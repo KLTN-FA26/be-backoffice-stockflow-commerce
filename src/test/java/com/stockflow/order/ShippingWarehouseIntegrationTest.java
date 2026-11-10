@@ -200,13 +200,13 @@ class ShippingWarehouseIntegrationTest {
         return new Warehouse(id, code, bin);
     }
 
-    /** {@code units} loose pieces of the test's SKU free in {@code warehouse}'s bin, received a while ago. */
+    /**
+     * {@code units} pieces of the test's SKU free in {@code warehouse}'s bin, received a while ago: whole cartons of
+     * {@link #PER_CARTON}, since every unit is in a carton (team plan 4C-2), so {@code units} is a multiple of it.
+     */
     private void stock(Warehouse warehouse, int units) {
-        tx.executeWithoutResult(s -> jdbc.update("""
-                INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, version,
-                    created_at, received_at)
-                VALUES (?, ?, ?, 'FX-LOT', ?, 0, 'AVAILABLE', 0, NOW(), clock_timestamp() - interval '2 days')""",
-                Identifiers.newId(), sku.sku(), warehouse.bin(), units));
+        tx.executeWithoutResult(s -> com.stockflow.support.CartonRows.stock(jdbc, sku.sku(), warehouse.bin(),
+                units / PER_CARTON, PER_CARTON, null, java.time.Instant.now().minus(2, java.time.temporal.ChronoUnit.DAYS)));
     }
 
     /** A DRAFT order of 20 cartons of 50 at 2,000 a piece with 10% VAT - as a converted quote leaves it. */
@@ -365,8 +365,8 @@ class ShippingWarehouseIntegrationTest {
     @Test
     @DisplayName("17 §4.2 step 2: every active warehouse is an option, the one holding every line first, in whole cartons")
     void optionsRankWarehousesByWholeCartons() {
-        stock(a, 1_030);
-        stock(b, 990);
+        stock(a, 1_000);
+        stock(b, 950);
         UUID orderId = confirmedOrder();
         UUID line = lineOf(orderId);
 
@@ -390,14 +390,14 @@ class ShippingWarehouseIntegrationTest {
             assertThat(l.lineId()).isEqualTo(line);
             assertThat(l.sku()).isEqualTo(sku.sku());
             assertThat(l.cartons()).isEqualTo(CARTONS);
-            assertThat(l.availableCartons()).as("1,030 pieces are 20 whole cartons; 30 loose are none (BR-21)")
+            assertThat(l.availableCartons()).as("1,000 pieces are 20 whole cartons")
                     .isEqualTo(20);
         });
 
         Option second = options.warehouses().get(1);
         assertThat(second.warehouseId()).as("then the one holding more").isEqualTo(b.id());
         assertThat(second.holdsEveryLine()).isFalse();
-        assertThat(second.availableCartons()).as("990 pieces are 19 whole cartons").isEqualTo(19);
+        assertThat(second.availableCartons()).as("950 pieces are 19 whole cartons").isEqualTo(19);
         assertThat(second.lines()).singleElement().satisfies(l -> assertThat(l.availableCartons()).isEqualTo(19));
 
         assertThat(options.warehouses().subList(2, options.warehouses().size()))
@@ -467,7 +467,7 @@ class ShippingWarehouseIntegrationTest {
     @Test
     @DisplayName("17 §4.2 step 3: k of N cartons available - k held, the earliest batch covered first; release refused")
     void partialHoldCoversTheEarliestBatchFirst() {
-        stock(a, 780);
+        stock(a, 750);
         stock(b, 1_000);
         UUID orderId = confirmedOrder(this::twoBatches);
         UUID line = lineOf(orderId);
@@ -488,11 +488,11 @@ class ShippingWarehouseIntegrationTest {
         assertThat(shippingWarehouses.coverage(orderId)).isEqualTo(coverage);
 
         assertThat(reservationsOf(orderId)).singleElement().satisfies(r -> assertThat(r)
-                .as("whole cartons only: the 30 loose pieces are not held (BR-21)")
+                .as("whole cartons only (BR-21): the 15 cartons A has")
                 .containsEntry("quantity", 15 * PER_CARTON)
                 .containsEntry("warehouse_code", a.code())
                 .containsEntry("status", "HELD"));
-        assertThat(atp(a)).as("the 30 loose pieces stay free").isEqualTo(30);
+        assertThat(atp(a)).as("every carton of A is held").isZero();
 
         // 17 §4.2 step 5: released only with every carton held.
         assertThatThrownBy(() -> releases.release(orderId, a.id(), coordinator))
@@ -587,18 +587,18 @@ class ShippingWarehouseIntegrationTest {
     @DisplayName("20 BR-01, BR-17: a hold at a warehouse is promised from it only - its ATP falls, the other's does not")
     void atpPerWarehouse() {
         stock(a, 1_000);
-        stock(b, 990);
-        assertThat(atpByWarehouse()).containsEntry(a.code(), 1_000).containsEntry(b.code(), 990);
-        assertThat(systemAtp()).isEqualTo(1_990);
+        stock(b, 950);
+        assertThat(atpByWarehouse()).containsEntry(a.code(), 1_000).containsEntry(b.code(), 950);
+        assertThat(systemAtp()).isEqualTo(1_950);
 
         UUID orderId = confirmedOrder();
         assertThat(choose(orderId, a).fullyHeld()).isTrue();
 
         assertThat(atpByWarehouse()).as("A falls by the 1,000 held; B does not")
-                .containsEntry(a.code(), 0).containsEntry(b.code(), 990);
+                .containsEntry(a.code(), 0).containsEntry(b.code(), 950);
         assertThat(inventory.availableToPromise(new Sku(sku.sku()), a.code())).isZero();
-        assertThat(inventory.availableToPromise(new Sku(sku.sku()), b.code())).isEqualTo(990);
-        assertThat(systemAtp()).as("system-wide it falls too").isEqualTo(990);
+        assertThat(inventory.availableToPromise(new Sku(sku.sku()), b.code())).isEqualTo(950);
+        assertThat(systemAtp()).as("system-wide it falls too").isEqualTo(950);
 
         // A second order choosing A: A has nothing left, and what only B has is not A's to hold.
         UUID other = confirmedOrder();
@@ -614,7 +614,7 @@ class ShippingWarehouseIntegrationTest {
         assertThat(direct.cartonsHeld()).isZero();
         assertThat(direct.reservationIds()).isEmpty();
         assertThat(reservationsOf(other)).isEmpty();
-        assertThat(atp(b)).isEqualTo(990);
+        assertThat(atp(b)).isEqualTo(950);
 
         // BR-22: nothing is held for it, so its warehouse may still change - and B holds its whole cartons.
         Coverage atB = choose(other, b);
@@ -816,7 +816,7 @@ class ShippingWarehouseIntegrationTest {
     @DisplayName("review of 4B-7: what the order holds counts as available to it at its own warehouse")
     void optionsCountTheOrdersOwnHolds() {
         stock(a, 1_000);
-        stock(b, 990);
+        stock(b, 950);
         UUID orderId = confirmedOrder();
         assertThat(choose(orderId, a).fullyHeld()).isTrue();
         assertThat(atp(a)).as("to everyone else").isZero();

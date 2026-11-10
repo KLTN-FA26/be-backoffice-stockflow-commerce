@@ -9,7 +9,6 @@ import com.stockflow.inventory.api.MoveReference;
 import com.stockflow.inventory.api.ReceiveStockCommand;
 import com.stockflow.inventory.api.ReclassifyStockPackagesCommand;
 import com.stockflow.inventory.api.StockDisposition;
-import com.stockflow.inventory.internal.domain.StockMovement;
 import com.stockflow.inventory.internal.domain.StockMovementLog;
 import com.stockflow.inventory.internal.service.StockOperations;
 import com.stockflow.support.DemoData;

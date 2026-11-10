@@ -78,9 +78,9 @@ class LotTraceIntegrationTest {
     @BeforeEach
     void setUp() {
         clerk = tx.execute(s -> ReferenceRows.user(entityManager));
-        // 5 cartons of one unit ordered of a SKU of its own, sent to HCM: its lot is the production order's, whatever
+        // 6 cartons of 2 units ordered of a SKU of its own, sent to HCM: its lot is the production order's, whatever
         // the receipts. Every unit is in a carton, and an order line takes whole cartons (team plan 4C-2).
-        goods = receivables.sent(DemoData.WAREHOUSE_HCM, 5, 1);
+        goods = receivables.sent(DemoData.WAREHOUSE_HCM, 6, 2);
         sku = goods.sku();
     }
 
@@ -120,7 +120,7 @@ class LotTraceIntegrationTest {
     @Test
     @DisplayName("a production order's two receipts are one lot; it is traced from the production order to the order it was picked for")
     void receiptToOrder() throws Exception {
-        GoodsReceipts.ReceiptView first = received(3);
+        GoodsReceipts.ReceiptView first = received(4);
         GoodsReceipts.ReceiptView second = received(2);
         UUID lot = lot();   // one lot per production order and SKU, across its receipts (kltn-docs 03 BR-03)
         assertThat(jdbc.queryForObject("SELECT count(*) FROM inventory.stock_lot WHERE sku = ?", Long.class, sku))
@@ -129,15 +129,15 @@ class LotTraceIntegrationTest {
         putAway(first);
         putAway(second);
         UUID order = order();
-        tx.executeWithoutResult(s -> inventory.reserve(new ReserveStockCommand(UUID.randomUUID(), new Sku(sku), 4,
+        tx.executeWithoutResult(s -> inventory.reserve(new ReserveStockCommand(UUID.randomUUID(), new Sku(sku), 6,
                 order)));
         List<StockReservation> allocated = tx.execute(s -> inventory.allocate(new AllocateStockCommand(order, "HCM")))
                 .allocations().get(0).holds();
         assertThat(allocated).extracting(StockReservation::locationCode).containsOnly(BIN);
-        assertThat(allocated).as("whole cartons of one").extracting(StockReservation::quantity)
-                .containsExactly(1, 1, 1, 1);
-        // Three of the four are picked; the fourth stays held.
-        List<UUID> pickLines = List.of(Identifiers.newId(), Identifiers.newId(), Identifiers.newId());
+        assertThat(allocated).as("whole cartons of two").extracting(StockReservation::quantity)
+                .containsExactly(2, 2, 2);
+        // Two of the three are picked; the third stays held.
+        List<UUID> pickLines = List.of(Identifiers.newId(), Identifiers.newId());
         for (int i = 0; i < pickLines.size(); i++) {
             UUID hold = allocated.get(i).reservationId();
             UUID pickLine = pickLines.get(i);
@@ -151,28 +151,28 @@ class LotTraceIntegrationTest {
         assertThat(trace.lot().productionOrderId()).isEqualTo(goods.productionOrderId());
         assertThat(trace.lot().productionOrderCode()).isEqualTo(goods.productionCode());
         assertThat(trace.lot().receivingWarehouseId()).isEqualTo(DemoData.WAREHOUSE_HCM);
-        assertThat(trace.lot().receivedQuantity()).isEqualTo(5);
-        assertThat(trace.lot().onHand()).as("5 received, 3 picked").isEqualTo(2);
-        assertThat(trace.lot().held()).as("the fourth carton's hold").isEqualTo(1);
-        assertThat(trace.lot().available()).isEqualTo(1);
+        assertThat(trace.lot().receivedQuantity()).isEqualTo(12);
+        assertThat(trace.lot().onHand()).as("12 received, 4 picked").isEqualTo(8);
+        assertThat(trace.lot().held()).as("the third carton's hold").isEqualTo(2);
+        assertThat(trace.lot().available()).isEqualTo(6);
         String orderNumber = jdbc.queryForObject("SELECT order_number FROM ordering.customer_order WHERE id = ?",
                 String.class, order);
         assertThat(trace.orders()).singleElement().satisfies(leg -> {
             assertThat(leg.orderId()).isEqualTo(order);
             assertThat(leg.orderNumber()).as("snapshot on the ledger line").isEqualTo(orderNumber);
-            assertThat(leg.picked()).isEqualTo(3);
+            assertThat(leg.picked()).isEqualTo(4);
         });
-        assertThat(trace.holds()).hasSize(4).allSatisfy(hold -> {
+        assertThat(trace.holds()).hasSize(3).allSatisfy(hold -> {
             assertThat(hold.orderId()).isEqualTo(order);
             assertThat(hold.allocatedFrom()).isNotNull();
             assertThat(hold.orderNumber()).as("snapshot on the allocation").isEqualTo(orderNumber);
         });
         assertThat(trace.holds()).extracting(LotTrace.Hold::status).containsExactlyInAnyOrder("CONSUMED", "CONSUMED",
-                "CONSUMED", "HELD");
+                "HELD");
         var ledger = traces.movements(lot, null, null, null, 0, 20).items();
         assertThat(ledger).extracting(LotTrace.Movement::type).as("one line per carton")
-                .containsExactlyInAnyOrder("RECEIPT", "RECEIPT", "RECEIPT", "RECEIPT", "RECEIPT", "MOVE", "MOVE", "MOVE",
-                        "MOVE", "MOVE", "PICK", "PICK", "PICK");
+                .containsExactlyInAnyOrder("RECEIPT", "RECEIPT", "RECEIPT", "RECEIPT", "RECEIPT", "RECEIPT", "MOVE",
+                        "MOVE", "MOVE", "MOVE", "MOVE", "MOVE", "PICK", "PICK");
         List<LotTrace.Movement> picks = ledger.stream().filter(m -> m.type().equals("PICK")).toList();
         assertThat(picks).extracting(LotTrace.Movement::referenceId).containsExactlyInAnyOrderElementsOf(pickLines);
         assertThat(picks).allSatisfy(pick -> {

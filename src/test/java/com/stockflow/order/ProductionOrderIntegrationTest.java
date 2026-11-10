@@ -254,13 +254,13 @@ class ProductionOrderIntegrationTest {
         return new Producer.Details(name, null, null, null, Producer.Channel.PDF, 14, null);
     }
 
-    /** {@code units} loose pieces of the test's SKU free in {@code warehouse}'s bin, received a while ago. */
+    /**
+     * {@code units} pieces of the test's SKU free in {@code warehouse}'s bin, received a while ago: whole cartons of
+     * {@link #PER_CARTON}, since every unit is in a carton (team plan 4C-2), so {@code units} is a multiple of it.
+     */
     private void stock(Warehouse warehouse, int units) {
-        tx.executeWithoutResult(s -> jdbc.update("""
-                INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, version,
-                    created_at, received_at)
-                VALUES (?, ?, ?, 'FX-LOT', ?, 0, 'AVAILABLE', 0, NOW(), clock_timestamp() - interval '2 days')""",
-                Identifiers.newId(), sku.sku(), warehouse.bin(), units));
+        tx.executeWithoutResult(s -> com.stockflow.support.CartonRows.stock(jdbc, sku.sku(), warehouse.bin(),
+                units / PER_CARTON, PER_CARTON, null, java.time.Instant.now().minus(2, java.time.temporal.ChronoUnit.DAYS)));
     }
 
     /** A DRAFT order of 20 cartons of 50 at 2,000 a piece with 10% VAT - as a converted quote leaves it. */

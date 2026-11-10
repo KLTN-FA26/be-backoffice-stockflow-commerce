@@ -678,7 +678,7 @@ class PickConfirmationIntegrationTest {
         // The manager of the warehouse is not the assignee either: only the assignee confirms.
         confirm(task, lineId, managerHcm.toString(), "WAREHOUSE_MANAGER", scan)
                 .andExpect(status().isNotFound());
-        confirm(task, lineId, coordinator.toString(), "WAREHOUSE_MANAGER", scan)
+        confirm(task, lineId, staff("SALES_STAFF").toString(), "SALES_STAFF", scan)
                 .andExpect(status().isForbidden()).andExpect(jsonPath("$.errorCode").value("FORBIDDEN"));
         confirm(task, lineId, customerUser.toString(), "CUSTOMER", scan)
                 .andExpect(status().isForbidden());
@@ -872,7 +872,7 @@ class PickConfirmationIntegrationTest {
                 .andExpect(jsonPath("$.data.items[*].warehouseId", not(hasItem(HCM.toString()))));
         call(get("/api/v1/fulfillment/put-backs").header("Authorization", token(managerHcm, "WAREHOUSE_MANAGER")))
                 .andExpect(status().isOk());
-        call(get("/api/v1/fulfillment/put-backs").header("Authorization", token(coordinator, "WAREHOUSE_MANAGER")))
+        call(get("/api/v1/fulfillment/put-backs").header("Authorization", token(staff("SALES_STAFF"), "SALES_STAFF")))
                 .andExpect(status().isForbidden());
         call(get("/api/v1/fulfillment/put-backs").header("Authorization", token(customerUser, "CUSTOMER")))
                 .andExpect(status().isForbidden());

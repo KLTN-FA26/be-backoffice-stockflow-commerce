@@ -125,6 +125,7 @@ class DispatchHandoverIntegrationTest {
     private UUID customerUser;
     private UUID otherCustomerUser;
     private UUID customer;
+    private UUID sales;
     private UUID ghn;
     private UUID ghtk;
     private UUID truck5t;
@@ -132,6 +133,7 @@ class DispatchHandoverIntegrationTest {
     @BeforeEach
     void setUp() {
         coordinator = staff("WAREHOUSE_MANAGER", HCM);
+        sales = staff("SALES_STAFF");
         manager = staff("WAREHOUSE_MANAGER", HCM);
         picker = staff("WAREHOUSE_STAFF", HCM);
         dispatcher = staff("WAREHOUSE_STAFF", HCM);
@@ -203,6 +205,11 @@ class DispatchHandoverIntegrationTest {
         return as(coordinator, "WAREHOUSE_MANAGER", request);
     }
 
+    /** What the retired order coordinator did for the customer - holds, cancellation requests - Sales does now. */
+    private ResultActions sales(MockHttpServletRequestBuilder request) throws Exception {
+        return as(sales, "SALES_STAFF", request);
+    }
+
     private JsonNode data(ResultActions result) throws Exception {
         return json.readTree(result.andReturn().getResponse().getContentAsString()).path("data");
     }
@@ -272,7 +279,7 @@ class DispatchHandoverIntegrationTest {
             UUID parcel = UUID.fromString(data(as(picker, "WAREHOUSE_STAFF", body(post(BASE + "/tasks/" + task
                     + "/packages"), ONE_CARTON)).andExpect(status().isCreated())).path("packageId").asText());
             as(picker, "WAREHOUSE_STAFF", body(post(BASE + "/tasks/" + task + "/packages/" + parcel + "/scans"),
-                    "{\"scanId\":\"" + UUID.randomUUID() + "\",\"scannedCode\":\"" + SOFA.code() + "\",\"quantity\":"
+                    "{\"scanId\":\"" + UUID.randomUUID() + "\",\"scannedCode\":\"" + SOFA.code() + "\",\"lotNumber\":\"FX-LOT\",\"quantity\":"
                             + units + "}")).andExpect(status().isOk());
             as(picker, "WAREHOUSE_STAFF", body(post(BASE + "/tasks/" + task + "/packages/" + parcel + "/seal"),
                     MEASURES)).andExpect(status().isOk());
@@ -396,9 +403,9 @@ class DispatchHandoverIntegrationTest {
         String loadId = load.path("loadId").asText();
         assertThat(load.path("code").asText()).matches("LD-\\d{8}-\\d{4}");
 
-        // Who may load: not the coordinator (reads only), not a customer, not another warehouse.
+        // Who may load: not Sales, not a customer, not another warehouse.
         oc(get(BASE + "/loads/" + loadId)).andExpect(status().isOk());
-        as(coordinator, "WAREHOUSE_MANAGER", body(post(BASE + "/loads/" + loadId + "/scans"), "{\"scanId\":\""
+        as(sales, "SALES_STAFF", body(post(BASE + "/loads/" + loadId + "/scans"), "{\"scanId\":\""
                 + UUID.randomUUID() + "\",\"packageCode\":\"" + parcels.get(0) + "\"}")).andExpect(status().isForbidden());
         as(customerUser, "CUSTOMER", get(BASE + "/loads")).andExpect(status().isForbidden());
         as(dispatcherElsewhere, "WAREHOUSE_STAFF", get(BASE + "/loads/" + loadId)).andExpect(status().isForbidden())
@@ -568,11 +575,11 @@ class DispatchHandoverIntegrationTest {
         UUID heldShipment = ship(pickedTask(held), false, 1);
         String heldLoad = vehicle(ghn, heldShipment).path("loadId").asText();
         scan(heldLoad, labels(heldShipment).getFirst()).andExpect(status().isOk());
-        oc(body(post("/api/v1/orders/" + held.orderId() + "/hold"), "{\"reasonCode\":\"ADDRESS\","
+        sales(body(post("/api/v1/orders/" + held.orderId() + "/hold"), "{\"reasonCode\":\"ADDRESS\","
                 + "\"note\":\"ward missing\"}")).andExpect(status().isOk());
         handOver(heldLoad).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("ORDER_INVALID_TRANSITION"));
-        oc(body(post("/api/v1/orders/" + held.orderId() + "/hold/resolution"), "{\"note\":\"ward fixed\"}"))
+        sales(body(post("/api/v1/orders/" + held.orderId() + "/hold/resolution"), "{\"note\":\"ward fixed\"}"))
                 .andExpect(status().isOk());
         handOver(heldLoad).andExpect(status().isOk());
         assertThat(statusOf(held)).isEqualTo(OrderStatus.SHIPPED);
@@ -602,7 +609,7 @@ class DispatchHandoverIntegrationTest {
 
         // A parcel of a shipment waiting for dispatch but in no load plan.
         as(picker, "WAREHOUSE_STAFF", body(post(BASE + "/tasks/" + task + "/packages/" + open + "/scans"),
-                "{\"scanId\":\"" + UUID.randomUUID() + "\",\"scannedCode\":\"" + SOFA.code() + "\",\"quantity\":1}"))
+                "{\"scanId\":\"" + UUID.randomUUID() + "\",\"scannedCode\":\"" + SOFA.code() + "\",\"lotNumber\":\"FX-LOT\",\"quantity\":1}"))
                 .andExpect(status().isOk());
         as(picker, "WAREHOUSE_STAFF", body(post(BASE + "/tasks/" + task + "/packages/" + open + "/seal"), MEASURES))
                 .andExpect(status().isOk());
@@ -1002,7 +1009,7 @@ class DispatchHandoverIntegrationTest {
         String cancel = "/api/v1/orders/" + order.orderId() + "/cancellation";
         String first = data(as(customerUser, "CUSTOMER", body(post(cancel), "{\"reasonCode\":\"CUSTOMER_REQUEST\"}"))
                 .andExpect(status().isAccepted())).path("requestId").asText();
-        oc(body(post("/api/v1/orders/" + order.orderId() + "/cancellation-requests/" + first + "/rejection"),
+        sales(body(post("/api/v1/orders/" + order.orderId() + "/cancellation-requests/" + first + "/rejection"),
                 "{\"note\":\"already printed for you\"}")).andExpect(status().isOk());
         String second = data(as(customerUser, "CUSTOMER", body(post(cancel), "{\"reasonCode\":\"CUSTOMER_REQUEST\"}"))
                 .andExpect(status().isAccepted())).path("requestId").asText();
@@ -1017,7 +1024,7 @@ class DispatchHandoverIntegrationTest {
         assertThat(closed.get("decided_by")).isNull();
         assertThat(closed.get("decided_at")).isNotNull();
         assertThat((String) closed.get("decision_note")).contains("PACKED").contains("can no longer be cancelled");
-        oc(body(post("/api/v1/orders/" + order.orderId() + "/cancellation-requests/" + second + "/approval"), "{}"))
+        sales(body(post("/api/v1/orders/" + order.orderId() + "/cancellation-requests/" + second + "/approval"), "{}"))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("ORDER_CANCELLATION_REQUEST_NOT_PENDING"));
 
@@ -1042,7 +1049,7 @@ class DispatchHandoverIntegrationTest {
         String request = data(as(customerUser, "CUSTOMER", body(post("/api/v1/orders/" + approved.orderId()
                 + "/cancellation"), "{\"reasonCode\":\"CUSTOMER_REQUEST\"}")).andExpect(status().isAccepted()))
                 .path("requestId").asText();
-        oc(body(post("/api/v1/orders/" + approved.orderId() + "/cancellation-requests/" + request + "/approval"), "{}"))
+        sales(body(post("/api/v1/orders/" + approved.orderId() + "/cancellation-requests/" + request + "/approval"), "{}"))
                 .andExpect(status().isOk());
         assertThat(jdbc.queryForObject("SELECT status FROM ordering.order_cancellation_request WHERE id = ?::uuid",
                 String.class, request)).isEqualTo("APPROVED");
@@ -1051,7 +1058,7 @@ class DispatchHandoverIntegrationTest {
         String pending = data(as(customerUser, "CUSTOMER", body(post("/api/v1/orders/" + cancelled.orderId()
                 + "/cancellation"), "{\"reasonCode\":\"CUSTOMER_REQUEST\"}")).andExpect(status().isAccepted()))
                 .path("requestId").asText();
-        oc(body(post("/api/v1/orders/" + cancelled.orderId() + "/admin-cancellation"),
+        sales(body(post("/api/v1/orders/" + cancelled.orderId() + "/admin-cancellation"),
                 "{\"reasonCode\":\"OUT_OF_STOCK\"}")).andExpect(status().isOk());
         assertThat(jdbc.queryForMap("SELECT status, decision_note FROM ordering.order_cancellation_request "
                 + "WHERE id = ?::uuid", pending)).containsEntry("status", "EXPIRED")
@@ -1155,7 +1162,7 @@ class DispatchHandoverIntegrationTest {
         kit.path("packages").forEach(p -> parts.add(p.path("packageId").asText()));
         assertThat(parts).hasSize(2);
         as(picker, "WAREHOUSE_STAFF", body(post(BASE + "/tasks/" + task + "/packages/" + parts.get(0) + "/scans"),
-                "{\"scanId\":\"" + UUID.randomUUID() + "\",\"scannedCode\":\"" + SOFA.code() + "\",\"quantity\":1}"))
+                "{\"scanId\":\"" + UUID.randomUUID() + "\",\"scannedCode\":\"" + SOFA.code() + "\",\"lotNumber\":\"FX-LOT\",\"quantity\":1}"))
                 .andExpect(status().isOk());
         for (String part : parts) {
             as(picker, "WAREHOUSE_STAFF", body(post(BASE + "/tasks/" + task + "/packages/" + part + "/seal"),
@@ -1197,7 +1204,7 @@ class DispatchHandoverIntegrationTest {
         List<String> parts = new ArrayList<>();
         kit.path("packages").forEach(p -> parts.add(p.path("packageId").asText()));
         as(picker, "WAREHOUSE_STAFF", body(post(BASE + "/tasks/" + task + "/packages/" + parts.get(0) + "/scans"),
-                "{\"scanId\":\"" + UUID.randomUUID() + "\",\"scannedCode\":\"" + SOFA.code() + "\",\"quantity\":1}"))
+                "{\"scanId\":\"" + UUID.randomUUID() + "\",\"scannedCode\":\"" + SOFA.code() + "\",\"lotNumber\":\"FX-LOT\",\"quantity\":1}"))
                 .andExpect(status().isOk());
         for (String part : parts) {
             as(picker, "WAREHOUSE_STAFF", body(post(BASE + "/tasks/" + task + "/packages/" + part + "/seal"),

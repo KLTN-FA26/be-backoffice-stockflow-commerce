@@ -266,27 +266,7 @@ class CountVarianceAdjustmentIntegrationTest {
     }
 
     @Test
-    @DisplayName("a loose surplus lands on the newest layer")
-    void looseSurplusOnTheNewestLayer() {
-        UUID older = loose(EARLY, 4);
-        UUID newer = loose(LATE, 6);
-        UUID line = countLine(null);
-
-        List<StockAdjustmentSummary> asked = operations.requestCountVariance(line, looseSlot(), 3, clerk, null);
-
-        assertThat(asked).singleElement().satisfies(a -> assertThat(a.quantityDelta()).isEqualTo(3));
-        operations.approve(asked.getFirst().adjustmentId(), manager);
-
-        assertThat(onHand(older)).isEqualTo(4);
-        assertThat(onHand(newer)).isEqualTo(9);
-        assertThat(adjustmentLedger()).singleElement().satisfies(row -> {
-            assertThat(row.get("to_location_code")).isEqualTo(BIN);
-            assertThat(row.get("from_location_code")).isNull();
-        });
-    }
-
-    @Test
-    @DisplayName("FIFO: a loose surplus opens a new layer received at approval; the counted layer is not raised")
+    @DisplayName("a loose surplus opens a new layer received at approval; the counted layer is not raised (every SKU is FIFO since 5-5)")
     void fifoLooseSurplusOpensANewLayer() {
         UUID old = loose(EARLY, 4);
         UUID line = countLine(null);

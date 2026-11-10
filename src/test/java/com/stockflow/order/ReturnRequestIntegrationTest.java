@@ -332,7 +332,7 @@ class ReturnRequestIntegrationTest {
                 .as("approved twice").isEqualTo(ErrorCode.RETURN_INVALID_TRANSITION);
 
         ReturnRequest received = returns.receive(request.id(), new ReturnRequestService.ReceiveReturnGoodsCommand(null,
-                List.of(new ReturnRequest.Receipt(only(request), 3, null, null)), List.of(), "thùng móp", null),
+                List.of(new ReturnRequest.Receipt(only(request), 3, null, "LOT-RET")), List.of(), "thùng móp", null),
                 warehouse);
         assertThat(received.status()).isEqualTo(ReturnStatus.RECEIVED);
         assertThat(received.receivingLocation()).as("HCM has no quarantine area: its QC area").isEqualTo("HCM-QC01");
@@ -581,7 +581,7 @@ class ReturnRequestIntegrationTest {
         ReturnRequest request = open(order, ReturnReason.PRINT_DEFECT, ReturnResolution.REPLACEMENT, 10);
         approved(request, true);
         returns.receive(request.id(), new ReturnRequestService.ReceiveReturnGoodsCommand("HCM-QC01",
-                List.of(new ReturnRequest.Receipt(only(request), 10, null, null)), List.of(), null, null), warehouse);
+                List.of(new ReturnRequest.Receipt(only(request), 10, null, "LOT-RET")), List.of(), null, null), warehouse);
         assertThat(code(catchThrowable(() -> returns.inspect(request.id(), new ReturnRequestService.InspectReturnCommand(
                 List.of(new ReturnRequest.Inspection(only(request), 10, 0, ReturnItemCondition.DEFECTIVE, 10, 0, 0,
                         "HCM-A02-1-A", null)), null, null), qc)))).isEqualTo(ErrorCode.RETURN_RESTOCK_NOT_ALLOWED);
@@ -695,8 +695,7 @@ class ReturnRequestIntegrationTest {
         ReturnRequest request = open(order.orderId(), ReturnReason.WRONG_ITEM, ReturnResolution.REPLACEMENT, 2);
         approved(request, true);
         assertThat(code(catchThrowable(() -> returns.receive(request.id(),
-                new ReturnRequestService.ReceiveReturnGoodsCommand("HCM-A02-1-A", List.of(new ReturnRequest.Receipt(
-                        only(request), 2, null, null)), List.of(), null, null), warehouse))))
+                new ReturnRequestService.ReceiveReturnGoodsCommand("HCM-A02-1-A", List.of(new ReturnRequest.Receipt(only(request), 2, null, "LOT-RET")), List.of(), null, null), warehouse))))
                 .as("never straight onto a bin").isEqualTo(ErrorCode.RETURN_RECEIVING_LOCATION_INVALID);
         assertThat(code(catchThrowable(() -> returns.receive(request.id(),
                 new ReturnRequestService.ReceiveReturnGoodsCommand(null, List.of(new ReturnRequest.Receipt(
@@ -744,7 +743,7 @@ class ReturnRequestIntegrationTest {
                 .satisfies(t -> assertThat(code(t)).isIn(ErrorCode.RETURN_INVALID_TRANSITION, ErrorCode.OPTIMISTIC_LOCK));
 
         List<Throwable> race = race(() -> returns.receive(request.id(), new ReturnRequestService.ReceiveReturnGoodsCommand(
-                        null, List.of(new ReturnRequest.Receipt(only(request), 2, null, null)), List.of(), null, null),
+                        null, List.of(new ReturnRequest.Receipt(only(request), 2, null, "LOT-RET")), List.of(), null, null),
                         warehouse),
                 () -> returns.cancel(request.id(), customer, null, customerUser));
         // The goods are here either way: counted in first, the withdrawal comes too late; withdrawn first, the parcel
@@ -765,9 +764,9 @@ class ReturnRequestIntegrationTest {
         ReturnRequest request = open(order.orderId(), ReturnReason.DAMAGED_IN_TRANSIT, ReturnResolution.REFUND, 3);
         approved(request, true);
         ReturnRequest first = returns.receive(request.id(), new ReturnRequestService.ReceiveReturnGoodsCommand(null,
-                List.of(new ReturnRequest.Receipt(only(request), 2, null, null)), List.of(), "đợt 1", null), warehouse);
+                List.of(new ReturnRequest.Receipt(only(request), 2, null, "LOT-RET")), List.of(), "đợt 1", null), warehouse);
         ReturnRequest second = returns.receive(request.id(), new ReturnRequestService.ReceiveReturnGoodsCommand(null,
-                List.of(new ReturnRequest.Receipt(only(request), 1, null, null)), List.of(), "đợt 2", null), warehouse);
+                List.of(new ReturnRequest.Receipt(only(request), 1, null, "LOT-RET")), List.of(), "đợt 2", null), warehouse);
         assertThat(second.parcelCount()).isEqualTo(2);
         assertThat(second.lines().getFirst().receivedQuantity()).isEqualTo(3);
         assertThat(jdbc.queryForObject("SELECT SUM(on_hand) FROM inventory.stock_item WHERE location_code = 'HCM-QC01'"
@@ -799,8 +798,7 @@ class ReturnRequestIntegrationTest {
         assertThat(settlements.close(order.orderId())).isTrue();
 
         assertThat(code(catchThrowable(() -> returns.receive(request.id(),
-                new ReturnRequestService.ReceiveReturnGoodsCommand(null, List.of(new ReturnRequest.Receipt(only(request),
-                        2, null, null)), List.of(), "về sau khi đơn đã đóng", null), warehouse))))
+                new ReturnRequestService.ReceiveReturnGoodsCommand(null, List.of(new ReturnRequest.Receipt(only(request), 2, null, "LOT-RET")), List.of(), "về sau khi đơn đã đóng", null), warehouse))))
                 .isEqualTo(ErrorCode.RETURN_ORDER_NOT_RETURNABLE);
         assertThat(queries.detail(request.id(), null).request().status()).isEqualTo(ReturnStatus.EXPIRED);
         assertThat(statusOf(order.orderId())).isEqualTo(OrderStatus.CLOSED);
@@ -848,7 +846,7 @@ class ReturnRequestIntegrationTest {
         assertThat(statusOf(order.orderId())).isEqualTo(OrderStatus.DELIVERED);
 
         ReturnRequest received = returns.receive(request.id(), new ReturnRequestService.ReceiveReturnGoodsCommand(null,
-                List.of(new ReturnRequest.Receipt(only(request), 2, null, null)), List.of(), "về trễ", null), warehouse);
+                List.of(new ReturnRequest.Receipt(only(request), 2, null, "LOT-RET")), List.of(), "về trễ", null), warehouse);
         assertThat(received.status()).isEqualTo(ReturnStatus.RECEIVED);
         assertThat(received.closedAt()).isNull();
         assertThat(statusOf(order.orderId())).isEqualTo(OrderStatus.RETURN_REQUESTED);

@@ -258,7 +258,7 @@ class ControlledUnloadIntegrationTest {
 
     private void scan(UUID task, String parcel) throws Exception {
         packer(body(post(BASE + "/tasks/" + task + "/packages/" + parcel + "/scans"), "{\"scanId\":\""
-                + UUID.randomUUID() + "\",\"scannedCode\":\"" + SOFA_BARCODE + "\",\"quantity\":1}"))
+                + UUID.randomUUID() + "\",\"scannedCode\":\"" + SOFA_BARCODE + "\",\"lotNumber\":\"FX-LOT\",\"quantity\":1}"))
                 .andExpect(status().isOk());
     }
 
@@ -736,8 +736,9 @@ class ControlledUnloadIntegrationTest {
         String version = "{\"expectedVersion\":" + plan.path("version").asLong() + ",\"reasonCode\":\"XE_HONG\","
                 + "\"note\":\"x\"}";
         String override = "{\"packageId\":\"" + UUID.randomUUID() + "\"}";
-        for (String[] role : new String[][] {{"WAREHOUSE_STAFF", "d"}, {"WAREHOUSE_MANAGER", "c"}}) {
-            UUID user = role[1].equals("d") ? dispatcher : coordinator;
+        UUID salesperson = staff("SALES_STAFF");
+        for (String[] role : new String[][] {{"WAREHOUSE_STAFF", "d"}, {"SALES_STAFF", "s"}}) {
+            UUID user = role[1].equals("d") ? dispatcher : salesperson;
             as(user, role[0], body(post(PLANS + "/" + planId + "/controlled-cancellation"), version))
                     .andExpect(status().isForbidden());
             as(user, role[0], body(post(LOADS + "/" + loadId + "/controlled-cancellation"), XE_HONG))

@@ -227,13 +227,13 @@ class AwaitingStockIntegrationTest {
         });
     }
 
-    /** {@code units} pieces of the test's SKU free in the warehouse's bin: goods put away. */
+    /**
+     * {@code units} pieces of the test's SKU free in the warehouse's bin: goods put away, whole cartons of
+     * {@link #PER_CARTON} since every unit is in a carton (team plan 4C-2).
+     */
     private void stock(int units) {
-        tx.executeWithoutResult(s -> jdbc.update("""
-                INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, version,
-                    created_at, received_at)
-                VALUES (?, ?, ?, 'FX-LOT', ?, 0, 'AVAILABLE', 0, NOW(), clock_timestamp() - interval '2 days')""",
-                Identifiers.newId(), sku.sku(), a.bin(), units));
+        tx.executeWithoutResult(s -> com.stockflow.support.CartonRows.stock(jdbc, sku.sku(), a.bin(),
+                units / PER_CARTON, PER_CARTON, null, java.time.Instant.now().minus(2, java.time.temporal.ChronoUnit.DAYS)));
     }
 
     /** A new order of a contract, 12 + 8 cartons, everything paid before delivery: CONFIRMED at signing. */

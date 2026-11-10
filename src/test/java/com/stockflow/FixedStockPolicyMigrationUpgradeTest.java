@@ -27,8 +27,11 @@ class FixedStockPolicyMigrationUpgradeTest {
 
     private static final String BEFORE = "20261115000050";
     private static final String MIGRATION = "20261115000100";
-    private static final String TABLE = "TABLE-OAK-160";
-    private static final String SOFA = "SOFA-3S-GREY";
+    /** A SKU someone configured lot-tracked, serial-tracked and FIFO, and one nobody ever configured. */
+    private static final String TABLE = "FSP-TABLE";
+    private static final String SOFA = "FSP-SOFA";
+    private static final String BIN_A = "FSP-RCV01";
+    private static final String BIN_B = "FSP-RCV02";
 
     @Test
     void upgradeFixesThePolicyForEverySkuAndKeepsTheStock() throws Exception {
@@ -41,17 +44,41 @@ class FixedStockPolicyMigrationUpgradeTest {
                 UUID emptied = UUID.randomUUID();
                 UUID receivedAt1 = UUID.randomUUID();
 
+                // This database has the migrations' data only: two SKUs and the two areas the stock sits in are made here.
+                for (String sku : new String[] {TABLE, SOFA}) {
+                    UUID product = UUID.randomUUID();
+                    RawSql.update(db, "INSERT INTO product.products (id, code, name, slug) VALUES (?, ?, 'Policy fixture', "
+                            + "?)", product, sku, sku.toLowerCase());
+                    RawSql.update(db, "INSERT INTO product.variants (id, product_id, sku, name, attribute_signature) "
+                            + "VALUES (gen_random_uuid(), ?, ?, 'Policy fixture', '')", product, sku);
+                }
+                UUID warehouse = UUID.randomUUID();
+                RawSql.update(db, "INSERT INTO warehouse.warehouse (id, name, status, prefix, address, map_unit, "
+                        + "map_width, map_height, version, created_at) VALUES (?, 'Policy fixture', 'ACTIVE', 'FSP', 'Test "
+                        + "address', 'M', 50, 50, 0, NOW())", warehouse);
+                int x = 1;
+                for (String area : new String[] {"RCV01", "RCV02"}) {
+                    UUID location = UUID.randomUUID();
+                    RawSql.update(db, "INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, "
+                            + "storage_class, is_pickable, is_putaway_target, status) VALUES (?, ?, 'AREA', ?, 'NORMAL', "
+                            + "FALSE, FALSE, 'ACTIVE')", location, warehouse, "FSP-" + area);
+                    RawSql.update(db, "INSERT INTO warehouse.area (id, warehouse_id, location_id, code, type, name, x, y, "
+                            + "width, length, rotation, is_obstacle, status) VALUES (gen_random_uuid(), ?, ?, ?, "
+                            + "'RECEIVING', 'x', ?, 1, 5, 5, 0, FALSE, 'ACTIVE')", warehouse, location, area, x);
+                    x += 20;
+                }
+
                 // The old state is written with the row triggers off: what the old policy accepted is not what this
                 // test is about.
                 RawSql.update(db, "SET session_replication_role = replica");
                 RawSql.update(db, "UPDATE inventory.inventory_items SET lot_tracked = TRUE, serial_tracked = TRUE, "
                         + "removal_strategy = 'FIFO', policy_configured = TRUE WHERE sku = ?", TABLE);
                 RawSql.update(db, "INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, serial_number, "
-                        + "on_hand, reserved, status, received_at, version, created_at) VALUES (?, ?, 'HCM-A01-1-B', "
+                        + "on_hand, reserved, status, received_at, version, created_at) VALUES (?, ?, 'FSP-RCV02', "
                         + "'LOT-SER', 'SN-0001', 1, 0, 'AVAILABLE', NOW() - interval '2 days', 0, NOW())",
                         serialUnit, TABLE);
                 RawSql.update(db, "INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, "
-                        + "version, created_at) VALUES (?, ?, 'HCM-A01-2-B', 0, 0, 'AVAILABLE', 0, NOW())", emptied, SOFA);
+                        + "version, created_at) VALUES (?, ?, 'FSP-RCV02', 0, 0, 'AVAILABLE', 0, NOW())", emptied, SOFA);
                 RawSql.update(db, "SET session_replication_role = origin");
                 long rows = RawSql.number(db, "SELECT count(*) FROM inventory.stock_item");
                 long onHand = RawSql.number(db, "SELECT sum(on_hand) FROM inventory.stock_item");
@@ -105,7 +132,7 @@ class FixedStockPolicyMigrationUpgradeTest {
                 }
                 RawSql.refused(db, "a receipt time in the future", "INSERT INTO inventory.stock_item (id, sku, "
                         + "location_code, lot_number, on_hand, reserved, status, received_at, version, created_at) "
-                        + "VALUES (gen_random_uuid(), '" + TABLE + "', 'HCM-A01-1-B', 'LOT-FUTURE', 1, 0, 'AVAILABLE', "
+                        + "VALUES (gen_random_uuid(), '" + TABLE + "', 'FSP-RCV02', 'LOT-FUTURE', 1, 0, 'AVAILABLE', "
                         + "NOW() + interval '1 day', 0, NOW())");
 
                 // A row's identity never changes in place; a layer is raised only by the application naming the row.
@@ -143,7 +170,7 @@ class FixedStockPolicyMigrationUpgradeTest {
     }
 
     private static String insert(String sku, String lot, String quantity) {
-        String where = sku.startsWith("T") ? "HCM-A01-1-A" : "HCM-A01-1-B";
+        String where = sku.startsWith("T") ? BIN_A : BIN_B;
         return "INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, "
                 + "received_at, version, created_at) VALUES (gen_random_uuid(), '" + sku + "', '" + where + "', " + lot
                 + ", " + quantity + ", 0, 'AVAILABLE', NOW() - interval '1 hour', 0, NOW())";

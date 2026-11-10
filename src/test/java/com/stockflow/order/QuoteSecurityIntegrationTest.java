@@ -166,7 +166,7 @@ class QuoteSecurityIntegrationTest {
         String manager = token(user(), "WAREHOUSE_MANAGER");
         send(get(QUOTES + "/" + id), manager, null).andExpect(status().isForbidden());
         for (String verb : List.of("conversion", "sending", "cancellation", "revision")) {
-            send(post(QUOTES + "/" + id + "/" + verb), manager, Map.of("version", version + 1))
+            send(post(QUOTES + "/" + id + "/" + verb), manager, Map.of("version", version + 1, "reason", "Not mine"))
                     .andExpect(status().isForbidden());
         }
     }

@@ -46,8 +46,9 @@ class RoleRetirementMigrationUpgradeTest {
                 UUID buyer = user(db, "buyer", "PROCUREMENT_STAFF");
                 UUID buyerAndClerk = user(db, "buyerclerk", "PROCUREMENT_STAFF", "WAREHOUSE_STAFF");
                 UUID bystander = user(db, "bystander", "SALES_STAFF");
-                UUID warehouse = UUID.fromString(RawSql.text(db,
-                        "SELECT id::text FROM warehouse.warehouse WHERE prefix = 'HCM'"));
+                // Two active warehouses of the test's own: this database has the migrations' data only.
+                UUID warehouse = warehouse(db, "RRA");
+                warehouse(db, "RRB");
                 RawSql.update(db, "INSERT INTO identity.user_warehouse (id, user_id, warehouse_id, version, created_at) "
                         + "VALUES (gen_random_uuid(), ?, ?, 0, NOW())", plannerWithBin, warehouse);
                 long activeWarehouses = RawSql.number(db,
@@ -191,6 +192,14 @@ class RoleRetirementMigrationUpgradeTest {
             RawSql.update(db, "INSERT INTO identity.user_role (id, user_id, role_id, version, created_at) SELECT "
                     + "gen_random_uuid(), ?, id, 0, NOW() FROM identity.app_role WHERE code = ?", id, role);
         }
+        return id;
+    }
+
+    private static UUID warehouse(Connection db, String prefix) throws Exception {
+        UUID id = UUID.randomUUID();
+        RawSql.update(db, "INSERT INTO warehouse.warehouse (id, name, status, prefix, address, map_unit, map_width, "
+                + "map_height, version, created_at) VALUES (?, 'Retirement test', 'ACTIVE', ?, 'Test address', 'M', 50, "
+                + "50, 0, NOW())", id, prefix);
         return id;
     }
 

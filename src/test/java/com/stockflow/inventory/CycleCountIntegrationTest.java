@@ -360,8 +360,13 @@ class CycleCountIntegrationTest {
         UUID row = loose(BIN, 10);
         CycleCountView planned = planBin(BIN).count();
         UUID line = planned.lines().get(0).id();
-        // A receipt after planning: the books say 12 when the shelf is counted.
-        tx.executeWithoutResult(s -> jdbc.update("update inventory.stock_item set on_hand = 12 where id = ?", row));
+        // A receipt after planning: a layer of its own (a layer is never raised in place), so the books say 12 when
+        // the shelf is counted.
+        UUID later = Identifiers.newId();
+        tx.executeWithoutResult(s -> jdbc.update("""
+                insert into inventory.stock_item (id, sku, location_code, lot_number, received_at, on_hand,
+                    reserved, status, version, created_at) values (?, ?, ?, ?, ?, 2, 0, 'AVAILABLE', 0, now())""",
+                later, sku, BIN, lot, Timestamp.from(EARLY.plusSeconds(3600))));
 
         CycleCountView counted = cycleCounts.count(planned.id(), line, 11, null, counter, false);
 
@@ -390,7 +395,8 @@ class CycleCountIntegrationTest {
 
         operations.approve((UUID) asked.get("id"), manager);
 
-        assertThat(onHand(row)).isEqualTo(11);
+        assertThat(onHand(row)).as("the shortage comes off the older layer, first in first out").isEqualTo(9);
+        assertThat(onHand(later)).isEqualTo(2);
     }
 
     @Test

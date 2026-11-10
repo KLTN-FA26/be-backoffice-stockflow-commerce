@@ -256,7 +256,7 @@ class LoadPlanIntegrationTest {
 
     private void scan(UUID task, String parcel) throws Exception {
         packer(body(post(BASE + "/tasks/" + task + "/packages/" + parcel + "/scans"), "{\"scanId\":\""
-                + UUID.randomUUID() + "\",\"scannedCode\":\"" + SOFA_BARCODE + "\",\"quantity\":1}"))
+                + UUID.randomUUID() + "\",\"scannedCode\":\"" + SOFA_BARCODE + "\",\"lotNumber\":\"FX-LOT\",\"quantity\":1}"))
                 .andExpect(status().isOk());
     }
 
@@ -820,8 +820,9 @@ class LoadPlanIntegrationTest {
         String url = PLANS + "/" + plan.path("loadPlanId").asText();
         oc(get(url)).andExpect(status().isOk());
         oc(get(PLANS)).andExpect(status().isOk());
-        oc(body(post(PLANS), createBody(UUID.randomUUID(), List.of(), List.of()))).andExpect(status().isForbidden());
-        oc(body(post(url + "/calculation"), version(plan))).andExpect(status().isForbidden());
+        as(sales, "SALES_STAFF", body(post(PLANS), createBody(UUID.randomUUID(), List.of(), List.of())))
+                .andExpect(status().isForbidden());
+        as(sales, "SALES_STAFF", body(post(url + "/calculation"), version(plan))).andExpect(status().isForbidden());
         as(sales, "SALES_STAFF", get(url)).andExpect(status().isForbidden());
         as(customerUser, "CUSTOMER", get(PLANS)).andExpect(status().isForbidden());
         as(dispatcherElsewhere, "WAREHOUSE_STAFF", get(url)).andExpect(status().isForbidden())

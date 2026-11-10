@@ -95,6 +95,8 @@ class PackingStationIntegrationTest {
     private static final Sku TABLE = new Sku("TABLE-OAK-160");
     private static final String SOFA_BARCODE = "8930000000011";
     private static final String TABLE_LOT = "LOT-2026-03";
+    /** The lot of the sofa cartons this test stocks: every unit has one since 5-5, and a scan names it. */
+    private static final String SOFA_LOT = com.stockflow.support.CartonRows.DEFAULT_LOT;
     private static final Duration ASYNC = Duration.ofSeconds(15);
     private static final UUID HCM = DemoData.WAREHOUSE_HCM;
     private static final String BASE = "/api/v1/fulfillment";
@@ -330,7 +332,7 @@ class PackingStationIntegrationTest {
         // SCRUM-282: every wrong scan is refused with its own code and writes nothing.
         scanAs(packerHcm, task, first, scan(UUID.randomUUID(), "NOT-IN-ORDER", null, 1))
                 .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("PACK_ITEM_NOT_IN_ORDER"));
-        scanAs(packerHcm, task, first, scan(UUID.randomUUID(), SOFA_BARCODE, null, 3))
+        scanAs(packerHcm, task, first, scan(UUID.randomUUID(), SOFA_BARCODE, SOFA_LOT, 3))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("PACK_QUANTITY_EXCEEDS_ORDER"));
         scanAs(packerHcm, task, first, scan(UUID.randomUUID(), TABLE.code(), "LOT-2026-04", 1))
@@ -342,11 +344,11 @@ class PackingStationIntegrationTest {
 
         // The right scan, by barcode; the same scan again changes nothing.
         UUID scanId = UUID.randomUUID();
-        scanAs(packerHcm, task, first, scan(scanId, SOFA_BARCODE, null, 1)).andExpect(status().isOk());
-        scanAs(packerHcm, task, first, scan(scanId, SOFA_BARCODE, null, 1)).andExpect(status().isOk())
+        scanAs(packerHcm, task, first, scan(scanId, SOFA_BARCODE, SOFA_LOT, 1)).andExpect(status().isOk());
+        scanAs(packerHcm, task, first, scan(scanId, SOFA_BARCODE, SOFA_LOT, 1)).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.lines[?(@.sku == 'SOFA-3S-GREY')].packed").value(1));
         UUID second = openPackage(task);
-        scanAs(packerHcm, task, second, scan(UUID.randomUUID(), "sofa-3s-grey", null, 1)).andExpect(status().isOk());
+        scanAs(packerHcm, task, second, scan(UUID.randomUUID(), "sofa-3s-grey", SOFA_LOT, 1)).andExpect(status().isOk());
         scanAs(packerHcm, task, second, scan(UUID.randomUUID(), TABLE.code(), TABLE_LOT, 1)).andExpect(status().isOk());
 
         // A package with goods but no measures: sealing without its height is 400; completing is refused.
@@ -394,7 +396,7 @@ class PackingStationIntegrationTest {
                 .andExpect(jsonPath("$.data.shipmentId").value(shipment));
         assertThat(sum("SELECT count(*) FROM fulfillment.shipment WHERE order_id = ?", order.orderId())).isEqualTo(1);
         // Packed: no more scans, and the order is not cancelled any more (decision 2026-10-17).
-        scanAs(packerHcm, task, second, scan(UUID.randomUUID(), SOFA.code(), null, 1))
+        scanAs(packerHcm, task, second, scan(UUID.randomUUID(), SOFA.code(), SOFA_LOT, 1))
                 .andExpect(status().isConflict());
         Throwable refused = catchThrowable(() -> WithCurrentUser.run(TestUsers.admin(), DataScope.ALL,
                 () -> orders.cancel(order.orderId(), new CancelOrderCommand(CancellationReasonCode.CUSTOMER_REQUEST,
@@ -430,7 +432,7 @@ class PackingStationIntegrationTest {
         as(pickerHcm, "WAREHOUSE_STAFF", post(BASE + "/tasks/" + task + "/picking-completion"))
                 .andExpect(status().isOk());
 
-        as(coordinator, "WAREHOUSE_MANAGER", post(BASE + "/tasks/" + task + "/packing-start"))
+        as(staff("SALES_STAFF"), "SALES_STAFF", post(BASE + "/tasks/" + task + "/packing-start"))
                 .andExpect(status().isForbidden());
         as(customerUser, "CUSTOMER", get(BASE + "/packing-queue")).andExpect(status().isForbidden());
         as(packerElsewhere, "WAREHOUSE_STAFF", get(BASE + "/tasks/" + task + "/packing-session"))
@@ -466,7 +468,7 @@ class PackingStationIntegrationTest {
         try {
             List<Future<Integer>> results = new ArrayList<>();
             for (UUID who : List.of(packerHcm, managerHcm)) {
-                String body = scan(UUID.randomUUID(), SOFA.code(), null, 2);
+                String body = scan(UUID.randomUUID(), SOFA.code(), SOFA_LOT, 2);
                 String header = token(who, who.equals(managerHcm) ? "WAREHOUSE_MANAGER" : "WAREHOUSE_STAFF");
                 results.add(pool.submit(() -> {
                     go.await();
@@ -500,12 +502,12 @@ class PackingStationIntegrationTest {
         UUID task = pickedTask(order);
         packer(post(BASE + "/tasks/" + task + "/packing-start")).andExpect(status().isOk());
         UUID parcel = openPackage(task);
-        scanAs(packerHcm, task, parcel, scan(UUID.randomUUID(), SOFA.code(), null, 2)).andExpect(status().isOk());
+        scanAs(packerHcm, task, parcel, scan(UUID.randomUUID(), SOFA.code(), SOFA_LOT, 2)).andExpect(status().isOk());
         packer(delete(BASE + "/tasks/" + task + "/packages/" + parcel + "/lines/" + sofaLine + "?quantity=1"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.lines[0].packed").value(1));
         seal(task, parcel, MEASURES).andExpect(status().isOk());
-        scanAs(packerHcm, task, parcel, scan(UUID.randomUUID(), SOFA.code(), null, 1))
+        scanAs(packerHcm, task, parcel, scan(UUID.randomUUID(), SOFA.code(), SOFA_LOT, 1))
                 .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("PACKAGE_SEALED"));
         packer(post(BASE + "/tasks/" + task + "/packages/" + parcel + "/reopening")).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("OPEN"));
@@ -536,7 +538,7 @@ class PackingStationIntegrationTest {
         assertThat(session.path("paymentDue").path("amountDueBeforeHandover").decimalValue())
                 .isEqualByComparingTo("7000000");
         UUID parcel = openPackage(task);
-        scanAs(packerHcm, task, parcel, scan(UUID.randomUUID(), SOFA.code(), null, 2)).andExpect(status().isOk());
+        scanAs(packerHcm, task, parcel, scan(UUID.randomUUID(), SOFA.code(), SOFA_LOT, 2)).andExpect(status().isOk());
         seal(task, parcel, MEASURES).andExpect(status().isOk());
         JsonNode packed = data(packer(post(BASE + "/tasks/" + task + "/packing-completion")).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.packStatus").value("PACKED")));
@@ -555,7 +557,7 @@ class PackingStationIntegrationTest {
         packer(post(BASE + "/tasks/" + task + "/packing-start")).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.paymentDue").doesNotExist());
         UUID first = openPackage(task);
-        scanAs(packerHcm, task, first, scan(UUID.randomUUID(), SOFA.code(), null, 1)).andExpect(status().isOk());
+        scanAs(packerHcm, task, first, scan(UUID.randomUUID(), SOFA.code(), SOFA_LOT, 1)).andExpect(status().isOk());
         seal(task, first, MEASURES).andExpect(status().isOk());
         packer(post(BASE + "/tasks/" + task + "/packing-completion").contentType("application/json")
                 .content("{\"partial\":true}")).andExpect(status().isBadRequest())
@@ -589,21 +591,21 @@ class PackingStationIntegrationTest {
         packer(post(BASE + "/tasks/" + task + "/packing-start")).andExpect(status().isOk());
         UUID parcel = openPackage(task);
         UUID scanned = UUID.randomUUID();
-        scanAs(packerHcm, task, parcel, scan(scanned, SOFA.code(), null, 2)).andExpect(status().isOk());
+        scanAs(packerHcm, task, parcel, scan(scanned, SOFA.code(), SOFA_LOT, 2)).andExpect(status().isOk());
         UUID removal = UUID.randomUUID();
         String remove = BASE + "/tasks/" + task + "/packages/" + parcel + "/lines/" + sofaLine + "?quantity=1&scanId="
                 + removal;
         packer(delete(remove)).andExpect(status().isOk()).andExpect(jsonPath("$.data.lines[0].packed").value(1));
         packer(delete(remove)).andExpect(status().isOk()).andExpect(jsonPath("$.data.lines[0].packed").value(1));
-        scanAs(packerHcm, task, parcel, scan(UUID.randomUUID(), SOFA.code(), null, 1_000_001))
+        scanAs(packerHcm, task, parcel, scan(UUID.randomUUID(), SOFA.code(), SOFA_LOT, 1_000_001))
                 .andExpect(status().isBadRequest()).andExpect(jsonPath("$.errorCode").value("VALIDATION_FAILED"));
-        scanAs(packerHcm, task, parcel, scan(UUID.randomUUID(), SOFA.code(), null, Integer.MAX_VALUE))
+        scanAs(packerHcm, task, parcel, scan(UUID.randomUUID(), SOFA.code(), SOFA_LOT, Integer.MAX_VALUE))
                 .andExpect(status().isBadRequest());
         packer(delete(BASE + "/tasks/" + task + "/packages/" + parcel + "/lines/" + sofaLine + "?quantity=2147483647"))
                 .andExpect(status().isBadRequest());
         seal(task, parcel, MEASURES).andExpect(status().isOk());
 
-        scanAs(packerHcm, task, parcel, scan(scanned, SOFA.code(), null, 2)) // a retry after sealing
+        scanAs(packerHcm, task, parcel, scan(scanned, SOFA.code(), SOFA_LOT, 2)) // a retry after sealing
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.lines[0].packed").value(1));
         assertThat(sum("SELECT count(*) FROM fulfillment.package_scan WHERE package_id = ?", parcel)).isEqualTo(2);
 
@@ -611,7 +613,7 @@ class PackingStationIntegrationTest {
         UUID otherTask = pickedTask(other);
         packer(post(BASE + "/tasks/" + otherTask + "/packing-start")).andExpect(status().isOk());
         UUID otherParcel = openPackage(otherTask);
-        scanAs(packerHcm, otherTask, otherParcel, scan(scanned, SOFA.code(), null, 1))
+        scanAs(packerHcm, otherTask, otherParcel, scan(scanned, SOFA.code(), SOFA_LOT, 1))
                 .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("PACK_SCAN_ID_CONFLICT"));
         assertThat(sum("SELECT count(*) FROM fulfillment.package_scan WHERE package_id = ?", otherParcel)).isZero();
     }
@@ -666,7 +668,7 @@ class PackingStationIntegrationTest {
 
         packer(post(BASE + "/tasks/" + task + "/packing-start")).andExpect(status().isOk());
         UUID parcel = openPackage(task);
-        scanAs(packerHcm, task, parcel, scan(UUID.randomUUID(), SOFA.code(), null, 1)).andExpect(status().isOk());
+        scanAs(packerHcm, task, parcel, scan(UUID.randomUUID(), SOFA.code(), SOFA_LOT, 1)).andExpect(status().isOk());
         seal(task, parcel, MEASURES).andExpect(status().isOk());
         packer(post(BASE + "/tasks/" + task + "/packing-completion")).andExpect(status().isOk());
         packer(get(BASE + "/tasks/" + task + "/packing-session")).andExpect(status().isOk())
@@ -733,12 +735,12 @@ class PackingStationIntegrationTest {
         UUID a = UUID.fromString(opened.path("packages").get(0).path("packageId").asText());
         UUID b = UUID.fromString(opened.path("packages").get(1).path("packageId").asText());
 
-        scanAs(packerHcm, task, b, scan(UUID.randomUUID(), SOFA.code(), null, 1)).andExpect(status().isConflict())
+        scanAs(packerHcm, task, b, scan(UUID.randomUUID(), SOFA.code(), SOFA_LOT, 1)).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("KIT_CONTENTS_INVALID"));
         seal(task, b, MEASURES).andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("PACKAGE_EMPTY"));
-        scanAs(packerHcm, task, a, scan(UUID.randomUUID(), SOFA.code(), null, 2)).andExpect(status().isConflict())
+        scanAs(packerHcm, task, a, scan(UUID.randomUUID(), SOFA.code(), SOFA_LOT, 2)).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("KIT_CONTENTS_INVALID"));
-        scanAs(packerHcm, task, a, scan(UUID.randomUUID(), SOFA.code(), null, 1)).andExpect(status().isOk());
+        scanAs(packerHcm, task, a, scan(UUID.randomUUID(), SOFA.code(), SOFA_LOT, 1)).andExpect(status().isOk());
         seal(task, a, MEASURES).andExpect(status().isOk()).andExpect(jsonPath("$.data.kit.partNo").value(1));
         seal(task, b, "{\"weightKg\":20,\"lengthCm\":95,\"widthCm\":90,\"heightCm\":40}").andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.heightCm").value(40)).andExpect(jsonPath("$.data.contents.length()").value(0));
@@ -749,7 +751,7 @@ class PackingStationIntegrationTest {
 
         // The second sofa's kit: part 1 sealed, part 2 not - nothing ships, whole or partial.
         List<UUID> second = kit(task, sofaLine);
-        scanAs(packerHcm, task, second.get(0), scan(UUID.randomUUID(), SOFA.code(), null, 1)).andExpect(status().isOk());
+        scanAs(packerHcm, task, second.get(0), scan(UUID.randomUUID(), SOFA.code(), SOFA_LOT, 1)).andExpect(status().isOk());
         seal(task, second.get(0), MEASURES).andExpect(status().isOk());
         packer(post(BASE + "/tasks/" + task + "/packing-completion")).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("KIT_INCOMPLETE"))
@@ -768,7 +770,7 @@ class PackingStationIntegrationTest {
                 .content(partial)).andExpect(status().isOk())).path("shipmentId").asText();
 
         List<UUID> third = kit(task, sofaLine);
-        scanAs(packerHcm, task, third.get(0), scan(UUID.randomUUID(), SOFA.code(), null, 1)).andExpect(status().isOk());
+        scanAs(packerHcm, task, third.get(0), scan(UUID.randomUUID(), SOFA.code(), SOFA_LOT, 1)).andExpect(status().isOk());
         for (UUID part : third) {
             seal(task, part, MEASURES).andExpect(status().isOk());
         }
@@ -815,7 +817,7 @@ class PackingStationIntegrationTest {
             packer(post(BASE + "/tasks/" + task + "/packing-start")).andExpect(status().isOk());
             List<UUID> parts = kit(task, tableLine);
             assertThat(parts).hasSize(3);
-            scanAs(packerHcm, task, parts.get(0), scan(UUID.randomUUID(), SOFA.code(), null, 1))
+            scanAs(packerHcm, task, parts.get(0), scan(UUID.randomUUID(), SOFA.code(), SOFA_LOT, 1))
                     .andExpect(status().isUnprocessableEntity())
                     .andExpect(jsonPath("$.errorCode").value("KIT_ITEM_MISMATCH"));
             scanAs(packerHcm, task, parts.get(0), scan(UUID.randomUUID(), TABLE.code(), TABLE_LOT, 1))
@@ -825,7 +827,7 @@ class PackingStationIntegrationTest {
             }
             // The sofa goes in an ordinary parcel: kits are the packer's choice ("đóng bộ"), not forced.
             UUID sofaBox = openPackage(task);
-            scanAs(packerHcm, task, sofaBox, scan(UUID.randomUUID(), SOFA.code(), null, 1)).andExpect(status().isOk());
+            scanAs(packerHcm, task, sofaBox, scan(UUID.randomUUID(), SOFA.code(), SOFA_LOT, 1)).andExpect(status().isOk());
             seal(task, sofaBox, MEASURES).andExpect(status().isOk()).andExpect(jsonPath("$.data.kit").doesNotExist());
             String shipment = data(packer(post(BASE + "/tasks/" + task + "/packing-completion"))
                     .andExpect(status().isOk())).path("shipmentId").asText();
@@ -907,12 +909,12 @@ class PackingStationIntegrationTest {
         UUID task = pickedTask(order);
         packer(post(BASE + "/tasks/" + task + "/packing-start")).andExpect(status().isOk());
         List<UUID> sealed = kit(task, line);
-        scanAs(packerHcm, task, sealed.get(0), scan(UUID.randomUUID(), SOFA.code(), null, 1)).andExpect(status().isOk());
+        scanAs(packerHcm, task, sealed.get(0), scan(UUID.randomUUID(), SOFA.code(), SOFA_LOT, 1)).andExpect(status().isOk());
         for (UUID part : sealed) {
             seal(task, part, MEASURES).andExpect(status().isOk());
         }
         List<UUID> half = kit(task, line);
-        scanAs(packerHcm, task, half.get(0), scan(UUID.randomUUID(), SOFA.code(), null, 1)).andExpect(status().isOk());
+        scanAs(packerHcm, task, half.get(0), scan(UUID.randomUUID(), SOFA.code(), SOFA_LOT, 1)).andExpect(status().isOk());
         seal(task, half.get(0), MEASURES).andExpect(status().isOk());
         WithCurrentUser.run(TestUsers.admin(), DataScope.ALL, () -> orders.cancel(order.orderId(),
                 new CancelOrderCommand(CancellationReasonCode.CUSTOMER_REQUEST, "changed their mind", null, null)));
@@ -931,7 +933,7 @@ class PackingStationIntegrationTest {
         packer(delete(BASE + "/tasks/" + packedTask + "/packages/" + unused.get(0))).andExpect(status().isOk());
         List<UUID> spare = kit(packedTask, lineOf(packed, SOFA));
         UUID box = openPackage(packedTask);
-        scanAs(packerHcm, packedTask, box, scan(UUID.randomUUID(), SOFA.code(), null, 1)).andExpect(status().isOk());
+        scanAs(packerHcm, packedTask, box, scan(UUID.randomUUID(), SOFA.code(), SOFA_LOT, 1)).andExpect(status().isOk());
         seal(packedTask, box, MEASURES).andExpect(status().isOk());
         String shipment = data(packer(post(BASE + "/tasks/" + packedTask + "/packing-completion"))
                 .andExpect(status().isOk())).path("shipmentId").asText();
@@ -941,7 +943,7 @@ class PackingStationIntegrationTest {
         UUID kitTask = pickedTask(kitOrder);
         packer(post(BASE + "/tasks/" + kitTask + "/packing-start")).andExpect(status().isOk());
         List<UUID> parts = kit(kitTask, lineOf(kitOrder, SOFA));
-        scanAs(packerHcm, kitTask, parts.get(0), scan(UUID.randomUUID(), SOFA.code(), null, 1)).andExpect(status().isOk());
+        scanAs(packerHcm, kitTask, parts.get(0), scan(UUID.randomUUID(), SOFA.code(), SOFA_LOT, 1)).andExpect(status().isOk());
         for (UUID part : parts) {
             seal(kitTask, part, MEASURES).andExpect(status().isOk());
         }
@@ -974,14 +976,14 @@ class PackingStationIntegrationTest {
                 .contentType("application/json").content("{}")).andExpect(status().isCreated())
                 .andExpect(jsonPath("$.data.kitOverrideReason").doesNotExist())).path("packageId").asText());
         scanAs(packerHcm, task, box, scan(UUID.randomUUID(), TABLE.code(), TABLE_LOT, 1)).andExpect(status().isOk());
-        scanAs(packerHcm, task, box, scan(UUID.randomUUID(), SOFA.code(), null, 1))
+        scanAs(packerHcm, task, box, scan(UUID.randomUUID(), SOFA.code(), SOFA_LOT, 1))
                 .andExpect(status().isUnprocessableEntity())
                 .andExpect(jsonPath("$.errorCode").value("KIT_OVERRIDE_REASON_REQUIRED"))
                 .andExpect(jsonPath("$.fieldErrors[0].field").value("kitOverrideReason"));
         assertThat(sum("SELECT count(*) FROM fulfillment.package_scan WHERE package_id = ? AND quantity > 0 "
                 + "AND scanned_code = ?", box, SOFA.code())).isZero();
         String withReason = "{\"scanId\":\"" + UUID.randomUUID() + "\",\"scannedCode\":\"" + SOFA.code()
-                + "\",\"quantity\":1,\"kitOverrideReason\":\"Khách lấy tại kho, không cần tách kiện\"}";
+                + "\",\"lotNumber\":\"FX-LOT\",\"quantity\":1,\"kitOverrideReason\":\"Khách lấy tại kho, không cần tách kiện\"}";
         scanAs(packerHcm, task, box, withReason).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.packages[0].kitOverrideReason")
                         .value("Khách lấy tại kho, không cần tách kiện"));
@@ -995,7 +997,7 @@ class PackingStationIntegrationTest {
 
         // The kit path: no reason asked, none kept.
         List<UUID> parts = kit(task, sofaLine);
-        scanAs(packerHcm, task, parts.get(0), scan(UUID.randomUUID(), SOFA.code(), null, 1)).andExpect(status().isOk());
+        scanAs(packerHcm, task, parts.get(0), scan(UUID.randomUUID(), SOFA.code(), SOFA_LOT, 1)).andExpect(status().isOk());
         for (UUID part : parts) {
             seal(task, part, MEASURES).andExpect(status().isOk())
                     .andExpect(jsonPath("$.data.kitOverrideReason").doesNotExist());
