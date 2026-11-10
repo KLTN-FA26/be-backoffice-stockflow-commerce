@@ -258,22 +258,24 @@ SELECT pg_temp.expect_fail_by('L16 ... after which its address is locked too', '
     UPDATE ordering.customer_order SET shipping_line1 = '3 Hai Ba Trung' WHERE id = md5('qa65:order:B')::uuid $q$);
 
 \echo '--- no first label on an order on hold (V20261113000710; review L3, 08 edge "a wrong address is caught before the first label")'
+UPDATE ordering.customer_order SET status = 'CONFIRMED', contract_signed_at = NOW() WHERE id = md5('qa65:order:D')::uuid;
+
 SELECT pg_temp.expect_fail_by('L17 put on hold and labelled in one statement', 'tg_order_label_lock', $q$
-    UPDATE ordering.customer_order SET status = 'ON_HOLD', hold_reason = 'ADDRESS', status_before_hold = 'PENDING_PAYMENT',
+    UPDATE ordering.customer_order SET status = 'ON_HOLD', hold_reason = 'ADDRESS', status_before_hold = 'CONFIRMED',
            first_labeled_at = NOW() WHERE id = md5('qa65:order:D')::uuid $q$);
 SELECT pg_temp.expect_ok('L18 an ADDRESS hold on an order not labelled', $q$
-    UPDATE ordering.customer_order SET status = 'ON_HOLD', hold_reason = 'ADDRESS', status_before_hold = 'PENDING_PAYMENT'
+    UPDATE ordering.customer_order SET status = 'ON_HOLD', hold_reason = 'ADDRESS', status_before_hold = 'CONFIRMED'
      WHERE id = md5('qa65:order:D')::uuid $q$);
 SELECT pg_temp.expect_fail_by('L19 a held order gets its first label', 'tg_order_label_lock', $q$
     UPDATE ordering.customer_order SET first_labeled_at = NOW() WHERE id = md5('qa65:order:D')::uuid $q$);
 SELECT pg_temp.expect_ok('L20 while held, its address is corrected (that is what the hold is for)', $q$
     UPDATE ordering.customer_order SET shipping_line1 = '9 Nguyen Hue' WHERE id = md5('qa65:order:D')::uuid $q$);
 SELECT pg_temp.expect_ok('L21 the hold resolved, the first label is recorded', $q$
-    UPDATE ordering.customer_order SET status = 'PENDING_PAYMENT', hold_reason = NULL, status_before_hold = NULL
+    UPDATE ordering.customer_order SET status = 'CONFIRMED', hold_reason = NULL, status_before_hold = NULL
      WHERE id = md5('qa65:order:D')::uuid;
     UPDATE ordering.customer_order SET first_labeled_at = NOW() WHERE id = md5('qa65:order:D')::uuid $q$);
 SELECT pg_temp.expect_ok('L22 a hold put on an order already labelled is not this rule''s concern (its label stands)', $q$
-    UPDATE ordering.customer_order SET status = 'ON_HOLD', hold_reason = 'CUSTOMER', status_before_hold = 'PENDING_PAYMENT'
+    UPDATE ordering.customer_order SET status = 'ON_HOLD', hold_reason = 'CUSTOMER', status_before_hold = 'CONFIRMED'
      WHERE id = md5('qa65:order:D')::uuid $q$);
 
 \echo '--- a reprint raises the label version, never lowers it (08 BR-08)'
