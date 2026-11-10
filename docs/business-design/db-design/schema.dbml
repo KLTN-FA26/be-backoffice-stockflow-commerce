@@ -133,31 +133,6 @@ Enum inventory.stock_alert_status {
   RESOLVED
 }
 
-Enum inventory.stock_damage_disposition_disposition_type {
-  WRITE_OFF
-  RETURN_TO_SUPPLIER
-  RESTORE
-}
-
-Enum inventory.stock_damage_report_origin {
-  STOCK_CHECK
-  PICKING
-  PACKING
-}
-
-Enum inventory.stock_damage_report_reason_code {
-  BROKEN
-  DEFORMED
-  WET_OR_MOULDY
-  DIRTY_OR_MISPRINTED
-  OTHER
-}
-
-Enum inventory.stock_damage_supplier_shipment_outcome {
-  SHIPPED
-  REFUSED
-}
-
 Enum inventory.stock_item_status {
   INBOUND
   AVAILABLE
@@ -1715,85 +1690,6 @@ Table inventory.stock_alert_dirty [headercolor: #3E7C4A] {
   id        bigint [pk]
   sku       varchar(64) [not null]
   marked_at timestamptz [not null, default: `now()`]
-}
-
-Table inventory.stock_damage_disposition [headercolor: #3E7C4A] {
-  id                     uuid [pk]
-  damage_report_id       uuid [not null]
-  request_id             uuid [not null, unique]
-  disposition_type       inventory.stock_damage_disposition_disposition_type [not null]
-  quantity               int [not null]
-  note                   varchar(1000)
-  record_number          varchar(30) [unique]
-  stock_adjustment_id    uuid
-  restore_location_code  varchar(64)
-  restored_stock_item_id uuid
-  supplier_id            uuid
-  supplier_name          varchar(200)
-  decided_by             uuid [not null]
-  decided_at             timestamptz [not null]
-  created_at             timestamptz [not null, default: `now()`]
-}
-
-Table inventory.stock_damage_photo [headercolor: #3E7C4A] {
-  id               uuid [pk]
-  damage_report_id uuid [not null]
-  storage_key      varchar(255) [not null, unique]
-  original_name    varchar(255) [not null]
-  content_type     varchar(100) [not null]
-  size_bytes       bigint [not null]
-  checksum         varchar(64) [not null]
-  sort_order       int [not null]
-  created_at       timestamptz [not null, default: `now()`]
-  indexes {
-    (damage_report_id, sort_order) [unique]
-  }
-}
-
-Table inventory.stock_damage_report [headercolor: #3E7C4A] {
-  id                      uuid [pk]
-  report_number           varchar(30) [not null, unique]
-  request_id              uuid [not null, unique]
-  origin                  inventory.stock_damage_report_origin [not null]
-  warehouse_id            uuid [not null]
-  sku                     varchar(64) [not null]
-  lot_number              varchar(64)
-  serial_number           varchar(100)
-  received_at             timestamptz
-  lot_id                  uuid
-  source_stock_item_id    uuid [not null]
-  source_location_code    varchar(64) [not null]
-  source_stock_package_id uuid
-  damaged_stock_item_id   uuid [not null]
-  damage_location_code    varchar(64) [not null]
-  quantity                int [not null]
-  reason_code             inventory.stock_damage_report_reason_code [not null]
-  note                    varchar(1000)
-  order_id                uuid
-  pick_line_id            uuid
-  reservation_id          uuid
-  impaired_reservation_id uuid
-  reported_by             uuid [not null]
-  reported_at             timestamptz [not null]
-  version                 bigint [not null, default: 0]
-  created_at              timestamptz [not null, default: `now()`]
-  created_by              varchar(100)
-  last_modified_at        timestamptz
-  last_modified_by        varchar(100)
-}
-
-Table inventory.stock_damage_supplier_shipment [headercolor: #3E7C4A] {
-  id               uuid [pk]
-  disposition_id   uuid [not null]
-  damage_report_id uuid [not null]
-  request_id       uuid [not null, unique]
-  outcome          inventory.stock_damage_supplier_shipment_outcome [not null]
-  quantity         int [not null]
-  delivery_note    varchar(64)
-  note             varchar(1000)
-  shipped_by       uuid [not null]
-  shipped_at       timestamptz [not null]
-  created_at       timestamptz [not null, default: `now()`]
 }
 
 Table inventory.stock_item [headercolor: #3E7C4A] {
@@ -4534,9 +4430,6 @@ Table fulfillment.pick_line [headercolor: #2C7873] {
   put_back_at            timestamptz
   lpn                    varchar(30)
   whole_carton           boolean [not null, default: false]
-  damaged_qty            int [not null, default: 0]
-  damage_report_id       uuid
-  packing_damaged_qty    int [not null, default: 0]
   short_reason           varchar(16)
   staged_at              timestamptz
   staged_location_code   varchar(64)
@@ -5287,29 +5180,6 @@ Ref: inventory.stock_adjustment.stock_package_id > inventory.stock_package.id [d
 Ref: inventory.stock_alert.acknowledged_by > identity.app_user.id
 Ref: inventory.stock_alert.sku > inventory.inventory_items.sku [delete: cascade]
 Ref: inventory.stock_alert.warehouse_id > warehouse.warehouse.id
-Ref: inventory.stock_damage_disposition.damage_report_id > inventory.stock_damage_report.id [delete: restrict]
-Ref: inventory.stock_damage_disposition.decided_by > identity.app_user.id
-Ref: inventory.stock_damage_disposition.restore_location_code > warehouse.storage_location.location_code [delete: restrict]
-Ref: inventory.stock_damage_disposition.restored_stock_item_id > inventory.stock_item.id [delete: restrict]
-Ref: inventory.stock_damage_disposition.stock_adjustment_id > inventory.stock_adjustment.id [delete: restrict]
-Ref: inventory.stock_damage_disposition.supplier_id > procurement.suppliers.id [delete: restrict]
-Ref: inventory.stock_damage_photo.damage_report_id > inventory.stock_damage_report.id [delete: restrict]
-Ref: inventory.stock_damage_report.damage_location_code > warehouse.storage_location.location_code [delete: restrict]
-Ref: inventory.stock_damage_report.damaged_stock_item_id > inventory.stock_item.id [delete: restrict]
-Ref: inventory.stock_damage_report.impaired_reservation_id > inventory.stock_reservation.id [delete: restrict]
-Ref: inventory.stock_damage_report.lot_id > inventory.stock_lot.id [delete: restrict]
-Ref: inventory.stock_damage_report.order_id > ordering.customer_order.id [delete: restrict]
-Ref: inventory.stock_damage_report.pick_line_id > fulfillment.pick_line.id [delete: restrict]
-Ref: inventory.stock_damage_report.reported_by > identity.app_user.id
-Ref: inventory.stock_damage_report.reservation_id > inventory.stock_reservation.id [delete: restrict]
-Ref: inventory.stock_damage_report.sku > inventory.inventory_items.sku [delete: restrict]
-Ref: inventory.stock_damage_report.source_location_code > warehouse.storage_location.location_code [delete: restrict]
-Ref: inventory.stock_damage_report.source_stock_item_id > inventory.stock_item.id [delete: restrict]
-Ref: inventory.stock_damage_report.source_stock_package_id > inventory.stock_package.id [delete: restrict]
-Ref: inventory.stock_damage_report.warehouse_id > warehouse.warehouse.id [delete: restrict]
-Ref: inventory.stock_damage_supplier_shipment.damage_report_id > inventory.stock_damage_report.id [delete: restrict]
-Ref: inventory.stock_damage_supplier_shipment.disposition_id > inventory.stock_damage_disposition.id [delete: restrict]
-Ref: inventory.stock_damage_supplier_shipment.shipped_by > identity.app_user.id
 Ref: inventory.stock_item.location_code > warehouse.storage_location.location_code [delete: restrict]
 Ref: inventory.stock_item.lot_id > inventory.stock_lot.id [delete: restrict]
 Ref: inventory.stock_item.sku > inventory.inventory_items.sku [delete: restrict]
@@ -5704,7 +5574,6 @@ Ref: fulfillment.pick.order_id > ordering.customer_order.id [delete: restrict]
 Ref: fulfillment.pick.staging_location_code > warehouse.storage_location.location_code [delete: restrict]
 Ref: fulfillment.pick.warehouse_id > warehouse.warehouse.id
 Ref: fulfillment.pick.wave_id > fulfillment.wave.id
-Ref: fulfillment.pick_line.damage_report_id > inventory.stock_damage_report.id [delete: restrict]
 Ref: fulfillment.pick_line.location_code > warehouse.storage_location.location_code [delete: restrict]
 Ref: fulfillment.pick_line.lpn > inventory.stock_package.lpn
 Ref: fulfillment.pick_line.order_line_id > ordering.order_line.id [delete: restrict]
@@ -5788,10 +5657,6 @@ TableGroup inventory_group [color: #3E7C4A] {
   inventory.stock_adjustment
   inventory.stock_alert
   inventory.stock_alert_dirty
-  inventory.stock_damage_disposition
-  inventory.stock_damage_photo
-  inventory.stock_damage_report
-  inventory.stock_damage_supplier_shipment
   inventory.stock_item
   inventory.stock_lot
   inventory.stock_movement
