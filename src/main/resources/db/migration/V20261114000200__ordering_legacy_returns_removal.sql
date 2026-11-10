@@ -9,10 +9,15 @@
 --   1. Returns of the QC era still open with goods counted in by parcel (RECEIVED, INSPECTED, SETTLEMENT_PENDING with
 --      no return receipt) cannot go on: they are CANCELLED, their proposal cleared, with a status history line. Closed
 --      ones stay as history: a credit is folded into the amount set off, a requested resolution or money mode other
---      than REFUND reads REFUND.
+--      than REFUND reads REFUND. A RESOLVED return keeps its claim on the order lines: its accepted units become its
+--      refunded units (refund_quantity, at most approved and received), and its settlement is spread over those lines
+--      by value (refund_amount, the last line taking the rounding), so check_return_request_line, which counts a
+--      resolved line by refund_quantity, still counts them and the same units cannot be returned and refunded twice.
 --   2. ordering.return_request loses the QC, parcel, credit, replacement and withdrawal columns; return_request_line
 --      the received SKU and lot, the inspection, the disposition, the stock write-offs, the replacement and the credit.
---      ck_return_request_amounts, ck_return_request_vat are restated on what is left; ck_return_request_status (no
+--      ck_return_request_amounts, ck_return_request_vat (vat_adjustment_required recomputed first: a replacement
+--      withdrawal no longer counts) and ck_return_request_line_received (dropped with received_sku) are restated on
+--      what is left; ck_return_request_status (no
 --      INSPECTED), ck_return_request_resolution and ck_return_request_money_mode (REFUND only) narrowed;
 --      check_return_request_line counts a resolved line by its refunded units. ck_return_request_goods_back is
 --      validated; ck_return_request_goods_required and ck_return_request_evidence_claim_only stay NOT VALID - a return
@@ -74,6 +79,42 @@ UPDATE ordering.return_request_line l
   FROM ordering.return_request r
  WHERE r.id = l.return_request_id AND r.status = 'CANCELLED' AND (l.refund_quantity <> 0 OR l.refund_amount <> 0);
 
+-- A RESOLVED return of the QC era keeps its claim (review M2): its accepted units become its refunded units and its
+-- settlement is spread over them by value, the last line (by id) taking what rounding left, so the lines add up to it
+-- exactly (check_return_request_refund, deferred to the commit). Returns resolved since 4D-3 name refunded units
+-- already and are left alone.
+WITH legacy AS (
+    SELECT l.id, l.return_request_id, r.settlement_amount, l.unit_price,
+           LEAST(l.accepted_quantity, COALESCE(l.approved_quantity, 0), COALESCE(l.received_quantity, 0)) AS units
+      FROM ordering.return_request_line l
+      JOIN ordering.return_request r ON r.id = l.return_request_id
+     WHERE r.status = 'RESOLVED' AND COALESCE(l.accepted_quantity, 0) > 0
+       AND NOT EXISTS (SELECT 1 FROM ordering.return_request_line x
+                        WHERE x.return_request_id = r.id AND x.refund_quantity > 0)
+), weighted AS (
+    SELECT id, return_request_id, settlement_amount, units,
+           CASE WHEN SUM(units * unit_price) OVER w > 0 THEN units * unit_price ELSE units END AS weight,
+           CASE WHEN SUM(units * unit_price) OVER w > 0 THEN SUM(units * unit_price) OVER w
+                ELSE SUM(units) OVER w END AS total,
+           ROW_NUMBER() OVER (w ORDER BY id DESC) AS from_last
+      FROM legacy
+     WHERE units > 0
+    WINDOW w AS (PARTITION BY return_request_id)
+), shared AS (
+    SELECT id, return_request_id, settlement_amount, units, from_last,
+           trunc(settlement_amount * weight / total, 4) AS share
+      FROM weighted
+)
+UPDATE ordering.return_request_line l
+   SET refund_quantity = s.units,
+       refund_amount   = CASE WHEN s.from_last = 1
+                              THEN s.settlement_amount - (SELECT COALESCE(SUM(o.share), 0) FROM shared o
+                                                           WHERE o.return_request_id = s.return_request_id
+                                                             AND o.from_last > 1)
+                              ELSE s.share END
+  FROM shared s
+ WHERE l.id = s.id;
+
 UPDATE ordering.return_request
    SET offset_amount = offset_amount + credited_amount, credited_amount = 0
  WHERE credited_amount <> 0;
@@ -104,6 +145,13 @@ ALTER TABLE ordering.return_request
     DROP COLUMN IF EXISTS withdrawal_offset_amount,
     DROP COLUMN IF EXISTS withdrawal_credited_amount,
     DROP COLUMN IF EXISTS withdrawal_credit_transfer_id;
+
+-- A replacement whose withdrawal was approved with an amount raised the VAT flag on a return settled at nothing; the
+-- withdrawal is gone (and the old ck_return_request_vat with its columns), so the flag is what the settlement says
+-- (review M1), or the restated ck_return_request_vat below refuses the row.
+UPDATE ordering.return_request
+   SET vat_adjustment_required = (status = 'RESOLVED' AND settlement_amount > 0)
+ WHERE vat_adjustment_required IS DISTINCT FROM (status = 'RESOLVED' AND settlement_amount > 0);
 
 ALTER TABLE ordering.return_request
     DROP CONSTRAINT IF EXISTS ck_return_request_amounts,
@@ -145,6 +193,11 @@ ALTER TABLE ordering.return_request_line
     DROP COLUMN IF EXISTS credit_quantity,
     DROP COLUMN IF EXISTS credit_amount,
     DROP COLUMN IF EXISTS replacement_order_line_id;
+
+-- Dropping received_sku took ck_return_request_line_received with it (review L2): its own half, restated. ReturnLine.receive.
+ALTER TABLE ordering.return_request_line DROP CONSTRAINT IF EXISTS ck_return_request_line_received;
+ALTER TABLE ordering.return_request_line ADD CONSTRAINT ck_return_request_line_received
+    CHECK (received_quantity IS NULL OR received_quantity >= 0);
 
 COMMENT ON COLUMN ordering.return_request.offset_amount IS
     'A resolved return: what its refund took off what the order''s installments still owed (team plan 4D-3); for a '
