@@ -78,6 +78,10 @@ UPDATE ordering.return_request_line l
    SET refund_quantity = 0, refund_amount = 0
   FROM ordering.return_request r
  WHERE r.id = l.return_request_id AND r.status = 'CANCELLED' AND (l.refund_quantity <> 0 OR l.refund_amount <> 0);
+-- The refund columns' constraint triggers (tg_return_request_line_refund) are deferred to the commit; events still
+-- pending would make the ALTER TABLE of return_request_line below refuse to run (55006, "pending trigger events").
+-- Checked here and now instead.
+SET CONSTRAINTS ALL IMMEDIATE;
 
 -- A RESOLVED return of the QC era keeps its claim (review M2): its accepted units become its refunded units and its
 -- settlement is spread over them by value, the last line (by id) taking what rounding left, so the lines add up to it
@@ -114,6 +118,8 @@ UPDATE ordering.return_request_line l
                               ELSE s.share END
   FROM shared s
  WHERE l.id = s.id;
+-- As above: the back-fill's deferred refund checks run now, so the columns can be dropped in 2 (tester's bug 3).
+SET CONSTRAINTS ALL IMMEDIATE;
 
 UPDATE ordering.return_request
    SET offset_amount = offset_amount + credited_amount, credited_amount = 0
