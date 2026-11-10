@@ -227,7 +227,7 @@ class TransferInstructionsIntegrationTest {
                 .andExpect(status().isNotFound()).andExpect(jsonPath("$.errorCode").value("CUSTOMER_NOT_FOUND"));
         http().anonymous(get(ORDERS + "/me/" + theirs.orderId() + "/transfer-instructions"))
                 .andExpect(status().isUnauthorized());
-        http().asRole(Role.WAREHOUSE_MANAGER, UUID.randomUUID(), get(ORDERS + "/me/" + theirs.orderId() + "/transfer-instructions"))
+        http().asRole(Role.WAREHOUSE_STAFF, UUID.randomUUID(), get(ORDERS + "/me/" + theirs.orderId() + "/transfer-instructions"))
                 .andExpect(status().isForbidden());
     }
 }
