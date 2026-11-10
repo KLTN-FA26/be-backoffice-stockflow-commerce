@@ -89,7 +89,7 @@ SELECT pg_temp.expect_ok('O11 picked in full', $q$
      WHERE id = md5('qa:pl:1')::uuid $q$);
 
 \echo '--- packing and shipping (docs 08, 09)'
-INSERT INTO fulfillment.pack (id, pick_id, status, started_at, created_at) VALUES (md5('qa:pack:1')::uuid, md5('qa:pick:1')::uuid, 'PACKING', NOW(), NOW());
+INSERT INTO fulfillment.pack (id, pick_id, status, started_at, created_at) VALUES (md5('qa:pack:1')::uuid, md5('qa:pick:1')::uuid, 'IN_PROGRESS', NOW(), NOW());
 INSERT INTO fulfillment.shipment (id, pack_id, order_id, carrier, status, code, warehouse_id, ready_at, created_at)
 VALUES (md5('qa:ship:1')::uuid, md5('qa:pack:1')::uuid, md5('qa:order:1')::uuid, 'GHN', 'READY_TO_DISPATCH', 'SO-QA-1-S1', md5('demo:wh:HCM')::uuid, NOW(), NOW());
 SELECT pg_temp.expect_fail('O12 sealed parcel that was never weighed', $q$
