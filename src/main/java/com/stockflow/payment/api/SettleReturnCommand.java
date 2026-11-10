@@ -11,11 +11,11 @@ import java.util.UUID;
  * @param rmaNumber  the return's number, named in the entries' descriptions
  * @param orderId    the order whose money settles it: the returned order's own, or for a return on a free replacement
  *                   order the order the replaced goods were first paid on
- * @param refundRest true (resolution REFUND): what the order's receivables do not take is refunded; false
- *                   (CREDIT_NOTE): it stays as the customer's credit
- * @param settledBy  who approved the money (the second pair of eyes): the entries are recorded in their name
- * @param reference  the reference of the credit entry, unique in the ledger: the RMA number for the resolution, the RMA
- *                   number with {@code -W} for the withdrawal of its replacement - each booked once
+ * @param refundRest true (resolution REFUND): refunded - refused since 4B-10 until 4D-3; false (CREDIT_NOTE): credited,
+ *                   settled outside the system (kltn-docs 15 BR-06)
+ * @param settledBy  who approved the money (the second pair of eyes)
+ * @param reference  the RMA number for the resolution, the RMA number with {@code -W} for the withdrawal of its
+ *                   replacement; named in the log
  */
 public record SettleReturnCommand(
         UUID returnRequestId,

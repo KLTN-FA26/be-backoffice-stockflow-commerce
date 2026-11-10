@@ -1,7 +1,6 @@
 package com.stockflow.order.internal.controller.dto;
 
 import com.stockflow.common.validation.ValidSku;
-import com.stockflow.order.api.PaymentTerm;
 import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.DecimalMin;
@@ -52,9 +51,6 @@ public final class QuoteRequests {
     public record Create(
             @NotNull(message = "requestId is required") UUID requestId,
             @NotNull(message = "customerId is required") UUID customerId,
-            @NotNull(message = "paymentTerm is required") PaymentTerm paymentTerm,
-            @Schema(description = "DEPOSIT only; empty takes the customer's default")
-            @Digits(integer = 3, fraction = 2, message = "depositPercent has at most 2 decimals") BigDecimal depositPercent,
             @NotNull(message = "validUntil is required") Instant validUntil,
             @Size(max = 2000, message = "terms are at most 2000 characters") String terms,
             @Schema(description = "SCRUM-502: the date the customer asks to receive the goods, not in the past; "
@@ -70,8 +66,6 @@ public final class QuoteRequests {
 
     public record Edit(
             @NotNull(message = "version is required") Long version,
-            @NotNull(message = "paymentTerm is required") PaymentTerm paymentTerm,
-            @Digits(integer = 3, fraction = 2, message = "depositPercent has at most 2 decimals") BigDecimal depositPercent,
             @NotNull(message = "validUntil is required") Instant validUntil,
             @Size(max = 2000, message = "terms are at most 2000 characters") String terms,
             @Schema(description = "SCRUM-502: the date the customer asks to receive the goods, not in the past; "

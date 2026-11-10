@@ -11,20 +11,20 @@ import java.util.UUID;
  * completes a print line short within what the customer agreed (review 2026-10-25, S6): the units in {@code lines}
  * will not be delivered.
  *
- * <p>Payment asks back {@code refundableAmount} - the money received above what the order is now worth
- * ({@code effectiveTotal}), less what an earlier closure asked for - as PENDING refunds for the accountant.
- * {@code closureId} names this closure: payment asks each refund once per closure, so a redelivered event changes
- * nothing and a second closure of the same order (after a failed shipment came back) is not lost. Fulfillment stops
- * the rest: open pick lines, and packages of those units not handed over, put back (G4-4 / G4-5).
+ * <p>Fulfillment stops the rest: open pick lines, and packages of those units not handed over, put back (G4-4 /
+ * G4-5). Payment makes a contract's installments paid after delivery due if the order is now delivered in full. The
+ * closure's money is not in this event: payment settles it on the installments in the closing transaction (4B-9) -
+ * {@code closureId} is the key of that settlement.
  * {@code reasonCode} is a {@code CancellationReasonCode} name; there is no free text (A7). Events written while
  * in-house production existed may carry {@code PRODUCTION_SHORTFALL}: units production did not make, the customer
  * agreeing (S6).</p>
  *
  * <p>Review of #150 (decisions 2026-10-17 / 2026-10-19), fields added as the contract rules allow: print lines closed
- * after printing started may keep a {@code feeAmount} agreed with the customer. The money received above what the order
- * is now worth paid {@code retainedFeeAmount} of it ({@code refundableAmount} is already net of the fee); payment opens
- * a receivable for {@code owedAmount}, the rest of it, due on the closing day. All 0 (or null, on events written
- * before) without a fee.</p>
+ * after printing started may keep a {@code feeAmount} agreed with the customer.</p>
+ *
+ * <p>4B-10: the order counts no money of its own any more, so {@code paidAmount}, {@code refundableAmount},
+ * {@code retainedFeeAmount} and {@code owedAmount} are always 0 - what was paid, is to refund and is owed is the
+ * settlement's ({@code GET /api/v1/refunds/orders/{orderId}}). Kept so events written before still read.</p>
  *
  * See {@code package-info.java} for the rules on changing this contract.
  */

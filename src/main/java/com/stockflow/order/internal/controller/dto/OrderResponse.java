@@ -45,34 +45,10 @@ public record OrderResponse(
         Address shippingAddress,
         Address billingAddress,
 
-        @Schema(example = "PREPAID", description = "PREPAID, DEPOSIT or CREDIT; null on list rows that do not carry it")
-        String paymentTerm,
-
         @Schema(description = "The warehouse the order was released from; null until released (SCRUM-423)")
         UUID warehouseId,
 
         Instant releasedAt,
-
-        @Schema(description = "Money received so far; null on rows that do not carry it")
-        BigDecimal paidAmount,
-
-        @Schema(description = "The deposit a DEPOSIT order needs before it is confirmed; null otherwise")
-        BigDecimal depositRequired,
-
-        Instant depositReceivedAt,
-        Instant paidInFullAt,
-
-        @Schema(example = "PARTIALLY_PAID", description = "UNPAID, PARTIALLY_PAID, ON_CREDIT or PAID (kltn-docs 15 §5.2)")
-        String paymentStatus,
-
-        @Schema(description = "Days to pay after delivery: a credit order's, or an ON_CREDIT deposit order's for its "
-                + "balance; null otherwise")
-        Integer creditTermDays,
-
-        @Schema(example = "BEFORE_DELIVERY", description = "A deposit order's way of collecting the balance: "
-                + "BEFORE_DELIVERY (by transfer, before the handover) or ON_CREDIT (a receivable on delivery, due "
-                + "after creditTermDays); null for other terms (G2-3). Nothing is collected on delivery")
-        String balancePolicy,
 
         @Schema(description = "Set when the order is CANCELLED")
         Cancellation cancellation,
@@ -109,17 +85,12 @@ public record OrderResponse(
         Instant completedAt,
         Instant closedAt,
 
-        @Schema(description = "What deliveries billed as receivables (a credit order)")
-        BigDecimal billedAmount,
-
         @Schema(description = "The total less the units closed out of a partly fulfilled order")
         BigDecimal effectiveTotal,
 
-        @Schema(description = "What the customer still owes on the order (effectiveTotal - paidAmount, never below 0)")
-        BigDecimal amountDue,
-
-        @Schema(description = "What must be paid before the goods may leave (G3-Q4): packing warns, handover refuses "
-                + "while it is above 0")
+        @Schema(description = "What the order itself knows must be paid before the goods may leave: 0 since 4B-10 - "
+                + "the handover reads the contract's installments (GET /api/v1/installments/orders/{orderId}, "
+                + "dueBeforeHandover)")
         BigDecimal amountDueBeforeHandover,
 
         @Schema(description = "The shipments handed to the carrier, oldest first (split shipments, G4-Q3)")
@@ -156,7 +127,6 @@ public record OrderResponse(
             @Schema(example = "HANDED_OVER", description = "HANDED_OVER, DELIVERED, DELIVERY_FAILED or RETURNED")
             String status,
             @Schema(description = "The goods' value at the order's prices") BigDecimal amount,
-            @Schema(description = "What its delivery billed a credit order") BigDecimal billedAmount,
             Instant handedOverAt,
             Instant outcomeAt,
             String failureReason,

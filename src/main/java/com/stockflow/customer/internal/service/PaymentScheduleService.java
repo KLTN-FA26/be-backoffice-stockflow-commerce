@@ -5,7 +5,6 @@ import com.stockflow.common.audit.AuditAction;
 import com.stockflow.common.audit.Auditable;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
-import com.stockflow.customer.api.CommercialTerm;
 import com.stockflow.customer.api.DefaultPaymentSchedule;
 import com.stockflow.customer.api.PaymentMilestone;
 import com.stockflow.customer.internal.domain.CreditProfile;
@@ -19,7 +18,6 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
-import java.math.RoundingMode;
 import java.time.Clock;
 import java.util.ArrayList;
 import java.util.List;
@@ -54,7 +52,7 @@ class PaymentScheduleService implements PaymentSchedules {
             throw new BusinessException(ErrorCode.CUSTOMER_NOT_FOUND, "No customer " + customerId);
         }
         return schedules.findByCustomerId(customerId).map(PaymentScheduleService::view)
-                .orElseGet(() -> fromTerms(customerId, creditProfiles.findByCustomerId(customerId)));
+                .orElseGet(() -> unset(customerId));
     }
 
     @Override
@@ -132,21 +130,13 @@ class PaymentScheduleService implements PaymentSchedules {
     }
 
     /**
-     * No schedule set: the one the customer's commercial terms give, so a contract drafted for an existing deposit
-     * customer asks what they agreed - the deposit share on signing, the rest before delivery - and anyone else pays on
-     * signing. Never credit: that is a schedule accounting approves (15 BR-12).
+     * No schedule set: everything on signing. Never credit - that is a schedule accounting approves (15 BR-12). Until
+     * 4B-10 a deposit customer's terms gave the deposit share on signing and the rest before delivery; customers have
+     * no payment terms of their own any more.
      */
-    static DefaultPaymentSchedule fromTerms(UUID customerId, Optional<CreditProfile> terms) {
-        BigDecimal deposit = terms.filter(t -> t.allowDeposit() && t.defaultTerm() == CommercialTerm.DEPOSIT)
-                .map(CreditProfile::depositPercent).filter(p -> p != null && p.signum() > 0 && p.compareTo(HUNDRED) < 0)
-                .map(p -> p.setScale(2, RoundingMode.HALF_UP)).orElse(null);
-        List<DefaultPaymentSchedule.Installment> lines = deposit == null
-                ? List.of(new DefaultPaymentSchedule.Installment(1, "On signing", HUNDRED, PaymentMilestone.ON_SIGNING,
-                        0))
-                : List.of(new DefaultPaymentSchedule.Installment(1, "Deposit", deposit, PaymentMilestone.ON_SIGNING, 0),
-                        new DefaultPaymentSchedule.Installment(2, "Balance", HUNDRED.subtract(deposit),
-                                PaymentMilestone.BEFORE_DELIVERY, 0));
-        return new DefaultPaymentSchedule(customerId, false, lines, null, null, null, null, null, -1L);
+    static DefaultPaymentSchedule unset(UUID customerId) {
+        return new DefaultPaymentSchedule(customerId, false, List.of(new DefaultPaymentSchedule.Installment(1,
+                "On signing", HUNDRED, PaymentMilestone.ON_SIGNING, 0)), null, null, null, null, null, -1L);
     }
 
     static DefaultPaymentSchedule view(PaymentSchedule s) {

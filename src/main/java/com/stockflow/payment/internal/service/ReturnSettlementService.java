@@ -4,148 +4,78 @@ import com.stockflow.common.audit.AuditAction;
 import com.stockflow.common.audit.Auditable;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
-import com.stockflow.contracts.PaymentCaptured;
-import com.stockflow.payment.api.OrderPayables;
-import com.stockflow.payment.api.PayableOrder;
+import com.stockflow.payment.api.InstallmentOrder;
+import com.stockflow.payment.api.InstallmentOrders;
 import com.stockflow.payment.api.ReturnSettlement;
 import com.stockflow.payment.api.SettleReturnCommand;
 import com.stockflow.payment.api.SettleReturnResult;
-import com.stockflow.payment.internal.domain.CustomerTransfer;
-import com.stockflow.payment.internal.domain.Receivable;
-import com.stockflow.payment.internal.domain.ReceivableBook;
-import com.stockflow.payment.internal.domain.ReturnRefunds;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
-import java.time.Clock;
-import java.time.Instant;
-import java.time.LocalDate;
-import java.time.ZoneId;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.UUID;
 
 /**
- * The money of a resolved return (SCRUM-260; V20261101020100 explains the two ways it is booked). Called by the order
- * module inside the transaction that resolves the return, after the second person approved it.
+ * The money of a resolved return, since the money ledger went (4B-10). Called by the order module inside the
+ * transaction that resolves the return, after the second person approved it.
  *
- * <ol>
- *   <li>The return's value first reduces what the order still owes on its receivables - the customer's own: a credit
- *       order's, a deposit balance on credit, not a carrier's (the customer paid the carrier) and not a fee. That is a
- *       RETURN_CREDIT entry of the ledger, allocated to those receivables earliest due first, each allocation announced
- *       as {@code PaymentCaptured} (method CREDIT_NOTE) so the order counts it as settled. An overdue receivable stays
- *       OVERDUE until it is settled in full, as with any payment.</li>
- *   <li>What the receivables do not take is either refunded - PENDING refunds of source RETURN on the money the order
- *       received, never more than it received (refused whole otherwise: {@code RETURN_REFUND_EXCEEDS_PAID}) - or kept
- *       as the customer's credit on the same RETURN_CREDIT entry.</li>
- * </ol>
+ * <p>Until 4B-10 a return's value reduced the order's receivables in the ledger, and the rest was refunded from the
+ * money the ledger had received for the order, or kept there as the customer's credit. The ledger is gone, and a
+ * contract order's money is on its installments, which the ledger never held - so for every order placed through a
+ * contract a refund was refused already ({@code RETURN_REFUND_EXCEEDS_PAID}, nothing received). That stays so here:</p>
+ * <ul>
+ *   <li><b>Refund</b>: nothing can be refunded through a return yet; a positive amount is refused whole. The amount to
+ *       refund of a return worked out from the installments (kltn-docs 15 §4.5 step 15, the 4B-9 settlements) is
+ *       4D-3's.</li>
+ *   <li><b>Credit</b>: the system keeps no credit (15 BR-05, BR-06: money not tied to an installment is the accounting
+ *       software's). The value is reported as credited and nothing is booked here; the accountant settles it outside,
+ *       as the return's record says.</li>
+ * </ul>
  *
- * <p>Locks, as every money path takes them: the order ({@link OrderPayables#lockForPayment}), then its receivables,
- * then the entry. Nothing is paid out here: refunds wait for the accountant (SCRUM-220).</p>
+ * <p>Locks the order first, as every money path does, so a resolution and a receipt of one order are decided one after
+ * the other.</p>
  */
 @Service
 @Transactional
 class ReturnSettlementService implements ReturnSettlement {
 
     private static final Logger log = LoggerFactory.getLogger(ReturnSettlementService.class);
-    private static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Ho_Chi_Minh");
 
-    /** The receivables a return's value may reduce: goods the customer owes for themselves. */
-    private static final Set<String> GOODS_RECEIVABLES = Set.of("CREDIT_ORDER", "DEPOSIT_BALANCE");
+    private final InstallmentOrders orders;
 
-    private final ReceivableBook book;
-    private final ReturnRefunds refunds;
-    private final OrderPayables orders;
-    private final ApplicationEventPublisher events;
-    private final Clock clock;
-
-    ReturnSettlementService(ReceivableBook book, ReturnRefunds refunds, OrderPayables orders,
-                            ApplicationEventPublisher events, Clock clock) {
-        this.book = book;
-        this.refunds = refunds;
+    ReturnSettlementService(InstallmentOrders orders) {
         this.orders = orders;
-        this.events = events;
-        this.clock = clock;
     }
 
     @Override
     @Auditable(action = AuditAction.CREATE, resourceType = "return-settlement", resourceId = "#command.returnRequestId()")
     public SettleReturnResult settleReturn(SettleReturnCommand command) {
-        PayableOrder order = orders.lockForPayment(command.orderId()).orElseThrow(() ->
+        InstallmentOrder order = orders.lockForPayment(command.orderId()).orElseThrow(() ->
                 new BusinessException(ErrorCode.NOT_FOUND, "No order " + command.orderId()));
         if (!order.customerId().equals(command.customerId()) || !order.currency().equals(command.currency())) {
             throw new IllegalArgumentException("Return %s does not match order %s".formatted(command.rmaNumber(),
                     order.orderNumber()));
         }
-        // Booked once per reference: the resolution, then perhaps the withdrawal of its replacement (credit only).
-        if (book.referenceRecorded(command.reference())
-                || command.refundRest() && refunds.hasRefunds(command.returnRequestId())) {
-            throw new IllegalStateException("Return %s was already settled (%s)".formatted(command.rmaNumber(),
-                    command.reference()));
+        if (command.refundRest()) {
+            throw new BusinessException(ErrorCode.RETURN_REFUND_EXCEEDS_PAID, ("Return %s would refund %s %s but no "
+                    + "money of order %s can be refunded through a return").formatted(command.rmaNumber(),
+                    plain(command.amount()), command.currency(), order.orderNumber()), List.of(),
+                    Map.of("refundable", BigDecimal.ZERO, "requested", command.amount()));
         }
-        Instant now = clock.instant();
-        List<Receivable> owed = book.lockUnpaid(command.customerId()).stream()
-                .filter(r -> r.orderId().equals(command.orderId()) && GOODS_RECEIVABLES.contains(r.kind()))
-                .toList();
-        BigDecimal outstanding = owed.stream().map(Receivable::outstanding).reduce(BigDecimal.ZERO, BigDecimal::add);
-        BigDecimal offset = command.amount().min(outstanding);
-        BigDecimal rest = command.amount().subtract(offset);
-        BigDecimal kept = command.refundRest() ? BigDecimal.ZERO : rest;
-        BigDecimal refunded = BigDecimal.ZERO;
-
-        CustomerTransfer credit = null;
-        if (offset.add(kept).signum() > 0) {
-            credit = book.save(CustomerTransfer.returnCredit(command.customerId(), command.reference(),
-                    offset.add(kept), command.currency(), LocalDate.ofInstant(now, BUSINESS_ZONE),
-                    command.settledBy(), now, "Return %s of order %s".formatted(command.rmaNumber(),
-                            command.orderNumber())));
-            BigDecimal toOffset = offset;
-            for (Receivable receivable : owed) {
-                if (toOffset.signum() <= 0) {
-                    break;
-                }
-                BigDecimal applied = receivable.allocate(credit.take(toOffset.min(receivable.outstanding())), now);
-                toOffset = toOffset.subtract(applied);
-                book.save(receivable);
-                ReceivableBook.Allocation allocation = book.recordAllocation(credit.id(), command.orderId(),
-                        receivable.id(), applied, now, command.settledBy());
-                events.publishEvent(new PaymentCaptured(command.orderId(), allocation.id(), applied,
-                        command.currency(), credit.channel().paymentMethod(), ReceivableService.sourceOf(receivable)));
-            }
-            credit = book.save(credit);
-        }
-        if (command.refundRest() && rest.signum() > 0) {
-            List<ReturnRefunds.Asked> asked = refunds.requestReturnRefunds(command.orderId(),
-                    command.returnRequestId(), rest, command.currency(),
-                    "Return %s of order %s".formatted(command.rmaNumber(), command.orderNumber()));
-            refunded = asked.stream().map(ReturnRefunds.Asked::amount).reduce(BigDecimal.ZERO, BigDecimal::add);
-            if (refunded.compareTo(rest) < 0) {
-                // Never a partial refund: the whole resolution rolls back, and Sales credits the rest instead.
-                throw new BusinessException(ErrorCode.RETURN_REFUND_EXCEEDS_PAID, ("Return %s would refund %s %s but "
-                        + "order %s has only %s %s of received money left to refund").formatted(command.rmaNumber(),
-                        plain(rest), command.currency(), order.orderNumber(), plain(refunded), command.currency()),
-                        List.of(), Map.of("refundable", refunded, "requested", rest));
-            }
-        }
-        log.info("Return {} of order {} settled: {} set off, {} refunded, {} kept as credit ({})", command.rmaNumber(),
-                order.orderNumber(), plain(offset), plain(refunded), plain(kept), command.currency());
-        return new SettleReturnResult(command.returnRequestId(), offset, refunded, kept,
-                credit == null ? null : credit.id());
+        log.info("Return {} of order {}: {} {} credited, to be settled outside the system", command.rmaNumber(),
+                order.orderNumber(), plain(command.amount()), command.currency());
+        return new SettleReturnResult(command.returnRequestId(), BigDecimal.ZERO, BigDecimal.ZERO, command.amount(),
+                null);
     }
 
     @Override
     @Transactional(readOnly = true)
     public BigDecimal refundCapacity(UUID orderId, UUID customerId, String currency) {
-        // As settleReturn counts them, without its locks: the customer's own goods receivables of the order first.
-        BigDecimal owed = book.receivablesOfOrder(orderId).stream()
-                .filter(r -> r.customerId().equals(customerId) && GOODS_RECEIVABLES.contains(r.kind()))
-                .map(Receivable::outstanding).reduce(BigDecimal.ZERO, BigDecimal::add);
-        return owed.add(refunds.refundable(orderId, currency));
+        return BigDecimal.ZERO;
     }
 
     private static String plain(BigDecimal value) {

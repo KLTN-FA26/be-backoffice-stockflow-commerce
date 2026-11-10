@@ -8,7 +8,7 @@ import com.stockflow.common.persistence.SortWhitelist;
 import com.stockflow.payment.api.CompanyBankAccount;
 import com.stockflow.payment.api.ContractInstallments;
 import com.stockflow.payment.api.InstallmentStanding;
-import com.stockflow.payment.api.OrderPayables;
+import com.stockflow.payment.api.InstallmentOrders;
 import com.stockflow.payment.internal.domain.Installment;
 import com.stockflow.payment.internal.domain.InstallmentBook;
 import com.stockflow.payment.internal.domain.InstallmentMilestone;
@@ -73,11 +73,11 @@ public class InstallmentService {
 
     private final InstallmentBook book;
     private final InstallmentSearch search;
-    private final OrderPayables orders;
+    private final InstallmentOrders orders;
     private final CompanyBankProperties bank;
     private final Clock clock;
 
-    InstallmentService(InstallmentBook book, InstallmentSearch search, OrderPayables orders, CompanyBankProperties bank,
+    InstallmentService(InstallmentBook book, InstallmentSearch search, InstallmentOrders orders, CompanyBankProperties bank,
                        Clock clock) {
         this.book = book;
         this.search = search;

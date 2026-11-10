@@ -123,9 +123,9 @@ class CustomerOrdersService implements CustomerOrders {
                 : Optional.empty();
         return new Detail(summary.orderId(), summary.orderNumber(), summary.status(),
                 statusGroup(summary.status(), summary.lifecycle()),
-                holdReasonPublic(summary.status(), latestCheck), summary.paymentTerm(), summary.total().amount(),
+                holdReasonPublic(summary.status(), latestCheck), summary.total().amount(),
                 summary.total().currency().getCurrencyCode(), summary.placedAt(), summary.shippingAddress(),
-                payment(summary), lines, timeline(summary, orders.history(orderId)),
+                lines, timeline(summary, orders.history(orderId)),
                 deliveryState(summary.status(), summary.lifecycle()), allowedActions(summary),
                 cancellationRequests.latestOf(orderId)
                         .map(r -> new CancellationRequestView(r.status().name(), r.reasonCode(), r.note(),
@@ -315,13 +315,6 @@ class CustomerOrdersService implements CustomerOrders {
             entries.add(new TimelineEntry(summary.status(), statusGroup(summary.status()), summary.placedAt(), null));
         }
         return List.copyOf(entries);
-    }
-
-    private static Payment payment(OrderSummary summary) {
-        var payment = summary.payment();
-        return payment == null ? null
-                : new Payment(payment.status(), payment.paidAmount(), payment.depositRequired(),
-                        payment.creditTermDays());
     }
 
     /** Before tax, the VAT and the fee lines; an order placed without VAT is all before tax, with no fee lines. */

@@ -80,14 +80,11 @@ class OrderReleaseService implements OrderReleases {
                     + "goods are received from the producer before it is released").formatted(order.orderNumber()));
         }
 
-        // kltn-docs 15 §4.3 step 4, 17 BR-02: no credit order is released for a customer who is overdue - nor a deposit
-        // order whose balance goes on credit (BALCREDIT, review of #150): it gives the same credit on delivery.
-        // 4B-5: so is an order whose contract pays after delivery - credit, whatever the order's own term says.
-        if ((order.paymentTerm() == com.stockflow.order.api.PaymentTerm.CREDIT || order.balanceOnCredit()
-                || paysAfterDelivery(order))
-                && paymentService.creditPosition(order.customerId()).hasOverdue()) {
+        // kltn-docs 15 §4.3 step 4, 17 BR-02: an order whose contract pays after delivery gives credit on delivery, so it
+        // is not released for a customer who is overdue (4B-5; until 4B-10 also checkout's credit orders).
+        if (paysAfterDelivery(order) && paymentService.creditPosition(order.customerId()).hasOverdue()) {
             throw new BusinessException(ErrorCode.CUSTOMER_CREDIT_OVERDUE,
-                    "Order %s is on credit and its customer has overdue receivables".formatted(order.orderNumber()));
+                    "Order %s is on credit and its customer has an overdue installment".formatted(order.orderNumber()));
         }
         if (order.paidByContract()) {
             // 4B-7 (17 §4.2 step 5): released when its stock is all held at its shipping warehouse - every carton of

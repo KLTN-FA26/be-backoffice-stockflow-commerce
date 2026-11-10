@@ -31,7 +31,7 @@ final class QuoteWebMapper {
 
     static QuoteResponse toResponse(Quotes.QuoteView q) {
         return new QuoteResponse(q.id(), q.quoteNumber(), q.customerId(), q.status().name(), q.revision(),
-                q.paymentTerm().name(), q.depositPercent(), q.validUntil(), q.terms(), q.requestedDeliveryDate(),
+                q.validUntil(), q.terms(), q.requestedDeliveryDate(),
                 q.legacy(),
                 q.lines().stream().map(l -> new QuoteResponse.Line(l.id(), l.lineNo(), l.measure(), l.sku(), l.cartons(),
                         l.unitsPerCarton(), l.units(), l.designSnapshotId(), l.printSpec(), l.priced(), l.moq(),
@@ -54,6 +54,6 @@ final class QuoteWebMapper {
 
     static QuoteRowResponse toResponse(Quotes.Row r) {
         return new QuoteRowResponse(r.id(), r.quoteNumber(), r.customerId(), r.status().name(), r.revision(),
-                r.paymentTerm().name(), r.validUntil(), r.sentAt(), r.convertedOrderId(), r.createdAt(), r.version());
+                r.validUntil(), r.sentAt(), r.convertedOrderId(), r.createdAt(), r.version());
     }
 }

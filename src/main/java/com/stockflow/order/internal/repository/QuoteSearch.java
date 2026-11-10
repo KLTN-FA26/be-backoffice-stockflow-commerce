@@ -1,6 +1,5 @@
 package com.stockflow.order.internal.repository;
 
-import com.stockflow.order.api.PaymentTerm;
 import com.stockflow.order.internal.domain.QuoteStatus;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -21,7 +20,7 @@ public interface QuoteSearch {
     }
 
     record Row(UUID id, String quoteNumber, UUID customerId, QuoteStatus status, int revision,
-               PaymentTerm paymentTerm, Instant validUntil, Instant sentAt, UUID convertedOrderId,
+               Instant validUntil, Instant sentAt, UUID convertedOrderId,
                Instant createdAt, String createdBy, long version) {
     }
 

@@ -12,22 +12,18 @@ package com.stockflow.payment.api;
 public interface ReturnSettlement {
 
     /**
-     * The return's value first reduces what the order still owes on its receivables (the customer's own, never a
-     * carrier's); the rest is refunded - PENDING refunds on the money the order received, newest first, never more of
-     * a payment than is left of it - or kept as the customer's credit. Takes the order's lock first, as every money
-     * path does.
+     * Books a return's value (4B-10: without the money ledger). A refund is refused: no money of an order can be
+     * refunded through a return until 4D-3 works it out from the installments. A credit is reported as credited and
+     * settled outside the system (kltn-docs 15 BR-05, BR-06). Takes the order's lock first, as every money path does.
      *
-     * @throws com.stockflow.common.error.BusinessException {@code RETURN_REFUND_EXCEEDS_PAID} when the order received
-     *         less money than the refund asks; {@code NOT_FOUND} for an unknown order
-     * @throws IllegalStateException when the return was booked already - the caller decides a return once
+     * @throws com.stockflow.common.error.BusinessException {@code RETURN_REFUND_EXCEEDS_PAID} for a refund;
+     *         {@code NOT_FOUND} for an unknown order
      */
     SettleReturnResult settleReturn(SettleReturnCommand command);
 
     /**
-     * The most a REFUND resolution of the order could book now (review of #195, N12): what the order still owes on the
-     * customer's own receivables, plus what is left of the money it received after the refunds already asked of it.
-     * Read only, nothing locked: {@link #settleReturn} decides under the order's lock; this lets Sales hear "credit it
-     * instead" when they propose the resolution rather than after the accountant approved it.
+     * The most a REFUND resolution of the order could book now (review of #195, N12), so Sales hear "credit it instead"
+     * when they propose the resolution: zero since the money ledger went (4B-10), until 4D-3.
      */
     java.math.BigDecimal refundCapacity(java.util.UUID orderId, java.util.UUID customerId, String currency);
 }

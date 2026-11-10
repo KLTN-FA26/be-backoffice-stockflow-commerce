@@ -34,9 +34,6 @@ public record CustomerOrderDetailResponse(
                 + "AWAITING_CREDIT_APPROVAL or UNDER_REVIEW")
         String holdReasonPublic,
 
-        @Schema(example = "PREPAID", description = "PREPAID, DEPOSIT or CREDIT")
-        String paymentTerm,
-
         BigDecimal total,
 
         @Schema(example = "VND")
@@ -45,8 +42,6 @@ public record CustomerOrderDetailResponse(
         Instant placedAt,
 
         OrderResponse.Address shippingAddress,
-
-        Payment payment,
 
         List<Line> lines,
 
@@ -126,17 +121,6 @@ public record CustomerOrderDetailResponse(
             @Schema(description = "Order the same again by a new draft quote (POST /orders/{id}/reorder): true only for an "
                     + "order that came from a quote. An order bought at the price list is false: the portal puts its "
                     + "lines back in the basket instead") boolean reorder) {
-    }
-
-    @Schema(name = "CustomerOrderPayment")
-    public record Payment(
-            @Schema(example = "PARTIALLY_PAID", description = "UNPAID, PARTIALLY_PAID, ON_CREDIT or PAID")
-            String status,
-            BigDecimal paidAmount,
-            @Schema(description = "The deposit a DEPOSIT order needs before it is confirmed; null otherwise")
-            BigDecimal depositRequired,
-            @Schema(description = "A credit order's days to pay after delivery; null otherwise")
-            Integer creditTermDays) {
     }
 
     @Schema(name = "CustomerOrderLine")

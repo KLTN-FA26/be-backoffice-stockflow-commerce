@@ -10,8 +10,8 @@ import com.stockflow.common.persistence.SortWhitelist;
 import com.stockflow.contracts.PaymentReceiptRecorded;
 import com.stockflow.contracts.PaymentReceiptVoided;
 import com.stockflow.customer.api.CustomerService;
-import com.stockflow.payment.api.OrderPayables;
-import com.stockflow.payment.api.PayableOrder;
+import com.stockflow.payment.api.InstallmentOrders;
+import com.stockflow.payment.api.InstallmentOrder;
 import com.stockflow.payment.internal.domain.Installment;
 import com.stockflow.payment.internal.domain.InstallmentBook;
 import com.stockflow.payment.internal.domain.InstallmentMilestone;
@@ -59,7 +59,7 @@ import java.util.stream.Collectors;
  *       void is refused (BR-13); {@code PaymentReceiptVoided} then holds it.</li>
  * </ul>
  *
- * <p>Locks: orders first (through {@link OrderPayables#lockForPayment}, as every money movement takes them), then the
+ * <p>Locks: orders first (through {@link InstallmentOrders#lockForPayment}, as every money movement takes them), then the
  * receipt, then installments in id order.</p>
  */
 @Service
@@ -91,13 +91,13 @@ public class PaymentReceiptService {
     private final InstallmentBook book;
     private final SettlementBook settlements;
     private final InstallmentSearch search;
-    private final OrderPayables orders;
+    private final InstallmentOrders orders;
     private final CustomerService customers;
     private final ApplicationEventPublisher events;
     private final Clock clock;
 
     PaymentReceiptService(InstallmentBook book, SettlementBook settlements, InstallmentSearch search,
-                          OrderPayables orders, CustomerService customers, ApplicationEventPublisher events,
+                          InstallmentOrders orders, CustomerService customers, ApplicationEventPublisher events,
                           Clock clock) {
         this.book = book;
         this.settlements = settlements;
@@ -126,7 +126,7 @@ public class PaymentReceiptService {
                 .map(PaymentReceipt.Payment::installmentId).toList();
         // The orders first, as every money movement locks them: a cancellation of one of them waits for this receipt,
         // or went first and is seen here - before its listener has cancelled the installments.
-        Map<UUID, PayableOrder> payable = new HashMap<>();
+        Map<UUID, InstallmentOrder> payable = new HashMap<>();
         named.stream().map(book::find).flatMap(java.util.Optional::stream).map(Installment::orderId).distinct().sorted()
                 .forEach(orderId -> orders.lockForPayment(orderId).ifPresent(order -> payable.put(orderId, order)));
         Map<UUID, Installment> installments = book.lock(named).stream()
@@ -149,7 +149,7 @@ public class PaymentReceiptService {
             if (!installment.currency().equals(currency)) {
                 throw new BusinessException(ErrorCode.VALIDATION_FAILED, "One receipt is in one currency");
             }
-            PayableOrder order = payable.get(installment.orderId());
+            InstallmentOrder order = payable.get(installment.orderId());
             // A cancelled order's fee item is what it still owes (4B-9, 15 §4.6 step 18): that money is taken.
             if (order != null && "CANCELLED".equals(order.status()) && !installment.isFeeItem()) {
                 // 15 BR-06, edge "tiền về sau khi đơn đã huỷ": money for a cancelled order is settled outside.
@@ -193,7 +193,7 @@ public class PaymentReceiptService {
         for (PaymentReceipt.Line line : unlocked.lines()) {
             book.find(line.installmentId()).ifPresent(installment -> orderIds.add(installment.orderId()));
         }
-        Map<UUID, PayableOrder> payable = new HashMap<>();
+        Map<UUID, InstallmentOrder> payable = new HashMap<>();
         orderIds.stream().sorted().forEach(orderId -> orders.lockForPayment(orderId)
                 .ifPresent(order -> payable.put(orderId, order)));
         PaymentReceipt receipt = book.lockReceipt(command.receiptId()).orElseThrow(() -> notFound(command.receiptId()));
@@ -220,7 +220,7 @@ public class PaymentReceiptService {
         orderIds.forEach(orderId -> paidOnSigningBefore.put(orderId, paidOnSigning(orderId, installments)));
         for (PaymentReceipt.Line line : receipt.lines()) {
             Installment installment = installments.get(line.installmentId());
-            PayableOrder order = installment == null ? null : payable.get(installment.orderId());
+            InstallmentOrder order = installment == null ? null : payable.get(installment.orderId());
             if (installment == null || order == null) {
                 throw new IllegalStateException("Receipt %s pays installment %s, which has no order"
                         .formatted(receipt.reference(), line.installmentId()));
@@ -237,7 +237,7 @@ public class PaymentReceiptService {
         }
         List<String> leftShort = new ArrayList<>();
         for (UUID orderId : orderIds) {
-            PayableOrder order = payable.get(orderId);
+            InstallmentOrder order = payable.get(orderId);
             if (paidOnSigningBefore.get(orderId) && !paidOnSigning(orderId, installments) && order.holdable()) {
                 leftShort.add(order.orderNumber());
             }

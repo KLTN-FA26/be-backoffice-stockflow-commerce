@@ -1,7 +1,6 @@
 package com.stockflow.order.internal.entity;
 
 import com.stockflow.order.api.OrderStatus;
-import com.stockflow.order.api.PaymentTerm;
 import com.stockflow.common.persistence.BaseEntity;
 import com.stockflow.common.security.ScopedEntity;
 import jakarta.persistence.CascadeType;
@@ -137,36 +136,18 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
     @Column(name = "cancellation_reason", length = 500)
     private String cancellationReason;
 
-    @Enumerated(EnumType.STRING)
-    @Column(name = "payment_term", nullable = false, length = 16)
-    private PaymentTerm paymentTerm = PaymentTerm.PREPAID;
-
-    @Column(name = "deposit_required", precision = 19, scale = 4)
-    private java.math.BigDecimal depositRequired;
-
-    @Column(name = "deposit_received_at")
-    private Instant depositReceivedAt;
-
-    /** V20261021000200 (G2-3): how a deposit order's balance is collected. */
-    @Enumerated(EnumType.STRING)
-    @Column(name = "balance_policy", length = 16)
-    private com.stockflow.order.api.BalancePolicy balancePolicy;
+    /*
+     * 4B-10: the money ledger's and the per-order payment terms' columns are no longer mapped - payment_term,
+     * deposit_required, deposit_received_at, balance_policy, paid_amount, paid_in_full_at, credit_term_days,
+     * billed_amount, receivable_paid_amount, remainder_refund_amount and remainder_fee_* (V20261108003200 keeps every
+     * ck_order_* true on their defaults). 4B-11 drops them.
+     */
 
     /** V20261022000400 (PACK-PARTIAL / PACK-EARLY): Sales allowed shipping in parts; shipped early, printing goes on. */
     @Column(name = "allow_partial_shipment", nullable = false)
     private boolean allowPartialShipment;
 
-    /** V20261022000400 (review of #150): fees agreed when print lines were closed after printing started. */
-    @Column(name = "remainder_fee_amount", nullable = false, precision = 19, scale = 4)
-    private java.math.BigDecimal remainderFeeAmount = java.math.BigDecimal.ZERO;
-
-    @Column(name = "remainder_fee_retained_amount", nullable = false, precision = 19, scale = 4)
-    private java.math.BigDecimal remainderFeeRetainedAmount = java.math.BigDecimal.ZERO;
-
-    @Column(name = "remainder_fee_paid_amount", nullable = false, precision = 19, scale = 4)
-    private java.math.BigDecimal remainderFeePaidAmount = java.math.BigDecimal.ZERO;
-
-    /** V20261102030100: the value of the units closed out of the order; what "paid in full" is measured against. */
+    /** V20261102030100: the value of the units closed out of the order (what a closure takes off the installments). */
     @Column(name = "closed_amount", nullable = false, precision = 19, scale = 4)
     private java.math.BigDecimal closedAmount = java.math.BigDecimal.ZERO;
 
@@ -186,13 +167,6 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
 
     @Column(name = "released_by")
     private UUID releasedBy;
-
-    /** Money received so far (SCRUM-460); the payment status is derived from it. */
-    @Column(name = "paid_amount", nullable = false, precision = 19, scale = 4)
-    private java.math.BigDecimal paidAmount = java.math.BigDecimal.ZERO;
-
-    @Column(name = "paid_in_full_at")
-    private Instant paidInFullAt;
 
     @jakarta.persistence.Enumerated(jakarta.persistence.EnumType.STRING)
     @Column(name = "cancellation_reason_code", length = 32)
@@ -241,7 +215,7 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
     @Column(name = "cancellation_fee_detail", length = 2000)
     private String cancellationFeeDetail;
 
-    /** V20261021000100 (G3-2): why it is on hold and where it goes back; the milestones; the money billed. */
+    /** V20261021000100 (G3-2): why it is on hold and where it goes back; the milestones. */
     @Enumerated(EnumType.STRING)
     @Column(name = "hold_reason", length = 24)
     private com.stockflow.order.api.HoldReason holdReason;
@@ -271,19 +245,6 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
 
     @Column(name = "closed_at")
     private Instant closedAt;
-
-    @Column(name = "billed_amount", nullable = false, precision = 19, scale = 4)
-    private java.math.BigDecimal billedAmount = java.math.BigDecimal.ZERO;
-
-    @Column(name = "receivable_paid_amount", nullable = false, precision = 19, scale = 4)
-    private java.math.BigDecimal receivablePaidAmount = java.math.BigDecimal.ZERO;
-
-    @Column(name = "remainder_refund_amount", nullable = false, precision = 19, scale = 4)
-    private java.math.BigDecimal remainderRefundAmount = java.math.BigDecimal.ZERO;
-
-    /** A credit order's days to pay after delivery, as sold (SCRUM-427). */
-    @Column(name = "credit_term_days")
-    private Integer creditTermDays;
 
     @OneToMany(mappedBy = "order", cascade = CascadeType.ALL,
             orphanRemoval = true, fetch = FetchType.LAZY)
@@ -334,22 +295,11 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
         this.cancellationReason = cancellationReason;
     }
 
-    public void applyTermsAndRelease(PaymentTerm paymentTerm, java.math.BigDecimal depositRequired,
-                                     Instant depositReceivedAt, UUID warehouseId, Instant releasedAt,
-                                     UUID releasedBy) {
-        this.paymentTerm = paymentTerm == null ? PaymentTerm.PREPAID : paymentTerm;
-        this.depositRequired = depositRequired;
-        this.depositReceivedAt = depositReceivedAt;
+    public void applyRelease(UUID warehouseId, Instant releasedAt, UUID releasedBy) {
         this.warehouseId = warehouseId;
         this.releasedAt = releasedAt;
         this.releasedBy = releasedBy;
     }
-
-    public void applyBalance(com.stockflow.order.api.BalancePolicy balancePolicy) {
-        this.balancePolicy = balancePolicy;
-    }
-
-    public com.stockflow.order.api.BalancePolicy getBalancePolicy() { return balancePolicy; }
 
     public void applyPartialShipment(boolean allowed) {
         this.allowPartialShipment = allowed;
@@ -369,27 +319,13 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
 
     public Instant getPackingStartedAt() { return packingStartedAt; }
 
-    public void applyRemainderFee(java.math.BigDecimal fee, java.math.BigDecimal retained, java.math.BigDecimal paid) {
-        this.remainderFeeAmount = fee == null ? java.math.BigDecimal.ZERO : fee;
-        this.remainderFeeRetainedAmount = retained == null ? java.math.BigDecimal.ZERO : retained;
-        this.remainderFeePaidAmount = paid == null ? java.math.BigDecimal.ZERO : paid;
-    }
-
     public void applyClosedAmount(java.math.BigDecimal closed) {
         this.closedAmount = closed == null ? java.math.BigDecimal.ZERO : closed;
     }
 
     public java.math.BigDecimal getClosedAmount() { return closedAmount; }
-    public java.math.BigDecimal getRemainderFeeAmount() { return remainderFeeAmount; }
-    public java.math.BigDecimal getRemainderFeeRetainedAmount() { return remainderFeeRetainedAmount; }
-    public java.math.BigDecimal getRemainderFeePaidAmount() { return remainderFeePaidAmount; }
 
-    public void applyPaymentAndCancellation(java.math.BigDecimal paidAmount, Instant paidInFullAt,
-                                            com.stockflow.order.api.CancellationReasonCode code,
-                                            java.math.BigDecimal retained, Integer creditTermDays) {
-        this.creditTermDays = creditTermDays;
-        this.paidAmount = paidAmount == null ? java.math.BigDecimal.ZERO : paidAmount;
-        this.paidInFullAt = paidInFullAt;
+    public void applyCancellation(com.stockflow.order.api.CancellationReasonCode code, java.math.BigDecimal retained) {
         this.cancellationReasonCode = code;
         this.cancellationRetainedAmount = retained;
     }
@@ -436,14 +372,9 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
     public String getCurrency() { return currency; }
     public Instant getPlacedAt() { return placedAt; }
     public String getCancellationReason() { return cancellationReason; }
-    public PaymentTerm getPaymentTerm() { return paymentTerm; }
-    public java.math.BigDecimal getDepositRequired() { return depositRequired; }
-    public Instant getDepositReceivedAt() { return depositReceivedAt; }
     public UUID getWarehouseId() { return warehouseId; }
     public Instant getReleasedAt() { return releasedAt; }
     public UUID getReleasedBy() { return releasedBy; }
-    public java.math.BigDecimal getPaidAmount() { return paidAmount; }
-    public Instant getPaidInFullAt() { return paidInFullAt; }
     public com.stockflow.order.api.CancellationReasonCode getCancellationReasonCode() { return cancellationReasonCode; }
     public java.math.BigDecimal getCancellationRetainedAmount() { return cancellationRetainedAmount; }
     public String getCancellationFeeReason() { return cancellationFeeReason; }
@@ -498,9 +429,7 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
     public void applyLifecycle(com.stockflow.order.api.HoldReason holdReason, OrderStatus statusBeforeHold,
                                String holdNote, Instant shippedAt, Instant deliveredAt,
                                com.stockflow.order.api.DeliveryFailureReason deliveryFailureReason,
-                               Instant completedAt, Instant refundedAt, Instant closedAt,
-                               java.math.BigDecimal billedAmount, java.math.BigDecimal receivablePaidAmount,
-                               java.math.BigDecimal remainderRefundAmount) {
+                               Instant completedAt, Instant refundedAt, Instant closedAt) {
         this.holdReason = holdReason;
         this.statusBeforeHold = statusBeforeHold;
         this.holdNote = holdNote;
@@ -510,9 +439,6 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
         this.completedAt = completedAt;
         this.refundedAt = refundedAt;
         this.closedAt = closedAt;
-        this.billedAmount = billedAmount;
-        this.receivablePaidAmount = receivablePaidAmount;
-        this.remainderRefundAmount = remainderRefundAmount;
     }
 
     /** One step of a status change: the row passes through each edge, so the transition trigger sees every one. */
@@ -529,10 +455,6 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
     public Instant getCompletedAt() { return completedAt; }
     public Instant getRefundedAt() { return refundedAt; }
     public Instant getClosedAt() { return closedAt; }
-    public java.math.BigDecimal getBilledAmount() { return billedAmount; }
-    public java.math.BigDecimal getReceivablePaidAmount() { return receivablePaidAmount; }
-    public java.math.BigDecimal getRemainderRefundAmount() { return remainderRefundAmount; }
-    public Integer getCreditTermDays() { return creditTermDays; }
     public List<OrderLineJpaEntity> getLines() { return lines; }
 
     /**

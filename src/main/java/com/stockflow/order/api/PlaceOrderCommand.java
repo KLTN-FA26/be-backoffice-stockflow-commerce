@@ -20,39 +20,21 @@ public record PlaceOrderCommand(
         UUID billingAddressId,
         boolean snapshotCustomer,
         List<Line> lines,
-        PaymentTerm paymentTerm,
-        java.math.BigDecimal depositPercent,
-        BalancePolicy balancePolicy,
         List<Fee> fees
 ) {
 
-    /** Without fee lines (before 4B-3, and every checkout). */
-    public PlaceOrderCommand(UUID requestId, UUID customerId, UUID shippingAddressId, UUID billingAddressId,
-                             boolean snapshotCustomer, List<Line> lines, PaymentTerm paymentTerm,
-                             java.math.BigDecimal depositPercent, BalancePolicy balancePolicy) {
-        this(requestId, customerId, shippingAddressId, billingAddressId, snapshotCustomer, lines, paymentTerm,
-                depositPercent, balancePolicy, List.of());
-    }
-
     /**
-     * Without a balance policy: a deposit order takes the customer's (G2-3).
+     * Without fee lines (before 4B-3, and every checkout). No payment terms since 4B-10: an order is paid by its sales
+     * contract's installments.
      */
     public PlaceOrderCommand(UUID requestId, UUID customerId, UUID shippingAddressId, UUID billingAddressId,
-                             boolean snapshotCustomer, List<Line> lines, PaymentTerm paymentTerm,
-                             java.math.BigDecimal depositPercent) {
-        this(requestId, customerId, shippingAddressId, billingAddressId, snapshotCustomer, lines, paymentTerm,
-                depositPercent, null);
+                             boolean snapshotCustomer, List<Line> lines) {
+        this(requestId, customerId, shippingAddressId, billingAddressId, snapshotCustomer, lines, List.of());
     }
 
     /** Compatibility constructor for trusted internal callers and existing integrations. */
     public PlaceOrderCommand(UUID requestId, UUID customerId, List<Line> lines) {
-        this(requestId, customerId, null, null, false, lines, null, null, null);
-    }
-
-    /** Prepaid, the default terms (kltn-docs 15 §4.1). */
-    public PlaceOrderCommand(UUID requestId, UUID customerId, UUID shippingAddressId, UUID billingAddressId,
-                             boolean snapshotCustomer, List<Line> lines) {
-        this(requestId, customerId, shippingAddressId, billingAddressId, snapshotCustomer, lines, null, null, null);
+        this(requestId, customerId, null, null, false, lines);
     }
 
     public PlaceOrderCommand {

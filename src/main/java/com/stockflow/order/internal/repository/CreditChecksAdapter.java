@@ -1,7 +1,6 @@
 package com.stockflow.order.internal.repository;
 
 import com.stockflow.common.id.Identifiers;
-import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.internal.domain.CreditChecks;
 import jakarta.persistence.EntityManager;
 import org.springframework.stereotype.Repository;
@@ -21,48 +20,6 @@ class CreditChecksAdapter implements CreditChecks, CreditHoldSearch {
 
     CreditChecksAdapter(EntityManager entityManager) {
         this.entityManager = entityManager;
-    }
-
-    /**
-     * The order side of a customer's credit exposure (kltn-docs 15 BR-03): for every credit order in a status
-     * {@link OrderStatus#countsTowardCreditExposure} names - the list comes from the state machine, never typed here,
-     * so a new status cannot leak an order out of it - what the order has still to bill: its total, less the units
-     * closed out of it ({@code closed_amount}, their share of their lines with tax as the order computed it - not their
-     * price alone, which would leave their VAT counted), less what its deliveries billed (the receivables count that),
-     * less money paid ahead outside receivables. A split order is counted once: its delivered shipments as receivables,
-     * the rest here. An order on a credit hold is not credit given yet. An order of a signed contract is not counted
-     * here: what its installments paid after delivery still owe is payment's to count (4B-6, 15 BR-10,
-     * {@code PaymentService.creditPosition}), so that checkout, a contract's signature and accounting's decision all
-     * read one exposure.
-     *
-     * <p>BALCREDIT: a deposit order whose balance goes on credit counts the same way, from the moment it is placed
-     * (PENDING_PAYMENT too: its balance was checked against the limit then), with its deposit counted as paid ahead
-     * until more than it is paid - so only the balance is credit; its deliveries' receivables take over from there.</p>
-     */
-    @Override
-    public BigDecimal undeliveredCreditExposure(UUID customerId, UUID excludingOrderId) {
-        Object sum = entityManager.createNativeQuery("""
-                        SELECT (SELECT COALESCE(SUM(GREATEST(0,
-                                   o.total_amount - o.closed_amount
-                                 - o.billed_amount
-                                 - GREATEST(CASE WHEN o.payment_term = 'DEPOSIT' THEN o.deposit_required ELSE 0 END,
-                                            o.paid_amount - o.receivable_paid_amount))), 0)
-                          FROM ordering.customer_order o
-                         WHERE o.customer_id = :customer
-                           AND (o.payment_term = 'CREDIT' AND o.status IN (:statuses)
-                             OR o.payment_term = 'DEPOSIT' AND o.balance_policy = 'ON_CREDIT'
-                                AND o.status IN (:balanceStatuses))
-                           AND o.id <> :excluding
-                           AND o.hold_reason IS DISTINCT FROM 'CREDIT'
-                           AND o.contract_signed_at IS NULL)""")
-                .setParameter("customer", customerId)
-                .setParameter("statuses", OrderStatus.creditExposureStatuses().stream().map(Enum::name).toList())
-                .setParameter("balanceStatuses", java.util.stream.Stream.concat(
-                        OrderStatus.creditExposureStatuses().stream(), java.util.stream.Stream.of(OrderStatus.PENDING_PAYMENT))
-                        .map(Enum::name).toList())
-                .setParameter("excluding", excludingOrderId == null ? new UUID(0, 0) : excludingOrderId)
-                .getSingleResult();
-        return sum instanceof BigDecimal value ? value : new BigDecimal(sum.toString());
     }
 
     @Override

@@ -4,38 +4,28 @@ import io.swagger.v3.oas.annotations.media.Schema;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
-import java.util.List;
 import java.util.UUID;
 
 /**
- * The payment terms a customer may use and the credit left (SCRUM-427, SCRUM-193): what the checkout
- * offers, and what Sales sees before proposing a credit order.
+ * A customer's credit and what is left of it (kltn-docs 15 §4.3, BR-10; 18 §2): what Sales sees before sending a
+ * contract that pays after delivery, and what the customer reads on the portal. Since 4B-10 there are no payment terms
+ * in it: a contract's installment plan says how the customer pays.
  */
 @Schema(name = "CreditPosition")
 public record CreditPositionResponse(
         UUID customerId,
-        @Schema(example = "[\"PREPAID\",\"CREDIT\"]") List<String> allowedTerms,
-        @Schema(example = "CREDIT") String defaultTerm,
-        BigDecimal depositPercent,
-        BigDecimal creditLimit,
-        Integer creditTermDays,
-        @Schema(description = "Owed on credit orders not yet delivered") BigDecimal exposure,
-        @Schema(description = "Limit minus exposure; null without credit. An order above it waits for approval")
-        BigDecimal availableCredit,
+        @Schema(description = "Null without credit") BigDecimal creditLimit,
+        @Schema(description = "Days to pay after delivery; null without credit") Integer creditTermDays,
+        @Schema(description = "What the installments paid after delivery of the customer's signed contracts still owe, "
+                + "not yet due included, and the cancellation fee items not paid (15 BR-10)") BigDecimal exposure,
+        @Schema(description = "Limit minus exposure, never below zero; null without credit. A contract whose part paid "
+                + "after delivery is above it is held for accounting when it is signed") BigDecimal availableCredit,
         String currency,
-        @Schema(description = "An overdue receivable: new credit orders wait for the credit approver")
+        @Schema(description = "An installment past its due date: a contract signed now is held for accounting")
         boolean hasOverdue,
-        @Schema(example = "BEFORE_DELIVERY", description = "How a deposit order's balance is collected: "
-                + "BEFORE_DELIVERY (by transfer, before the goods leave) or ON_CREDIT (a receivable on the customer's "
-                + "credit); null without deposits (G2-3)")
-        String depositBalancePolicy,
-        @Schema(description = "What is still unpaid on receivables past their due date; zero when none (SCRUM-193)")
+        @Schema(description = "What is still unpaid on installments past their due date; zero when none")
         BigDecimal overdueAmount,
-        @Schema(description = "The earliest due date among the overdue receivables; absent when nothing is overdue")
-        LocalDate oldestOverdueDueDate,
-        @Schema(example = "[\"BEFORE_DELIVERY\",\"ON_CREDIT\"]", description = "The balance policies a deposit "
-                + "order of this customer may be placed on (the balancePolicy of POST /orders): empty without deposits "
-                + "(SCRUM-193)")
-        List<String> allowedBalancePolicies
+        @Schema(description = "The earliest due date among them; absent when nothing is overdue")
+        LocalDate oldestOverdueDueDate
 ) {
 }
