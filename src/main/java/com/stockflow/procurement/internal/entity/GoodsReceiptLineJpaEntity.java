@@ -21,9 +21,11 @@ import java.util.UUID;
  * where, how many, expiry, note — is recounted while the receipt is a draft
  * ({@link #recount}); {@code tg_goods_receipt_lines_frozen} refuses it once the receipt is past DRAFT.</p>
  *
- * <p>{@code uom_conversion_id}: the packing unit the line's cartons are in, NULL for a line counted loose in the
- * base unit (V20261020000400). Recounted with the rest while DRAFT; {@code tg_goods_receipt_lines_unit} checks it
- * is a unit of the line's item.</p>
+ * <p>{@code uom_conversion_id}: the packing unit the line's cartons are in - a production line counts whole cartons
+ * of its standard count (kltn-docs 03 BR-12, BR-13). Recounted with the rest while DRAFT;
+ * {@code tg_goods_receipt_lines_unit} checks it is a unit of the line's item. It and {@code lot_number} are NOT NULL
+ * since {@code V20261113000200}: no line is counted loose or without a lot any more, and an old purchase line was
+ * given its item's base unit and its receipt's number.</p>
  */
 @Entity
 @Table(name = "goods_receipt_lines", schema = "procurement")
@@ -49,7 +51,7 @@ public class GoodsReceiptLineJpaEntity extends BaseEntity {
     @Column(name = "received_qty", nullable = false, precision = 18, scale = 3)
     private BigDecimal receivedQty;
 
-    @Column(name = "lot_number", length = 64, updatable = false)
+    @Column(name = "lot_number", nullable = false, length = 64, updatable = false)
     private String lotNumber;
 
     @Column(name = "expiry_date")
@@ -58,7 +60,7 @@ public class GoodsReceiptLineJpaEntity extends BaseEntity {
     @Column(name = "note", length = 255)
     private String note;
 
-    @Column(name = "uom_conversion_id")
+    @Column(name = "uom_conversion_id", nullable = false)
     private UUID uomConversionId;
 
     protected GoodsReceiptLineJpaEntity() {
