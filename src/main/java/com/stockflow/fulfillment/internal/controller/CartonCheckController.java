@@ -18,6 +18,7 @@ import com.stockflow.fulfillment.internal.controller.dto.CartonScanRequest;
 import com.stockflow.fulfillment.internal.controller.dto.CartonSelectionRequest;
 import com.stockflow.fulfillment.internal.service.CartonChecks;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.Size;
 import org.springframework.http.CacheControl;
 import org.springframework.http.ContentDisposition;
@@ -108,7 +109,9 @@ class CartonCheckController {
     /**
      * Labels the cartons named, or every CHECKED one (08 §4.3 steps 5-6): each takes its carton spec's size and weight
      * and is LABELED; the first label locks the order (08 BR-04). 422 CARTON_SPEC_UNMEASURED naming the SKUs whose carton
-     * spec has no size or weight (BR-07); 409 CARTON_NOT_CHECKED. Then print them: {@code POST .../shipping-labels}.
+     * spec has no size or weight (BR-07); 409 CARTON_NOT_CHECKED. A retry is 200 with nothing changed: of the cartons
+     * named, or - with no body - once no carton waits CHECKED and one is labelled. Then print them:
+     * {@code POST .../shipping-labels}.
      */
     @PostMapping("/tasks/{taskId}/carton-labels")
     @RequiresPermission(resource = FulfillmentResources.PACKING, action = Action.UPDATE)
@@ -119,13 +122,19 @@ class CartonCheckController {
         return ApiResponse.ok(mapper.toResponse(checks.label(taskId, request == null ? null : request.lpns(), actor)));
     }
 
-    /** A torn or lost label printed again (08 BR-08): its version goes up and the old label is void. */
+    /**
+     * A torn or lost label printed again (08 BR-08): its version goes up and the old label is void. Only the worker who
+     * started the session or a warehouse manager (BR-06), also once it is completed. Send {@code fromVersion}, the version on the label being
+     * replaced: a retry once the carton is past it answers 200 with nothing changed (an {@code Idempotency-Key} does the
+     * same). Without it every call is a new version.
+     */
     @PostMapping("/tasks/{taskId}/cartons/{lpn}/label-reprint")
     @RequiresPermission(resource = FulfillmentResources.PACKING, action = Action.UPDATE)
     @Auditable(action = AuditAction.UPDATE, resourceType = "fulfillment-task", resourceId = "#taskId")
     public ApiResponse<CartonCheckSessionResponse> reprint(@PathVariable UUID taskId,
-            @PathVariable @Size(max = 30) String lpn, @AuthenticatedUser CurrentUser actor) {
-        return ApiResponse.ok(mapper.toResponse(checks.reprint(taskId, lpn, actor)));
+            @PathVariable @Size(max = 30) String lpn, @RequestParam(required = false) @Min(1) Integer fromVersion,
+            @AuthenticatedUser CurrentUser actor) {
+        return ApiResponse.ok(mapper.toResponse(checks.reprint(taskId, lpn, fromVersion, actor)));
     }
 
     /**

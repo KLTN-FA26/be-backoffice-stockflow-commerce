@@ -252,21 +252,13 @@ class CartonCheckService implements CartonChecks {
     }
 
     @Override
-    public Session reprint(UUID taskId, String lpn, CurrentUser actor) {
+    public Session reprint(UUID taskId, String lpn, Integer fromVersion, CurrentUser actor) {
         Context ctx = forWork(taskId);
         CartonCheck check = load(ctx);
-        if (check.status() == PackStatus.CANCELLED) {
-            throw new BusinessException(ErrorCode.PACK_STATE_CONFLICT, "The check was cancelled with its order");
-        }
-        if (check.status() == PackStatus.IN_PROGRESS) {
-            check.requireWorkable(actor.userId(), isManager(actor));
-        } else if (check.status() == PackStatus.PENDING) {
-            throw new BusinessException(ErrorCode.PACK_STATE_CONFLICT, "Start the check first");
-        }
-        // A completed check's label is printed again by any worker of the station: nobody works the session any more.
+        check.requireReprintable(actor.userId(), isManager(actor));
         CartonCheck.Carton carton = check.carton(lpn).orElse(null);
         CartonCheck.Spec spec = carton == null ? null : specs(List.of(carton)).get(carton.sku());
-        CartonCheck.Carton reprinted = check.reprint(lpn, spec, dimDivisor);
+        CartonCheck.Carton reprinted = check.reprint(lpn, spec, dimDivisor, fromVersion);
         store.save(check, ctx.pack());
         log.info("Order {}: label of carton {} printed again, version {}", ctx.pick().getOrderNumber(),
                 reprinted.lpn(), reprinted.labelVersion());
