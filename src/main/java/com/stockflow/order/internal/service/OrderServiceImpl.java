@@ -45,8 +45,6 @@ import java.util.List;
 import java.util.Optional;
 
 import java.util.UUID;
-import com.stockflow.catalog.api.CatalogService;
-import com.stockflow.common.domain.Money;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.design.api.DesignService;
 import com.stockflow.order.internal.entity.OrderHoldJpaEntity;
@@ -113,7 +111,6 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
     private final DesignService designs;
     private final OrderHoldJpaRepository holds;
     private final CustomerService customers;
-    private final CatalogService catalog;
     private final CancellationRequestRepository cancellationRequests;
     private final com.stockflow.payment.api.PaymentService paymentService;
     private final com.stockflow.product.api.CustomerSkus customerSkus;
@@ -124,7 +121,6 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
             DesignService designs,
             OrderHoldJpaRepository holds,
                      CustomerService customers,
-            CatalogService catalog,
                      CancellationRequestRepository cancellationRequests,
                      com.stockflow.payment.api.PaymentService paymentService,
                      com.stockflow.product.api.CustomerSkus customerSkus,
@@ -139,7 +135,6 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
         this.designs = designs;
         this.holds = holds;
         this.customers = customers;
-        this.catalog = catalog;
         this.cancellationRequests = cancellationRequests;
         this.paymentService = paymentService;
     }
@@ -150,6 +145,11 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
      * <p><b>One transaction covers everything below.</b> The order rows, every stock reservation,
      * and the {@code event_publication} row for {@code OrderPlaced} all commit together or none of
      * them do. There is no window in which an order exists without its stock.</p>
+     *
+     * <p>No production code calls this since team plan 5-2: the customer does not place orders (kltn-docs 14 BR-01,
+     * BR-02), so checkout ({@code POST /api/v1/orders}) is gone and nothing is priced for one. It stays as the tests'
+     * way to an order holding stock until 4B-10 replaces it with an order drawn up through a contract; every line is
+     * placed at the price on the command, which the test chose.</p>
      */
     @Override
     public OrderSummary placeOrder(PlaceOrderCommand command) {
@@ -159,10 +159,9 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
     /**
      * {@inheritDoc}
      *
-     * <p>The same transaction and steps as {@link #placeOrder}; only the price source differs. Every line
-     * — design lines included — is placed at the price on the command, which the quote service computed
-     * from the accepted quote. This is why the method is on an internal interface and not on
-     * {@code OrderService}: a client-supplied price never reaches it.</p>
+     * <p>Every line - design lines included - is placed at the price on the command, which the quote service computed
+     * from the accepted quote, and the order is a DRAFT for its contract: no stock is held and no terms are applied
+     * here. On an internal interface, not on {@code OrderService}: only the quote service converts.</p>
      */
     @Override
     public OrderSummary placeQuotedOrder(PlaceOrderCommand command) {
@@ -182,22 +181,12 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
             return toSummary(alreadyPlaced.get());
         }
 
-        // SCRUM-298 is a separate integration: never fall back to a client-supplied design price. A
-        // design line is priced by an accepted quote (SCRUM-448), which arrives through placeQuotedOrder.
+        // SCRUM-298 is a separate integration: a design line is priced by an accepted quote (SCRUM-448), which arrives
+        // through placeQuotedOrder.
         if (!quotePriced && command.snapshotCustomer()
                 && command.lines().stream().anyMatch(line -> line.designSnapshotId() != null)) {
             throw new BusinessException(ErrorCode.DESIGN_QUOTE_REQUIRED);
         }
-        // SCRUM-428: the customer's own tier for the order's total of each SKU, else its group's or the
-        // base price (kltn-docs 13 §3); the client's price is only what it expects to pay (agreedPrice).
-        var sellingPrices =
-                command.snapshotCustomer() && !quotePriced
-                        ? catalog.checkoutPrices(command.customerId(),
-                                command.lines().stream()
-                                        .filter(line -> line.designSnapshotId() == null)
-                                        .collect(Collectors.toMap(line -> line.sku().code(),
-                                                PlaceOrderCommand.Line::quantity, Integer::sum)))
-                        : Map.<String, Money>of();
         // Another customer's own SKU is not there for this customer (kltn-docs 13 BR-02), whoever places the order.
         customerSkus.requireVisibleTo(command.lines().stream().map(line -> line.sku().code()).toList(),
                 command.customerId());
@@ -212,11 +201,7 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
         for (int index = 0; index < command.lines().size(); index++) {
             PlaceOrderCommand.Line line = command.lines().get(index);
             var orderLine = Order.line(deterministicLineId(command.requestId(), index),
-                    line.sku(), line.quantity(),
-                            command.snapshotCustomer() && !quotePriced
-                                    ? agreedPrice(
-                                            line.sku().code(), line.unitPrice(), sellingPrices)
-                                    : line.unitPrice(), line.designSnapshotId());
+                    line.sku(), line.quantity(), line.unitPrice(), line.designSnapshotId());
             if (line.carton() != null) {
                 orderLine.withCartons(line.carton().uomConversionId(), line.carton().cartons(),
                         line.carton().unitsPerCarton());
@@ -293,14 +278,6 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
         throw new BusinessException(ErrorCode.GUEST_CHECKOUT_DISABLED);
     }
 
-    /** The server price is authoritative; the client's amount is only what it expects to pay. */
-    private static Money agreedPrice(String sku, Money expected, Map<String, Money> prices) {
-        var actual = prices.get(sku);
-        if (actual == null) throw new BusinessException(ErrorCode.PRICE_NOT_AVAILABLE);
-        if (!actual.equals(expected)) throw new BusinessException(ErrorCode.CHECKOUT_PRICE_CHANGED);
-        return actual;
-    }
-
     @Override
     @Transactional(readOnly = true)
     public Optional<OrderSummary> findById(UUID orderId) {
@@ -357,18 +334,6 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
     @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
     public Optional<OrderStatus> lockedStatus(UUID orderId) {
         return repository.findByIdForUpdate(new OrderId(orderId)).map(Order::status);
-    }
-
-    /**
-     * Decision 2026-10-17: a cancellation the system would make on its own is not made once printing started; the
-     * order stays as it is and Sales and the coordinators are told (OrderCancellationReferred), to settle the fee, the
-     * blanks and the printed goods by hand. Once per order and reason: a redelivered event tells nobody twice.
-     */
-    private void referToStaff(Order order, CancellationReasonCode wouldHaveBeen) {
-        order.referCancellationToStaff(wouldHaveBeen, clock.instant());
-        events.publishEventsOf(order);
-        log.warn("Order {}: {} after printing started; not cancelled, referred to staff", order.orderNumber(),
-                wouldHaveBeen);
     }
 
     private Order lockOrder(UUID orderId) {
@@ -483,7 +448,9 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
     /**
      * Frees the stock holds of {@code lines}. The goods of a print line not shipped stay in stock as the customer's
      * surplus (kltn-docs 17 BR-07): nothing is scrapped. Releasing a hold already consumed by a pick or closed does
-     * nothing - its goods are fulfillment's to put back (G4-4).
+     * nothing - its goods are fulfillment's to put back (G4-4). An expired hold is closed too: since team plan 5-2
+     * nothing cancels a checkout order when its hold runs out, so Sales cancels such an order by hand
+     * ({@code POST /orders/{id}/admin-cancellation}) and its expired holds are skipped here, not refused.
      */
     private void releaseHolds(java.util.Collection<OrderLine> lines) {
         lines.stream().flatMap(line -> line.reservationIds().stream())
@@ -581,26 +548,6 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
         events.publishEventsOf(order);
         log.warn("Order {} put on hold: payment receipt {} was voided and its installment on signing is short",
                 order.orderNumber(), reference);
-    }
-
-    /**
-     * A hold of the order expired before it was paid: the order is cancelled and its other holds
-     * released (kltn-docs 14 BR-07, 15 step 4). Called by {@code InventoryEventListener} for every
-     * expired hold — the first one cancels, the rest find the order already cancelled. An order that
-     * is no longer waiting for payment is left alone: its holds are pinned and cannot expire, so the
-     * event can only be a late redelivery.
-     */
-    public void cancelAfterHoldExpired(UUID orderId) {
-        Optional<Order> found = repository.findByIdForUpdate(new OrderId(orderId));
-        if (found.isEmpty() || found.get().status() != OrderStatus.PENDING_PAYMENT) {
-            return;
-        }
-        if (found.get().printingStartedAt() != null) {
-            referToStaff(found.get(), CancellationReasonCode.PAYMENT_NOT_RECEIVED);
-            return;
-        }
-        cancelLoaded(found.get(), new CancelOrderCommand(CancellationReasonCode.PAYMENT_NOT_RECEIVED,
-                "not paid before the stock hold ran out", null, null));
     }
 
     @Override

@@ -79,10 +79,6 @@ public final class QuoteRequests {
             List<@Valid Fee> fees) {
     }
 
-    /** Reorder of an order placed from a quote; {@code requestId} makes a retried click return the same draft. */
-    public record Reorder(@NotNull(message = "requestId is required") UUID requestId) {
-    }
-
     public record Version(@NotNull(message = "version is required") Long version) {
     }
 

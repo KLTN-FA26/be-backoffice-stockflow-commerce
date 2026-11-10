@@ -887,7 +887,7 @@ public final class Order extends AggregateRoot {
         }
         requireNotPacked();
         // Decision 2026-10-17: once printing started, a person decides - the fee, the blanks, the printed goods - so
-        // the system never cancels such an order on its own (referCancellationToStaff is its way instead).
+        // the system never cancels such an order on its own.
         if (by == null && printingStartedAt != null) {
             throw new BusinessException(ErrorCode.CANCELLATION_NEEDS_STAFF,
                     "Order %s started printing: staff decide its cancellation".formatted(orderNumber));
@@ -1694,15 +1694,6 @@ public final class Order extends AggregateRoot {
         }
         packedAt = at;
         return true;
-    }
-
-    /**
-     * Decision 2026-10-17: the system would cancel this order (a payment failed, an unpaid hold ran out) but printing
-     * started, so it does not - it hands the order to staff, who settle fee, blanks and printed goods by hand.
-     */
-    public void referCancellationToStaff(CancellationReasonCode wouldHaveBeen, Instant now) {
-        registerEvent(new OrderEvent.CancellationReferred(new com.stockflow.contracts.OrderCancellationReferred(
-                id.value(), orderNumber.value(), wouldHaveBeen.name(), now)));
     }
 
     /** 03 §9: a packed order is not cancelled - by anyone, on any path; it goes through a return (RMA). */

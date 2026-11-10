@@ -5,12 +5,9 @@ import com.stockflow.catalog.internal.domain.CustomerPrice;
 import com.stockflow.catalog.internal.domain.CustomerPriceRepository;
 import com.stockflow.catalog.internal.domain.SellingPrice;
 import com.stockflow.catalog.internal.repository.ListingRepository;
-import com.stockflow.common.error.BusinessException;
-import com.stockflow.common.error.ErrorCode;
 import com.stockflow.customer.api.CustomerService;
 import com.stockflow.customer.api.CustomerSummary;
 import com.stockflow.product.api.CustomerSkus;
-import com.stockflow.product.api.ProductPublication;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -23,10 +20,8 @@ import java.util.Optional;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.catchThrowableOfType;
 import static org.mockito.ArgumentMatchers.anyCollection;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 /**
@@ -63,21 +58,6 @@ class CustomerSkuPricesTest {
                 List.of(new CustomerPrice.Tier(1, new BigDecimal("11000000"))), null, 0)));
         when(listings.price(OWN)).thenReturn(Optional.of(new SellingPrice(new BigDecimal("2500"), "VND")));
         when(listings.publishedProductForSku(OWN)).thenReturn(Optional.of(UUID.randomUUID()));
-    }
-
-    @Test
-    @DisplayName("checkout refuses the customer's own SKU before anything is locked or priced")
-    void checkoutRefusesTheCustomersOwnSku() {
-        ProductPublication publication = mock(ProductPublication.class);
-        CatalogServiceImpl catalog = new CatalogServiceImpl(listings, publication, resolver, customerSkus);
-
-        BusinessException refused = catchThrowableOfType(BusinessException.class,
-                () -> catalog.checkoutPrices(customer, Map.of(OWN, 20)));
-
-        assertThat(refused).isNotNull();
-        assertThat(refused.errorCode()).isEqualTo(ErrorCode.PRODUCT_NOT_PURCHASABLE);
-        assertThat(refused.getMessage()).contains(OWN).contains("quoted");
-        verifyNoInteractions(publication);
     }
 
     @Test

@@ -70,8 +70,6 @@ class NoRoleNameAccessTest {
             new Allowed("identity/internal/controller/dto/RoleResponse.java", "example = \"ACCOUNTANT\"",
                     "OpenAPI example of a role code"),
             // ---- who is told: the audience of a notification, not access
-            new Allowed("notification/internal/service/OrderReferralNotificationListener.java",
-                    "List.of(Role.SALES_STAFF, Role.ORDER_COORDINATOR)", "who is told of a referred order"),
             new Allowed("notification/internal/service/QuoteNotificationListener.java", "staff.activeStaff(Role.SALES_STAFF)",
                     "who is told of a quote with no handler"),
             new Allowed("notification/internal/service/InventoryAlertNotificationListener.java",

@@ -7,7 +7,8 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * Intent: turn a cart into an order.
+ * Intent: place an order - an accepted quote's (the quote service converts it), or a test's fixture until 4B-10. There
+ * is no cart and no checkout any more (team plan 5-2).
  *
  * <p>Records with compact-constructor validation, so an instance that exists is structurally
  * valid. The caller cannot hand the service a command with zero lines and discover the problem

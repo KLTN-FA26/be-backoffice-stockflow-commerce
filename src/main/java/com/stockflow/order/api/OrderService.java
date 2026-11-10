@@ -20,6 +20,11 @@ public interface OrderService {
      *
      * <p>All of it in one transaction. See {@code OrderServiceImpl} for why that sentence is the
      * entire justification for this architecture.</p>
+     *
+     * <p><b>Test fixture only - no production caller.</b> Since team plan 5-2 the customer does not place orders
+     * (kltn-docs 14 BR-01, BR-02) and nothing prices the lines: each is placed at the price on the command, so a
+     * production caller would set its own prices. An order of the business is drawn up from an accepted quote. Kept as
+     * the tests' way to an order holding stock until 4B-10 replaces it and removes this method.</p>
      */
     OrderSummary placeOrder(PlaceOrderCommand command);
 

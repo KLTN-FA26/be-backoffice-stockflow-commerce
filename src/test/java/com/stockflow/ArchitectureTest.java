@@ -417,4 +417,18 @@ class ArchitectureTest {
                 .because("constructor injection makes dependencies explicit and objects testable");
         rule.check(CLASSES);
     }
+
+    /**
+     * Team plan 5-2: the customer does not place orders, so {@code OrderService.placeOrder} has no production caller. It
+     * stays only as the tests' fixture until 4B-10 replaces it with an order drawn up through a contract. A production
+     * class calling it would bring checkout back by the side door, priced at whatever the caller says.
+     */
+    @Test
+    void noProductionClassPlacesAnOrderThroughTheFixture() {
+        ArchRule rule = noClasses()
+                .should().callMethod(com.stockflow.order.api.OrderService.class, "placeOrder",
+                        com.stockflow.order.api.PlaceOrderCommand.class)
+                .because("placeOrder is a test fixture until 4B-10; the customer does not place orders (14 BR-01, BR-02)");
+        rule.check(CLASSES);
+    }
 }

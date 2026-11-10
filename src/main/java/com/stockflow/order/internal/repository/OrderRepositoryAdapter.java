@@ -127,13 +127,6 @@ class OrderRepositoryAdapter implements OrderRepository, OrderSearchRepository {
     }
 
     @Override
-    public List<Order> findLiveSince(UUID customerId, java.time.Instant since) {
-        return jpa.findLiveSinceWithLines(customerId, since).stream()
-                .map(this::toDomain)
-                .toList();
-    }
-
-    @Override
     public OrderNumber nextOrderNumber(LocalDate date) {
         return OrderNumber.of(date, sequence.nextFor(date));
     }
@@ -151,11 +144,22 @@ class OrderRepositoryAdapter implements OrderRepository, OrderSearchRepository {
             if (stepwise) {
                 // The row passes through every edge, so tg_order_status_transition checks each one: resolving a hold
                 // may move the order on at once (ON_HOLD → PARTIALLY_FULFILLED → DELIVERED), and ON_HOLD → DELIVERED
-                // is no edge. Every other column already holds its final value, which every step's CHECKs accept.
+                // is no edge. Every other column already holds its final value, which every step's CHECKs accept -
+                // except the hold columns when the order ends ON_HOLD after a step that is not (a payment confirms it,
+                // then its lapsed stock holds it: PENDING_PAYMENT → CONFIRMED → ON_HOLD). A step off hold carries
+                // none of them, as ck_order_hold_* require; the final values come back for the last step.
+                var finalHoldReason = managed.getHoldReason();
+                var finalStatusBeforeHold = managed.getStatusBeforeHold();
+                var finalHoldNote = managed.getHoldNote();
                 for (int i = 0; i < steps.size() - 1; i++) {
-                    managed.moveTo(steps.get(i).to());
+                    OrderStatus step = steps.get(i).to();
+                    managed.moveTo(step);
+                    if (step != OrderStatus.ON_HOLD) {
+                        managed.holdColumns(null, null, null);
+                    }
                     jpa.saveAndFlush(managed);
                 }
+                managed.holdColumns(finalHoldReason, finalStatusBeforeHold, finalHoldNote);
                 managed.moveTo(order.status());
                 steps.forEach(step -> recordTransition(order, step));
             } else if (previous != order.status()) {

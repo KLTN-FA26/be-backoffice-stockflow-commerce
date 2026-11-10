@@ -41,7 +41,7 @@ import static org.mockito.Mockito.when;
 
 /**
  * What {@link OrderServiceImpl} does when other modules tell it something: money counted or taken back (kltn-docs 15
- * BR-02, BR-06), a failed payment or an expired stock hold (14 BR-07), and what any cancellation does with the order's
+ * BR-02, BR-06), a failed payment (the expired stock hold no longer cancels, 5-2), and what any cancellation does with the order's
  * holds (17 §4.4, BR-PRD-10). {@code placeOrder} is deliberately not covered here.
  */
 class OrderServiceImplReactionsTest {
@@ -54,7 +54,7 @@ class OrderServiceImplReactionsTest {
     private final OrderServiceImpl service = new OrderServiceImpl(repository, mock(OrderSearchRepository.class),
             inventory, events, Clock.fixed(NOW, ZoneOffset.UTC), mock(DesignService.class),
             mock(OrderHoldJpaRepository.class), mock(CustomerService.class),
-            mock(com.stockflow.catalog.api.CatalogService.class), payments, requests, mock(CreditChecks.class),
+            payments, requests, mock(CreditChecks.class),
             mock(com.stockflow.payment.api.PaymentService.class), org.mockito.Mockito.mock(com.stockflow.product.api.CustomerSkus.class), org.mockito.Mockito.mock(com.stockflow.order.internal.domain.SalesContractRepository.class));
 
     private Order found(Order order) {
@@ -78,10 +78,34 @@ class OrderServiceImplReactionsTest {
     @DisplayName("money counted (PaymentCaptured)")
     class PaymentCaptured {
 
+        /** What checkout left: a live hold for every unit of every line, as the order expects when money arrives. */
+        private void holdsCover(Order order) {
+            when(inventory.holdsOf(id(order))).thenReturn(order.lines().stream()
+                    .map(line -> new com.stockflow.inventory.api.OrderHold(line.sku().code(), "A-01", line.quantity()))
+                    .toList());
+        }
+
+        @Test
+        @DisplayName("paid after the holds ran out (5-2): not confirmed holding nothing - ON_HOLD for INVENTORY, "
+                + "naming what is still held, nothing pinned")
+        void paidAfterTheHoldsRanOutGoesOnHold() {
+            Order order = waitingForPayment(PaymentTerm.PREPAID);
+            when(payments.record(any(), any(), any(), anyString(), any())).thenReturn(true);
+            when(inventory.holdsOf(id(order))).thenReturn(List.of());
+
+            service.recordPayment(id(order), UUID.randomUUID(), order.total().amount(), "VND");
+
+            assertThat(order.status()).isEqualTo(OrderStatus.ON_HOLD);
+            assertThat(order.holdReason()).isEqualTo(com.stockflow.order.api.HoldReason.INVENTORY);
+            assertThat(order.holdNote()).contains("0 of ");
+            verify(repository).save(order);
+        }
+
         @Test
         @DisplayName("a prepaid order paid in full is CONFIRMED and its stock holds are pinned (BR-02, BR-07)")
         void fullPaymentConfirmsAndPins() {
             Order order = waitingForPayment(PaymentTerm.PREPAID);
+            holdsCover(order);
             when(payments.record(any(), any(), any(), anyString(), any())).thenReturn(true);
 
             service.recordPayment(id(order), UUID.randomUUID(), order.total().amount(), "VND");
@@ -110,6 +134,7 @@ class OrderServiceImplReactionsTest {
         @DisplayName("a deposit order is CONFIRMED by its deposit (30 percent of 1 100 000), not the whole price")
         void depositConfirms() {
             Order order = waitingForPayment(PaymentTerm.DEPOSIT);
+            holdsCover(order);
             when(payments.record(any(), any(), any(), anyString(), any())).thenReturn(true);
 
             service.recordPayment(id(order), UUID.randomUUID(), new BigDecimal("330000"), "VND");
@@ -221,47 +246,6 @@ class OrderServiceImplReactionsTest {
 
             assertThat(order.paidAmount()).isEqualByComparingTo("1100000");
             verify(payments, never()).record(any(), any(), any(), anyString(), any());
-        }
-    }
-
-    @Nested
-    @DisplayName("a stock hold expired before payment (14 BR-07)")
-    class HoldExpired {
-
-        @Test
-        @DisplayName("an unpaid order is cancelled with PAYMENT_NOT_RECEIVED and its other holds are released")
-        void cancelsTheUnpaidOrder() {
-            Order order = waitingForPayment(PaymentTerm.PREPAID);
-            List<UUID> holds = order.reservationIds();
-
-            service.cancelAfterHoldExpired(id(order));
-
-            assertThat(order.status()).isEqualTo(OrderStatus.CANCELLED);
-            assertThat(order.cancellationReasonCode()).isEqualTo(CancellationReasonCode.PAYMENT_NOT_RECEIVED);
-            holds.forEach(hold -> verify(inventory).release(hold, "ORDER_CANCELLED"));
-            assertThat(order.reservationIds()).isEmpty();
-        }
-
-        @Test
-        @DisplayName("an order no longer waiting for payment is left alone: its holds are pinned, the event is late")
-        void aPaidOrderIsLeftAlone() {
-            Order order = found(OrderFixtures.confirmedPrepaid());
-
-            service.cancelAfterHoldExpired(id(order));
-
-            assertThat(order.status()).isEqualTo(OrderStatus.CONFIRMED);
-            verify(repository, never()).save(any());
-            verify(inventory, never()).release(any(), anyString());
-        }
-
-        @Test
-        @DisplayName("an unknown order is ignored")
-        void unknownOrder() {
-            when(repository.findByIdForUpdate(any())).thenReturn(Optional.empty());
-
-            service.cancelAfterHoldExpired(UUID.randomUUID());
-
-            verify(repository, never()).save(any());
         }
     }
 

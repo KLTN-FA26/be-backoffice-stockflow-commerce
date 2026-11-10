@@ -446,6 +446,17 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
         this.status = next;
     }
 
+    /**
+     * Sets the hold columns alone: a step of a stepwise save that is not ON_HOLD carries none, as
+     * {@code ck_order_hold_reason}, {@code ck_order_hold_note} and {@code ck_order_hold_return} require.
+     */
+    public void holdColumns(com.stockflow.order.api.HoldReason holdReason, OrderStatus statusBeforeHold,
+                            String holdNote) {
+        this.holdReason = holdReason;
+        this.statusBeforeHold = statusBeforeHold;
+        this.holdNote = holdNote;
+    }
+
     public com.stockflow.order.api.HoldReason getHoldReason() { return holdReason; }
     public OrderStatus getStatusBeforeHold() { return statusBeforeHold; }
     public String getHoldNote() { return holdNote; }

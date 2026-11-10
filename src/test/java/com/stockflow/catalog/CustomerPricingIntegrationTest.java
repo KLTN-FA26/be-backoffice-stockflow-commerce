@@ -1,6 +1,5 @@
 package com.stockflow.catalog;
 
-import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.nimbusds.jose.jwk.RSAKey;
 import com.stockflow.catalog.internal.service.CustomerPriceService;
@@ -216,21 +215,16 @@ class CustomerPricingIntegrationTest {
     }
 
     @Test
-    void checkoutNeverChargesAPriceOfTheCustomersOwn() throws Exception {
+    void aCustomerCannotCheckOutAtAll() throws Exception {
         Buyer buyer = buyer("ACTIVE");
         String sku = ownSku(buyer);
         createPrice(buyer.customerId(), sku, tiers(Map.of(1, 9_000L))).andExpect(status().isCreated());
 
-        // The customer's own SKU is quoted (14 BR-01, BR-08), not bought at checkout.
-        order(buyer, List.of(line(sku, 10, 9_000L))).andExpect(status().isConflict())
-                .andExpect(jsonPath("$.errorCode").value("PRODUCT_NOT_PURCHASABLE"));
-        // A stock variant is charged its base price, as the storefront shows it.
-        order(buyer, List.of(line(BLANK, 1, 9_000L))).andExpect(status().isConflict())
-                .andExpect(jsonPath("$.errorCode").value("CHECKOUT_PRICE_CHANGED"));
-        String placed = order(buyer, List.of(line(BLANK, 1, BASE))).andExpect(status().isCreated())
-                .andReturn().getResponse().getContentAsString();
-        JsonNode order = mapper.readTree(placed).get("data");
-        assertThat(order.at("/lines/0/unitPrice").decimalValue()).isEqualByComparingTo(String.valueOf(BASE));
+        // The customer does not place orders (kltn-docs 14 BR-01, BR-02; team plan 5-2): its own SKU is quoted, a stock
+        // variant is drawn up by Sales, and the checkout that priced them is gone, at any price.
+        order(buyer, List.of(line(sku, 10, 9_000L))).andExpect(status().isForbidden());
+        order(buyer, List.of(line(BLANK, 1, 9_000L))).andExpect(status().isForbidden());
+        order(buyer, List.of(line(BLANK, 1, BASE))).andExpect(status().isForbidden());
     }
 
     @Test

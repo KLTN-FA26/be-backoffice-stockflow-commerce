@@ -496,13 +496,6 @@ Enum procurement.suppliers_status {
   BLACKLISTED
 }
 
-Enum ordering.cart_status {
-  ACTIVE
-  ABANDONED
-  CONVERTED
-  MERGED
-}
-
 Enum ordering.contract_payment_installment_milestone {
   ON_SIGNING
   BEFORE_DELIVERY
@@ -2702,38 +2695,6 @@ Table procurement.suppliers [headercolor: #7D5BA6] {
 // =============================================================================
 // SCHEMA: ordering
 // =============================================================================
-
-Table ordering.cart [headercolor: #C0392B] {
-  id                  uuid [pk]
-  customer_id         uuid
-  guest_token         varchar(64) [unique]
-  status              ordering.cart_status [not null, default: 'ACTIVE']
-  currency            varchar(3) [not null, default: 'VND']
-  converted_order_id  uuid
-  merged_into_cart_id uuid
-  last_activity_at    timestamptz [not null, default: `now()`]
-  expires_at          timestamptz
-  version             bigint [not null, default: 0]
-  created_at          timestamptz [not null, default: `now()`]
-  created_by          varchar(100)
-  last_modified_at    timestamptz
-  last_modified_by    varchar(100)
-}
-
-Table ordering.cart_line [headercolor: #C0392B] {
-  id                  uuid [pk]
-  cart_id             uuid [not null]
-  sku                 varchar(64) [not null]
-  quantity            int [not null]
-  design_snapshot_id  uuid
-  unit_price_snapshot decimal(19,4)
-  added_at            timestamptz [not null, default: `now()`]
-  version             bigint [not null, default: 0]
-  created_at          timestamptz [not null, default: `now()`]
-  created_by          varchar(100)
-  last_modified_at    timestamptz
-  last_modified_by    varchar(100)
-}
 
 Table ordering.contract_payment_installment [headercolor: #C0392B] {
   id                uuid [pk]
@@ -5482,12 +5443,6 @@ Ref: procurement.supplier_invoices.voided_by > identity.app_user.id
 Ref: procurement.supplier_item_prices.supplier_item_id > procurement.supplier_items.id [delete: cascade]
 Ref: procurement.supplier_items.inventory_item_id > inventory.inventory_items.id [delete: restrict]
 Ref: procurement.supplier_items.supplier_id > procurement.suppliers.id [delete: cascade]
-Ref: ordering.cart.converted_order_id > ordering.customer_order.id [delete: restrict]
-Ref: ordering.cart.customer_id > customer.customer.id [delete: restrict]
-Ref: ordering.cart.merged_into_cart_id > ordering.cart.id [delete: restrict]
-Ref: ordering.cart_line.cart_id > ordering.cart.id [delete: cascade]
-Ref: ordering.cart_line.design_snapshot_id > design.design_snapshot.id [delete: restrict]
-Ref: ordering.cart_line.sku > product.variants.sku [delete: restrict]
 Ref: ordering.contract_payment_installment.contract_id > ordering.sales_contract.id [delete: cascade]
 Ref: ordering.contract_payment_installment.delivery_batch_id > ordering.delivery_batch.id [delete: cascade]
 Ref: ordering.customer_order.customer_id > customer.customer.id [delete: restrict]
@@ -5890,8 +5845,6 @@ TableGroup procurement_group [color: #7D5BA6] {
 }
 
 TableGroup ordering_group [color: #C0392B] {
-  ordering.cart
-  ordering.cart_line
   ordering.contract_payment_installment
   ordering.customer_order
   ordering.delivery_batch

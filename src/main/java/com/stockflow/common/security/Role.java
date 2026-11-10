@@ -18,7 +18,8 @@ public enum Role {
     WAREHOUSE_STAFF(Roles.WAREHOUSE_STAFF, "Receive, put away, pick, pack and hand over to carriers"),
     WAREHOUSE_MANAGER(Roles.WAREHOUSE_MANAGER, "Approve adjustments, override slotting"),
     INVENTORY_PLANNER(Roles.INVENTORY_PLANNER, "Monitor stock levels"),
-    CUSTOMER(Roles.CUSTOMER, "Browse, design, order and track"),
+    /** Orders nothing itself (team plan 5-2, kltn-docs 14 BR-01): Sales draws an order up from a quote it accepted. */
+    CUSTOMER(Roles.CUSTOMER, "Browse, design, request and accept quotes, track orders"),
     SALES_STAFF(Roles.SALES_STAFF, "Advise customers, edit designs, create assisted orders"),
     ORDER_COORDINATOR(Roles.ORDER_COORDINATOR, "Release orders to the warehouse and handle holds"),
     /** Was ECOMMERCE_ADMIN; renamed by V20261107000100 (kltn-docs 00 §2, 2026-11-05) with its id and grants. */

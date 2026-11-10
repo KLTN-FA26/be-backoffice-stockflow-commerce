@@ -117,10 +117,7 @@ public record CustomerOrderDetailResponse(
     @Schema(name = "CustomerOrderAllowedActions")
     public record AllowedActions(
             @Schema(description = "Cancel at once (POST /orders/{id}/cancellation answers 200)") boolean cancel,
-            @Schema(description = "Ask for a cancellation (the same endpoint answers 202)") boolean requestCancellation,
-            @Schema(description = "Order the same again by a new draft quote (POST /orders/{id}/reorder): true only for an "
-                    + "order that came from a quote. An order bought at the price list is false: the portal puts its "
-                    + "lines back in the basket instead") boolean reorder) {
+            @Schema(description = "Ask for a cancellation (the same endpoint answers 202)") boolean requestCancellation) {
     }
 
     @Schema(name = "CustomerOrderLine")
@@ -133,14 +130,6 @@ public record CustomerOrderDetailResponse(
             @Schema(description = "Set for a line printed to the customer's design; null for stock goods")
             UUID designSnapshotId,
             Production production,
-            @Schema(description = "Where this SKU is on sale in the storefront today (/catalog/{slug}); null when it "
-                    + "is not on sale now or the line is a design line. Today's catalogue, for putting the line back "
-                    + "in a basket (reorder)")
-            String productSlug,
-            @Schema(description = "The product's published title today; null as productSlug")
-            String productTitle,
-            @Schema(description = "The product's primary public image today; null without one or as productSlug")
-            String productImageUrl,
             @Schema(description = "4B-2 (14 BR-08): cartons ordered; quantity is cartons x unitsPerCarton pieces. Null "
                     + "for a line not ordered in cartons")
             Integer cartons,

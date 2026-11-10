@@ -713,14 +713,12 @@ class B2bOnboardingIntegrationTest {
                                 """))
                 .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString();
         assertThat(address).contains("SHIPPING");
-        long price = jdbc.queryForObject(
-                "SELECT price FROM catalog.pricing_rule WHERE name='BASE:SOFA-3S-GREY' AND active", Long.class);
+        // The customer follows its orders but does not place one (kltn-docs 14 BR-01; team plan 5-2): Sales does.
         mvc.perform(post("/api/v1/orders").header("Authorization", "Bearer " + shop)
                         .contentType("application/json").content(json(Map.of(
                                 "requestId", UUID.randomUUID(), "customerId", customerId,
-                                "lines", List.of(Map.of("sku", "SOFA-3S-GREY", "quantity", 1, "unitPrice", price))))))
-                .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.data.customerId").value(customerId.toString()));
+                                "lines", List.of(Map.of("sku", "SOFA-3S-GREY", "quantity", 1, "unitPrice", 1000))))))
+                .andExpect(status().isForbidden());
 
         // Supplied later by Sales, with the usual rules.
         String code = mst();

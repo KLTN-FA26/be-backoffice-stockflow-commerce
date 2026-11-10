@@ -95,7 +95,6 @@ final class OrderFixtures {
                 org.mockito.Mockito.mock(com.stockflow.design.api.DesignService.class),
                 org.mockito.Mockito.mock(com.stockflow.order.internal.repository.OrderHoldJpaRepository.class),
                 org.mockito.Mockito.mock(com.stockflow.customer.api.CustomerService.class),
-                org.mockito.Mockito.mock(com.stockflow.catalog.api.CatalogService.class),
                 org.mockito.Mockito.mock(com.stockflow.order.internal.domain.OrderPayments.class),
                 org.mockito.Mockito.mock(com.stockflow.order.internal.domain.CancellationRequestRepository.class),
                 org.mockito.Mockito.mock(com.stockflow.order.internal.domain.CreditChecks.class),
