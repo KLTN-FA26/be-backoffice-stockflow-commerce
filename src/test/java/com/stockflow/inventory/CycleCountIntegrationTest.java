@@ -100,8 +100,6 @@ class CycleCountIntegrationTest {
                     "Cycle count fixture", sku.toLowerCase(Locale.ROOT));
             jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature) values (?,?,?,?,'')",
                     Identifiers.newId(), product, sku, "Cycle count fixture");
-            jdbc.update("update inventory.inventory_items set lot_tracked=true,"
-                    + " removal_strategy='FEFO', policy_configured=true where sku=?", sku);
             item = jdbc.queryForObject("select id from inventory.inventory_items where sku = ?", UUID.class, sku);
             cartonUnit = Identifiers.newId();
             jdbc.update("insert into inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)"

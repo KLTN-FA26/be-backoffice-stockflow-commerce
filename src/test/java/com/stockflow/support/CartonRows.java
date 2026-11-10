@@ -20,6 +20,12 @@ public final class CartonRows {
     public record Carton(UUID id, String lpn, UUID stockItemId) {
     }
 
+    /**
+     * The lot of a carton a test gives none: every unit has one since team plan 5-5 (kltn-docs 01 BR-17), and the
+     * database refuses live stock without it ({@code inventory.enforce_sku_policy}).
+     */
+    public static final String DEFAULT_LOT = "FX-LOT";
+
     private CartonRows() {
     }
 
@@ -42,7 +48,10 @@ public final class CartonRows {
         return id;
     }
 
-    /** {@code count} AVAILABLE cartons of {@code factor} units at {@code location}, received at {@code receivedAt}. */
+    /**
+     * {@code count} AVAILABLE cartons of {@code factor} units at {@code location}, received at {@code receivedAt}; a
+     * null {@code lotNumber} is {@link #DEFAULT_LOT}.
+     */
     public static List<Carton> stock(JdbcTemplate jdbc, String sku, String location, int count, int factor,
                                      String lotNumber, Instant receivedAt) {
         return stock(jdbc, sku, location, count, factor, lotNumber, receivedAt, "AVAILABLE");
@@ -68,7 +77,7 @@ public final class CartonRows {
                     INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved,
                                                       status, version, created_at, received_at, stock_package_id)
                     VALUES (?, ?, ?, ?, ?, 0, ?, 0, NOW(), ?, ?)""",
-                    row, sku, location, lotNumber, perCarton, status, Timestamp.from(receivedAt), id);
+                    row, sku, location, lotNumber == null ? DEFAULT_LOT : lotNumber, perCarton, status, Timestamp.from(receivedAt), id);
             made.add(new Carton(id, lpn, row));
         }
         return made;

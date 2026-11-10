@@ -53,7 +53,10 @@ SELECT pg_temp.expect_true('AE3 no threshold or expiry column left on an item, a
 SELECT pg_temp.expect_true('AE4 no function still reads a dropped column',
     NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
                  WHERE n.nspname IN ('inventory', 'procurement', 'warehouse', 'fulfillment', 'ordering')
-                   AND p.prosrc ~ '(expiry_date|expiry_tracked|max_shelf_life_days|reorder_point|safety_stock|stock_alert)'));
+                   -- check_goods_receipt_line(_frozen) read expiry_date only as a jsonb key of the row (to_jsonb(NEW) -> 'expiry_date'),
+                   -- on purpose: they ran before and after the column went, and a column that is gone reads as NULL there.
+                   AND regexp_replace(p.prosrc, '->>? ''expiry_date''', '', 'g')
+                       ~ '(expiry_date|expiry_tracked|max_shelf_life_days|reorder_point|safety_stock|stock_alert)'));
 SELECT pg_temp.expect_true('AE5 the alert permission is gone, from every role',
     NOT EXISTS (SELECT 1 FROM identity.permission WHERE resource = 'inventory-alerts' OR code LIKE 'inventory-alerts:%'));
 SELECT pg_temp.expect_true('AE6 no publication of an event only the alerts used is left to retry',
@@ -70,15 +73,15 @@ SELECT pg_temp.expect_fail('AE8 a threshold written to an item', $q$
 
 \echo '--- EXPIRED is read only (StockStatus.EXPIRED, AdjustmentReason.EXPIRED)'
 SELECT pg_temp.expect_fail('AE10 a new stock row EXPIRED', $q$
-    INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, created_at, received_at)
-    VALUES (gen_random_uuid(), 'SOFA-3S-GREY', 'HCM-QC01', 1, 0, 'EXPIRED', NOW(), NOW()) $q$);
+    INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at, received_at)
+    VALUES (gen_random_uuid(), 'SOFA-3S-GREY', 'HCM-QC01', 'QA-LOT', 1, 0, 'EXPIRED', NOW(), NOW()) $q$);
 SELECT pg_temp.expect_fail('AE11 stock on hand turned EXPIRED', $q$
     UPDATE inventory.stock_item SET status = 'EXPIRED'
      WHERE id = (SELECT id FROM inventory.stock_item WHERE status = 'AVAILABLE' AND reserved = 0 ORDER BY id LIMIT 1) $q$);
 -- A row the old sweep left EXPIRED, made here by switching the guard off for one statement.
 ALTER TABLE inventory.stock_item DISABLE TRIGGER tg_stock_item_no_new_expired;
-INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, created_at, received_at)
-VALUES (md5('qa42:expired')::uuid, 'SOFA-3S-GREY', 'HCM-QC01', 3, 0, 'EXPIRED', NOW(), NOW() - interval '1 day');
+INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at, received_at)
+VALUES (md5('qa42:expired')::uuid, 'SOFA-3S-GREY', 'HCM-QC01', 'QA-LOT', 3, 0, 'EXPIRED', NOW(), NOW() - interval '1 day');
 ALTER TABLE inventory.stock_item ENABLE TRIGGER tg_stock_item_no_new_expired;
 SELECT pg_temp.expect_ok('AE12 a row already EXPIRED is still written off', $q$
     UPDATE inventory.stock_item SET on_hand = 0 WHERE id = md5('qa42:expired')::uuid $q$);
@@ -103,10 +106,12 @@ SELECT pg_temp.expect_ok('AE18 an EXPIRED adjustment recorded before is still de
            decided_at = NOW(), rejection_reason = 'qa' WHERE id = md5('qa42:adj:old')::uuid $q$);
 
 \echo '--- lots without expiry (SCRUM-142): one per receipt, SKU and lot number'
-INSERT INTO procurement.goods_receipts (id, receipt_number, warehouse_id, received_at, received_by, supplier_id,
-                                        blind_reason)
-SELECT md5('qa42:gr')::uuid, 'GR-QA42-1', md5('demo:wh:HCM')::uuid, NOW(), md5('demo:user:editor')::uuid, s.id, 'qa'
-  FROM procurement.suppliers s ORDER BY s.id LIMIT 1;
+-- A historical (PURCHASE) receipt header, written with the row triggers off: purchasing was removed and
+-- check_goods_receipt refuses one (QA 61), but a lot an old receipt opened is all AE20-AE22 are about.
+SET LOCAL session_replication_role = replica;
+INSERT INTO procurement.goods_receipts (id, receipt_number, warehouse_id, received_at, received_by, receipt_type)
+VALUES (md5('qa42:gr')::uuid, 'GR-QA42-1', md5('demo:wh:HCM')::uuid, NOW(), md5('demo:user:editor')::uuid, 'PURCHASE');
+SET LOCAL session_replication_role = origin;
 SELECT pg_temp.expect_ok('AE20 a receipt opens a lot of the table', $q$
     INSERT INTO inventory.stock_lot (id, sku, lot_number, received_at, origin_type, goods_receipt_id)
     VALUES (md5('qa42:lot:1')::uuid, 'TABLE-OAK-160', 'LOT-QA42', NOW(), 'GOODS_RECEIPT', md5('qa42:gr')::uuid) $q$);
@@ -133,21 +138,12 @@ SELECT pg_temp.expect_fail('AE26 a stock row received in the future (the receipt
     INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at, received_at)
     VALUES (gen_random_uuid(), 'TABLE-OAK-160', 'HCM-QC01', 'LOT-QA42-F', 1, 0, 'QUARANTINE', NOW(),
             clock_timestamp() + interval '1 hour') $q$);
-SELECT pg_temp.expect_fail('AE27 a lot-tracked SKU stocked without a lot (the policy rule stays)', $q$
+SELECT pg_temp.expect_fail('AE27 a SKU stocked without a lot (the policy rule stays, and holds for every SKU since 5-5)', $q$
     INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, created_at, received_at)
     VALUES (gen_random_uuid(), 'TABLE-OAK-160', 'HCM-QC01', 1, 0, 'QUARANTINE', NOW(), NOW()) $q$);
 
-\echo '--- receiving records no expiry (03 BR-06)'
-SELECT pg_temp.expect_ok('AE30 a lot-tracked line with its lot and nothing else', $q$
-    INSERT INTO procurement.goods_receipt_lines (id, receipt_id, inventory_item_id, location_id, received_qty, lot_number)
-    VALUES (md5('qa42:grl')::uuid, md5('qa42:gr')::uuid, md5('demo:item:TABLE-OAK-160')::uuid,
-            md5('demo:loc:HCM-RCV01')::uuid, 1, 'LOT-QA42') $q$);
-SELECT pg_temp.expect_fail('AE31 a lot-tracked line without its lot (BR-03 stays)', $q$
-    INSERT INTO procurement.goods_receipt_lines (id, receipt_id, inventory_item_id, location_id, received_qty)
-    VALUES (gen_random_uuid(), md5('qa42:gr')::uuid, md5('demo:item:TABLE-OAK-160')::uuid,
-            md5('demo:loc:HCM-RCV01')::uuid, 1) $q$);
-SELECT pg_temp.expect_ok('AE32 a draft line recounted', $q$
-    UPDATE procurement.goods_receipt_lines SET received_qty = 2 WHERE id = md5('qa42:grl')::uuid $q$);
+-- Receiving records no expiry (03 BR-06): a receipt line has no expiry column to fill, and every line names its lot
+-- (QA 70, V20261115000100); the lines themselves are only ever of a production order (QA 22, QA 61).
 
 ROLLBACK;
 \echo 'PASS 42_alerts_and_expiry_removed'

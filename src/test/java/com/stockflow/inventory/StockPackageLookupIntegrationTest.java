@@ -50,6 +50,7 @@ import static org.assertj.core.api.Assertions.tuple;
 class StockPackageLookupIntegrationTest {
 
     private static final String RECEIVING = "HCM-RCV01";
+    private static final String LOT = "LOT-FX";
     private static final String BIN = "HCM-A01-1-A";
     private static final Instant RECEIVED = Instant.parse("2026-01-02T00:00:00Z");
 
@@ -85,7 +86,7 @@ class StockPackageLookupIntegrationTest {
 
     /** Both cartons IN_STOCK, unopened, at the receiving area; nothing loose. */
     private void receive() {
-        inventory.receive(new ReceiveStockCommand(line, new Sku(sku), "LOT-FX", RECEIVING, 2000, clerk, RECEIVED));
+        inventory.receive(new ReceiveStockCommand(line, new Sku(sku), LOT, RECEIVING, 2000, clerk, RECEIVED));
     }
 
     private PageResponse<StockPackageBalance> list(String location, String sku, List<StockPackageStatus> statuses) {
@@ -150,7 +151,7 @@ class StockPackageLookupIntegrationTest {
         receive();
 
         assertThat(lookup.atLocation(RECEIVING.toLowerCase(Locale.ROOT))).filteredOn(l -> l.sku().equals(sku))
-                .containsExactly(new LocationLine(sku, null, StockStatus.INBOUND, 2, 2000, 0, 0, 0, 2000));
+                .containsExactly(new LocationLine(sku, LOT, StockStatus.INBOUND, 2, 2000, 0, 0, 0, 2000));
     }
 
     @Test

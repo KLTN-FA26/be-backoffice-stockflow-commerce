@@ -81,11 +81,7 @@ class CountVarianceAdjustmentIntegrationTest {
                     "Count fixture", sku.toLowerCase(Locale.ROOT));
             jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature) values (?,?,?,?,'')",
                     Identifiers.newId(), product, sku, "Count fixture");
-            // Lot tracked, and a write-up allowed: a configured FIFO item refuses raising an existing layer ("FIFO
-            // replenishment requires a new receipt layer"), which fifo() switches on. The loose split is FIFO either way
-            // (CountVariance, kltn-docs 01 BR-17).
-            jdbc.update("update inventory.inventory_items set lot_tracked=true,"
-                    + " removal_strategy='FEFO', policy_configured=true where sku=?", sku);
+            // Every SKU is lot-tracked and first in, first out since 5-5 (kltn-docs 01 BR-17): there is no policy to set.
             item = jdbc.queryForObject("select id from inventory.inventory_items where sku = ?", UUID.class, sku);
             cartonUnit = Identifiers.newId();
             jdbc.update("insert into inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)"
@@ -94,12 +90,6 @@ class CountVarianceAdjustmentIntegrationTest {
     }
 
     // ------------------------------------------------------------------ fixtures
-
-    /** The SKU becomes a configured FIFO item, before it holds stock: an existing layer is never raised. */
-    private void fifo() {
-        tx.executeWithoutResult(s -> jdbc.update("update inventory.inventory_items set"
-                + " removal_strategy='FIFO' where sku=?", sku));
-    }
 
     private UUID loose(Instant receivedAt, int onHand) {
         UUID id = Identifiers.newId();
@@ -298,7 +288,6 @@ class CountVarianceAdjustmentIntegrationTest {
     @Test
     @DisplayName("FIFO: a loose surplus opens a new layer received at approval; the counted layer is not raised")
     void fifoLooseSurplusOpensANewLayer() {
-        fifo();
         UUID old = loose(EARLY, 4);
         UUID line = countLine(null);
 
@@ -324,7 +313,6 @@ class CountVarianceAdjustmentIntegrationTest {
     @Test
     @DisplayName("FIFO: a LOST carton found again is refilled on its own row, not a new layer")
     void fifoCartonFoundAgainRefillsItsOwnRow() {
-        fifo();
         UUID box = carton("R", 20, true);
         operations.approve(operations.requestCountVariance(countLine(box), cartonSlot(box), -20, clerk, null)
                 .getFirst().adjustmentId(), manager);

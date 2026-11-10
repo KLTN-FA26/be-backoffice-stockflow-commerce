@@ -78,14 +78,15 @@ class LotTraceIntegrationTest {
     @BeforeEach
     void setUp() {
         clerk = tx.execute(s -> ReferenceRows.user(entityManager));
-        // 2 cartons of 5 ordered of a SKU of its own, sent to HCM: its lot is the production order's, whatever the receipts.
-        goods = receivables.sent(DemoData.WAREHOUSE_HCM, 2, 5);
+        // 5 cartons of one unit ordered of a SKU of its own, sent to HCM: its lot is the production order's, whatever
+        // the receipts. Every unit is in a carton, and an order line takes whole cartons (team plan 4C-2).
+        goods = receivables.sent(DemoData.WAREHOUSE_HCM, 5, 1);
         sku = goods.sku();
     }
 
-    /** One carton of the production order counted and confirmed into {@link #RECEIVING}: a receipt of its own. */
-    private GoodsReceipts.ReceiptView received() {
-        return receivables.received(goods, RECEIVING, 1, clerk);
+    /** {@code cartons} of the production order counted and confirmed into {@link #RECEIVING}: a receipt of its own. */
+    private GoodsReceipts.ReceiptView received(int cartons) {
+        return receivables.received(goods, RECEIVING, cartons, clerk);
     }
 
     private UUID lot() {
@@ -119,8 +120,8 @@ class LotTraceIntegrationTest {
     @Test
     @DisplayName("a production order's two receipts are one lot; it is traced from the production order to the order it was picked for")
     void receiptToOrder() throws Exception {
-        GoodsReceipts.ReceiptView first = received();
-        GoodsReceipts.ReceiptView second = received();
+        GoodsReceipts.ReceiptView first = received(3);
+        GoodsReceipts.ReceiptView second = received(2);
         UUID lot = lot();   // one lot per production order and SKU, across its receipts (kltn-docs 03 BR-03)
         assertThat(jdbc.queryForObject("SELECT count(*) FROM inventory.stock_lot WHERE sku = ?", Long.class, sku))
                 .isEqualTo(1L);
@@ -133,9 +134,15 @@ class LotTraceIntegrationTest {
         List<StockReservation> allocated = tx.execute(s -> inventory.allocate(new AllocateStockCommand(order, "HCM")))
                 .allocations().get(0).holds();
         assertThat(allocated).extracting(StockReservation::locationCode).containsOnly(BIN);
-        assertThat(allocated).extracting(StockReservation::quantity).containsExactly(4);
-        UUID pickLine = Identifiers.newId();
-        tx.executeWithoutResult(s -> consumption.consumeForPick(allocated.get(0).reservationId(), pickLine, clerk));
+        assertThat(allocated).as("whole cartons of one").extracting(StockReservation::quantity)
+                .containsExactly(1, 1, 1, 1);
+        // Three of the four are picked; the fourth stays held.
+        List<UUID> pickLines = List.of(Identifiers.newId(), Identifiers.newId(), Identifiers.newId());
+        for (int i = 0; i < pickLines.size(); i++) {
+            UUID hold = allocated.get(i).reservationId();
+            UUID pickLine = pickLines.get(i);
+            tx.executeWithoutResult(s -> consumption.consumeForPick(hold, pickLine, clerk));
+        }
 
         // The lot as received, and what is left of it.
         LotTrace trace = traces.trace(lot, null);
@@ -144,29 +151,34 @@ class LotTraceIntegrationTest {
         assertThat(trace.lot().productionOrderId()).isEqualTo(goods.productionOrderId());
         assertThat(trace.lot().productionOrderCode()).isEqualTo(goods.productionCode());
         assertThat(trace.lot().receivingWarehouseId()).isEqualTo(DemoData.WAREHOUSE_HCM);
-        assertThat(trace.lot().receivedQuantity()).isEqualTo(10);
-        assertThat(trace.lot().onHand()).as("10 received, 4 picked").isEqualTo(6);
-        assertThat(trace.lot().held()).isZero();
-        assertThat(trace.lot().available()).isEqualTo(6);
+        assertThat(trace.lot().receivedQuantity()).isEqualTo(5);
+        assertThat(trace.lot().onHand()).as("5 received, 3 picked").isEqualTo(2);
+        assertThat(trace.lot().held()).as("the fourth carton's hold").isEqualTo(1);
+        assertThat(trace.lot().available()).isEqualTo(1);
         String orderNumber = jdbc.queryForObject("SELECT order_number FROM ordering.customer_order WHERE id = ?",
                 String.class, order);
         assertThat(trace.orders()).singleElement().satisfies(leg -> {
             assertThat(leg.orderId()).isEqualTo(order);
             assertThat(leg.orderNumber()).as("snapshot on the ledger line").isEqualTo(orderNumber);
-            assertThat(leg.picked()).isEqualTo(4);
+            assertThat(leg.picked()).isEqualTo(3);
         });
-        assertThat(trace.holds()).hasSize(3).allSatisfy(hold -> {
+        assertThat(trace.holds()).hasSize(4).allSatisfy(hold -> {
             assertThat(hold.orderId()).isEqualTo(order);
             assertThat(hold.allocatedFrom()).isNotNull();
             assertThat(hold.orderNumber()).as("snapshot on the allocation").isEqualTo(orderNumber);
-            assertThat(hold.status()).isEqualTo("CONSUMED");
         });
+        assertThat(trace.holds()).extracting(LotTrace.Hold::status).containsExactlyInAnyOrder("CONSUMED", "CONSUMED",
+                "CONSUMED", "HELD");
         var ledger = traces.movements(lot, null, null, null, 0, 20).items();
-        assertThat(ledger).extracting(LotTrace.Movement::type).contains("RECEIPT", "PICK");
-        LotTrace.Movement pick = ledger.stream().filter(m -> m.type().equals("PICK")).findFirst().orElseThrow();
-        assertThat(pick.referenceId()).isEqualTo(pickLine);
-        assertThat(pick.orderId()).isEqualTo(order);
-        assertThat(pick.orderNumber()).isEqualTo(orderNumber);
+        assertThat(ledger).extracting(LotTrace.Movement::type).as("one line per carton")
+                .containsExactlyInAnyOrder("RECEIPT", "RECEIPT", "RECEIPT", "RECEIPT", "RECEIPT", "MOVE", "MOVE", "MOVE",
+                        "MOVE", "MOVE", "PICK", "PICK", "PICK");
+        List<LotTrace.Movement> picks = ledger.stream().filter(m -> m.type().equals("PICK")).toList();
+        assertThat(picks).extracting(LotTrace.Movement::referenceId).containsExactlyInAnyOrderElementsOf(pickLines);
+        assertThat(picks).allSatisfy(pick -> {
+            assertThat(pick.orderId()).isEqualTo(order);
+            assertThat(pick.orderNumber()).isEqualTo(orderNumber);
+        });
 
         // Filters: by lot number (the production order's code), by warehouse, by day; paged.
         var byNumber = traces.lots(new LotTraces.Query(sku, goods.productionCode(), null, null, null, 0, 20));

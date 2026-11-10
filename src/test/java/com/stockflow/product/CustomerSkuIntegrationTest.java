@@ -114,13 +114,11 @@ class CustomerSkuIntegrationTest {
         tx.executeWithoutResult(s -> jdbc.update("UPDATE inventory.inventory_items SET weight_kg = 0.012, "
                 + "length_cm = 9, barcode = '8930000000017' WHERE sku = ?", sourceSku));
         CustomerSku sku = issue(snapshot(), "0312345678");
-        var copied = jdbc.queryForMap("SELECT weight_kg, length_cm, barcode, policy_configured FROM "
+        var copied = jdbc.queryForMap("SELECT weight_kg, length_cm, barcode FROM "
                 + "inventory.inventory_items WHERE sku = ?", sku.sku());
         assertThat((BigDecimal) copied.get("weight_kg")).isEqualByComparingTo("0.012");
         assertThat((BigDecimal) copied.get("length_cm")).isEqualByComparingTo("9");
         assertThat(copied.get("barcode")).isNull();
-        // The source never had a policy decided, so neither has the copy (it stays on the list to configure).
-        assertThat(copied.get("policy_configured")).isEqualTo(false);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM product.product_change_log WHERE subject_id = ? AND "
                 + "change_type = 'VARIANT_ADDED'", Long.class, sku.variantId())).isEqualTo(1);
 

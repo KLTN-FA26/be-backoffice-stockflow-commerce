@@ -92,6 +92,7 @@ SELECT pg_temp.expect_fail('WC8 a consumed carton back in stock still open', $q$
     UPDATE inventory.stock_package SET status = 'IN_STOCK', closed_at = NULL WHERE id = md5('qa41:pk')::uuid;
     UPDATE inventory.stock_item SET on_hand = 4 WHERE id = md5('qa41:pk:row')::uuid $q$);
 SELECT pg_temp.expect_ok('WC9 CONSUMED -> IN_STOCK: put back whole on another bin, sealed again (20 §4.6 step 5)', $q$
+    SET LOCAL stockflow.same_receipt_merge = '855874c7-250e-165a-634e-378f66c747e3';
     UPDATE inventory.stock_package SET status = 'IN_STOCK', unopened = TRUE, closed_at = NULL,
            location_code = 'HCM-A01-1-B' WHERE id = md5('qa41:pk')::uuid;
     UPDATE inventory.stock_item SET on_hand = 4, location_code = 'HCM-A01-1-B' WHERE id = md5('qa41:pk:row')::uuid $q$);

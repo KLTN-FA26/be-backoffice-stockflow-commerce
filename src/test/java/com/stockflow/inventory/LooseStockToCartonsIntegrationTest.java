@@ -205,14 +205,16 @@ class LooseStockToCartonsIntegrationTest {
     @DisplayName("availability in pieces is what it was before the conversion: 25 + 8 sofas in two bins, 12 oak tables,"
             + " the 30 quarantined ones not available")
     void availabilityIsUnchangedInPieces() throws Exception {
-        // Before: the four demo rows as the migration archived them, loose and lot-less where the seed wrote them so.
+        // Before: the four demo rows as the migration archived them, loose and lot-less where the seed wrote them so (the
+        // whole rows, not the lot-and-expiry entries V20261111000300 archived under the same ids).
         assertThat(jdbc.queryForList("""
                 SELECT (row_data ->> 'sku') || ' ' || (row_data ->> 'location_code') || ' '
                        || COALESCE(row_data ->> 'lot_number', '-') || ' ' || (row_data ->> 'status') || ' '
                        || (row_data ->> 'on_hand') || ' ' || (row_data ->> 'reserved') || ' '
                        || COALESCE(row_data ->> 'stock_package_id', 'loose')
                   FROM platform.legacy_archive
-                 WHERE source_table = 'inventory.stock_item' AND row_id IN (?, ?, ?, ?)""", String.class,
+                 WHERE source_table = 'inventory.stock_item' AND row_id IN (?, ?, ?, ?)
+                   AND jsonb_exists(row_data, 'status')""", String.class,
                 DEMO_ROWS.toArray()))
                 .containsExactlyInAnyOrder(
                         SOFA + " " + SOFA_BIN + " - AVAILABLE 25 0 loose",

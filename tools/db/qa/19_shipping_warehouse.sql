@@ -97,12 +97,19 @@ SELECT pg_temp.expect_fail('SW10 a hold on a stock item naming a warehouse', $q$
                                              reserved_at, status, sku, warehouse_code)
     VALUES (gen_random_uuid(), '22222222-2222-4222-8222-222222222222', md5('qa19:contract')::uuid, gen_random_uuid(),
             gen_random_uuid(), 1, NOW(), 'HELD', 'SOFA-3S-GREY', 'HCM') $q$);
+-- The demo sofas are cartons of one since 4C-1 (the loose rows 1111.. are empty), so the allocation is one unit of one of
+-- those cartons' rows; the rule checked is where it is allocated, not how many.
 SELECT pg_temp.expect_ok('SW11 allocated on a bin of HCM, where it is held (released to HCM)', $q$
     INSERT INTO inventory.stock_reservation (id, stock_item_id, order_id, root_request_id, request_id, quantity,
                                              reserved_at, status, sku, allocated_from_id)
-    VALUES (gen_random_uuid(), '11111111-1111-4111-8111-111111111111', md5('qa19:contract')::uuid, gen_random_uuid(),
-            gen_random_uuid(), 25, NOW(), 'HELD', 'SOFA-3S-GREY', md5('qa19:hold')::uuid);
-    UPDATE inventory.stock_item SET reserved = reserved + 25 WHERE id = '11111111-1111-4111-8111-111111111111' $q$);
+    SELECT gen_random_uuid(), s.id, md5('qa19:contract')::uuid, gen_random_uuid(), gen_random_uuid(), 1, NOW(),
+           'HELD', 'SOFA-3S-GREY', md5('qa19:hold')::uuid
+      FROM inventory.stock_item s
+     WHERE s.sku = 'SOFA-3S-GREY' AND s.on_hand = 1 AND s.reserved = 0 AND s.stock_package_id IS NOT NULL
+     ORDER BY s.id LIMIT 1;
+    UPDATE inventory.stock_item SET reserved = 1
+     WHERE id = (SELECT stock_item_id FROM inventory.stock_reservation WHERE allocated_from_id = md5('qa19:hold')::uuid
+                  ORDER BY id LIMIT 1) $q$);
 
 \echo '--- released from where it ships (BR-22)'
 SELECT pg_temp.expect_fail('SW12 an order of a contract released with no shipping warehouse', $q$
@@ -126,11 +133,11 @@ CREATE FUNCTION pg_temp.grants(role_code TEXT, permission_code TEXT) RETURNS BOO
                      JOIN identity.permission p ON p.id = rp.permission_id
                     WHERE r.code = role_code AND p.code = permission_code)
 $$;
-SELECT pg_temp.expect_true('SW15 Sales chooses; the manager, coordinator and warehouse manager read; not the customer',
+SELECT pg_temp.expect_true('SW15 Sales chooses; the Sales Manager and the warehouse manager read; the order coordinator is retired (5-7), nor does the customer',
     pg_temp.grants('SALES_STAFF', 'sales-order-shipping-warehouses:UPDATE')
     AND pg_temp.grants('SALES_MANAGER', 'sales-order-shipping-warehouses:READ')
     AND NOT pg_temp.grants('SALES_MANAGER', 'sales-order-shipping-warehouses:UPDATE')
-    AND pg_temp.grants('ORDER_COORDINATOR', 'sales-order-shipping-warehouses:READ')
+    AND NOT EXISTS (SELECT 1 FROM identity.app_role WHERE code = 'ORDER_COORDINATOR')
     AND pg_temp.grants('WAREHOUSE_MANAGER', 'sales-order-shipping-warehouses:READ')
     AND NOT pg_temp.grants('CUSTOMER', 'sales-order-shipping-warehouses:READ'));
 

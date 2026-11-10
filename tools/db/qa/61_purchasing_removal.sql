@@ -145,11 +145,11 @@ SELECT pg_temp.expect_true('F1 item_in_use runs and is true for an item with sto
 SELECT pg_temp.expect_true('F2 unit_in_use runs', $c$
     NOT inventory.unit_in_use(gen_random_uuid()) $c$);
 
--- Fixtures: a carton of 10 sofas; a production order of 5 cartons of them at HCM, SENT with no sample to approve first;
+-- Fixtures: a carton of 10 sofas (its own unit code: the demo sofa already has the CARTON of one that 4C-1 made); a production order of 5 cartons of them at HCM, SENT with no sample to approve first;
 -- a DRAFT receipt against it, registered with it (as 22_production_receipts.sql does). The production order's own rows are
 -- written with the row triggers off: its rules are 21_production_orders.sql's.
 INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, length_cm, width_cm, height_cm, weight_kg)
-VALUES (md5('qa61:carton')::uuid, md5('demo:item:SOFA-3S-GREY')::uuid, 'CARTON', 10, 60, 40, 50, 12),
+VALUES (md5('qa61:carton')::uuid, md5('demo:item:SOFA-3S-GREY')::uuid, 'CARTON10', 10, 60, 40, 50, 12),
        (md5('qa61:old')::uuid, md5('demo:item:SOFA-3S-GREY')::uuid, 'OLDCTN', 10, NULL, NULL, NULL, NULL);
 UPDATE inventory.uom_conversions SET active = FALSE WHERE id = md5('qa61:old')::uuid;
 SET LOCAL session_replication_role = replica;

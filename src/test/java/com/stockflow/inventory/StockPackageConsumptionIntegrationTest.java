@@ -65,8 +65,6 @@ class StockPackageConsumptionIntegrationTest {
                     "Carton fixture", sku.toLowerCase(Locale.ROOT));
             jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature) values (?,?,?,?,'')",
                     Identifiers.newId(), product, sku, "Carton fixture");
-            jdbc.update("update inventory.inventory_items set removal_strategy='FIFO', policy_configured=true"
-                    + " where sku=?", sku);
             item = jdbc.queryForObject("select id from inventory.inventory_items where sku = ?", UUID.class, sku);
             carton = Identifiers.newId();
             jdbc.update("insert into inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)"

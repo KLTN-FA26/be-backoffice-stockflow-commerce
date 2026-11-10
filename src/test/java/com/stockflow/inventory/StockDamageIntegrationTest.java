@@ -120,7 +120,7 @@ class StockDamageIntegrationTest {
             jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature)"
                     + " values (?,?,?,'Damage fixture','')", Identifiers.newId(), product, sku);
         });
-        row = stock(BIN, 10, "L1", "AVAILABLE", null);
+        row = stock(BIN, 10, "L1", "AVAILABLE");
         staff = staff("WAREHOUSE_STAFF", DemoData.WAREHOUSE_HCM);
         otherStaff = staff("WAREHOUSE_STAFF", DemoData.WAREHOUSE_HCM);
         manager = staff("WAREHOUSE_MANAGER", DemoData.WAREHOUSE_HCM);
@@ -132,13 +132,13 @@ class StockDamageIntegrationTest {
 
     // ---- fixtures ------------------------------------------------------------------------------------
 
-    private UUID stock(String location, int onHand, String lot, String status, String serial) {
+    private UUID stock(String location, int onHand, String lot, String status) {
         UUID id = Identifiers.newId();
         tx.executeWithoutResult(s -> jdbc.update("""
                 INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved,
-                                                  status, received_at, serial_number, version, created_at)
-                VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, 0, NOW())""", id, sku, location, lot, onHand, status,
-                Timestamp.from(Instant.parse("2026-10-01T03:00:00Z")), serial));
+                                                  status, received_at, version, created_at)
+                VALUES (?, ?, ?, ?, ?, 0, ?, ?, 0, NOW())""", id, sku, location, lot, onHand, status,
+                Timestamp.from(Instant.parse("2026-10-01T03:00:00Z"))));
         return id;
     }
 
@@ -549,7 +549,7 @@ class StockDamageIntegrationTest {
         // IN_PRODUCTION: blanks in the print shop are production's to scrap, never a damage report's.
         // EXPIRED is not tried: no stock row becomes EXPIRED any more (tg_stock_item_no_new_expired, team plan 5-1).
         for (String status : List.of("DAMAGED", "QUARANTINE", "INBOUND", "IN_PRODUCTION")) {
-            UUID other = stock("HCM-B01-2-" + (status.equals("DAMAGED") ? "A" : "B"), 2, "L-" + status, status, null);
+            UUID other = stock("HCM-B01-2-" + (status.equals("DAMAGED") ? "A" : "B"), 2, "L-" + status, status);
             report(UUID.randomUUID(), other, 1).andExpect(status().isConflict())
                     .andExpect(jsonPath("$.errorCode").value("STOCK_STATUS_MISMATCH"));
         }
@@ -558,7 +558,7 @@ class StockDamageIntegrationTest {
     @Test
     @DisplayName("quarantine areas holding the layer in another status are skipped; none left is DAMAGE_AREA_MISSING")
     void destinations() throws Exception {
-        stock(QC01, 1, "L1", "QUARANTINE", null);
+        stock(QC01, 1, "L1", "QUARANTINE");
         report(UUID.randomUUID(), row, 1).andExpect(status().isCreated())
                 .andExpect(jsonPath("$.data.damageLocationCode").value(RTV01));
         report(staff, "WAREHOUSE_STAFF", reportJson(UUID.randomUUID(), row, 1, "BROKEN", null, QC01), jpeg("x.jpg"))
@@ -568,9 +568,9 @@ class StockDamageIntegrationTest {
                 .andExpect(jsonPath("$.data.damageLocationCode").value(RTV01));
         assertThat(damagedAt(RTV01)).isEqualTo(3);
 
-        UUID otherLayer = stock("HCM-A01-2-A", 5, "L9", "AVAILABLE", null);
-        stock(QC01, 1, "L9", "QUARANTINE", null);
-        stock(RTV01, 1, "L9", "BLOCKED", null);
+        UUID otherLayer = stock("HCM-A01-2-A", 5, "L9", "AVAILABLE");
+        stock(QC01, 1, "L9", "QUARANTINE");
+        stock(RTV01, 1, "L9", "BLOCKED");
         report(UUID.randomUUID(), otherLayer, 1).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("DAMAGE_AREA_MISSING"));
         assertThat(onHand(otherLayer)).isEqualTo(5);
@@ -597,7 +597,7 @@ class StockDamageIntegrationTest {
     @Test
     @DisplayName("two reports of the same row at once: the row lock decides, the second sees what is left")
     void concurrentReports() throws Exception {
-        UUID small = stock("HCM-A02-2-B", 5, "L1", "AVAILABLE", null);
+        UUID small = stock("HCM-A02-2-B", 5, "L1", "AVAILABLE");
         List<String> bodies = List.of(reportJson(UUID.randomUUID(), small, 3, "BROKEN", null, null),
                 reportJson(UUID.randomUUID(), small, 3, "BROKEN", null, null));
         List<String> headers = List.of(token(staff, "WAREHOUSE_STAFF"), token(otherStaff, "WAREHOUSE_STAFF"));
@@ -634,29 +634,11 @@ class StockDamageIntegrationTest {
     // ---- shapes of stock ----------------------------------------------------------------------------------
 
     @Test
-    @DisplayName("a serial unit is reported one at a time and keeps its serial number in quarantine")
-    void serialUnit() throws Exception {
-        UUID unit = stock("HCM-B01-1-A", 1, null, "AVAILABLE", "SN-" + sku);
-        report(UUID.randomUUID(), unit, 2).andExpect(status().isConflict())
-                .andExpect(jsonPath("$.errorCode").value("DAMAGE_EXCEEDS_FREE_STOCK"));
-
-        report(UUID.randomUUID(), unit, 1).andExpect(status().isCreated())
-                .andExpect(jsonPath("$.data.serialNumber").value("SN-" + sku));
-
-        assertThat(onHand(unit)).isZero();
-        assertThat(jdbc.queryForObject("""
-                SELECT on_hand FROM inventory.stock_item WHERE sku = ? AND serial_number = ? AND status = 'DAMAGED'""",
-                Integer.class, sku, "SN-" + sku)).isEqualTo(1);
-    }
-
-    @Test
     @DisplayName("a carton is reported whole: part of it is refused, all of it consumes it; the units arrive loose, merged")
     void cartonRows() throws Exception {
-        // A FIFO SKU with its policy configured: the second report merges into the DAMAGED row of the same receipt
-        // layer, which the policy trigger accepts only as a same-receipt merge. Two sealed cartons of 5 received
-        // together are that one layer.
-        tx.executeWithoutResult(s -> jdbc.update("UPDATE inventory.inventory_items SET removal_strategy = 'FIFO',"
-                + " policy_configured = true WHERE sku = ?", sku));
+        // The second report merges into the DAMAGED row of the same receipt layer, which the policy trigger accepts only
+        // as a same-receipt merge (every SKU is first in, first out since 5-5). Two sealed cartons of 5 received together
+        // are that one layer.
         List<CartonRows.Carton> made = tx.execute(s -> CartonRows.stock(jdbc, sku, "HCM-A01-2-B", 2, 5, null, Instant.parse("2026-09-01T03:00:00Z"), "AVAILABLE"));
         UUID carton = made.get(0).id();
         UUID contents = made.get(0).stockItemId();

@@ -445,11 +445,11 @@ values (?,?,'HCM-A01-1-A','UNTRACED',?,0,'AVAILABLE',?,now())
     void negativeVersionIsHttp400AndPublicCatalogReturnsAPage() throws Exception {
         var f = fixture("DRAFT");
         mvc.perform(
-                        MockMvcRequestBuilders.put("/api/v1/inventory/items/" + f.itemId() + "/policy")
+                        MockMvcRequestBuilders.put("/api/v1/inventory/items/" + f.itemId() + "/logistics")
                                 .contentType("application/json")
                                 .content(
                                         """
-{"version":-1,"removalStrategy":"FIFO","trackingMode":"NONE"}
+{"version":-1,"unitOfMeasure":"EACH","storageClass":"NORMAL","requiresAdultSignature":false}
 """))
                 .andExpect(MockMvcResultMatchers.status().isBadRequest());
         mvc.perform(MockMvcRequestBuilders.get("/api/v1/catalog/products"))

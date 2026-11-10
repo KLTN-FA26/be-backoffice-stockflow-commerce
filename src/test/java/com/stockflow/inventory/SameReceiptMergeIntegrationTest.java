@@ -73,8 +73,6 @@ class SameReceiptMergeIntegrationTest {
                     "FIFO fixture", sku.toLowerCase(Locale.ROOT));
             jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature) values (?,?,?,?,'')",
                     Identifiers.newId(), product, sku, "FIFO fixture");
-            jdbc.update("update inventory.inventory_items set lot_tracked=true, removal_strategy='FIFO',"
-                    + " policy_configured=true where sku=?", sku);
             jdbc.update("""
                     insert into inventory.stock_item (id, sku, location_code, lot_number, received_at, on_hand, reserved,
                         status, version, created_at) values (?, ?, ?, ?, ?, 10, 0, 'AVAILABLE', 0, now())""",

@@ -14,8 +14,15 @@ BEGIN;
 -- V20261111000110 (team plan 4C-1) put the demo stock into cartons. The checks of loose stock below - loose stock goes
 -- with 4C-3 - use the demo sofa rows as they were before it. The sofas' cartons stay beside them, so the books hold
 -- the demo sofas twice for the length of this script; no check here reads a SKU's total.
-UPDATE inventory.stock_item SET on_hand = 25 WHERE id = '11111111-1111-4111-8111-111111111111';
-UPDATE inventory.stock_item SET on_hand = 8 WHERE id = '22222222-2222-4222-8222-222222222222';
+-- Since 5-5 enforce_sku_policy refuses live stock with no lot and a layer raised in place, for every SKU: the demo
+-- rows are lot-less zero rows that 4C-1 emptied, so this fixture - and only this statement pair - writes them back by
+-- hand under a lot of their own, with the trigger off. Everything checked after it runs with the trigger on.
+ALTER TABLE inventory.stock_item DISABLE TRIGGER trg_stock_sku_policy;
+UPDATE inventory.stock_item SET on_hand = 25, lot_number = 'QA-LOT', lot_id = NULL
+ WHERE id = '11111111-1111-4111-8111-111111111111';
+UPDATE inventory.stock_item SET on_hand = 8, lot_number = 'QA-LOT', lot_id = NULL
+ WHERE id = '22222222-2222-4222-8222-222222222222';
+ALTER TABLE inventory.stock_item ENABLE TRIGGER trg_stock_sku_policy;
 
 CREATE FUNCTION pg_temp.expect_fail(label TEXT, stmt TEXT) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN
@@ -297,8 +304,8 @@ INSERT INTO fulfillment.pick_line (id, pick_id, order_line_id, reservation_id, s
                                    allocated_qty, picked_qty, status, picked_by, picked_at, consumed_at)
 VALUES (md5('qa:pl:f46')::uuid, md5('qa:pick:f1')::uuid, md5('qa:ol:f5')::uuid, md5('qa:res:f46')::uuid,
         'SOFA-3S-GREY', 'HCM-A01-2-B', 2, 2, 2, 'PICKED', md5('demo:user:editor')::uuid, NOW(), NOW());
-INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, received_at, version, created_at)
-SELECT md5('qa:si:f46')::uuid, sku, 'HCM-QC01', 1, 0, 'DAMAGED', received_at, 0, NOW()
+INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, received_at, version, created_at)
+SELECT md5('qa:si:f46')::uuid, sku, 'HCM-QC01', lot_number, 1, 0, 'DAMAGED', received_at, 0, NOW()
   FROM inventory.stock_item WHERE id = '11111111-1111-4111-8111-111111111111';
 
 SELECT pg_temp.expect_fail('F46 more units found damaged at packing than the line picked', $q$

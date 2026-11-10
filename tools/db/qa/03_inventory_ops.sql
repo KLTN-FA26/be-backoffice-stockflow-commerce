@@ -7,8 +7,15 @@ BEGIN;
 -- V20261111000110 (team plan 4C-1) put the demo stock into cartons. The checks of loose stock below - loose stock goes
 -- with 4C-3 - use the demo sofa rows as they were before it. The sofas' cartons stay beside them, so the books hold
 -- the demo sofas twice for the length of this script; no check here reads a SKU's total.
-UPDATE inventory.stock_item SET on_hand = 25 WHERE id = '11111111-1111-4111-8111-111111111111';
-UPDATE inventory.stock_item SET on_hand = 8 WHERE id = '22222222-2222-4222-8222-222222222222';
+-- Since 5-5 enforce_sku_policy refuses live stock with no lot and a layer raised in place, for every SKU: the demo
+-- rows are lot-less zero rows that 4C-1 emptied, so this fixture - and only this statement pair - writes them back by
+-- hand under a lot of their own, with the trigger off. Everything checked after it runs with the trigger on.
+ALTER TABLE inventory.stock_item DISABLE TRIGGER trg_stock_sku_policy;
+UPDATE inventory.stock_item SET on_hand = 25, lot_number = 'QA-LOT', lot_id = NULL
+ WHERE id = '11111111-1111-4111-8111-111111111111';
+UPDATE inventory.stock_item SET on_hand = 8, lot_number = 'QA-LOT', lot_id = NULL
+ WHERE id = '22222222-2222-4222-8222-222222222222';
+ALTER TABLE inventory.stock_item ENABLE TRIGGER trg_stock_sku_policy;
 
 -- Inserts a warehouse whether or not the pre-C2 column "code" still exists (C2 drops it).
 CREATE FUNCTION pg_temp.qa_warehouse(wid UUID, wprefix TEXT, wunit TEXT, w NUMERIC, h NUMERIC) RETURNS void

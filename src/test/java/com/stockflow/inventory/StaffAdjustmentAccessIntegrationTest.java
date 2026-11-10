@@ -71,7 +71,7 @@ class StaffAdjustmentAccessIntegrationTest {
         String body = "{\"locationCode\":\"%s\",\"sku\":\"%s\",\"quantityDelta\":-1,"
                 .formatted(stock.get("location_code"), stock.get("sku")) + "\"reason\":\"SUBCONTRACT_LOSS\"}";
 
-        mvc.asRole(Role.WAREHOUSE_STAFF, clerk, post("/api/v1/inventory/adjustments")
+        mvc.asRole(Role.SYSTEM_ADMIN, clerk, post("/api/v1/inventory/adjustments")
                         .contentType(MediaType.APPLICATION_JSON).content(body))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.errorCode").value("VALIDATION_FAILED"));

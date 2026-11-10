@@ -58,8 +58,8 @@ SELECT pg_temp.expect_fail('design draft of no product', $q$
 
 \echo '--- C2: the map is the only location model'
 SELECT pg_temp.expect_fail('stock at a location the map does not have', $q$
-    INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, version, created_at)
-    VALUES (gen_random_uuid(), 'SOFA-3S-GREY', 'NOWHERE-1', 1, 0, 'AVAILABLE', 0, NOW()) $q$);
+    INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, version, created_at)
+    VALUES (gen_random_uuid(), 'SOFA-3S-GREY', 'NOWHERE-1', 'QA-LOT', 1, 0, 'AVAILABLE', 0, NOW()) $q$);
 SELECT pg_temp.expect_fail('warehouse without a map frame', $q$
     UPDATE warehouse.warehouse SET map_width = NULL WHERE prefix = 'HCM' $q$);
 SELECT pg_temp.expect_true('putaway targets a storage location', $q$
@@ -68,8 +68,8 @@ SELECT pg_temp.expect_true('putaway targets a storage location', $q$
 
 \echo '--- C3: stock and putaway are of known inventory items'
 SELECT pg_temp.expect_fail('stock of a SKU with no inventory item', $q$
-    INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, version, created_at)
-    SELECT gen_random_uuid(), 'NO-ITEM-SKU', location_code, 1, 0, 'AVAILABLE', 0, NOW()
+    INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, version, created_at)
+    SELECT gen_random_uuid(), 'NO-ITEM-SKU', location_code, 'QA-LOT', 1, 0, 'AVAILABLE', 0, NOW()
       FROM warehouse.storage_location LIMIT 1 $q$);
 
 \echo '--- C4: putaway has exactly one source'
