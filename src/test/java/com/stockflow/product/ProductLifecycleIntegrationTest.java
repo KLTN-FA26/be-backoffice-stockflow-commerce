@@ -292,7 +292,8 @@ class ProductLifecycleIntegrationTest {
                 .andExpect(jsonPath("$.data.warnings.length()").value(2))
                 .andExpect(jsonPath("$.data.warnings[0]").value("OPEN_PRODUCTION_ORDER_LINES"))
                 .andExpect(jsonPath("$.data.warnings[1]").value("UNSHIPPED_ORDER_LINES"))
-                .andExpect(jsonPath("$.data.openReferences.length()").value(2))
+                // The production order's own sales order is an unshipped order line of the SKU too.
+                .andExpect(jsonPath("$.data.openReferences.length()").value(3))
                 .andExpect(jsonPath("$.data.openReferencesTruncated").value(false))
                 .andExpect(jsonPath("$.data.openReferences[?(@.kind == 'PRODUCTION_ORDER_LINE')].documentNumber")
                         .value(production.productionCode()))
@@ -618,7 +619,7 @@ class ProductLifecycleIntegrationTest {
         orderWithLine(approved.code(), "CANCELLED");
 
         send("GET", token(UUID.randomUUID(), "SALES_STAFF"), path, null).andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.references.length()").value(3))
+                .andExpect(jsonPath("$.data.references.length()").value(4))
                 .andExpect(jsonPath("$.data.references[?(@.kind == 'PRODUCTION_ORDER_LINE')].documentId")
                         .value(production.productionOrderId().toString()))
                 .andExpect(jsonPath("$.data.references[?(@.kind == 'SALES_ORDER_LINE')].documentId")
