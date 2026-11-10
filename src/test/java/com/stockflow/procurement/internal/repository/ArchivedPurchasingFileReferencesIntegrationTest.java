@@ -102,7 +102,10 @@ class ArchivedPurchasingFileReferencesIntegrationTest {
 
     /** Writes a row as V20261113000200 archives them; {@code archive_test} marks it for cleanup. */
     private void archive(String sourceTable, String keyField, String key) {
+        String json = "{\"" + keyField + "\": \"" + key + "\", \"archive_test\": \"true\"}";
         jdbc.update("INSERT INTO platform.legacy_archive (source_table, row_id, row_data) VALUES (?, gen_random_uuid(), "
-                + "jsonb_build_object(?::text, ?::text, 'archive_test', 'true'))", sourceTable, keyField, key);
+                + "?::jsonb)", sourceTable, json);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM platform.legacy_archive WHERE source_table = ? AND "
+                + "row_data ->> ? = ?", Integer.class, sourceTable, keyField, key)).as("the row is there").isEqualTo(1);
     }
 }

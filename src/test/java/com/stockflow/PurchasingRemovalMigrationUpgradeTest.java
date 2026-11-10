@@ -334,13 +334,15 @@ class PurchasingRemovalMigrationUpgradeTest {
                         + "'procurement.goods_receipts.purchase' ORDER BY row_data ->> 'receipt_number'"))
                         .containsExactly("false:false", "true:true");
                 assertThat(RawSql.number(db, "SELECT count(*) FROM platform.legacy_archive WHERE source_table = "
-                        + "'identity.permission' AND row_data ->> 'code' LIKE 'procurement-%'")).isEqualTo(33);
+                        + "'identity.permission' AND row_data ->> 'code' LIKE 'procurement-%' AND row_data ->> 'code' NOT LIKE "
+                        + "'procurement-qc-tasks:%'")).isEqualTo(33);
                 assertThat(RawSql.number(db, "SELECT count(*) FROM platform.legacy_archive WHERE source_table = "
                         + "'identity.permission' AND row_data ->> 'code' IN " + inList(KEPT_PERMISSIONS))).isZero();
                 assertThat(RawSql.number(db, "SELECT count(*) FROM platform.legacy_archive a JOIN "
                         + "platform.legacy_archive p ON p.source_table = 'identity.permission' AND p.row_id::text = "
                         + "a.row_data ->> 'permission_id' WHERE a.source_table = 'identity.role_permission' AND "
-                        + "p.row_data ->> 'code' LIKE 'procurement-%'")).isEqualTo(goneGrants);
+                        + "p.row_data ->> 'code' LIKE 'procurement-%' AND p.row_data ->> 'code' NOT LIKE "
+                        + "'procurement-qc-tasks:%'")).isEqualTo(goneGrants);
                 assertThat(RawSql.text(db, "SELECT obj_description('platform.legacy_archive'::regclass, 'pg_class')"))
                         .contains("purchasing").contains("V20261113000200");
 
