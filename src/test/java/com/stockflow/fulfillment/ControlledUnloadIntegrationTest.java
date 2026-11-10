@@ -101,7 +101,7 @@ class ControlledUnloadIntegrationTest {
 
     @BeforeEach
     void setUp() {
-        CartonStationSupport.giveCartonsASize(jdbc);
+        CartonStationSupport.giveCartonsASize(tx, jdbc);
         coordinator = staff("ORDER_COORDINATOR");
         picker = staff("WAREHOUSE_STAFF", HCM);
         dispatcher = staff("WAREHOUSE_STAFF", HCM);

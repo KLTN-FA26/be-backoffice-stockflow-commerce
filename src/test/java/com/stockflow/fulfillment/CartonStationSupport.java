@@ -3,6 +3,7 @@ package com.stockflow.fulfillment;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.test.web.servlet.ResultActions;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 
@@ -35,17 +36,19 @@ final class CartonStationSupport {
      * The size and full weight the carton spec of the demo SKUs declares: a sofa carton as the repack tests measured
      * its box (215 x 95 x 90 cm, 52.5 kg), a table carton a flat one.
      */
-    static void giveCartonsASize(JdbcTemplate jdbc) {
-        size(jdbc, "SOFA-3S-GREY", "215", "95", "90", "52.5");
-        size(jdbc, "TABLE-OAK-160", "165", "95", "20", "38");
+    static void giveCartonsASize(TransactionTemplate tx, JdbcTemplate jdbc) {
+        tx.executeWithoutResult(s -> {
+            size(jdbc, "SOFA-3S-GREY", "215", "95", "90", "52.5");
+            size(jdbc, "TABLE-OAK-160", "165", "95", "20", "38");
+        });
     }
 
     /** The carton spec of the SKU declares no size again, as the demo data has it. */
-    static void clearCartonSize(JdbcTemplate jdbc, String sku) {
-        jdbc.update("""
+    static void clearCartonSize(TransactionTemplate tx, JdbcTemplate jdbc, String sku) {
+        tx.executeWithoutResult(s -> jdbc.update("""
                 UPDATE inventory.uom_conversions u SET length_cm = NULL, width_cm = NULL, height_cm = NULL, weight_kg = NULL
                   FROM inventory.inventory_items i
-                 WHERE i.id = u.inventory_item_id AND i.sku = ? AND NOT u.is_base AND u.active""", sku);
+                 WHERE i.id = u.inventory_item_id AND i.sku = ? AND NOT u.is_base AND u.active""", sku));
     }
 
     private static void size(JdbcTemplate jdbc, String sku, String length, String width, String height, String weight) {
@@ -121,13 +124,15 @@ final class CartonStationSupport {
     static final class Parts {
 
         private final Worker worker;
+        private final TransactionTemplate tx;
         private final JdbcTemplate jdbc;
         private final ObjectMapper json;
         private final java.util.Map<UUID, Integer> shipped = new java.util.HashMap<>();
         private final java.util.Map<UUID, UUID> first = new java.util.HashMap<>();
 
-        Parts(Worker worker, JdbcTemplate jdbc, ObjectMapper json) {
+        Parts(Worker worker, TransactionTemplate tx, JdbcTemplate jdbc, ObjectMapper json) {
             this.worker = worker;
+            this.tx = tx;
             this.jdbc = jdbc;
             this.json = json;
         }
@@ -148,6 +153,7 @@ final class CartonStationSupport {
             }
             boolean more = done + mine.size() < all.size();
             UUID shipment = firstCall ? whole : UUID.randomUUID();
+            tx.executeWithoutResult(t -> {
             if (firstCall) {
                 jdbc.update("UPDATE fulfillment.package SET shipment_id = NULL WHERE shipment_id = ?", whole);
             } else {
@@ -166,6 +172,7 @@ final class CartonStationSupport {
             }
             jdbc.update("UPDATE fulfillment.shipment SET package_count = ?, partial = ?, partial_note = ? WHERE id = ?",
                     mine.size(), more, more ? "part of the order (test)" : null, shipment);
+            });
             shipped.put(task, done + mine.size());
             return shipment;
         }

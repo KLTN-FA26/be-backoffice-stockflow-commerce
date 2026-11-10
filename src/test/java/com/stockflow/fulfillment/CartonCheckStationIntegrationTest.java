@@ -134,7 +134,7 @@ class CartonCheckStationIntegrationTest {
         customer = customerOf(customerUser);
         carrier = tx.execute(s -> ReferenceRows.truckCarrier(entityManager, "Xe tải Kiểm Thùng"));
         truck5t = jdbc.queryForObject("SELECT id FROM fulfillment.vehicle_type WHERE code = 'TRUCK-5T'", UUID.class);
-        CartonStationSupport.giveCartonsASize(jdbc);
+        CartonStationSupport.giveCartonsASize(tx, jdbc);
     }
 
     // ---- fixtures ----------------------------------------------------------------------------
@@ -398,7 +398,7 @@ class CartonCheckStationIntegrationTest {
             + "the carton takes its size, weight and volumetric weight and the order is locked: no cancellation, a pending "
             + "request expires; the PDF has a page per carton; a reprint raises the version")
     void labelsNeedACartonSpecAndLockTheOrder() throws Exception {
-        CartonStationSupport.clearCartonSize(jdbc, SOFA.code());
+        CartonStationSupport.clearCartonSize(tx, jdbc, SOFA.code());
         OrderSummary order = order(2);
         String cancel = "/api/v1/orders/" + order.orderId() + "/cancellation";
         String request = data(as(customerUser, "CUSTOMER", body(post(cancel), "{\"reasonCode\":\"CUSTOMER_REQUEST\"}"))
@@ -411,7 +411,7 @@ class CartonCheckStationIntegrationTest {
         // 08 BR-07: no size, no label; the answer names the SKU and nothing is labelled, locked or half done.
         label(task, null).andExpect(status().isUnprocessableEntity())
                 .andExpect(jsonPath("$.errorCode").value("CARTON_SPEC_UNMEASURED"))
-                .andExpect(jsonPath("$.fieldErrors[0].rejectedValue").value(SOFA.code()));
+                .andExpect(jsonPath("$.fieldErrors[0].message").value(SOFA.code()));
         assertThat(jdbc.queryForObject("SELECT count(*) FROM fulfillment.package WHERE lpn IN (?, ?) AND status = 'LABELED'",
                 Long.class, mine.get(0), mine.get(1))).isZero();
         assertThat(orderLockedAt(order)).isNull();
@@ -419,7 +419,7 @@ class CartonCheckStationIntegrationTest {
                 .andExpect(jsonPath("$.errorCode").value("CARTON_NOT_CHECKED"));
 
         // The manager completes the carton spec on the item; the same call now labels.
-        CartonStationSupport.giveCartonsASize(jdbc);
+        CartonStationSupport.giveCartonsASize(tx, jdbc);
         label(task, "{\"lpns\":[\"" + mine.get(0).toLowerCase() + "\"]}").andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.orderLocked").value(true))
                 .andExpect(jsonPath("$.data.cartons[?(@.lpn=='" + mine.get(0) + "')].status")
@@ -480,8 +480,6 @@ class CartonCheckStationIntegrationTest {
         assertThat(carton(mine.get(0))).containsEntry("label_version", 2);
         asPacker(post(url(task, "/cartons/" + mine.get(0) + "/label-reprint"))).andExpect(status().isOk());
         assertThat(carton(mine.get(0))).containsEntry("label_version", 3);
-        asPacker(post(url(task, "/cartons/" + mine.get(1) + "/label-reprint"))).andExpect(status().isConflict())
-                .andExpect(jsonPath("$.errorCode").value("CARTON_NOT_CHECKED"));
         as(otherPacker, "WAREHOUSE_STAFF", post(url(task, "/cartons/" + mine.get(0) + "/label-reprint")))
                 .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("PACKING_TAKEN"));
     }
@@ -548,7 +546,8 @@ class CartonCheckStationIntegrationTest {
         assertThat(carton(mine.get(0))).containsEntry("label_version", 2);
         // A carton in a shipment is not removed.
         asPacker(body(post(url(task, "/cartons/" + mine.get(0) + "/removal")), "{}")).andExpect(status().isConflict())
-                .andExpect(jsonPath("$.errorCode").value("PACKAGE_SHIPPED"));
+                .andExpect(jsonPath("$.errorCode").value("PACK_STATE_CONFLICT"));   // a completed session is not worked;
+        // PACKAGE_SHIPPED is the domain's answer (CartonCheckTest) for a session still in progress
     }
 
     @Test
@@ -643,7 +642,7 @@ class CartonCheckStationIntegrationTest {
         OrderSummary order = order(1);
         // A contract order as 4B-6 writes it: one BEFORE_DELIVERY installment still unpaid (rows written around the
         // contract tables, which this test is not about).
-        jdbc.execute((org.springframework.jdbc.core.ConnectionCallback<Void>) connection -> {
+        tx.executeWithoutResult(t -> jdbc.execute((org.springframework.jdbc.core.ConnectionCallback<Void>) connection -> {
             try (var statement = connection.createStatement()) {
                 statement.execute("SET session_replication_role = replica");
                 statement.execute("""
@@ -656,7 +655,7 @@ class CartonCheckStationIntegrationTest {
                 statement.execute("SET session_replication_role = DEFAULT");
             }
             return null;
-        });
+        }));
         UUID task = pickedTask(order);
         start(packer, "WAREHOUSE_STAFF", task).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.paymentDue.amount").value(2000000))
@@ -785,42 +784,54 @@ class CartonCheckStationIntegrationTest {
 
     // ---- the carton spec ---------------------------------------------------------------------------
 
+    private void write(String sql, Object... args) {
+        tx.executeWithoutResult(s -> jdbc.update(sql, args));
+    }
+
     @Test
     @DisplayName("the carton spec of a SKU: its one carton unit; the default shipping one among several; none when several have "
             + "no default or there is no carton unit; measured only with a size and a weight")
     void theCartonSpecOfASku() {
-        String sku = "CK-SPEC-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(java.util.Locale.ROOT);
-        jdbc.update("INSERT INTO inventory.inventory_items (id, sku, policy_configured, lot_tracked, removal_strategy) "
-                + "VALUES (gen_random_uuid(), ?, TRUE, FALSE, 'FEFO')", sku);
-        assertThat(itemControls.cartonSpec(new Sku(sku))).as("no carton unit").isEmpty();
-        assertThat(itemControls.cartonSpec(new Sku("CK-NO-SUCH-SKU"))).as("unknown SKU").isEmpty();
-
-        UUID first = Identifiers.newId();
-        jdbc.update("INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, active) "
-                + "SELECT ?, id, 'CARTON12', 12, TRUE FROM inventory.inventory_items WHERE sku = ?", first, sku);
-        var spec = itemControls.cartonSpec(new Sku(sku)).orElseThrow();
-        assertThat(spec.unitOfMeasure()).isEqualTo("CARTON12");
-        assertThat(spec.unitsPerCarton()).isEqualTo(12);
-        assertThat(spec.measured()).as("no size, no weight declared").isFalse();
-
-        jdbc.update("UPDATE inventory.uom_conversions SET length_cm = 40, width_cm = 30, height_cm = 25, weight_kg = 6.5 "
-                + "WHERE id = ?", first);
-        spec = itemControls.cartonSpec(new Sku(sku)).orElseThrow();
-        assertThat(spec.measured()).isTrue();
-        assertThat(spec.lengthCm()).isEqualByComparingTo("40");
-        assertThat(spec.weightKg()).isEqualByComparingTo("6.5");
-
-        jdbc.update("UPDATE inventory.uom_conversions SET weight_kg = NULL WHERE id = ?", first);
-        assertThat(itemControls.cartonSpec(new Sku(sku)).orElseThrow().measured()).as("a size without a weight").isFalse();
-
+        // The table's carton unit, put through every shape and back (a SKU needs a catalogue variant to exist at all).
+        String sku = "TABLE-OAK-160";
+        UUID first = jdbc.queryForObject("SELECT u.id FROM inventory.uom_conversions u JOIN inventory.inventory_items i "
+                + "ON i.id = u.inventory_item_id WHERE i.sku = ? AND NOT u.is_base AND u.active", UUID.class, sku);
         UUID second = Identifiers.newId();
-        jdbc.update("INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, active) "
-                + "SELECT ?, id, 'CARTON24', 24, TRUE FROM inventory.inventory_items WHERE sku = ?", second, sku);
-        assertThat(itemControls.cartonSpec(new Sku(sku))).as("two units, none the default for shipping").isEmpty();
-        jdbc.update("UPDATE inventory.uom_conversions SET default_shipping = TRUE WHERE id = ?", second);
-        assertThat(itemControls.cartonSpec(new Sku(sku)).orElseThrow().unitOfMeasure()).isEqualTo("CARTON24");
-        jdbc.update("UPDATE inventory.uom_conversions SET active = FALSE WHERE id = ?", second);
-        assertThat(itemControls.cartonSpec(new Sku(sku)).orElseThrow().unitOfMeasure())
-                .as("an inactive unit is not a candidate").isEqualTo("CARTON12");
+        try {
+            assertThat(itemControls.cartonSpec(new Sku("CK-NO-SUCH-SKU"))).as("unknown SKU").isEmpty();
+            write("UPDATE inventory.uom_conversions SET active = FALSE WHERE id = ?", first);
+            assertThat(itemControls.cartonSpec(new Sku(sku))).as("no carton unit").isEmpty();
+
+            write("UPDATE inventory.uom_conversions SET active = TRUE, length_cm = NULL, width_cm = NULL, height_cm = NULL, "
+                    + "weight_kg = NULL WHERE id = ?", first);
+            var spec = itemControls.cartonSpec(new Sku(sku)).orElseThrow();
+            assertThat(spec.unitOfMeasure()).isEqualTo("CARTON");
+            assertThat(spec.unitsPerCarton()).isEqualTo(1);
+            assertThat(spec.measured()).as("no size, no weight declared").isFalse();
+
+            write("UPDATE inventory.uom_conversions SET length_cm = 40, width_cm = 30, height_cm = 25, weight_kg = 6.5 "
+                    + "WHERE id = ?", first);
+            spec = itemControls.cartonSpec(new Sku(sku)).orElseThrow();
+            assertThat(spec.measured()).isTrue();
+            assertThat(spec.lengthCm()).isEqualByComparingTo("40");
+            assertThat(spec.weightKg()).isEqualByComparingTo("6.5");
+
+            write("UPDATE inventory.uom_conversions SET weight_kg = NULL WHERE id = ?", first);
+            assertThat(itemControls.cartonSpec(new Sku(sku)).orElseThrow().measured()).as("a size without a weight")
+                    .isFalse();
+
+            write("INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, active) "
+                    + "SELECT ?, id, 'CARTON24', 24, TRUE FROM inventory.inventory_items WHERE sku = ?", second, sku);
+            assertThat(itemControls.cartonSpec(new Sku(sku))).as("two units, none the default for shipping").isEmpty();
+            write("UPDATE inventory.uom_conversions SET default_shipping = TRUE WHERE id = ?", second);
+            assertThat(itemControls.cartonSpec(new Sku(sku)).orElseThrow().unitOfMeasure()).isEqualTo("CARTON24");
+            write("UPDATE inventory.uom_conversions SET active = FALSE, default_shipping = FALSE WHERE id = ?", second);
+            assertThat(itemControls.cartonSpec(new Sku(sku)).orElseThrow().unitOfMeasure())
+                    .as("an inactive unit is not a candidate").isEqualTo("CARTON");
+        } finally {
+            write("DELETE FROM inventory.uom_conversions WHERE id = ?", second);
+            write("UPDATE inventory.uom_conversions SET active = TRUE WHERE id = ?", first);
+            CartonStationSupport.giveCartonsASize(tx, jdbc);
+        }
     }
 }

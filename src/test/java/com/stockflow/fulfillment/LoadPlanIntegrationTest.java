@@ -107,8 +107,8 @@ class LoadPlanIntegrationTest {
 
     @BeforeEach
     void setUp() {
-        CartonStationSupport.giveCartonsASize(jdbc);
-        parts = new CartonStationSupport.Parts(this::packer, jdbc, json);
+        CartonStationSupport.giveCartonsASize(tx, jdbc);
+        parts = new CartonStationSupport.Parts(this::packer, tx, jdbc, json);
         coordinator = staff("ORDER_COORDINATOR");
         sales = staff("SALES_STAFF");
         manager = staff("WAREHOUSE_MANAGER", HCM);

@@ -146,8 +146,8 @@ class DispatchHandoverIntegrationTest {
         ghn = tx.execute(s -> ReferenceRows.truckCarrier(entityManager, "Xe tải Nhanh"));
         ghtk = tx.execute(s -> ReferenceRows.truckCarrier(entityManager, "Xe tải Tiết Kiệm"));
         truck5t = jdbc.queryForObject("SELECT id FROM fulfillment.vehicle_type WHERE code = 'TRUCK-5T'", UUID.class);
-        CartonStationSupport.giveCartonsASize(jdbc);
-        parts = new CartonStationSupport.Parts(request -> as(picker, "WAREHOUSE_STAFF", request), jdbc, json);
+        CartonStationSupport.giveCartonsASize(tx, jdbc);
+        parts = new CartonStationSupport.Parts(request -> as(picker, "WAREHOUSE_STAFF", request), tx, jdbc, json);
     }
 
     // ---- fixtures ----------------------------------------------------------------------------
