@@ -99,7 +99,7 @@ class PickListTest {
                     UUID::randomUUID));
 
             assertThat(thrown).isInstanceOfSatisfying(BusinessException.class, refusal -> {
-                assertThat(refusal.errorCode()).isEqualTo(ErrorCode.CONFLICT);
+                assertThat(refusal.errorCode()).isEqualTo(ErrorCode.PICK_HOLD_NOT_IN_CARTON);
                 assertThat(refusal.getMessage()).contains("MUG-9").doesNotContain("CUP-12");
             });
             assertThat(list.lines()).isEmpty();

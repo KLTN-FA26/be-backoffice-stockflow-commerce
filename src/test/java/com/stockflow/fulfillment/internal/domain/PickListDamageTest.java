@@ -184,9 +184,18 @@ class PickListDamageTest {
         });
 
         PickLine third = open("CUP", "HCM-A01-1-A", 2, "LPN-4");
-        assertThatThrownBy(() -> list(PickStatus.PICKING, third).replaceDamaged(third.id(), 2, REPORT, List.of(hold(
-                UUID.randomUUID(), "CUP", "HCM-A02-1-A", HCM, 2, null)), null, UUID::randomUUID))
-                .as("a replacement with no carton").isInstanceOf(IllegalArgumentException.class);
+        PickList withThird = list(PickStatus.PICKING, third);
+        assertThat(refusal(() -> withThird.replaceDamaged(third.id(), 2, REPORT, List.of(hold(
+                UUID.randomUUID(), "CUP", "HCM-A02-1-A", HCM, 2, null)), null, UUID::randomUUID)))
+                .as("a replacement with no carton").isEqualTo(ErrorCode.PICK_HOLD_NOT_IN_CARTON);
+        assertThat(third.status()).as("nothing changed").isEqualTo(PickLineStatus.OPEN);
+        assertThat(withThird.lines()).hasSize(1);
+        PickLine packed = picked("CUP", "HCM-A01-1-A", 2, "LPN-5");
+        PickList packing = list(PickStatus.PICKED, packed);
+        assertThat(refusal(() -> packing.replaceDamagedAfterPick(packed.id(), 2, REPORT, List.of(hold(
+                UUID.randomUUID(), "CUP", "HCM-A02-1-A", HCM, 2, null)), null, UUID::randomUUID)))
+                .as("a replacement at packing with no carton").isEqualTo(ErrorCode.PICK_HOLD_NOT_IN_CARTON);
+        assertThat(packed.packingDamagedQty()).isZero();
     }
 
     @Test

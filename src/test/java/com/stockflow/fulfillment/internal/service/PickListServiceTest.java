@@ -178,7 +178,7 @@ class PickListServiceTest {
         }
 
         @Test
-        @DisplayName("a live hold on no carton is CONFLICT: a line is picked by its carton's LPN, so none is planned")
+        @DisplayName("a live hold on no carton is PICK_HOLD_NOT_IN_CARTON: a line is picked by its carton's LPN, so none is planned")
         void looseHoldIsRefused() {
             OrderSummary order = FulfillmentFixtures.orderWith(task.getOrderId(), OrderStatus.PICKING,
                     List.of(FulfillmentFixtures.stockLine("SKU-A", resA)), null);
@@ -186,7 +186,8 @@ class PickListServiceTest {
                     HoldView.Status.HELD, null, null)));
             locationsIn(WAREHOUSE, "HCM-A-01");
 
-            assertThat(refusal(() -> service.planLines(task, order)).errorCode()).isEqualTo(ErrorCode.CONFLICT);
+            assertThat(refusal(() -> service.planLines(task, order)).errorCode())
+                    .isEqualTo(ErrorCode.PICK_HOLD_NOT_IN_CARTON);
             verify(pickLines, never()).saveAll(any());
         }
 
