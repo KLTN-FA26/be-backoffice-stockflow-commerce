@@ -64,6 +64,12 @@ class SeedTestDataLoadTest {
                 outbound(db);
                 assertThat(RawSql.text(db, "SELECT connection_type || '|' || (api_key_sealed IS NULL) FROM "
                         + "fulfillment.carrier WHERE id = ?", AHAMOVE)).as("Ahamove without a key").isEqualTo("MANUAL|true");
+                // Review S-2: a MANUAL carrier has no API traffic; its trips carry typed waybill numbers instead.
+                for (String table : List.of("fulfillment.carrier_booking", "fulfillment.carrier_api_call",
+                        "fulfillment.carrier_event")) {
+                    assertThat(RawSql.number(db, "SELECT count(*) FROM " + table + " WHERE created_by = 'seed'"))
+                            .as("%s without the key", table).isZero();
+                }
             }
             noOrphans(pg, database);
 
@@ -102,6 +108,7 @@ class SeedTestDataLoadTest {
                         AHAMOVE), "carrier:" + AHAMOVE + ":api-key")).isEqualTo(apiKey);
                 assertThat(cipher.open(RawSql.text(db, "SELECT webhook_auth_value_sealed FROM fulfillment.carrier WHERE "
                         + "id = ?", AHAMOVE), "carrier:" + AHAMOVE + ":webhook-auth-value")).isEqualTo(token);
+                ahamoveTraffic(db);
                 // The demo's own rows are still there, next to the seed's.
                 assertThat(RawSql.number(db, "SELECT count(*) FROM warehouse.warehouse WHERE id = ?",
                         DemoData.WAREHOUSE_HCM)).isOne();
@@ -132,8 +139,20 @@ class SeedTestDataLoadTest {
                 Map.entry("DRAFT", 1L), Map.entry("PENDING_CONTRACT", 1L), Map.entry("PENDING_PAYMENT", 1L),
                 Map.entry("CONFIRMED", 1L), Map.entry("AWAITING_STOCK", 3L), Map.entry("READY_TO_FULFILL", 1L),
                 Map.entry("PICKING", 1L), Map.entry("PACKED", 1L), Map.entry("SHIPPED", 2L), Map.entry("DELIVERED", 1L),
-                Map.entry("DELIVERY_FAILED", 1L), Map.entry("RETURN_REQUESTED", 2L), Map.entry("COMPLETED", 1L),
-                Map.entry("CANCELLED", 2L)));
+                Map.entry("DELIVERY_FAILED", 1L), Map.entry("RETURN_REQUESTED", 1L), Map.entry("RETURNED", 1L),
+                Map.entry("COMPLETED", 1L), Map.entry("CANCELLED", 2L)));
+        // Review S-1: goods back in the warehouse move the order to RETURNED (ReturnRequestService.goodsReceived),
+        // with its history line; a return still waiting for its goods leaves the order RETURN_REQUESTED.
+        assertThat(RawSql.number(db, "SELECT count(*) FROM ordering.return_request r JOIN ordering.customer_order o ON "
+                + "o.id = r.order_id WHERE r.created_by = 'seed' AND r.status IN ('RECEIVED', 'SETTLEMENT_PENDING', "
+                + "'RESOLVED')")).as("returns whose goods came back").isPositive();
+        assertThat(RawSql.number(db, "SELECT count(*) FROM ordering.return_request r JOIN ordering.customer_order o ON "
+                + "o.id = r.order_id WHERE r.created_by = 'seed' AND r.status IN ('RECEIVED', 'SETTLEMENT_PENDING', "
+                + "'RESOLVED') AND (o.status <> 'RETURNED' OR NOT EXISTS (SELECT 1 FROM ordering.order_status_history h "
+                + "WHERE h.order_id = o.id AND h.to_status = 'RETURNED'))")).as("their orders RETURNED").isZero();
+        assertThat(RawSql.number(db, "SELECT count(*) FROM ordering.return_request r JOIN ordering.customer_order o ON "
+                + "o.id = r.order_id WHERE r.created_by = 'seed' AND r.status = 'REQUESTED' AND o.status <> "
+                + "'RETURN_REQUESTED'")).as("a return waiting for its goods").isZero();
         assertThat(byStatus(db, "ordering.production_order")).as("a production order in every state")
                 .containsOnlyKeys(allowedStatuses(db, "ordering.production_order"));
         assertThat(byStatus(db, "ordering.production_order")).containsEntry("RECEIVED", 10L);
@@ -184,7 +203,7 @@ class SeedTestDataLoadTest {
                 + "'QUARANTINE')")).as("quarantined stock outside a quarantine area").isZero();
     }
 
-    /** Picks to staging, carton checks, load plans, trips with waybills, carrier bookings and webhook events, failures included. */
+    /** Picks to staging, carton checks, load plans, trips with waybills and their outcomes, failures included. */
     private static void outbound(Connection db) throws Exception {
         assertThat(RawSql.number(db, "SELECT count(*) FROM fulfillment.pick_line l JOIN fulfillment.pick p ON p.id = "
                 + "l.pick_id WHERE p.created_by = 'seed' AND l.status = 'STAGED'")).as("lines picked to staging")
@@ -198,7 +217,14 @@ class SeedTestDataLoadTest {
                 "DELIVERY_FAILED");
         assertThat(RawSql.number(db, "SELECT count(*) FROM fulfillment.shipment WHERE created_by = 'seed' AND "
                 + "tracking_number IS NOT NULL")).as("trips with a waybill number").isPositive();
+    }
+
+    /** With the key, Ahamove's bookings, API calls and webhook events, failures included (review S-2). */
+    private static void ahamoveTraffic(Connection db) throws Exception {
+        outbound(db);
         assertThat(byStatus(db, "fulfillment.carrier_booking")).containsKeys("BOOKED", "FAILED");
+        assertThat(RawSql.number(db, "SELECT count(*) FROM fulfillment.carrier_api_call WHERE created_by = 'seed'"))
+                .isPositive();
         assertThat(RawSql.texts(db, "SELECT DISTINCT result FROM fulfillment.carrier_event WHERE created_by = 'seed'"))
                 .contains("APPLIED", "INVALID_SIGNATURE", "UNMATCHED", "DUPLICATE");
     }

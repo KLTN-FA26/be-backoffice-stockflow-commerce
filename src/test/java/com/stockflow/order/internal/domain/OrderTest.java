@@ -1,11 +1,11 @@
 package com.stockflow.order.internal.domain;
 
-import com.stockflow.order.api.CancellationReasonCode;
-import com.stockflow.order.api.OrderStatus;
 import com.stockflow.common.domain.Money;
 import com.stockflow.common.domain.Sku;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
+import com.stockflow.order.api.CancellationReasonCode;
+import com.stockflow.order.api.OrderStatus;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -45,10 +45,15 @@ class OrderTest {
         order.cancel(CancellationReasonCode.OTHER, note, null, STAFF, NOW);
     }
 
+    /**
+     * Placed and waiting for its money: its contract sent and signed with an installment due on signing -
+     * PENDING_PAYMENT. Since the checkout's submit() went (review C4 D-1), signing is how an order is placed.
+     */
     private static Order submittedOrder() {
         Order order = draftWithTwoLines();
         order.lines().forEach(line -> order.attachReservations(line.id(), List.of(UUID.randomUUID())));
-        order.submit();
+        order.sendContract(STAFF, NOW);
+        order.contractSigned(false, true, STAFF, NOW);
         order.pullDomainEvents();
         return order;
     }
@@ -66,28 +71,13 @@ class OrderTest {
     }
 
     @Test
-    @DisplayName("cannot be submitted while a line holds no stock")
-    void submitRequiresEveryLineToBeReserved() {
+    @DisplayName("signing its contract announces OrderPlaced with the full line detail")
+    void signingPublishesOrderPlaced() {
         Order order = draftWithTwoLines();
-        order.attachReservations(order.lines().getFirst().id(), List.of(UUID.randomUUID()));
+        order.sendContract(STAFF, NOW);
+        order.pullDomainEvents();
 
-        // The guard that catches the day someone adds a checkout path that forgets to reserve.
-        assertThatThrownBy(order::submit)
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("1 line(s) hold no stock reservation");
-
-        // And the refusal leaves nothing half-done: the order is still a DRAFT, not an order
-        // claiming to be awaiting payment for stock nobody set aside.
-        assertThat(order.status()).isEqualTo(OrderStatus.DRAFT);
-    }
-
-    @Test
-    @DisplayName("submitting announces OrderPlaced with the full line detail")
-    void submitPublishesOrderPlaced() {
-        Order order = draftWithTwoLines();
-        order.lines().forEach(line -> order.attachReservations(line.id(), List.of(UUID.randomUUID())));
-
-        order.submit();
+        order.contractSigned(false, true, STAFF, NOW);
 
         assertThat(order.status()).isEqualTo(OrderStatus.PENDING_PAYMENT);
         assertThat(order.pullDomainEvents()).singleElement()
@@ -229,11 +219,12 @@ class OrderTest {
     // ------------------------------------------------------------------ confirmation (4B-5, 4B-6; 4B-10)
 
     @Test
-    @DisplayName("an order placed at checkout waits in PENDING_PAYMENT: no money in the system confirms it any more")
-    void checkoutOrderIsNeverConfirmedByMoney() {
-        Order order = submittedOrder();
-        assertThat(order.confirmByInstallments(NOW)).as("not an order of a contract").isFalse();
-        assertThat(order.status()).isEqualTo(OrderStatus.PENDING_PAYMENT);
+    @DisplayName("an order no contract was signed for is never confirmed by money")
+    void unsignedOrderIsNeverConfirmedByMoney() {
+        Order order = draftWithTwoLines();
+        order.sendContract(STAFF, NOW);
+        assertThat(order.confirmByInstallments(NOW)).as("not an order of a signed contract").isFalse();
+        assertThat(order.status()).isEqualTo(OrderStatus.PENDING_CONTRACT);
         assertThat(order.paidByContract()).isFalse();
     }
 
@@ -404,9 +395,7 @@ class OrderTest {
     @Test
     @DisplayName("an order waiting for its money is not released; a confirmed one is not picked before; released once")
     void releaseRefusals() {
-        Order unpaid = draftWithTwoLines();
-        unpaid.lines().forEach(line -> unpaid.attachReservations(line.id(), List.of(UUID.randomUUID())));
-        unpaid.submit();
+        Order unpaid = submittedOrder();
         assertThatThrownBy(() -> unpaid.release(HCM, "HCM", COORDINATOR, NOW))
                 .isInstanceOf(InvalidOrderTransitionException.class);
 

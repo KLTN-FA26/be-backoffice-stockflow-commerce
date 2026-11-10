@@ -52,8 +52,7 @@ class SalesContractTest {
         assertThatThrownBy(() -> SalesContract.requireContractable(order(false)))
                 .extracting(SalesContractTest::code).isEqualTo(ErrorCode.SALES_CONTRACT_ORDER_NOT_CARTONS);
         Order placed = order(true);
-        placed.lines().forEach(line -> placed.attachReservations(line.id(), List.of(UUID.randomUUID())));
-        placed.submit();
+        placed.sendContract(SALES, NOW);
         assertThatThrownBy(() -> SalesContract.requireContractable(placed))
                 .extracting(SalesContractTest::code).isEqualTo(ErrorCode.SALES_CONTRACT_ORDER_NOT_DRAFT);
         SalesContract contract = contract(order(true), TODAY.plusDays(20));

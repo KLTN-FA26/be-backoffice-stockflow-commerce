@@ -51,8 +51,8 @@ class LotTraceServiceTest {
     }
 
     private static LotTrace.Summary summary() {
-        return new LotTrace.Summary(LOT, "INK-RED", "L1", NOW, "GOODS_RECEIPT", null, null, null, null, null, null,
-                null, 100, 60, 50, 10);
+        return new LotTrace.Summary(LOT, "INK-RED", "L1", NOW, "GOODS_RECEIPT", null, null, null, 100, 60, 50,
+                10);
     }
 
     private ArgumentCaptor<LotTraceSearch.Filter> lotsFiltered() {

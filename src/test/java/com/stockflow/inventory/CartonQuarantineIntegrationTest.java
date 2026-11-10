@@ -11,17 +11,17 @@ import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.api.MoveReference;
 import com.stockflow.inventory.api.MoveStockPackagesCommand;
 import com.stockflow.inventory.api.RequestAdjustmentCommand;
-import com.stockflow.inventory.api.ReserveStockCommand;
 import com.stockflow.inventory.api.StockAdjustmentReason;
 import com.stockflow.inventory.api.StockAdjustmentSummary;
 import com.stockflow.inventory.api.StockPackageView;
 import com.stockflow.inventory.internal.domain.PutawayRanker;
 import com.stockflow.inventory.internal.service.CartonQuarantineService;
-import com.stockflow.inventory.internal.service.PutawayService;
 import com.stockflow.inventory.internal.service.PutawayService.TaskView;
+import com.stockflow.inventory.internal.service.PutawayService;
 import com.stockflow.inventory.internal.service.StockOperations;
 import com.stockflow.support.CartonRows;
 import com.stockflow.support.DemoData;
+import com.stockflow.support.Holds;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
 import com.stockflow.support.RecordedEvents;
@@ -165,8 +165,7 @@ class CartonQuarantineIntegrationTest {
                     VALUES (?, ?, ?, ?, 'CONFIRMED', 1, 'VND', NOW(), 0, NOW(), NOW())""", order,
                     "SO-20991227-%06d".formatted(ORDER_NUMBERS.incrementAndGet()), DemoData.CUSTOMER_ID,
                     UUID.randomUUID());
-            inventory.reserve(new ReserveStockCommand(UUID.randomUUID(), new Sku(sku), quantity, order));
-            inventory.pinReservations(order);
+            Holds.units(inventory, order, sku, prefix, quantity);
         });
         return order;
     }

@@ -2,14 +2,13 @@ package com.stockflow.inventory;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.stockflow.common.domain.Sku;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.security.Role;
 import com.stockflow.inventory.api.AllocateStockCommand;
 import com.stockflow.inventory.api.HoldView;
 import com.stockflow.inventory.api.InventoryService;
-import com.stockflow.inventory.api.ReserveStockCommand;
 import com.stockflow.support.DemoData;
+import com.stockflow.support.Holds;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
 import com.stockflow.support.RedisContainer;
@@ -317,8 +316,7 @@ class LooseStockToCartonsIntegrationTest {
 
         List<HoldView> holds = tx.execute(s -> {
             UUID order = confirmedOrder();
-            inventory.reserve(new ReserveStockCommand(UUID.randomUUID(), new Sku(SOFA), 3, order));
-            inventory.pinReservations(order);
+            Holds.units(inventory, order, SOFA, "HCM", 3);
             List<UUID> ids = inventory.allocate(new AllocateStockCommand(order, "HCM")).allocations().stream()
                     .flatMap(allocation -> allocation.holdIds().stream()).toList();
             List<HoldView> made = inventory.holds(ids);

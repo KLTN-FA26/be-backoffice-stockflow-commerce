@@ -9,10 +9,10 @@ import com.stockflow.inventory.api.HoldView;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.api.MoveReference;
 import com.stockflow.inventory.api.MoveStockPackagesCommand;
-import com.stockflow.inventory.api.ReserveStockCommand;
 import com.stockflow.inventory.api.StockPackageView;
 import com.stockflow.support.CartonRows;
 import com.stockflow.support.DemoData;
+import com.stockflow.support.Holds;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
 import com.stockflow.support.ReferenceRows;
@@ -91,8 +91,7 @@ class CartonAllocationIntegrationTest {
     private UUID reserved(int quantity) {
         UUID order = confirmedOrder();
         tx.executeWithoutResult(s -> {
-            inventory.reserve(new ReserveStockCommand(UUID.randomUUID(), new Sku(sku), quantity, order));
-            inventory.pinReservations(order);
+            Holds.units(inventory, order, sku, "HCM", quantity);
         });
         return order;
     }

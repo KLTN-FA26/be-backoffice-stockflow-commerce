@@ -814,10 +814,9 @@ class ShippingWarehouseIntegrationTest {
         UUID holder = confirmedOrder();
         assertThat(choose(holder, a).fullyHeld()).isTrue();
 
-        // A checkout's hold names no warehouse: promised against the whole system, which still has B's 1,000.
+        // Another order holds B's 1,000; released at A, it would need the holder's stock there.
         UUID other = draftOrder();
-        tx.executeWithoutResult(s -> inventory.reserve(new com.stockflow.inventory.api.ReserveStockCommand(
-                Identifiers.newId(), new Sku(sku.sku()), 1_000, other)));
+        tx.executeWithoutResult(s -> com.stockflow.support.Holds.units(inventory, other, sku.sku(), b.code(), 1_000));
         assertThatThrownBy(() -> tx.executeWithoutResult(s -> inventory.allocate(
                 new com.stockflow.inventory.api.AllocateStockCommand(other, a.code()))))
                 .as("A's stock is the holder's").extracting(ShippingWarehouseIntegrationTest::code)

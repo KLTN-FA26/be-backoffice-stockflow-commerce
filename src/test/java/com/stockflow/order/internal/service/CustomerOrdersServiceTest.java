@@ -279,7 +279,8 @@ class CustomerOrdersServiceTest {
         @DisplayName("the timeline takes the cancellation's reason code from the order, never the typed reason")
         void timelineExposesOnlyTheCode() {
             Order order = OrderFixtures.draft(UUID.randomUUID());
-            order.submit();
+            order.sendContract(OrderFixtures.STAFF, NOW);
+            order.contractSigned(false, true, OrderFixtures.STAFF, NOW);
             order.cancel(CancellationReasonCode.DUPLICATE_ORDER, "secret note", null, null, NOW);
             order(order);
             when(orders.history(order.id().value())).thenReturn(List.of(

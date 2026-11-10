@@ -248,7 +248,7 @@ class StockPackageContentsTest {
         void writeDownCannotCutIntoHolds() {
             StockPackage carton = carton(id, 24);
             StockItem held = row(id, 24);
-            held.reserve(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), Quantity.of(24), NOW);
+            held.allocate(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), Quantity.of(24), NOW);
             rowsOf(carton, held);
 
             assertThat(codeOf(() -> contents.adjust(id, -24, false, NOW))).isEqualTo(ErrorCode.STOCK_PACKAGE_HELD);

@@ -5,13 +5,13 @@ import com.stockflow.common.id.Identifiers;
 import com.stockflow.inventory.api.InventoryService;
 
 import com.stockflow.inventory.api.RequestAdjustmentCommand;
-import com.stockflow.inventory.api.ReserveStockCommand;
 import com.stockflow.inventory.api.StockAdjustmentReason;
 import com.stockflow.inventory.consumption.PickConsumption;
 import com.stockflow.inventory.consumption.PutBackCommand;
 import com.stockflow.inventory.internal.service.StockOperations;
 import com.stockflow.support.CartonRows;
 import com.stockflow.support.DemoData;
+import com.stockflow.support.Holds;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
 import com.stockflow.support.ReferenceRows;
@@ -187,11 +187,8 @@ class SameReceiptMergeIntegrationTest {
         cartons(2, 3);
         UUID order = confirmedOrder();
         List<UUID> holds = tx.execute(s -> {
-            UUID first = inventory.reserve(new ReserveStockCommand(UUID.randomUUID(), new Sku(sku), 3, order))
-                    .reservationIds().getFirst();
-            UUID second = inventory.reserve(new ReserveStockCommand(UUID.randomUUID(), new Sku(sku), 3, order))
-                    .reservationIds().getFirst();
-            inventory.pinReservations(order);
+            UUID first = Holds.units(inventory, order, sku, "HCM", 3);
+            UUID second = Holds.units(inventory, order, sku, "HCM", 3);
             return allocated(order, List.of(first, second));
         });
         List<String> lpns = holds.stream().map(this::lpnOf).toList();
@@ -241,9 +238,7 @@ class SameReceiptMergeIntegrationTest {
         cartons(1, 5);
         UUID order = confirmedOrder();
         UUID hold = tx.execute(s -> {
-            UUID id = inventory.reserve(new ReserveStockCommand(UUID.randomUUID(), new Sku(sku), 5, order))
-                    .reservationIds().getFirst();
-            inventory.pinReservations(order);
+            UUID id = Holds.units(inventory, order, sku, "HCM", 5);
             return allocated(order, List.of(id)).getFirst();
         });
         String picked = lpnOf(hold);
@@ -286,9 +281,7 @@ class SameReceiptMergeIntegrationTest {
         cartons(1, 3);
         UUID order = confirmedOrder();
         UUID hold = tx.execute(s -> {
-            UUID id = inventory.reserve(new ReserveStockCommand(UUID.randomUUID(), new Sku(sku), 3, order))
-                    .reservationIds().getFirst();
-            inventory.pinReservations(order);
+            UUID id = Holds.units(inventory, order, sku, "HCM", 3);
             return allocated(order, List.of(id)).getFirst();
         });
         String lpn = lpnOf(hold);

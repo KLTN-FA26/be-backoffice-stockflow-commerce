@@ -39,8 +39,7 @@ class InventoryLevelTest {
                         mock(com.stockflow.inventory.internal.domain.SkuReservationRepository.class),
                         mock(com.stockflow.inventory.internal.domain.LocationDirectory.class),
                         mock(com.stockflow.inventory.internal.domain.CycleCountRepository.class),
-                    mock(com.stockflow.inventory.internal.domain.StockPackageRepository.class),
-                        java.time.Duration.ofMinutes(30));
+                    mock(com.stockflow.inventory.internal.domain.StockPackageRepository.class));
 
     private static StockLevelLine line(
             String location, StockStatus status, int onHand, int reserved) {

@@ -30,7 +30,6 @@ import org.junit.jupiter.api.Test;
 import org.springframework.context.ApplicationEventPublisher;
 
 import java.time.Clock;
-import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.HashMap;
@@ -42,7 +41,6 @@ import java.util.UUID;
 
 import static com.stockflow.inventory.internal.service.InventoryFixtures.NOW;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyCollection;
 import static org.mockito.Mockito.mock;
@@ -66,7 +64,7 @@ class InventoryServiceImplAvailabilityTest {
     private final InventoryServiceImpl service = new InventoryServiceImpl(repository,
             new InventoryEventPublisher(mock(ApplicationEventPublisher.class)), operations,
             mock(InventoryItemDirectory.class), Clock.fixed(NOW, ZoneOffset.UTC), policies, skuReservations,
-            locations, cycleCounts, stockPackages, Duration.ofMinutes(30));
+            locations, cycleCounts, stockPackages);
 
     private final Map<StockItemId, StockItem> rows = new HashMap<>();
 
@@ -97,17 +95,6 @@ class InventoryServiceImplAvailabilityTest {
     private static CurrentUser clerkOf(String prefix) {
         return new CurrentUser(UUID.randomUUID(), "clerk", Set.of(Role.WAREHOUSE_STAFF), Set.of(), DataScope.WAREHOUSE,
                 Set.of(prefix), Set.of(UUID.randomUUID()));
-    }
-
-    @Test
-    @DisplayName("a reservation TTL that is not positive is refused at construction")
-    void ttlMustBePositive() {
-        assertThatThrownBy(() -> new InventoryServiceImpl(repository, null, operations, null, Clock.systemUTC(),
-                policies, skuReservations, null, cycleCounts, stockPackages, Duration.ZERO))
-                .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> new InventoryServiceImpl(repository, null, operations, null, Clock.systemUTC(),
-                policies, skuReservations, null, cycleCounts, stockPackages, Duration.ofMinutes(-1)))
-                .isInstanceOf(IllegalArgumentException.class);
     }
 
     @Nested
@@ -334,8 +321,11 @@ class InventoryServiceImplAvailabilityTest {
         @Test
         @DisplayName("each row shows on hand, reserved and available separately")
         void rowFigures() {
-            StockItem bin = stock("HCM-A01-1-A", "L1", 50);
-            bin.reserve(ORDER, UUID.randomUUID(), UUID.randomUUID(), Quantity.of(12), NOW);
+            // A carton's row, allocated in part for an order: only a carton's row takes a hold (20 BR-14).
+            StockItem bin = new StockItem(StockItemId.newId(), CUP, new LocationId("HCM-A01-1-A"), "L1",
+                    Quantity.of(50), StockStatus.AVAILABLE, List.of(), 0L, NOW, UUID.randomUUID(),
+                    new StockPackageId(UUID.randomUUID()));
+            bin.allocate(ORDER, UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), Quantity.of(12), NOW);
             when(repository.findAvailableBySku(CUP)).thenReturn(List.of(bin));
 
             StockAvailability row = service.availabilityOf(CUP).get(0);

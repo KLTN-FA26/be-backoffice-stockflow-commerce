@@ -1,6 +1,5 @@
 package com.stockflow.inventory;
 
-import com.stockflow.common.domain.Sku;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
@@ -11,7 +10,6 @@ import com.stockflow.inventory.api.AllocateStockCommand;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.api.MoveReference;
 import com.stockflow.inventory.api.ReclassifyStockPackagesCommand;
-import com.stockflow.inventory.api.ReserveStockCommand;
 import com.stockflow.inventory.api.StockDisposition;
 import com.stockflow.inventory.api.StockReservation;
 import com.stockflow.inventory.consumption.PickConsumption;
@@ -19,6 +17,7 @@ import com.stockflow.inventory.internal.domain.LotTrace;
 import com.stockflow.inventory.internal.service.LotTraces;
 import com.stockflow.procurement.internal.service.GoodsReceipts;
 import com.stockflow.support.DemoData;
+import com.stockflow.support.Holds;
 import com.stockflow.support.ProductionReceiptTest;
 import com.stockflow.support.ProductionReceivables;
 import com.stockflow.support.ReferenceRows;
@@ -129,8 +128,7 @@ class LotTraceIntegrationTest {
         putAway(first);
         putAway(second);
         UUID order = order();
-        tx.executeWithoutResult(s -> inventory.reserve(new ReserveStockCommand(UUID.randomUUID(), new Sku(sku), 6,
-                order)));
+        tx.executeWithoutResult(s -> Holds.units(inventory, order, sku, "HCM", 6));
         List<StockReservation> allocated = tx.execute(s -> inventory.allocate(new AllocateStockCommand(order, "HCM")))
                 .allocations().get(0).holds();
         assertThat(allocated).extracting(StockReservation::locationCode).containsOnly(BIN);

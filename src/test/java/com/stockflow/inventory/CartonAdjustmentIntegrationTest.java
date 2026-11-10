@@ -5,18 +5,20 @@ import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.inventory.api.AllocateStockCommand;
+import com.stockflow.inventory.api.HoldStockCommand;
+import com.stockflow.inventory.api.HoldStockResult;
 import com.stockflow.inventory.api.InventoryService;
-import com.stockflow.inventory.api.ReserveStockCommand;
 import com.stockflow.inventory.api.StockAdjustmentReason;
 import com.stockflow.inventory.api.StockAdjustmentStatus;
 import com.stockflow.inventory.api.StockAdjustmentSummary;
 import com.stockflow.inventory.internal.domain.AdjustmentDirection;
-import com.stockflow.inventory.internal.service.CycleCounts;
 import com.stockflow.inventory.internal.service.CycleCounts.PlanCycleCountCommand;
-import com.stockflow.inventory.internal.service.StockOperations;
+import com.stockflow.inventory.internal.service.CycleCounts;
 import com.stockflow.inventory.internal.service.StockOperations.PackageAdjustmentRequest;
+import com.stockflow.inventory.internal.service.StockOperations;
 import com.stockflow.support.CartonRows;
 import com.stockflow.support.DemoData;
+import com.stockflow.support.Holds;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
 import com.stockflow.support.ReferenceRows;
@@ -134,9 +136,7 @@ class CartonAdjustmentIntegrationTest {
     private List<UUID> holdOneCarton() {
         UUID order = confirmedOrder();
         UUID hold = tx.execute(s -> {
-            UUID id = inventory.reserve(new ReserveStockCommand(UUID.randomUUID(), new Sku(sku), CARTON, order))
-                    .reservationIds().getFirst();
-            inventory.pinReservations(order);
+            UUID id = Holds.units(inventory, order, sku, "HCM", CARTON);
             return inventory.allocate(new AllocateStockCommand(order, "HCM")).allocations().stream()
                     .filter(allocation -> allocation.reservationId().equals(id)).findFirst().orElseThrow()
                     .holdIds().getFirst();
@@ -374,17 +374,20 @@ class CartonAdjustmentIntegrationTest {
     }
 
     @Test
-    @DisplayName("the carton waiting for a decision cannot be reserved beyond what is left: ATP is the other carton only")
+    @DisplayName("the carton waiting for a decision cannot be held beyond what is left: ATP is the other carton only")
     void aPendingWriteOffCannotBeReservedAway() {
         CartonRows.Carton a = carton(BIN);
         carton(BIN2);
         ask(a, AdjustmentDirection.WRITE_OFF, StockAdjustmentReason.DAMAGED, null);
 
         UUID order = confirmedOrder();
-        Throwable tooMuch = catchThrowable(() -> tx.executeWithoutResult(s -> inventory.reserve(
-                new ReserveStockCommand(UUID.randomUUID(), new Sku(sku), 2 * CARTON, order))));
+        HoldStockResult held = tx.execute(s -> {
+            inventory.prepareReservation(java.util.Set.of(new Sku(sku)));
+            return inventory.holdAtWarehouse(new HoldStockCommand(UUID.randomUUID(), order, new Sku(sku), "HCM", 2,
+                    CARTON));
+        });
 
-        assertThat(tooMuch).as("two cartons were asked for, one is promised").isNotNull();
+        assertThat(held.cartonsHeld()).as("two cartons were asked for, one is promised").isEqualTo(1);
     }
 
     // ------------------------------------------------------------------ the two paths of a stock adjustment

@@ -2,7 +2,6 @@ package com.stockflow.order.internal.service;
 
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.contracts.OrderReleased;
-import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.OrderSummary;
@@ -44,14 +43,13 @@ class OrderReleaseServiceTest {
     private final WarehouseDirectory warehouses = mock(WarehouseDirectory.class);
     private final OrderEventPublisher events = mock(OrderEventPublisher.class);
     private final OrderService orders = mock(OrderService.class);
-    private final InventoryService inventory = mock(InventoryService.class);
     private final PaymentService paymentService = mock(PaymentService.class);
     private final OrderStockAllocation allocation = mock(OrderStockAllocation.class);
     private final com.stockflow.order.internal.domain.SalesContractRepository contracts =
             mock(com.stockflow.order.internal.domain.SalesContractRepository.class);
     private final OrderSummary summary = mock(OrderSummary.class);
     private final OrderReleaseService service = new OrderReleaseService(repository, warehouses, events,
-            orders, Clock.fixed(NOW, ZoneOffset.UTC), inventory, paymentService, allocation, contracts,
+            orders, Clock.fixed(NOW, ZoneOffset.UTC), paymentService, allocation, contracts,
             org.mockito.Mockito.mock(ShippingWarehouseService.class), org.mockito.Mockito.mock(com.stockflow.order.internal.service.DeliveryBatchService.class), org.mockito.Mockito.mock(com.stockflow.order.internal.domain.DeliveryBatchRecords.class));
 
     @BeforeEach
@@ -67,7 +65,7 @@ class OrderReleaseServiceTest {
     }
 
     @Test
-    @DisplayName("a stock-only order goes to READY_TO_FULFILL: stock allocated, holds pinned, saved, OrderReleased published")
+    @DisplayName("a stock-only order goes to READY_TO_FULFILL: stock allocated, saved, OrderReleased published")
     void releasesAStockOrder() {
         Order order = loaded(OrderFixtures.confirmed());
 
@@ -76,7 +74,6 @@ class OrderReleaseServiceTest {
         assertThat(order.status()).isEqualTo(OrderStatus.READY_TO_FULFILL);
         assertThat(order.warehouseId()).isEqualTo(WAREHOUSE);
         verify(allocation).allocate(order, "HCM");
-        verify(inventory).pinReservations(order.id().value());
         verify(repository).save(order);
         verify(events).publishEventsOf(order);
         assertThat(order.pullDomainEvents()).anySatisfy(event -> assertThat(event)

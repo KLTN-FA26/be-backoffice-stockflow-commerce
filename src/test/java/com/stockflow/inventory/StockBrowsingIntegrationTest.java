@@ -1,6 +1,5 @@
 package com.stockflow.inventory;
 
-import com.stockflow.common.domain.Sku;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
@@ -8,11 +7,11 @@ import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.DataScope;
 import com.stockflow.common.security.Role;
 import com.stockflow.inventory.api.InventoryService;
-import com.stockflow.inventory.api.ReserveStockCommand;
 import com.stockflow.inventory.internal.domain.ReservationStatus;
 import com.stockflow.inventory.internal.domain.StockStatus;
 import com.stockflow.inventory.internal.service.StockBrowsing;
 import com.stockflow.support.DemoData;
+import com.stockflow.support.Holds;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
 import com.stockflow.support.WithCurrentUser;
@@ -82,9 +81,8 @@ class StockBrowsingIntegrationTest {
                     order, "SO-20991231-%06d".formatted(ThreadLocalRandom.current().nextInt(1_000_000)),
                     DemoData.CUSTOMER_ID, UUID.randomUUID());
         });
-        // SCRUM-152: checkout holds the SKU; releasing the order to HCM puts the hold on the oldest whole carton.
-        UUID reservation = inventory.reserve(new ReserveStockCommand(UUID.randomUUID(), new Sku(sku), 3, order))
-                .reservationIds().get(0);
+        // Sales holds the SKU at HCM (4B-7); releasing the order to HCM puts the hold on the oldest whole carton.
+        UUID reservation = tx.execute(s -> Holds.units(inventory, order, sku, "HCM", 3));
         softReservation = reservation;
         tx.executeWithoutResult(s -> inventory.allocate(
                 new com.stockflow.inventory.api.AllocateStockCommand(order, "HCM")));

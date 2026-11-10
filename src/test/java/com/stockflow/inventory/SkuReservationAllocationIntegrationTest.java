@@ -6,10 +6,11 @@ import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.inventory.api.AllocateStockCommand;
 import com.stockflow.inventory.api.AllocateStockResult;
+import com.stockflow.inventory.api.HoldStockCommand;
+import com.stockflow.inventory.api.HoldStockResult;
 import com.stockflow.inventory.api.HoldView;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.api.ReallocateStockCommand;
-import com.stockflow.inventory.api.ReserveStockCommand;
 import com.stockflow.inventory.api.StockAvailability;
 import com.stockflow.inventory.api.StockReservation;
 import com.stockflow.support.DemoData;
@@ -130,15 +131,29 @@ class SkuReservationAllocationIntegrationTest {
         return order;
     }
 
-    private StockReservation reserve(UUID order, int quantity) {
+    /** A SKU hold Sales took for the order at HCM (4B-7): its reservation id. */
+    private record Hold(UUID reservationId) {
+    }
+
+    private Hold reserve(UUID order, int quantity) {
         return reserve(order, UUID.randomUUID(), quantity);
     }
 
-    private StockReservation reserve(UUID order, UUID request, int quantity) {
+    /** {@code quantity} units held at HCM for the order; fails the test when fewer could be. */
+    private Hold reserve(UUID order, UUID request, int quantity) {
+        HoldStockResult held = hold(order, request, quantity);
+        assertThat(held.cartonsHeld()).as("%d of %s held", quantity, sku).isOne();
+        return new Hold(held.reservationIds().getFirst());
+    }
+
+    /**
+     * The hold as asked: {@code quantity} units as one block, or nothing when HCM has fewer to promise - a shortage
+     * holds nothing (4B-7: held later, when stock arrives), it is not refused.
+     */
+    private HoldStockResult hold(UUID order, UUID request, int quantity) {
         return tx.execute(s -> {
             inventory.prepareReservation(Set.of(new Sku(sku)));
-            return inventory.reserve(new ReserveStockCommand(request, new Sku(sku), quantity, order))
-                    .reservations().get(0);
+            return inventory.holdAtWarehouse(new HoldStockCommand(request, order, new Sku(sku), "HCM", 1, quantity));
         });
     }
 
@@ -169,23 +184,21 @@ class SkuReservationAllocationIntegrationTest {
     }
 
     @Test
-    @DisplayName("checkout holds the SKU on no location: ATP falls, no stock row is held, a replay is the same hold")
-    void checkoutReservesTheSkuOnly() {
+    @DisplayName("a hold takes the SKU at a warehouse on no location: ATP falls, no stock row is held, no deadline, "
+            + "a replay is the same hold")
+    void aHoldReservesTheSkuOnly() {
         assertThat(atp()).isEqualTo(17);
         UUID order = order();
         UUID request = UUID.randomUUID();
-        StockReservation held = reserve(order, request, 7);
+        Hold held = reserve(order, request, 7);
 
-        assertThat(held.stockItemId()).isNull();
-        assertThat(held.locationCode()).isNull();
-        assertThat(held.quantity()).isEqualTo(7);
         assertThat(atp()).isEqualTo(10);
         assertThat(reservedEverywhere()).isZero();
         assertThat(jdbc.queryForMap("""
-                SELECT stock_item_id, sku, status, expires_at IS NOT NULL AS deadline FROM inventory.stock_reservation
-                 WHERE id = ?""", held.reservationId()))
+                SELECT stock_item_id, sku, status, quantity, warehouse_code, expires_at IS NOT NULL AS deadline
+                  FROM inventory.stock_reservation WHERE id = ?""", held.reservationId()))
                 .containsEntry("stock_item_id", null).containsEntry("sku", sku).containsEntry("status", "HELD")
-                .containsEntry("deadline", true);
+                .containsEntry("quantity", 7).containsEntry("warehouse_code", "HCM").containsEntry("deadline", false);
 
         assertThat(reserve(order, request, 7).reservationId()).isEqualTo(held.reservationId());
         assertThat(atp()).isEqualTo(10);
@@ -193,14 +206,16 @@ class SkuReservationAllocationIntegrationTest {
                 .satisfies(hold -> assertThat(hold.locationCode()).isNull());
         assertThat(inventory.holds(List.of(held.reservationId()))).singleElement()
                 .satisfies(view -> assertThat(view.status()).isEqualTo(HoldView.Status.HELD));
-        assertThat(code(catchThrowable(() -> reserve(order(), 16)))).isEqualTo(ErrorCode.INSUFFICIENT_STOCK);
+        assertThat(hold(order(), UUID.randomUUID(), 16).cartonsHeld()).as("10 left to promise: nothing held")
+                .isZero();
+        assertThat(atp()).isEqualTo(10);
     }
 
     @Test
     @DisplayName("release allocates whole cartons FIFO on pickable bins: the oldest receipt first; never an area")
     void allocationFollowsFifoOnPickableBins() {
         UUID order = order();
-        StockReservation soft = reserve(order, 12);
+        Hold soft = reserve(order, 12);
         int atpBefore = atp();
 
         AllocateStockResult result = allocate(order, "hcm");
@@ -240,15 +255,14 @@ class SkuReservationAllocationIntegrationTest {
     @DisplayName("a warehouse that cannot cover the order allocates nothing and leaves the reservation held")
     void allocationIsAllOrNothing() {
         UUID order = order();
-        StockReservation soft = reserve(order, 13);   // 17 pickable in HCM: enough
+        Hold soft = reserve(order, 13);   // 17 pickable in HCM: enough
         UUID other = order();
-        StockReservation rest = reserve(other, 4);    // ATP 17 - 13 = 4: the area's cartons are not promised
-        assertThat(code(catchThrowable(() -> reserve(order(), 1)))).as("nothing left to promise")
-                .isEqualTo(ErrorCode.INSUFFICIENT_STOCK);
+        Hold rest = reserve(other, 4);    // ATP 17 - 13 = 4: the area's cartons are not promised
+        assertThat(hold(order(), UUID.randomUUID(), 1).cartonsHeld()).as("nothing left to promise").isZero();
 
         assertThat(allocate(order, "HCM").allocations()).hasSize(1);
-        assertThat(code(catchThrowable(() -> allocate(other, "ZZZ")))).as("a warehouse that has none of it")
-                .isEqualTo(ErrorCode.INSUFFICIENT_STOCK);
+        assertThat(code(catchThrowable(() -> allocate(other, "ZZZ")))).as("held at HCM: allocated there or not at all")
+                .isEqualTo(ErrorCode.RESERVATION_WAREHOUSE_MISMATCH);
         assertThat(status(rest.reservationId())).isEqualTo("HELD");
         assertThat(reservedEverywhere()).isEqualTo(13);
         assertThat(status(soft.reservationId())).isEqualTo("ALLOCATED");
@@ -258,8 +272,8 @@ class SkuReservationAllocationIntegrationTest {
     @DisplayName("a release after one line's reservation lapsed allocates nothing, rather than the other lines alone")
     void aLapsedReservationStopsTheAllocation() {
         UUID order = order();
-        StockReservation kept = reserve(order, 2);
-        StockReservation lapsed = reserve(order, 3);
+        Hold kept = reserve(order, 2);
+        Hold lapsed = reserve(order, 3);
         tx.executeWithoutResult(s -> inventory.release(lapsed.reservationId(), "MANUAL_OVERRIDE"));
 
         assertThat(code(catchThrowable(() -> allocate(order, "HCM")))).isEqualTo(ErrorCode.RESERVATION_NOT_ACTIVE);
@@ -267,14 +281,14 @@ class SkuReservationAllocationIntegrationTest {
         assertThat(reservedEverywhere()).isZero();
 
         UUID none = order();
-        StockReservation only = reserve(none, 1);
+        Hold only = reserve(none, 1);
         tx.executeWithoutResult(s -> inventory.release(only.reservationId(), "MANUAL_OVERRIDE"));
         assertThat(code(catchThrowable(() -> allocate(none, "HCM")))).as("nothing left to allocate either")
                 .isEqualTo(ErrorCode.RESERVATION_NOT_ACTIVE);
     }
 
     @Test
-    @DisplayName("concurrent checkouts never promise more than the SKU has")
+    @DisplayName("concurrent holds never promise more than the SKU has")
     void noOversellUnderConcurrency() throws Exception {
         int threads = 8;
         List<UUID> orders = new ArrayList<>();
@@ -288,13 +302,7 @@ class SkuReservationAllocationIntegrationTest {
             for (UUID order : orders) {
                 Callable<Boolean> checkout = () -> {
                     start.await();
-                    try {
-                        reserve(order, 4);
-                        return true;
-                    } catch (BusinessException refused) {
-                        assertThat(refused.errorCode()).isEqualTo(ErrorCode.INSUFFICIENT_STOCK);
-                        return false;
-                    }
+                    return hold(order, UUID.randomUUID(), 4).cartonsHeld() == 1;
                 };
                 results.add(pool.submit(checkout));
             }
@@ -343,13 +351,13 @@ class SkuReservationAllocationIntegrationTest {
     @DisplayName("cancelling before allocation releases the SKU; after, the allocations; ATP comes back either way")
     void cancellationBeforeAndAfterAllocation() {
         UUID early = order();
-        StockReservation soft = reserve(early, 3);
+        Hold soft = reserve(early, 3);
         tx.executeWithoutResult(s -> inventory.release(soft.reservationId(), "ORDER_CANCELLED"));
         assertThat(status(soft.reservationId())).isEqualTo("RELEASED");
         assertThat(atp()).isEqualTo(17);
 
         UUID late = order();
-        StockReservation released = reserve(late, 6);
+        Hold released = reserve(late, 6);
         List<UUID> allocations = allocate(late, "HCM").allocations().get(0).holdIds();
         allocations.forEach(id -> tx.executeWithoutResult(s -> inventory.release(id, "ORDER_CANCELLED")));
         assertThat(allocations).allSatisfy(id -> assertThat(status(id)).isEqualTo("RELEASED"));
@@ -360,27 +368,11 @@ class SkuReservationAllocationIntegrationTest {
     }
 
     @Test
-    @DisplayName("payment pins a SKU reservation, a refused credit re-arms it; allocations never expire")
-    void pinAndRearm() {
-        UUID order = order();
-        StockReservation soft = reserve(order, 2);
-        assertThat((Integer) tx.execute(s -> inventory.pinReservations(order))).isEqualTo(1);
-        assertThat(jdbc.queryForObject("SELECT expires_at IS NULL FROM inventory.stock_reservation WHERE id = ?",
-                Boolean.class, soft.reservationId())).isTrue();
-        assertThat((Integer) tx.execute(s -> inventory.rearmReservations(order))).isEqualTo(1);
-        assertThat(jdbc.queryForObject("SELECT expires_at IS NOT NULL FROM inventory.stock_reservation WHERE id = ?",
-                Boolean.class, soft.reservationId())).isTrue();
-
-        allocate(order, "HCM");
-        assertThat((Integer) tx.execute(s -> inventory.rearmReservations(order))).as("allocations stay pinned").isZero();
-    }
-
-    @Test
     @DisplayName("a short pick's carton is reallocated as the next carton in FIFO order, its own bin's included, never"
             + " the short carton itself (07 BR-09)")
     void reallocationAfterAShortPick() {
         UUID order = order();
-        StockReservation soft = reserve(order, 4);
+        Hold soft = reserve(order, 4);
         StockReservation first = allocate(order, "HCM").allocations().get(0).holds().get(0);
         assertThat(first.locationCode()).isEqualTo("HCM-A01-1-B");
 

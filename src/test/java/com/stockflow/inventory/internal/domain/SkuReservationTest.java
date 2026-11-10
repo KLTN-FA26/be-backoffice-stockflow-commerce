@@ -15,34 +15,38 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/** SCRUM-152: the soft, SKU-level reservation a checkout takes, and the allocation it turns into at release. */
+/**
+ * SCRUM-152 / 4B-7: the soft, SKU-level hold an order of a contract takes at its shipping warehouse, and the allocation
+ * it turns into at release. The checkout reservation with a payment deadline is gone (V20261117000300).
+ */
 class SkuReservationTest {
 
     private static final Sku SKU = new Sku("SOFA-3S-GREY");
     private static final Instant NOW = Instant.parse("2026-10-17T03:00:00Z");
-    private static final Duration TTL = Duration.ofMinutes(30);
 
-    private static SkuReservation open(int quantity, int available) {
-        return SkuReservation.open(SKU, UUID.randomUUID(), UUID.randomUUID(), Quantity.of(quantity), available, NOW, TTL);
+    private static SkuReservation hold(int quantity, int available) {
+        return SkuReservation.holdAt("HCM", SKU, UUID.randomUUID(), UUID.randomUUID(), Quantity.of(quantity), available,
+                NOW);
     }
 
+    /** A carton's row: only a carton's row takes an allocation (kltn-docs 20 BR-14). */
     private static StockItem stock(int onHand) {
-        return new StockItem(StockItemId.newId(), SKU, new LocationId("HCM-A01-1-A"), null, Quantity.of(onHand),
-                StockStatus.AVAILABLE, java.util.List.of(), 0L);
+        return new StockItem(StockItemId.newId(), SKU, new LocationId("HCM-A01-1-A"), "LOT-1", Quantity.of(onHand),
+                StockStatus.AVAILABLE, java.util.List.of(), 0L, NOW, UUID.randomUUID(),
+                new StockPackageId(UUID.randomUUID()));
     }
 
     @Test
-    @DisplayName("opens only within available-to-promise, on no location, with the checkout deadline")
-    void opensWithinAtp() {
-        SkuReservation reservation = open(3, 3);
+    @DisplayName("holds only within available-to-promise, on no location, announced once")
+    void holdsWithinAtp() {
+        SkuReservation reservation = hold(3, 3);
         assertThat(reservation.status()).isEqualTo(ReservationStatus.HELD);
-        assertThat(reservation.expiresAt()).isEqualTo(NOW.plus(TTL));
         assertThat(reservation.pullDomainEvents()).singleElement()
                 .satisfies(e -> assertThat(((StockEvent) e).payload()).isInstanceOfSatisfying(StockReserved.class,
                         reserved -> assertThat(reserved.locationCode()).isNull()));
-        assertThatThrownBy(() -> open(4, 3)).isInstanceOfSatisfying(InsufficientStockException.class,
+        assertThatThrownBy(() -> hold(4, 3)).isInstanceOfSatisfying(InsufficientStockException.class,
                 refused -> assertThat(refused.available()).isEqualTo(3));
-        assertThatThrownBy(() -> open(1, -2)).isInstanceOfSatisfying(InsufficientStockException.class,
+        assertThatThrownBy(() -> hold(1, -2)).isInstanceOfSatisfying(InsufficientStockException.class,
                 refused -> assertThat(refused.available()).isZero());
     }
 
@@ -61,19 +65,15 @@ class SkuReservationTest {
     }
 
     @Test
-    @DisplayName("expires, pins and re-arms like a checkout hold; release is idempotent and announced once")
+    @DisplayName("release is idempotent and announced once; a released hold is not allocated")
     void lifecycle() {
-        SkuReservation reservation = open(2, 10);
-        assertThat(reservation.isExpiredAt(NOW.plus(TTL))).isTrue();
-        assertThat(reservation.pin()).isTrue();
-        assertThat(reservation.isExpiredAt(NOW.plus(Duration.ofDays(1)))).isFalse();
-        assertThat(reservation.pin()).isFalse();
-        assertThat(reservation.rearm(NOW.plus(TTL))).isTrue();
+        SkuReservation reservation = hold(2, 10);
         reservation.pullDomainEvents();
 
-        assertThat(reservation.release(ReleaseReason.RESERVATION_EXPIRED, NOW)).isTrue();
-        assertThat(reservation.status()).isEqualTo(ReservationStatus.EXPIRED);
-        assertThat(reservation.release(ReleaseReason.ORDER_CANCELLED, NOW)).isFalse();
+        assertThat(reservation.release(ReleaseReason.ORDER_CANCELLED, NOW)).isTrue();
+        assertThat(reservation.status()).isEqualTo(ReservationStatus.RELEASED);
+        assertThat(reservation.release(ReleaseReason.MANUAL_OVERRIDE, NOW)).isFalse();
+        assertThat(reservation.releaseReason()).isEqualTo(ReleaseReason.ORDER_CANCELLED);
         assertThat(reservation.pullDomainEvents()).singleElement()
                 .satisfies(e -> assertThat(((StockEvent) e).payload()).isInstanceOf(StockReservationReleased.class));
         assertThatThrownBy(() -> reservation.markAllocated(NOW)).isInstanceOfSatisfying(BusinessException.class,
@@ -81,9 +81,20 @@ class SkuReservationTest {
     }
 
     @Test
+    @DisplayName("a HELD hold of before V20261117000300 still reads as expired past its deadline; a hold of now never")
+    void legacyDeadline() {
+        SkuReservation legacy = new SkuReservation(ReservationId.newId(), SKU, UUID.randomUUID(), UUID.randomUUID(),
+                UUID.randomUUID(), Quantity.of(2), NOW, NOW.plus(Duration.ofMinutes(30)), ReservationStatus.HELD, null,
+                null);
+        assertThat(legacy.isExpiredAt(NOW.plus(Duration.ofMinutes(30)))).isTrue();
+        assertThat(legacy.isExpiredAt(NOW)).isFalse();
+        assertThat(hold(2, 10).isExpiredAt(NOW.plus(Duration.ofDays(365)))).isFalse();
+    }
+
+    @Test
     @DisplayName("allocation: a pinned hold on the stock item pointing back at the reservation, which closes ALLOCATED")
     void allocation() {
-        SkuReservation reservation = open(4, 10);
+        SkuReservation reservation = hold(4, 10);
         StockItem item = stock(5);
         UUID request = UUID.randomUUID();
 
@@ -93,15 +104,14 @@ class SkuReservationTest {
         assertThat(allocation.allocatedFrom()).isEqualTo(reservation.id().value());
         assertThat(allocation.orderId()).isEqualTo(reservation.orderId());
         assertThat(allocation.isPinned()).isTrue();
-        assertThat(allocation.rearm(NOW.plus(TTL))).as("an allocation never waits for payment again").isFalse();
         assertThat(item.reserved()).isEqualTo(Quantity.of(4));
         assertThat(item.allocate(reservation, request, Quantity.of(4), NOW)).as("replayed").isSameAs(allocation);
         assertThat(reservation.status()).isEqualTo(ReservationStatus.ALLOCATED);
         assertThat(reservation.expiresAt()).isNull();
-        assertThatThrownBy(() -> item.allocate(open(2, 10), UUID.randomUUID(), Quantity.of(2), NOW))
+        assertThatThrownBy(() -> item.allocate(hold(2, 10), UUID.randomUUID(), Quantity.of(2), NOW))
                 .isInstanceOf(InsufficientStockException.class);
-        assertThatThrownBy(() -> stock(5).allocate(SkuReservation.open(new Sku("OTHER"), UUID.randomUUID(),
-                UUID.randomUUID(), Quantity.of(1), 1, NOW, TTL), UUID.randomUUID(), Quantity.of(1), NOW))
+        assertThatThrownBy(() -> stock(5).allocate(SkuReservation.holdAt("HCM", new Sku("OTHER"), UUID.randomUUID(),
+                UUID.randomUUID(), Quantity.of(1), 1, NOW), UUID.randomUUID(), Quantity.of(1), NOW))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 

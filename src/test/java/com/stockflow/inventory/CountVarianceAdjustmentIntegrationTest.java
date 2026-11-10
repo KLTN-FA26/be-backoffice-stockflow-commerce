@@ -6,7 +6,6 @@ import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.api.RequestAdjustmentCommand;
-import com.stockflow.inventory.api.ReserveStockCommand;
 import com.stockflow.inventory.api.StockAdjustmentReason;
 import com.stockflow.inventory.api.StockAdjustmentStatus;
 import com.stockflow.inventory.api.StockAdjustmentSummary;
@@ -16,6 +15,7 @@ import com.stockflow.inventory.internal.domain.LocationId;
 import com.stockflow.inventory.internal.domain.StockPackageId;
 import com.stockflow.inventory.internal.service.StockOperations;
 import com.stockflow.support.DemoData;
+import com.stockflow.support.Holds;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
 import com.stockflow.support.ReferenceRows;
@@ -159,9 +159,7 @@ class CountVarianceAdjustmentIntegrationTest {
     /** A customer's hold of one whole carton, allocated onto the SKU's one carton (as in the pick tests). */
     private UUID hold(UUID order) {
         return tx.execute(s -> {
-            UUID id = inventory.reserve(new ReserveStockCommand(UUID.randomUUID(), new Sku(sku), CARTON_FACTOR, order))
-                    .reservationIds().getFirst();
-            inventory.pinReservations(order);
+            UUID id = Holds.units(inventory, order, sku, "HCM", CARTON_FACTOR);
             return inventory.allocate(new com.stockflow.inventory.api.AllocateStockCommand(order, "HCM")).allocations()
                     .stream().filter(allocation -> allocation.reservationId().equals(id)).findFirst().orElseThrow()
                     .holdIds().getFirst();

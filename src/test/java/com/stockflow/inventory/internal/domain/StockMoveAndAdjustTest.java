@@ -24,8 +24,10 @@ class StockMoveAndAdjustTest {
     private static final UUID CLERK = UUID.randomUUID();
     private static final UUID MANAGER = UUID.randomUUID();
 
+    /** A carton's row: stock is kept in whole cartons (kltn-docs 20 BR-14), so only a carton's row takes units or holds. */
     private static StockItem available(int onHand) {
-        StockItem item = new StockItem(StockItemId.newId(), SKU, BIN, "LOT-1", Quantity.of(onHand), StockStatus.AVAILABLE, List.of(), 0L);
+        StockItem item = new StockItem(StockItemId.newId(), SKU, BIN, "LOT-1", Quantity.of(onHand), StockStatus.AVAILABLE,
+                List.of(), 0L, NOW, UUID.randomUUID(), new StockPackageId(UUID.randomUUID()));
         item.pullDomainEvents();
         return item;
     }
@@ -38,7 +40,7 @@ class StockMoveAndAdjustTest {
         @DisplayName("moves only the unreserved units; a hold stays where it was taken")
         void reservedUnitsDoNotMove() {
             StockItem item = available(10);
-            item.reserve(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), Quantity.of(4), NOW);
+            item.allocate(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), Quantity.of(4), NOW);
 
             assertThat(item.movable()).isEqualTo(Quantity.of(6));
             assertThatThrownBy(() -> item.moveOut(Quantity.of(7)))
@@ -143,7 +145,7 @@ class StockMoveAndAdjustTest {
         @DisplayName("a write-off may not eat into a customer's hold")
         void writeOffBelowReservedIsRefused() {
             StockItem item = available(10);
-            item.reserve(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), Quantity.of(8), NOW);
+            item.allocate(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), Quantity.of(8), NOW);
             StockAdjustment adjustment = writeOff(-3, AdjustmentReason.DAMAGED, null);
 
             assertThatThrownBy(() -> adjustment.approveAndPost(MANAGER, item, NOW))

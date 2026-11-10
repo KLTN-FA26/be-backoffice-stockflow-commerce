@@ -1,11 +1,10 @@
 package com.stockflow.fulfillment;
 
-import com.stockflow.common.domain.Sku;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.inventory.api.AllocateStockCommand;
 import com.stockflow.inventory.api.InventoryService;
-import com.stockflow.inventory.api.ReserveStockCommand;
 import com.stockflow.support.DemoData;
+import com.stockflow.support.Holds;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
 import org.junit.jupiter.api.BeforeEach;
@@ -133,7 +132,7 @@ class PickLineCartonMigrationTest {
     /** Reserves and allocates {@code quantity} for the order - one whole carton; returns the one hold it made. */
     private UUID hold(int quantity) {
         List<UUID> holds = tx.execute(s -> {
-            inventory.reserve(new ReserveStockCommand(UUID.randomUUID(), new Sku(sku), quantity, order));
+            Holds.units(inventory, order, sku, "HCM", quantity);
             return inventory.allocate(new AllocateStockCommand(order, "HCM")).allocations().stream()
                     .flatMap(allocation -> allocation.holdIds().stream()).toList();
         });

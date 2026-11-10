@@ -1,13 +1,12 @@
 package com.stockflow.inventory;
 
-import com.stockflow.common.domain.Sku;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.inventory.api.InventoryService;
-import com.stockflow.inventory.api.ReserveStockCommand;
 import com.stockflow.inventory.consumption.PickConsumption;
 import com.stockflow.support.DemoData;
+import com.stockflow.support.Holds;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
 import com.stockflow.support.ReferenceRows;
@@ -101,9 +100,7 @@ class StockPackageConsumptionIntegrationTest {
 
     private UUID hold(UUID order, int quantity) {
         return tx.execute(s -> {
-            UUID id = inventory.reserve(new ReserveStockCommand(UUID.randomUUID(), new Sku(sku), quantity, order))
-                    .reservationIds().getFirst();
-            inventory.pinReservations(order);
+            UUID id = Holds.units(inventory, order, sku, "HCM", quantity);
             // SCRUM-152: the checkout reservation holds the SKU on no bin; the release allocates it, here to the one
             // stock row (a carton's, or loose) that can serve it.
             return inventory.allocate(new com.stockflow.inventory.api.AllocateStockCommand(order, "HCM")).allocations()
