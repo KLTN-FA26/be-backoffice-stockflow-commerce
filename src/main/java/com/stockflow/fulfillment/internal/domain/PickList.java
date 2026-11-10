@@ -92,8 +92,8 @@ public final class PickList {
      * @return the lines added; empty when the task had lines already, is past picking, or the order has
      *         nothing to pick
      * @throws BusinessException {@code FULFILLMENT_HOLDS_OUTSIDE_WAREHOUSE} when a hold of a stock line sits
-     *         in another warehouse than the task's; the message names the SKUs. {@code CONFLICT} when a live hold is
-     *         on no carton: allocation takes whole cartons only (4C-2) and V20261111000110 boxed every hold before, so
+     *         in another warehouse than the task's; the message names the SKUs. {@code PICK_HOLD_NOT_IN_CARTON} when a
+     *         live hold is on no carton: allocation takes whole cartons only (4C-2) and V20261111000110 boxed every hold before, so
      *         such a hold was written around both, and a line for it could be confirmed by no LPN
      */
     public List<PickLine> plan(List<OrderLine> orderLines, Map<UUID, Hold> holds, Supplier<UUID> ids) {
@@ -123,13 +123,7 @@ public final class PickList {
                     "Task %s is picked in warehouse %s but stock for %s is held in another warehouse"
                             .formatted(taskId, warehouseId, String.join(", ", elsewhere)));
         }
-        Set<String> loose = new TreeSet<>();
-        stops.stream().filter(stop -> stop.hold().lpn() == null).forEach(stop -> loose.add(stop.hold().sku()));
-        if (!loose.isEmpty()) {
-            throw new BusinessException(ErrorCode.CONFLICT,
-                    "Task %s: stock for %s is held loose, in no carton; a line is picked by its carton's LPN"
-                            .formatted(taskId, String.join(", ", loose)));
-        }
+        requireCartons(stops.stream().map(Stop::hold).toList());
         stops.sort(Comparator.comparing((Stop stop) -> stop.hold().locationCode())
                 .thenComparing(stop -> stop.hold().sku())
                 .thenComparing(stop -> stop.hold().reservationId()));
@@ -238,7 +232,9 @@ public final class PickList {
      * superseded (CANCELLED, its shortfall kept) and one new OPEN line per new allocation follows the last stop.
      *
      * @throws BusinessException {@code PICK_LINE_NOT_OPEN} unless the line is SHORT;
-     *         {@code FULFILLMENT_HOLDS_OUTSIDE_WAREHOUSE} for an allocation outside the task's warehouse
+     *         {@code FULFILLMENT_HOLDS_OUTSIDE_WAREHOUSE} for an allocation outside the task's warehouse;
+     *         {@code PICK_HOLD_NOT_IN_CARTON} for an allocation on no carton - nothing is changed, and the caller's
+     *         transaction, which made it, rolls back (4C-4 B1)
      */
     public List<PickLine> replaceShort(UUID lineId, List<Hold> allocations, Supplier<UUID> ids) {
         PickLine line = requireLine(lineId);
@@ -250,6 +246,7 @@ public final class PickList {
             throw new BusinessException(ErrorCode.FULFILLMENT_HOLDS_OUTSIDE_WAREHOUSE,
                     "Task %s is picked in warehouse %s; the new allocation is elsewhere".formatted(taskId, warehouseId));
         }
+        requireCartons(allocations);
         line.supersede();
         int sequence = lines.stream().mapToInt(PickLine::sequenceNo).max().orElse(0);
         List<PickLine> added = new ArrayList<>();
@@ -341,6 +338,7 @@ public final class PickList {
             throw new IllegalArgumentException("The whole carton is damaged, and either replaced or impaired, never both "
                     + "or neither");
         }
+        requireCartons(replacements);
         line.supersedeForDamage(damaged, reportId);
         int sequence = lines.stream().mapToInt(PickLine::sequenceNo).max().orElse(0);
         List<PickLine> added = new ArrayList<>();
@@ -421,6 +419,7 @@ public final class PickList {
                 || replacements.stream().mapToInt(Hold::quantity).sum() != (replacements.isEmpty() ? 0 : damaged)) {
             throw new IllegalArgumentException("The damaged units are either replaced in full or impaired, never both");
         }
+        requireCartons(replacements);
         line.damagedAfterPick(damaged);
         int sequence = lines.stream().mapToInt(PickLine::sequenceNo).max().orElse(0);
         List<PickLine> added = new ArrayList<>();
@@ -528,6 +527,22 @@ public final class PickList {
     private PickLine requireLine(UUID lineId) {
         return line(lineId).orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND,
                 "Task %s has no pick line %s".formatted(taskId, lineId)));
+    }
+
+    /**
+     * Every hold a line is planned for is a carton (07 BR-04, BR-10): a line on loose stock could be confirmed by no LPN.
+     * Checked before any line changes, so a refusal leaves the list as it was.
+     *
+     * @throws BusinessException {@code PICK_HOLD_NOT_IN_CARTON}, naming the SKUs
+     */
+    private void requireCartons(List<Hold> holds) {
+        Set<String> loose = new TreeSet<>();
+        holds.stream().filter(hold -> hold.lpn() == null).forEach(hold -> loose.add(hold.sku()));
+        if (!loose.isEmpty()) {
+            throw new BusinessException(ErrorCode.PICK_HOLD_NOT_IN_CARTON,
+                    "Task %s: stock for %s is held loose, in no carton; a line is picked by its carton's LPN"
+                            .formatted(taskId, String.join(", ", loose)));
+        }
     }
 
     /** The line's own LPN, in any case (07 BR-10). A line with no carton matches nothing. */

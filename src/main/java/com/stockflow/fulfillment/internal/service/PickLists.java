@@ -80,7 +80,10 @@ public interface PickLists {
      *
      * @return the new lines
      * @throws com.stockflow.common.error.BusinessException {@code NOT_FOUND}; {@code OUT_OF_DATA_SCOPE};
-     *         {@code PICK_LINE_NOT_OPEN} unless SHORT; {@code INSUFFICIENT_STOCK}, and then nothing changes
+     *         {@code PICK_LINE_NOT_OPEN} unless SHORT; {@code INSUFFICIENT_STOCK} when whole cartons cannot cover it
+     *         - also for a damage report's share restored as loose units, which no pick line can take - and then
+     *         nothing changes and the order stays ON_HOLD; {@code PICK_HOLD_NOT_IN_CARTON} should an allocation still
+     *         land on no carton (a guard), likewise changing nothing
      */
     List<PickLineView> reallocateShort(UUID taskId, UUID lineId, CurrentUser actor);
 
