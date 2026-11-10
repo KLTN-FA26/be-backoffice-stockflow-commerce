@@ -56,6 +56,12 @@ import java.util.UUID;
 public final class Order extends AggregateRoot {
 
     private static final BigDecimal HUNDRED = BigDecimal.valueOf(100);
+    /**
+     * The statuses the check station labels cartons in (4C-6, the station's own list): released, being picked, or
+     * shipping the rest of a split order.
+     */
+    private static final java.util.Set<OrderStatus> LABELLABLE = java.util.EnumSet.of(OrderStatus.READY_TO_FULFILL,
+            OrderStatus.PICKING, OrderStatus.PARTIALLY_FULFILLED);
 
     private final OrderId id;
     private final OrderNumber orderNumber;
@@ -1055,16 +1061,30 @@ public final class Order extends AggregateRoot {
     /**
      * The check station printed the order's first shipping label (kltn-docs 08 §4.3 step 7, BR-04): from now the order
      * is not cancelled and its delivery address, printed on the label, does not change (17 BR-12, BR-16). Only an order
-     * the warehouse may still work on gets a label - a cancelled one has its cartons removed instead. Idempotent.
+     * the warehouse may still work on gets a label - a cancelled one has its cartons removed instead, and a held one
+     * waits for its hold to be resolved. Idempotent.
+     *
+     * <p>The station checks the same statuses before it takes this lock; they are checked again here, under the order's
+     * row lock, because a hold put on in between - an ADDRESS hold above all (08 edge case: a wrong address is caught
+     * before the first label) - must stop the label that would lock the address it was put on to correct.</p>
      *
      * @return whether this was the first label
-     * @throws BusinessException {@code ORDER_CANCELLED}
+     * @throws BusinessException {@code ORDER_CANCELLED}; {@code PACK_STATE_CONFLICT} while the order is on hold, or in
+     *         any status the check station does not work in
      */
     public boolean recordFirstLabel(Instant at) {
         java.util.Objects.requireNonNull(at, "at");
         if (status == OrderStatus.CANCELLED) {
             throw new BusinessException(ErrorCode.ORDER_CANCELLED,
                     "Order %s is cancelled; none of its cartons is labelled".formatted(orderNumber));
+        }
+        if (status == OrderStatus.ON_HOLD) {
+            throw new BusinessException(ErrorCode.PACK_STATE_CONFLICT, ("Order %s is on hold (%s); its cartons are "
+                    + "labelled once the hold is resolved").formatted(orderNumber, holdReason));
+        }
+        if (!LABELLABLE.contains(status)) {
+            throw new BusinessException(ErrorCode.PACK_STATE_CONFLICT,
+                    "Order %s is %s; its cartons are not labelled now".formatted(orderNumber, status));
         }
         if (firstLabeledAt != null) {
             return false;
