@@ -72,7 +72,7 @@ class StockItemTest {
             StockItem holding = new StockItem(StockItemId.newId(), SKU, LOCATION, "L1", null, Quantity.of(3),
                     StockStatus.AVAILABLE, List.of(), 0L, NOW, null, new StockPackageId(UUID.randomUUID()));
             StockItem loose = new StockItem(StockItemId.newId(), SKU, LOCATION, "L1", null, Quantity.ZERO,
-                    StockStatus.AVAILABLE, List.of(), 0L, NOW, null, null);
+                    StockStatus.AVAILABLE, List.of(), 0L, NOW, null, (StockPackageId) null);
 
             assertThatThrownBy(() -> holding.comeBackAs(StockStatus.AVAILABLE))
                     .isInstanceOf(IllegalStateException.class);
