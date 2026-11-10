@@ -170,6 +170,9 @@ public interface CycleCounts {
         }
     }
 
-    /** A carton left out of a plan, with the number of the count holding it. */
+    /**
+     * A carton left out of a plan, with the number of the document holding it: the count, or the adjustment asked by
+     * hand that still waits for approval.
+     */
     record SkippedSlot(String locationCode, String sku, String lotNumber, String lpn, String countNumber) { }
 }

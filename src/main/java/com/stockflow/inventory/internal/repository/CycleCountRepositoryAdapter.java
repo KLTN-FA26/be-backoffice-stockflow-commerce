@@ -149,6 +149,10 @@ class CycleCountRepositoryAdapter implements CycleCountRepository {
      * still {@code PENDING_APPROVAL}: a second count would raise a second correction of the same stock against the
      * same books, and approving both would post the difference twice. Once the adjustment is decided the slot is
      * free again, which is what lets a rejected variance be recounted.</p>
+     *
+     * <p>A carton with an adjustment asked by hand and still pending is busy too ({@link CountBusy#PENDING_ADJUSTMENT}),
+     * held by that adjustment's number: counted, its variance would be a second pending adjustment of the carton,
+     * which {@code uk_stock_adjustment_pending_package} refuses. The older holder wins when there are two.</p>
      */
     @Override
     public Map<CountSlot, String> claim(Collection<CountSlot> slots) {
@@ -161,13 +165,18 @@ class CycleCountRepositoryAdapter implements CycleCountRepository {
 
         Map<CountSlot, String> busy = new HashMap<>();
         jdbc.query("""
-                SELECT c.count_number, l.stock_package_id
-                  FROM inventory.cycle_count c JOIN inventory.cycle_count_line l ON l.cycle_count_id = c.id
-                 WHERE %s AND l.stock_package_id IN (:packages)
-                 ORDER BY c.created_at, c.id""".formatted(CountBusy.BUSY),
+                SELECT h.holder, h.stock_package_id
+                  FROM (SELECT c.count_number AS holder, l.stock_package_id, c.created_at AS since, c.id AS tie
+                          FROM inventory.cycle_count c JOIN inventory.cycle_count_line l ON l.cycle_count_id = c.id
+                         WHERE %s AND l.stock_package_id IN (:packages)
+                        UNION ALL
+                        SELECT a.adjustment_number, a.stock_package_id, a.created_at, a.id
+                          FROM inventory.stock_adjustment a
+                         WHERE %s AND a.stock_package_id IN (:packages)) h
+                 ORDER BY h.since, h.tie""".formatted(CountBusy.BUSY, CountBusy.PENDING_ADJUSTMENT),
                 new MapSqlParameterSource("packages", byCarton.keySet()), (RowCallbackHandler) rs ->
                         busy.putIfAbsent(byCarton.get(rs.getObject("stock_package_id", UUID.class)),
-                                rs.getString("count_number")));
+                                rs.getString("holder")));
         return busy;
     }
 

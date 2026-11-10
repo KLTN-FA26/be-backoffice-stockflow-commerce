@@ -8,8 +8,9 @@ import java.util.List;
 @Schema(name = "PlannedCycleCount")
 public record PlannedCycleCountResponse(CycleCountResponse count, List<Skipped> skipped) {
 
-    @Schema(name = "SkippedCountSlot", description = "A carton on another open count, or one whose variance still "
-            + "waits for approval")
+    @Schema(name = "SkippedCountSlot", description = "A carton on another open count, one whose variance still "
+            + "waits for approval, or one with an adjustment waiting for approval; countNumber is that document's "
+            + "number (a count's, or an adjustment's)")
     public record Skipped(String locationCode, String sku, String lotNumber, String lpn, String countNumber) {
     }
 }

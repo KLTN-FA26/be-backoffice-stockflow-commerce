@@ -34,8 +34,9 @@ public interface CycleCountRepository {
     Optional<CycleCount> findHolding(CountSlot slot);
 
     /**
-     * Locks all slots in sorted key order; returns each busy slot with the number of the count holding it. Busy: on
-     * an open count, or on a completed one whose variance adjustment is still pending approval.
+     * Locks all slots in sorted key order; returns each busy slot with the number of the document holding it. Busy: on
+     * an open count, on a completed one whose variance adjustment is still pending approval, or with an adjustment
+     * asked by hand still pending approval (its adjustment number) - counted, the carton would be decided twice.
      */
     Map<CountSlot, String> claim(Collection<CountSlot> slots);
 

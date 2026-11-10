@@ -808,6 +808,12 @@ class StockOperationsServiceImpl implements StockOperations {
         }
         WarehouseScope.requireLocation(slot.location().code());
         policies.lock(slot.sku().code());
+        // A count's claim leaves out a carton with a pending adjustment (CountBusy.PENDING_ADJUSTMENT); said again here,
+        // with its own code, rather than as the unique index's bare conflict.
+        adjustments.findPendingForPackage(slot.stockPackageId()).ifPresent(pending -> {
+            throw new BusinessException(ErrorCode.STOCK_PACKAGE_ADJUSTMENT_PENDING,
+                    "Adjustment %s of this carton is waiting for approval".formatted(pending.number()));
+        });
         Instant now = clock.instant();
         StockAdjustment adjustment = StockAdjustment.requestCarton(
                 adjustments.nextNumber(LocalDate.ofInstant(now, BUSINESS_ZONE)), slot.stockPackageId(),
@@ -823,10 +829,13 @@ class StockOperationsServiceImpl implements StockOperations {
      * Kltn-docs 20 §4.3: a carton, by its LPN, written off whole (it must be in stock, held for no order) or restocked
      * whole (it must be LOST), for one of BR-04's reasons. Nothing changes until another person approves (BR-05).
      *
-     * <p>Lock order of every carton writer: the SKU, the carton's slot (the advisory lock a count's claim takes, so a
-     * count planned now sees this request or waits for it), then the carton. A carton a count holds (BR-10) is the
-     * count's to correct, and a carton with an adjustment already pending is decided once: both are refused, as the
-     * database refuses the second pending one ({@code uk_stock_adjustment_pending_package}).</p>
+     * <p>Lock order of every carton writer: the SKU, the carton's slot (the advisory lock a count's claim takes), then
+     * the carton. A count planned at the same moment waits for that lock and then finds this request pending, which
+     * makes the carton busy for it ({@code CountBusy.PENDING_ADJUSTMENT}): it is left out of the plan, or refused as a
+     * found line. A carton with an adjustment already pending is decided once ({@code STOCK_PACKAGE_ADJUSTMENT_PENDING},
+     * said before the count check, since that adjustment also makes the carton busy), and a carton a count holds
+     * (BR-10) is the count's to correct ({@code STOCK_SLOT_UNDER_COUNT}); the database refuses a second pending one
+     * ({@code uk_stock_adjustment_pending_package}).</p>
      */
     @Override
     @Auditable(action = AuditAction.CREATE, resourceType = "stock-adjustment", resourceId = "#result?.adjustmentId()")
@@ -851,16 +860,12 @@ class StockOperationsServiceImpl implements StockOperations {
         String count = countLines.claim(List.of(slot)).get(slot);
         StockPackage carton = stockPackages.findAllByIdForUpdate(List.of(seen.id())).stream().findFirst()
                 .orElseThrow(() -> new IllegalStateException("Stock package %s vanished".formatted(seen.lpn())));
+        requireNoPendingAdjustment(carton);
         if (count != null) {
             throw new BusinessException(ErrorCode.STOCK_SLOT_UNDER_COUNT,
                     "%s is on count %s; the count corrects it".formatted(carton.lpn(), count),
                     List.of(), Map.of("locationCode", carton.location().code(), "cycleCountNumber", count));
         }
-        adjustments.findPendingForPackage(carton.id()).ifPresent(pending -> {
-            throw new BusinessException(ErrorCode.STOCK_PACKAGE_ADJUSTMENT_PENDING,
-                    "Adjustment %s of %s is waiting for approval".formatted(pending.number(), carton.lpn()),
-                    List.of(), Map.of("lpn", carton.lpn(), "adjustmentNumber", pending.number()));
-        });
         StockItem locked = stockItems.findByIdForUpdate(row.id()).orElseThrow();
         switch (request.direction()) {
             case WRITE_OFF -> {
@@ -888,6 +893,15 @@ class StockOperationsServiceImpl implements StockOperations {
                 null, request.requestedBy(), now);
         log.info("Adjustment {} asked: {} of {} ({})", adjustment.number(), request.direction(), carton.lpn(), reason);
         return toSummary(adjustments.save(adjustment));
+    }
+
+    /** One adjustment of a carton waits for approval at a time ({@code uk_stock_adjustment_pending_package}). */
+    private void requireNoPendingAdjustment(StockPackage carton) {
+        adjustments.findPendingForPackage(carton.id()).ifPresent(pending -> {
+            throw new BusinessException(ErrorCode.STOCK_PACKAGE_ADJUSTMENT_PENDING,
+                    "Adjustment %s of %s is waiting for approval".formatted(pending.number(), carton.lpn()),
+                    List.of(), Map.of("lpn", carton.lpn(), "adjustmentNumber", pending.number()));
+        });
     }
 
     @Override
