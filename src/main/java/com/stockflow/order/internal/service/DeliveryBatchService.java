@@ -99,6 +99,7 @@ public class DeliveryBatchService {
     private final OrderRepository orders;
     private final SalesContractRepository contracts;
     private final DeliveryBatchRecords records;
+    private final com.stockflow.order.internal.domain.ProductionOrderRepository productionOrders;
     private final ShippingWarehouseService shippingWarehouses;
     private final FileTransfers files;
     private final StagedUploads staged;
@@ -107,7 +108,9 @@ public class DeliveryBatchService {
 
     DeliveryBatchService(OrderRepository orders, SalesContractRepository contracts, DeliveryBatchRecords records,
                          ShippingWarehouseService shippingWarehouses, FileTransfers files, StagedUploads staged,
-                         TransactionTemplate tx, Clock clock) {
+                         TransactionTemplate tx, Clock clock,
+                         com.stockflow.order.internal.domain.ProductionOrderRepository productionOrders) {
+        this.productionOrders = productionOrders;
         this.orders = orders;
         this.contracts = contracts;
         this.records = records;
@@ -316,6 +319,15 @@ public class DeliveryBatchService {
                 clock.instant()));
         log.info("Order {}: delivery batch {} moved from {}..{} to {}..{} ({})", order.orderNumber(), batch.seq(),
                 oldStart, oldEnd, change.windowStart(), change.windowEnd(), change.reason());
+        // 17 §4.5: a draft production order of the batch takes the new default needed-by date (BR-26); one already
+        // sent keeps its date - the production coordinator tells the producer.
+        for (com.stockflow.order.internal.domain.ProductionOrder draft : productionOrders.ofSalesOrder(orderId)) {
+            if (batch.id().equals(draft.deliveryBatchId()) && draft.followWindow(change.windowStart())) {
+                productionOrders.save(draft);
+                log.info("Production order {} of order {} is needed by {} now", draft.code(), order.orderNumber(),
+                        change.windowStart());
+            }
+        }
         return scheduleOf(order);
     }
 

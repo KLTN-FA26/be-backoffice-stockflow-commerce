@@ -100,12 +100,15 @@ public class ProductionOrderService {
     private final DesignService designs;
     private final Clock clock;
     private final TransactionTemplate tx;
+    private final com.stockflow.order.internal.domain.DeliveryBatchRecords batchRecords;
 
     ProductionOrderService(ProductionOrderRepository productionOrders, ProductionOrderReceiptRepository receipts,
                            ProductionOrderSearch search, OrderRepository orders, SalesContractRepository contracts,
                            ProducerRepository producers, ShippingWarehouseService shippingWarehouses,
                            WarehouseDirectory warehouses, CustomerSkus customerSkus, DesignService designs, Clock clock,
-                           PlatformTransactionManager transactions) {
+                           PlatformTransactionManager transactions,
+                           com.stockflow.order.internal.domain.DeliveryBatchRecords batchRecords) {
+        this.batchRecords = batchRecords;
         this.productionOrders = productionOrders;
         this.receipts = receipts;
         this.search = search;
@@ -167,7 +170,8 @@ public class ProductionOrderService {
         Instant now = clock.instant();
         ProductionOrder drawn = ProductionOrder.drawUp(productionOrders.nextCode(LocalDate.ofInstant(now,
                         BUSINESS_ZONE)), salesOrderId, batch.id(), order.customerId(), producer.id(),
-                order.shippingWarehouseId(), batch.windowStart(), firstTime, made,
+                // BR-26: needed by the first day of the batch's window in force - after a move, the new one (4B-8).
+                order.shippingWarehouseId(), batchRecords.windowInForce(salesOrderId, batch).start(), firstTime, made,
                 order.total().currency().getCurrencyCode(), by, now);
         ProductionOrder saved = productionOrders.save(drawn);
         log.info("Production order {} drawn up for batch {} of order {}: {} line(s), producer {}", saved.code(),

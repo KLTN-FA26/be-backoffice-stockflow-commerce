@@ -92,7 +92,10 @@ public class ShippingWarehouseService {
     public record LineCoverage(UUID lineId, String sku, int cartons, int heldCartons, int shortCartons) {
     }
 
-    /** A delivery batch's lines and their cover, the earliest batch served first (17 §4.2 step 3). */
+    /**
+     * A delivery batch's lines and their cover, the earliest batch served first (17 §4.2 step 3); its window is the one in
+     * force (17 BR-28), not necessarily the contract's.
+     */
     public record BatchCoverage(int seq, LocalDate windowStart, LocalDate windowEnd, boolean fullyHeld,
                                 List<LineCoverage> lines) {
     }
@@ -492,7 +495,8 @@ public class ShippingWarehouseService {
                     batchLines.add(new LineCoverage(line.orderLineId(), skuOf.get(line.orderLineId()), line.cartons(),
                             takes, line.cartons() - takes));
                 }
-                batches.add(new BatchCoverage(batch.seq(), batch.windowStart(), batch.windowEnd(),
+                DeliveryBatchRecords.Window window = batchRecords.windowInForce(order.id().value(), batch);
+                batches.add(new BatchCoverage(batch.seq(), window.start(), window.end(),
                         batchLines.stream().allMatch(l -> l.shortCartons() == 0), batchLines));
             }
         } else if (contract != null) {
@@ -507,7 +511,8 @@ public class ShippingWarehouseService {
                     batchLines.add(new LineCoverage(line.orderLineId(), skuOf.get(line.orderLineId()), line.cartons(),
                             takes, line.cartons() - takes));
                 }
-                batches.add(new BatchCoverage(batch.seq(), batch.windowStart(), batch.windowEnd(),
+                DeliveryBatchRecords.Window window = batchRecords.windowInForce(order.id().value(), batch);
+                batches.add(new BatchCoverage(batch.seq(), window.start(), window.end(),
                         batchLines.stream().allMatch(l -> l.shortCartons() == 0), batchLines));
             }
         }
