@@ -293,13 +293,13 @@ class PickDamageIntegrationTest {
         }
     }
 
-    /** Every open line of the task picked, the task completed and packing started by the picker. */
+    /** Every open line of the task picked and the task completed: its cartons wait at the dispatch area. */
     private void pickedAndAtPacking(UUID task) throws Exception {
         pickOpenLines(task);
         mvc.perform(post("/api/v1/fulfillment/tasks/" + task + "/picking-completion")
                 .header("Authorization", token(picker, "WAREHOUSE_STAFF"))).andExpect(status().isOk());
-        mvc.perform(post("/api/v1/fulfillment/tasks/" + task + "/packing-start")
-                .header("Authorization", token(picker, "WAREHOUSE_STAFF"))).andExpect(status().isOk());
+        // The check is not started: once the station holds a line's carton, damage after the pick is refused there
+        // (PACK_STATE_CONFLICT, 4C-6) - a damaged carton is removed at the station instead.
     }
 
     /** Units of the task's picked lines still good: what the check station can label (the picked cartons). */
