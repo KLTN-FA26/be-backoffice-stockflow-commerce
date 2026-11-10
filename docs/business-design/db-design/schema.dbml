@@ -206,6 +206,7 @@ Enum inventory.stock_movement_reference_type {
   EXPIRY_SWEEP
   DAMAGE_REPORT
   STOCK_PACKAGE
+  GOODS_RECEIPT
 }
 
 Enum inventory.stock_package_status {
@@ -345,6 +346,12 @@ Enum procurement.goods_receipts_approval_decision {
   APPROVED
   EXCESS_REJECTED
   REJECTED
+}
+
+Enum procurement.goods_receipts_receipt_type {
+  PURCHASE
+  PRODUCTION
+  RETURN
 }
 
 Enum procurement.goods_receipts_status {
@@ -2174,34 +2181,59 @@ Table procurement.goods_receipt_photos [headercolor: #7D5BA6] {
   last_modified_by varchar(100)
 }
 
+Table procurement.goods_receipt_return_cartons [headercolor: #7D5BA6] {
+  id               uuid [pk]
+  receipt_id       uuid [not null]
+  stock_package_id uuid [not null]
+  lpn              varchar(30) [not null]
+  sku              varchar(64) [not null]
+  lot_number       varchar(64)
+  quantity         int [not null]
+  condition_note   varchar(500)
+  scanned_by       uuid [not null]
+  version          bigint [not null, default: 0]
+  created_at       timestamptz [not null, default: `now()`]
+  created_by       varchar(100)
+  last_modified_at timestamptz
+  last_modified_by varchar(100)
+  indexes {
+    (receipt_id, stock_package_id) [unique]
+  }
+}
+
 Table procurement.goods_receipts [headercolor: #7D5BA6] {
-  id                    uuid [pk]
-  receipt_number        varchar(30) [not null, unique]
-  po_id                 uuid
-  po_revision_id        uuid
-  warehouse_id          uuid [not null]
-  status                procurement.goods_receipts_status [not null, default: 'DRAFT']
-  received_at           timestamptz [not null]
-  received_by           uuid [not null]
-  confirmed_at          timestamptz
-  confirmed_by          uuid
-  delivery_note         varchar(100)
-  note                  text
-  version               bigint [not null, default: 0]
-  created_at            timestamptz [not null, default: `now()`]
-  created_by            varchar(100)
-  last_modified_at      timestamptz
-  last_modified_by      varchar(100)
-  closed_at             timestamptz
-  approval_requested_at timestamptz
-  approval_requested_by uuid
-  approval_decision     procurement.goods_receipts_approval_decision
-  approval_decided_at   timestamptz
-  approval_decided_by   uuid
-  approval_reason       varchar(500)
-  supplier_id           uuid
-  blind_reason          varchar(500)
-  referenced_po_id      uuid
+  id                     uuid [pk]
+  receipt_number         varchar(30) [not null, unique]
+  po_id                  uuid
+  po_revision_id         uuid
+  warehouse_id           uuid [not null]
+  status                 procurement.goods_receipts_status [not null, default: 'DRAFT']
+  received_at            timestamptz [not null]
+  received_by            uuid [not null]
+  confirmed_at           timestamptz
+  confirmed_by           uuid
+  delivery_note          varchar(100)
+  note                   text
+  version                bigint [not null, default: 0]
+  created_at             timestamptz [not null, default: `now()`]
+  created_by             varchar(100)
+  last_modified_at       timestamptz
+  last_modified_by       varchar(100)
+  closed_at              timestamptz
+  approval_requested_at  timestamptz
+  approval_requested_by  uuid
+  approval_decision      procurement.goods_receipts_approval_decision
+  approval_decided_at    timestamptz
+  approval_decided_by    uuid
+  approval_reason        varchar(500)
+  supplier_id            uuid
+  blind_reason           varchar(500)
+  referenced_po_id       uuid
+  receipt_type           procurement.goods_receipts_receipt_type [not null, default: 'PURCHASE']
+  customer_order_id      uuid
+  return_shipment_id     uuid
+  return_request_id      uuid
+  quarantine_location_id uuid
 }
 
 Table procurement.po_delivery_decision [headercolor: #7D5BA6] {
@@ -5186,13 +5218,20 @@ Ref: procurement.goods_receipt_lines.uom_conversion_id > inventory.uom_conversio
 Ref: procurement.goods_receipt_photos.receipt_id > procurement.goods_receipts.id [delete: restrict]
 Ref: procurement.goods_receipt_photos.receipt_line_id > procurement.goods_receipt_lines.id [delete: set null]
 Ref: procurement.goods_receipt_photos.taken_by > identity.app_user.id
+Ref: procurement.goods_receipt_return_cartons.receipt_id > procurement.goods_receipts.id [delete: restrict]
+Ref: procurement.goods_receipt_return_cartons.scanned_by > identity.app_user.id
+Ref: procurement.goods_receipt_return_cartons.stock_package_id > inventory.stock_package.id [delete: restrict]
 Ref: procurement.goods_receipts.approval_decided_by > identity.app_user.id
 Ref: procurement.goods_receipts.approval_requested_by > identity.app_user.id
 Ref: procurement.goods_receipts.confirmed_by > identity.app_user.id
+Ref: procurement.goods_receipts.customer_order_id > ordering.customer_order.id [delete: restrict]
 Ref: procurement.goods_receipts.po_id > procurement.purchase_orders.id [delete: restrict]
 Ref: procurement.goods_receipts.po_revision_id > procurement.purchase_order_revisions.id [delete: restrict]
+Ref: procurement.goods_receipts.quarantine_location_id > warehouse.storage_location.id [delete: restrict]
 Ref: procurement.goods_receipts.received_by > identity.app_user.id
 Ref: procurement.goods_receipts.referenced_po_id > procurement.purchase_orders.id [delete: restrict]
+Ref: procurement.goods_receipts.return_request_id > ordering.return_request.id [delete: restrict]
+Ref: procurement.goods_receipts.return_shipment_id > fulfillment.shipment.id [delete: restrict]
 Ref: procurement.goods_receipts.supplier_id > procurement.suppliers.id [delete: restrict]
 Ref: procurement.goods_receipts.warehouse_id > warehouse.warehouse.id [delete: restrict]
 Ref: procurement.po_delivery_decision.purchase_order_id > procurement.purchase_orders.id [delete: cascade]
@@ -5604,6 +5643,7 @@ TableGroup procurement_group [color: #7D5BA6] {
   procurement.approval_limits
   procurement.goods_receipt_lines
   procurement.goods_receipt_photos
+  procurement.goods_receipt_return_cartons
   procurement.goods_receipts
   procurement.po_delivery_decision
   procurement.po_number_sequence
