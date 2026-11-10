@@ -17,8 +17,9 @@
 --      pickable nor a putaway target (06 BR-18, BR-12: stock arrives there only by picking). An area holding stock does
 --      not turn into a STAGING area nor out of one: its stock would change meaning under it. Area, the trigger.
 --   2. inventory.stock_movement: stock moves into or out of a STAGING area only by picking - a MOVE naming a pick line
---      (stage, unstage) - and leaves it by a PICK (the move to dispatch); a count may still correct it (20 §4.9 step 4).
---      No other movement touches it (11 BR-09, 20 BR-20). StockOperationsServiceImpl.requireMovableBetween.
+--      (stage, unstage) - and leaves it by a PICK (the move to dispatch); a count or an adjustment may still write it
+--      down (20 §4.9 step 4), never up: found units there would be nobody's and stranded. No other movement touches it
+--      (11 BR-09, 20 BR-20). StockOperationsServiceImpl.requireMovableBetween, requireNoSurplusInStaging.
 --      A pick line writes one MOVE out of each place it is moved from (uk_stock_movement_pick_line_move): staged out of
 --      its bin once, put back out of the staging area once. The other movements stay one per pick line and type.
 --   3. fulfillment.pick: destination (DISPATCH | STAGING), the staging area for a STAGING task, STAGED as a status,
@@ -101,16 +102,22 @@ CREATE FUNCTION inventory.check_staging_movement()
     RETURNS trigger
     LANGUAGE plpgsql AS
 $$
+DECLARE
+    -- A count or an adjustment only writes a staging area down (out of it), never up: the place it may touch is the
+    -- one it takes from. Every other line touches both of its places.
+    touched TEXT[] := CASE WHEN NEW.movement_type IN ('ADJUSTMENT', 'COUNT_CORRECTION')
+                           THEN ARRAY[NEW.to_location_code]
+                           ELSE ARRAY[NEW.from_location_code, NEW.to_location_code] END;
 BEGIN
-    IF NOT ((NEW.movement_type = 'MOVE' AND NEW.reference_type = 'PICK_LINE')
-            OR NEW.movement_type IN ('PICK', 'ADJUSTMENT', 'COUNT_CORRECTION'))
+    IF NOT ((NEW.movement_type = 'MOVE' AND NEW.reference_type = 'PICK_LINE') OR NEW.movement_type = 'PICK')
        AND EXISTS (SELECT 1
                      FROM warehouse.area a
                      JOIN warehouse.storage_location l ON l.id = a.location_id
                     WHERE a.type = 'STAGING'
-                      AND l.location_code IN (NEW.from_location_code, NEW.to_location_code)) THEN
-        RAISE EXCEPTION 'a % (reference %) cannot touch staging area %: stock enters and leaves it only by picking '
-            '(kltn-docs 11 BR-09, 20 BR-20)', NEW.movement_type, NEW.reference_type,
+                      AND l.location_code = ANY (touched)) THEN
+        RAISE EXCEPTION 'a % (reference %) cannot % staging area %: stock enters it only by picking, and leaves it by '
+            'picking or a write-down (kltn-docs 11 BR-09, 20 BR-20)', NEW.movement_type, NEW.reference_type,
+            CASE WHEN NEW.movement_type IN ('ADJUSTMENT', 'COUNT_CORRECTION') THEN 'add to' ELSE 'touch' END,
             coalesce(NEW.to_location_code, NEW.from_location_code) USING ERRCODE = 'check_violation';
     END IF;
     RETURN NEW;

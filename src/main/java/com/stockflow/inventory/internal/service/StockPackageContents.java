@@ -278,6 +278,11 @@ class StockPackageContents {
             this.locked = locked;
         }
 
+        /** The locked carton {@code id}; empty when it was not among those locked. */
+        java.util.Optional<StockPackage> carton(StockPackageId id) {
+            return java.util.Optional.ofNullable(id == null ? null : locked.get(id));
+        }
+
         /** {@code row} gave up units; nothing to do for loose stock. */
         void tookFrom(StockItem row) {
             if (row.isLoose()) {

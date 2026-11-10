@@ -256,13 +256,17 @@ count of the carton (07 §4.4 step 9, BR-09).
 `STAGING` calls `PickConsumption.stage` instead - the carton and its one row move whole to the task's staging area
 (one `MOVE, PICK_LINE` row), the allocation still HELD on it; the line is STAGED and the task completes STAGED. The
 warehouse manager moves the whole task to dispatch (`POST /fulfillment/tasks/{id}/dispatch-transfer`, refused while
-the order is ON_HOLD): `consumeStaged` per line, lines PICKED, task PICKED. A cancelled order's staged carton goes back
+the order is ON_HOLD): one bulk `consumeStaged` for every staged line - all SKU locks sorted, then the cartons, then
+the rows - lines PICKED, task PICKED; a carton no longer IN_STOCK in the staging area is refused, not shipped. A carton
+missing or damaged in the staging area is a short pick of its STAGED line (20 §4.9 step 4), scanned at the staging
+area, by the assignee or whoever assigns the work. A cancelled order's staged carton goes back
 by `unstage` (a second `MOVE`, nothing was deducted). Stock in a STAGING area is out of ATP even once a cancellation
 released it (ATP counts only whole cartons a release could allocate, and a staging area is never pickable), never
-allocated, and never moved by hand
-(`StockOperationsServiceImpl.requireMovableBetween`, `tg_stock_movement_staging`). Lock order of the move to
+allocated, never moved by hand (`StockOperationsServiceImpl.requireMovableBetween`, `tg_stock_movement_staging`),
+never reported damaged on the shelf, and written down by a count or an adjustment but never up. Lock order of the move to
 dispatch: pick → order → SKU locks → carton → row. A top-up (`POST …/top-up`, 07 §4.3 step 7) plans lines for holds no
-line has yet, in the same task; a STAGED or PICKED task goes back to PICKING.
+line has yet, in the same task; a STAGED or PICKED task goes back to PICKING with its order, and a task whose
+packing is complete is refused.
 
 `POST /api/v1/inventory/reservations/{reservationId}/consumption` still exists for operations (closing a
 hold by hand) and runs the same implementation, writing a `PICK` ledger row that names the order. Nothing

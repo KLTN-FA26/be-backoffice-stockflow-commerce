@@ -84,7 +84,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @IntegrationTest
 @Import({PostgresContainer.class, RedisContainer.class})
 @AutoConfigureMockMvc
-@TestPropertySource(properties = {"stockflow.security.enabled=true", "stockflow.catalog.projection-retry-ms=3600000"})
+@TestPropertySource(properties = {"stockflow.security.enabled=true", "stockflow.catalog.projection-retry-ms=3600000",
+        "stockflow.upload-inspection.enabled=false"})
 class StagingIntegrationTest {
 
     private static final Sku SOFA = new Sku("SOFA-3S-GREY");
@@ -111,7 +112,7 @@ class StagingIntegrationTest {
     private UUID managerHcm;
     private UUID pickerHcm;
     private UUID otherPickerHcm;
-    private final List<UUID> placed = new ArrayList<>();
+    private final List<UUID> placed = java.util.Collections.synchronizedList(new ArrayList<>());
     private final List<String> extraAreas = new ArrayList<>();
     private final List<UUID> extraWarehouses = new ArrayList<>();
 
@@ -216,10 +217,13 @@ class StagingIntegrationTest {
         return token(pickerHcm, "WAREHOUSE_STAFF");
     }
 
-    /** A paid stock-only order of the demo customer, its stock held at HCM, released there (READY_TO_FULFILL). */
     private OrderSummary confirmedOrder(int sofas) {
-        OrderSummary order = orders.placeOrder(new PlaceOrderCommand(UUID.randomUUID(), DemoData.CUSTOMER_ID,
-                List.of(new PlaceOrderCommand.Line(SOFA, sofas, Money.vnd(12_000_000), null))));
+        return confirmedOrder(List.of(new PlaceOrderCommand.Line(SOFA, sofas, Money.vnd(12_000_000), null)));
+    }
+
+    /** A paid stock-only order of the demo customer, its stock held at HCM, released there (READY_TO_FULFILL). */
+    private OrderSummary confirmedOrder(List<PlaceOrderCommand.Line> lines) {
+        OrderSummary order = orders.placeOrder(new PlaceOrderCommand(UUID.randomUUID(), DemoData.CUSTOMER_ID, lines));
         placed.add(order.orderId());
         BigDecimal total = order.total().amount();
         UUID payment = Identifiers.newId();
@@ -551,7 +555,7 @@ class StagingIntegrationTest {
         confirmAll(task);
         assertThat(locationOf(laterLpn)).isEqualTo(STAGING);
         complete(task).andExpect(status().isOk()).andExpect(jsonPath("$.data.pickStatus").value("STAGED"));
-        call(post("/api/v1/fulfillment/tasks/" + task + "/top-up").header("Authorization", oc()))
+        call(post("/api/v1/fulfillment/tasks/" + task + "/top-up").header("Authorization", manager()))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.length()").value(0));
         assertThat(pickStatus(task)).as("nothing new: it stays STAGED").isEqualTo("STAGED");
 
@@ -561,6 +565,184 @@ class StagingIntegrationTest {
 
         dispatchTransfer(task).andExpect(status().isOk()).andExpect(jsonPath("$.data.pickStatus").value("PICKED"));
         assertThat(cartonStatus(laterLpn)).isEqualTo("CONSUMED");
+    }
+
+    // ---- review M2: a staged carton found missing at the staging area ---------------------------
+
+    @Test
+    @DisplayName("a manager who is not the assignee reports a staged carton short at the staging area: the order stops, dispatch is "
+            + "refused; reallocated, the new carton is staged and the task moves to dispatch; a non-assignee picker is refused")
+    void aStagedCartonFoundMissingIsHandledAsAShortPick() throws Exception {
+        OrderSummary order = confirmedOrder(1);
+        UUID task = stagingTask(order);
+        start(task);
+        JsonNode line = lines(task).get(0);
+        String lineId = line.path("lineId").asText();
+        String lpn = line.path("lpn").asText();
+        confirm(task, line).andExpect(status().isOk());
+        complete(task).andExpect(status().isOk()).andExpect(jsonPath("$.data.pickStatus").value("STAGED"));
+        String url = "/api/v1/fulfillment/tasks/" + task + "/pick-lines/" + lineId + "/short";
+        String body = "{\"locationCode\":\"" + STAGING + "\",\"reason\":\"NOT_FOUND\"}";
+
+        call(post(url).header("Authorization", token(otherPickerHcm, "WAREHOUSE_STAFF")).contentType("application/json")
+                .content(body)).andExpect(status().isNotFound());
+        call(post(url).header("Authorization", manager()).contentType("application/json")
+                .content("{\"locationCode\":\"" + line.path("locationCode").asText() + "\",\"reason\":\"NOT_FOUND\"}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("PICK_LOCATION_MISMATCH"));
+        assertThat(jdbc.queryForObject("SELECT status FROM fulfillment.pick_line WHERE id = ?::uuid", String.class,
+                lineId)).as("the bin is not where the carton is").isEqualTo("STAGED");
+
+        call(post(url).header("Authorization", manager()).contentType("application/json").content(body))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("SHORT"));
+        assertThat(jdbc.queryForObject("SELECT picked_qty FROM fulfillment.pick_line WHERE id = ?::uuid", Integer.class,
+                lineId)).isZero();
+        assertThat(orders.findById(order.orderId()).orElseThrow().status()).isEqualTo(OrderStatus.ON_HOLD);
+        assertThat(orders.findById(order.orderId()).orElseThrow().lifecycle().holdReason())
+                .isEqualTo(HoldReason.INVENTORY);
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM inventory.cycle_count c JOIN inventory.cycle_count_line l ON l.cycle_count_id = c.id
+                 WHERE c.trigger_type = 'SHORT_PICK' AND c.status = 'PLANNED'
+                   AND l.stock_package_id = (SELECT id FROM inventory.stock_package WHERE lpn = ?)""", Integer.class, lpn))
+                .as("a blind recount of the carton").isOne();
+        assertThat(locationOf(lpn)).isEqualTo(STAGING);
+        call(post(url).header("Authorization", manager()).contentType("application/json").content(body))
+                .andExpect(status().isOk());      // the same report again
+        dispatchTransfer(task).andExpect(status().isConflict());
+        assertThat(ledgerRows("PICK", lineId)).isZero();
+
+        // the coordinator reallocates: the task is picking again, the new carton is staged too
+        JsonNode added = body(call(post("/api/v1/fulfillment/tasks/" + task + "/pick-lines/" + lineId + "/reallocation")
+                .header("Authorization", oc())).andExpect(status().isOk()).andReturn());
+        assertThat(added).hasSize(1);
+        String newLpn = added.get(0).path("lpn").asText();
+        assertThat(newLpn).isNotEqualTo(lpn);
+        assertThat(pickStatus(task)).isEqualTo("PICKING");
+        confirmAll(task);
+        assertThat(locationOf(newLpn)).isEqualTo(STAGING);
+        complete(task).andExpect(status().isOk()).andExpect(jsonPath("$.data.pickStatus").value("STAGED"));
+        if (orders.findById(order.orderId()).orElseThrow().status() == OrderStatus.ON_HOLD) {
+            WithCurrentUser.run(TestUsers.admin(), DataScope.ALL,
+                    () -> orders.resolveHold(order.orderId(), "found elsewhere", managerHcm));
+        }
+        dispatchTransfer(task).andExpect(status().isOk()).andExpect(jsonPath("$.data.pickStatus").value("PICKED"));
+        assertThat(cartonStatus(newLpn)).isEqualTo("CONSUMED");
+        assertThat(cartonStatus(lpn)).as("the carton that was missing is not deducted").isEqualTo("IN_STOCK");
+    }
+
+    // ---- review L3, L5: nothing but picking changes a staging area ------------------------------
+
+    @Test
+    @DisplayName("a shelf damage report on a staged carton, or on a released one left in staging, and a positive adjustment there "
+            + "are STAGING_MOVE_NOT_ALLOWED, with no ledger line and no report")
+    void damageAndSurplusAtAStagingAreaAreRefused() throws Exception {
+        OrderSummary order = confirmedOrder(1);
+        UUID task = stagingTask(order);
+        start(task);
+        JsonNode line = lines(task).get(0);
+        String lpn = line.path("lpn").asText();
+        confirm(task, line).andExpect(status().isOk());
+        String row = jdbc.queryForObject("""
+                SELECT s.id::text FROM inventory.stock_item s JOIN inventory.stock_package p ON p.id = s.stock_package_id
+                 WHERE p.lpn = ?""", String.class, lpn);
+        int ledgerBefore = jdbc.queryForObject("SELECT count(*) FROM inventory.stock_movement WHERE sku = ?",
+                Integer.class, SOFA.code());
+
+        shelfDamage(row).andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("STAGING_MOVE_NOT_ALLOWED"));
+
+        WithCurrentUser.run(TestUsers.admin(), DataScope.ALL, () -> orders.cancel(order.orderId(), "CUSTOMER_REQUEST"));
+        Await.until("task cancelled", ASYNC, () -> "CANCELLED".equals(pickStatus(task)));
+        assertThat(jdbc.queryForObject("SELECT reserved FROM inventory.stock_item WHERE id = ?::uuid", Integer.class, row))
+                .as("released, left in staging").isZero();
+        shelfDamage(row).andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("STAGING_MOVE_NOT_ALLOWED"));
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM inventory.stock_damage_report WHERE source_stock_item_id = ?::uuid",
+                Integer.class, row)).isZero();
+
+        String lot = jdbc.queryForObject("SELECT lot_number FROM inventory.stock_item WHERE id = ?::uuid", String.class, row);
+        Throwable surplus = catchThrowable(() -> tx.execute(s -> inventory.requestAdjustment(
+                new com.stockflow.inventory.api.RequestAdjustmentCommand(STAGING, SOFA, lot, 1,
+                        com.stockflow.inventory.api.StockAdjustmentReason.FOUND, "found in staging", managerHcm))));
+        assertThat(surplus).isInstanceOfSatisfying(BusinessException.class,
+                refusal -> assertThat(refusal.errorCode()).isEqualTo(ErrorCode.STAGING_MOVE_NOT_ALLOWED));
+        Throwable writeDown = catchThrowable(() -> tx.execute(s -> inventory.requestAdjustment(
+                new com.stockflow.inventory.api.RequestAdjustmentCommand(STAGING, SOFA, lot, -1,
+                        com.stockflow.inventory.api.StockAdjustmentReason.LOST, "gone from staging", managerHcm))));
+        if (writeDown instanceof BusinessException refused) {
+            assertThat(refused.errorCode()).as("a write-down is not what is refused")
+                    .isNotEqualTo(ErrorCode.STAGING_MOVE_NOT_ALLOWED);
+        }
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM inventory.stock_movement WHERE sku = ?", Integer.class,
+                SOFA.code())).as("nothing was written for the refused calls").isEqualTo(ledgerBefore);
+    }
+
+    private ResultActions shelfDamage(String row) throws Exception {
+        byte[] jpeg = {(byte) 0xFF, (byte) 0xD8, (byte) 0xFF, (byte) 0xE0, 0, 16, 'J', 'F', 'I', 'F', 0, 1, 1, 0, 0, 1, 0,
+                1, 0, 0};
+        String report = "{\"requestId\":\"" + UUID.randomUUID() + "\",\"stockItemId\":\"" + row
+                + "\",\"quantity\":1,\"reason\":\"BROKEN\"}";
+        return mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                .multipart("/api/v1/inventory/damage-reports")
+                .file(new org.springframework.mock.web.MockMultipartFile("report", "", "application/json",
+                        report.getBytes(java.nio.charset.StandardCharsets.UTF_8)))
+                .file(new org.springframework.mock.web.MockMultipartFile("photos", "broken.jpg", "image/jpeg", jpeg))
+                .header("Authorization", picker()));
+    }
+
+    // ---- review M1: the move to dispatch locks in the order every multi-SKU writer keeps ---------
+
+    @Test
+    @DisplayName("moving a two-SKU task to dispatch while checkouts of both SKUs race it finishes without deadlock; two moves at "
+            + "once deduct once")
+    void movingToDispatchDoesNotDeadlockAndDeductsOnce() throws Exception {
+        PlaceOrderCommand.Line sofaLine = new PlaceOrderCommand.Line(SOFA, 1, Money.vnd(12_000_000), null);
+        PlaceOrderCommand.Line table = new PlaceOrderCommand.Line(new Sku("TABLE-OAK-160"), 1, Money.vnd(3_000_000), null);
+        OrderSummary order = confirmedOrder(List.of(table, sofaLine));
+        UUID task = stagingTask(order);
+        start(task);
+        confirmAll(task);
+        complete(task).andExpect(status().isOk());
+        JsonNode lines = lines(task);
+        assertThat(lines).hasSize(2);
+        String header = manager();
+        String url = "/api/v1/fulfillment/tasks/" + task + "/dispatch-transfer";
+
+        java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(4);
+        java.util.concurrent.CountDownLatch go = new java.util.concurrent.CountDownLatch(1);
+        try {
+            List<java.util.concurrent.Future<Integer>> moves = new ArrayList<>();
+            for (int i = 0; i < 2; i++) {
+                moves.add(pool.submit(() -> {
+                    go.await();
+                    return mvc.perform(post(url).header("Authorization", header)).andReturn().getResponse().getStatus();
+                }));
+            }
+            java.util.concurrent.Future<String> checkouts = pool.submit(() -> {
+                go.await();
+                for (int i = 0; i < 3; i++) {
+                    try {
+                        OrderSummary other = orders.placeOrder(new PlaceOrderCommand(UUID.randomUUID(),
+                                DemoData.CUSTOMER_ID, List.of(sofaLine, table)));
+                        placed.add(other.orderId());
+                    } catch (BusinessException stockRanOut) {
+                        return "no stock: " + stockRanOut.errorCode();
+                    }
+                }
+                return "placed";
+            });
+            go.countDown();
+            for (var move : moves) {
+                assertThat(move.get(60, java.util.concurrent.TimeUnit.SECONDS)).isEqualTo(200);
+            }
+            assertThat(checkouts.get(60, java.util.concurrent.TimeUnit.SECONDS)).isNotNull();
+        } finally {
+            pool.shutdownNow();
+        }
+
+        assertThat(pickStatus(task)).isEqualTo("PICKED");
+        for (JsonNode line : lines) {
+            assertThat(ledgerRows("PICK", line.path("lineId").asText())).as("deducted once").isEqualTo(1);
+            assertThat(cartonStatus(line.path("lpn").asText())).isEqualTo("CONSUMED");
+        }
     }
 
     // ---- stock in a staging area is not moved by hand ------------------------------------------

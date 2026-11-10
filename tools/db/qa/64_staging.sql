@@ -183,8 +183,13 @@ UPDATE inventory.stock_package SET location_code = 'HCM-A01-2-B' WHERE id IN (SE
 UPDATE inventory.stock_item SET location_code = 'HCM-A01-2-B' WHERE id IN (SELECT row_id FROM qa64_carton WHERE n IN (7, 8));
 SELECT pg_temp.expect_ok('LG14 a count corrects a staging area (20 section 4.9 step 4): COUNT_CORRECTION out of it',
     pg_temp.move_sql('COUNT_CORRECTION', 'HCM-STG01', NULL, 'CYCLE_COUNT_LINE', gen_random_uuid(), NULL, 'AVAILABLE'));
-SELECT pg_temp.expect_ok('LG15 ... and an approved adjustment: ADJUSTMENT into it',
+SELECT pg_temp.expect_ok('LG15 ... and an approved adjustment writes it down: ADJUSTMENT out of it',
+    pg_temp.move_sql('ADJUSTMENT', 'HCM-STG01', NULL, 'STOCK_ADJUSTMENT', gen_random_uuid(), NULL, 'AVAILABLE'));
+-- Review L5: never up - found units there would be nobody's, out of ATP, unpickable and unmovable.
+SELECT pg_temp.expect_fail_by('LG16 an ADJUSTMENT into a staging area (a surplus)', 'cannot add to staging area',
     pg_temp.move_sql('ADJUSTMENT', NULL, 'HCM-STG01', 'STOCK_ADJUSTMENT', gen_random_uuid(), NULL, NULL, 'AVAILABLE'));
+SELECT pg_temp.expect_fail_by('LG17 a COUNT_CORRECTION into a staging area (a surplus)', 'cannot add to staging area',
+    pg_temp.move_sql('COUNT_CORRECTION', NULL, 'HCM-STG01', 'CYCLE_COUNT_LINE', gen_random_uuid(), NULL, NULL, 'AVAILABLE'));
 
 \echo '--- the task: a destination, a staging area for it, STAGED (07 BR-08)'
 INSERT INTO warehouse.warehouse (id, name, status, prefix, address, map_unit, map_width, map_height, created_at)
