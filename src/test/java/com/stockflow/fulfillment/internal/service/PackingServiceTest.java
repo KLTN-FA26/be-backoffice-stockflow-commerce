@@ -1,6 +1,5 @@
 package com.stockflow.fulfillment.internal.service;
 
-import com.stockflow.common.audit.AuditEntry;
 import com.stockflow.common.audit.AuditTrail;
 import com.stockflow.common.domain.Money;
 import com.stockflow.common.error.ErrorCode;
