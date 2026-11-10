@@ -65,7 +65,9 @@ class DispatchWebMapper {
                 d.waybillNo(), d.carrierConnectionType(), d.carrierBooking() == null ? null
                         : new LoadResponse.CarrierBooking(d.carrierBooking().status(), d.carrierBooking().carrierOrderId(),
                         d.carrierBooking().trackingLink(), d.carrierBooking().requestedAt(),
-                        d.carrierBooking().bookedAt(), d.carrierBooking().lastError()));
+                        d.carrierBooking().bookedAt(), d.carrierBooking().lastError()),
+                d.handoverWarnings().stream().map(w -> new LoadResponse.HandoverWarning(w.orderId(), w.orderNumber(),
+                        w.reasonCode(), w.amountDue(), w.currency(), w.deliveryBatchSeq(), w.windowStart())).toList());
     }
 
     ControlledCancelResponse toResponse(Dispatching.ControlledCancelResult r) {

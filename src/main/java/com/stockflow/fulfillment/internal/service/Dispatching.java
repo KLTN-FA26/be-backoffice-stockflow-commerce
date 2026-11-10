@@ -61,7 +61,53 @@ public interface Dispatching {
                       Instant bookingCancelledAt, String bookingCancelReason, List<PendingUnload> pendingUnloads,
                       boolean carrierBookingToCancel, String cancelReasonCode, UUID replacementLoadId,
                       String replacementLoadCode, String waybillNo, String carrierConnectionType,
-                      CarrierBookingView carrierBooking) { }
+                      CarrierBookingView carrierBooking, List<HandoverWarning> handoverWarnings) {
+
+        public LoadDetail {
+            handoverWarnings = handoverWarnings == null ? List.of() : List.copyOf(handoverWarnings);
+        }
+
+        /** Without handover warnings: every answer but the start of loading. */
+        public LoadDetail(UUID loadId, String code, UUID warehouseId, String status, UUID carrierId,
+                          String carrierCode, String carrierName, String vehiclePlate, String driverName,
+                          String driverPhone, Instant loadingStartedAt, UUID loadingStartedBy, Instant dispatchedAt,
+                          UUID dispatchedBy, String dispatchedByName, String carrierRepresentative, String signatureRef,
+                          String handoverNote, Instant cancelledAt, String cancelReason, int shipmentCount,
+                          int expectedPackageCount, int loadedPackageCount, long version, List<LoadShipment> shipments,
+                          UUID loadPlanId, String loadPlanCode, Integer vehicleSeq, String vehicleTypeCode,
+                          Instant bookedAt, UUID bookedBy, Instant bookingCancelledAt, String bookingCancelReason,
+                          List<PendingUnload> pendingUnloads, boolean carrierBookingToCancel, String cancelReasonCode,
+                          UUID replacementLoadId, String replacementLoadCode, String waybillNo,
+                          String carrierConnectionType, CarrierBookingView carrierBooking) {
+            this(loadId, code, warehouseId, status, carrierId, carrierCode, carrierName, vehiclePlate, driverName,
+                    driverPhone, loadingStartedAt, loadingStartedBy, dispatchedAt, dispatchedBy, dispatchedByName,
+                    carrierRepresentative, signatureRef, handoverNote, cancelledAt, cancelReason, shipmentCount,
+                    expectedPackageCount, loadedPackageCount, version, shipments, loadPlanId, loadPlanCode, vehicleSeq,
+                    vehicleTypeCode, bookedAt, bookedBy, bookingCancelledAt, bookingCancelReason, pendingUnloads,
+                    carrierBookingToCancel, cancelReasonCode, replacementLoadId, replacementLoadCode, waybillNo,
+                    carrierConnectionType, carrierBooking, List.of());
+        }
+
+        /** The same load with the warnings the start of loading found. */
+        public LoadDetail withHandoverWarnings(List<HandoverWarning> warnings) {
+            return new LoadDetail(loadId, code, warehouseId, status, carrierId, carrierCode, carrierName, vehiclePlate,
+                    driverName, driverPhone, loadingStartedAt, loadingStartedBy, dispatchedAt, dispatchedBy,
+                    dispatchedByName, carrierRepresentative, signatureRef, handoverNote, cancelledAt, cancelReason,
+                    shipmentCount, expectedPackageCount, loadedPackageCount, version, shipments, loadPlanId,
+                    loadPlanCode, vehicleSeq, vehicleTypeCode, bookedAt, bookedBy, bookingCancelledAt,
+                    bookingCancelReason, pendingUnloads, carrierBookingToCancel, cancelReasonCode, replacementLoadId,
+                    replacementLoadCode, waybillNo, carrierConnectionType, carrierBooking, warnings);
+        }
+    }
+
+    /**
+     * 4B-8 (kltn-docs 08 BR-11, 17 §4.4 step 17, 09 BR-18): an order on the vehicle whose goods may not leave yet, found
+     * when loading starts - loading goes ahead; the handover will refuse the vehicle until the order may leave.
+     *
+     * @param reasonCode why (ORDER_BALANCE_NOT_PAID, DELIVERY_BATCH_WINDOW_NOT_OPEN, ...)
+     */
+    record HandoverWarning(UUID orderId, String orderNumber, String reasonCode, java.math.BigDecimal amountDue,
+                           String currency, Integer deliveryBatchSeq, java.time.LocalDate windowStart) { }
 
     /**
      * The load's latest order at an API_BOOKING carrier (3-4), null when it never had one.
