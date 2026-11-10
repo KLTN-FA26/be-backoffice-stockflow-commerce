@@ -123,7 +123,7 @@ class PickConsumptionServiceTest {
     private final StockPackageRepository stockPackages = mock(StockPackageRepository.class);
     private final PickConsumptionService service = new PickConsumptionService(stockItems, ledger,
             new InventoryEventPublisher(publisher), locations, policies,
-            new StockPackageContents(stockPackages, stockItems), Clock.fixed(NOW, ZoneOffset.UTC),
+            new StockPackageContents(stockPackages, stockItems, locations), Clock.fixed(NOW, ZoneOffset.UTC),
             cycleCounts, stockPackages);
     private final List<StockItem> saved = new ArrayList<>();
     private final List<StockItem> merged = new ArrayList<>();
@@ -359,7 +359,7 @@ class PickConsumptionServiceTest {
             StockPackageId id = new StockPackageId(UUID.randomUUID());
             boolean consumed = holdStatus == ReservationStatus.CONSUMED;
             StockPackage carton = new StockPackage(id, LPN, UUID.randomUUID(), UUID.randomUUID(), received, received,
-                    bin, consumed ? StockPackageStatus.CONSUMED : StockPackageStatus.IN_STOCK, !consumed, null,
+                    bin, consumed ? StockPackageStatus.CONSUMED : StockPackageStatus.IN_STOCK, null,
                     consumed ? NOW.minusSeconds(60) : null, 0L);
             StockItem row = new StockItem(StockItemId.newId(), SOFA, bin, "LOT-1",
                     consumed ? Quantity.ZERO : Quantity.of(received), rowStatus, List.of(reservation), 0L,
@@ -383,7 +383,6 @@ class PickConsumptionServiceTest {
             service.putBack(command(line, hold, BIN));
 
             assertThat(picked.carton().status()).isEqualTo(StockPackageStatus.IN_STOCK);
-            assertThat(picked.carton().unopened()).as("sealed again").isTrue();
             assertThat(picked.carton().closedAt()).isNull();
             assertThat(picked.carton().location()).isEqualTo(BIN);
             assertThat(picked.carton().lpn()).as("it keeps its LPN").isEqualTo(LPN);
@@ -728,7 +727,7 @@ class PickConsumptionServiceTest {
                     status == ReservationStatus.HELD ? null : NOW.minusSeconds(60));
             StockPackageId id = new StockPackageId(UUID.randomUUID());
             StockPackage carton = new StockPackage(id, LPN, UUID.randomUUID(), UUID.randomUUID(), count, count, bin,
-                    StockPackageStatus.IN_STOCK, true, null, null, 0L);
+                    StockPackageStatus.IN_STOCK, null, null, 0L);
             StockItem row = new StockItem(StockItemId.newId(), SOFA, bin, "LOT-1",
                     Quantity.of(count), rowStatus, List.of(reservation), 0L, NOW.minusSeconds(86_400), null, id);
             when(stockItems.findIdByReservationId(ReservationId.of(hold))).thenReturn(Optional.of(row.id()));
@@ -1053,7 +1052,7 @@ class PickConsumptionServiceTest {
                     UUID.randomUUID(), Quantity.of(2), NOW.minusSeconds(3600), null, ReservationStatus.HELD, null, null);
             StockPackageId id = new StockPackageId(UUID.randomUUID());
             StockPackage carton = new StockPackage(id, lpn, UUID.randomUUID(), UUID.randomUUID(), 2, 2, bin,
-                    StockPackageStatus.IN_STOCK, true, null, null, 0L);
+                    StockPackageStatus.IN_STOCK, null, null, 0L);
             cartonsById.put(id, carton);
             StockItem row = new StockItem(StockItemId.newId(), new Sku(sku), bin, "LOT-1",
                     Quantity.of(2), StockStatus.AVAILABLE, List.of(reservation), 0L, NOW.minusSeconds(86_400), null, id);

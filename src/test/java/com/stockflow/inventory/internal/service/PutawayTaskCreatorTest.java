@@ -46,7 +46,7 @@ class PutawayTaskCreatorTest {
         Instant closedAt = status.isClosed() ? NOW : null;
         return new StockPackage(new StockPackageId(UUID.randomUUID()),
                 "LPN-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(), UUID.randomUUID(),
-                UUID.randomUUID(), 24, 24, new LocationId("HCM-RCV01"), status, false, line, closedAt, 0L);
+                UUID.randomUUID(), 24, 24, new LocationId("HCM-RCV01"), status, line, closedAt, 0L);
     }
 
     private static ReceiptStockReadyForPutaway event(Line... lines) {

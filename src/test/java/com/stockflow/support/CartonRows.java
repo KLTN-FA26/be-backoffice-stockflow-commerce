@@ -11,7 +11,8 @@ import java.util.UUID;
 
 /**
  * Stock as the warehouse keeps it since team plan 4C-2: whole, sealed LPN cartons of the SKU's one carton unit, one
- * stock row each (kltn-docs 20 BR-14, BR-18). Written as rows, for a test whose subject is not receiving: the way
+ * stock row each (kltn-docs 20 BR-14, BR-18), always with a lot (BR-22: a missing lot is 'UNTRACED', team plan 4C-3).
+ * Written as rows, for a test whose subject is not receiving: the way
  * a receipt makes them is {@code ReceivingPackagesIntegrationTest}'s. The SKU's inventory item must exist.
  */
 public final class CartonRows {

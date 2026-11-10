@@ -61,10 +61,10 @@ VALUES (md5('qa41:soft')::uuid, 'SOFA-3S-GREY', md5('qa41:order')::uuid, md5('qa
         NOW(), 'HELD');
 
 \echo '--- the carton lifecycle (20 §5.5): never opened in stock, counted at its standard count only'
-SELECT pg_temp.expect_fail('WC1 a carton in stock is opened', $q$
-    UPDATE inventory.stock_package SET unopened = FALSE WHERE id = md5('qa41:pk')::uuid $q$);
-SELECT pg_temp.expect_fail('WC2 part of a carton in stock is taken (opened, 3 of 4 left)', $q$
-    UPDATE inventory.stock_package SET unopened = FALSE WHERE id = md5('qa41:pk')::uuid;
+SELECT pg_temp.expect_true('WC1 a carton in stock is never opened: the flag is gone (V20261113000300, team plan 4C-3)',
+    NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'inventory'
+                   AND table_name = 'stock_package' AND column_name = 'unopened'));
+SELECT pg_temp.expect_fail('WC2 part of a carton in stock is taken (3 of 4 left)', $q$
     UPDATE inventory.stock_item SET on_hand = 3 WHERE id = md5('qa41:pk:row')::uuid $q$);
 SELECT pg_temp.expect_fail('WC3 a carton counted at another figure than its standard count (03 BR-13)', $q$
     UPDATE inventory.stock_package SET received_qty = 3 WHERE id = md5('qa41:rcv')::uuid $q$);
@@ -82,39 +82,34 @@ SELECT pg_temp.expect_fail('WC5 a draft counted at another figure before 4C-2 go
             md5('qa41:old')::uuid) $q$);
 SELECT pg_temp.expect_ok('WC6 the whole carton leaves stock: emptied and CONSUMED in one transaction', $q$
     UPDATE inventory.stock_item SET on_hand = 0 WHERE id = md5('qa41:pk:row')::uuid;
-    UPDATE inventory.stock_package SET status = 'CONSUMED', unopened = FALSE, closed_at = NOW()
+    UPDATE inventory.stock_package SET status = 'CONSUMED', closed_at = NOW()
      WHERE id = md5('qa41:pk')::uuid $q$);
 SELECT pg_temp.expect_fail('WC7 a consumed carton back in stock with only part of its count', $q$
-    UPDATE inventory.stock_package SET status = 'IN_STOCK', unopened = TRUE, closed_at = NULL
+    UPDATE inventory.stock_package SET status = 'IN_STOCK', closed_at = NULL
      WHERE id = md5('qa41:pk')::uuid;
     UPDATE inventory.stock_item SET on_hand = 3 WHERE id = md5('qa41:pk:row')::uuid $q$);
-SELECT pg_temp.expect_fail('WC8 a consumed carton back in stock still open', $q$
-    UPDATE inventory.stock_package SET status = 'IN_STOCK', closed_at = NULL WHERE id = md5('qa41:pk')::uuid;
-    UPDATE inventory.stock_item SET on_hand = 4 WHERE id = md5('qa41:pk:row')::uuid $q$);
-SELECT pg_temp.expect_ok('WC9 CONSUMED -> IN_STOCK: put back whole on another bin, sealed again (20 §4.6 step 5)', $q$
+SELECT pg_temp.expect_fail('WC8 a consumed carton back in stock with its row still empty', $q$
+    UPDATE inventory.stock_package SET status = 'IN_STOCK', closed_at = NULL WHERE id = md5('qa41:pk')::uuid $q$);
+SELECT pg_temp.expect_ok('WC9 CONSUMED -> IN_STOCK: put back whole on another bin (20 §4.6 step 5)', $q$
     SET LOCAL stockflow.same_receipt_merge = '855874c7-250e-165a-634e-378f66c747e3';
-    UPDATE inventory.stock_package SET status = 'IN_STOCK', unopened = TRUE, closed_at = NULL,
+    UPDATE inventory.stock_package SET status = 'IN_STOCK', closed_at = NULL,
            location_code = 'HCM-A01-1-B' WHERE id = md5('qa41:pk')::uuid;
     UPDATE inventory.stock_item SET on_hand = 4, location_code = 'HCM-A01-1-B' WHERE id = md5('qa41:pk:row')::uuid $q$);
-SELECT pg_temp.expect_ok('WC10 a lost carton found whole comes back sealed', $q$
+SELECT pg_temp.expect_ok('WC10 a carton lost and found again whole is in stock again, on its own row (4C-2 review: it was never allocatable)', $q$
     UPDATE inventory.stock_item SET on_hand = 0 WHERE id = md5('qa41:pk:row')::uuid;
-    UPDATE inventory.stock_package SET status = 'LOST', unopened = FALSE, closed_at = NOW()
+    UPDATE inventory.stock_package SET status = 'LOST', closed_at = NOW()
      WHERE id = md5('qa41:pk')::uuid;
-    UPDATE inventory.stock_package SET status = 'IN_STOCK', unopened = TRUE, closed_at = NULL
+    UPDATE inventory.stock_package SET status = 'IN_STOCK', closed_at = NULL
      WHERE id = md5('qa41:pk')::uuid;
     UPDATE inventory.stock_item SET on_hand = 4 WHERE id = md5('qa41:pk:row')::uuid $q$);
-SELECT pg_temp.expect_fail('WC10b a lost carton found still open', $q$
+SELECT pg_temp.expect_fail('WC10b a carton found again without its units back on its row', $q$
     UPDATE inventory.stock_item SET on_hand = 0 WHERE id = md5('qa41:pk:row')::uuid;
-    UPDATE inventory.stock_package SET status = 'LOST', unopened = FALSE, closed_at = NOW()
-     WHERE id = md5('qa41:pk')::uuid;
+    UPDATE inventory.stock_package SET status = 'LOST', closed_at = NOW() WHERE id = md5('qa41:pk')::uuid;
+    UPDATE inventory.stock_package SET status = 'IN_STOCK', closed_at = NULL WHERE id = md5('qa41:pk')::uuid $q$);
+SELECT pg_temp.expect_fail('WC10c a lost carton found with part of its count on its row', $q$
+    UPDATE inventory.stock_item SET on_hand = 0 WHERE id = md5('qa41:pk:row')::uuid;
+    UPDATE inventory.stock_package SET status = 'LOST', closed_at = NOW() WHERE id = md5('qa41:pk')::uuid;
     UPDATE inventory.stock_package SET status = 'IN_STOCK', closed_at = NULL WHERE id = md5('qa41:pk')::uuid;
-    UPDATE inventory.stock_item SET on_hand = 4 WHERE id = md5('qa41:pk:row')::uuid $q$);
-SELECT pg_temp.expect_fail('WC10c a lost carton found with part of its count', $q$
-    UPDATE inventory.stock_item SET on_hand = 0 WHERE id = md5('qa41:pk:row')::uuid;
-    UPDATE inventory.stock_package SET status = 'LOST', unopened = FALSE, closed_at = NOW()
-     WHERE id = md5('qa41:pk')::uuid;
-    UPDATE inventory.stock_package SET status = 'IN_STOCK', unopened = TRUE, closed_at = NULL
-     WHERE id = md5('qa41:pk')::uuid;
     UPDATE inventory.stock_item SET on_hand = 3 WHERE id = md5('qa41:pk:row')::uuid $q$);
 SELECT pg_temp.expect_fail('WC11 VOID back to receiving', $q$
     UPDATE inventory.stock_package SET status = 'VOID', closed_at = NOW() WHERE id = md5('qa41:rcv')::uuid;
@@ -185,7 +180,7 @@ SELECT pg_temp.expect_fail('WC21 an allocation of part of a carton', $q$
 SELECT pg_temp.expect_ok('WC22 the held carton picked: the allocation consumed, the carton CONSUMED whole', $q$
     UPDATE inventory.stock_reservation SET status = 'CONSUMED', closed_at = NOW() WHERE id = md5('qa41:alloc')::uuid;
     UPDATE inventory.stock_item SET on_hand = 0, reserved = 0 WHERE id = md5('qa41:pk:row')::uuid;
-    UPDATE inventory.stock_package SET status = 'CONSUMED', unopened = FALSE, closed_at = NOW()
+    UPDATE inventory.stock_package SET status = 'CONSUMED', closed_at = NOW()
      WHERE id = md5('qa41:pk')::uuid $q$);
 
 \echo '--- a putaway puts a carton away (05 BR-08)'

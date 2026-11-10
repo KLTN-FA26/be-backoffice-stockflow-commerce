@@ -15,7 +15,6 @@ public record StockPackageResponse(
         @Schema(description = "What is left in it") int onHand,
         @Schema(description = "Of onHand, the units held for orders") int reserved,
         @Schema(description = "RECEIVING, IN_STOCK, CONSUMED, LOST or VOID") String status,
-        boolean unopened,
         String locationCode,
         UUID goodsReceiptLineId
 ) {

@@ -108,8 +108,8 @@ class StockPackageController {
 
     @GetMapping("/location-summary")
     @Operation(summary = "What one location holds, by carton",
-            description = "One exact location code, a bin or an area. A line per SKU, lot and stock status: unopened "
-                    + "cartons and their units, opened cartons and what is left in them, loose units, the total. "
+            description = "One exact location code, a bin or an area. A line per SKU, lot and stock status: cartons "
+                    + "and their units, loose units, the total. "
                     + "404 LOCATION_NOT_FOUND; 403 for a location in another warehouse.")
     @RequiresPermission(resource = InventoryResources.STOCK_PACKAGES, action = Action.READ)
     public ApiResponse<List<StockPackageLocationLineResponse>> locationSummary(@RequestParam String location) {

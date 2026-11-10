@@ -378,7 +378,7 @@ class PutawayConfirmationIntegrationTest {
     }
 
     @Test
-    @DisplayName("a carton already moved by hand into the chosen bin is put away in place: AVAILABLE, unopened, DONE,"
+    @DisplayName("a carton already moved by hand into the chosen bin is put away in place: AVAILABLE, in stock, DONE,"
             + " one ledger line from the bin to the bin; a bin with room for just this carton is not full of it twice")
     void cartonAlreadyInTheChosenBin() {
         String bin = bin(warehouse, "A01", "NORMAL", 10, 500, "ACTIVE");
@@ -413,8 +413,8 @@ class PutawayConfirmationIntegrationTest {
                     assertThat(row.get("status")).isEqualTo("AVAILABLE");
                     assertThat(row.get("location_code")).isEqualTo(bin);
                 });
-        assertThat(jdbc.queryForObject("select unopened from inventory.stock_package where lpn = ?", Boolean.class,
-                lpn1)).isTrue();
+        assertThat(jdbc.queryForObject("select status from inventory.stock_package where lpn = ?", String.class,
+                lpn1)).isEqualTo("IN_STOCK");
         assertThat(recorded.matching(PutawayCompleted.class, e -> e.putawayTaskId().equals(cartonTask))).hasSize(1);
     }
 }

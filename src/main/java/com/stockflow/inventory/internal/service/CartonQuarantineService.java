@@ -147,7 +147,7 @@ public class CartonQuarantineService {
                     "%s is not in quarantine; only a quarantined carton is released".formatted(carton.lpn()),
                     List.of(), Map.of("lpn", carton.lpn()));
         }
-        if (adjustments.existsPendingForPackage(carton.id())) {
+        if (adjustments.findPendingForPackage(carton.id()).isPresent()) {
             throw new BusinessException(ErrorCode.STOCK_PACKAGE_DECISION_PENDING,
                     "A write-off of %s awaits approval; it is released once that is rejected or withdrawn"
                             .formatted(carton.lpn()), List.of(), Map.of("lpn", carton.lpn()));

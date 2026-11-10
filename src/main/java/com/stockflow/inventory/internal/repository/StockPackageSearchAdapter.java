@@ -34,8 +34,11 @@ class StockPackageSearchAdapter implements StockPackageSearch {
 
     private static final String CARTON_COLUMNS = """
             b.stock_package_id, b.lpn, b.sku, b.unit_of_measure, b.nominal_qty, b.received_qty, b.location_code,
-            b.status, b.unopened, b.lot_number, b.on_hand, b.reserved, b.goods_receipt_line_id,
+            b.status, b.lot_number, b.on_hand, b.reserved, b.goods_receipt_line_id,
             b.closed_at""";
+
+    /** The view, one row per carton (V20261113000300); nothing expires since team plan 5-1, so nothing else is read. */
+    private static final String CARTONS = "inventory.stock_package_balance b";
 
     /** The column of each of {@link #SORTABLE}; checked when the class loads, so a gap fails startup, not a request. */
     private static final Map<String, String> SORT_COLUMNS =
@@ -65,7 +68,7 @@ class StockPackageSearchAdapter implements StockPackageSearch {
 
     @Override
     public Optional<StockPackageBalance> byLpn(String lpn) {
-        return jdbc.query("SELECT " + CARTON_COLUMNS + " FROM inventory.stock_package_balance b WHERE b.lpn = :lpn",
+        return jdbc.query("SELECT " + CARTON_COLUMNS + " FROM " + CARTONS + " WHERE b.lpn = :lpn",
                 new MapSqlParameterSource("lpn", lpn), StockPackageSearchAdapter::cartonRow).stream().findFirst();
     }
 
@@ -82,18 +85,15 @@ class StockPackageSearchAdapter implements StockPackageSearch {
     }
 
     /**
-     * Rows of a carton are whole or opened by their carton's {@code unopened}; rows with no carton are loose. A carton
-     * holds one lot (rule 2 of V20261022000100), so it falls in one group; were its rows in two stock statuses, it
-     * would be counted in each, holding in each what its rows there hold.
+     * A row of a carton is a whole carton (one row per carton, V20261113000300); rows with no carton are loose. A
+     * carton holds one lot, so it falls in one group.
      */
     @Override
     public List<StockPackageBalance.LocationLine> atLocation(String locationCode) {
         return jdbc.query("""
                         SELECT s.sku, s.lot_number, s.status,
-                               count(DISTINCT p.id) FILTER (WHERE p.unopened)                 AS whole_cartons,
-                               COALESCE(sum(s.on_hand) FILTER (WHERE p.unopened), 0)          AS whole_units,
-                               count(DISTINCT p.id) FILTER (WHERE NOT p.unopened)             AS opened_cartons,
-                               COALESCE(sum(s.on_hand) FILTER (WHERE NOT p.unopened), 0)      AS opened_units,
+                               count(DISTINCT p.id)                                           AS whole_cartons,
+                               COALESCE(sum(s.on_hand) FILTER (WHERE p.id IS NOT NULL), 0)    AS whole_units,
                                COALESCE(sum(s.on_hand) FILTER (WHERE p.id IS NULL), 0)        AS loose_units
                           FROM inventory.stock_item s
                           LEFT JOIN inventory.stock_package p ON p.id = s.stock_package_id
@@ -103,8 +103,7 @@ class StockPackageSearchAdapter implements StockPackageSearch {
                 new MapSqlParameterSource("code", locationCode),
                 (rs, i) -> new StockPackageBalance.LocationLine(rs.getString("sku"), rs.getString("lot_number"),
                         StockStatus.valueOf(rs.getString("status")),
-                        rs.getInt("whole_cartons"), rs.getInt("whole_units"), rs.getInt("opened_cartons"),
-                        rs.getInt("opened_units"), rs.getInt("loose_units")));
+                        rs.getInt("whole_cartons"), rs.getInt("whole_units"), rs.getInt("loose_units")));
     }
 
     @Override
@@ -116,7 +115,7 @@ class StockPackageSearchAdapter implements StockPackageSearch {
             return new PageImpl<>(List.of(), pageable, total == null ? 0 : total);
         }
         params.addValue("limit", pageable.getPageSize()).addValue("offset", pageable.getOffset());
-        List<StockPackageBalance> content = jdbc.query("SELECT " + CARTON_COLUMNS + " FROM inventory.stock_package_balance b"
+        List<StockPackageBalance> content = jdbc.query("SELECT " + CARTON_COLUMNS + " FROM " + CARTONS
                         + " WHERE " + where + " ORDER BY " + orderBy(pageable.getSort())
                         + " LIMIT :limit OFFSET :offset",
                 params, StockPackageSearchAdapter::cartonRow);
@@ -159,7 +158,7 @@ class StockPackageSearchAdapter implements StockPackageSearch {
         return new StockPackageBalance(rs.getObject("stock_package_id", UUID.class), rs.getString("lpn"), rs.getString("sku"),
                 rs.getString("unit_of_measure"), rs.getInt("nominal_qty"), rs.getObject("received_qty", Integer.class),
                 rs.getString("location_code"), StockPackageStatus.valueOf(rs.getString("status")),
-                rs.getBoolean("unopened"), rs.getString("lot_number"), rs.getInt("on_hand"), rs.getInt("reserved"), rs.getObject("goods_receipt_line_id", UUID.class),
+                rs.getString("lot_number"), rs.getInt("on_hand"), rs.getInt("reserved"), rs.getObject("goods_receipt_line_id", UUID.class),
                 instant(rs, "closed_at"));
     }
 

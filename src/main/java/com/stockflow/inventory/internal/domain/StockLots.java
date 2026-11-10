@@ -14,6 +14,18 @@ import java.util.UUID;
 public interface StockLots {
 
     /**
+     * The lot of units whose lot is not known (kltn-docs 20 BR-22, open question C45): every unit carries a lot
+     * ({@code ck_stock_item_lot}, V20261113000300), so goods given none are of this one, as V20261111000110 labelled
+     * the stock it boxed.
+     */
+    String UNTRACED = "UNTRACED";
+
+    /** {@code lotNumber} trimmed, or {@link #UNTRACED} when none is given. */
+    static String orUntraced(String lotNumber) {
+        return lotNumber == null || lotNumber.isBlank() ? UNTRACED : lotNumber.trim();
+    }
+
+    /**
      * The lot a receipt opens for these goods: found when another line of the same receipt opened it already, made
      * otherwise. The caller holds the SKU's advisory lock, which is what keeps two lines of one receipt from making
      * it twice; {@code uk_stock_lot_receipt} is the last guard. Against a production order, the lot is found when an

@@ -190,8 +190,8 @@ class CartonAllocationIntegrationTest {
         tx.executeWithoutResult(s -> {
             CartonRows.stock(jdbc, sku, "HCM-RCV01", 1, FACTOR, null, Instant.parse("2026-01-03T00:00:00Z"));
             jdbc.update("""
-                    insert into inventory.stock_item (id, sku, location_code, on_hand, reserved, status, version,
-                        created_at, received_at) values (?, ?, ?, 7, 0, 'AVAILABLE', 0, now(), now())""",
+                    insert into inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, version,
+                        created_at, received_at) values (?, ?, ?, 'UNTRACED', 7, 0, 'AVAILABLE', 0, now(), now())""",
                     Identifiers.newId(), sku, SHELF);
         });
 

@@ -40,10 +40,10 @@ END $$;
 \echo '--- nothing loose (20 BR-14)'
 SELECT pg_temp.expect_true('LC1 no unit in stock lies outside a carton',
     NOT EXISTS (SELECT 1 FROM inventory.stock_item WHERE on_hand > 0 AND stock_package_id IS NULL));
-SELECT pg_temp.expect_true('LC2 every carton in stock is one sealed carton of its standard count, of one lot (BR-18)',
+SELECT pg_temp.expect_true('LC2 every carton in stock is one whole carton of its standard count, of one lot (BR-18)',
     NOT EXISTS (SELECT 1 FROM inventory.stock_package p
                  WHERE p.status = 'IN_STOCK'
-                   AND (NOT p.unopened OR p.received_qty <> p.nominal_qty
+                   AND (p.received_qty <> p.nominal_qty
                         OR (SELECT count(*) FROM inventory.stock_item s
                              WHERE s.stock_package_id = p.id AND s.on_hand > 0) <> 1
                         OR (SELECT min(s.on_hand) FROM inventory.stock_item s
@@ -130,11 +130,9 @@ SELECT pg_temp.expect_fail('LC16 stock of any SKU (the oak table) with no lot: e
     VALUES (gen_random_uuid(), 'TABLE-OAK-160', 'HCM-A01-1-A', 2, 0, 'AVAILABLE', NOW(), NOW()) $q$);
 
 \echo '--- the cartons it made are cartons like any other'
-SELECT pg_temp.expect_fail('LC17 a carton it made is opened and sealed again', $q$
-    UPDATE inventory.stock_package SET unopened = FALSE
-     WHERE id = (SELECT id FROM inventory.stock_package WHERE created_by = 'V20261111000110' ORDER BY lpn LIMIT 1);
-    UPDATE inventory.stock_package SET unopened = TRUE
-     WHERE id = (SELECT id FROM inventory.stock_package WHERE created_by = 'V20261111000110' ORDER BY lpn LIMIT 1) $q$);
+SELECT pg_temp.expect_true('LC17 a carton it made is never opened: there is no flag to open it with (V20261113000300)',
+    NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'inventory'
+                   AND table_name = 'stock_package' AND column_name = 'unopened'));
 SELECT pg_temp.expect_fail('LC18 a carton it made holds more than its standard count', $q$
     UPDATE inventory.stock_item SET on_hand = 2
      WHERE stock_package_id = (SELECT id FROM inventory.stock_package WHERE created_by = 'V20261111000110'

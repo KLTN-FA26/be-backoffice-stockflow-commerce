@@ -355,7 +355,7 @@ class InventoryServiceImplAvailabilityTest {
             Integer counted = status == StockPackageStatus.RECEIVING ? null : 24;
             return new StockPackage(new StockPackageId(UUID.randomUUID()), "LPN-" + UUID.randomUUID().toString()
                     .substring(0, 8).toUpperCase(), UUID.randomUUID(), UUID.randomUUID(), 24, counted,
-                    new LocationId("HCM-RCV01"), status, true, line, closed, 0L);
+                    new LocationId("HCM-RCV01"), status, line, closed, 0L);
         }
 
         @Test

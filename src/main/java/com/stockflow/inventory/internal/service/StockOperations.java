@@ -60,9 +60,36 @@ public interface StockOperations {
      */
     StockAdjustmentSummary requestAdjustment(RequestAdjustmentCommand command);
 
-    /** Submission's side of SCRUM-164: the variance of one counted line as pending COUNT_VARIANCE adjustment(s). */
-    List<StockAdjustmentSummary> requestCountVariance(UUID cycleCountLineId, CountSlot slot, int delta,
-                                                      UUID requestedBy, String note);
+    /**
+     * A person's request to write an LPN carton off whole or restock a LOST one whole (kltn-docs 20 §4.3, BR-04).
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code VALIDATION_FAILED} for {@code COUNT_VARIANCE} or a
+     *         reason of the history; {@code STOCK_PACKAGE_NOT_FOUND}; {@code OUT_OF_DATA_SCOPE};
+     *         {@code STOCK_SLOT_UNDER_COUNT}; {@code STOCK_PACKAGE_ADJUSTMENT_PENDING};
+     *         {@code INVALID_STOCK_PACKAGE_TRANSITION} (a write-off of a carton not in stock, a restock of one not
+     *         LOST); {@code STOCK_PACKAGE_HELD} (a write-off of a carton held for an order)
+     */
+    StockAdjustmentSummary requestPackageAdjustment(PackageAdjustmentRequest request);
+
+    /** Submission's side of SCRUM-164: one counted carton found against the books, as a pending COUNT_VARIANCE. */
+    StockAdjustmentSummary requestCountVariance(UUID cycleCountLineId, CountSlot slot, int delta, UUID requestedBy,
+                                                String note);
+
+    /**
+     * A carton to adjust, by its LPN in either case.
+     *
+     * @param note required when the reason is {@code OTHER}
+     */
+    record PackageAdjustmentRequest(String lpn, com.stockflow.inventory.internal.domain.AdjustmentDirection direction,
+                                    com.stockflow.inventory.api.StockAdjustmentReason reason, String note,
+                                    UUID requestedBy) {
+
+        public PackageAdjustmentRequest {
+            java.util.Objects.requireNonNull(direction, "direction");
+            java.util.Objects.requireNonNull(reason, "reason");
+            java.util.Objects.requireNonNull(requestedBy, "requestedBy");
+        }
+    }
 
     StockAdjustmentSummary approve(UUID adjustmentId, UUID approverId);
 

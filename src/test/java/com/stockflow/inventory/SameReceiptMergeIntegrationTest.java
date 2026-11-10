@@ -112,7 +112,7 @@ class SameReceiptMergeIntegrationTest {
     private List<Map<String, Object>> cartonRows() {
         return jdbc.queryForList("""
                 select p.lpn, p.status as carton_status, p.location_code as carton_location,
-                       p.unopened as sealed, i.location_code, i.on_hand, i.reserved, i.status,
+                       i.location_code, i.on_hand, i.reserved, i.status,
                        i.lot_number, i.received_at
                   from inventory.stock_package p join inventory.stock_item i on i.stock_package_id = p.id
                  where i.sku = ? order by p.lpn""", sku);
@@ -173,10 +173,10 @@ class SameReceiptMergeIntegrationTest {
         return reservations.stream().map(holdOf::get).toList();
     }
 
-    /** "location:status:unopened:on_hand" of each carton of the SKU's receipt, by location. */
+    /** "location:status:on_hand" of each carton of the SKU's receipt, by location. */
     private List<String> cartonsOfTheReceipt() {
         return jdbc.queryForList("""
-                select p.location_code || ':' || p.status || ':' || p.unopened || ':' || s.on_hand
+                select p.location_code || ':' || p.status || ':' || s.on_hand
                   from inventory.stock_package p join inventory.stock_item s on s.stock_package_id = p.id
                  where s.sku = ? order by p.location_code, p.lpn""", String.class, sku);
     }
@@ -215,7 +215,7 @@ class SameReceiptMergeIntegrationTest {
                 new PutBackCommand(lines.get(0), holds.get(0), lpns.get(0), SHELF, clerk)));
 
         assertThat(cartonRows()).hasSize(2).allSatisfy(row -> {
-            assertThat(row).containsEntry("carton_status", "IN_STOCK").containsEntry("sealed", true)
+            assertThat(row).containsEntry("carton_status", "IN_STOCK")
                     .containsEntry("on_hand", 3).containsEntry("reserved", 0).containsEntry("status", "AVAILABLE")
                     .containsEntry("lot_number", lot);
             assertThat(((java.sql.Timestamp) row.get("received_at")).toInstant()).as("the receipt's age is kept")

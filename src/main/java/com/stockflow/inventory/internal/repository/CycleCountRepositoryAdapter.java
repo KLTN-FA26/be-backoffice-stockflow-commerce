@@ -21,7 +21,6 @@ import org.springframework.stereotype.Repository;
 
 import java.sql.ResultSet;
 import java.sql.Timestamp;
-import java.sql.Types;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
@@ -120,9 +119,9 @@ class CycleCountRepositoryAdapter implements CycleCountRepository {
     /**
      * {@inheritDoc}
      *
-     * <p>Takes a transaction-scoped advisory lock on the slot first (seed 703; 701 is the SKU's, 702 the alerts').
-     * No constraint says one count per slot, so without it two short reports on one bin in different picks would
-     * both find none and both open one. A loose slot matches only loose lines, a carton only its package.</p>
+     * <p>Takes a transaction-scoped advisory lock on the carton first (seed 703; 701 is the SKU's, 702 the alerts').
+     * No constraint says one count per carton, so without it two short reports on one carton in different picks would
+     * both find none and both open one.</p>
      *
      * <p>Held means what {@link #claim} means ({@link CountBusy#BUSY}): a short pick on a slot whose count still waits for its
      * variance to be decided must not open a second count of the same stock, or approving both would correct it
@@ -130,70 +129,54 @@ class CycleCountRepositoryAdapter implements CycleCountRepository {
      */
     @Override
     public Optional<CycleCount> findHolding(CountSlot slot) {
+        requireCarton(slot);
         lock(List.of(slot.lockKey()));
-        MapSqlParameterSource params = new MapSqlParameterSource();
-        String match = slotMatch(slot, "l", params);
         List<UUID> ids = jdbc.queryForList("""
                 SELECT c.id FROM inventory.cycle_count c JOIN inventory.cycle_count_line l ON l.cycle_count_id = c.id
-                 WHERE %s AND %s
-                 ORDER BY c.created_at, c.id LIMIT 1""".formatted(CountBusy.BUSY, match), params, UUID.class);
+                 WHERE %s AND l.stock_package_id = :package
+                 ORDER BY c.created_at, c.id LIMIT 1""".formatted(CountBusy.BUSY),
+                new MapSqlParameterSource("package", slot.stockPackageId().value()), UUID.class);
         return ids.stream().findFirst().flatMap(this::findById);
     }
 
     /**
      * {@inheritDoc}
      *
-     * <p>The locks are taken in sorted key order, so two claims over overlapping slots cannot deadlock. The one
-     * query then over-fetches by bin and SKU (for loose lines) or package, and the exact slot is matched here.</p>
+     * <p>The locks are taken in sorted key order, so two claims over overlapping cartons cannot deadlock. A count is
+     * by carton (team plan 4C-3), so a slot is claimed by its carton alone, wherever the carton stands.</p>
      *
      * <p>A slot stays busy after its count is submitted while a {@code COUNT_VARIANCE} adjustment of its line is
      * still {@code PENDING_APPROVAL}: a second count would raise a second correction of the same stock against the
      * same books, and approving both would post the difference twice. Once the adjustment is decided the slot is
      * free again, which is what lets a rejected variance be recounted.</p>
+     *
+     * <p>A carton with an adjustment asked by hand and still pending is busy too ({@link CountBusy#PENDING_ADJUSTMENT}),
+     * held by that adjustment's number: counted, its variance would be a second pending adjustment of the carton,
+     * which {@code uk_stock_adjustment_pending_package} refuses. The older holder wins when there are two.</p>
      */
     @Override
     public Map<CountSlot, String> claim(Collection<CountSlot> slots) {
         if (slots.isEmpty()) {
             return Map.of();
         }
-        Map<String, CountSlot> byKey = new LinkedHashMap<>();
-        slots.forEach(slot -> byKey.putIfAbsent(slot.lockKey(), slot));
-        lock(new TreeSet<>(byKey.keySet()));
+        Map<UUID, CountSlot> byCarton = new LinkedHashMap<>();
+        slots.forEach(slot -> byCarton.putIfAbsent(requireCarton(slot).stockPackageId().value(), slot));
+        lock(new TreeSet<>(byCarton.values().stream().map(CountSlot::lockKey).toList()));
 
-        MapSqlParameterSource params = new MapSqlParameterSource();
-        List<String> any = new ArrayList<>();
-        Set<UUID> packages = new TreeSet<>();
-        Set<String> locations = new TreeSet<>();
-        Set<String> skus = new TreeSet<>();
-        for (CountSlot slot : byKey.values()) {
-            if (slot.isCarton()) {
-                packages.add(slot.stockPackageId().value());
-            } else {
-                locations.add(slot.location().code());
-                skus.add(slot.sku().code());
-            }
-        }
-        if (!packages.isEmpty()) {
-            any.add("l.stock_package_id IN (:packages)");
-            params.addValue("packages", packages);
-        }
-        if (!locations.isEmpty()) {
-            any.add("(l.stock_package_id IS NULL AND l.location_code IN (:locations) AND l.sku IN (:skus))");
-            params.addValue("locations", locations).addValue("skus", skus);
-        }
         Map<CountSlot, String> busy = new HashMap<>();
         jdbc.query("""
-                SELECT c.count_number, l.location_code, l.sku, l.lot_number, l.stock_package_id
-                  FROM inventory.cycle_count c JOIN inventory.cycle_count_line l ON l.cycle_count_id = c.id
-                 WHERE %s AND (%s)
-                 ORDER BY c.created_at, c.id""".formatted(CountBusy.BUSY, String.join(" OR ", any)), params,
-                (RowCallbackHandler) rs -> {
-            CountSlot held = slotOf(rs);
-            CountSlot wanted = byKey.get(held.lockKey());
-            if (wanted != null) {
-                busy.putIfAbsent(wanted, rs.getString("count_number"));
-            }
-        });
+                SELECT h.holder, h.stock_package_id
+                  FROM (SELECT c.count_number AS holder, l.stock_package_id, c.created_at AS since, c.id AS tie
+                          FROM inventory.cycle_count c JOIN inventory.cycle_count_line l ON l.cycle_count_id = c.id
+                         WHERE %s AND l.stock_package_id IN (:packages)
+                        UNION ALL
+                        SELECT a.adjustment_number, a.stock_package_id, a.created_at, a.id
+                          FROM inventory.stock_adjustment a
+                         WHERE %s AND a.stock_package_id IN (:packages)) h
+                 ORDER BY h.since, h.tie""".formatted(CountBusy.BUSY, CountBusy.PENDING_ADJUSTMENT),
+                new MapSqlParameterSource("packages", byCarton.keySet()), (RowCallbackHandler) rs ->
+                        busy.putIfAbsent(byCarton.get(rs.getObject("stock_package_id", UUID.class)),
+                                rs.getString("holder")));
         return busy;
     }
 
@@ -201,20 +184,8 @@ class CycleCountRepositoryAdapter implements CycleCountRepository {
     public List<CountLineDraft> stockIn(String warehousePrefix, Collection<String> locationCodes,
                                         Collection<String> locationPrefixes, Collection<String> skus) {
         List<CountLineDraft> drafts = new ArrayList<>();
-        // Grouped by the lot as CountSlot normalises it: rows whose lot is NULL, empty or padded are one slot, and
-        // grouped raw they would come back as two drafts of it, which CycleCount.plan refuses as a duplicate.
-        String loose = """
-                SELECT s.location_code, s.sku, NULLIF(btrim(s.lot_number), '') AS lot_number, sum(s.on_hand) AS qty
-                  FROM inventory.stock_item s
-                 WHERE s.stock_package_id IS NULL AND %s
-                 GROUP BY s.location_code, s.sku, NULLIF(btrim(s.lot_number), '')
-                HAVING sum(s.on_hand) > 0
-                 ORDER BY s.location_code, s.sku, lot_number""";
-        MapSqlParameterSource looseParams = new MapSqlParameterSource();
-        jdbc.query(loose.formatted(scope("s", warehousePrefix, locationCodes, locationPrefixes, skus, looseParams)),
-                looseParams, (RowCallbackHandler) rs -> drafts.add(new CountLineDraft(
-                        CountSlot.loose(new LocationId(rs.getString("location_code")), new Sku(rs.getString("sku")),
-                                rs.getString("lot_number")), rs.getInt("qty"))));
+        // One line per carton in stock (kltn-docs 20 §4.2 a2). Units in no carton - a put-back, a return or a damage
+        // report not yet in cartons - are not counted: a count states cartons present or not found (BR-14).
         String cartons = """
                 SELECT b.stock_package_id, b.location_code, b.sku, b.lot_number, b.on_hand AS qty
                   FROM inventory.stock_package_balance b
@@ -266,28 +237,16 @@ class CycleCountRepositoryAdapter implements CycleCountRepository {
     /**
      * {@inheritDoc}
      *
-     * <p>{@code FOR SHARE} cannot sit on an aggregate query in PostgreSQL, hence the inner select: the rows are
-     * locked, then summed. A stock row's lot is compared trimmed, as {@link #stockIn} groups it and
-     * {@link CountSlot} holds it.</p>
+     * <p>{@code FOR SHARE} cannot sit on an aggregate query in PostgreSQL, hence the inner select: the row is
+     * locked, then read. A carton is one row (V20261113000300).</p>
      */
     @Override
     public int bookQuantity(CountSlot slot) {
-        MapSqlParameterSource params = new MapSqlParameterSource();
-        String where;
-        if (slot.isCarton()) {
-            where = "s.stock_package_id = :package";
-            params.addValue("package", slot.stockPackageId().value());
-        } else {
-            where = """
-                    s.stock_package_id IS NULL AND s.location_code = :location AND s.sku = :sku
-                    AND COALESCE(btrim(s.lot_number), '') = COALESCE(:lot, '')""";
-            params.addValue("location", slot.location().code()).addValue("sku", slot.sku().code())
-                    .addValue("lot", slot.lotNumber(), Types.VARCHAR);
-        }
+        requireCarton(slot);
         Number total = jdbc.queryForObject("""
                 SELECT COALESCE(sum(q.on_hand), 0)
-                  FROM (SELECT s.on_hand FROM inventory.stock_item s WHERE %s FOR SHARE) q""".formatted(where),
-                params, Number.class);
+                  FROM (SELECT s.on_hand FROM inventory.stock_item s WHERE s.stock_package_id = :package FOR SHARE) q""",
+                new MapSqlParameterSource("package", slot.stockPackageId().value()), Number.class);
         return total == null ? 0 : total.intValue();
     }
 
@@ -382,8 +341,8 @@ class CycleCountRepositoryAdapter implements CycleCountRepository {
     /**
      * {@inheritDoc}
      *
-     * <p>A carton line freezes the stock rows of that carton ({@code stock_package_id} equal); a loose line only
-     * loose rows of its bin, SKU and lot.</p>
+     * <p>A line freezes the stock row of its carton ({@code stock_package_id} equal). Units in no carton are never
+     * allocated (whole cartons only, team plan 4C-2), so a loose line of the history has nothing to freeze.</p>
      *
      * <p>The freeze lasts while the SHORT_PICK count is open, and (SCRUM-146 D7) after it completes until every
      * {@code COUNT_VARIANCE} adjustment of the line is decided: between submission and approval the books still hold
@@ -394,6 +353,9 @@ class CycleCountRepositoryAdapter implements CycleCountRepository {
      * pick on that slot reuses the count rather than opening a SHORT_PICK one ({@link #findHolding}), so without this
      * branch nothing would hold the doubted units back. A pending surplus freezes nothing: the books hold fewer units
      * than the shelf, none of which can be over-promised.</p>
+     *
+     * <p>Kltn-docs 20 BR-11: a write-off of a carton asked by hand and still waiting for approval freezes it too,
+     * whatever its reason - the carton is in doubt (damaged, lost) until a manager decides.</p>
      *
      * <p>Accepted gap (final review C1): a short pick on a slot an <em>open</em> MANUAL count holds reuses that count,
      * and the slot stays unfrozen until the count is submitted with a shortage. For that window the allocator may
@@ -408,19 +370,20 @@ class CycleCountRepositoryAdapter implements CycleCountRepository {
                 SELECT s.id, s.sku, s.location_code, s.on_hand - s.reserved AS free
                   FROM inventory.stock_item s
                  WHERE s.sku IN (:skus) AND s.status = 'AVAILABLE' AND s.on_hand > s.reserved
-                   AND EXISTS (SELECT 1 FROM inventory.cycle_count c
-                                 JOIN inventory.cycle_count_line l ON l.cycle_count_id = c.id
-                                WHERE ((c.trigger_type = 'SHORT_PICK' AND %s)
-                                       OR (c.status = 'COMPLETED'
-                                           AND EXISTS (SELECT 1 FROM inventory.stock_adjustment a
-                                                        WHERE a.cycle_count_line_id = l.id
-                                                          AND a.reason_code = 'COUNT_VARIANCE'
-                                                          AND a.status = 'PENDING_APPROVAL'
-                                                          AND a.quantity_delta < 0)))
-                                  AND (l.stock_package_id = s.stock_package_id
-                                       OR (l.stock_package_id IS NULL AND s.stock_package_id IS NULL
-                                           AND l.location_code = s.location_code AND l.sku = s.sku
-                                           AND COALESCE(l.lot_number, '') = COALESCE(btrim(s.lot_number), ''))))"""
+                   AND s.stock_package_id IS NOT NULL
+                   AND (EXISTS (SELECT 1 FROM inventory.cycle_count c
+                                  JOIN inventory.cycle_count_line l ON l.cycle_count_id = c.id
+                                 WHERE ((c.trigger_type = 'SHORT_PICK' AND %s)
+                                        OR (c.status = 'COMPLETED'
+                                            AND EXISTS (SELECT 1 FROM inventory.stock_adjustment a
+                                                         WHERE a.cycle_count_line_id = l.id
+                                                           AND a.reason_code = 'COUNT_VARIANCE'
+                                                           AND a.status = 'PENDING_APPROVAL'
+                                                           AND a.quantity_delta < 0)))
+                                   AND l.stock_package_id = s.stock_package_id)
+                        OR EXISTS (SELECT 1 FROM inventory.stock_adjustment w
+                                    WHERE w.stock_package_id = s.stock_package_id
+                                      AND w.status = 'PENDING_APPROVAL' AND w.quantity_delta < 0))"""
                         .formatted(CountBusy.BUSY),
                 new MapSqlParameterSource().addValue("skus", skus),
                 (rs, row) -> new Frozen(rs.getObject("id", UUID.class), rs.getString("sku"),
@@ -443,24 +406,12 @@ class CycleCountRepositoryAdapter implements CycleCountRepository {
         }, (RowCallbackHandler) rs -> { });
     }
 
-    /** The condition that a line of alias {@code line} is this slot: its package, or the loose bin, SKU and lot. */
-    private static String slotMatch(CountSlot slot, String line, MapSqlParameterSource params) {
-        if (slot.isCarton()) {
-            params.addValue("package", slot.stockPackageId().value());
-            return line + ".stock_package_id = :package";
+    /** Counts are by carton (team plan 4C-3): a slot to claim, hold or read the books of names one. */
+    private static CountSlot requireCarton(CountSlot slot) {
+        if (!slot.isCarton()) {
+            throw new IllegalArgumentException("A count slot names a carton: " + slot.lockKey());
         }
-        params.addValue("location", slot.location().code()).addValue("sku", slot.sku().code())
-                .addValue("lot", slot.lotNumber(), Types.VARCHAR);
-        return line + ".stock_package_id IS NULL AND " + line + ".location_code = :location AND " + line
-                + ".sku = :sku AND COALESCE(" + line + ".lot_number, '') = COALESCE(:lot, '')";
-    }
-
-    private static CountSlot slotOf(ResultSet rs) throws java.sql.SQLException {
-        LocationId location = new LocationId(rs.getString("location_code"));
-        Sku sku = new Sku(rs.getString("sku"));
-        UUID pkg = rs.getObject("stock_package_id", UUID.class);
-        return pkg == null ? CountSlot.loose(location, sku, rs.getString("lot_number"))
-                : CountSlot.carton(location, sku, rs.getString("lot_number"), new StockPackageId(pkg));
+        return slot;
     }
 
     /** {@code warehouses} null for every warehouse; empty for none, answered without a query (null). */

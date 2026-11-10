@@ -873,11 +873,10 @@ class PickConfirmationIntegrationTest {
                 .containsEntry("from_location_code", null).containsEntry("to_location_code", target)
                 .containsEntry("to_status", "AVAILABLE").containsEntry("actor_id", otherPickerHcm)
                 .containsEntry("names_the_carton", true);
-        // The carton is back: IN_STOCK at the target, sealed, holding what was counted in; its row follows it.
+        // The carton is back: IN_STOCK at the target, holding what was counted in; its row follows it.
         assertThat(jdbc.queryForMap("""
-                SELECT status, location_code, unopened AS sealed FROM inventory.stock_package WHERE lpn = ?""",
-                lpn)).containsEntry("status", "IN_STOCK").containsEntry("location_code", target)
-                .containsEntry("sealed", true);
+                SELECT status, location_code FROM inventory.stock_package WHERE lpn = ?""",
+                lpn)).containsEntry("status", "IN_STOCK").containsEntry("location_code", target);
         assertThat(jdbc.queryForMap("""
                 SELECT i.status, i.location_code, i.on_hand, i.reserved FROM inventory.stock_item i
                   JOIN inventory.stock_package p ON p.id = i.stock_package_id WHERE p.lpn = ?""", lpn))

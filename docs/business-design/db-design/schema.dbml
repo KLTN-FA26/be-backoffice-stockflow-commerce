@@ -1600,7 +1600,7 @@ Table inventory.stock_item [headercolor: #3E7C4A] {
   last_modified_by varchar(100)
   received_at      timestamptz
   stock_package_id uuid
-  lot_id           uuid
+  lot_id           uuid [not null]
 }
 
 Table inventory.stock_lot [headercolor: #3E7C4A] {
@@ -1661,7 +1661,6 @@ Table inventory.stock_package [headercolor: #3E7C4A] {
   received_qty          int
   location_code         varchar(64) [not null]
   status                inventory.stock_package_status [not null, default: 'RECEIVING']
-  unopened              boolean [not null, default: true]
   goods_receipt_line_id uuid
   closed_at             timestamptz
   version               bigint [not null, default: 0]

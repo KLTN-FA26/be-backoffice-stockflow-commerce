@@ -16,5 +16,7 @@ interface StockAdjustmentJpaRepository extends BaseJpaRepository<StockAdjustment
     Optional<StockAdjustmentJpaEntity> findFirstByReservationIdAndStatusIn(UUID reservationId,
                                                                            Collection<AdjustmentStatus> statuses);
 
-    boolean existsByStockPackageIdAndStatus(UUID stockPackageId, AdjustmentStatus status);
+    /** uk_stock_adjustment_pending_package: at most one per carton and status PENDING_APPROVAL. */
+    Optional<StockAdjustmentJpaEntity> findFirstByStockPackageIdAndStatus(UUID stockPackageId,
+                                                                          AdjustmentStatus status);
 }

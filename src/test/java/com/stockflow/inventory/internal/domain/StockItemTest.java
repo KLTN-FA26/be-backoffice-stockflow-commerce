@@ -35,6 +35,52 @@ class StockItemTest {
     }
 
     @Nested
+    @DisplayName("the row of a carton found again (4C-3, L4)")
+    class ComingBack {
+
+        private StockItem emptyCartonRow(StockStatus status) {
+            return new StockItem(StockItemId.newId(), SKU, LOCATION, "L1", Quantity.ZERO, status, List.of(), 0L,
+                    NOW, null, new StockPackageId(UUID.randomUUID()));
+        }
+
+        @Test
+        @DisplayName("an empty carton row comes back AVAILABLE or QUARANTINE, whatever it was")
+        void comesBackAsAvailableOrQuarantine() {
+            for (StockStatus before : StockStatus.values()) {
+                StockItem row = emptyCartonRow(before);
+                row.comeBackAs(StockStatus.AVAILABLE);
+                assertThat(row.status()).as("from " + before).isEqualTo(StockStatus.AVAILABLE);
+                row.comeBackAs(StockStatus.QUARANTINE);
+                assertThat(row.status()).isEqualTo(StockStatus.QUARANTINE);
+            }
+        }
+
+        @Test
+        @DisplayName("no other status: a carton found is not found DAMAGED, BLOCKED, INBOUND, EXPIRED or in production")
+        void onlyAvailableOrQuarantine() {
+            for (StockStatus target : List.of(StockStatus.INBOUND, StockStatus.BLOCKED, StockStatus.DAMAGED,
+                    StockStatus.EXPIRED, StockStatus.IN_PRODUCTION)) {
+                assertThatThrownBy(() -> emptyCartonRow(StockStatus.AVAILABLE).comeBackAs(target))
+                        .as(target.name()).isInstanceOf(IllegalArgumentException.class);
+            }
+        }
+
+        @Test
+        @DisplayName("only the empty row of a carton: not one holding units, not a loose row")
+        void onlyAnEmptyCartonRow() {
+            StockItem holding = new StockItem(StockItemId.newId(), SKU, LOCATION, "L1", Quantity.of(3),
+                    StockStatus.AVAILABLE, List.of(), 0L, NOW, null, new StockPackageId(UUID.randomUUID()));
+            StockItem loose = new StockItem(StockItemId.newId(), SKU, LOCATION, "L1", Quantity.ZERO,
+                    StockStatus.AVAILABLE, List.of(), 0L, NOW, null, (StockPackageId) null);
+
+            assertThatThrownBy(() -> holding.comeBackAs(StockStatus.AVAILABLE))
+                    .isInstanceOf(IllegalStateException.class);
+            assertThatThrownBy(() -> loose.comeBackAs(StockStatus.AVAILABLE))
+                    .isInstanceOf(IllegalStateException.class);
+        }
+    }
+
+    @Nested
     @DisplayName("receiving goods")
     class Receiving {
 

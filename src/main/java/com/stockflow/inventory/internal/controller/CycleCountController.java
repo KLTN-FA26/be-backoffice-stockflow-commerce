@@ -124,24 +124,23 @@ class CycleCountController {
     }
 
     @PutMapping("/{countId}/lines/{lineId}/count")
-    @Operation(summary = "Record what was found on a line; the book quantity is re-read now")
+    @Operation(summary = "Scan a line's carton present (found=true) or not found; the books are read again now")
     @RequiresPermission(resource = InventoryResources.CYCLE_COUNTS, action = Action.UPDATE, scope = DataScope.WAREHOUSE)
     public ApiResponse<CycleCountResponse> count(@PathVariable UUID countId, @PathVariable UUID lineId,
                                                  @Valid @RequestBody CountLineRequest request,
                                                  @AuthenticatedUser CurrentUser actor) {
-        return ApiResponse.ok(toResponse(counts.count(countId, lineId, request.countedQty(), request.present(),
-                actor.userId(), decides(actor))));
+        return ApiResponse.ok(toResponse(counts.count(countId, lineId, request.found(), actor.userId(),
+                decides(actor))));
     }
 
     @PostMapping("/{countId}/lines")
-    @Operation(summary = "Add a slot found on the shelf: the bin it was found in, with a carton's LPN or a SKU and lot")
+    @Operation(summary = "Add a carton the plan did not list: its LPN, scanned in the bin it is recorded at")
     @RequiresPermission(resource = InventoryResources.CYCLE_COUNTS, action = Action.UPDATE, scope = DataScope.WAREHOUSE)
     public ApiResponse<CycleCountResponse> addLine(@PathVariable UUID countId,
                                                    @Valid @RequestBody AddCountLineRequest request,
                                                    @AuthenticatedUser CurrentUser actor) {
         return ApiResponse.ok(toResponse(counts.addLine(countId, new CycleCounts.AddCountLineCommand(
-                request.locationCode(), request.sku(), request.lotNumber(), request.lpn(), request.countedQty(),
-                actor.userId(), decides(actor)))));
+                request.locationCode(), request.lpn(), actor.userId(), decides(actor)))));
     }
 
     @PostMapping("/{countId}/submission")
@@ -189,8 +188,8 @@ class CycleCountController {
                 count.status(), count.blind(), count.assignedUserId(), count.plannedDate(), count.startedAt(),
                 count.completedAt(), count.note(), count.createdAt(),
                 count.lines().stream().map(line -> new CycleCountResponse.Line(line.id(), line.locationCode(),
-                        line.sku(), line.lotNumber(), line.stockPackageId(), line.lpn(), line.expectedQty(),
-                        line.countedQty(), line.countedBy(), line.countedAt(), line.recountRequired(),
+                        line.sku(), line.lotNumber(), line.stockPackageId(), line.lpn(), line.booked(),
+                        line.found(), line.countedBy(), line.countedAt(), line.recountRequired(),
                         line.adjustments().stream().map(adjustment -> new CycleCountResponse.Adjustment(
                                 adjustment.id(), adjustment.number(), adjustment.quantityDelta(), adjustment.status()))
                                 .toList())).toList());

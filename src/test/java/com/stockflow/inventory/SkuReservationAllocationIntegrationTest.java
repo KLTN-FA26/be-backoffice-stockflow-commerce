@@ -440,10 +440,10 @@ class SkuReservationAllocationIntegrationTest {
             assertThat(line.sku()).isEqualTo(sku);
             assertThat(line.stockPackageId()).as("a row of a carton is counted as that carton")
                     .isEqualTo(cartonOf(allocation));
-            assertThat(line.expectedQty()).as("blind").isNull();
+            assertThat(line.booked()).as("blind").isNull();
         });
         var manager = cycleCounts.get(first.cycleCountId(), true);
-        assertThat(manager.lines().get(0).expectedQty()).as("the carton's books, for who decides").isEqualTo(1);
+        assertThat(manager.lines().get(0).booked()).as("the carton's books, for who decides").isTrue();
         assertThat(manager.note()).contains("found 0");
         assertThat(counter.note()).as("what the picker found would anchor the count too").isNull();
         assertThat(jdbc.queryForList("""
@@ -517,7 +517,7 @@ class SkuReservationAllocationIntegrationTest {
         // Every line is counted before the count is submitted: those two at 0, the bin's other cartons as they are.
         for (var line : manual.lines()) {
             boolean missing = shortCarton.equals(line.stockPackageId()) || freeCarton.equals(line.stockPackageId());
-            cycleCounts.count(manual.id(), line.id(), missing ? 0 : 1, null, counter, false);
+            cycleCounts.count(manual.id(), line.id(), !missing, counter, false);
         }
         cycleCounts.submit(manual.id(), counter, false);
         assertThat(jdbc.queryForList("""

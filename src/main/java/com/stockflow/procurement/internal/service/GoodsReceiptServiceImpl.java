@@ -600,7 +600,7 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
      * counting.</p>
      *
      * <p>SCRUM-473: nothing here names a carton. {@code inventory.receive} finds the line's RECEIVING cartons by the
-     * line's id and puts the goods into them - one INBOUND row each, IN_STOCK and still unopened.</p>
+     * line's id and puts the goods into them - one INBOUND row each, IN_STOCK and whole.</p>
      */
     @Override
     @Auditable(action = AuditAction.TRANSITION, resourceType = "goods-receipt", resourceId = "#receiptId")

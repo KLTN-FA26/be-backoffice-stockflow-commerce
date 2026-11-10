@@ -75,17 +75,18 @@ class StockAdjustmentRepositoryAdapter implements StockAdjustmentRepository, Sto
     }
 
     @Override
+    public Optional<StockAdjustment> findPendingForPackage(StockPackageId stockPackageId) {
+        return jpa.findFirstByStockPackageIdAndStatus(stockPackageId.value(),
+                        com.stockflow.inventory.internal.domain.AdjustmentStatus.PENDING_APPROVAL)
+                .map(StockAdjustmentRepositoryAdapter::toDomain);
+    }
+
+    @Override
     public Optional<StockAdjustment> findLiveForHold(UUID reservationId) {
         return jpa.findFirstByReservationIdAndStatusIn(reservationId, java.util.EnumSet.of(
                         com.stockflow.inventory.internal.domain.AdjustmentStatus.PENDING_APPROVAL,
                         com.stockflow.inventory.internal.domain.AdjustmentStatus.POSTED))
                 .map(StockAdjustmentRepositoryAdapter::toDomain);
-    }
-
-    @Override
-    public boolean existsPendingForPackage(com.stockflow.inventory.internal.domain.StockPackageId stockPackageId) {
-        return jpa.existsByStockPackageIdAndStatus(stockPackageId.value(),
-                com.stockflow.inventory.internal.domain.AdjustmentStatus.PENDING_APPROVAL);
     }
 
     @Override

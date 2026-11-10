@@ -275,21 +275,22 @@ hold by hand) and runs the same implementation, writing a `PICK` ledger row that
 in the repo calls it; picking never goes over HTTP. (The original design did — "fulfillment calls the
 consumption endpoint over HTTP" — and was replaced so the pick line and the deduction commit together.)
 
-### Cycle count — a thin document over the adjustment (SCRUM-146)
+### Cycle count — by carton, a thin document over the adjustment (SCRUM-146, 4C-3)
 
 The count lives in `inventory`: aggregate `CycleCount` (`PLANNED → IN_PROGRESS → COMPLETED`, `CANCELLED`)
-with `CountSlot` (a bin + SKU + lot, or one carton) and the pure `CountVariance` split in `internal/domain/`;
-planning in `CycleCountService`, counting and submission in `CycleCountCountingService`. Counting re-reads the
-book quantity, so nothing is frozen while people count. `CycleCountCountingService.submit` is one
-`@Transactional` method: count row `FOR UPDATE` → SKU advisory locks in sorted order → cartons `FOR UPDATE` (a carton line
-follows its carton to its current bin) → `COMPLETED` → `StockOperations.requestCountVariance` per differing
-line, which raises pending `COUNT_VARIANCE` adjustments through the SCRUM-145 four-eyes mechanism — a loose
-shortage split over the slot's rows, free units first then held ones, each FIFO (`CYCLE_COUNT_STALE` rolls
-the whole submission back), one adjustment per carton. Nothing posts here: review and posting are the
-adjustment's own `PENDING_APPROVAL → POSTED`, and a SHORT_PICK slot stays out of ATP until its line's
-adjustments are decided. A slot with a pending `COUNT_VARIANCE` adjustment is busy — for new counts and for
-short picks, which reuse the count holding it (`CycleCountRepositoryAdapter.BUSY`, one predicate for
-`claim` and `findHolding`).
+with one line per LPN carton (`CountSlot`; a loose slot is only history), planning in `CycleCountService`, counting
+and submission in `CycleCountCountingService`. A carton is scanned present or marked not found — never a quantity
+(kltn-docs 20 BR-14); "booked" (in stock at the line's bin) is read from the carton under its lock when the line is
+counted, so nothing is frozen while people count. `submit` is one `@Transactional` method: count row `FOR UPDATE` →
+SKU advisory locks in sorted order → cartons `FOR UPDATE` → every counted line judged again (BR-09, else
+`CYCLE_COUNT_STALE` rolls the whole submission back) → `COMPLETED` → `StockOperations.requestCountVariance` per
+differing line: one pending `COUNT_VARIANCE` of the whole carton (missing → written off, LOST carton found →
+restocked). At most 500 lines, found ones included (BR-12). Nothing posts here: approval is the adjustment's own
+`PENDING_APPROVAL → POSTED`; a write-off for LOST or a count shortage leaves the carton LOST. A carton on an open
+count, with a pending `COUNT_VARIANCE`, or with an adjustment asked by hand still pending is busy (`CountBusy`, one
+predicate for `claim`; short picks reuse a count through `findHolding`); a pending write-off or SHORT_PICK count keeps
+it out of ATP (BR-11). A blind counter learns the books neither from the view nor from a refusal (BR-07). A person
+adjusts a carton by LPN only (`requestPackageAdjustment`: write off an unheld carton in stock, or restock a LOST one).
 
 ### Receiving into cartons (SCRUM-473)
 

@@ -2,7 +2,6 @@ package com.stockflow.inventory.internal.controller;
 
 import com.stockflow.common.api.ApiResponse;
 import com.stockflow.common.api.PageResponse;
-import com.stockflow.common.domain.Sku;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.persistence.Pages;
@@ -13,7 +12,6 @@ import com.stockflow.common.security.PermissionResource;
 import com.stockflow.common.security.RequiresPermission;
 import com.stockflow.inventory.api.MoveReference;
 import com.stockflow.inventory.api.MoveStockPackagesCommand;
-import com.stockflow.inventory.api.RequestAdjustmentCommand;
 import com.stockflow.inventory.api.StockAdjustmentStatus;
 import com.stockflow.inventory.internal.controller.dto.MoveStockPackagesRequest;
 import com.stockflow.inventory.internal.controller.dto.MovedStockPackageResponse;
@@ -105,20 +103,26 @@ class StockOperationsController {
                 .map(mapper::toResponse));
     }
 
+    /**
+     * Kltn-docs 20 §4.3: a carton, by LPN, written off whole or restocked whole - never a number of units (BR-14). A
+     * quarantined carton that cannot be used is written off here as DAMAGED (20 §4.8 step 3, team plan 4D-1), unless
+     * it was released to a putaway task. Loose stock is not adjusted here: returns come back as cartons (4D-2).
+     */
     @PostMapping("/adjustments")
     @ResponseStatus(HttpStatus.CREATED)
-    @Operation(summary = "Ask for a stock correction with a reason; nothing changes until someone else approves",
-            description = "Loose stock by locationCode, sku and lotNumber, or a whole carton by lpn (written off "
-                    + "whole: quantityDelta is minus what it holds; a quarantined carton that cannot be used is "
-                    + "written off as DAMAGED). An lpn with an open putaway task is 409 STOCK_PACKAGE_DECISION_PENDING.")
+    @Operation(summary = "Ask to write a carton off whole or restock a LOST one; nothing changes until someone else "
+            + "approves",
+            description = "404 STOCK_PACKAGE_NOT_FOUND; 409 INVALID_STOCK_PACKAGE_TRANSITION (a write-off of a carton "
+                    + "not in stock, a restock of one not LOST), STOCK_PACKAGE_HELD, STOCK_SLOT_UNDER_COUNT, "
+                    + "STOCK_PACKAGE_ADJUSTMENT_PENDING, STOCK_PACKAGE_DECISION_PENDING (an open putaway task); 400 "
+                    + "VALIDATION_FAILED for COUNT_VARIANCE, a reason of the "
+                    + "history, or OTHER without a note; 403 for a carton in another warehouse.")
     @RequiresPermission(resource = InventoryResources.STOCK_ITEMS, action = Action.UPDATE)
     public ApiResponse<StockAdjustmentResponse> requestAdjustment(@Valid @RequestBody RequestAdjustmentRequest request,
                                                                   @AuthenticatedUser CurrentUser user) {
-        boolean byLpn = request.lpn() != null && !request.lpn().isBlank();
-        return ApiResponse.ok(mapper.toResponse(operations.requestAdjustment(new RequestAdjustmentCommand(
-                request.locationCode(), request.sku() == null || request.sku().isBlank() ? null : new Sku(request.sku()),
-                byLpn ? null : request.lotNumber(), request.quantityDelta(), request.reason(), request.note(),
-                user.userId(), null, byLpn ? request.lpn() : null))));
+        return ApiResponse.ok(mapper.toResponse(operations.requestPackageAdjustment(
+                new StockOperations.PackageAdjustmentRequest(request.lpn(), request.direction(), request.reason(),
+                        request.note(), user.userId()))));
     }
 
     @GetMapping("/adjustments")

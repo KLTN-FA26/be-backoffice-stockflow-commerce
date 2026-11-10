@@ -130,7 +130,9 @@ ALTER TABLE inventory.inventory_items
 ALTER TABLE inventory.stock_item DROP CONSTRAINT ck_stock_serial_quantity;
 DROP INDEX inventory.uk_stock_item_live_serial;
 DROP INDEX inventory.uk_stock_item_sku_location_lot;
-DROP INDEX inventory.uk_stock_item_package_layer;
+-- V20261113000300 (team plan 4C-3, earlier in version order) already replaced this key by uk_stock_item_package,
+-- one row per carton; it is made again below only where that one is missing.
+DROP INDEX IF EXISTS inventory.uk_stock_item_package_layer;
 
 -- Units told apart by serial number alone: a microsecond apart instead (see the header).
 ALTER TABLE inventory.stock_item DISABLE TRIGGER trg_stock_sku_policy;
@@ -166,6 +168,12 @@ ALTER TABLE inventory.stock_item DROP COLUMN serial_number;
 CREATE UNIQUE INDEX uk_stock_item_sku_location_lot
     ON inventory.stock_item (sku, location_code, COALESCE(lot_number, ''), received_at) NULLS NOT DISTINCT
     WHERE stock_package_id IS NULL;
-CREATE UNIQUE INDEX uk_stock_item_package_layer
-    ON inventory.stock_item (stock_package_id, sku, COALESCE(lot_number, ''), received_at) NULLS NOT DISTINCT
-    WHERE stock_package_id IS NOT NULL;
+DO $$
+BEGIN
+    IF to_regclass('inventory.uk_stock_item_package') IS NULL THEN
+        CREATE UNIQUE INDEX uk_stock_item_package_layer
+            ON inventory.stock_item (stock_package_id, sku, COALESCE(lot_number, ''), received_at) NULLS NOT DISTINCT
+            WHERE stock_package_id IS NOT NULL;
+    END IF;
+END
+$$;

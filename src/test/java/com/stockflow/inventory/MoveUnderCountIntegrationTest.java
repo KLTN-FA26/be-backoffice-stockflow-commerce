@@ -25,7 +25,6 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.transaction.support.TransactionTemplate;
 
-import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.List;
 import java.util.Locale;
@@ -40,9 +39,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 /**
  * SCRUM-146, owner decision MOVE-HELD (28/10), kltn-docs 11 BR-06: a carton moved by hand does not leave a slot a
- * cycle count holds (its own carton slot), nor go into a bin where a count holds the SKU and lot loose (open, or
- * submitted with its variance still pending) - the one {@code CountBusy} predicate reads. A count of another bin of
- * the same SKU leaves the move alone. Since team plan 4C-2 a person moves whole cartons only.
+ * cycle count holds (its own carton slot, open or submitted with its variance still pending) - the one
+ * {@code CountBusy} predicate reads. A count holds cartons only (team plan 4C-3), so a carton may arrive in a bin whose
+ * cartons are being counted: it is on no count line, and an arrival changes no counted line (the "BR-06 arrival rule"
+ * 4C-2 left to this package). A count of another bin of the same SKU leaves the move alone.
  */
 @SecuredIntegrationTest
 class MoveUnderCountIntegrationTest {
@@ -63,6 +63,9 @@ class MoveUnderCountIntegrationTest {
     private String sku;
     private UUID clerk;
     private UUID manager;
+    /** The carton that starts at {@link #A}, and the one at {@link #C}. */
+    private String lpnA;
+    private String lpnC;
 
     @BeforeEach
     void setUp() {
@@ -76,17 +79,11 @@ class MoveUnderCountIntegrationTest {
                     "Move under count fixture", sku.toLowerCase(Locale.ROOT));
             jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature) values (?,?,?,?,'')",
                     Identifiers.newId(), product, sku, "Move under count fixture");
-            CartonRows.stock(jdbc, sku, A, 1, 10, null, Instant.parse("2026-01-02T00:00:00Z"), "AVAILABLE");
-            stock(C, 5);
+            lpnA = CartonRows.stock(jdbc, sku, A, 1, 10, "L1",
+                    Instant.parse("2026-01-02T00:00:00Z"), "AVAILABLE").getFirst().lpn();
+            lpnC = CartonRows.stock(jdbc, sku, C, 1, 10, "L1",
+                    Instant.parse("2026-01-02T00:00:00Z"), "AVAILABLE").getFirst().lpn();
         });
-    }
-
-    private void stock(String bin, int onHand) {
-        jdbc.update("""
-                insert into inventory.stock_item (id, sku, location_code, lot_number, received_at, on_hand,
-                    reserved, status, version, created_at)
-                values (?, ?, ?, 'UNTRACED', ?, ?, 0, 'AVAILABLE', 0, now())""",
-                Identifiers.newId(), sku, bin, Timestamp.from(Instant.parse("2026-01-02T00:00:00Z")), onHand);
     }
 
     private UUID user(String role) {
@@ -107,16 +104,10 @@ class MoveUnderCountIntegrationTest {
                 List.of(), List.of(), List.of(bin), List.of(sku)), false).count();
     }
 
-    /** The carton standing at {@code from}, whole, to {@code to}. */
-    private void move(String from, String to) {
-        operations.moveStockPackages(new MoveStockPackagesCommand(List.of(lpnAt(from)), to,
+    /** The carton {@code lpn}, whole, to {@code to}. */
+    private void move(String lpn, String to) {
+        operations.moveStockPackages(new MoveStockPackagesCommand(List.of(lpn), to,
                 MoveReference.MOVE_TASK, Identifiers.newId(), manager));
-    }
-
-    private String lpnAt(String location) {
-        return jdbc.queryForObject("""
-                SELECT p.lpn FROM inventory.stock_package p JOIN inventory.inventory_items i ON i.id = p.inventory_item_id
-                 WHERE i.sku = ? AND p.location_code = ? AND p.status = 'IN_STOCK'""", String.class, sku, location);
     }
 
     private static ErrorCode code(Throwable thrown) {
@@ -124,8 +115,9 @@ class MoveUnderCountIntegrationTest {
         return ((BusinessException) thrown).errorCode();
     }
 
-    private void count(CycleCountView count, int counted) {
-        cycleCounts.count(count.id(), count.lines().get(0).id(), counted, null, clerk, false);
+    private void scan(CycleCountView count, String lpn, boolean found) {
+        UUID line = count.lines().stream().filter(l -> lpn.equals(l.lpn())).findFirst().orElseThrow().id();
+        cycleCounts.count(count.id(), line, found, clerk, false);
     }
 
     @Test
@@ -133,51 +125,59 @@ class MoveUnderCountIntegrationTest {
     void moveOutOfAHeldSlot() {
         plan(A);
 
-        assertThat(code(catchThrowable(() -> move(A, B)))).isEqualTo(ErrorCode.STOCK_SLOT_UNDER_COUNT);
+        assertThat(code(catchThrowable(() -> move(lpnA, B)))).isEqualTo(ErrorCode.STOCK_SLOT_UNDER_COUNT);
         assertThat(jdbc.queryForObject("select sum(on_hand) from inventory.stock_item where sku = ? and location_code = ?",
                 Integer.class, sku, A)).isEqualTo(10);
     }
 
     @Test
-    @DisplayName("into a held slot: 409 STOCK_SLOT_UNDER_COUNT")
-    void moveIntoAHeldSlot() {
-        plan(C);
+    @DisplayName("into a bin whose cartons are being counted: allowed - the arrival is on no line and changes no counted line")
+    void moveIntoACountedBinIsAllowed() {
+        CycleCountView count = plan(C);
 
-        assertThat(code(catchThrowable(() -> move(A, C)))).isEqualTo(ErrorCode.STOCK_SLOT_UNDER_COUNT);
+        move(lpnA, C);
+
+        assertThat(jdbc.queryForObject("select location_code from inventory.stock_package where lpn = ?", String.class,
+                lpnA)).isEqualTo(C);
+        assertThat(cycleCounts.get(count.id(), true).lines()).extracting(CycleCountView.Line::lpn)
+                .containsExactly(lpnC);
+        // The carton that arrived is no one's count: the count of the bin still submits on its own line.
+        scan(count, lpnC, true);
+        assertThat(cycleCounts.submit(count.id(), clerk, false).status()).isEqualTo("COMPLETED");
     }
 
     @Test
-    @DisplayName("a slot is bin, SKU and lot: a count of another bin does not stop the move")
+    @DisplayName("a slot is one carton: a count of another bin does not stop the move")
     void unrelatedSlotsAreFree() {
         plan(C);
 
-        move(A, B);
+        move(lpnA, B);
 
         assertThat(jdbc.queryForObject("select sum(on_hand) from inventory.stock_item where sku = ? and location_code = ?",
                 Integer.class, sku, B)).isEqualTo(10);
     }
 
     @Test
-    @DisplayName("the slot is free again when the count is submitted with no variance, or cancelled; held while the "
+    @DisplayName("the carton is free again when its count is submitted with no variance, or cancelled; held while the "
             + "variance is pending")
     void freedWhenTheCountIsDone() {
         CycleCountView matching = plan(A);
-        count(matching, 10);
+        scan(matching, lpnA, true);
         cycleCounts.submit(matching.id(), clerk, false);
-        move(A, B);
+        move(lpnA, B);
 
-        CycleCountView cancelled = plan(C);
-        assertThat(code(catchThrowable(() -> move(B, C)))).isEqualTo(ErrorCode.STOCK_SLOT_UNDER_COUNT);
+        CycleCountView cancelled = plan(B);
+        assertThat(code(catchThrowable(() -> move(lpnA, C)))).isEqualTo(ErrorCode.STOCK_SLOT_UNDER_COUNT);
         cycleCounts.cancel(cancelled.id(), "done", "test");
-        move(B, C);
+        move(lpnA, C);
 
         // The carton not found: its COUNT_VARIANCE waits for approval, and the carton stays where the count holds it.
         CycleCountView missing = plan(C);
-        for (CycleCountView.Line line : missing.lines()) {
-            cycleCounts.count(missing.id(), line.id(), line.lpn() != null ? 0 : 5, null, clerk, false);
-        }
+        scan(missing, lpnA, false);
+        scan(missing, lpnC, true);
         cycleCounts.submit(missing.id(), clerk, false);
-        assertThat(code(catchThrowable(() -> move(C, B)))).isEqualTo(ErrorCode.STOCK_SLOT_UNDER_COUNT);
+        assertThat(code(catchThrowable(() -> move(lpnA, B)))).isEqualTo(ErrorCode.STOCK_SLOT_UNDER_COUNT);
+        move(lpnC, B);
     }
 
     @Test
@@ -189,7 +189,7 @@ class MoveUnderCountIntegrationTest {
                         .contentType("application/json")
                         .content("""
                                 {"requestId":"%s","lpns":["%s"],"toLocation":"%s"}"""
-                                .formatted(UUID.randomUUID(), lpnAt(A), B)))
+                                .formatted(UUID.randomUUID(), lpnA, B)))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("STOCK_SLOT_UNDER_COUNT"))
                 .andExpect(jsonPath("$.details.locationCode").value(A))

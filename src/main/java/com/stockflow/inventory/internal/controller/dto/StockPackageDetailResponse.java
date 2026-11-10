@@ -17,7 +17,6 @@ public record StockPackageDetailResponse(
         @Schema(description = "What is left in it: the sum of its stock rows; 0 before it is received") int onHand,
         @Schema(description = "Of onHand, the units held for orders") int reserved,
         @Schema(description = "RECEIVING, IN_STOCK, CONSUMED, LOST or VOID") String status,
-        @Schema(description = "Still closed as counted: then it holds exactly receivedQty") boolean unopened,
         @Schema(example = "HCM-A01-1-A") String locationCode,
         @Schema(description = "The goods receipt line it arrived on; null for one made in the warehouse")
         UUID goodsReceiptLineId,

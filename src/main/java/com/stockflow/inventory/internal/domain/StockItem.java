@@ -38,10 +38,10 @@ import java.util.UUID;
  * three imports from {@code contracts}: the aggregate names the events it causes, which is domain
  * knowledge, and {@code contracts} holds nothing but flat records.
  *
- * <p><b>Loose stock or the contents of one stock package.</b> A row with no {@link #stockPackageId()} is loose
- * and keyed by (SKU, location, lot, receipt time); a row in a stock package (a carton, V20261020000200)
- * is keyed by the package instead, so a bin may hold a loose layer and several cartons of the very same receipt.
- * A lookup of one must never land on the other.</p>
+ * <p><b>One carton, or loose stock.</b> A row in a stock package (a carton, V20261020000200) is that carton's
+ * contents - one row per carton ({@code uk_stock_item_package}, V20261113000300). A row with no
+ * {@link #stockPackageId()} is loose and keyed by (SKU, location, lot, receipt time); since team plan 4C-2 hardly
+ * anything writes one. A lookup of one must never land on the other. Every row carries a lot (20 BR-22).</p>
  *
  * <p><b>Known limit — one order line can span several stock items.</b> The aggregate is keyed per
  * location and layer, so 100 units spread over three locations means mutating three aggregates in
@@ -165,12 +165,24 @@ public final class StockItem extends AggregateRoot {
                 StockItemId.newId(),
                 sku,
                 location,
-                lotNumber,
+                requireLot(lotNumber),
                 quantity,
                 StockStatus.QUARANTINE,
                 List.of(),
                 0L,
                 receivedAt);
+    }
+
+    /**
+     * Every unit carries a lot (kltn-docs 20 BR-22; {@code ck_stock_item_lot}, V20261113000300): a new layer is given
+     * one - {@code StockLots.UNTRACED} when its lot is not known. Asked where goods enter stock; the other new layers
+     * copy the lot of the units they came from.
+     */
+    private static String requireLot(String lotNumber) {
+        if (lotNumber == null || lotNumber.isBlank()) {
+            throw new IllegalArgumentException("Every unit carries a lot; " + StockLots.UNTRACED + " when none is known");
+        }
+        return lotNumber;
     }
 
     private Quantity onHand;
@@ -214,7 +226,7 @@ public final class StockItem extends AggregateRoot {
                 StockItemId.newId(),
                 sku,
                 location,
-                lotNumber,
+                requireLot(lotNumber),
                 quantity,
                 StockStatus.QUARANTINE,
                 List.of(),
@@ -237,7 +249,7 @@ public final class StockItem extends AggregateRoot {
     public static StockItem receiveInbound(Sku sku, LocationId location, String lotNumber,
                                            Quantity quantity, Instant receivedAt, UUID lotId) {
         Objects.requireNonNull(receivedAt, "receivedAt");
-        return new StockItem(StockItemId.newId(), sku, location, lotNumber, quantity,
+        return new StockItem(StockItemId.newId(), sku, location, requireLot(lotNumber), quantity,
                 StockStatus.INBOUND, List.of(), 0L, receivedAt, lotId);
     }
 
@@ -249,7 +261,7 @@ public final class StockItem extends AggregateRoot {
                                                Quantity quantity, Instant receivedAt, UUID lotId) {
         Objects.requireNonNull(carton, "carton");
         Objects.requireNonNull(receivedAt, "receivedAt");
-        return new StockItem(StockItemId.newId(), sku, location, lotNumber, quantity,
+        return new StockItem(StockItemId.newId(), sku, location, requireLot(lotNumber), quantity,
                 StockStatus.INBOUND, List.of(), 0L, receivedAt, lotId, carton);
     }
 
@@ -412,6 +424,21 @@ public final class StockItem extends AggregateRoot {
         }
         this.status = StockStatus.QUARANTINE;
         moveIn(quantity);
+    }
+
+    /**
+     * The empty row of a LOST carton found again takes the status the carton comes back in (kltn-docs 20 §4.6 step 7):
+     * AVAILABLE on the shelf, QUARANTINE in a quarantine area. Only while it holds nothing and no hold names it - the
+     * units arrive right after, so no unit ever changes status here.
+     */
+    public void comeBackAs(StockStatus target) {
+        if (target != StockStatus.AVAILABLE && target != StockStatus.QUARANTINE) {
+            throw new IllegalArgumentException(target + " is not AVAILABLE or QUARANTINE");
+        }
+        if (stockPackageId == null || !onHand.isZero() || !reserved().isZero()) {
+            throw new IllegalStateException("Stock item %s is not the empty row of a carton".formatted(id));
+        }
+        this.status = target;
     }
 
     /**

@@ -43,7 +43,8 @@ import java.util.UUID;
  * works on its own canonical SKU and lot, so it never disturbs the demo stock other tests read.
  *
  * <p>Moves are of whole cartons by LPN since team plan 4C-2 (kltn-docs 11 BR-04, BR-07): a carton of 10 stands at
- * {@link #BIN} beside the loose row the adjustments work on.</p>
+ * {@link #BIN} beside the loose row the loose adjustment path still works on (a customer return's, until 4D-2). A
+ * carton is adjusted by LPN, whole: {@code CartonAdjustmentIntegrationTest} (team plan 4C-3).</p>
  */
 // DIRECT_DEPENDENCIES: moves ask warehouse :: api whether a location may take stock (issue #67).
 @ApplicationModuleTest(mode = ApplicationModuleTest.BootstrapMode.DIRECT_DEPENDENCIES)
@@ -148,7 +149,7 @@ VALUES (?, ?, ?, ?, ?, 0, ?, 0, NOW())""",
             assertThat(view.lpn()).isEqualTo(carton.lpn());
             assertThat(view.locationCode()).isEqualTo(PACKING);
             assertThat(view.quantity()).isEqualTo(10);
-            assertThat(view.unopened()).isTrue();
+            assertThat(view.status()).isEqualTo("IN_STOCK");
         });
         assertThat(cartonAt(PACKING)).isEqualTo(10);
         assertThat(onHand(BIN)).as("the loose row beside it stays").isEqualTo(10);
@@ -192,7 +193,7 @@ VALUES (?, ?, ?, ?, ?, 0, ?, 0, NOW())""",
                 java.time.Instant.parse("2026-01-03T00:00:00Z")).getFirst());
         tx.executeWithoutResult(s -> {
             jdbc.update("UPDATE inventory.stock_item SET on_hand = 0 WHERE id = ?", gone.stockItemId());
-            jdbc.update("UPDATE inventory.stock_package SET status = 'CONSUMED', unopened = FALSE, closed_at = NOW()"
+            jdbc.update("UPDATE inventory.stock_package SET status = 'CONSUMED', closed_at = NOW()"
                     + " WHERE id = ?", gone.id());
         });
         assertThatThrownBy(() -> inventory.moveStockPackages(new MoveStockPackagesCommand(

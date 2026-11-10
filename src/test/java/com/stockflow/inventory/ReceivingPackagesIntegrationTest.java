@@ -36,7 +36,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * per carton, the remainder loose.
  *
  * <p>Nothing here runs in a test transaction: V20261020000200 checks a carton against its rows at commit (an IN_STOCK
- * carton holds stock, an unopened one exactly what was counted into it), so every call commits as production's
+ * carton holds stock, exactly what was counted into it), so every call commits as production's
  * would. Each test has its own SKU, with a CARTON unit of 1000, and its own production order of 2 cartons (SENT, delivering to HCM) with a draft
  * receipt of one line of 2000 and no carton labelled yet, on the HCM receiving area.</p>
  */
@@ -116,7 +116,6 @@ class ReceivingPackagesIntegrationTest {
             assertThat(view.unitOfMeasure()).isEqualTo("CARTON");
             assertThat(view.nominalQty()).isEqualTo(1000);
             assertThat(view.locationCode()).isEqualTo(RECEIVING);
-            assertThat(view.unopened()).isTrue();
         });
         assertThat(views).extracting(StockPackageView::lpn).doesNotHaveDuplicates().isSorted();
         assertThat(views).extracting(StockPackageView::quantity).containsExactly(1000, 1000);
@@ -173,8 +172,8 @@ class ReceivingPackagesIntegrationTest {
 
         assertThat(move.quantity()).as("the first carton's line is the move returned").isEqualTo(1000);
         assertThat(jdbc.queryForList("""
-                select status || ':' || unopened from inventory.stock_package where goods_receipt_line_id = ?""",
-                String.class, line)).containsExactly("IN_STOCK:true", "IN_STOCK:true");
+                select status from inventory.stock_package where goods_receipt_line_id = ?""",
+                String.class, line)).containsExactly("IN_STOCK", "IN_STOCK");
         assertThat(jdbc.query("""
                 select s.on_hand, s.status, s.location_code, p.received_qty from inventory.stock_item s
                   left join inventory.stock_package p on p.id = s.stock_package_id
@@ -226,17 +225,14 @@ class ReceivingPackagesIntegrationTest {
     }
 
     @Test
-    @DisplayName("a draft carton counted at another figure before 4C-2 is refused at receipt until counted again")
-    void aNonStandardDraftCartonIsRecountedFirst() {
+    @DisplayName("a draft carton cannot be counted at another figure than its standard, not even with the row triggers "
+            + "off: ck_stock_package_standard_count (V20261113000300); counted again it stays at the standard")
+    void aNonStandardDraftCartonCannotBeWritten() {
         String lpn = count(PackageCount.fresh(), PackageCount.fresh()).getFirst().lpn();
-        // As a draft counted under the old rules stands: the row triggers are off only for this transaction's write.
-        tx.executeWithoutResult(s -> {
+        assertThatThrownBy(() -> tx.executeWithoutResult(s -> {
             jdbc.execute("SET LOCAL session_replication_role = replica");
             jdbc.update("update inventory.stock_package set received_qty = 980 where lpn = ?", lpn);
-        });
-
-        assertThatThrownBy(() -> receive(2000))
-                .extracting(ReceivingPackagesIntegrationTest::code).isEqualTo(ErrorCode.RECEIPT_PACKAGE_NOT_STANDARD);
+        })).hasMessageContaining("ck_stock_package_standard_count");
         assertThat(stockRows()).isZero();
 
         count(new PackageCount(lpn), PackageCount.fresh());

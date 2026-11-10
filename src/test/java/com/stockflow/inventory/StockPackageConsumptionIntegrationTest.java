@@ -72,7 +72,7 @@ class StockPackageConsumptionIntegrationTest {
         });
     }
 
-    /** An unopened carton of 5 on the shelf, counted in at 5: the only stock of the SKU unless another is added. */
+    /** A whole carton of 5 on the shelf, counted in at 5: the only stock of the SKU unless another is added. */
     private UUID cartonOnShelf(String name) {
         UUID id = Identifiers.newId();
         tx.executeWithoutResult(s -> {
@@ -114,7 +114,7 @@ class StockPackageConsumptionIntegrationTest {
 
     private Map<String, Object> carton(UUID id) {
         return jdbc.queryForMap("""
-                select p.status, p.unopened, p.closed_at is not null as closed,
+                select p.status, p.closed_at is not null as closed,
                        (select coalesce(sum(s.on_hand), 0) from inventory.stock_item s where s.stock_package_id = p.id) as held
                   from inventory.stock_package p where p.id = ?""", id);
     }
@@ -128,8 +128,7 @@ class StockPackageConsumptionIntegrationTest {
         assertThat(((BusinessException) catchThrowable(() -> hold(order, 3))).errorCode())
                 .as("3 of a carton of 5: a reservation counts cartons")
                 .isEqualTo(ErrorCode.RESERVATION_NOT_WHOLE_CARTONS);
-        assertThat(carton(box)).containsEntry("status", "IN_STOCK").containsEntry("unopened", true)
-                .containsEntry("held", 5L);
+        assertThat(carton(box)).containsEntry("status", "IN_STOCK").containsEntry("held", 5L);
 
         UUID whole = hold(order, 5);
         tx.executeWithoutResult(s -> pickConsumption.consumeForPick(whole, Identifiers.newId(), clerk));
