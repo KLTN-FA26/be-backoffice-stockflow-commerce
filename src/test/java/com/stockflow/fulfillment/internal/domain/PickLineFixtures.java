@@ -22,30 +22,25 @@ final class PickLineFixtures {
 
     /** An OPEN line: one whole carton, nothing picked. */
     static PickLine open(String sku, String location, int quantity, String lpn) {
-        return line(sku, location, quantity, 0, PickLineStatus.OPEN, 0, null, lpn, 0);
+        return line(sku, location, quantity, 0, PickLineStatus.OPEN, 0, null, lpn);
     }
 
     /** A PICKED line: the carton was taken whole. */
     static PickLine picked(String sku, String location, int quantity, String lpn) {
-        return line(sku, location, quantity, quantity, PickLineStatus.PICKED, 0, null, lpn, 0);
-    }
-
-    /** A PICKED line of which {@code packingDamaged} units were found damaged at the bench (R8). */
-    static PickLine pickedPartlyDamaged(String sku, String location, int quantity, String lpn, int packingDamaged) {
-        return line(sku, location, quantity, quantity, PickLineStatus.PICKED, 0, null, lpn, packingDamaged);
+        return line(sku, location, quantity, quantity, PickLineStatus.PICKED, 0, null, lpn);
     }
 
     /** A line reported short of its whole carton, for {@code reason}. */
     static PickLine shortLine(String sku, String location, int quantity, String lpn, ShortPickReason reason) {
-        return line(sku, location, quantity, 0, PickLineStatus.SHORT, quantity, reason, lpn, 0);
+        return line(sku, location, quantity, 0, PickLineStatus.SHORT, quantity, reason, lpn);
     }
 
     static PickLine line(String sku, String location, int quantity, int picked, PickLineStatus status, int shortQty,
-                         ShortPickReason reason, String lpn, int packingDamaged) {
+                         ShortPickReason reason, String lpn) {
         boolean pickedOrBack = status == PickLineStatus.PICKED || status == PickLineStatus.PUT_BACK;
         return new PickLine(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), sku, location, "L1", 1, quantity,
                 picked, status, pickedOrBack ? PICKER : null, pickedOrBack ? NOW : null, pickedOrBack ? NOW : null,
                 pickedOrBack ? location : null, pickedOrBack ? lpn : null, 0, null, null, null, shortQty, reason, lpn,
-                lpn != null, 0, null, packingDamaged);
+                lpn != null);
     }
 }

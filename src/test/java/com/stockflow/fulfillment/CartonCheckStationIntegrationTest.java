@@ -46,7 +46,6 @@ import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
-import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.ResultActions;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
@@ -66,7 +65,6 @@ import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -589,18 +587,11 @@ class CartonCheckStationIntegrationTest {
         for (String lpn : mine) {
             scan(packer, "WAREHOUSE_STAFF", task, lpn).andExpect(status().isOk());
         }
-        // Damage after the pick on a carton the station holds is refused: it is removed here, not reported there.
+        // Damage after the pick is no endpoint any more (5-6): a damaged carton is removed here, whole.
         String damagedLine = jdbc.queryForObject("SELECT id::text FROM fulfillment.pick_line WHERE lpn = ?", String.class,
                 damaged);
-        String report = "{\"requestId\":\"" + UUID.randomUUID() + "\",\"damagedQuantity\":1,\"reason\":\"BROKEN\","
-                + "\"note\":\"cracked\"}";
-        asPacker(multipart(BASE + "/tasks/" + task + "/pick-lines/" + damagedLine + "/damage-after-pick")
-                .file(new MockMultipartFile("report", "", "application/json", report.getBytes(StandardCharsets.UTF_8)))
-                .file(new MockMultipartFile("photos", "broken.jpg", "image/jpeg", new byte[] {(byte) 0xFF, (byte) 0xD8,
-                        (byte) 0xFF, (byte) 0xE0, 0, 16, 'J', 'F', 'I', 'F', 0, 1, 1, 0, 0, 1, 0, 1, 0, 0})))
-                .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("PACK_STATE_CONFLICT"));
-        assertThat(jdbc.queryForObject("SELECT packing_damaged_qty FROM fulfillment.pick_line WHERE id = ?::uuid",
-                Integer.class, damagedLine)).isZero();
+        asPacker(post(BASE + "/tasks/" + task + "/pick-lines/" + damagedLine + "/damage-after-pick"))
+                .andExpect(status().is4xxClientError());
         asPacker(body(post(url(task, "/cartons/" + damaged + "/removal")), "{\"note\":\"corner crushed\"}"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.cartons[?(@.lpn=='" + damaged + "')].status")
