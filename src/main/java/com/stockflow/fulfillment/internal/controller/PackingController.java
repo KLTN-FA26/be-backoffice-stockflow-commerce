@@ -203,7 +203,9 @@ class PackingController {
      * (BR-STK-003). Take the units out of their parcel first. They go back into stock as DAMAGED in quarantine; the
      * task goes back to picking for what replaces them - new lines elsewhere, or a SHORT line, the order ON_HOLD
      * ({@code INVENTORY}) for the coordinator, when nothing could - and packing resumes once it is picked again. The
-     * same report again answers 200 with what it made; retries carry the same {@code requestId}.
+     * same report again answers 200 with what it made; retries carry the same {@code requestId}. Always the whole
+     * carton the line picked (team plan 4C-4; kltn-docs 08): part of one is 409 {@code STOCK_PACKAGE_TAKEN_WHOLE}, since
+     * its good units would be deducted with no carton to go back into.
      */
     @PostMapping(value = "/tasks/{taskId}/pick-lines/{lineId}/damage-after-pick",
             consumes = org.springframework.http.MediaType.MULTIPART_FORM_DATA_VALUE)

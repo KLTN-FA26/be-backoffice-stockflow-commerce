@@ -166,9 +166,11 @@ class PickListShortPickTest {
         PickList list = picking(shortLine);
         list.reportShort(shortLine.id(), "HCM-A01-1-A", ShortPickReason.DAMAGED);
 
-        org.assertj.core.api.Assertions.assertThatThrownBy(() -> list.replaceShort(shortLine.id(),
-                        List.of(hold(UUID.randomUUID(), "SOFA", "HCM-B01-1-A", HCM, 4, null)), UUID::randomUUID))
-                .isInstanceOf(NullPointerException.class);
+        assertThat(refusal(() -> list.replaceShort(shortLine.id(),
+                List.of(hold(UUID.randomUUID(), "SOFA", "HCM-B01-1-A", HCM, 4, null)), UUID::randomUUID)))
+                .isEqualTo(ErrorCode.PICK_HOLD_NOT_IN_CARTON);
+        assertThat(shortLine.status()).as("nothing changed").isEqualTo(PickLineStatus.SHORT);
+        assertThat(list.lines()).hasSize(1);
     }
 
     @Test

@@ -454,10 +454,16 @@ public final class PickList {
      * has inventory take them back into quarantine and make the order whole, then calls
      * {@link #replaceDamagedAfterPick}. Whether those units are out of every parcel is the packing session's to say.
      *
+     * <p>Always the whole carton the line picked (team plan 4C-4 review M1; kltn-docs 08: a damaged carton is removed
+     * whole). Part of a carton reported damaged would leave its good units deducted, in no carton - a CONSUMED carton
+     * cannot reopen (4C-2) - and, were the order cancelled, a put-back that can never succeed (it returns whole cartons
+     * only): those units would be off the books with no way back. So the line's units are damaged all at once or not
+     * at all, and a line damaged at packing has nothing left to put back.</p>
+     *
      * @throws BusinessException {@code NOT_FOUND}; {@code PICK_TASK_STATE_CONFLICT} unless the task is PICKING or
      *         PICKED;
-     *         {@code PICK_LINE_NOT_OPEN} unless the line was picked, on a hold; {@code VALIDATION_FAILED} unless 1 to
-     *         the units it picked that were not reported damaged already
+     *         {@code PICK_LINE_NOT_OPEN} unless the line was picked, on a hold; {@code STOCK_PACKAGE_TAKEN_WHOLE}
+     *         unless {@code damaged} is everything the line picked, none of it reported damaged before
      */
     public void requireDamageableAfterPick(UUID lineId, int damaged) {
         PickLine line = requireLine(lineId);
@@ -469,10 +475,10 @@ public final class PickList {
             throw new BusinessException(ErrorCode.PICK_LINE_NOT_OPEN,
                     "Only a picked line of allocated stock brought units to packing; it is " + line.status());
         }
-        if (damaged < 1 || damaged > line.goodQty()) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, ("The line brought %d unit(s) to packing, %d of "
-                    + "them reported damaged already; damage is reported for 1 to %d").formatted(line.pickedQty(),
-                    line.packingDamagedQty(), line.goodQty()));
+        if (damaged != line.pickedQty() || line.packingDamagedQty() != 0) {
+            throw new BusinessException(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE, ("The line brought carton %s of %d unit(s) "
+                    + "to packing, %d of them reported damaged already; a carton is reported damaged whole, never %d of "
+                    + "it").formatted(line.lpn(), line.pickedQty(), line.packingDamagedQty(), damaged));
         }
     }
 
