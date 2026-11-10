@@ -618,7 +618,9 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
     /**
      * Frees the stock holds of {@code lines}. The goods of a print line not shipped stay in stock as the customer's
      * surplus (kltn-docs 17 BR-07): nothing is scrapped. Releasing a hold already consumed by a pick or closed does
-     * nothing - its goods are fulfillment's to put back (G4-4).
+     * nothing - its goods are fulfillment's to put back (G4-4). An expired hold is closed too: since team plan 5-2
+     * nothing cancels a checkout order when its hold runs out, so Sales cancels such an order by hand
+     * ({@code POST /orders/{id}/admin-cancellation}) and its expired holds are skipped here, not refused.
      */
     private void releaseHolds(java.util.Collection<OrderLine> lines) {
         lines.stream().flatMap(line -> line.reservationIds().stream())
@@ -710,6 +712,7 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
                 ofReceivable, ofFeeReceivable);
         if (confirmed) {
             inventory.pinReservations(orderId);
+            holdIfStockLapsed(order);
         }
         if (order.status() == OrderStatus.CANCELLED) {
             log.warn("Payment {} of {} {} arrived for order {}, already cancelled ({}); settle it with the customer",
@@ -717,6 +720,42 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
         }
         repository.save(order);
         events.publishEventsOf(order);
+    }
+
+    /**
+     * A checkout order confirmed by its payment after some of its holds ran out: since team plan 5-2 nothing cancels
+     * an unpaid order when its hold expires, so the money can arrive for stock that is no longer kept for it - and may
+     * have been sold since. Confirming it as it is would leave a CONFIRMED order holding nothing. It is put ON_HOLD for
+     * INVENTORY instead (kltn-docs 17 edge "không đủ hàng để phân bổ"): the customer has paid, so cancelling it
+     * silently is wrong, and holding the stock again here could take what other orders were promised meanwhile. Sales
+     * decides with the customer - wait for stock, or cancel and refund - and resolves the hold. Only an order whose
+     * stock was held at checkout can be short like this: an order of a contract holds nothing until it is confirmed.
+     */
+    private void holdIfStockLapsed(Order order) {
+        if (order.paidByContract()) {
+            return;
+        }
+        Map<String, Integer> held = new java.util.HashMap<>();
+        inventory.holdsOf(order.id().value()).forEach(hold -> held.merge(hold.sku(), hold.quantity(), Integer::sum));
+        Map<String, Integer> wanted = new java.util.TreeMap<>();
+        order.lines().forEach(line -> wanted.merge(line.sku().code(), line.quantity(), Integer::sum));
+        List<String> missing = wanted.entrySet().stream()
+                .filter(entry -> held.getOrDefault(entry.getKey(), 0) < entry.getValue())
+                .map(entry -> "%s %d of %d".formatted(entry.getKey(), held.getOrDefault(entry.getKey(), 0),
+                        entry.getValue()))
+                .toList();
+        if (missing.isEmpty()) {
+            return;
+        }
+        Instant now = clock.instant();
+        String note = "Paid after its stock hold ran out; still held: " + String.join(", ", missing);
+        if (note.length() > 500) {
+            note = note.substring(0, 497) + "...";
+        }
+        order.putOnHold(com.stockflow.order.api.HoldReason.INVENTORY, note, null, now);
+        holds.save(new OrderHoldJpaEntity(Identifiers.newId(), order.id().value(),
+                com.stockflow.order.api.HoldReason.INVENTORY.name(), now, note, null));
+        log.warn("Order {} put on hold: paid after its stock hold ran out ({})", order.orderNumber(), note);
     }
 
     /**
