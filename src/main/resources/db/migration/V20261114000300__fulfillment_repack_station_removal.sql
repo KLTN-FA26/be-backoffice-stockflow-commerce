@@ -19,21 +19,17 @@
 -- =============================================================================
 
 
--- 1. Parcels never sealed
-DELETE FROM fulfillment.package_scan s
- USING fulfillment.package p
- WHERE p.id = s.package_id AND p.pick_line_id IS NULL AND p.status = 'OPEN';
-DELETE FROM fulfillment.package_line l
- USING fulfillment.package p
- WHERE p.id = l.package_id AND p.pick_line_id IS NULL AND p.status = 'OPEN';
-DELETE FROM fulfillment.package WHERE pick_line_id IS NULL AND status = 'OPEN';
-
-
--- 2. Parcel contents and scans
+-- 2. Parcel contents and scans. Dropped before 1 deletes any parcel: package_scan is append-only (platform.append_only
+--    lets a row go only with its parent, and its key to the parcel is RESTRICT), so its rows cannot be deleted one by one,
+--    and every parcel's contents go here anyway.
 DROP TABLE IF EXISTS fulfillment.package_scan;
 DROP TABLE IF EXISTS fulfillment.package_line;
 DROP FUNCTION IF EXISTS fulfillment.check_package_line_quantity();
 DROP FUNCTION IF EXISTS fulfillment.check_kit_part_line();
+
+
+-- 1. Parcels never sealed, now that nothing names them
+DELETE FROM fulfillment.package WHERE pick_line_id IS NULL AND status = 'OPEN';
 
 
 -- 3. What only a repack parcel had
