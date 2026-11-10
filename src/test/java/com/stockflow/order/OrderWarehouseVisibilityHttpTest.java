@@ -78,8 +78,8 @@ class OrderWarehouseVisibilityHttpTest {
                         + "shipping_warehouse_chosen_at = NOW(), shipping_warehouse_chosen_by = ? WHERE id = ?",
                         row[1], sales, row[0]);
             }
-            jdbc.update("UPDATE ordering.customer_order SET warehouse_id = ?, released_at = NOW() WHERE id = ?", here,
-                    releasedHere);
+            jdbc.update("UPDATE ordering.customer_order SET warehouse_id = ?, released_at = NOW(), released_by = ? WHERE id = ?",
+                    here, sales, releasedHere);
         });
     }
 
