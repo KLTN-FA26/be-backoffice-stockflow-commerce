@@ -399,4 +399,49 @@ class CartonAdjustmentIntegrationTest {
                 .extracting(StockAdjustmentSummary::adjustmentId, StockAdjustmentSummary::stockPackageId)
                 .containsExactly(org.assertj.core.groups.Tuple.tuple(asked.adjustmentId(), box.id()));
     }
+
+    // ------------------------------------------------------------------ L4: what status a carton found comes back as
+
+    private String rowStatus(CartonRows.Carton carton) {
+        return jdbc.queryForObject("select status from inventory.stock_item where id = ?", String.class,
+                carton.stockItemId());
+    }
+
+    private void loseAndFind(CartonRows.Carton box) {
+        operations.approve(ask(box, AdjustmentDirection.WRITE_OFF, StockAdjustmentReason.LOST, null).adjustmentId(),
+                manager);
+        assertThat(state(box)).containsEntry("status", "LOST");
+        operations.approve(ask(box, AdjustmentDirection.RESTOCK, StockAdjustmentReason.FOUND, null).adjustmentId(),
+                manager);
+        assertThat(state(box)).containsEntry("status", "IN_STOCK").containsEntry("held", (long) CARTON);
+    }
+
+    @Test
+    @DisplayName("L4: a LOST carton whose row was INBOUND, BLOCKED or DAMAGED is found AVAILABLE and in ATP")
+    void foundCartonIsSellableWhateverItsRowWas() {
+        int expected = 0;
+        for (String before : List.of("INBOUND", "BLOCKED", "DAMAGED")) {
+            CartonRows.Carton box = tx.execute(s -> CartonRows.stock(jdbc, sku, BIN, 1, CARTON, "L1", null, EARLY,
+                    before)).getFirst();
+            assertThat(rowStatus(box)).isEqualTo(before);
+
+            loseAndFind(box);
+
+            assertThat(rowStatus(box)).as("a row that was " + before).isEqualTo("AVAILABLE");
+            expected += CARTON;
+            assertThat(atp()).as("found again, allocatable").isEqualTo(expected);
+        }
+    }
+
+    @Test
+    @DisplayName("L4: a LOST carton recorded in a QUARANTINE area is found QUARANTINE: never sold by being found")
+    void foundCartonInQuarantineStaysInQuarantine() {
+        CartonRows.Carton box = tx.execute(s -> CartonRows.stock(jdbc, sku, "HCM-QC01", 1, CARTON, "L1", null, EARLY,
+                "QUARANTINE")).getFirst();
+
+        loseAndFind(box);
+
+        assertThat(rowStatus(box)).isEqualTo("QUARANTINE");
+        assertThat(atp()).isZero();
+    }
 }

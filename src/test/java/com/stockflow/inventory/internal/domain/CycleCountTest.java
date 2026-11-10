@@ -24,6 +24,8 @@ class CycleCountTest {
     private final UUID other = UUID.randomUUID();
 
     private static final int STANDARD = 12;
+    /** 20 BR-12: a count holds at most 500 cartons. */
+    private static final int MAX = 500;
 
     /** A carton at the bin; one fixed carton per bin keeps the helper deterministic. */
     private static CountSlot slot(String location) {
@@ -68,7 +70,7 @@ class CycleCountTest {
                 .isInstanceOf(IllegalArgumentException.class);
         CycleCount count = CycleCount.plan("CC-1", WAREHOUSE, CycleCountTrigger.MANUAL, false, null,
                 LocalDate.of(2026, 10, 23), null, List.of(new CountLineDraft(here, STANDARD)));
-        assertThatThrownBy(() -> count.addLine(moved, true, STANDARD, counter, T1))
+        assertThatThrownBy(() -> count.addLine(moved, true, STANDARD, counter, T1, MAX))
                 .satisfies(t -> assertCode(t, ErrorCode.CYCLE_COUNT_SLOT_BUSY));
     }
 
@@ -221,18 +223,34 @@ class CycleCountTest {
     void addLineRefusesASlotAlreadyOnTheCount() {
         CycleCount count = planOne(null, null);
 
-        assertThatThrownBy(() -> count.addLine(slot("HN-A01-1-01"), true, STANDARD, counter, T1))
+        assertThatThrownBy(() -> count.addLine(slot("HN-A01-1-01"), true, STANDARD, counter, T1, MAX))
                 .satisfies(t -> assertCode(t, ErrorCode.CYCLE_COUNT_SLOT_BUSY));
 
         // a LOST carton found again: the books do not have it, the counter does (a surplus of one carton)
-        CycleCountLine added = count.addLine(slot("HN-A01-1-02"), false, STANDARD, counter, T1);
+        CycleCountLine added = count.addLine(slot("HN-A01-1-02"), false, STANDARD, counter, T1, MAX);
         assertThat(count.lines()).hasSize(2);
         assertThat(added.found()).isTrue();
         assertThat(added.booked()).isFalse();
         assertThat(added.delta()).isEqualTo(STANDARD);
         // a carton the books do have, scanned although the plan missed it: present on both sides, no variance
-        CycleCountLine known = count.addLine(slot("HN-A01-1-03"), true, STANDARD, counter, T1);
+        CycleCountLine known = count.addLine(slot("HN-A01-1-03"), true, STANDARD, counter, T1, MAX);
         assertThat(known.delta()).isZero();
+    }
+
+    @Test
+    void aFullCountTakesNoMoreLines() {
+        CycleCount count = planOne(null, null);
+
+        assertThatThrownBy(() -> count.addLine(slot("HN-A01-1-02"), true, STANDARD, counter, T1, 1))
+                .as("the plan already filled a count of one line")
+                .satisfies(t -> assertCode(t, ErrorCode.CYCLE_COUNT_TOO_LARGE));
+        assertThat(count.lines()).hasSize(1);
+
+        count.addLine(slot("HN-A01-1-02"), true, STANDARD, counter, T1, 2);
+        assertThat(count.lines()).hasSize(2);
+        assertThatThrownBy(() -> count.addLine(slot("HN-A01-1-03"), true, STANDARD, counter, T1, 2))
+                .satisfies(t -> assertCode(t, ErrorCode.CYCLE_COUNT_TOO_LARGE));
+        assertThat(count.lines()).hasSize(2);
     }
 
     @Test

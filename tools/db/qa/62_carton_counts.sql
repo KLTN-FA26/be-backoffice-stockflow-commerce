@@ -315,6 +315,34 @@ SELECT pg_temp.expect_fail('CF4 a LOST carton moved to CONSUMED', $q$
     UPDATE inventory.stock_package SET status = 'LOST', closed_at = NOW() WHERE id = md5('qa62:c')::uuid;
     UPDATE inventory.stock_package SET status = 'CONSUMED' WHERE id = md5('qa62:c')::uuid $q$);
 
+\echo '--- a count holds at most 500 cartons (20 BR-12), found ones included'
+INSERT INTO inventory.cycle_count (id, count_number, warehouse_id, trigger_type, status, started_at)
+VALUES (md5('qa62:big')::uuid, 'CC-QA-62B', md5('demo:wh:HCM')::uuid, 'MANUAL', 'IN_PROGRESS', NOW());
+INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, received_qty,
+                                     location_code, status)
+SELECT md5('qa62:m:' || n)::uuid, 'QA62-M-' || n, md5('demo:item:SOFA-3S-GREY')::uuid, md5('qa62:unit')::uuid, 4, 4,
+       'HCM-A02-1-B', 'IN_STOCK'
+  FROM generate_series(1, 501) n;
+INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at,
+                                  received_at, stock_package_id)
+SELECT md5('qa62:m:row:' || n)::uuid, 'SOFA-3S-GREY', 'HCM-A02-1-B', 'UNTRACED', 4, 0, 'AVAILABLE', NOW(),
+       NOW() - interval '1 day', md5('qa62:m:' || n)::uuid
+  FROM generate_series(1, 501) n;
+SELECT pg_temp.expect_ok('CX1 500 carton lines on one count', $q$
+    INSERT INTO inventory.cycle_count_line (id, cycle_count_id, location_code, sku, expected_qty, stock_package_id)
+    SELECT gen_random_uuid(), md5('qa62:big')::uuid, 'HCM-A02-1-B', 'SOFA-3S-GREY', 0, md5('qa62:m:' || n)::uuid
+      FROM generate_series(1, 500) n $q$);
+SELECT pg_temp.expect_fail('CX2 a 501st line, planned or found', $q$
+    INSERT INTO inventory.cycle_count_line (id, cycle_count_id, location_code, sku, expected_qty, stock_package_id)
+    VALUES (gen_random_uuid(), md5('qa62:big')::uuid, 'HCM-A02-1-B', 'SOFA-3S-GREY', 0, md5('qa62:m:501')::uuid) $q$);
+SELECT pg_temp.expect_true('CX3 the count holds 500',
+    (SELECT count(*) = 500 FROM inventory.cycle_count_line WHERE cycle_count_id = md5('qa62:big')::uuid));
+SELECT pg_temp.expect_ok('CX4 another count is not full', $q$
+    INSERT INTO inventory.cycle_count (id, count_number, warehouse_id, trigger_type, status, started_at)
+    VALUES (md5('qa62:small')::uuid, 'CC-QA-62C', md5('demo:wh:HCM')::uuid, 'MANUAL', 'IN_PROGRESS', NOW());
+    INSERT INTO inventory.cycle_count_line (id, cycle_count_id, location_code, sku, expected_qty, stock_package_id)
+    VALUES (gen_random_uuid(), md5('qa62:small')::uuid, 'HCM-A02-1-B', 'SOFA-3S-GREY', 0, md5('qa62:m:501')::uuid) $q$);
+
 \echo '--- what the migration kept'
 SELECT pg_temp.expect_true('CM1 the unopened flags were archived whole before the column went',
     EXISTS (SELECT 1 FROM platform.legacy_archive WHERE source_table = 'inventory.stock_package.unopened'

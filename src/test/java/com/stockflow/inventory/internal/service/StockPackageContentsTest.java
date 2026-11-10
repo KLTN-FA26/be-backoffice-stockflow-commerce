@@ -41,7 +41,9 @@ class StockPackageContentsTest {
 
     private final StockPackageRepository stockPackages = mock(StockPackageRepository.class);
     private final StockItemRepository stockItems = mock(StockItemRepository.class);
-    private final StockPackageContents contents = new StockPackageContents(stockPackages, stockItems);
+    private final com.stockflow.inventory.internal.domain.LocationDirectory locations =
+            mock(com.stockflow.inventory.internal.domain.LocationDirectory.class);
+    private final StockPackageContents contents = new StockPackageContents(stockPackages, stockItems, locations);
 
     private static StockPackage carton(StockPackageId id, int counted) {
         return new StockPackage(id, "LPN-0001", UUID.randomUUID(), UUID.randomUUID(), 24, counted,
@@ -57,6 +59,11 @@ class StockPackageContentsTest {
     private static StockItem row(StockPackageId carton, int onHand) {
         return new StockItem(StockItemId.newId(), new Sku("CUP-12OZ"), new LocationId("HCM-A01-1-A"), "L1", null,
                 Quantity.of(onHand), StockStatus.AVAILABLE, List.of(), 0L, NOW, null, carton);
+    }
+
+    private static StockItem rowIn(StockPackageId carton, int onHand, StockStatus status) {
+        return new StockItem(StockItemId.newId(), new Sku("CUP-12OZ"), new LocationId("HCM-A01-1-A"), "L1", null,
+                Quantity.of(onHand), status, List.of(), 0L, NOW, null, carton);
     }
 
     private static StockItem loose(int onHand) {
@@ -285,6 +292,39 @@ class StockPackageContentsTest {
             assertThat(changes).singleElement().satisfies(c -> assertThat(c.delta()).isEqualTo(24));
             verify(stockItems).saveMerged(emptied);
             verify(stockPackages).save(lost);
+        }
+
+        @Test
+        @DisplayName("L4: a LOST carton whose row was INBOUND, BLOCKED or DAMAGED comes back AVAILABLE, not silently "
+                + "out of ATP")
+        void foundCartonIsSellableWhateverItsRowWas() {
+            for (StockStatus before : List.of(StockStatus.INBOUND, StockStatus.BLOCKED, StockStatus.DAMAGED,
+                    StockStatus.AVAILABLE)) {
+                StockPackage lost = cartonWith(id, StockPackageStatus.LOST, 24);
+                StockItem emptied = rowIn(id, 0, before);
+                rowsOf(lost, emptied);
+
+                contents.adjust(id, 24, false, NOW);
+
+                assertThat(emptied.status()).as("a row that was " + before).isEqualTo(StockStatus.AVAILABLE);
+                assertThat(emptied.available().value()).isEqualTo(24);
+                assertThat(lost.status()).isEqualTo(StockPackageStatus.IN_STOCK);
+            }
+        }
+
+        @Test
+        @DisplayName("L4: a LOST carton recorded in a QUARANTINE area comes back QUARANTINE, out of ATP")
+        void foundCartonInQuarantineStaysInQuarantine() {
+            when(locations.isQuarantineArea(new LocationId("HCM-A01-1-A"))).thenReturn(true);
+            StockPackage lost = cartonWith(id, StockPackageStatus.LOST, 24);
+            StockItem emptied = rowIn(id, 0, StockStatus.AVAILABLE);
+            rowsOf(lost, emptied);
+
+            contents.adjust(id, 24, false, NOW);
+
+            assertThat(emptied.status()).isEqualTo(StockStatus.QUARANTINE);
+            assertThat(emptied.onHand().value()).isEqualTo(24);
+            assertThat(emptied.available().value()).as("not sellable until released").isZero();
         }
 
         @Test

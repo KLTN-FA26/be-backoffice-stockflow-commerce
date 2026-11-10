@@ -622,18 +622,6 @@ class CycleCountIntegrationTest {
     }
 
     @Test
-    @DisplayName("a line that differs from nothing is not judged: a carton emptied after being found present is no variance")
-    void aLineWithoutVarianceIsNotChecked() {
-        UUID box = carton(BIN, "P");
-        CycleCountView planned = planBin(BIN).count();
-        cycleCounts.count(planned.id(), cartonLine(planned, box).id(), true, counter, false);
-        consumeWhole(box);
-
-        assertThat(cycleCounts.submit(planned.id(), counter, false).status()).isEqualTo("COMPLETED");
-        assertThat(adjustments()).isEmpty();
-    }
-
-    @Test
     @DisplayName("a stale line rolls the whole submission back: the shortage of another line is not asked")
     void staleRollsBackTheWholeSubmission() {
         // BIN (HCM-A01-1-B) sorts before BIN2 (HCM-A01-2-A): its shortage is asked - and flushed - first, so the
@@ -974,5 +962,215 @@ class CycleCountIntegrationTest {
                 .isEqualTo(clerk);
         assertThat(code(catchThrowable(() -> cycleCounts.assign(planned.id(), colleague, true))))
                 .as("a count being counted keeps its counter").isEqualTo(ErrorCode.CONFLICT);
+    }
+
+    // ------------------------------------------------------------------ review fixes (M1-M4, L4)
+
+    private com.stockflow.inventory.api.StockAdjustmentSummary askByHand(UUID carton, String name,
+            com.stockflow.inventory.internal.domain.AdjustmentDirection direction,
+            com.stockflow.inventory.api.StockAdjustmentReason reason) {
+        return operations.requestPackageAdjustment(new StockOperations.PackageAdjustmentRequest(lpn(name), direction,
+                reason, null, counter));
+    }
+
+    @Test
+    @DisplayName("M4 (BR-09): a line found and booked whose carton was picked, written off or lost before submit is "
+            + "CYCLE_COUNT_STALE although it raises no variance")
+    void aFoundBookedLineWhoseCartonLeftIsStale() {
+        UUID picked = carton(BIN, "P");
+        CycleCountView first = planBin(BIN).count();
+        cycleCounts.count(first.id(), cartonLine(first, picked).id(), true, counter, false);
+        consumeWhole(picked);
+
+        Throwable stale = catchThrowable(() -> cycleCounts.submit(first.id(), counter, true));
+
+        assertThat(code(stale)).as("picked, or written off by an approved adjustment: CONSUMED")
+                .isEqualTo(ErrorCode.CYCLE_COUNT_STALE);
+        assertThat(cycleCounts.get(first.id(), true).status()).isEqualTo("IN_PROGRESS");
+        assertThat(adjustments()).isEmpty();
+
+        UUID gone = carton(BIN2, "G");
+        CycleCountView second = planBin(BIN2).count();
+        cycleCounts.count(second.id(), cartonLine(second, gone).id(), true, counter, false);
+        loseWhole(gone);
+
+        assertThat(code(catchThrowable(() -> cycleCounts.submit(second.id(), counter, true))))
+                .as("written off as lost since").isEqualTo(ErrorCode.CYCLE_COUNT_STALE);
+        assertThat(adjustments()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("M4 (BR-09): a not-found, not-booked line whose LOST carton was restocked meanwhile is "
+            + "CYCLE_COUNT_STALE")
+    void aNotFoundNotBookedLineWhoseCartonCameBackIsStale() {
+        UUID box = carton(BIN, "R");
+        CycleCountView planned = planBin(BIN).count();
+        loseWhole(box);
+        cycleCounts.count(planned.id(), cartonLine(planned, box).id(), false, counter, false);
+        CycleCountView books = cycleCounts.get(planned.id(), true);
+        assertThat(cartonLine(books, box).booked()).isFalse();
+        assertThat(cartonLine(books, box).found()).isFalse();
+        findWhole(box);
+
+        assertThat(code(catchThrowable(() -> cycleCounts.submit(planned.id(), counter, true))))
+                .isEqualTo(ErrorCode.CYCLE_COUNT_STALE);
+        assertThat(adjustments()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("M4 (BR-09): a line found and booked that is still as judged submits without a variance")
+    void aLineAsJudgedSubmitsWithoutVariance() {
+        UUID box = carton(BIN, "K");
+        CycleCountView planned = planBin(BIN).count();
+        cycleCounts.count(planned.id(), cartonLine(planned, box).id(), true, counter, false);
+
+        assertThat(cycleCounts.submit(planned.id(), counter, false).status()).isEqualTo("COMPLETED");
+        assertThat(adjustments()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("M1: a carton with a manual write-off waiting is left out of a plan, named with the adjustment's "
+            + "number, and cannot be added; a pending RESTOCK of a LOST carton likewise")
+    void aPendingManualAdjustmentMakesTheCartonBusy() {
+        UUID x = carton(BIN, "X");
+        UUID y = carton(BIN, "Y");
+        var writeOff = askByHand(x, "X", com.stockflow.inventory.internal.domain.AdjustmentDirection.WRITE_OFF,
+                com.stockflow.inventory.api.StockAdjustmentReason.DAMAGED);
+
+        PlannedCount planned = planBin(BIN);
+
+        assertThat(planned.count().lines()).extracting(CycleCountView.Line::stockPackageId).containsExactly(y);
+        assertThat(planned.skipped()).singleElement().satisfies(skipped -> {
+            assertThat(skipped.lpn()).isEqualTo(lpn("X"));
+            assertThat(skipped.countNumber()).isEqualTo(writeOff.number());
+        });
+        assertThat(code(catchThrowable(() -> cycleCounts.addLine(planned.count().id(),
+                new AddCountLineCommand(BIN, lpn("X"), counter, false)))))
+                .as("a carton whose write-off waits for approval is not counted").isEqualTo(ErrorCode.CYCLE_COUNT_SLOT_BUSY);
+
+        UUID lost = carton(BIN2, "Z");
+        loseWhole(lost);
+        askByHand(lost, "Z", com.stockflow.inventory.internal.domain.AdjustmentDirection.RESTOCK,
+                com.stockflow.inventory.api.StockAdjustmentReason.FOUND);
+        assertThat(code(catchThrowable(() -> cycleCounts.addLine(planned.count().id(),
+                new AddCountLineCommand(BIN2, lpn("Z"), counter, false)))))
+                .as("nor is a LOST carton whose restock waits").isEqualTo(ErrorCode.CYCLE_COUNT_SLOT_BUSY);
+        assertThat(cycleCounts.get(planned.count().id(), true).lines()).hasSize(1);
+
+        // Decided, the carton is free for a count again.
+        operations.reject(writeOff.adjustmentId(), manager, "Fine");
+        assertThat(planBin(BIN).skipped()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("M1: a count variance asked for a carton with an adjustment already pending is "
+            + "STOCK_PACKAGE_ADJUSTMENT_PENDING, not a unique-key 500")
+    void aCountVarianceMeetsThePendingAdjustment() {
+        UUID x = carton(BIN, "X");
+        askByHand(x, "X", com.stockflow.inventory.internal.domain.AdjustmentDirection.WRITE_OFF,
+                com.stockflow.inventory.api.StockAdjustmentReason.DAMAGED);
+
+        Throwable refused = catchThrowable(() -> operations.requestCountVariance(UUID.randomUUID(),
+                cartonSlot(x, BIN), -CARTON_FACTOR, counter, "CC-1"));
+
+        assertThat(code(refused)).isEqualTo(ErrorCode.STOCK_PACKAGE_ADJUSTMENT_PENDING);
+        assertThat(adjustments()).hasSize(1);
+    }
+
+    @Test
+    @DisplayName("M3 (BR-12): a found carton cannot take a count past its cap: CYCLE_COUNT_TOO_LARGE")
+    void addLineStopsAtTheCap() {
+        carton(BIN, "A");
+        carton(BIN2, "B");
+        CycleCountView planned = planBin(BIN).count();
+        Object counting = AopTestUtils.getUltimateTargetObject(
+                ReflectionTestUtils.getField(AopTestUtils.getUltimateTargetObject(cycleCounts), "counting"));
+        Object cap = ReflectionTestUtils.getField(counting, "maxLines");
+        assertThat(cap).isEqualTo(500);
+        ReflectionTestUtils.setField(counting, "maxLines", 1);
+        try {
+            assertThat(code(catchThrowable(() -> cycleCounts.addLine(planned.id(),
+                    new AddCountLineCommand(BIN2, lpn("B"), counter, false))))).isEqualTo(ErrorCode.CYCLE_COUNT_TOO_LARGE);
+            ReflectionTestUtils.setField(counting, "maxLines", 2);
+            assertThat(cycleCounts.addLine(planned.id(), new AddCountLineCommand(BIN2, lpn("B"), counter, false)).lines())
+                    .hasSize(2);
+        } finally {
+            ReflectionTestUtils.setField(counting, "maxLines", cap);
+        }
+    }
+
+    private String message(Throwable thrown) {
+        assertThat(thrown).isInstanceOf(BusinessException.class);
+        return thrown.getMessage();
+    }
+
+    @Test
+    @DisplayName("M2 (BR-07): on a blind count a counter learns neither a carton's recorded bin nor its status from a "
+            + "refusal; who may decide, still does")
+    void blindRefusalsKeepTheBooksFromTheCounter() {
+        String away = "HCM-A02-1-A";
+        UUID counted = carton(BIN, "A");
+        UUID elsewhere = carton(BIN2, "W");
+        UUID consumed = carton(BIN3, "C");
+        consumeWhole(consumed);
+        UUID lostAway = carton(away, "L");
+        loseWhole(lostAway);
+        CycleCountView planned = planBin(BIN).count();
+
+        // addLine at a wrong bin: the recorded bin
+        Throwable wrongForCounter = catchThrowable(() -> cycleCounts.addLine(planned.id(),
+                new AddCountLineCommand(BIN, lpn("W"), counter, false)));
+        Throwable wrongForManager = catchThrowable(() -> cycleCounts.addLine(planned.id(),
+                new AddCountLineCommand(BIN, lpn("W"), manager, true)));
+        assertThat(code(wrongForCounter)).isEqualTo(ErrorCode.STOCK_PACKAGE_WRONG_LOCATION);
+        assertThat(code(wrongForManager)).isEqualTo(ErrorCode.STOCK_PACKAGE_WRONG_LOCATION);
+        assertThat(message(wrongForCounter)).doesNotContain(BIN2);
+        assertThat(message(wrongForManager)).contains(BIN2);
+
+        // a LOST carton recorded elsewhere
+        Throwable lostForCounter = catchThrowable(() -> cycleCounts.addLine(planned.id(),
+                new AddCountLineCommand(BIN, lpn("L"), counter, false)));
+        Throwable lostForManager = catchThrowable(() -> cycleCounts.addLine(planned.id(),
+                new AddCountLineCommand(BIN, lpn("L"), manager, true)));
+        assertThat(code(lostForCounter)).isEqualTo(ErrorCode.STOCK_PACKAGE_WRONG_LOCATION);
+        assertThat(message(lostForCounter)).doesNotContain(away).doesNotContain("LOST");
+        assertThat(message(lostForManager)).contains(away);
+
+        // a CONSUMED carton: its status
+        Throwable consumedForCounter = catchThrowable(() -> cycleCounts.addLine(planned.id(),
+                new AddCountLineCommand(BIN3, lpn("C"), counter, false)));
+        Throwable consumedForManager = catchThrowable(() -> cycleCounts.addLine(planned.id(),
+                new AddCountLineCommand(BIN3, lpn("C"), manager, true)));
+        assertThat(code(consumedForCounter)).isEqualTo(ErrorCode.CONFLICT);
+        assertThat(message(consumedForCounter)).doesNotContain("CONSUMED");
+        assertThat(message(consumedForManager)).contains("CONSUMED");
+
+        // count(found=true) of a carton emptied since planning
+        UUID line = cartonLine(planned, counted).id();
+        consumeWhole(counted);
+        Throwable foundForCounter = catchThrowable(() -> cycleCounts.count(planned.id(), line, true, counter, false));
+        Throwable foundForManager = catchThrowable(() -> cycleCounts.count(planned.id(), line, true, manager, true));
+        assertThat(code(foundForCounter)).isEqualTo(ErrorCode.CONFLICT);
+        assertThat(message(foundForCounter)).doesNotContain("CONSUMED");
+        assertThat(message(foundForManager)).contains("CONSUMED");
+        assertThat(elsewhere).isNotNull();
+    }
+
+    @Test
+    @DisplayName("M2 (BR-07): a stale submit says neither the carton's status nor its bin to a blind counter; to who "
+            + "may decide it does")
+    void blindStaleSubmitKeepsTheBooksFromTheCounter() {
+        UUID box = carton(BIN, "S");
+        CycleCountView planned = planBin(BIN).count();
+        cycleCounts.count(planned.id(), cartonLine(planned, box).id(), false, counter, false);
+        moveWhole(box, BIN2);
+
+        Throwable forCounter = catchThrowable(() -> cycleCounts.submit(planned.id(), counter, false));
+        Throwable forManager = catchThrowable(() -> cycleCounts.submit(planned.id(), manager, true));
+
+        assertThat(code(forCounter)).isEqualTo(ErrorCode.CYCLE_COUNT_STALE);
+        assertThat(code(forManager)).isEqualTo(ErrorCode.CYCLE_COUNT_STALE);
+        assertThat(message(forCounter)).doesNotContain(BIN2).doesNotContain("IN_STOCK");
+        assertThat(message(forManager)).contains(BIN2).contains("IN_STOCK");
     }
 }
