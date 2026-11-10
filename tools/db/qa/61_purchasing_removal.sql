@@ -108,12 +108,12 @@ SELECT pg_temp.expect_true('T9 the tolerance triggers are gone, the check trigge
                  AND tgname IN ('tg_goods_receipts_tolerance', 'tg_goods_receipts_tolerance_insert'))
     AND (SELECT pg_get_triggerdef(oid) FROM pg_trigger WHERE tgname = 'tg_goods_receipts_check') NOT LIKE '%po_id%'
     AND (SELECT pg_get_triggerdef(oid) FROM pg_trigger WHERE tgname = 'tg_goods_receipts_check') LIKE '%production_order_id%' $c$);
-SELECT pg_temp.expect_true('T10 no foreign key points at a dropped table, and the lot keeps its snapshot columns', $c$
+SELECT pg_temp.expect_true('T10 no foreign key points at a dropped table, and the lot no longer carries purchase / supplier columns (V20261117000200)', $c$
     NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname IN ('fk_stock_lot_purchase_order', 'fk_stock_lot_supplier',
         'fk_goods_receipts_po', 'fk_goods_receipts_supplier', 'fk_inventory_items_default_supplier',
         'fk_goods_receipt_lines_po_line', 'fk_stock_damage_disposition_supplier'))
     AND (SELECT count(*) FROM information_schema.columns WHERE table_schema = 'inventory' AND table_name = 'stock_lot'
-          AND column_name IN ('purchase_order_id', 'purchase_order_number', 'supplier_id', 'supplier_name')) = 4 $c$);
+          AND column_name IN ('purchase_order_id', 'purchase_order_number', 'supplier_id', 'supplier_name')) = 0 $c$);
 
 \echo '--- what was dropped is in the archive'
 SELECT pg_temp.expect_true('A1 the demo suppliers are archived whole', $c$

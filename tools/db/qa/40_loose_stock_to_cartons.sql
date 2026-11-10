@@ -19,6 +19,23 @@ BEGIN
     RAISE EXCEPTION 'FAIL  %: the database accepted it', label;
 END $$;
 
+-- Refused by the named rule: a statement that breaks something else proves nothing.
+CREATE FUNCTION pg_temp.expect_fail_by(label TEXT, rule TEXT, stmt TEXT) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+    BEGIN
+        EXECUTE stmt;
+        SET CONSTRAINTS ALL IMMEDIATE;
+        SET CONSTRAINTS ALL DEFERRED;
+    EXCEPTION WHEN OTHERS THEN
+        IF SQLERRM NOT LIKE '%' || rule || '%' THEN
+            RAISE EXCEPTION 'FAIL  %: refused, but not by %: %', label, rule, SQLERRM;
+        END IF;
+        RAISE NOTICE 'ok    %  [%]', label, rule;
+        RETURN;
+    END;
+    RAISE EXCEPTION 'FAIL  %: the database accepted it', label;
+END $$;
+
 CREATE FUNCTION pg_temp.expect_ok(label TEXT, stmt TEXT) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN
     EXECUTE stmt;
@@ -118,16 +135,27 @@ SELECT pg_temp.expect_fail('LC13 a STATUS_CHANGE that changes no status', $q$
             'AVAILABLE', 'STOCK_PACKAGE', gen_random_uuid(), NOW()) $q$);
 
 \echo '--- every unit has a lot (20 BR-22): any SKU may carry one, a lot-tracked one must'
+-- In a carton of 2: a row with units outside one is refused by ck_stock_item_whole_cartons (QA 41).
+INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)
+VALUES (md5('qa40:u')::uuid, md5('demo:item:SOFA-3S-GREY')::uuid, 'QA_QA40', 2);
+INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, received_qty, location_code, status)
+VALUES (md5('qa40:p')::uuid, 'QA-QA40-1', md5('demo:item:SOFA-3S-GREY')::uuid, md5('qa40:u')::uuid, 2, 2, 'HCM-A01-1-A', 'IN_STOCK');
 SELECT pg_temp.expect_ok('LC14 a lot on stock of the demo sofa', $q$
     INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at,
-                                      received_at)
-    VALUES (md5('qa40:lot')::uuid, 'SOFA-3S-GREY', 'HCM-A01-1-A', 'LOT-QA40', 2, 0, 'AVAILABLE', NOW(), NOW()) $q$);
-SELECT pg_temp.expect_ok('LC15 ... and more of it later, the application naming the layer it merges into (5-5, QA 70)', $q$
-    SET LOCAL stockflow.same_receipt_merge = '7918ee7c-02ad-dfa8-d9b1-020bc6616749';
+                                      received_at, stock_package_id)
+    VALUES (md5('qa40:lot')::uuid, 'SOFA-3S-GREY', 'HCM-A01-1-A', 'LOT-QA40', 2, 0, 'AVAILABLE', NOW(), NOW(),
+            md5('qa40:p')::uuid) $q$);
+SELECT pg_temp.expect_fail_by('LC15 ... and units are never added to its layer in place: a new receipt makes a new layer (5-5, QA 70)', 'FIFO replenishment requires a new receipt layer', $q$
     UPDATE inventory.stock_item SET on_hand = on_hand + 1 WHERE id = md5('qa40:lot')::uuid $q$);
-SELECT pg_temp.expect_fail('LC16 stock of any SKU (the oak table) with no lot: every SKU is lot-tracked since 5-5 (QA 70)', $q$
-    INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, created_at, received_at)
-    VALUES (gen_random_uuid(), 'TABLE-OAK-160', 'HCM-A01-1-A', 2, 0, 'AVAILABLE', NOW(), NOW()) $q$);
+-- The oak table in a carton of its own, so that the lot rule is what the next statement meets (and not the carton rule).
+INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)
+SELECT md5('qa40:uo')::uuid, i.id, 'QA_QA40O', 2 FROM inventory.inventory_items i WHERE i.sku = 'TABLE-OAK-160';
+INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, received_qty, location_code, status)
+SELECT md5('qa40:po')::uuid, 'QA-QA40-OAK', i.id, md5('qa40:uo')::uuid, 2, 2, 'HCM-A01-1-A', 'IN_STOCK'
+  FROM inventory.inventory_items i WHERE i.sku = 'TABLE-OAK-160';
+SELECT pg_temp.expect_fail('LC16 stock of any SKU (the oak table, in a carton) with no lot: every SKU is lot-tracked since 5-5 (QA 70)', $q$
+    INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, created_at, received_at, stock_package_id)
+    VALUES (gen_random_uuid(), 'TABLE-OAK-160', 'HCM-A01-1-A', 2, 0, 'AVAILABLE', NOW(), NOW(), md5('qa40:po')::uuid) $q$);
 
 \echo '--- the cartons it made are cartons like any other'
 SELECT pg_temp.expect_true('LC17 a carton it made is never opened: there is no flag to open it with (V20261113000300)',

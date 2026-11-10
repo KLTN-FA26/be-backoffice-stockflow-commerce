@@ -19,6 +19,22 @@ BEGIN
     RAISE EXCEPTION 'FAIL  %: the database accepted it', label;
 END $$;
 
+CREATE FUNCTION pg_temp.expect_fail_by(label TEXT, rule TEXT, stmt TEXT) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+    BEGIN
+        EXECUTE stmt;
+        SET CONSTRAINTS ALL IMMEDIATE;
+        SET CONSTRAINTS ALL DEFERRED;
+    EXCEPTION WHEN OTHERS THEN
+        IF SQLERRM NOT LIKE '%' || rule || '%' THEN
+            RAISE EXCEPTION 'FAIL  %: refused, but not by %: %', label, rule, SQLERRM;
+        END IF;
+        RAISE NOTICE 'ok    %  [%]', label, rule;
+        RETURN;
+    END;
+    RAISE EXCEPTION 'FAIL  %: the database accepted it', label;
+END $$;
+
 CREATE FUNCTION pg_temp.expect_ok(label TEXT, stmt TEXT) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN
     EXECUTE stmt;
@@ -78,7 +94,8 @@ SELECT pg_temp.expect_fail('CL5 a row emptied of its lot', $q$
     UPDATE inventory.stock_item SET lot_number = NULL WHERE id = md5('qa62:a:row')::uuid $q$);
 SELECT pg_temp.expect_fail('CL6 a row whose lot is blanked', $q$
     UPDATE inventory.stock_item SET lot_number = ' ' WHERE id = md5('qa62:a:row')::uuid $q$);
-SELECT pg_temp.expect_ok('CL7 a loose row with the lot UNTRACED (still written by a put-back, a return, a damage report)', $q$
+-- Not any more (V20261117000100): the row has no carton, so the table refuses it whatever its lot is.
+SELECT pg_temp.expect_fail_by('CL7 a loose row with units and the lot UNTRACED', 'ck_stock_item_whole_cartons', $q$
     INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at,
                                       received_at)
     VALUES (md5('qa62:loose')::uuid, 'SOFA-3S-GREY', 'HCM-A02-1-B', 'UNTRACED', 1, 0, 'AVAILABLE', NOW(), NOW()) $q$);
@@ -99,11 +116,11 @@ SELECT pg_temp.expect_fail('CR4 a second row of one carton, of another lot', $q$
                                       received_at, stock_package_id)
     VALUES (gen_random_uuid(), 'SOFA-3S-GREY', 'HCM-A01-1-A', 'LOT-QA62', 0, 0, 'AVAILABLE', NOW(), NOW(),
             md5('qa62:a')::uuid) $q$);
-SELECT pg_temp.expect_ok('CR5 two loose rows (no carton) are not one another''s duplicate', $q$
+SELECT pg_temp.expect_ok('CR5 two emptied loose rows (no carton; the only loose rows left) are not one another''s duplicate', $q$
     INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at,
                                       received_at)
-    VALUES (gen_random_uuid(), 'SOFA-3S-GREY', 'HCM-A02-1-B', 'LOT-QA62-X', 1, 0, 'AVAILABLE', NOW(), NOW()),
-           (gen_random_uuid(), 'SOFA-3S-GREY', 'HCM-A02-1-B', 'LOT-QA62-Y', 1, 0, 'AVAILABLE', NOW(), NOW()) $q$);
+    VALUES (gen_random_uuid(), 'SOFA-3S-GREY', 'HCM-A02-1-B', 'LOT-QA62-X', 0, 0, 'AVAILABLE', NOW(), NOW()),
+           (gen_random_uuid(), 'SOFA-3S-GREY', 'HCM-A02-1-B', 'LOT-QA62-Y', 0, 0, 'AVAILABLE', NOW(), NOW()) $q$);
 
 \echo '--- a carton is counted, and is in stock, at its standard count only (20 BR-18)'
 SELECT pg_temp.expect_fail('CS1 a carton made IN_STOCK counted in at 3 of 4', $q$

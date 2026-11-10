@@ -56,12 +56,18 @@ SELECT pg_temp.expect_fail_like('FP3 a blank lot is no lot', 'needs a lot number
 SELECT pg_temp.expect_fail_like('FP4 a row at zero with no lot', 'lot_number', $q$
     INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, created_at, received_at)
     VALUES (md5('qa70:zero')::uuid, 'SOFA-3S-GREY', 'HCM-A01-1-B', 0, 0, 'AVAILABLE', NOW(), NOW() - interval '2 hour') $q$);
+-- One carton of 5 for each SKU: live stock sits in a carton (ck_stock_item_whole_cartons).
+INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)
+SELECT md5('qa70:u:' || i.sku)::uuid, i.id, 'QA_QA70', 5 FROM inventory.inventory_items i WHERE i.sku IN ('SOFA-3S-GREY', 'TABLE-OAK-160');
+INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, received_qty, location_code, status)
+SELECT md5('qa70:p:' || i.sku)::uuid, 'QA-QA70-' || left(i.sku, 4), i.id, md5('qa70:u:' || i.sku)::uuid, 5, 5, 'HCM-A01-1-A', 'IN_STOCK'
+  FROM inventory.inventory_items i WHERE i.sku IN ('SOFA-3S-GREY', 'TABLE-OAK-160');
 SELECT pg_temp.expect_ok('FP6 live stock with its lot, of either SKU', $q$
-    INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at, received_at)
+    INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at, received_at, stock_package_id)
     VALUES (md5('qa70:row')::uuid, 'SOFA-3S-GREY', 'HCM-A01-1-A', 'QA70-LOT', 5, 0, 'AVAILABLE', NOW(),
-            NOW() - interval '1 hour'),
+            NOW() - interval '1 hour', md5('qa70:p:SOFA-3S-GREY')::uuid),
            (md5('qa70:row2')::uuid, 'TABLE-OAK-160', 'HCM-A01-1-A', 'QA70-LOT', 5, 0, 'AVAILABLE', NOW(),
-            NOW() - interval '1 hour') $q$);
+            NOW() - interval '1 hour', md5('qa70:p:TABLE-OAK-160')::uuid) $q$);
 SELECT pg_temp.expect_fail_like('FP7 a receipt time in the future', 'Invalid receipt date', $q$
     INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at, received_at)
     VALUES (gen_random_uuid(), 'SOFA-3S-GREY', 'HCM-A01-1-A', 'QA70-FUT', 1, 0, 'AVAILABLE', NOW(), NOW() + interval '1 day') $q$);
@@ -79,14 +85,15 @@ SELECT pg_temp.expect_fail_like('FP11 a layer raised in place (first in, first o
 SELECT pg_temp.expect_fail_like('FP12 the application named another row for the statement', 'new receipt layer', $q$
     SET LOCAL stockflow.same_receipt_merge = '00000000-0000-4000-8000-000000000070';
     UPDATE inventory.stock_item SET on_hand = on_hand + 1 WHERE id = md5('qa70:row')::uuid $q$);
-SELECT pg_temp.expect_ok('FP13 the application named this row: units of its very receipt merge into it', $q$
+-- A carton row is whole (20 BR-18): since 4C-3 the merge of a receipt into a layer in place cannot grow it, whoever names it.
+SELECT pg_temp.expect_fail_like('FP13 the application named this row, but a carton in stock is whole: no unit is merged into it', 'a carton in stock is whole', $q$
     SET LOCAL stockflow.same_receipt_merge = 'd79905cd-5752-0db5-f34c-e5abdc6cfbfa';
     UPDATE inventory.stock_item SET on_hand = on_hand + 1 WHERE id = md5('qa70:row')::uuid $q$);
 SELECT pg_temp.expect_fail_like('FP14 ... and no other row rides on that', 'new receipt layer', $q$
     UPDATE inventory.stock_item SET on_hand = on_hand + 1 WHERE id = md5('qa70:row2')::uuid $q$);
-SELECT pg_temp.expect_ok('FP15 a layer that only shrinks is free: a hold, then less on hand', $q$
+SELECT pg_temp.expect_ok('FP15 a layer that does not grow is free: a hold, then released', $q$
     UPDATE inventory.stock_item SET reserved = 2 WHERE id = md5('qa70:row')::uuid;
-    UPDATE inventory.stock_item SET reserved = 0, on_hand = on_hand - 1 WHERE id = md5('qa70:row')::uuid $q$);
+    UPDATE inventory.stock_item SET reserved = 0 WHERE id = md5('qa70:row')::uuid $q$);
 
 \echo '--- no serial numbers, no per-item policy; the layer keys without the serial'
 SELECT pg_temp.expect_true('FP16 the policy columns of the item and the serial of stock are gone', (
@@ -107,13 +114,17 @@ SELECT pg_temp.expect_true('FP19 the layer keys read the lot and the receipt tim
     SELECT bool_and(indexdef LIKE '%lot_number%' AND indexdef LIKE '%received_at%' AND indexdef NOT LIKE '%serial%')
       FROM pg_indexes WHERE schemaname = 'inventory'
        AND indexname IN ('uk_stock_item_sku_location_lot', 'uk_stock_item_package_layer')));
-SELECT pg_temp.expect_fail_like('FP20 two loose layers of one SKU, place, lot and receipt time', 'uk_stock_item_sku_location_lot', $q$
+SELECT pg_temp.expect_ok('FP19b a loose row at zero, of the same SKU, place, lot and receipt time as the carton row', $q$
     INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at, received_at)
-    SELECT gen_random_uuid(), sku, location_code, lot_number, 1, 0, 'AVAILABLE', NOW(), received_at
+    SELECT md5('qa70:loose0')::uuid, sku, location_code, lot_number, 0, 0, 'AVAILABLE', NOW(), received_at
+      FROM inventory.stock_item WHERE id = md5('qa70:row')::uuid $q$);
+SELECT pg_temp.expect_fail_like('FP20 two loose layers (emptied: the only loose ones left) of one SKU, place, lot and receipt time', 'uk_stock_item_sku_location_lot', $q$
+    INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at, received_at)
+    SELECT gen_random_uuid(), sku, location_code, lot_number, 0, 0, 'AVAILABLE', NOW(), received_at
       FROM inventory.stock_item WHERE id = md5('qa70:row')::uuid $q$);
 SELECT pg_temp.expect_ok('FP21 ... but a later receipt of the same lot is a layer of its own', $q$
     INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at, received_at)
-    SELECT gen_random_uuid(), sku, location_code, lot_number, 1, 0, 'AVAILABLE', NOW(), received_at + interval '1 minute'
+    SELECT gen_random_uuid(), sku, location_code, lot_number, 0, 0, 'AVAILABLE', NOW(), received_at + interval '1 minute'
       FROM inventory.stock_item WHERE id = md5('qa70:row')::uuid $q$);
 
 \echo '--- every goods receipt line names its lot (03 BR-03)'
