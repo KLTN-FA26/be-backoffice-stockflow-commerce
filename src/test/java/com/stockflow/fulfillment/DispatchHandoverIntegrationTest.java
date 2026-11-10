@@ -24,6 +24,7 @@ import com.stockflow.order.api.PlaceOrderCommand;
 import com.stockflow.order.internal.service.OrderReleases;
 import com.stockflow.payment.internal.service.ReceivableService;
 import com.stockflow.support.Await;
+import com.stockflow.support.CartonRows;
 import com.stockflow.support.DemoData;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
@@ -98,9 +99,6 @@ class DispatchHandoverIntegrationTest {
     private static final UUID HCM = DemoData.WAREHOUSE_HCM;
     private static final String BASE = "/api/v1/fulfillment";
     private static final String PLANS = BASE + "/load-plans";
-    /** KIT-FORCE: the sofa ships as 2 boxes; packed in an ordinary package, it needs a reason. */
-    private static final String ONE_CARTON = "{\"kitOverrideReason\":\"test: packed as one carton\"}";
-    private static final String MEASURES = "{\"weightKg\":52.5,\"lengthCm\":215,\"widthCm\":95,\"heightCm\":90}";
 
     @Autowired MockMvc mvc;
     @MockitoBean JwtDecoder decoder;
@@ -128,6 +126,7 @@ class DispatchHandoverIntegrationTest {
     private UUID ghn;
     private UUID ghtk;
     private UUID truck5t;
+    private CartonStationSupport.Parts parts;
 
     @BeforeEach
     void setUp() {
@@ -147,6 +146,8 @@ class DispatchHandoverIntegrationTest {
         ghn = tx.execute(s -> ReferenceRows.truckCarrier(entityManager, "Xe tải Nhanh"));
         ghtk = tx.execute(s -> ReferenceRows.truckCarrier(entityManager, "Xe tải Tiết Kiệm"));
         truck5t = jdbc.queryForObject("SELECT id FROM fulfillment.vehicle_type WHERE code = 'TRUCK-5T'", UUID.class);
+        CartonStationSupport.giveCartonsASize(jdbc);
+        parts = new CartonStationSupport.Parts(request -> as(picker, "WAREHOUSE_STAFF", request), jdbc, json);
     }
 
     // ---- fixtures ----------------------------------------------------------------------------
@@ -265,21 +266,13 @@ class DispatchHandoverIntegrationTest {
         return task;
     }
 
-    /** One shipment of {@code perPackage} sofas in each new package, completed (partial when asked). */
+    /**
+     * The next shipment of the task, of {@code perPackage.length} cartons (a sofa each): the check station runs once for
+     * the task - scan, label, complete - and {@link CartonStationSupport.Parts} hands the cartons out to shipments, as the
+     * old repack station made them one completion at a time. {@code partial} is what the shipment is, not an input.
+     */
     private UUID ship(UUID task, boolean partial, int... perPackage) throws Exception {
-        as(picker, "WAREHOUSE_STAFF", post(BASE + "/tasks/" + task + "/packing-start")).andExpect(status().isOk());
-        for (int units : perPackage) {
-            UUID parcel = UUID.fromString(data(as(picker, "WAREHOUSE_STAFF", body(post(BASE + "/tasks/" + task
-                    + "/packages"), ONE_CARTON)).andExpect(status().isCreated())).path("packageId").asText());
-            as(picker, "WAREHOUSE_STAFF", body(post(BASE + "/tasks/" + task + "/packages/" + parcel + "/scans"),
-                    "{\"scanId\":\"" + UUID.randomUUID() + "\",\"scannedCode\":\"" + SOFA.code() + "\",\"quantity\":"
-                            + units + "}")).andExpect(status().isOk());
-            as(picker, "WAREHOUSE_STAFF", body(post(BASE + "/tasks/" + task + "/packages/" + parcel + "/seal"),
-                    MEASURES)).andExpect(status().isOk());
-        }
-        String completion = partial ? "{\"partial\":true,\"note\":\"ready goods first\"}" : "{}";
-        return UUID.fromString(data(as(picker, "WAREHOUSE_STAFF", body(post(BASE + "/tasks/" + task
-                + "/packing-completion"), completion)).andExpect(status().isOk())).path("shipmentId").asText());
+        return parts.ship(task, perPackage.length);
     }
 
     private List<String> labels(UUID shipment) {
@@ -579,8 +572,8 @@ class DispatchHandoverIntegrationTest {
     }
 
     @Test
-    @DisplayName("the wrong parcel: open (not sealed), of a shipment in no load plan, in another load plan, on board "
-            + "another vehicle - each refused with its own code; each vehicle hands over its own")
+    @DisplayName("the wrong carton: of a shipment in no load plan, in another load plan, on board another vehicle - each "
+            + "refused with its own code; each vehicle hands over its own")
     void wrongParcelsAreRefused() throws Exception {
         OrderSummary order = order(PaymentTerm.PREPAID, null, 3, 1_000_000);
         UUID task = pickedTask(order);
@@ -591,23 +584,8 @@ class DispatchHandoverIntegrationTest {
         String load = first.path("loadId").asText();
         String other = second.path("loadId").asText();
 
-        // An open parcel: its label exists but it is not sealed.
-        as(picker, "WAREHOUSE_STAFF", post(BASE + "/tasks/" + task + "/packing-start")).andExpect(status().isOk());
-        UUID open = UUID.fromString(data(as(picker, "WAREHOUSE_STAFF", body(post(BASE + "/tasks/" + task
-                + "/packages"), ONE_CARTON)).andExpect(status().isCreated())).path("packageId").asText());
-        String openLabel = jdbc.queryForObject("SELECT label_code FROM fulfillment.package WHERE id = ?", String.class,
-                open);
-        scan(load, openLabel).andExpect(status().isConflict())
-                .andExpect(jsonPath("$.errorCode").value("PACKAGE_NOT_READY"));
-
-        // A parcel of a shipment waiting for dispatch but in no load plan.
-        as(picker, "WAREHOUSE_STAFF", body(post(BASE + "/tasks/" + task + "/packages/" + open + "/scans"),
-                "{\"scanId\":\"" + UUID.randomUUID() + "\",\"scannedCode\":\"" + SOFA.code() + "\",\"quantity\":1}"))
-                .andExpect(status().isOk());
-        as(picker, "WAREHOUSE_STAFF", body(post(BASE + "/tasks/" + task + "/packages/" + open + "/seal"), MEASURES))
-                .andExpect(status().isOk());
-        UUID c = UUID.fromString(data(as(picker, "WAREHOUSE_STAFF", body(post(BASE + "/tasks/" + task
-                + "/packing-completion"), "{}")).andExpect(status().isOk())).path("shipmentId").asText());
+        // A carton of a shipment waiting for dispatch but in no load plan.
+        UUID c = ship(task, false, 1);
         scan(load, labels(c).getFirst()).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("PACKAGE_NOT_IN_LOAD"));
         // b's parcel is in another load plan, which the refusal names.
@@ -940,11 +918,8 @@ class DispatchHandoverIntegrationTest {
      * of these adds what it is about to use instead of eating theirs.
      */
     private void stock(int sofas) {
-        tx.executeWithoutResult(s -> jdbc.update("""
-                INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, version,
-                    created_at, received_at)
-                VALUES (?, ?, 'HCM-A02-1-A', ?, 0, 'AVAILABLE', 0, NOW(), NOW() - interval '400 days')""",
-                Identifiers.newId(), SOFA.code(), sofas));
+        tx.executeWithoutResult(s -> CartonRows.stock(jdbc, SOFA.code(), "HCM-A02-1-A", sofas, 1, null,
+                Instant.now().minus(400, java.time.temporal.ChronoUnit.DAYS)));
     }
 
     /** Packs, plans, loads and delivers one credit order: its delivery opens one receivable. */
@@ -1080,7 +1055,7 @@ class DispatchHandoverIntegrationTest {
 
     @Test
     @DisplayName("E2E: packing-queue rows carry their status (the value the status filter matches): PENDING until a "
-            + "packer takes the order, PACKING after")
+            + "packer takes the order, IN_PROGRESS after")
     void packingQueueRowsCarryTheirStatus() throws Exception {
         stock(1);
         OrderSummary order = order(PaymentTerm.PREPAID, null, 1, 1_000_000);
@@ -1099,9 +1074,8 @@ class DispatchHandoverIntegrationTest {
             }
         };
         assertThat(row.apply("").path("status").asText()).isEqualTo("PENDING");
-        assertThat(row.apply("").path("packStatus").asText()).isEqualTo("PENDING");
         as(picker, "WAREHOUSE_STAFF", post(BASE + "/tasks/" + task + "/packing-start")).andExpect(status().isOk());
-        assertThat(row.apply("&status=PACKING").path("status").asText()).isEqualTo("PACKING");
+        assertThat(row.apply("&status=IN_PROGRESS").path("status").asText()).isEqualTo("IN_PROGRESS");
         assertThat(row.apply("&status=PENDING")).isNull();
     }
 
@@ -1138,31 +1112,16 @@ class DispatchHandoverIntegrationTest {
         }
     }
 
-    // ---- kits ("bộ", SCRUM-287 PR K, LP2-6) -------------------------------------------------------------------
+    // ---- every carton of a shipment is scanned ---------------------------------------------------------------------
 
     @Test
-    @DisplayName("LP2-6: a kit of 2 leaves only with both parts scanned - a part left behind holds back its shipment, "
-            + "named with its kit; the load and the manifest show each part's kit")
-    void everyPartOfAKitIsScanned() throws Exception {
-        stock(1);
-        OrderSummary order = order(PaymentTerm.PREPAID, null, 1, 1_000_000);
+    @DisplayName("LP2-6 at the check station: a shipment of two cartons leaves only with both scanned - a carton left behind "
+            + "holds back its shipment, named by its label code; the load and the manifest show both")
+    void everyCartonOfAShipmentIsScanned() throws Exception {
+        stock(2);
+        OrderSummary order = order(PaymentTerm.PREPAID, null, 2, 1_000_000);
         UUID task = pickedTask(order);
-        UUID line = order.lines().getFirst().lineId();
-        as(picker, "WAREHOUSE_STAFF", post(BASE + "/tasks/" + task + "/packing-start")).andExpect(status().isOk());
-        JsonNode kit = data(as(picker, "WAREHOUSE_STAFF", body(post(BASE + "/tasks/" + task + "/package-kits"),
-                "{\"orderLineId\":\"" + line + "\"}")).andExpect(status().isCreated()));
-        List<String> parts = new ArrayList<>();
-        kit.path("packages").forEach(p -> parts.add(p.path("packageId").asText()));
-        assertThat(parts).hasSize(2);
-        as(picker, "WAREHOUSE_STAFF", body(post(BASE + "/tasks/" + task + "/packages/" + parts.get(0) + "/scans"),
-                "{\"scanId\":\"" + UUID.randomUUID() + "\",\"scannedCode\":\"" + SOFA.code() + "\",\"quantity\":1}"))
-                .andExpect(status().isOk());
-        for (String part : parts) {
-            as(picker, "WAREHOUSE_STAFF", body(post(BASE + "/tasks/" + task + "/packages/" + part + "/seal"),
-                    MEASURES)).andExpect(status().isOk());
-        }
-        UUID shipment = UUID.fromString(data(as(picker, "WAREHOUSE_STAFF", body(post(BASE + "/tasks/" + task
-                + "/packing-completion"), "{}")).andExpect(status().isOk())).path("shipmentId").asText());
+        UUID shipment = ship(task, false, 1, 1);
         List<String> labels = labels(shipment);
         assertThat(labels).hasSize(2);
 
@@ -1170,87 +1129,20 @@ class DispatchHandoverIntegrationTest {
         scan(load, labels.get(0)).andExpect(status().isOk());
         handOver(load).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("LOAD_NOT_FULLY_LOADED"))
-                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString(
-                        labels.get(1) + " (kit part 2/2)")));
+                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString(labels.get(1))));
         assertThat(shipmentRow(shipment)).containsEntry("status", "READY_TO_DISPATCH");
         dispatch(get(BASE + "/loads/" + load)).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.expectedPackageCount").value(2))
-                .andExpect(jsonPath("$.data.loadedPackageCount").value(1))
-                .andExpect(jsonPath("$.data.shipments[0].packages[1].kit.partNo").value(2))
-                .andExpect(jsonPath("$.data.shipments[0].packages[1].kit.partCount").value(2))
-                .andExpect(jsonPath("$.data.shipments[0].packages[1].loaded").value(false));
+                .andExpect(jsonPath("$.data.loadedPackageCount").value(1));
 
-        scan(load, labels.get(1)).andExpect(status().isOk());
+        // A carton is also scanned by the LPN on its label, lower case included.
+        String lpn = jdbc.queryForObject("SELECT lpn FROM fulfillment.package WHERE label_code = ?", String.class,
+                labels.get(1));
+        scan(load, lpn.toLowerCase()).andExpect(status().isOk());
         handOver(load).andExpect(status().isOk());
         assertThat(shipmentRow(shipment)).containsEntry("status", "HANDED_OVER");
         assertThat(statusOf(order)).isEqualTo(OrderStatus.SHIPPED);
         JsonNode manifest = data(dispatch(get(BASE + "/loads/" + load + "/manifest")).andExpect(status().isOk()));
         assertThat(manifest.path("packageCount").asInt()).isEqualTo(2);
-        assertThat(manifest.path("shipments").get(0).path("packages").findValuesAsText("groupId"))
-                .containsOnly(kit.path("kitGroupId").asText());
-    }
-
-    /** A kit of the line opened, the unit scanned into part 1, every part sealed; its parts, part 1 first. */
-    private List<String> packKit(UUID task, UUID line) throws Exception {
-        JsonNode kit = data(as(picker, "WAREHOUSE_STAFF", body(post(BASE + "/tasks/" + task + "/package-kits"),
-                "{\"orderLineId\":\"" + line + "\"}")).andExpect(status().isCreated()));
-        List<String> parts = new ArrayList<>();
-        kit.path("packages").forEach(p -> parts.add(p.path("packageId").asText()));
-        as(picker, "WAREHOUSE_STAFF", body(post(BASE + "/tasks/" + task + "/packages/" + parts.get(0) + "/scans"),
-                "{\"scanId\":\"" + UUID.randomUUID() + "\",\"scannedCode\":\"" + SOFA.code() + "\",\"quantity\":1}"))
-                .andExpect(status().isOk());
-        for (String part : parts) {
-            as(picker, "WAREHOUSE_STAFF", body(post(BASE + "/tasks/" + task + "/packages/" + part + "/seal"),
-                    MEASURES)).andExpect(status().isOk());
-        }
-        return parts;
-    }
-
-    @Test
-    @DisplayName("review of #155: a kit shipped in part of the order and returned stays whole on its shipment; its unit is "
-            + "packed again in a new kit and ships with the rest")
-    void aReturnedKitIsPackedAgain() throws Exception {
-        stock(2);
-        OrderSummary order = order(PaymentTerm.PREPAID, null, 2, 1_000_000);
-        UUID task = pickedTask(order);
-        UUID line = order.lines().getFirst().lineId();
-        as(picker, "WAREHOUSE_STAFF", post(BASE + "/tasks/" + task + "/packing-start")).andExpect(status().isOk());
-        List<String> first = packKit(task, line);
-        UUID s1 = UUID.fromString(data(as(picker, "WAREHOUSE_STAFF", body(post(BASE + "/tasks/" + task
-                + "/packing-completion"), "{\"partial\":true,\"note\":\"one sofa now\"}")).andExpect(status().isOk()))
-                .path("shipmentId").asText());
-        String load = vehicle(ghn, s1).path("loadId").asText();
-        labels(s1).forEach(code -> {
-            try {
-                scan(load, code).andExpect(status().isOk());
-            } catch (Exception e) {
-                throw new IllegalStateException(e);
-            }
-        });
-        handOver(load).andExpect(status().isOk());
-        outcome(s1, "{\"outcome\":\"DELIVERY_FAILED\",\"failureReason\":\"REFUSED\"}").andExpect(status().isOk());
-        as(manager, "WAREHOUSE_MANAGER", body(post(BASE + "/shipments/" + s1 + "/delivery-outcome"),
-                "{\"outcome\":\"RETURNED\"}")).andExpect(status().isOk());
-
-        // The returned kit's unit is the order's to ship again: both sofas are packed anew, each in its own kit.
-        as(picker, "WAREHOUSE_STAFF", get(BASE + "/tasks/" + task + "/packing-session")).andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.lines[0].packed").value(0));
-        List<String> second = packKit(task, line);
-        List<String> third = packKit(task, line);
-        UUID s2 = UUID.fromString(data(as(picker, "WAREHOUSE_STAFF", body(post(BASE + "/tasks/" + task
-                + "/packing-completion"), "{}")).andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.packStatus").value("PACKED"))).path("shipmentId").asText());
-        assertThat(shipmentRow(s1)).containsEntry("status", "RETURNED");
-        assertThat(jdbc.queryForList("SELECT shipment_id || '/' || status FROM fulfillment.package WHERE id IN "
-                + "(?::uuid, ?::uuid)", String.class, first.get(0), first.get(1))).containsOnly(s1 + "/SEALED");
-        assertThat(jdbc.queryForObject("SELECT package_count FROM fulfillment.shipment WHERE id = ?", Integer.class,
-                s2)).isEqualTo(4);
-        assertThat(jdbc.queryForObject("SELECT count(DISTINCT kit_group_id) FROM fulfillment.package WHERE shipment_id "
-                + "= ?", Integer.class, s2)).isEqualTo(2);
-        assertThat(jdbc.queryForObject("SELECT COALESCE(SUM(pl.quantity), 0) FROM fulfillment.package_line pl JOIN "
-                + "fulfillment.package p ON p.id = pl.package_id WHERE p.shipment_id = ?", Integer.class, s2))
-                .isEqualTo(2);
-        assertThat(second).hasSize(2);
-        assertThat(third).hasSize(2);
     }
 }

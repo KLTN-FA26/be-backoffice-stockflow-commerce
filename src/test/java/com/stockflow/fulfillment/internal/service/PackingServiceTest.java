@@ -172,8 +172,8 @@ class PackingServiceTest {
     }
 
     private void packing(UUID by) {
-        session = sessionOf(PackStatus.PACKING, by, 10, 10);
-        pack.apply(PackStatus.PACKING, NOW, by, null, null);
+        session = sessionOf(PackStatus.IN_PROGRESS, by, 10, 10);
+        pack.apply(PackStatus.IN_PROGRESS, NOW, by, null, null);
     }
 
     private PackingSession.Parcel sealedParcel(int units) {
@@ -258,7 +258,7 @@ class PackingServiceTest {
         void startIsIdempotent() {
             Packing.Session started = service.start(pick.getId(), actor);
 
-            assertThat(started.packStatus()).isEqualTo("PACKING");
+            assertThat(started.packStatus()).isEqualTo("IN_PROGRESS");
             assertThat(started.packerId()).isEqualTo(packer);
             verify(store).save(session, pack);
 
@@ -273,7 +273,7 @@ class PackingServiceTest {
             packing(UUID.randomUUID());
 
             assertThat(refusal(() -> service.start(pick.getId(), actor)).errorCode()).isEqualTo(ErrorCode.PACKING_TAKEN);
-            assertThat(service.start(pick.getId(), manager).packStatus()).isEqualTo("PACKING");
+            assertThat(service.start(pick.getId(), manager).packStatus()).isEqualTo("IN_PROGRESS");
         }
 
         @Test
@@ -439,7 +439,7 @@ class PackingServiceTest {
         @Test
         @DisplayName("a kit of an item that ships as several boxes opens one part per box")
         void kitParts() {
-            session = new PackingSession(pack.getId(), "SO-0001", PackStatus.PACKING, NOW, packer, null, null,
+            session = new PackingSession(pack.getId(), "SO-0001", PackStatus.IN_PROGRESS, NOW, packer, null, null,
                     List.of(new PackingSession.Line(lineId, "SKU-A", null, 4, 4, false, null, Map.of(), Set.of(), true,
                             false, 3)), List.of(), List.of());
 
@@ -598,7 +598,7 @@ class PackingServiceTest {
             assertThat(shipment.getStatus()).isEqualTo(ShipmentStatus.READY_TO_DISPATCH);
             assertThat(shipment.getPackageCount()).isEqualTo(1);
             assertThat(shipment.isPartial()).isFalse();
-            assertThat(session.status()).isEqualTo(PackStatus.PACKED);
+            assertThat(session.status()).isEqualTo(PackStatus.COMPLETED);
             verify(orders).markPacked(orderId, packer);
             verify(timeline).record(any(Shipment.class), eq(null), any(OrderSummary.class), eq(null), eq(null), eq(null));
             verify(store).save(session, pack);
@@ -642,7 +642,7 @@ class PackingServiceTest {
         @Test
         @DisplayName("packing already PACKED answers with the last shipment it made")
         void completedBefore() {
-            pack.apply(PackStatus.PACKED, NOW, packer, NOW, packer);
+            pack.apply(PackStatus.COMPLETED, NOW, packer, NOW, packer);
             Shipment first = Shipment.ready(UUID.randomUUID(), "SO-0001-S1", orderId, pack.getId(), WAREHOUSE, null,
                     1, null, packer, NOW);
             Shipment last = Shipment.ready(UUID.randomUUID(), "SO-0001-S2", orderId, pack.getId(), WAREHOUSE, null,
@@ -689,7 +689,7 @@ class PackingServiceTest {
             verify(shipments).saveAndFlush(saved.capture());
             assertThat(saved.getValue().isPartial()).isTrue();
             assertThat(saved.getValue().getPartialNote()).isEqualTo("only 6 on the shelf");
-            assertThat(session.status()).as("the rest is still to pack").isEqualTo(PackStatus.PACKING);
+            assertThat(session.status()).as("the rest is still to pack").isEqualTo(PackStatus.IN_PROGRESS);
             assertThat(done.shipmentId()).isEqualTo(saved.getValue().getId());
         }
 
@@ -740,12 +740,12 @@ class PackingServiceTest {
         @BeforeEach
         void aPrintedOrderBeingPacked() {
             when(orders.findById(orderId)).thenReturn(Optional.of(printedOrder()));
-            session = new PackingSession(pack.getId(), "SO-0001", PackStatus.PACKING, NOW, packer, null, null,
+            session = new PackingSession(pack.getId(), "SO-0001", PackStatus.IN_PROGRESS, NOW, packer, null, null,
                     List.of(new PackingSession.Line(lineId, "SKU-A", null, 10, 10, false, null, Map.of(), Set.of(), true,
                                     false, 1),
                             new PackingSession.Line(printLine, "CUP-PRINT", null, 4, 4, true, snapshot, Map.of(), Set.of(),
                                     true, false, 1)), List.of(), List.of());
-            pack.apply(PackStatus.PACKING, NOW, packer, null, null);
+            pack.apply(PackStatus.IN_PROGRESS, NOW, packer, null, null);
             PackingSession.Parcel parcel = session.openPackage(UUID.randomUUID(), PackageType.CARTON, NOW);
             session.scan(UUID.randomUUID(), parcel.id(), "SKU-A", null, null, 10, null, packer, NOW);
             session.scan(UUID.randomUUID(), parcel.id(), "CUP-PRINT", null, null, 4, null, packer, NOW);
@@ -760,7 +760,7 @@ class PackingServiceTest {
             PackingService.Completed done = service.complete(pick.getId(), PackingCompletion.whole(), actor);
 
             assertThat(done.shipmentId()).isNotNull();
-            assertThat(session.status()).isEqualTo(PackStatus.PACKED);
+            assertThat(session.status()).isEqualTo(PackStatus.COMPLETED);
             verify(orders).markPacked(orderId, packer);
         }
     }
@@ -935,9 +935,9 @@ class PackingServiceTest {
                     new OrderHoldState(heldForPayment, OrderStatus.ON_HOLD, HoldReason.PAYMENT, false),
                     new OrderHoldState(cancelled, OrderStatus.CANCELLED, null, false),
                     new OrderHoldState(stillInProduction, OrderStatus.IN_PRODUCTION, null, true)));
-            PackJpaEntity okPack = new PackJpaEntity(UUID.randomUUID(), candidates.get(0).getId(), PackStatus.PACKING,
+            PackJpaEntity okPack = new PackJpaEntity(UUID.randomUUID(), candidates.get(0).getId(), PackStatus.IN_PROGRESS,
                     null);
-            okPack.apply(PackStatus.PACKING, NOW, packer, null, null);
+            okPack.apply(PackStatus.IN_PROGRESS, NOW, packer, null, null);
             PackJpaEntity restPack = new PackJpaEntity(UUID.randomUUID(), candidates.get(1).getId(), PackStatus.PENDING,
                     null);
             when(packs.findByPickIdIn(any())).thenReturn(List.of(okPack, restPack));
@@ -959,7 +959,7 @@ class PackingServiceTest {
 
             assertThat(page.items()).extracting(Packing.QueueRow::orderId).containsExactly(ok, restOfSplit);
             Packing.QueueRow row = page.items().getFirst();
-            assertThat(row.packStatus()).isEqualTo("PACKING");
+            assertThat(row.packStatus()).isEqualTo("IN_PROGRESS");
             assertThat(row.packageCount()).as("the voided parcel is not counted").isEqualTo(2);
             assertThat(row.sealedPackageCount()).isEqualTo(1);
             assertThat(row.shipmentCount()).as("the cancelled shipment is not counted").isEqualTo(1);

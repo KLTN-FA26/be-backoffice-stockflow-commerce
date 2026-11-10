@@ -30,7 +30,7 @@ import com.stockflow.fulfillment.internal.repository.LoadPlanPackageJpaRepositor
 import com.stockflow.fulfillment.internal.repository.LoadPlanStore;
 import com.stockflow.fulfillment.internal.repository.LoadPlanVehicleJpaRepository;
 import com.stockflow.fulfillment.internal.repository.PackageJpaRepository;
-import com.stockflow.fulfillment.internal.repository.PackageLineJpaRepository;
+import com.stockflow.fulfillment.internal.repository.ParcelContents;
 import com.stockflow.fulfillment.internal.repository.PickJpaRepository;
 import com.stockflow.fulfillment.internal.repository.ShipmentJpaRepository;
 import com.stockflow.fulfillment.internal.repository.ShipmentLocks;
@@ -105,7 +105,7 @@ class LoadPlanServiceTest {
     private final WarehouseService warehouses = mock(WarehouseService.class);
     private final LoadPlanEstimateComparison estimates = mock(LoadPlanEstimateComparison.class);
     private final PickJpaRepository picks = mock(PickJpaRepository.class);
-    private final PackageLineJpaRepository packageLines = mock(PackageLineJpaRepository.class);
+    private final ParcelContents packageLines = mock(ParcelContents.class);
     private final DispatchLoadShipmentJpaRepository loadMembers = mock(DispatchLoadShipmentJpaRepository.class);
     private final LoadPlanService service = new LoadPlanService(plans, members, planVehicles, store, numbers, parcels,
             packages, shipments, shipmentLocks, vehicleTypes, loads, loadStore, loadNumbers, warehouses, estimates, picks,

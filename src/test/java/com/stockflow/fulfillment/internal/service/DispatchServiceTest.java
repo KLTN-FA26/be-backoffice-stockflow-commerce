@@ -20,7 +20,7 @@ import com.stockflow.fulfillment.internal.repository.DispatchLoadShipmentJpaRepo
 import com.stockflow.fulfillment.internal.repository.DispatchLoadStore;
 import com.stockflow.fulfillment.internal.repository.LoadNumbers;
 import com.stockflow.fulfillment.internal.repository.PackageJpaRepository;
-import com.stockflow.fulfillment.internal.repository.PackageLineJpaRepository;
+import com.stockflow.fulfillment.internal.repository.ParcelContents;
 import com.stockflow.fulfillment.internal.repository.PickJpaRepository;
 import com.stockflow.fulfillment.internal.repository.ShipmentJpaRepository;
 import com.stockflow.fulfillment.internal.repository.ShipmentLocks;
@@ -72,7 +72,7 @@ class DispatchServiceTest {
     private final ShipmentJpaRepository shipments = mock(ShipmentJpaRepository.class);
     private final ShipmentLocks locks = mock(ShipmentLocks.class);
     private final PackageJpaRepository packages = mock(PackageJpaRepository.class);
-    private final PackageLineJpaRepository packageLines = mock(PackageLineJpaRepository.class);
+    private final ParcelContents packageLines = mock(ParcelContents.class);
     private final PickJpaRepository picks = mock(PickJpaRepository.class);
     private final CarrierJpaRepository carriers = mock(CarrierJpaRepository.class);
     private final ShipmentTimeline timeline = mock(ShipmentTimeline.class);

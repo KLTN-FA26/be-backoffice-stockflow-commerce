@@ -52,21 +52,21 @@ class FulfillmentServiceImplTest {
     private final InventoryService inventory = mock(InventoryService.class);
     private final WarehouseService warehouses = mock(WarehouseService.class);
     private final PickListService pickLists = mock(PickListService.class);
-    private final PackingService packing = mock(PackingService.class);
+    private final CartonCheckService packing = mock(CartonCheckService.class);
     private final Instant now = Instant.parse("2026-09-18T08:00:00Z");
     private final FulfillmentServiceImpl service = new FulfillmentServiceImpl(
             picks, packs, orders, identities, inventory, warehouses, pickLists, packing,
             Clock.fixed(now, ZoneOffset.UTC));
 
     /**
-     * G4-5: completing packing is the packing service's (its rules are PackingSessionTest's, its flow the packing
-     * station integration test's); the task service answers with the task, the shipment and the payment warning.
+     * 4C-6: completing packing is the carton check's (its rules are CartonCheckTest's, its flow the check station
+     * integration test's); the task service answers with the task, the shipment and the payment warning.
      */
     @Test
     void completingPackingAnswersWithTheShipmentAndThePaymentWarning() {
         UUID packer = UUID.randomUUID();
         var pick = pickedTask(UUID.randomUUID());
-        var pack = new PackJpaEntity(UUID.randomUUID(), pick.getId(), PackStatus.PACKED, now);
+        var pack = new PackJpaEntity(UUID.randomUUID(), pick.getId(), PackStatus.COMPLETED, now);
         var order = order(pick.getOrderId(), "a".repeat(64));
         var owing = new OrderSummary(order.orderId(), order.orderNumber(), order.customerId(), OrderStatus.PACKED,
                 order.total(), order.lines(), order.placedAt(), null, null, null, null, null, null, null, null, null,
@@ -76,7 +76,8 @@ class FulfillmentServiceImplTest {
         UUID shipment = UUID.randomUUID();
         when(picks.findById(pick.getId())).thenReturn(Optional.of(pick));
         when(packs.findByPickId(pick.getId())).thenReturn(Optional.of(pack));
-        when(packing.complete(eq(pick.getId()), any(), any())).thenReturn(new PackingService.Completed(shipment, owing));
+        when(packing.complete(eq(pick.getId()), any(), any())).thenReturn(new CartonCheckService.Completed(shipment, owing,
+                new CartonChecks.PaymentDue(new java.math.BigDecimal("700"), "VND")));
 
         var result = service.completePacking(pick.getId(), user(packer, Role.WAREHOUSE_STAFF));
 
@@ -89,15 +90,15 @@ class FulfillmentServiceImplTest {
     @Test
     void aCompletionThatMadeNoShipmentAnswersWithoutOne() {
         var pick = pickedTask(UUID.randomUUID());
-        var pack = new PackJpaEntity(UUID.randomUUID(), pick.getId(), PackStatus.PACKED, now);
+        var pack = new PackJpaEntity(UUID.randomUUID(), pick.getId(), PackStatus.COMPLETED, now);
         when(picks.findById(pick.getId())).thenReturn(Optional.of(pick));
         when(packs.findByPickId(pick.getId())).thenReturn(Optional.of(pack));
         when(packing.complete(eq(pick.getId()), any(), any()))
-                .thenReturn(new PackingService.Completed(null, order(pick.getOrderId(), "a".repeat(64))));
+                .thenReturn(new CartonCheckService.Completed(null, order(pick.getOrderId(), "a".repeat(64)), null));
 
         var result = service.completePacking(pick.getId(), user(UUID.randomUUID(), Role.WAREHOUSE_MANAGER));
 
-        assertThat(result.packStatus()).isEqualTo("PACKED");
+        assertThat(result.packStatus()).isEqualTo("COMPLETED");
         assertThat(result.shipmentId()).isNull();
         assertThat(result.paymentDue()).isNull();
     }
@@ -136,7 +137,7 @@ class FulfillmentServiceImplTest {
         var order = order(pick.getOrderId(), "e".repeat(64));
         when(picks.findById(pick.getId())).thenReturn(Optional.of(pick));
         when(packs.findByPickId(pick.getId())).thenReturn(Optional.of(new PackJpaEntity(UUID.randomUUID(),
-                pick.getId(), PackStatus.PACKING, null)));
+                pick.getId(), PackStatus.IN_PROGRESS, null)));
         when(orders.findById(pick.getOrderId())).thenReturn(Optional.of(order));
         var packer = staffOf(HCM);
         var elsewhere = staffOf(HN);

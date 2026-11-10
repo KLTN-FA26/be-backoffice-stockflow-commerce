@@ -78,20 +78,15 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 class FtlDispatchIntegrationTest {
 
     private static final Sku SOFA = new Sku("SOFA-3S-GREY");
-    private static final String SOFA_BARCODE = "8930000000011";
     private static final Duration ASYNC = Duration.ofSeconds(15);
     private static final UUID HCM = DemoData.WAREHOUSE_HCM;
     private static final String ORDERS = "/api/v1/orders";
     private static final String BASE = "/api/v1/fulfillment";
     private static final String PLANS = BASE + "/load-plans";
     private static final String LOADS = BASE + "/loads";
-    private static final String ONE_CARTON = "{\"kitOverrideReason\":\"test: packed as one carton\"}";
-    /** A sofa carton, and kit part 1 (the sofa itself): 2150 x 950 x 900 mm. */
-    private static final String SOFA_MEASURES = "{\"weightKg\":52.5,\"lengthCm\":215,\"widthCm\":95,\"heightCm\":90}";
-    /** Kit part 2 (the cushions): 950 x 900 x 400 mm. */
-    private static final String PART2_MEASURES = "{\"weightKg\":20,\"lengthCm\":95,\"widthCm\":90,\"heightCm\":40}";
 
     @Autowired MockMvc mvc;
+    private CartonStationSupport.Parts parts;
     @MockitoBean JwtDecoder decoder;
     /** 3-4: the carrier's API, faked - no test calls Ahamove. */
     @MockitoBean com.stockflow.fulfillment.internal.service.CarrierBookingGateway carrierGateway;
@@ -114,6 +109,8 @@ class FtlDispatchIntegrationTest {
 
     @BeforeEach
     void setUp() {
+        CartonStationSupport.giveCartonsASize(jdbc);
+        parts = new CartonStationSupport.Parts(this::packer, jdbc, json);
         coordinator = staff("ORDER_COORDINATOR");
         picker = staff("WAREHOUSE_STAFF", HCM);
         dispatcher = staff("WAREHOUSE_STAFF", HCM);
@@ -222,7 +219,7 @@ class FtlDispatchIntegrationTest {
         return order;
     }
 
-    /** The order picked and packed: as kits of 2 (LP2-6) or one carton per sofa. Returns the shipment and task. */
+    /** The order picked and packed at the check station, one shipment of all its cartons. Returns the shipment and task. */
     private UUID[] packed(OrderSummary order, boolean kits) throws Exception {
         UUID task = UUID.fromString(data(oc(body(post(BASE + "/tasks"), "{\"orderId\":\"" + order.orderId()
                 + "\",\"assignedUserId\":\"" + picker + "\"}")).andExpect(status().isCreated())).path("taskId").asText());
@@ -235,37 +232,9 @@ class FtlDispatchIntegrationTest {
                             + "\"}")).andExpect(status().isOk());
         }
         packer(post(BASE + "/tasks/" + task + "/picking-completion")).andExpect(status().isOk());
-        packer(post(BASE + "/tasks/" + task + "/packing-start")).andExpect(status().isOk());
-        int sofas = order.lines().getFirst().quantity();
-        UUID line = order.lines().getFirst().lineId();
-        for (int i = 0; i < sofas; i++) {
-            if (kits) {
-                JsonNode kit = data(packer(body(post(BASE + "/tasks/" + task + "/package-kits"), "{\"orderLineId\":\""
-                        + line + "\"}")).andExpect(status().isCreated()));
-                String part1 = kit.path("packages").get(0).path("packageId").asText();
-                String part2 = kit.path("packages").get(1).path("packageId").asText();
-                scan(task, part1);
-                packer(body(post(BASE + "/tasks/" + task + "/packages/" + part1 + "/seal"), SOFA_MEASURES))
-                        .andExpect(status().isOk());
-                packer(body(post(BASE + "/tasks/" + task + "/packages/" + part2 + "/seal"), PART2_MEASURES))
-                        .andExpect(status().isOk());
-            } else {
-                String parcel = data(packer(body(post(BASE + "/tasks/" + task + "/packages"), ONE_CARTON))
-                        .andExpect(status().isCreated())).path("packageId").asText();
-                scan(task, parcel);
-                packer(body(post(BASE + "/tasks/" + task + "/packages/" + parcel + "/seal"), SOFA_MEASURES))
-                        .andExpect(status().isOk());
-            }
-        }
-        String shipment = data(packer(post(BASE + "/tasks/" + task + "/packing-completion")).andExpect(status().isOk()))
-                .path("shipmentId").asText();
-        return new UUID[] {UUID.fromString(shipment), task};
-    }
-
-    private void scan(UUID task, String parcel) throws Exception {
-        packer(body(post(BASE + "/tasks/" + task + "/packages/" + parcel + "/scans"), "{\"scanId\":\""
-                + UUID.randomUUID() + "\",\"scannedCode\":\"" + SOFA_BARCODE + "\",\"quantity\":1}"))
-                .andExpect(status().isOk());
+        // The check station (4C-6): start, scan the LPN of every picked carton, label, complete: one shipment.
+        UUID shipment = CartonStationSupport.ship(this::packer, jdbc, json, task, null);
+        return new UUID[] {shipment, task};
     }
 
     private static String ids(List<UUID> ids) {
@@ -1691,7 +1660,7 @@ class FtlDispatchIntegrationTest {
 
     // ---- review of #162: no-partial orders, the gate at every vehicle, concurrency, auto-cancel ------------------
 
-    /** An order of 2 sofas packed in two shipments (Sales allowed partial shipments): as kits or cartons. */
+    /** An order of 2 sofas packed in two shipments (Sales allowed partial shipments), a carton each. */
     private UUID[] packedInTwo(OrderSummary order, boolean kits) throws Exception {
         tx.executeWithoutResult(s -> jdbc.update(
                 "UPDATE ordering.customer_order SET allow_partial_shipment = TRUE WHERE id = ?", order.orderId()));
@@ -1706,30 +1675,10 @@ class FtlDispatchIntegrationTest {
                             + "\"}")).andExpect(status().isOk());
         }
         packer(post(BASE + "/tasks/" + task + "/picking-completion")).andExpect(status().isOk());
-        packer(post(BASE + "/tasks/" + task + "/packing-start")).andExpect(status().isOk());
-        UUID line = order.lines().getFirst().lineId();
+        // Two shipments of one sofa each: the check station runs once and hands the cartons out (see Parts).
         UUID[] shipments = new UUID[2];
         for (int i = 0; i < 2; i++) {
-            if (kits) {
-                JsonNode kit = data(packer(body(post(BASE + "/tasks/" + task + "/package-kits"), "{\"orderLineId\":\""
-                        + line + "\"}")).andExpect(status().isCreated()));
-                String part1 = kit.path("packages").get(0).path("packageId").asText();
-                String part2 = kit.path("packages").get(1).path("packageId").asText();
-                scan(task, part1);
-                packer(body(post(BASE + "/tasks/" + task + "/packages/" + part1 + "/seal"), SOFA_MEASURES))
-                        .andExpect(status().isOk());
-                packer(body(post(BASE + "/tasks/" + task + "/packages/" + part2 + "/seal"), PART2_MEASURES))
-                        .andExpect(status().isOk());
-            } else {
-                String parcel = data(packer(body(post(BASE + "/tasks/" + task + "/packages"), ONE_CARTON))
-                        .andExpect(status().isCreated())).path("packageId").asText();
-                scan(task, parcel);
-                packer(body(post(BASE + "/tasks/" + task + "/packages/" + parcel + "/seal"), SOFA_MEASURES))
-                        .andExpect(status().isOk());
-            }
-            shipments[i] = UUID.fromString(data(packer(body(post(BASE + "/tasks/" + task + "/packing-completion"),
-                    i == 0 ? "{\"partial\":true,\"note\":\"one sofa now\"}" : "{}")).andExpect(status().isOk()))
-                    .path("shipmentId").asText());
+            shipments[i] = parts.ship(task, 1);
         }
         return shipments;
     }
