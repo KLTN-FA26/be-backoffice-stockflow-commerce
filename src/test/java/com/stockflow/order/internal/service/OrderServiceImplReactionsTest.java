@@ -78,10 +78,34 @@ class OrderServiceImplReactionsTest {
     @DisplayName("money counted (PaymentCaptured)")
     class PaymentCaptured {
 
+        /** What checkout left: a live hold for every unit of every line, as the order expects when money arrives. */
+        private void holdsCover(Order order) {
+            when(inventory.holdsOf(id(order))).thenReturn(order.lines().stream()
+                    .map(line -> new com.stockflow.inventory.api.OrderHold(line.sku().code(), "A-01", line.quantity()))
+                    .toList());
+        }
+
+        @Test
+        @DisplayName("paid after the holds ran out (5-2): not confirmed holding nothing - ON_HOLD for INVENTORY, "
+                + "naming what is still held, nothing pinned")
+        void paidAfterTheHoldsRanOutGoesOnHold() {
+            Order order = waitingForPayment(PaymentTerm.PREPAID);
+            when(payments.record(any(), any(), any(), anyString(), any())).thenReturn(true);
+            when(inventory.holdsOf(id(order))).thenReturn(List.of());
+
+            service.recordPayment(id(order), UUID.randomUUID(), order.total().amount(), "VND");
+
+            assertThat(order.status()).isEqualTo(OrderStatus.ON_HOLD);
+            assertThat(order.holdReason()).isEqualTo(com.stockflow.order.api.HoldReason.INVENTORY);
+            assertThat(order.holdNote()).contains("0 of ");
+            verify(repository).save(order);
+        }
+
         @Test
         @DisplayName("a prepaid order paid in full is CONFIRMED and its stock holds are pinned (BR-02, BR-07)")
         void fullPaymentConfirmsAndPins() {
             Order order = waitingForPayment(PaymentTerm.PREPAID);
+            holdsCover(order);
             when(payments.record(any(), any(), any(), anyString(), any())).thenReturn(true);
 
             service.recordPayment(id(order), UUID.randomUUID(), order.total().amount(), "VND");
@@ -110,6 +134,7 @@ class OrderServiceImplReactionsTest {
         @DisplayName("a deposit order is CONFIRMED by its deposit (30 percent of 1 100 000), not the whole price")
         void depositConfirms() {
             Order order = waitingForPayment(PaymentTerm.DEPOSIT);
+            holdsCover(order);
             when(payments.record(any(), any(), any(), anyString(), any())).thenReturn(true);
 
             service.recordPayment(id(order), UUID.randomUUID(), new BigDecimal("330000"), "VND");

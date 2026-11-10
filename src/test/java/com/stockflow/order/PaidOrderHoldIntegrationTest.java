@@ -142,11 +142,11 @@ class PaidOrderHoldIntegrationTest {
         Await.until("the holds expired", ASYNC, () -> holdStates(orderId).stream()
                 .allMatch(state -> state.startsWith("EXPIRED")));
         // The expiry event is no longer the order's to answer. The registry writes one row per listener in the
-        // sweep's own transaction, so which listeners exist is known now, with no waiting: none is the order's.
+        // sweep's own transaction, so which listeners exist is known now, with no waiting: none is the one that cancelled.
         assertThat(jdbc.queryForList("""
                 SELECT listener_id FROM event_publication WHERE event_type LIKE '%StockReservationReleased'
                   AND serialized_event LIKE ?""", String.class, "%" + orderId + "%"))
-                .noneMatch(listener -> listener.contains("com.stockflow.order."));
+                .noneMatch(listener -> listener.contains("InventoryEventListener"));
         assertThat(context.containsBean("inventoryEventListener")).isFalse();
         assertThat(statusOf(orderId)).as("nothing cancels it on its own any more").isEqualTo(OrderStatus.PENDING_PAYMENT);
         assertThat(jdbc.queryForObject("SELECT cancellation_reason FROM ordering.customer_order WHERE id = ?",

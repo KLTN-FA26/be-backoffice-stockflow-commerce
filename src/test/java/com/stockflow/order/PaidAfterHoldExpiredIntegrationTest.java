@@ -64,7 +64,7 @@ class PaidAfterHoldExpiredIntegrationTest {
     @Autowired EntityManager entityManager;
 
     private UUID place(int quantity) {
-        return orders.placeOrder(new PlaceOrderCommand(UUID.randomUUID(), DemoData.CUSTOMER_ID, null, null, true,
+        return orders.placeOrder(new PlaceOrderCommand(UUID.randomUUID(), DemoData.CUSTOMER_ID, null, null, false,
                 List.of(new PlaceOrderCommand.Line(SOFA, quantity, Money.vnd(12_000_000), null)),
                 PaymentTerm.PREPAID, null, null)).orderId();
     }
