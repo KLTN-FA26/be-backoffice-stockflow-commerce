@@ -12,10 +12,8 @@ import com.stockflow.inventory.internal.domain.StockItemRepository;
 import com.stockflow.common.domain.Sku;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.LockModeType;
-import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Repository;
 
-import java.time.Instant;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
@@ -187,15 +185,6 @@ class StockItemRepositoryAdapter implements StockItemRepository {
     }
 
     @Override
-    public List<StockItem> findWithReservationsExpiredBefore(Instant cutoff, int limit) {
-        return jpa.findStockItemIdsWithExpiredReservations(cutoff, PageRequest.of(0, limit)).stream()
-                .map(jpa::findByIdWithReservations)
-                .flatMap(Optional::stream)
-                .map(StockItemPersistenceMapper::toDomain)
-                .toList();
-    }
-
-    @Override
     public Optional<StockItem> findByReservationIdForUpdate(ReservationId reservationId) {
         return jpa.findStockItemIdByReservationId(reservationId.value())
                 .flatMap(id -> findByIdForUpdate(new StockItemId(id)));
@@ -264,14 +253,6 @@ class StockItemRepositoryAdapter implements StockItemRepository {
     @Override
     public List<com.stockflow.inventory.internal.domain.HoldDetail> findHolds(Collection<UUID> reservationIds) {
         return reservationIds.isEmpty() ? List.of() : jpa.findHolds(reservationIds);
-    }
-
-    @Override
-    public List<StockItem> findWithReservationsForOrder(UUID orderId) {
-        return jpa.findStockItemIdsHoldingOrder(orderId).stream()
-                .map(id -> findByIdForUpdate(new StockItemId(id)))
-                .flatMap(Optional::stream)
-                .toList();
     }
 
     /**

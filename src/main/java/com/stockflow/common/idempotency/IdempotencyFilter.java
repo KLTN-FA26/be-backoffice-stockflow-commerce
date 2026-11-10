@@ -49,7 +49,7 @@ import java.util.Set;
  * <h2>Interaction with the application's own idempotency</h2>
  *
  * <p>This is HTTP-level and complements, rather than replaces, the domain-level keys —
- * {@code PlaceOrderCommand.requestId}, {@code ReserveStockCommand.requestId}. The two catch
+ * {@code PlaceOrderCommand.requestId}, {@code HoldStockCommand.requestId}. The two catch
  * different retries: this one catches a client resending the same HTTP request; the domain one
  * catches a caller reaching the service by any route, including from another module in-process.
  * Removing either leaves a real hole.</p>

@@ -6,7 +6,7 @@ import java.util.UUID;
  * Identifier of a single {@link Reservation} held inside a {@link StockItem}.
  *
  * <p>This id is the one internal value that does leave the module, as the {@code reservationId}
- * field of {@code ReserveStockResult} — {@code order} stores it and hands it back to
+ * field of {@code StockReservation} and {@code HoldStockResult} — {@code order} stores it and hands it back to
  * {@code InventoryService.release(...)} later. It leaves as a plain {@code UUID}, unwrapped, so
  * that no other module has to import anything from {@code inventory.internal}.</p>
  */

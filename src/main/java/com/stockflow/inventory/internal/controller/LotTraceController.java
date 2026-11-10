@@ -95,8 +95,7 @@ class LotTraceController {
 
     private static LotTraceResponse.Lot toResponse(LotTrace.Summary l) {
         return new LotTraceResponse.Lot(l.lotId(), l.sku(), l.lotNumber(), l.receivedAt(), l.origin(),
-                l.goodsReceiptId(), l.goodsReceiptNumber(), l.purchaseOrderId(), l.purchaseOrderNumber(),
-                l.supplierId(), l.supplierName(), l.receivingWarehouseId(), l.receivedQuantity(), l.onHand(),
+                l.goodsReceiptId(), l.goodsReceiptNumber(), l.receivingWarehouseId(), l.receivedQuantity(), l.onHand(),
                 l.available(), l.held(), l.productionOrderId(), l.productionOrderCode());
     }
 }

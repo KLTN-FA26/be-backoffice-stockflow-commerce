@@ -10,7 +10,6 @@ import jakarta.persistence.EntityManager;
 import jakarta.persistence.LockModeType;
 import org.springframework.stereotype.Repository;
 
-import java.time.Instant;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
@@ -81,19 +80,6 @@ class SkuReservationRepositoryAdapter implements SkuReservationRepository {
                          limit 1
                         """)
                 .setParameter("orderId", orderId).getResultList().isEmpty();
-    }
-
-    /** {@code SKIP LOCKED}: a reservation a checkout or a release is busy with is swept on the next run. */
-    @Override
-    public List<SkuReservation> findExpiredForUpdate(Instant cutoff, int limit) {
-        @SuppressWarnings("unchecked")
-        List<UUID> ids = entityManager.createNativeQuery("""
-                        select id from inventory.stock_reservation
-                         where stock_item_id is null and status = 'HELD' and expires_at < :cutoff
-                         order by expires_at, id limit :limit for update skip locked
-                        """)
-                .setParameter("cutoff", cutoff).setParameter("limit", limit).getResultList();
-        return refreshed(ids);
     }
 
     @Override

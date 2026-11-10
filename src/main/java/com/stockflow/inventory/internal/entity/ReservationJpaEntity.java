@@ -24,7 +24,8 @@ import java.util.UUID;
  * which is its own aggregate and saved through {@code SkuReservationRepositoryAdapter}.
  *
  * <p>The indexes are not decoration; each one exists for a query that runs constantly:
- * {@code order_id} for cancellation, {@code expires_at} for the sweeper's minute-by-minute scan.
+ * {@code order_id} for cancellation and release. {@code expires_at} is kept for the rows of before
+ * V20261117000300, which released every hold that had one; nothing sets it any more.
  * The unique constraint on {@code request_id} is the last line of defence for idempotency: the
  * aggregate checks in memory, and the database refuses even if two threads slip past that check
  * simultaneously.</p>

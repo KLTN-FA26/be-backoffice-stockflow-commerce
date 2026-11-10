@@ -20,6 +20,9 @@ import com.stockflow.common.security.PermissionResource;
  * rather than walking the bean registry. Had it walked the registry, this declaration would have
  * been invisible, the resource would have been missing from the catalog, and the two endpoints it
  * guards would have returned 403 to everyone with no way to grant the permission.</p>
+ *
+ * <p>No CREATE: a hold is taken by Sales choosing the order's shipping warehouse (kltn-docs 17 §4.2), in-process,
+ * never over HTTP. The checkout's reservation endpoint went with V20261117000300.</p>
  */
 @PermissionResource(
         code = InventoryResources.RESERVATIONS,
@@ -27,7 +30,7 @@ import com.stockflow.common.security.PermissionResource;
         label = "Stock reservations",
         route = "/inventory/reservations",
         apiPath = "/api/v1/inventory/reservations",
-        actions = {Action.VIEW_PAGE, Action.READ, Action.CREATE, Action.UPDATE, Action.DELETE})
+        actions = {Action.VIEW_PAGE, Action.READ, Action.UPDATE, Action.DELETE})
 final class ReservationsResourceDeclaration {
 
     private ReservationsResourceDeclaration() {

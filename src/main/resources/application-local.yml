@@ -69,5 +69,3 @@ stockflow:
       base-url: ${STOCKFLOW_PUBLIC_BASE_URL:http://localhost:8080}
       # A laptop may sign with a key made per process: its links die at a restart, which nobody minds here.
       process-key-allowed: true
-  inventory:
-    reservation-sweep-interval: PT15S   # faster than production, so expiry is testable by hand

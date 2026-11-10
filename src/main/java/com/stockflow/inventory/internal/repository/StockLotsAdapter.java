@@ -40,7 +40,6 @@ class StockLotsAdapter implements StockLots {
                 .findFirst()
                 .orElseGet(() -> jpa.saveAndFlush(new StockLotJpaEntity(Identifiers.newId(), lot.sku().code(),
                         lot.lotNumber(), lot.receivedAt(), lot.goodsReceiptId(),
-                        lot.goodsReceiptNumber(), lot.purchaseOrderId(), lot.purchaseOrderNumber(), lot.supplierId(),
-                        lot.supplierName(), lot.warehouseId())).getId());
+                        lot.goodsReceiptNumber(), lot.warehouseId())).getId());
     }
 }

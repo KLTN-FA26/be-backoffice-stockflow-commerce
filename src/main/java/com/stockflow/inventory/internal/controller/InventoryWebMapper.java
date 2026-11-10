@@ -1,11 +1,8 @@
 package com.stockflow.inventory.internal.controller;
 
-import com.stockflow.inventory.api.ReserveStockResult;
 import com.stockflow.inventory.api.StockAvailability;
 import com.stockflow.inventory.api.StockLevel;
 import com.stockflow.inventory.internal.controller.dto.StockLevelResponse;
-import com.stockflow.inventory.api.StockReservation;
-import com.stockflow.inventory.internal.controller.dto.ReservationResponse;
 import com.stockflow.inventory.internal.controller.dto.ReservationRowResponse;
 import com.stockflow.inventory.internal.controller.dto.StockItemResponse;
 import com.stockflow.inventory.internal.controller.dto.WarehouseStockItemResponse;
@@ -40,18 +37,6 @@ interface InventoryWebMapper {
     StockLevelResponse toResponse(StockLevel level);
 
     List<StockLevelResponse> toLevelResponses(List<StockLevel> levels);
-
-    @Mapping(target = "holds", source = "reservations")
-    ReservationResponse toResponse(ReserveStockResult result);
-
-    /**
-     * Element mapping for the nested list.
-     *
-     * <p>MapStruct would generate this implicitly, and it is declared anyway so that a mismatch
-     * between {@code StockReservation} and {@code Hold} names the two records in the compile error rather
-     * than pointing at the enclosing method.</p>
-     */
-    ReservationResponse.Hold toHold(StockReservation hold);
 
     ReservationRowResponse toResponse(StockBrowsing.Reservation reservation);
 

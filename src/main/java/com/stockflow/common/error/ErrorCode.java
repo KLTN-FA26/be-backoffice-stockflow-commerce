@@ -526,6 +526,11 @@ public enum ErrorCode {
     STOCK_PACKAGE_HELD("The carton is held for an order and cannot be moved or written off by hand", 409),
     /** Team plan 4C-2 (07 BR-03, 11 BR-04): stock leaves a carton whole; nothing takes part of one. */
     STOCK_PACKAGE_TAKEN_WHOLE("A carton is taken whole; part of it cannot be taken", 409),
+    /**
+     * Team plan 4C-2, review M-5 (kltn-docs 20 BR-14): stock is kept in whole cartons, so units are never added to a row
+     * in no carton. A carton found is restocked through a count (by its LPN), never as loose units.
+     */
+    STOCK_NOT_IN_CARTON("Stock is kept in whole cartons; adjust a carton by its LPN", 422),
     /** Team plan 4D-1 (kltn-docs 20 §4.8): the carton is quarantined already. */
     STOCK_PACKAGE_QUARANTINED("The carton is already in quarantine", 409),
     /** Team plan 4D-1 (kltn-docs 05 BR-01, BR-14): only a quarantined carton is released to a putaway task. */

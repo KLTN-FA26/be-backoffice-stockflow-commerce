@@ -13,8 +13,6 @@ import com.stockflow.inventory.api.RequestAdjustmentCommand;
 import com.stockflow.inventory.api.StockAdjustmentSummary;
 import com.stockflow.inventory.api.StockMove;
 import com.stockflow.inventory.api.StockPackageView;
-import com.stockflow.inventory.api.ReserveStockResult;
-import com.stockflow.inventory.api.ReserveStockCommand;
 import com.stockflow.inventory.api.StockAvailability;
 import com.stockflow.inventory.api.StockLevel;
 import com.stockflow.inventory.api.StockReservation;
@@ -75,9 +73,8 @@ import java.util.stream.Collectors;
  * outside this package can name the implementation, so nobody can bypass the port by
  * autowiring the concrete class and calling a method the interface does not expose.</p>
  *
- * <p><b>Clock is injected.</b> Reservation expiry is time-dependent, and
- * {@code Instant.now()} scattered through the code makes that untestable. With a {@code Clock}
- * bean the sweeper test fast-forwards 31 minutes instead of sleeping for them.</p>
+ * <p><b>Clock is injected.</b> Every hold, allocation and ledger line is stamped with the time it was made, and
+ * {@code Instant.now()} scattered through the code would make those stamps untestable.</p>
  */
 @Service
 @Transactional
@@ -96,22 +93,13 @@ class InventoryServiceImpl implements InventoryService {
     private final com.stockflow.inventory.internal.domain.CycleCountRepository cycleCounts;
     private final com.stockflow.inventory.internal.domain.StockPackageRepository stockPackages;
 
-    /** How long a hold lasts while its order waits for payment (kltn-docs 14: set by the business). */
-    private final java.time.Duration reservationTtl;
-
     InventoryServiceImpl(StockItemRepository repository, InventoryEventPublisher events,
                          StockOperations operations, InventoryItemDirectory items, Clock clock,
                          InventoryPolicyRepository policies,
                          SkuReservationRepository skuReservations, LocationDirectory locations,
                          com.stockflow.inventory.internal.domain.CycleCountRepository cycleCounts,
-                         com.stockflow.inventory.internal.domain.StockPackageRepository stockPackages,
-                         @org.springframework.beans.factory.annotation.Value(
-                                 "${stockflow.inventory.reservation-ttl:PT30M}") java.time.Duration reservationTtl) {
-        if (reservationTtl == null || reservationTtl.isZero() || reservationTtl.isNegative()) {
-            throw new IllegalArgumentException("stockflow.inventory.reservation-ttl must be positive");
-        }
+                         com.stockflow.inventory.internal.domain.StockPackageRepository stockPackages) {
         this.stockPackages = stockPackages;
-        this.reservationTtl = reservationTtl;
         this.repository = repository;
         this.events = events;
         this.operations = operations;
@@ -126,8 +114,8 @@ class InventoryServiceImpl implements InventoryService {
     @Override
     @Transactional(propagation = Propagation.MANDATORY)
     public void prepareReservation(Set<Sku> skus) {
-        // SKU advisory locks only (SCRUM-152): a SKU reservation touches no stock row, so locking every stock row of
-        // the basket, as checkout did while it chose lots, would only serialise checkouts against picking.
+        // SKU advisory locks only (SCRUM-152): a SKU reservation touches no stock row, so locking stock rows here
+        // would only serialise holding against picking.
         skus.stream().map(Sku::code).distinct().sorted().forEach(policies::lock);
     }
 
@@ -345,7 +333,7 @@ class InventoryServiceImpl implements InventoryService {
      * {@inheritDoc}
      *
      * <p>The hold is checked against the warehouse's figure read under the SKU's advisory lock - the same lock every
-     * checkout, allocation and other hold of the SKU takes - and again by {@code tg_stock_reservation_soft_atp} per
+     * allocation and other hold of the SKU takes - and again by {@code tg_stock_reservation_soft_atp} per
      * warehouse. Whole cartons only: the figure is cut down to a multiple of the carton (17 BR-21).</p>
      */
     @Override
@@ -415,9 +403,9 @@ class InventoryServiceImpl implements InventoryService {
                     new Totals(totals.onHand(), totals.available(), totals.reserved(),
                             (int) Math.max(0, totals.atp() - frozen.free())));
         }
-        // A checkout's SKU reservation is promised against the whole system, not against a warehouse (SCRUM-152): no
-        // warehouse can promise more than is left system-wide once every SKU reservation is counted - from these same
-        // lines and this same day.
+        // A SKU reservation of before 4B-7 named no warehouse and was promised against the whole system (SCRUM-152):
+        // no warehouse can promise more than is left system-wide once every SKU reservation is counted - from these
+        // same lines and this same day.
         long unheld = byWarehouse.values().stream().mapToLong(Totals::atp).sum();
         int systemWide = (int) Math.max(0, unheld - skuReservations.heldBySku(List.of(sku.code()))
                 .getOrDefault(sku.code(), 0L));
@@ -444,83 +432,7 @@ class InventoryServiceImpl implements InventoryService {
     /**
      * {@inheritDoc}
      *
-     * <p><b>This method is the whole argument for the monolith.</b> It joins the caller's
-     * transaction ({@code Propagation.REQUIRED}, the default, stated explicitly here because it is
-     * load-bearing rather than incidental). {@code order} calls it while saving the order; one
-     * commit covers both. If the order insert then violates a constraint, this reservation
-     * disappears with it, automatically.</p>
-     *
-     * <p><b>A SKU reservation, not a choice of lots (SCRUM-152).</b> Until Sprint 3 this method planned over
-     * every location and placed the hold on stock items — choosing a bin and a lot at checkout, before anybody
-     * knew which warehouse would ship the order. It now holds quantity against the SKU only; {@link #allocate}
-     * chooses bins and lots when the order is released (docs 01, 03 §6, 04c F-FUL).</p>
-     *
-     * <ol>
-     *   <li><b>Replay first.</b> A retried checkout finds the reservation its first attempt made — or, for a retry
-     *       of a checkout placed before this change, the holds it placed on stock items.</li>
-     *   <li><b>Under the SKU's advisory lock</b> — the lock every path that changes what is promised takes before
-     *       any row lock — read available-to-promise: unheld sellable stock minus live SKU reservations.</li>
-     *   <li>Open the reservation, refused below that figure. {@code tg_stock_reservation_soft_atp} checks the same
-     *       rule again in the database, as the safety net.</li>
-     * </ol>
-     */
-    @Override
-    @Transactional(propagation = Propagation.REQUIRED)
-    public ReserveStockResult reserve(ReserveStockCommand command) {
-        Instant now = clock.instant();
-        List<SkuReservation> served = skuReservations.findHeldForRequest(command.requestId());
-        if (!served.isEmpty()) {
-            log.info("Request {} was already served; returning its reservation", command.requestId());
-            return resultOf(command.orderId(), command.sku(), served);
-        }
-        Optional<ReserveStockResult> placedOnStock = replayOf(command.requestId(), command.sku(), command.orderId());
-        if (placedOnStock.isPresent()) {
-            return placedOnStock.get();
-        }
-
-        policies.lock(command.sku().code());   // re-entrant: checkout took it in prepareReservation already
-        requireWholeCartons(command.sku(), command.quantity());
-        int available = availableToPromise(command.sku());
-        SkuReservation reservation = SkuReservation.open(command.sku(), command.orderId(), command.requestId(),
-                Quantity.of(command.quantity()), available, now, reservationTtl);
-        skuReservations.save(reservation);
-        events.publishEventsOf(reservation);
-
-        log.info("Reserved {} units of {} for order {} (SKU reservation {})",
-                command.quantity(), command.sku(), command.orderId(), reservation.id());
-        return new ReserveStockResult(command.orderId(), List.of(toApiReservation(reservation)), command.quantity(),
-                available - command.quantity(), now);
-    }
-
-    /**
-     * A reservation counts cartons (kltn-docs 07 BR-03, 20 §5.6): the units asked for are a whole number of the SKU's
-     * cartons, since a release hands out whole cartons only and a remainder could never be allocated. A SKU with no
-     * carton unit has no stock in cartons, so nothing would be promised to it anyway.
-     */
-    private void requireWholeCartons(Sku sku, int quantity) {
-        java.util.OptionalInt factor = stockPackages.cartonFactorOf(sku.code());
-        if (factor.isPresent() && quantity % factor.getAsInt() != 0) {
-            throw new BusinessException(ErrorCode.RESERVATION_NOT_WHOLE_CARTONS,
-                    "%d unit(s) of %s are not whole cartons of %d; a reservation counts cartons".formatted(quantity,
-                            sku.code(), factor.getAsInt()), List.of(),
-                    Map.of("sku", sku.code(), "cartonQuantity", factor.getAsInt()));
-        }
-    }
-
-    private ReserveStockResult resultOf(UUID orderId, Sku sku, List<SkuReservation> reservations) {
-        return new ReserveStockResult(orderId, reservations.stream().map(InventoryServiceImpl::toApiReservation).toList(),
-                reservations.stream().mapToInt(r -> r.quantity().value()).sum(), availableToPromise(sku),
-                reservations.stream().map(SkuReservation::reservedAt).min(Comparator.naturalOrder()).orElseThrow());
-    }
-
-    private static StockReservation toApiReservation(SkuReservation reservation) {
-        return new StockReservation(reservation.id().value(), null, null, null, reservation.quantity().value());
-    }
-
-    /**
-     * {@inheritDoc}
-     *
-     * <p>The order of locks is the one every checkout and move uses: the SKUs' advisory locks (sorted), then the
+     * <p>The order of locks is the one every hold and move uses: the SKUs' advisory locks (sorted), then the
      * order's reservations, then the stock rows in id order. Planning reads projections only, so the locked read of
      * each stock row is its first read in this transaction and the re-check in {@link StockItem#allocate} runs on
      * current numbers. Each stock row is locked once even when two lines of the order draw on it — refreshing a
@@ -540,7 +452,7 @@ class InventoryServiceImpl implements InventoryService {
         unlocked.stream().map(r -> r.sku().code()).distinct().sorted().forEach(policies::lock);
         List<SkuReservation> held = skuReservations.findHeldForOrderForUpdate(command.orderId()).stream()
                 .filter(r -> command.includes(r.id().value())).toList();
-        // After the lock: a reservation the sweeper expired a moment ago is seen as expired here, not skipped.
+        // After the lock: a reservation released by hand a moment ago is seen as released here, not skipped.
         requireNoneLapsed(command.orderId());
 
         record Planned(SkuReservation from, int sequence, StockAllocator.AllocationLine line) { }
@@ -674,10 +586,10 @@ class InventoryServiceImpl implements InventoryService {
     }
 
     /**
-     * All or nothing (docs 04c F-FUL): a line whose reservation expired or was released before the release has no
-     * stock behind it, and allocating the other lines would send the order to the warehouse short. Only a
-     * cancellation releases a checkout order's reservations, and an expiry cancels an unpaid order, so this is the
-     * race where the release came first.
+     * All or nothing (docs 04c F-FUL): a line whose reservation was released before the release has no stock behind
+     * it, and allocating the other lines would send the order to the warehouse short. Holds carry no deadline since
+     * V20261117000300 (an expired row is one of before it), so this is the race with a cancellation or a release by
+     * hand.
      *
      * <p>4B-7: holds at a warehouse (orders of a contract) are left out. They never expire, one released by hand
      * (20 §5.6, {@code MANUAL_OVERRIDE}) is replaced by the order holding again, and the order checks that every carton
@@ -745,44 +657,6 @@ class InventoryServiceImpl implements InventoryService {
                 .getBytes(StandardCharsets.UTF_8));
     }
 
-    /**
-     * Rebuilds the original result when this request has already been served.
-     *
-     * <p>Reads the quantities from the stored reservations rather than from the command, so a
-     * partially-applied earlier attempt reports what is actually held rather than what was asked
-     * for.</p>
-     */
-    private Optional<ReserveStockResult> replayOf(UUID requestId, Sku sku, UUID orderId) {
-        List<StockItem> holders = repository.findWithReservationsForRequest(requestId)
-                .stream()
-                // Same id ordering as the reserve loop. These loads take write locks too, and two
-                // replays of different requests touching the same pair of stock items in opposite
-                // orders would deadlock exactly as two fresh checkouts would.
-                .sorted(Comparator.comparing(item -> item.id().value().toString()))
-                .toList();
-        if (holders.isEmpty()) {
-            return Optional.empty();
-        }
-
-        List<StockReservation> reservations = new ArrayList<>();
-        Instant earliest = null;
-        for (StockItem item : holders) {
-            for (Reservation reservation : item.activeReservationsFor(requestId)) {
-                reservations.add(toApiReservation(item, reservation));
-                if (earliest == null || reservation.reservedAt().isBefore(earliest)) {
-                    earliest = reservation.reservedAt();
-                }
-            }
-        }
-        if (reservations.isEmpty()) {
-            return Optional.empty();
-        }
-
-        int quantityHeld = reservations.stream().mapToInt(StockReservation::quantity).sum();
-        return Optional.of(new ReserveStockResult(orderId, reservations, quantityHeld,
-                availableToPromise(sku), earliest));
-    }
-
     private static StockReservation toApiReservation(StockItem item, Reservation reservation) {
         return new StockReservation(
                 reservation.id().value(),
@@ -791,34 +665,6 @@ class InventoryServiceImpl implements InventoryService {
                 item.lotNumber(),
                 // The reservation's own quantity, never the plan's: on a replay the two can differ.
                 reservation.quantity().value());
-    }
-
-    /**
-     * {@inheritDoc}
-     *
-     * <p>{@code findWithReservationsForOrder} locks each stock row, the same lock the expiry sweep
-     * takes, so a hold is either pinned here or expired there — never both.</p>
-     */
-    @Override
-    public int pinReservations(UUID orderId) {
-        int pinned = 0;
-        for (SkuReservation reservation : skuReservations.findHeldForOrderForUpdate(orderId)) {
-            if (reservation.pin()) {
-                skuReservations.save(reservation);
-                pinned++;
-            }
-        }
-        for (StockItem item : repository.findWithReservationsForOrder(orderId)) {
-            int here = item.pinReservationsOf(orderId);
-            if (here > 0) {
-                repository.save(item);
-                pinned += here;
-            }
-        }
-        if (pinned > 0) {
-            log.info("Pinned {} hold(s) of order {}: it no longer waits for payment", pinned, orderId);
-        }
-        return pinned;
     }
 
     @Override
@@ -847,30 +693,6 @@ class InventoryServiceImpl implements InventoryService {
                         r.quantity().value(), com.stockflow.inventory.api.HoldView.Status.valueOf(r.status().name()),
                         r.expiresAt())));
         return views;
-    }
-
-    @Override
-    public int rearmReservations(UUID orderId) {
-        Instant deadline = clock.instant().plus(reservationTtl);
-        int rearmed = 0;
-        for (SkuReservation reservation : skuReservations.findHeldForOrderForUpdate(orderId)) {
-            if (reservation.rearm(deadline)) {
-                skuReservations.save(reservation);
-                rearmed++;
-            }
-        }
-        // Allocations do not expire (X-RESV): Reservation#rearm leaves them pinned.
-        for (StockItem item : repository.findWithReservationsForOrder(orderId)) {
-            int here = item.rearmReservationsOf(orderId, deadline);
-            if (here > 0) {
-                repository.save(item);
-                rearmed += here;
-            }
-        }
-        if (rearmed > 0) {
-            log.info("Order {} waits for payment again: {} hold(s) expire at {}", orderId, rearmed, deadline);
-        }
-        return rearmed;
     }
 
     /**
@@ -915,8 +737,7 @@ class InventoryServiceImpl implements InventoryService {
 
     /**
      * The stock item holding {@code reservationId}, locked. A warehouse-bound caller reaches only
-     * holds in their own warehouses (BR-SEC-002); the system — an event listener, the sweeper — is
-     * not limited.
+     * holds in their own warehouses (BR-SEC-002); the system — an event listener — is not limited.
      */
     private StockItem holderOf(ReservationId reservationId) {
         StockItem item = repository.findByReservationIdForUpdate(reservationId)
@@ -932,7 +753,7 @@ class InventoryServiceImpl implements InventoryService {
      * <p>Type 3 (name-based) UUID semantics, derived from the caller's request id and the stock
      * item it applies to. Two properties matter: it differs per stock item, so the unique
      * constraint on {@code request_id} is not violated when one line spans several lots; and it is
-     * stable across processes and restarts, so a retried checkout is recognised as a replay rather
+     * stable across processes and restarts, so a retried request is recognised as a replay rather
      * than held a second time.</p>
      */
     private static UUID perStockItemRequestId(UUID requestId, StockItemId stockItemId) {

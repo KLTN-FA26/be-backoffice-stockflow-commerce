@@ -17,19 +17,19 @@ import java.util.UUID;
  * {@code ModularityTest} fails the build if anyone imports them.</p>
  *
  * <p>The parameters and return types are records declared in this same package, never domain
- * objects. Handing another module a {@code StockItem} would let it call {@code reserve()} on the
+ * objects. Handing another module a {@code StockItem} would let it call {@code allocate()} on the
  * aggregate directly, outside a transaction and outside the invariants.</p>
  */
 public interface InventoryService {
 
     /**
      * Available to promise for one SKU (docs 01): sellable units on hand — AVAILABLE — minus
-     * every hold on them (allocations, checkout holds made before SCRUM-152) minus the live
-     * SKU reservations, which sit on no stock item. Never negative.
+     * every hold on them (allocations) minus the live SKU reservations (the holds Sales takes at a
+     * shipping warehouse), which sit on no stock item. Never negative.
      */
     int availableToPromise(Sku sku);
 
-    /** Batch availability; missing keys mean zero. Never authorizes a checkout without reserve(). */
+    /** Batch availability; missing keys mean zero. A number to show, never a hold: holding is {@link #holdAtWarehouse}. */
     default java.util.Map<String, Long> availableQuantities(java.util.Set<String> skus) {
         return skus.stream().collect(java.util.stream.Collectors.toMap(
                 code -> code, code -> (long) availableToPromise(new Sku(code))));
@@ -70,20 +70,8 @@ public interface InventoryService {
      */
     List<StockLevel> levelsOf(Sku sku);
 
-    /**
-     * Reserve stock for an order line: a SKU reservation (docs 01 "Reserved"), on no location and no lot, for the
-     * checkout deadline. Bins and lots are chosen when the order is released ({@link #allocate}).
-     *
-     * <p>Called synchronously from {@code order} during checkout, <b>inside the caller's
-     * transaction</b>. That is the whole point of the monolith: if the order row fails to persist,
-     * this reservation rolls back with it. In the microservices version this same step needed a
-     * saga plus a compensating action plus a reservation timeout.</p>
-     *
-     * @throws com.stockflow.common.error.BusinessException when ATP is below the requested quantity
-     */
-    ReserveStockResult reserve(ReserveStockCommand command);
-    /** Take every basket SKU's advisory lock, in SKU order, before reserving any line: two checkouts sharing two
-     * SKUs then wait for each other instead of deadlocking. Must join the same transaction as the reserve calls. */
+    /** Take every SKU's advisory lock, in SKU order, before holding any line: two orders holding two shared SKUs then
+     * wait for each other instead of deadlocking. Must join the same transaction as the holds. */
     void prepareReservation(java.util.Set<Sku> skus);
 
     /**
@@ -129,28 +117,8 @@ public interface InventoryService {
      */
     List<StockReservation> reallocate(ReallocateStockCommand command);
 
-    /** Release a reservation — the order cancelled or closed, or the hold expired. */
+    /** Release a reservation — the order cancelled or closed, or a hold released by hand. */
     void release(UUID reservationId, String reason);
-
-    /**
-     * Stop the holds of an order from expiring: the order no longer waits for payment (paid, or
-     * released on its deposit), so its stock stays held until it is consumed or the order releases
-     * it (kltn-docs 14 BR-07, SCRUM-465). Joins the caller's transaction, like {@link #reserve}, so
-     * the order's new status and the pinned holds commit together and the expiry sweep cannot slip
-     * in between. Idempotent.
-     *
-     * @return how many holds were pinned by this call
-     */
-    int pinReservations(UUID orderId);
-
-    /**
-     * The order waits for payment again (SCRUM-427: credit refused, switched to prepaid or deposit):
-     * its pinned holds get the checkout deadline from now (kltn-docs 14 BR-07). Joins the caller's
-     * transaction. Idempotent.
-     *
-     * @return how many holds got a deadline
-     */
-    int rearmReservations(UUID orderId);
 
     /**
      * Where an order's stock is held right now (SCRUM-466): one row per live (HELD) hold, by SKU and
