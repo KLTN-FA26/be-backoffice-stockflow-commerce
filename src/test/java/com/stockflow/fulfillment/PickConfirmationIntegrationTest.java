@@ -278,7 +278,7 @@ class PickConfirmationIntegrationTest {
     }
 
     /** {@code quantity} sofas, at least two: one carton of them (a contract's lines are cartons, 14 BR-08). */
-    private static ConfirmedOrders.Line sofa(int quantity) {
+    private ConfirmedOrders.Line sofa(int quantity) {
         return ConfirmedOrders.Line.units(sofaSku, quantity, Money.vnd(12_000_000));
     }
 
