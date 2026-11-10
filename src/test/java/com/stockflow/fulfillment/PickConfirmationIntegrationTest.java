@@ -240,7 +240,7 @@ class PickConfirmationIntegrationTest {
             Await.until("task of the cancelled order cancelled", ASYNC, () -> "CANCELLED".equals(jdbc.queryForObject(
                     "SELECT status FROM fulfillment.pick WHERE order_id = ?", String.class, order)));
             for (Map<String, Object> line : picked) {
-                // Onto the bin they left, beside their emptied carton row, as loose units.
+                // Onto the bin it left: the carton comes back whole, sealed.
                 pickLists.putBack((UUID) line.get("pick_id"), (UUID) line.get("id"),
                         (String) line.get("location_code"), system);
             }
@@ -402,7 +402,7 @@ class PickConfirmationIntegrationTest {
         assertThat(added).hasSize(1);
         String newLine = added.get(0).path("lineId").asText();
         String newLocation = added.get(0).path("locationCode").asText();
-        assertThat(newLocation).as("never the short bin").isNotEqualTo(location);
+        assertThat(lpn(newLine)).as("never the short carton (07 BR-09)").isNotEqualTo(lpn(lineId));
         assertThat(lineStatus(lineId)).isEqualTo("CANCELLED");
         assertThat(holdStatus(lineId)).isEqualTo("RELEASED");
         assertThat(orders.findById(order.orderId()).orElseThrow().status()).as("back where it was held from")
@@ -744,8 +744,7 @@ class PickConfirmationIntegrationTest {
     @Test
     @DisplayName("cancelled after picking: the line waits in /put-backs; put back restores on_hand once, with a ledger row")
     void putBackAfterCancellation() throws Exception {
-        // The carton's unit comes back loose (team plan 4C-4 puts it back in a carton), here onto the other sofa bin;
-        // putBackOntoTheBinItLeft covers the bin it left.
+        // The carton comes back whole, here onto the other sofa bin; putBackOntoTheBinItLeft covers the bin it left.
         OrderSummary order = confirmedOrder(sofa(1));
         UUID task = startedTask(order);
         JsonNode line = lines(task).get(0);
@@ -814,6 +813,10 @@ class PickConfirmationIntegrationTest {
                 .andExpect(jsonPath("$.data.putBackLocationCode").value(target));
         assertThat(onHand(target, SOFA)).isEqualTo(beforeTarget + 1);
         assertThat(onHand(location, SOFA)).isEqualTo(before - 1);
+        assertThat(jdbc.queryForObject("SELECT p.status || ':' || p.unopened || ':' || p.location_code"
+                + " FROM fulfillment.pick_line l JOIN inventory.stock_package p ON p.lpn = l.lpn WHERE l.id = ?::uuid",
+                String.class, lineId)).as("the carton itself, moved to where it was put").isEqualTo(
+                "IN_STOCK:true:" + target);
         assertThat(ledgerRows("PUT_BACK", lineId)).isEqualTo(1);
         assertThat(jdbc.queryForMap("""
                 SELECT from_location_code, to_location_code, to_status, actor_id FROM inventory.stock_movement
@@ -835,7 +838,8 @@ class PickConfirmationIntegrationTest {
     }
 
     @Test
-    @DisplayName("a carton's units put back onto the very bin they were picked from come back loose beside its row")
+    @DisplayName("a carton picked for an order cancelled since comes back whole: the same LPN, sealed, In Stock on the"
+            + " bin it is put on - the bin it left here (07 BR-05, 20 §4.6)")
     void putBackOntoTheBinItLeft() throws Exception {
         OrderSummary order = confirmedOrder(sofa(1));
         UUID task = startedTask(order);
@@ -855,10 +859,16 @@ class PickConfirmationIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.putBackLocationCode").value(location));
         assertThat(onHand(location, SOFA)).isEqualTo(before);
-        assertThat(jdbc.queryForObject("SELECT p.status FROM fulfillment.pick_line l JOIN inventory.stock_package p"
-                + " ON p.lpn = l.lpn WHERE l.id = ?::uuid", String.class, lineId))
-                .as("the carton itself stays consumed").isEqualTo("CONSUMED");
+        assertThat(jdbc.queryForObject("SELECT p.status || ':' || p.unopened || ':' || p.location_code"
+                + " FROM fulfillment.pick_line l JOIN inventory.stock_package p ON p.lpn = l.lpn WHERE l.id = ?::uuid",
+                String.class, lineId)).as("the carton itself is back").isEqualTo("IN_STOCK:true:" + location);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM inventory.stock_item WHERE sku = ? AND location_code = ?"
+                + " AND stock_package_id IS NULL AND on_hand > 0", Integer.class, SOFA.code(), location))
+                .as("nothing loose").isZero();
         assertThat(ledgerRows("PUT_BACK", lineId)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT p.lpn FROM inventory.stock_movement m JOIN inventory.stock_package p"
+                + " ON p.id = m.to_stock_package_id WHERE m.movement_type = 'PUT_BACK' AND m.reference_id = ?::uuid",
+                String.class, lineId)).as("the ledger names the carton").isEqualTo(lpn(lineId));
     }
 
     @Test

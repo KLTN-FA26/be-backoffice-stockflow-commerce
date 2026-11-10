@@ -145,10 +145,17 @@ public final class StockPackage {
         closedAt = Objects.requireNonNull(now, "now");
     }
 
-    /** LOST → IN_STOCK: found again. */
+    /**
+     * LOST → IN_STOCK: found again, whole, and sealed (team plan 4C-2: nothing in stock is an opened carton, and only
+     * a sealed one is ever allocated). A carton found with less than was counted into it is not found: the count that
+     * finds it states it present or missing, never part of it. Its rows must hold its count again in the same
+     * transaction ({@code check_stock_package_contents} checks a sealed carton at commit); {@code StockPackageContents}
+     * refuses a write-up of anything less first.
+     */
     public void found() {
         requireStatus(StockPackageStatus.LOST, "be found");
         status = StockPackageStatus.IN_STOCK;
+        unopened = true;
         closedAt = null;
     }
 

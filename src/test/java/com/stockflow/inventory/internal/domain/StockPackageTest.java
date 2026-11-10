@@ -118,7 +118,7 @@ class StockPackageTest {
     }
 
     @Test
-    @DisplayName("lost is no longer unopened; found again it is back in stock and open")
+    @DisplayName("lost is no longer unopened; found again it is back in stock whole, sealed")
     void lostAndFound() {
         StockPackage carton = inStock();
         carton.lose(NOW);
@@ -128,7 +128,7 @@ class StockPackageTest {
         carton.found();
         assertThat(carton.status()).isEqualTo(StockPackageStatus.IN_STOCK);
         assertThat(carton.closedAt()).isNull();
-        assertThat(carton.unopened()).isFalse();
+        assertThat(carton.unopened()).as("sealed again: only a sealed carton is allocated").isTrue();
         refused(carton::found);
     }
 

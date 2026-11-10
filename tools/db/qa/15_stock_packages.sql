@@ -107,11 +107,12 @@ SELECT pg_temp.expect_ok('K17 made in the warehouse (repacked): created IN_STOCK
     VALUES (md5('qa:pk:2')::uuid, 'QA-LPN-2', md5('demo:item:SOFA-3S-GREY')::uuid, md5('qa:unit:SOFA-CARTON')::uuid, 10, 4, 'HCM-A01-1-A', 'IN_STOCK');
     INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, created_at, received_at, stock_package_id)
     VALUES (md5('qa:pk:2:row')::uuid, 'SOFA-3S-GREY', 'HCM-A01-1-A', 4, 0, 'AVAILABLE', NOW(), NOW() - interval '2 hour', md5('qa:pk:2')::uuid) $q$);
-SELECT pg_temp.expect_ok('K18 not found by a count (LOST, emptied), then found again', $q$
+SELECT pg_temp.expect_ok('K18 not found by a count (LOST, emptied), then found again whole, sealed', $q$
     UPDATE inventory.stock_item SET on_hand = 0 WHERE id = md5('qa:pk:2:row')::uuid;
     UPDATE inventory.stock_package SET status = 'LOST', unopened = FALSE, closed_at = NOW()
      WHERE id = md5('qa:pk:2')::uuid;
-    UPDATE inventory.stock_package SET status = 'IN_STOCK', closed_at = NULL WHERE id = md5('qa:pk:2')::uuid;
+    UPDATE inventory.stock_package SET status = 'IN_STOCK', unopened = TRUE, closed_at = NULL
+     WHERE id = md5('qa:pk:2')::uuid;
     UPDATE inventory.stock_item SET on_hand = 4 WHERE id = md5('qa:pk:2:row')::uuid $q$);
 SELECT pg_temp.expect_fail('K19 created already CONSUMED (skipping the lifecycle)', $q$
     INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, received_qty, location_code, status, unopened, closed_at)

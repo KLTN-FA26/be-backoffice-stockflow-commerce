@@ -65,7 +65,6 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
-import java.util.Set;
 import java.util.TreeMap;
 import java.util.UUID;
 
@@ -983,13 +982,13 @@ class StockDamageService implements StockDamages, PickDamageReporting {
     }
 
     /**
-     * What the SKU's live checkout reservations now promise beyond its free sellable stock. A reservation names no
-     * units, so damage cannot release it; it can only leave it uncovered, and the release will then fall short.
+     * What the SKU's live checkout reservations now promise beyond the stock a release could still allocate. A
+     * reservation names no units, so damage cannot release it; it can only leave it uncovered, and the release will
+     * then fall short.
      */
     private int shortfall(Sku sku, Instant now) {
         LocalDate today = BusinessCalendar.date(now);
-        long free = stockItems.availableQuantities(Set.of(sku.code()), today).getOrDefault(sku.code(), 0L)
-                - cycleCounts.frozen(List.of(sku.code()), today).stream().mapToLong(CycleCountRepository.Frozen::free).sum();
+        long free = pickable.allocatableBySku(List.of(sku.code()), today).getOrDefault(sku.code(), 0L);
         long promised = skuReservations.heldBySku(List.of(sku.code())).getOrDefault(sku.code(), 0L);
         int shortfall = (int) Math.max(0, promised - Math.max(0, free));
         if (shortfall > 0) {

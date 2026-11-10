@@ -5,8 +5,9 @@ import java.util.UUID;
 
 /**
  * Intent: a picker found fewer units than an allocation promised (X-SHORT); release that allocation and allocate
- * the same quantity again from other pickable bins of the same warehouse, FEFO, never from the bin that came up
- * short — its count is in doubt until somebody recounts it.
+ * the same quantity again as whole cartons of the same warehouse, never the carton that came up short - its count is
+ * in doubt until somebody recounts it. The other cartons of its bin were each scanned by their own LPN and stay
+ * pickable (kltn-docs 07 BR-09).
  *
  * @param reservationId the allocation the short pick line was picking
  * @param requestId     idempotency key: the same request answers with the allocations it already made

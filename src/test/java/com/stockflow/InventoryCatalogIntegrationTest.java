@@ -219,23 +219,29 @@ values (?,?,'HCM-A01-1-A',?,0,'AVAILABLE',?,?,?,?,now())
     void batchAvailabilityExcludesHoldsBlockedAndExpiredStock() {
         var a = fixture("DRAFT");
         var b = fixture("DRAFT");
-        UUID held = stock(a, 6, null, null, null);
-        write("update inventory.stock_item set reserved=2 where id=?", held);
-        UUID blocked = stock(b, 10, null, null, null);
-        write("update inventory.stock_item set status='QUARANTINE' where id=?", blocked);
-        Instant qcReceipt = Instant.parse("2026-09-03T00:00:00Z");
-        for (String status : List.of("INBOUND", "BLOCKED")) {
-            UUID pending = stock(a, 30, qcReceipt, null, null);
-            write("update inventory.stock_item set status=? where id=?", status, pending);
-            qcReceipt = qcReceipt.plusSeconds(1);
-        }
-        stock(a, 20, Instant.parse("2026-01-01T00:00:00Z"), LocalDate.of(2000, 1, 1), null);
+        Instant received = Instant.parse("2026-01-02T00:00:00Z");
+        // Since team plan 4C-2 only whole sealed cartons nothing holds are promised: two free cartons of 2 count; a
+        // held one, cartons not AVAILABLE, an expired one and loose units do not.
+        transactions.executeWithoutResult(s -> {
+            com.stockflow.support.CartonRows.stock(jdbc, a.sku(), "HCM-A01-1-A", 2, 2, null, received);
+            UUID held = com.stockflow.support.CartonRows.stock(jdbc, a.sku(), "HCM-A01-1-A", 1, 2, null, received)
+                    .getFirst().stockItemId();
+            jdbc.update("update inventory.stock_item set reserved=2 where id=?", held);
+            for (String status : List.of("INBOUND", "BLOCKED")) {
+                com.stockflow.support.CartonRows.stock(jdbc, a.sku(), "HCM-A01-1-A", 1, 2, null, null, received, status);
+            }
+            com.stockflow.support.CartonRows.stock(jdbc, a.sku(), "HCM-A01-1-A", 1, 2, null, LocalDate.of(2000, 1, 1),
+                    received, "AVAILABLE");
+            com.stockflow.support.CartonRows.stock(jdbc, b.sku(), "HCM-A01-1-A", 1, 10, null, null, received,
+                    "QUARANTINE");
+        });
+        stock(a, 7, Instant.parse("2026-01-01T00:00:00Z"), null, null);
         var available = inventory.availableQuantities(Set.of(a.sku(), b.sku(), "MISSING-SKU"));
         assertThat(available.get(a.sku())).isEqualTo(4L);
         assertThat(available.getOrDefault(b.sku(), 0L)).isZero();
         assertThat(available.getOrDefault("MISSING-SKU", 0L)).isZero();
-        // Policy uses usable on-hand before reservations; QC stock is still excluded.
-        assertThat(items.get(a.itemId()).evaluation().usableOnHand()).isEqualTo(6L);
+        // Policy uses usable on-hand before reservations, loose units included; QC and expired stock are excluded.
+        assertThat(items.get(a.itemId()).evaluation().usableOnHand()).isEqualTo(13L);
     }
 
     @Test
@@ -272,7 +278,9 @@ values (?,?,'HCM-A01-1-A',?,0,'AVAILABLE',?,?,?,?,now())
     void accountCheckoutUsesServerPriceAndReplayKeepsTheAgreedSnapshot() {
         var f = fixture("APPROVED");
         gallery(f);
-        stock(f, 10, null, null, null);
+        // Ten cartons of one: what available to promise counts since team plan 4C-2.
+        transactions.executeWithoutResult(s -> com.stockflow.support.CartonRows.stock(jdbc, f.sku(), "HCM-A01-1-A",
+                10, 1, null, Instant.parse("2026-01-02T00:00:00Z")));
         var listing = catalog.edit(f.product(), 0, "checkout-" + f.sku(), null, null);
         catalog.price(
                 f.product(),
