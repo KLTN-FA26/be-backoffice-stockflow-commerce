@@ -12,9 +12,10 @@ import java.util.UUID;
  * <p>{@code uomConversionId} is the packing unit the line's labelled cartons are in (SCRUM-473).
  * {@code receivedQuantity} is the total in base units.</p>
  *
- * <p>A line of a historical purchase receipt has no production order line ({@code productionOrderLineId} null); it
- * may carry no carton unit (counted loose) and, for an expiry-tracked item, an expiry date. Its purchase order line
- * is not read any more (4A-8).</p>
+ * <p>A line of a historical purchase receipt has no production order line ({@code productionOrderLineId} null) and,
+ * for an expiry-tracked item, may carry an expiry date. Counted loose or without a lot, it was given its item's base
+ * unit and its receipt's number as lot by {@code V20261113000200}, which archived and dropped its purchase order
+ * line.</p>
  *
  * <p>There is no quality check at the warehouse (kltn-docs 03 BR-07): every unit counted goes on to putaway.</p>
  */
