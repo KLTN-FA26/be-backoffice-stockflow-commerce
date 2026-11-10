@@ -664,9 +664,10 @@ class StockDamageService implements StockDamages, PickDamageReporting {
         TreeMap<String, StockItem> locked = lock(damagedView.id(), layerThere.map(StockItem::id).orElse(null),
                 List.of());
         StockItem damaged = locked.get(damagedView.id().value().toString());
-        // Units an order's impaired allocation holds were found fine after all: restoring everything left gives them
-        // back to the order - the allocation goes onto the bin with them, pickable, and the coordinator's
-        // reallocation of the short line keeps it there. Anything less takes free units only.
+        // Units an order's impaired allocation holds were found fine after all: restoring everything left moves the
+        // allocation onto the bin with them. They come back loose, so the coordinator's reallocation of the short line
+        // does not keep it there: it releases them, free loose stock, and allocates whole cartons instead (team plan
+        // 4C-4; INSUFFICIENT_STOCK when there are none, the order still on hold). Anything less takes free units only.
         int held = heldForOrder(report, damaged);
         boolean withOrder = held > 0 && units.equals(report.pending());
         if (!withOrder) {
@@ -780,7 +781,8 @@ class StockDamageService implements StockDamages, PickDamageReporting {
     /**
      * The units of a report an order's impaired allocation still holds on its damaged row (SCRUM-277, R8): they are
      * the order's until the coordinator reallocates its short line, so no decision may take them - only a restore of
-     * everything left, which gives them back to the order ({@link #restore}). Read on the locked row. Several reports'
+     * everything left, which moves the allocation onto the bin with them until that reallocation releases it in favour
+     * of whole cartons ({@link #restore}; team plan 4C-4). Read on the locked row. Several reports'
      * units share one DAMAGED row of a layer; this is the guard per report the row's own unheld check cannot be.
      */
     private int heldForOrder(StockDamageReport report, StockItem damagedRow) {
