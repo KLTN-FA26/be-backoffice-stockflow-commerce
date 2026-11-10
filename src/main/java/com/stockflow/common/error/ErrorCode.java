@@ -102,6 +102,11 @@ public enum ErrorCode {
     LOCATION_NOT_FOUND("Location not found", 404),
     /** No stock of this SKU (and lot) is held at this location. */
     STOCK_ITEM_NOT_FOUND("No such stock at this location", 404),
+    /**
+     * A loose stock adjustment that names no lot (team plan 5-5): every SKU is lot-tracked (kltn-docs 01 BR-17), so a
+     * layer is found by its lot - without one the request is incomplete, not about stock that does not exist.
+     */
+    STOCK_ADJUSTMENT_LOT_REQUIRED("Every SKU is lot-tracked: name the lot of the stock to adjust", 400),
     /** No stock package (carton) with this id or LPN (SCRUM-473). */
     STOCK_PACKAGE_NOT_FOUND("No such stock package", 404),
     STOCK_ADJUSTMENT_NOT_FOUND("Stock adjustment not found", 404),
