@@ -199,7 +199,7 @@ final class OrderPersistenceMapper {
                         entity.getPackedAt(), entity.getShippedAt(), entity.getDeliveredAt(),
                         entity.getDeliveryFailureReason(), entity.getCompletedAt(), entity.getClosedAt(),
                         entity.getBilledAmount(), null, null, null, List.of(), List.of(),
-                        entity.isAllowPartialShipment()),
+                        entity.isAllowPartialShipment(), null, null, entity.getFirstLabeledAt()),
                 rowCharges(entity));
     }
 

@@ -242,9 +242,11 @@ public interface OrderService {
      * order is locked - no cancellation, no change of delivery address (08 BR-04, 17 BR-12, BR-16) - and a customer's
      * cancellation request still waiting expires. Joins the caller's transaction, which must exist, and takes the
      * order's row lock, so a cancellation in flight either came first ({@code ORDER_CANCELLED}: nothing is labelled) or
-     * is refused afterwards. Idempotent.
+     * is refused afterwards. A hold put on after the station read the order is refused the same way, under the lock.
+     * Idempotent.
      *
-     * @throws com.stockflow.common.error.BusinessException {@code NOT_FOUND}; {@code ORDER_CANCELLED}
+     * @throws com.stockflow.common.error.BusinessException {@code NOT_FOUND}; {@code ORDER_CANCELLED};
+     *         {@code PACK_STATE_CONFLICT} while the order is on hold or in a status the station does not label in
      */
     void recordFirstLabel(UUID orderId);
 

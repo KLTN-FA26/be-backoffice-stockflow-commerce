@@ -471,7 +471,7 @@ class PickListService implements PickLists {
         // here (fulfillment.pick.order_id is unique), so it is refused rather than opened as a second task.
         packs.findByPickId(pick.getId())
                 .filter(pack -> pack.getStatus() != com.stockflow.fulfillment.internal.domain.PackStatus.PENDING
-                        && pack.getStatus() != com.stockflow.fulfillment.internal.domain.PackStatus.PACKING)
+                        && pack.getStatus() != com.stockflow.fulfillment.internal.domain.PackStatus.IN_PROGRESS)
                 .ifPresent(pack -> {
                     throw new BusinessException(ErrorCode.PICK_TASK_STATE_CONFLICT, ("Packing of task %s is %s; its "
                             + "cartons left with a shipment, so nothing is added to it").formatted(taskId,
