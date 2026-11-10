@@ -379,8 +379,17 @@ class StockDamageService implements StockDamages, PickDamageReporting {
                     "Allocation %s is not order %s's".formatted(command.reservationId(), command.orderId()));
         }
         Quantity quantity = Quantity.of(command.quantity());
-        StockItem.HeldShare share = source.consumedShare(holdId, quantity);
         int before = reports.damagedAfterPick(holdId.value());
+        // A carton picked whole is reported damaged whole (team plan 4C-4 review M1; kltn-docs 08): part of it would
+        // leave the rest deducted in a CONSUMED carton that cannot reopen, and a cancelled order could never put it
+        // back. Said before consumedShare, which would accept any part.
+        if (source.stockPackageId() != null && (before > 0 || !quantity.equals(hold.quantity()))) {
+            throw new BusinessException(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE, ("Allocation %s took a whole carton of %s "
+                    + "unit(s), %d of them reported damaged already; a carton is reported damaged whole, never %s of it")
+                    .formatted(holdId.value(), hold.quantity(), before, quantity), List.of(),
+                    Map.of("reservationId", command.reservationId()));
+        }
+        StockItem.HeldShare share = source.consumedShare(holdId, quantity);
         if (before + quantity.value() > hold.quantity().value()) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, ("The pick took %s unit(s) on allocation %s, %d of "
                     + "them reported damaged already; %s more cannot be").formatted(hold.quantity(), holdId.value(),
