@@ -45,7 +45,7 @@ VALUES (md5('qa17:blank')::uuid, md5('qa17:product')::uuid, 'QA-HD-BLANK', 'QA l
         NOW());
 INSERT INTO design.design_draft (id, customer_id, product_id, status, created_at, current_artifacts)
 SELECT md5('qa17:draft')::uuid, c.id, md5('qa17:product')::uuid, 'DRAFT', NOW(), '{}'::jsonb
-  FROM customer.customer c ORDER BY c.id LIMIT 1;
+  FROM customer.customer c WHERE c.id = 'c0000000-0000-4000-8000-000000000001';
 INSERT INTO design.design_snapshot (id, draft_id, checksum, artifact_url, confirmed_at, created_at, artifact_manifest)
 VALUES (md5('qa17:snap')::uuid, md5('qa17:draft')::uuid, repeat('a', 64), 'https://example.com/a.pdf', NOW(), NOW(),
         '[]'::jsonb);
@@ -53,7 +53,7 @@ INSERT INTO product.variants (id, product_id, sku, name, status, is_default, att
                               created_at, owner_customer_id, design_snapshot_id, source_variant_id)
 SELECT md5('qa17:own')::uuid, md5('qa17:product')::uuid, 'QA-HD-OWN', 'QA ly in logo', 'ACTIVE', FALSE,
        'OWNED-SKU:QA-HD-OWN', 1, 0, NOW(), c.id, md5('qa17:snap')::uuid, md5('qa17:blank')::uuid
-  FROM customer.customer c ORDER BY c.id LIMIT 1;
+  FROM customer.customer c WHERE c.id = 'c0000000-0000-4000-8000-000000000001';
 INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, is_base, default_purchase, active,
                                        version, created_at, default_shipping)
 SELECT md5('qa17:carton')::uuid, i.id, 'CARTON', 50, FALSE, FALSE, TRUE, 0, NOW(), TRUE
@@ -61,7 +61,7 @@ SELECT md5('qa17:carton')::uuid, i.id, 'CARTON', 50, FALSE, FALSE, TRUE, 0, NOW(
 INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, tax_amount,
                                      currency, placed_at, created_at)
 SELECT md5('qa17:order')::uuid, 'SO-QA-HD', c.id, gen_random_uuid(), 'DRAFT', 2200000, 200000, 'VND', NOW(), NOW()
-  FROM customer.customer c ORDER BY c.id LIMIT 1;
+  FROM customer.customer c WHERE c.id = 'c0000000-0000-4000-8000-000000000001';
 INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency, uom_conversion_id, cartons,
                                  units_per_carton, tax_rate, tax_amount)
 VALUES (md5('qa17:line')::uuid, md5('qa17:order')::uuid, 'QA-HD-OWN', 1000, 2000, 'VND', md5('qa17:carton')::uuid, 20,
@@ -71,16 +71,17 @@ VALUES (md5('qa17:line')::uuid, md5('qa17:order')::uuid, 'QA-HD-OWN', 1000, 2000
 SELECT pg_temp.expect_fail('SC1 a legal profile without its representative', $q$
     INSERT INTO customer.customer_legal_profile (id, customer_id, registered_address, representative_name,
                                                  representative_title)
-    SELECT gen_random_uuid(), c.id, '1 Le Loi', ' ', 'Director' FROM customer.customer c ORDER BY c.id LIMIT 1 $q$);
+    SELECT gen_random_uuid(), c.id, '1 Le Loi', ' ', 'Director'
+      FROM customer.customer c WHERE c.id = 'c0000000-0000-4000-8000-000000000001' $q$);
 SELECT pg_temp.expect_ok('SC2 the registered address, the legal representative and their title', $q$
     INSERT INTO customer.customer_legal_profile (id, customer_id, registered_address, representative_name,
                                                  representative_title)
     SELECT md5('qa17:legal')::uuid, c.id, '1 Le Loi, Ho Chi Minh City', 'Tran Van B', 'Director'
-      FROM customer.customer c ORDER BY c.id LIMIT 1 $q$);
+      FROM customer.customer c WHERE c.id = 'c0000000-0000-4000-8000-000000000001' $q$);
 SELECT pg_temp.expect_ok('SC3 a change of the representative kept in the customer''s history (18 §6)', $q$
     INSERT INTO customer.customer_change_history (id, customer_id, field, old_value, new_value, changed_at)
     SELECT gen_random_uuid(), c.id, 'REPRESENTATIVE', 'Tran Van A', 'Tran Van B', NOW()
-      FROM customer.customer c ORDER BY c.id LIMIT 1 $q$);
+      FROM customer.customer c WHERE c.id = 'c0000000-0000-4000-8000-000000000001' $q$);
 
 \echo '--- the contract, its schedule and plan (V20261108002200)'
 SELECT pg_temp.expect_ok('SC4 a draft contract: one batch of the 20 cartons, everything on signing', $q$
@@ -128,8 +129,8 @@ SELECT pg_temp.expect_fail('SC10 an installment on signing tied to a batch', $q$
 SELECT pg_temp.expect_fail('SC11 an installment before delivery with a due day', $q$
     UPDATE ordering.contract_payment_installment SET due_days = 5 WHERE id = md5('qa17:i2')::uuid $q$);
 SELECT pg_temp.expect_true('SC12a the demo customer has no credit approved',
-    NOT EXISTS (SELECT 1 FROM customer.credit_profile p WHERE p.customer_id = (SELECT id FROM customer.customer
-                ORDER BY id LIMIT 1) AND p.credit_limit > 0));
+    NOT EXISTS (SELECT 1 FROM customer.credit_profile p
+                 WHERE p.customer_id = 'c0000000-0000-4000-8000-000000000001' AND p.credit_limit > 0));
 SELECT pg_temp.expect_fail('SC12 an installment after delivery without credit accounting approved (15 BR-12)', $q$
     UPDATE ordering.contract_payment_installment SET milestone = 'AFTER_DELIVERY', due_days = 30
      WHERE id = md5('qa17:i2')::uuid $q$);
@@ -185,7 +186,7 @@ SELECT pg_temp.expect_fail('SC20c a signed contract''s buyer changed', $q$
 INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, tax_amount,
                                      currency, placed_at, created_at)
 SELECT md5('qa17:order2')::uuid, 'SO-QA-HD2', c.id, gen_random_uuid(), 'DRAFT', 2200000, 200000, 'VND', NOW(), NOW()
-  FROM customer.customer c ORDER BY c.id LIMIT 1;
+  FROM customer.customer c WHERE c.id = 'c0000000-0000-4000-8000-000000000001';
 SELECT pg_temp.expect_fail('SC22 an order waiting for a contract it does not have', $q$
     UPDATE ordering.customer_order SET status = 'PENDING_CONTRACT' WHERE id = md5('qa17:order2')::uuid $q$);
 SELECT pg_temp.expect_fail('SC23 a draft order straight to the warehouse, without a contract', $q$
