@@ -122,6 +122,25 @@ class ProductionOrderTest {
     }
 
     @Test
+    @DisplayName("R2, 17 §4.5 / BR-26: a moved window moves a DRAFT's needed-by date; the same date, or an order "
+            + "already submitted, keeps it")
+    void followsAMovedWindowWhileADraft() {
+        ProductionOrder order = drawn(false);
+        assertThat(order.followWindow(LocalDate.of(2026, 12, 1))).as("the same date").isFalse();
+        assertThat(order.followWindow(null)).isFalse();
+        assertThat(order.followWindow(LocalDate.of(2026, 12, 20))).isTrue();
+        assertThat(order.needByDate()).isEqualTo(LocalDate.of(2026, 12, 20));
+
+        order.submit(COORDINATOR, NOW);
+        assertThat(order.followWindow(LocalDate.of(2027, 1, 5))).as("submitted: the coordinator tells the producer")
+                .isFalse();
+        assertThat(order.needByDate()).isEqualTo(LocalDate.of(2026, 12, 20));
+        order.approve(MANAGER, NOW.plusSeconds(60));
+        assertThat(order.followWindow(LocalDate.of(2027, 1, 5))).as("sent").isFalse();
+        assertThat(order.needByDate()).isEqualTo(LocalDate.of(2026, 12, 20));
+    }
+
+    @Test
     @DisplayName("BR-06: cancelled before mass printing, closed after it - both with a reason")
     void cancelledOrClosed() {
         ProductionOrder sent = drawn(false);
