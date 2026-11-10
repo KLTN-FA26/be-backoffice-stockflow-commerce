@@ -100,6 +100,7 @@ public class DeliveryBatchService {
     private final SalesContractRepository contracts;
     private final DeliveryBatchRecords records;
     private final com.stockflow.order.internal.domain.ProductionOrderRepository productionOrders;
+    private final com.stockflow.order.api.ConsentMessages consentMessages;
     private final ShippingWarehouseService shippingWarehouses;
     private final FileTransfers files;
     private final StagedUploads staged;
@@ -109,7 +110,9 @@ public class DeliveryBatchService {
     DeliveryBatchService(OrderRepository orders, SalesContractRepository contracts, DeliveryBatchRecords records,
                          ShippingWarehouseService shippingWarehouses, FileTransfers files, StagedUploads staged,
                          TransactionTemplate tx, Clock clock,
-                         com.stockflow.order.internal.domain.ProductionOrderRepository productionOrders) {
+                         com.stockflow.order.internal.domain.ProductionOrderRepository productionOrders,
+                         com.stockflow.order.api.ConsentMessages consentMessages) {
+        this.consentMessages = consentMessages;
         this.productionOrders = productionOrders;
         this.orders = orders;
         this.contracts = contracts;
@@ -382,6 +385,18 @@ public class DeliveryBatchService {
         if (order.shipments().stream().anyMatch(s -> batch.id().equals(s.deliveryBatchId()))) {
             throw new BusinessException(ErrorCode.DELIVERY_BATCH_WINDOW_LOCKED, ("Delivery batch %d of order %s has goods "
                     + "handed over; its window no longer moves").formatted(batch.seq(), order.orderNumber()));
+        }
+        if (change.evidenceMessageId() != null) {
+            // BR-28: the customer's consent - a message the customer sent, in their own conversation (about this order,
+            // or about none). The database checks the same (ordering.check_delivery_batch_of_order).
+            boolean theirs = consentMessages.find(change.evidenceMessageId())
+                    .filter(m -> m.fromCustomer() && order.customerId().equals(m.customerId())
+                            && (m.orderId() == null || m.orderId().equals(order.id().value())))
+                    .isPresent();
+            if (!theirs) {
+                throw new BusinessException(ErrorCode.VALIDATION_FAILED, ("The consent is a chat message the customer "
+                        + "of order %s sent in their own conversation").formatted(order.orderNumber()));
+            }
         }
         LocalDate today = BusinessCalendar.date(clock.instant());
         if (change.windowStart().isBefore(today)) {

@@ -243,6 +243,17 @@ BEGIN
             RAISE EXCEPTION 'batch % of order %: a carton of it was handed over; its window no longer moves (17 BR-28)',
                 the_batch.seq, NEW.order_id USING ERRCODE = 'check_violation';
         END IF;
+        -- The customer's consent in a chat message: one the customer sent, in their own conversation, about this order
+        -- or about none (DeliveryBatchService.check, through chat's ConsentMessages).
+        IF NEW.evidence_message_id IS NOT NULL AND NOT EXISTS (
+            SELECT 1 FROM chat.message m
+              JOIN chat.conversation v ON v.id = m.conversation_id
+              JOIN ordering.customer_order o ON o.id = NEW.order_id
+             WHERE m.id = NEW.evidence_message_id AND m.sender_type = 'CUSTOMER' AND v.customer_id = o.customer_id
+               AND (v.order_id IS NULL OR v.order_id = NEW.order_id)) THEN
+            RAISE EXCEPTION 'order %: chat message % is not the customer''s own word in their conversation (17 BR-28)',
+                NEW.order_id, NEW.evidence_message_id USING ERRCODE = 'check_violation';
+        END IF;
         -- The windows in force after this change, batch by batch: none starts before the batch before it.
         WITH in_force AS (
             SELECT b.seq,
