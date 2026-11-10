@@ -32,6 +32,7 @@ import com.stockflow.order.internal.service.SalesContracts;
 import com.stockflow.order.internal.service.ShippingWarehouseService;
 import com.stockflow.order.internal.service.ShippingWarehouseService.BatchCoverage;
 import com.stockflow.support.Await;
+import com.stockflow.support.CartonRows;
 import com.stockflow.support.ConfirmedDesigns;
 import com.stockflow.support.DemoData;
 import com.stockflow.support.IntegrationTest;
@@ -227,13 +228,10 @@ class AwaitingStockIntegrationTest {
         });
     }
 
-    /** {@code units} pieces of the test's SKU free in the warehouse's bin: goods put away. */
+    /** {@code units} pieces of the test's SKU free in the warehouse's bin: goods put away, as whole cartons of 50. */
     private void stock(int units) {
-        tx.executeWithoutResult(s -> jdbc.update("""
-                INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, version,
-                    created_at, received_at)
-                VALUES (?, ?, ?, ?, 0, 'AVAILABLE', 0, NOW(), clock_timestamp() - interval '2 days')""",
-                Identifiers.newId(), sku.sku(), a.bin(), units));
+        tx.executeWithoutResult(s -> CartonRows.stock(jdbc, sku.sku(), a.bin(), units / PER_CARTON, PER_CARTON, null,
+                Instant.now().minus(Duration.ofDays(2))));
     }
 
     /** A new order of a contract, 12 + 8 cartons, everything paid before delivery: CONFIRMED at signing. */

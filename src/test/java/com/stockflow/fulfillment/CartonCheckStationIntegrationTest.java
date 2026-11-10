@@ -861,8 +861,8 @@ class CartonCheckStationIntegrationTest {
     // ---- the carton spec ---------------------------------------------------------------------------
 
     @Test
-    @DisplayName("the repack station's seven parcel writes answer 410 REPACK_RETIRED and write nothing (until 4C-7)")
-    void repackParcelWritesAreRetired() throws Exception {
+    @DisplayName("the repack station's seven parcel writes are gone with 4C-7: no handler answers (404), nothing is written")
+    void repackParcelWritesAreGone() throws Exception {
         OrderSummary order = order(1);
         UUID task = pickedTask(order);
         start(packer, "WAREHOUSE_STAFF", task).andExpect(status().isOk());
@@ -882,12 +882,10 @@ class CartonCheckStationIntegrationTest {
                 post(url(task, "/packages/" + parcel + "/reopening")),
                 delete(url(task, "/packages/" + parcel)));
         for (MockHttpServletRequestBuilder write : writes) {
-            asPacker(write).andExpect(status().isGone()).andExpect(jsonPath("$.errorCode").value("REPACK_RETIRED"));
+            asPacker(write).andExpect(status().isNotFound());
         }
         assertThat(jdbc.queryForObject("SELECT count(*) FROM fulfillment.package p JOIN fulfillment.pack k ON k.id = "
                 + "p.pack_id WHERE k.pick_id = ?", Long.class, task)).as("no parcel row, no renumbering").isEqualTo(rows);
-        assertThat(jdbc.queryForObject("SELECT count(*) FROM fulfillment.package_scan WHERE package_id = ?", Long.class,
-                parcel)).isZero();
         // the station itself is unaffected
         scan(packer, "WAREHOUSE_STAFF", task, lpns(task).getFirst()).andExpect(status().isOk());
     }

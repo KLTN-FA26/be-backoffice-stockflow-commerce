@@ -159,7 +159,8 @@ class ReturnReceiptIntegrationTest {
             assertThat(back.get("row_status")).as("quarantine, not available").isEqualTo("QUARANTINE");
             assertThat(back.get("location_code")).isEqualTo(QUARANTINE);
             assertThat(back.get("lot_number")).as("the lot it was received in (03 BR-03)").isEqualTo(lot);
-            assertThat(((Number) back.get("on_hand")).intValue()).isEqualTo(4);
+            assertThat(((Number) back.get("on_hand")).intValue()).as("the count it left with")
+                    .isEqualTo(shipped.cartons().getFirst().quantity());
         }
         assertThat(carton(shipped.lpns().get(2)).get("package_status")).as("not on the receipt: still out")
                 .isEqualTo("CONSUMED");
@@ -202,8 +203,12 @@ class ReturnReceiptIntegrationTest {
 
         // A carton of the shipment that is back in the warehouse already (by hand, outside any receipt).
         String home = mine.lpns().getFirst();
-        tx.executeWithoutResult(s -> jdbc.update("UPDATE inventory.stock_package SET status = 'IN_STOCK', closed_at = NULL, "
-                + "location_code = 'HCM-A01-1-A' WHERE lpn = ?", home));
+        tx.executeWithoutResult(s -> {
+            jdbc.update("UPDATE inventory.stock_package SET status = 'IN_STOCK', unopened = TRUE, closed_at = NULL, "
+                    + "location_code = 'HCM-A01-1-A' WHERE lpn = ?", home);
+            jdbc.update("UPDATE inventory.stock_item SET on_hand = ? WHERE stock_package_id = (SELECT id FROM "
+                    + "inventory.stock_package WHERE lpn = ?)", mine.cartons().getFirst().quantity(), home);
+        });
         assertThat(code(catchThrowable(() -> scan(draft.id(), home)))).isEqualTo(ErrorCode.RETURN_CARTON_IN_WAREHOUSE);
 
         // A carton scanned by mistake comes off the draft; nothing scanned, nothing to confirm.

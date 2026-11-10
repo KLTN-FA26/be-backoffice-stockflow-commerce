@@ -521,6 +521,7 @@ class CartonCheckServiceTest {
         void cancelsTheShipmentsWaitingForDispatch() {
             started();
             service.check(pick.getId(), "LPN-1", actor);
+            service.check(pick.getId(), "LPN-2", actor);
             service.label(pick.getId(), null, actor);
             var done = service.complete(pick.getId(), PackingCompletion.whole(), actor);
             ShipmentJpaEntity waiting = waiting(done.shipmentId());
@@ -546,6 +547,7 @@ class CartonCheckServiceTest {
         void leavesAShipmentThatLeftInPart() {
             started();
             service.check(pick.getId(), "LPN-1", actor);
+            service.check(pick.getId(), "LPN-2", actor);
             service.label(pick.getId(), null, actor);
             var done = service.complete(pick.getId(), PackingCompletion.whole(), actor);
             ShipmentJpaEntity gone = waiting(done.shipmentId());

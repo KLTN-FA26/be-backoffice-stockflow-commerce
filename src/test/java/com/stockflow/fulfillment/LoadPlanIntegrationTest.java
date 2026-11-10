@@ -609,11 +609,9 @@ class LoadPlanIntegrationTest {
         UUID loadId = jdbc.queryForObject("SELECT l.id FROM fulfillment.dispatch_load l JOIN fulfillment.load_plan_vehicle v "
                 + "ON v.id = l.load_plan_vehicle_id WHERE v.load_plan_id = ?::uuid", UUID.class, id);
 
-        // The repack station's taking apart and reopening are retired (410); the freeze is the trigger's now.
-        packer(delete(BASE + "/tasks/" + doomed[1] + "/packages/" + parcel)).andExpect(status().isGone())
-                .andExpect(jsonPath("$.errorCode").value("REPACK_RETIRED"));
-        packer(post(BASE + "/tasks/" + doomed[1] + "/packages/" + parcel + "/reopening")).andExpect(status().isGone())
-                .andExpect(jsonPath("$.errorCode").value("REPACK_RETIRED"));
+        // The repack station's taking apart and reopening are gone (4C-7: 404); the freeze is the trigger's now.
+        packer(delete(BASE + "/tasks/" + doomed[1] + "/packages/" + parcel)).andExpect(status().isNotFound());
+        packer(post(BASE + "/tasks/" + doomed[1] + "/packages/" + parcel + "/reopening")).andExpect(status().isNotFound());
         Throwable byHand = catchThrowable(() -> jdbc.update(
                 "UPDATE fulfillment.package SET height_cm = 10 WHERE id = ?", parcel));
         assertThat(byHand).hasMessageContaining("tg_package_in_load_plan");

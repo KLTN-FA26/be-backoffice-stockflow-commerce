@@ -35,7 +35,8 @@ public final class ShippedCartons {
 
     /**
      * {@code count} cartons of {@code perCarton} units of {@code sku}, in {@code lot}, picked for {@code orderLineId} of
-     * {@code orderId} at HCM and carried by one new shipment in {@code shipmentStatus} ({@code DELIVERED} or
+     * {@code orderId} at HCM (a SKU that has a carton unit already keeps its factor; {@code perCarton} is for one that has
+     * none yet) and carried by one new shipment in {@code shipmentStatus} ({@code DELIVERED} or
      * {@code RETURNED}, as the carrier left it). {@code staff} is the user the check station's rows name.
      */
     public static Shipped ship(JdbcTemplate jdbc, TransactionTemplate tx, UUID orderId, UUID orderLineId, String sku,
@@ -82,6 +83,9 @@ public final class ShippedCartons {
                     + "fulfillment.pick_line WHERE pick_id = ?", Integer.class, pick));
             for (CartonRows.Carton carton : stocked) {
                 no++;
+                // The SKU's carton unit says what a carton holds (a demo sofa: one piece), whatever the caller hoped.
+                int held = jdbc.queryForObject("SELECT on_hand FROM inventory.stock_item WHERE id = ?", Integer.class,
+                        carton.stockItemId());
                 jdbc.update("UPDATE inventory.stock_package SET status = 'CONSUMED', unopened = FALSE, closed_at = NOW() "
                         + "WHERE id = ?", carton.id());
                 jdbc.update("UPDATE inventory.stock_item SET on_hand = 0 WHERE id = ?", carton.stockItemId());
@@ -90,7 +94,7 @@ public final class ShippedCartons {
                         INSERT INTO fulfillment.pick_line (id, pick_id, order_line_id, sku, location_code, lot_number,
                             sequence_no, allocated_qty, picked_qty, status, lpn, whole_carton, picked_by, picked_at, consumed_at)
                         VALUES (?, ?, ?, ?, 'HCM-A01-1-A', ?, ?, ?, ?, 'PICKED', ?, TRUE, ?, NOW(), NOW())""", line, pick,
-                        orderLineId, sku, lot, no, perCarton, perCarton, carton.lpn(), staff);
+                        orderLineId, sku, lot, no, held, held, carton.lpn(), staff);
                 jdbc.update("""
                         INSERT INTO fulfillment.package (id, pack_id, shipment_id, package_no, label_code, status,
                             pick_line_id, lpn, checked_at, checked_by, labeled_at, labeled_by, label_version, weight_kg,
@@ -98,7 +102,7 @@ public final class ShippedCartons {
                         VALUES (?, ?, ?, ?, ?, 'LABELED', ?, ?, NOW(), ?, NOW(), ?, 1, 12, 60, 40, 40, 16, NULL)""",
                         Identifiers.newId(), pack, shipment, no, shipmentCode + "-C" + no, line, carton.lpn(), staff,
                         staff);
-                shipped.add(new Carton(carton.id(), carton.lpn(), perCarton));
+                shipped.add(new Carton(carton.id(), carton.lpn(), held));
             }
         });
         return new Shipped(orderId, shipment, shipmentCode, shipped);

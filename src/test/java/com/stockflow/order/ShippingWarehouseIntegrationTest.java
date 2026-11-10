@@ -33,6 +33,7 @@ import com.stockflow.order.internal.service.ShippingWarehouseService.LineCoverag
 import com.stockflow.order.internal.service.ShippingWarehouseService.Option;
 import com.stockflow.order.internal.service.ShippingWarehouseService.Options;
 import com.stockflow.support.Await;
+import com.stockflow.support.CartonRows;
 import com.stockflow.support.CustomerSkuRows;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
@@ -200,13 +201,23 @@ class ShippingWarehouseIntegrationTest {
         return new Warehouse(id, code, bin);
     }
 
-    /** {@code units} loose pieces of the test's SKU free in {@code warehouse}'s bin, received a while ago. */
+    /**
+     * {@code units} pieces of the test's SKU free in {@code warehouse}'s bin, received a while ago: whole sealed cartons of
+     * 50 (what a hold takes since 4C-2) and, when the figure is not a multiple of 50, the loose remainder a row without a
+     * carton holds - never part of a hold or of what is available to promise (BR-21).
+     */
     private void stock(Warehouse warehouse, int units) {
-        tx.executeWithoutResult(s -> jdbc.update("""
-                INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, version,
-                    created_at, received_at)
-                VALUES (?, ?, ?, ?, 0, 'AVAILABLE', 0, NOW(), clock_timestamp() - interval '2 days')""",
-                Identifiers.newId(), sku.sku(), warehouse.bin(), units));
+        tx.executeWithoutResult(s -> {
+            CartonRows.stock(jdbc, sku.sku(), warehouse.bin(), units / PER_CARTON, PER_CARTON, null,
+                    Instant.now().minus(Duration.ofDays(2)));
+            if (units % PER_CARTON > 0) {
+                jdbc.update("""
+                        INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, version,
+                            created_at, received_at)
+                        VALUES (?, ?, ?, ?, 0, 'AVAILABLE', 0, NOW(), clock_timestamp() - interval '2 days')""",
+                        Identifiers.newId(), sku.sku(), warehouse.bin(), units % PER_CARTON);
+            }
+        });
     }
 
     /** A DRAFT order of 20 cartons of 50 at 2,000 a piece with 10% VAT - as a converted quote leaves it. */

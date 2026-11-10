@@ -1613,9 +1613,9 @@ class FtlDispatchIntegrationTest {
                 .containsEntry("order_id", order.orderId());
         assertThat(jdbc.queryForObject("SELECT package_count FROM fulfillment.shipment WHERE id = ?", Integer.class,
                 shipment)).isEqualTo(1);
-        // A shipping label names neither the shipment nor n/N (08 §4.3, 4C-6): a split outdates no carton's label.
-        assertThat(jdbc.queryForObject("SELECT label_outdated_at IS NOT NULL FROM fulfillment.package WHERE id = "
-                + "?::uuid", Boolean.class, stays)).isFalse();
+        // A shipping label names neither the shipment nor n/N (08 §4.3, 4C-6): a split changes no carton's label.
+        assertThat(jdbc.queryForObject("SELECT label_version FROM fulfillment.package WHERE id = ?::uuid", Integer.class,
+                stays)).isEqualTo(1);
         assertThat(data(dispatch(get(BASE + "/load-plan-candidates?warehouseId=" + HCM)).andExpect(status().isOk()))
                 .findValuesAsText("shipmentId")).contains(rest.toString()).doesNotContain(shipment.toString());
         JsonNode check = data(dispatch(get(PLANS + "/" + id + "/reconciliation")).andExpect(status().isOk()));

@@ -45,7 +45,7 @@ class ReturnEmailComposerTest {
         EmailContent content = message.draft().write("Công ty TNHH In Ly An Phát");
         assertThat(content.subject()).isEqualTo("Đã tiếp nhận yêu cầu đổi trả " + RMA);
         assertThat(content.facts()).extracting(EmailContent.Fact::value).containsExactly(RMA, ORDER,
-                "Lỗi in (nhoè, mờ, lệch hoặc sai màu)", "14:05 25/10/2026");
+                "Lỗi in (nhoè, mờ, lệch hoặc sai màu)", "Hoàn tiền", "14:05 25/10/2026");
         assertThat(content.table().rows()).containsExactly(List.of("CUP-PET-500", "120"));
         assertThat(all(content)).contains("Vui lòng chưa gửi hàng về").doesNotContain("null");
     }
@@ -125,7 +125,7 @@ class ReturnEmailComposerTest {
         String text = all(content);
 
         assertThat(text).contains("Số tiền trừ vào công nợ: 300.000 ₫", "Số tiền hoàn lại: 1.250.000 ₫",
-                "không phải thanh toán thêm", "hoá đơn điều chỉnh")
+                "được trừ trực tiếp vào công nợ", "bộ phận kế toán xử lý và chuyển về tài khoản", "hoá đơn điều chỉnh")
                 .doesNotContain("Đơn hàng thay thế", "ghi có vào tài khoản", "null");
         assertThat(content.table().rows()).as("units back, units refunded").containsExactly(List.of("CUP-PET-500", "80", "50"));
     }
