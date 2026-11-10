@@ -48,7 +48,9 @@ public class PackingSessionStore {
     }
 
     public PackingSession load(PackJpaEntity pack, String orderNumber, List<PackingSession.Line> lines) {
-        List<PackageJpaEntity> rows = packages.findByPackIdOrderByPackageNoAsc(pack.getId());
+        // The check station's shipping cartons of the same pack (4C-6) are not this station's parcels.
+        List<PackageJpaEntity> rows = packages.findByPackIdOrderByPackageNoAsc(pack.getId()).stream()
+                .filter(row -> !row.isCarton()).toList();
         List<PackageScanJpaEntity> scanned = rows.isEmpty() ? List.of()
                 : scans.findByPackageIdInOrderByScannedAtAscIdAsc(rows.stream().map(PackageJpaEntity::getId).toList());
         Map<UUID, Map<PackingSession.ContentKey, Integer>> contents = new HashMap<>();

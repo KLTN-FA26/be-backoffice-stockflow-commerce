@@ -13,7 +13,6 @@ import com.stockflow.fulfillment.internal.entity.CarrierJpaEntity;
 import com.stockflow.fulfillment.internal.entity.DispatchLoadJpaEntity;
 import com.stockflow.fulfillment.internal.entity.LoadPlanJpaEntity;
 import com.stockflow.fulfillment.internal.entity.PackageJpaEntity;
-import com.stockflow.fulfillment.internal.entity.PackageLineJpaEntity;
 import com.stockflow.fulfillment.internal.entity.ShipmentJpaEntity;
 import com.stockflow.fulfillment.internal.repository.CarrierJpaRepository;
 import com.stockflow.fulfillment.internal.repository.DispatchLoadJpaRepository;
@@ -22,7 +21,7 @@ import com.stockflow.fulfillment.internal.repository.DispatchLoadShipmentJpaRepo
 import com.stockflow.fulfillment.internal.repository.DispatchLoadStore;
 import com.stockflow.fulfillment.internal.repository.LoadNumbers;
 import com.stockflow.fulfillment.internal.repository.PackageJpaRepository;
-import com.stockflow.fulfillment.internal.repository.PackageLineJpaRepository;
+import com.stockflow.fulfillment.internal.repository.ParcelContents;
 import com.stockflow.fulfillment.internal.repository.PickJpaRepository;
 import com.stockflow.fulfillment.internal.repository.ShipmentJpaRepository;
 import com.stockflow.fulfillment.internal.repository.ShipmentLocks;
@@ -73,7 +72,7 @@ class DispatchVehicleHandoverTest {
     private final ShipmentJpaRepository shipments = mock(ShipmentJpaRepository.class);
     private final ShipmentLocks locks = mock(ShipmentLocks.class);
     private final PackageJpaRepository packages = mock(PackageJpaRepository.class);
-    private final PackageLineJpaRepository packageLines = mock(PackageLineJpaRepository.class);
+    private final ParcelContents packageLines = mock(ParcelContents.class);
     private final CarrierJpaRepository carriers = mock(CarrierJpaRepository.class);
     private final ShipmentTimeline timeline = mock(ShipmentTimeline.class);
     private final OrderService orders = mock(OrderService.class);
@@ -196,8 +195,8 @@ class DispatchVehicleHandoverTest {
 
         private void sealedWithContents() {
             List<PackageJpaEntity> parcels = sealedParcels(plan, planned.shipmentId());
-            when(packageLines.findByPackageIdIn(any())).thenReturn(parcels.stream()
-                    .map(p -> new PackageLineJpaEntity(UUID.randomUUID(), p.getId(), UUID.randomUUID(), 3)).toList());
+            when(packageLines.of(any())).thenReturn(parcels.stream()
+                    .map(p -> new ParcelContents.Line(p.getId(), UUID.randomUUID(), 3)).toList());
         }
 
         @Test
@@ -319,7 +318,7 @@ class DispatchVehicleHandoverTest {
         void wholeOrderHandover() {
             confirmedPlan(2, 1);
             sealedParcels(plan, planned.shipmentId());
-            when(packageLines.findByPackageIdIn(any())).thenReturn(List.of());
+            when(packageLines.of(any())).thenReturn(List.of());
             Vehicle v = vehicleLoad(plan, plan.activeVehicles().getFirst(), planned.shipmentId(), true);
             when(orders.markShipped(eq(row.getOrderId()), any(), any()))
                     .thenReturn(orderAllowingParts(row.getOrderId(), row));
@@ -412,7 +411,7 @@ class DispatchVehicleHandoverTest {
             LoadPlanJpaEntity planHeader = new LoadPlanJpaEntity(plan.snapshot());
             when(planVehicles.lock(vehicle.id())).thenReturn(new PlanVehicles.PlanOfLoad(planHeader, plan, vehicle));
             when(planVehicles.read(any())).thenReturn(new PlanVehicles.PlanOfLoad(planHeader, plan, vehicle));
-            when(packageLines.findByPackageIdIn(any())).thenReturn(List.of());
+            when(packageLines.of(any())).thenReturn(List.of());
 
             service.startLoading(load.id(), actor);
 

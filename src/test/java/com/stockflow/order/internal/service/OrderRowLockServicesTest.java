@@ -130,7 +130,7 @@ class OrderRowLockServicesTest {
     @DisplayName("reservations held by an order")
     class Reservations {
 
-        private final OrderReservationService service = new OrderReservationService(repository);
+        private final OrderReservationService service = new OrderReservationService(repository, org.mockito.Mockito.mock(com.stockflow.order.internal.domain.DeliveryBatchRecords.class));
 
         @Test
         @DisplayName("a hold is replaced by the allocations that took its place, keeping the other holds")

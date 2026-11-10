@@ -12,14 +12,14 @@ import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.PermissionResource;
 import com.stockflow.common.security.RequiresPermission;
 import com.stockflow.inventory.api.MoveReference;
-import com.stockflow.inventory.api.MoveStockCommand;
+import com.stockflow.inventory.api.MoveStockPackagesCommand;
 import com.stockflow.inventory.api.RequestAdjustmentCommand;
 import com.stockflow.inventory.api.StockAdjustmentStatus;
-import com.stockflow.inventory.internal.controller.dto.MoveStockRequest;
+import com.stockflow.inventory.internal.controller.dto.MoveStockPackagesRequest;
+import com.stockflow.inventory.internal.controller.dto.MovedStockPackageResponse;
 import com.stockflow.inventory.internal.controller.dto.RejectAdjustmentRequest;
 import com.stockflow.inventory.internal.controller.dto.RequestAdjustmentRequest;
 import com.stockflow.inventory.internal.controller.dto.StockAdjustmentResponse;
-import com.stockflow.inventory.internal.controller.dto.StockMoveResponse;
 import com.stockflow.inventory.internal.controller.dto.StockMovementResponse;
 import com.stockflow.inventory.internal.domain.StockMovement;
 import com.stockflow.inventory.internal.service.StockOperations;
@@ -36,6 +36,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -51,7 +52,7 @@ import java.util.UUID;
  */
 @RestController
 @RequestMapping("/api/v1/inventory")
-@Tag(name = "Inventory operations", description = "Moves between locations, stock history, adjustments")
+@Tag(name = "Inventory operations", description = "Carton moves between locations, stock history, adjustments")
 @PermissionResource(
         code = InventoryResources.STOCK_MOVEMENTS,
         group = "Inventory",
@@ -69,15 +70,24 @@ class StockOperationsController {
         this.mapper = mapper;
     }
 
+    /**
+     * Kltn-docs 11: cartons scanned by LPN to one destination, all of them or none (BR-04, BR-07); never a carton held
+     * for an order (BR-05) or one a cycle count holds (BR-06). The request id names the move in the ledger
+     * ({@code MOVE_TASK}), so sending it again answers the cartons it moved instead of moving them twice.
+     */
     @PostMapping("/movements")
     @ResponseStatus(HttpStatus.CREATED)
-    @Operation(summary = "Move unreserved stock between two locations; idempotent on requestId")
+    @Operation(summary = "Move whole cartons, by LPN, to one location; all or none, idempotent on requestId",
+            description = "404 STOCK_PACKAGE_NOT_FOUND; 409 STOCK_PACKAGE_HELD for a carton held for an order, "
+                    + "STOCK_SLOT_UNDER_COUNT, INVALID_STOCK_PACKAGE_TRANSITION for a carton not in stock, "
+                    + "MOVE_ACROSS_WAREHOUSES; 422 VALIDATION_FAILED for a carton already there; 403 for a carton or "
+                    + "location in another warehouse.")
     @RequiresPermission(resource = InventoryResources.STOCK_ITEMS, action = Action.UPDATE)
-    public ApiResponse<StockMoveResponse> move(@Valid @RequestBody MoveStockRequest request,
-                                               @AuthenticatedUser CurrentUser user) {
-        return ApiResponse.ok(mapper.toResponse(operations.move(new MoveStockCommand(
-                request.requestId(), new Sku(request.sku()), request.lotNumber(), request.fromLocation(),
-                request.toLocation(), request.quantity(), MoveReference.MOVE_TASK, null, user.userId()))));
+    public ApiResponse<List<MovedStockPackageResponse>> move(@Valid @RequestBody MoveStockPackagesRequest request,
+                                                             @AuthenticatedUser CurrentUser user) {
+        return ApiResponse.ok(operations.moveStockPackages(new MoveStockPackagesCommand(request.lpns(),
+                request.toLocation(), MoveReference.MOVE_TASK, request.requestId(), user.userId())).stream()
+                .map(mapper::toResponse).toList());
     }
 
     @GetMapping("/movements")

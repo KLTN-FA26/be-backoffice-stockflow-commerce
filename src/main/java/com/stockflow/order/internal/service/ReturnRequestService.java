@@ -778,7 +778,7 @@ public class ReturnRequestService {
         Order replacement = orderService.loadForUpdate(request.replacementOrderId());
         Map<UUID, Integer> withdrawn = withdrawable(replacement, request);
         String note = "%s: %s".formatted(request.rmaNumber(), request.withdrawalReason());
-        if (replacement.packedAt() == null) {
+        if (!replacement.packedForGood()) {
             orderService.cancelLoaded(replacement, new CancelOrderCommand(CancellationReasonCode.REPLACEMENT_WITHDRAWN,
                     note, null, by));
         } else {
@@ -812,13 +812,13 @@ public class ReturnRequestService {
     }
 
     /**
-     * What of the replacement can still be withdrawn, per return line: all of it while nothing is packed (the order is
+     * What of the replacement can still be withdrawn, per return line: all of it while no carton is labelled (the order is
      * cancelled), or - shipped in part (PARTIALLY_FULFILLED) - the units not shipped, whose rest is closed. Goods packed,
      * handed over or delivered come back as a return instead.
      */
     private static Map<UUID, Integer> withdrawable(Order replacement, ReturnRequest request) {
         boolean whole = replacement.status().canTransitionTo(OrderStatus.CANCELLED)
-                && replacement.packedAt() == null;
+                && !replacement.packedForGood();
         boolean rest = replacement.status() == OrderStatus.PARTIALLY_FULFILLED;
         Map<UUID, Integer> units = new HashMap<>();
         if (whole || rest) {

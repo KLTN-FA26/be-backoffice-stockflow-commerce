@@ -743,7 +743,7 @@ class ProductionReceiptIntegrationTest {
             assertThat(task.quantity()).isEqualTo(PER_CARTON);
         });
         for (PutawayTaskView task : tasks) {
-            putaway.confirm(task.id(), a.bin(), lpns.get(task.stockPackageId()), null, clerk);
+            putaway.confirm(task.id(), a.bin(), lpns.get(task.stockPackageId()), clerk);
         }
 
         Await.until("the receipt to close", Duration.ofSeconds(20), () -> status(receipt.id()).equals("CLOSED"));

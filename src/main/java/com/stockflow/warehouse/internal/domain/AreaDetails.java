@@ -27,6 +27,12 @@ public record AreaDetails(AreaType type, String name, Footprint footprint, boole
             if (settings == null) {
                 throw DomainChecks.invalid("A %s area holds stock, so it needs location settings".formatted(type));
             }
+            // Kltn-docs 06 BR-12, BR-18: stock enters a staging area only by picking for an order, so no picker takes
+            // from it and no putaway suggests it (tg_area_staging, tg_storage_location_staging).
+            if (type == AreaType.STAGING && (settings.pickable() || settings.putawayTarget())) {
+                throw DomainChecks.invalid("A STAGING area is neither pickable nor a putaway target: stock arrives there "
+                        + "only by picking for an order");
+            }
         } else {
             storageClass = null;
             settings = null;

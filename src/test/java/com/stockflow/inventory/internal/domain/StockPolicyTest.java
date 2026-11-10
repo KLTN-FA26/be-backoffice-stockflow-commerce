@@ -52,19 +52,19 @@ class StockPolicyTest {
     }
     private StockAllocator.Candidate lot(String location,Instant received,LocalDate expiry) {
         return new StockAllocator.Candidate(StockItemId.newId(),new LocationId(location),"L",expiry,
-                StockStatus.AVAILABLE,Quantity.of(2),received);
+                StockStatus.AVAILABLE,Quantity.of(2),received,java.util.UUID.randomUUID(),true);
     }
     @Test void fifoUsesReceiptNotRemainingQuantityOrLocation() {
         var newer=lot("HCM-A-01",Instant.parse("2026-09-02T00:00:00Z"),null);
         var older=lot("HCM-Z-01",Instant.parse("2026-09-01T00:00:00Z"),null);
-        assertThat(StockAllocator.plan("SKU",List.of(newer,older),Quantity.of(1),RemovalStrategy.FIFO,
-                LocalDate.of(2026,9,27)).getFirst().stockItemId()).isEqualTo(older.stockItemId());
+        assertThat(StockAllocator.plan("SKU",List.of(newer,older),Quantity.of(2),RemovalStrategy.FIFO,
+                LocalDate.of(2026,9,27)).lines().getFirst().stockItemId()).isEqualTo(older.stockItemId());
     }
     @Test void expiredStockIsExcludedBeforeTheNightlySweep() {
         var expired=lot("HCM-A-01",Instant.EPOCH,LocalDate.of(2026,9,26));
         var usable=lot("HCM-B-01",Instant.EPOCH,LocalDate.of(2026,9,27));
-        assertThat(StockAllocator.plan("SKU",List.of(expired,usable),Quantity.of(1),RemovalStrategy.FEFO,
-                LocalDate.of(2026,9,27)).getFirst().stockItemId()).isEqualTo(usable.stockItemId());
+        assertThat(StockAllocator.plan("SKU",List.of(expired,usable),Quantity.of(2),RemovalStrategy.FEFO,
+                LocalDate.of(2026,9,27)).lines().getFirst().stockItemId()).isEqualTo(usable.stockItemId());
     }
     @Test void unknownReceiptTimeCannotSilentlyBecomeFifo() {
         assertThatThrownBy(() -> StockAllocator.plan("SKU",List.of(lot("HCM-A-01",null,null)),

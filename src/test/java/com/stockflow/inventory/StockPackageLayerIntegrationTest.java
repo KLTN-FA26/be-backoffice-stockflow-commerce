@@ -3,8 +3,6 @@ package com.stockflow.inventory;
 import com.stockflow.common.domain.Sku;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.inventory.api.InventoryService;
-import com.stockflow.inventory.api.MoveReference;
-import com.stockflow.inventory.api.MoveStockCommand;
 import com.stockflow.inventory.api.RequestAdjustmentCommand;
 import com.stockflow.inventory.api.StockAdjustmentReason;
 import com.stockflow.inventory.internal.domain.LocationId;
@@ -35,16 +33,16 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * SCRUM-473 (#140) against a real PostgreSQL: a bin holding a loose layer and cartons of the very same receipt
- * (V20261020000200 keys a carton's row by the carton, so all three share SKU, bin, lot and receipt time). A move
- * or an adjustment named by those takes the loose layer and never a carton - it used to pick one by chance, or
- * refuse with INVENTORY_POLICY_STOCK_CONFLICT - and goods arriving at a bin arrive loose.
+ * (V20261020000200 keys a carton's row by the carton, so all three share SKU, bin, lot and receipt time). An
+ * adjustment named by those takes the loose layer and never a carton - it used to pick one by chance, or refuse with
+ * INVENTORY_POLICY_STOCK_CONFLICT. (A person's move named by SKU, bin and lot is gone with team plan 4C-2: cartons are
+ * moved by LPN, {@code StockPackageMoveIntegrationTest}.)
  */
 @IntegrationTest
 @Import(PostgresContainer.class)
 class StockPackageLayerIntegrationTest {
 
     private static final String SHELF = "HCM-A01-1-B";
-    private static final String OTHER_BIN = "HCM-A02-2-A";
     private static final Instant RECEIVED = Instant.parse("2026-01-02T00:00:00Z");
 
     @Autowired InventoryService inventory;
@@ -118,38 +116,6 @@ class StockPackageLayerIntegrationTest {
     }
 
     @Test
-    @DisplayName("a move named by SKU, bin, lot and receipt time takes the loose layer; the cartons are untouched")
-    void moveTakesTheLooseLayer() {
-        tx.executeWithoutResult(s -> inventory.move(new MoveStockCommand(UUID.randomUUID(), new Sku(sku), lot, SHELF,
-                OTHER_BIN, 3, MoveReference.MOVE_TASK, Identifiers.newId(), clerk, RECEIVED)));
-
-        assertThat(rows()).containsExactly(SHELF + ":5:carton", SHELF + ":5:carton", SHELF + ":7:loose",
-                OTHER_BIN + ":3:loose");
-    }
-
-    @Test
-    @DisplayName("without a receipt time the one loose layer is found: the cartons beside it no longer make it ambiguous")
-    void moveWithoutReceiptTime() {
-        tx.executeWithoutResult(s -> inventory.move(new MoveStockCommand(UUID.randomUUID(), new Sku(sku), lot, SHELF,
-                OTHER_BIN, 2, MoveReference.MOVE_TASK, Identifiers.newId(), clerk, null)));
-
-        assertThat(rows()).containsExactly(SHELF + ":5:carton", SHELF + ":5:carton", SHELF + ":8:loose",
-                OTHER_BIN + ":2:loose");
-    }
-
-    @Test
-    @DisplayName("goods moved onto a bin holding a carton of their receipt arrive loose, never into the carton")
-    void arrivalIsLoose() {
-        tx.executeWithoutResult(s -> inCarton(OTHER_BIN, "C"));
-
-        tx.executeWithoutResult(s -> inventory.move(new MoveStockCommand(UUID.randomUUID(), new Sku(sku), lot, SHELF,
-                OTHER_BIN, 4, MoveReference.MOVE_TASK, Identifiers.newId(), clerk, RECEIVED)));
-
-        assertThat(rows()).containsExactly(SHELF + ":5:carton", SHELF + ":5:carton", SHELF + ":6:loose",
-                OTHER_BIN + ":4:loose", OTHER_BIN + ":5:carton");
-    }
-
-    @Test
     @DisplayName("an adjustment named by SKU, bin and lot is the loose layer's, requested and posted")
     void adjustmentTakesTheLooseLayer() {
         var requested = tx.execute(s -> operations.requestAdjustment(new RequestAdjustmentCommand(SHELF,
@@ -182,17 +148,17 @@ class StockPackageLayerIntegrationTest {
         tx.executeWithoutResult(s -> {
             StockPackage receiving = stockPackages.findByLpn("LPN-" + sku + "-R").orElseThrow();
             assertThat(receiving.status()).isEqualTo(StockPackageStatus.RECEIVING);
-            receiving.count(4);
+            receiving.count();
             stockPackages.save(receiving);
         });
         tx.executeWithoutResult(s -> {
             StockPackage counted = stockPackages.findAllByIdForUpdate(List.of(new StockPackageId(labelled))).getFirst();
-            assertThat(counted.receivedQty()).isEqualTo(4);
+            assertThat(counted.receivedQty()).as("the standard count, assigned").isEqualTo(5);
             counted.cancel(Instant.now());
             stockPackages.save(counted);
         });
         assertThat(jdbc.queryForMap("select status, received_qty, closed_at is not null as closed"
                 + " from inventory.stock_package where id = ?", labelled))
-                .containsEntry("status", "VOID").containsEntry("received_qty", 4).containsEntry("closed", true);
+                .containsEntry("status", "VOID").containsEntry("received_qty", 5).containsEntry("closed", true);
     }
 }

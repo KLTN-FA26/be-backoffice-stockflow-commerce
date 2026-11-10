@@ -29,6 +29,7 @@ import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.BeforeEach;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
+import com.stockflow.support.ReceiptCartons;
 
 import org.hamcrest.Matchers;
 import org.junit.jupiter.api.Test;
@@ -1440,11 +1441,14 @@ values (?, 'test-listener', 'test-event', '{}', now()-interval '10 minutes')
         return orders.confirm(purchaseOrderId, buyer, command);
     }
 
-    /** Goods counted in through a goods receipt at the HCM receiving area, as the warehouse does it. */
+    /**
+     * Goods counted in through a goods receipt at the HCM receiving area, as the warehouse does it: every unit in a
+     * carton of the demo sofa's CARTON unit of one piece (team plan 4C-2, kltn-docs 03 BR-12).
+     */
     private void receive(PurchaseOrderSummary po, int quantity) {
         var receipt = receipts.create(new GoodsReceipts.Create(po.purchaseOrderId(), null, null), buyer);
         receipts.replaceLines(receipt.id(), List.of(new GoodsReceipts.NewLine(po.lines().getFirst().lineId(), quantity,
-                null, null, "HCM-RCV01", null)));
+                null, null, "HCM-RCV01", null, ReceiptCartons.DEMO_UNIT, ReceiptCartons.demo(quantity))));
         receipts.confirm(receipt.id(), buyer);
     }
 }

@@ -21,6 +21,7 @@ import java.util.UUID;
  *   <li>DELIVERED → COMPLETED once the return window ({@code stockflow.order.return-window-days}, default 7) has passed,
  *       every installment of its contract is paid (17 §4.6 step 21; 4B-10: asked of payment, the order keeps no
  *       money of its own) and no return request is open. An order whose installments still owe stays DELIVERED.
+ *       Its signed contract is completed with it (4B-8, 14 §5.2).
  *       An order with an open return is RETURN_REQUESTED and so not a candidate at all; the check here stays as the
  *       guard against a return opened between the candidate query and the row lock (SCRUM-243: the return service
  *       takes the same lock, so one of the two sees the other).</li>
@@ -39,18 +40,21 @@ public class OrderSettlementService {
     private final SettlementCandidates candidates;
     private final OrderEventPublisher events;
     private final com.stockflow.payment.api.PaymentService payments;
+    private final com.stockflow.order.internal.domain.SalesContractRepository contracts;
     private final Clock clock;
     private final Duration returnWindow;
     private final Duration closeAfter;
 
     OrderSettlementService(OrderRepository repository, SettlementCandidates candidates, OrderEventPublisher events,
                            com.stockflow.payment.api.PaymentService payments,
+                           com.stockflow.order.internal.domain.SalesContractRepository contracts,
                            Clock clock, @Value("${stockflow.order.return-window-days:7}") int returnWindowDays,
                            @Value("${stockflow.order.close-after-days:30}") int closeAfterDays) {
         this.repository = repository;
         this.candidates = candidates;
         this.events = events;
         this.payments = payments;
+        this.contracts = contracts;
         this.clock = clock;
         this.returnWindow = Duration.ofDays(returnWindowDays);
         this.closeAfter = Duration.ofDays(closeAfterDays);
@@ -84,6 +88,12 @@ public class OrderSettlementService {
             return false;
         }
         repository.save(order);
+        // 4B-8 (14 §5.2): the order completed - every batch delivered, every installment paid - completes its contract.
+        contracts.findLiveByOrderId(orderId).filter(contract -> contract.complete(clock.instant()))
+                .ifPresent(contract -> {
+                    contracts.save(contract);
+                    log.info("Sales contract {} completed with its order", contract.contractNumber());
+                });
         events.publishEventsOf(order);
         log.info("Order {} completed", order.orderNumber());
         return true;

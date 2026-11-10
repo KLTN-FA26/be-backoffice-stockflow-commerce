@@ -30,7 +30,7 @@ import com.stockflow.fulfillment.internal.repository.LoadPlanPackageJpaRepositor
 import com.stockflow.fulfillment.internal.repository.LoadPlanStore;
 import com.stockflow.fulfillment.internal.repository.LoadPlanVehicleJpaRepository;
 import com.stockflow.fulfillment.internal.repository.PackageJpaRepository;
-import com.stockflow.fulfillment.internal.repository.PackageLineJpaRepository;
+import com.stockflow.fulfillment.internal.repository.ParcelContents;
 import com.stockflow.fulfillment.internal.repository.PickJpaRepository;
 import com.stockflow.fulfillment.internal.repository.ShipmentJpaRepository;
 import com.stockflow.fulfillment.internal.repository.ShipmentLocks;
@@ -105,11 +105,13 @@ class LoadPlanServiceTest {
     private final WarehouseService warehouses = mock(WarehouseService.class);
     private final LoadPlanEstimateComparison estimates = mock(LoadPlanEstimateComparison.class);
     private final PickJpaRepository picks = mock(PickJpaRepository.class);
-    private final PackageLineJpaRepository packageLines = mock(PackageLineJpaRepository.class);
+    private final ParcelContents packageLines = mock(ParcelContents.class);
     private final DispatchLoadShipmentJpaRepository loadMembers = mock(DispatchLoadShipmentJpaRepository.class);
+    /** A labelled carton's corrected spec on planning (4C-6, review M2): CartonMeasuresTest's; a no-op here. */
+    private final CartonMeasures cartonMeasures = mock(CartonMeasures.class);
     private final LoadPlanService service = new LoadPlanService(plans, members, planVehicles, store, numbers, parcels,
             packages, shipments, shipmentLocks, vehicleTypes, loads, loadStore, loadNumbers, warehouses, estimates, picks,
-            packageLines, loadMembers, Clock.fixed(NOW, ZoneOffset.UTC), Duration.ofSeconds(2), Duration.ofSeconds(12), mock(PlatformTransactionManager.class));
+            packageLines, loadMembers, cartonMeasures, Clock.fixed(NOW, ZoneOffset.UTC), Duration.ofSeconds(2), Duration.ofSeconds(12), mock(PlatformTransactionManager.class));
 
     private final CurrentUser actor = FulfillmentFixtures.user();
     private FulfillmentFixtures.PlannedPlan planned;
@@ -383,7 +385,7 @@ class LoadPlanServiceTest {
 
             assertThat(detail.packageCount()).isEqualTo(2);
             assertThat(detail.status()).isEqualTo("DRAFT");
-            verify(picks).lockByOrderId(row.getOrderId());
+            verify(picks).lockAllByOrderId(row.getOrderId());
         }
 
         @Test
@@ -566,7 +568,7 @@ class LoadPlanServiceTest {
         private final RecordingTransactions transactions = new RecordingTransactions();
         private final LoadPlanService withTransactions = new LoadPlanService(plans, members, planVehicles, store,
                 numbers, parcels, packages, shipments, shipmentLocks, vehicleTypes, loads, loadStore, loadNumbers,
-                warehouses, estimates, picks, packageLines, loadMembers, Clock.fixed(NOW, ZoneOffset.UTC),
+                warehouses, estimates, picks, packageLines, loadMembers, cartonMeasures, Clock.fixed(NOW, ZoneOffset.UTC),
                 Duration.ofSeconds(2), Duration.ofSeconds(12), transactions);
         private final List<Boolean> activeDuringSearch = new ArrayList<>();
         private final List<List<String>> eventsAtSearch = new ArrayList<>();

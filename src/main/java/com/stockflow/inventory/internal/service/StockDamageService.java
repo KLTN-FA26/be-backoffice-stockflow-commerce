@@ -63,8 +63,8 @@ import java.util.Collection;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
-import java.util.Set;
 import java.util.TreeMap;
 import java.util.UUID;
 
@@ -223,6 +223,14 @@ class StockDamageService implements StockDamages, PickDamageReporting {
                         "No stock item " + command.stockItemId()));
         // BR-SEC-002 first: another warehouse's stock is not this caller's to report, nor to learn about.
         WarehouseScope.requireLocation(view.location().code());
+        // Review L3 (team plan 4C-5, kltn-docs 11 BR-09, 20 BR-20): a carton in a staging area was picked for an order and
+        // leaves it only by dispatch or put-back; moving its units to quarantine here would be refused by the ledger
+        // (tg_stock_movement_staging) as an unexplained integrity error. Damage found there is a short pick of its line.
+        if (locations.isStagingArea(view.location())) {
+            throw new BusinessException(ErrorCode.STAGING_MOVE_NOT_ALLOWED, ("%s is a staging area: its cartons leave it "
+                    + "by dispatch or put-back; report damage there as a short pick of the line").formatted(view.location()),
+                    List.of(), java.util.Map.of("locationCode", view.location().code()));
+        }
         StockDamageReport.requireExplained(command.reason(), command.note());
         return view;
     }
@@ -277,6 +285,14 @@ class StockDamageService implements StockDamages, PickDamageReporting {
         }
         Instant now = clock.instant();
         Quantity quantity = Quantity.of(command.quantity());
+        // A carton is taken whole (team plan 4C-2; kltn-docs 07 BR-03): the damaged units of a carton line are the
+        // whole carton. Said here, before anything is planned, rather than by the carton check at the end or the
+        // database's tg_stock_reservation_whole_carton, which would refuse the shrunk hold only as a bare conflict.
+        if (view.stockPackageId() != null && !quantity.equals(view.onHand())) {
+            throw new BusinessException(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE,
+                    "%s damaged of a carton holding %s: a carton is reported damaged whole, never in part".formatted(
+                            quantity, view.onHand()), List.of(), Map.of("reservationId", command.reservationId()));
+        }
         UUID warehouseId = warehouseOf(view.location());
         Destination destination = destination(view, warehouseId, command.damageLocationCode());
         List<StockAllocator.AllocationLine> replacement = planReplacement(view, quantity, now);
@@ -371,8 +387,17 @@ class StockDamageService implements StockDamages, PickDamageReporting {
                     "Allocation %s is not order %s's".formatted(command.reservationId(), command.orderId()));
         }
         Quantity quantity = Quantity.of(command.quantity());
-        StockItem.HeldShare share = source.consumedShare(holdId, quantity);
         int before = reports.damagedAfterPick(holdId.value());
+        // A carton picked whole is reported damaged whole (team plan 4C-4 review M1; kltn-docs 08): part of it would
+        // leave the rest deducted in a CONSUMED carton that cannot reopen, and a cancelled order could never put it
+        // back. Said before consumedShare, which would accept any part.
+        if (source.stockPackageId() != null && (before > 0 || !quantity.equals(hold.quantity()))) {
+            throw new BusinessException(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE, ("Allocation %s took a whole carton of %s "
+                    + "unit(s), %d of them reported damaged already; a carton is reported damaged whole, never %s of it")
+                    .formatted(holdId.value(), hold.quantity(), before, quantity), List.of(),
+                    Map.of("reservationId", command.reservationId()));
+        }
+        StockItem.HeldShare share = source.consumedShare(holdId, quantity);
         if (before + quantity.value() > hold.quantity().value()) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, ("The pick took %s unit(s) on allocation %s, %d of "
                     + "them reported damaged already; %s more cannot be").formatted(hold.quantity(), holdId.value(),
@@ -450,16 +475,23 @@ class StockDamageService implements StockDamages, PickDamageReporting {
     }
 
     /**
-     * The order's replacement for damaged units, FEFO over pickable stock of the warehouse, read before any lock (the
-     * SKU lock keeps it valid: every path that changes availability takes it first). Empty when the warehouse cannot
-     * cover all of them: the order then keeps an impaired share, never half a replacement.
+     * The order's replacement for damaged units, whole cartons of pickable stock of the warehouse in the SKU's removal
+     * order, read before any lock (the SKU lock keeps it valid: every path that changes availability takes it first).
+     * Empty when whole cartons cannot cover all of them: the order then keeps an impaired share, never half a
+     * replacement.
      */
     private List<StockAllocator.AllocationLine> planReplacement(StockItem source, Quantity quantity, Instant now) {
         List<StockAllocator.Candidate> pool = pickable.candidates(source.sku(), source.location().warehouseCode(),
                 null, now);
         try {
-            return StockAllocator.plan(source.sku().code(), pool, quantity,
+            StockAllocator.Plan plan = StockAllocator.plan(source.sku().code(), pool, quantity,
                     controls.policy(source.sku()).removalStrategy(), BusinessCalendar.date(now));
+            if (plan.isShort()) {
+                log.info("No replacement for {} damaged x {} in {}: whole cartons cover {}", quantity, source.sku(),
+                        source.location().warehouseCode(), plan.planned());
+                return List.of();
+            }
+            return plan.lines();
         } catch (BusinessException noReplacement) {
             log.info("No replacement for {} damaged x {} in {}: {}", quantity, source.sku(),
                     source.location().warehouseCode(), noReplacement.getMessage());
@@ -640,9 +672,10 @@ class StockDamageService implements StockDamages, PickDamageReporting {
         TreeMap<String, StockItem> locked = lock(damagedView.id(), layerThere.map(StockItem::id).orElse(null),
                 List.of());
         StockItem damaged = locked.get(damagedView.id().value().toString());
-        // Units an order's impaired allocation holds were found fine after all: restoring everything left gives them
-        // back to the order - the allocation goes onto the bin with them, pickable, and the coordinator's
-        // reallocation of the short line keeps it there. Anything less takes free units only.
+        // Units an order's impaired allocation holds were found fine after all: restoring everything left moves the
+        // allocation onto the bin with them. They come back loose, so the coordinator's reallocation of the short line
+        // does not keep it there: it releases them, free loose stock, and allocates whole cartons instead (team plan
+        // 4C-4; INSUFFICIENT_STOCK when there are none, the order still on hold). Anything less takes free units only.
         int held = heldForOrder(report, damaged);
         boolean withOrder = held > 0 && units.equals(report.pending());
         if (!withOrder) {
@@ -756,7 +789,8 @@ class StockDamageService implements StockDamages, PickDamageReporting {
     /**
      * The units of a report an order's impaired allocation still holds on its damaged row (SCRUM-277, R8): they are
      * the order's until the coordinator reallocates its short line, so no decision may take them - only a restore of
-     * everything left, which gives them back to the order ({@link #restore}). Read on the locked row. Several reports'
+     * everything left, which moves the allocation onto the bin with them until that reallocation releases it in favour
+     * of whole cartons ({@link #restore}; team plan 4C-4). Read on the locked row. Several reports'
      * units share one DAMAGED row of a layer; this is the guard per report the row's own unheld check cannot be.
      */
     private int heldForOrder(StockDamageReport report, StockItem damagedRow) {
@@ -967,13 +1001,13 @@ class StockDamageService implements StockDamages, PickDamageReporting {
     }
 
     /**
-     * What the SKU's live checkout reservations now promise beyond its free sellable stock. A reservation names no
-     * units, so damage cannot release it; it can only leave it uncovered, and the release will then fall short.
+     * What the SKU's live checkout reservations now promise beyond the stock a release could still allocate. A
+     * reservation names no units, so damage cannot release it; it can only leave it uncovered, and the release will
+     * then fall short.
      */
     private int shortfall(Sku sku, Instant now) {
         LocalDate today = BusinessCalendar.date(now);
-        long free = stockItems.availableQuantities(Set.of(sku.code()), today).getOrDefault(sku.code(), 0L)
-                - cycleCounts.frozen(List.of(sku.code()), today).stream().mapToLong(CycleCountRepository.Frozen::free).sum();
+        long free = pickable.allocatableBySku(List.of(sku.code()), today).getOrDefault(sku.code(), 0L);
         long promised = skuReservations.heldBySku(List.of(sku.code())).getOrDefault(sku.code(), 0L);
         int shortfall = (int) Math.max(0, promised - Math.max(0, free));
         if (shortfall > 0) {

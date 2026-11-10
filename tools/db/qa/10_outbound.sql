@@ -11,6 +11,11 @@
 -- =============================================================================
 \set ON_ERROR_STOP on
 BEGIN;
+-- V20261111000110 (team plan 4C-1) put the demo stock into cartons. The checks of loose stock below - loose stock goes
+-- with 4C-3 - use the demo sofa rows as they were before it. The sofas' cartons stay beside them, so the books hold
+-- the demo sofas twice for the length of this script; no check here reads a SKU's total.
+UPDATE inventory.stock_item SET on_hand = 25 WHERE id = '11111111-1111-4111-8111-111111111111';
+UPDATE inventory.stock_item SET on_hand = 8 WHERE id = '22222222-2222-4222-8222-222222222222';
 
 CREATE FUNCTION pg_temp.expect_fail(label TEXT, stmt TEXT) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN
@@ -25,6 +30,23 @@ BEGIN
     RAISE EXCEPTION 'FAIL  %: the database accepted it', label;
 END $$;
 
+-- The same, and it is the named rule that refuses it: a statement that breaks something else proves nothing.
+CREATE FUNCTION pg_temp.expect_fail_by(label TEXT, rule TEXT, stmt TEXT) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+    BEGIN
+        EXECUTE stmt;
+        SET CONSTRAINTS ALL IMMEDIATE;
+        SET CONSTRAINTS ALL DEFERRED;
+    EXCEPTION WHEN OTHERS THEN
+        IF SQLERRM NOT LIKE '%' || rule || '%' THEN
+            RAISE EXCEPTION 'FAIL  %: refused, but not by %: %', label, rule, SQLERRM;
+        END IF;
+        RAISE NOTICE 'ok    %  [%]', label, rule;
+        RETURN;
+    END;
+    RAISE EXCEPTION 'FAIL  %: the database accepted it', label;
+END $$;
+
 CREATE FUNCTION pg_temp.expect_ok(label TEXT, stmt TEXT) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN
     EXECUTE stmt;
@@ -34,6 +56,24 @@ BEGIN
 EXCEPTION WHEN OTHERS THEN
     RAISE EXCEPTION 'FAIL  %: %', label, SQLERRM;
 END $$;
+
+-- Since V20261113000400 (team plan 4C-4) a pick line is one carton, named by its LPN, and a put-back returns it whole:
+-- the lines below are on demo cartons of one sofa (n = 1 to 4) and on a carton of three of their own, QA10-LPN-3.
+CREATE TEMP TABLE qa10_carton AS
+SELECT row_number() OVER (ORDER BY p.lpn) AS n, s.id AS row_id, p.id AS package_id, p.lpn
+  FROM inventory.stock_item s JOIN inventory.stock_package p ON p.id = s.stock_package_id
+ WHERE s.sku = 'SOFA-3S-GREY' AND s.location_code = 'HCM-A01-2-B' AND p.status = 'IN_STOCK' AND s.on_hand = 1
+ ORDER BY p.lpn LIMIT 4;
+INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)
+VALUES (md5('qa10:unit')::uuid, md5('demo:item:SOFA-3S-GREY')::uuid, 'QA10_CTN', 3);
+INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, received_qty,
+                                     location_code, status)
+VALUES (md5('qa10:pk3')::uuid, 'QA10-LPN-3', md5('demo:item:SOFA-3S-GREY')::uuid, md5('qa10:unit')::uuid, 3, 3,
+        'HCM-A01-2-B', 'IN_STOCK');
+INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at,
+                                  received_at, stock_package_id)
+VALUES (md5('qa10:pk3:row')::uuid, 'SOFA-3S-GREY', 'HCM-A01-2-B', 'UNTRACED', 3, 0, 'AVAILABLE', NOW(),
+        NOW() - interval '1 day', md5('qa10:pk3')::uuid);
 
 INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, currency, placed_at,
                                      created_at, warehouse_id)
@@ -59,22 +99,24 @@ INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, curren
 VALUES (md5('qa:ol:f5')::uuid, md5('qa:order:f1')::uuid, 'SOFA-3S-GREY', 1, 12000000, 'VND');
 INSERT INTO inventory.stock_reservation (id, stock_item_id, order_id, root_request_id, request_id, quantity, reserved_at,
                                          expires_at, status, closed_at)
-VALUES (md5('qa:res:f5')::uuid, '11111111-1111-4111-8111-111111111111', md5('qa:order:f1')::uuid, gen_random_uuid(),
-        gen_random_uuid(), 1, NOW(), NULL, 'CONSUMED', NOW());
-INSERT INTO fulfillment.pick_line (id, pick_id, order_line_id, reservation_id, sku, location_code, sequence_no, allocated_qty)
-VALUES (md5('qa:pl:f5')::uuid, md5('qa:pick:f1')::uuid, md5('qa:ol:f5')::uuid, md5('qa:res:f5')::uuid, 'SOFA-3S-GREY',
-        'HCM-A01-2-B', 1, 1);
+SELECT md5('qa:res:f5')::uuid, c.row_id, md5('qa:order:f1')::uuid, gen_random_uuid(),
+        gen_random_uuid(), 1, NOW(), NULL, 'CONSUMED', NOW() FROM qa10_carton c WHERE c.n = 1;
+INSERT INTO fulfillment.pick_line (id, pick_id, order_line_id, reservation_id, sku, location_code, sequence_no, allocated_qty,
+                                   lpn, whole_carton)
+SELECT md5('qa:pl:f5')::uuid, md5('qa:pick:f1')::uuid, md5('qa:ol:f5')::uuid, md5('qa:res:f5')::uuid, 'SOFA-3S-GREY',
+        'HCM-A01-2-B', 1, 1, c.lpn, TRUE FROM qa10_carton c WHERE c.n = 1;
 
 SELECT pg_temp.expect_fail('F5 a line PICKED against a hold that was never deducted (consumed_at NULL)', $q$
     UPDATE fulfillment.pick_line SET status = 'PICKED', picked_qty = 1, picked_by = md5('demo:user:editor')::uuid,
            picked_at = NOW() WHERE id = md5('qa:pl:f5')::uuid $q$);
-SELECT pg_temp.expect_fail('F6 a second live line for the same hold', $q$
-    INSERT INTO fulfillment.pick_line (id, pick_id, order_line_id, reservation_id, sku, location_code, allocated_qty)
-    VALUES (gen_random_uuid(), md5('qa:pick:f1')::uuid, md5('qa:ol:f5')::uuid, md5('qa:res:f5')::uuid, 'SOFA-3S-GREY',
-            'HCM-A01-2-B', 1) $q$);
+SELECT pg_temp.expect_fail_by('F6 a second live line for the same hold', 'uk_pick_line_reservation_live', $q$
+    INSERT INTO fulfillment.pick_line (id, pick_id, order_line_id, reservation_id, sku, location_code, allocated_qty, lpn)
+    SELECT gen_random_uuid(), md5('qa:pick:f1')::uuid, md5('qa:ol:f5')::uuid, md5('qa:res:f5')::uuid, 'SOFA-3S-GREY',
+           'HCM-A01-2-B', 1, c.lpn FROM qa10_carton c WHERE c.n = 1 $q$);
 SELECT pg_temp.expect_ok('F7 a line picked in full and deducted', $q$
     UPDATE fulfillment.pick_line SET status = 'PICKED', picked_qty = 1, picked_by = md5('demo:user:editor')::uuid,
-           picked_at = NOW(), consumed_at = NOW(), scanned_location_code = 'HCM-A01-2-B', scanned_code = '8930000000011'
+           picked_at = NOW(), consumed_at = NOW(), scanned_location_code = 'HCM-A01-2-B',
+           scanned_code = (SELECT lpn FROM qa10_carton WHERE n = 1)
      WHERE id = md5('qa:pl:f5')::uuid $q$);
 SELECT pg_temp.expect_fail('F8 PUT_BACK without the bin it went back onto', $q$
     UPDATE fulfillment.pick_line SET status = 'PUT_BACK', put_back_qty = 1, put_back_by = md5('demo:user:editor')::uuid,
@@ -112,14 +154,14 @@ SELECT pg_temp.expect_ok('F16 the order is cancelled: the line goes back onto it
     UPDATE fulfillment.pick_line SET status = 'PUT_BACK', put_back_qty = 1, put_back_by = md5('demo:user:editor')::uuid,
            put_back_location_code = 'HCM-A01-2-B', put_back_at = NOW() WHERE id = md5('qa:pl:f5')::uuid;
     INSERT INTO inventory.stock_movement (id, movement_type, sku, to_location_code, quantity, to_status, reference_type,
-                                          reference_id, occurred_at)
-    VALUES (gen_random_uuid(), 'PUT_BACK', 'SOFA-3S-GREY', 'HCM-A01-2-B', 1, 'AVAILABLE', 'PICK_LINE',
-            md5('qa:pl:f5')::uuid, NOW()) $q$);
-SELECT pg_temp.expect_fail('F17 a second put-back of the same pick line', $q$
+                                          reference_id, occurred_at, to_stock_package_id)
+    SELECT gen_random_uuid(), 'PUT_BACK', 'SOFA-3S-GREY', 'HCM-A01-2-B', 1, 'AVAILABLE', 'PICK_LINE',
+           md5('qa:pl:f5')::uuid, NOW(), c.package_id FROM qa10_carton c WHERE c.n = 1 $q$);
+SELECT pg_temp.expect_fail_by('F17 a second put-back of the same pick line', 'uk_stock_movement', $q$
     INSERT INTO inventory.stock_movement (id, movement_type, sku, to_location_code, quantity, to_status, reference_type,
-                                          reference_id, occurred_at)
-    VALUES (gen_random_uuid(), 'PUT_BACK', 'SOFA-3S-GREY', 'HCM-A02-1-A', 1, 'AVAILABLE', 'PICK_LINE',
-            md5('qa:pl:f5')::uuid, NOW()) $q$);
+                                          reference_id, occurred_at, to_stock_package_id)
+    SELECT gen_random_uuid(), 'PUT_BACK', 'SOFA-3S-GREY', 'HCM-A01-2-B', 1, 'AVAILABLE', 'PICK_LINE',
+           md5('qa:pl:f5')::uuid, NOW(), c.package_id FROM qa10_carton c WHERE c.n = 1 $q$);
 SELECT pg_temp.expect_ok('F18 a put-back moved back from a staging location still has both ends (unchanged shape)', $q$
     INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, to_location_code, quantity,
                                           from_status, to_status, reference_type, reference_id, occurred_at)
@@ -130,14 +172,14 @@ SELECT pg_temp.expect_ok('F19 a cancelled line frees its hold for a new live lin
     VALUES (md5('qa:ol:f19')::uuid, md5('qa:order:f1')::uuid, 'SOFA-3S-GREY', 1, 12000000, 'VND');
     INSERT INTO inventory.stock_reservation (id, stock_item_id, order_id, root_request_id, request_id, quantity,
                                              reserved_at, expires_at, status)
-    VALUES (md5('qa:res:f19')::uuid, '11111111-1111-4111-8111-111111111111', md5('qa:order:f1')::uuid,
-            gen_random_uuid(), gen_random_uuid(), 1, NOW(), NULL, 'HELD');
-    UPDATE inventory.stock_item SET reserved = reserved + 1 WHERE id = '11111111-1111-4111-8111-111111111111';
-    INSERT INTO fulfillment.pick_line (id, pick_id, order_line_id, reservation_id, sku, location_code, allocated_qty, status)
-    VALUES (gen_random_uuid(), md5('qa:pick:f1')::uuid, md5('qa:ol:f19')::uuid, md5('qa:res:f19')::uuid,
-            'SOFA-3S-GREY', 'HCM-A01-2-B', 1, 'CANCELLED'),
-           (gen_random_uuid(), md5('qa:pick:f1')::uuid, md5('qa:ol:f19')::uuid, md5('qa:res:f19')::uuid,
-            'SOFA-3S-GREY', 'HCM-A01-2-B', 1, 'OPEN') $q$);
+    SELECT md5('qa:res:f19')::uuid, c.row_id, md5('qa:order:f1')::uuid,
+           gen_random_uuid(), gen_random_uuid(), 1, NOW(), NULL, 'HELD' FROM qa10_carton c WHERE c.n = 2;
+    UPDATE inventory.stock_item SET reserved = reserved + 1 WHERE id = (SELECT row_id FROM qa10_carton WHERE n = 2);
+    INSERT INTO fulfillment.pick_line (id, pick_id, order_line_id, reservation_id, sku, location_code, allocated_qty, status,
+                                       lpn, whole_carton)
+    SELECT gen_random_uuid(), md5('qa:pick:f1')::uuid, md5('qa:ol:f19')::uuid, md5('qa:res:f19')::uuid,
+           'SOFA-3S-GREY', 'HCM-A01-2-B', 1, v.status, c.lpn, TRUE
+      FROM qa10_carton c CROSS JOIN (VALUES ('CANCELLED'), ('OPEN')) v(status) WHERE c.n = 2 $q$);
 
 \echo '--- the packing station: parcels, scans, shipments (G4-5, V20261021000300; docs 08 BR-01/03/04, 09 §5)'
 INSERT INTO fulfillment.pack (id, pick_id, status, created_at)
@@ -286,23 +328,29 @@ SELECT pg_temp.expect_fail('F45 a parcel loaded once its load left', $q$
 \echo '--- damage found at packing (R8): units a pick took, back into quarantine, never more than it took'
 INSERT INTO inventory.stock_reservation (id, stock_item_id, order_id, root_request_id, request_id, quantity, reserved_at,
                                          expires_at, status, closed_at)
-VALUES (md5('qa:res:f46')::uuid, '11111111-1111-4111-8111-111111111111', md5('qa:order:f1')::uuid, gen_random_uuid(),
-        gen_random_uuid(), 2, NOW(), NULL, 'CONSUMED', NOW());
+VALUES (md5('qa:res:f46')::uuid, md5('qa10:pk3:row')::uuid, md5('qa:order:f1')::uuid, gen_random_uuid(),
+        gen_random_uuid(), 3, NOW(), NULL, 'CONSUMED', NOW());
 INSERT INTO fulfillment.pick_line (id, pick_id, order_line_id, reservation_id, sku, location_code, sequence_no,
-                                   allocated_qty, picked_qty, status, picked_by, picked_at, consumed_at)
+                                   allocated_qty, picked_qty, status, picked_by, picked_at, consumed_at, lpn, whole_carton)
 VALUES (md5('qa:pl:f46')::uuid, md5('qa:pick:f1')::uuid, md5('qa:ol:f5')::uuid, md5('qa:res:f46')::uuid,
-        'SOFA-3S-GREY', 'HCM-A01-2-B', 2, 2, 2, 'PICKED', md5('demo:user:editor')::uuid, NOW(), NOW());
+        'SOFA-3S-GREY', 'HCM-A01-2-B', 2, 3, 3, 'PICKED', md5('demo:user:editor')::uuid, NOW(), NOW(), 'QA10-LPN-3', TRUE);
 INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, received_at, version, created_at)
 SELECT md5('qa:si:f46')::uuid, sku, 'HCM-QC01', 1, 0, 'DAMAGED', received_at, 0, NOW()
   FROM inventory.stock_item WHERE id = '11111111-1111-4111-8111-111111111111';
 
-SELECT pg_temp.expect_fail('F46 more units found damaged at packing than the line picked', $q$
-    UPDATE fulfillment.pick_line SET packing_damaged_qty = 3 WHERE id = md5('qa:pl:f46')::uuid $q$);
-SELECT pg_temp.expect_fail('F47 units found damaged at packing on a line that picked nothing', $q$
-    INSERT INTO fulfillment.pick_line (id, pick_id, order_line_id, sku, location_code, allocated_qty, status,
-                                       packing_damaged_qty)
-    VALUES (gen_random_uuid(), md5('qa:pick:f1')::uuid, md5('qa:ol:f5')::uuid, 'SOFA-3S-GREY', 'HCM-A01-2-B', 1,
-            'OPEN', 1) $q$);
+SELECT pg_temp.expect_fail_by('F46 more units found damaged at packing than the line picked',
+    'ck_pick_line_packing_damaged', $q$
+    UPDATE fulfillment.pick_line SET packing_damaged_qty = 4 WHERE id = md5('qa:pl:f46')::uuid $q$);
+SELECT pg_temp.expect_fail_by('F47 units found damaged at packing on a line that picked nothing',
+    'ck_pick_line_packing_damaged', $q$
+    INSERT INTO inventory.stock_reservation (id, stock_item_id, order_id, root_request_id, request_id, quantity,
+                                             reserved_at, expires_at, status)
+    SELECT md5('qa:res:f47')::uuid, c.row_id, md5('qa:order:f1')::uuid, gen_random_uuid(), gen_random_uuid(), 1, NOW(),
+           NULL, 'HELD' FROM qa10_carton c WHERE c.n = 3;
+    INSERT INTO fulfillment.pick_line (id, pick_id, order_line_id, reservation_id, sku, location_code, allocated_qty, status,
+                                       packing_damaged_qty, lpn, whole_carton)
+    SELECT gen_random_uuid(), md5('qa:pick:f1')::uuid, md5('qa:ol:f5')::uuid, md5('qa:res:f47')::uuid, 'SOFA-3S-GREY',
+           'HCM-A01-2-B', 1, 'OPEN', 1, c.lpn, TRUE FROM qa10_carton c WHERE c.n = 3 $q$);
 INSERT INTO inventory.stock_reservation (id, stock_item_id, order_id, root_request_id, request_id, quantity, reserved_at,
                                          expires_at, status, closed_at)
 VALUES (md5('qa:res:f48')::uuid, '11111111-1111-4111-8111-111111111111', md5('qa:order:f1')::uuid, gen_random_uuid(),
@@ -322,40 +370,47 @@ SELECT pg_temp.expect_fail('F49 a packing damage report that names no pick line'
     VALUES (md5('qa:dmg:f49')::uuid, 'DMG-QA-F49', gen_random_uuid(), 'PACKING', md5('demo:wh:HCM')::uuid,
             'SOFA-3S-GREY', '11111111-1111-4111-8111-111111111111', 'HCM-A01-2-B', md5('qa:si:f46')::uuid,
             'HCM-QC01', 1, 'BROKEN', md5('demo:user:editor')::uuid, NOW()) $q$);
-SELECT pg_temp.expect_ok('F50 one unit of the picked line damaged at packing: the report, its photo, the line, the ledger', $q$
+SELECT pg_temp.expect_ok('F50 the whole picked carton damaged at packing (review M1): the report, its photo, the line, the ledger', $q$
     INSERT INTO inventory.stock_damage_report (id, report_number, request_id, origin, warehouse_id, sku,
            source_stock_item_id, source_location_code, damaged_stock_item_id, damage_location_code, quantity,
            reason_code, order_id, pick_line_id, reservation_id, reported_by, reported_at)
     VALUES (md5('qa:dmg:f50')::uuid, 'DMG-QA-F50', gen_random_uuid(), 'PACKING', md5('demo:wh:HCM')::uuid,
             'SOFA-3S-GREY', '11111111-1111-4111-8111-111111111111', 'HCM-A01-2-B', md5('qa:si:f46')::uuid,
-            'HCM-QC01', 1, 'BROKEN', md5('qa:order:f1')::uuid, md5('qa:pl:f46')::uuid, md5('qa:res:f46')::uuid,
+            'HCM-QC01', 3, 'BROKEN', md5('qa:order:f1')::uuid, md5('qa:pl:f46')::uuid, md5('qa:res:f46')::uuid,
             md5('demo:user:editor')::uuid, NOW());
     INSERT INTO inventory.stock_damage_photo (id, damage_report_id, storage_key, original_name, content_type,
                                               size_bytes, checksum, sort_order)
     VALUES (gen_random_uuid(), md5('qa:dmg:f50')::uuid, 'qc-evidence/qa-f50.jpg', 'f50.jpg', 'image/jpeg', 20,
             repeat('a', 64), 1);
-    UPDATE fulfillment.pick_line SET packing_damaged_qty = 1 WHERE id = md5('qa:pl:f46')::uuid;
+    UPDATE fulfillment.pick_line SET packing_damaged_qty = 3 WHERE id = md5('qa:pl:f46')::uuid;
     INSERT INTO inventory.stock_movement (id, movement_type, sku, to_location_code, quantity, from_status, to_status,
                                           reference_type, reference_id, occurred_at)
-    VALUES (gen_random_uuid(), 'PUT_BACK', 'SOFA-3S-GREY', 'HCM-QC01', 1, 'DAMAGED', 'DAMAGED', 'DAMAGE_REPORT',
+    VALUES (gen_random_uuid(), 'PUT_BACK', 'SOFA-3S-GREY', 'HCM-QC01', 3, 'DAMAGED', 'DAMAGED', 'DAMAGE_REPORT',
             md5('qa:dmg:f50')::uuid, NOW()) $q$);
+-- A part of a picked carton is no longer damaged at packing (review M1): the line is damaged whole or not at all.
+SELECT pg_temp.expect_fail_by('F50b one unit of the carton damaged at packing is a part of it',
+    'ck_pick_line_packing_damaged_whole', $q$
+    UPDATE fulfillment.pick_line SET packing_damaged_qty = 1 WHERE id = md5('qa:pl:f46')::uuid $q$);
 SELECT pg_temp.expect_fail('F51 a second packing report taking the line past what it picked', $q$
     INSERT INTO inventory.stock_damage_report (id, report_number, request_id, origin, warehouse_id, sku,
            source_stock_item_id, source_location_code, damaged_stock_item_id, damage_location_code, quantity,
            reason_code, order_id, pick_line_id, reservation_id, reported_by, reported_at)
     VALUES (md5('qa:dmg:f51')::uuid, 'DMG-QA-F51', gen_random_uuid(), 'PACKING', md5('demo:wh:HCM')::uuid,
             'SOFA-3S-GREY', '11111111-1111-4111-8111-111111111111', 'HCM-A01-2-B', md5('qa:si:f46')::uuid,
-            'HCM-QC01', 2, 'BROKEN', md5('qa:order:f1')::uuid, md5('qa:pl:f46')::uuid, md5('qa:res:f46')::uuid,
+            'HCM-QC01', 3, 'BROKEN', md5('qa:order:f1')::uuid, md5('qa:pl:f46')::uuid, md5('qa:res:f46')::uuid,
             md5('demo:user:editor')::uuid, NOW());
     INSERT INTO inventory.stock_damage_photo (id, damage_report_id, storage_key, original_name, content_type,
                                               size_bytes, checksum, sort_order)
     VALUES (gen_random_uuid(), md5('qa:dmg:f51')::uuid, 'qc-evidence/qa-f51.jpg', 'f51.jpg', 'image/jpeg', 20,
             repeat('a', 64), 1) $q$);
-SELECT pg_temp.expect_fail('F52 a put-back of everything the line picked, the damaged unit included', $q$
-    UPDATE fulfillment.pick_line SET status = 'PUT_BACK', put_back_qty = 2, put_back_by = md5('demo:user:editor')::uuid,
+SELECT pg_temp.expect_fail_by('F52 a put-back of everything the line picked, the damaged unit included',
+    'ck_pick_line_put_back', $q$
+    UPDATE fulfillment.pick_line SET status = 'PUT_BACK', put_back_qty = 3, put_back_by = md5('demo:user:editor')::uuid,
            put_back_location_code = 'HCM-A01-2-B', put_back_at = NOW() WHERE id = md5('qa:pl:f46')::uuid $q$);
-SELECT pg_temp.expect_ok('F53 a put-back of what the line still has', $q$
-    UPDATE fulfillment.pick_line SET status = 'PUT_BACK', put_back_qty = 1, put_back_by = md5('demo:user:editor')::uuid,
+-- A carton damaged whole at packing has nothing left to put back (07 BR-05; review M1).
+SELECT pg_temp.expect_fail_by('F53 a put-back of a carton that was all damaged at packing: nothing is left',
+    'ck_pick_line_put_back', $q$
+    UPDATE fulfillment.pick_line SET status = 'PUT_BACK', put_back_qty = 0, put_back_by = md5('demo:user:editor')::uuid,
            put_back_location_code = 'HCM-A01-2-B', put_back_at = NOW() WHERE id = md5('qa:pl:f46')::uuid $q$);
 
 \echo '--- damaged goods back to the supplier: in parts or refused, never more than decided, shipped units off the books'

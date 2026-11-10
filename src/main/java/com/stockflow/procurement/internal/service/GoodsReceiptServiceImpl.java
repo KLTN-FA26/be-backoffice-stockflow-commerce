@@ -267,6 +267,7 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
         if (receipt.againstProductionOrder()) {
             return replaceProductionLines(receipt, newLines);
         }
+        receipt.requireCountable();
         // SCRUM-478: a receipt without a PO has no order; its lines name the item by SKU.
         ReceivingPurchaseOrder order = orderOf(receipt);
         LocalDate receivedOn = LocalDate.ofInstant(receipt.receivedAt(), BUSINESS_ZONE);
@@ -408,7 +409,7 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
         for (CartonCount count : ordered) {
             inventory.countReceivingPackages(new CountReceivingPackagesCommand(count.lineId(), new Sku(count.sku()),
                     count.unitId(), count.locationCode(), count.packages().stream()
-                    .map(p -> new CountReceivingPackagesCommand.PackageCount(p.lpn(), p.quantity()))
+                    .map(p -> new CountReceivingPackagesCommand.PackageCount(p.lpn()))
                     .toList(), actor));
         }
     }
@@ -782,7 +783,7 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
                             "%s has no unit %s".formatted(item.sku(), code));
                 } else if (!unit.get().base()) {
                     errors.add(index, "unitOfMeasure", ErrorCode.RECEIPT_LINE_UNIT_INVALID,
-                            "%s is a packing unit: list the line's cartons in it, or count the line loose in the base unit"
+                            "%s is a packing unit: list the line's cartons in it"
                                     .formatted(code));
                 }
             }
@@ -834,6 +835,15 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
             errors.add(index, "unitOfMeasure", ErrorCode.RECEIPT_LINE_UNIT_INVALID,
                     "%s is retired; cartons are labelled in an active packing unit".formatted(code));
             return null;
+        }
+        // Kltn-docs 03 BR-13 (team plan 4C-2): every carton holds the unit's factor, the SKU's standard count; inventory
+        // assigns it, so a carton listed at another count is one not to receive - it goes back to the producer.
+        for (int j = 0; j < in.packages().size(); j++) {
+            if (in.packages().get(j).quantity() != unit.factor()) {
+                errors.add(index, "packages[%d].quantity".formatted(j), ErrorCode.RECEIPT_PACKAGE_NOT_STANDARD,
+                        "A %s of %s holds %d; a carton of %d is not received".formatted(unit.unitOfMeasure(),
+                                item.sku(), unit.factor(), in.packages().get(j).quantity()));
+            }
         }
         // Rule 7: every carton of a line is in the line's unit, so the unit changes only with all the old ones voided.
         List<String> keptInOtherUnit = cartonsBefore.stream()
@@ -930,9 +940,11 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
      * {@inheritDoc}
      *
      * <p>SCRUM-473: nothing here names a carton. {@code inventory.receive} finds the line's RECEIVING cartons by the
-     * line's id and puts the goods into them - one INBOUND row each, IN_STOCK and still unopened - and only the
-     * remainder goes loose; it refuses cartons holding more than the line ({@code RECEIPT_PACKAGES_EXCEED_LINE}),
-     * the invariant {@link #replaceLines} states first.</p>
+     * line's id and puts the goods into them - one INBOUND row each, IN_STOCK and still unopened. Since team plan
+     * 4C-2 nothing goes loose (kltn-docs 03 BR-12): a line with units outside its cartons - a remainder, or a line
+     * counted with none - is refused ({@code RECEIPT_LINE_NOT_IN_CARTONS}) and the receipt stays a draft to recount; a
+     * draft may still hold such a line while it is being counted. Cartons holding more than the line are refused
+     * ({@code RECEIPT_PACKAGES_EXCEED_LINE}), the invariant {@link #replaceLines} states first.</p>
      */
     @Override
     @Auditable(action = AuditAction.TRANSITION, resourceType = "goods-receipt", resourceId = "#receiptId")
@@ -1008,6 +1020,7 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
         receipt = loadForUpdate(receiptId);
         Instant now = clock.instant().truncatedTo(java.time.temporal.ChronoUnit.MICROS);
         List<ReceiptLine> before = List.copyOf(receipt.lines());
+        receipt.requireDecidable(approverId, reason);
         receipt.cutBackTo(allowedPerPoLine(order, receipt));
         requireCartonsFitTheCut(receipt, before);
         // The cut is saved while the receipt still waits: the lines of a posted receipt are frozen (BR-05). The reason

@@ -6,7 +6,8 @@ import org.springframework.stereotype.Component;
 
 /**
  * An order released to be shipped makes its contract's installments paid before delivery due (4B-6, kltn-docs 15 §4.1
- * step 2: "Đơn Ready to Fulfill"). They have no due day: the handover waits for them (BR-08).
+ * step 2: "Đơn Ready to Fulfill"). They have no due day: the handover waits for them (BR-08). Since 4B-8 a delivery
+ * batch released makes due its own installment and those tied to no batch.
  */
 @Component("paymentOrderReleasedListener")
 class OrderReleasedListener {
@@ -19,6 +20,6 @@ class OrderReleasedListener {
 
     @ApplicationModuleListener
     public void on(OrderReleased event) {
-        installments.released(event.orderId(), event.releasedAt());
+        installments.released(event.orderId(), event.releasedAt(), event.deliveryBatchId());
     }
 }

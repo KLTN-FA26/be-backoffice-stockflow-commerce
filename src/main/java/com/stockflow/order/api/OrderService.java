@@ -227,6 +227,19 @@ public interface OrderService {
     void recordPackingStarted(UUID orderId);
 
     /**
+     * The check station labelled a shipping carton of the order (4C-6, kltn-docs 08 §4.3 step 7): the first time, the
+     * order is locked - no cancellation, no change of delivery address (08 BR-04, 17 BR-12, BR-16) - and a customer's
+     * cancellation request still waiting expires. Joins the caller's transaction, which must exist, and takes the
+     * order's row lock, so a cancellation in flight either came first ({@code ORDER_CANCELLED}: nothing is labelled) or
+     * is refused afterwards. A hold put on after the station read the order is refused the same way, under the lock.
+     * Idempotent.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code NOT_FOUND}; {@code ORDER_CANCELLED};
+     *         {@code PACK_STATE_CONFLICT} while the order is on hold or in a status the station does not label in
+     */
+    void recordFirstLabel(UUID orderId);
+
+    /**
      * The order's status read under its row lock, in the caller's transaction: what fulfillment checks before it
      * carries on work for the order, so a cancellation cannot slip in between the check and the work (audit of #109).
      * Empty for an unknown order.
@@ -248,4 +261,29 @@ public interface OrderService {
      * transition after that; an order with no recorded change returns an empty list.
      */
     java.util.List<OrderStatusChange> history(UUID orderId);
+
+    /**
+     * 4B-8 (kltn-docs 09 BR-18, 15 BR-08, 17 BR-29): the orders among {@code orderIds} whose goods may not leave at
+     * {@code at} - an installment still owed before delivery, a delivery window not open yet, a hold - each with why
+     * and what it owes. Empty: the vehicle may go. Fulfillment asks before handing a vehicle over, and refuses it whole.
+     */
+    java.util.List<HandoverBlock> handoverBlocks(java.util.Collection<UUID> orderIds, java.time.Instant at);
+
+    /**
+     * 4B-8 (kltn-docs 07 BR-07): the delivery batch of the order released and not picked yet, with the holds it stands
+     * for - what fulfillment opens a pick task for. Empty for an order that does not release by batch.
+     *
+     * @param pickedBatches the batches that have a pick task already
+     */
+    java.util.Optional<ReleasedBatch> batchToPick(UUID orderId, java.util.Collection<UUID> pickedBatches);
+
+    /** 4B-8: the holds a released delivery batch stands for - its allocations, picked or not. */
+    java.util.Set<UUID> holdsOfBatch(UUID orderId, UUID deliveryBatchId);
+
+    /**
+     * 4B-8 (kltn-docs 08 §4.4 step 8.3): the units of each order line a delivery batch carries - its cartons in pieces,
+     * as the signed schedule fixes them: what the carton check of that batch's task expects. Empty for a batch not of
+     * the order's contract.
+     */
+    java.util.Map<UUID, Integer> batchUnits(UUID orderId, UUID deliveryBatchId);
 }

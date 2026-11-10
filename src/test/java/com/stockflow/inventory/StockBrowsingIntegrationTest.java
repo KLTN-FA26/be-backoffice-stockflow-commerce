@@ -69,7 +69,11 @@ class StockBrowsingIntegrationTest {
             jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature)"
                     + " values (?,?,?,'Browse fixture','')", Identifiers.newId(), product, sku);
             jdbc.update("update inventory.inventory_items set policy_configured=true where sku=?", sku);
-            stock("HCM-A01-1-B", 10, "AVAILABLE");
+            // Two sealed cartons of 3: the older one is allocated whole, the other stays free.
+            com.stockflow.support.CartonRows.stock(jdbc, sku, "HCM-A01-1-B", 1, 3, null,
+                    java.time.Instant.parse("2026-01-01T00:00:00Z"));
+            com.stockflow.support.CartonRows.stock(jdbc, sku, "HCM-A01-1-A", 1, 3, null,
+                    java.time.Instant.parse("2026-02-01T00:00:00Z"));
             stock("HCM-A02-2-A", 4, "QUARANTINE");
             stock("HCM-A01-2-B", 0, "AVAILABLE");
             jdbc.update("""
@@ -79,7 +83,7 @@ class StockBrowsingIntegrationTest {
                     order, "SO-20991231-%06d".formatted(ThreadLocalRandom.current().nextInt(1_000_000)),
                     DemoData.CUSTOMER_ID, UUID.randomUUID());
         });
-        // SCRUM-152: checkout holds the SKU; releasing the order to HCM puts the hold on a bin.
+        // SCRUM-152: checkout holds the SKU; releasing the order to HCM puts the hold on the oldest whole carton.
         UUID reservation = inventory.reserve(new ReserveStockCommand(UUID.randomUUID(), new Sku(sku), 3, order))
                 .reservationIds().get(0);
         softReservation = reservation;
@@ -150,22 +154,23 @@ class StockBrowsingIntegrationTest {
     void warehouseStock() {
         var rows = browsing.warehouseStock(DemoData.WAREHOUSE_HCM, query(null, null, false)).items();
         assertThat(rows).extracting(StockBrowsing.StockRow::locationCode)
-                .containsExactly("HCM-A01-1-B", "HCM-A02-2-A");
-        assertThat(rows).extracting(StockBrowsing.StockRow::available).containsExactly(7, 0);
-        assertThat(rows).extracting(StockBrowsing.StockRow::reserved).containsExactly(3, 0);
+                .containsExactly("HCM-A01-1-A", "HCM-A01-1-B", "HCM-A02-2-A");
+        assertThat(rows).extracting(StockBrowsing.StockRow::available).containsExactly(3, 0, 0);
+        assertThat(rows).extracting(StockBrowsing.StockRow::reserved).containsExactly(0, 3, 0);
 
-        assertThat(browsing.warehouseStock(DemoData.WAREHOUSE_HCM, query(null, null, true)).items()).hasSize(3);
+        assertThat(browsing.warehouseStock(DemoData.WAREHOUSE_HCM, query(null, null, true)).items()).hasSize(4);
         assertThat(browsing.warehouseStock(DemoData.WAREHOUSE_HCM, query(null, List.of(StockStatus.QUARANTINE), false))
                 .items()).extracting(StockBrowsing.StockRow::locationCode).containsExactly("HCM-A02-2-A");
         assertThat(browsing.warehouseStock(DemoData.WAREHOUSE_HCM, query("hcm-a01", null, true)).items())
-                .extracting(StockBrowsing.StockRow::locationCode).containsExactly("HCM-A01-1-B", "HCM-A01-2-B");
+                .extracting(StockBrowsing.StockRow::locationCode)
+                .containsExactly("HCM-A01-1-A", "HCM-A01-1-B", "HCM-A01-2-B");
         assertThat(codeOf(catchThrowable(() -> browsing.warehouseStock(DemoData.WAREHOUSE_HCM,
                 query("HN-A01", null, false))))).isEqualTo(ErrorCode.VALIDATION_FAILED);
         assertThat(codeOf(catchThrowable(() -> browsing.warehouseStock(UUID.randomUUID(), query(null, null, false)))))
                 .isEqualTo(ErrorCode.WAREHOUSE_NOT_FOUND);
 
         assertThat(WithCurrentUser.call(HCM_CLERK, HCM_CLERK.scope(),
-                () -> browsing.warehouseStock(DemoData.WAREHOUSE_HCM, query(null, null, false))).items()).hasSize(2);
+                () -> browsing.warehouseStock(DemoData.WAREHOUSE_HCM, query(null, null, false))).items()).hasSize(3);
         assertThat(codeOf(catchThrowable(() -> WithCurrentUser.call(OTHER_CLERK, OTHER_CLERK.scope(),
                 () -> browsing.warehouseStock(DemoData.WAREHOUSE_HCM, query(null, null, false))))))
                 .isEqualTo(ErrorCode.OUT_OF_DATA_SCOPE);

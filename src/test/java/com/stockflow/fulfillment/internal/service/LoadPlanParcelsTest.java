@@ -5,10 +5,9 @@ import com.stockflow.fulfillment.internal.domain.KitPart;
 import com.stockflow.fulfillment.internal.domain.PackageStatus;
 import com.stockflow.fulfillment.internal.domain.loadplanning.CargoPackage;
 import com.stockflow.fulfillment.internal.entity.PackageJpaEntity;
-import com.stockflow.fulfillment.internal.entity.PackageLineJpaEntity;
 import com.stockflow.fulfillment.internal.entity.ShipmentJpaEntity;
 import com.stockflow.fulfillment.internal.repository.PackageJpaRepository;
-import com.stockflow.fulfillment.internal.repository.PackageLineJpaRepository;
+import com.stockflow.fulfillment.internal.repository.ParcelContents;
 import com.stockflow.fulfillment.internal.repository.ShipmentJpaRepository;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
@@ -39,7 +38,7 @@ import static org.mockito.Mockito.when;
 class LoadPlanParcelsTest {
 
     private final PackageJpaRepository packages = mock(PackageJpaRepository.class);
-    private final PackageLineJpaRepository lines = mock(PackageLineJpaRepository.class);
+    private final ParcelContents lines = mock(ParcelContents.class);
     private final ShipmentJpaRepository shipments = mock(ShipmentJpaRepository.class);
     private final OrderService orders = mock(OrderService.class);
     private final LoadPlanParcels parcels = new LoadPlanParcels(packages, lines, shipments, orders);
@@ -166,10 +165,10 @@ class LoadPlanParcelsTest {
         PackageJpaEntity empty = parcel(shipmentId, 3, "40", "40", "30", "5");
         when(shipments.findAllById(any())).thenReturn(List.of(shipment));
         when(orders.findById(order.orderId())).thenReturn(Optional.of(order));
-        when(lines.findByPackageIdIn(any())).thenReturn(List.of(
-                new PackageLineJpaEntity(UUID.randomUUID(), mixed.getId(), a.lineId(), 1),
-                new PackageLineJpaEntity(UUID.randomUUID(), mixed.getId(), b.lineId(), 1),
-                new PackageLineJpaEntity(UUID.randomUUID(), single.getId(), a.lineId(), 2)));
+        when(lines.of(any())).thenReturn(List.of(
+                new ParcelContents.Line(mixed.getId(), a.lineId(), 1),
+                new ParcelContents.Line(mixed.getId(), b.lineId(), 1),
+                new ParcelContents.Line(single.getId(), a.lineId(), 2)));
 
         Map<UUID, LoadPlanParcels.Parcel> described = parcels.describe(List.of(mixed, single, empty));
 

@@ -35,8 +35,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 /**
  * SCRUM-473 carton lookup through the real filter chain, permission aspect and data scope. A line of 2000 is counted
- * through the real endpoint as cartons of 1000 and 980, then received: both cartons IN_STOCK at the receiving area,
- * 20 loose beside them.
+ * through the real endpoint as two cartons of the unit's standard 1000 (team plan 4C-2: every unit in a carton, every
+ * carton full), then received: both cartons IN_STOCK at the receiving area, nothing loose.
  */
 @SecuredIntegrationTest
 class StockPackageLookupHttpTest {
@@ -99,7 +99,7 @@ class StockPackageLookupHttpTest {
         UUID receiptId = receipts.create(new GoodsReceipts.Create(po, "DN-CLK", null), clerk).id();
         String body = """
                 {"lines":[{"purchaseOrderLineId":"%s","quantity":2000,"locationCode":"%s","unitOfMeasure":"CARTON",
-                           "packages":[{"quantity":1000},{"quantity":980}]}]}""".formatted(poLine, RECEIVING);
+                           "packages":[{"quantity":1000},{"quantity":1000}]}]}""".formatted(poLine, RECEIVING);
         mvc.asRole(Role.WAREHOUSE_STAFF, clerk, put("/api/v1/goods-receipts/" + receiptId + "/lines")
                         .contentType(MediaType.APPLICATION_JSON).content(body))
                 .andExpect(status().isOk());
@@ -158,12 +158,12 @@ class StockPackageLookupHttpTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data[?(@.sku == '%s')].status", sku).value("INBOUND"))
                 .andExpect(jsonPath("$.data[?(@.sku == '%s')].wholeCartons", sku).value(2))
-                .andExpect(jsonPath("$.data[?(@.sku == '%s')].looseUnits", sku).value(20))
+                .andExpect(jsonPath("$.data[?(@.sku == '%s')].looseUnits", sku).value(0))
                 .andExpect(jsonPath("$.data[?(@.sku == '%s')].totalUnits", sku).value(2000));
         read(Role.WAREHOUSE_STAFF, clerk, "?sku=" + sku)
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.totalElements").value(2))
-                .andExpect(jsonPath("$.data.items[1].onHand").value(980))
+                .andExpect(jsonPath("$.data.items[1].onHand").value(1000))
                 .andExpect(jsonPath("$.data.items[1].status").value("IN_STOCK"));
     }
 

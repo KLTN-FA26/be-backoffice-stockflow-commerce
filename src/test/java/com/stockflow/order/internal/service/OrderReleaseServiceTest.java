@@ -52,7 +52,7 @@ class OrderReleaseServiceTest {
     private final OrderSummary summary = mock(OrderSummary.class);
     private final OrderReleaseService service = new OrderReleaseService(repository, warehouses, events,
             orders, Clock.fixed(NOW, ZoneOffset.UTC), inventory, paymentService, allocation, contracts,
-            org.mockito.Mockito.mock(ShippingWarehouseService.class));
+            org.mockito.Mockito.mock(ShippingWarehouseService.class), org.mockito.Mockito.mock(com.stockflow.order.internal.service.DeliveryBatchService.class), org.mockito.Mockito.mock(com.stockflow.order.internal.domain.DeliveryBatchRecords.class));
 
     @BeforeEach
     void knownWarehouse() {

@@ -10,6 +10,7 @@ import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.security.RequiresPermission;
 import com.stockflow.common.security.ScopeGuards;
+import com.stockflow.common.security.WarehouseScope;
 import com.stockflow.order.internal.controller.dto.DeliveryFailureRequest;
 import com.stockflow.order.internal.controller.dto.HoldOrderRequest;
 import com.stockflow.order.internal.controller.dto.ResolveHoldRequest;
@@ -104,14 +105,22 @@ class OrderReleaseController {
         return ApiResponse.ok(OrderWebMapper.toResponse(orders.resolveHold(orderId, request.note(), user.userId())));
     }
 
+    /**
+     * 17 BR-03: by the warehouse manager of the warehouse released to - one of the caller's, when they are limited.
+     * 4B-8 (BR-29): an order with a signed delivery schedule releases its next delivery batch.
+     */
     @PostMapping("/{orderId}/release")
-    @Operation(summary = "Release a paid order (or a deposit order whose deposit is in) from a warehouse: ready to "
-            + "fulfil, every line allocated on its bins. Every order ships as a full truckload (09 BR-08)")
-    @RequiresPermission(resource = OrderResources.ORDERS, action = Action.APPROVE, scope = DataScope.ALL)
+    @Operation(summary = "Release an order - its next delivery batch, for an order with a delivery schedule - from its "
+            + "shipping warehouse: the batch's holds are allocated on bins there. 409 DELIVERY_BATCH_NOT_NEXT, "
+            + "409 ORDER_STOCK_NOT_HELD. 403 for a warehouse the caller is not assigned to")
+    @RequiresPermission(resource = OrderResources.RELEASES, action = Action.UPDATE, scope = DataScope.ALL)
     public ApiResponse<OrderResponse> release(@PathVariable UUID orderId,
                                               @Valid @RequestBody ReleaseOrderRequest request,
                                               @AuthenticatedUser CurrentUser user) {
+        ScopeGuards.requireBackOffice(user);
+        // Scope first: whether another warehouse exists is not an out-of-scope caller's to learn.
+        WarehouseScope.requireWarehouse(request.warehouseId());
         return ApiResponse.ok(OrderWebMapper.toResponse(releases.release(orderId, request.warehouseId(),
-                user.userId())));
+                request.deliveryBatchId(), user.userId())));
     }
 }

@@ -158,6 +158,10 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
     @Column(name = "packing_started_at")
     private Instant packingStartedAt;
 
+    /** V20261113000700 (4C-6): when the order's first shipping label was printed - its lock (08 BR-04). */
+    @Column(name = "first_labeled_at")
+    private Instant firstLabeledAt;
+
     @Column(name = "warehouse_id")
     private UUID warehouseId;
 
@@ -317,6 +321,12 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
     }
 
     public Instant getPackingStartedAt() { return packingStartedAt; }
+
+    public void applyFirstLabeled(Instant firstLabeled) {
+        this.firstLabeledAt = firstLabeled;
+    }
+
+    public Instant getFirstLabeledAt() { return firstLabeledAt; }
 
     public void applyClosedAmount(java.math.BigDecimal closed) {
         this.closedAmount = closed == null ? java.math.BigDecimal.ZERO : closed;

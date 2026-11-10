@@ -5,6 +5,7 @@ import com.stockflow.common.id.Identifiers;
 import com.stockflow.inventory.api.InventoryControlService;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
+import com.stockflow.support.ReceiptCartons;
 import com.stockflow.support.RedisContainer;
 import com.stockflow.support.ReferenceRows;
 import jakarta.persistence.EntityManager;
@@ -130,15 +131,19 @@ class GoodsReceiptExpiryWarningIntegrationTest {
         return JsonPath.read(body, "$.data.id");
     }
 
+    /** Lines are counted into cartons of one (the demo CARTON unit): a receipt is posted only so (team plan 4C-2). */
     private String lot(String name, int quantity, LocalDate expiry) {
         return """
-                {"purchaseOrderLineId":"%s","quantity":%d,"lotNumber":"%s-%s","expiryDate":"%s","locationCode":"HCM-RCV01"}"""
-                .formatted(tableLine, quantity, name, suffix, expiry);
+                {"purchaseOrderLineId":"%s","quantity":%d,"lotNumber":"%s-%s","expiryDate":"%s","locationCode":"HCM-RCV01",\
+                "unitOfMeasure":"%s","packages":%s}"""
+                .formatted(tableLine, quantity, name, suffix, expiry, ReceiptCartons.DEMO_UNIT,
+                        ReceiptCartons.json(quantity, 1));
     }
 
     private String sofa(int quantity) {
         return """
-                {"purchaseOrderLineId":"%s","quantity":%d,"locationCode":"HCM-RCV01"}""".formatted(sofaLine, quantity);
+                {"purchaseOrderLineId":"%s","quantity":%d,"locationCode":"HCM-RCV01","unitOfMeasure":"%s","packages":%s}"""
+                .formatted(sofaLine, quantity, ReceiptCartons.DEMO_UNIT, ReceiptCartons.json(quantity, 1));
     }
 
     private String count(String receipt, String... lines) throws Exception {

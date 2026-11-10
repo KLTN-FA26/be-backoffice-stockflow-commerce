@@ -31,6 +31,40 @@ public interface FulfillmentService {
      *         {@code OUT_OF_DATA_SCOPE} for a warehouse the caller is not assigned to
      */
     FulfillmentTask createTask(UUID orderId, UUID assignedUserId, CurrentUser actor);
+
+    /**
+     * {@link #createTask(UUID, UUID, CurrentUser)} with its destination (kltn-docs 07 §4.1 step 2, 17 BR-08):
+     * {@code DISPATCH}, or {@code STAGING} into {@code stagingLocationCode} - optional when the warehouse has exactly one
+     * active staging area, and ignored for a {@code DISPATCH} task. Asked again for the same order, it answers the task
+     * already there, whatever was asked.
+     *
+     * @throws com.stockflow.common.error.BusinessException as {@link #createTask(UUID, UUID, CurrentUser)};
+     *         {@code STAGING_AREA_INVALID} when the staging area is not an active staging area of the task's warehouse,
+     *         or none was named and the warehouse has none or several
+     */
+    FulfillmentTask createTask(UUID orderId, UUID assignedUserId, PickDestination destination,
+                               String stagingLocationCode, CurrentUser actor);
+
+    /**
+     * Changes where a PENDING task takes its cartons (kltn-docs 07 §4.1 step 3, BR-08).
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code PICK_TASK_STATE_CONFLICT} once the task is past
+     *         PENDING; {@code STAGING_AREA_INVALID} as {@link #createTask(UUID, UUID, PickDestination, String,
+     *         CurrentUser)}; {@code OUT_OF_DATA_SCOPE}
+     */
+    FulfillmentTask changeDestination(UUID taskId, PickDestination destination, String stagingLocationCode,
+                                      CurrentUser actor);
+
+    /**
+     * The warehouse manager moves a STAGED task to dispatch, all of it at once (kltn-docs 07 §4.3 step 8, BR-11; 17
+     * §4.4 step 16, BR-08): every STAGED line is deducted where it stands (PICK, CONSUMED) and becomes PICKED, and the
+     * task is PICKED, ready for checking and labelling. A payment due before delivery does not stop it; the handover
+     * is refused later (07 §4.3). Moved again, it answers the task as it is.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code PICK_TASK_STATE_CONFLICT} unless the task is STAGED
+     *         (or its order is closed); {@code PICK_ORDER_ON_HOLD} while the order is on hold; {@code OUT_OF_DATA_SCOPE}
+     */
+    FulfillmentTask moveToDispatch(UUID taskId, CurrentUser actor);
     /**
      * The tasks this actor may see, newest first; the role decides which ones, the caller's warehouses
      * narrow them, and the query narrows them further.
@@ -46,6 +80,12 @@ public interface FulfillmentService {
      * @throws com.stockflow.common.error.BusinessException {@code OUT_OF_DATA_SCOPE}, {@code WAREHOUSE_NOT_FOUND}
      */
     List<FulfillmentAssignee> assignees(UUID warehouseId, CurrentUser actor);
+    /**
+     * Gives a PENDING task to someone else (kltn-docs 07 §4.1 step 3, BR-08: only before picking starts).
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code PICK_TASK_STATE_CONFLICT} once the task is past
+     *         PENDING; {@code VALIDATION_FAILED} for an assignee who cannot take it
+     */
     FulfillmentTask assign(UUID taskId, UUID assignedUserId, CurrentUser actor);
     FulfillmentTask findTask(UUID taskId, CurrentUser actor);
     FulfillmentTask startPicking(UUID taskId, CurrentUser actor);

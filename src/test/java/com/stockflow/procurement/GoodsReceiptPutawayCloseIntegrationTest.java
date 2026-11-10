@@ -66,8 +66,8 @@ class GoodsReceiptPutawayCloseIntegrationTest {
         plainPoLine = Identifiers.newId();
         secondPoLine = Identifiers.newId();
         tx.executeWithoutResult(s -> {
-            UUID plainItem = item(prefix + "P");
-            UUID secondItem = item(prefix + "Q");
+            UUID plainItem = item(prefix + "P", 6);
+            UUID secondItem = item(prefix + "Q", 4);
             jdbc.update("INSERT INTO warehouse.warehouse (id, name, status, prefix, address, map_unit, map_width,"
                     + " map_height, version, created_at) VALUES (?, 'Putaway close', 'ACTIVE', ?, 'Test address', 'M',"
                     + " 50, 50, 0, NOW())", warehouse, prefix);
@@ -92,7 +92,8 @@ class GoodsReceiptPutawayCloseIntegrationTest {
         });
     }
 
-    private UUID item(String sku) {
+    /** An item sold in cartons of {@code perCarton}: a receipt puts every unit into one (team plan 4C-2). */
+    private UUID item(String sku, int perCarton) {
         UUID product = Identifiers.newId();
         jdbc.update("insert into product.products(id,code,name,slug) values (?,?,?,?)", product, sku,
                 "Putaway close fixture", sku.toLowerCase(Locale.ROOT));
@@ -102,6 +103,8 @@ class GoodsReceiptPutawayCloseIntegrationTest {
         // BR-03: tg_goods_receipt_lines_item refuses a receipt line for an item with no weight or dimensions.
         jdbc.update("update inventory.inventory_items set weight_kg = 0.5, length_cm = 10, width_cm = 8,"
                 + " height_cm = 6 where id = ?", item);
+        jdbc.update("insert into inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)"
+                + " values (?, ?, 'CARTON', ?)", Identifiers.newId(), item, perCarton);
         return item;
     }
 
@@ -148,8 +151,10 @@ class GoodsReceiptPutawayCloseIntegrationTest {
                 VALUES (?, ?, ?, 'A', 0, 0, 5, 1.2, 0, 'PALLET')""", Identifiers.newId(), level, location);
     }
 
-    private GoodsReceipts.NewLine line(UUID poLine, int quantity) {
-        return new GoodsReceipts.NewLine(poLine, quantity, null, null, receiving, null, null, List.of());
+    /** {@code cartons} cartons of {@code perCarton} on the PO line. */
+    private GoodsReceipts.NewLine line(UUID poLine, int cartons, int perCarton) {
+        return new GoodsReceipts.NewLine(poLine, cartons * perCarton, null, null, receiving, null, "CARTON",
+                java.util.Collections.nCopies(cartons, new GoodsReceipts.NewPackage(null, perCarton)));
     }
 
     private GoodsReceipts.ReceiptView confirmedReceipt(GoodsReceipts.NewLine... lines) {
@@ -167,28 +172,35 @@ class GoodsReceiptPutawayCloseIntegrationTest {
         return receipt.lines().stream().filter(l -> l.purchaseOrderLineId().equals(poLine)).findFirst().orElseThrow();
     }
 
-    /** The putaway task of a receipt line, once the asynchronous receipt event has opened it. */
-    private UUID taskOf(UUID receiptId, UUID lineId) {
-        Await.until("the putaway task of line " + lineId, Duration.ofSeconds(20),
-                () -> findTask(receiptId, lineId) != null);
-        return findTask(receiptId, lineId);
+    /** The putaway tasks of a receipt line, one per carton, once the asynchronous receipt event has opened them. */
+    private List<PutawayTaskView> tasksOf(UUID receiptId, UUID lineId, int cartons) {
+        Await.until("the putaway tasks of line " + lineId, Duration.ofSeconds(20),
+                () -> findTasks(receiptId, lineId).size() == cartons);
+        return findTasks(receiptId, lineId);
     }
 
-    private UUID findTask(UUID receiptId, UUID lineId) {
+    private List<PutawayTaskView> findTasks(UUID receiptId, UUID lineId) {
         return putawayTasks.tasksOfReceipt(receiptId).stream()
-                .filter(t -> lineId.equals(t.goodsReceiptLineId())).map(PutawayTaskView::id).findFirst().orElse(null);
+                .filter(t -> lineId.equals(t.goodsReceiptLineId())).toList();
+    }
+
+    /** Puts the task's carton away by scanning its LPN. */
+    private void putAway(PutawayTaskView task) {
+        String lpn = jdbc.queryForObject("select lpn from inventory.stock_package where id = ?", String.class,
+                task.stockPackageId());
+        putaway.confirm(task.id(), bin, lpn, clerk);
     }
 
     @Test
     @DisplayName("a receipt closes after the last of its goods is put away, not before")
     void receiptClosesAfterItsLastTask() {
-        GoodsReceipts.ReceiptView receipt = confirmedReceipt(line(plainPoLine, 12));
+        GoodsReceipts.ReceiptView receipt = confirmedReceipt(line(plainPoLine, 2, 6));
         assertThat(status(receipt.id())).isEqualTo("IN_PUTAWAY");
-        UUID task = taskOf(receipt.id(), lineOf(receipt, plainPoLine).id());
+        List<PutawayTaskView> tasks = tasksOf(receipt.id(), lineOf(receipt, plainPoLine).id(), 2);
 
-        putaway.confirm(task, bin, null, 5, clerk);
-        assertThat(status(receipt.id())).as("5 of 12 is not enough").isEqualTo("IN_PUTAWAY");
-        putaway.confirm(task, bin, null, 7, clerk);
+        putAway(tasks.get(0));
+        assertThat(status(receipt.id())).as("one carton of two is not enough").isEqualTo("IN_PUTAWAY");
+        putAway(tasks.get(1));
 
         Await.until("the receipt to close", Duration.ofSeconds(20), () -> status(receipt.id()).equals("CLOSED"));
         assertThat(jdbc.queryForObject("select closed_at is not null from procurement.goods_receipts where id = ?",
@@ -198,29 +210,29 @@ class GoodsReceiptPutawayCloseIntegrationTest {
     @Test
     @DisplayName("a two-line receipt stays in putaway until its second line is put away too")
     void staysInPutawayUntilEveryLineIsPutAway() {
-        GoodsReceipts.ReceiptView receipt = confirmedReceipt(line(plainPoLine, 10), line(secondPoLine, 4));
+        GoodsReceipts.ReceiptView receipt = confirmedReceipt(line(plainPoLine, 2, 6), line(secondPoLine, 1, 4));
         assertThat(status(receipt.id())).isEqualTo("IN_PUTAWAY");
         UUID plainLine = lineOf(receipt, plainPoLine).id();
         UUID secondLine = lineOf(receipt, secondPoLine).id();
 
-        putaway.confirm(taskOf(receipt.id(), plainLine), bin, null, 10, clerk);
+        tasksOf(receipt.id(), plainLine, 2).forEach(this::putAway);
         Await.until("the plain line to be fully put away", Duration.ofSeconds(20),
-                () -> putawayTasks.doneQuantityByReceiptLine(receipt.id()).getOrDefault(plainLine, 0) == 10);
+                () -> putawayTasks.doneQuantityByReceiptLine(receipt.id()).getOrDefault(plainLine, 0) == 12);
         assertThat(status(receipt.id())).as("the second line is not put away yet").isEqualTo("IN_PUTAWAY");
 
-        putaway.confirm(taskOf(receipt.id(), secondLine), bin, null, 4, clerk);
+        tasksOf(receipt.id(), secondLine, 1).forEach(this::putAway);
         Await.until("the receipt to close", Duration.ofSeconds(20), () -> status(receipt.id()).equals("CLOSED"));
     }
 
     @Test
     @DisplayName("the listener decides on the quantities as they are when it runs, not as the event saw them")
     void listenerReadsTheCurrentState() {
-        GoodsReceipts.ReceiptView receipt = confirmedReceipt(line(plainPoLine, 10), line(secondPoLine, 4));
+        GoodsReceipts.ReceiptView receipt = confirmedReceipt(line(plainPoLine, 1, 6), line(secondPoLine, 1, 4));
         UUID plainLine = lineOf(receipt, plainPoLine).id();
         UUID secondLine = lineOf(receipt, secondPoLine).id();
-        UUID task = taskOf(receipt.id(), plainLine);
-        putaway.confirm(task, bin, null, 10, clerk);
-        putaway.confirm(taskOf(receipt.id(), secondLine), bin, null, 4, clerk);
+        UUID task = tasksOf(receipt.id(), plainLine, 1).getFirst().id();
+        tasksOf(receipt.id(), plainLine, 1).forEach(this::putAway);
+        tasksOf(receipt.id(), secondLine, 1).forEach(this::putAway);
         Await.until("the receipt to close", Duration.ofSeconds(20), () -> status(receipt.id()).equals("CLOSED"));
         // Put it back to what a lost race leaves: IN_PUTAWAY with everything put away, nothing closed it.
         jdbc.update("update procurement.goods_receipts set status = 'IN_PUTAWAY', closed_at = null where id = ?",

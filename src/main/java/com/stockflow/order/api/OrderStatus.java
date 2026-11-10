@@ -80,7 +80,8 @@ public enum OrderStatus {
      * 4A-6 (kltn-docs 17 §4.2 step 5, §4.4 step 15, §5.1 "Awaiting Stock", BR-04): an order of a contract short of
      * finished goods for its next delivery batch at its shipping warehouse, with a production order for that batch sent
      * to a producer. What is available there is held for it and topped up as goods are put away; it is released once
-     * every carton is held (until 4B-8 releases batch by batch). The customer sees "Đang chờ hàng" (17 §5.2).
+     * every carton of its next delivery batch is held (4B-8 releases batch by batch). The customer sees "Đang chờ hàng"
+     * (17 §5.2).
      */
     AWAITING_STOCK,
 

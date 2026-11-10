@@ -78,6 +78,17 @@ public class OrderShipmentJpaEntity extends BaseEntity {
     protected OrderShipmentJpaEntity() {
     }
 
+    /** 4B-8: the delivery batch it carried; written once, with the shipment. */
+    @Column(name = "delivery_batch_id", updatable = false)
+    private UUID deliveryBatchId;
+
+    public OrderShipmentJpaEntity withDeliveryBatch(UUID batchId) {
+        this.deliveryBatchId = batchId;
+        return this;
+    }
+
+    public UUID getDeliveryBatchId() { return deliveryBatchId; }
+
     public OrderShipmentJpaEntity withCarriage(com.stockflow.order.api.ShipmentHandover.Carriage carriage) {
         if (carriage != null) {
             this.shipmentCode = carriage.shipmentCode();

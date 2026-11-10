@@ -45,7 +45,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * SCRUM-145 four-eyes approval, with the commit-time carton checks (V20261020000200, rule 5 of V20261022000100) live.
  * A loose variance is split over the slot's receipt layers; a carton's is one adjustment, and its approval spreads the
  * units over the carton's rows and changes the carton once - LOST when a count found it empty, found again when a
- * count finds it. A shortage that would cut into a customer's hold is refused at approval and posts nothing.
+ * count finds it; a write-down of part of a carton is refused (team plan 4C-2: a carton is taken whole). A shortage
+ * that would cut into a customer's hold is refused at approval and posts nothing.
  */
 @IntegrationTest
 @Import(PostgresContainer.class)
@@ -187,7 +188,10 @@ class CountVarianceAdjustmentIntegrationTest {
         return order;
     }
 
-    /** A customer's hold of {@code quantity}, allocated onto the SKU's one stock row (as in the pick tests). */
+    /**
+     * A customer's hold of {@code quantity}, allocated onto the SKU's one sealed carton (as in the pick tests): whole
+     * cartons only since team plan 4C-2, so {@code quantity} is the carton's.
+     */
     private UUID hold(UUID order, int quantity) {
         return tx.execute(s -> {
             UUID id = inventory.reserve(new ReserveStockCommand(UUID.randomUUID(), new Sku(sku), quantity, order))
@@ -197,6 +201,22 @@ class CountVarianceAdjustmentIntegrationTest {
                     .stream().filter(allocation -> allocation.reservationId().equals(id)).findFirst().orElseThrow()
                     .holdIds().getFirst();
         });
+    }
+
+    /**
+     * A hold of {@code quantity} on loose layer {@code row}, written as a row: since team plan 4C-2 nothing allocates
+     * loose stock, but a hold made on it before then (or on a put-back) is still there, and a count must spare it.
+     */
+    private UUID looseHold(UUID order, UUID row, int quantity) {
+        UUID id = Identifiers.newId();
+        tx.executeWithoutResult(s -> {
+            jdbc.update("""
+                    insert into inventory.stock_reservation (id, stock_item_id, order_id, root_request_id, request_id,
+                        quantity, reserved_at, expires_at, status) values (?, ?, ?, ?, ?, ?, now(), null, 'HELD')""",
+                    id, row, order, Identifiers.newId(), Identifiers.newId(), quantity);
+            jdbc.update("update inventory.stock_item set reserved = ? where id = ?", quantity, row);
+        });
+        return id;
     }
 
     // ------------------------------------------------------------------ tests
@@ -245,9 +265,7 @@ class CountVarianceAdjustmentIntegrationTest {
     void looseShortageSparesAFullyHeldLayer() {
         UUID soon = loose(LATE, LocalDate.now().plusMonths(6), 3);
         UUID later = loose(EARLY, LocalDate.now().plusYears(1), 10);
-        UUID hold = hold(confirmedOrder(), 3);
-        assertThat(jdbc.queryForObject("select reserved from inventory.stock_item where id = ?", Integer.class, soon))
-                .as("FEFO allocated the whole of the earliest-expiring layer").isEqualTo(3);
+        UUID hold = looseHold(confirmedOrder(), soon, 3);
         UUID line = countLine(null);
 
         List<StockAdjustmentSummary> asked = operations.requestCountVariance(line, looseSlot(), -2, clerk, "CC-1");
@@ -348,16 +366,22 @@ class CountVarianceAdjustmentIntegrationTest {
     }
 
     @Test
-    @DisplayName("an opened carton written down keeps the rest and stays in stock, open")
-    void openedCartonWrittenDownStaysOpen() {
-        UUID box = carton("O", 30, false);
+    @DisplayName("a carton written down in part is refused at approval: a carton is taken whole; nothing posts")
+    void cartonWrittenDownInPartIsRefused() {
+        UUID box = carton("O", CARTON_FACTOR, true);
         UUID line = countLine(box);
 
-        List<StockAdjustmentSummary> asked = operations.requestCountVariance(line, cartonSlot(box), -4, clerk, null);
-        operations.approve(asked.getFirst().adjustmentId(), manager);
+        StockAdjustmentSummary asked = operations.requestCountVariance(line, cartonSlot(box), -4, clerk, null)
+                .getFirst();
 
-        assertThat(cartonState(box)).containsEntry("status", "IN_STOCK").containsEntry("unopened", false)
-                .containsEntry("held", 26L);
+        assertThatThrownBy(() -> operations.approve(asked.adjustmentId(), manager))
+                .isInstanceOf(BusinessException.class)
+                .extracting(e -> ((BusinessException) e).errorCode()).isEqualTo(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE);
+        assertThat(cartonState(box)).containsEntry("status", "IN_STOCK").containsEntry("unopened", true)
+                .containsEntry("held", (long) CARTON_FACTOR);
+        assertThat(adjustmentLedger()).isEmpty();
+        assertThat(jdbc.queryForObject("select status from inventory.stock_adjustment where id = ?", String.class,
+                asked.adjustmentId())).isEqualTo("PENDING_APPROVAL");
     }
 
     @Test
@@ -386,8 +410,9 @@ class CountVarianceAdjustmentIntegrationTest {
     @Test
     @DisplayName("a shortage that would cut into a customer's hold is refused at approval; nothing posts, the hold stays")
     void shortageIntoAHoldIsRefusedAtApproval() {
-        UUID box = carton("H", 10, true);
-        UUID hold = hold(confirmedOrder(), 8);
+        // A sealed carton allocated whole to the customer: none of it is free to write down.
+        UUID box = carton("H", CARTON_FACTOR, true);
+        UUID hold = hold(confirmedOrder(), CARTON_FACTOR);
         String holdBefore = jdbc.queryForObject("select status || ':' || quantity from inventory.stock_reservation"
                 + " where id = ?", String.class, hold);
         UUID line = countLine(box);
@@ -398,7 +423,7 @@ class CountVarianceAdjustmentIntegrationTest {
                 .isInstanceOf(InsufficientStockException.class);
 
         assertThat(cartonState(box)).containsEntry("status", "IN_STOCK").containsEntry("unopened", true)
-                .containsEntry("held", 10L);
+                .containsEntry("held", (long) CARTON_FACTOR);
         assertThat(adjustmentLedger()).isEmpty();
         assertThat(jdbc.queryForObject("select status from inventory.stock_adjustment where id = ?", String.class,
                 asked.adjustmentId())).isEqualTo("PENDING_APPROVAL");

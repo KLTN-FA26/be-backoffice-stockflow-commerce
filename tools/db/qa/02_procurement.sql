@@ -195,7 +195,7 @@ SELECT pg_temp.expect_fail('R25 a second receipt posted past the tolerance (10.5
             md5('demo:loc:HCM-RCV01')::uuid, 0.5);
     UPDATE procurement.goods_receipts SET status = 'IN_PUTAWAY', confirmed_by = md5('demo:user:approver')::uuid,
         confirmed_at = NOW() WHERE id = md5('qa:gr:2')::uuid $q$);
-SELECT pg_temp.expect_ok('R32 putaway task sourced from the receipt line', $q$
+SELECT pg_temp.expect_fail('R32 a loose putaway task of a receipt line: a task is one carton (05 BR-08, V20261111000200)', $q$
     INSERT INTO warehouse.putaway_task (id, goods_receipt_id, goods_receipt_line_id, sku, quantity, target_location_id, status, created_at)
     VALUES (gen_random_uuid(), md5('qa:gr:1')::uuid, md5('qa:grl:1')::uuid, 'SOFA-3S-GREY', 8, NULL, 'PENDING', NOW()) $q$);
 

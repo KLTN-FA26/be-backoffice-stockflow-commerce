@@ -37,10 +37,15 @@ class LocationDirectoryAdapter implements LocationDirectory {
     }
 
     @Override
-    public boolean isPackingArea(LocationId location) {
+    public boolean isStagingArea(LocationId location) {
         return warehouses.findLocation(location.code())
-                .map(view -> view.areaType() == com.stockflow.warehouse.api.StorageLocationView.AreaType.PACKING)
+                .map(view -> view.areaType() == com.stockflow.warehouse.api.StorageLocationView.AreaType.STAGING)
                 .orElse(false);
+    }
+
+    @Override
+    public java.util.Set<String> stagingAreas() {
+        return warehouses.areaLocationCodes(com.stockflow.warehouse.api.StorageLocationView.AreaType.STAGING);
     }
 
     @Override

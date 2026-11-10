@@ -405,27 +405,25 @@ public final class StockItem extends AggregateRoot {
     }
 
     /**
-     * Loose goods already standing in the bin they are put away into: the row changes status in place. A loose row
-     * is unique per SKU, bin, lot and receipt time whatever its status, so these goods cannot be split into an
-     * INBOUND part and an AVAILABLE part of one row, and cannot be moved to the bin they are in; the whole row
-     * becomes AVAILABLE or none of it does.
+     * A warehouse manager quarantines the carton this row is the contents of (kltn-docs 20 §4.8, BR-21; team plan
+     * 4D-1): sellable or still-to-be-put-away stock goes on hold, in place, keeping its carton. Only a free carton:
+     * units held for an order would lose their hold silently, so the caller reallocates them first; the table says it
+     * again ({@code ck_stock_item_quarantine_unheld}). Quarantined stock is not reservable
+     * ({@link StockStatus#isReservable}), so it stays out of ATP and allocation until a putaway makes it AVAILABLE.
      */
-    public void putAwayInPlace() {
-        if (stockPackageId != null) {
-            throw new IllegalStateException("Stock item %s is in a carton; put the carton away".formatted(id));
+    public void quarantineInPackage() {
+        if (stockPackageId == null) {
+            throw new IllegalStateException("Stock item %s is loose; only a carton is quarantined".formatted(id));
         }
-        if (status != StockStatus.INBOUND) {
-            throw new IllegalStateException("Stock item %s is %s; only INBOUND stock is put away as AVAILABLE"
-                    .formatted(id, status));
+        if (status != StockStatus.AVAILABLE && status != StockStatus.INBOUND) {
+            throw new IllegalStateException("Stock item %s is %s, not AVAILABLE or INBOUND".formatted(id, status));
         }
         if (!reserved().isZero()) {
             throw new IllegalStateException(
-                    "Cannot put away stock item %s in place: %s units are still reserved".formatted(id, reserved()));
+                    "Cannot quarantine stock item %s: %s units are held for an order".formatted(id, reserved()));
         }
-        this.status = StockStatus.AVAILABLE;
+        this.status = StockStatus.QUARANTINE;
     }
-
-    // ------------------------------------------------------------------ reservation lifecycle
 
     /**
      * Pin every active hold of {@code orderId} on this stock row: its order is no longer waiting for
@@ -627,9 +625,9 @@ public final class StockItem extends AggregateRoot {
     }
 
     /**
-     * Goods picked for an order that was cancelled afterwards come back onto this stock item (docs 07
-     * BR-05, SCRUM-275): {@code onHand} grows by what the pick took. Only sellable stock takes them —
-     * a put-back is not how goods get into a quarantined or blocked lot.
+     * The carton picked for an order that was cancelled afterwards comes back into this, its row (docs 07 BR-05, §4.5
+     * step 14; team plan 4C-4): {@code onHand} grows by what the pick took, the whole carton. Only sellable stock takes
+     * it - a put-back is not how goods get into a quarantined or blocked lot.
      */
     public void putBack(Quantity quantity) {
         if (status != StockStatus.AVAILABLE) {

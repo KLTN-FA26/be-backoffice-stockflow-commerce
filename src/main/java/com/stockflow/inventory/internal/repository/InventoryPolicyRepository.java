@@ -144,13 +144,17 @@ public class InventoryPolicyRepository {
         return findItem(sku).map(InventoryControlItem::policy);
     }
 
+    /**
+     * Whether stock of {@code sku} breaks {@code p}: the twin of {@code inventory.enforce_sku_policy}, which refuses
+     * the same rows at write time. A lot conflicts with no policy (V20261111000110): every unit carries one (kltn-docs
+     * 20 BR-22, lot {@code UNTRACED} for what had none), so only a lot-tracked SKU's stock without one does.
+     */
     public boolean incompatible(String sku, InventoryPolicy p) {
         Long count =
                 jdbc.queryForObject(
                         """
 select count(*) from inventory.stock_item where sku = ? and (on_hand > 0 or reserved > 0)
 and ((? and nullif(trim(lot_number), '') is null)
-  or (not ? and lot_number is not null)
   or (? and (nullif(trim(serial_number), '') is null or on_hand > 1))
   or (not ? and serial_number is not null)
   or (? and expiry_date is null) or (not ? and expiry_date is not null)
@@ -161,7 +165,6 @@ and ((? and nullif(trim(lot_number), '') is null)
 """,
                         Long.class,
                         sku,
-                        p.trackingMode().lotTracked(),
                         p.trackingMode().lotTracked(),
                         p.trackingMode().serialTracked(),
                         p.trackingMode().serialTracked(),
@@ -292,6 +295,28 @@ where sku=? and version=?
         return jdbc.query("select * from inventory.inventory_items where sku = ?", (rs, n) ->
                 new InventoryItemLogistics(rs.getString("sku"), rs.getLong("version"), logistics(rs)), sku)
                 .stream().findFirst();
+    }
+
+    /**
+     * The SKU's carton spec: its one active packing unit, or the default shipping one among several - the rule
+     * {@code StockPackageRepository.cartonFactorOf} and V20261111000110 use - with the item's rotatable flag. Empty for
+     * an unknown SKU, or one with no such unit.
+     */
+    public Optional<com.stockflow.inventory.api.CartonSpec> findCartonSpec(String sku) {
+        record Unit(com.stockflow.inventory.api.CartonSpec spec, boolean defaultShipping) { }
+        List<Unit> units = jdbc.query("""
+                select u.unit_of_measure, u.factor, u.length_cm, u.width_cm, u.height_cm, u.weight_kg,
+                       u.default_shipping, i.rotatable
+                  from inventory.uom_conversions u
+                  join inventory.inventory_items i on i.id = u.inventory_item_id
+                 where i.sku = ? and u.active and not u.is_base
+                """, (rs, n) -> new Unit(new com.stockflow.inventory.api.CartonSpec(sku,
+                        rs.getString("unit_of_measure"), rs.getInt("factor"), rs.getBigDecimal("length_cm"),
+                        rs.getBigDecimal("width_cm"), rs.getBigDecimal("height_cm"), rs.getBigDecimal("weight_kg"),
+                        rs.getBoolean("rotatable")),
+                        rs.getBoolean("default_shipping")), sku);
+        List<Unit> chosen = units.size() == 1 ? units : units.stream().filter(Unit::defaultShipping).toList();
+        return chosen.size() == 1 ? Optional.of(chosen.getFirst().spec()) : Optional.empty();
     }
 
     /** Whether any stock of the SKU is held anywhere, in any status. */

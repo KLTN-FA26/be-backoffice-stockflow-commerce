@@ -42,8 +42,9 @@ import java.util.UUID;
  *       D23) - by that day plus its days (BR-09): the customer's receivable.</li>
  * </ul>
  *
- * <p>An installment tied to a delivery batch (17 §4.5) falls due with the order for now: nothing releases or delivers a
- * batch on its own until 4B-8, and an order released or delivered is released or delivered whole.</p>
+ * <p>An installment before delivery tied to a delivery batch falls due when that batch is released (4B-8, 17 §4.5);
+ * one after delivery still falls due once the order is delivered in full - per-batch delivery dates are not tracked
+ * yet (a known gap, reports/C3.md).</p>
  */
 @Service
 @Transactional
@@ -109,7 +110,36 @@ public class InstallmentService {
 
     /** The order was released to be shipped: what it pays before delivery is due (15 §4.1 step 2). */
     public void released(UUID orderId, Instant at) {
-        reach(orderId, InstallmentMilestone.BEFORE_DELIVERY, at);
+        released(orderId, at, null);
+    }
+
+    /**
+     * 4B-8 (15 §4.1, 17 §4.5): a delivery batch released makes due the installments before delivery tied to it, and
+     * those tied to no batch (due with the first release); null: the order released whole, every one of them.
+     */
+    public void released(UUID orderId, Instant at, UUID deliveryBatchId) {
+        LocalDate day = LocalDate.ofInstant(at, BUSINESS_ZONE);
+        for (Installment installment : book.lockOfOrder(orderId)) {
+            if (installment.milestone() == InstallmentMilestone.BEFORE_DELIVERY
+                    && (deliveryBatchId == null || installment.deliveryBatchId() == null
+                            || deliveryBatchId.equals(installment.deliveryBatchId()))
+                    && installment.reach(at, day)) {
+                book.save(installment);
+                log.info("Installment {} of contract {} is due (BEFORE_DELIVERY{})", installment.seq(),
+                        installment.contractNumber(), deliveryBatchId == null ? "" : ", its delivery batch released");
+            }
+        }
+    }
+
+    /** {@link com.stockflow.payment.api.PaymentService#dueBeforeHandover(UUID, UUID)}. */
+    @Transactional(readOnly = true)
+    public java.math.BigDecimal dueBeforeHandover(UUID orderId, UUID deliveryBatchId) {
+        return book.ofOrder(orderId).stream().filter(i -> i.status() != InstallmentStatus.CANCELLED)
+                .filter(i -> i.milestone() == InstallmentMilestone.ON_SIGNING
+                        || i.milestone() == InstallmentMilestone.BEFORE_DELIVERY
+                        && (deliveryBatchId == null || i.deliveryBatchId() == null
+                                || deliveryBatchId.equals(i.deliveryBatchId())))
+                .map(Installment::outstanding).reduce(java.math.BigDecimal.ZERO, java.math.BigDecimal::add);
     }
 
     /**

@@ -111,11 +111,15 @@ class BlindCountIntegrationTest {
                 StockAdjustmentReason.DAMAGED, null, clerk)).adjustmentId();
     }
 
+    /**
+     * A ledger line of loose units moved for a document. Not a move by hand: since team plan 4C-2 a person moves whole
+     * cartons only ({@code ck_stock_movement_move_task_carton}), and what this class reads is the ledger, not cartons.
+     */
     private void movement(String from, String to, int quantity) {
         jdbc.update("""
                 insert into inventory.stock_movement (id, movement_type, sku, from_location_code, to_location_code,
                     quantity, from_status, to_status, reference_type, reference_id, occurred_at, lot_id)
-                values (?, 'MOVE', ?, ?, ?, ?, 'AVAILABLE', 'AVAILABLE', 'MOVE_TASK', ?, now(), ?)""",
+                values (?, 'MOVE', ?, ?, ?, ?, 'AVAILABLE', 'AVAILABLE', 'ORDER', ?, now(), ?)""",
                 Identifiers.newId(), sku, from, to, quantity, Identifiers.newId(), lot);
     }
 

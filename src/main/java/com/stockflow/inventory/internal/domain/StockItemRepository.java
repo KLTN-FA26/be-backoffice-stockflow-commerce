@@ -62,12 +62,16 @@ public interface StockItemRepository {
     /** Sellable stock for one SKU across all locations. Used by the query side, never before a lock. */
     List<StockItem> findAvailableBySku(Sku sku);
 
-    /** Aggregated query port: no reservation history is needed for storefront availability. */
-    default java.util.Map<String, Long> availableQuantities(java.util.Set<String> skus, LocalDate today) {
-        return skus.stream().collect(java.util.stream.Collectors.toMap(code -> code,
-                code -> findAvailableBySku(new Sku(code)).stream()
-                        .filter(item -> item.expiryDate() == null || !item.expiryDate().isBefore(today))
-                        .mapToLong(item -> item.available().value()).sum()));
+    /**
+     * The stock rows of these SKUs a release could allocate: AVAILABLE, unexpired, each the whole content of a sealed
+     * carton in stock that nothing holds (team plan 4C-2; kltn-docs 07 BR-03). Available to promise is counted from
+     * these, so checkout never promises loose units or an opened carton that no release would hand out. Where they
+     * stand is the caller's to judge (pickable bins are the warehouse module's).
+     */
+    List<Allocatable> findAllocatable(Collection<String> skus, LocalDate today);
+
+    /** A row {@link #findAllocatable} returns: the carton's units at its location. */
+    record Allocatable(StockItemId id, String sku, String locationCode, int units) {
     }
 
     /** Per (location, status) subtotals of one SKU, all statuses included; feeds Inventory Level. */
@@ -79,8 +83,6 @@ public interface StockItemRepository {
      */
     Map<String, Integer> findAllocatedBySku(Sku sku);
 
-    /** Sellable units ({@code onHand − reserved} of AVAILABLE stock) per SKU; absent when none. */
-    Map<Sku, Integer> sumAvailableBySkus(Collection<Sku> skus, LocalDate today);
 
     /**
      * The loose stock rows of {@code sku} at {@code location}: rows in a stock package are left out. A row in a
@@ -92,20 +94,6 @@ public interface StockItemRepository {
      * would take or fill the others by chance. Stock in a carton is reached through its carton.</p>
      */
     List<StockItem> findLooseBySkuAndLocation(Sku sku, LocationId location);
-
-    /**
-     * The loose INBOUND rows of one lot, in id order, unlocked. A confirmed receipt opens its own lot per (SKU, lot
-     * number, expiry), so these are exactly one receipt line's loose goods still waiting for putaway; the caller
-     * locks the rows it takes from.
-     */
-    List<StockItem> findLooseInboundByLot(Sku sku, java.util.UUID lotId);
-
-    /**
-     * Where each lot's loose goods wait: the location code of the lowest-id loose INBOUND row with units, per lot, in
-     * one query that loads no reservations. A lot with no such row is absent. For reading only: nothing here may be
-     * taken from, because the rows are neither locked nor loaded.
-     */
-    java.util.Map<java.util.UUID, String> looseInboundLocationByLot(java.util.Collection<java.util.UUID> lotIds);
 
     /**
      * What is left in a stock package: the sum of its rows' {@code on_hand}, as this transaction has written them

@@ -43,6 +43,11 @@ public final class PutawayTask extends AggregateRoot {
         if (task.quantity() < 1) {
             throw DomainChecks.invalid("A putaway task needs at least one unit, got " + task.quantity());
         }
+        // Kltn-docs 05 BR-08 (team plan 4C-2): a task is one carton, put away whole; a receipt puts every unit into a
+        // carton, so there is no loose remainder to put away. Stated again by ck_putaway_task_receipt_carton.
+        if (task.stockPackageId() == null) {
+            throw DomainChecks.invalid("A putaway task of a receipt line names the carton it puts away");
+        }
         return new PutawayTask(id, Objects.requireNonNull(task.goodsReceiptId(), "goodsReceiptId"),
                 Objects.requireNonNull(task.goodsReceiptLineId(), "goodsReceiptLineId"),
                 DomainChecks.requiredText("sku", task.sku(), 64), task.quantity(), task.stockPackageId(), null,

@@ -11,6 +11,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -31,7 +32,9 @@ class OrderCancellationListenerTest {
     private final PackJpaRepository packs = mock(PackJpaRepository.class);
     private final PickListService pickLists = mock(PickListService.class);
     private final PackingService packing = mock(PackingService.class);
-    private final OrderCancellationListener listener = new OrderCancellationListener(picks, packs, pickLists, packing);
+    private final CartonCheckService cartonChecks = mock(CartonCheckService.class);
+    private final OrderCancellationListener listener = new OrderCancellationListener(picks, packs, pickLists, packing,
+            cartonChecks);
 
     private final UUID orderId = UUID.randomUUID();
     private final OrderCancelled event = new OrderCancelled(orderId, "SO-0001", UUID.randomUUID(), "RELEASED", "CUSTOMER",
@@ -44,19 +47,19 @@ class OrderCancellationListenerTest {
     @Test
     @DisplayName("an order that never reached fulfillment has nothing to cancel")
     void orderWithoutAPick() {
-        when(picks.lockByOrderId(orderId)).thenReturn(Optional.empty());
+        when(picks.lockAllByOrderId(orderId)).thenReturn(List.of());
 
         listener.on(event);
 
         verify(picks, never()).save(any());
-        verifyNoInteractions(pickLists, packing, packs);
+        verifyNoInteractions(pickLists, packing, packs, cartonChecks);
     }
 
     @Test
     @DisplayName("a pick not yet started is cancelled with its open lines, without a put-back")
     void pendingPickIsCancelled() {
         PickJpaEntity pick = pick(PickStatus.PENDING);
-        when(picks.lockByOrderId(orderId)).thenReturn(Optional.of(pick));
+        when(picks.lockAllByOrderId(orderId)).thenReturn(List.of(pick));
         when(packs.findByPickId(pick.getId())).thenReturn(Optional.empty());
 
         listener.on(event);
@@ -65,14 +68,14 @@ class OrderCancellationListenerTest {
         assertThat(pick.isNeedsPutBack()).isFalse();
         verify(picks).save(pick);
         verify(pickLists).cancelOpenLines(pick);
-        verifyNoInteractions(packing);
+        verifyNoInteractions(packing, cartonChecks);
     }
 
     @Test
     @DisplayName("a pick already started is flagged so its goods are put back (SCRUM-460)")
     void startedPickNeedsPutBack() {
         PickJpaEntity pick = pick(PickStatus.PICKING);
-        when(picks.lockByOrderId(orderId)).thenReturn(Optional.of(pick));
+        when(picks.lockAllByOrderId(orderId)).thenReturn(List.of(pick));
         when(packs.findByPickId(pick.getId())).thenReturn(Optional.empty());
 
         listener.on(event);
@@ -84,13 +87,15 @@ class OrderCancellationListenerTest {
     @DisplayName("a pack is voided with its parcels and labels, then cancelled (08 BR-05)")
     void packIsCancelledAfterItsParcelsAreVoided() {
         PickJpaEntity pick = pick(PickStatus.PICKED);
-        PackJpaEntity pack = new PackJpaEntity(UUID.randomUUID(), pick.getId(), PackStatus.PACKING, null);
-        when(picks.lockByOrderId(orderId)).thenReturn(Optional.of(pick));
+        PackJpaEntity pack = new PackJpaEntity(UUID.randomUUID(), pick.getId(), PackStatus.IN_PROGRESS, null);
+        when(picks.lockAllByOrderId(orderId)).thenReturn(List.of(pick));
         when(packs.findByPickId(pick.getId())).thenReturn(Optional.of(pack));
 
         listener.on(event);
 
         verify(packing).cancelForOrder(pick, pack);
+        // 4C-6: the check's cartons are removed (ORDER_CANCELLED) and its session cancelled, under the pick's lock.
+        verify(cartonChecks).cancelForOrder(pick, pack);
         assertThat(pack.getStatus()).isEqualTo(PackStatus.CANCELLED);
         verify(packs).save(pack);
     }
@@ -99,11 +104,11 @@ class OrderCancellationListenerTest {
     @DisplayName("the event delivered twice does nothing the second time")
     void redeliveryIsIdempotent() {
         PickJpaEntity pick = pick(PickStatus.CANCELLED);
-        when(picks.lockByOrderId(orderId)).thenReturn(Optional.of(pick));
+        when(picks.lockAllByOrderId(orderId)).thenReturn(List.of(pick));
 
         listener.on(event);
 
         verify(picks, never()).save(any());
-        verifyNoInteractions(pickLists, packing, packs);
+        verifyNoInteractions(pickLists, packing, packs, cartonChecks);
     }
 }

@@ -29,6 +29,13 @@ public interface PaymentService {
     InstallmentStanding installmentStanding(UUID orderId);
 
     /**
+     * 4B-8 (15 BR-08, 09 BR-18, 17 §4.5): what must be paid before the goods of one delivery batch leave - the
+     * installments on signing, and those before delivery tied to that batch or to none. A batch's handover waits for
+     * its own installment, not for those of the batches after it.
+     */
+    java.math.BigDecimal dueBeforeHandover(UUID orderId, UUID deliveryBatchId);
+
+    /**
      * 4B-9 (15 §4.6 step 18, BR-15): a contract order was cancelled. Its installments not paid in full are cancelled;
      * the money collected on them pays the fee first, the rest is to be refunded, and a shortfall becomes the
      * cancellation fee item, due from the cancellation day. Written in the caller's transaction, after the order's row

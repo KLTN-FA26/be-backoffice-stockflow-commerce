@@ -800,6 +800,30 @@ class ReturnRequestIntegrationTest {
     }
 
     @Test
+    @DisplayName("a replacement order with a labelled carton (4C-6) is not withdrawn whole: it is locked against cancellation "
+            + "although nothing is packed, so the approval says so (RETURN_REPLACEMENT_NOT_WITHDRAWABLE) instead of "
+            + "failing on the cancellation; nothing is cancelled or credited (review L5)")
+    void replacementWithALabelledCartonIsNotWithdrawn() {
+        OrderSummary order = delivered(3);
+        ReturnRequest request = open(order.orderId(), ReturnReason.DAMAGED_IN_TRANSIT, ReturnResolution.REPLACEMENT, 1);
+        approved(request, false);
+        UUID replacement = resolved(request, 1, 0, null).replacementOrderId();
+        placed.add(replacement);
+        returns.proposeReplacementWithdrawal(request.id(), "Khách muốn nhận tiền thay vì hàng", null, sales);
+
+        // Meanwhile the check station labels the replacement's first carton: the order is locked from now (08 BR-04).
+        tx.executeWithoutResult(s -> jdbc.update(
+                "UPDATE ordering.customer_order SET first_labeled_at = NOW() WHERE id = ?", replacement));
+        OrderStatus before = statusOf(replacement);
+
+        assertThat(code(catchThrowable(() -> returns.approveReplacementWithdrawal(request.id(), null, accountant))))
+                .isEqualTo(ErrorCode.RETURN_REPLACEMENT_NOT_WITHDRAWABLE);
+        assertThat(statusOf(replacement)).isEqualTo(before).isNotEqualTo(OrderStatus.CANCELLED);
+        assertThat(code(catchThrowable(() -> returns.proposeReplacementWithdrawal(request.id(), "again", null,
+                sales)))).isIn(ErrorCode.RETURN_REPLACEMENT_NOT_WITHDRAWABLE, ErrorCode.RETURN_INVALID_TRANSITION);
+    }
+
+    @Test
     @DisplayName("a defective reprint: the replacement order's free line is claimed at what the goods were paid, not at "
             + "the replacement's zero")
     void claimOnAReplacement() {

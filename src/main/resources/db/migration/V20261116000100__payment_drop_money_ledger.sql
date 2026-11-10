@@ -49,32 +49,57 @@
 -- ---------------------------------------------------------------------------------------------
 -- 1. Return requests no longer name a customer transfer
 -- ---------------------------------------------------------------------------------------------
-ALTER TABLE ordering.return_request DROP CONSTRAINT fk_return_request_credit_transfer;
-ALTER TABLE ordering.return_request DROP CONSTRAINT fk_return_request_withdrawal_transfer;
+-- Every step here is conditional: cluster 1's rework of the old returns (4D-4, an earlier version number) may already
+-- have dropped these constraints or the columns they name. Whatever is still there is brought in line; nothing is
+-- assumed.
+ALTER TABLE ordering.return_request DROP CONSTRAINT IF EXISTS fk_return_request_credit_transfer;
+ALTER TABLE ordering.return_request DROP CONSTRAINT IF EXISTS fk_return_request_withdrawal_transfer;
 -- Tied a credit or an offset to the transfer that booked it; nothing books one any more (4B-10).
-ALTER TABLE ordering.return_request DROP CONSTRAINT ck_return_request_credit_transfer;
-ALTER TABLE ordering.return_request DROP CONSTRAINT ck_return_request_withdrawal;
+ALTER TABLE ordering.return_request DROP CONSTRAINT IF EXISTS ck_return_request_credit_transfer;
+ALTER TABLE ordering.return_request DROP CONSTRAINT IF EXISTS ck_return_request_withdrawal;
 
-UPDATE ordering.return_request
-SET credit_transfer_id = NULL, withdrawal_credit_transfer_id = NULL
-WHERE credit_transfer_id IS NOT NULL OR withdrawal_credit_transfer_id IS NOT NULL;
-
--- The withdrawal's rules as before, without its last clause (the withdrawal's credit booked as a transfer).
-ALTER TABLE ordering.return_request ADD CONSTRAINT ck_return_request_withdrawal CHECK (
-    (withdrawal_status IS NULL OR withdrawal_status IN ('PENDING', 'APPROVED', 'REJECTED'))
-    AND (withdrawal_status IS NULL
-         OR (status = 'RESOLVED' AND replacement_order_id IS NOT NULL AND withdrawal_reason IS NOT NULL
-             AND withdrawal_proposed_by IS NOT NULL AND withdrawal_proposed_at IS NOT NULL))
-    AND ((withdrawal_status IN ('APPROVED', 'REJECTED'))
-         = (withdrawal_decided_by IS NOT NULL AND withdrawal_decided_at IS NOT NULL))
-    AND (withdrawal_decided_by IS NULL OR withdrawal_decided_by <> withdrawal_proposed_by)
-    AND (withdrawal_status IS DISTINCT FROM 'REJECTED' OR withdrawal_decision_note IS NOT NULL)
-    AND withdrawal_amount >= 0
-    AND withdrawal_offset_amount >= 0
-    AND withdrawal_credited_amount >= 0
-    AND (withdrawal_status = 'APPROVED' OR (withdrawal_offset_amount = 0 AND withdrawal_credited_amount = 0))
-    AND (withdrawal_status IS DISTINCT FROM 'APPROVED'
-         OR withdrawal_offset_amount + withdrawal_credited_amount = withdrawal_amount));
+DO $$
+DECLARE
+    has_credit_transfer     BOOLEAN;
+    has_withdrawal_transfer BOOLEAN;
+    has_withdrawal          BOOLEAN;
+BEGIN
+    SELECT bool_or(column_name = 'credit_transfer_id'),
+           bool_or(column_name = 'withdrawal_credit_transfer_id'),
+           count(*) FILTER (WHERE column_name IN ('withdrawal_status', 'replacement_order_id', 'withdrawal_reason',
+               'withdrawal_proposed_by', 'withdrawal_proposed_at', 'withdrawal_decided_by', 'withdrawal_decided_at',
+               'withdrawal_decision_note', 'withdrawal_amount', 'withdrawal_offset_amount',
+               'withdrawal_credited_amount')) = 11
+      INTO has_credit_transfer, has_withdrawal_transfer, has_withdrawal
+      FROM information_schema.columns
+     WHERE table_schema = 'ordering' AND table_name = 'return_request';
+    IF has_credit_transfer THEN
+        UPDATE ordering.return_request SET credit_transfer_id = NULL WHERE credit_transfer_id IS NOT NULL;
+    END IF;
+    IF has_withdrawal_transfer THEN
+        UPDATE ordering.return_request SET withdrawal_credit_transfer_id = NULL
+         WHERE withdrawal_credit_transfer_id IS NOT NULL;
+    END IF;
+    -- The withdrawal's rules as before, without its last clause (the withdrawal's credit booked as a transfer); only
+    -- while the withdrawal is still there to state them on.
+    IF has_withdrawal THEN
+        ALTER TABLE ordering.return_request ADD CONSTRAINT ck_return_request_withdrawal CHECK (
+            (withdrawal_status IS NULL OR withdrawal_status IN ('PENDING', 'APPROVED', 'REJECTED'))
+            AND (withdrawal_status IS NULL
+                 OR (status = 'RESOLVED' AND replacement_order_id IS NOT NULL AND withdrawal_reason IS NOT NULL
+                     AND withdrawal_proposed_by IS NOT NULL AND withdrawal_proposed_at IS NOT NULL))
+            AND ((withdrawal_status IN ('APPROVED', 'REJECTED'))
+                 = (withdrawal_decided_by IS NOT NULL AND withdrawal_decided_at IS NOT NULL))
+            AND (withdrawal_decided_by IS NULL OR withdrawal_decided_by <> withdrawal_proposed_by)
+            AND (withdrawal_status IS DISTINCT FROM 'REJECTED' OR withdrawal_decision_note IS NOT NULL)
+            AND withdrawal_amount >= 0
+            AND withdrawal_offset_amount >= 0
+            AND withdrawal_credited_amount >= 0
+            AND (withdrawal_status = 'APPROVED' OR (withdrawal_offset_amount = 0 AND withdrawal_credited_amount = 0))
+            AND (withdrawal_status IS DISTINCT FROM 'APPROVED'
+                 OR withdrawal_offset_amount + withdrawal_credited_amount = withdrawal_amount));
+    END IF;
+END $$;
 
 
 -- ---------------------------------------------------------------------------------------------

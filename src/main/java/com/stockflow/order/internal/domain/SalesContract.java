@@ -180,6 +180,27 @@ public final class SalesContract {
     }
 
     /**
+     * 4B-8 (kltn-docs 14 §5.2, 17 §4.6 step 21): the order it binds completed - every batch delivered, every installment
+     * paid - so the contract is fulfilled: SIGNED → COMPLETED, once. {@code ck_sales_contract_completed} and the
+     * transition trigger say the same.
+     *
+     * @return whether this changed the contract (false when it was completed already)
+     * @throws BusinessException {@code SALES_CONTRACT_STATUS_INVALID} for a contract not signed
+     */
+    public boolean complete(Instant at) {
+        if (status == SalesContractStatus.COMPLETED) {
+            return false;
+        }
+        if (!status.canTransitionTo(SalesContractStatus.COMPLETED)) {
+            throw new BusinessException(ErrorCode.SALES_CONTRACT_STATUS_INVALID, "Contract %s is %s: only a signed "
+                    .formatted(contractNumber, status) + "contract is completed");
+        }
+        this.status = SalesContractStatus.COMPLETED;
+        this.completedAt = Objects.requireNonNull(at, "at");
+        return true;
+    }
+
+    /**
      * Cancelled before it was signed, with a reason (14 §4.3 step 16, §5.2): the customer refused it, its content has
      * to change, or the order is cancelled. A signed contract is never cancelled here (BR-14).
      *

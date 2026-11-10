@@ -2,14 +2,15 @@ package com.stockflow.fulfillment;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.stockflow.common.domain.Sku;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.contracts.OrderCancelled;
 import com.stockflow.order.api.HoldReason;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.OrderSummary;
-import com.stockflow.order.internal.service.SalesContracts;
 import com.stockflow.support.Await;
+import com.stockflow.order.internal.service.SalesContracts;
 import com.stockflow.support.ConfirmedOrders;
 import com.stockflow.support.CustomerSkuRows;
 import com.stockflow.support.DemoData;
@@ -75,20 +76,16 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         "stockflow.upload-inspection.enabled=false"})
 class FtlDispatchIntegrationTest {
 
-    private static final String SOFA = "SOFA-3S-GREY";
+    private static final Sku SOFA = new Sku("SOFA-3S-GREY");
     private static final Duration ASYNC = Duration.ofSeconds(15);
     private static final UUID HCM = DemoData.WAREHOUSE_HCM;
     private static final String ORDERS = "/api/v1/orders";
     private static final String BASE = "/api/v1/fulfillment";
     private static final String PLANS = BASE + "/load-plans";
     private static final String LOADS = BASE + "/loads";
-    private static final String ONE_CARTON = "{\"kitOverrideReason\":\"test: packed as one carton\"}";
-    /** A sofa carton, and kit part 1 (the sofa itself): 2150 x 950 x 900 mm. */
-    private static final String SOFA_MEASURES = "{\"weightKg\":52.5,\"lengthCm\":215,\"widthCm\":95,\"heightCm\":90}";
-    /** Kit part 2 (the cushions): 950 x 900 x 400 mm. */
-    private static final String PART2_MEASURES = "{\"weightKg\":20,\"lengthCm\":95,\"widthCm\":90,\"heightCm\":40}";
 
     @Autowired MockMvc mvc;
+    private CartonStationSupport.Parts parts;
     @MockitoBean JwtDecoder decoder;
     /** 3-4: the carrier's API, faked - no test calls Ahamove. */
     @MockitoBean com.stockflow.fulfillment.internal.service.CarrierBookingGateway carrierGateway;
@@ -112,6 +109,8 @@ class FtlDispatchIntegrationTest {
 
     @BeforeEach
     void setUp() {
+        CartonStationSupport.giveCartonsASize(tx, jdbc);
+        parts = new CartonStationSupport.Parts(this::packer, tx, jdbc, json);
         coordinator = staff("ORDER_COORDINATOR");
         picker = staff("WAREHOUSE_STAFF", HCM);
         dispatcher = staff("WAREHOUSE_STAFF", HCM);
@@ -187,33 +186,27 @@ class FtlDispatchIntegrationTest {
         return request.contentType("application/json").content(content);
     }
 
-    private void stock(String sku, int sofas) {
-        tx.executeWithoutResult(s -> jdbc.update("""
-                INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, version,
-                    created_at, received_at)
-                VALUES (?, ?, 'HCM-A02-1-A', ?, 0, 'AVAILABLE', 0, NOW(), NOW() - interval '400 days')""",
-                Identifiers.newId(), sku, sofas));
-    }
-
-    /** A paid order of the demo customer for {@code sofas} sofas, released at HCM (every order is a full truckload). */
-    private OrderSummary ftlOrder(int sofas) throws Exception {
-        return ftlOrder(sofas, DemoData.CUSTOMER_ID);
-    }
-
+    /**
+     * The order's sofas, as whole sealed cartons of one (the demo sofa's carton unit): an order is given whole cartons
+     * only (team plan 4C-2), so loose sofas would not be allocated and the order would draw on the shared demo cartons.
+     * Received long ago, so the allocator hands them out first (FIFO).
+     */
+    /**
+     * A paid order of {@code sofas} sofas for the customer, released at HCM (every order is a full truckload): a
+     * contract's order, one carton of two pieces per sofa (14 BR-08), its sealed cartons held at HCM and picked one by
+     * one by their LPN (4C).
+     */
     private OrderSummary ftlOrder(int sofas, UUID customer) throws Exception {
         return ftlOrder(sofas, customer, ConfirmedOrders.paidOnSigning());
     }
 
     /** The same, its contract paying as {@code plan} says; the installments on signing are paid. */
     private OrderSummary ftlOrder(int sofas, UUID customer, List<SalesContracts.Installment> plan) throws Exception {
-        int pieces = Math.max(2, sofas);
-        String sku = sofaOf(customer);
-        stock(sku, pieces);
+        CustomerSkuRows.Issued issued = sofaOf(customer);
+        CustomerSkuRows.stock(jdbc, tx, issued.sku(), 2 * sofas);
         ConfirmedOrders.Signed signed = confirmedOrders().signed(customer, plan,
-                ConfirmedOrders.Line.units(sku, pieces, 12_000_000));
-        UUID orderId = confirmedOrders().pay(signed).orderId();
-        sofasOrdered.put(orderId, sofas);
-        return confirmedOrders().release(orderId, HCM, coordinator);
+                ConfirmedOrders.Line.cartons(issued, sofas, 6_000_000));
+        return confirmedOrders().release(confirmedOrders().pay(signed).orderId(), HCM, coordinator);
     }
 
     private ConfirmedOrders confirmedOrders;
@@ -225,83 +218,33 @@ class FtlDispatchIntegrationTest {
         return confirmedOrders;
     }
 
-    private final Map<UUID, String> sofas = new java.util.HashMap<>();
-    /** Sofas a test asked for, per order: a carton holds two pieces at least (ck_order_line_cartons), so one is two. */
-    private final Map<UUID, Integer> sofasOrdered = new java.util.HashMap<>();
+    private final java.util.Map<UUID, CustomerSkuRows.Issued> sofas = new java.util.HashMap<>();
 
-    /** The customer's own sofa, handling like the catalogue's (a contract's lines are only ever the customer's, 14 BR-04). */
-    private String sofaOf(UUID customer) {
+    /** The customer's own sofa, handling like the catalogue's, sold in cartons of two (a contract's lines are only ever the customer's, 14 BR-04). */
+    private CustomerSkuRows.Issued sofaOf(UUID customer) {
         return sofas.computeIfAbsent(customer,
-                c -> CustomerSkuRows.like(jdbc, tx, entityManager, c, SOFA, 50).sku());
+                c -> CustomerSkuRows.like(jdbc, tx, entityManager, c, SOFA.code(), 2));
     }
 
-    /** The order picked and packed: as kits of 2 (LP2-6) or one carton per sofa. Returns the shipment and task. */
+    private OrderSummary ftlOrder(int sofas) throws Exception {
+        return ftlOrder(sofas, DemoData.CUSTOMER_ID);
+    }
+    /** The order picked and packed at the check station, one shipment of all its cartons. Returns the shipment and task. */
     private UUID[] packed(OrderSummary order, boolean kits) throws Exception {
         UUID task = UUID.fromString(data(oc(body(post(BASE + "/tasks"), "{\"orderId\":\"" + order.orderId()
                 + "\",\"assignedUserId\":\"" + picker + "\"}")).andExpect(status().isCreated())).path("taskId").asText());
         packer(post(BASE + "/tasks/" + task + "/picking-start")).andExpect(status().isOk());
         for (Map<String, Object> line : jdbc.queryForList(
-                "SELECT id, location_code, sku, allocated_qty FROM fulfillment.pick_line WHERE pick_id = ?", task)) {
+                "SELECT id, location_code, lpn AS scan "
+                        + "FROM fulfillment.pick_line WHERE pick_id = ?", task)) {
             packer(body(post(BASE + "/tasks/" + task + "/pick-lines/" + line.get("id") + "/confirmation"),
-                    "{\"locationCode\":\"" + line.get("location_code") + "\",\"scannedCode\":\"" + line.get("sku")
-                            + "\",\"quantity\":" + line.get("allocated_qty") + "}")).andExpect(status().isOk());
+                    "{\"locationCode\":\"" + line.get("location_code") + "\",\"lpn\":\"" + line.get("scan")
+                            + "\"}")).andExpect(status().isOk());
         }
         packer(post(BASE + "/tasks/" + task + "/picking-completion")).andExpect(status().isOk());
-        packer(post(BASE + "/tasks/" + task + "/packing-start")).andExpect(status().isOk());
-        int pieces = order.lines().getFirst().quantity();
-        int sofas = sofasOrdered.getOrDefault(order.orderId(), pieces);
-        UUID line = order.lines().getFirst().lineId();
-        if (sofas < pieces && !kits) {
-            // One sofa asked for, one carton of two pieces ordered: both go in the one package, as the one sofa was.
-            String parcel = data(packer(body(post(BASE + "/tasks/" + task + "/packages"), ONE_CARTON))
-                    .andExpect(status().isCreated())).path("packageId").asText();
-            scan(task, parcel, pieces);
-            packer(body(post(BASE + "/tasks/" + task + "/packages/" + parcel + "/seal"), SOFA_MEASURES))
-                    .andExpect(status().isOk());
-            sofas = 0;
-        } else if (sofas < pieces) {
-            // A kit is one sofa: the other piece stays behind, the order shipping in parts (PACK-PARTIAL).
-            tx.executeWithoutResult(s -> jdbc.update(
-                    "UPDATE ordering.customer_order SET allow_partial_shipment = TRUE WHERE id = ?", order.orderId()));
-        }
-        for (int i = 0; i < sofas; i++) {
-            if (kits) {
-                JsonNode kit = data(packer(body(post(BASE + "/tasks/" + task + "/package-kits"), "{\"orderLineId\":\""
-                        + line + "\"}")).andExpect(status().isCreated()));
-                String part1 = kit.path("packages").get(0).path("packageId").asText();
-                String part2 = kit.path("packages").get(1).path("packageId").asText();
-                scan(task, part1);
-                packer(body(post(BASE + "/tasks/" + task + "/packages/" + part1 + "/seal"), SOFA_MEASURES))
-                        .andExpect(status().isOk());
-                packer(body(post(BASE + "/tasks/" + task + "/packages/" + part2 + "/seal"), PART2_MEASURES))
-                        .andExpect(status().isOk());
-            } else {
-                String parcel = data(packer(body(post(BASE + "/tasks/" + task + "/packages"), ONE_CARTON))
-                        .andExpect(status().isCreated())).path("packageId").asText();
-                scan(task, parcel);
-                packer(body(post(BASE + "/tasks/" + task + "/packages/" + parcel + "/seal"), SOFA_MEASURES))
-                        .andExpect(status().isOk());
-            }
-        }
-        boolean leftBehind = kits && sofasOrdered.getOrDefault(order.orderId(), pieces) < pieces;
-        String shipment = data(packer(body(post(BASE + "/tasks/" + task + "/packing-completion"),
-                leftBehind ? "{\"partial\":true,\"note\":\"one sofa now\"}" : "{}")).andExpect(status().isOk()))
-                .path("shipmentId").asText();
-        return new UUID[] {UUID.fromString(shipment), task};
-    }
-
-    private String pickedSku(UUID task) {
-        return jdbc.queryForObject("SELECT sku FROM fulfillment.pick_line WHERE pick_id = ? LIMIT 1", String.class, task);
-    }
-
-    private void scan(UUID task, String parcel) throws Exception {
-        scan(task, parcel, 1);
-    }
-
-    private void scan(UUID task, String parcel, int quantity) throws Exception {
-        packer(body(post(BASE + "/tasks/" + task + "/packages/" + parcel + "/scans"), "{\"scanId\":\""
-                + UUID.randomUUID() + "\",\"scannedCode\":\"" + pickedSku(task) + "\",\"quantity\":" + quantity + "}"))
-                .andExpect(status().isOk());
+        // The check station (4C-6): start, scan the LPN of every picked carton, label, complete: one shipment.
+        UUID shipment = CartonStationSupport.ship(this::packer, jdbc, json, task, null);
+        return new UUID[] {shipment, task};
     }
 
     private static String ids(List<UUID> ids) {
@@ -397,7 +340,7 @@ class FtlDispatchIntegrationTest {
         String v1 = loadOf(plan, 1);
         String v2 = loadOf(plan, 2);
 
-        // Confirmation opened both vehicles' manifests with the shipment, each listing its own two parcels (a kit).
+        // Confirmation opened both vehicles' manifests with the shipment, each listing its own carton.
         JsonNode first = load(v1);
         JsonNode second = load(v2);
         for (JsonNode l : List.of(first, second)) {
@@ -406,7 +349,7 @@ class FtlDispatchIntegrationTest {
             assertThat(l.path("vehicleTypeCode").asText()).isEqualTo("TRUCK-1T25");
             assertThat(l.path("shipments")).singleElement().satisfies(s -> assertThat(s.path("shipmentId").asText())
                     .isEqualTo(shipment.toString()));
-            assertThat(l.path("expectedPackageCount").asInt()).isEqualTo(2);
+            assertThat(l.path("expectedPackageCount").asInt()).isEqualTo(1);
         }
         assertThat(first.path("vehicleSeq").asInt()).isEqualTo(1);
         assertThat(labels(first)).doesNotContainAnyElementsOf(labels(second));
@@ -449,24 +392,18 @@ class FtlDispatchIntegrationTest {
         wrong.path("fieldErrors").forEach(f -> fields.put(f.path("field").asText(), f.path("message").asText()));
         assertThat(fields).containsEntry("vehicleSeq", "2").containsEntry("loadCode", second.path("code").asText());
 
-        // Kit part 1 only: the kit is not whole - LOAD_NOT_FULLY_LOADED names part 2.
+        // Nothing scanned: the vehicle's carton is missing - LOAD_NOT_FULLY_LOADED names it.
         List<String> mine = labels(first);
-        Map<String, Integer> partOf = new HashMap<>();
-        first.path("shipments").get(0).path("packages").forEach(p -> partOf.put(p.path("labelCode").asText(),
-                p.path("kit").path("partNo").asInt()));
-        String part1 = mine.stream().filter(l -> partOf.get(l) == 1).findFirst().orElseThrow();
-        String part2 = mine.stream().filter(l -> partOf.get(l) == 2).findFirst().orElseThrow();
-        scanOnto(v1, part1).andExpect(status().isOk());
         JsonNode notWhole = body(handOver(v1).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("LOAD_NOT_FULLY_LOADED")));
-        assertThat(notWhole.path("message").asText()).contains(part2).contains("kit part 2/2");
-        scanOnto(v1, part2).andExpect(status().isOk());
+        assertThat(notWhole.path("message").asText()).contains(mine.getFirst());
+        scanOnto(v1, mine.getFirst()).andExpect(status().isOk());
 
         // The per-vehicle manifest: only this vehicle's parcels.
         JsonNode manifest = data(dispatch(get(LOADS + "/" + v1 + "/manifest")).andExpect(status().isOk()));
         assertThat(manifest.path("vehicleSeq").asInt()).isEqualTo(1);
         assertThat(manifest.path("loadPlanCode").asText()).isEqualTo(plan.path("code").asText());
-        assertThat(manifest.path("packageCount").asInt()).isEqualTo(2);
+        assertThat(manifest.path("packageCount").asInt()).isEqualTo(1);
         assertThat(manifest.path("shipments").get(0).path("orderNumber").asText()).isEqualTo(order.orderNumber());
         assertThat(manifest.path("shipments").get(0).path("packages").findValuesAsText("labelCode"))
                 .containsExactlyInAnyOrderElementsOf(mine);
@@ -819,12 +756,17 @@ class FtlDispatchIntegrationTest {
 
     /** The shipment's order delivered to {@code province}. */
     private void deliverTo(UUID shipment, String province) {
-        tx.executeWithoutResult(s -> jdbc.update("""
+        // A labelled order's delivery address is locked (17 BR-16, tg_order_label_lock). This test is about carriers by
+        // province, so the fixture writes the address with the row triggers off for its own transaction.
+        tx.executeWithoutResult(s -> {
+            jdbc.execute("SET LOCAL session_replication_role = replica");
+            jdbc.update("""
                 UPDATE ordering.customer_order SET shipping_recipient_name = 'Lan', shipping_phone = '0912345678',
                     shipping_line1 = '2 Hai Bà Trưng', shipping_ward_code = '26740', shipping_ward_name = 'Bến Nghé',
                     shipping_province_code = ?,
                     shipping_province_name = 'Hồ Chí Minh', shipping_country_code = 'VN'
-                 WHERE id = (SELECT order_id FROM fulfillment.shipment WHERE id = ?)""", province, shipment));
+                 WHERE id = (SELECT order_id FROM fulfillment.shipment WHERE id = ?)""", province, shipment);
+        });
     }
 
     @Test
@@ -1681,32 +1623,24 @@ class FtlDispatchIntegrationTest {
                 .containsEntry("order_id", order.orderId());
         assertThat(jdbc.queryForObject("SELECT package_count FROM fulfillment.shipment WHERE id = ?", Integer.class,
                 shipment)).isEqualTo(1);
+        // A shipping label names neither the shipment nor n/N (08 §4.3, 4C-6): a split outdates no carton's label.
         assertThat(jdbc.queryForObject("SELECT label_outdated_at IS NOT NULL FROM fulfillment.package WHERE id = "
-                + "?::uuid", Boolean.class, stays)).isTrue();
+                + "?::uuid", Boolean.class, stays)).isFalse();
         assertThat(data(dispatch(get(BASE + "/load-plan-candidates?warehouseId=" + HCM)).andExpect(status().isOk()))
                 .findValuesAsText("shipmentId")).contains(rest.toString()).doesNotContain(shipment.toString());
         JsonNode check = data(dispatch(get(PLANS + "/" + id + "/reconciliation")).andExpect(status().isOk()));
         assertThat(check.path("pieceCheck").path("balanced").asBoolean()).isTrue();
         assertThat(check.path("shipments")).allSatisfy(s -> assertThat(s.path("notInPlan").asInt()).isZero());
 
-        // Its label names the old shipment: reprinted before it is loaded anywhere.
+        // The carton that moved to the new shipment is not on this vehicle's manifest: its scan is refused as such.
         String restLabel = jdbc.queryForObject("SELECT label_code FROM fulfillment.package WHERE id = ?::uuid",
                 String.class, stays);
         scanOnto(loadId, restLabel).andExpect(status().isConflict())
-                .andExpect(jsonPath("$.errorCode").value("LABEL_OUTDATED"));
-        packer(get(BASE + "/tasks/" + packedShipment[1] + "/packages/" + stays + "/label")).andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.shipmentId").value(rest.toString()));
-        assertThat(jdbc.queryForObject("SELECT label_outdated_at FROM fulfillment.package WHERE id = ?::uuid",
-                java.sql.Timestamp.class, stays)).isNull();
-        scanOnto(loadId, restLabel).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("PACKAGE_NOT_IN_LOAD"));
 
-        // The parcel that stays is 1/1 now, no longer 1/2: its label is reprinted before it is loaded too.
+        // The carton that stays is loadable at once: its label did not change with the split.
         assertThat(labels(load(loadId))).hasSize(1);
-        scanOnto(loadId, labels(load(loadId)).getFirst()).andExpect(status().isConflict())
-                .andExpect(jsonPath("$.errorCode").value("LABEL_OUTDATED"));
-        packer(get(BASE + "/tasks/" + packedShipment[1] + "/packages/" + goes + "/label")).andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.packageCount").value(1));
+        scanOnto(loadId, labels(load(loadId)).getFirst()).andExpect(status().isOk());
         scanOnto(loadId, labels(load(loadId)).getFirst()).andExpect(status().isOk());
         handOver(loadId).andExpect(status().isOk());
         assertThat(shipmentStatus(shipment)).isEqualTo("HANDED_OVER");
@@ -1727,7 +1661,7 @@ class FtlDispatchIntegrationTest {
 
     // ---- review of #162: no-partial orders, the gate at every vehicle, concurrency, auto-cancel ------------------
 
-    /** An order of 2 sofas packed in two shipments (Sales allowed partial shipments): as kits or cartons. */
+    /** An order of 2 sofas packed in two shipments (Sales allowed partial shipments), a carton each. */
     private UUID[] packedInTwo(OrderSummary order, boolean kits) throws Exception {
         tx.executeWithoutResult(s -> jdbc.update(
                 "UPDATE ordering.customer_order SET allow_partial_shipment = TRUE WHERE id = ?", order.orderId()));
@@ -1735,36 +1669,17 @@ class FtlDispatchIntegrationTest {
                 + "\",\"assignedUserId\":\"" + picker + "\"}")).andExpect(status().isCreated())).path("taskId").asText());
         packer(post(BASE + "/tasks/" + task + "/picking-start")).andExpect(status().isOk());
         for (Map<String, Object> line : jdbc.queryForList(
-                "SELECT id, location_code, sku, allocated_qty FROM fulfillment.pick_line WHERE pick_id = ?", task)) {
+                "SELECT id, location_code, lpn AS scan "
+                        + "FROM fulfillment.pick_line WHERE pick_id = ?", task)) {
             packer(body(post(BASE + "/tasks/" + task + "/pick-lines/" + line.get("id") + "/confirmation"),
-                    "{\"locationCode\":\"" + line.get("location_code") + "\",\"scannedCode\":\"" + line.get("sku")
-                            + "\",\"quantity\":" + line.get("allocated_qty") + "}")).andExpect(status().isOk());
+                    "{\"locationCode\":\"" + line.get("location_code") + "\",\"lpn\":\"" + line.get("scan")
+                            + "\"}")).andExpect(status().isOk());
         }
         packer(post(BASE + "/tasks/" + task + "/picking-completion")).andExpect(status().isOk());
-        packer(post(BASE + "/tasks/" + task + "/packing-start")).andExpect(status().isOk());
-        UUID line = order.lines().getFirst().lineId();
+        // Two shipments of one sofa each: the check station runs once and hands the cartons out (see Parts).
         UUID[] shipments = new UUID[2];
         for (int i = 0; i < 2; i++) {
-            if (kits) {
-                JsonNode kit = data(packer(body(post(BASE + "/tasks/" + task + "/package-kits"), "{\"orderLineId\":\""
-                        + line + "\"}")).andExpect(status().isCreated()));
-                String part1 = kit.path("packages").get(0).path("packageId").asText();
-                String part2 = kit.path("packages").get(1).path("packageId").asText();
-                scan(task, part1);
-                packer(body(post(BASE + "/tasks/" + task + "/packages/" + part1 + "/seal"), SOFA_MEASURES))
-                        .andExpect(status().isOk());
-                packer(body(post(BASE + "/tasks/" + task + "/packages/" + part2 + "/seal"), PART2_MEASURES))
-                        .andExpect(status().isOk());
-            } else {
-                String parcel = data(packer(body(post(BASE + "/tasks/" + task + "/packages"), ONE_CARTON))
-                        .andExpect(status().isCreated())).path("packageId").asText();
-                scan(task, parcel);
-                packer(body(post(BASE + "/tasks/" + task + "/packages/" + parcel + "/seal"), SOFA_MEASURES))
-                        .andExpect(status().isOk());
-            }
-            shipments[i] = UUID.fromString(data(packer(body(post(BASE + "/tasks/" + task + "/packing-completion"),
-                    i == 0 ? "{\"partial\":true,\"note\":\"one sofa now\"}" : "{}")).andExpect(status().isOk()))
-                    .path("shipmentId").asText());
+            shipments[i] = parts.ship(task, 1);
         }
         return shipments;
     }
@@ -2094,91 +2009,6 @@ class FtlDispatchIntegrationTest {
         // The % of a search term is literal, not a wildcard.
         assertThat(loadsPage("&search=%25").path("totalElements").asInt()).isZero();
     }
-
-    @Test
-    @DisplayName("labelOutdated / labelOutdatedAt on every parcel entry: a split at loading start marks the parcel left "
-            + "on the shipment (n/N changed) - on the vehicle's load and manifest - and the parcel moved to the new "
-            + "shipment - on the shipment detail and the packing session; the 409 LABEL_OUTDATED scan is unchanged; "
-            + "a label reprint clears the flag everywhere")
-    void labelOutdatedIsExposed() throws Exception {
-        OrderSummary order = ftlOrder(2);
-        allowPartial(order, true);
-        UUID[] packedShipment = packed(order, false);
-        UUID shipment = packedShipment[0];
-        UUID task = packedShipment[1];
-        JsonNode plan = plan(List.of(shipment), truck5t);
-        plan = step(plan, "/calculation", version(plan));
-        List<String> parcels = plan.path("packages").findValuesAsText("packageId");
-        String goes = parcels.get(0);
-        String stays = parcels.get(1);
-        plan = leaveOnTray(plan, goes, stays);
-        plan = step(plan, "/confirmation", version(plan));
-        String loadId = loadOf(plan, 1);
-
-        // Before the split nothing is outdated, and the flag is there, false, and the time is left out (null).
-        JsonNode before = load(loadId);
-        assertThat(before.path("shipments").get(0).path("packages")).isNotEmpty().allSatisfy(p -> {
-            assertThat(p.path("labelOutdated").isBoolean()).isTrue();
-            assertThat(p.path("labelOutdated").asBoolean()).isFalse();
-            assertThat(p.hasNonNull("labelOutdatedAt")).isFalse();
-        });
-        JsonNode manifestBefore = data(dispatch(get(LOADS + "/" + loadId + "/manifest")).andExpect(status().isOk()));
-        assertThat(manifestBefore.path("shipments").get(0).path("packages").get(0).path("labelOutdated").asBoolean())
-                .isFalse();
-
-        book(loadId, ghn, "51C-888.88");
-        dispatch(post(LOADS + "/" + loadId + "/loading-start")).andExpect(status().isOk());
-        UUID rest = jdbc.queryForObject("SELECT shipment_id FROM fulfillment.package WHERE id = ?::uuid", UUID.class,
-                stays);
-        assertThat(rest).isNotEqualTo(shipment);
-
-        // The parcel that stays on the vehicle: 1/1 now - its label is outdated, on the load and on the manifest.
-        JsonNode loaded = load(loadId);
-        JsonNode onLoad = loaded.path("shipments").get(0).path("packages").get(0);
-        assertThat(onLoad.path("packageId").asText()).isEqualTo(goes);
-        assertThat(onLoad.path("labelOutdated").asBoolean()).isTrue();
-        assertThat(onLoad.hasNonNull("labelOutdatedAt")).isTrue();
-        Instant since = Instant.parse(onLoad.path("labelOutdatedAt").asText());
-        assertThat(since).isBeforeOrEqualTo(Instant.now());
-        JsonNode manifest = data(dispatch(get(LOADS + "/" + loadId + "/manifest")).andExpect(status().isOk()));
-        JsonNode onManifest = manifest.path("shipments").get(0).path("packages").get(0);
-        assertThat(onManifest.path("labelOutdated").asBoolean()).isTrue();
-        assertThat(Instant.parse(onManifest.path("labelOutdatedAt").asText())).isEqualTo(since);
-        scanOnto(loadId, labels(loaded).getFirst()).andExpect(status().isConflict())
-                .andExpect(jsonPath("$.errorCode").value("LABEL_OUTDATED"));
-
-        // The parcel moved to the new shipment: on its detail and in the packing session.
-        JsonNode moved = data(dispatch(get(BASE + "/shipments/" + rest)).andExpect(status().isOk()))
-                .path("packages").get(0);
-        assertThat(moved.path("packageId").asText()).isEqualTo(stays);
-        assertThat(moved.path("labelOutdated").asBoolean()).isTrue();
-        assertThat(moved.hasNonNull("labelOutdatedAt")).isTrue();
-        JsonNode session = data(packer(get(BASE + "/tasks/" + task + "/packing-session")).andExpect(status().isOk()));
-        Map<String, Boolean> flags = new HashMap<>();
-        session.path("packages").forEach(p -> flags.put(p.path("packageId").asText(),
-                p.path("labelOutdated").asBoolean() && p.hasNonNull("labelOutdatedAt")));
-        assertThat(flags).containsEntry(goes, true).containsEntry(stays, true);
-
-        // A reprint of the moved parcel's label clears only its own flag; the other follows its own reprint.
-        packer(get(BASE + "/tasks/" + task + "/packages/" + stays + "/label")).andExpect(status().isOk());
-        JsonNode afterOne = data(dispatch(get(BASE + "/shipments/" + rest)).andExpect(status().isOk()))
-                .path("packages").get(0);
-        assertThat(afterOne.path("labelOutdated").asBoolean()).isFalse();
-        assertThat(afterOne.hasNonNull("labelOutdatedAt")).isFalse();
-        assertThat(load(loadId).path("shipments").get(0).path("packages").get(0).path("labelOutdated").asBoolean())
-                .isTrue();
-        packer(get(BASE + "/tasks/" + task + "/packages/" + goes + "/label")).andExpect(status().isOk());
-        JsonNode cleared = load(loadId).path("shipments").get(0).path("packages").get(0);
-        assertThat(cleared.path("labelOutdated").asBoolean()).isFalse();
-        assertThat(cleared.hasNonNull("labelOutdatedAt")).isFalse();
-        assertThat(data(dispatch(get(LOADS + "/" + loadId + "/manifest")).andExpect(status().isOk()))
-                .path("shipments").get(0).path("packages").get(0).path("labelOutdated").asBoolean()).isFalse();
-        session = data(packer(get(BASE + "/tasks/" + task + "/packing-session")).andExpect(status().isOk()));
-        assertThat(session.path("packages")).allSatisfy(p -> assertThat(p.path("labelOutdated").asBoolean()).isFalse());
-        scanOnto(loadId, labels(load(loadId)).getFirst()).andExpect(status().isOk());
-    }
-
-    // ---- the database, a second time (V20261022001400) ---------------------------------------
 
     @Test
     @DisplayName("V20261022001400 / V20261108000400: a load still open is a plan's vehicle (one of no plan is refused); "

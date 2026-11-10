@@ -20,5 +20,5 @@
  * </ul>
  */
 @org.springframework.modulith.ApplicationModule(allowedDependencies = {"order :: api", "inventory :: api",
-        "inventory :: consumption", "warehouse :: api", "identity :: api", "customer :: api"})
+        "inventory :: consumption", "warehouse :: api", "identity :: api", "customer :: api", "payment :: api"})
 package com.stockflow.fulfillment;

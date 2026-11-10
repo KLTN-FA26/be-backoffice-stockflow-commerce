@@ -3,6 +3,7 @@ package com.stockflow.procurement;
 import com.jayway.jsonpath.JsonPath;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.security.Role;
+import com.stockflow.support.ReceiptCartons;
 import com.stockflow.support.ReferenceRows;
 import com.stockflow.support.SecuredIntegrationTest;
 import com.stockflow.support.SecuredMvc;
@@ -40,6 +41,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * tolerance is posted. Four eyes, the reason, and the database's own checks of the same rules.
  *
  * <p>The demo supplier GOVIET has a 5% tolerance: an order of 100 takes up to 105.</p>
+ *
+ * <p>Since team plan 4C-2 a receipt is posted only with every unit in a carton (kltn-docs 03 BR-12): the lines are
+ * counted into the demo SKUs' CARTON unit of one piece, and a line that cartons were counted into is neither cut below
+ * them nor removed by a rejection. Rejecting the excess therefore cuts only a loose line counted last, whole.</p>
  */
 @SecuredIntegrationTest
 class GoodsReceiptOverToleranceApprovalIntegrationTest {
@@ -145,12 +150,28 @@ class GoodsReceiptOverToleranceApprovalIntegrationTest {
         return JsonPath.read(body, "$.data.id");
     }
 
+    /** A line counted into cartons of one: what a posted receipt holds. */
     private String plain(UUID poLine, int quantity) {
+        return """
+                {"purchaseOrderLineId":"%s","quantity":%d,"locationCode":"%s","unitOfMeasure":"%s","packages":%s}"""
+                .formatted(poLine, quantity, RECEIVING, ReceiptCartons.DEMO_UNIT, ReceiptCartons.json(quantity, 1));
+    }
+
+    /** A loose line: never posted, only waited on, cancelled or cut away whole. */
+    private String plainLoose(UUID poLine, int quantity) {
         return """
                 {"purchaseOrderLineId":"%s","quantity":%d,"locationCode":"%s"}""".formatted(poLine, quantity, RECEIVING);
     }
 
     private String lot(UUID poLine, int quantity, String lotNumber) {
+        return """
+                {"purchaseOrderLineId":"%s","quantity":%d,"lotNumber":"%s","expiryDate":"%s","locationCode":"%s",\
+                "unitOfMeasure":"%s","packages":%s}"""
+                .formatted(poLine, quantity, lotNumber, LocalDate.now().plusYears(1), RECEIVING,
+                        ReceiptCartons.DEMO_UNIT, ReceiptCartons.json(quantity, 1));
+    }
+
+    private String lotLoose(UUID poLine, int quantity, String lotNumber) {
         return """
                 {"purchaseOrderLineId":"%s","quantity":%d,"lotNumber":"%s","expiryDate":"%s","locationCode":"%s"}"""
                 .formatted(poLine, quantity, lotNumber, LocalDate.now().plusYears(1), RECEIVING);
@@ -369,36 +390,63 @@ class GoodsReceiptOverToleranceApprovalIntegrationTest {
     // ------------------------------------------------------------------ reject the excess
 
     @Test
-    @DisplayName("reject the excess: 110 counted, 105 posted; the order is RECEIVED; the reason and the cut are kept")
-    void rejectCutsToTheTolerance() throws Exception {
+    @DisplayName("reject the excess of a line in cartons: refused, it would cut the line below its cartons; nothing is "
+            + "counted in and the receipt still waits")
+    void rejectDoesNotCutBelowTheCartons() throws Exception {
         UUID order = confirmedOrder(SOFA, 100);
         String receipt = waitingReceipt(order);
         int before = inbound(SOFA, null);
 
         rejectExcess(manager, receipt, "5 cartons went back on the truck")
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.errorCode").value("RECEIPT_PACKAGES_EXCEED_LINE"));
+
+        assertThat(inbound(SOFA, null)).isEqualTo(before);
+        assertThat(jdbc.queryForObject("""
+                SELECT r.status || ':' || l.received_qty::int FROM procurement.goods_receipts r
+                  JOIN procurement.goods_receipt_lines l ON l.receipt_id = r.id WHERE r.id = ?::uuid""",
+                String.class, receipt)).isEqualTo("PENDING_APPROVAL:110");
+    }
+
+    @Test
+    @DisplayName("reject the excess: 110 counted (105 in cartons, 5 loose last), 105 posted; the order is RECEIVED; the "
+            + "reason and the cut are kept")
+    void rejectCutsToTheTolerance() throws Exception {
+        UUID order = confirmedOrder(TABLE, 100);
+        UUID line = poLine(order, TABLE);
+        String suffix = UUID.randomUUID().toString().substring(0, 6);
+        String receipt = draft(clerk, order);
+        count(clerk, receipt, lot(line, 105, "A-" + suffix), lotLoose(line, 5, "B-" + suffix)).andExpect(status().isOk());
+        confirm(clerk, receipt).andExpect(jsonPath("$.data.status").value("PENDING_APPROVAL"));
+
+        rejectExcess(manager, receipt, "5 cartons went back on the truck")
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("IN_PUTAWAY"))
+                .andExpect(jsonPath("$.data.lines.length()").value(1))
                 .andExpect(jsonPath("$.data.lines[0].quantity").value(105))
                 .andExpect(jsonPath("$.data.approval.decision").value("EXCESS_REJECTED"))
                 .andExpect(jsonPath("$.data.approval.reason").value("5 cartons went back on the truck"))
                 .andExpect(jsonPath("$.data.confirmedBy").value(manager.toString()));
 
-        assertThat(inbound(SOFA, null)).as("only up to the tolerance").isEqualTo(before + 105);
+        assertThat(inbound(TABLE, "A-" + suffix)).as("only up to the tolerance").isEqualTo(105);
+        assertThat(inbound(TABLE, "B-" + suffix)).isZero();
         assertThat(poStatus(order)).isEqualTo("RECEIVED");
-        assertThat(jdbc.queryForObject("SELECT received_qty::int FROM procurement.goods_receipt_lines WHERE receipt_id = ?::uuid",
-                Integer.class, receipt)).isEqualTo(105);
+        assertThat(jdbc.queryForList("SELECT received_qty::int FROM procurement.goods_receipt_lines WHERE receipt_id = ?::uuid",
+                Integer.class, receipt)).containsExactly(105);
     }
 
     @Test
-    @DisplayName("reject the excess of a lot-tracked line: the last lot is cut (70 + 50 -> 70 + 35) and the receipt goes to putaway")
+    @DisplayName("reject the excess of a lot-tracked line: the last lot, loose, is cut away whole (70 + 35 + 15 -> 70 + 35) "
+            + "and the receipt goes to putaway")
     void rejectCutsTheLastLot() throws Exception {
         UUID order = confirmedOrder(TABLE, 100);
         UUID line = poLine(order, TABLE);
         String suffix = UUID.randomUUID().toString().substring(0, 6);
         String receipt = draft(clerk, order);
-        count(clerk, receipt, lot(line, 70, "A-" + suffix), lot(line, 50, "B-" + suffix))
+        count(clerk, receipt, lot(line, 70, "A-" + suffix), lot(line, 35, "B-" + suffix),
+                lotLoose(line, 15, "C-" + suffix))
                 .andExpect(jsonPath("$.data.lines[0].warnings[0]").value("OVER_TOLERANCE"))
-                .andExpect(jsonPath("$.data.lines[1].warnings[0]").value("OVER_TOLERANCE"));
+                .andExpect(jsonPath("$.data.lines[2].warnings[0]").value("OVER_TOLERANCE"));
         confirm(clerk, receipt).andExpect(jsonPath("$.data.status").value("PENDING_APPROVAL"));
         assertThat(inbound(TABLE, "A-" + suffix) + inbound(TABLE, "B-" + suffix)).isZero();
 
@@ -408,26 +456,31 @@ class GoodsReceiptOverToleranceApprovalIntegrationTest {
 
         assertThat(inbound(TABLE, "A-" + suffix)).isEqualTo(70);
         assertThat(inbound(TABLE, "B-" + suffix)).isEqualTo(35);
+        assertThat(inbound(TABLE, "C-" + suffix)).isZero();
     }
 
     @Test
-    @DisplayName("what posted receipts already hold narrows the allowance: 99 posted, 10 counted, 6 stay (99 + 6 = 105)")
+    @DisplayName("what posted receipts already hold narrows the allowance: 99 posted, 10 counted (6 in cartons, 4 loose), "
+            + "6 stay (99 + 6 = 105)")
     void rejectCountsReceiptsAlreadyPosted() throws Exception {
-        UUID order = confirmedOrder(SOFA, 100);
+        UUID order = confirmedOrder(TABLE, 100);
+        UUID line = poLine(order, TABLE);
+        String suffix = UUID.randomUUID().toString().substring(0, 6);
         String first = draft(clerk, order);
         String second = draft(clerk, order);
-        count(clerk, first, plain(poLine(order, SOFA), 99)).andExpect(status().isOk());
-        count(clerk, second, plain(poLine(order, SOFA), 10)).andExpect(status().isOk());
+        count(clerk, first, lot(line, 99, "A-" + suffix)).andExpect(status().isOk());
+        count(clerk, second, lot(line, 6, "B-" + suffix), lotLoose(line, 4, "C-" + suffix)).andExpect(status().isOk());
         confirm(clerk, first).andExpect(jsonPath("$.data.status").value("IN_PUTAWAY"));
         confirm(clerk, second).andExpect(jsonPath("$.data.status").value("PENDING_APPROVAL"));   // 99 + 10 = 109 > 105
-        int before = inbound(SOFA, null);
 
         rejectExcess(manager, second, "the order is nearly full")
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("IN_PUTAWAY"))
+                .andExpect(jsonPath("$.data.lines.length()").value(1))
                 .andExpect(jsonPath("$.data.lines[0].quantity").value(6));
 
-        assertThat(inbound(SOFA, null)).isEqualTo(before + 6);
+        assertThat(inbound(TABLE, "B-" + suffix)).isEqualTo(6);
+        assertThat(inbound(TABLE, "C-" + suffix)).isZero();
         assertThat(poStatus(order)).isEqualTo("RECEIVED");
     }
 
@@ -440,7 +493,8 @@ class GoodsReceiptOverToleranceApprovalIntegrationTest {
         String waiting = draft(clerk, order);
         String third = draft(clerk, order);
         count(clerk, first, plain(poLine(order, SOFA), 99)).andExpect(status().isOk());
-        count(clerk, waiting, plain(poLine(order, SOFA), 10)).andExpect(status().isOk());
+        // Loose: a line cartons were counted into is not removed by the rejection.
+        count(clerk, waiting, plainLoose(poLine(order, SOFA), 10)).andExpect(status().isOk());
         count(clerk, third, plain(poLine(order, SOFA), 6)).andExpect(status().isOk());
         confirm(clerk, first).andExpect(jsonPath("$.data.status").value("IN_PUTAWAY"));
         confirm(clerk, waiting).andExpect(jsonPath("$.data.status").value("PENDING_APPROVAL"));   // 109 > 105
@@ -548,9 +602,12 @@ class GoodsReceiptOverToleranceApprovalIntegrationTest {
                 .isInstanceOf(DataIntegrityViolationException.class)
                 .hasMessageContaining("ck_goods_receipts_approval_pending");
 
-        // The lines of a waiting receipt may be cut (the rejection of the excess), a posted one's may not (BR-05).
+        // The lines of a waiting receipt may be cut (the rejection of the excess), a posted one's may not (BR-05). The
+        // count goes back to the 110 its cartons hold before it is posted: every unit is received in a carton.
         tx.executeWithoutResult(s -> jdbc.update(
                 "UPDATE procurement.goods_receipt_lines SET received_qty = 105 WHERE receipt_id = ?", id));
+        tx.executeWithoutResult(s -> jdbc.update(
+                "UPDATE procurement.goods_receipt_lines SET received_qty = 110 WHERE receipt_id = ?", id));
         approve(manager, receipt, "ok").andExpect(status().isOk());
         assertThatThrownBy(() -> tx.executeWithoutResult(s -> jdbc.update(
                 "UPDATE procurement.goods_receipt_lines SET received_qty = 1 WHERE receipt_id = ?", id)))

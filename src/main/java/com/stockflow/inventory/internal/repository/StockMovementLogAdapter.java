@@ -38,10 +38,26 @@ class StockMovementLogAdapter implements StockMovementLog, StockLedgerSearch {
     }
 
     @Override
+    public java.util.List<MovedCarton> cartonsMovedBy(StockMovement.ReferenceType referenceType, UUID referenceId) {
+        return jpa.cartonsMovedBy(referenceType, referenceId).stream()
+                .map(row -> new MovedCarton(new com.stockflow.inventory.internal.domain.StockPackageId((UUID) row[0]),
+                        new com.stockflow.inventory.internal.domain.LocationId((String) row[1])))
+                .toList();
+    }
+
+    @Override
     public Optional<StockMovement> findByReference(StockMovement.MovementType type,
                                                    StockMovement.ReferenceType referenceType, UUID referenceId) {
         return jpa.findFirstByMovementTypeAndReferenceTypeAndReferenceIdOrderByIdAsc(type, referenceType, referenceId)
                 .map(StockMovementLogAdapter::toDomain);
+    }
+
+    @Override
+    public java.util.List<StockMovement> findAllByReference(StockMovement.MovementType type,
+                                                            StockMovement.ReferenceType referenceType,
+                                                            UUID referenceId) {
+        return jpa.findByMovementTypeAndReferenceTypeAndReferenceIdOrderByIdAsc(type, referenceType, referenceId)
+                .stream().map(StockMovementLogAdapter::toDomain).toList();
     }
 
     @Override

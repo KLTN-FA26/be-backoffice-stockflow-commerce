@@ -12,6 +12,12 @@ import java.util.regex.Pattern;
  * One physical carton with its own LPN (GitHub #125, SCRUM-473): which item, made in which packing unit,
  * where it is, and whether it is still unopened.
  *
+ * <p><b>Whole cartons only (team plan 4C-2; kltn-docs 20 §4.6, §5.5).</b> A carton holds the SKU's standard count -
+ * its packing unit's factor - from the day it is received (03 BR-13), and leaves stock whole: it is never opened,
+ * nothing is taken out of part of it. So there is no "open" any more; taking its contents ends it
+ * ({@link #consume}), and a carton that comes back whole - put back after its order was cancelled, or returned by a
+ * customer - is in stock again, sealed ({@link #restock}).</p>
+ *
  * <p><b>It holds no quantity of its own.</b> What is left in it is the stock rows that point at it
  * ({@link StockItem#stockPackageId()}), the sum of their {@code on_hand}; two copies of one number would
  * drift. {@code nominalQty} is the packing unit's factor when it was made and {@code receivedQty} what was
@@ -66,22 +72,40 @@ public final class StockPackage {
 
     // ------------------------------------------------------------------ behaviour
 
-    /** Counted (again) while still being received; fixed once in stock ({@code tg_stock_package_transition}). */
-    public void count(int quantity) {
+    /**
+     * Counted (again) while still being received: it holds the standard count, {@link #nominalQty}, which the system
+     * assigns rather than anyone typing a number (kltn-docs 03 BR-13: a carton of another count is not listed at all).
+     * Fixed once in stock ({@code tg_stock_package_transition}).
+     */
+    public void count() {
         requireStatus(StockPackageStatus.RECEIVING, "be recounted");
-        if (quantity < 0) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A carton holds no fewer than 0 units");
-        }
-        receivedQty = quantity;
+        receivedQty = nominalQty;
     }
 
-    /** RECEIVING → IN_STOCK: its receipt was posted; it must have been counted. */
+    /**
+     * RECEIVING → IN_STOCK: its receipt was posted. It must have been counted at the standard count: a draft counted
+     * before whole cartons were the rule may still carry another figure, and is recounted first.
+     */
     public void putInStock() {
         requireStatus(StockPackageStatus.RECEIVING, "go into stock");
         if (receivedQty == null) {
             throw transition("%s has not been counted".formatted(lpn));
         }
+        requireStandardCount();
         status = StockPackageStatus.IN_STOCK;
+    }
+
+    /**
+     * Refuses a carton counted at another figure than its standard count (kltn-docs 03 BR-13), naming it: asked
+     * first by a receipt, so a draft counted under the old rules is reported as that carton, not as a line whose
+     * cartons fall short. A carton not yet counted passes; {@link #putInStock} refuses it.
+     */
+    public void requireStandardCount() {
+        if (receivedQty != null && receivedQty != nominalQty) {
+            throw new BusinessException(ErrorCode.RECEIPT_PACKAGE_NOT_STANDARD,
+                    "%s was counted at %d; a carton holds %d - count the line again".formatted(lpn, receivedQty,
+                            nominalQty));
+        }
     }
 
     /** RECEIVING → VOID: its receipt was cancelled before posting. */
@@ -91,13 +115,7 @@ public final class StockPackage {
         closedAt = Objects.requireNonNull(now, "now");
     }
 
-    /** Something was taken out of it, or put into it: it is no longer as it was counted. Once open, open. */
-    public void open() {
-        requireStatus(StockPackageStatus.IN_STOCK, "be opened");
-        unopened = false;
-    }
-
-    /** IN_STOCK → CONSUMED: its last unit left it. */
+    /** IN_STOCK → CONSUMED: it left stock whole - picked for an order, or written off whole. */
     public void consume(Instant now) {
         requireStatus(StockPackageStatus.IN_STOCK, "be emptied");
         unopened = false;
@@ -106,21 +124,17 @@ public final class StockPackage {
     }
 
     /**
-     * Units left this carton's rows, {@code left} remaining in them. The one rule every path that takes stock out
-     * of a carton applies (a pick, a package, a write-off): taken from, it is opened - it no
-     * longer holds what was counted into it - and emptied, it is CONSUMED, in the same transaction, or the
-     * commit-time check of V20261020000200 refuses (an IN_STOCK carton holds something; an unopened one holds
-     * exactly its count).
+     * CONSUMED → IN_STOCK at {@code location}, sealed: the carton came back whole (kltn-docs 20 §4.6 steps 5-6) - put
+     * back after its order was cancelled, or received again on a return. It keeps its LPN; its rows must hold its
+     * count again in the same transaction (V20261020000200 checks at commit). Only a carton that was in stock was
+     * ever consumed, so it was counted in at its standard count.
      */
-    public void contentsTaken(int left, Instant now) {
-        if (left < 0) {
-            throw new IllegalStateException("Stock package %s would hold %d".formatted(lpn, left));
-        }
-        if (left == 0) {
-            consume(now);
-        } else {
-            open();
-        }
+    public void restock(LocationId location) {
+        requireStatus(StockPackageStatus.CONSUMED, "come back into stock");
+        this.location = Objects.requireNonNull(location, "location");
+        status = StockPackageStatus.IN_STOCK;
+        unopened = true;
+        closedAt = null;
     }
 
     /** IN_STOCK → LOST: a count did not find it. Nobody knows what is in it any more, so it is not unopened. */
@@ -131,10 +145,17 @@ public final class StockPackage {
         closedAt = Objects.requireNonNull(now, "now");
     }
 
-    /** LOST → IN_STOCK: found again. */
+    /**
+     * LOST → IN_STOCK: found again, whole, and sealed (team plan 4C-2: nothing in stock is an opened carton, and only
+     * a sealed one is ever allocated). A carton found with less than was counted into it is not found: the count that
+     * finds it states it present or missing, never part of it. Its rows must hold its count again in the same
+     * transaction ({@code check_stock_package_contents} checks a sealed carton at commit); {@code StockPackageContents}
+     * refuses a write-up of anything less first.
+     */
     public void found() {
         requireStatus(StockPackageStatus.LOST, "be found");
         status = StockPackageStatus.IN_STOCK;
+        unopened = true;
         closedAt = null;
     }
 

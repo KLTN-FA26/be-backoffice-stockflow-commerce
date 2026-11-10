@@ -20,9 +20,11 @@ import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.internal.service.InventoryItems;
 import com.stockflow.product.internal.service.ProductVariantService;
 import com.stockflow.support.ApprovalLimitFixtures;
+import com.stockflow.support.CartonRows;
 import com.stockflow.support.DemoData;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
+import com.stockflow.support.ReceiptCartons;
 import com.stockflow.support.ProductFixtures;
 import com.stockflow.support.ReferenceRows;
 import com.stockflow.support.SupplierItemFixtures;
@@ -149,10 +151,23 @@ class ProductEndOfLifePurchasingIntegrationTest {
         return po;
     }
 
-    /** A goods receipt for {@code quantity} of the order's only line, confirmed. */
+    /**
+     * A goods receipt for {@code quantity} of the order's only line, confirmed. Every unit is received in a carton of
+     * the SKU's standard count (team plan 4C-2, kltn-docs 03 BR-12/BR-13): the SKU gets a carton unit of 2 here, and
+     * every quantity received in these tests is even.
+     */
     private void receive(UUID po, int quantity) {
+        String sku = jdbc.queryForObject("""
+                SELECT i.sku FROM procurement.purchase_order_lines l JOIN inventory.inventory_items i
+                  ON i.id = l.inventory_item_id WHERE l.po_id = ?""", String.class, po);
+        UUID unit = tx.execute(s -> CartonRows.unit(jdbc, sku, 2));
+        String code = jdbc.queryForObject("SELECT unit_of_measure FROM inventory.uom_conversions WHERE id = ?",
+                String.class, unit);
+        int factor = jdbc.queryForObject("SELECT factor FROM inventory.uom_conversions WHERE id = ?", Integer.class,
+                unit);
         var draft = receipts.create(new GoodsReceipts.Create(po, "DN-EL", null), editor);
-        receipts.replaceLines(draft.id(), List.of(new GoodsReceipts.NewLine(lineOf(po), quantity, null, null, "HCM-RCV01", null)));
+        receipts.replaceLines(draft.id(), List.of(new GoodsReceipts.NewLine(lineOf(po), quantity, null, null, "HCM-RCV01",
+                null, code, ReceiptCartons.of(quantity / factor, factor))));
         assertThat(receipts.confirm(draft.id(), editor).lines()).singleElement()
                 .satisfies(l -> assertThat(l.quantity()).isEqualTo(quantity));
     }

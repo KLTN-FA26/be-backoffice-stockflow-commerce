@@ -9,7 +9,7 @@ import java.util.UUID;
 import java.util.function.Supplier;
 
 /**
- * Floor space that is not a shelf: receiving, quarantine, packing, dispatch, overflow - each a place
+ * Floor space that is not a shelf: receiving, quarantine, dispatch, staging, overflow - each a place
  * stock can sit, with a storage location coded {@code prefix-area} (BR-10) - or an office or aisle,
  * {@code NON_STORAGE}, on the map only to be drawn and walked around.
  *

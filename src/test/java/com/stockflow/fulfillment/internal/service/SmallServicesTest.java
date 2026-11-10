@@ -80,7 +80,7 @@ class SmallServicesTest {
         PackJpaRepository packs = mock(PackJpaRepository.class);
         ShipmentContext context = new ShipmentContext(packs);
         UUID pickId = UUID.randomUUID();
-        PackJpaEntity pack = new PackJpaEntity(UUID.randomUUID(), pickId, PackStatus.PACKED, NOW);
+        PackJpaEntity pack = new PackJpaEntity(UUID.randomUUID(), pickId, PackStatus.COMPLETED, NOW);
         ShipmentJpaEntity withPack = FulfillmentFixtures.row(com.stockflow.fulfillment.internal.domain.Shipment.ready(
                 UUID.randomUUID(), "S1", UUID.randomUUID(), pack.getId(), WAREHOUSE, null, 1, null, UUID.randomUUID(),
                 NOW));

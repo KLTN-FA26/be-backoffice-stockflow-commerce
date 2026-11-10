@@ -39,6 +39,11 @@ public final class OrderShipment {
     private String failureNote;
     /** G4-2a: number, parcels and carrier, as the customer reads them; null on shipments recorded before. */
     private final com.stockflow.order.api.ShipmentHandover.Carriage carriage;
+    /**
+     * 4B-8 (17 BR-29): the delivery batch whose cartons it carried; null for an order without a delivery schedule, or a
+     * shipment handed over before batches were released one by one.
+     */
+    private UUID deliveryBatchId;
 
     public OrderShipment(UUID id, Map<UUID, Integer> quantities, BigDecimal amount, Instant handedOverAt,
                          UUID handedOverBy, OrderShipmentStatus status, Instant outcomeAt, UUID outcomeBy,
@@ -65,9 +70,17 @@ public final class OrderShipment {
     }
 
     static OrderShipment handedOver(UUID id, Map<UUID, Integer> quantities, BigDecimal amount, Instant at, UUID by,
-                                    com.stockflow.order.api.ShipmentHandover.Carriage carriage) {
-        return new OrderShipment(id, quantities, amount, at, by, OrderShipmentStatus.HANDED_OVER, null, null, null,
-                null, carriage);
+                                    com.stockflow.order.api.ShipmentHandover.Carriage carriage, UUID deliveryBatchId) {
+        OrderShipment shipment = new OrderShipment(id, quantities, amount, at, by, OrderShipmentStatus.HANDED_OVER,
+                null, null, null, null, carriage);
+        shipment.deliveryBatchId = deliveryBatchId;
+        return shipment;
+    }
+
+    /** Rehydration of the batch it carried (4B-8). */
+    public OrderShipment restoreDeliveryBatch(UUID batchId) {
+        this.deliveryBatchId = batchId;
+        return this;
     }
 
     /** @return false when it already was delivered */
@@ -155,4 +168,5 @@ public final class OrderShipment {
     public DeliveryFailureReason failureReason() { return failureReason; }
     public String failureNote() { return failureNote; }
     public com.stockflow.order.api.ShipmentHandover.Carriage carriage() { return carriage; }
+    public UUID deliveryBatchId() { return deliveryBatchId; }
 }

@@ -46,7 +46,7 @@ class OrderSettlementServiceTest {
     }
 
     private OrderSettlementService at(Instant now) {
-        return new OrderSettlementService(repository, candidates, events, payments, Clock.fixed(now, ZoneOffset.UTC), 7, 30);
+        return new OrderSettlementService(repository, candidates, events, payments, org.mockito.Mockito.mock(com.stockflow.order.internal.domain.SalesContractRepository.class), Clock.fixed(now, ZoneOffset.UTC), 7, 30);
     }
 
     @Test

@@ -12,6 +12,7 @@ import com.stockflow.fulfillment.internal.domain.PickLine;
 import com.stockflow.fulfillment.internal.domain.PickLineStatus;
 import com.stockflow.fulfillment.internal.domain.PickList;
 import com.stockflow.fulfillment.internal.domain.PickStatus;
+import com.stockflow.fulfillment.internal.domain.ShortPickReason;
 import com.stockflow.fulfillment.internal.entity.PickJpaEntity;
 import com.stockflow.fulfillment.internal.entity.PickLineJpaEntity;
 import com.stockflow.fulfillment.internal.repository.PickJpaRepository;
@@ -28,6 +29,7 @@ import com.stockflow.inventory.consumption.DamagePhoto;
 import com.stockflow.inventory.consumption.PickConsumption;
 import com.stockflow.inventory.consumption.PickDamageReporting;
 import com.stockflow.inventory.consumption.PutBackCommand;
+import com.stockflow.inventory.consumption.StageCommand;
 import com.stockflow.inventory.consumption.ReportPickDamageCommand;
 import com.stockflow.inventory.consumption.ReportPickDamageResult;
 import com.stockflow.order.api.OrderReservations;
@@ -63,8 +65,9 @@ import java.util.function.Function;
 import java.util.stream.Collectors;
 
 /**
- * Pick lines: planning them from the order's holds, confirming them by scan with an in-process stock
- * deduction, and putting the goods of a cancelled order back (SCRUM-267, 274, 275).
+ * Pick lines, one carton each: planning them from the order's holds, confirming them by scanning the carton's LPN with
+ * an in-process stock deduction, reporting a carton short, and putting the carton of a cancelled order back whole
+ * (SCRUM-267, 274, 275; team plan 4C-4).
  *
  * <p><b>Lock order.</b> Every write locks the pick task first ({@code PickJpaRepository.lockById},
  * {@code SELECT … FOR UPDATE}) and only then reaches inventory, which locks the stock row. No path takes
@@ -76,7 +79,9 @@ import java.util.stream.Collectors;
  *
  * <p><b>One transaction.</b> The line turning PICKED, the hold turning CONSUMED, {@code on_hand}
  * falling, the {@code PICK} ledger row and {@code StockDeducted} commit together or not at all — which
- * is the reason consumption is in-process rather than an HTTP call (decision G4 §6 #7).</p>
+ * is the reason consumption is in-process rather than an HTTP call (decision G4 §6 #7). The same holds for a
+ * STAGING task (team plan 4C-5): the line turning STAGED and its carton moving to the staging area commit together,
+ * and so do the lines turning PICKED and their cartons being deducted when the task moves to dispatch.</p>
  */
 @Service
 @Transactional
@@ -95,12 +100,19 @@ class PickListService implements PickLists {
     private final OrderReservations orderReservations;
     private final PickDamageReporting damages;
     private final TransactionOperations tx;
+    private final com.stockflow.fulfillment.internal.repository.PackJpaRepository packs;
+    /** 4C-6: the check station's shipping cartons, to know a line whose carton was removed as damaged. */
+    private final com.stockflow.fulfillment.internal.repository.PackageJpaRepository packages;
 
 
     PickListService(PickJpaRepository picks, PickLineJpaRepository pickLines, OrderService orders,
                     InventoryService inventory, InventoryControlService itemControls, PickConsumption consumption,
                     WarehouseService warehouses, Clock clock, OrderReservations orderReservations,
-                    PickDamageReporting damages, TransactionOperations tx) {
+                    PickDamageReporting damages, TransactionOperations tx,
+                    com.stockflow.fulfillment.internal.repository.PackJpaRepository packs,
+                    com.stockflow.fulfillment.internal.repository.PackageJpaRepository packages) {
+        this.packs = packs;
+        this.packages = packages;
         this.damages = damages;
         this.tx = tx;
         this.orderReservations = orderReservations;
@@ -117,21 +129,48 @@ class PickListService implements PickLists {
     // ------------------------------------------------------------------ called by the task service
 
     /**
-     * Plans the lines of a task that has none: at creation, and lazily at picking-start for a task opened
-     * before lines existed. Idempotent; the caller holds the pick's lock (or has just created it).
+     * Plans a line for every live hold of the order that has none: at creation, lazily at picking-start for a task
+     * opened before lines existed, and for a top-up (07 §4.3 step 7) - a STAGED or PICKED task given lines goes back
+     * to PICKING. Idempotent; the caller holds the pick's lock (or has just created it).
+     *
+     * @return the lines added
      */
-    public void planLines(PickJpaEntity pick, OrderSummary order) {
+    public List<PickLine> planLines(PickJpaEntity pick, OrderSummary order) {
         List<PickLineJpaEntity> stored = pickLines.findByPickIdOrderBySequenceNoAscIdAsc(pick.getId());
-        if (!stored.isEmpty()) {
-            return;
-        }
         PickList list = toList(pick, stored);
-        List<PickLine> added = list.plan(orderLinesOf(order), holdsOf(order), Identifiers::newId);
+        List<PickLine> added = list.plan(orderLinesOf(order), holdsOf(pick, order), Identifiers::newId);
         if (!added.isEmpty()) {
             pickLines.saveAll(added.stream().map(line -> PickLineMapper.toNewEntity(pick.getId(), line)).toList());
-            log.info("Planned {} pick line(s) for task {} of order {}", added.size(), pick.getId(),
-                    pick.getOrderNumber());
+            if (pick.getStatus() == PickStatus.STAGED || pick.getStatus() == PickStatus.PICKED) {
+                pick.reopen();
+                picks.save(pick);
+            }
+            log.info("Planned {} pick line(s) for task {} of order {}{}", added.size(), pick.getId(),
+                    pick.getOrderNumber(), stored.isEmpty() ? "" : " (top-up)");
         }
+        return added;
+    }
+
+    /**
+     * The STAGED task moves to dispatch (07 §4.3 step 8): every STAGED line turns PICKED and its carton is deducted
+     * where it stands. The caller holds the pick's lock and, after it, the order's; inventory locks the SKUs, the
+     * cartons and the rows - pick, order, stock rows, as everywhere. The task itself moves after this.
+     */
+    void moveStagedLinesToDispatch(PickJpaEntity pick, UUID actorId) {
+        List<PickLineJpaEntity> stored = pickLines.findByPickIdOrderBySequenceNoAscIdAsc(pick.getId());
+        PickList list = toList(pick, stored);
+        Instant now = clock.instant();
+        List<PickLine> moved = list.moveToDispatch();
+        // One call for the whole task (review M1): inventory takes every SKU lock sorted, then the cartons, then the
+        // rows. A line without a hold fails loudly (4C-4 requireHold): skipping it would mark it PICKED undeducted.
+        consumption.consumeStaged(moved.stream()
+                .map(line -> new com.stockflow.inventory.consumption.StagedLine(requireHold(line, "moved to dispatch"),
+                        line.id()))
+                .toList(), actorId);
+        moved.forEach(line -> line.recordConsumed(now));
+        writeBack(list, stored, moved.stream().map(PickLine::id).collect(Collectors.toSet()));
+        log.info("Task {} of order {} moved to dispatch: {} staged carton(s) deducted", pick.getId(),
+                pick.getOrderNumber(), moved.size());
     }
 
     /**
@@ -142,7 +181,7 @@ class PickListService implements PickLists {
     public void requireAllPicked(PickJpaEntity pick, OrderSummary order) {
         List<PickLineJpaEntity> stored = pickLines.findByPickIdOrderBySequenceNoAscIdAsc(pick.getId());
         if (stored.isEmpty()) {
-            boolean somethingToPick = holdsOf(order).values().stream().anyMatch(PickList.Hold::live);
+            boolean somethingToPick = holdsOf(pick, order).values().stream().anyMatch(PickList.Hold::live);
             if (somethingToPick) {
                 throw new BusinessException(ErrorCode.PICK_LINES_INCOMPLETE,
                         "The task has no pick lines yet; start picking to load them");
@@ -174,31 +213,34 @@ class PickListService implements PickLists {
     }
 
     @Override
-    public PickLineView confirm(UUID taskId, UUID lineId, String locationCode, String scannedCode, int quantity,
-                                CurrentUser actor) {
+    public PickLineView confirm(UUID taskId, UUID lineId, String locationCode, String lpn, CurrentUser actor) {
         PickJpaEntity pick = lockPick(taskId);
         WarehouseScope.requireWarehouse(pick.getWarehouseId());
         pick.requireAssigned(actor.userId());
         TaskAccess.orderInFulfilment(orders, pick);
         List<PickLineJpaEntity> stored = pickLines.findByPickIdOrderBySequenceNoAscIdAsc(pick.getId());
         PickList list = toList(pick, stored);
-        String barcode = list.line(lineId).map(line -> barcodesOf(List.of(line.sku())).get(line.sku())).orElse(null);
         Instant now = clock.instant();
 
-        PickList.Confirmation outcome = list.confirm(lineId, locationCode, scannedCode, quantity, barcode,
-                actor.userId(), now);
+        PickList.Confirmation outcome = list.confirm(lineId, locationCode, lpn, actor.userId(), now);
         PickLine line = outcome.line();
+        String barcode = barcodesOf(List.of(line.sku())).get(line.sku());
         if (outcome.repeated()) {
             return view(taskId, line, barcode);
         }
-        if (line.reservationId() != null) {
+        if (line.status() == PickLineStatus.STAGED) {
+            // A STAGING task (4C-5): the carton moves to the staging area, still held - pick, then SKU, carton, row.
+            consumption.stage(new StageCommand(line.id(), requireHold(line, "staged"), line.lpn(),
+                    line.stagedLocationCode(), actor.userId()));
+        } else {
             // The pick is locked; inventory now locks the stock row (pick -> stock_item, never the reverse).
-            consumption.consumeForPick(line.reservationId(), line.id(), actor.userId());
+            consumption.consumeForPick(requireHold(line, "confirmed"), line.id(), actor.userId());
             line.recordConsumed(now);
         }
         writeBack(list, stored, Set.of(line.id()));
-        log.info("Pick line {} of task {} picked: {} x {} from {}", line.id(), taskId, line.pickedQty(), line.sku(),
-                line.locationCode());
+        log.info("Pick line {} of task {} {}: carton {} ({} x {}) from {}", line.id(), taskId,
+                line.status() == PickLineStatus.STAGED ? "staged at " + line.stagedLocationCode() : "picked",
+                line.lpn(), line.pickedQty(), line.sku(), line.locationCode());
         return view(taskId, line, barcode);
     }
 
@@ -221,76 +263,137 @@ class PickListService implements PickLists {
             }
             allowed.ifPresent(ids -> where.add(ids.isEmpty() ? cb.disjunction() : pick.get("warehouseId").in(ids)));
             task.select(pick.get("id")).where(where.toArray(Predicate[]::new));
-            return cb.and(cb.equal(root.get("status"), PickLineStatus.PICKED),
-                    cb.gt(root.get("pickedQty"), root.<Integer>get("packingDamagedQty")), cb.exists(task));
+            // 4C-6: a carton the check station removed as damaged waits too, cancelled task or not, for quarantine.
+            var live = query.subquery(UUID.class);
+            var livePick = live.from(PickJpaEntity.class);
+            List<Predicate> liveWhere = new ArrayList<>(List.of(cb.equal(livePick.get("id"), root.get("pickId"))));
+            if (warehouseId != null) {
+                liveWhere.add(cb.equal(livePick.get("warehouseId"), warehouseId));
+            }
+            allowed.ifPresent(ids -> liveWhere.add(ids.isEmpty() ? cb.disjunction()
+                    : livePick.get("warehouseId").in(ids)));
+            live.select(livePick.get("id")).where(liveWhere.toArray(Predicate[]::new));
+            return cb.and(cb.gt(root.get("pickedQty"), root.<Integer>get("packingDamagedQty")), cb.or(
+                    cb.and(root.get("status").in(PickLineStatus.PICKED, PickLineStatus.STAGED), cb.exists(task)),
+                    cb.and(cb.equal(root.get("status"), PickLineStatus.PICKED), cb.exists(removedDamaged(root, query,
+                            cb)), cb.exists(live))));
         };
         Page<PickLineJpaEntity> found = pickLines.findAll(waiting,
                 Pages.of(page, size, Sort.by(Sort.Direction.ASC, "pickedAt", "id")));
         Map<UUID, PickJpaEntity> tasks = picks.findAllById(found.getContent().stream()
                         .map(PickLineJpaEntity::getPickId).collect(Collectors.toSet())).stream()
                 .collect(Collectors.toMap(PickJpaEntity::getId, Function.identity()));
+        Set<UUID> damaged = removedDamaged(found.getContent().stream().map(PickLineJpaEntity::getId).toList());
         return Pages.toResponse(found, row -> {
             PickJpaEntity task = tasks.get(row.getPickId());
+            // A staged carton stands in the staging area, not at the bin it was picked from (4C-5).
             return new PutBackRow(row.getPickId(), task.getOrderNumber(), task.getWarehouseId(), row.getId(),
-                    row.getSku(), row.getLotNumber(), row.getGoodQty(), row.getLocationCode(), row.getPickedAt());
+                    row.getSku(), row.getLotNumber(), row.getLpn(), row.getGoodQty(),
+                    row.getStatus() == PickLineStatus.STAGED ? row.getStagedLocationCode() : row.getLocationCode(),
+                    row.getPickedAt(), damaged.contains(row.getId()));
         });
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Locks the pick, then inventory takes the SKU, the carton and its row (07 §4.5 step 14). The carton goes back
+     * CONSUMED to IN_STOCK, sealed, at the bin (4C-2's transition), keeping its LPN and its count. A staged line's
+     * carton was never deducted: it is moved from the staging area to the bin instead (4C-5).</p>
+     */
     @Override
-    public PickLineView putBack(UUID taskId, UUID lineId, String locationCode, CurrentUser actor) {
+    public PickLineView putBack(UUID taskId, UUID lineId, String locationCode, String lpn, CurrentUser actor) {
         PickJpaEntity pick = lockPick(taskId);
         WarehouseScope.requireWarehouse(pick.getWarehouseId());
         List<PickLineJpaEntity> stored = pickLines.findByPickIdOrderBySequenceNoAscIdAsc(pick.getId());
         PickList list = toList(pick, stored);
         PickList.PutBackTarget target = warehouses.findLocation(locationCode.trim())
                 .map(view -> new PickList.PutBackTarget(view.locationCode(), view.warehouseId(),
-                        view.kind() == StorageLocationView.Kind.BIN, view.usable()))
+                        view.kind() == StorageLocationView.Kind.BIN, view.usable(),
+                        view.areaType() == StorageLocationView.AreaType.QUARANTINE))
                 .orElse(null);
 
-        PickList.PutBack outcome = list.putBack(lineId, target, actor.userId(), clock.instant());
+        boolean damaged = removedDamaged(List.of(lineId)).contains(lineId);
+        PickList.PutBack outcome = list.putBack(lineId, lpn, target, damaged, actor.userId(), clock.instant());
         PickLine line = outcome.line();
         String barcode = barcodesOf(List.of(line.sku())).get(line.sku());
         if (outcome.repeated()) {
             return view(taskId, line, barcode);
         }
-        if (line.reservationId() == null) {
-            // Only a re-allocation (SCRUM-268) makes a line without a hold, and that flow does not exist yet.
-            throw new BusinessException(ErrorCode.PUT_BACK_NOT_REQUIRED, "The line consumed no hold");
+        // A line put back names its carton (PickList#putBack), so it has the hold that took it (tg_pick_line_carton).
+        // A staged line's carton was never deducted: it is moved back from the staging area instead (4C-5).
+        PutBackCommand command = new PutBackCommand(line.id(), requireHold(line, "put back"), line.lpn(),
+                line.putBackLocationCode(), actor.userId());
+        if (outcome.fromStaging()) {
+            consumption.unstage(command);
+        } else if (outcome.toQuarantine()) {
+            consumption.putBackToQuarantine(command);
+        } else {
+            consumption.putBack(command);
         }
-        consumption.putBack(new PutBackCommand(line.id(), line.reservationId(), line.sku(), line.lotNumber(),
-                line.putBackLocationCode(), line.putBackQty(), actor.userId()));
         writeBack(list, stored, Set.of(line.id()));
-        log.info("Pick line {} of task {} put back: {} x {} onto {}", line.id(), taskId, line.putBackQty(),
-                line.sku(), line.putBackLocationCode());
+        log.info("Pick line {} of task {} put back: carton {} ({} x {}) onto {}", line.id(), taskId, line.lpn(),
+                line.putBackQty(), line.sku(), line.putBackLocationCode());
         return view(taskId, line, barcode);
     }
 
+    /**
+     * The lines among {@code lineIds} whose carton the check station removed as damaged (4C-6): they go into quarantine
+     * through the put-back queue (08 §4.2 step 4).
+     */
+    private Set<UUID> removedDamaged(Collection<UUID> lineIds) {
+        return lineIds.isEmpty() ? Set.of() : packages.findByPickLineIdIn(lineIds).stream()
+                .filter(carton -> carton.getStatus() == com.stockflow.fulfillment.internal.domain.PackageStatus.REMOVED
+                        && carton.getRemovalReason() == com.stockflow.fulfillment.internal.domain.CartonCheck
+                        .RemovalReason.DAMAGED)
+                .map(com.stockflow.fulfillment.internal.entity.PackageJpaEntity::getPickLineId)
+                .collect(Collectors.toSet());
+    }
+
+    /** The criteria twin of {@link #removedDamaged(Collection)}: a removed, damaged carton of the line {@code root}. */
+    private static jakarta.persistence.criteria.Subquery<UUID> removedDamaged(
+            jakarta.persistence.criteria.Root<PickLineJpaEntity> root, jakarta.persistence.criteria.CriteriaQuery<?> query,
+            jakarta.persistence.criteria.CriteriaBuilder cb) {
+        var carton = query.subquery(UUID.class);
+        var row = carton.from(com.stockflow.fulfillment.internal.entity.PackageJpaEntity.class);
+        carton.select(row.get("id")).where(cb.equal(row.get("pickLineId"), root.get("id")),
+                cb.equal(row.get("status"), com.stockflow.fulfillment.internal.domain.PackageStatus.REMOVED),
+                cb.equal(row.get("removalReason"),
+                        com.stockflow.fulfillment.internal.domain.CartonCheck.RemovalReason.DAMAGED));
+        return carton;
+    }
+
     @Override
-    public PickLineView reportShort(UUID taskId, UUID lineId, String locationCode, int found, CurrentUser actor) {
+    public PickLineView reportShort(UUID taskId, UUID lineId, String locationCode, ShortPickReason reason,
+                                    CurrentUser actor) {
         PickJpaEntity pick = lockPick(taskId);
         WarehouseScope.requireWarehouse(pick.getWarehouseId());
-        pick.requireAssigned(actor.userId());
-        TaskAccess.orderInFulfilment(orders, pick);
         List<PickLineJpaEntity> stored = pickLines.findByPickIdOrderBySequenceNoAscIdAsc(pick.getId());
         PickList list = toList(pick, stored);
-        PickList.Confirmation outcome = list.reportShort(lineId, locationCode, found);
+        // A carton missing from the staging area (review M2, 20 §4.9 step 4) is found by whoever counts or checks it,
+        // often not the picker: the assignee or whoever assigns the work may report it. A shelf short is the picker's.
+        boolean stagedCarton = list.line(lineId).map(PickList::stagedCarton).orElse(false);
+        if (!stagedCarton || !actor.can(FulfillmentPermissions.TASK_ASSIGNMENT,
+                com.stockflow.common.security.Action.UPDATE)) {
+            pick.requireAssigned(actor.userId());
+        }
+        TaskAccess.orderInFulfilment(orders, pick);
+        PickList.Confirmation outcome = list.reportShort(lineId, locationCode, reason);
         PickLine line = outcome.line();
         String barcode = barcodesOf(List.of(line.sku())).get(line.sku());
         if (outcome.repeated()) {
             return view(taskId, line, barcode);
         }
         writeBack(list, stored, Set.of(line.id()));
-        // X-SHORT step 02: the order stops; it does not cancel, and no stock is deducted (docs 04c).
-        holdForInventory(pick.getOrderId(), actor.userId(), "Short pick: %d of %s x %s missing at %s".formatted(
-                line.shortQty(), line.allocatedQty(), line.sku(), line.locationCode()));
-        // X-SHORT step 03: the books and the shelf disagree, so the bin is counted again.
-        if (line.reservationId() != null) {
-            var recount = consumption.requestRecount(line.reservationId(), line.id(),
-                    line.allocatedQty() - line.shortQty());
-            log.info("Short pick line {}: recount {} of {}", line.id(), recount.countNumber(), line.locationCode());
-        }
-        log.info("Pick line {} of task {} short: {} of {} x {} missing at {}", line.id(), taskId, line.shortQty(),
-                line.allocatedQty(), line.sku(), line.locationCode());
+        // 07 §4.4 step 9, BR-09: the order stops (INVENTORY); it does not cancel, and no stock is deducted.
+        holdForInventory(pick.getOrderId(), actor.userId(), "Short pick: carton %s (%d x %s) at %s, %s".formatted(
+                line.lpn(), line.allocatedQty(), line.sku(), PickList.expectedAt(line), reason));
+        // BR-09: the books and the shelf disagree, so the carton is counted blind (or the count holding it answers),
+        // which also keeps it out of allocation until the variance is decided (20 BR-11). The picker took none of it.
+        var recount = consumption.requestRecount(requireHold(line, "reported short"), line.id(), 0);
+        log.info("Short pick line {}: recount {} of carton {}", line.id(), recount.countNumber(), line.lpn());
+        log.info("Pick line {} of task {} short: carton {} ({} x {}) at {}, {}", line.id(), taskId, line.lpn(),
+                line.allocatedQty(), line.sku(), PickList.expectedAt(line), reason);
         return view(taskId, line, barcode);
     }
 
@@ -303,9 +406,11 @@ class PickListService implements PickLists {
         PickList list = toList(pick, stored);
         PickLine shortLine = list.line(lineId).orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND,
                 "Task %s has no pick line %s".formatted(taskId, lineId)));
-        if (shortLine.status() != PickLineStatus.SHORT || shortLine.reservationId() == null) {
+        // Every SHORT line has an allocation: one reported short names its carton, and one a damage report made holds
+        // the impaired share (PickLine#fromDamage).
+        if (shortLine.status() != PickLineStatus.SHORT) {
             throw new BusinessException(ErrorCode.PICK_LINE_NOT_OPEN,
-                    "Only a SHORT line with an allocation is reallocated; it is " + shortLine.status());
+                    "Only a SHORT line is reallocated; it is " + shortLine.status());
         }
         // Pick, then order, then stock rows. A cancellation locks the order before the stock rows it releases; taking
         // the order only at the end (replaceHold) would wait on it while holding those rows.
@@ -316,8 +421,8 @@ class PickListService implements PickLists {
         orderReservations.replaceHold(pick.getOrderId(), shortLine.reservationId(),
                 allocated.stream().map(StockReservation::reservationId).toList());
         Map<String, UUID> warehouseOf = new HashMap<>();
-        // The new holds' cartons (SCRUM-473): a line drawn from a carton must name it. A hold not read back is planned
-        // loose; were it in a carton after all, tg_pick_line_carton refuses the line rather than let it go unscanned.
+        // The new holds' cartons (SCRUM-473): every line names its carton (4C-4). A hold not read back would have none,
+        // and PickLine refuses a line without one rather than plan a stop nobody could confirm by LPN.
         Map<UUID, HoldView> cartons = inventory.holds(allocated.stream().map(StockReservation::reservationId).toList())
                 .stream().collect(Collectors.toMap(HoldView::reservationId, view -> view));
         List<PickList.Hold> holds = allocated.stream().map(hold -> {
@@ -334,11 +439,52 @@ class PickListService implements PickLists {
         writeBack(list, stored, Set.of(lineId));
         pickLines.flush();
         pickLines.saveAll(added.stream().map(line -> PickLineMapper.toNewEntity(pick.getId(), line)).toList());
+        if (pick.getStatus() == PickStatus.STAGED) {
+            // A carton short in the staging area (review M2): its replacements are picked, to the staging area again.
+            pick.reopen();
+            picks.save(pick);
+        }
         if (!list.hasShortLines()) {
             resumeAfterInventory(pick.getOrderId(), actor.userId(), "Short pick reallocated: line %s".formatted(lineId));
         }
         log.info("Short line {} of task {} reallocated to {} new line(s)", lineId, taskId, added.size());
         Map<String, String> barcodes = barcodesOf(List.of(shortLine.sku()));
+        return added.stream().map(line -> view(taskId, line, barcodes.get(line.sku()))).toList();
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Locks the pick first, as every write of the task; reads the order's holds (inventory takes no lock to read
+     * them). A top-up takes no stock lock: its lines only name cartons the order already holds.</p>
+     */
+    @Override
+    public List<PickLineView> topUp(UUID taskId, CurrentUser actor) {
+        PickJpaEntity pick = lockPick(taskId);
+        WarehouseScope.requireWarehouse(pick.getWarehouseId());
+        if (pick.getStatus() == PickStatus.CANCELLED) {
+            throw new BusinessException(ErrorCode.PICK_TASK_STATE_CONFLICT, "The task was cancelled with its order");
+        }
+        // Review L1: a task whose packing is complete has handed its cartons on (a shipment); reopening its picking
+        // would leave the pack finished under a task picking again. The rest of such an order is a new delivery round,
+        // which docs 07 §4.1 step 2 gives a task of its own (4C-6 / the delivery schedule) - and an order has one task
+        // here (fulfillment.pick.order_id is unique), so it is refused rather than opened as a second task.
+        packs.findByPickId(pick.getId())
+                .filter(pack -> pack.getStatus() != com.stockflow.fulfillment.internal.domain.PackStatus.PENDING
+                        && pack.getStatus() != com.stockflow.fulfillment.internal.domain.PackStatus.IN_PROGRESS)
+                .ifPresent(pack -> {
+                    throw new BusinessException(ErrorCode.PICK_TASK_STATE_CONFLICT, ("Packing of task %s is %s; its "
+                            + "cartons left with a shipment, so nothing is added to it").formatted(taskId,
+                            pack.getStatus()));
+                });
+        OrderSummary order = TaskAccess.orderInFulfilment(orders, pick);
+        List<PickLine> added = planLines(pick, order);
+        if (!added.isEmpty() && order.status() != com.stockflow.order.api.OrderStatus.ON_HOLD) {
+            // 07 §4.3 step 7: the order is picking again with its task (READY_TO_FULFILL -> PICKING; an order already
+            // picking is left alone). An order on hold stays held: the hold resolves back to where it was.
+            orders.startPicking(pick.getOrderId(), actor.userId());
+        }
+        Map<String, String> barcodes = barcodesOf(added.stream().map(PickLine::sku).toList());
         return added.stream().map(line -> view(taskId, line, barcodes.get(line.sku()))).toList();
     }
 
@@ -423,11 +569,16 @@ class PickListService implements PickLists {
                 line.reservationId(), line.id(), pick.getOrderId(), damage.damagedQuantity(), damage.reason(),
                 damage.note(), evidence, damage.damageLocationCode(), actor.userId()));
 
+        if (result.retainedQuantity() != 0) {
+            // The line is a whole carton and inventory refuses part of one (STOCK_PACKAGE_TAKEN_WHOLE): nothing stays.
+            throw new IllegalStateException("Damage report %s left %d unit(s) of carton %s at the bin".formatted(
+                    result.reportNumber(), result.retainedQuantity(), line.lpn()));
+        }
         List<PickList.Hold> replacements = replacementHolds(line.sku(), result);
         List<PickLine> added = list.replaceDamaged(lineId, damage.damagedQuantity(), result.damageReportId(),
-                result.retainedQuantity(), replacements, result.impairedReservationId(), Identifiers::newId);
-        // The superseded line first: the line for the good units takes over its allocation, and only one live line
-        // may hold an allocation (uk_pick_line_reservation_live) - a flush inserts before it updates.
+                replacements, result.impairedReservationId(), Identifiers::newId);
+        // The superseded line first, as for a reallocation: only one live line may hold an allocation
+        // (uk_pick_line_reservation_live), and a flush inserts before it updates.
         writeBack(list, stored, Set.of(lineId));
         pickLines.flush();
         pickLines.saveAll(added.stream().map(row -> PickLineMapper.toNewEntity(pick.getId(), row)).toList());
@@ -595,13 +746,27 @@ class PickListService implements PickLists {
         }
     }
 
+    /**
+     * The hold behind a line that is being confirmed or reported short. Always there today - the line names a carton
+     * (ck_pick_line_lpn) and tg_pick_line_carton makes it its hold's - but should either rule ever be relaxed, a line
+     * without one must fail loudly: skipping would mark it PICKED with nothing deducted, or SHORT with no blind count
+     * (07 BR-09). Thrown inside the transaction, so nothing of the request is kept.
+     */
+    private static UUID requireHold(PickLine line, String what) {
+        if (line.reservationId() == null) {
+            throw new IllegalStateException(("Pick line %s (carton %s) has no hold and cannot be %s: a line is planned "
+                    + "from the hold on its carton").formatted(line.id(), line.lpn(), what));
+        }
+        return line.reservationId();
+    }
+
     private PickJpaEntity lockPick(UUID taskId) {
         return picks.lockById(taskId).orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
     }
 
     private static PickList toList(PickJpaEntity pick, List<PickLineJpaEntity> stored) {
         return new PickList(pick.getId(), pick.getWarehouseId(), pick.getStatus(), pick.isNeedsPutBack(),
-                stored.stream().map(PickLineMapper::toDomain).toList());
+                pick.confirmsInto(), stored.stream().map(PickLineMapper::toDomain).toList());
     }
 
     /** Copies the lines the aggregate changed back onto their rows; dirty checking writes them at commit. */
@@ -625,8 +790,8 @@ class PickListService implements PickLists {
 
     /**
      * The allocations that replaced damaged units, as the pick list plans them: with the warehouse of each location and
-     * the carton each is in (SCRUM-473), read back as the short reallocation does. A hold not read back is planned
-     * loose; were it in a carton after all, tg_pick_line_carton refuses the line rather than let it go unscanned.
+     * the carton each is in (SCRUM-473), read back as the short reallocation does. A hold not read back would name no
+     * carton, which PickLine refuses for a replacement line (4C-4).
      */
     private List<PickList.Hold> replacementHolds(String sku, ReportPickDamageResult result) {
         if (result.replacements().isEmpty()) {
@@ -647,10 +812,15 @@ class PickListService implements PickLists {
     }
 
     /** The holds of the order's lines, with the warehouse each one's location belongs to. */
-    private Map<UUID, PickList.Hold> holdsOf(OrderSummary order) {
+    private Map<UUID, PickList.Hold> holdsOf(PickJpaEntity pick, OrderSummary order) {
         Set<UUID> ids = order.lines().stream()
                 .flatMap(line -> line.reservationIds().stream())
                 .collect(Collectors.toCollection(LinkedHashSet::new));
+        if (pick.getDeliveryBatchId() != null) {
+            // 4B-8 (07 BR-07): a task picks its own delivery batch - the holds that stand for it, not the order's
+            // others (a later batch's holds wait at the warehouse for their own release).
+            ids.retainAll(orders.holdsOfBatch(order.orderId(), pick.getDeliveryBatchId()));
+        }
         if (ids.isEmpty()) {
             return Map.of();
         }
@@ -682,6 +852,7 @@ class PickListService implements PickLists {
         return new PickLineView(line.id(), taskId, line.sequenceNo(), line.orderLineId(), line.sku(), barcode,
                 line.locationCode(), line.lotNumber(), line.allocatedQty(), line.pickedQty(), line.status().name(),
                 line.pickedAt(), line.putBackQty(), line.putBackLocationCode(), line.putBackAt(), line.shortQty(),
-                line.lpn(), line.wholeCarton(), line.damagedQty(), line.damageReportId(), line.packingDamagedQty());
+                line.shortReason(), line.lpn(), line.wholeCarton(), line.damagedQty(), line.damageReportId(),
+                line.packingDamagedQty(), line.stagedAt(), line.stagedLocationCode());
     }
 }

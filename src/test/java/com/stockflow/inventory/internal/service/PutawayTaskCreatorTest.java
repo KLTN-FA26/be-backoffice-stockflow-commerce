@@ -28,7 +28,10 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-/** SCRUM-92: received goods ready for putaway open one task per carton and one loose task for the rest (kltn-docs 05). */
+/**
+ * SCRUM-92: received goods ready for putaway open one task per carton (kltn-docs 05 BR-08). Since team plan 4C-2 a
+ * receipt puts every unit into a carton, so units outside one open no task.
+ */
 class PutawayTaskCreatorTest {
 
     private static final UUID RECEIPT = UUID.randomUUID();
@@ -61,15 +64,15 @@ class PutawayTaskCreatorTest {
     }
 
     @Test
-    @DisplayName("a line with no cartons opens one loose task for all of its units")
+    @DisplayName("a line with no cartons opens no task: units outside a carton are not put away")
     void looseOnly() {
         creator.on(event(line(LINE, 100)));
 
-        assertThat(opened()).containsExactly(new NewPutawayTask(RECEIPT, LINE, "CUP-12OZ", 100, null));
+        assertThat(opened()).isEmpty();
     }
 
     @Test
-    @DisplayName("cartons open one task each, sized by their INBOUND units; the units beyond them are one loose task")
+    @DisplayName("cartons open one task each, sized by their INBOUND units; the units beyond them open none")
     void cartonsPlusLooseRest() {
         StockPackage a = carton(LINE, StockPackageStatus.IN_STOCK);
         StockPackage b = carton(LINE, StockPackageStatus.IN_STOCK);
@@ -80,8 +83,7 @@ class PutawayTaskCreatorTest {
 
         assertThat(opened()).containsExactlyInAnyOrder(
                 new NewPutawayTask(RECEIPT, LINE, "CUP-12OZ", 24, a.id().value()),
-                new NewPutawayTask(RECEIPT, LINE, "CUP-12OZ", 24, b.id().value()),
-                new NewPutawayTask(RECEIPT, LINE, "CUP-12OZ", 12, null));
+                new NewPutawayTask(RECEIPT, LINE, "CUP-12OZ", 24, b.id().value()));
     }
 
     @Test
@@ -105,7 +107,7 @@ class PutawayTaskCreatorTest {
 
         creator.on(event(line(LINE, 24)));
 
-        assertThat(opened()).containsExactly(new NewPutawayTask(RECEIPT, LINE, "CUP-12OZ", 24, null));
+        assertThat(opened()).isEmpty();
     }
 
     @Test
@@ -117,7 +119,7 @@ class PutawayTaskCreatorTest {
 
         creator.on(event(line(LINE, 24)));
 
-        assertThat(opened()).extracting(NewPutawayTask::stockPackageId).containsOnlyNulls();
+        assertThat(opened()).isEmpty();
     }
 
     @Test
@@ -137,9 +139,12 @@ class PutawayTaskCreatorTest {
         UUID other = UUID.randomUUID();
         when(tasks.tasksOfReceipt(RECEIPT)).thenReturn(List.of(new PutawayTaskView(UUID.randomUUID(), RECEIPT, LINE,
                 "CUP-12OZ", 100, null, null, "OPEN")));
+        StockPackage ofOther = carton(other, StockPackageStatus.IN_STOCK);
+        when(stockPackages.findByReceiptLines(anyCollection())).thenReturn(List.of(ofOther));
+        when(stockPackages.inboundOnHandOf(anyCollection())).thenReturn(Map.of(ofOther.id(), 24));
 
-        creator.on(event(line(LINE, 100), line(other, 30)));
+        creator.on(event(line(LINE, 100), line(other, 24)));
 
-        assertThat(opened()).containsExactly(new NewPutawayTask(RECEIPT, other, "CUP-12OZ", 30, null));
+        assertThat(opened()).containsExactly(new NewPutawayTask(RECEIPT, other, "CUP-12OZ", 24, ofOther.id().value()));
     }
 }

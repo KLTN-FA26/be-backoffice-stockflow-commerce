@@ -1,16 +1,16 @@
 package com.stockflow.inventory;
 
-import com.stockflow.common.domain.Sku;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.security.Role;
 import com.stockflow.inventory.api.MoveReference;
-import com.stockflow.inventory.api.MoveStockCommand;
+import com.stockflow.inventory.api.MoveStockPackagesCommand;
 import com.stockflow.inventory.internal.service.CycleCountView;
 import com.stockflow.inventory.internal.service.CycleCounts;
 import com.stockflow.inventory.internal.service.CycleCounts.PlanCycleCountCommand;
 import com.stockflow.inventory.internal.service.StockOperations;
+import com.stockflow.support.CartonRows;
 import com.stockflow.support.ReferenceRows;
 import com.stockflow.support.SecuredIntegrationTest;
 import com.stockflow.support.SecuredMvc;
@@ -41,9 +41,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * SCRUM-146, owner decision MOVE-HELD (28/10): a manual stock move does not take loose stock out of, or put it into,
- * a slot a cycle count holds (open, or submitted with its variance still pending). The slot is the bin, SKU and lot,
- * the one {@code CountBusy} predicate reads; a count of another bin of the same SKU leaves the move alone.
+ * SCRUM-146, owner decision MOVE-HELD (28/10), kltn-docs 11 BR-06: a carton moved by hand does not leave a slot a
+ * cycle count holds (its own carton slot), nor go into a bin where a count holds the SKU and lot loose (open, or
+ * submitted with its variance still pending) - the one {@code CountBusy} predicate reads. A count of another bin of
+ * the same SKU leaves the move alone. Since team plan 4C-2 a person moves whole cartons only.
  */
 @SecuredIntegrationTest
 class MoveUnderCountIntegrationTest {
@@ -77,7 +78,8 @@ class MoveUnderCountIntegrationTest {
                     "Move under count fixture", sku.toLowerCase(Locale.ROOT));
             jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature) values (?,?,?,?,'')",
                     Identifiers.newId(), product, sku, "Move under count fixture");
-            stock(A, 10);
+            CartonRows.stock(jdbc, sku, A, 1, 10, null, LocalDate.now().plusYears(1),
+                    Instant.parse("2026-01-02T00:00:00Z"), "AVAILABLE");
             stock(C, 5);
         });
     }
@@ -109,9 +111,16 @@ class MoveUnderCountIntegrationTest {
                 List.of(), List.of(), List.of(bin), List.of(sku)), false).count();
     }
 
+    /** The carton standing at {@code from}, whole, to {@code to}. */
     private void move(String from, String to) {
-        operations.move(new MoveStockCommand(Identifiers.newId(), new Sku(sku), null, from, to, 1,
-                MoveReference.MOVE_TASK, null, manager));
+        operations.moveStockPackages(new MoveStockPackagesCommand(List.of(lpnAt(from)), to,
+                MoveReference.MOVE_TASK, Identifiers.newId(), manager));
+    }
+
+    private String lpnAt(String location) {
+        return jdbc.queryForObject("""
+                SELECT p.lpn FROM inventory.stock_package p JOIN inventory.inventory_items i ON i.id = p.inventory_item_id
+                 WHERE i.sku = ? AND p.location_code = ? AND p.status = 'IN_STOCK'""", String.class, sku, location);
     }
 
     private static ErrorCode code(Throwable thrown) {
@@ -149,7 +158,7 @@ class MoveUnderCountIntegrationTest {
         move(A, B);
 
         assertThat(jdbc.queryForObject("select sum(on_hand) from inventory.stock_item where sku = ? and location_code = ?",
-                Integer.class, sku, B)).isEqualTo(1);
+                Integer.class, sku, B)).isEqualTo(10);
     }
 
     @Test
@@ -162,14 +171,17 @@ class MoveUnderCountIntegrationTest {
         move(A, B);
 
         CycleCountView cancelled = plan(C);
-        assertThat(code(catchThrowable(() -> move(A, C)))).isEqualTo(ErrorCode.STOCK_SLOT_UNDER_COUNT);
+        assertThat(code(catchThrowable(() -> move(B, C)))).isEqualTo(ErrorCode.STOCK_SLOT_UNDER_COUNT);
         cycleCounts.cancel(cancelled.id(), "done", "test");
-        move(A, C);
+        move(B, C);
 
-        CycleCountView short_ = plan(A);
-        count(short_, 7);
-        cycleCounts.submit(short_.id(), clerk, false);
-        assertThat(code(catchThrowable(() -> move(A, B)))).isEqualTo(ErrorCode.STOCK_SLOT_UNDER_COUNT);
+        // The carton not found: its COUNT_VARIANCE waits for approval, and the carton stays where the count holds it.
+        CycleCountView missing = plan(C);
+        for (CycleCountView.Line line : missing.lines()) {
+            cycleCounts.count(missing.id(), line.id(), line.lpn() != null ? 0 : 5, null, clerk, false);
+        }
+        cycleCounts.submit(missing.id(), clerk, false);
+        assertThat(code(catchThrowable(() -> move(C, B)))).isEqualTo(ErrorCode.STOCK_SLOT_UNDER_COUNT);
     }
 
     @Test
@@ -180,8 +192,8 @@ class MoveUnderCountIntegrationTest {
         mvc.asRole(Role.WAREHOUSE_MANAGER, manager, post("/api/v1/inventory/movements")
                         .contentType("application/json")
                         .content("""
-                                {"requestId":"%s","sku":"%s","fromLocation":"%s","toLocation":"%s","quantity":1}"""
-                                .formatted(UUID.randomUUID(), sku, A, B)))
+                                {"requestId":"%s","lpns":["%s"],"toLocation":"%s"}"""
+                                .formatted(UUID.randomUUID(), lpnAt(A), B)))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("STOCK_SLOT_UNDER_COUNT"))
                 .andExpect(jsonPath("$.details.locationCode").value(A))
