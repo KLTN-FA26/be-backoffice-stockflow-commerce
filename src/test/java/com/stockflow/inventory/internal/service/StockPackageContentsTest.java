@@ -301,7 +301,7 @@ class StockPackageContentsTest {
         @Test
         @DisplayName("a LOST carton is found whole or not at all: part of it is STOCK_PACKAGE_TAKEN_WHOLE, still LOST")
         void lostCartonIsNotFoundInPart() {
-            StockPackage lost = cartonWith(id, StockPackageStatus.LOST, false, 24);
+            StockPackage lost = cartonWith(id, StockPackageStatus.LOST, 24);
             StockItem emptied = row(id, 0);
             rowsOf(lost, emptied);
 
