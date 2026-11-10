@@ -1839,9 +1839,6 @@ class FtlDispatchIntegrationTest {
         UUID orderId = confirmed.orderId();
         OrderSummary order = confirmedOrders().release(orderId, HCM, coordinator);
         assertThat(order.status()).isEqualTo(OrderStatus.READY_TO_FULFILL);
-        // Sales allowed partial shipments: a plan of batch 1 alone is refused otherwise - the production bug
-        // aBatchIsPlannedWithoutAllowingPartialShipments pins.
-        allowPartial(order, true);
         List<UUID> batchIds = jdbc.queryForList("""
                 SELECT b.id FROM ordering.delivery_batch b JOIN ordering.sales_contract c ON c.id = b.contract_id
                  WHERE c.order_id = ? ORDER BY b.seq""", UUID.class, orderId);
@@ -1896,11 +1893,6 @@ class FtlDispatchIntegrationTest {
     }
 
     @Test
-    @org.junit.jupiter.api.Disabled("production bug (4B-8): LoadPlanService.requirePartialAllowed (LP-4) counts the whole "
-            + "order's outstanding units (PartialShipments.outstandingUnits), so a plan of delivery batch 1 alone is "
-            + "refused at confirmation with ORDER_PARTIAL_SHIPMENT_NOT_ALLOWED unless Sales allowed partial shipments; "
-            + "17 BR-15 / 4B-8: the units of later batches are not left behind (the handover and loading start already "
-            + "count the batch in flight only)")
     @DisplayName("4B-8 (17 BR-15): a plan of delivery batch 1 is confirmed without partial shipments being allowed - the "
             + "later batch's units are not left behind")
     void aBatchIsPlannedWithoutAllowingPartialShipments() throws Exception {
@@ -1935,7 +1927,6 @@ class FtlDispatchIntegrationTest {
         UUID orderId = confirmedOrders().pay(confirmedOrders().sign(confirmedOrders().draft(customer,
                 List.of(ConfirmedOrders.Line.cartons(sofa, 4, 6_000_000))), plan, 2)).orderId();
         OrderSummary order = confirmedOrders().release(orderId, HCM, coordinator);
-        allowPartial(order, true);   // see twoDeliveryBatches
         UUID shipment = packed(order, false)[0];
         String load = loadOf(confirmed(List.of(shipment), truck5t), 1);
         loadAll(load, ghn);

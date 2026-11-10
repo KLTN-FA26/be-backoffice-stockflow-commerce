@@ -819,6 +819,57 @@ class LoadPlanServiceTest {
             assertThat(thrown.fieldErrors()).extracting(f -> f.message()).containsExactly("SO-0777");
         }
 
+        /**
+         * An order that may not ship in parts, every parcel of the plan its own and 3 units in each (6 leaving), whose
+         * units due together the order module answers with {@code dueTogether}.
+         */
+        private UUID strictOrderDue(int dueTogether) {
+            ShipmentJpaEntity row = shipmentRow(ShipmentStatus.READY_TO_DISPATCH);
+            when(shipmentLocks.lock(any())).thenReturn(List.of(row));
+            when(shipments.findAllById(any())).thenReturn(List.of(row));
+            when(loadNumbers.next(any())).thenReturn("LD-20261111-0001");
+            OrderSummary order = FulfillmentFixtures.order(UUID.randomUUID(), List.of());
+            var lifecycle = new OrderSummary.Lifecycle(null, null, null, null, null, null, null, null, null,
+                    BigDecimal.ZERO, BigDecimal.ZERO, List.of(), List.of(), false);
+            OrderSummary strict = new OrderSummary(order.orderId(), "SO-0888", order.customerId(), OrderStatus.PACKED,
+                    order.total(), order.lines(), NOW, null, null, null, null, null, null, null, null, WAREHOUSE, NOW,
+                    null, lifecycle);
+            org.mockito.Mockito.doAnswer(call -> {
+                Map<UUID, LoadPlanParcels.Parcel> described = new LinkedHashMap<>();
+                parcelsOf(call.getArgument(0)).forEach((id, p) -> described.put(id, new LoadPlanParcels.Parcel(p.row(),
+                        null, strict, p.carton(), p.partName())));
+                return described;
+            }).when(parcels).of(any());
+            UUID line = UUID.randomUUID();
+            when(packageLines.of(any())).thenAnswer(call -> call.<java.util.Collection<UUID>>getArgument(0).stream()
+                    .map(id -> new com.stockflow.fulfillment.internal.repository.ParcelContents.Line(id, line, 3))
+                    .toList());
+            when(parcels.unitsDueTogether(any())).thenReturn(Map.of(strict.orderId(), dueTogether));
+            return strict.orderId();
+        }
+
+        @Test
+        @DisplayName("LP-4, 4B-8 (17 BR-15): a plan carrying exactly the units due together - the delivery batch in "
+                + "flight, not the whole order - confirms for an order that may not ship in parts")
+        void exactlyTheBatchIsWhole() {
+            UUID orderId = strictOrderDue(6);
+
+            assertThat(service.confirm(plan.id(), 0L, actor).status()).isEqualTo("CONFIRMED");
+            verify(parcels).unitsDueTogether(java.util.Set.of(orderId));
+        }
+
+        @Test
+        @DisplayName("LP-4, 4B-8: one unit short of what is due together is a partial shipment: refused")
+        void oneUnitShortIsRefused() {
+            strictOrderDue(7);
+
+            var thrown = refusal(() -> service.confirm(plan.id(), 0L, actor));
+
+            assertThat(thrown.errorCode()).isEqualTo(ErrorCode.ORDER_PARTIAL_SHIPMENT_NOT_ALLOWED);
+            assertThat(thrown.fieldErrors()).extracting(f -> f.message()).containsExactly("SO-0888");
+            verify(loadStore, never()).insert(any());
+        }
+
         @Test
         @DisplayName("acknowledging what stays behind records it; the same acknowledgement again changes nothing")
         void acknowledges() {
