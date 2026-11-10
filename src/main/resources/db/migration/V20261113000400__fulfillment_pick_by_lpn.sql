@@ -15,7 +15,10 @@
 --   4. A SHORT line says why: a reason, or the damage report that made it.
 --   5. A put-back returns the whole carton the line took: put_back_qty = allocated_qty.
 --   6. The ledger: a PUT_BACK of a pick line names the carton it goes back into (to_stock_package_id).
--- Rules 3-6 are CHECKs added NOT VALID and validated at once when no existing row breaks them, which is the case on a
+--   7. Damage found at packing takes the whole carton a line picked, or nothing (review M1; kltn-docs 08: a damaged
+--      carton is removed whole): part of one would leave the rest deducted in a CONSUMED carton that cannot reopen, and a
+--      cancelled order could never put it back. packing_damaged_qty is 0 or picked_qty.
+-- Rules 3-7 are CHECKs added NOT VALID and validated at once when no existing row breaks them, which is the case on a
 -- database whose orders were all picked after 4C-1: a new or changed row is always checked, and only the history written
 -- before (loose picks, partial picks of a carton) is spared.
 --
@@ -162,7 +165,8 @@ ALTER TABLE fulfillment.pick_line
     ADD CONSTRAINT ck_pick_line_lpn CHECK (lpn IS NOT NULL OR damage_report_id IS NOT NULL) NOT VALID,
     ADD CONSTRAINT ck_pick_line_short_reported CHECK (status <> 'SHORT' OR short_reason IS NOT NULL
         OR damage_report_id IS NOT NULL) NOT VALID,
-    ADD CONSTRAINT ck_pick_line_put_back_whole CHECK (status <> 'PUT_BACK' OR put_back_qty = allocated_qty) NOT VALID;
+    ADD CONSTRAINT ck_pick_line_put_back_whole CHECK (status <> 'PUT_BACK' OR put_back_qty = allocated_qty) NOT VALID,
+    ADD CONSTRAINT ck_pick_line_packing_damaged_whole CHECK (packing_damaged_qty IN (0, picked_qty)) NOT VALID;
 
 ALTER TABLE inventory.stock_movement
     ADD CONSTRAINT ck_stock_movement_put_back_carton CHECK (movement_type <> 'PUT_BACK' OR reference_type <> 'PICK_LINE'
@@ -175,6 +179,9 @@ COMMENT ON CONSTRAINT ck_pick_line_short_reported ON fulfillment.pick_line IS
     'kltn-docs 07 §4.4 step 9: a short pick says why. NOT VALID where short lines without a reason exist.';
 COMMENT ON CONSTRAINT ck_pick_line_put_back_whole ON fulfillment.pick_line IS
     'kltn-docs 07 BR-05, §4.5 step 14: a put-back returns the whole carton. NOT VALID where partial put-backs exist.';
+COMMENT ON CONSTRAINT ck_pick_line_packing_damaged_whole ON fulfillment.pick_line IS
+    'kltn-docs 08 (review M1 of team plan 4C-4): damage found at packing takes the whole carton a line picked, or '
+    'nothing. NOT VALID where partial packing damage exists.';
 COMMENT ON CONSTRAINT ck_stock_movement_put_back_carton ON inventory.stock_movement IS
     'kltn-docs 07 §4.5 step 14: a pick line''s put-back goes back into its carton. NOT VALID where loose put-backs exist.';
 
@@ -190,6 +197,9 @@ BEGIN
     END IF;
     IF NOT EXISTS (SELECT 1 FROM fulfillment.pick_line WHERE status = 'PUT_BACK' AND put_back_qty <> allocated_qty) THEN
         ALTER TABLE fulfillment.pick_line VALIDATE CONSTRAINT ck_pick_line_put_back_whole;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM fulfillment.pick_line WHERE packing_damaged_qty NOT IN (0, picked_qty)) THEN
+        ALTER TABLE fulfillment.pick_line VALIDATE CONSTRAINT ck_pick_line_packing_damaged_whole;
     END IF;
     IF NOT EXISTS (SELECT 1 FROM inventory.stock_movement
                     WHERE movement_type = 'PUT_BACK' AND reference_type = 'PICK_LINE' AND to_stock_package_id IS NULL) THEN
