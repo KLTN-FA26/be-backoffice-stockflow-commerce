@@ -31,7 +31,8 @@ public record RequestAdjustmentRequest(
         int quantityDelta,
 
         @Schema(description = "Why the stock changed. COUNT_VARIANCE is refused here (400 VALIDATION_FAILED): it is "
-                + "posted only by a cycle count's submission, which names the count line it comes from")
+                + "posted only by a cycle count's submission, which names the count line it comes from. "
+                + "SUBCONTRACT_LOSS is refused too (400 VALIDATION_FAILED): subcontracting is gone (4A-8)")
         @NotNull(message = "reason is required")
         StockAdjustmentReason reason,
 
