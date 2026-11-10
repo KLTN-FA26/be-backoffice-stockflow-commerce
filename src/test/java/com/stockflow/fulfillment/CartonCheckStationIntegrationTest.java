@@ -453,8 +453,14 @@ class CartonCheckStationIntegrationTest {
         oc(body(post("/api/v1/orders/" + order.orderId() + "/cancellation-requests/" + request + "/approval"), "{}"))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("ORDER_CANCELLATION_REQUEST_NOT_PENDING"));
-        // A second label time never replaces the first.
+        // A second label time never replaces the first. Label every CHECKED one again (mine.get(1) is still CHECKED).
         label(task, null).andExpect(status().isOk());
+        // Review L2: the same call repeated after it worked is 200 with nothing changed, not CARTON_NOT_CHECKED.
+        Object labelledVersion = carton(mine.get(1)).get("version");
+        label(task, null).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.cartons[?(@.lpn=='" + mine.get(1) + "')].status")
+                        .value(org.hamcrest.Matchers.contains("LABELED")));
+        assertThat(carton(mine.get(1))).containsEntry("version", labelledVersion).containsEntry("label_version", 1);
         assertThat(orderLockedAt(order)).isEqualTo(lockedAt);
 
         // The PDF: one 100 x 150 mm page per labelled carton, nothing changed by printing it.
@@ -485,6 +491,17 @@ class CartonCheckStationIntegrationTest {
         assertThat(carton(mine.get(0))).containsEntry("label_version", 3);
         as(otherPacker, "WAREHOUSE_STAFF", post(url(task, "/cartons/" + mine.get(0) + "/label-reprint")))
                 .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("PACKING_TAKEN"));
+        // Review L1: the tablet sends the version on the label it replaces; a retry after it worked changes nothing.
+        asPacker(post(url(task, "/cartons/" + mine.get(0) + "/label-reprint?fromVersion=3"))).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.cartons[?(@.lpn=='" + mine.get(0) + "')].labelVersion")
+                        .value(org.hamcrest.Matchers.contains(4)));
+        Object reprinted = carton(mine.get(0)).get("version");
+        asPacker(post(url(task, "/cartons/" + mine.get(0) + "/label-reprint?fromVersion=3"))).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.cartons[?(@.lpn=='" + mine.get(0) + "')].labelVersion")
+                        .value(org.hamcrest.Matchers.contains(4)));
+        assertThat(carton(mine.get(0))).containsEntry("label_version", 4).containsEntry("version", reprinted);
+        asPacker(post(url(task, "/cartons/" + mine.get(0) + "/label-reprint?fromVersion=0")))
+                .andExpect(status().isBadRequest());
     }
 
     private CartonStationSupport.Worker asPackerWorker() {
@@ -543,10 +560,14 @@ class CartonCheckStationIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT count(*) FROM fulfillment.shipment WHERE order_id = ?", Long.class,
                 order.orderId())).isOne();
 
-        // A label printed again after completion by any packer, until the order leaves.
+        // A label printed again after completion, until the order leaves: by the worker who started the check or a
+        // manager only (08 BR-06, review L7).
         as(otherPacker, "WAREHOUSE_STAFF", post(url(task, "/cartons/" + mine.get(0) + "/label-reprint")))
-                .andExpect(status().isOk());
-        assertThat(carton(mine.get(0))).containsEntry("label_version", 2);
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("PACKING_TAKEN"));
+        assertThat(carton(mine.get(0))).containsEntry("label_version", 1);
+        asPacker(post(url(task, "/cartons/" + mine.get(0) + "/label-reprint"))).andExpect(status().isOk());
+        asManager(post(url(task, "/cartons/" + mine.get(0) + "/label-reprint?fromVersion=2"))).andExpect(status().isOk());
+        assertThat(carton(mine.get(0))).containsEntry("label_version", 3);
         // A carton in a shipment is not removed.
         asPacker(body(post(url(task, "/cartons/" + mine.get(0) + "/removal")), "{}")).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("PACK_STATE_CONFLICT"));   // a completed session is not worked;
@@ -795,6 +816,51 @@ class CartonCheckStationIntegrationTest {
         // What the order was told it shipped is what the pick lines took (no copy on the carton).
         assertThat(orders.findById(order.orderId()).orElseThrow().lifecycle().lines())
                 .extracting(OrderSummary.LineProgress::shippedQuantity).containsExactly(2);
+    }
+
+    @Test
+    @DisplayName("a carton spec corrected after the check reaches the cartons when a label is printed again or the vehicle "
+            + "is planned; once a plan holds them their measures stay (08 edge case, review M2)")
+    void aCorrectedCartonSpecReachesTheCartonsBeforeTheVehicleIsPlanned() throws Exception {
+        OrderSummary order = order(2);
+        UUID task = pickedTask(order);
+        UUID shipment = CartonStationSupport.ship(asPackerWorker(), jdbc, json, task, null);
+        List<String> mine = lpns(task);
+        assertThat((BigDecimal) carton(mine.get(0)).get("length_cm")).isEqualByComparingTo("215");
+
+        // The manager finds the real carton is 230 cm long and 55 kg, and corrects the spec on the item.
+        CartonStationSupport.correctCartonSize(tx, jdbc, SOFA.code(), "230", "95", "90", "55");
+        // The first carton's label is printed again: it takes the corrected spec at once.
+        asPacker(post(url(task, "/cartons/" + mine.get(0) + "/label-reprint"))).andExpect(status().isOk());
+        assertThat((BigDecimal) carton(mine.get(0)).get("length_cm")).isEqualByComparingTo("230");
+        assertThat((BigDecimal) carton(mine.get(0)).get("weight_kg")).isEqualByComparingTo("55");
+        assertThat((BigDecimal) carton(mine.get(0)).get("dim_weight_kg")).as("230 x 95 x 90 / 6000")
+                .isEqualByComparingTo("327.750");
+        assertThat((BigDecimal) carton(mine.get(1)).get("length_cm")).as("no reprint yet").isEqualByComparingTo("215");
+
+        // Its vehicle is planned: the other carton takes the corrected spec as the plan takes it.
+        String plan = data(dispatch(body(post(BASE + "/load-plans"), "{\"requestId\":\"" + UUID.randomUUID()
+                + "\",\"warehouseId\":\"" + HCM + "\",\"shipmentIds\":[\"" + shipment + "\"],\"vehicleTypeIds\":[\""
+                + truck5t + "\"],\"selectionMode\":\"SINGLE_TYPE\"}")).andExpect(status().isCreated()))
+                .path("loadPlanId").asText();
+        for (String lpn : mine) {
+            Map<String, Object> row = carton(lpn);
+            assertThat((BigDecimal) row.get("length_cm")).as(lpn).isEqualByComparingTo("230");
+            assertThat((BigDecimal) row.get("weight_kg")).as(lpn).isEqualByComparingTo("55");
+            assertThat((BigDecimal) row.get("dim_weight_kg")).as(lpn).isEqualByComparingTo("327.750");
+        }
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM fulfillment.load_plan_package WHERE load_plan_id = ?::uuid "
+                + "AND active", Long.class, plan)).isEqualTo(2);
+
+        // Corrected again while the plan holds them: a reprint raises the version but keeps the planned measures.
+        CartonStationSupport.correctCartonSize(tx, jdbc, SOFA.code(), "240", "95", "90", "60");
+        asPacker(post(url(task, "/cartons/" + mine.get(1) + "/label-reprint"))).andExpect(status().isOk());
+        assertThat(carton(mine.get(1))).containsEntry("label_version", 2);
+        assertThat((BigDecimal) carton(mine.get(1)).get("length_cm")).as("planned: frozen").isEqualByComparingTo("230");
+        JsonNode planView = data(dispatch(get(BASE + "/load-plans/" + plan)).andExpect(status().isOk()));
+        data(dispatch(body(post(BASE + "/load-plans/" + plan + "/calculation"), "{\"expectedVersion\":"
+                + planView.path("version").asLong() + "}")).andExpect(status().isOk()));
+        assertThat((BigDecimal) carton(mine.get(0)).get("length_cm")).isEqualByComparingTo("230");
     }
 
     private long dispatchVersion(String load) throws Exception {

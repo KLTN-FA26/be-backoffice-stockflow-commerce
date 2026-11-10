@@ -71,9 +71,15 @@ class CartonCheckServiceTest {
     private final PaymentService payments = mock(PaymentService.class);
     private final IdentityService identities = mock(IdentityService.class);
     private final ShipmentTimeline timeline = mock(ShipmentTimeline.class);
+    private final com.stockflow.fulfillment.internal.repository.LoadPlanPackageJpaRepository planMembers =
+            mock(com.stockflow.fulfillment.internal.repository.LoadPlanPackageJpaRepository.class);
+    private final CartonMeasures measures = new CartonMeasures(itemControls,
+            mock(com.stockflow.fulfillment.internal.repository.PickLineJpaRepository.class),
+            mock(PackageJpaRepository.class), planMembers,
+            mock(com.stockflow.fulfillment.internal.repository.DispatchLoadPackageJpaRepository.class), 6000);
     private final CartonCheckService service = new CartonCheckService(picks, packs, mock(PackageJpaRepository.class),
-            shipments, store, orders, itemControls, payments, identities, mock(WarehouseService.class), timeline,
-            Clock.fixed(NOW, ZoneOffset.UTC), 6000);
+            shipments, store, orders, measures, payments, identities, mock(WarehouseService.class), timeline,
+            Clock.fixed(NOW, ZoneOffset.UTC));
 
     private final UUID worker = UUID.randomUUID();
     private final UUID otherWorker = UUID.randomUUID();
@@ -353,33 +359,87 @@ class CartonCheckServiceTest {
         void whileWorking() {
             labelled();
 
-            assertThat(refusal(() -> service.reprint(pick.getId(), "LPN-1", colleague)).errorCode())
+            assertThat(refusal(() -> service.reprint(pick.getId(), "LPN-1", null, colleague)).errorCode())
                     .isEqualTo(ErrorCode.PACKING_TAKEN);
-            assertThat(service.reprint(pick.getId(), "LPN-1", manager).cartons().stream()
-                    .filter(c -> c.lpn().equals("LPN-1")).findFirst().orElseThrow().labelVersion()).isEqualTo(2);
+            assertThat(versionOf(service.reprint(pick.getId(), "LPN-1", null, manager), "LPN-1")).isEqualTo(2);
         }
 
         @Test
-        @DisplayName("on a COMPLETED check any packer may: nobody works the session any more")
+        @DisplayName("on a COMPLETED check too, only the starter or a manager (08 BR-06, review L7): a colleague is "
+                + "PACKING_TAKEN and nothing is saved")
         void afterCompletion() {
             labelled();
             service.check(pick.getId(), "LPN-2", actor);
             service.label(pick.getId(), null, actor);
             service.complete(pick.getId(), PackingCompletion.whole(), actor);
+            org.mockito.Mockito.clearInvocations(store);
 
-            var session = service.reprint(pick.getId(), "LPN-1", colleague);
+            assertThat(refusal(() -> service.reprint(pick.getId(), "LPN-1", null, colleague)).errorCode())
+                    .isEqualTo(ErrorCode.PACKING_TAKEN);
+            verify(store, never()).save(any(), any());
+            assertThat(versionOf(service.reprint(pick.getId(), "LPN-1", null, actor), "LPN-1")).isEqualTo(2);
+            assertThat(versionOf(service.reprint(pick.getId(), "LPN-1", null, manager), "LPN-1")).isEqualTo(3);
+        }
 
-            assertThat(session.cartons().stream().filter(c -> c.lpn().equals("LPN-1")).findFirst().orElseThrow()
-                    .labelVersion()).isEqualTo(2);
+        @Test
+        @DisplayName("a retry with the version the caller saw changes nothing (review L1)")
+        void retryWithFromVersion() {
+            labelled();
+
+            assertThat(versionOf(service.reprint(pick.getId(), "LPN-1", 1, actor), "LPN-1")).isEqualTo(2);
+            assertThat(versionOf(service.reprint(pick.getId(), "LPN-1", 1, actor), "LPN-1")).isEqualTo(2);
+            assertThat(versionOf(service.reprint(pick.getId(), "LPN-1", 2, actor), "LPN-1")).isEqualTo(3);
+        }
+
+        @Test
+        @DisplayName("labelling every checked carton again after it worked answers the session, not CARTON_NOT_CHECKED "
+                + "(review L2), and does not lock the order a second time")
+        void labelRetry() {
+            labelled();
+
+            var session = service.label(pick.getId(), null, actor);
+
+            assertThat(versionOf(session, "LPN-1")).isEqualTo(1);
+            verify(orders, org.mockito.Mockito.times(1)).recordFirstLabel(orderId);
+        }
+
+        @Test
+        @DisplayName("after completion the corrected carton spec reaches the carton on a reprint while no load plan holds "
+                + "it; once a plan does, the reprint keeps the measures its layout used (review M2)")
+        void correctedSpecUntilPlanned() {
+            labelled();
+            service.check(pick.getId(), "LPN-2", actor);
+            service.label(pick.getId(), null, actor);
+            service.complete(pick.getId(), PackingCompletion.whole(), actor);
+            CartonCheck.Carton one = check.carton("LPN-1").orElseThrow();
+            check.saved();   // the store wrote the cartons (mocked here)
+            when(itemControls.cartonSpec(new Sku("SKU-A"))).thenReturn(Optional.of(new CartonSpec("SKU-A", "CARTON", 10,
+                    new BigDecimal("70"), new BigDecimal("40"), new BigDecimal("40"), new BigDecimal("14"), true)));
+
+            service.reprint(pick.getId(), "LPN-1", null, actor);
+            assertThat(one.lengthCm()).isEqualByComparingTo("70");
+            assertThat(one.weightKg()).isEqualByComparingTo("14");
+
+            when(planMembers.findByPackageIdInAndActiveTrue(List.of(one.id()))).thenReturn(List.of(
+                    mock(com.stockflow.fulfillment.internal.entity.LoadPlanPackageJpaEntity.class)));
+            when(itemControls.cartonSpec(new Sku("SKU-A"))).thenReturn(Optional.of(new CartonSpec("SKU-A", "CARTON", 10,
+                    new BigDecimal("80"), new BigDecimal("40"), new BigDecimal("40"), new BigDecimal("15"), true)));
+            service.reprint(pick.getId(), "LPN-1", null, actor);
+            assertThat(one.lengthCm()).as("planned: frozen").isEqualByComparingTo("70");
+            assertThat(one.labelVersion()).isEqualTo(3);
+        }
+
+        private int versionOf(CartonChecks.Session session, String lpn) {
+            return session.cartons().stream().filter(c -> c.lpn().equals(lpn)).findFirst().orElseThrow().labelVersion();
         }
 
         @Test
         @DisplayName("a check not started has no label; a cancelled one is PACK_STATE_CONFLICT")
         void notStartedOrCancelled() {
-            assertThat(refusal(() -> service.reprint(pick.getId(), "LPN-1", actor)).errorCode())
+            assertThat(refusal(() -> service.reprint(pick.getId(), "LPN-1", null, actor)).errorCode())
                     .isEqualTo(ErrorCode.PACK_STATE_CONFLICT);
             check.cancel(NOW, java.util.Set.of());
-            assertThat(refusal(() -> service.reprint(pick.getId(), "LPN-1", actor)).errorCode())
+            assertThat(refusal(() -> service.reprint(pick.getId(), "LPN-1", null, actor)).errorCode())
                     .isEqualTo(ErrorCode.PACK_STATE_CONFLICT);
         }
     }

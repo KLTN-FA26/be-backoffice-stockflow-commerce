@@ -366,6 +366,26 @@ class CartonCheckTest {
         }
 
         @Test
+        @DisplayName("'label every CHECKED one' again once all are labelled is a retry: nothing changes and no error, so the "
+                + "worker is not told the labels failed (review L2); with nothing labelled at all it is still CARTON_NOT_CHECKED")
+        void retryOfLabelAll() {
+            CartonCheck check = started();
+            labelAll(check);
+            check.saved();
+            assertThat(check.label(null, specs(), DIVISOR, OTHER, NOW.plusSeconds(30))).isEmpty();
+            assertThat(check.label(List.of(), specs(), DIVISOR, OTHER, NOW.plusSeconds(30))).isEmpty();
+            assertThat(check.changedCartons()).isEmpty();
+            assertThat(check.cartons()).extracting(Carton::labelVersion).containsOnly(1);
+            assertThat(check.cartons()).extracting(Carton::labeledBy).containsOnly(WORKER);
+
+            CartonCheck mixed = started();
+            mixed.check("LPN-A1", WORKER, NOW);
+            mixed.label(null, specs(), DIVISOR, WORKER, NOW);
+            assertThat(mixed.label(null, specs(), DIVISOR, WORKER, NOW)).as("A2 and B1 are still TO_CHECK").isEmpty();
+            assertThat(mixed.carton("LPN-A2").orElseThrow().status()).isEqualTo(PackageStatus.TO_CHECK);
+        }
+
+        @Test
         @DisplayName("a removed carton is not labelled")
         void removedRefused() {
             CartonCheck check = started();
@@ -393,26 +413,55 @@ class CartonCheckTest {
             labelAll(check);
             Spec corrected = new Spec(new BigDecimal("30"), new BigDecimal("30"), new BigDecimal("30"),
                     new BigDecimal("9"), false);
-            Carton carton = check.reprint("LPN-A1", corrected, DIVISOR);
+            Carton carton = check.reprint("LPN-A1", corrected, DIVISOR, false, null);
             assertThat(carton.labelVersion()).isEqualTo(2);
             assertThat(carton.lengthCm()).isEqualByComparingTo("30");
             assertThat(carton.weightKg()).isEqualByComparingTo("9");
             assertThat(carton.dimWeightKg()).isEqualByComparingTo("4.500");
             assertThat(carton.rotatable()).isFalse();
-            assertThat(check.reprint("LPN-A1", null, DIVISOR).labelVersion()).isEqualTo(3);
+            assertThat(check.reprint("LPN-A1", null, DIVISOR, false, null).labelVersion()).isEqualTo(3);
         }
 
         @Test
-        @DisplayName("once shipped the measures stay what load planning took")
-        void shippedKeepsMeasures() {
+        @DisplayName("a carton already in a shipment that waits for dispatch takes the corrected spec when its label is "
+                + "printed again: its vehicle is planned later (08 edge case, review M2)")
+        void shippedNotPlannedTakesTheCorrectedSpec() {
+            CartonCheck check = started();
+            labelAll(check);
+            Completion all = check.complete(false, null, false, wanted(20, 5), skus());
+            check.ship(all, UUID.randomUUID(), WORKER, NOW);
+            Spec corrected = new Spec(new BigDecimal("70"), new BigDecimal("40"), new BigDecimal("40"),
+                    new BigDecimal("14"), true);
+            Carton carton = check.reprint("LPN-A1", corrected, DIVISOR, false, null);
+            assertThat(carton.labelVersion()).isEqualTo(2);
+            assertThat(carton.lengthCm()).isEqualByComparingTo("70");
+            assertThat(carton.weightKg()).isEqualByComparingTo("14");
+            assertThat(carton.dimWeightKg()).isEqualByComparingTo("18.667");
+            assertThat(carton.shipmentId()).isNotNull();
+        }
+
+        @Test
+        @DisplayName("a carton a load plan or a vehicle holds keeps the measures its layout was computed from")
+        void plannedKeepsMeasures() {
             CartonCheck check = started();
             labelAll(check);
             Completion all = check.complete(false, null, false, wanted(20, 5), skus());
             check.ship(all, UUID.randomUUID(), WORKER, NOW);
             Spec corrected = new Spec(BigDecimal.ONE, BigDecimal.ONE, BigDecimal.ONE, BigDecimal.ONE, true);
-            Carton carton = check.reprint("LPN-A1", corrected, DIVISOR);
+            Carton carton = check.reprint("LPN-A1", corrected, DIVISOR, true, null);
             assertThat(carton.labelVersion()).isEqualTo(2);
             assertThat(carton.lengthCm()).isEqualByComparingTo("60");
+            assertThat(carton.dimWeightKg()).isEqualByComparingTo("16.000");
+        }
+
+        @Test
+        @DisplayName("the volumetric weight is one rule for the label and for planning: L x W x H / divisor, three decimals, "
+                + "never below 0.001; a divisor that is not positive is refused")
+        void specDimWeight() {
+            assertThat(SPEC.dimWeightKg(DIVISOR)).isEqualByComparingTo("16.000");
+            assertThat(new Spec(BigDecimal.ONE, BigDecimal.ONE, BigDecimal.ONE, BigDecimal.ONE, true).dimWeightKg(DIVISOR))
+                    .isEqualByComparingTo("0.001");
+            assertThatThrownBy(() -> SPEC.dimWeightKg(0)).isInstanceOf(IllegalArgumentException.class);
         }
 
         @Test
@@ -420,9 +469,51 @@ class CartonCheckTest {
         void unmeasuredSpecKeeps() {
             CartonCheck check = started();
             labelAll(check);
-            Carton carton = check.reprint("LPN-A1", new Spec(null, null, null, null, true), DIVISOR);
+            Carton carton = check.reprint("LPN-A1", new Spec(null, null, null, null, true), DIVISOR, false, null);
             assertThat(carton.lengthCm()).isEqualByComparingTo("60");
             assertThat(carton.labelVersion()).isEqualTo(2);
+        }
+
+        @Test
+        @DisplayName("fromVersion makes a reprint retry-safe: once the carton is past the version the caller saw, the call "
+                + "changes nothing (review L1); null always prints a new version")
+        void retryByFromVersion() {
+            CartonCheck check = started();
+            labelAll(check);
+            assertThat(check.reprint("LPN-A1", SPEC, DIVISOR, false, 1).labelVersion()).isEqualTo(2);
+            check.saved();
+            Carton again = check.reprint("LPN-A1", new Spec(BigDecimal.ONE, BigDecimal.ONE, BigDecimal.ONE,
+                    BigDecimal.ONE, true), DIVISOR, false, 1);
+            assertThat(again.labelVersion()).isEqualTo(2);
+            assertThat(again.lengthCm()).as("a retry does not re-measure either").isEqualByComparingTo("60");
+            assertThat(check.changedCartons()).isEmpty();
+            assertThat(check.reprint("LPN-A1", SPEC, DIVISOR, false, 2).labelVersion()).isEqualTo(3);
+            assertThat(check.reprint("LPN-A1", SPEC, DIVISOR, false, null).labelVersion()).isEqualTo(4);
+            assertThat(check.reprint("LPN-A1", SPEC, DIVISOR, false, 3).labelVersion()).as("an older label seen: done already")
+                    .isEqualTo(4);
+        }
+
+        @Test
+        @DisplayName("who may reprint (08 BR-06): the starter or a manager, IN_PROGRESS and COMPLETED alike; nobody while "
+                + "PENDING or once CANCELLED (review L7)")
+        void whoMayReprint() {
+            CartonCheck working = started();
+            working.requireReprintable(WORKER, false);
+            working.requireReprintable(MANAGER, true);
+            assertCode(() -> working.requireReprintable(OTHER, false), ErrorCode.PACKING_TAKEN);
+
+            CartonCheck done = started();
+            labelAll(done);
+            done.ship(done.complete(false, null, false, wanted(20, 5), skus()), UUID.randomUUID(), WORKER, NOW);
+            assertThat(done.status()).isEqualTo(PackStatus.COMPLETED);
+            done.requireReprintable(WORKER, false);
+            done.requireReprintable(MANAGER, true);
+            assertCode(() -> done.requireReprintable(OTHER, false), ErrorCode.PACKING_TAKEN);
+
+            assertCode(() -> pending().requireReprintable(WORKER, true), ErrorCode.PACK_STATE_CONFLICT);
+            CartonCheck cancelled = started();
+            cancelled.cancel(NOW, java.util.Set.of());
+            assertCode(() -> cancelled.requireReprintable(WORKER, true), ErrorCode.PACK_STATE_CONFLICT);
         }
 
         @Test
@@ -431,10 +522,10 @@ class CartonCheckTest {
             CartonCheck check = started();
             check.check("LPN-A2", WORKER, NOW);
             check.remove("LPN-B1", null, WORKER, NOW);
-            assertCode(() -> check.reprint("LPN-A1", SPEC, DIVISOR), ErrorCode.CARTON_NOT_CHECKED);
-            assertCode(() -> check.reprint("LPN-A2", SPEC, DIVISOR), ErrorCode.CARTON_NOT_CHECKED);
-            assertCode(() -> check.reprint("LPN-B1", SPEC, DIVISOR), ErrorCode.CARTON_NOT_CHECKED);
-            assertCode(() -> check.reprint("LPN-NOPE", SPEC, DIVISOR), ErrorCode.CARTON_NOT_IN_TASK);
+            assertCode(() -> check.reprint("LPN-A1", SPEC, DIVISOR, false, null), ErrorCode.CARTON_NOT_CHECKED);
+            assertCode(() -> check.reprint("LPN-A2", SPEC, DIVISOR, false, null), ErrorCode.CARTON_NOT_CHECKED);
+            assertCode(() -> check.reprint("LPN-B1", SPEC, DIVISOR, false, null), ErrorCode.CARTON_NOT_CHECKED);
+            assertCode(() -> check.reprint("LPN-NOPE", SPEC, DIVISOR, false, null), ErrorCode.CARTON_NOT_IN_TASK);
         }
     }
 
