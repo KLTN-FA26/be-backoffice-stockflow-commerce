@@ -101,9 +101,9 @@ SELECT md5('qa65:pl:' || n)::uuid,
 CREATE FUNCTION pg_temp.carton_sql(n INT, k TEXT, status TEXT, extra_cols TEXT DEFAULT '', extra_vals TEXT DEFAULT '')
 RETURNS TEXT LANGUAGE sql AS $$
     SELECT format($f$
-        INSERT INTO fulfillment.package (id, pack_id, package_no, label_code, package_type, status, pick_line_id, lpn %s)
+        INSERT INTO fulfillment.package (id, pack_id, package_no, label_code, status, pick_line_id, lpn %s)
         SELECT md5('qa65:pkg:' || c.n)::uuid, md5('qa65:pack:' || %L)::uuid, c.n, 'SO-QA-65' || %L || '-C' || c.n,
-               'CARTON', %L, md5('qa65:pl:' || c.n)::uuid, c.lpn %s
+               %L, md5('qa65:pl:' || c.n)::uuid, c.lpn %s
           FROM qa65_carton c WHERE c.n = %s $f$, extra_cols, k, k, status, extra_vals, n)
 $$;
 
@@ -130,49 +130,49 @@ SELECT pg_temp.expect_ok('S6 a session is CANCELLED with its order', $q$
     UPDATE fulfillment.pack SET status = 'CANCELLED' WHERE id = md5('qa65:pack:B')::uuid;
     UPDATE fulfillment.pack SET status = 'PENDING' WHERE id = md5('qa65:pack:B')::uuid $q$);
 
-\echo '--- a shipping carton row is one picked carton, never a repack parcel (ck_package_kind, tg_package_carton; 08 BR-05)'
+\echo '--- a shipping carton row is one picked carton, never a repack parcel (ck_package_kind, tg_package_carton, tg_package_is_carton; 08 BR-05)'
 SELECT pg_temp.expect_fail_by('K1 a carton row with no LPN', 'ck_package_kind', $q$
     ALTER TABLE fulfillment.package DISABLE TRIGGER tg_package_carton;
-    INSERT INTO fulfillment.package (id, pack_id, package_no, label_code, package_type, status, pick_line_id)
-    VALUES (gen_random_uuid(), md5('qa65:pack:A')::uuid, 91, 'QA65-K1', 'CARTON', 'TO_CHECK', md5('qa65:pl:1')::uuid) $q$);
+    INSERT INTO fulfillment.package (id, pack_id, package_no, label_code, status, pick_line_id)
+    VALUES (gen_random_uuid(), md5('qa65:pack:A')::uuid, 91, 'QA65-K1', 'TO_CHECK', md5('qa65:pl:1')::uuid) $q$);
 SELECT pg_temp.expect_fail_by('K2 a repack parcel with an LPN', 'ck_package_kind', $q$
-    INSERT INTO fulfillment.package (id, pack_id, package_no, label_code, package_type, status, lpn)
-    SELECT gen_random_uuid(), md5('qa65:pack:A')::uuid, 92, 'QA65-K2', 'CARTON', 'OPEN', c.lpn
+    ALTER TABLE fulfillment.package DISABLE TRIGGER tg_package_is_carton;
+    INSERT INTO fulfillment.package (id, pack_id, package_no, label_code, status, lpn)
+    SELECT gen_random_uuid(), md5('qa65:pack:A')::uuid, 92, 'QA65-K2', 'OPEN', c.lpn
       FROM qa65_carton c WHERE c.n = 9 $q$);
 SELECT pg_temp.expect_fail_by('K3 a repack parcel with a carton''s status', 'ck_package_kind', $q$
-    INSERT INTO fulfillment.package (id, pack_id, package_no, label_code, package_type, status)
-    VALUES (gen_random_uuid(), md5('qa65:pack:A')::uuid, 93, 'QA65-K3', 'CARTON', 'TO_CHECK') $q$);
+    ALTER TABLE fulfillment.package DISABLE TRIGGER tg_package_is_carton;
+    INSERT INTO fulfillment.package (id, pack_id, package_no, label_code, status)
+    VALUES (gen_random_uuid(), md5('qa65:pack:A')::uuid, 93, 'QA65-K3', 'TO_CHECK') $q$);
 SELECT pg_temp.expect_fail_by('K4 a carton that is SEALED (it is never packed again)', 'ck_package_kind',
-    'ALTER TABLE fulfillment.package DISABLE TRIGGER tg_package_carton; '
+    'ALTER TABLE fulfillment.package DISABLE TRIGGER tg_package_carton; ALTER TABLE fulfillment.package DISABLE TRIGGER tg_package_is_carton; '
     || pg_temp.carton_sql(1, 'A', 'SEALED', ', sealed_at', ', NOW()'));
-SELECT pg_temp.expect_fail_by('K5 a carton row of a kit', 'ck_package_kind', $q$
-    ALTER TABLE fulfillment.package DISABLE TRIGGER tg_package_kit_check;
-    INSERT INTO fulfillment.package (id, pack_id, package_no, label_code, package_type, status, pick_line_id, lpn, kit_group_id)
-    SELECT gen_random_uuid(), md5('qa65:pack:A')::uuid, 94, 'QA65-K5', 'CARTON', 'TO_CHECK', md5('qa65:pl:1')::uuid, c.lpn, gen_random_uuid()
-      FROM qa65_carton c WHERE c.n = 1 $q$);
+SELECT pg_temp.expect_fail_by('K5 a new row naming no pick line: parcels are no longer packed (4C-7)', 'parcels are no longer packed', $q$
+    INSERT INTO fulfillment.package (id, pack_id, package_no, label_code, status)
+    VALUES (gen_random_uuid(), md5('qa65:pack:A')::uuid, 94, 'QA65-K5', 'OPEN') $q$);
 SELECT pg_temp.expect_fail_by('K6 a carton of another task''s pick line (task B''s line in task A''s session)', 'tg_package_carton',
     pg_temp.carton_sql(7, 'A', 'TO_CHECK'));
 SELECT pg_temp.expect_fail_by('K7 a carton row inserted CHECKED: every carton starts TO_CHECK', 'tg_package_carton',
     pg_temp.carton_sql(1, 'A', 'CHECKED', ', checked_at, checked_by', ', NOW(), md5(''demo:user:editor'')::uuid'));
 SELECT pg_temp.expect_fail_by('K8 a carton row whose LPN is not the pick line''s', 'tg_package_carton', $q$
-    INSERT INTO fulfillment.package (id, pack_id, package_no, label_code, package_type, status, pick_line_id, lpn)
-    SELECT gen_random_uuid(), md5('qa65:pack:A')::uuid, 95, 'QA65-K8', 'CARTON', 'TO_CHECK', md5('qa65:pl:1')::uuid, c.lpn
+    INSERT INTO fulfillment.package (id, pack_id, package_no, label_code, status, pick_line_id, lpn)
+    SELECT gen_random_uuid(), md5('qa65:pack:A')::uuid, 95, 'QA65-K8', 'TO_CHECK', md5('qa65:pl:1')::uuid, c.lpn
       FROM qa65_carton c WHERE c.n = 2 $q$);
 SELECT pg_temp.expect_fail_by('K9 a carton of a pick line not PICKED (OPEN)', 'tg_package_carton', $q$
     UPDATE fulfillment.pick_line SET status = 'OPEN', picked_qty = 0, picked_by = NULL, picked_at = NULL, consumed_at = NULL
      WHERE id = md5('qa65:pl:3')::uuid;
-    INSERT INTO fulfillment.package (id, pack_id, package_no, label_code, package_type, status, pick_line_id, lpn)
-    SELECT gen_random_uuid(), md5('qa65:pack:A')::uuid, 96, 'QA65-K9', 'CARTON', 'TO_CHECK', md5('qa65:pl:3')::uuid, c.lpn
+    INSERT INTO fulfillment.package (id, pack_id, package_no, label_code, status, pick_line_id, lpn)
+    SELECT gen_random_uuid(), md5('qa65:pack:A')::uuid, 96, 'QA65-K9', 'TO_CHECK', md5('qa65:pl:3')::uuid, c.lpn
       FROM qa65_carton c WHERE c.n = 3 $q$);
 SELECT pg_temp.expect_ok('K10 a TO_CHECK carton of the task''s own picked line', pg_temp.carton_sql(1, 'A', 'TO_CHECK'));
 SELECT pg_temp.expect_fail_by('K11 a second row for the same pick line', 'uk_package_pick_line', $q$
-    INSERT INTO fulfillment.package (id, pack_id, package_no, label_code, package_type, status, pick_line_id, lpn)
-    SELECT gen_random_uuid(), md5('qa65:pack:A')::uuid, 97, 'QA65-K11', 'CARTON', 'TO_CHECK', md5('qa65:pl:1')::uuid, c.lpn
+    INSERT INTO fulfillment.package (id, pack_id, package_no, label_code, status, pick_line_id, lpn)
+    SELECT gen_random_uuid(), md5('qa65:pack:A')::uuid, 97, 'QA65-K11', 'TO_CHECK', md5('qa65:pl:1')::uuid, c.lpn
       FROM qa65_carton c WHERE c.n = 1 $q$);
 SELECT pg_temp.expect_fail_by('K12 one LPN TO_CHECK or CHECKED in two rows at once', 'uk_package_lpn_checking', $q$
     ALTER TABLE fulfillment.package DISABLE TRIGGER tg_package_carton;
-    INSERT INTO fulfillment.package (id, pack_id, package_no, label_code, package_type, status, pick_line_id, lpn)
-    SELECT gen_random_uuid(), md5('qa65:pack:A')::uuid, 98, 'QA65-K12', 'CARTON', 'TO_CHECK', md5('qa65:pl:2')::uuid, c.lpn
+    INSERT INTO fulfillment.package (id, pack_id, package_no, label_code, status, pick_line_id, lpn)
+    SELECT gen_random_uuid(), md5('qa65:pack:A')::uuid, 98, 'QA65-K12', 'TO_CHECK', md5('qa65:pl:2')::uuid, c.lpn
       FROM qa65_carton c WHERE c.n = 1 $q$);
 SELECT pg_temp.expect_fail_by('K13 the carton''s LPN is rewritten', 'tg_package_carton', $q$
     UPDATE fulfillment.package SET lpn = (SELECT lpn FROM qa65_carton WHERE n = 2) WHERE id = md5('qa65:pkg:1')::uuid $q$);
@@ -221,8 +221,8 @@ SELECT pg_temp.expect_ok('L2 the same, once the order''s first label time is set
     UPDATE ordering.customer_order SET first_labeled_at = NOW() WHERE id = md5('qa65:order:A')::uuid;
     UPDATE fulfillment.package SET status = 'LABELED', checked_at = COALESCE(checked_at, NOW()), checked_by = md5('demo:user:editor')::uuid, labeled_at = NOW(), labeled_by = md5('demo:user:editor')::uuid, label_version = 1, weight_kg = 12, length_cm = 60, width_cm = 40, height_cm = 40, dim_weight_kg = 16 WHERE id = md5('qa65:pkg:1')::uuid $q$);
 SELECT pg_temp.expect_fail_by('L3 a carton labelled for an order that is not locked, inserted at once', 'tg_package_label_locks_order', $q$
-    INSERT INTO fulfillment.package (id, pack_id, package_no, label_code, package_type, status, pick_line_id, lpn)
-    SELECT md5('qa65:pkg:7')::uuid, md5('qa65:pack:B')::uuid, 7, 'SO-QA-65B-C7', 'CARTON', 'TO_CHECK', md5('qa65:pl:7')::uuid, c.lpn
+    INSERT INTO fulfillment.package (id, pack_id, package_no, label_code, status, pick_line_id, lpn)
+    SELECT md5('qa65:pkg:7')::uuid, md5('qa65:pack:B')::uuid, 7, 'SO-QA-65B-C7', 'TO_CHECK', md5('qa65:pl:7')::uuid, c.lpn
       FROM qa65_carton c WHERE c.n = 7;
     UPDATE fulfillment.package SET status = 'CHECKED', checked_at = NOW(), checked_by = md5('demo:user:editor')::uuid
      WHERE id = md5('qa65:pkg:7')::uuid;
@@ -289,8 +289,8 @@ SELECT pg_temp.expect_fail_by('R3 label version back to 0 once labelled', 'ck_pa
 
 \echo '--- a removed carton says why; a labelled one leaves only while in no shipment (08 §5.2, BR-04)'
 SELECT pg_temp.expect_ok('D1 a TO_CHECK carton of order A is added (carton 2), then removed as damaged by a worker', $q$
-    INSERT INTO fulfillment.package (id, pack_id, package_no, label_code, package_type, status, pick_line_id, lpn)
-    SELECT md5('qa65:pkg:2')::uuid, md5('qa65:pack:A')::uuid, 2, 'SO-QA-65A-C2', 'CARTON', 'TO_CHECK', md5('qa65:pl:2')::uuid, c.lpn
+    INSERT INTO fulfillment.package (id, pack_id, package_no, label_code, status, pick_line_id, lpn)
+    SELECT md5('qa65:pkg:2')::uuid, md5('qa65:pack:A')::uuid, 2, 'SO-QA-65A-C2', 'TO_CHECK', md5('qa65:pl:2')::uuid, c.lpn
       FROM qa65_carton c WHERE c.n = 2 $q$);
 SELECT pg_temp.expect_fail_by('D2 REMOVED without a reason', 'ck_package_removed', $q$
     UPDATE fulfillment.package SET status = 'REMOVED', removed_at = NOW() WHERE id = md5('qa65:pkg:2')::uuid $q$);
@@ -313,14 +313,14 @@ SELECT pg_temp.expect_fail_by('D9 a REMOVED carton comes back', 'tg_package_cart
     UPDATE fulfillment.package SET status = 'CHECKED', removed_at = NULL, removed_by = NULL, removal_reason = NULL,
            removal_note = NULL, checked_at = NOW(), checked_by = md5('demo:user:editor')::uuid WHERE id = md5('qa65:pkg:2')::uuid $q$);
 SELECT pg_temp.expect_ok('D10 a CHECKED carton (3) is removed by the system for a cancelled order: no worker', $q$
-    INSERT INTO fulfillment.package (id, pack_id, package_no, label_code, package_type, status, pick_line_id, lpn)
-    SELECT md5('qa65:pkg:3')::uuid, md5('qa65:pack:A')::uuid, 3, 'SO-QA-65A-C3', 'CARTON', 'TO_CHECK', md5('qa65:pl:3')::uuid, c.lpn
+    INSERT INTO fulfillment.package (id, pack_id, package_no, label_code, status, pick_line_id, lpn)
+    SELECT md5('qa65:pkg:3')::uuid, md5('qa65:pack:A')::uuid, 3, 'SO-QA-65A-C3', 'TO_CHECK', md5('qa65:pl:3')::uuid, c.lpn
       FROM qa65_carton c WHERE c.n = 3;
     UPDATE fulfillment.package SET status = 'REMOVED', removed_at = NOW(), removal_reason = 'ORDER_CANCELLED'
      WHERE id = md5('qa65:pkg:3')::uuid $q$);
 SELECT pg_temp.expect_ok('D11 a LABELED carton (4) removed while in no shipment', $q$
-    INSERT INTO fulfillment.package (id, pack_id, package_no, label_code, package_type, status, pick_line_id, lpn)
-    SELECT md5('qa65:pkg:4')::uuid, md5('qa65:pack:A')::uuid, 4, 'SO-QA-65A-C4', 'CARTON', 'TO_CHECK', md5('qa65:pl:4')::uuid, c.lpn
+    INSERT INTO fulfillment.package (id, pack_id, package_no, label_code, status, pick_line_id, lpn)
+    SELECT md5('qa65:pkg:4')::uuid, md5('qa65:pack:A')::uuid, 4, 'SO-QA-65A-C4', 'TO_CHECK', md5('qa65:pl:4')::uuid, c.lpn
       FROM qa65_carton c WHERE c.n = 4;
     UPDATE fulfillment.package SET status = 'CHECKED', checked_at = NOW(), checked_by = md5('demo:user:editor')::uuid WHERE id = md5('qa65:pkg:4')::uuid;
     UPDATE fulfillment.package SET status = 'LABELED', labeled_at = NOW(), labeled_by = md5('demo:user:editor')::uuid, label_version = 1,
@@ -340,16 +340,16 @@ SELECT pg_temp.expect_fail_by('H3 a LABELED carton that is in a shipment is not 
     UPDATE fulfillment.package SET status = 'REMOVED', removed_at = NOW(), removed_by = md5('demo:user:editor')::uuid,
            removal_reason = 'DAMAGED' WHERE id = md5('qa65:pkg:1')::uuid $q$);
 SELECT pg_temp.expect_fail_by('H4 a CHECKED carton in a shipment', 'ck_package_shipped', $q$
-    INSERT INTO fulfillment.package (id, pack_id, package_no, label_code, package_type, status, pick_line_id, lpn)
-    SELECT md5('qa65:pkg:5')::uuid, md5('qa65:pack:A')::uuid, 5, 'SO-QA-65A-C5', 'CARTON', 'TO_CHECK', md5('qa65:pl:5')::uuid, c.lpn
+    INSERT INTO fulfillment.package (id, pack_id, package_no, label_code, status, pick_line_id, lpn)
+    SELECT md5('qa65:pkg:5')::uuid, md5('qa65:pack:A')::uuid, 5, 'SO-QA-65A-C5', 'TO_CHECK', md5('qa65:pl:5')::uuid, c.lpn
       FROM qa65_carton c WHERE c.n = 5;
     UPDATE fulfillment.package SET status = 'CHECKED', checked_at = NOW(), checked_by = md5('demo:user:editor')::uuid,
            shipment_id = md5('qa65:ship:A')::uuid WHERE id = md5('qa65:pkg:5')::uuid $q$);
 
 \echo '--- a carton live at the station is not put back; a removed one is (tg_pick_line_carton_removed; 08 §4.2 step 4)'
 SELECT pg_temp.expect_ok('P1 carton 5 comes to the station: TO_CHECK', $q$
-    INSERT INTO fulfillment.package (id, pack_id, package_no, label_code, package_type, status, pick_line_id, lpn)
-    SELECT md5('qa65:pkg:5')::uuid, md5('qa65:pack:A')::uuid, 5, 'SO-QA-65A-C5', 'CARTON', 'TO_CHECK', md5('qa65:pl:5')::uuid, c.lpn
+    INSERT INTO fulfillment.package (id, pack_id, package_no, label_code, status, pick_line_id, lpn)
+    SELECT md5('qa65:pkg:5')::uuid, md5('qa65:pack:A')::uuid, 5, 'SO-QA-65A-C5', 'TO_CHECK', md5('qa65:pl:5')::uuid, c.lpn
       FROM qa65_carton c WHERE c.n = 5 $q$);
 SELECT pg_temp.expect_fail_by('P2 its line put back while TO_CHECK', 'tg_pick_line_carton_removed', $q$
     UPDATE fulfillment.pick_line SET status = 'PUT_BACK', put_back_qty = 1, put_back_by = md5('demo:user:editor')::uuid,
