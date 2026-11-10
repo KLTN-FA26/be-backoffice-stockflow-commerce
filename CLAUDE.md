@@ -20,7 +20,7 @@ code, and points at the code for the rest.
 ## 1. Read this first: what has been verified
 
 **The suite runs.** `mvn test` resolves, compiles and executes under Maven; on the integration tip of the rescope it
-is `<FULL_SUITE_COUNT>` tests (unit, integration against Testcontainers Postgres + Redis, migration upgrade tests,
+is about 4,570 tests (unit, integration against Testcontainers Postgres + Redis, migration upgrade tests,
 and the fitness functions). Earlier versions of this file said it had never run; that was true until the first
 Maven-enabled build and is no longer. Do not "restore" the old caution: when a test is red, it is information.
 
