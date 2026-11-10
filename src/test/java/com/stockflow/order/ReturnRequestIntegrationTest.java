@@ -95,6 +95,8 @@ class ReturnRequestIntegrationTest {
 
     private UUID customer;
     private String sku;
+    /** Its carton unit: two pieces, so a replacement of a carton is whole cartons (07 BR-03, team plan 4C-2). */
+    private CustomerSkuRows.Issued issued;
     private ConfirmedOrders confirmedOrders;
     private UUID customerUser;
     private UUID sales;
@@ -115,7 +117,8 @@ class ReturnRequestIntegrationTest {
         qc = tx.execute(s -> ReferenceRows.user(entityManager));
         confirmedOrders = new ConfirmedOrders(context);
         // A contract's lines are only ever the customer's own SKUs, in cartons (14 BR-04, BR-08).
-        sku = CustomerSkuRows.issue(jdbc, tx, entityManager, customer, 50).sku();
+        issued = CustomerSkuRows.issue(jdbc, tx, entityManager, customer, 2);
+        sku = issued.sku();
     }
 
     /** Stock the tests hold is given back, so other test classes find the demo stock they count on. */
@@ -137,12 +140,18 @@ class ReturnRequestIntegrationTest {
 
     // ---------------------------------------------------------------------------------------------------- helpers
 
-    /** A CONFIRMED order of {@code units} pieces, at least two: one carton of them (14 BR-08), its stock in HCM. */
+    /**
+     * A CONFIRMED order of {@code units} pieces, at least two, its stock in HCM: cartons of the SKU's two for an even
+     * number, else one carton of them all (14 BR-08). Stock is whole sealed cartons of the size ordered (4C-2).
+     */
     private OrderSummary place(int units) {
         // Stock for the order and for what the returns of it send out again (a replacement order holds its own).
         CustomerSkuRows.stock(jdbc, tx, sku, units);
         CustomerSkuRows.stock(jdbc, tx, sku, units);
-        UUID orderId = confirmedOrders.confirmed(customer, ConfirmedOrders.Line.units(sku, units, PRICE)).orderId();
+        ConfirmedOrders.Line line = units % issued.unitsPerCarton() == 0
+                ? ConfirmedOrders.Line.cartons(issued, units / issued.unitsPerCarton(), PRICE)
+                : ConfirmedOrders.Line.units(sku, units, PRICE);
+        UUID orderId = confirmedOrders.confirmed(customer, line).orderId();
         placed.add(orderId);
         return orders.findById(orderId).orElseThrow();
     }
@@ -410,8 +419,9 @@ class ReturnRequestIntegrationTest {
     @DisplayName("replacement of a stock item: a free replacement order, CONFIRMED with its stock held and released "
             + "like any order; the delivered order goes back to DELIVERED and completes after its window")
     void replacementOrder() {
-        OrderSummary order = delivered(3);
-        ReturnRequest request = open(order.orderId(), ReturnReason.SHORT_DELIVERY, ReturnResolution.REPLACEMENT, 1);
+        // Goods ship and come back in whole cartons (17 §4.10 step 39): a carton of two short.
+        OrderSummary order = delivered(4);
+        ReturnRequest request = open(order.orderId(), ReturnReason.SHORT_DELIVERY, ReturnResolution.REPLACEMENT, 2);
         assertThat(code(catchThrowable(() -> returns.approve(request.id(), new ReturnRequestService.ApproveReturnCommand(
                 null, null, "giao thiếu 1", null), sales)))).as("the signed delivery note, photographed")
                 .isEqualTo(ErrorCode.RETURN_EVIDENCE_REQUIRED);
@@ -421,7 +431,7 @@ class ReturnRequestIntegrationTest {
         assertThat(inspected.status()).as("nothing to send back for a short delivery").isEqualTo(ReturnStatus.INSPECTED);
 
         ReturnRequest pending = returns.proposeResolution(request.id(), new ReturnRequestService.ResolveReturnCommand(
-                List.of(new ReturnRequest.Remedy(only(request), 1, 0)), null, null, null), sales);
+                List.of(new ReturnRequest.Remedy(only(request), 2, 0)), null, null, null), sales);
         assertThat(pending.status()).as("free goods wait for a second person too")
                 .isEqualTo(ReturnStatus.SETTLEMENT_PENDING);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM ordering.customer_order WHERE replaces_return_request_id = ?",
@@ -438,7 +448,7 @@ class ReturnRequestIntegrationTest {
         assertThat(free.total().amount()).isZero();
         assertThat(free.lines()).singleElement().satisfies(l -> {
             assertThat(l.sku()).isEqualTo(sku);
-            assertThat(l.quantity()).isEqualTo(1);
+            assertThat(l.quantity()).isEqualTo(2);
             assertThat(l.lineId()).isEqualTo(resolved.lines().getFirst().replacementOrderLineId());
         });
         assertThat(jdbc.queryForObject("SELECT replaces_return_request_id FROM ordering.customer_order WHERE id = ?",
@@ -453,6 +463,25 @@ class ReturnRequestIntegrationTest {
         backdateDelivery(order.orderId(), 8);
         assertThat(settlements.complete(order.orderId())).isTrue();
         assertThat(statusOf(order.orderId())).isEqualTo(OrderStatus.COMPLETED);
+    }
+
+    @Test
+    @org.junit.jupiter.api.Disabled("production bug (returns, 4D-3): a replacement of part of a carton is accepted when "
+            + "Sales propose it (SETTLEMENT_PENDING) and only fails at the second person's approval, inside the "
+            + "replacement order's reservation (RESERVATION_NOT_WHOLE_CARTONS): goods ship in whole cartons only (17 "
+            + "§4.10 step 39, 07 BR-03), so the proposal should be refused")
+    @DisplayName("a replacement short of a whole carton is refused when Sales propose it; the return stays INSPECTED")
+    void aPartCartonReplacementIsRefusedWhenProposed() {
+        OrderSummary order = delivered(4);
+        ReturnRequest request = open(order.orderId(), ReturnReason.SHORT_DELIVERY, ReturnResolution.REPLACEMENT, 1);
+        withPhoto(request);
+        returns.approve(request.id(), new ReturnRequestService.ApproveReturnCommand(null, null, "short by one", null),
+                sales);
+        Throwable refused = catchThrowable(() -> returns.proposeResolution(request.id(),
+                new ReturnRequestService.ResolveReturnCommand(List.of(new ReturnRequest.Remedy(only(request), 1, 0)),
+                        null, null, null), sales));
+        assertThat(refused).as("one piece of a carton of two").isInstanceOf(BusinessException.class);
+        assertThat(queries.detail(request.id(), null).request().status()).isEqualTo(ReturnStatus.INSPECTED);
     }
 
     @Test
@@ -769,10 +798,10 @@ class ReturnRequestIntegrationTest {
     @DisplayName("a replacement order is cancelled only through its return: neither the customer nor staff cancel it; "
             + "withdrawn by two people, it is cancelled and its units credited (RMA-...-W)")
     void replacementWithdrawal() {
-        OrderSummary order = delivered(3);
-        ReturnRequest request = open(order.orderId(), ReturnReason.DAMAGED_IN_TRANSIT, ReturnResolution.REPLACEMENT, 1);
+        OrderSummary order = delivered(4);
+        ReturnRequest request = open(order.orderId(), ReturnReason.DAMAGED_IN_TRANSIT, ReturnResolution.REPLACEMENT, 2);
         approved(request, false);
-        ReturnRequest resolved = resolved(request, 1, 0, null);
+        ReturnRequest resolved = resolved(request, 2, 0, null);
         UUID replacement = resolved.replacementOrderId();
         placed.add(replacement);
 
@@ -793,7 +822,7 @@ class ReturnRequestIntegrationTest {
         assertThat(statusOf(replacement)).isEqualTo(OrderStatus.CANCELLED);
         assertThat(jdbc.queryForObject("SELECT cancellation_reason_code FROM ordering.customer_order WHERE id = ?",
                 String.class, replacement)).isEqualTo("REPLACEMENT_WITHDRAWN");
-        assertThat(withdrawn.withdrawalMoney().total()).isEqualByComparingTo(BigDecimal.valueOf(PRICE));
+        assertThat(withdrawn.withdrawalMoney().total()).isEqualByComparingTo(BigDecimal.valueOf(2 * PRICE));
         assertThat(jdbc.queryForObject("SELECT count(*) FROM inventory.stock_reservation WHERE order_id = ? "
                 + "AND status = 'HELD'", Long.class, replacement)).as("its stock released").isZero();
         assertThat(code(catchThrowable(() -> returns.proposeReplacementWithdrawal(request.id(), "again", null,
@@ -805,10 +834,10 @@ class ReturnRequestIntegrationTest {
             + "although nothing is packed, so the approval says so (RETURN_REPLACEMENT_NOT_WITHDRAWABLE) instead of "
             + "failing on the cancellation; nothing is cancelled or credited (review L5)")
     void replacementWithALabelledCartonIsNotWithdrawn() {
-        OrderSummary order = delivered(3);
-        ReturnRequest request = open(order.orderId(), ReturnReason.DAMAGED_IN_TRANSIT, ReturnResolution.REPLACEMENT, 1);
+        OrderSummary order = delivered(4);
+        ReturnRequest request = open(order.orderId(), ReturnReason.DAMAGED_IN_TRANSIT, ReturnResolution.REPLACEMENT, 2);
         approved(request, false);
-        UUID replacement = resolved(request, 1, 0, null).replacementOrderId();
+        UUID replacement = resolved(request, 2, 0, null).replacementOrderId();
         placed.add(replacement);
         returns.proposeReplacementWithdrawal(request.id(), "Khách muốn nhận tiền thay vì hàng", null, sales);
 
@@ -828,15 +857,15 @@ class ReturnRequestIntegrationTest {
     @DisplayName("a defective reprint: the replacement order's free line is claimed at what the goods were paid, not at "
             + "the replacement's zero")
     void claimOnAReplacement() {
-        OrderSummary order = delivered(3);
-        ReturnRequest request = open(order.orderId(), ReturnReason.DAMAGED_IN_TRANSIT, ReturnResolution.REPLACEMENT, 1);
+        OrderSummary order = delivered(4);
+        ReturnRequest request = open(order.orderId(), ReturnReason.DAMAGED_IN_TRANSIT, ReturnResolution.REPLACEMENT, 2);
         approved(request, false);
-        UUID replacement = resolved(request, 1, 0, null).replacementOrderId();
+        UUID replacement = resolved(request, 2, 0, null).replacementOrderId();
         placed.add(replacement);
         deliver(replacement);
         assertThat(statusOf(replacement)).isEqualTo(OrderStatus.DELIVERED);
 
-        ReturnRequest again = open(replacement, ReturnReason.DAMAGED_IN_TRANSIT, ReturnResolution.CREDIT_NOTE, 1);
+        ReturnRequest again = open(replacement, ReturnReason.DAMAGED_IN_TRANSIT, ReturnResolution.CREDIT_NOTE, 2);
         assertThat(again.lines().getFirst().unitPrice()).as("the price paid, not the replacement's zero")
                 .isEqualByComparingTo(BigDecimal.valueOf(PRICE));
         approved(again, false);
