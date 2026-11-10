@@ -9,8 +9,7 @@ import java.util.UUID;
  * (08 §4.2 step 4, team plan 4C-6).
  *
  * @param lpn              the carton: scan it to put it back
- * @param pickedQty        what goes back: the carton's count, less any units found damaged at packing (then it is not
- *                         whole any more, and the put-back is refused)
+ * @param pickedQty        what goes back: the carton's count, whole
  * @param fromLocationCode where it was picked from: the natural bin to put it back on
  * @param quarantine       removed at the check station as damaged: it goes into a QUARANTINE area of the warehouse,
  *                         not onto a bin

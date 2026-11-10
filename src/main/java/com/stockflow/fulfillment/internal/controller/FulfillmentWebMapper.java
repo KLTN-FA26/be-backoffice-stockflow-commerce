@@ -4,7 +4,6 @@ import com.stockflow.fulfillment.api.FulfillmentAssignee;
 import com.stockflow.fulfillment.api.FulfillmentTask;
 import com.stockflow.fulfillment.internal.controller.dto.AssigneeResponse;
 import com.stockflow.fulfillment.internal.controller.dto.FulfillmentTaskResponse;
-import com.stockflow.fulfillment.internal.controller.dto.PickDamageResponse;
 import com.stockflow.fulfillment.internal.controller.dto.PickLineResponse;
 import com.stockflow.fulfillment.internal.controller.dto.PutBackRowResponse;
 import com.stockflow.fulfillment.internal.service.PickLists;
@@ -35,14 +34,7 @@ class FulfillmentWebMapper {
                 line.barcode(), line.locationCode(), line.lotNumber(), line.allocatedQty(), line.pickedQty(),
                 line.status(), line.pickedAt(), line.putBackQty(), line.putBackLocationCode(), line.putBackAt(),
                 line.shortQty(), line.shortReason() == null ? null : line.shortReason().name(), line.lpn(),
-                line.wholeCarton(), line.damagedQty(), line.damageReportId(), line.packingDamagedQty(),
-                line.stagedAt(), line.stagedLocationCode());
-    }
-
-    PickDamageResponse toResponse(PickLists.PickDamageView damage) {
-        return new PickDamageResponse(damage.damageReportId(), damage.reportNumber(), damage.damageLocationCode(),
-                damage.damagedQuantity(), damage.orderOnHold(), toResponse(damage.line()),
-                damage.lines().stream().map(this::toResponse).toList());
+                line.wholeCarton(), line.stagedAt(), line.stagedLocationCode());
     }
 
     PutBackRowResponse toResponse(PickLists.PutBackRow row) {
