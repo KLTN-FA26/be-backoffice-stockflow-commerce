@@ -155,6 +155,8 @@ SELECT pg_temp.expect_fail('BR7 a release is written once', $q$
 INSERT INTO fulfillment.shipment (id, order_id, status, code, warehouse_id, ready_at, created_at)
 VALUES (md5('qa29:shipment1')::uuid, md5('qa29:order')::uuid, 'READY_TO_DISPATCH', 'SO-QA-DB-S1',
         md5('demo:wh:HCM')::uuid, NOW(), NOW()),
+       (md5('qa29:shipment1b')::uuid, md5('qa29:order')::uuid, 'READY_TO_DISPATCH', 'SO-QA-DB-S1B',
+        md5('demo:wh:HCM')::uuid, NOW(), NOW()),
        (md5('qa29:shipment2')::uuid, md5('qa29:order')::uuid, 'READY_TO_DISPATCH', 'SO-QA-DB-S2',
         md5('demo:wh:HCM')::uuid, NOW(), NOW());
 SELECT pg_temp.expect_fail('BR8 a shipment naming a batch that is not released', $q$
@@ -217,23 +219,66 @@ SELECT pg_temp.expect_fail('BR19 a window change that names a chat message that 
     VALUES (gen_random_uuid(), md5('qa29:b2')::uuid, md5('qa29:order')::uuid, CURRENT_DATE + 48, CURRENT_DATE + 50,
             CURRENT_DATE + 52, CURRENT_DATE + 53, 'SELLER_DELAY', 'later', gen_random_uuid(),
             md5('demo:user:editor')::uuid, NOW()) $q$);
-SELECT pg_temp.expect_ok('BR20 batch 1 handed over on the first day of its window', $q$
+-- Review fix R4 (17 BR-28): consent by chat is a message the customer sent, in their own conversation (about this order
+-- or about none). An agent's message, and a message of another customer's conversation, are no consent.
+INSERT INTO customer.customer (id, full_name, email, tax_code, status, version, created_at)
+VALUES (md5('qa29:other-customer')::uuid, 'QA other customer', 'qa29-other@example.com', '0399999929', 'ACTIVE', 0,
+        NOW());
+INSERT INTO chat.conversation (id, customer_id, order_id, subject, status, version, created_at)
+SELECT md5('qa29:conv')::uuid, o.customer_id, o.id, 'Lich giao', 'OPEN', 0, NOW()
+  FROM ordering.customer_order o WHERE o.id = md5('qa29:order')::uuid;
+INSERT INTO chat.conversation (id, customer_id, subject, status, version, created_at)
+VALUES (md5('qa29:conv-other')::uuid, md5('qa29:other-customer')::uuid, 'Hoi gia', 'OPEN', 0, NOW());
+INSERT INTO chat.message (id, conversation_id, sender_type, sender_id, body, sent_at, version, created_at)
+VALUES (md5('qa29:msg-agent')::uuid, md5('qa29:conv')::uuid, 'AGENT', md5('demo:user:editor')::uuid,
+        'Chung toi doi dot 2 nhe', NOW(), 0, NOW()),
+       (md5('qa29:msg-other')::uuid, md5('qa29:conv-other')::uuid, 'CUSTOMER', NULL, 'Dong y', NOW(), 0, NOW()),
+       (md5('qa29:msg-own')::uuid, md5('qa29:conv')::uuid, 'CUSTOMER', NULL, 'Dong y doi dot 2', NOW(), 0, NOW());
+SELECT pg_temp.expect_fail('BR19a consent by a message the agent sent', $q$
+    INSERT INTO ordering.delivery_batch_window_change (id, delivery_batch_id, order_id, old_window_start, old_window_end,
+        new_window_start, new_window_end, reason_code, note, evidence_message_id, changed_by, changed_at)
+    VALUES (gen_random_uuid(), md5('qa29:b2')::uuid, md5('qa29:order')::uuid, CURRENT_DATE + 48, CURRENT_DATE + 50,
+            CURRENT_DATE + 49, CURRENT_DATE + 51, 'SELLER_DELAY', 'later', md5('qa29:msg-agent')::uuid,
+            md5('demo:user:editor')::uuid, NOW()) $q$);
+SELECT pg_temp.expect_fail('BR19b consent by a message of another customer''s conversation', $q$
+    INSERT INTO ordering.delivery_batch_window_change (id, delivery_batch_id, order_id, old_window_start, old_window_end,
+        new_window_start, new_window_end, reason_code, note, evidence_message_id, changed_by, changed_at)
+    VALUES (gen_random_uuid(), md5('qa29:b2')::uuid, md5('qa29:order')::uuid, CURRENT_DATE + 48, CURRENT_DATE + 50,
+            CURRENT_DATE + 49, CURRENT_DATE + 51, 'SELLER_DELAY', 'later', md5('qa29:msg-other')::uuid,
+            md5('demo:user:editor')::uuid, NOW()) $q$);
+SELECT pg_temp.expect_ok('BR19c consent by the customer''s own message: batch 2 moves to day 49', $q$
+    INSERT INTO ordering.delivery_batch_window_change (id, delivery_batch_id, order_id, old_window_start, old_window_end,
+        new_window_start, new_window_end, reason_code, note, evidence_message_id, changed_by, changed_at)
+    VALUES (gen_random_uuid(), md5('qa29:b2')::uuid, md5('qa29:order')::uuid, CURRENT_DATE + 48, CURRENT_DATE + 50,
+            CURRENT_DATE + 49, CURRENT_DATE + 51, 'SELLER_DELAY', 'later', md5('qa29:msg-own')::uuid,
+            md5('demo:user:editor')::uuid, NOW()) $q$);
+SELECT pg_temp.expect_ok('BR20 half of batch 1 handed over on the first day of its window', $q$
     INSERT INTO ordering.order_shipment (id, order_id, status, amount, handed_over_at, delivery_batch_id)
-    VALUES (md5('qa29:shipment1')::uuid, md5('qa29:order')::uuid, 'HANDED_OVER', 1100000,
+    VALUES (md5('qa29:shipment1')::uuid, md5('qa29:order')::uuid, 'HANDED_OVER', 550000,
             NOW() + interval '31 days', md5('qa29:b1')::uuid);
     INSERT INTO ordering.order_shipment_line (shipment_id, order_line_id, quantity)
-    VALUES (md5('qa29:shipment1')::uuid, md5('qa29:line')::uuid, 500) $q$);
+    VALUES (md5('qa29:shipment1')::uuid, md5('qa29:line')::uuid, 250) $q$);
+SELECT pg_temp.expect_fail('BR20a (R5) batch 2 released while batch 1 is handed over by half (250 of 500 units)', $q$
+    INSERT INTO ordering.delivery_batch_release (delivery_batch_id, order_id, seq, warehouse_id, released_at, released_by)
+    VALUES (md5('qa29:b2')::uuid, md5('qa29:order')::uuid, 2, md5('demo:wh:HCM')::uuid, NOW(),
+            md5('demo:user:editor')::uuid) $q$);
+SELECT pg_temp.expect_ok('BR20b the other half of batch 1 handed over', $q$
+    INSERT INTO ordering.order_shipment (id, order_id, status, amount, handed_over_at, delivery_batch_id)
+    VALUES (md5('qa29:shipment1b')::uuid, md5('qa29:order')::uuid, 'HANDED_OVER', 550000,
+            NOW() + interval '32 days', md5('qa29:b1')::uuid);
+    INSERT INTO ordering.order_shipment_line (shipment_id, order_line_id, quantity)
+    VALUES (md5('qa29:shipment1b')::uuid, md5('qa29:line')::uuid, 250) $q$);
 SELECT pg_temp.expect_fail('BR21 batch 1''s window moves no more once a carton of it left', $q$
     INSERT INTO ordering.delivery_batch_window_change (id, delivery_batch_id, order_id, old_window_start, old_window_end,
         new_window_start, new_window_end, reason_code, note, evidence_file_key, evidence_file_name, changed_by, changed_at)
     VALUES (gen_random_uuid(), md5('qa29:b1')::uuid, md5('qa29:order')::uuid, CURRENT_DATE + 30, CURRENT_DATE + 32,
             CURRENT_DATE + 31, CURRENT_DATE + 33, 'SELLER_DELAY', 'late', 'files/e.pdf', 'e.pdf',
             md5('demo:user:editor')::uuid, NOW()) $q$);
-SELECT pg_temp.expect_ok('BR22 now batch 2 is released (batch 1 handed over in full, 500 units, 17 BR-29; its window in force from day 48 is not asked yet)', $q$
+SELECT pg_temp.expect_ok('BR22 now batch 2 is released (batch 1 handed over in full, 500 units, 17 BR-29; its window in force from day 49 is not asked yet)', $q$
     INSERT INTO ordering.delivery_batch_release (delivery_batch_id, order_id, seq, warehouse_id, released_at, released_by)
     VALUES (md5('qa29:b2')::uuid, md5('qa29:order')::uuid, 2, md5('demo:wh:HCM')::uuid, NOW(),
             md5('demo:user:editor')::uuid) $q$);
-SELECT pg_temp.expect_fail('BR23 batch 2 handed over before the window in force (day 48), though the signed contract said 44', $q$
+SELECT pg_temp.expect_fail('BR23 batch 2 handed over before the window in force (day 49), though the signed contract said 44', $q$
     INSERT INTO ordering.order_shipment (id, order_id, status, amount, handed_over_at, delivery_batch_id)
     VALUES (md5('qa29:shipment2')::uuid, md5('qa29:order')::uuid, 'HANDED_OVER', 1100000,
             NOW() + interval '45 days', md5('qa29:b2')::uuid) $q$);
@@ -254,6 +299,37 @@ SELECT pg_temp.expect_fail('BR26 a pick without a batch beside them is a second 
     INSERT INTO fulfillment.pick (id, order_id, order_number, warehouse_id, status, created_at)
     VALUES (gen_random_uuid(), md5('qa29:order')::uuid, 'SO-QA-DB', md5('demo:wh:HCM')::uuid, 'PICKING', NOW()),
            (gen_random_uuid(), md5('qa29:order')::uuid, 'SO-QA-DB', md5('demo:wh:HCM')::uuid, 'PICKING', NOW()) $q$);
+
+\echo '--- a hold stands for a line its batch carries and a reservation of its own order (review fix R7)'
+INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, tax_amount,
+                                     currency, placed_at, created_at)
+SELECT md5('qa29:order2')::uuid, 'SO-QA-DB-2', o.customer_id, gen_random_uuid(), 'DRAFT', 110000, 10000, 'VND', NOW(),
+       NOW()
+  FROM ordering.customer_order o WHERE o.id = md5('qa29:order')::uuid;
+INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency, uom_conversion_id, cartons,
+                                 units_per_carton, tax_rate, tax_amount)
+VALUES (md5('qa29:line2')::uuid, md5('qa29:order2')::uuid, 'QA-DB-OWN', 50, 2000, 'VND', md5('qa29:carton')::uuid, 1,
+        50, 10, 10000);
+SET CONSTRAINTS ALL IMMEDIATE;
+SET CONSTRAINTS ALL DEFERRED;
+-- Inventory's holds of both orders, written past inventory's own triggers: what they promise is not checked here.
+SET session_replication_role = replica;
+INSERT INTO inventory.stock_reservation (id, order_id, root_request_id, request_id, quantity, reserved_at, status, sku,
+                                         warehouse_code)
+VALUES (md5('qa29:res-own')::uuid, md5('qa29:order')::uuid, gen_random_uuid(), gen_random_uuid(), 50, NOW(), 'HELD',
+        'QA-DB-OWN', 'HCM'),
+       (md5('qa29:res-other')::uuid, md5('qa29:order2')::uuid, gen_random_uuid(), gen_random_uuid(), 50, NOW(), 'HELD',
+        'QA-DB-OWN', 'HCM');
+SET session_replication_role = DEFAULT;
+SELECT pg_temp.expect_fail('BR27 a hold for a line its batch does not carry (another order''s line)', $q$
+    INSERT INTO ordering.delivery_batch_hold (reservation_id, delivery_batch_id, order_id, order_line_id)
+    VALUES (md5('qa29:res-own')::uuid, md5('qa29:b2')::uuid, md5('qa29:order')::uuid, md5('qa29:line2')::uuid) $q$);
+SELECT pg_temp.expect_fail('BR28 a hold naming another order''s reservation, refused at commit', $q$
+    INSERT INTO ordering.delivery_batch_hold (reservation_id, delivery_batch_id, order_id, order_line_id)
+    VALUES (md5('qa29:res-other')::uuid, md5('qa29:b2')::uuid, md5('qa29:order')::uuid, md5('qa29:line')::uuid) $q$);
+SELECT pg_temp.expect_ok('BR29 the order''s own reservation for a line batch 2 carries', $q$
+    INSERT INTO ordering.delivery_batch_hold (reservation_id, delivery_batch_id, order_id, order_line_id)
+    VALUES (md5('qa29:res-own')::uuid, md5('qa29:b2')::uuid, md5('qa29:order')::uuid, md5('qa29:line')::uuid) $q$);
 
 ROLLBACK;
 \echo 'PASS 29_release_by_delivery_batch'
