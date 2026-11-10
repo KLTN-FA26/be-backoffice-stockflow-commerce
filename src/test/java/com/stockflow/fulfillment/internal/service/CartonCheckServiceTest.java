@@ -515,9 +515,9 @@ class CartonCheckServiceTest {
             // LPN-2 sits in another shipment, which did not cancel (it left on a vehicle)
             var keptCarton = check.carton("LPN-2").orElseThrow();
             check.ship(new CartonCheck.Completion(List.of(keptCarton), true, List.of()), kept, worker, NOW);
-            when(shipments.findByPackIdOrderByReadyAtAscIdAsc(pack.getId())).thenReturn(List.of(
-                    shipment(done.shipmentId(), com.stockflow.fulfillment.internal.domain.ShipmentStatus.CANCELLED),
-                    shipment(kept, com.stockflow.fulfillment.internal.domain.ShipmentStatus.HANDED_OVER)));
+            var cancelled = shipment(done.shipmentId(), com.stockflow.fulfillment.internal.domain.ShipmentStatus.CANCELLED);
+            var left = shipment(kept, com.stockflow.fulfillment.internal.domain.ShipmentStatus.HANDED_OVER);
+            when(shipments.findByPackIdOrderByReadyAtAscIdAsc(pack.getId())).thenReturn(List.of(cancelled, left));
 
             service.cancelForOrder(pick, pack);
 

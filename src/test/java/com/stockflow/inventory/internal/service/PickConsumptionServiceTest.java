@@ -1148,6 +1148,7 @@ class PickConsumptionServiceTest {
             verify(stockPackages, never()).save(any());
             assertThat(good.carton().status()).isEqualTo(StockPackageStatus.IN_STOCK);
 
+            ledgerRows.clear();   // the first refusal rolled back in production; this mock ledger does not
             Line moved = stagedLine("SKU-C", "LPN-C", BIN);
             moved.carton().moveTo(OTHER_BIN);
             assertThat(refusal(() -> service.consumeStaged(List.of(moved.staged()), PICKER)))

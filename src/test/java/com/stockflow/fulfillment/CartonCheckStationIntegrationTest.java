@@ -886,7 +886,7 @@ class CartonCheckStationIntegrationTest {
                 body(post(url(task, "/packages")), "{}"),
                 body(post(url(task, "/package-kits")), "{\"orderLineId\":\"" + line + "\"}"),
                 body(post(url(task, "/packages/" + parcel + "/scans")), scan),
-                delete(url(task, "/packages/" + parcel + "/lines/" + line)),
+                delete(url(task, "/packages/" + parcel + "/lines/" + line + "?quantity=1")),
                 body(post(url(task, "/packages/" + parcel + "/seal")), seal),
                 post(url(task, "/packages/" + parcel + "/reopening")),
                 delete(url(task, "/packages/" + parcel)));
