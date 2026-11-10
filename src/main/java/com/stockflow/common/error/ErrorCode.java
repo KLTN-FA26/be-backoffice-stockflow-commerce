@@ -545,6 +545,12 @@ public enum ErrorCode {
      * PICK_QUANTITY_EXCEEDS_ALLOCATION and PICK_QUANTITY_SHORT are gone.
      */
     PICK_ITEM_MISMATCH("The scanned code is not this line's carton LPN", 409),
+    /**
+     * Team plan 4C-4 (kltn-docs 07 BR-04, BR-10): the stock held for a pick line is in no carton, so no LPN could
+     * confirm it. A guard: allocation takes whole cartons only, and a damage report's share restored as loose units is
+     * reallocated to cartons (INSUFFICIENT_STOCK when there are none) rather than kept.
+     */
+    PICK_HOLD_NOT_IN_CARTON("The stock held for this line is in no carton; reallocate it to whole cartons", 409),
     PICK_LINE_NOT_OPEN("This line is no longer open", 409),
     /** A cycle count already completed or cancelled. */
     CYCLE_COUNT_NOT_OPEN("This cycle count is no longer open", 409),

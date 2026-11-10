@@ -102,7 +102,6 @@ class InventoryServiceImpl implements InventoryService {
     private final LocationDirectory locations;
     private final com.stockflow.inventory.internal.domain.CycleCountRepository cycleCounts;
     private final com.stockflow.inventory.internal.domain.StockPackageRepository stockPackages;
-    private final com.stockflow.inventory.internal.domain.StockDamageReportRepository damageReports;
 
     /** How long a hold lasts while its order waits for payment (kltn-docs 14: set by the business). */
     private final java.time.Duration reservationTtl;
@@ -113,14 +112,12 @@ class InventoryServiceImpl implements InventoryService {
                          SkuReservationRepository skuReservations, LocationDirectory locations,
                          com.stockflow.inventory.internal.domain.CycleCountRepository cycleCounts,
                          com.stockflow.inventory.internal.domain.StockPackageRepository stockPackages,
-                         com.stockflow.inventory.internal.domain.StockDamageReportRepository damageReports,
                          @org.springframework.beans.factory.annotation.Value(
                                  "${stockflow.inventory.reservation-ttl:PT30M}") java.time.Duration reservationTtl) {
         if (reservationTtl == null || reservationTtl.isZero() || reservationTtl.isNegative()) {
             throw new IllegalArgumentException("stockflow.inventory.reservation-ttl must be positive");
         }
         this.stockPackages = stockPackages;
-        this.damageReports = damageReports;
         this.reservationTtl = reservationTtl;
         this.repository = repository;
         this.events = events;
@@ -613,16 +610,10 @@ class InventoryServiceImpl implements InventoryService {
         }
         policies.lock(view.sku().code());
         LocalDate today = BusinessCalendar.date(now);
-        if (restoredImpairment(shortId, now)) {
-            // A damage report's impaired allocation whose units a manager found fine and restored onto a bin, the
-            // order's share with them: a sound allocation on pickable stock now, nothing about that bin in doubt. Kept
-            // where it is; the short line gives way to one that picks it there.
-            StockItem current = repository.findByIdForUpdate(view.id()).orElseThrow();
-            Reservation hold = current.findReservation(shortId).orElseThrow();
-            log.info("Allocation {} of order {}: restored from damage at {}, kept for picking", shortId,
-                    command.orderId(), current.location());
-            return List.of(toApiReservation(current, hold));
-        }
+        // A damage report's impaired share restored onto a bin is restored as loose units (StockDamageService#restore),
+        // which no pick line can take (team plan 4C-4; kltn-docs 07 BR-04, BR-10): it is released and reallocated like
+        // any short allocation, to whole cartons, or INSUFFICIENT_STOCK leaves everything as it was (4C-4 B1). Keeping
+        // it where it is comes back when a restore puts units back into a carton (4C-3).
         String warehouse = view.location().warehouseCode();
         List<StockAllocator.AllocationLine> lines = plan(view.sku(),
                 pickableCandidates(view.sku(), warehouse, view.id()), shortHold.quantity(), warehouse, today);
@@ -655,26 +646,6 @@ class InventoryServiceImpl implements InventoryService {
         log.info("Allocation {} of order {} came up short at {}; reallocated {} unit(s) to {} hold(s)", shortId,
                 command.orderId(), view.location(), shortHold.quantity(), made.size());
         return lines.stream().map(line -> made.get(line.stockItemId())).toList();
-    }
-
-    /**
-     * Whether the allocation is a damage report's impaired share that went back onto good stock with its units
-     * (RESTORE of everything left): AVAILABLE, unexpired, on a pickable location of a layer no count has frozen.
-     * Read under the SKU lock.
-     */
-    private boolean restoredImpairment(ReservationId holdId, Instant now) {
-        if (!damageReports.isImpairedAllocation(holdId.value())) {
-            return false;
-        }
-        StockItem item = repository.findIdByReservationId(holdId).flatMap(repository::findById).orElseThrow();
-        LocalDate today = BusinessCalendar.date(now);
-        boolean frozen = cycleCounts.frozen(List.of(item.sku().code()), today).stream()
-                .anyMatch(layer -> layer.stockItemId().equals(item.id().value()));
-        return item.findReservation(holdId).map(r -> r.status().isActive()).orElse(false)
-                && item.status() == StockStatus.AVAILABLE
-                && !com.stockflow.inventory.internal.domain.ExpiryPolicy.isExpired(item.expiryDate(), today)
-                && !frozen
-                && locations.pickable(List.of(item.location().code())).containsKey(item.location().code());
     }
 
     /**
