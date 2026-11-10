@@ -170,6 +170,7 @@ Enum inventory.stock_item_status {
 
 Enum inventory.stock_lot_origin_type {
   GOODS_RECEIPT
+  PRODUCTION_ORDER
   UNTRACED
 }
 
@@ -344,6 +345,11 @@ Enum procurement.goods_receipts_approval_decision {
   APPROVED
   EXCESS_REJECTED
   REJECTED
+}
+
+Enum procurement.goods_receipts_receipt_type {
+  PURCHASE
+  PRODUCTION
 }
 
 Enum procurement.goods_receipts_status {
@@ -527,6 +533,7 @@ Enum ordering.customer_order_status {
   PENDING_CONTRACT
   PENDING_PAYMENT
   CONFIRMED
+  AWAITING_STOCK
   IN_PRODUCTION
   READY_TO_FULFILL
   PICKING
@@ -623,6 +630,17 @@ Enum ordering.production_order_status {
   RECEIVED
   CANCELLED
   CLOSED
+}
+
+Enum ordering.production_order_receipt_status {
+  DRAFT
+  CONFIRMED
+  CANCELLED
+}
+
+Enum ordering.production_order_sample_round_result {
+  APPROVED
+  REPRINT_REQUESTED
 }
 
 Enum ordering.quote_payment_term {
@@ -771,6 +789,7 @@ Enum payment.installment_milestone {
   ON_SIGNING
   BEFORE_DELIVERY
   AFTER_DELIVERY
+  CANCELLATION_FEE
 }
 
 Enum payment.installment_status {
@@ -780,6 +799,11 @@ Enum payment.installment_status {
   PAID
   OVERDUE
   CANCELLED
+}
+
+Enum payment.order_settlement_kind {
+  ORDER_CANCELLED
+  REMAINDER_CLOSED
 }
 
 Enum payment.payment_method {
@@ -828,6 +852,11 @@ Enum payment.refund_status {
   PENDING
   COMPLETED
   FAILED
+}
+
+Enum payment.refund_record_status {
+  RECORDED
+  VOIDED
 }
 
 Enum design.design_artifact_artifact_role {
@@ -1827,6 +1856,8 @@ Table inventory.stock_lot [headercolor: #3E7C4A] {
   created_by            varchar(100)
   last_modified_at      timestamptz
   last_modified_by      varchar(100)
+  production_order_id   uuid
+  production_order_code varchar(32)
 }
 
 Table inventory.stock_movement [headercolor: #3E7C4A] {
@@ -2169,21 +2200,25 @@ Table procurement.approval_limits [headercolor: #7D5BA6] {
 }
 
 Table procurement.goods_receipt_lines [headercolor: #7D5BA6] {
-  id                uuid [pk]
-  receipt_id        uuid [not null]
-  po_line_id        uuid
-  inventory_item_id uuid [not null]
-  location_id       uuid [not null]
-  received_qty      decimal(18,3) [not null]
-  lot_number        varchar(64)
-  expiry_date       date
-  note              varchar(255)
-  version           bigint [not null, default: 0]
-  created_at        timestamptz [not null, default: `now()`]
-  created_by        varchar(100)
-  last_modified_at  timestamptz
-  last_modified_by  varchar(100)
-  uom_conversion_id uuid
+  id                       uuid [pk]
+  receipt_id               uuid [not null]
+  po_line_id               uuid
+  inventory_item_id        uuid [not null]
+  location_id              uuid [not null]
+  received_qty             decimal(18,3) [not null]
+  lot_number               varchar(64)
+  expiry_date              date
+  note                     varchar(255)
+  version                  bigint [not null, default: 0]
+  created_at               timestamptz [not null, default: `now()`]
+  created_by               varchar(100)
+  last_modified_at         timestamptz
+  last_modified_by         varchar(100)
+  uom_conversion_id        uuid
+  production_order_line_id uuid
+  indexes {
+    (receipt_id, production_order_line_id) [unique]
+  }
 }
 
 Table procurement.goods_receipt_photos [headercolor: #7D5BA6] {
@@ -2232,6 +2267,8 @@ Table procurement.goods_receipts [headercolor: #7D5BA6] {
   supplier_id           uuid
   blind_reason          varchar(500)
   referenced_po_id      uuid
+  receipt_type          procurement.goods_receipts_receipt_type [not null, default: 'PURCHASE']
+  production_order_id   uuid
 }
 
 Table procurement.po_delivery_decision [headercolor: #7D5BA6] {
@@ -3086,6 +3123,47 @@ Table ordering.production_order_line [headercolor: #C0392B] {
   }
 }
 
+Table ordering.production_order_receipt [headercolor: #C0392B] {
+  production_order_id uuid [not null]
+  goods_receipt_id    uuid [not null, unique]
+  receipt_number      varchar(30) [not null]
+  status              ordering.production_order_receipt_status [not null]
+  opened_at           timestamptz [not null]
+  settled_at          timestamptz
+  indexes {
+    (production_order_id, goods_receipt_id) [pk]
+  }
+}
+
+Table ordering.production_order_sample_media [headercolor: #C0392B] {
+  id              uuid [pk]
+  sample_round_id uuid [not null]
+  storage_key     varchar(512) [not null, unique]
+  file_name       varchar(255) [not null]
+  content_type    varchar(100) [not null]
+  size_bytes      bigint [not null]
+  uploaded_by     uuid [not null]
+  uploaded_at     timestamptz [not null]
+}
+
+Table ordering.production_order_sample_round [headercolor: #C0392B] {
+  id                      uuid [pk]
+  production_order_id     uuid [not null]
+  round_no                int [not null]
+  reprint_reason          varchar(16)
+  physical_sample_sent_on date
+  opened_by               uuid [not null]
+  opened_at               timestamptz [not null]
+  result                  ordering.production_order_sample_round_result
+  customer_note           varchar(500)
+  answered_by             uuid
+  answered_at             timestamptz
+  created_at              timestamptz [not null, default: `now()`]
+  indexes {
+    (production_order_id, round_no) [unique]
+  }
+}
+
 Table ordering.production_order_slip [headercolor: #C0392B] {
   production_order_id uuid [pk]
   storage_key         varchar(512) [not null, unique]
@@ -3593,7 +3671,7 @@ Table payment.customer_transfer [headercolor: #B8860B] {
 Table payment.installment [headercolor: #B8860B] {
   id                      uuid [pk]
   contract_id             uuid [not null]
-  contract_installment_id uuid [not null, unique]
+  contract_installment_id uuid [unique]
   order_id                uuid [not null]
   customer_id             uuid [not null]
   contract_number         varchar(40) [not null]
@@ -3617,8 +3695,54 @@ Table payment.installment [headercolor: #B8860B] {
   created_by              varchar(100)
   last_modified_at        timestamptz
   last_modified_by        varchar(100)
+  reduced_amount          decimal(19,4) [not null, default: 0]
   indexes {
     (contract_id, seq) [unique]
+  }
+}
+
+Table payment.installment_reduction [headercolor: #B8860B] {
+  id             uuid [pk]
+  settlement_id  uuid [not null]
+  installment_id uuid [not null]
+  amount         decimal(19,4) [not null]
+  created_at     timestamptz [not null, default: `now()`]
+  indexes {
+    (settlement_id, installment_id) [unique]
+  }
+}
+
+Table payment.order_settlement [headercolor: #B8860B] {
+  id                 uuid [pk]
+  order_id           uuid [not null]
+  contract_id        uuid [not null]
+  customer_id        uuid [not null]
+  order_number       varchar(32) [not null]
+  contract_number    varchar(40) [not null]
+  kind               payment.order_settlement_kind [not null]
+  source_id          uuid [not null]
+  currency           varchar(3) [not null]
+  collected_amount   decimal(19,4) [not null]
+  closed_amount      decimal(19,4) [not null, default: 0]
+  reduced_amount     decimal(19,4) [not null, default: 0]
+  surplus_amount     decimal(19,4) [not null]
+  fee_amount         decimal(19,4) [not null, default: 0]
+  fee_percent        decimal(5,2)
+  fee_reason         varchar(500)
+  fee_detail         varchar(2000)
+  fee_covered_amount decimal(19,4) [not null, default: 0]
+  refundable_amount  decimal(19,4) [not null, default: 0]
+  fee_owed_amount    decimal(19,4) [not null, default: 0]
+  fee_installment_id uuid [unique]
+  settled_by         uuid
+  settled_at         timestamptz [not null]
+  version            bigint [not null, default: 0]
+  created_at         timestamptz [not null, default: `now()`]
+  created_by         varchar(100)
+  last_modified_at   timestamptz
+  last_modified_by   varchar(100)
+  indexes {
+    (kind, source_id) [unique]
   }
 }
 
@@ -3711,6 +3835,29 @@ Table payment.refund [headercolor: #B8860B] {
   allocation_id        uuid
   transfer_id          uuid
   return_request_id    uuid
+}
+
+Table payment.refund_record [headercolor: #B8860B] {
+  id               uuid [pk]
+  order_id         uuid [not null]
+  customer_id      uuid [not null]
+  order_number     varchar(32) [not null]
+  amount           decimal(19,4) [not null]
+  currency         varchar(3) [not null]
+  refunded_on      date [not null]
+  reference        varchar(100) [not null]
+  note             varchar(500)
+  status           payment.refund_record_status [not null]
+  recorded_by      uuid [not null]
+  recorded_at      timestamptz [not null]
+  voided_by        uuid
+  voided_at        timestamptz
+  void_reason      varchar(500)
+  version          bigint [not null, default: 0]
+  created_at       timestamptz [not null, default: `now()`]
+  created_by       varchar(100)
+  last_modified_at timestamptz
+  last_modified_by varchar(100)
 }
 
 Table payment.transfer_allocation [headercolor: #B8860B] {
@@ -5273,6 +5420,7 @@ Ref: inventory.stock_item.lot_id > inventory.stock_lot.id [delete: restrict]
 Ref: inventory.stock_item.sku > inventory.inventory_items.sku [delete: restrict]
 Ref: inventory.stock_item.stock_package_id > inventory.stock_package.id [delete: restrict]
 Ref: inventory.stock_lot.goods_receipt_id > procurement.goods_receipts.id [delete: restrict]
+Ref: inventory.stock_lot.production_order_id > ordering.production_order.id [delete: restrict]
 Ref: inventory.stock_lot.purchase_order_id > procurement.purchase_orders.id [delete: restrict]
 Ref: inventory.stock_lot.sku > inventory.inventory_items.sku [delete: restrict]
 Ref: inventory.stock_lot.supplier_id > procurement.suppliers.id [delete: restrict]
@@ -5325,6 +5473,7 @@ Ref: procurement.approval_limits.role_id > identity.app_role.id [delete: cascade
 Ref: procurement.goods_receipt_lines.inventory_item_id > inventory.inventory_items.id [delete: restrict]
 Ref: procurement.goods_receipt_lines.location_id > warehouse.storage_location.id [delete: restrict]
 Ref: procurement.goods_receipt_lines.po_line_id > procurement.purchase_order_lines.id [delete: restrict]
+Ref: procurement.goods_receipt_lines.production_order_line_id > ordering.production_order_line.id [delete: restrict]
 Ref: procurement.goods_receipt_lines.receipt_id > procurement.goods_receipts.id [delete: cascade]
 Ref: procurement.goods_receipt_lines.uom_conversion_id > inventory.uom_conversions.id [delete: restrict]
 Ref: procurement.goods_receipt_photos.receipt_id > procurement.goods_receipts.id [delete: restrict]
@@ -5335,6 +5484,7 @@ Ref: procurement.goods_receipts.approval_requested_by > identity.app_user.id
 Ref: procurement.goods_receipts.confirmed_by > identity.app_user.id
 Ref: procurement.goods_receipts.po_id > procurement.purchase_orders.id [delete: restrict]
 Ref: procurement.goods_receipts.po_revision_id > procurement.purchase_order_revisions.id [delete: restrict]
+Ref: procurement.goods_receipts.production_order_id > ordering.production_order.id [delete: restrict]
 Ref: procurement.goods_receipts.received_by > identity.app_user.id
 Ref: procurement.goods_receipts.referenced_po_id > procurement.purchase_orders.id [delete: restrict]
 Ref: procurement.goods_receipts.supplier_id > procurement.suppliers.id [delete: restrict]
@@ -5452,6 +5602,13 @@ Ref: ordering.production_order.sales_order_id > ordering.customer_order.id
 Ref: ordering.production_order_line.design_snapshot_id > design.design_snapshot.id
 Ref: ordering.production_order_line.order_line_id > ordering.order_line.id
 Ref: ordering.production_order_line.production_order_id > ordering.production_order.id [delete: cascade]
+Ref: ordering.production_order_receipt.goods_receipt_id > procurement.goods_receipts.id [delete: restrict]
+Ref: ordering.production_order_receipt.production_order_id > ordering.production_order.id [delete: restrict]
+Ref: ordering.production_order_sample_media.sample_round_id > ordering.production_order_sample_round.id
+Ref: ordering.production_order_sample_media.uploaded_by > identity.app_user.id
+Ref: ordering.production_order_sample_round.answered_by > identity.app_user.id
+Ref: ordering.production_order_sample_round.opened_by > identity.app_user.id
+Ref: ordering.production_order_sample_round.production_order_id > ordering.production_order.id
 Ref: ordering.production_order_slip.production_order_id > ordering.production_order.id
 Ref: ordering.production_order_status_history.changed_by > identity.app_user.id
 Ref: ordering.production_order_status_history.production_order_id > ordering.production_order.id
@@ -5528,6 +5685,13 @@ Ref: payment.installment.contract_installment_id > ordering.contract_payment_ins
 Ref: payment.installment.customer_id > customer.customer.id
 Ref: payment.installment.delivery_batch_id > ordering.delivery_batch.id
 Ref: payment.installment.order_id > ordering.customer_order.id
+Ref: payment.installment_reduction.installment_id > payment.installment.id
+Ref: payment.installment_reduction.settlement_id > payment.order_settlement.id
+Ref: payment.order_settlement.contract_id > ordering.sales_contract.id
+Ref: payment.order_settlement.customer_id > customer.customer.id
+Ref: payment.order_settlement.fee_installment_id > payment.installment.id
+Ref: payment.order_settlement.order_id > ordering.customer_order.id
+Ref: payment.order_settlement.settled_by > identity.app_user.id
 Ref: payment.payment.order_id > ordering.customer_order.id [delete: restrict]
 Ref: payment.payment_receipt.customer_id > customer.customer.id
 Ref: payment.payment_receipt.recorded_by > identity.app_user.id
@@ -5541,6 +5705,10 @@ Ref: payment.refund.order_id > ordering.customer_order.id [delete: restrict]
 Ref: payment.refund.payment_id > payment.payment.id
 Ref: payment.refund.return_request_id > ordering.return_request.id [delete: restrict]
 Ref: payment.refund.transfer_id > payment.customer_transfer.id [delete: restrict]
+Ref: payment.refund_record.customer_id > customer.customer.id
+Ref: payment.refund_record.order_id > ordering.customer_order.id
+Ref: payment.refund_record.recorded_by > identity.app_user.id
+Ref: payment.refund_record.voided_by > identity.app_user.id
 Ref: payment.transfer_allocation.allocated_by > identity.app_user.id
 Ref: payment.transfer_allocation.order_id > ordering.customer_order.id [delete: restrict]
 Ref: payment.transfer_allocation.receivable_id > payment.receivable.id [delete: restrict]
@@ -5815,6 +5983,9 @@ TableGroup ordering_group [color: #C0392B] {
   ordering.producer
   ordering.production_order
   ordering.production_order_line
+  ordering.production_order_receipt
+  ordering.production_order_sample_media
+  ordering.production_order_sample_round
   ordering.production_order_slip
   ordering.production_order_status_history
   ordering.production_order_status_transition
@@ -5850,11 +6021,14 @@ TableGroup payment_group [color: #B8860B] {
   payment.cod_remittance_line
   payment.customer_transfer
   payment.installment
+  payment.installment_reduction
+  payment.order_settlement
   payment.payment
   payment.payment_receipt
   payment.payment_receipt_line
   payment.receivable
   payment.refund
+  payment.refund_record
   payment.transfer_allocation
 }
 
