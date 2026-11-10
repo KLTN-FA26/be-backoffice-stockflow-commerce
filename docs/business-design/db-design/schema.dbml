@@ -515,12 +515,6 @@ Enum ordering.customer_order_cancellation_reason_code {
   OTHER
 }
 
-Enum ordering.customer_order_payment_term {
-  PREPAID
-  DEPOSIT
-  CREDIT
-}
-
 Enum ordering.customer_order_status {
   DRAFT
   PENDING_CONTRACT
@@ -622,12 +616,6 @@ Enum ordering.production_order_receipt_status {
   DRAFT
   CONFIRMED
   CANCELLED
-}
-
-Enum ordering.quote_payment_term {
-  PREPAID
-  DEPOSIT
-  CREDIT
 }
 
 Enum ordering.quote_status {
@@ -752,20 +740,6 @@ Enum customer.default_payment_installment_milestone {
   AFTER_DELIVERY
 }
 
-Enum payment.cod_remittance_status {
-  PENDING
-  RECEIVED
-  RECONCILED
-  DISPUTED
-}
-
-Enum payment.cod_remittance_line_match_status {
-  MATCHED
-  SHORT
-  OVER
-  MISSING
-}
-
 Enum payment.installment_milestone {
   ON_SIGNING
   BEFORE_DELIVERY
@@ -787,52 +761,9 @@ Enum payment.order_settlement_kind {
   REMAINDER_CLOSED
 }
 
-Enum payment.payment_method {
-  CARD
-  BANK_TRANSFER
-  COD
-  E_WALLET
-  DEPOSIT
-}
-
-Enum payment.payment_status {
-  PENDING
-  CAPTURED
-  FAILED
-  REFUNDED
-  CANCELLED
-}
-
 Enum payment.payment_receipt_status {
   RECORDED
   VOIDED
-}
-
-Enum payment.receivable_kind {
-  CREDIT_ORDER
-  CANCELLATION_FEE
-  DEPOSIT_BALANCE
-}
-
-Enum payment.receivable_status {
-  OPEN
-  PARTIALLY_PAID
-  OVERDUE
-  PAID
-}
-
-Enum payment.refund_source {
-  ORDER_CANCELLED
-  ORDER_REMAINDER_CLOSED
-  RETURN
-  MANUAL
-  CUSTOMER_CREDIT
-}
-
-Enum payment.refund_status {
-  PENDING
-  COMPLETED
-  FAILED
 }
 
 Enum payment.refund_record_status {
@@ -2712,87 +2643,74 @@ Table ordering.contract_payment_installment [headercolor: #C0392B] {
 }
 
 Table ordering.customer_order [headercolor: #C0392B] {
-  id                            uuid [pk]
-  order_number                  varchar(32) [not null, unique]
-  customer_id                   uuid
-  request_id                    uuid [not null, unique]
-  status                        ordering.customer_order_status [not null]
-  total_amount                  decimal(19,4) [not null]
-  currency                      varchar(3) [not null]
-  placed_at                     timestamptz [not null]
-  cancellation_reason           varchar(500)
-  version                       bigint [not null, default: 0]
-  created_at                    timestamptz [not null]
-  created_by                    varchar(100)
-  last_modified_at              timestamptz
-  last_modified_by              varchar(100)
-  contact_name                  varchar(200)
-  contact_email                 varchar(320)
-  contact_phone                 varchar(32)
-  shipping_recipient_name       varchar(200)
-  shipping_phone                varchar(32)
-  shipping_line1                varchar(255)
-  shipping_line2                varchar(255)
-  shipping_ward_code            varchar(20)
-  shipping_ward_name            varchar(120)
-  shipping_province_code        varchar(20)
-  shipping_province_name        varchar(120)
-  shipping_country_code         varchar(2)
-  shipping_postal_code          varchar(20)
-  billing_recipient_name        varchar(200)
-  billing_phone                 varchar(32)
-  billing_line1                 varchar(255)
-  billing_line2                 varchar(255)
-  billing_ward_code             varchar(20)
-  billing_ward_name             varchar(120)
-  billing_province_code         varchar(20)
-  billing_province_name         varchar(120)
-  billing_country_code          varchar(2)
-  billing_postal_code           varchar(20)
-  payment_term                  ordering.customer_order_payment_term [not null, default: 'PREPAID']
-  deposit_required              decimal(19,4)
-  deposit_received_at           timestamptz
-  warehouse_id                  uuid
-  released_at                   timestamptz
-  released_by                   uuid
-  paid_amount                   decimal(19,4) [not null, default: 0]
-  paid_in_full_at               timestamptz
-  cancellation_reason_code      ordering.customer_order_cancellation_reason_code
-  cancellation_retained_amount  decimal(19,4)
-  credit_term_days              int
-  cancellation_fee_reason       varchar(500)
-  cancellation_fee_detail       varchar(2000)
-  cancellation_fee_amount       decimal(19,4)
-  printing_started_at           timestamptz
-  packed_at                     timestamptz
-  hold_reason                   varchar(24)
-  status_before_hold            varchar(32)
-  hold_note                     varchar(1000)
-  shipped_at                    timestamptz
-  delivered_at                  timestamptz
-  delivery_failure_reason       varchar(24)
-  completed_at                  timestamptz
-  refunded_at                   timestamptz
-  closed_at                     timestamptz
-  billed_amount                 decimal(19,4) [not null, default: 0]
-  receivable_paid_amount        decimal(19,4) [not null, default: 0]
-  remainder_refund_amount       decimal(19,4) [not null, default: 0]
-  balance_policy                varchar(16)
-  allow_partial_shipment        boolean [not null, default: false]
-  remainder_fee_amount          decimal(19,4) [not null, default: 0]
-  remainder_fee_retained_amount decimal(19,4) [not null, default: 0]
-  remainder_fee_paid_amount     decimal(19,4) [not null, default: 0]
-  fulfilment_started_at         timestamptz
-  packing_started_at            timestamptz
-  goods_left_at                 timestamptz
-  replaces_return_request_id    uuid
-  closed_amount                 decimal(19,4) [not null, default: 0]
-  tax_amount                    decimal(19,4) [not null, default: 0]
-  net_amount                    decimal(19,4) [note: 'generated: (total_amount - tax_amount)']
-  contract_signed_at            timestamptz
-  shipping_warehouse_id         uuid
-  shipping_warehouse_chosen_at  timestamptz
-  shipping_warehouse_chosen_by  uuid
+  id                           uuid [pk]
+  order_number                 varchar(32) [not null, unique]
+  customer_id                  uuid
+  request_id                   uuid [not null, unique]
+  status                       ordering.customer_order_status [not null]
+  total_amount                 decimal(19,4) [not null]
+  currency                     varchar(3) [not null]
+  placed_at                    timestamptz [not null]
+  cancellation_reason          varchar(500)
+  version                      bigint [not null, default: 0]
+  created_at                   timestamptz [not null]
+  created_by                   varchar(100)
+  last_modified_at             timestamptz
+  last_modified_by             varchar(100)
+  contact_name                 varchar(200)
+  contact_email                varchar(320)
+  contact_phone                varchar(32)
+  shipping_recipient_name      varchar(200)
+  shipping_phone               varchar(32)
+  shipping_line1               varchar(255)
+  shipping_line2               varchar(255)
+  shipping_ward_code           varchar(20)
+  shipping_ward_name           varchar(120)
+  shipping_province_code       varchar(20)
+  shipping_province_name       varchar(120)
+  shipping_country_code        varchar(2)
+  shipping_postal_code         varchar(20)
+  billing_recipient_name       varchar(200)
+  billing_phone                varchar(32)
+  billing_line1                varchar(255)
+  billing_line2                varchar(255)
+  billing_ward_code            varchar(20)
+  billing_ward_name            varchar(120)
+  billing_province_code        varchar(20)
+  billing_province_name        varchar(120)
+  billing_country_code         varchar(2)
+  billing_postal_code          varchar(20)
+  warehouse_id                 uuid
+  released_at                  timestamptz
+  released_by                  uuid
+  cancellation_reason_code     ordering.customer_order_cancellation_reason_code
+  cancellation_retained_amount decimal(19,4)
+  cancellation_fee_reason      varchar(500)
+  cancellation_fee_detail      varchar(2000)
+  cancellation_fee_amount      decimal(19,4)
+  printing_started_at          timestamptz
+  packed_at                    timestamptz
+  hold_reason                  varchar(24)
+  status_before_hold           varchar(32)
+  hold_note                    varchar(1000)
+  shipped_at                   timestamptz
+  delivered_at                 timestamptz
+  delivery_failure_reason      varchar(24)
+  completed_at                 timestamptz
+  refunded_at                  timestamptz
+  closed_at                    timestamptz
+  allow_partial_shipment       boolean [not null, default: false]
+  fulfilment_started_at        timestamptz
+  packing_started_at           timestamptz
+  goods_left_at                timestamptz
+  replaces_return_request_id   uuid
+  closed_amount                decimal(19,4) [not null, default: 0]
+  tax_amount                   decimal(19,4) [not null, default: 0]
+  net_amount                   decimal(19,4) [note: 'generated: (total_amount - tax_amount)']
+  contract_signed_at           timestamptz
+  shipping_warehouse_id        uuid
+  shipping_warehouse_chosen_at timestamptz
+  shipping_warehouse_chosen_by uuid
 }
 
 Table ordering.delivery_batch [headercolor: #C0392B] {
@@ -2927,20 +2845,11 @@ Table ordering.order_partial_shipment_decision [headercolor: #C0392B] {
   last_modified_by varchar(100)
 }
 
-Table ordering.order_payment [headercolor: #C0392B] {
-  payment_id  uuid [pk]
-  order_id    uuid [not null]
-  amount      decimal(19,4) [not null]
-  currency    varchar(3) [not null]
-  captured_at timestamptz [not null]
-}
-
 Table ordering.order_shipment [headercolor: #C0392B] {
   id               uuid [pk]
   order_id         uuid [not null]
   status           ordering.order_shipment_status [not null]
   amount           decimal(19,4) [not null]
-  billed_amount    decimal(19,4) [not null, default: 0]
   handed_over_at   timestamptz [not null]
   handed_over_by   uuid
   outcome_at       timestamptz
@@ -3097,8 +3006,6 @@ Table ordering.quote [headercolor: #C0392B] {
   customer_id             uuid [not null]
   status                  ordering.quote_status [not null]
   revision                int [not null, default: 1]
-  payment_term            ordering.quote_payment_term [not null, default: 'PREPAID']
-  deposit_percent         decimal(5,2)
   valid_until             timestamptz [not null]
   terms                   varchar(2000)
   sent_at                 timestamptz
@@ -3389,25 +3296,19 @@ Table customer.address [headercolor: #D68910] {
 }
 
 Table customer.credit_profile [headercolor: #D68910] {
-  id                     uuid [pk]
-  customer_id            uuid [not null, unique]
-  allow_prepaid          boolean [not null, default: true]
-  allow_deposit          boolean [not null, default: false]
-  allow_credit           boolean [not null, default: false]
-  default_payment_term   varchar(16) [not null, default: 'PREPAID']
-  deposit_percent        decimal(5,2)
-  credit_limit           decimal(19,4)
-  credit_term_days       int
-  currency               varchar(3) [not null, default: 'VND']
-  approved_by            uuid [not null]
-  approved_at            timestamptz [not null]
-  note                   varchar(1000)
-  version                bigint [not null, default: 0]
-  created_at             timestamptz [not null, default: `now()`]
-  created_by             varchar(100)
-  last_modified_at       timestamptz
-  last_modified_by       varchar(100)
-  deposit_balance_policy varchar(16)
+  id               uuid [pk]
+  customer_id      uuid [not null, unique]
+  credit_limit     decimal(19,4)
+  credit_term_days int
+  currency         varchar(3) [not null, default: 'VND']
+  approved_by      uuid [not null]
+  approved_at      timestamptz [not null]
+  note             varchar(1000)
+  version          bigint [not null, default: 0]
+  created_at       timestamptz [not null, default: `now()`]
+  created_by       varchar(100)
+  last_modified_at timestamptz
+  last_modified_by varchar(100)
 }
 
 Table customer.customer [headercolor: #D68910] {
@@ -3508,66 +3409,6 @@ Table customer.segment [headercolor: #D68910] {
 // SCHEMA: payment
 // =============================================================================
 
-Table payment.cod_remittance [headercolor: #B8860B] {
-  id                uuid [pk]
-  remittance_number varchar(30) [not null, unique]
-  carrier           varchar(120) [not null]
-  statement_ref     varchar(128)
-  period_from       date [not null]
-  period_to         date [not null]
-  currency          varchar(3) [not null, default: 'VND']
-  expected_amount   decimal(18,2) [not null, default: 0]
-  fee_amount        decimal(18,2) [not null, default: 0]
-  received_amount   decimal(18,2)
-  status            payment.cod_remittance_status [not null, default: 'PENDING']
-  received_at       timestamptz
-  reconciled_by     uuid
-  reconciled_at     timestamptz
-  note              varchar(1000)
-  version           bigint [not null, default: 0]
-  created_at        timestamptz [not null, default: `now()`]
-  created_by        varchar(100)
-  last_modified_at  timestamptz
-  last_modified_by  varchar(100)
-}
-
-Table payment.cod_remittance_line [headercolor: #B8860B] {
-  id               uuid [pk]
-  remittance_id    uuid [not null]
-  shipment_id      uuid [not null, unique]
-  payment_id       uuid
-  cod_amount       decimal(18,2) [not null]
-  remitted_amount  decimal(18,2) [not null]
-  fee_amount       decimal(18,2) [not null, default: 0]
-  match_status     payment.cod_remittance_line_match_status [not null]
-  version          bigint [not null, default: 0]
-  created_at       timestamptz [not null, default: `now()`]
-  created_by       varchar(100)
-  last_modified_at timestamptz
-  last_modified_by varchar(100)
-}
-
-Table payment.customer_transfer [headercolor: #B8860B] {
-  id                 uuid [pk]
-  customer_id        uuid [not null]
-  reference          varchar(100) [not null, unique]
-  amount             decimal(19,4) [not null]
-  unallocated_amount decimal(19,4) [not null]
-  currency           varchar(3) [not null]
-  received_on        date [not null]
-  recorded_by        uuid [not null]
-  recorded_at        timestamptz [not null]
-  note               varchar(1000)
-  version            bigint [not null, default: 0]
-  created_at         timestamptz [not null, default: `now()`]
-  created_by         varchar(100)
-  last_modified_at   timestamptz
-  last_modified_by   varchar(100)
-  channel            varchar(24) [not null, default: 'BANK_TRANSFER']
-  carrier_name       varchar(120)
-  refunded_amount    decimal(19,4) [not null, default: 0]
-}
-
 Table payment.installment [headercolor: #B8860B] {
   id                      uuid [pk]
   contract_id             uuid [not null]
@@ -3646,22 +3487,6 @@ Table payment.order_settlement [headercolor: #B8860B] {
   }
 }
 
-Table payment.payment [headercolor: #B8860B] {
-  id               uuid [pk]
-  order_id         uuid [not null]
-  amount           decimal(18,2) [not null]
-  currency         varchar(3) [not null, default: 'VND']
-  method           payment.payment_method [not null]
-  status           payment.payment_status [not null]
-  provider_ref     varchar(128)
-  captured_at      timestamptz
-  version          bigint [not null, default: 0]
-  created_at       timestamptz [not null]
-  created_by       varchar(100)
-  last_modified_at timestamptz
-  last_modified_by varchar(100)
-}
-
 Table payment.payment_receipt [headercolor: #B8860B] {
   id               uuid [pk]
   customer_id      uuid [not null]
@@ -3694,49 +3519,6 @@ Table payment.payment_receipt_line [headercolor: #B8860B] {
   }
 }
 
-Table payment.receivable [headercolor: #B8860B] {
-  id               uuid [pk]
-  order_id         uuid [not null]
-  customer_id      uuid [not null]
-  kind             payment.receivable_kind [not null, default: 'CREDIT_ORDER']
-  amount           decimal(19,4) [not null]
-  paid_amount      decimal(19,4) [not null, default: 0]
-  currency         varchar(3) [not null]
-  issued_at        timestamptz [not null]
-  due_date         date [not null]
-  status           payment.receivable_status [not null, default: 'OPEN']
-  settled_at       timestamptz
-  version          bigint [not null, default: 0]
-  created_at       timestamptz [not null, default: `now()`]
-  created_by       varchar(100)
-  last_modified_at timestamptz
-  last_modified_by varchar(100)
-  shipment_id      uuid
-  collector        varchar(16) [not null, default: 'CUSTOMER']
-  order_number     varchar(32)
-}
-
-Table payment.refund [headercolor: #B8860B] {
-  id                   uuid [pk]
-  payment_id           uuid
-  amount               decimal(18,2) [not null]
-  currency             varchar(3) [not null, default: 'VND']
-  reason               varchar(255)
-  status               payment.refund_status [not null]
-  refunded_at          timestamptz
-  version              bigint [not null, default: 0]
-  created_at           timestamptz [not null]
-  created_by           varchar(100)
-  last_modified_at     timestamptz
-  last_modified_by     varchar(100)
-  order_id             uuid
-  source               payment.refund_source
-  remainder_closure_id uuid
-  allocation_id        uuid
-  transfer_id          uuid
-  return_request_id    uuid
-}
-
 Table payment.refund_record [headercolor: #B8860B] {
   id               uuid [pk]
   order_id         uuid [not null]
@@ -3758,18 +3540,6 @@ Table payment.refund_record [headercolor: #B8860B] {
   created_by       varchar(100)
   last_modified_at timestamptz
   last_modified_by varchar(100)
-}
-
-Table payment.transfer_allocation [headercolor: #B8860B] {
-  id                     uuid [pk]
-  transfer_id            uuid [not null]
-  receivable_id          uuid
-  amount                 decimal(19,4) [not null]
-  allocated_at           timestamptz [not null]
-  allocated_by           uuid
-  order_id               uuid [not null]
-  reverses_allocation_id uuid
-  note                   varchar(500)
 }
 
 // =============================================================================
@@ -5472,7 +5242,6 @@ Ref: ordering.order_line_reservation.order_line_id > ordering.order_line.id [del
 Ref: ordering.order_line_reservation.reservation_id > inventory.stock_reservation.id [delete: restrict]
 Ref: ordering.order_partial_shipment_decision.decided_by > identity.app_user.id
 Ref: ordering.order_partial_shipment_decision.order_id > ordering.customer_order.id [delete: cascade]
-Ref: ordering.order_payment.order_id > ordering.customer_order.id [delete: restrict]
 Ref: ordering.order_shipment.handed_over_by > identity.app_user.id
 Ref: ordering.order_shipment.id > fulfillment.shipment.id [delete: restrict]
 Ref: ordering.order_shipment.order_id > ordering.customer_order.id [delete: restrict]
@@ -5512,7 +5281,6 @@ Ref: ordering.quote_price_tier.quote_line_id > ordering.quote_line.id [delete: c
 Ref: ordering.quote_status_history.changed_by > identity.app_user.id
 Ref: ordering.quote_status_history.quote_id > ordering.quote.id [delete: cascade]
 Ref: ordering.return_request.cancelled_by > identity.app_user.id
-Ref: ordering.return_request.credit_transfer_id > payment.customer_transfer.id [delete: restrict]
 Ref: ordering.return_request.customer_id > customer.customer.id [delete: restrict]
 Ref: ordering.return_request.decided_by > identity.app_user.id
 Ref: ordering.return_request.inspected_by > identity.app_user.id
@@ -5523,7 +5291,6 @@ Ref: ordering.return_request.receiving_location_code > warehouse.storage_locatio
 Ref: ordering.return_request.replacement_order_id > ordering.customer_order.id [delete: restrict]
 Ref: ordering.return_request.requested_by > identity.app_user.id
 Ref: ordering.return_request.settled_by > identity.app_user.id
-Ref: ordering.return_request.withdrawal_credit_transfer_id > payment.customer_transfer.id [delete: restrict]
 Ref: ordering.return_request.withdrawal_decided_by > identity.app_user.id
 Ref: ordering.return_request.withdrawal_proposed_by > identity.app_user.id
 Ref: ordering.return_request_discrepancy.recorded_by > identity.app_user.id
@@ -5559,12 +5326,6 @@ Ref: customer.default_payment_installment.schedule_id > customer.default_payment
 Ref: customer.default_payment_schedule.approved_by > identity.app_user.id
 Ref: customer.default_payment_schedule.customer_id > customer.customer.id [delete: cascade]
 Ref: customer.default_payment_schedule.set_by > identity.app_user.id
-Ref: payment.cod_remittance.reconciled_by > identity.app_user.id
-Ref: payment.cod_remittance_line.payment_id > payment.payment.id [delete: restrict]
-Ref: payment.cod_remittance_line.remittance_id > payment.cod_remittance.id [delete: cascade]
-Ref: payment.cod_remittance_line.shipment_id > fulfillment.shipment.id [delete: restrict]
-Ref: payment.customer_transfer.customer_id > customer.customer.id [delete: restrict]
-Ref: payment.customer_transfer.recorded_by > identity.app_user.id
 Ref: payment.installment.contract_id > ordering.sales_contract.id
 Ref: payment.installment.contract_installment_id > ordering.contract_payment_installment.id
 Ref: payment.installment.customer_id > customer.customer.id
@@ -5577,28 +5338,15 @@ Ref: payment.order_settlement.customer_id > customer.customer.id
 Ref: payment.order_settlement.fee_installment_id > payment.installment.id
 Ref: payment.order_settlement.order_id > ordering.customer_order.id
 Ref: payment.order_settlement.settled_by > identity.app_user.id
-Ref: payment.payment.order_id > ordering.customer_order.id [delete: restrict]
 Ref: payment.payment_receipt.customer_id > customer.customer.id
 Ref: payment.payment_receipt.recorded_by > identity.app_user.id
 Ref: payment.payment_receipt.voided_by > identity.app_user.id
 Ref: payment.payment_receipt_line.installment_id > payment.installment.id
 Ref: payment.payment_receipt_line.receipt_id > payment.payment_receipt.id
-Ref: payment.receivable.customer_id > customer.customer.id [delete: restrict]
-Ref: payment.receivable.order_id > ordering.customer_order.id [delete: restrict]
-Ref: payment.refund.allocation_id > payment.transfer_allocation.id [delete: restrict]
-Ref: payment.refund.order_id > ordering.customer_order.id [delete: restrict]
-Ref: payment.refund.payment_id > payment.payment.id
-Ref: payment.refund.return_request_id > ordering.return_request.id [delete: restrict]
-Ref: payment.refund.transfer_id > payment.customer_transfer.id [delete: restrict]
 Ref: payment.refund_record.customer_id > customer.customer.id
 Ref: payment.refund_record.order_id > ordering.customer_order.id
 Ref: payment.refund_record.recorded_by > identity.app_user.id
 Ref: payment.refund_record.voided_by > identity.app_user.id
-Ref: payment.transfer_allocation.allocated_by > identity.app_user.id
-Ref: payment.transfer_allocation.order_id > ordering.customer_order.id [delete: restrict]
-Ref: payment.transfer_allocation.receivable_id > payment.receivable.id [delete: restrict]
-Ref: payment.transfer_allocation.reverses_allocation_id > payment.transfer_allocation.id [delete: restrict]
-Ref: payment.transfer_allocation.transfer_id > payment.customer_transfer.id [delete: restrict]
 Ref: design.design_artifact.draft_id > design.design_draft.id
 Ref: design.design_asset.draft_id > design.design_draft.id
 Ref: design.design_decision.actor_id > identity.app_user.id
@@ -5857,7 +5605,6 @@ TableGroup ordering_group [color: #C0392B] {
   ordering.order_line_reservation
   ordering.order_number_sequence
   ordering.order_partial_shipment_decision
-  ordering.order_payment
   ordering.order_shipment
   ordering.order_shipment_line
   ordering.order_status_history
@@ -5896,19 +5643,12 @@ TableGroup customer_group [color: #D68910] {
 }
 
 TableGroup payment_group [color: #B8860B] {
-  payment.cod_remittance
-  payment.cod_remittance_line
-  payment.customer_transfer
   payment.installment
   payment.installment_reduction
   payment.order_settlement
-  payment.payment
   payment.payment_receipt
   payment.payment_receipt_line
-  payment.receivable
-  payment.refund
   payment.refund_record
-  payment.transfer_allocation
 }
 
 TableGroup design_group [color: #AA4A9E] {
