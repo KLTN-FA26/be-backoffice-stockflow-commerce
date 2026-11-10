@@ -190,10 +190,10 @@ class ProductionOrderDispatchIntegrationTest extends ProductionOrderDispatchFixt
     }
 
     @Test
-    @DisplayName("F1: the arrival notice goes to whoever holds procurement-goods-receipts:APPROVE at the warehouse, "
+    @DisplayName("F1: the arrival notice goes to whoever holds procurement-goods-receipts:CREATE at the warehouse, "
             + "not to a user of the same warehouse without it")
     void arrivalNoticeFollowsThePermission() {
-        UUID holder = holderOf("procurement-goods-receipts:APPROVE");
+        UUID holder = holderOf("procurement-goods-receipts:CREATE");
         UUID bystander = holderOf("procurement-goods-receipts:READ");
 
         ProductionOrder sent = approved(producer);

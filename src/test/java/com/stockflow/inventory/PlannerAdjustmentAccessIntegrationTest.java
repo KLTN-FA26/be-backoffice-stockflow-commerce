@@ -28,6 +28,7 @@ class PlannerAdjustmentAccessIntegrationTest {
 
     @Autowired MockMvc mockMvc;
     @MockitoBean JwtDecoder decoder;
+    @org.springframework.beans.factory.annotation.Autowired org.springframework.jdbc.core.JdbcTemplate jdbc;
 
     private SecuredMvc mvc;
     private final UUID planner = UUID.randomUUID();
@@ -61,5 +62,18 @@ class PlannerAdjustmentAccessIntegrationTest {
         mvc.asRole(Role.INVENTORY_PLANNER, planner, post("/api/v1/inventory/adjustments/" + adjustment + "/rejection")
                         .contentType(MediaType.APPLICATION_JSON).content("{\"reason\":\"not mine to decide\"}"))
                 .andExpect(status().isForbidden());
+    }
+    @Test
+    @DisplayName("4A-8: an adjustment for SUBCONTRACT_LOSS is refused, 400 VALIDATION_FAILED: subcontracting is gone")
+    void subcontractLossIsRefused() throws Exception {
+        var stock = jdbc.queryForMap("SELECT sku, location_code FROM inventory.stock_item WHERE on_hand > 0 "
+                + "AND status = 'AVAILABLE' ORDER BY sku LIMIT 1");
+        String body = "{\"locationCode\":\"%s\",\"sku\":\"%s\",\"quantityDelta\":-1,"
+                .formatted(stock.get("location_code"), stock.get("sku")) + "\"reason\":\"SUBCONTRACT_LOSS\"}";
+
+        mvc.asRole(Role.INVENTORY_PLANNER, planner, post("/api/v1/inventory/adjustments")
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("VALIDATION_FAILED"));
     }
 }
