@@ -66,17 +66,25 @@ SELECT pg_temp.expect_fail('O6 pick line for a line of another order', $q$
 SELECT pg_temp.expect_fail('O7 pick line with another sku than its order line', $q$
     INSERT INTO fulfillment.pick_line (id, pick_id, order_line_id, sku, location_code, allocated_qty)
     VALUES (gen_random_uuid(), md5('qa:pick:1')::uuid, md5('qa:ol:1')::uuid, 'TABLE-OAK-160', 'HCM-B01-1-A', 1) $q$);
-SELECT pg_temp.expect_ok('O8 pick line allocated from a bin, against the reservation', $q$
-    INSERT INTO fulfillment.pick_line (id, pick_id, order_line_id, reservation_id, sku, location_code, allocated_qty)
-    VALUES (md5('qa:pl:1')::uuid, md5('qa:pick:1')::uuid, md5('qa:ol:1')::uuid, md5('qa:res:1')::uuid, 'SOFA-3S-GREY', 'HCM-A01-2-B', 2) $q$);
+-- Since V20261113000400 a pick line is one carton, named by its LPN (07 BR-04, BR-10): it is allocated from a carton's
+-- row, and the checkout reservation of O1 (on an emptied loose row of the demo) is not a line's hold any more.
+SELECT pg_temp.expect_ok('O8 pick line for a carton allocated from a bin, against its own hold', $q$
+    INSERT INTO inventory.stock_reservation (id, stock_item_id, order_id, root_request_id, request_id, quantity, reserved_at, expires_at, status)
+    SELECT md5('qa:res:3')::uuid, s.id, md5('qa:order:1')::uuid, gen_random_uuid(), gen_random_uuid(), 1, NOW(), NULL, 'HELD'
+      FROM inventory.stock_item s JOIN inventory.stock_package p ON p.id = s.stock_package_id
+     WHERE s.sku = 'SOFA-3S-GREY' AND s.location_code = 'HCM-A01-2-B' AND p.status = 'IN_STOCK' ORDER BY p.lpn LIMIT 1;
+    INSERT INTO fulfillment.pick_line (id, pick_id, order_line_id, reservation_id, sku, location_code, allocated_qty, lpn, whole_carton)
+    SELECT md5('qa:pl:1')::uuid, md5('qa:pick:1')::uuid, md5('qa:ol:1')::uuid, md5('qa:res:3')::uuid, 'SOFA-3S-GREY', 'HCM-A01-2-B', 1, p.lpn, TRUE
+      FROM inventory.stock_reservation r JOIN inventory.stock_item s ON s.id = r.stock_item_id
+      JOIN inventory.stock_package p ON p.id = s.stock_package_id WHERE r.id = md5('qa:res:3')::uuid $q$);
 SELECT pg_temp.expect_fail('O9 picking more than allocated (BR-04)', $q$
-    UPDATE fulfillment.pick_line SET picked_qty = 3 WHERE id = md5('qa:pl:1')::uuid $q$);
-SELECT pg_temp.expect_fail('O10 PICKED with a partial quantity', $q$
-    UPDATE fulfillment.pick_line SET status = 'PICKED', picked_qty = 1, picked_by = md5('demo:user:editor')::uuid, picked_at = NOW()
+    UPDATE fulfillment.pick_line SET picked_qty = 2 WHERE id = md5('qa:pl:1')::uuid $q$);
+SELECT pg_temp.expect_fail('O10 PICKED with nothing picked: a carton is taken whole', $q$
+    UPDATE fulfillment.pick_line SET status = 'PICKED', picked_qty = 0, picked_by = md5('demo:user:editor')::uuid, picked_at = NOW()
      WHERE id = md5('qa:pl:1')::uuid $q$);
 -- consumed_at since V20261014001000: a picked line with a hold has deducted it (09_outbound F5).
 SELECT pg_temp.expect_ok('O11 picked in full', $q$
-    UPDATE fulfillment.pick_line SET status = 'PICKED', picked_qty = 2, picked_by = md5('demo:user:editor')::uuid, picked_at = NOW(),
+    UPDATE fulfillment.pick_line SET status = 'PICKED', picked_qty = 1, picked_by = md5('demo:user:editor')::uuid, picked_at = NOW(),
            consumed_at = NOW()
      WHERE id = md5('qa:pl:1')::uuid $q$);
 
