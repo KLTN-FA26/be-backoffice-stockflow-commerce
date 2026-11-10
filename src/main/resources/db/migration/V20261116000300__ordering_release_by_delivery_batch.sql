@@ -166,9 +166,11 @@ CREATE TRIGGER tg_delivery_batch_window_change_append_only
 -- ---------------------------------------------------------------------------------------------
 -- The rules the application keeps, kept again here
 -- ---------------------------------------------------------------------------------------------
--- The batch of a hold, a release, a shipment or a window change is one of the order's live contract; a release is in
--- schedule order (the batch before it released and handed over), at the order's shipping warehouse; a window changes
--- only while no shipment of its batch went, never into the past (CHECK) and never out of the schedule's order.
+-- The batch of a hold, a release, a shipment or a window change is one of the order's live contract; a hold stands for
+-- a line the batch carries (and, at commit, is a reservation of the order); a release is in schedule order (the batch
+-- before it released and handed over in full), at the order's shipping warehouse; a window changes only while no
+-- shipment of its batch went, never into the past (CHECK), never out of the schedule's order, and with consent the
+-- customer gave in their own chat conversation when it is a message.
 CREATE OR REPLACE FUNCTION ordering.check_delivery_batch_of_order()
  RETURNS trigger
  LANGUAGE plpgsql
@@ -194,7 +196,14 @@ BEGIN
             USING ERRCODE = 'check_violation';
     END IF;
 
-    IF TG_TABLE_NAME = 'delivery_batch_release' THEN
+    IF TG_TABLE_NAME = 'delivery_batch_hold' THEN
+        -- A hold stands for a line the batch carries.
+        IF NOT EXISTS (SELECT 1 FROM ordering.delivery_batch_line l
+                        WHERE l.delivery_batch_id = NEW.delivery_batch_id AND l.order_line_id = NEW.order_line_id) THEN
+            RAISE EXCEPTION 'hold % of order %: batch % carries no cartons of line %', NEW.reservation_id, NEW.order_id,
+                the_batch.seq, NEW.order_line_id USING ERRCODE = 'check_violation';
+        END IF;
+    ELSIF TG_TABLE_NAME = 'delivery_batch_release' THEN
         SELECT o.shipping_warehouse_id INTO the_order FROM ordering.customer_order o WHERE o.id = NEW.order_id;
         IF NEW.seq <> the_batch.seq THEN
             RAISE EXCEPTION 'release of batch %: seq % is not the batch''s %', NEW.delivery_batch_id, NEW.seq,
@@ -280,6 +289,27 @@ $function$;
 
 CREATE TRIGGER tg_delivery_batch_hold_order BEFORE INSERT OR UPDATE ON ordering.delivery_batch_hold
     FOR EACH ROW EXECUTE FUNCTION ordering.check_delivery_batch_of_order();
+
+-- The hold is a reservation of that order. Checked at commit: the reservation row is written in the same transaction
+-- (inventory's hold, or its allocation at release), possibly after this row (fk_delivery_batch_hold_reservation is
+-- deferred for the same reason).
+CREATE OR REPLACE FUNCTION ordering.check_delivery_batch_hold_reservation()
+ RETURNS trigger
+ LANGUAGE plpgsql
+AS $function$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM inventory.stock_reservation r
+                    WHERE r.id = NEW.reservation_id AND r.order_id = NEW.order_id) THEN
+        RAISE EXCEPTION 'hold % is not a reservation of order %', NEW.reservation_id, NEW.order_id
+            USING ERRCODE = 'check_violation';
+    END IF;
+    RETURN NULL;
+END
+$function$;
+
+CREATE CONSTRAINT TRIGGER tg_delivery_batch_hold_reservation AFTER INSERT OR UPDATE ON ordering.delivery_batch_hold
+    DEFERRABLE INITIALLY DEFERRED
+    FOR EACH ROW EXECUTE FUNCTION ordering.check_delivery_batch_hold_reservation();
 CREATE TRIGGER tg_delivery_batch_release_order BEFORE INSERT ON ordering.delivery_batch_release
     FOR EACH ROW EXECUTE FUNCTION ordering.check_delivery_batch_of_order();
 CREATE TRIGGER tg_delivery_batch_release_append_only BEFORE UPDATE OR DELETE ON ordering.delivery_batch_release
