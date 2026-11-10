@@ -33,6 +33,8 @@ class CustomerModuleTest {
     // notification (booted here) asks the order module for production orders; order is not booted.
     @org.springframework.test.context.bean.override.mockito.MockitoBean
     com.stockflow.notification.api.ProductionOrderDirectory productionOrderDirectoryMock;
+    @org.springframework.test.context.bean.override.mockito.MockitoBean
+    com.stockflow.notification.api.ProductionOrderResends productionOrderResendsMock;
     // A dependency of a bootstrapped dependency, not of this module: explicit ports only, the slice must not boot more.
     @MockitoBean com.stockflow.warehouse.api.WarehouseService warehouseServiceMock;
 

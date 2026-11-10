@@ -33,6 +33,8 @@ class ProcurementModuleTest {
     // notification (booted here) asks the order module for production orders; order is not booted.
     @org.springframework.test.context.bean.override.mockito.MockitoBean
     com.stockflow.notification.api.ProductionOrderDirectory productionOrderDirectoryMock;
+    @org.springframework.test.context.bean.override.mockito.MockitoBean
+    com.stockflow.notification.api.ProductionOrderResends productionOrderResendsMock;
     /** Notification (booted here) asks customer for addresses through this; customer is not booted (SCRUM-352). */
     @org.springframework.test.context.bean.override.mockito.MockitoBean
     com.stockflow.notification.api.CustomerDirectory customerDirectory;

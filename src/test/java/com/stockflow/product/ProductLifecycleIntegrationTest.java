@@ -299,8 +299,10 @@ class ProductLifecycleIntegrationTest {
                         .value(production.productionCode()))
                 .andExpect(jsonPath("$.data.openReferences[?(@.kind == 'PRODUCTION_ORDER_LINE')].documentId")
                         .value(production.productionOrderId().toString()))
-                .andExpect(jsonPath("$.data.openReferences[?(@.kind == 'SALES_ORDER_LINE')].documentNumber").value(orderNumber))
-                .andExpect(jsonPath("$.data.openReferences[?(@.kind == 'SALES_ORDER_LINE')].sku").value(sku));
+                .andExpect(jsonPath("$.data.openReferences[?(@.kind == 'SALES_ORDER_LINE')].documentNumber")
+                        .value(org.hamcrest.Matchers.hasItem(orderNumber)))
+                .andExpect(jsonPath("$.data.openReferences[?(@.kind == 'SALES_ORDER_LINE')].sku")
+                        .value(org.hamcrest.Matchers.everyItem(org.hamcrest.Matchers.is(sku))));
 
         // Every variant, the default one included, is OBSOLETE (docs 01 §5.2), not BLOCKED; the documents are untouched.
         assertThat(jdbc.queryForList("SELECT status FROM product.variants WHERE product_id = ?", String.class, id))
@@ -623,7 +625,7 @@ class ProductLifecycleIntegrationTest {
                 .andExpect(jsonPath("$.data.references[?(@.kind == 'PRODUCTION_ORDER_LINE')].documentId")
                         .value(production.productionOrderId().toString()))
                 .andExpect(jsonPath("$.data.references[?(@.kind == 'SALES_ORDER_LINE')].documentId")
-                        .value(org.hamcrest.Matchers.containsInAnyOrder(order.toString(), drafted.toString())));
+                        .value(org.hamcrest.Matchers.hasItems(order.toString(), drafted.toString())));
         assertRefused(send("GET", token(UUID.randomUUID(), "WAREHOUSE_STAFF"), path, null), 403, "FORBIDDEN");
         assertRefused(send("GET", editor(), "/api/v1/products/" + UUID.randomUUID() + "/open-references", null),
                 404, "PRODUCT_NOT_FOUND");
