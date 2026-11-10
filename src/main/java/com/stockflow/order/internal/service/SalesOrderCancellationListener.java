@@ -23,15 +23,16 @@ import java.util.UUID;
  * those not mass printing yet (DRAFT, PENDING_APPROVAL, SENT, ACCEPTED, SAMPLE_PENDING) are cancelled; those printing
  * (IN_PRODUCTION) or partly received are closed - what the producer already made and still delivers is received as the
  * customer's surplus (BR-07). Each with the order's cancellation as its reason and who cancelled the order as its actor.
- * Telling the producer to stop is 4A-3's.
+ * A production order already sent tells its producer to stop through {@code ProductionOrderService.cancel} and
+ * {@code close} (4A-3).
  *
  * <p>After the order's commit, like every reaction to {@code OrderCancelled}. One transaction per production order,
  * each locking the sales order first and then the production order - the lock order of every write to a production
  * order - so one refused does not undo the others. A production order that refuses because goods are being received
  * against it (a draft goods receipt, {@code PRODUCTION_ORDER_HAS_DRAFT_RECEIPTS}, 4A-5) is passed by here: it is
  * stopped when its last draft is confirmed or cancelled ({@code ProductionOrderReceivingService}), in that receipt's
- * transaction, so it is not left open whatever the event registry does next. Any other failure is
- * raised once the rest were tried, so the event stays incomplete and is delivered again; a redelivery skips what was
+ * transaction, so it is not left open whatever the event registry does next, and its producer is told there too.
+ * Any other failure is raised once the rest were tried, so the event stays incomplete and is delivered again; a redelivery skips what was
  * stopped already - a production order received, cancelled or closed is left as it is.</p>
  *
  * <p>{@code @Async @TransactionalEventListener}, not {@code @ApplicationModuleListener}: the latter wraps the whole
