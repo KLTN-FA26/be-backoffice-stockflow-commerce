@@ -53,10 +53,10 @@ public interface StockOperations {
     StockPackageView quarantine(String lpn, String toLocationCode, String reason, UUID actorId);
 
     /**
-     * A person's request to write stock up or down: loose stock by (location, SKU, lot), or a whole carton by its LPN
-     * (written off whole, team plan 4D-1). Refuses {@code COUNT_VARIANCE} ({@code VALIDATION_FAILED}): only a cycle
-     * count asks for that, through {@link #requestCountVariance}. A loose request naming no lot is
-     * {@code STOCK_ADJUSTMENT_LOT_REQUIRED} (400, on {@code lotNumber}): every SKU is lot-tracked (team plan 5-5).
+     * A person's request to write a whole carton off, by its LPN (team plan 4D-1). A location given outside the
+     * caller's warehouses is {@code OUT_OF_DATA_SCOPE} first; a request naming no carton is {@code STOCK_NOT_IN_CARTON}
+     * (stock is kept in whole cartons, so there is no loose stock to adjust by lot). Refuses {@code COUNT_VARIANCE}
+     * ({@code VALIDATION_FAILED}): only a cycle count asks for that, through {@link #requestCountVariance}.
      */
     StockAdjustmentSummary requestAdjustment(RequestAdjustmentCommand command);
 
