@@ -43,6 +43,7 @@ import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.stereotype.Component;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.RequestBuilder;
@@ -130,6 +131,7 @@ class PickConfirmationIntegrationTest {
     }
 
     @Autowired MockMvc mvc;
+    @MockitoSpyBean com.stockflow.inventory.consumption.PickConsumption pickConsumption;
     @MockitoBean JwtDecoder decoder;
     @Autowired OrderService orders;
     @Autowired com.stockflow.order.internal.service.OrderReleases releases;
@@ -929,6 +931,81 @@ class PickConfirmationIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT location_code FROM inventory.stock_package WHERE lpn = ?", String.class,
                 lpn)).isEqualTo(target);
         assertThat(ledgerRows("PUT_BACK", lineId)).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("two put-backs of one line at the same moment put the carton back once: one ledger line")
+    void concurrentPutBacksPutBackOnce() throws Exception {
+        OrderSummary order = confirmedOrder(sofa(1));
+        UUID task = startedTask(order);
+        JsonNode line = lines(task).get(0);
+        String lineId = line.path("lineId").asText();
+        String location = line.path("locationCode").asText();
+        String lpn = lpn(lineId);
+        int before = onHand(location, SOFA);
+        confirm(task, lineId, pickerHcm.toString(), "WAREHOUSE_STAFF", scan(location, lpn)).andExpect(status().isOk());
+        WithCurrentUser.run(TestUsers.admin(), DataScope.ALL, () -> orders.cancel(order.orderId(), "CUSTOMER_REQUEST"));
+        Await.until("task cancelled", ASYNC, () -> "CANCELLED".equals(
+                jdbc.queryForObject("SELECT status FROM fulfillment.pick WHERE id = ?", String.class, task)));
+        String header = token(otherPickerHcm, "WAREHOUSE_STAFF");
+        String url = "/api/v1/fulfillment/tasks/" + task + "/pick-lines/" + lineId + "/put-back";
+
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        CountDownLatch go = new CountDownLatch(1);
+        try {
+            List<Future<Integer>> results = new ArrayList<>();
+            for (int i = 0; i < 2; i++) {
+                results.add(pool.submit(() -> {
+                    go.await();
+                    return mvc.perform(post(url).header("Authorization", header).contentType("application/json")
+                            .content(putBackBody(location, lpn))).andReturn().getResponse().getStatus();
+                }));
+            }
+            go.countDown();
+            for (Future<Integer> result : results) {
+                assertThat(result.get(30, TimeUnit.SECONDS)).isEqualTo(200);
+            }
+        } finally {
+            pool.shutdownNow();
+        }
+
+        assertThat(ledgerRows("PUT_BACK", lineId)).isEqualTo(1);
+        assertThat(onHand(location, SOFA)).isEqualTo(before);
+        assertThat(cartonStatus(lpn)).isEqualTo("IN_STOCK");
+        assertThat(lineStatus(lineId)).isEqualTo("PUT_BACK");
+    }
+
+    @Test
+    @DisplayName("a short pick whose blind count is refused keeps nothing: the line stays OPEN and the order is not held")
+    void shortPickIsAtomic() throws Exception {
+        OrderSummary order = confirmedOrder(sofa(1));
+        UUID task = startedTask(order);
+        JsonNode line = lines(task).get(0);
+        String lineId = line.path("lineId").asText();
+        String location = line.path("locationCode").asText();
+        org.mockito.Mockito.doThrow(new com.stockflow.common.error.BusinessException(
+                        com.stockflow.common.error.ErrorCode.CONFLICT, "the count is refused"))
+                .when(pickConsumption).requestRecount(org.mockito.ArgumentMatchers.any(),
+                        org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyInt());
+        try {
+            call(post("/api/v1/fulfillment/tasks/" + task + "/pick-lines/" + lineId + "/short")
+                    .header("Authorization", token(pickerHcm, "WAREHOUSE_STAFF"))
+                    .contentType("application/json").content(shortBody(location, "NOT_FOUND")))
+                    .andExpect(status().isConflict());
+        } finally {
+            org.mockito.Mockito.reset(pickConsumption);
+        }
+
+        assertThat(lineStatus(lineId)).isEqualTo("OPEN");
+        assertThat(jdbc.queryForObject("SELECT short_reason FROM fulfillment.pick_line WHERE id = ?::uuid", String.class,
+                lineId)).isNull();
+        assertThat(orders.findById(order.orderId()).orElseThrow().status()).isNotEqualTo(OrderStatus.ON_HOLD);
+        // And the same report, once the count can be asked, goes through.
+        call(post("/api/v1/fulfillment/tasks/" + task + "/pick-lines/" + lineId + "/short")
+                .header("Authorization", token(pickerHcm, "WAREHOUSE_STAFF"))
+                .contentType("application/json").content(shortBody(location, "NOT_FOUND")))
+                .andExpect(status().isOk());
+        assertThat(orders.findById(order.orderId()).orElseThrow().status()).isEqualTo(OrderStatus.ON_HOLD);
     }
 
     @Test

@@ -78,8 +78,7 @@ class InventoryServiceImplAvailabilityTest {
     private final InventoryServiceImpl service = new InventoryServiceImpl(repository,
             new InventoryEventPublisher(mock(ApplicationEventPublisher.class)), operations,
             mock(InventoryItemDirectory.class), Clock.fixed(NOW, ZoneOffset.UTC), controls, policies, skuReservations,
-            locations, cycleCounts, stockPackages,
-            mock(com.stockflow.inventory.internal.domain.StockDamageReportRepository.class), Duration.ofMinutes(30));
+            locations, cycleCounts, stockPackages, Duration.ofMinutes(30));
 
     private final Map<StockItemId, StockItem> rows = new HashMap<>();
 
@@ -118,10 +117,10 @@ class InventoryServiceImplAvailabilityTest {
     @DisplayName("a reservation TTL that is not positive is refused at construction")
     void ttlMustBePositive() {
         assertThatThrownBy(() -> new InventoryServiceImpl(repository, null, operations, null, Clock.systemUTC(),
-                controls, policies, skuReservations, null, cycleCounts, stockPackages, null, Duration.ZERO))
+                controls, policies, skuReservations, null, cycleCounts, stockPackages, Duration.ZERO))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> new InventoryServiceImpl(repository, null, operations, null, Clock.systemUTC(),
-                controls, policies, skuReservations, null, cycleCounts, stockPackages, null, Duration.ofMinutes(-1)))
+                controls, policies, skuReservations, null, cycleCounts, stockPackages, Duration.ofMinutes(-1)))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 

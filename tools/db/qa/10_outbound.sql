@@ -370,23 +370,27 @@ SELECT pg_temp.expect_fail('F49 a packing damage report that names no pick line'
     VALUES (md5('qa:dmg:f49')::uuid, 'DMG-QA-F49', gen_random_uuid(), 'PACKING', md5('demo:wh:HCM')::uuid,
             'SOFA-3S-GREY', '11111111-1111-4111-8111-111111111111', 'HCM-A01-2-B', md5('qa:si:f46')::uuid,
             'HCM-QC01', 1, 'BROKEN', md5('demo:user:editor')::uuid, NOW()) $q$);
-SELECT pg_temp.expect_ok('F50 one unit of the picked line damaged at packing: the report, its photo, the line, the ledger', $q$
+SELECT pg_temp.expect_ok('F50 the whole picked carton damaged at packing (review M1): the report, its photo, the line, the ledger', $q$
     INSERT INTO inventory.stock_damage_report (id, report_number, request_id, origin, warehouse_id, sku,
            source_stock_item_id, source_location_code, damaged_stock_item_id, damage_location_code, quantity,
            reason_code, order_id, pick_line_id, reservation_id, reported_by, reported_at)
     VALUES (md5('qa:dmg:f50')::uuid, 'DMG-QA-F50', gen_random_uuid(), 'PACKING', md5('demo:wh:HCM')::uuid,
             'SOFA-3S-GREY', '11111111-1111-4111-8111-111111111111', 'HCM-A01-2-B', md5('qa:si:f46')::uuid,
-            'HCM-QC01', 1, 'BROKEN', md5('qa:order:f1')::uuid, md5('qa:pl:f46')::uuid, md5('qa:res:f46')::uuid,
+            'HCM-QC01', 3, 'BROKEN', md5('qa:order:f1')::uuid, md5('qa:pl:f46')::uuid, md5('qa:res:f46')::uuid,
             md5('demo:user:editor')::uuid, NOW());
     INSERT INTO inventory.stock_damage_photo (id, damage_report_id, storage_key, original_name, content_type,
                                               size_bytes, checksum, sort_order)
     VALUES (gen_random_uuid(), md5('qa:dmg:f50')::uuid, 'qc-evidence/qa-f50.jpg', 'f50.jpg', 'image/jpeg', 20,
             repeat('a', 64), 1);
-    UPDATE fulfillment.pick_line SET packing_damaged_qty = 1 WHERE id = md5('qa:pl:f46')::uuid;
+    UPDATE fulfillment.pick_line SET packing_damaged_qty = 3 WHERE id = md5('qa:pl:f46')::uuid;
     INSERT INTO inventory.stock_movement (id, movement_type, sku, to_location_code, quantity, from_status, to_status,
                                           reference_type, reference_id, occurred_at)
-    VALUES (gen_random_uuid(), 'PUT_BACK', 'SOFA-3S-GREY', 'HCM-QC01', 1, 'DAMAGED', 'DAMAGED', 'DAMAGE_REPORT',
+    VALUES (gen_random_uuid(), 'PUT_BACK', 'SOFA-3S-GREY', 'HCM-QC01', 3, 'DAMAGED', 'DAMAGED', 'DAMAGE_REPORT',
             md5('qa:dmg:f50')::uuid, NOW()) $q$);
+-- A part of a picked carton is no longer damaged at packing (review M1): the line is damaged whole or not at all.
+SELECT pg_temp.expect_fail_by('F50b one unit of the carton damaged at packing is a part of it',
+    'ck_pick_line_packing_damaged_whole', $q$
+    UPDATE fulfillment.pick_line SET packing_damaged_qty = 1 WHERE id = md5('qa:pl:f46')::uuid $q$);
 SELECT pg_temp.expect_fail('F51 a second packing report taking the line past what it picked', $q$
     INSERT INTO inventory.stock_damage_report (id, report_number, request_id, origin, warehouse_id, sku,
            source_stock_item_id, source_location_code, damaged_stock_item_id, damage_location_code, quantity,
@@ -403,11 +407,10 @@ SELECT pg_temp.expect_fail_by('F52 a put-back of everything the line picked, the
     'ck_pick_line_put_back', $q$
     UPDATE fulfillment.pick_line SET status = 'PUT_BACK', put_back_qty = 3, put_back_by = md5('demo:user:editor')::uuid,
            put_back_location_code = 'HCM-A01-2-B', put_back_at = NOW() WHERE id = md5('qa:pl:f46')::uuid $q$);
--- Was an accepted put-back of what the line still has: since V20261113000400 (4C-4) a put-back returns the whole carton,
--- and a carton part of which went to quarantine at packing is no carton any more (07 BR-05).
-SELECT pg_temp.expect_fail_by('F53 a put-back of what the line still has is a part of its carton',
-    'ck_pick_line_put_back_whole', $q$
-    UPDATE fulfillment.pick_line SET status = 'PUT_BACK', put_back_qty = 2, put_back_by = md5('demo:user:editor')::uuid,
+-- A carton damaged whole at packing has nothing left to put back (07 BR-05; review M1).
+SELECT pg_temp.expect_fail_by('F53 a put-back of a carton that was all damaged at packing: nothing is left',
+    'ck_pick_line_put_back', $q$
+    UPDATE fulfillment.pick_line SET status = 'PUT_BACK', put_back_qty = 0, put_back_by = md5('demo:user:editor')::uuid,
            put_back_location_code = 'HCM-A01-2-B', put_back_at = NOW() WHERE id = md5('qa:pl:f46')::uuid $q$);
 
 \echo '--- damaged goods back to the supplier: in parts or refused, never more than decided, shipped units off the books'
