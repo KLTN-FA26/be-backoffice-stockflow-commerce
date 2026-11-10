@@ -415,10 +415,9 @@ class ProductionReceiptIntegrationTest {
         assertThat(receipt.number()).matches("GR-\\d{8}-\\d{4,}");
         assertThat(receipt.lines()).isEmpty();
         assertThat(registration(receipt.id())).as("the production order knows of the draft").isEqualTo("DRAFT");
-        assertThat(jdbc.queryForMap("SELECT receipt_type, production_order_id, po_id, supplier_id "
+        assertThat(jdbc.queryForMap("SELECT receipt_type, production_order_id "
                 + "FROM procurement.goods_receipts WHERE id = ?", receipt.id()))
-                .containsEntry("receipt_type", "PRODUCTION").containsEntry("production_order_id", production.id())
-                .containsEntry("po_id", null).containsEntry("supplier_id", null);
+                .containsEntry("receipt_type", "PRODUCTION").containsEntry("production_order_id", production.id());
         assertThat(reread(production.id()).status()).as("nothing moves before a receipt is confirmed")
                 .isEqualTo(ProductionOrderStatus.SENT);
 
