@@ -41,7 +41,8 @@
 --   4. inventory.stock_adjustment: a carton's adjustment moves the whole carton (quantity_delta = +/- nominal_qty)
 --      for one of the six reasons of BR-04, and a COUNT_VARIANCE names a carton (tg_stock_adjustment_whole_carton,
 --      on INSERT: pending ones of the history are decided as they were asked, and approval refuses a partial one).
---      One adjustment of a carton waits for approval at a time (uk_stock_adjustment_pending_package).
+--      One adjustment of a carton waits for approval at a time (uk_stock_adjustment_pending_package). OTHER carries
+--      a note (ck_stock_adjustment_other_note, validated when the history allows).
 --
 -- Not here, on purpose (deviation from the team plan, recorded in reports/4C-3.md): stock_item.stock_package_id
 -- stays NULLable. Loose rows are still written by the put-back of a pick line (team plan 4C-4), a customer return
@@ -166,6 +167,15 @@ UNION ALL SELECT 'inventory.cycle_count_line', l.id, to_jsonb(l)
 -- ---------------------------------------------------------------------------------------------
 -- 3. Count lines and draft cartons set back to not counted
 -- ---------------------------------------------------------------------------------------------
+
+-- The carton/row checks (tg_stock_package_rows, tg_stock_item_package_*) are deferred constraint triggers. A row
+-- this migration updates would queue them until commit, and PostgreSQL refuses an ALTER TABLE of a table with pending
+-- trigger events (55006: "cannot ALTER TABLE ... because it has pending trigger events") - the ALTERs of sections 4
+-- and 5 follow such updates (a draft carton set back, a carton row detached, a row relabelled). Checked as each
+-- statement ends instead, from here to the end of this transaction: nothing is left pending at an ALTER, and every
+-- row is still checked.
+SET CONSTRAINTS ALL IMMEDIATE;
+
 UPDATE inventory.cycle_count_line l
    SET counted_qty = NULL, counted_by = NULL, counted_at = NULL,
        expected_qty = CASE WHEN p.status = 'IN_STOCK' THEN p.nominal_qty ELSE 0 END,
@@ -462,6 +472,24 @@ CREATE UNIQUE INDEX uk_stock_adjustment_pending_package ON inventory.stock_adjus
     WHERE stock_package_id IS NOT NULL AND status = 'PENDING_APPROVAL';
 COMMENT ON INDEX inventory.uk_stock_adjustment_pending_package IS
     'One adjustment of a carton waits for approval at a time: a second would decide the same carton twice.';
+
+-- BR-04: OTHER says why (StockAdjustment refuses it first). NOT VALID, then validated when no row of the history
+-- breaks it, so a database with such a row still upgrades and every new or changed row is checked either way.
+ALTER TABLE inventory.stock_adjustment ADD CONSTRAINT ck_stock_adjustment_other_note
+    CHECK (reason_code <> 'OTHER' OR NULLIF(btrim(note), '') IS NOT NULL) NOT VALID;
+COMMENT ON CONSTRAINT ck_stock_adjustment_other_note ON inventory.stock_adjustment IS
+    'kltn-docs 20 BR-04: an adjustment with reason OTHER carries a note.';
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM inventory.stock_adjustment
+                    WHERE reason_code = 'OTHER' AND NULLIF(btrim(note), '') IS NULL) THEN
+        ALTER TABLE inventory.stock_adjustment VALIDATE CONSTRAINT ck_stock_adjustment_other_note;
+    ELSE
+        RAISE NOTICE 'V20261113000300: ck_stock_adjustment_other_note left NOT VALID: adjustments with reason OTHER '
+            'and no note exist';
+    END IF;
+END
+$$;
 
 
 -- ---------------------------------------------------------------------------------------------
