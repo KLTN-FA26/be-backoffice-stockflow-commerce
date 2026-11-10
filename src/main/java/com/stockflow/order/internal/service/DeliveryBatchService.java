@@ -220,6 +220,30 @@ public class DeliveryBatchService {
         return Optional.empty();
     }
 
+    /**
+     * 4B-8 (15 §4.1, 17 §4.5): the batches every unit of which is in a delivered shipment, each with the moment its last
+     * shipment was delivered - what an installment after delivery tied to the batch counts from.
+     */
+    @Transactional(propagation = Propagation.SUPPORTS)
+    public Map<UUID, Instant> deliveredBatches(Order order) {
+        SalesContract contract = signedContract(order).orElse(null);
+        Map<UUID, Instant> delivered = new HashMap<>();
+        if (contract == null) {
+            return delivered;
+        }
+        Map<UUID, OrderLine> lines = linesById(order);
+        for (DeliveryBatch batch : contract.schedule()) {
+            int units = unitsOf(batch, lines);
+            if (units > 0 && shippedUnits(order, batch.id(), true) >= units) {
+                order.shipments().stream().filter(s -> batch.id().equals(s.deliveryBatchId()))
+                        .filter(s -> s.status() == OrderShipmentStatus.DELIVERED && s.outcomeAt() != null)
+                        .map(com.stockflow.order.internal.domain.OrderShipment::outcomeAt)
+                        .max(Comparator.naturalOrder()).ifPresent(at -> delivered.put(batch.id(), at));
+            }
+        }
+        return delivered;
+    }
+
     /** Whether the order works its schedule batch by batch: it has a signed contract with a delivery schedule. */
     @Transactional(propagation = Propagation.MANDATORY)
     public boolean scheduled(Order order) {

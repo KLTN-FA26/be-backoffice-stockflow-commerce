@@ -30,9 +30,17 @@ class InstallmentOrdersAdapter implements InstallmentOrders {
             OrderStatus.COMPLETED, OrderStatus.CLOSED);
 
     private final OrderRepository orders;
+    private final DeliveryBatchService batches;
 
-    InstallmentOrdersAdapter(OrderRepository orders) {
+    InstallmentOrdersAdapter(OrderRepository orders, DeliveryBatchService batches) {
         this.orders = orders;
+        this.batches = batches;
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public java.util.Map<UUID, java.time.Instant> batchesDeliveredAt(UUID orderId) {
+        return orders.findById(new OrderId(orderId)).map(batches::deliveredBatches).orElse(java.util.Map.of());
     }
 
     @Override

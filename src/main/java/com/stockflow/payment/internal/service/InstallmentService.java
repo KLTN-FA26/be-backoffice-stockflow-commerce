@@ -42,9 +42,8 @@ import java.util.UUID;
  *       D23) - by that day plus its days (BR-09): the customer's receivable.</li>
  * </ul>
  *
- * <p>An installment before delivery tied to a delivery batch falls due when that batch is released (4B-8, 17 §4.5);
- * one after delivery still falls due once the order is delivered in full - per-batch delivery dates are not tracked
- * yet (a known gap, reports/C3.md).</p>
+ * <p>An installment tied to a delivery batch follows that batch (4B-8, 17 §4.5): one before delivery falls due when the
+ * batch is released, one after delivery when the batch is delivered in full.</p>
  */
 @Service
 @Transactional
@@ -143,8 +142,10 @@ public class InstallmentService {
     }
 
     /**
-     * Goods of the order were delivered, or the rest of it closed: once it is delivered in full, what it pays after
-     * delivery is due from that day (15 §4.1 step 2, D23). A delivery of part of a split order waits for the last one.
+     * Goods of the order were delivered, or the rest of it closed (15 §4.1 step 2, D23): what it pays after delivery is
+     * due from the day its goods were delivered. An installment tied to a delivery batch counts from the day that batch
+     * was delivered in full (4B-8, 17 §4.5); one tied to no batch, from the day the whole order was. A delivery of part
+     * of a batch, or of a split order, waits for the last one.
      *
      * @param wholeOrder the event delivered the whole order at once (no shipment of its own)
      */
@@ -153,9 +154,25 @@ public class InstallmentService {
             reach(orderId, InstallmentMilestone.AFTER_DELIVERY, at);
             return;
         }
-        // The day the order was delivered in full, as the order has it: a shipment's event handled late - after the
-        // order's last delivery - must not date the receivable from an earlier delivery (BR-09).
-        orders.deliveredInFullAt(orderId).ifPresent(last -> reach(orderId, InstallmentMilestone.AFTER_DELIVERY, last));
+        // The days as the order has them, read before the installments are locked (orders before installments): a
+        // shipment's event handled late - after a later delivery - must not date the receivable from an earlier one.
+        java.util.Map<UUID, Instant> batches = orders.batchesDeliveredAt(orderId);
+        Instant whole = orders.deliveredInFullAt(orderId).orElse(null);
+        if (batches.isEmpty() && whole == null) {
+            return;
+        }
+        for (Installment installment : book.lockOfOrder(orderId)) {
+            if (installment.milestone() != InstallmentMilestone.AFTER_DELIVERY) {
+                continue;
+            }
+            Instant from = installment.deliveryBatchId() == null ? whole
+                    : batches.getOrDefault(installment.deliveryBatchId(), whole);
+            if (from != null && installment.reach(from, LocalDate.ofInstant(from, BUSINESS_ZONE))) {
+                book.save(installment);
+                log.info("Installment {} of contract {} is due (AFTER_DELIVERY) by {}", installment.seq(),
+                        installment.contractNumber(), installment.dueDate());
+            }
+        }
     }
 
     private void reach(UUID orderId, InstallmentMilestone milestone, Instant at) {

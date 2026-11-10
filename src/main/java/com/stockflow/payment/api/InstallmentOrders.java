@@ -34,4 +34,12 @@ public interface InstallmentOrders {
      * installments paid after delivery count from.
      */
     Optional<Instant> deliveredInFullAt(UUID orderId);
+
+    /**
+     * 4B-8 (15 §4.1, 17 §4.5 "Đợt thanh toán gắn đợt giao"): the delivery batches of the order delivered in full - every
+     * unit of the batch in a delivered shipment - each with the moment its last unit was delivered. An installment paid
+     * after delivery that is tied to a batch is due from that moment, not from the whole order's delivery. Empty for an
+     * order without a delivery schedule, or none delivered yet.
+     */
+    java.util.Map<UUID, Instant> batchesDeliveredAt(UUID orderId);
 }
