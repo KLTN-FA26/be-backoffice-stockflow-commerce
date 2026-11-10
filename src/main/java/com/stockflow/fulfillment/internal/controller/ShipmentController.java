@@ -33,8 +33,9 @@ import java.util.UUID;
  *
  * <p>Outcomes have a resource of their own, {@code fulfillment-delivery-outcomes}: UPDATE records one, and on its own
  * only RETURNED (09 §5 "Warehouse": the warehouse manager may record a shipment back at the warehouse until the
- * returns receipt, SCRUM-295, records it itself); DELIVERED and DELIVERY_FAILED also need APPROVE, the Order
- * Coordinator's (09 BR-02), as they move the order and bill it.</p>
+ * returns receipt, SCRUM-295, records it itself); DELIVERED and DELIVERY_FAILED also need APPROVE (09 BR-02), the
+ * warehouse manager's since the order coordinator role was retired (17 BR-27, team plan 5-7), as they move the order
+ * and bill it.</p>
  */
 @RestController
 @RequestMapping("/api/v1/fulfillment/shipments")
@@ -77,7 +78,7 @@ class ShipmentController {
     @Auditable(action = AuditAction.TRANSITION, resourceType = "shipment", resourceId = "#shipmentId")
     public ApiResponse<ShipmentResponse> recordOutcome(@PathVariable UUID shipmentId,
             @Valid @RequestBody DeliveryOutcomeRequest request, @AuthenticatedUser CurrentUser actor) {
-        // 09 BR-02: delivered / not delivered are the Order Coordinator's; the grant says who that is.
+        // 09 BR-02: delivered / not delivered take APPROVE (the warehouse manager's, 17 BR-27); the grant says who.
         if (!"RETURNED".equals(request.outcome())) {
             actor.require(FulfillmentResources.DELIVERY_OUTCOMES, Action.APPROVE);
         }

@@ -143,7 +143,7 @@ class FulfillmentController {
 
     /**
      * The pick list: one line per hold of the order's stock lines, in walking order (print lines have
-     * none, docs 07 BR-06). The assignee, and managers and coordinators of the task's warehouse.
+     * none, docs 07 BR-06). The assignee, and managers of the task's warehouse.
      */
     @GetMapping("/tasks/{taskId}/pick-lines")
     @RequiresPermission(resource = FulfillmentResources.PICK_LISTS, action = Action.READ)
@@ -199,7 +199,7 @@ class FulfillmentController {
     /**
      * X-SHORT (docs 04c): the assignee is at the line's bin and finds fewer units than allocated - a picking step,
      * so the picking permission. The line turns
-     * SHORT, nothing is deducted, and the order goes ON_HOLD ({@code INVENTORY}) for the coordinator. The
+     * SHORT, nothing is deducted, and the order goes ON_HOLD ({@code INVENTORY}) for the warehouse manager. The
      * same report again answers 200 with the line unchanged.
      */
     @PostMapping("/tasks/{taskId}/pick-lines/{lineId}/short")
@@ -239,7 +239,7 @@ class FulfillmentController {
      * the picking permission. {@code multipart/form-data}: a JSON part {@code report} and one to five image parts
      * {@code photos} (BR-STK-003). The damaged units go to quarantine as DAMAGED; the line gives way to a line for the
      * good units at the same bin and, for the damaged ones, to new lines where other stock replaced them - or a SHORT
-     * line, the order ON_HOLD ({@code INVENTORY}) for the coordinator, when none could. The same report again answers
+     * line, the order ON_HOLD ({@code INVENTORY}) for the warehouse manager, when none could. The same report again answers
      * 200 with what it made. Retries carry the same {@code requestId}: uploads are not buffered by the idempotency
      * filter.
      */
@@ -280,7 +280,7 @@ class FulfillmentController {
      * Resolves a SHORT line by reallocation (X-SHORT step 04): the same quantity is allocated on other pickable
      * bins of the warehouse, FEFO, never the short one; the answer is the new lines to pick. The order resumes
      * once no line is SHORT. Too little stock is 409 {@code INSUFFICIENT_STOCK} and nothing changes. A decision of
-     * whoever assigns the work (the coordinator, the warehouse manager), not of the picker.
+     * whoever assigns the work (the warehouse manager), not of the picker.
      */
     @PostMapping("/tasks/{taskId}/pick-lines/{lineId}/reallocation")
     @RequiresPermission(resource = FulfillmentResources.TASK_ASSIGNMENT, action = Action.UPDATE)

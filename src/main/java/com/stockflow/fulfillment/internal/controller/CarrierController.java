@@ -34,7 +34,7 @@ import java.util.UUID;
 
 /**
  * The carrier catalogue (G4-2a; kltn-docs 09 §3) and each carrier's connection settings and service codes (3-1; 09
- * §4.1 step 2). {@code fulfillment-shipments:READ} to list (dispatch staff choose from it, coordinators read it);
+ * §4.1 step 2). {@code fulfillment-shipments:READ} to list (dispatch staff choose from it, managers read it);
  * {@code fulfillment-carriers:UPDATE} to keep it - seeded for the warehouse manager (spec G4 §6.4). Secrets go in and
  * never come out: the response says whether each is set.
  */

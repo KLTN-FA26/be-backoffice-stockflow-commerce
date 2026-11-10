@@ -21,7 +21,7 @@ import java.util.UUID;
 public interface PickLists {
 
     /**
-     * A task's lines in walking order. The assignee, and managers and coordinators of the task's
+     * A task's lines in walking order. The assignee, and managers of the task's
      * warehouse, may read them.
      *
      * @throws com.stockflow.common.error.BusinessException {@code NOT_FOUND}, {@code OUT_OF_DATA_SCOPE}
@@ -75,7 +75,7 @@ public interface PickLists {
      * X-SHORT resolved by reallocation: inventory releases the short allocation and allocates the same quantity
      * on other pickable bins of the warehouse (FEFO, never the short bin); the order line holds the new
      * allocations, the short line is superseded by one new line per allocation, and once no line is SHORT any
-     * more the order resumes. A coordinator or the warehouse's manager.
+     * more the order resumes. The warehouse's manager.
      *
      * @return the new lines
      * @throws com.stockflow.common.error.BusinessException {@code NOT_FOUND}; {@code OUT_OF_DATA_SCOPE};
@@ -89,7 +89,7 @@ public interface PickLists {
      * order, then stock rows: inventory moves the damaged units to quarantine as DAMAGED; the line gives way to a line
      * for the good units at the same bin and, for the damaged ones, to new lines where other stock of the warehouse
      * replaced them (FEFO) - or, when there is none, to a SHORT line, the order ON_HOLD with reason
-     * {@code INVENTORY} until the coordinator reallocates it (the X-SHORT path). The same report again answers with
+     * {@code INVENTORY} until the warehouse manager reallocates it (the X-SHORT path). The same report again answers with
      * what it made.
      *
      * @throws com.stockflow.common.error.BusinessException {@code NOT_FOUND} (task, line, or not the assignee);
@@ -119,7 +119,7 @@ public interface PickLists {
      * What a damage report at picking did.
      *
      * @param damageLocationCode where the picker takes the damaged units
-     * @param orderOnHold        true when nothing replaced them: the new SHORT line waits for the coordinator
+     * @param orderOnHold        true when nothing replaced them: the new SHORT line waits for the warehouse manager
      * @param line               the line reported, now CANCELLED with its damaged units
      * @param lines              the lines that replaced it, in walking order: pick the OPEN ones
      */

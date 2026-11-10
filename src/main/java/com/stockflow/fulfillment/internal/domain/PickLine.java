@@ -136,7 +136,7 @@ public final class PickLine {
     /**
      * A line a damage report made (SCRUM-277): the good units still to pick at the bin, a replacement allocation
      * elsewhere (OPEN, {@code shortQty} 0), or the damaged share nothing could replace (SHORT by all of it, waiting for
-     * the coordinator's reallocation like any short line). {@code lpn} is the carton its hold is in, null for loose
+     * the warehouse manager's reallocation like any short line). {@code lpn} is the carton its hold is in, null for loose
      * stock (SCRUM-473; {@code tg_pick_line_carton}). Package-private: only {@link PickList} plans lines.
      */
     static PickLine fromDamage(UUID id, UUID orderLineId, UUID reservationId, String sku, String locationCode,
@@ -188,7 +188,7 @@ public final class PickLine {
 
     /**
      * The picker found {@code found} of the allocated units at the bin (X-SHORT): nothing is taken and nothing is
-     * deducted - the line records the shortfall and waits for the coordinator.
+     * deducted - the line records the shortfall and waits for the warehouse manager.
      */
     void reportShort(int found, String scannedLocation) {
         this.status = PickLineStatus.SHORT;

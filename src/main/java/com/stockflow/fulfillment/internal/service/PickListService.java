@@ -436,7 +436,7 @@ class PickListService implements PickLists {
         }
         boolean held = result.impairedReservationId() != null;
         if (held) {
-            // X-SHORT step 02: nothing replaced the damaged units, so the order stops until the coordinator decides.
+            // X-SHORT step 02: nothing replaced the damaged units, so the order stops until the warehouse manager decides.
             holdForInventory(pick.getOrderId(), actor.userId(), ("Damaged at pick: %d x %s at %s, report %s; no other "
                     + "stock to replace them").formatted(damage.damagedQuantity(), line.sku(), line.locationCode(),
                     result.reportNumber()));
@@ -576,7 +576,7 @@ class PickListService implements PickLists {
 
     /**
      * X-SHORT step 02: ON_HOLD with reason INVENTORY (kltn-docs 17 edge "short pick"). An order already ON_HOLD - a
-     * second short line, or held for another reason by the coordinator - is stopped already and stays as it is: a
+     * second short line, or held for another reason by the warehouse manager - is stopped already and stays as it is: a
      * hold is not stacked on a hold. Locks the order, so the caller keeps the order pick, order, stock rows.
      */
     private void holdForInventory(UUID orderId, UUID by, String note) {

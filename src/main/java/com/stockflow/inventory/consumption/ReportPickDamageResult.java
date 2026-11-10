@@ -10,7 +10,7 @@ import java.util.UUID;
  *   <li>{@code replacements} not empty: other stock of the warehouse took their place (FEFO) - the order keeps its
  *       quantity, on new allocations the picker goes on to pick;</li>
  *   <li>{@code impairedReservationId} set: nothing could replace them, so the order keeps them allocated on the
- *       damaged units, where nobody can pick them, until the coordinator reallocates that share (X-SHORT).</li>
+ *       damaged units, where nobody can pick them, until the warehouse manager reallocates that share (X-SHORT).</li>
  * </ul>
  *
  * @param retainedQuantity units the allocation still keeps at the bin, good ones to pick (0 when all were damaged:

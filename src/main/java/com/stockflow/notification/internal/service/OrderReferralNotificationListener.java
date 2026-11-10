@@ -20,9 +20,10 @@ import java.util.ResourceBundle;
 
 /**
  * Decision 2026-10-17: the system did not cancel an order whose printing had started; the people who settle it by hand
- * are told - Sales (the agreed fee, with the customer) and the order coordinators (the order itself). In-app, one inbox
- * row per person per order and reason, so a redelivered event tells nobody twice; no e-mail (there is no template, and
- * the bell is where order work is picked up).
+ * are told - Sales, who settles the agreed fee with the customer and, since the order coordinator role was retired
+ * (team plan 5-7, kltn-docs 00 §2), the order itself. In-app, one inbox row per person per order and reason, so a
+ * redelivered event tells nobody twice; no e-mail (there is no template, and the bell is where order work is picked
+ * up).
  */
 @Component
 class OrderReferralNotificationListener {
@@ -40,11 +41,11 @@ class OrderReferralNotificationListener {
     @ApplicationModuleListener
     public void on(OrderCancellationReferred event) {
         Map<java.util.UUID, StaffContact> recipients = new LinkedHashMap<>();
-        for (Role role : List.of(Role.SALES_STAFF, Role.ORDER_COORDINATOR)) {
+        for (Role role : List.of(Role.SALES_STAFF)) {
             staff.activeStaff(role).forEach(contact -> recipients.putIfAbsent(contact.userId(), contact));
         }
         if (recipients.isEmpty()) {
-            log.warn("Order {} referred to staff ({}): no active Sales or coordinator account; nobody was notified",
+            log.warn("Order {} referred to staff ({}): no active Sales account; nobody was notified",
                     LogSafe.text(event.orderNumber()), LogSafe.text(event.reasonCode()));
             return;
         }

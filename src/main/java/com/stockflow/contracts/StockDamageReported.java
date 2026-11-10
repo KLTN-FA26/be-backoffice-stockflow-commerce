@@ -13,9 +13,9 @@ import java.util.UUID;
  *                              or {@code OTHER}
  * @param orderId               the order whose allocation the units were picked against; null for a stock check.
  *                              Consumers: {@code notification} tells the warehouse managers who decide, the order
- *                              coordinators when the order is on hold, the planners when reservations fall short
+ *                              task assigners when the order is on hold, the replenishers when reservations fall short
  * @param orderOnHold           true when no other stock could replace the order's damaged units: its pick line is
- *                              short and the order ON_HOLD (INVENTORY) until the coordinator reallocates it
+ *                              short and the order ON_HOLD (INVENTORY) until the warehouse manager reallocates it
  * @param skuReservationShortfall units the SKU's live checkout reservations now promise beyond its free sellable
  *                              stock (0 when they are still covered): those orders will not allocate in full at
  *                              release unless stock arrives first

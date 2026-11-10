@@ -4,8 +4,9 @@ import com.stockflow.common.security.Action;
 import com.stockflow.common.security.PermissionResource;
 
 /**
- * Catalog declaration of {@code fulfillment-load-estimates} (V20261022001200): CREATE and READ for the order
- * coordinator and the warehouse manager (SYSTEM_ADMIN holds all). No page of its own: the estimate opens from an order.
+ * Catalog declaration of {@code fulfillment-load-estimates} (V20261022001200): CREATE and READ for Sales (since
+ * V20261115000200, the order coordinator's grant) and the warehouse manager (SYSTEM_ADMIN holds all). No page of its
+ * own: the estimate opens from an order.
  */
 @PermissionResource(code = FulfillmentResources.LOAD_ESTIMATES, group = "Fulfillment", label = "Load estimates",
         apiPath = "/api/v1/fulfillment/load-estimates", actions = {Action.CREATE, Action.READ})

@@ -230,7 +230,7 @@ class PackingController {
      * {@code multipart/form-data}: a JSON part {@code report} and one to five image parts {@code photos}
      * (BR-STK-003). Take the units out of their parcel first. They go back into stock as DAMAGED in quarantine; the
      * task goes back to picking for what replaces them - new lines elsewhere, or a SHORT line, the order ON_HOLD
-     * ({@code INVENTORY}) for the coordinator, when nothing could - and packing resumes once it is picked again. The
+     * ({@code INVENTORY}) for the warehouse manager, when nothing could - and packing resumes once it is picked again. The
      * same report again answers 200 with what it made; retries carry the same {@code requestId}.
      */
     @PostMapping(value = "/tasks/{taskId}/pick-lines/{lineId}/damage-after-pick",

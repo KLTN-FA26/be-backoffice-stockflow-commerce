@@ -207,7 +207,7 @@ public final class PickList {
     /**
      * The picker is at the line's bin and finds fewer units than were allocated there (docs 04c X-SHORT): the line
      * turns SHORT, recording the shortfall; nothing is picked and no stock is deducted. The order stops (the
-     * caller puts it ON_HOLD) until the coordinator reallocates. Reporting the same shortfall again answers with
+     * caller puts it ON_HOLD) until the warehouse manager reallocates. Reporting the same shortfall again answers with
      * the line as it is.
      *
      * @param found the units that are there, 0 up to one fewer than allocated
@@ -242,7 +242,7 @@ public final class PickList {
     }
 
     /**
-     * The coordinator moved a SHORT line's allocation to other bins of the warehouse: the short line is
+     * The warehouse manager moved a SHORT line's allocation to other bins of the warehouse: the short line is
      * superseded (CANCELLED, its shortfall kept) and one new OPEN line per new allocation follows the last stop.
      *
      * @throws BusinessException {@code PICK_LINE_NOT_OPEN} unless the line is SHORT;
@@ -269,7 +269,7 @@ public final class PickList {
         return added;
     }
 
-    /** Whether a line is still SHORT, waiting for the coordinator. */
+    /** Whether a line is still SHORT, waiting for the warehouse manager. */
     public boolean hasShortLines() {
         return lines.stream().anyMatch(line -> line.status() == PickLineStatus.SHORT);
     }
@@ -412,7 +412,7 @@ public final class PickList {
      * Inventory took the damaged units back into quarantine and made the order whole (R8). The picked line keeps them
      * on record ({@link PickLine#packingDamagedQty}); what replaces them is picked again, after the last stop: one OPEN
      * line per allocation that replaced them, or, when nothing could, one SHORT line for them against the impaired
-     * allocation, for the coordinator to reallocate (X-SHORT). The caller puts a complete task back to PICKING.
+     * allocation, for the warehouse manager to reallocate (X-SHORT). The caller puts a complete task back to PICKING.
      *
      * @return the new lines
      * @throws BusinessException {@code FULFILLMENT_HOLDS_OUTSIDE_WAREHOUSE} for a replacement outside the task's

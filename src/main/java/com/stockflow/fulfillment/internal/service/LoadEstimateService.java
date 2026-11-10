@@ -383,7 +383,7 @@ class LoadEstimateService implements LoadEstimates {
 
     /**
      * The requested types in the order given (duplicates dropped), or every active type by code. A type the plan may
-     * not use is refused rather than silently left out: the coordinator chose it.
+     * not use is refused rather than silently left out: the warehouse manager chose it.
      */
     private List<VehicleSpec> vehicleSpecs(List<UUID> requested) {
         List<VehicleTypeJpaEntity> rows = new ArrayList<>();

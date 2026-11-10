@@ -38,8 +38,8 @@ import java.util.UUID;
 /**
  * Loading and handover of a load plan's vehicles (SCRUM-288/292/293, SCRUM-392; kltn-docs 09 §4.2): every order ships
  * as a full truckload (09 BR-08), so a load is born from a confirmed plan, never opened by hand.
- * {@code fulfillment-shipments:READ} to look (coordinators too); {@code fulfillment-dispatch:UPDATE} to book, load and
- * sign - seeded for the warehouse (09 §2 Dispatch Staff), not the coordinator. Calling a plan's vehicle off after loading
+ * {@code fulfillment-shipments:READ} to look (managers too); {@code fulfillment-dispatch:UPDATE} to book, load and
+ * sign - seeded for the warehouse (09 §2 Dispatch Staff). Calling a plan's vehicle off after loading
  * started, dropping one from its plan and confirming a parcel off without a scan is
  * {@code fulfillment-controlled-cancellations:UPDATE} (SCRUM-474). Every call is limited to the caller's warehouses.
  */

@@ -68,7 +68,7 @@ import java.util.UUID;
         label = "Orders",
         route = "/sales/orders",
         apiPath = "/api/v1/orders",
-        actions = {Action.VIEW_PAGE, Action.READ, Action.CREATE, Action.UPDATE, Action.APPROVE, Action.EXPORT})
+        actions = {Action.VIEW_PAGE, Action.READ, Action.CREATE, Action.UPDATE, Action.EXPORT})
 class OrderController {
 
     private final OrderService orderService;
@@ -249,8 +249,8 @@ class OrderController {
      *
      * <p>SCRUM-242/WBS 3.17.4. Same underlying {@link OrderService#cancel}, but {@code scope =
      * ALL} and its own resource, {@code sales-order-cancellations:UPDATE}: kltn-docs 17 §2 has Sales
-     * handle cancellations, while releasing an order to production ({@code sales-orders:APPROVE})
-     * stays with the coordinator. A customer's role is never granted it, so this endpoint is
+     * handle cancellations, while releasing an order ({@code sales-order-releases:UPDATE}) is the
+     * warehouse manager's. A customer's role is never granted it, so this endpoint is
      * unreachable for them even though it accepts the same path shape as {@link #cancel}.</p>
      */
     @PostMapping("/{orderId}/admin-cancellation")

@@ -4,7 +4,12 @@ import java.util.Arrays;
 import java.util.Optional;
 
 /**
- * The roles from the BRD (section 6.1), plus {@link #SYSTEM_ADMIN}, as a real type.
+ * The roles of kltn-docs 00 §2.1 and the customer's, as a real type: the system roles, which the database seeds and
+ * nobody deletes or renames (00 §2.5.3).
+ *
+ * <p>ORDER_COORDINATOR and INVENTORY_PLANNER were retired by V20261115000200 (00 §2, decision 2026-11-05; team plan
+ * 5-7): Sales took the customer's side of their work, the warehouse manager the warehouse's, and their holders were
+ * given those roles.</p>
  *
  * <p>Use this enum everywhere in ordinary code: it cannot be misspelled, it can be switched over
  * exhaustively, and adding a role makes the compiler point at every place that must be updated.</p>
@@ -16,15 +21,16 @@ import java.util.Optional;
 public enum Role {
 
     WAREHOUSE_STAFF(Roles.WAREHOUSE_STAFF, "Receive, put away, pick, pack and hand over to carriers"),
-    WAREHOUSE_MANAGER(Roles.WAREHOUSE_MANAGER, "Approve adjustments, override slotting"),
-    INVENTORY_PLANNER(Roles.INVENTORY_PLANNER, "Monitor stock levels"),
+    WAREHOUSE_MANAGER(Roles.WAREHOUSE_MANAGER, "Assigned warehouses: set-up, receiving decisions, order release, "
+            + "pick tasks and staging, delivery outcomes, counts and adjustment approval"),
     CUSTOMER(Roles.CUSTOMER, "Browse, design, order and track"),
-    SALES_STAFF(Roles.SALES_STAFF, "Advise customers, edit designs, create assisted orders"),
-    ORDER_COORDINATOR(Roles.ORDER_COORDINATOR, "Release orders to the warehouse and handle holds"),
+    SALES_STAFF(Roles.SALES_STAFF, "Customers, quotes, orders and contracts; shipping warehouse, holds, "
+            + "cancellations, partial delivery and returns of a confirmed order; chat"),
     /** Was ECOMMERCE_ADMIN; renamed by V20261107000100 (kltn-docs 00 §2, 2026-11-05) with its id and grants. */
     SALES_MANAGER(Roles.SALES_MANAGER, "Product data and approval, internal prices, print setup, design review, staff accounts"),
     PROCUREMENT_STAFF(Roles.PROCUREMENT_STAFF, "Purchase orders and supplier coordination"),
-    ACCOUNTANT(Roles.ACCOUNTANT, "Supplier invoices, three-way matching, reconciliation"),
+    ACCOUNTANT(Roles.ACCOUNTANT,
+            "Receipts against contract instalments, receivables and refunds, credit approval, e-invoices"),
     /** Holds every permission, and its grants cannot be edited at runtime (V20260929000200). */
     SYSTEM_ADMIN(Roles.SYSTEM_ADMIN, "Every permission: users, roles, permissions and all modules");
 

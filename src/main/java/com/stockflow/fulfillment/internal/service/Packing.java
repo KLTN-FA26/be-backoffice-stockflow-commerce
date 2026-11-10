@@ -104,7 +104,7 @@ public interface Packing {
      * In one transaction, pick first, then order, then stock: inventory takes them back into stock as DAMAGED in a
      * quarantine area and allocates the same quantity again, FEFO, or, when there is none, keeps the share impaired on
      * the damaged units; the line keeps them on record and packing no longer counts them; the task goes back to
-     * PICKING, for its assignee to pick the new lines - or, with nothing to replace them, for the coordinator to
+     * PICKING, for its assignee to pick the new lines - or, with nothing to replace them, for the warehouse manager to
      * reallocate the new SHORT line, the order ON_HOLD (INVENTORY) meanwhile (X-SHORT). Packing resumes when the task
      * is picked again. The same report again answers with what it made.
      *

@@ -90,7 +90,7 @@ class FulfillmentServiceImpl implements FulfillmentService {
         }
         OrderSummary order = requireOrder(orderId);
         // Released - its warehouse chosen: READY_TO_FULFILL (SCRUM-423, kltn-docs 17 BR-02). A CONFIRMED order is
-        // released by the coordinator first (G3-2).
+        // released by the warehouse manager first (G3-2).
         if (order.status() != OrderStatus.READY_TO_FULFILL) {
             throw new BusinessException(ErrorCode.PICK_TASK_STATE_CONFLICT,
                     "Only a released order (READY_TO_FULFILL) can enter fulfillment; it is " + order.status());

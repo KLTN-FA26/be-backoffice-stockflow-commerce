@@ -10,7 +10,7 @@ import java.util.UUID;
  *
  * @param damageLocationCode the quarantine area the picker takes the damaged units to
  * @param orderOnHold        true when no other stock replaced the damaged units: the SHORT line among {@code lines}
- *                           waits for the coordinator's reallocation and the order is ON_HOLD (INVENTORY)
+ *                           waits for the warehouse manager's reallocation and the order is ON_HOLD (INVENTORY)
  * @param line               the line reported, now CANCELLED with {@code damagedQty}
  * @param lines              what replaced it, in walking order: the good units at the same bin, then any replacement
  *                           elsewhere (OPEN, pick them) or the SHORT line

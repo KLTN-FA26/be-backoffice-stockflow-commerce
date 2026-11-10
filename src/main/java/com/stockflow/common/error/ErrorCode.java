@@ -381,7 +381,7 @@ public enum ErrorCode {
      */
     ORDER_PRINT_GOODS_NOT_RECEIVED("This order has printed goods that are not in stock yet; it is released once they "
             + "are received from the producer", 409),
-    /** SCRUM-460: once released, a customer asks and Sales or the coordinator decides. */
+    /** SCRUM-460: once released, a customer asks and Sales decides. */
     ORDER_NOT_CANCELLABLE("This order can no longer be cancelled; raise a return instead", 409),
     /** Audit of #109 (decision 2026-10-17): before printing a cancellation is refunded in full - nothing is kept. */
     CANCELLATION_FEE_BEFORE_PRINTING("Printing has not started: the order is refunded in full, no fee is kept", 409),

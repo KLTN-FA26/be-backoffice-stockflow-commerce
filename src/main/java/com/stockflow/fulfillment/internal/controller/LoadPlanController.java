@@ -37,7 +37,7 @@ import java.util.UUID;
 
 /**
  * Load planning of full-truckload shipping (SCRUM-287 PR D / SCRUM-391; kltn-docs 09 §4.2, §5, BR-09..BR-15).
- * {@code fulfillment-load-plans}: READ to look (the order coordinator too), CREATE to start a plan, UPDATE for every
+ * {@code fulfillment-load-plans}: READ to look, CREATE to start a plan, UPDATE for every
  * step after - seeded for warehouse staff (09 §2 Dispatch Staff) and the warehouse manager. Every call is limited to the
  * caller's warehouses. Each change sends the plan's {@code expectedVersion}; another one is 409 OPTIMISTIC_LOCK.
  *
