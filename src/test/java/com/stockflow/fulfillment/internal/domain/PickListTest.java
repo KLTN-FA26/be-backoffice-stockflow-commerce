@@ -358,6 +358,65 @@ class PickListTest {
             assertThat(line.putBackAt()).isEqualTo(NOW);
         }
 
+        private final PickList.PutBackTarget quarantine =
+                new PickList.PutBackTarget("HCM-QUA01", HCM, false, true, true);
+
+        @Test
+        @DisplayName("a carton removed as damaged at the check station goes whole into a QUARANTINE area, task cancelled or not (4C-6)")
+        void removedDamagedCartonGoesToQuarantine() {
+            PickLine line = picked("SOFA-3S-GREY", "HCM-A01-2-B", 2, LPN);
+            var list = new PickList(UUID.randomUUID(), HCM, PickStatus.PICKED, false, List.of(line));
+
+            var outcome = list.putBack(line.id(), LPN, quarantine, true, PICKER, NOW);
+
+            assertThat(outcome.toQuarantine()).isTrue();
+            assertThat(outcome.fromStaging()).isFalse();
+            assertThat(line.status()).isEqualTo(PickLineStatus.PUT_BACK);
+            assertThat(line.putBackLocationCode()).isEqualTo("HCM-QUA01");
+            assertThat(line.putBackQty()).isEqualTo(2);
+            assertThat(list.putBack(line.id(), LPN, quarantine, true, PICKER, NOW.plusSeconds(5)).repeated()).isTrue();
+        }
+
+        @Test
+        @DisplayName("a damaged carton is refused a bin, an unusable or another warehouse's quarantine area, and no target")
+        void removedDamagedCartonNeedsAQuarantineArea() {
+            List<PickList.PutBackTarget> wrong = new ArrayList<>();
+            wrong.add(null);
+            wrong.add(bin);
+            wrong.add(new PickList.PutBackTarget("HCM-QUA01", HCM, false, false, true));
+            wrong.add(new PickList.PutBackTarget("HN-QUA01", HN, false, true, true));
+            for (PickList.PutBackTarget target : wrong) {
+                PickLine line = picked("SOFA-3S-GREY", "HCM-A01-2-B", 2, LPN);
+                var list = new PickList(UUID.randomUUID(), HCM, PickStatus.PICKED, false, List.of(line));
+                assertThat(refusal(() -> list.putBack(line.id(), LPN, target, true, PICKER, NOW)))
+                        .isEqualTo(ErrorCode.PUT_BACK_LOCATION_INVALID);
+                assertThat(line.status()).isEqualTo(PickLineStatus.PICKED);
+            }
+        }
+
+        @Test
+        @DisplayName("a quarantine area never takes a carton that was not removed as damaged")
+        void quarantineIsNotForGoodCartons() {
+            PickLine line = picked("SOFA-3S-GREY", "HCM-A01-2-B", 2, LPN);
+            var list = new PickList(UUID.randomUUID(), HCM, PickStatus.CANCELLED, true, List.of(line));
+            assertThat(refusal(() -> list.putBack(line.id(), LPN, quarantine, PICKER, NOW)))
+                    .isEqualTo(ErrorCode.PUT_BACK_LOCATION_INVALID);
+            assertThat(line.status()).isEqualTo(PickLineStatus.PICKED);
+        }
+
+        @Test
+        @DisplayName("a damaged-removed carton is put back only from PICKED, and only by its own LPN")
+        void removedDamagedNeedsPickedLineAndLpn() {
+            PickLine open = open("SOFA-3S-GREY", "HCM-A01-2-B", 2, LPN);
+            var openList = new PickList(UUID.randomUUID(), HCM, PickStatus.PICKING, false, List.of(open));
+            assertThat(refusal(() -> openList.putBack(open.id(), LPN, quarantine, true, PICKER, NOW)))
+                    .isEqualTo(ErrorCode.PUT_BACK_NOT_REQUIRED);
+            PickLine line = picked("SOFA-3S-GREY", "HCM-A01-2-B", 2, LPN);
+            var list = new PickList(UUID.randomUUID(), HCM, PickStatus.PICKED, false, List.of(line));
+            assertThat(refusal(() -> list.putBack(line.id(), OTHER_LPN, quarantine, true, PICKER, NOW)))
+                    .isEqualTo(ErrorCode.PICK_ITEM_MISMATCH);
+        }
+
         @Test
         @DisplayName("another carton's LPN, the SKU or nothing is PICK_ITEM_MISMATCH and the line stays picked")
         void wrongScan() {

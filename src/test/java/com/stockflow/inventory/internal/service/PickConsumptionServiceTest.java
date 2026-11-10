@@ -433,6 +433,96 @@ class PickConsumptionServiceTest {
             });
         }
 
+        private final LocationId quarantine = new LocationId("HCM-QC01");
+
+        @Test
+        @DisplayName("a damaged carton (removed at the check station) goes whole into a QUARANTINE area: IN_STOCK there, its row "
+                + "QUARANTINE with its units, one PUT_BACK row whose status is QUARANTINE - never AVAILABLE (4C-6)")
+        void damagedCartonToQuarantine() {
+            UUID hold = UUID.randomUUID();
+            UUID line = UUID.randomUUID();
+            Picked picked = pickedCarton(BIN, 3, hold);
+            when(locations.isQuarantineArea(quarantine)).thenReturn(true);
+            UUID warehouse = UUID.randomUUID();
+            when(locations.warehouseOf(BIN)).thenReturn(Optional.of(warehouse));
+            when(locations.warehouseOf(quarantine)).thenReturn(Optional.of(warehouse));
+
+            service.putBackToQuarantine(command(line, hold, quarantine));
+
+            assertThat(picked.carton().status()).isEqualTo(StockPackageStatus.IN_STOCK);
+            assertThat(picked.carton().location()).isEqualTo(quarantine);
+            assertThat(picked.carton().lpn()).isEqualTo(LPN);
+            assertThat(picked.row().status()).isEqualTo(StockStatus.QUARANTINE);
+            assertThat(picked.row().location()).as("the row follows its carton").isEqualTo(quarantine);
+            assertThat(picked.row().onHand()).isEqualTo(Quantity.of(3));
+            assertThat(ledgerRows).singleElement().satisfies(row -> {
+                assertThat(row.type()).isEqualTo(StockMovement.MovementType.PUT_BACK);
+                assertThat(row.referenceId()).isEqualTo(line);
+                assertThat(row.to()).isEqualTo(quarantine);
+                assertThat(row.toStatus()).isEqualTo(StockStatus.QUARANTINE);
+                assertThat(row.toStockPackage()).isEqualTo(picked.carton().id());
+            });
+            var order = org.mockito.Mockito.inOrder(policies, stockPackages, stockItems);
+            order.verify(policies).lock("SOFA-3S-GREY");
+            order.verify(stockPackages).findAllByIdForUpdate(any());
+            order.verify(stockItems).findByIdForUpdate(picked.row().id());
+        }
+
+        @Test
+        @DisplayName("a bin is not a quarantine area: LOCATION_AREA_MISMATCH, and the carton stays picked")
+        void damagedCartonNeedsAQuarantineArea() {
+            UUID hold = UUID.randomUUID();
+            Picked picked = pickedCarton(BIN, 3, hold);
+            when(locations.isQuarantineArea(OTHER_BIN)).thenReturn(false);
+
+            assertThat(refusal(() -> service.putBackToQuarantine(command(UUID.randomUUID(), hold, OTHER_BIN))))
+                    .isEqualTo(ErrorCode.LOCATION_AREA_MISMATCH);
+
+            assertThat(picked.carton().status()).isEqualTo(StockPackageStatus.CONSUMED);
+            assertThat(picked.row().onHand()).isEqualTo(Quantity.ZERO);
+            assertThat(ledgerRows).isEmpty();
+            verify(stockPackages, never()).save(any());
+        }
+
+        @Test
+        @DisplayName("a quarantine area of another warehouse is MOVE_ACROSS_WAREHOUSES: stock never changes warehouse")
+        void damagedCartonStaysInItsWarehouse() {
+            UUID hold = UUID.randomUUID();
+            Picked picked = pickedCarton(BIN, 3, hold);
+            when(locations.isQuarantineArea(quarantine)).thenReturn(true);
+            when(locations.warehouseOf(BIN)).thenReturn(Optional.of(UUID.randomUUID()));
+            when(locations.warehouseOf(quarantine)).thenReturn(Optional.of(UUID.randomUUID()));
+
+            assertThat(refusal(() -> service.putBackToQuarantine(command(UUID.randomUUID(), hold, quarantine))))
+                    .isEqualTo(ErrorCode.MOVE_ACROSS_WAREHOUSES);
+
+            assertThat(picked.carton().status()).isEqualTo(StockPackageStatus.CONSUMED);
+            assertThat(ledgerRows).isEmpty();
+        }
+
+        @Test
+        @DisplayName("an unknown or unusable quarantine area is refused before the area rule; the same line again changes nothing")
+        void damagedCartonReplayAndUsability() {
+            UUID hold = UUID.randomUUID();
+            UUID line = UUID.randomUUID();
+            Picked picked = pickedCarton(BIN, 3, hold);
+            LocationId closed = new LocationId("HCM-QC09");
+            when(locations.stateOf(closed)).thenReturn(LocationDirectory.LocationState.UNUSABLE);
+            assertThat(refusal(() -> service.putBackToQuarantine(command(line, hold, closed))))
+                    .isEqualTo(ErrorCode.LOCATION_NOT_USABLE);
+
+            when(locations.isQuarantineArea(quarantine)).thenReturn(true);
+            UUID warehouse = UUID.randomUUID();
+            when(locations.warehouseOf(BIN)).thenReturn(Optional.of(warehouse));
+            when(locations.warehouseOf(quarantine)).thenReturn(Optional.of(warehouse));
+            service.putBackToQuarantine(command(line, hold, quarantine));
+            service.putBackToQuarantine(command(line, hold, quarantine));
+
+            assertThat(ledgerRows).hasSize(1);
+            assertThat(picked.row().status()).isEqualTo(StockStatus.QUARANTINE);
+            verify(stockPackages, org.mockito.Mockito.times(1)).save(any());
+        }
+
         @Test
         @DisplayName("the SKU is locked, then the carton, then its row - in that order")
         void lockOrder() {

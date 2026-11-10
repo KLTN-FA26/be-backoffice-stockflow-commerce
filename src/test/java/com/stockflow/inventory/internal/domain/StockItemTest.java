@@ -461,6 +461,41 @@ class StockItemTest {
         }
 
         @Test
+        @DisplayName("quarantineInPackage (4C-6, a damaged carton back from the check station): AVAILABLE or INBOUND goes on "
+                + "hold in place, keeping its carton and its units, and stops being reservable")
+        void quarantineInPackageHoldsTheCartonInPlace() {
+            for (StockStatus before : List.of(StockStatus.AVAILABLE, StockStatus.INBOUND)) {
+                StockItem row = cartonRow(before, List.of());
+                StockItemId id = row.id();
+
+                row.quarantineInPackage();
+
+                assertThat(row.status()).isEqualTo(StockStatus.QUARANTINE);
+                assertThat(row.id()).isEqualTo(id);
+                assertThat(row.stockPackageId()).isEqualTo(carton);
+                assertThat(row.onHand()).isEqualTo(Quantity.of(10));
+                assertThat(row.status().isReservable()).isFalse();
+            }
+        }
+
+        @Test
+        @DisplayName("quarantineInPackage refuses a loose row, a row not AVAILABLE or INBOUND, and units held for an order")
+        void quarantineInPackageRefusals() {
+            assertThatThrownBy(() -> availableWith(5).quarantineInPackage()).isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("loose");
+            for (StockStatus status : List.of(StockStatus.QUARANTINE, StockStatus.BLOCKED, StockStatus.DAMAGED)) {
+                StockItem row = cartonRow(status, List.of());
+                assertThatThrownBy(row::quarantineInPackage).as("%s", status).isInstanceOf(IllegalStateException.class);
+                assertThat(row.status()).isEqualTo(status);
+            }
+            StockItem held = cartonRow(StockStatus.AVAILABLE, List.of());
+            held.reserve(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), Quantity.of(2), NOW);
+            assertThatThrownBy(held::quarantineInPackage).isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("held for an order");
+            assertThat(held.status()).isEqualTo(StockStatus.AVAILABLE);
+        }
+
+        @Test
         @DisplayName("putaway: an INBOUND carton row becomes AVAILABLE in place")
         void inboundRowInCartonBecomesAvailable() {
             StockItem row = cartonRow(StockStatus.INBOUND, List.of());

@@ -69,10 +69,12 @@ class PickListServiceTest {
     private final PickConsumption consumption = mock(PickConsumption.class);
     private final WarehouseService warehouses = mock(WarehouseService.class);
     private final OrderReservations orderReservations = mock(OrderReservations.class);
+    private final com.stockflow.fulfillment.internal.repository.PackageJpaRepository packages =
+            mock(com.stockflow.fulfillment.internal.repository.PackageJpaRepository.class);
     private final PickListService service = new PickListService(picks, pickLines, orders, inventory, itemControls,
             consumption, warehouses, Clock.fixed(NOW, ZoneOffset.UTC), orderReservations,
             mock(com.stockflow.inventory.consumption.PickDamageReporting.class),
-            org.springframework.transaction.support.TransactionOperations.withoutTransaction());
+            org.springframework.transaction.support.TransactionOperations.withoutTransaction(), packages);
 
     private final UUID picker = UUID.randomUUID();
     private final CurrentUser actor = new CurrentUser(picker, "picker",
@@ -680,6 +682,70 @@ class PickListServiceTest {
             assertThat(command.getValue().lpn()).as("the carton, as the line names it").isEqualTo("LPN-SKU-A");
             assertThat(command.getValue().locationCode()).isEqualTo("HCM-A-05");
             assertThat(command.getValue().actorId()).isEqualTo(picker);
+        }
+
+        private void cartonRemovedAs(com.stockflow.fulfillment.internal.domain.CartonCheck.RemovalReason reason) {
+            var removed = com.stockflow.fulfillment.internal.entity.PackageJpaEntity.carton(UUID.randomUUID(),
+                    UUID.randomUUID(), 1, "SO-0001-C1", row.getId(), "LPN-SKU-A");
+            removed.applyCarton(com.stockflow.fulfillment.internal.domain.PackageStatus.REMOVED, NOW, picker, null, null,
+                    0, null, null, null, null, null, true, null, NOW, reason == com.stockflow.fulfillment.internal.domain
+                            .CartonCheck.RemovalReason.DAMAGED ? picker : null, reason, "dented");
+            when(packages.findByPickLineIdIn(any())).thenReturn(List.of(removed));
+        }
+
+        private void areaOf(String code, UUID warehouse, StorageLocationView.AreaType type, boolean usable) {
+            when(warehouses.findLocation(code)).thenReturn(Optional.of(new StorageLocationView(UUID.randomUUID(),
+                    StorageLocationView.Kind.AREA, warehouse, code, null, null, null, usable, type)));
+        }
+
+        @Test
+        @DisplayName("a carton the check station removed as damaged goes into a QUARANTINE area through putBackToQuarantine, "
+                + "never putBack (4C-6)")
+        void damagedCartonGoesToQuarantine() {
+            cartonRemovedAs(com.stockflow.fulfillment.internal.domain.CartonCheck.RemovalReason.DAMAGED);
+            areaOf("HCM-QC01", WAREHOUSE, StorageLocationView.AreaType.QUARANTINE, true);
+
+            var view = service.putBack(task.getId(), row.getId(), "HCM-QC01", "lpn-sku-a", actor);
+
+            assertThat(view.status()).isEqualTo("PUT_BACK");
+            assertThat(view.putBackLocationCode()).isEqualTo("HCM-QC01");
+            ArgumentCaptor<PutBackCommand> command = ArgumentCaptor.forClass(PutBackCommand.class);
+            verify(consumption).putBackToQuarantine(command.capture());
+            verify(consumption, never()).putBack(any());
+            assertThat(command.getValue().reservationId()).isEqualTo(reservation);
+            assertThat(command.getValue().lpn()).isEqualTo("LPN-SKU-A");
+            assertThat(command.getValue().locationCode()).isEqualTo("HCM-QC01");
+        }
+
+        @Test
+        @DisplayName("a damaged carton is refused a bin, another warehouse's quarantine, an inactive one: PUT_BACK_LOCATION_INVALID")
+        void damagedCartonNeedsAUsableQuarantineOfItsWarehouse() {
+            cartonRemovedAs(com.stockflow.fulfillment.internal.domain.CartonCheck.RemovalReason.DAMAGED);
+            binOf(WAREHOUSE, true, StorageLocationView.Kind.BIN);
+            areaOf("HN-QC01", OTHER_WAREHOUSE, StorageLocationView.AreaType.QUARANTINE, true);
+            areaOf("HCM-QC02", WAREHOUSE, StorageLocationView.AreaType.QUARANTINE, false);
+            areaOf("HCM-RCV01", WAREHOUSE, StorageLocationView.AreaType.RECEIVING, true);
+
+            for (String target : new String[] {"HCM-A-05", "HN-QC01", "HCM-QC02", "HCM-RCV01", "HCM-NOWHERE"}) {
+                assertThat(refusal(() -> service.putBack(task.getId(), row.getId(), target, "LPN-SKU-A", actor))
+                        .errorCode()).as(target).isEqualTo(ErrorCode.PUT_BACK_LOCATION_INVALID);
+            }
+            assertThat(row.getStatus()).isEqualTo(PickLineStatus.PICKED);
+            verifyNoInteractions(consumption);
+        }
+
+        @Test
+        @DisplayName("a cancelled order's carton (removed for ORDER_CANCELLED) goes onto a bin, never into quarantine")
+        void cancelledOrdersCartonGoesToABin() {
+            cartonRemovedAs(com.stockflow.fulfillment.internal.domain.CartonCheck.RemovalReason.ORDER_CANCELLED);
+            areaOf("HCM-QC01", WAREHOUSE, StorageLocationView.AreaType.QUARANTINE, true);
+
+            assertThat(refusal(() -> service.putBack(task.getId(), row.getId(), "HCM-QC01", "LPN-SKU-A", actor))
+                    .errorCode()).isEqualTo(ErrorCode.PUT_BACK_LOCATION_INVALID);
+            binOf(WAREHOUSE, true, StorageLocationView.Kind.BIN);
+            service.putBack(task.getId(), row.getId(), "HCM-A-05", "LPN-SKU-A", actor);
+            verify(consumption).putBack(any());
+            verify(consumption, never()).putBackToQuarantine(any());
         }
 
         @Test
