@@ -86,6 +86,19 @@ public final class CartonCheck {
         public boolean measured() {
             return positive(lengthCm) && positive(widthCm) && positive(heightCm) && positive(weightKg);
         }
+
+        /**
+         * The volumetric weight D × W × H / divisor (08 BR-09), rounded to the gram and never to nothing: the column
+         * says a known weight is positive. One rule for the label and for a carton re-measured when its vehicle is
+         * planned.
+         */
+        public BigDecimal dimWeightKg(int divisor) {
+            if (divisor <= 0) {
+                throw new IllegalArgumentException("The volumetric divisor is positive");
+            }
+            return lengthCm.multiply(widthCm).multiply(heightCm)
+                    .divide(BigDecimal.valueOf(divisor), 3, RoundingMode.HALF_UP).max(SMALLEST_WEIGHT);
+        }
     }
 
     /** What a completion ships: the labelled cartons not shipped yet, and whether it is part of the order. */
@@ -310,19 +323,21 @@ public final class CartonCheck {
 
     /**
      * A label torn or lost is printed again (08 §4.3 step 7, BR-08): the carton's label version goes up, so the old
-     * label is void. Its size and weight follow the carton spec as it is now while it is in no shipment (08 edge: a spec
-     * corrected after the check applies when the label is printed again); once shipped they stay what load planning
-     * took.
+     * label is void. Its size and weight follow the carton spec as it is now unless a load plan or a vehicle holds it
+     * (08 edge case: a spec corrected after the check applies when the label is printed again or the vehicle is
+     * planned). A carton of a shipment waiting for dispatch is planned later, so it takes the corrected size; a planned
+     * one keeps what its layout was computed from, which the database also refuses to change under the plan.
      *
      * <p>Retry-safe with {@code fromVersion}: the label is printed from the answer, so a call repeated after it worked
      * must not void the sticker it just produced.</p>
      *
      * @param spec        its SKU's carton spec now; null or not measured keeps the measures it has
+     * @param planned     a load plan or a vehicle holds the carton: its measures stay
      * @param fromVersion the version on the label being replaced; when the carton is past it already the reprint was
      *                    done (a retry) and nothing changes. Null: always a new version
      * @throws BusinessException {@code CARTON_NOT_IN_TASK}; {@code CARTON_NOT_CHECKED} unless it is LABELED
      */
-    public Carton reprint(String lpn, Spec spec, int divisor, Integer fromVersion) {
+    public Carton reprint(String lpn, Spec spec, int divisor, boolean planned, Integer fromVersion) {
         Carton carton = requireCarton(lpn);
         if (carton.status != PackageStatus.LABELED) {
             throw new BusinessException(ErrorCode.CARTON_NOT_CHECKED, ("Carton %s is %s: only a labelled carton's "
@@ -331,7 +346,7 @@ public final class CartonCheck {
         if (fromVersion != null && carton.labelVersion > fromVersion) {
             return carton;
         }
-        if (carton.shipmentId == null && spec != null && spec.measured()) {
+        if (!planned && spec != null && spec.measured()) {
             carton.measure(spec, divisor);
         }
         carton.labelVersion++;
@@ -622,17 +637,12 @@ public final class CartonCheck {
 
         /** The carton spec's size and full weight, and the volumetric weight D × W × H / divisor (08 BR-07, BR-09). */
         private void measure(Spec spec, int divisor) {
-            if (divisor <= 0) {
-                throw new IllegalArgumentException("The volumetric divisor is positive");
-            }
+            dimWeightKg = spec.dimWeightKg(divisor);
             lengthCm = spec.lengthCm();
             widthCm = spec.widthCm();
             heightCm = spec.heightCm();
             weightKg = spec.weightKg();
             rotatable = spec.rotatable();
-            // Rounded to the gram, never to nothing: the column says a known weight is positive.
-            dimWeightKg = lengthCm.multiply(widthCm).multiply(heightCm)
-                    .divide(BigDecimal.valueOf(divisor), 3, RoundingMode.HALF_UP).max(SMALLEST_WEIGHT);
         }
 
         private void removeFor(RemovalReason reason, String note, UUID actor, Instant now) {

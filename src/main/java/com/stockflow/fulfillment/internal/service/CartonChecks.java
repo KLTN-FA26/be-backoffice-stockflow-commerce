@@ -70,8 +70,8 @@ public interface CartonChecks {
 
     /**
      * A label torn or lost is printed again (08 §4.3 step 7, BR-08): the carton's label version goes up, voiding the
-     * old one. Also once the session is completed, until the carton leaves; only by the worker who started the session
-     * or a warehouse manager (BR-06).
+     * old one, and its measures follow the carton spec unless a load plan or a vehicle holds it. Also once the session
+     * is completed, until the carton leaves; only by the worker who started the session or a warehouse manager (BR-06).
      *
      * @param fromVersion the version on the label being replaced: a retry, the carton past it already, changes nothing;
      *                    null always reprints
