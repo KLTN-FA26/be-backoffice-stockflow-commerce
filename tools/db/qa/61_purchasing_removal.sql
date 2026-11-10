@@ -73,10 +73,10 @@ SELECT pg_temp.expect_true('T1 none of the 21 procurement tables of purchasing r
 SELECT pg_temp.expect_true('T2 nor the notification and warehouse ones', $c$
     to_regclass('notification.po_delivery_control') IS NULL AND to_regclass('notification.po_retry_cursor') IS NULL
     AND to_regclass('warehouse.subcontractor_site') IS NULL $c$);
-SELECT pg_temp.expect_true('T3 procurement keeps exactly its three receiving tables', $c$
+SELECT pg_temp.expect_true('T3 procurement keeps exactly its receiving tables (and 4D-2''s return cartons)', $c$
     (SELECT string_agg(table_name, ',' ORDER BY table_name) FROM information_schema.tables
       WHERE table_schema = 'procurement' AND table_type = 'BASE TABLE')
-    = 'goods_receipt_lines,goods_receipt_photos,goods_receipts' $c$);
+    = 'goods_receipt_lines,goods_receipt_photos,goods_receipt_return_cartons,goods_receipts' $c$);
 SELECT pg_temp.expect_true('T4 goods_receipts lost its PO, supplier, blind and approval columns', $c$
     NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'procurement'
                  AND table_name = 'goods_receipts' AND column_name IN ('po_id', 'po_revision_id', 'supplier_id',
@@ -165,7 +165,7 @@ VALUES (md5('qa61:prod:line')::uuid, md5('qa61:prod')::uuid, md5('qa61:ol')::uui
         md5('qa61:snap')::uuid, repeat('d', 64));
 -- An item nothing but a production order line names.
 INSERT INTO product.products (id, code, name, slug, status, kind, tax_class, version, created_at)
-VALUES (md5('qa61:product')::uuid, 'QA61', 'QA 61', 'qa-61', 'DRAFT', 'STANDARD', 'STANDARD', 0, NOW());
+VALUES (md5('qa61:product')::uuid, 'QA61', 'QA 61', 'qa-61', 'DRAFT', 'CUSTOMIZABLE', 'STANDARD', 0, NOW());
 SET LOCAL session_replication_role = origin;
 INSERT INTO product.variants (id, product_id, sku, name, status, is_default, attribute_signature, position, version, created_at)
 VALUES (md5('qa61:variant')::uuid, md5('qa61:product')::uuid, 'QA-61-ONLY', 'QA 61', 'DRAFT', TRUE, 'DEFAULT', 0, 0, NOW());
@@ -324,22 +324,22 @@ SELECT pg_temp.expect_fail('H4 a photo changed (append-only)', $q$
 \echo '--- storage locations: a bin or an area owns each; the SUBCONTRACTOR kind takes no new one'
 -- check_storage_location_owned runs at the commit of every bin and area created: it must read only tables that exist.
 SELECT pg_temp.expect_ok('S1 a new area, location first (owned by the commit)', $q$
-    INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, storage_class, is_pickable, is_putaway_target, status)
-    VALUES (md5('qa61:locA')::uuid, md5('demo:wh:HCM')::uuid, 'AREA', 'HCM-QA61', 'NORMAL', FALSE, FALSE, 'ACTIVE');
+    INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, is_pickable, is_putaway_target, status)
+    VALUES (md5('qa61:locA')::uuid, md5('demo:wh:HCM')::uuid, 'AREA', 'HCM-QA61', FALSE, FALSE, 'ACTIVE');
     INSERT INTO warehouse.area (id, warehouse_id, location_id, code, type, name, x, y, width, length, rotation, is_obstacle, status)
     VALUES (md5('qa61:areaA')::uuid, md5('demo:wh:HCM')::uuid, md5('qa61:locA')::uuid, 'QA61', 'OVERFLOW', 'QA 61', 0, 0, 2, 2, 0,
             FALSE, 'ACTIVE') $q$);
 SELECT pg_temp.expect_ok('S2 a new bin, location first (owned by the commit)', $q$
-    INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, storage_class, is_pickable, is_putaway_target, status)
-    VALUES (md5('qa61:locB')::uuid, md5('demo:wh:HCM')::uuid, 'BIN', 'HCM-A01-1-Q', 'NORMAL', TRUE, TRUE, 'ACTIVE');
+    INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, is_pickable, is_putaway_target, status)
+    VALUES (md5('qa61:locB')::uuid, md5('demo:wh:HCM')::uuid, 'BIN', 'HCM-A01-1-Q', TRUE, TRUE, 'ACTIVE');
     INSERT INTO warehouse.bin (id, level_id, location_id, code, x, y, width, length, rotation, type)
     VALUES (md5('qa61:binB')::uuid, md5('demo:level:HCM-A01-1')::uuid, md5('qa61:locB')::uuid, 'Q', 0, 0, 1, 1, 0, 'STANDARD') $q$);
 SELECT pg_temp.expect_fail_like('S3 a SUBCONTRACTOR location (nothing owns it any more)', 'owned by no bin and no area', $q$
-    INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, storage_class, is_pickable, is_putaway_target, status)
-    VALUES (gen_random_uuid(), md5('demo:wh:HCM')::uuid, 'SUBCONTRACTOR', 'HCM-SUB-QA61', 'NORMAL', FALSE, FALSE, 'ACTIVE') $q$);
+    INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, is_pickable, is_putaway_target, status)
+    VALUES (gen_random_uuid(), md5('demo:wh:HCM')::uuid, 'SUBCONTRACTOR', 'HCM-SUB-QA61', FALSE, FALSE, 'ACTIVE') $q$);
 SELECT pg_temp.expect_fail_like('S4 a bin location whose bin was never written', 'owned by no bin and no area', $q$
-    INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, storage_class, is_pickable, is_putaway_target, status)
-    VALUES (gen_random_uuid(), md5('demo:wh:HCM')::uuid, 'BIN', 'HCM-A01-1-R', 'NORMAL', TRUE, TRUE, 'ACTIVE') $q$);
+    INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, is_pickable, is_putaway_target, status)
+    VALUES (gen_random_uuid(), md5('demo:wh:HCM')::uuid, 'BIN', 'HCM-A01-1-R', TRUE, TRUE, 'ACTIVE') $q$);
 SELECT pg_temp.expect_true('S5 the kind itself stays in the CHECKs: ledger lines of the locations there were name them', $c$
     (SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = 'ck_storage_location_kind') LIKE '%SUBCONTRACTOR%' $c$);
 

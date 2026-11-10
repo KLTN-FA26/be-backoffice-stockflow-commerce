@@ -71,9 +71,8 @@ $$;
 SET session_replication_role = replica;
 INSERT INTO warehouse.warehouse (id, name, status, prefix, address, map_unit, map_width, map_height, version, created_at)
 VALUES (md5('qa52:wh')::uuid, 'QA52', 'ACTIVE', 'QA52', 'QA', 'M', 50, 50, 0, NOW());
-INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, storage_class, is_pickable,
-                                        is_putaway_target, status)
-VALUES (md5('qa52:wh:qc')::uuid, md5('qa52:wh')::uuid, 'AREA', 'QA52-QC01', 'NORMAL', FALSE, FALSE, 'ACTIVE');
+INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, is_pickable, is_putaway_target, status)
+VALUES (md5('qa52:wh:qc')::uuid, md5('qa52:wh')::uuid, 'AREA', 'QA52-QC01', FALSE, FALSE, 'ACTIVE');
 INSERT INTO warehouse.area (id, warehouse_id, location_id, code, type, name, x, y, width, length, rotation, is_obstacle,
                             status)
 VALUES (gen_random_uuid(), md5('qa52:wh')::uuid, md5('qa52:wh:qc')::uuid, 'QC01', 'QUARANTINE', 'QC01', 1, 1, 5, 5, 0,
@@ -92,21 +91,24 @@ VALUES (md5('qa52:o1:l')::uuid, md5('qa52:o1')::uuid, 'SOFA-3S-GREY', 8, 100, 'V
 INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)
 VALUES (md5('qa52:unit')::uuid, md5('demo:item:SOFA-3S-GREY')::uuid, 'QA52_CTN', 4);
 INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, received_qty,
-                                     location_code, status, unopened, closed_at)
+                                     location_code, status, closed_at)
 VALUES (md5('qa52:c1')::uuid, 'QA52-LPN-1', md5('demo:item:SOFA-3S-GREY')::uuid, md5('qa52:unit')::uuid, 4, 4,
-        'HCM-A01-1-A', 'CONSUMED', FALSE, NOW()),
+        'HCM-A01-1-A', 'CONSUMED', NOW()),
        (md5('qa52:c2')::uuid, 'QA52-LPN-2', md5('demo:item:SOFA-3S-GREY')::uuid, md5('qa52:unit')::uuid, 4, 4,
-        'HCM-A01-1-A', 'CONSUMED', FALSE, NOW()),
+        'HCM-A01-1-A', 'CONSUMED', NOW()),
        (md5('qa52:c3')::uuid, 'QA52-LPN-3', md5('demo:item:SOFA-3S-GREY')::uuid, md5('qa52:unit')::uuid, 4, 4,
-        'HCM-A01-1-A', 'CONSUMED', FALSE, NOW());
-INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at,
+        'HCM-A01-1-A', 'CONSUMED', NOW());
+-- Written with triggers off, so the lot is named here: lot_id is NOT NULL since V20261113000300 (4C-3).
+INSERT INTO inventory.stock_lot (id, sku, lot_number, received_at, origin_type, created_at)
+VALUES (md5('qa52:lot')::uuid, 'SOFA-3S-GREY', 'PO-QA52-LOT', NOW() - interval '30 days', 'UNTRACED', NOW());
+INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, lot_id, on_hand, reserved, status, created_at,
                                   received_at, stock_package_id)
-VALUES (md5('qa52:c1:row')::uuid, 'SOFA-3S-GREY', 'HCM-A01-1-A', 'PO-QA52-LOT', 0, 0, 'AVAILABLE', NOW(),
-        NOW() - interval '30 days', md5('qa52:c1')::uuid),
-       (md5('qa52:c2:row')::uuid, 'SOFA-3S-GREY', 'HCM-A01-1-A', 'PO-QA52-LOT', 0, 0, 'AVAILABLE', NOW(),
-        NOW() - interval '30 days', md5('qa52:c2')::uuid),
-       (md5('qa52:c3:row')::uuid, 'SOFA-3S-GREY', 'HCM-A01-1-A', 'PO-QA52-LOT', 0, 0, 'AVAILABLE', NOW(),
-        NOW() - interval '30 days', md5('qa52:c3')::uuid);
+VALUES (md5('qa52:c1:row')::uuid, 'SOFA-3S-GREY', 'HCM-A01-1-A', 'PO-QA52-LOT', md5('qa52:lot')::uuid, 0, 0, 'AVAILABLE',
+        NOW(), NOW() - interval '30 days', md5('qa52:c1')::uuid),
+       (md5('qa52:c2:row')::uuid, 'SOFA-3S-GREY', 'HCM-A01-1-A', 'PO-QA52-LOT', md5('qa52:lot')::uuid, 0, 0, 'AVAILABLE',
+        NOW(), NOW() - interval '30 days', md5('qa52:c2')::uuid),
+       (md5('qa52:c3:row')::uuid, 'SOFA-3S-GREY', 'HCM-A01-1-A', 'PO-QA52-LOT', md5('qa52:lot')::uuid, 0, 0, 'AVAILABLE',
+        NOW(), NOW() - interval '30 days', md5('qa52:c3')::uuid);
 
 INSERT INTO fulfillment.pick (id, order_id, order_number, warehouse_id, status, created_at)
 VALUES (md5('qa52:p1')::uuid, md5('qa52:o1')::uuid, 'SO-QA52-O1', md5('demo:wh:HCM')::uuid, 'PICKED', NOW()),
@@ -145,23 +147,20 @@ SET session_replication_role = DEFAULT;
 \echo '--- receipt_type: three kinds, and only a RETURN receipt names an order, a source or a quarantine area (03 §1)'
 SELECT pg_temp.expect_fail('RR1 a receipt of an unknown type', $q$
     INSERT INTO procurement.goods_receipts (id, receipt_number, warehouse_id, status, received_at, received_by,
-                                            receipt_type, supplier_id, blind_reason)
+                                            receipt_type)
     VALUES (gen_random_uuid(), 'GR-QA52-X1', md5('demo:wh:HCM')::uuid, 'DRAFT', NOW(), md5('demo:user:editor')::uuid,
-            'TRANSFER', (SELECT id FROM procurement.suppliers LIMIT 1), 'QA') $q$);
+            'TRANSFER') $q$);
 SELECT pg_temp.expect_fail('RR2 a purchase receipt naming a customer order and a returned shipment', $q$
     INSERT INTO procurement.goods_receipts (id, receipt_number, warehouse_id, status, received_at, received_by,
-                                            receipt_type, supplier_id, blind_reason, customer_order_id,
-                                            return_shipment_id)
+                                            receipt_type, customer_order_id, return_shipment_id)
     VALUES (gen_random_uuid(), 'GR-QA52-X2', md5('demo:wh:HCM')::uuid, 'DRAFT', NOW(), md5('demo:user:editor')::uuid,
-            'PURCHASE', (SELECT id FROM procurement.suppliers LIMIT 1), 'QA', md5('qa52:o1')::uuid,
-            md5('qa52:s1')::uuid) $q$);
-SELECT pg_temp.expect_ok('RR3 a blind purchase receipt still needs only its supplier and reason', $q$
-    INSERT INTO procurement.goods_receipts (id, receipt_number, warehouse_id, status, received_at, received_by,
-                                            supplier_id, blind_reason)
+            'PURCHASE', md5('qa52:o1')::uuid, md5('qa52:s1')::uuid) $q$);
+-- The supplier and blind-receipt columns and the PURCHASE default went with purchasing (V20261113000200, 4A-9): a
+-- receipt names its type.
+SELECT pg_temp.expect_fail('RR3 a receipt written without a type', $q$
+    INSERT INTO procurement.goods_receipts (id, receipt_number, warehouse_id, status, received_at, received_by)
     VALUES (md5('qa52:blind')::uuid, 'GR-QA52-B1', md5('demo:wh:HCM')::uuid, 'DRAFT', NOW(),
-            md5('demo:user:editor')::uuid, (SELECT id FROM procurement.suppliers LIMIT 1), 'QA') $q$);
-SELECT pg_temp.expect_true('RR4 a receipt written without a type is a PURCHASE receipt',
-    (SELECT receipt_type FROM procurement.goods_receipts WHERE id = md5('qa52:blind')::uuid) = 'PURCHASE');
+            md5('demo:user:editor')::uuid) $q$);
 
 \echo '--- a RETURN receipt names its order, its quarantine area and exactly one source (BR-14)'
 SELECT pg_temp.expect_fail('RR5 a return receipt against nothing',
@@ -172,15 +171,7 @@ SELECT pg_temp.expect_fail('RR7 a return receipt naming no order',
     pg_temp.receipt('qa52:r:x7', NULL, 'qa52:s1', NULL, 'HCM-QC01'));
 SELECT pg_temp.expect_fail('RR8 a return receipt naming no quarantine area',
     pg_temp.receipt('qa52:r:x8', 'qa52:o1', 'qa52:s1', NULL, 'NO-SUCH-PLACE'));
-SELECT pg_temp.expect_fail('RR9 a return receipt naming a supplier and a reason, as a blind receipt does', $q$
-    INSERT INTO procurement.goods_receipts (id, receipt_number, warehouse_id, status, received_at, received_by,
-                                            receipt_type, customer_order_id, return_shipment_id,
-                                            quarantine_location_id, supplier_id, blind_reason)
-    VALUES (gen_random_uuid(), 'GR-QA52-X9', md5('demo:wh:HCM')::uuid, 'DRAFT', NOW(), md5('demo:user:editor')::uuid,
-            'RETURN', md5('qa52:o1')::uuid, md5('qa52:s1')::uuid,
-            (SELECT id FROM warehouse.storage_location WHERE location_code = 'HCM-QC01'),
-            (SELECT id FROM procurement.suppliers LIMIT 1), 'QA') $q$);
-
+-- RR9 (a return receipt naming a supplier and a reason) went with those columns (V20261113000200, 4A-9).
 \echo '--- opened only for goods coming back, of its order, at the warehouse they left, into its quarantine (09 BR-06)'
 SELECT pg_temp.expect_fail('RR10 a return receipt for a shipment that was DELIVERED, not returned',
     pg_temp.receipt('qa52:r:x10', 'qa52:o1', 'qa52:s2', NULL, 'HCM-QC01'));
@@ -269,7 +260,7 @@ SELECT pg_temp.expect_fail('RL1 a GOODS_RECEIPT line that is not a RECEIPT', $q$
             'QUARANTINE', 'GOODS_RECEIPT', md5('qa52:r:s1')::uuid, NOW(), md5('qa52:c1')::uuid,
             md5('qa52:c1')::uuid) $q$);
 SELECT pg_temp.expect_fail('RL2 a return received as AVAILABLE stock (it goes into QUARANTINE, out of ATP)', $q$
-    UPDATE inventory.stock_package SET status = 'IN_STOCK', unopened = TRUE, closed_at = NULL,
+    UPDATE inventory.stock_package SET status = 'IN_STOCK', closed_at = NULL,
            location_code = 'HCM-QC01' WHERE id = md5('qa52:c1')::uuid;
     UPDATE inventory.stock_item SET on_hand = 4, location_code = 'HCM-QC01' WHERE id = md5('qa52:c1:row')::uuid;
     INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, to_location_code, quantity, to_status,
@@ -296,7 +287,7 @@ SELECT pg_temp.expect_fail('RS4 a return receipt closed at another moment than i
     UPDATE procurement.goods_receipts SET status = 'CLOSED', confirmed_at = now() - interval '1 hour',
            closed_at = now(), confirmed_by = md5('demo:user:editor')::uuid WHERE id = md5('qa52:r:s1')::uuid $q$);
 SELECT pg_temp.expect_fail('RS5 the carton received into another place than the receipt''s area', $q$
-    UPDATE inventory.stock_package SET status = 'IN_STOCK', unopened = TRUE, closed_at = NULL,
+    UPDATE inventory.stock_package SET status = 'IN_STOCK', closed_at = NULL,
            location_code = 'HCM-RTV01' WHERE id = md5('qa52:c1')::uuid;
     UPDATE inventory.stock_item SET on_hand = 4, status = 'QUARANTINE', location_code = 'HCM-RTV01'
      WHERE id = md5('qa52:c1:row')::uuid;
@@ -307,7 +298,9 @@ SELECT pg_temp.expect_fail('RS5 the carton received into another place than the 
     UPDATE procurement.goods_receipts SET status = 'CLOSED', confirmed_at = now(), closed_at = now(),
            confirmed_by = md5('demo:user:editor')::uuid WHERE id = md5('qa52:r:s1')::uuid $q$);
 SELECT pg_temp.expect_ok('RS6 confirmed: the carton back whole and sealed in HCM-QC01 as QUARANTINE, one RECEIPT line, CLOSED', $q$
-    UPDATE inventory.stock_package SET status = 'IN_STOCK', unopened = TRUE, closed_at = NULL,
+    -- The row is raised in place, as StockItemRepository#saveMerged does it: 5-5's merge marker (QA 70) names it.
+    SELECT set_config('stockflow.same_receipt_merge', md5('qa52:c1:row')::uuid::text, true);
+    UPDATE inventory.stock_package SET status = 'IN_STOCK', closed_at = NULL,
            location_code = 'HCM-QC01' WHERE id = md5('qa52:c1')::uuid;
     UPDATE inventory.stock_item SET on_hand = 4, status = 'QUARANTINE', location_code = 'HCM-QC01'
      WHERE id = md5('qa52:c1:row')::uuid;

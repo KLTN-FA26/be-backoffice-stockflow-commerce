@@ -98,10 +98,13 @@ SET LOCAL session_replication_role = replica;
 UPDATE procurement.goods_receipts SET status = 'CLOSED', confirmed_at = NOW(), confirmed_by = md5('demo:user:editor')::uuid,
        closed_at = NOW() WHERE id = md5('qa53:g')::uuid;
 SET LOCAL session_replication_role = origin;
-INSERT INTO procurement.goods_receipts (id, receipt_number, warehouse_id, status, received_at, received_by, supplier_id,
-                                        blind_reason)
+-- A legacy purchase receipt: the supplier and blind columns went with purchasing (V20261113000200, 4A-9), and no new
+-- one is started by the application, so it is written as old data is, triggers off.
+SET LOCAL session_replication_role = replica;
+INSERT INTO procurement.goods_receipts (id, receipt_number, warehouse_id, status, received_at, received_by, receipt_type)
 VALUES (md5('qa53:g:purchase')::uuid, 'GR-QA53-P', md5('demo:wh:HCM')::uuid, 'DRAFT', NOW(), md5('demo:user:editor')::uuid,
-        (SELECT id FROM procurement.suppliers LIMIT 1), 'QA');
+        'PURCHASE');
+SET LOCAL session_replication_role = origin;
 SELECT pg_temp.expect_fail_by('RT3 a receipt that is not a return receipt (a purchase one)', 'its goods come back on a confirmed return receipt', $q$
     UPDATE ordering.return_request SET goods_receipt_id = md5('qa53:g:purchase')::uuid,
            received_by = md5('demo:user:editor')::uuid, received_at = NOW(), receiving_location_code = 'HCM-QC01'
@@ -211,25 +214,25 @@ SELECT pg_temp.expect_true('QE8 ck_order_confirmed_basis survived the column it 
         AND conrelid = 'ordering.customer_order'::regclass));
 SELECT pg_temp.expect_fail_by('QE9 a CONFIRMED order with no basis at all still refused', 'ck_order_confirmed_basis', $q$
     INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, currency,
-                                         placed_at, created_at, payment_term)
+                                         placed_at, created_at)
     VALUES (gen_random_uuid(), 'SO-QA53-C', 'c0000000-0000-4000-8000-000000000001', gen_random_uuid(), 'CONFIRMED', 1,
-            'VND', NOW(), NOW(), 'PREPAID') $q$);
+            'VND', NOW(), NOW()) $q$);
 SELECT pg_temp.expect_true('QE10 the QC-era permissions are gone from the catalogue and every role',
     (SELECT count(*) FROM identity.permission WHERE resource IN ('sales-rma-inspections', 'sales-rma-receipts')) = 0);
 
 \echo '--- the QUALITY_CONTROL area type is gone, QUARANTINE stays (4D-4)'
 SELECT pg_temp.expect_fail_by('AR1 a QUALITY_CONTROL area', 'ck_area_type', $q$
-    INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, storage_class, is_pickable,
+    INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, is_pickable,
                                             is_putaway_target, status)
-    VALUES (md5('qa53:loc:qc')::uuid, md5('demo:wh:HCM')::uuid, 'AREA', 'HCM-QA53A', 'OVERSIZE', FALSE, FALSE, 'ACTIVE');
+    VALUES (md5('qa53:loc:qc')::uuid, md5('demo:wh:HCM')::uuid, 'AREA', 'HCM-QA53A', FALSE, FALSE, 'ACTIVE');
     INSERT INTO warehouse.area (id, warehouse_id, location_id, code, type, name, x, y, width, length, rotation, is_obstacle,
                                 status)
     VALUES (gen_random_uuid(), md5('demo:wh:HCM')::uuid, md5('qa53:loc:qc')::uuid, 'QA53A', 'QUALITY_CONTROL', 'QC', 60, 2, 3, 3,
             0, FALSE, 'ACTIVE') $q$);
 SELECT pg_temp.expect_ok('AR2 a QUARANTINE area', $q$
-    INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, storage_class, is_pickable,
+    INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, is_pickable,
                                             is_putaway_target, status)
-    VALUES (md5('qa53:loc:q')::uuid, md5('demo:wh:HCM')::uuid, 'AREA', 'HCM-QA53B', 'OVERSIZE', FALSE, FALSE, 'ACTIVE');
+    VALUES (md5('qa53:loc:q')::uuid, md5('demo:wh:HCM')::uuid, 'AREA', 'HCM-QA53B', FALSE, FALSE, 'ACTIVE');
     INSERT INTO warehouse.area (id, warehouse_id, location_id, code, type, name, x, y, width, length, rotation, is_obstacle,
                                 status)
     VALUES (gen_random_uuid(), md5('demo:wh:HCM')::uuid, md5('qa53:loc:q')::uuid, 'QA53B', 'QUARANTINE', 'Q', 60, 8, 3, 3,

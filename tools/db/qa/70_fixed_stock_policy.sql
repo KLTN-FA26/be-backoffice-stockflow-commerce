@@ -51,12 +51,11 @@ SELECT pg_temp.expect_fail_like('FP2 live stock of the oak table (configured bef
 SELECT pg_temp.expect_fail_like('FP3 a blank lot is no lot', 'needs a lot number', $q$
     INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at, received_at)
     VALUES (gen_random_uuid(), 'SOFA-3S-GREY', 'HCM-A01-1-A', '   ', 5, 0, 'AVAILABLE', NOW(), NOW() - interval '1 hour') $q$);
-SELECT pg_temp.expect_ok('FP4 a row at zero needs no lot (nothing is on hand)', $q$
+-- A row at zero needs one too: lot_number is NOT NULL for every row since V20261113000300 (4C-3, 20 BR-22), which the
+-- trigger's "nothing is on hand" allowance of 5-5 no longer reaches.
+SELECT pg_temp.expect_fail_like('FP4 a row at zero with no lot', 'lot_number', $q$
     INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, created_at, received_at)
     VALUES (md5('qa70:zero')::uuid, 'SOFA-3S-GREY', 'HCM-A01-1-B', 0, 0, 'AVAILABLE', NOW(), NOW() - interval '2 hour') $q$);
-SELECT pg_temp.expect_fail_like('FP5 ... and raised to live stock it still needs one, the merge marker or not', 'needs a lot number', $q$
-    SET LOCAL stockflow.same_receipt_merge = 'be3df2b0-6b57-0196-e89e-6b36eec4809f';
-    UPDATE inventory.stock_item SET on_hand = 3 WHERE id = md5('qa70:zero')::uuid $q$);
 SELECT pg_temp.expect_ok('FP6 live stock with its lot, of either SKU', $q$
     INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at, received_at)
     VALUES (md5('qa70:row')::uuid, 'SOFA-3S-GREY', 'HCM-A01-1-A', 'QA70-LOT', 5, 0, 'AVAILABLE', NOW(),
@@ -98,10 +97,12 @@ SELECT pg_temp.expect_true('FP16 the policy columns of the item and the serial o
 SELECT pg_temp.expect_true('FP17 their CHECKs and the live-serial index are gone', (
     SELECT count(*) FROM pg_constraint WHERE conname IN ('ck_inventory_control_removal', 'ck_stock_serial_quantity')) = 0
     AND NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'uk_stock_item_live_serial'));
-SELECT pg_temp.expect_true('FP18 the serials kept for their own packages: the packing station (4C-7), damage reports (5-6)', (
+-- Kept by 5-5 for their own packages, both went with them earlier in version order: the packing station's scans
+-- (V20261114000300, 4C-7) and the damage reports (V20261114000400, 5-6).
+SELECT pg_temp.expect_true('FP18 no serial left anywhere: the packing station (4C-7) and damage reports (5-6) are gone', (
     SELECT count(*) FROM information_schema.columns
      WHERE (table_schema, table_name, column_name) IN (('fulfillment', 'package_scan', 'serial_number'),
-           ('inventory', 'stock_damage_report', 'serial_number'))) = 2);
+           ('inventory', 'stock_damage_report', 'serial_number'))) = 0);
 SELECT pg_temp.expect_true('FP19 the layer keys read the lot and the receipt time, not a serial', (
     SELECT bool_and(indexdef LIKE '%lot_number%' AND indexdef LIKE '%received_at%' AND indexdef NOT LIKE '%serial%')
       FROM pg_indexes WHERE schemaname = 'inventory'

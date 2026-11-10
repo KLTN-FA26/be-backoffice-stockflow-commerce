@@ -304,6 +304,7 @@ SELECT pg_temp.expect_ok('CF1 a shortage approved: the carton written off whole 
     UPDATE inventory.stock_item SET on_hand = 0 WHERE id = md5('qa62:c:row')::uuid;
     UPDATE inventory.stock_package SET status = 'LOST', closed_at = NOW() WHERE id = md5('qa62:c')::uuid $q$);
 SELECT pg_temp.expect_ok('CF2 found again whole: IN_STOCK on the row it was emptied from', $q$
+    SELECT set_config('stockflow.same_receipt_merge', md5('qa62:c:row')::uuid::text, true);
     UPDATE inventory.stock_package SET status = 'IN_STOCK', closed_at = NULL WHERE id = md5('qa62:c')::uuid;
     UPDATE inventory.stock_item SET on_hand = 4 WHERE id = md5('qa62:c:row')::uuid $q$);
 SELECT pg_temp.expect_fail('CF3 found again with its row still empty', $q$

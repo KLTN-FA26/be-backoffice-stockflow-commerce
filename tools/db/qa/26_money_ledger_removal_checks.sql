@@ -88,8 +88,10 @@ SELECT pg_temp.expect_fail('MR11 a shipment of nothing', $q$
 \echo '--- a credit note books no transfer: the return check that wanted one is gone'
 SELECT pg_temp.expect_true('MR12 ck_return_request_credit_transfer is gone',
     NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ck_return_request_credit_transfer'));
+-- The check itself went with the withdrawal columns in V20261114000200 (4D-4); while it stood it named no transfer.
 SELECT pg_temp.expect_true('MR13 the withdrawal check no longer names a credit transfer',
-    (SELECT pg_get_constraintdef(oid) NOT LIKE '%transfer%' FROM pg_constraint WHERE conname = 'ck_return_request_withdrawal'));
+    (SELECT coalesce(bool_and(pg_get_constraintdef(oid) NOT LIKE '%transfer%'), TRUE) FROM pg_constraint
+      WHERE conname = 'ck_return_request_withdrawal'));
 SELECT pg_temp.expect_true('MR14 the return''s transfer foreign keys are gone',
     NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname IN ('fk_return_request_credit_transfer',
                                                               'fk_return_request_withdrawal_transfer')));

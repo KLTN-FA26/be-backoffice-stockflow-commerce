@@ -92,8 +92,8 @@ SELECT md5('qa64:res:' || n)::uuid, row_id, md5('qa64:order')::uuid, gen_random_
 -- A storage location must be owned by an area when the statement ends, so a location and its area go in together.
 CREATE FUNCTION pg_temp.area_sql(code TEXT, type TEXT, pickable BOOLEAN, putaway BOOLEAN) RETURNS TEXT LANGUAGE sql AS $$
     SELECT format($f$
-        INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, storage_class, is_pickable, is_putaway_target, status)
-        VALUES (md5('qa64:loc:' || %1$L)::uuid, md5('demo:wh:HCM')::uuid, 'AREA', 'HCM-' || %1$L, 'NORMAL', %3$L, %4$L, 'ACTIVE');
+        INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, is_pickable, is_putaway_target, status)
+        VALUES (md5('qa64:loc:' || %1$L)::uuid, md5('demo:wh:HCM')::uuid, 'AREA', 'HCM-' || %1$L, %3$L, %4$L, 'ACTIVE');
         INSERT INTO warehouse.area (id, warehouse_id, location_id, code, type, name, x, y, width, length, rotation, is_obstacle, status)
         VALUES (md5('qa64:area:' || %1$L)::uuid, md5('demo:wh:HCM')::uuid, md5('qa64:loc:' || %1$L)::uuid, %1$L, %2$L, 'x',
                 1, 1, 2, 2, 0, FALSE, 'ACTIVE') $f$, code, type, pickable, putaway)
@@ -194,8 +194,8 @@ SELECT pg_temp.expect_fail_by('LG17 a COUNT_CORRECTION into a staging area (a su
 \echo '--- the task: a destination, a staging area for it, STAGED (07 BR-08)'
 INSERT INTO warehouse.warehouse (id, name, status, prefix, address, map_unit, map_width, map_height, created_at)
 VALUES (md5('qa64:wh')::uuid, 'QA other warehouse', 'ACTIVE', 'QB', 'x', 'M', 20, 20, NOW());
-INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, storage_class, is_pickable, is_putaway_target, status)
-VALUES (md5('qa64:loc:qb')::uuid, md5('qa64:wh')::uuid, 'AREA', 'QB-STG01', 'NORMAL', FALSE, FALSE, 'ACTIVE');
+INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, is_pickable, is_putaway_target, status)
+VALUES (md5('qa64:loc:qb')::uuid, md5('qa64:wh')::uuid, 'AREA', 'QB-STG01', FALSE, FALSE, 'ACTIVE');
 INSERT INTO warehouse.area (id, warehouse_id, location_id, code, type, name, x, y, width, length, rotation, is_obstacle, status)
 VALUES (md5('qa64:area:qb')::uuid, md5('qa64:wh')::uuid, md5('qa64:loc:qb')::uuid, 'STG01', 'STAGING', 'x', 1, 1, 2, 2, 0, FALSE, 'ACTIVE');
 

@@ -183,25 +183,26 @@ SELECT pg_temp.expect_ok('CB1 a carton picked whole: hold consumed, row emptied,
       FROM qa63_carton c WHERE c.n = 8;
     UPDATE inventory.stock_reservation SET status = 'CONSUMED', closed_at = NOW() WHERE id = md5('qa63:res:8')::uuid;
     UPDATE inventory.stock_item SET on_hand = 0, reserved = 0 WHERE id = (SELECT row_id FROM qa63_carton WHERE n = 8);
-    UPDATE inventory.stock_package SET status = 'CONSUMED', unopened = FALSE, closed_at = NOW()
+    UPDATE inventory.stock_package SET status = 'CONSUMED', closed_at = NOW()
      WHERE id = (SELECT package_id FROM qa63_carton WHERE n = 8) $q$);
 SELECT pg_temp.expect_fail('CB2 put back opened: a carton in stock is sealed', $q$
     UPDATE inventory.stock_package SET status = 'IN_STOCK', closed_at = NULL, location_code = 'HCM-A01-1-A'
      WHERE id = (SELECT package_id FROM qa63_carton WHERE n = 8) $q$);
 SELECT pg_temp.expect_fail('CB3 put back sealed but its row left empty: the carton holds nothing', $q$
-    UPDATE inventory.stock_package SET status = 'IN_STOCK', unopened = TRUE, closed_at = NULL, location_code = 'HCM-A01-1-A'
+    UPDATE inventory.stock_package SET status = 'IN_STOCK', closed_at = NULL, location_code = 'HCM-A01-1-A'
      WHERE id = (SELECT package_id FROM qa63_carton WHERE n = 8) $q$);
 SELECT pg_temp.expect_fail('CB4 put back sealed, its row refilled with other than the carton''s count', $q$
-    UPDATE inventory.stock_package SET status = 'IN_STOCK', unopened = TRUE, closed_at = NULL, location_code = 'HCM-A01-1-A'
+    UPDATE inventory.stock_package SET status = 'IN_STOCK', closed_at = NULL, location_code = 'HCM-A01-1-A'
      WHERE id = (SELECT package_id FROM qa63_carton WHERE n = 8);
     UPDATE inventory.stock_item SET location_code = 'HCM-A01-1-A', on_hand = 3
      WHERE id = (SELECT row_id FROM qa63_carton WHERE n = 8) $q$);
 SELECT pg_temp.expect_fail('CB5 put back with its row left at the old bin: carton and row are in one place', $q$
-    UPDATE inventory.stock_package SET status = 'IN_STOCK', unopened = TRUE, closed_at = NULL, location_code = 'HCM-A01-1-A'
+    UPDATE inventory.stock_package SET status = 'IN_STOCK', closed_at = NULL, location_code = 'HCM-A01-1-A'
      WHERE id = (SELECT package_id FROM qa63_carton WHERE n = 8);
     UPDATE inventory.stock_item SET on_hand = 1 WHERE id = (SELECT row_id FROM qa63_carton WHERE n = 8) $q$);
 SELECT pg_temp.expect_ok('CB6 put back whole onto another bin: IN_STOCK sealed, its row there with the carton''s count, one ledger line', $q$
-    UPDATE inventory.stock_package SET status = 'IN_STOCK', unopened = TRUE, closed_at = NULL, location_code = 'HCM-A01-1-A'
+    SELECT set_config('stockflow.same_receipt_merge', (SELECT row_id FROM qa63_carton WHERE n = 8)::text, true);
+    UPDATE inventory.stock_package SET status = 'IN_STOCK', closed_at = NULL, location_code = 'HCM-A01-1-A'
      WHERE id = (SELECT package_id FROM qa63_carton WHERE n = 8);
     UPDATE inventory.stock_item SET location_code = 'HCM-A01-1-A', on_hand = 1
      WHERE id = (SELECT row_id FROM qa63_carton WHERE n = 8);
@@ -210,7 +211,7 @@ SELECT pg_temp.expect_ok('CB6 put back whole onto another bin: IN_STOCK sealed, 
     SELECT gen_random_uuid(), 'PUT_BACK', 'SOFA-3S-GREY', 'HCM-A01-1-A', 1, 'AVAILABLE', 'PICK_LINE', md5('qa63:pb:8')::uuid,
            NOW(), c.package_id FROM qa63_carton c WHERE c.n = 8 $q$);
 SELECT pg_temp.expect_true('CB7 the carton is IN_STOCK, sealed, at the bin, its row AVAILABLE holding its one unit',
-    (SELECT p.status = 'IN_STOCK' AND p.unopened AND p.closed_at IS NULL AND p.location_code = 'HCM-A01-1-A'
+    (SELECT p.status = 'IN_STOCK' AND p.closed_at IS NULL AND p.location_code = 'HCM-A01-1-A'
             AND s.location_code = 'HCM-A01-1-A' AND s.on_hand = 1 AND s.status = 'AVAILABLE'
        FROM qa63_carton c JOIN inventory.stock_package p ON p.id = c.package_id
        JOIN inventory.stock_item s ON s.id = c.row_id WHERE c.n = 8));
