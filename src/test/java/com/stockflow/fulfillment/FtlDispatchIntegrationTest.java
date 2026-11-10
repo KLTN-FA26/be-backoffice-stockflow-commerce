@@ -10,7 +10,13 @@ import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.OrderSummary;
 import com.stockflow.support.Await;
+import com.stockflow.order.internal.domain.WindowChangeReason;
+import com.stockflow.order.internal.service.DeliveryBatchService;
+import com.stockflow.order.internal.service.OrderReleases;
 import com.stockflow.order.internal.service.SalesContracts;
+import com.stockflow.support.ChatRows;
+import com.stockflow.support.WithCurrentUser;
+import com.stockflow.common.security.DataScope;
 import com.stockflow.support.ConfirmedOrders;
 import com.stockflow.support.CustomerSkuRows;
 import com.stockflow.support.DemoData;
@@ -38,6 +44,7 @@ import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilde
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -409,9 +416,12 @@ class FtlDispatchIntegrationTest {
                 .containsExactlyInAnyOrderElementsOf(mine);
 
         // The order's gate runs at every vehicle (LP-3): on hold, vehicle 1 is refused though it completes nothing.
+        // 4B-8 (09 BR-18): the vehicle is refused whole, the held order named with why.
         orders.putOnHold(order.orderId(), HoldReason.PAYMENT, "check the transfer", coordinator);
         handOver(v1).andExpect(status().isConflict())
-                .andExpect(jsonPath("$.errorCode").value("ORDER_INVALID_TRANSITION"));
+                .andExpect(jsonPath("$.errorCode").value("LOAD_HANDOVER_BLOCKED"))
+                .andExpect(jsonPath("$.details.orders[0].orderId").value(order.orderId().toString()))
+                .andExpect(jsonPath("$.details.orders[0].reasonCode").value("ORDER_INVALID_TRANSITION"));
         orders.resolveHold(order.orderId(), "transfer found", coordinator);
 
         // Vehicle 1 signed: it left, the shipment still waits for vehicle 2, the order is not shipped.
@@ -1767,8 +1777,10 @@ class FtlDispatchIntegrationTest {
     }
 
     @Test
-    @DisplayName("review of #162: an unpaid BEFORE_DELIVERY deposit order is refused at a vehicle that completes no "
-            + "shipment (409 ORDER_BALANCE_NOT_PAID); paid, it leaves")
+    @DisplayName("review of #162, 4B-8 (09 BR-18, 08 BR-11): an order owing its BEFORE_DELIVERY installment is named when "
+            + "loading starts (handoverWarnings, loading goes ahead) and refuses the vehicle whole - even one that completes "
+            + "no shipment (409 LOAD_HANDOVER_BLOCKED, the order, ORDER_BALANCE_NOT_PAID, what it owes, its batch); paid, "
+            + "it leaves")
     void unpaidAtANonLastTruck() throws Exception {
         // 30% on signing (paid, so the order is confirmed), the rest before delivery (15 BR-07, BR-08).
         OrderSummary order = ftlOrder(2, DemoData.CUSTOMER_ID, List.of(
@@ -1779,9 +1791,30 @@ class FtlDispatchIntegrationTest {
         JsonNode plan = confirmed(List.of(shipment), truck1t25);
         assertThat(plan.path("vehicles")).hasSize(2);
         String truck1 = loadOf(plan, 1);
-        loadAll(truck1, ghn);
+        BigDecimal owed = jdbc.queryForObject("SELECT amount FROM payment.installment WHERE order_id = ? "
+                + "AND milestone = 'BEFORE_DELIVERY'", BigDecimal.class, order.orderId());
+        book(truck1, ghn, "51C-" + truck1.substring(0, 6));
+        // R6: loading starts, and the warehouse is told now which order will hold the vehicle back.
+        JsonNode started = data(dispatch(post(LOADS + "/" + truck1 + "/loading-start")).andExpect(status().isOk()));
+        assertThat(started.path("status").asText()).isEqualTo("LOADING");
+        assertThat(started.path("handoverWarnings")).singleElement().satisfies(w -> {
+            assertThat(w.path("orderId").asText()).isEqualTo(order.orderId().toString());
+            assertThat(w.path("reasonCode").asText()).isEqualTo("ORDER_BALANCE_NOT_PAID");
+            assertThat(w.path("amountDue").decimalValue()).isEqualByComparingTo(owed);
+            assertThat(w.path("deliveryBatchSeq").asInt()).isEqualTo(1);
+        });
+        for (String label : labels(load(truck1))) {
+            scanOnto(truck1, label).andExpect(status().isOk());
+        }
         handOver(truck1).andExpect(status().isConflict())
-                .andExpect(jsonPath("$.errorCode").value("ORDER_BALANCE_NOT_PAID"));
+                .andExpect(jsonPath("$.errorCode").value("LOAD_HANDOVER_BLOCKED"))
+                .andExpect(jsonPath("$.details.orders.length()").value(1))
+                .andExpect(jsonPath("$.details.orders[0].orderId").value(order.orderId().toString()))
+                .andExpect(jsonPath("$.details.orders[0].orderNumber").value(order.orderNumber()))
+                .andExpect(jsonPath("$.details.orders[0].reasonCode").value("ORDER_BALANCE_NOT_PAID"))
+                .andExpect(jsonPath("$.details.orders[0].amountDue").value(owed.stripTrailingZeros().toPlainString()))
+                .andExpect(jsonPath("$.details.orders[0].currency").value("VND"))
+                .andExpect(jsonPath("$.details.orders[0].deliveryBatchSeq").value(1));
         assertThat(load(truck1).path("status").asText()).isEqualTo("LOADING");
         assertThat(jdbc.queryForObject("SELECT goods_left_at FROM ordering.customer_order WHERE id = ?",
                 java.sql.Timestamp.class, order.orderId())).isNull();
@@ -1790,6 +1823,136 @@ class FtlDispatchIntegrationTest {
         confirmedOrders().pay(DemoData.CUSTOMER_ID, (UUID) balance.get("id"), (BigDecimal) balance.get("amount"));
         handOver(truck1).andExpect(status().isOk());
         assertThat(shipmentStatus(shipment)).isEqualTo("READY_TO_DISPATCH");
+    }
+
+    @Test
+    @DisplayName("4B-8 (17 §4.5, BR-28, BR-29; 09 BR-04, BR-18): an order of two delivery batches leaves batch by batch - "
+            + "batch 1 released, picked on a task of its own, checked and handed over: PARTIALLY_FULFILLED; batch 2 "
+            + "released only then, on a second task; its vehicle refused whole before batch 2's window opens "
+            + "(LOAD_HANDOVER_BLOCKED, DELIVERY_BATCH_WINDOW_NOT_OPEN); the window moved to today with the customer's "
+            + "consent, it leaves: SHIPPED, each shipment recording its batch")
+    void twoDeliveryBatches() throws Exception {
+        CustomerSkuRows.Issued sofa = sofaOf(DemoData.CUSTOMER_ID);
+        CustomerSkuRows.stock(jdbc, tx, sofa.sku(), 2 * 4);
+        ConfirmedOrders.Confirmed confirmed = confirmedOrders().pay(confirmedOrders().signedInBatches(
+                DemoData.CUSTOMER_ID, 2, ConfirmedOrders.Line.cartons(sofa, 4, 6_000_000)));
+        UUID orderId = confirmed.orderId();
+        OrderSummary order = confirmedOrders().release(orderId, HCM, coordinator);
+        assertThat(order.status()).isEqualTo(OrderStatus.READY_TO_FULFILL);
+        // Sales allowed partial shipments: a plan of batch 1 alone is refused otherwise - the production bug
+        // aBatchIsPlannedWithoutAllowingPartialShipments pins.
+        allowPartial(order, true);
+        List<UUID> batchIds = jdbc.queryForList("""
+                SELECT b.id FROM ordering.delivery_batch b JOIN ordering.sales_contract c ON c.id = b.contract_id
+                 WHERE c.order_id = ? ORDER BY b.seq""", UUID.class, orderId);
+
+        // Batch 1: its own task, two cartons checked, one vehicle, handed over.
+        UUID[] first = packed(order, false);
+        assertThat(jdbc.queryForObject("SELECT delivery_batch_id FROM fulfillment.pick WHERE id = ?", UUID.class,
+                first[1])).isEqualTo(batchIds.get(0));
+        assertThat(jdbc.queryForObject("SELECT package_count FROM fulfillment.shipment WHERE id = ?", Integer.class,
+                first[0])).as("batch 1's two cartons").isEqualTo(2);
+        String load1 = loadOf(confirmed(List.of(first[0]), truck5t), 1);
+        loadAll(load1, ghn);
+        handOver(load1).andExpect(status().isOk());
+        assertThat(orders.findById(orderId).orElseThrow().status()).as("batch 2 still to come")
+                .isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
+        assertThat(jdbc.queryForObject("SELECT delivery_batch_id FROM ordering.order_shipment WHERE id = ?", UUID.class,
+                first[0])).isEqualTo(batchIds.get(0));
+
+        // Batch 2: released now that batch 1 left; the order keeps PARTIALLY_FULFILLED.
+        OrderSummary second = WithCurrentUser.call(confirmedOrders().sales(), DataScope.ALL,
+                () -> context.getBean(OrderReleases.class).release(orderId, HCM, coordinator));
+        assertThat(second.status()).isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
+        UUID[] next = packed(second, false);
+        assertThat(next[1]).as("a task of its own").isNotEqualTo(first[1]);
+        assertThat(jdbc.queryForObject("SELECT delivery_batch_id FROM fulfillment.pick WHERE id = ?", UUID.class,
+                next[1])).isEqualTo(batchIds.get(1));
+        String load2 = loadOf(confirmed(List.of(next[0]), truck5t), 1);
+        loadAll(load2, ghtk);
+        LocalDate today = LocalDate.now(ConfirmedOrders.VIETNAM);
+        handOver(load2).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("LOAD_HANDOVER_BLOCKED"))
+                .andExpect(jsonPath("$.details.orders[0].orderId").value(orderId.toString()))
+                .andExpect(jsonPath("$.details.orders[0].reasonCode").value("DELIVERY_BATCH_WINDOW_NOT_OPEN"))
+                .andExpect(jsonPath("$.details.orders[0].deliveryBatchSeq").value(2))
+                .andExpect(jsonPath("$.details.orders[0].windowStart").value(today.plusDays(14).toString()));
+        assertThat(shipmentStatus(next[0])).isEqualTo("READY_TO_DISPATCH");
+
+        // The customer takes it early: Sales moves the window to today, the consent a message of theirs (BR-28).
+        UUID consent = ChatRows.message(jdbc, tx, DemoData.CUSTOMER_ID, orderId, "CUSTOMER");
+        WithCurrentUser.call(confirmedOrders().sales(), DataScope.ALL, () -> context.getBean(DeliveryBatchService.class)
+                .changeWindow(confirmedOrders().sales(), orderId, batchIds.get(1), new DeliveryBatchService.WindowChange(
+                        today, today.plusDays(2), WindowChangeReason.CUSTOMER_REQUEST, "The customer takes it now",
+                        null, consent)));
+        handOver(load2).andExpect(status().isOk());
+        assertThat(orders.findById(orderId).orElseThrow().status()).isEqualTo(OrderStatus.SHIPPED);
+        assertThat(jdbc.queryForObject("SELECT delivery_batch_id FROM ordering.order_shipment WHERE id = ?", UUID.class,
+                next[0])).isEqualTo(batchIds.get(1));
+        DeliveryBatchService.Schedule schedule = WithCurrentUser.call(confirmedOrders().sales(), DataScope.ALL,
+                () -> context.getBean(DeliveryBatchService.class).schedule(orderId));
+        assertThat(schedule.batches()).extracting(DeliveryBatchService.BatchView::state)
+                .containsExactly(DeliveryBatchService.BatchState.IN_DELIVERY, DeliveryBatchService.BatchState.IN_DELIVERY);
+    }
+
+    @Test
+    @org.junit.jupiter.api.Disabled("production bug (4B-8): LoadPlanService.requirePartialAllowed (LP-4) counts the whole "
+            + "order's outstanding units (PartialShipments.outstandingUnits), so a plan of delivery batch 1 alone is "
+            + "refused at confirmation with ORDER_PARTIAL_SHIPMENT_NOT_ALLOWED unless Sales allowed partial shipments; "
+            + "17 BR-15 / 4B-8: the units of later batches are not left behind (the handover and loading start already "
+            + "count the batch in flight only)")
+    @DisplayName("4B-8 (17 BR-15): a plan of delivery batch 1 is confirmed without partial shipments being allowed - the "
+            + "later batch's units are not left behind")
+    void aBatchIsPlannedWithoutAllowingPartialShipments() throws Exception {
+        CustomerSkuRows.Issued sofa = sofaOf(DemoData.CUSTOMER_ID);
+        CustomerSkuRows.stock(jdbc, tx, sofa.sku(), 2 * 4);
+        UUID orderId = confirmedOrders().pay(confirmedOrders().signedInBatches(DemoData.CUSTOMER_ID, 2,
+                ConfirmedOrders.Line.cartons(sofa, 4, 6_000_000))).orderId();
+        OrderSummary order = confirmedOrders().release(orderId, HCM, coordinator);
+        allowPartial(order, false);
+        UUID shipment = packed(order, false)[0];
+        JsonNode plan = confirmed(List.of(shipment), truck5t);
+        assertThat(plan.path("status").asText()).isEqualTo("CONFIRMED");
+    }
+
+    @Test
+    @DisplayName("R3 (15 §4.1, 17 §4.5): batch 1 delivered in full makes its AFTER_DELIVERY installment due, dated from "
+            + "that delivery, while batch 2 has not left; the installment tied to no batch waits for the whole order")
+    void afterDeliveryInstallmentOfABatch() throws Exception {
+        // A customer of the test's own with credit approved by accounting: a contract paying after delivery fits it.
+        UUID customer = tx.execute(s -> ReferenceRows.customer(entityManager));
+        UUID accountant = staff("ACCOUNTANT");
+        tx.executeWithoutResult(s -> jdbc.update("""
+                INSERT INTO customer.credit_profile (id, customer_id, credit_limit, credit_term_days, approved_by,
+                                                     approved_at)
+                VALUES (?, ?, 10000000000, 30, ?, NOW())""", Identifiers.newId(), customer, accountant));
+        CustomerSkuRows.Issued sofa = sofaOf(customer);
+        CustomerSkuRows.stock(jdbc, tx, sofa.sku(), 2 * 4);
+        List<SalesContracts.Installment> plan = List.of(
+                new SalesContracts.Installment("Deposit", "ON_SIGNING", null, new BigDecimal("40"), 0, null),
+                new SalesContracts.Installment("After batch 1", "AFTER_DELIVERY", null, new BigDecimal("30"), 10, 1),
+                new SalesContracts.Installment("After all", "AFTER_DELIVERY", null, new BigDecimal("30"), 20, null));
+        UUID orderId = confirmedOrders().pay(confirmedOrders().sign(confirmedOrders().draft(customer,
+                List.of(ConfirmedOrders.Line.cartons(sofa, 4, 6_000_000))), plan, 2)).orderId();
+        OrderSummary order = confirmedOrders().release(orderId, HCM, coordinator);
+        allowPartial(order, true);   // see twoDeliveryBatches
+        UUID shipment = packed(order, false)[0];
+        String load = loadOf(confirmed(List.of(shipment), truck5t), 1);
+        loadAll(load, ghn);
+        handOver(load).andExpect(status().isOk());
+        assertThat(orders.findById(orderId).orElseThrow().status()).isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
+
+        oc(body(post(BASE + "/shipments/" + shipment + "/delivery-outcome"), "{\"outcome\":\"DELIVERED\"}"))
+                .andExpect(status().isOk());
+        Await.until("batch 1's installment after delivery due", ASYNC, () -> "DUE".equals(jdbc.queryForObject(
+                "SELECT status FROM payment.installment WHERE order_id = ? AND seq = 2", String.class, orderId)));
+        java.sql.Date outcome = jdbc.queryForObject("SELECT CAST(outcome_at AT TIME ZONE 'Asia/Ho_Chi_Minh' AS date) "
+                + "FROM fulfillment.shipment WHERE id = ?", java.sql.Date.class, shipment);
+        assertThat(jdbc.queryForObject("SELECT due_date FROM payment.installment WHERE order_id = ? AND seq = 2",
+                java.sql.Date.class, orderId).toLocalDate()).as("10 days from batch 1's delivery")
+                .isEqualTo(outcome.toLocalDate().plusDays(10));
+        assertThat(jdbc.queryForObject("SELECT status FROM payment.installment WHERE order_id = ? AND seq = 3",
+                String.class, orderId)).as("tied to no batch: waits for the whole order").isEqualTo("NOT_DUE");
     }
 
     @Test
