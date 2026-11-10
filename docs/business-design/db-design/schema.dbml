@@ -78,11 +78,6 @@ Enum inventory.cycle_count_trigger_type {
   MANUAL
 }
 
-Enum inventory.inventory_items_removal_strategy {
-  FIFO
-  FEFO
-}
-
 Enum inventory.inventory_items_storage_class {
   NORMAL
   COLD
@@ -1581,8 +1576,6 @@ Table inventory.inventory_items [headercolor: #3E7C4A] {
   package_count               int [not null, default: 1]
   pack_size                   int [not null, default: 1]
   storage_class               inventory.inventory_items_storage_class [not null, default: 'NORMAL']
-  lot_tracked                 boolean [not null, default: false]
-  serial_tracked              boolean [not null, default: false]
   default_supplier_id         uuid
   requires_adult_signature    boolean [not null, default: false]
   shipping_restriction_note   varchar(500)
@@ -1591,8 +1584,6 @@ Table inventory.inventory_items [headercolor: #3E7C4A] {
   created_by                  varchar(100)
   last_modified_at            timestamptz
   last_modified_by            varchar(100)
-  removal_strategy            inventory.inventory_items_removal_strategy [not null, default: 'FEFO']
-  policy_configured           boolean [not null, default: false]
   rotatable                   boolean [not null, default: true]
   reference_purchase_price    decimal(18,2)
   reference_purchase_currency varchar(3)
@@ -1720,7 +1711,6 @@ Table inventory.stock_item [headercolor: #3E7C4A] {
   last_modified_at timestamptz
   last_modified_by varchar(100)
   received_at      timestamptz
-  serial_number    varchar(100)
   stock_package_id uuid
   lot_id           uuid
 }
