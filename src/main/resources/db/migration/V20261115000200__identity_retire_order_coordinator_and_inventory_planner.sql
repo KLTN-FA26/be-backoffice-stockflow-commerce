@@ -12,8 +12,9 @@
 --      the order-level delivered / not delivered records (an order without shipments) answer to
 --      fulfillment-delivery-outcomes:APPROVE, as the shipment's do;
 --   2. grants, each advancing app_role.version of exactly the roles that gained one (ADR-0008):
---        * WAREHOUSE_MANAGER: sales-order-releases:UPDATE, fulfillment-delivery-outcomes:APPROVE, and the planner's
---          two exports (inventory-stock-items:EXPORT, inventory-stock-movements:EXPORT), which nobody else held;
+--        * WAREHOUSE_MANAGER: sales-order-releases:UPDATE, fulfillment-delivery-outcomes:APPROVE. The planner's two
+--          exports (inventory-stock-items:EXPORT, inventory-stock-movements:EXPORT) are not handed on: no endpoint
+--          checks either, and they go with the planner's grants;
 --        * SALES_STAFF: sales-order-holds:UPDATE, fulfillment-load-estimates:READ and :CREATE (00 §2.1: Sales answers
 --          the customer about a delivery). Sales already holds cancellations, partial delivery, returns, quote
 --          conversion and the shipping warehouse;
@@ -62,8 +63,6 @@ ON CONFLICT (code) DO NOTHING;
 WITH wanted (role_code, permission_code) AS (
     VALUES ('WAREHOUSE_MANAGER', 'sales-order-releases:UPDATE'),
            ('WAREHOUSE_MANAGER', 'fulfillment-delivery-outcomes:APPROVE'),
-           ('WAREHOUSE_MANAGER', 'inventory-stock-items:EXPORT'),
-           ('WAREHOUSE_MANAGER', 'inventory-stock-movements:EXPORT'),
            ('SALES_STAFF', 'sales-order-holds:UPDATE'),
            ('SALES_STAFF', 'fulfillment-load-estimates:READ'),
            ('SALES_STAFF', 'fulfillment-load-estimates:CREATE')
