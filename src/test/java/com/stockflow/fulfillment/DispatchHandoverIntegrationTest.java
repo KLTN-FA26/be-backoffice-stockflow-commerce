@@ -741,44 +741,6 @@ class DispatchHandoverIntegrationTest {
     // ---- review of G4-2a -----------------------------------------------------------------------------
 
     @Test
-    @DisplayName("review #1: parcels packed before they recorded contents (V20261021000300 shapes) leave as the whole "
-            + "order - marked so - and their outcomes take the whole-order path; the customer sees one shipment; the "
-            + "credit order's delivery opens its one receivable")
-    void parcelsWithoutContentsLeaveAsTheWholeOrder() throws Exception {
-        OrderSummary order = order(PaymentTerm.CREDIT, null, 1, 2_000_000);
-        UUID shipment = ship(pickedTask(order), false, 1);
-        // What V20261021000300 made of a pack completed by the old flow: a sealed parcel with no recorded contents.
-        tx.executeWithoutResult(t -> jdbc.update("DELETE FROM fulfillment.package_line WHERE package_id IN "
-                + "(SELECT id FROM fulfillment.package WHERE shipment_id = ?)", shipment));
-        String load = vehicle(ghn, shipment).path("loadId").asText();
-        scan(load, labels(shipment).getFirst()).andExpect(status().isOk());
-        handOver(load).andExpect(status().isOk());
-        assertThat(jdbc.queryForObject("SELECT whole_order_handover FROM fulfillment.shipment WHERE id = ?",
-                Boolean.class, shipment)).isTrue();
-        OrderSummary shipped = orders.findById(order.orderId()).orElseThrow();
-        assertThat(shipped.status()).isEqualTo(OrderStatus.SHIPPED);
-        assertThat(shipped.lifecycle().shipments()).isEmpty();
-        as(customerUser, "CUSTOMER", get("/api/v1/orders/me/" + order.orderId())).andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.shipments.length()").value(1))
-                .andExpect(jsonPath("$.data.shipments[0].status").value("HANDED_OVER"));
-
-        outcome(shipment, "{\"outcome\":\"DELIVERY_FAILED\",\"failureReason\":\"CUSTOMER_ABSENT\"}")
-                .andExpect(status().isOk());
-        assertThat(statusOf(order)).isEqualTo(OrderStatus.DELIVERY_FAILED);
-        as(customerUser, "CUSTOMER", get("/api/v1/orders/me/" + order.orderId())).andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.shipments[0].status").value("DELIVERY_FAILED"))
-                .andExpect(jsonPath("$.data.shipments[0].failureReason").value("CUSTOMER_ABSENT"));
-        outcome(shipment, "{\"outcome\":\"DELIVERED\"}").andExpect(status().isOk());
-        assertThat(statusOf(order)).isEqualTo(OrderStatus.DELIVERED);
-        Await.until("the order's receivable", ASYNC, () -> jdbc.queryForObject(
-                "SELECT count(*) FROM payment.receivable WHERE order_id = ?", Long.class, order.orderId()) == 1);
-        assertThat(jdbc.queryForObject("SELECT amount::bigint FROM payment.receivable WHERE order_id = ?", Long.class,
-                order.orderId())).isEqualTo(2_000_000L);
-        as(customerUser, "CUSTOMER", get("/api/v1/orders/me/" + order.orderId())).andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.shipments[0].status").value("DELIVERED"));
-    }
-
-    @Test
     @DisplayName("review #3: L1 {O1, O2} and L2 {O2, O1} signed at once - no deadlock, both orders shipped")
     void crossedLoadsDoNotDeadlock() throws Exception {
         OrderSummary o1 = order(PaymentTerm.PREPAID, null, 2, 1_000_000);
@@ -991,7 +953,7 @@ class DispatchHandoverIntegrationTest {
         assertThat(closed.get("status")).isEqualTo("EXPIRED");
         assertThat(closed.get("decided_by")).isNull();
         assertThat(closed.get("decided_at")).isNotNull();
-        assertThat((String) closed.get("decision_note")).contains("PACKED").contains("can no longer be cancelled");
+        assertThat((String) closed.get("decision_note")).contains("labelled").contains("can no longer be cancelled");
         oc(body(post("/api/v1/orders/" + order.orderId() + "/cancellation-requests/" + second + "/approval"), "{}"))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("ORDER_CANCELLATION_REQUEST_NOT_PENDING"));

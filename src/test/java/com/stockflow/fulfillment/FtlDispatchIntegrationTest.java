@@ -109,8 +109,8 @@ class FtlDispatchIntegrationTest {
 
     @BeforeEach
     void setUp() {
-        CartonStationSupport.giveCartonsASize(tx, jdbc);
-        parts = new CartonStationSupport.Parts(this::packer, tx, jdbc, json);
+        CartonStationSupport.giveCartonsASize(jdbc);
+        parts = new CartonStationSupport.Parts(this::packer, jdbc, json);
         coordinator = staff("ORDER_COORDINATOR");
         picker = staff("WAREHOUSE_STAFF", HCM);
         dispatcher = staff("WAREHOUSE_STAFF", HCM);
@@ -1637,6 +1637,380 @@ class FtlDispatchIntegrationTest {
         // The carton that stays is loadable at once: its label did not change with the split.
         assertThat(labels(load(loadId))).hasSize(1);
         scanOnto(loadId, labels(load(loadId)).getFirst()).andExpect(status().isOk());
+        packer(get(BASE + "/tasks/" + packedShipment[1] + "/packages/" + goes + "/label")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.packageCount").value(1));
+        scanOnto(loadId, labels(load(loadId)).getFirst()).andExpect(status().isOk());
+        handOver(loadId).andExpect(status().isOk());
+        assertThat(shipmentStatus(shipment)).isEqualTo("HANDED_OVER");
+        assertThat(shipmentStatus(rest)).isEqualTo("READY_TO_DISPATCH");
+        assertThat(orders.findById(order.orderId()).orElseThrow().status()).isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
+        assertThat(planStatus(plan)).isEqualTo("DISPATCHED");
+    }
+
+    /** One carton on the floor of vehicle 1, the other on the tray, acknowledged (BR-13). */
+    private JsonNode leaveOnTray(JsonNode plan, String goes, String stays) throws Exception {
+        plan = data(dispatch(body(put(PLANS + "/" + plan.path("loadPlanId").asText() + "/placements"),
+                "{\"expectedVersion\":" + plan.path("version").asLong() + ",\"vehicles\":[{\"seq\":1,\"boxes\":[{\"ref\":\""
+                        + goes + "\",\"xMm\":0,\"yMm\":0,\"zMm\":0,\"wMm\":950,\"hMm\":900,\"dMm\":2150,"
+                        + "\"orientation\":\"LWH\"}]}],\"tray\":[\"" + stays + "\"]}")).andExpect(status().isOk()));
+        return step(plan, "/unplaced-acknowledgement", "{\"expectedVersion\":" + plan.path("version").asLong()
+                + ",\"note\":\"next truck\"}");
+    }
+
+    // ---- review of #162: no-partial orders, the gate at every vehicle, concurrency, auto-cancel ------------------
+
+    /** An order of 2 sofas packed in two shipments (Sales allowed partial shipments), a carton each. */
+    private UUID[] packedInTwo(OrderSummary order, boolean kits) throws Exception {
+        tx.executeWithoutResult(s -> jdbc.update(
+                "UPDATE ordering.customer_order SET allow_partial_shipment = TRUE WHERE id = ?", order.orderId()));
+        UUID task = UUID.fromString(data(oc(body(post(BASE + "/tasks"), "{\"orderId\":\"" + order.orderId()
+                + "\",\"assignedUserId\":\"" + picker + "\"}")).andExpect(status().isCreated())).path("taskId").asText());
+        packer(post(BASE + "/tasks/" + task + "/picking-start")).andExpect(status().isOk());
+        for (Map<String, Object> line : jdbc.queryForList(
+                "SELECT id, location_code, lpn AS scan "
+                        + "FROM fulfillment.pick_line WHERE pick_id = ?", task)) {
+            packer(body(post(BASE + "/tasks/" + task + "/pick-lines/" + line.get("id") + "/confirmation"),
+                    "{\"locationCode\":\"" + line.get("location_code") + "\",\"lpn\":\"" + line.get("scan")
+                            + "\"}")).andExpect(status().isOk());
+        }
+        packer(post(BASE + "/tasks/" + task + "/picking-completion")).andExpect(status().isOk());
+        // Two shipments of one sofa each: the check station runs once and hands the cartons out (see Parts).
+        UUID[] shipments = new UUID[2];
+        for (int i = 0; i < 2; i++) {
+            shipments[i] = parts.ship(task, 1);
+        }
+        return shipments;
+    }
+
+    private void allowPartial(OrderSummary order, boolean allowed) {
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE ordering.customer_order SET allow_partial_shipment = ? "
+                + "WHERE id = ?", allowed, order.orderId()));
+    }
+
+    /** The load of the vehicle carrying {@code shipment}'s parcels (one vehicle each here). */
+    private String loadCarrying(JsonNode plan, UUID shipment) throws Exception {
+        for (int seq = 1; seq <= plan.path("vehicles").size(); seq++) {
+            String loadId = loadOf(plan, seq);
+            for (JsonNode s : load(loadId).path("shipments")) {
+                if (s.path("shipmentId").asText().equals(shipment.toString())) {
+                    return loadId;
+                }
+            }
+        }
+        throw new AssertionError("no vehicle carries " + shipment);
+    }
+
+    private void loadAll(String loadId, UUID carrier) throws Exception {
+        book(loadId, carrier, "51C-" + loadId.substring(0, 6));
+        dispatch(post(LOADS + "/" + loadId + "/loading-start")).andExpect(status().isOk());
+        for (String label : labels(load(loadId))) {
+            scanOnto(loadId, label).andExpect(status().isOk());
+        }
+    }
+
+    @Test
+    @DisplayName("review of #162, blocking 1-3: an order that may NOT ship in parts with S1 on truck 1 and S2 on truck 2 "
+            + "(Sales turned the flag off after confirmation): truck 1 signs - nothing handed over, goods_left_at set, "
+            + "the order no longer cancelled (ORDER_NOT_CANCELLABLE); truck 2 signs - S1 (on truck 1's load) and S2 "
+            + "recorded together, the order SHIPPED")
+    void noPartialOrderAcrossTrucks() throws Exception {
+        OrderSummary order = ftlOrder(2);
+        UUID[] shipments = packedInTwo(order, true);
+        JsonNode plan = confirmed(List.of(shipments[0], shipments[1]), truck1t25);
+        assertThat(plan.path("vehicles")).hasSize(2);
+        String truck1 = loadCarrying(plan, shipments[0]);
+        String truck2 = loadCarrying(plan, shipments[1]);
+        assertThat(truck1).isNotEqualTo(truck2);
+        allowPartial(order, false);
+
+        loadAll(truck1, ghn);
+        assertThat(data(handOver(truck1).andExpect(status().isOk())).path("status").asText()).isEqualTo("DISPATCHED");
+        assertThat(shipmentStatus(shipments[0])).isEqualTo("READY_TO_DISPATCH");
+        assertThat(jdbc.queryForObject("SELECT goods_left_at IS NOT NULL FROM ordering.customer_order WHERE id = ?",
+                Boolean.class, order.orderId())).isTrue();
+        oc(body(post(ORDERS + "/" + order.orderId() + "/admin-cancellation"),
+                "{\"reasonCode\":\"CUSTOMER_REQUEST\",\"note\":\"customer changed its mind\"}"))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("ORDER_NOT_CANCELLABLE"));
+
+        loadAll(truck2, ghtk);
+        handOver(truck2).andExpect(status().isOk());
+        assertThat(jdbc.queryForMap("SELECT status, load_id, carrier_id FROM fulfillment.shipment WHERE id = ?",
+                shipments[0])).containsEntry("status", "HANDED_OVER").containsEntry("load_id", UUID.fromString(truck1))
+                .containsEntry("carrier_id", ghn);
+        assertThat(jdbc.queryForMap("SELECT status, load_id FROM fulfillment.shipment WHERE id = ?", shipments[1]))
+                .containsEntry("status", "HANDED_OVER").containsEntry("load_id", UUID.fromString(truck2));
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM ordering.order_shipment WHERE order_id = ?", Long.class,
+                order.orderId())).isEqualTo(2L);
+        assertThat(orders.findById(order.orderId()).orElseThrow().status()).isEqualTo(OrderStatus.SHIPPED);
+        assertThat(planStatus(plan)).isEqualTo("DISPATCHED");
+    }
+
+    @Test
+    @DisplayName("review of #162, blocking 2: an order that may not ship in parts with units outside the plan is "
+            + "refused when its first vehicle starts loading (409 ORDER_PARTIAL_SHIPMENT_NOT_ALLOWED) - nothing on "
+            + "board, the plan can still be reopened")
+    void partialRefusedAtLoadingStart() throws Exception {
+        OrderSummary order = ftlOrder(2);
+        UUID[] shipments = packedInTwo(order, false);
+        JsonNode plan = confirmed(List.of(shipments[0]), truck5t);
+        allowPartial(order, false);
+        String loadId = loadOf(plan, 1);
+        book(loadId, ghn, "51C-777.77");
+        dispatch(post(LOADS + "/" + loadId + "/loading-start")).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("ORDER_PARTIAL_SHIPMENT_NOT_ALLOWED"));
+        assertThat(load(loadId).path("status").asText()).isEqualTo("VEHICLE_BOOKED");
+        JsonNode now = data(dispatch(get(PLANS + "/" + plan.path("loadPlanId").asText())).andExpect(status().isOk()));
+        assertThat(step(now, "/reopening", "{\"expectedVersion\":" + now.path("version").asLong()
+                + ",\"reason\":\"take the whole order\"}").path("status").asText()).isEqualTo("PLANNED");
+    }
+
+    @Test
+    @DisplayName("review of #162: an unpaid BEFORE_DELIVERY deposit order is refused at a vehicle that completes no "
+            + "shipment (409 ORDER_BALANCE_NOT_PAID); paid, it leaves")
+    void unpaidAtANonLastTruck() throws Exception {
+        OrderSummary order = ftlOrder(2);
+        UUID shipment = packed(order, true)[0];
+        JsonNode plan = confirmed(List.of(shipment), truck1t25);
+        assertThat(plan.path("vehicles")).hasSize(2);
+        String truck1 = loadOf(plan, 1);
+        BigDecimal total = order.total().amount();
+        BigDecimal deposit = total.multiply(new BigDecimal("0.3"));
+        tx.executeWithoutResult(s -> {
+            jdbc.update("""
+                    UPDATE ordering.customer_order SET payment_term = 'DEPOSIT', deposit_required = ?,
+                           balance_policy = 'BEFORE_DELIVERY', paid_amount = ?, paid_in_full_at = NULL WHERE id = ?""",
+                    deposit, deposit, order.orderId());
+            jdbc.update("UPDATE payment.payment SET amount = ? WHERE order_id = ?", deposit, order.orderId());
+        });
+        loadAll(truck1, ghn);
+        handOver(truck1).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("ORDER_BALANCE_NOT_PAID"));
+        assertThat(load(truck1).path("status").asText()).isEqualTo("LOADING");
+        assertThat(jdbc.queryForObject("SELECT goods_left_at FROM ordering.customer_order WHERE id = ?",
+                java.sql.Timestamp.class, order.orderId())).isNull();
+        tx.executeWithoutResult(s -> {
+            jdbc.update("UPDATE ordering.customer_order SET paid_amount = total_amount WHERE id = ?", order.orderId());
+            jdbc.update("UPDATE payment.payment SET amount = ? WHERE order_id = ?", total, order.orderId());
+        });
+        handOver(truck1).andExpect(status().isOk());
+        assertThat(shipmentStatus(shipment)).isEqualTo("READY_TO_DISPATCH");
+    }
+
+    @Test
+    @DisplayName("review of #162: the two trucks of one shipment signed at the same moment - both succeed, the shipment "
+            + "is handed over once, the plan DISPATCHED once")
+    void twoTrucksSignAtOnce() throws Exception {
+        OrderSummary order = ftlOrder(2);
+        UUID shipment = packed(order, true)[0];
+        JsonNode plan = confirmed(List.of(shipment), truck1t25);
+        String truck1 = loadOf(plan, 1);
+        String truck2 = loadOf(plan, 2);
+        loadAll(truck1, ghn);
+        loadAll(truck2, ghtk);
+        List<String> bodies = new ArrayList<>();
+        for (String loadId : List.of(truck1, truck2)) {
+            bodies.add("{\"version\":" + load(loadId).path("version").asLong()
+                    + ",\"carrierRepresentative\":\"Tai\",\"signed\":true}");
+        }
+        List<String> tokens = List.of(token(dispatcher, "WAREHOUSE_STAFF"), token(dispatcher, "WAREHOUSE_STAFF"));
+        java.util.concurrent.CountDownLatch go = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(2);
+        List<java.util.concurrent.Future<Integer>> results = new ArrayList<>();
+        List<String> trucks = List.of(truck1, truck2);
+        for (int i = 0; i < 2; i++) {
+            int n = i;
+            results.add(pool.submit(() -> {
+                go.await();
+                return mvc.perform(post(LOADS + "/" + trucks.get(n) + "/handover").header("Authorization",
+                        tokens.get(n)).contentType("application/json").content(bodies.get(n)))
+                        .andReturn().getResponse().getStatus();
+            }));
+        }
+        go.countDown();
+        List<Integer> statuses = new ArrayList<>();
+        for (var f : results) {
+            statuses.add(f.get());
+        }
+        pool.shutdown();
+        assertThat(statuses).containsOnly(200);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM fulfillment.shipment_event WHERE shipment_id = ? AND "
+                + "status = 'HANDED_OVER'", Long.class, shipment)).isEqualTo(1L);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM ordering.order_shipment WHERE id = ?", Long.class,
+                shipment)).isEqualTo(1L);
+        assertThat(planStatus(plan)).isEqualTo("DISPATCHED");
+        assertThat(orders.findById(order.orderId()).orElseThrow().status()).isEqualTo(OrderStatus.SHIPPED);
+    }
+
+    @Test
+    @DisplayName("decision 7 (review of #162): truck A left; the order on booked truck B is cancelled - B is "
+            + "auto-cancelled ('auto-cancelled: nothing to carry'), flagged carrierBookingToCancel, and the plan turns "
+            + "DISPATCHED")
+    void autoCancelDispatchesThePlan() throws Exception {
+        OrderSummary leaving = ftlOrder(1);
+        OrderSummary doomed = ftlOrder(1);
+        UUID kept = packed(leaving, true)[0];
+        UUID[] cancelled = packed(doomed, true);
+        JsonNode plan = confirmed(List.of(kept, cancelled[0]), truck1t25);
+        assertThat(plan.path("vehicles")).hasSize(2);
+        String truckA = loadCarrying(plan, kept);
+        String truckB = loadCarrying(plan, cancelled[0]);
+        assertThat(truckA).isNotEqualTo(truckB);
+        book(truckB, ghtk, "51C-888.88");
+        loadAll(truckA, ghn);
+        handOver(truckA).andExpect(status().isOk());
+        assertThat(planStatus(plan)).isEqualTo("CONFIRMED");
+
+        tx.executeWithoutResult(s -> publisher.publishEvent(new OrderCancelled(doomed.orderId(), doomed.orderNumber(),
+                DemoData.CUSTOMER_ID, "PACKED", "OTHER", "test", BigDecimal.ZERO, BigDecimal.ZERO, "VND", coordinator,
+                Instant.now())));
+        Await.until("truck B called off", ASYNC, () -> "CANCELLED".equals(jdbc.queryForObject(
+                "SELECT status FROM fulfillment.dispatch_load WHERE id = ?::uuid", String.class, truckB)));
+        JsonNode b = load(truckB);
+        assertThat(b.path("cancelReason").asText()).startsWith("auto-cancelled: nothing to carry");
+        assertThat(b.path("carrierBookingToCancel").asBoolean()).isTrue();
+        assertThat(load(truckA).path("carrierBookingToCancel").asBoolean()).isFalse();
+        assertThat(planStatus(plan)).isEqualTo("DISPATCHED");
+        assertThat(shipmentStatus(kept)).isEqualTo("HANDED_OVER");
+    }
+
+    // ---- who may -----------------------------------------------------------------------------
+
+    @Test
+    @DisplayName("permissions and scope: the coordinator reads a vehicle's load but does not book, load or unload "
+            + "(403); warehouse staff of another warehouse get OUT_OF_DATA_SCOPE")
+    void whoMay() throws Exception {
+        UUID shipment = packed(ftlOrder(1), false)[0];
+        JsonNode plan = confirmed(List.of(shipment), truck5t);
+        String loadId = loadOf(plan, 1);
+        oc(get(LOADS + "/" + loadId)).andExpect(status().isOk());
+        oc(body(post(LOADS + "/" + loadId + "/booking"), "{\"carrierId\":\"" + ghn + "\"}"))
+                .andExpect(status().isForbidden());
+        oc(post(LOADS + "/" + loadId + "/loading-start")).andExpect(status().isForbidden());
+        oc(body(post(LOADS + "/" + loadId + "/booking-cancellation"), "{\"reason\":\"x\"}"))
+                .andExpect(status().isForbidden());
+        oc(body(post(LOADS + "/" + loadId + "/unloads"), "{\"packageCode\":\"PKG-X\"}"))
+                .andExpect(status().isForbidden());
+        as(dispatcherElsewhere, "WAREHOUSE_STAFF", body(post(LOADS + "/" + loadId + "/booking"),
+                "{\"carrierId\":\"" + ghn + "\"}")).andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.errorCode").value("OUT_OF_DATA_SCOPE"));
+        as(dispatcherElsewhere, "WAREHOUSE_STAFF", post(LOADS + "/" + loadId + "/loading-start"))
+                .andExpect(status().isForbidden()).andExpect(jsonPath("$.errorCode").value("OUT_OF_DATA_SCOPE"));
+        dispatch(body(post(LOADS + "/" + loadId + "/booking"), "{}")).andExpect(status().isBadRequest());
+        dispatch(body(post(LOADS + "/" + loadId + "/booking"), "{\"carrierId\":\"" + UUID.randomUUID() + "\"}"))
+                .andExpect(status().isNotFound()).andExpect(jsonPath("$.errorCode").value("CARRIER_NOT_FOUND"));
+        assertThat(jdbc.queryForObject("SELECT status FROM fulfillment.dispatch_load WHERE id = ?::uuid", String.class,
+                loadId)).isEqualTo("PLANNED");
+    }
+
+    // ---- loads list: status filter, plan code search; label flags (the FE gaps of the dispatch screens) --------
+
+    /**
+     * A load of the parcel shipping that was removed (V20261108000400), straight into the table: it has no plan's vehicle,
+     * which only a closed load may lack, so it is history - signed and gone.
+     */
+    private String historyLoad(String plate) {
+        UUID id = Identifiers.newId();
+        tx.executeWithoutResult(s -> jdbc.update("""
+                INSERT INTO fulfillment.dispatch_load (id, code, request_id, warehouse_id, carrier_id, vehicle_plate,
+                    status, loading_started_at, dispatched_at, dispatched_by, carrier_representative, shipment_count,
+                    package_count, waybill_no)
+                VALUES (?, ?, gen_random_uuid(), ?, ?, ?, 'DISPATCHED', NOW(), NOW(), ?, 'Tai', 1, 1,
+                        'WB-' || gen_random_uuid())""",
+                id, "LD-TEST-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(), HCM, ghn, plate,
+                dispatcher));
+        return id.toString();
+    }
+
+    private JsonNode loadsPage(String query) throws Exception {
+        return data(dispatch(get(LOADS + "?warehouseId=" + HCM + query)).andExpect(status().isOk()));
+    }
+
+    private int count(String where) {
+        return jdbc.queryForObject("SELECT count(*) FROM fulfillment.dispatch_load WHERE warehouse_id = ? AND "
+                + where, Integer.class, HCM);
+    }
+
+    @Test
+    @DisplayName("GET loads?status: PLANNED / DISPATCHED (any case) filter in the query - totalElements, totalPages and "
+            + "the pages of a size 1 walk are those of the filtered set; no status: every load; an unknown status is "
+            + "400 UNSUPPORTED_PARAMETER on field status")
+    void listFiltersByStatus() throws Exception {
+        UUID shipment = packed(ftlOrder(2), true)[0];
+        confirmed(List.of(shipment), truck1t25);                       // two vehicles, PLANNED
+        historyLoad("51D-001.01");
+        historyLoad("51D-002.02");
+        int planned = count("status = 'PLANNED'");
+        int dispatched = count("status = 'DISPATCHED'");
+        int all = count("TRUE");
+        assertThat(planned).isGreaterThanOrEqualTo(2);
+        assertThat(dispatched).isGreaterThanOrEqualTo(2);
+
+        JsonNode onlyPlanned = loadsPage("&status=PLANNED&size=1");
+        assertThat(onlyPlanned.path("totalElements").asInt()).isEqualTo(planned);
+        assertThat(onlyPlanned.path("totalPages").asInt()).isEqualTo(planned);
+        assertThat(onlyPlanned.path("items")).hasSize(1);
+        assertThat(onlyPlanned.path("hasNext").asBoolean()).isTrue();
+        List<String> seen = new ArrayList<>();
+        for (int page = 0; page < planned; page++) {
+            JsonNode one = loadsPage("&status=PLANNED&size=1&page=" + page);
+            assertThat(one.path("items")).hasSize(1);
+            assertThat(one.path("items").get(0).path("status").asText()).isEqualTo("PLANNED");
+            seen.add(one.path("items").get(0).path("loadId").asText());
+        }
+        assertThat(seen).doesNotHaveDuplicates().hasSize(planned);
+        assertThat(loadsPage("&status=PLANNED&size=1&page=" + planned).path("items")).isEmpty();
+
+        JsonNode onlyDispatched = loadsPage("&status=dispatched&size=2");
+        assertThat(onlyDispatched.path("totalElements").asInt()).isEqualTo(dispatched);
+        assertThat(onlyDispatched.path("items")).allSatisfy(l -> assertThat(l.path("status").asText())
+                .isEqualTo("DISPATCHED"));
+
+        assertThat(loadsPage("&size=1").path("totalElements").asInt()).isEqualTo(all);
+        assertThat(loadsPage("&status=").path("totalElements").asInt()).isEqualTo(all);
+
+        JsonNode bad = body(dispatch(get(LOADS + "?status=TRAIN")).andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("UNSUPPORTED_PARAMETER")));
+        assertThat(bad.path("fieldErrors")).singleElement().satisfies(f -> assertThat(f.path("field").asText())
+                .isEqualTo("status"));
+    }
+
+    @Test
+    @DisplayName("GET loads?search also matches the load plan's code (case-insensitive, partial) through the vehicle: "
+            + "both vehicles of the plan and no other load; load code and plate matches unchanged; one query, so the "
+            + "count and the pages stay right with status")
+    void listSearchesByPlanCode() throws Exception {
+        UUID shipment = packed(ftlOrder(2), true)[0];
+        JsonNode plan = confirmed(List.of(shipment), truck1t25);
+        String planCode = plan.path("code").asText();
+        String v1 = loadOf(plan, 1);
+        String v2 = loadOf(plan, 2);
+        String other = historyLoad("51E-777.77");
+
+        JsonNode byPlan = loadsPage("&search=" + planCode);
+        assertThat(byPlan.path("totalElements").asInt()).isEqualTo(2);
+        assertThat(byPlan.path("items").findValuesAsText("loadId")).containsExactlyInAnyOrder(v1, v2);
+        assertThat(byPlan.path("items")).allSatisfy(l -> assertThat(l.path("loadPlanCode").asText()).isEqualTo(planCode));
+        assertThat(loadsPage("&search=" + planCode.toLowerCase()).path("totalElements").asInt()).isEqualTo(2);
+        assertThat(loadsPage("&search=" + planCode.substring(planCode.length() - 4)).path("items")
+                .findValuesAsText("loadId")).contains(v1, v2);
+        JsonNode paged = loadsPage("&search=" + planCode + "&size=1&page=1");
+        assertThat(paged.path("totalElements").asInt()).isEqualTo(2);
+        assertThat(paged.path("totalPages").asInt()).isEqualTo(2);
+        assertThat(paged.path("items")).hasSize(1);
+        assertThat(loadsPage("&search=" + planCode + "&status=DISPATCHED").path("totalElements").asInt()).isZero();
+        assertThat(loadsPage("&search=" + planCode + "&status=PLANNED").path("totalElements").asInt())
+                .isEqualTo(2);
+
+        // The existing matches: the load's own code and the plate (a load of the removed parcel shipping has no plan).
+        assertThat(loadsPage("&search=" + load(v1).path("code").asText()).path("items").findValuesAsText("loadId"))
+                .containsExactly(v1);
+        book(v2, ghn, "51F-123.45");
+        assertThat(loadsPage("&search=51F-123").path("items").findValuesAsText("loadId")).containsExactly(v2);
+        JsonNode byPlate = loadsPage("&search=51E-777");
+        assertThat(byPlate.path("items").findValuesAsText("loadId")).containsExactly(other);
+        assertThat(byPlate.path("items").get(0).hasNonNull("loadPlanCode")).isFalse();
+        assertThat(loadsPage("&search=LP-NO-SUCH-PLAN").path("totalElements").asInt()).isZero();
+        // The % of a search term is literal, not a wildcard.
         assertThat(loadsPage("&search=%25").path("totalElements").asInt()).isZero();
     }
 
