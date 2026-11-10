@@ -396,13 +396,18 @@ class CartonCheckService implements CartonChecks {
     }
 
     /**
-     * The order was cancelled (08 BR-04, 17 §4.6 step 32): every carton not in a shipment is REMOVED - it goes back onto
-     * a bin through the put-back queue - and the session is CANCELLED. Called by the cancellation listener under the
-     * pick's lock.
+     * The order was cancelled (08 BR-04, 17 §4.6 step 32): every carton not in a shipment, or in a shipment the
+     * cancellation cancelled, is REMOVED - it goes back onto a bin through the put-back queue - and the session is
+     * CANCELLED. Called by the cancellation listener under the pick's lock, after the repack station's cleanup.
      */
     public void cancelForOrder(PickJpaEntity pick, PackJpaEntity pack) {
         CartonCheck check = store.load(pack, pick.getOrderId(), pick.getOrderNumber());
-        List<CartonCheck.Carton> removed = check.cancel(clock.instant());
+        // The listener cancelled the shipments still waiting for dispatch first (PackingService#cancelForOrder, which also
+        // takes them out of load plans and loads); their cartons are removed with the rest.
+        Set<UUID> cancelled = shipments.findByPackIdOrderByReadyAtAscIdAsc(pack.getId()).stream()
+                .filter(row -> row.getStatus() == ShipmentStatus.CANCELLED).map(ShipmentJpaEntity::getId)
+                .collect(Collectors.toSet());
+        List<CartonCheck.Carton> removed = check.cancel(clock.instant(), cancelled);
         store.save(check, pack);
         if (removed.stream().anyMatch(c -> c.labelVersion() > 0)) {
             // The order refuses a cancellation once a carton is labelled (08 BR-04): a labelled carton here means it

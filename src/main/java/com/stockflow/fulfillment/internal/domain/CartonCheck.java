@@ -406,16 +406,22 @@ public final class CartonCheck {
     }
 
     /**
-     * The order was cancelled (08 BR-04): every carton not in a shipment is REMOVED for that reason - they go back onto
-     * a bin through the put-back queue - and the session is CANCELLED. The order refuses a cancellation once a carton
-     * is labelled, so normally no label is voided here.
+     * The order was cancelled (08 BR-04): every carton not in a shipment, and every carton of a shipment the
+     * cancellation cancelled, is REMOVED for that reason - they go back onto a bin through the put-back queue - and the
+     * session is CANCELLED. A carton taken out of a cancelled shipment leaves it ({@code shipment_id} cleared): a REMOVED
+     * carton is in no shipment ({@code ck_package_shipped}). A shipment that did not cancel - part of it already left on
+     * a vehicle - keeps its cartons. The order refuses a cancellation once a carton is labelled, so normally no label is
+     * voided here.
      *
+     * @param cancelledShipments the session's shipments the cancellation cancelled
      * @return the cartons removed
      */
-    public List<Carton> cancel(Instant now) {
+    public List<Carton> cancel(Instant now, Set<UUID> cancelledShipments) {
         List<Carton> removed = new ArrayList<>();
         for (Carton carton : cartons) {
-            if (carton.status != PackageStatus.REMOVED && carton.shipmentId == null) {
+            boolean free = carton.shipmentId == null || cancelledShipments.contains(carton.shipmentId);
+            if (carton.status != PackageStatus.REMOVED && free) {
+                carton.shipmentId = null;
                 carton.removeFor(RemovalReason.ORDER_CANCELLED, null, null, now);
                 changed.add(carton.id);
                 removed.add(carton);
