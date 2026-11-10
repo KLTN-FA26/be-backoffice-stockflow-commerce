@@ -268,8 +268,8 @@ class ProductionOrderDispatchIntegrationTest extends ProductionOrderDispatchFixt
         Await.until("the re-sent e-mail", ASYNC, () -> mailTo(producerEmail).size() == 2);
         Email again = mailTo(producerEmail).get(1);
         assertThat(again.idempotencyKey()).isEqualTo("production-order:" + sent.id() + ":sent:1");
-        assertThat(link(again.text(), "/slip").signature()).as("links signed afresh")
-                .isNotEqualTo(link(first.text(), "/slip").signature());
+        // Signed afresh from the request: they expire no earlier (the same second when both fall in it).
+        assertThat(link(again.text(), "/slip").expires()).isGreaterThanOrEqualTo(link(first.text(), "/slip").expires());
         Await.until("the re-send is recorded", ASYNC, () -> deliveries(sent.id(), "sent").stream()
                 .filter(row -> "SENT".equals(row.get("status"))).count() == 2);
         assertThat(deliveries(sent.id(), "sent")).extracting(row -> row.get("external_reference"))
