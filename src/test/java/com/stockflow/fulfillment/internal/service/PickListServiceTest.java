@@ -72,7 +72,8 @@ class PickListServiceTest {
     private final PickListService service = new PickListService(picks, pickLines, orders, inventory, itemControls,
             consumption, warehouses, Clock.fixed(NOW, ZoneOffset.UTC), orderReservations,
             mock(com.stockflow.inventory.consumption.PickDamageReporting.class),
-            org.springframework.transaction.support.TransactionOperations.withoutTransaction());
+            org.springframework.transaction.support.TransactionOperations.withoutTransaction(),
+            mock(com.stockflow.fulfillment.internal.repository.PackJpaRepository.class));
 
     private final UUID picker = UUID.randomUUID();
     private final CurrentUser actor = new CurrentUser(picker, "picker",
@@ -896,7 +897,7 @@ class PickListServiceTest {
         }
 
         @Test
-        @DisplayName("moving to dispatch deducts every STAGED line where it stands, in line order, and records it")
+        @DisplayName("moving to dispatch deducts every STAGED line where it stands, in one call (review M1), and records it")
         void moveStagedLinesDeductsEach() {
             stagingTaskIs(PickStatus.STAGED);
             UUID second = UUID.randomUUID();
@@ -909,9 +910,10 @@ class PickListServiceTest {
             assertThat(b.getStatus()).isEqualTo(PickLineStatus.PICKED);
             assertThat(a.getConsumedAt()).isEqualTo(NOW);
             assertThat(b.getConsumedAt()).isEqualTo(NOW);
-            var order = org.mockito.Mockito.inOrder(consumption);
-            order.verify(consumption).consumeStaged(reservation, a.getId(), picker);
-            order.verify(consumption).consumeStaged(second, b.getId(), picker);
+            verify(consumption).consumeStaged(List.of(
+                    new com.stockflow.inventory.consumption.StagedLine(reservation, a.getId()),
+                    new com.stockflow.inventory.consumption.StagedLine(second, b.getId())), picker);
+            verify(consumption, never()).consumeStaged(any(UUID.class), any(UUID.class), any(UUID.class));
             verify(pickLines).save(a);
             verify(pickLines).save(b);
         }
