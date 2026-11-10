@@ -44,8 +44,8 @@ public final class StaffFixtures {
             jdbc.update("INSERT INTO warehouse.warehouse (id, name, status, prefix, address, map_unit, map_width, map_height,"
                     + " version, created_at) VALUES (?, 'Test warehouse', 'ACTIVE', ?, 'Test address', 'M', 50, 50, 0, NOW())",
                     id, prefix);
-            jdbc.update("INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, storage_class,"
-                    + " is_pickable, is_putaway_target, status) VALUES (?, ?, 'AREA', ?, 'NORMAL', FALSE, FALSE, 'ACTIVE')",
+            jdbc.update("INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code,"
+                    + " is_pickable, is_putaway_target, status) VALUES (?, ?, 'AREA', ?, FALSE, FALSE, 'ACTIVE')",
                     location, id, area);
             jdbc.update("INSERT INTO warehouse.area (id, warehouse_id, location_id, code, type, name, x, y, width, length,"
                     + " rotation, is_obstacle, status) VALUES (?, ?, ?, 'RCV01', 'RECEIVING', 'x', 1, 1, 5, 5, 0, FALSE, 'ACTIVE')",

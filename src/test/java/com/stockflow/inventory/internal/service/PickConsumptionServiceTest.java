@@ -124,7 +124,7 @@ class PickConsumptionServiceTest {
     private final PickConsumptionService service = new PickConsumptionService(stockItems, ledger,
             new InventoryEventPublisher(publisher), locations, policies,
             new StockPackageContents(stockPackages, stockItems, locations), Clock.fixed(NOW, ZoneOffset.UTC),
-            cycleCounts, stockPackages);
+            cycleCounts, stockPackages, mock(CartonPlacement.class));
     private final List<StockItem> saved = new ArrayList<>();
     private final List<StockItem> merged = new ArrayList<>();
 

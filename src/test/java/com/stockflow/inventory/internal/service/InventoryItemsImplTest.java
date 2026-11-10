@@ -4,7 +4,6 @@ import com.stockflow.common.api.PageResponse;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.inventory.api.ItemLogistics;
 import com.stockflow.inventory.api.SkuRetirement;
-import com.stockflow.inventory.api.StorageClass;
 import com.stockflow.common.security.CurrentUserProvider;
 import com.stockflow.inventory.internal.repository.InventoryItemSearch;
 import com.stockflow.inventory.internal.repository.InventoryPolicyRepository;
@@ -50,8 +49,7 @@ class InventoryItemsImplTest {
     private final InventoryItemsImpl service = new InventoryItemsImpl(policies, search, users, retirement);
 
     private static ItemLogistics logistics(String unit, String barcode) {
-        return new ItemLogistics(unit, barcode, BigDecimal.ONE, null, null, null, null, null, null, null, 1, 1,
-                StorageClass.NORMAL, false, null);
+        return new ItemLogistics(unit, barcode, BigDecimal.ONE, null, null, null, null, null, null, null, 1, 1);
     }
 
     private ItemRow row(long version, String unit) {
@@ -93,16 +91,16 @@ class InventoryItemsImplTest {
         @DisplayName("search turns blank filters into no filter and trims the others")
         void searchNormalisesFilters() {
             when(search.items(any(), any(Pageable.class))).thenReturn(new PageImpl<>(List.of(
-                    new InventoryItemSearch.Row(ID, SKU, "PCS", "893", StorageClass.COLD))));
+                    new InventoryItemSearch.Row(ID, SKU, "PCS", "893"))));
 
             PageResponse<InventoryItems.Summary> page = service.search(
-                    new InventoryItems.ItemQuery("  ", " cup ", StorageClass.COLD, 0, 20));
+                    new InventoryItems.ItemQuery("  ", " cup ", 0, 20));
 
             ArgumentCaptor<InventoryItemSearch.Criteria> criteria =
                     ArgumentCaptor.forClass(InventoryItemSearch.Criteria.class);
             verify(search).items(criteria.capture(), any(Pageable.class));
             assertThat(criteria.getValue()).isEqualTo(
-                    new InventoryItemSearch.Criteria(null, "cup", StorageClass.COLD));
+                    new InventoryItemSearch.Criteria(null, "cup"));
             assertThat(page.items().get(0).sku()).isEqualTo(SKU);
         }
     }

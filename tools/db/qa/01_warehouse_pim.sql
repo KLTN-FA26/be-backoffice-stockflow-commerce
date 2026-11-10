@@ -53,32 +53,32 @@ INSERT INTO warehouse.zone (id, warehouse_id, name) VALUES (md5('qa:zone:HN')::u
 
 \echo '--- warehouse map'
 SELECT pg_temp.expect_ok('W0 a correct new bin (location first, owned by commit)', $q$
-    INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, storage_class, is_pickable, is_putaway_target, status)
-    VALUES (md5('qa:loc:C')::uuid, md5('demo:wh:HCM')::uuid, 'BIN', 'HCM-A01-1-C', 'OVERSIZE', TRUE, TRUE, 'ACTIVE');
+    INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, is_pickable, is_putaway_target, status)
+    VALUES (md5('qa:loc:C')::uuid, md5('demo:wh:HCM')::uuid, 'BIN', 'HCM-A01-1-C', TRUE, TRUE, 'ACTIVE');
     INSERT INTO warehouse.bin (id, level_id, location_id, code, x, y, width, length, rotation, type)
     VALUES (md5('qa:bin:C')::uuid, md5('demo:level:HCM-A01-1')::uuid, md5('qa:loc:C')::uuid, 'C', 0, 0, 1, 1, 0, 'STANDARD') $q$);
 SELECT pg_temp.expect_fail('W1 bin location code in area format', $q$
-    INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, storage_class, is_pickable, is_putaway_target, status)
-    VALUES (gen_random_uuid(), md5('demo:wh:HCM')::uuid, 'BIN', 'HCM-A01', 'NORMAL', TRUE, TRUE, 'ACTIVE') $q$);
+    INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, is_pickable, is_putaway_target, status)
+    VALUES (gen_random_uuid(), md5('demo:wh:HCM')::uuid, 'BIN', 'HCM-A01', TRUE, TRUE, 'ACTIVE') $q$);
 SELECT pg_temp.expect_fail('W2 old-style code HCM-A-01-02-B', $q$
-    INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, storage_class, is_pickable, is_putaway_target, status)
-    VALUES (gen_random_uuid(), md5('demo:wh:HCM')::uuid, 'BIN', 'HCM-A-01-02-B', 'NORMAL', TRUE, TRUE, 'ACTIVE') $q$);
+    INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, is_pickable, is_putaway_target, status)
+    VALUES (gen_random_uuid(), md5('demo:wh:HCM')::uuid, 'BIN', 'HCM-A-01-02-B', TRUE, TRUE, 'ACTIVE') $q$);
 SELECT pg_temp.expect_fail('W3 bin pointing at an AREA location', $q$
     INSERT INTO warehouse.bin (id, level_id, location_id, code, x, y, width, length, rotation, type)
     VALUES (gen_random_uuid(), md5('demo:level:HCM-A01-1')::uuid, md5('demo:loc:HCM-QC01')::uuid, 'Z', 0, 0, 1, 1, 0, 'STANDARD') $q$);
 SELECT pg_temp.expect_fail('W4 bin whose location is in another warehouse', $q$
-    INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, storage_class, is_pickable, is_putaway_target, status)
-    VALUES (md5('qa:loc:hn')::uuid, md5('qa:wh:HN')::uuid, 'BIN', 'HCM-A01-1-D', 'NORMAL', TRUE, TRUE, 'ACTIVE');
+    INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, is_pickable, is_putaway_target, status)
+    VALUES (md5('qa:loc:hn')::uuid, md5('qa:wh:HN')::uuid, 'BIN', 'HCM-A01-1-D', TRUE, TRUE, 'ACTIVE');
     INSERT INTO warehouse.bin (id, level_id, location_id, code, x, y, width, length, rotation, type)
     VALUES (gen_random_uuid(), md5('demo:level:HCM-A01-1')::uuid, md5('qa:loc:hn')::uuid, 'D', 0, 0, 1, 1, 0, 'STANDARD') $q$);
 SELECT pg_temp.expect_fail('W5 bin code that does not assemble into its location code', $q$
-    INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, storage_class, is_pickable, is_putaway_target, status)
-    VALUES (md5('qa:loc:e')::uuid, md5('demo:wh:HCM')::uuid, 'BIN', 'HCM-A01-1-E', 'NORMAL', TRUE, TRUE, 'ACTIVE');
+    INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, is_pickable, is_putaway_target, status)
+    VALUES (md5('qa:loc:e')::uuid, md5('demo:wh:HCM')::uuid, 'BIN', 'HCM-A01-1-E', TRUE, TRUE, 'ACTIVE');
     INSERT INTO warehouse.bin (id, level_id, location_id, code, x, y, width, length, rotation, type)
     VALUES (gen_random_uuid(), md5('demo:level:HCM-A01-1')::uuid, md5('qa:loc:e')::uuid, 'F', 0, 0, 1, 1, 0, 'STANDARD') $q$);
 SELECT pg_temp.expect_fail('W6 storage location owned by nobody at commit', $q$
-    INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, storage_class, is_pickable, is_putaway_target, status)
-    VALUES (gen_random_uuid(), md5('demo:wh:HCM')::uuid, 'AREA', 'HCM-LOST01', 'NORMAL', FALSE, FALSE, 'ACTIVE') $q$);
+    INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, is_pickable, is_putaway_target, status)
+    VALUES (gen_random_uuid(), md5('demo:wh:HCM')::uuid, 'AREA', 'HCM-LOST01', FALSE, FALSE, 'ACTIVE') $q$);
 SELECT pg_temp.expect_fail('W7 warehouse prefix changed (BR-13)',
     $q$ UPDATE warehouse.warehouse SET prefix = 'SGN' WHERE id = md5('demo:wh:HCM')::uuid $q$);
 SELECT pg_temp.expect_fail('W8 location code changed (BR-13)',
@@ -89,12 +89,12 @@ SELECT pg_temp.expect_fail('W10 NON_STORAGE area with a location', $q$
     UPDATE warehouse.area SET location_id = md5('demo:loc:HCM-QC01')::uuid WHERE code = 'OFFICE' $q$);
 SELECT pg_temp.expect_fail('W11 storage area without a location', $q$
     INSERT INTO warehouse.area (id, warehouse_id, code, type, name, x, y, width, length, rotation, is_obstacle, status)
-    VALUES (gen_random_uuid(), md5('demo:wh:HCM')::uuid, 'OVF01', 'OVERFLOW', 'x', 1, 1, 1, 1, 0, FALSE, 'ACTIVE') $q$);
+    VALUES (gen_random_uuid(), md5('demo:wh:HCM')::uuid, 'OVF99', 'OVERFLOW', 'x', 1, 1, 1, 1, 0, FALSE, 'ACTIVE') $q$);
 SELECT pg_temp.expect_fail('W12 shelf in a zone of another warehouse', $q$
     INSERT INTO warehouse.shelf (id, warehouse_id, zone_id, code, name, x, y, width, length, rotation, is_obstacle,
-        pick_north, pick_east, pick_south, pick_west, default_storage_class, status)
+        pick_north, pick_east, pick_south, pick_west, status)
     VALUES (gen_random_uuid(), md5('demo:wh:HCM')::uuid, md5('qa:zone:HN')::uuid, 'Z99', 'x', 1, 1, 1, 1, 0, TRUE,
-        TRUE, FALSE, FALSE, FALSE, 'NORMAL', 'ACTIVE') $q$);
+        TRUE, FALSE, FALSE, FALSE, 'ACTIVE') $q$);
 SELECT pg_temp.expect_fail('W13 door without open/closed state', $q$
     INSERT INTO warehouse.boundary (id, warehouse_id, type, start_x, start_y, end_x, end_y, is_passable)
     VALUES (gen_random_uuid(), md5('demo:wh:HCM')::uuid, 'DOOR', 0, 0, 0, 5, TRUE) $q$);
@@ -105,12 +105,12 @@ SELECT pg_temp.expect_fail('W15 half-defined map frame', $q$
 
 SELECT pg_temp.expect_fail('W16 shelf in a warehouse that does not exist (D-W1)', $q$
     INSERT INTO warehouse.shelf (id, warehouse_id, code, name, x, y, width, length, rotation, is_obstacle,
-        pick_north, pick_east, pick_south, pick_west, default_storage_class, status)
+        pick_north, pick_east, pick_south, pick_west, status)
     VALUES (gen_random_uuid(), gen_random_uuid(), 'Z98', 'x', 1, 1, 1, 1, 0, TRUE,
-        TRUE, FALSE, FALSE, FALSE, 'NORMAL', 'ACTIVE') $q$);
+        TRUE, FALSE, FALSE, FALSE, 'ACTIVE') $q$);
 SELECT pg_temp.expect_fail('W17 storage location in a warehouse that does not exist (D-W1)', $q$
-    INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, storage_class, is_pickable, is_putaway_target, status)
-    VALUES (gen_random_uuid(), gen_random_uuid(), 'AREA', 'XX-GHOST01', 'NORMAL', FALSE, FALSE, 'ACTIVE') $q$);
+    INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, is_pickable, is_putaway_target, status)
+    VALUES (gen_random_uuid(), gen_random_uuid(), 'AREA', 'XX-GHOST01', FALSE, FALSE, 'ACTIVE') $q$);
 
 \echo '--- product information management'
 INSERT INTO product.attributes (id, code, name, data_type) VALUES (md5('qa:attr:NOTE')::uuid, 'NOTE', 'Ghi chú', 'TEXT');
@@ -404,18 +404,6 @@ BEGIN
     FOR r IN SELECT p.code, p.status FROM product.products p
               WHERE p.status IN ('APPROVED', 'PUBLISHED') AND p.brand_id IS NULL ORDER BY p.code LOOP
         RAISE NOTICE 'P29 report: product % (%) has no brand', r.code, r.status;
-    END LOOP;
-    FOR r IN SELECT a.row_data ->> 'code' AS code, i.sku, i.storage_class,
-                    (a.row_data ->> 'hazmat')::boolean AS hazmat, (a.row_data ->> 'oversized')::boolean AS oversized
-               FROM platform.legacy_archive a
-               JOIN product.variants v ON v.product_id = a.row_id
-               JOIN inventory.inventory_items i ON i.sku = v.sku
-              WHERE a.source_table = 'product.product'
-                AND ((a.row_data ->> 'hazmat')::boolean AND i.storage_class <> 'HAZMAT'
-                     OR (a.row_data ->> 'oversized')::boolean AND i.storage_class NOT IN ('HAZMAT', 'OVERSIZE'))
-              ORDER BY 1, 2 LOOP
-        RAISE NOTICE 'P29 report: legacy product % was hazmat=% oversized=% but SKU % is stored as %',
-            r.code, r.hazmat, r.oversized, r.sku, r.storage_class;
     END LOOP;
 END $$;
 

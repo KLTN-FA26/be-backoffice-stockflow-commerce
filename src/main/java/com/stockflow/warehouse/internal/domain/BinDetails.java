@@ -4,11 +4,12 @@ package com.stockflow.warehouse.internal.domain;
  * Everything about a bin that may change after it is created - not its code, which is part of its
  * location code.
  *
- * @param footprint            in the shelf's own frame, so moving the shelf never moves its bins
- * @param storageClassOverride {@code null} = the shelf's default class applies
+ * <p>The footprint's width and length are also two of the three measures a carton must fit within (kltn-docs 06
+ * BR-01) and of the bin's computed volume ({@code BinSize}); the third is its level's clear height.</p>
+ *
+ * @param footprint in the shelf's own frame, so moving the shelf never moves its bins
  */
-public record BinDetails(String description, Footprint footprint, BinType type,
-                         StorageClass storageClassOverride) {
+public record BinDetails(String description, Footprint footprint, BinType type) {
 
     static final int DESCRIPTION_MAX_LENGTH = 1000;
 

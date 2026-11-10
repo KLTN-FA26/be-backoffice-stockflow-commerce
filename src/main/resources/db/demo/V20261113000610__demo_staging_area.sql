@@ -6,10 +6,11 @@
 -- free floor below the print shop (PRD01, 26..38 x 12..20).
 -- =============================================================================
 
-INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, storage_class, capacity_units,
-                                        max_weight, is_pickable, is_putaway_target, status, created_by)
-VALUES (md5('demo:loc:HCM-STG01')::uuid, md5('demo:wh:HCM')::uuid, 'AREA', 'HCM-STG01', 'OVERSIZE', NULL, NULL,
-        FALSE, FALSE, 'ACTIVE', 'flyway');
+-- No storage class or unit capacity: V20261112000100 (team plan 5-4, earlier in version order) dropped both.
+INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, max_weight, is_pickable,
+                                        is_putaway_target, status, created_by)
+VALUES (md5('demo:loc:HCM-STG01')::uuid, md5('demo:wh:HCM')::uuid, 'AREA', 'HCM-STG01', NULL, FALSE, FALSE, 'ACTIVE',
+        'flyway');
 
 INSERT INTO warehouse.area (id, warehouse_id, location_id, code, type, name, x, y, width, length, rotation,
                             is_obstacle, status, created_by)

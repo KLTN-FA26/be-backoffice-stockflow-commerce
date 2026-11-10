@@ -44,6 +44,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  * the SKU's carton count - is received into a warehouse of its own whose bins the tests shape, so the hard rules for a
  * bin the clerk chose can each be broken in turn without touching the shared demo stock. Every task is one carton,
  * put away whole by scanning its LPN (kltn-docs 05 BR-08; team plan 4C-2): there are no loose tasks to confirm.
+ *
+ * <p>Team plan 5-4: the carton unit measures 50 x 40 x 30 cm (0.06 m³) and records no weight, so a carton weighs its
+ * 10 units of 0.5 kg. A bin takes it when the carton fits it dimension by dimension - turned on the horizontal if the
+ * item allows (06 BR-01) - and its computed volume and weight limit have room (05 BR-03); when no bin takes it, the
+ * warehouse's OVERFLOW area does (05 BR-13).</p>
  */
 @ProductionReceiptTest
 @Import(RecordedEvents.class)
@@ -108,17 +113,20 @@ class PutawayConfirmationIntegrationTest {
 
     private void area(UUID warehouseId, String code, String locationCode, String type, int x) {
         UUID location = Identifiers.newId();
-        jdbc.update("INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, storage_class,"
-                + " is_pickable, is_putaway_target, status) VALUES (?, ?, 'AREA', ?, 'NORMAL', FALSE, FALSE, 'ACTIVE')",
+        jdbc.update("INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code,"
+                + " is_pickable, is_putaway_target, status) VALUES (?, ?, 'AREA', ?, FALSE, FALSE, 'ACTIVE')",
                 location, warehouseId, locationCode);
         jdbc.update("INSERT INTO warehouse.area (id, warehouse_id, location_id, code, type, name, x, y, width, length,"
                 + " rotation, is_obstacle, status) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 5, 5, 0, FALSE, 'ACTIVE')",
                 Identifiers.newId(), warehouseId, location, code, type, code, x);
     }
 
-    /** A bin on a shelf of its own, a putaway target of {@code storageClass}; null limits mean none. */
-    private String bin(UUID warehouseId, String name, String storageClass, Integer capacity, Integer maxWeight,
-                       String status) {
+    /**
+     * A bin on a shelf of its own, a putaway target: {@code width} x {@code length} m on a level {@code clearHeight}
+     * m clear (its volume is their product); a null weight limit means none.
+     */
+    private String bin(UUID warehouseId, String name, String width, String length, String clearHeight,
+                       Integer maxWeight, String status) {
         String code = prefix + "-" + name + "-1-A";
         tx.executeWithoutResult(s -> {
             UUID zone = Identifiers.newId();
@@ -131,27 +139,44 @@ class PutawayConfirmationIntegrationTest {
             jdbc.update("""
                     INSERT INTO warehouse.shelf (id, warehouse_id, zone_id, code, name, x, y, width, length, rotation,
                                                  is_obstacle, pick_north, pick_east, pick_south, pick_west,
-                                                 default_storage_class, status)
-                    VALUES (?, ?, ?, ?, 'Shelf', ?, 30, 10, 1.2, 0, TRUE, FALSE, FALSE, TRUE, FALSE, 'NORMAL',
+                                                 status)
+                    VALUES (?, ?, ?, ?, 'Shelf', ?, 30, 10, 1.2, 0, TRUE, FALSE, FALSE, TRUE, FALSE,
                             'ACTIVE')""", shelf, warehouseId, zone, name, x);
             jdbc.update("""
                     INSERT INTO warehouse.shelf_level (id, shelf_id, level_index, elevation, usable_height, max_weight)
-                    VALUES (?, ?, 1, 0, 1.4, 500)""", level, shelf);
+                    VALUES (?, ?, 1, 0, ?::numeric, 500)""", level, shelf, clearHeight);
             jdbc.update("""
-                    INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, storage_class,
-                                                            capacity_units, max_weight, is_pickable,
+                    INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, max_weight, is_pickable,
                                                             is_putaway_target, status)
-                    VALUES (?, ?, 'BIN', ?, ?, ?, ?, TRUE, TRUE, ?)""", location, warehouseId, code, storageClass,
-                    capacity, maxWeight, status);
+                    VALUES (?, ?, 'BIN', ?, ?, TRUE, TRUE, ?)""", location, warehouseId, code, maxWeight, status);
             jdbc.update("""
                     INSERT INTO warehouse.bin (id, level_id, location_id, code, x, y, width, length, rotation, type)
-                    VALUES (?, ?, ?, 'A', 0, 0, 5, 1.2, 0, 'PALLET')""", Identifiers.newId(), level, location);
+                    VALUES (?, ?, ?, 'A', 0, 0, ?::numeric, ?::numeric, 0, 'PALLET')""", Identifiers.newId(), level,
+                    location, width, length);
         });
         return code;
     }
 
+    /** 5 m x 1.2 m x 1.4 m: 8.4 m³, room for a hundred cartons. */
     private String roomyBin(String name) {
-        return bin(warehouse, name, "NORMAL", 500, 500, "ACTIVE");
+        return bin(warehouse, name, "5", "1.2", "1.4", 500, "ACTIVE");
+    }
+
+    /** Exactly one carton: 0.5 m x 0.4 m x 0.3 m. */
+    private String oneCartonBin(String name) {
+        return bin(warehouse, name, "0.4", "0.5", "0.3", 500, "ACTIVE");
+    }
+
+    /** The warehouse's OVERFLOW area. */
+    private String overflowArea() {
+        String code = prefix + "-OVF01";
+        tx.executeWithoutResult(s -> area(warehouse, "OVF01", code, "OVERFLOW", 10));
+        return code;
+    }
+
+    private void moveByHand(String lpn, String to) {
+        inventory.moveStockPackages(new MoveStockPackagesCommand(lpn, to, MoveReference.MOVE_TASK, UUID.randomUUID(),
+                clerk));
     }
 
     private BusinessException refusal(Runnable confirm) {
@@ -254,17 +279,16 @@ class PutawayConfirmationIntegrationTest {
             jdbc.update("""
                     INSERT INTO warehouse.shelf (id, warehouse_id, zone_id, code, name, x, y, width, length, rotation,
                                                  is_obstacle, pick_north, pick_east, pick_south, pick_west,
-                                                 default_storage_class, status)
-                    VALUES (?, ?, ?, 'B01', 'Shelf', 5, 30, 10, 1.2, 0, TRUE, FALSE, FALSE, TRUE, FALSE, 'NORMAL',
+                                                 status)
+                    VALUES (?, ?, ?, 'B01', 'Shelf', 5, 30, 10, 1.2, 0, TRUE, FALSE, FALSE, TRUE, FALSE,
                             'ACTIVE')""", shelf, elsewhere, zone);
             jdbc.update("""
                     INSERT INTO warehouse.shelf_level (id, shelf_id, level_index, elevation, usable_height, max_weight)
                     VALUES (?, ?, 1, 0, 1.4, 500)""", level, shelf);
             jdbc.update("""
-                    INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, storage_class,
-                                                            capacity_units, max_weight, is_pickable,
+                    INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, max_weight, is_pickable,
                                                             is_putaway_target, status)
-                    VALUES (?, ?, 'BIN', ?, 'NORMAL', 500, 500, TRUE, TRUE, 'ACTIVE')""", location, elsewhere, code);
+                    VALUES (?, ?, 'BIN', ?, 500, TRUE, TRUE, 'ACTIVE')""", location, elsewhere, code);
             jdbc.update("""
                     INSERT INTO warehouse.bin (id, level_id, location_id, code, x, y, width, length, rotation, type)
                     VALUES (?, ?, ?, 'A', 0, 0, 5, 1.2, 0, 'PALLET')""", Identifiers.newId(), level, location);
@@ -277,24 +301,43 @@ class PutawayConfirmationIntegrationTest {
     @Test
     @DisplayName("a blocked bin: LOCATION_NOT_USABLE")
     void unusableBinRefused() {
-        String bin = bin(warehouse, "A01", "NORMAL", 500, 500, "BLOCKED");
+        String bin = bin(warehouse, "A01", "5", "1.2", "1.4", 500, "BLOCKED");
 
         assertThat(refusal(() -> confirmCarton(cartonTask, lpn1, bin)).errorCode()).isEqualTo(ErrorCode.LOCATION_NOT_USABLE);
     }
 
     @Test
-    @DisplayName("a bin of another storage class: LOCATION_STORAGE_CLASS_MISMATCH")
-    void wrongClassRefused() {
-        String bin = bin(warehouse, "A01", "COLD", 500, 500, "ACTIVE");
+    @DisplayName("06 BR-01: a bin the carton does not fit either way: CARTON_DOES_NOT_FIT_BIN, nothing moves")
+    void cartonDoesNotFitRefused() {
+        String narrow = bin(warehouse, "A01", "0.45", "0.45", "1.4", 500, "ACTIVE");
+        String low = bin(warehouse, "A02", "5", "1.2", "0.29", 500, "ACTIVE");
 
-        assertThat(refusal(() -> confirmCarton(cartonTask, lpn1, bin)).errorCode())
-                .isEqualTo(ErrorCode.LOCATION_STORAGE_CLASS_MISMATCH);
+        assertThat(refusal(() -> confirmCarton(cartonTask, lpn1, narrow)).errorCode())
+                .isEqualTo(ErrorCode.CARTON_DOES_NOT_FIT_BIN);
+        assertThat(refusal(() -> confirmCarton(cartonTask, lpn1, low)).errorCode())
+                .isEqualTo(ErrorCode.CARTON_DOES_NOT_FIT_BIN);
+        assertThat(ledgerLines(cartonTask)).isZero();
     }
 
     @Test
-    @DisplayName("a bin the units do not fit in: LOCATION_CAPACITY_EXCEEDED")
+    @DisplayName("06 BR-01: a carton turned on the horizontal fits a bin 0.5 wide x 0.4 long - unless its item may not be turned")
+    void turnedOnTheHorizontal() {
+        String turned = bin(warehouse, "A01", "0.5", "0.4", "0.3", 500, "ACTIVE");
+        tx.executeWithoutResult(s -> jdbc.update("update inventory.inventory_items set rotatable = false where sku = ?",
+                sku));
+        assertThat(refusal(() -> confirmCarton(cartonTask, lpn1, turned)).errorCode())
+                .isEqualTo(ErrorCode.CARTON_DOES_NOT_FIT_BIN);
+
+        tx.executeWithoutResult(s -> jdbc.update("update inventory.inventory_items set rotatable = true where sku = ?",
+                sku));
+        assertThat(confirmCarton(cartonTask, lpn1, turned).status()).isEqualTo("DONE");
+    }
+
+    @Test
+    @DisplayName("BR-03: a bin whose computed volume is taken by another carton: LOCATION_CAPACITY_EXCEEDED")
     void capacityRefused() {
-        String bin = bin(warehouse, "A01", "NORMAL", 9, 500, "ACTIVE");
+        String bin = oneCartonBin("A01");
+        moveByHand(lpn2, bin);
 
         assertThat(refusal(() -> confirmCarton(cartonTask, lpn1, bin)).errorCode())
                 .isEqualTo(ErrorCode.LOCATION_CAPACITY_EXCEEDED);
@@ -306,7 +349,7 @@ class PutawayConfirmationIntegrationTest {
     void weightRefused() {
         tx.executeWithoutResult(t -> jdbc.update("update inventory.inventory_items set weight_kg = 0.5 where sku = ?",
                 sku));
-        String bin = bin(warehouse, "A01", "NORMAL", 500, 4, "ACTIVE");   // 10 units of 0.5 kg weigh 5
+        String bin = bin(warehouse, "A01", "5", "1.2", "1.4", 4, "ACTIVE");   // 10 units of 0.5 kg weigh 5
 
         assertThat(refusal(() -> confirmCarton(cartonTask, lpn1, bin)).errorCode())
                 .isEqualTo(ErrorCode.LOCATION_CAPACITY_EXCEEDED);
@@ -381,9 +424,8 @@ class PutawayConfirmationIntegrationTest {
     @DisplayName("a carton already moved by hand into the chosen bin is put away in place: AVAILABLE, in stock, DONE,"
             + " one ledger line from the bin to the bin; a bin with room for just this carton is not full of it twice")
     void cartonAlreadyInTheChosenBin() {
-        String bin = bin(warehouse, "A01", "NORMAL", 10, 500, "ACTIVE");
-        inventory.moveStockPackages(new MoveStockPackagesCommand(lpn1, bin, MoveReference.MOVE_TASK,
-                UUID.randomUUID(), clerk));
+        String bin = oneCartonBin("A01");
+        moveByHand(lpn1, bin);
 
         TaskView done = confirmCarton(cartonTask, lpn1, bin);
 
@@ -416,5 +458,86 @@ class PutawayConfirmationIntegrationTest {
         assertThat(jdbc.queryForObject("select status from inventory.stock_package where lpn = ?", String.class,
                 lpn1)).isEqualTo("IN_STOCK");
         assertThat(recorded.matching(PutawayCompleted.class, e -> e.putawayTaskId().equals(cartonTask))).hasSize(1);
+    }
+
+    @Test
+    @DisplayName("05 BR-13: reading a task whose carton no bin takes names the OVERFLOW area; confirming into it puts "
+            + "the carton away AVAILABLE, the task DONE, and ATP grows")
+    void overflowWhenNoBinTakesTheCarton() {
+        String narrow = bin(warehouse, "A01", "0.45", "0.45", "1.4", 500, "ACTIVE");
+        String overflow = overflowArea();
+        int before = inventory.availableToPromise(new Sku(sku));
+
+        TaskView read = putaway.get(cartonTask);
+        assertThat(read.suggestions()).isEmpty();
+        assertThat(read.overflowLocationCodes()).containsExactly(overflow);
+
+        TaskView done = confirmCarton(cartonTask, lpn1, overflow.toLowerCase(Locale.ROOT));
+
+        assertThat(done.status()).isEqualTo("DONE");
+        assertThat(done.targetLocationCode()).isEqualTo(overflow);
+        assertThat(jdbc.queryForList("""
+                SELECT s.status, s.location_code FROM inventory.stock_item s
+                  JOIN inventory.stock_package p ON p.id = s.stock_package_id WHERE p.lpn = ?""", lpn1))
+                .singleElement().satisfies(row -> {
+                    assertThat(row.get("status")).isEqualTo("AVAILABLE");
+                    assertThat(row.get("location_code")).isEqualTo(overflow);
+                });
+        assertThat(inventory.availableToPromise(new Sku(sku))).isEqualTo(before + 10);
+        assertThat(recorded.matching(PutawayCompleted.class, e -> e.putawayTaskId().equals(cartonTask))).hasSize(1);
+        assertThat(narrow).isNotNull();
+    }
+
+    @Test
+    @DisplayName("05 BR-13: OVERFLOW is refused while a bin still takes the carton: PUTAWAY_OVERFLOW_NOT_ALLOWED")
+    void overflowRefusedWhileABinTakesIt() {
+        roomyBin("A01");
+        String overflow = overflowArea();
+
+        assertThat(putaway.get(cartonTask).overflowLocationCodes()).isEmpty();
+        assertThat(refusal(() -> confirmCarton(cartonTask, lpn1, overflow)).errorCode())
+                .isEqualTo(ErrorCode.PUTAWAY_OVERFLOW_NOT_ALLOWED);
+        assertThat(ledgerLines(cartonTask)).isZero();
+    }
+
+    @Test
+    @DisplayName("11 BR-10: a hand move into a bin the carton does not fit is refused whole; into an area, size is not checked")
+    void movesCheckTheFitToo() {
+        String narrow = bin(warehouse, "A01", "0.45", "0.45", "1.4", 500, "ACTIVE");
+        String overflow = overflowArea();
+
+        assertThat(org.junit.jupiter.api.Assertions.assertThrows(BusinessException.class,
+                () -> inventory.moveStockPackages(new MoveStockPackagesCommand(List.of(lpn1, lpn2), narrow,
+                        MoveReference.MOVE_TASK, UUID.randomUUID(), clerk))).errorCode())
+                .isEqualTo(ErrorCode.CARTON_DOES_NOT_FIT_BIN);
+        assertThat(jdbc.queryForList("select location_code from inventory.stock_package where lpn in (?, ?)",
+                String.class, lpn1, lpn2)).containsOnly(receiving);
+
+        moveByHand(lpn1, overflow);
+        assertThat(jdbc.queryForObject("select location_code from inventory.stock_package where lpn = ?",
+                String.class, lpn1)).isEqualTo(overflow);
+    }
+
+    @Test
+    @DisplayName("tg_stock_package_fits_bin: the database refuses a carton written into a bin it does not fit")
+    void theDatabaseSaysItToo() {
+        String narrow = bin(warehouse, "A01", "0.45", "0.45", "1.4", 500, "ACTIVE");
+        String turned = bin(warehouse, "A02", "0.5", "0.4", "0.3", 500, "ACTIVE");
+
+        String carton = """
+                INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty,
+                                                     location_code)
+                SELECT ?, ?, p.inventory_item_id, p.uom_conversion_id, 10, ? FROM inventory.stock_package p
+                 WHERE p.lpn = ?""";
+        // Each in a transaction rolled back: only the row trigger is under test, not the carton's stock rows.
+        assertThat(org.junit.jupiter.api.Assertions.assertThrows(org.springframework.dao.DataAccessException.class,
+                () -> tx.executeWithoutResult(s -> {
+                    s.setRollbackOnly();
+                    jdbc.update(carton, Identifiers.newId(), "T-NARROW-" + prefix, narrow, lpn1);
+                }))).hasMessageContaining("does not fit bin");
+        tx.executeWithoutResult(s -> {
+            s.setRollbackOnly();
+            assertThat(jdbc.update(carton, Identifiers.newId(), "T-TURNED-" + prefix, turned, lpn1)).isEqualTo(1);
+        });
     }
 }

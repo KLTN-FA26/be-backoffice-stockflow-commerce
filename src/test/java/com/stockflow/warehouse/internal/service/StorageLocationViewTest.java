@@ -1,8 +1,8 @@
 package com.stockflow.warehouse.internal.service;
 
 import com.stockflow.warehouse.api.StorageLocationView;
+import com.stockflow.warehouse.internal.domain.AreaType;
 import com.stockflow.warehouse.internal.domain.LocationStatus;
-import com.stockflow.warehouse.internal.domain.StorageClass;
 import com.stockflow.warehouse.internal.domain.StorageLocationKind;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -22,7 +22,7 @@ class StorageLocationViewTest {
     @DisplayName("the api's enums have exactly the domain's constants")
     void enumsMatchTheDomain() {
         assertThat(names(StorageLocationView.Kind.values())).isEqualTo(names(StorageLocationKind.values()));
-        assertThat(names(StorageLocationView.StorageClass.values())).isEqualTo(names(StorageClass.values()));
+        assertThat(names(StorageLocationView.AreaType.values())).isEqualTo(names(AreaType.values()));
         assertThat(names(StorageLocationView.Status.values())).isEqualTo(names(LocationStatus.values()));
     }
 

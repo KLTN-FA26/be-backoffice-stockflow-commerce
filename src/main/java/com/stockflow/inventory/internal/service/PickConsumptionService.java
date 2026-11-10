@@ -84,13 +84,15 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
     private final Clock clock;
     private final com.stockflow.inventory.internal.domain.CycleCountRepository cycleCounts;
     private final StockPackageRepository stockPackages;
+    private final CartonPlacement placement;
 
     PickConsumptionService(StockItemRepository stockItems, StockMovementLog ledger, InventoryEventPublisher events,
                            LocationDirectory locations, InventoryPolicyRepository policies,
                            StockPackageContents cartons, Clock clock,
                            com.stockflow.inventory.internal.domain.CycleCountRepository cycleCounts,
-                           StockPackageRepository stockPackages) {
+                           StockPackageRepository stockPackages, CartonPlacement placement) {
         this.stockPackages = stockPackages;
+        this.placement = placement;
         this.cycleCounts = cycleCounts;
         this.stockItems = stockItems;
         this.ledger = ledger;
@@ -226,6 +228,9 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
             throw new BusinessException(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE, ("Pick line %s took loose stock; only a "
                     + "whole carton is put back (kltn-docs 07 §4.5 step 14)").formatted(command.pickLineId()));
         }
+        // Onto a bin, the carton must fit it (kltn-docs 07 BR-12, 06 BR-01; team plan 5-4); one that fits no bin goes to an
+        // OVERFLOW area, which takes any size. An area is not judged.
+        placement.requireFits(target.code(), rowView.stockPackageId());
         StockPackage cartonView = stockPackages.findById(rowView.stockPackageId()).orElseThrow(() ->
                 new IllegalStateException("No stock package " + rowView.stockPackageId().value()));
         if (!cartonView.lpn().equalsIgnoreCase(command.lpn().trim())) {

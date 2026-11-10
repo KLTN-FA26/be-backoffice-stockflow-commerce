@@ -52,10 +52,9 @@ class InventoryItemsImpl implements InventoryItems {
     @Override
     @Transactional(readOnly = true)
     public PageResponse<Summary> search(ItemQuery query) {
-        var criteria = new InventoryItemSearch.Criteria(blankToNull(query.sku()), blankToNull(query.q()),
-                query.storageClass());
+        var criteria = new InventoryItemSearch.Criteria(blankToNull(query.sku()), blankToNull(query.q()));
         return Pages.toResponse(search.items(criteria, Pages.of(query.page(), query.size()))
-                .map(r -> new Summary(r.id(), r.sku(), r.unitOfMeasure(), r.barcode(), r.storageClass())));
+                .map(r -> new Summary(r.id(), r.sku(), r.unitOfMeasure(), r.barcode())));
     }
 
     private static String blankToNull(String value) {

@@ -94,7 +94,7 @@ class PickListServiceTest {
         when(orders.findById(task.getOrderId())).thenReturn(Optional.of(FulfillmentFixtures.orderWith(
                 task.getOrderId(), OrderStatus.PICKING, List.of(), null)));
         when(itemControls.logistics(any())).thenAnswer(call -> new InventoryItemLogistics("X", 0, new ItemLogistics(
-                "PCS", "8930000000017", null, null, null, null, null, null, null, null, 1, 1, null, false, null)));
+                "PCS", "8930000000017", null, null, null, null, null, null, null, null, 1, 1)));
     }
 
     private PickLineJpaEntity line(String sku, String location, int allocated, UUID reservation) {
@@ -134,7 +134,7 @@ class PickListServiceTest {
         private void locationsIn(UUID warehouse, String... codes) {
             for (String code : codes) {
                 when(warehouses.findLocation(code)).thenReturn(Optional.of(new StorageLocationView(UUID.randomUUID(),
-                        StorageLocationView.Kind.BIN, warehouse, code, null, null, null, true)));
+                        StorageLocationView.Kind.BIN, warehouse, code, null, null, true)));
             }
         }
 
@@ -579,7 +579,7 @@ class PickListServiceTest {
             when(inventory.holds(any())).thenReturn(List.of(new HoldView(hold, "SKU-A", location, "LOT-2", 5,
                     HoldView.Status.HELD, null, "LPN-NEW", true)));
             when(warehouses.findLocation(location)).thenReturn(Optional.of(new StorageLocationView(UUID.randomUUID(),
-                    StorageLocationView.Kind.BIN, WAREHOUSE, location, null, null, null, true)));
+                    StorageLocationView.Kind.BIN, WAREHOUSE, location, null, null, true)));
         }
 
         @Test
@@ -650,7 +650,7 @@ class PickListServiceTest {
             when(inventory.reallocate(any())).thenReturn(List.of(new StockReservation(UUID.randomUUID(),
                     UUID.randomUUID(), "HN-B-01", "LOT-2", 5)));
             when(warehouses.findLocation("HN-B-01")).thenReturn(Optional.of(new StorageLocationView(UUID.randomUUID(),
-                    StorageLocationView.Kind.BIN, OTHER_WAREHOUSE, "HN-B-01", null, null, null, true)));
+                    StorageLocationView.Kind.BIN, OTHER_WAREHOUSE, "HN-B-01", null, null, true)));
 
             assertThat(refusal(() -> service.reallocateShort(task.getId(), row.getId(), actor)).errorCode())
                     .isEqualTo(ErrorCode.FULFILLMENT_HOLDS_OUTSIDE_WAREHOUSE);
@@ -677,7 +677,7 @@ class PickListServiceTest {
 
         private void binOf(UUID warehouse, boolean usable, StorageLocationView.Kind kind) {
             when(warehouses.findLocation("HCM-A-05")).thenReturn(Optional.of(new StorageLocationView(UUID.randomUUID(),
-                    kind, warehouse, "HCM-A-05", null, null, null, usable)));
+                    kind, warehouse, "HCM-A-05", null, null, usable)));
         }
 
         @Test
@@ -710,7 +710,7 @@ class PickListServiceTest {
 
         private void areaOf(String code, UUID warehouse, StorageLocationView.AreaType type, boolean usable) {
             when(warehouses.findLocation(code)).thenReturn(Optional.of(new StorageLocationView(UUID.randomUUID(),
-                    StorageLocationView.Kind.AREA, warehouse, code, null, null, null, usable, type)));
+                    StorageLocationView.Kind.AREA, warehouse, code, null, null, usable, type, null)));
         }
 
         @Test
@@ -991,7 +991,7 @@ class PickListServiceTest {
             when(inventory.holds(any())).thenAnswer(call -> List.of(new HoldView(hold, "SKU-A", location, "LOT-1", 4,
                     HoldView.Status.HELD, null, lpn, true)));
             when(warehouses.findLocation(location)).thenReturn(Optional.of(new StorageLocationView(UUID.randomUUID(),
-                    StorageLocationView.Kind.BIN, WAREHOUSE, location, null, null, null, true)));
+                    StorageLocationView.Kind.BIN, WAREHOUSE, location, null, null, true)));
         }
 
         @Test
@@ -1075,9 +1075,9 @@ class PickListServiceTest {
             PickLineJpaEntity picked = line("SKU-B", "HCM-A-02", 2, otherHold);
             picked.apply(2, PickLineStatus.PICKED, picker, NOW, NOW, "HCM-A-02", lpnOf("SKU-B"), 0, null, null, null);
             when(warehouses.findLocation("HCM-A-01")).thenReturn(Optional.of(new StorageLocationView(UUID.randomUUID(),
-                    StorageLocationView.Kind.BIN, WAREHOUSE, "HCM-A-01", null, null, null, true)));
+                    StorageLocationView.Kind.BIN, WAREHOUSE, "HCM-A-01", null, null, true)));
             when(warehouses.findLocation("HCM-A-02")).thenReturn(Optional.of(new StorageLocationView(UUID.randomUUID(),
-                    StorageLocationView.Kind.BIN, WAREHOUSE, "HCM-A-02", null, null, null, true)));
+                    StorageLocationView.Kind.BIN, WAREHOUSE, "HCM-A-02", null, null, true)));
 
             var fromStaging = service.putBack(task.getId(), staged.getId(), "HCM-A-01", "LPN-SKU-A", actor);
             var fromDispatch = service.putBack(task.getId(), picked.getId(), "HCM-A-02", "LPN-SKU-B", actor);

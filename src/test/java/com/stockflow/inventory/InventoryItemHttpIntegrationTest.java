@@ -43,16 +43,15 @@ class InventoryItemHttpIntegrationTest {
         suffix = UUID.randomUUID().toString().substring(0, 8).toUpperCase(Locale.ROOT);
     }
 
-    /** A variant makes its inventory item; the barcode and storage class are then set on that item. */
-    private UUID item(String sku, String barcode, String storageClass) {
+    /** A variant makes its inventory item; the barcode is then set on that item. */
+    private UUID item(String sku, String barcode) {
         return tx.execute(s -> {
             UUID product = Identifiers.newId();
             jdbc.update("insert into product.products(id,code,name,slug) values (?,?,?,?)", product, sku,
                     "Item fixture", slugOf(sku));
             jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature)"
                     + " values (?,?,?,'Item fixture','')", Identifiers.newId(), product, sku);
-            jdbc.update("update inventory.inventory_items set barcode=?, storage_class=? where sku=?", barcode,
-                    storageClass, sku);
+            jdbc.update("update inventory.inventory_items set barcode=? where sku=?", barcode, sku);
             return jdbc.queryForObject("select id from inventory.inventory_items where sku=?", UUID.class, sku);
         });
     }
@@ -67,13 +66,13 @@ class InventoryItemHttpIntegrationTest {
     }
 
     private static String logisticsBody(long version) {
-        return "{\"version\":" + version + ",\"unitOfMeasure\":\"EACH\",\"storageClass\":\"NORMAL\","
-                + "\"weightKg\":0.120,\"requiresAdultSignature\":false}";
+        return "{\"version\":" + version + ",\"unitOfMeasure\":\"EACH\","
+                + "\"weightKg\":0.120}";
     }
 
     @Test
     void detailHasLogisticsAndNoPolicy() throws Exception {
-        UUID id = item("HTTP-D-" + suffix, null, "NORMAL");
+        UUID id = item("HTTP-D-" + suffix, null);
         mvc.perform(get(BASE + "/" + id))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.id").value(id.toString()))
@@ -85,7 +84,7 @@ class InventoryItemHttpIntegrationTest {
 
     @Test
     void putLogisticsReturnsTheWholeItem() throws Exception {
-        UUID id = item("HTTP-L-" + suffix, null, "NORMAL");
+        UUID id = item("HTTP-L-" + suffix, null);
         long v = versionOf(id);
         mvc.perform(put(BASE + "/" + id + "/logistics").contentType(MediaType.APPLICATION_JSON)
                         .content(logisticsBody(v)))
@@ -98,7 +97,7 @@ class InventoryItemHttpIntegrationTest {
     /** The stock policy is the same for every SKU (kltn-docs 01 BR-17, team plan 5-5): there is nothing to configure. */
     @Test
     void thereIsNoPolicyToConfigure() throws Exception {
-        UUID id = item("HTTP-P-" + suffix, null, "NORMAL");
+        UUID id = item("HTTP-P-" + suffix, null);
         mvc.perform(put(BASE + "/" + id + "/policy").contentType(MediaType.APPLICATION_JSON)
                         .content("{\"version\":" + versionOf(id) + ",\"removalStrategy\":\"FIFO\",\"trackingMode\":\"LOT\"}"))
                 .andExpect(status().isNotFound());
@@ -106,7 +105,7 @@ class InventoryItemHttpIntegrationTest {
 
     @Test
     void packagingPreviewResolvesTheItemsOwnBox() throws Exception {
-        UUID id = item("HTTP-K-" + suffix, null, "NORMAL");
+        UUID id = item("HTTP-K-" + suffix, null);
         tx.executeWithoutResult(s -> jdbc.update("""
                 update inventory.inventory_items set weight_kg = 0.5, length_cm = 10, width_cm = 8, height_cm = 6,
                     package_weight_kg = 0.7, package_length_cm = 12, package_width_cm = 9, package_height_cm = 7
@@ -126,7 +125,7 @@ class InventoryItemHttpIntegrationTest {
 
     @Test
     void packagingPreviewOfAnItemWithoutDataIsMissingButStill200() throws Exception {
-        UUID id = item("HTTP-M-" + suffix, null, "NORMAL");
+        UUID id = item("HTTP-M-" + suffix, null);
         mvc.perform(get(BASE + "/" + id + "/packaging-preview").param("quantity", "1"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("MISSING"))
@@ -136,7 +135,7 @@ class InventoryItemHttpIntegrationTest {
 
     @Test
     void packagingPreviewRefusesABadQuantityAndAnUnknownItem() throws Exception {
-        UUID id = item("HTTP-Q-" + suffix, null, "NORMAL");
+        UUID id = item("HTTP-Q-" + suffix, null);
         mvc.perform(get(BASE + "/" + id + "/packaging-preview").param("quantity", "0"))
                 .andExpect(status().isBadRequest());
         mvc.perform(get(BASE + "/" + id + "/packaging-preview")).andExpect(status().isBadRequest());
@@ -160,8 +159,8 @@ class InventoryItemHttpIntegrationTest {
     @Test
     void listFiltersBySkuExactly() throws Exception {
         String sku = "HTTP-S-" + suffix;
-        UUID id = item(sku, null, "NORMAL");
-        item(sku + "-2", null, "NORMAL");
+        UUID id = item(sku, null);
+        item(sku + "-2", null);
         mvc.perform(get(BASE).param("sku", sku))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.totalElements").value(1))
@@ -172,7 +171,7 @@ class InventoryItemHttpIntegrationTest {
     void listFiltersByQOnSkuOrBarcode() throws Exception {
         String sku = "HTTP-Q-" + suffix;
         String barcode = "BC" + suffix + "XYZ";
-        UUID id = item(sku, barcode, "NORMAL");
+        UUID id = item(sku, barcode);
         mvc.perform(get(BASE).param("q", ("q-" + suffix).toLowerCase(Locale.ROOT)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.totalElements").value(1))
@@ -186,7 +185,7 @@ class InventoryItemHttpIntegrationTest {
     @Test
     void skuAndQCombineWithAnd() throws Exception {
         String sku = "HTTP-AQ-" + suffix;
-        UUID id = item(sku, null, "NORMAL");
+        UUID id = item(sku, null);
         mvc.perform(get(BASE).param("sku", sku).param("q", "aq-" + suffix.toLowerCase(Locale.ROOT)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.totalElements").value(1))
@@ -199,8 +198,8 @@ class InventoryItemHttpIntegrationTest {
     /** The schema only allows A-Z, 0-9, '.', '_' and '-' in a SKU, so a literal {@code %} is exercised through the barcode. */
     @Test
     void qPercentMatchesLiterally() throws Exception {
-        UUID literal = item("HTTP-PC1-" + suffix, "W%X-" + suffix, "NORMAL");
-        item("HTTP-PC2-" + suffix, "WAX-" + suffix, "NORMAL");
+        UUID literal = item("HTTP-PC1-" + suffix, "W%X-" + suffix);
+        item("HTTP-PC2-" + suffix, "WAX-" + suffix);
         mvc.perform(get(BASE).param("q", "W%X-" + suffix))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.totalElements").value(1))
@@ -209,8 +208,8 @@ class InventoryItemHttpIntegrationTest {
 
     @Test
     void qUnderscoreMatchesLiterally() throws Exception {
-        UUID literal = item("W_X-" + suffix, null, "NORMAL");
-        item("WAX-" + suffix, null, "NORMAL");
+        UUID literal = item("W_X-" + suffix, null);
+        item("WAX-" + suffix, null);
         mvc.perform(get(BASE).param("q", "W_X-" + suffix))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.totalElements").value(1))
@@ -218,23 +217,22 @@ class InventoryItemHttpIntegrationTest {
     }
 
     @Test
-    void listFiltersByStorageClassAndRowsCarryNoPolicy() throws Exception {
+    void listRowsCarryNoStorageClassOrPolicy() throws Exception {
         String sku = "HTTP-C-" + suffix;
-        item(sku, null, "COLD");
-        mvc.perform(get(BASE).param("sku", sku).param("storageClass", "COLD"))
+        item(sku, null);
+        mvc.perform(get(BASE).param("sku", sku))
                 .andExpect(jsonPath("$.data.totalElements").value(1))
+                .andExpect(jsonPath("$.data.items[0].storageClass").doesNotExist())
                 .andExpect(jsonPath("$.data.items[0].trackingMode").doesNotExist())
                 .andExpect(jsonPath("$.data.items[0].policyConfigured").doesNotExist());
-        mvc.perform(get(BASE).param("sku", sku).param("storageClass", "NORMAL"))
-                .andExpect(jsonPath("$.data.totalElements").value(0));
     }
 
     @Test
     void listPagesInSkuOrder() throws Exception {
         String prefix = "HTTP-PG-" + suffix;
-        item(prefix + "-B", null, "NORMAL");
-        item(prefix + "-A", null, "NORMAL");
-        item(prefix + "-C", null, "NORMAL");
+        item(prefix + "-B", null);
+        item(prefix + "-A", null);
+        item(prefix + "-C", null);
         mvc.perform(get(BASE).param("q", prefix).param("size", "2"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.totalElements").value(3))

@@ -30,7 +30,7 @@ import java.util.regex.Pattern;
  * class of every new or edited draft, and of every submission.</p>
  *
  * <p>What is deliberately <b>not</b> on the product (the PIM model, docs 01): logistics — weight,
- * dimensions, package, storage class — belong to the inventory item of each SKU (BR-08), and images
+ * dimensions, package — belong to the inventory item of each SKU (BR-08), and images
  * belong to a variant (decision D5). The product's selling SKUs are its variants, created with the
  * product: one default variant whose SKU is the product code, or, for a product created with variant
  * axes, every combination of its options, SKUs by the code rule and the first one the default.

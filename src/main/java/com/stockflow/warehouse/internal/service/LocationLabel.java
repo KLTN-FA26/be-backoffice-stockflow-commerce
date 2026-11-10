@@ -1,6 +1,5 @@
 package com.stockflow.warehouse.internal.service;
 
-import com.stockflow.warehouse.internal.domain.StorageClass;
 import com.stockflow.warehouse.internal.domain.StorageLocationKind;
 
 import java.util.Objects;
@@ -13,11 +12,10 @@ import java.util.Objects;
  * @param areaName   the area's name; null for a bin
  */
 public record LocationLabel(String code, StorageLocationKind kind, String shelfCode, Integer levelIndex,
-                            String binCode, String areaName, StorageClass storageClass) {
+                            String binCode, String areaName) {
 
     public LocationLabel {
         Objects.requireNonNull(code, "code");
         Objects.requireNonNull(kind, "kind");
-        Objects.requireNonNull(storageClass, "storageClass");
     }
 }

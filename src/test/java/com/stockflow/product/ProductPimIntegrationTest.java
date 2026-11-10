@@ -8,7 +8,6 @@ import com.stockflow.common.security.DataScope;
 import com.stockflow.common.storage.FileUpload;
 import com.stockflow.common.storage.UploadInspection;
 import com.stockflow.inventory.api.ItemLogistics;
-import com.stockflow.inventory.api.StorageClass;
 import com.stockflow.product.api.CreateProductCommand;
 import com.stockflow.product.api.ListProductsQuery;
 import com.stockflow.product.api.ProductKind;
@@ -159,12 +158,11 @@ class ProductPimIntegrationTest {
 
         var logistics = new ItemLogistics("EACH", "893" + suffix.replaceAll("[^0-9]", "1"),
                 new BigDecimal("0.012"), new BigDecimal("8"), new BigDecimal("8"), new BigDecimal("10"),
-                new BigDecimal("6.2"), new BigDecimal("40"), new BigDecimal("30"), new BigDecimal("50"), 1, 50,
-                StorageClass.FRAGILE, false, null);
+                new BigDecimal("6.2"), new BigDecimal("40"), new BigDecimal("30"), new BigDecimal("50"), 1, 50);
         var after = items.describe(itemId, before.version(), logistics);
 
         assertThat(after.version()).isGreaterThan(before.version());
-        assertThat(after.logistics().storageClass()).isEqualTo(StorageClass.FRAGILE);
+        assertThat(after.logistics().packageHeightCm()).isEqualByComparingTo("50");
         assertThat(after.logistics().packSize()).isEqualTo(50);
         assertThatThrownBy(() -> items.describe(itemId, before.version(), logistics))
                 .isInstanceOfSatisfying(BusinessException.class,

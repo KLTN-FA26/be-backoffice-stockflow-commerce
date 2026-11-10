@@ -214,8 +214,8 @@ public class ProductionReceivables {
         UUID carton = Identifiers.newId();
         tx.executeWithoutResult(s -> {
             jdbc.update("""
-                    UPDATE inventory.inventory_items SET weight_kg = 0.02, length_cm = 9, width_cm = 9, height_cm = 12,
-                           storage_class = 'NORMAL' WHERE id = ?""", item);
+                    UPDATE inventory.inventory_items SET weight_kg = 0.02, length_cm = 9, width_cm = 9, height_cm = 12
+                           WHERE id = ?""", item);
             jdbc.update("""
                     INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, is_base,
                         weight_kg, length_cm, width_cm, height_cm, default_purchase, active, version, created_at,

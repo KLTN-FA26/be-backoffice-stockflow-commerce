@@ -87,7 +87,7 @@ class CartonQuarantineServiceTest {
         when(operations.quarantine(anyString(), anyString(), anyString(), any())).thenReturn(new StockPackageView(
                 cartonId.value(), LPN, LINE, "CUP-12OZ", UUID.randomUUID(), "CARTON", 10, 10, 10, AREA, "IN_STOCK"));
         when(warehouses.findLocation(AREA)).thenReturn(Optional.of(new StorageLocationView(areaId,
-                StorageLocationView.Kind.AREA, UUID.randomUUID(), AREA, StorageLocationView.StorageClass.NORMAL,
+                StorageLocationView.Kind.AREA, UUID.randomUUID(), AREA,
                 StorageLocationView.Status.ACTIVE, StorageLocationView.Status.ACTIVE, true)));
     }
 

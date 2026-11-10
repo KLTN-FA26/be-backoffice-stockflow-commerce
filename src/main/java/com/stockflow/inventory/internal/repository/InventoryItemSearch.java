@@ -1,6 +1,5 @@
 package com.stockflow.inventory.internal.repository;
 
-import com.stockflow.inventory.api.StorageClass;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 
@@ -12,14 +11,14 @@ import java.util.UUID;
  */
 public interface InventoryItemSearch {
 
-    record Row(UUID id, String sku, String unitOfMeasure, String barcode, StorageClass storageClass) {
+    record Row(UUID id, String sku, String unitOfMeasure, String barcode) {
     }
 
     /**
      * @param sku exact match
      * @param q   substring of the SKU or the barcode, case-insensitive; {@code %} and {@code _} match themselves
      */
-    record Criteria(String sku, String q, StorageClass storageClass) {
+    record Criteria(String sku, String q) {
     }
 
     /** Ordered by SKU, which is unique, so a page boundary never moves between two reads. */

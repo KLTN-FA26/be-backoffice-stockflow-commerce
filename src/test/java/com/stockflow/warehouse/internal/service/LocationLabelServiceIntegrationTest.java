@@ -7,7 +7,6 @@ import com.stockflow.support.DemoData;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
 import com.stockflow.warehouse.internal.domain.LabelSelection;
-import com.stockflow.warehouse.internal.domain.StorageClass;
 import com.stockflow.warehouse.internal.domain.StorageLocationKind;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.EntityManagerFactory;
@@ -103,26 +102,24 @@ class LocationLabelServiceIntegrationTest {
         jdbc.update("""
                 INSERT INTO warehouse.shelf (id, warehouse_id, zone_id, code, name, x, y, width, length, rotation,
                                              is_obstacle, pick_north, pick_east, pick_south, pick_west,
-                                             default_storage_class, status)
-                VALUES (?, ?, ?, 'A01', 'Shelf', 5, 5, 10, 1.2, 0, TRUE, FALSE, FALSE, TRUE, FALSE, 'OVERSIZE',
+                                             status)
+                VALUES (?, ?, ?, 'A01', 'Shelf', 5, 5, 10, 1.2, 0, TRUE, FALSE, FALSE, TRUE, FALSE,
                         'ACTIVE')""", shelf, warehouse, zone);
         jdbc.update("""
                 INSERT INTO warehouse.shelf_level (id, shelf_id, level_index, elevation, usable_height, max_weight)
                 VALUES (?, ?, 1, 0, 1.4, 500)""", level, shelf);
         jdbc.update("""
-                INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, storage_class,
-                                                        capacity_units, max_weight, is_pickable,
+                INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, max_weight, is_pickable,
                                                         is_putaway_target, status)
-                VALUES (?, ?, 'BIN', ?, 'OVERSIZE', 40, 250, TRUE, TRUE, 'ACTIVE')""",
+                VALUES (?, ?, 'BIN', ?, 250, TRUE, TRUE, 'ACTIVE')""",
                 binLocation, warehouse, prefix + "-A01-1-A");
         jdbc.update("""
                 INSERT INTO warehouse.bin (id, level_id, location_id, code, x, y, width, length, rotation, type)
                 VALUES (?, ?, ?, 'A', 0, 0, 5, 1.2, 0, 'PALLET')""", Identifiers.newId(), level, binLocation);
         jdbc.update("""
-                INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, storage_class,
-                                                        capacity_units, max_weight, is_pickable,
+                INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, max_weight, is_pickable,
                                                         is_putaway_target, status)
-                VALUES (?, ?, 'AREA', ?, 'NORMAL', NULL, NULL, FALSE, FALSE, 'ACTIVE')""",
+                VALUES (?, ?, 'AREA', ?, NULL, FALSE, FALSE, 'ACTIVE')""",
                 areaLocation, warehouse, prefix + "-RCV01");
         jdbc.update("""
                 INSERT INTO warehouse.area (id, warehouse_id, location_id, code, type, name, x, y, width, length,
@@ -179,15 +176,14 @@ class LocationLabelServiceIntegrationTest {
     @Test
     void aBinLabelCarriesItsPath() {
         LocationLabel label = labels.sheetFor(HCM, codesOf("HCM-A01-2-B")).labels().getFirst();
-        assertThat(label).isEqualTo(new LocationLabel("HCM-A01-2-B", StorageLocationKind.BIN, "A01", 2, "B", null,
-                StorageClass.OVERSIZE));
+        assertThat(label).isEqualTo(new LocationLabel("HCM-A01-2-B", StorageLocationKind.BIN, "A01", 2, "B", null));
     }
 
     @Test
     void anAreaLabelCarriesItsName() {
         LocationLabel label = labels.sheetFor(HCM, codesOf("HCM-RCV01")).labels().getFirst();
         assertThat(label).isEqualTo(new LocationLabel("HCM-RCV01", StorageLocationKind.AREA, null, null, null,
-                "Khu nhận hàng", StorageClass.OVERSIZE));
+                "Khu nhận hàng"));
     }
 
     // ------------------------------------------------------------------ the layout rule (D4)

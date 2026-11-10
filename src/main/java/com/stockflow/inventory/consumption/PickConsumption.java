@@ -46,6 +46,8 @@ public interface PickConsumption {
      *         {@code STOCK_PACKAGE_TAKEN_WHOLE} when the hold is not that whole carton, emptied by this pick (loose
      *         stock, part of a carton); {@code INVALID_STOCK_PACKAGE_TRANSITION}
      *         when the carton is not CONSUMED; {@code STOCK_STATUS_MISMATCH} when its row is not AVAILABLE stock;
+     *         {@code CARTON_DOES_NOT_FIT_BIN} when the carton does not fit that bin dimension by dimension (kltn-docs
+     *         07 BR-12: such a carton goes to an OVERFLOW area);
      *         {@code OUT_OF_DATA_SCOPE}
      */
     void putBack(PutBackCommand command);

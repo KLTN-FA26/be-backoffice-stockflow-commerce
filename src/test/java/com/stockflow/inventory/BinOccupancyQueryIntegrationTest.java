@@ -1,8 +1,10 @@
 package com.stockflow.inventory;
 
 import com.stockflow.common.id.Identifiers;
+import com.stockflow.inventory.internal.domain.PutawayRanker.Need;
 import com.stockflow.inventory.internal.domain.PutawayRanker.Occupancy;
 import com.stockflow.inventory.internal.repository.BinOccupancyQuery;
+import com.stockflow.support.CartonRows;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
 import org.junit.jupiter.api.BeforeEach;
@@ -13,6 +15,7 @@ import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -20,7 +23,11 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/** SCRUM-92: what a bin holds, summed over every SKU on it, as the putaway ranker reads it. */
+/**
+ * SCRUM-92, team plan 5-4: what a bin holds, summed over every SKU on it, and what a carton takes of it, as the putaway
+ * ranker reads them. A carton takes its carton unit's length x width x height and weighs the unit's full weight
+ * (kltn-docs 05 BR-03); loose units, history since V20261111000110, take no volume and weigh their unit weight.
+ */
 @IntegrationTest
 @Import(PostgresContainer.class)
 class BinOccupancyQueryIntegrationTest {
@@ -82,6 +89,55 @@ class BinOccupancyQueryIntegrationTest {
         assertThat(bin.weightKg().subtract(before.weightKg())).isEqualByComparingTo("30");
         assertThat(bin.holdsSku()).isTrue();
         assertThat(bin.holdsLot()).isTrue();
+    }
+
+    /** A carton unit of {@code factor} units of 50 x 40 x 30 cm (0.06 m³), weighing {@code weight} kg full or unknown. */
+    private UUID cartonUnit(String sku, int factor, String weight) {
+        return tx.execute(s -> {
+            UUID unit = CartonRows.unit(jdbc, sku, factor);
+            jdbc.update("update inventory.uom_conversions set length_cm = 50, width_cm = 40, height_cm = 30,"
+                    + " weight_kg = ?::numeric where id = ?", weight, unit);
+            return unit;
+        });
+    }
+
+    @Test
+    @DisplayName("cartons take their carton unit's volume and weigh it full; a carton left out is not counted")
+    void cartonsTakeTheirVolume() {
+        cartonUnit(skuA, 10, "12");
+        Occupancy before = query.occupancyOf(List.of(BIN), skuA, "LOT-1").getOrDefault(BIN, Occupancy.EMPTY);
+        List<CartonRows.Carton> cartons = tx.execute(s ->
+                CartonRows.stock(jdbc, skuA, BIN, 2, 10, "LOT-1", Instant.now()));
+
+        Occupancy both = query.occupancyOf(List.of(BIN), skuA, "LOT-1").get(BIN);
+        Occupancy one = query.occupancyOf(List.of(BIN), skuA, "LOT-1", cartons.get(0).id()).get(BIN);
+
+        assertThat(both.volumeM3().subtract(before.volumeM3())).isEqualByComparingTo("0.12");
+        assertThat(both.weightKg().subtract(before.weightKg())).isEqualByComparingTo("24");
+        assertThat(both.units() - before.units()).isEqualTo(20);
+        assertThat(one.volumeM3().subtract(before.volumeM3())).isEqualByComparingTo("0.06");
+        assertThat(one.weightKg().subtract(before.weightKg())).isEqualByComparingTo("12");
+        assertThat(both.holdsLot()).isTrue();
+    }
+
+    @Test
+    @DisplayName("what a carton takes: its unit's size, the item's rotatable flag, the unit's weight or else the units'")
+    void needsOfCartons() {
+        cartonUnit(skuA, 10, "12");
+        cartonUnit(skuB, 10, null);
+        tx.executeWithoutResult(s -> jdbc.update("update inventory.inventory_items set rotatable = false, weight_kg = 0.5"
+                + " where sku = ?", skuB));
+        UUID a = tx.execute(s -> CartonRows.stock(jdbc, skuA, BIN, 1, 10, "LOT-1", Instant.now())).get(0).id();
+        UUID b = tx.execute(s -> CartonRows.stock(jdbc, skuB, BIN, 1, 10, "LOT-1", Instant.now())).get(0).id();
+
+        Map<UUID, Need> needs = query.needsOf(List.of(a, b, UUID.randomUUID()));
+
+        assertThat(needs).containsOnlyKeys(a, b);
+        assertThat(needs.get(a).carton().volumeM3()).isEqualByComparingTo("0.06");
+        assertThat(needs.get(a).carton().rotatable()).isTrue();
+        assertThat(needs.get(a).weightKg()).isEqualByComparingTo("12");
+        assertThat(needs.get(b).carton().rotatable()).isFalse();
+        assertThat(needs.get(b).weightKg()).as("10 units x 0.5 kg").isEqualByComparingTo("5");
     }
 
     @Test

@@ -36,7 +36,7 @@ final class ShelfPersistenceMapper {
                 new Footprint(shelf.getX(), shelf.getY(), shelf.getWidth(), shelf.getLength(), shelf.getRotation()),
                 shelf.isObstacle(),
                 new PickFaces(shelf.isPickNorth(), shelf.isPickEast(), shelf.isPickSouth(), shelf.isPickWest()),
-                shelf.getDefaultStorageClass(), shelf.getStatus(),
+                shelf.getStatus(),
                 levels.stream().map(ShelfPersistenceMapper::toDomain).toList(), shelf.getVersion());
     }
 
@@ -50,7 +50,7 @@ final class ShelfPersistenceMapper {
         return new Bin(bin.getId(), bin.getCode(),
                 new BinDetails(bin.getDescription(),
                         new Footprint(bin.getX(), bin.getY(), bin.getWidth(), bin.getLength(), bin.getRotation()),
-                        bin.getType(), bin.getStorageClassOverride()),
+                        bin.getType()),
                 StorageLocationPersistenceMapper.toDomain(bin.getLocation()));
     }
 
@@ -60,7 +60,7 @@ final class ShelfPersistenceMapper {
         ShelfJpaEntity entity = new ShelfJpaEntity(shelf.id(), shelf.warehouseId(), shelf.zoneId(), shelf.code(),
                 shelf.name(), shelf.description(), f.x(), f.y(), f.width(), f.length(), f.rotation(),
                 shelf.obstacle(), faces.north(), faces.east(), faces.south(), faces.west(),
-                shelf.defaultStorageClass(), shelf.status());
+                shelf.status());
         shelf.levels().forEach(level -> entity.addLevel(toNewEntity(level)));
         return entity;
     }
@@ -77,7 +77,7 @@ final class ShelfPersistenceMapper {
         PickFaces faces = shelf.pickFaces();
         row.apply(shelf.zoneId(), shelf.name(), shelf.description(), f.x(), f.y(), f.width(), f.length(),
                 f.rotation(), shelf.obstacle(), faces.north(), faces.east(), faces.south(), faces.west(),
-                shelf.defaultStorageClass(), shelf.status());
+                shelf.status());
 
         Map<UUID, ShelfLevelJpaEntity> levelRows = new HashMap<>();
         levels.forEach(level -> levelRows.put(level.getId(), level));
@@ -114,13 +114,13 @@ final class ShelfPersistenceMapper {
     private static BinJpaEntity toNewEntity(Bin bin) {
         Footprint f = bin.footprint();
         return new BinJpaEntity(bin.id(), StorageLocationPersistenceMapper.toNewEntity(bin.location()), bin.code(), bin.details().description(), f.x(), f.y(),
-                f.width(), f.length(), f.rotation(), bin.details().type(), bin.details().storageClassOverride());
+                f.width(), f.length(), f.rotation(), bin.details().type());
     }
 
     private static void apply(Bin bin, BinJpaEntity row) {
         Footprint f = bin.footprint();
         row.apply(bin.details().description(), f.x(), f.y(), f.width(), f.length(), f.rotation(),
-                bin.details().type(), bin.details().storageClassOverride());
+                bin.details().type());
         StorageLocationPersistenceMapper.apply(bin.location(), row.getLocation());
     }
 }

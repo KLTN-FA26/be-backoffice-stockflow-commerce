@@ -112,6 +112,7 @@ class StockOperationsServiceImpl implements StockOperations {
     private final StockPackageRepository stockPackages;
     private final UomConversionRepository units;
     private final CycleCountRepository countLines;
+    private final CartonPlacement placement;
     /** Asked whether a carton is on its way into a bin before it is written off (team plan 4D-1). */
     private final com.stockflow.warehouse.api.PutawayTasks putawayTasks;
 
@@ -121,8 +122,9 @@ class StockOperationsServiceImpl implements StockOperations {
                                InventoryPolicyRepository policies, StockLots lots, StockPackageContents cartons,
                                InventoryEventPublisher events, StockPackageRepository stockPackages,
                                UomConversionRepository units, SlotsUnderCount underCount,
-                               CycleCountRepository countLines,
+                               CycleCountRepository countLines, CartonPlacement placement,
                                com.stockflow.warehouse.api.PutawayTasks putawayTasks) {
+        this.placement = placement;
         this.putawayTasks = putawayTasks;
         this.underCount = underCount;
         this.countLines = countLines;
@@ -224,6 +226,11 @@ class StockOperationsServiceImpl implements StockOperations {
      * asked through {@code claim} after the cartons are locked and before their rows are, which also takes their
      * advisory locks, so a count planned at the same moment either sees this move committed or waits for it.</p>
      *
+     * <p>Into a bin, whatever the reference, every carton that changes place must fit it dimension by dimension
+     * (kltn-docs 06 BR-01, 11 BR-10; {@link CartonPlacement}): one that does not refuses the whole move with
+     * {@code CARTON_DOES_NOT_FIT_BIN}. Into an area, size is not checked. Neither the bin's volume nor its load is
+     * weighed here: only a putaway does that (11 §4.1, open question C24).</p>
+     *
      * <p>One exception: a putaway ({@code PUTAWAY_TASK}, to AVAILABLE) of a carton somebody already moved by hand into
      * the chosen bin. It has nowhere to move to, so it is reclassified where it stands, and its ledger line is a
      * {@code STATUS_CHANGE} from the bin to the bin ({@code MOVE} names two different places). Every other move to
@@ -296,6 +303,9 @@ class StockOperationsServiceImpl implements StockOperations {
             }
             from.put(carton.id(), carton.location());
         }
+        // Into a bin, every carton must fit it (kltn-docs 06 BR-01, 11 BR-10): one that does not refuses the move.
+        placement.requireFits(toCode, cartons.stream().filter(carton -> !carton.location().equals(to))
+                .collect(Collectors.toMap(carton -> carton.id().value(), StockPackage::lpn)));
 
         List<StockItemId> rowIds = stockItems.findIdsInStockPackages(from.keySet());
         if (byHand) {

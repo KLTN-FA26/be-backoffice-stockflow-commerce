@@ -21,14 +21,14 @@ class AreaTest {
     private static final AtomicLong SEQUENCE = new AtomicLong();
     private static final Footprint FLOOR = new Footprint(new BigDecimal("40"), new BigDecimal("2"),
             new BigDecimal("15"), new BigDecimal("8"), 0);
-    private static final LocationSettings SETTINGS = new LocationSettings(500, new BigDecimal("2000"), false, true);
+    private static final LocationSettings SETTINGS = new LocationSettings(new BigDecimal("2000"), false, true);
 
     private static UUID newId() {
         return new UUID(0x0190a000_0000_7000L, 0x8000_0000_0000_0000L | SEQUENCE.incrementAndGet());
     }
 
     private static AreaDetails details(AreaType type) {
-        return new AreaDetails(type, "Khu " + type, FLOOR, false, null, SETTINGS);
+        return new AreaDetails(type, "Khu " + type, FLOOR, false, SETTINGS);
     }
 
     private static Area area(String code, AreaType type) {
@@ -45,7 +45,7 @@ class AreaTest {
     }
 
     @Test
-    @DisplayName("a storage area owns an ACTIVE AREA location coded prefix-area, NORMAL by default (#18 D9)")
+    @DisplayName("a storage area owns an ACTIVE AREA location coded prefix-area")
     void storageAreaOwnsALocation() {
         Area area = area("rcv02", AreaType.RECEIVING);
 
@@ -55,8 +55,7 @@ class AreaTest {
         assertThat(location.kind()).isEqualTo(StorageLocationKind.AREA);
         assertThat(location.locationCode()).isEqualTo("HN-RCV02");
         assertThat(location.status()).isEqualTo(LocationStatus.ACTIVE);
-        assertThat(location.storageClass()).isEqualTo(StorageClass.NORMAL);
-        assertThat(location.capacityUnits()).isEqualTo(500);
+        assertThat(location.maxWeight()).isEqualByComparingTo("2000");
         assertThat(location.id()).isNotEqualTo(area.id());
     }
 
@@ -72,7 +71,7 @@ class AreaTest {
     @Test
     @DisplayName("a storage type needs location settings; a code must fit a location code")
     void refusesBadInput() {
-        assertThat(errorOf(() -> new AreaDetails(AreaType.OVERFLOW, "Khu", FLOOR, false, null, null)))
+        assertThat(errorOf(() -> new AreaDetails(AreaType.OVERFLOW, "Khu", FLOOR, false, null)))
                 .isEqualTo(ErrorCode.VALIDATION_FAILED);
         assertThat(errorOf(() -> area("RCV-01", AreaType.RECEIVING))).isEqualTo(ErrorCode.VALIDATION_FAILED);
     }
@@ -106,13 +105,12 @@ class AreaTest {
         Area area = area("rcv02", AreaType.RECEIVING);
         UUID locationId = area.location().id();
 
-        area.update(new AreaDetails(AreaType.OVERFLOW, "Khu tràn", FLOOR, true, StorageClass.OVERSIZE,
-                new LocationSettings(null, null, true, false)), 0, "hn", AreaTest::newId);
+        area.update(new AreaDetails(AreaType.OVERFLOW, "Khu tràn", FLOOR, true,
+                new LocationSettings(null, true, false)), 0, "hn", AreaTest::newId);
 
         assertThat(area.code()).isEqualTo("RCV02");
         assertThat(area.location().id()).isEqualTo(locationId);
         assertThat(area.location().locationCode()).isEqualTo("HN-RCV02");
-        assertThat(area.location().storageClass()).isEqualTo(StorageClass.OVERSIZE);
         assertThat(area.location().pickable()).isTrue();
         assertThat(errorOf(() -> area.update(details(AreaType.OVERFLOW), 3, "hn", AreaTest::newId)))
                 .isEqualTo(ErrorCode.OPTIMISTIC_LOCK);
@@ -134,18 +132,18 @@ class AreaTest {
     @Test
     @DisplayName("a STAGING area is neither pickable nor a putaway target, and owns a location like any storage area (4C-5)")
     void stagingAreaIsNeitherPickableNorAPutawayTarget() {
-        LocationSettings neither = new LocationSettings(500, new BigDecimal("2000"), false, false);
+        LocationSettings neither = new LocationSettings(new BigDecimal("2000"), false, false);
         Area staging = Area.create(newId(), WAREHOUSE, "stg02",
-                new AreaDetails(AreaType.STAGING, "Khu cho xuat", FLOOR, false, null, neither), "hn", AreaTest::newId);
+                new AreaDetails(AreaType.STAGING, "Khu cho xuat", FLOOR, false, neither), "hn", AreaTest::newId);
 
         assertThat(staging.location().locationCode()).isEqualTo("HN-STG02");
         assertThat(staging.location().pickable()).isFalse();
         assertThat(staging.location().putawayTarget()).isFalse();
 
-        assertThat(errorOf(() -> new AreaDetails(AreaType.STAGING, "Khu", FLOOR, false, null,
-                new LocationSettings(500, new BigDecimal("2000"), true, false)))).as("pickable")
+        assertThat(errorOf(() -> new AreaDetails(AreaType.STAGING, "Khu", FLOOR, false,
+                new LocationSettings(new BigDecimal("2000"), true, false)))).as("pickable")
                 .isEqualTo(ErrorCode.VALIDATION_FAILED);
-        assertThat(errorOf(() -> new AreaDetails(AreaType.STAGING, "Khu", FLOOR, false, null, SETTINGS)))
+        assertThat(errorOf(() -> new AreaDetails(AreaType.STAGING, "Khu", FLOOR, false, SETTINGS)))
                 .as("a putaway target (the default settings of the tests)").isEqualTo(ErrorCode.VALIDATION_FAILED);
         // any other storage type may be either
         assertThat(details(AreaType.DISPATCH).settings().putawayTarget()).isTrue();

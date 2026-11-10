@@ -8,7 +8,6 @@ import com.stockflow.warehouse.internal.domain.AreaType;
 import com.stockflow.warehouse.internal.domain.BinType;
 import com.stockflow.warehouse.internal.domain.LocationStatus;
 import com.stockflow.warehouse.internal.domain.MapUnit;
-import com.stockflow.warehouse.internal.domain.StorageClass;
 import com.stockflow.warehouse.internal.domain.StorageLocationKind;
 import com.stockflow.warehouse.internal.domain.WarehouseStatus;
 import com.stockflow.warehouse.internal.entity.AreaJpaEntity;
@@ -75,7 +74,6 @@ class ShelfJpaRepositoryIntegrationTest {
                 assertThat(b.getType()).isEqualTo(BinType.STANDARD);
                 assertThat(b.getLocation().getKind()).isEqualTo(StorageLocationKind.BIN);
                 assertThat(b.getLocation().getLocationCode()).isEqualTo("HN-A01-2-03");
-                assertThat(b.getLocation().getCapacityUnits()).isEqualTo(20);
                 assertThat(b.getLocation().isPutawayTarget()).isTrue();
             });
         });
@@ -163,21 +161,20 @@ class ShelfJpaRepositoryIntegrationTest {
 
     private StorageLocationJpaEntity location(WarehouseJpaEntity warehouse, StorageLocationKind kind,
                                               String code) {
-        return new StorageLocationJpaEntity(Identifiers.newId(), warehouse.getId(), kind, code,
-                StorageClass.NORMAL, 20, null, true, true, LocationStatus.ACTIVE);
+        return new StorageLocationJpaEntity(Identifiers.newId(), warehouse.getId(), kind, code, null, true, true, LocationStatus.ACTIVE);
     }
 
     private ShelfJpaEntity shelfWithOneBin(WarehouseJpaEntity warehouse) {
         ShelfJpaEntity shelf = new ShelfJpaEntity(Identifiers.newId(), warehouse.getId(), null,
                 "A01", "Shelf A01", null, BigDecimal.ONE, BigDecimal.ONE, new BigDecimal("3"),
-                BigDecimal.ONE, 0, true, true, false, false, false, StorageClass.NORMAL,
+                BigDecimal.ONE, 0, true, true, false, false, false,
                 LocationStatus.ACTIVE);
-        ShelfLevelJpaEntity level = new ShelfLevelJpaEntity(Identifiers.newId(), 2, null, null,
-                new BigDecimal("500"));
+        ShelfLevelJpaEntity level = new ShelfLevelJpaEntity(Identifiers.newId(), 2, null,
+                new BigDecimal("1.4"), new BigDecimal("500"));
         level.addBin(new BinJpaEntity(Identifiers.newId(),
                 location(warehouse, StorageLocationKind.BIN, "HN-A01-2-03"), "03", null,
                 new BigDecimal("2"), BigDecimal.ZERO, BigDecimal.ONE, BigDecimal.ONE, 0,
-                BinType.STANDARD, null));
+                BinType.STANDARD));
         shelf.addLevel(level);
         return shelf;
     }

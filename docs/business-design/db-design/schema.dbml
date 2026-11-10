@@ -208,14 +208,6 @@ Enum warehouse.area_type {
   NON_STORAGE
 }
 
-Enum warehouse.bin_storage_class_override {
-  NORMAL
-  COLD
-  HAZMAT
-  FRAGILE
-  OVERSIZE
-}
-
 Enum warehouse.bin_type {
   STANDARD
   PALLET
@@ -261,14 +253,6 @@ Enum warehouse.putaway_task_status {
   CANCELLED
 }
 
-Enum warehouse.shelf_default_storage_class {
-  NORMAL
-  COLD
-  HAZMAT
-  FRAGILE
-  OVERSIZE
-}
-
 Enum warehouse.shelf_status {
   ACTIVE
   BLOCKED
@@ -287,14 +271,6 @@ Enum warehouse.storage_location_status {
   BLOCKED
   MAINTENANCE
   INACTIVE
-}
-
-Enum warehouse.storage_location_storage_class {
-  NORMAL
-  COLD
-  HAZMAT
-  FRAGILE
-  OVERSIZE
 }
 
 Enum warehouse.warehouse_status {
@@ -1740,23 +1716,22 @@ Table warehouse.area [headercolor: #8E6C3A] {
 }
 
 Table warehouse.bin [headercolor: #8E6C3A] {
-  id                     uuid [pk]
-  level_id               uuid [not null]
-  location_id            uuid [not null, unique]
-  code                   varchar(20) [not null]
-  description            varchar(1000)
-  x                      decimal(10,3) [not null]
-  y                      decimal(10,3) [not null]
-  width                  decimal(10,3) [not null]
-  length                 decimal(10,3) [not null]
-  rotation               int [not null]
-  type                   warehouse.bin_type [not null]
-  storage_class_override warehouse.bin_storage_class_override
-  version                bigint [not null, default: 0]
-  created_at             timestamptz [not null, default: `now()`]
-  created_by             varchar(100)
-  last_modified_at       timestamptz
-  last_modified_by       varchar(100)
+  id               uuid [pk]
+  level_id         uuid [not null]
+  location_id      uuid [not null, unique]
+  code             varchar(20) [not null]
+  description      varchar(1000)
+  x                decimal(10,3) [not null]
+  y                decimal(10,3) [not null]
+  width            decimal(10,3) [not null]
+  length           decimal(10,3) [not null]
+  rotation         int [not null]
+  type             warehouse.bin_type [not null]
+  version          bigint [not null, default: 0]
+  created_at       timestamptz [not null, default: `now()`]
+  created_by       varchar(100)
+  last_modified_at timestamptz
+  last_modified_by varchar(100)
   indexes {
     (level_id, code) [unique]
   }
@@ -1824,29 +1799,28 @@ Table warehouse.putaway_task [headercolor: #8E6C3A] {
 }
 
 Table warehouse.shelf [headercolor: #8E6C3A] {
-  id                    uuid [pk]
-  warehouse_id          uuid [not null]
-  zone_id               uuid
-  code                  varchar(20) [not null]
-  name                  varchar(200) [not null]
-  description           varchar(1000)
-  x                     decimal(10,3) [not null]
-  y                     decimal(10,3) [not null]
-  width                 decimal(10,3) [not null]
-  length                decimal(10,3) [not null]
-  rotation              int [not null]
-  is_obstacle           boolean [not null]
-  pick_north            boolean [not null]
-  pick_east             boolean [not null]
-  pick_south            boolean [not null]
-  pick_west             boolean [not null]
-  default_storage_class warehouse.shelf_default_storage_class [not null]
-  status                warehouse.shelf_status [not null]
-  version               bigint [not null, default: 0]
-  created_at            timestamptz [not null, default: `now()`]
-  created_by            varchar(100)
-  last_modified_at      timestamptz
-  last_modified_by      varchar(100)
+  id               uuid [pk]
+  warehouse_id     uuid [not null]
+  zone_id          uuid
+  code             varchar(20) [not null]
+  name             varchar(200) [not null]
+  description      varchar(1000)
+  x                decimal(10,3) [not null]
+  y                decimal(10,3) [not null]
+  width            decimal(10,3) [not null]
+  length           decimal(10,3) [not null]
+  rotation         int [not null]
+  is_obstacle      boolean [not null]
+  pick_north       boolean [not null]
+  pick_east        boolean [not null]
+  pick_south       boolean [not null]
+  pick_west        boolean [not null]
+  status           warehouse.shelf_status [not null]
+  version          bigint [not null, default: 0]
+  created_at       timestamptz [not null, default: `now()`]
+  created_by       varchar(100)
+  last_modified_at timestamptz
+  last_modified_by varchar(100)
   indexes {
     (warehouse_id, code) [unique]
   }
@@ -1888,8 +1862,6 @@ Table warehouse.storage_location [headercolor: #8E6C3A] {
   warehouse_id      uuid [not null]
   kind              warehouse.storage_location_kind [not null]
   location_code     varchar(64) [not null, unique]
-  storage_class     warehouse.storage_location_storage_class [not null]
-  capacity_units    int
   max_weight        decimal(10,3)
   is_pickable       boolean [not null]
   is_putaway_target boolean [not null]

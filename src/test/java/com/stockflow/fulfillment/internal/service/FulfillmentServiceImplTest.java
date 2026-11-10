@@ -192,7 +192,7 @@ class FulfillmentServiceImplTest {
             holds.add(new OrderHold(parts[1], parts[0], 2));
             UUID where = parts[0].startsWith("HN") ? HN : HCM;
             when(warehouses.findLocation(parts[0])).thenReturn(Optional.of(new StorageLocationView(UUID.randomUUID(),
-                    StorageLocationView.Kind.BIN, where, parts[0], StorageLocationView.StorageClass.NORMAL,
+                    StorageLocationView.Kind.BIN, where, parts[0],
                     StorageLocationView.Status.ACTIVE, StorageLocationView.Status.ACTIVE, true)));
         }
         when(inventory.holdsOf(order.orderId())).thenReturn(holds);
@@ -600,7 +600,7 @@ class FulfillmentServiceImplTest {
     private StorageLocationView stagingView(UUID warehouse, String code, boolean usable, StorageLocationView.AreaType type) {
         var status = usable ? StorageLocationView.Status.ACTIVE : StorageLocationView.Status.INACTIVE;
         return new StorageLocationView(UUID.randomUUID(), StorageLocationView.Kind.AREA, warehouse, code,
-                StorageLocationView.StorageClass.NORMAL, status, status, usable, type);
+                status, status, usable, type, null);
     }
 
     /** A released order of HCM, its holds in HCM, one assignable picker, ready for {@code createTask}. */

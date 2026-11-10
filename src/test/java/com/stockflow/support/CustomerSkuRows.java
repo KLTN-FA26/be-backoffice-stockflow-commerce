@@ -123,7 +123,7 @@ public final class CustomerSkuRows {
                    SET weight_kg = c.weight_kg, length_cm = c.length_cm, width_cm = c.width_cm, height_cm = c.height_cm,
                        package_weight_kg = c.package_weight_kg, package_length_cm = c.package_length_cm,
                        package_width_cm = c.package_width_cm, package_height_cm = c.package_height_cm,
-                       package_count = c.package_count, pack_size = c.pack_size, storage_class = c.storage_class,
+                       package_count = c.package_count, pack_size = c.pack_size,
                        barcode = ?
                   FROM inventory.inventory_items c
                  WHERE i.sku = ? AND c.sku = ?""", barcode, issued.sku(), like));

@@ -182,18 +182,15 @@ class AwaitingStockIntegrationTest {
                     zone, id);
             jdbc.update("""
                     INSERT INTO warehouse.shelf (id, warehouse_id, zone_id, code, name, x, y, width, length, rotation,
-                                                 is_obstacle, pick_north, pick_east, pick_south, pick_west,
-                                                 default_storage_class, status)
-                    VALUES (?, ?, ?, 'A01', 'Shelf', 5, 5, 10, 1.2, 0, TRUE, FALSE, FALSE, TRUE, FALSE, 'OVERSIZE',
-                            'ACTIVE')""", shelf, id, zone);
+                                                 is_obstacle, pick_north, pick_east, pick_south, pick_west, status)
+                    VALUES (?, ?, ?, 'A01', 'Shelf', 5, 5, 10, 1.2, 0, TRUE, FALSE, FALSE, TRUE, FALSE, 'ACTIVE')""", shelf, id, zone);
             jdbc.update("""
                     INSERT INTO warehouse.shelf_level (id, shelf_id, level_index, elevation, usable_height, max_weight)
                     VALUES (?, ?, 1, 0, 1.4, 500)""", level, shelf);
             jdbc.update("""
-                    INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, storage_class,
-                                                            capacity_units, max_weight, is_pickable,
+                    INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, max_weight, is_pickable,
                                                             is_putaway_target, status)
-                    VALUES (?, ?, 'BIN', ?, 'OVERSIZE', 40, 250, TRUE, TRUE, 'ACTIVE')""", location, id, bin);
+                    VALUES (?, ?, 'BIN', ?, 250, TRUE, TRUE, 'ACTIVE')""", location, id, bin);
             jdbc.update("""
                     INSERT INTO warehouse.bin (id, level_id, location_id, code, x, y, width, length, rotation, type)
                     VALUES (?, ?, ?, 'A', 0, 0, 5, 1.2, 0, 'PALLET')""", Identifiers.newId(), level, location);

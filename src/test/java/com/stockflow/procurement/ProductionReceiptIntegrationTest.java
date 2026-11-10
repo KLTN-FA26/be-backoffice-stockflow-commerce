@@ -200,9 +200,9 @@ class ProductionReceiptIntegrationTest {
                     VALUES (?, ?, 'ACTIVE', ?, 'Somewhere', 'M', 50, 50, 0, NOW())""", id, "Warehouse " + code, code);
             UUID area = Identifiers.newId();
             jdbc.update("""
-                    INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, storage_class,
+                    INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code,
                                                             is_pickable, is_putaway_target, status)
-                    VALUES (?, ?, 'AREA', ?, 'NORMAL', FALSE, FALSE, 'ACTIVE')""", area, id, receivingArea);
+                    VALUES (?, ?, 'AREA', ?, FALSE, FALSE, 'ACTIVE')""", area, id, receivingArea);
             jdbc.update("""
                     INSERT INTO warehouse.area (id, warehouse_id, location_id, code, type, name, x, y, width, length,
                                                 rotation, is_obstacle, status)
@@ -216,18 +216,15 @@ class ProductionReceiptIntegrationTest {
                     zone, id);
             jdbc.update("""
                     INSERT INTO warehouse.shelf (id, warehouse_id, zone_id, code, name, x, y, width, length, rotation,
-                                                 is_obstacle, pick_north, pick_east, pick_south, pick_west,
-                                                 default_storage_class, status)
-                    VALUES (?, ?, ?, 'B01', 'Shelf', 5, 30, 10, 1.2, 0, TRUE, FALSE, FALSE, TRUE, FALSE, 'NORMAL',
-                            'ACTIVE')""", shelf, id, zone);
+                                                 is_obstacle, pick_north, pick_east, pick_south, pick_west, status)
+                    VALUES (?, ?, ?, 'B01', 'Shelf', 5, 30, 10, 1.2, 0, TRUE, FALSE, FALSE, TRUE, FALSE, 'ACTIVE')""", shelf, id, zone);
             jdbc.update("""
                     INSERT INTO warehouse.shelf_level (id, shelf_id, level_index, elevation, usable_height, max_weight)
                     VALUES (?, ?, 1, 0, 1.4, 5000)""", level, shelf);
             jdbc.update("""
-                    INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, storage_class,
-                                                            capacity_units, max_weight, is_pickable,
+                    INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, max_weight, is_pickable,
                                                             is_putaway_target, status)
-                    VALUES (?, ?, 'BIN', ?, 'NORMAL', 100000, 5000, TRUE, TRUE, 'ACTIVE')""", location, id, bin);
+                    VALUES (?, ?, 'BIN', ?, 5000, TRUE, TRUE, 'ACTIVE')""", location, id, bin);
             jdbc.update("""
                     INSERT INTO warehouse.bin (id, level_id, location_id, code, x, y, width, length, rotation, type)
                     VALUES (?, ?, ?, 'A', 0, 0, 5, 1.2, 0, 'PALLET')""", Identifiers.newId(), level, location);
@@ -257,8 +254,8 @@ class ProductionReceiptIntegrationTest {
                     product.variantId());
             UUID item = jdbc.queryForObject("SELECT id FROM inventory.inventory_items WHERE sku = ?", UUID.class, code);
             jdbc.update("""
-                    UPDATE inventory.inventory_items SET weight_kg = 0.02, length_cm = 9, width_cm = 9, height_cm = 12,
-                           storage_class = 'NORMAL' WHERE id = ?""", item);
+                    UPDATE inventory.inventory_items SET weight_kg = 0.02, length_cm = 9, width_cm = 9, height_cm = 12
+                           WHERE id = ?""", item);
             UUID carton = Identifiers.newId();
             jdbc.update("""
                     INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, is_base,

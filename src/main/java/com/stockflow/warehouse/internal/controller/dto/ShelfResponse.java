@@ -2,18 +2,17 @@ package com.stockflow.warehouse.internal.controller.dto;
 
 import com.stockflow.warehouse.internal.domain.BinType;
 import com.stockflow.warehouse.internal.domain.LocationStatus;
-import com.stockflow.warehouse.internal.domain.StorageClass;
 import io.swagger.v3.oas.annotations.media.Schema;
 
 import java.math.BigDecimal;
 import java.util.List;
 import java.util.UUID;
 
-/** A shelf with its levels and bins. Bins carry their storage location's code, class and status. */
+/** A shelf with its levels and bins. Bins carry their storage location's code, computed volume and status. */
 @Schema(name = "Shelf")
 public record ShelfResponse(UUID id, UUID warehouseId, UUID zoneId, String code, String name, String description,
                             FootprintResponse footprint, boolean obstacle, PickFaces pickFaces,
-                            StorageClass defaultStorageClass, LocationStatus status, long version,
+                            LocationStatus status, long version,
                             List<Level> levels) {
 
     @Schema(name = "PickFaces")
@@ -31,11 +30,13 @@ public record ShelfResponse(UUID id, UUID warehouseId, UUID zoneId, String code,
                                FootprintResponse footprint) {
     }
 
-    /** @param storageClass the class in force - the override, or the shelf's default */
+    /** @param capacityVolumeM3 width x length x the level's clear height, computed (06 BR-19); absent without one */
     @Schema(name = "ShelfBin")
     public record Bin(UUID id, String code, String description, FootprintResponse footprint, BinType type,
-                      StorageClass storageClassOverride, UUID locationId, String locationCode,
-                      StorageClass storageClass, Integer capacityUnits, BigDecimal maxWeight,
+                      UUID locationId, String locationCode,
+                      @Schema(description = "Computed: width x length x the level's usableHeight; absent while the "
+                              + "level has none") BigDecimal capacityVolumeM3,
+                      BigDecimal maxWeight,
                       boolean pickable, boolean putawayTarget, LocationStatus status) {
     }
 }

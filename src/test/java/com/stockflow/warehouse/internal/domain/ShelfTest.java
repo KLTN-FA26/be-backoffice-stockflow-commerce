@@ -32,10 +32,10 @@ class ShelfTest {
                 new BigDecimal(length), 0);
     }
 
-    /** A01: 10 x 1.2 at (5, 5), picked from the south, NORMAL by default. */
+    /** A01: 10 x 1.2 at (5, 5), picked from the south. */
     private static Shelf shelf(PickFaces faces) {
         return Shelf.create(newId(), WAREHOUSE, null, "a01", "Kệ A01", null, at("5", "5", "10", "1.2"),
-                true, faces, StorageClass.NORMAL);
+                true, faces);
     }
 
     private static Shelf shelf() {
@@ -43,18 +43,17 @@ class ShelfTest {
     }
 
     private static ShelfLevel level(Shelf shelf, int index) {
-        return shelf.addLevel(newId(), index, LevelMeasures.NONE);
+        return shelf.addLevel(newId(), index, new LevelMeasures(null, new BigDecimal("1.4"), null));
     }
 
     private static Bin bin(Shelf shelf, ShelfLevel level, String code, Footprint footprint) {
-        return bin(shelf, level, code, footprint, null, true);
+        return bin(shelf, level, code, footprint, true);
     }
 
-    private static Bin bin(Shelf shelf, ShelfLevel level, String code, Footprint footprint,
-                           StorageClass override, boolean pickable) {
+    private static Bin bin(Shelf shelf, ShelfLevel level, String code, Footprint footprint, boolean pickable) {
         return shelf.addBin(level.id(), newId(), newId(), code,
-                new BinDetails(null, footprint, BinType.PALLET, override),
-                new LocationSettings(40, new BigDecimal("250"), pickable, true), "hn");
+                new BinDetails(null, footprint, BinType.PALLET),
+                new LocationSettings(new BigDecimal("250"), pickable, true), "hn");
     }
 
     private static ErrorCode errorOf(Runnable call) {
@@ -84,10 +83,10 @@ class ShelfTest {
         @DisplayName("refuses a code that could not be part of a location code, or a blank name")
         void refusesBadInput() {
             assertThat(errorOf(() -> Shelf.create(newId(), WAREHOUSE, null, "A-01", "Kệ", null,
-                    at("0", "0", "1", "1"), true, PickFaces.NONE, StorageClass.NORMAL)))
+                    at("0", "0", "1", "1"), true, PickFaces.NONE)))
                     .isEqualTo(ErrorCode.VALIDATION_FAILED);
             assertThat(errorOf(() -> Shelf.create(newId(), WAREHOUSE, null, "A01", " ", null,
-                    at("0", "0", "1", "1"), true, PickFaces.NONE, StorageClass.NORMAL)))
+                    at("0", "0", "1", "1"), true, PickFaces.NONE)))
                     .isEqualTo(ErrorCode.VALIDATION_FAILED);
         }
     }
@@ -119,13 +118,27 @@ class ShelfTest {
         }
 
         @Test
-        @DisplayName("measures are optional, but an elevation is never negative and a height or load never zero")
+        @DisplayName("an elevation is never negative and a height or load never zero")
         void measuresAreChecked() {
             assertThat(errorOf(() -> new LevelMeasures(new BigDecimal("-0.001"), null, null)))
                     .isEqualTo(ErrorCode.VALIDATION_FAILED);
             assertThat(errorOf(() -> new LevelMeasures(null, BigDecimal.ZERO, null)))
                     .isEqualTo(ErrorCode.VALIDATION_FAILED);
             assertThat(new LevelMeasures(BigDecimal.ZERO, null, null).elevation()).isEqualByComparingTo("0");
+        }
+
+        @Test
+        @DisplayName("a level is declared and edited with its clear height (kltn-docs 06 BR-19)")
+        void clearHeightIsRequired() {
+            Shelf shelf = shelf();
+            ShelfLevel level = level(shelf, 1);
+
+            assertThat(errorOf(() -> shelf.addLevel(newId(), 2, new LevelMeasures(null, null, null))))
+                    .isEqualTo(ErrorCode.VALIDATION_FAILED);
+            assertThat(errorOf(() -> shelf.updateLevel(level.id(), new LevelMeasures(BigDecimal.ONE, null, null))))
+                    .isEqualTo(ErrorCode.VALIDATION_FAILED);
+            assertThat(shelf.levels()).hasSize(1);
+            assertThat(shelf.level(level.id()).measures().usableHeight()).isEqualByComparingTo("1.4");
         }
 
         @Test
@@ -139,7 +152,7 @@ class ShelfTest {
 
             assertThat(shelf.level(level.id()).levelIndex()).isEqualTo(2);
             assertThat(shelf.level(level.id()).measures().maxWeight()).isEqualByComparingTo("500");
-            assertThat(errorOf(() -> shelf.updateLevel(newId(), LevelMeasures.NONE)))
+            assertThat(errorOf(() -> shelf.updateLevel(newId(), new LevelMeasures(null, new BigDecimal("1.4"), null))))
                     .isEqualTo(ErrorCode.SHELF_LEVEL_NOT_FOUND);
         }
     }
@@ -158,19 +171,6 @@ class ShelfTest {
             assertThat(location.kind()).isEqualTo(StorageLocationKind.BIN);
             assertThat(location.locationCode()).isEqualTo("HN-A01-2-03");
             assertThat(location.status()).isEqualTo(LocationStatus.ACTIVE);
-            assertThat(location.capacityUnits()).isEqualTo(40);
-        }
-
-        @Test
-        @DisplayName("stores the shelf's default class, or the bin's override (issue #18 D9)")
-        void resolvesStorageClass() {
-            Shelf shelf = shelf();
-            ShelfLevel level = level(shelf, 1);
-
-            assertThat(bin(shelf, level, "01", at("0", "0", "1", "1")).location().storageClass())
-                    .isEqualTo(StorageClass.NORMAL);
-            assertThat(bin(shelf, level, "02", at("1", "0", "1", "1"), StorageClass.COLD, true)
-                    .location().storageClass()).isEqualTo(StorageClass.COLD);
         }
 
         @Test
@@ -231,13 +231,13 @@ class ShelfTest {
         @DisplayName("a level holds at most 200 bins (issue #18 D7)")
         void atMost200() {
             Shelf shelf = Shelf.create(newId(), WAREHOUSE, null, "B01", "Kệ B01", null,
-                    at("0", "0", "201", "1"), true, PickFaces.NONE, StorageClass.NORMAL);
+                    at("0", "0", "201", "1"), true, PickFaces.NONE);
             ShelfLevel level = level(shelf, 1);
             for (int i = 0; i < 200; i++) {
-                bin(shelf, level, "B" + i, at(String.valueOf(i), "0", "1", "1"), null, false);
+                bin(shelf, level, "B" + i, at(String.valueOf(i), "0", "1", "1"), false);
             }
 
-            assertThat(errorOf(() -> bin(shelf, level, "B200", at("200", "0", "1", "1"), null, false)))
+            assertThat(errorOf(() -> bin(shelf, level, "B200", at("200", "0", "1", "1"), false)))
                     .isEqualTo(ErrorCode.SHELF_CAPACITY_EXCEEDED);
         }
 
@@ -250,26 +250,25 @@ class ShelfTest {
             bin(shelf, level, "02", at("3", "0", "2", "1"));
 
             shelf.updateBin(level.id(), bin.id(), new BinDetails("Ô sát tường", at("0.5", "0", "2", "1"),
-                    BinType.STANDARD, StorageClass.FRAGILE), new LocationSettings(null, null, false, false));
+                    BinType.STANDARD), new LocationSettings(null, false, false));
 
             Bin updated = shelf.level(level.id()).bin(bin.id());
             assertThat(updated.code()).isEqualTo("01");
             assertThat(updated.location().locationCode()).isEqualTo("HN-A01-1-01");
-            assertThat(updated.location().storageClass()).isEqualTo(StorageClass.FRAGILE);
             assertThat(updated.location().pickable()).isFalse();
             assertThat(errorOf(() -> shelf.updateBin(level.id(), bin.id(), new BinDetails(null,
-                    at("2", "0", "2", "1"), BinType.STANDARD, null), new LocationSettings(null, null, false, false))))
+                    at("2", "0", "2", "1"), BinType.STANDARD), new LocationSettings(null, false, false))))
                     .isEqualTo(ErrorCode.LAYOUT_OVERLAP);
             assertThat(errorOf(() -> shelf.updateBin(level.id(), newId(), new BinDetails(null,
-                    at("0", "0", "1", "1"), BinType.STANDARD, null), new LocationSettings(null, null, false, false))))
+                    at("0", "0", "1", "1"), BinType.STANDARD), new LocationSettings(null, false, false))))
                     .isEqualTo(ErrorCode.BIN_NOT_FOUND);
         }
 
         @Test
         @DisplayName("location settings are checked: capacity and load are positive when given")
         void settingsAreChecked() {
-            assertThat(errorOf(() -> new LocationSettings(0, null, true, true))).isEqualTo(ErrorCode.VALIDATION_FAILED);
-            assertThat(errorOf(() -> new LocationSettings(null, BigDecimal.ZERO, true, true)))
+            assertThat(new LocationSettings(null, true, true).maxWeight()).as("no weight limit").isNull();
+            assertThat(errorOf(() -> new LocationSettings(BigDecimal.ZERO, true, true)))
                     .isEqualTo(ErrorCode.VALIDATION_FAILED);
         }
     }
@@ -278,8 +277,8 @@ class ShelfTest {
     @DisplayName("generating bins (BR-14)")
     class GeneratingBins {
 
-        private static final BinDefaults PICKABLE_PALLETS = new BinDefaults(BinType.PALLET, null,
-                new LocationSettings(40, new BigDecimal("250"), true, true));
+        private static final BinDefaults PICKABLE_PALLETS = new BinDefaults(BinType.PALLET,
+                new LocationSettings(new BigDecimal("250"), true, true));
 
         private static List<Bin> generate(Shelf shelf, List<UUID> levelIds, int rows, int columns,
                                           BinDefaults defaults) {
@@ -307,24 +306,7 @@ class ShelfTest {
             assertThat(last.footprint()).isEqualTo(at("6.666", "0.6", "3.333", "0.6"));
             assertThat(last.details().type()).isEqualTo(BinType.PALLET);
             assertThat(last.location().status()).isEqualTo(LocationStatus.ACTIVE);
-            assertThat(last.location().storageClass()).isEqualTo(StorageClass.NORMAL);
-            assertThat(last.location().capacityUnits()).isEqualTo(40);
             assertThat(last.location().pickable()).isTrue();
-        }
-
-        @Test
-        @DisplayName("an override reaches every generated location; without one the shelf's default does (#18 D9)")
-        void resolvesTheStorageClass() {
-            Shelf shelf = shelf();
-            ShelfLevel level = level(shelf, 1);
-
-            List<Bin> bins = generate(shelf, List.of(level.id()), 1, 2, new BinDefaults(BinType.STANDARD,
-                    StorageClass.COLD, new LocationSettings(null, null, false, true)));
-
-            assertThat(bins).allSatisfy(bin -> {
-                assertThat(bin.details().storageClassOverride()).isEqualTo(StorageClass.COLD);
-                assertThat(bin.location().storageClass()).isEqualTo(StorageClass.COLD);
-            });
         }
 
         @Test
@@ -364,7 +346,7 @@ class ShelfTest {
             assertThat(errorOf(() -> generate(faceless, List.of(level.id()), 1, 2, PICKABLE_PALLETS)))
                     .isEqualTo(ErrorCode.PICK_FACE_REQUIRED);
             assertThat(errorOf(() -> generate(faceless, List.of(level.id()), 1, 201, new BinDefaults(BinType.PALLET,
-                    null, new LocationSettings(null, null, false, true))))).isEqualTo(ErrorCode.SHELF_CAPACITY_EXCEEDED);
+                    new LocationSettings(null, false, true))))).isEqualTo(ErrorCode.SHELF_CAPACITY_EXCEEDED);
             assertThat(errorOf(() -> generate(faceless, List.of(), 1, 1, PICKABLE_PALLETS)))
                     .isEqualTo(ErrorCode.VALIDATION_FAILED);
             assertThat(faceless.level(level.id()).bins()).isEmpty();
@@ -394,9 +376,9 @@ class ShelfTest {
             Shelf shelf = shelf(PickFaces.NONE);
             ShelfLevel level = level(shelf, 1);
 
-            assertThat(errorOf(() -> bin(shelf, level, "01", at("0", "0", "1", "1"), null, true)))
+            assertThat(errorOf(() -> bin(shelf, level, "01", at("0", "0", "1", "1"), true)))
                     .isEqualTo(ErrorCode.PICK_FACE_REQUIRED);
-            assertThat(bin(shelf, level, "02", at("0", "0", "1", "1"), null, false).code()).isEqualTo("02");
+            assertThat(bin(shelf, level, "02", at("0", "0", "1", "1"), false).code()).isEqualTo("02");
         }
 
         @Test
@@ -406,7 +388,7 @@ class ShelfTest {
             bin(shelf, level(shelf, 1), "01", at("0", "0", "1", "1"));
 
             assertThat(errorOf(() -> shelf.update(null, shelf.name(), null, shelf.footprint(), true,
-                    PickFaces.NONE, StorageClass.NORMAL, 0L))).isEqualTo(ErrorCode.PICK_FACE_REQUIRED);
+                    PickFaces.NONE, 0L))).isEqualTo(ErrorCode.PICK_FACE_REQUIRED);
         }
     }
 
@@ -422,11 +404,10 @@ class ShelfTest {
             Bin farBin = bin(shelf, level, "01", at("8", "0", "2", "1"));
 
             assertThat(errorOf(() -> shelf.update(null, "Kệ A01", null, at("5", "5", "9.999", "1.2"), true,
-                    shelf.pickFaces(), StorageClass.NORMAL, 0L))).isEqualTo(ErrorCode.LAYOUT_OUT_OF_BOUNDS);
+                    shelf.pickFaces(), 0L))).isEqualTo(ErrorCode.LAYOUT_OUT_OF_BOUNDS);
 
             shelf.changeBinStatus(level.id(), farBin.id(), LocationStatus.INACTIVE);
-            shelf.update(null, "Kệ A01", null, at("5", "5", "6", "1.2"), true, shelf.pickFaces(),
-                    StorageClass.NORMAL, 0L);
+            shelf.update(null, "Kệ A01", null, at("5", "5", "6", "1.2"), true, shelf.pickFaces(), 0L);
             assertThat(shelf.footprint().width()).isEqualByComparingTo("6");
 
             // Left outside by the shrink, the bin may not return to the layout there.
@@ -436,29 +417,12 @@ class ShelfTest {
         }
 
         @Test
-        @DisplayName("a new default class reaches every bin without an override, and only those")
-        void defaultClassPropagates() {
-            Shelf shelf = shelf();
-            ShelfLevel level = level(shelf, 1);
-            Bin plain = bin(shelf, level, "01", at("0", "0", "1", "1"));
-            Bin cold = bin(shelf, level, "02", at("1", "0", "1", "1"), StorageClass.COLD, true);
-
-            shelf.update(null, "Kệ A01", null, shelf.footprint(), true, shelf.pickFaces(),
-                    StorageClass.OVERSIZE, 0L);
-
-            assertThat(shelf.level(level.id()).bin(plain.id()).location().storageClass())
-                    .isEqualTo(StorageClass.OVERSIZE);
-            assertThat(shelf.level(level.id()).bin(cold.id()).location().storageClass())
-                    .isEqualTo(StorageClass.COLD);
-        }
-
-        @Test
         @DisplayName("refuses an edit based on an older version")
         void refusesStaleEdit() {
             Shelf shelf = shelf();
 
             assertThat(errorOf(() -> shelf.update(null, "X", null, shelf.footprint(), true,
-                    shelf.pickFaces(), StorageClass.NORMAL, 7L))).isEqualTo(ErrorCode.OPTIMISTIC_LOCK);
+                    shelf.pickFaces(), 7L))).isEqualTo(ErrorCode.OPTIMISTIC_LOCK);
         }
 
         @Test

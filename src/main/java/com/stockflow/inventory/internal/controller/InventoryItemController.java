@@ -8,7 +8,6 @@ import com.stockflow.common.security.PermissionResource;
 import com.stockflow.common.security.RequiresPermission;
 import com.stockflow.inventory.api.PackagingSpec;
 import com.stockflow.inventory.api.PackagingSpecResolver;
-import com.stockflow.inventory.api.StorageClass;
 import com.stockflow.inventory.internal.controller.dto.InventoryItemResponse;
 import com.stockflow.inventory.internal.controller.dto.InventoryItemSummaryResponse;
 import com.stockflow.inventory.internal.controller.dto.UpdateItemLogisticsRequest;
@@ -67,11 +66,10 @@ class InventoryItemController {
     public ApiResponse<PageResponse<InventoryItemSummaryResponse>> list(
             @RequestParam(required = false) String sku,
             @RequestParam(required = false) String q,
-            @RequestParam(required = false) StorageClass storageClass,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "" + Pages.DEFAULT_PAGE_SIZE) int size) {
         return ApiResponse.ok(items.search(
-                new InventoryItems.ItemQuery(sku, q, storageClass, page, size))
+                new InventoryItems.ItemQuery(sku, q, page, size))
                 .map(mapper::toSummary));
     }
 

@@ -39,8 +39,7 @@ interface AreaWebMapper {
     private AreaDetails toDetails(AreaType type, String name,
                                   FootprintRequest footprint, boolean obstacle, AreaRequests.Location location) {
         return new AreaDetails(type, name, toFootprint(footprint), obstacle,
-                location == null ? null : location.storageClass(),
-                location == null ? null : new LocationSettings(location.capacityUnits(), location.maxWeight(),
+                location == null ? null : new LocationSettings(location.maxWeight(),
                         location.pickable(), location.putawayTarget()));
     }
 }

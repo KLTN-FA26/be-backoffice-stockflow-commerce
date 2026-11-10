@@ -123,6 +123,6 @@ class LocationLabelServiceImpl implements LocationLabelService {
 
     private static LocationLabel toLabel(LabelRow row) {
         return new LocationLabel(row.locationCode(), row.kind(), row.shelfCode(), row.levelIndex(), row.binCode(),
-                row.areaName(), row.storageClass());
+                row.areaName());
     }
 }

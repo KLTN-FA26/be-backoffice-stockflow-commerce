@@ -864,9 +864,9 @@ class StagingIntegrationTest {
             }
             UUID location = Identifiers.newId();
             jdbc.update("""
-                    INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, storage_class,
+                    INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code,
                                                             is_pickable, is_putaway_target, status)
-                    VALUES (?, ?, 'AREA', ?, 'NORMAL', FALSE, FALSE, 'ACTIVE')""", location, warehouse, code);
+                    VALUES (?, ?, 'AREA', ?, FALSE, FALSE, 'ACTIVE')""", location, warehouse, code);
             jdbc.update("""
                     INSERT INTO warehouse.area (id, warehouse_id, location_id, code, type, name, x, y, width, length,
                                                 rotation, is_obstacle, status)

@@ -44,7 +44,8 @@ class UomConversionServiceImplTest {
     private final UomConversionRepository conversions = mock(UomConversionRepository.class);
     private final InventoryPolicyRepository items = mock(InventoryPolicyRepository.class);
     private final CurrentUserProvider users = mock(CurrentUserProvider.class);
-    private final UomConversionServiceImpl service = new UomConversionServiceImpl(conversions, items, users);
+    private final UomConversionServiceImpl service = new UomConversionServiceImpl(conversions, items, users,
+            mock(BinStranding.class));
 
     @BeforeEach
     void itemExists() {

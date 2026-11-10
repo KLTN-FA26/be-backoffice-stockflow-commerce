@@ -37,8 +37,7 @@ final class AreaPersistenceMapper {
                 && before.footprint().equals(after.footprint()) && before.obstacle() == after.obstacle()
                 && before.status() == after.status();
         return areaUnchanged && before.location() != null && after.location() != null
-                && (before.location().storageClass() != after.location().storageClass()
-                || !before.location().settings().equals(after.location().settings()));
+                && !before.location().settings().equals(after.location().settings());
     }
 
     /**

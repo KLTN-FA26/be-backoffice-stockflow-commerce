@@ -116,9 +116,9 @@ public final class Area extends AggregateRoot {
         }
         if (location == null) {
             location = StorageLocation.forArea(newLocationId.get(), warehouseId,
-                    LocationCode.ofArea(warehousePrefix, code), details.storageClass(), details.settings(), status);
+                    LocationCode.ofArea(warehousePrefix, code), details.settings(), status);
         } else {
-            location.apply(details.storageClass(), details.settings());
+            location.apply(details.settings());
         }
     }
 

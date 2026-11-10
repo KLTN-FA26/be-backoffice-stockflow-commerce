@@ -7,8 +7,8 @@ import java.util.UUID;
  * The smallest storage slot on a shelf level. A child of {@link Shelf}: created, changed and
  * checked only through it, because whether a bin fits depends on its shelf and its neighbours.
  *
- * <p>{@code code} is local to the level and never changes; the global code, status, class and
- * capacity live on its {@link StorageLocation}.</p>
+ * <p>{@code code} is local to the level and never changes; the global code, status and load limit live on its
+ * {@link StorageLocation}.</p>
  */
 public final class Bin {
 

@@ -86,21 +86,20 @@ public interface WarehouseService {
     java.util.List<StorageLocationView> findLocations(java.util.Collection<String> locationCodes);
 
     /**
-     * The bins a putaway of stock of {@code storageClass} may go to in a warehouse (SCRUM-92): bins flagged as putaway
-     * targets whose bin, shelf and warehouse are all ACTIVE (the same rule as {@link StorageLocationView#usable()}), never an area, by location
-     * code. Capacity and weight are the bin's own limits; null where none is set.
+     * The bins a putaway may go to in a warehouse (SCRUM-92): bins flagged as putaway targets whose bin, shelf and
+     * warehouse are all ACTIVE (the same rule as {@link StorageLocationView#usable()}), never an area, by location
+     * code, each with its size and load limit. There is no storage class any more (kltn-docs 06, decided
+     * 2026-11-05): which bins a carton fits is the caller's to decide from the carton's dimensions.
      *
      * @return empty for an unknown warehouse or when no bin qualifies
      */
-    java.util.List<PutawayCandidate> putawayCandidates(UUID warehouseId, StorageLocationView.StorageClass storageClass);
+    java.util.List<PutawayCandidate> putawayCandidates(UUID warehouseId);
 
     /**
      * One location judged by the rule of {@link #putawayCandidates}, for a bin the clerk chose by hand: one indexed
      * read instead of the warehouse's whole list.
      *
-     * @return empty when {@code locationCode} is not a putaway candidate of {@code storageClass} in the warehouse
+     * @return empty when {@code locationCode} is not a putaway candidate in the warehouse
      */
-    java.util.Optional<PutawayCandidate> putawayCandidate(UUID warehouseId,
-                                                         StorageLocationView.StorageClass storageClass,
-                                                         String locationCode);
+    java.util.Optional<PutawayCandidate> putawayCandidate(UUID warehouseId, String locationCode);
 }

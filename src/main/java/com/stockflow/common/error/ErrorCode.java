@@ -216,10 +216,20 @@ public enum ErrorCode {
     PUTAWAY_LPN_MISMATCH("The scanned carton is not the one this putaway task is for", 409),
     /** SCRUM-92: the chosen target is a storage area; goods are put away into bins. */
     PUTAWAY_TARGET_NOT_BIN("Goods are put away into a bin, not a storage area", 422),
-    /** SCRUM-92: the bin's storage class is not the one the item must be kept in. */
-    LOCATION_STORAGE_CLASS_MISMATCH("The storage class of this bin does not fit the item", 409),
-    /** SCRUM-92: the putaway would take the bin past its capacity in units or its weight limit. */
-    LOCATION_CAPACITY_EXCEEDED("This bin cannot take that many units or that much weight", 409),
+    /** SCRUM-92, kltn-docs 05 BR-03: the putaway would take the bin past its computed volume or its weight limit. */
+    LOCATION_CAPACITY_EXCEEDED("This bin has no room left for this carton", 409),
+    /**
+     * kltn-docs 06 BR-01, 11 BR-10: a carton does not fit the bin dimension by dimension, even turned on the
+     * horizontal when its item allows. Every move of a carton into a bin is refused for it: putaway, put-back, a move.
+     */
+    CARTON_DOES_NOT_FIT_BIN("This carton does not fit the bin", 422),
+    /**
+     * kltn-docs 06 BR-23: resizing a bin, a level's clear height or a carton unit would leave a carton standing where it
+     * no longer fits, or a bin holding more volume than it has. The details list the bins and cartons; move them first.
+     */
+    CARTONS_WOULD_NOT_FIT("This change would leave cartons that no longer fit where they stand", 409),
+    /** kltn-docs 05 BR-13: a carton goes to the OVERFLOW area only when no bin of its warehouse takes it. */
+    PUTAWAY_OVERFLOW_NOT_ALLOWED("A bin can still take this carton; put it away into a bin", 409),
     /**
      * SCRUM-473: a line with cartons names the active packing unit they are in; a loose line counts in the base unit
      * and claims no packing unit it holds no carton of.

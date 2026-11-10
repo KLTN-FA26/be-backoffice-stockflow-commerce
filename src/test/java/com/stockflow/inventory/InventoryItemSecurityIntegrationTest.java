@@ -36,7 +36,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 class InventoryItemSecurityIntegrationTest {
 
     private static final String LOGISTICS_BODY =
-            "{\"version\":%d,\"unitOfMeasure\":\"EACH\",\"storageClass\":\"NORMAL\",\"requiresAdultSignature\":false}";
+            "{\"version\":%d,\"unitOfMeasure\":\"EACH\"}";
     /** The role whose grants the last test rewrites; restored afterwards, as InventoryCatalogSecurityIntegrationTest does. */
     private static final String REWRITTEN_ROLE = "ACCOUNTANT";
 
