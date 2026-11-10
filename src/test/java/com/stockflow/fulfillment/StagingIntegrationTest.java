@@ -161,6 +161,13 @@ class StagingIntegrationTest {
                         (String) line.get("location_code"), (String) line.get("lpn"), system);
             }
         }
+        // The asynchronous listeners of what the test did (cancellations, mails) finish before the next test class runs:
+        // statement counters of other classes are shared by every thread.
+        for (UUID order : placed) {
+            Await.until("events of the order handled", ASYNC, () -> jdbc.queryForObject(
+                    "SELECT count(*) FROM event_publication WHERE completion_date IS NULL AND serialized_event LIKE ?",
+                    Integer.class, "%" + order + "%") == 0);
+        }
         for (String code : extraAreas) {
             tx.executeWithoutResult(s -> {
                 jdbc.update("DELETE FROM warehouse.area WHERE location_id = (SELECT id FROM warehouse.storage_location "
