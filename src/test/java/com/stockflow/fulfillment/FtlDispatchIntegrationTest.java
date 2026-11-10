@@ -114,7 +114,7 @@ class FtlDispatchIntegrationTest {
 
     @BeforeEach
     void setUp() {
-        coordinator = staff("ORDER_COORDINATOR");
+        coordinator = staff("WAREHOUSE_MANAGER", HCM);
         picker = staff("WAREHOUSE_STAFF", HCM);
         dispatcher = staff("WAREHOUSE_STAFF", HCM);
         UUID elsewhere = tx.execute(s -> otherWarehouse());
@@ -170,7 +170,7 @@ class FtlDispatchIntegrationTest {
     }
 
     private ResultActions oc(MockHttpServletRequestBuilder request) throws Exception {
-        return as(coordinator, "ORDER_COORDINATOR", request);
+        return as(coordinator, "WAREHOUSE_MANAGER", request);
     }
 
     private ResultActions packer(MockHttpServletRequestBuilder request) throws Exception {

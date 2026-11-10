@@ -324,23 +324,22 @@ public class ProductionReceivables {
     }
 
     /**
-     * Goods on the dock as a count of {@code counts} cartons of a line of {@code lineCartons} cartons' worth leaves
-     * them: the cartons labelled and the rest of the line loose, everything received into INBOUND stock at
-     * {@code location}, and the putaway tasks opened for it as a confirmation opens them. The receipt service itself
-     * takes only whole cartons of the standard count and refuses to confirm anything else (BR-12, BR-13), so a count
-     * with a short carton or a loose remainder is written below it: the line as rows, the cartons through
-     * {@code countReceivingPackages}, the stock through {@code receive}, the event as {@code confirm} publishes it.
-     * The receipt stays a draft. The tests that need loose stock or a short carton are about what the inventory and
-     * the putaway do with it, not about how it came.
+     * Goods on the dock as a count of {@code cartons} cartons leaves them: every carton labelled, everything received
+     * into INBOUND stock at {@code location}, and the putaway tasks opened for it as a confirmation opens them. The
+     * receipt service itself only takes a line that lists its cartons and the database checks it, at commit, as it
+     * does any other, so this writes the line as rows and goes through {@code countReceivingPackages} and
+     * {@code receive}, with the event as {@code confirm} publishes it; the receipt stays a draft. Cartons only, each
+     * of the packing unit's count: since team plan 4C-2 nothing else is stock, so there is no short carton and no loose
+     * remainder to put on the dock.
      */
-    public Dock onTheDock(Receivable receivable, String location, int lineCartons, List<Integer> counts, UUID clerk) {
+    public Dock onTheDock(Receivable receivable, String location, int cartons, UUID clerk) {
         GoodsReceipts.ReceiptView draft = draftReceipt(receivable, clerk);
-        UUID line = uncountedLine(receivable, draft, location, lineCartons);
-        List<String> lpns = countCartons(receivable.first(), line, location, counts, clerk).stream()
+        UUID line = uncountedLine(receivable, draft, location, cartons);
+        List<String> lpns = countCartons(receivable.first(), line, location, cartons, clerk).stream()
                 .map(StockPackageView::lpn).sorted().toList();
-        int quantity = lineCartons * receivable.unitsPerCarton();
-        inventory.receive(new ReceiveStockCommand(line, new Sku(receivable.sku()), null, null, location, quantity,
-                clerk, Instant.now()));
+        int quantity = cartons * receivable.unitsPerCarton();
+        inventory.receive(new ReceiveStockCommand(line, new Sku(receivable.sku()), receivable.productionCode(),
+                location, quantity, clerk, Instant.now()));
         tx.executeWithoutResult(s -> events.publishEvent(new ReceiptStockReadyForPutaway(draft.id(), draft.number(),
                 draft.warehouseId(), List.of(new ReceiptStockReadyForPutaway.Line(line, receivable.sku(), null,
                         location, quantity)))));
@@ -348,11 +347,11 @@ public class ProductionReceivables {
                 lpns);
     }
 
-    /** Labels one carton for each of {@code counts} on the line, as the clerk counted them. */
-    public List<StockPackageView> countCartons(Goods goods, UUID line, String location, List<Integer> counts,
-                                               UUID clerk) {
+    /** Labels {@code cartons} new cartons on the line, as the clerk counted them. */
+    public List<StockPackageView> countCartons(Goods goods, UUID line, String location, int cartons, UUID clerk) {
         return inventory.countReceivingPackages(new CountReceivingPackagesCommand(line, new Sku(goods.sku()),
-                goods.cartonUnitId(), location, counts.stream().map(c -> new PackageCount(null, c)).toList(), clerk));
+                goods.cartonUnitId(), location, IntStream.range(0, cartons).mapToObj(i -> PackageCount.fresh()).toList(),
+                clerk));
     }
 
     private UUID customer() {

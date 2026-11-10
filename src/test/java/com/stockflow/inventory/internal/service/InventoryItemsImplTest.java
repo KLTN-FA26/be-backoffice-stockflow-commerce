@@ -2,12 +2,9 @@ package com.stockflow.inventory.internal.service;
 
 import com.stockflow.common.api.PageResponse;
 import com.stockflow.common.error.ErrorCode;
-import com.stockflow.inventory.api.InventoryPolicy;
 import com.stockflow.inventory.api.ItemLogistics;
-import com.stockflow.inventory.api.RemovalStrategy;
 import com.stockflow.inventory.api.SkuRetirement;
 import com.stockflow.inventory.api.StorageClass;
-import com.stockflow.inventory.api.TrackingMode;
 import com.stockflow.common.security.CurrentUserProvider;
 import com.stockflow.inventory.internal.repository.InventoryItemSearch;
 import com.stockflow.inventory.internal.repository.InventoryPolicyRepository;
@@ -57,15 +54,8 @@ class InventoryItemsImplTest {
                 StorageClass.NORMAL, false, null);
     }
 
-    private static InventoryPolicy policy(RemovalStrategy strategy, TrackingMode tracking) {
-        return new InventoryPolicy(strategy, tracking);
-    }
-
-    private static final InventoryPolicy CURRENT_POLICY =
-            policy(RemovalStrategy.FEFO, TrackingMode.LOT);
-
     private ItemRow row(long version, String unit) {
-        return new ItemRow(ID, SKU, version, logistics(unit, null), CURRENT_POLICY);
+        return new ItemRow(ID, SKU, version, logistics(unit, null));
     }
 
     @BeforeEach
@@ -74,7 +64,6 @@ class InventoryItemsImplTest {
         when(policies.findSku(ID)).thenReturn(Optional.of(SKU));
         when(users.current()).thenReturn(Optional.empty());
         when(retirement.getIfAvailable()).thenReturn(retired);
-        when(policies.save(anyString(), anyLong(), any(), anyString())).thenReturn(true);
         when(policies.saveLogistics(anyString(), anyLong(), any(), anyString())).thenReturn(true);
     }
 
@@ -83,11 +72,11 @@ class InventoryItemsImplTest {
     class Reading {
 
         @Test
-        @DisplayName("the detail has the logistics and the policy, and no thresholds (kltn-docs 20 BR-13)")
+        @DisplayName("the detail has the logistics and no policy: the stock policy is fixed (kltn-docs 01 BR-17)")
         void detail() {
             var detail = service.get(ID);
 
-            assertThat(detail.policy()).isEqualTo(CURRENT_POLICY);
+            assertThat(detail.sku()).isEqualTo(SKU);
             assertThat(detail.logistics().unitOfMeasure()).isEqualTo("PCS");
         }
 
@@ -101,20 +90,20 @@ class InventoryItemsImplTest {
         }
 
         @Test
-        @DisplayName("search turns blank filters into no filter, trims the others, and derives the tracking mode")
+        @DisplayName("search turns blank filters into no filter and trims the others")
         void searchNormalisesFilters() {
             when(search.items(any(), any(Pageable.class))).thenReturn(new PageImpl<>(List.of(
-                    new InventoryItemSearch.Row(ID, SKU, "PCS", "893", StorageClass.COLD, true, true, false))));
+                    new InventoryItemSearch.Row(ID, SKU, "PCS", "893", StorageClass.COLD))));
 
             PageResponse<InventoryItems.Summary> page = service.search(
-                    new InventoryItems.ItemQuery("  ", " cup ", StorageClass.COLD, false, 0, 20));
+                    new InventoryItems.ItemQuery("  ", " cup ", StorageClass.COLD, 0, 20));
 
             ArgumentCaptor<InventoryItemSearch.Criteria> criteria =
                     ArgumentCaptor.forClass(InventoryItemSearch.Criteria.class);
             verify(search).items(criteria.capture(), any(Pageable.class));
             assertThat(criteria.getValue()).isEqualTo(
-                    new InventoryItemSearch.Criteria(null, "cup", StorageClass.COLD, false));
-            assertThat(page.items().get(0).trackingMode()).isEqualTo(TrackingMode.LOT_SERIAL);
+                    new InventoryItemSearch.Criteria(null, "cup", StorageClass.COLD));
+            assertThat(page.items().get(0).sku()).isEqualTo(SKU);
         }
     }
 
@@ -214,55 +203,5 @@ class InventoryItemsImplTest {
             assertThat(codeOf(() -> service.describe(ID, 3, logistics("PCS", null))))
                     .isEqualTo(ErrorCode.OPTIMISTIC_LOCK);
         }
-    }
-
-    @Nested
-    @DisplayName("configuring the stock policy")
-    class Configuring {
-
-        @Test
-        @DisplayName("a retired SKU is VARIANT_OBSOLETE")
-        void retiredSku() {
-            when(retired.retired(SKU)).thenReturn(true);
-
-            assertThat(codeOf(() -> service.configure(ID, 3, CURRENT_POLICY))).isEqualTo(ErrorCode.VARIANT_OBSOLETE);
-        }
-
-        @Test
-        @DisplayName("a stale version is OPTIMISTIC_LOCK and nothing is saved")
-        void staleVersion() {
-            assertThat(codeOf(() -> service.configure(ID, 1, CURRENT_POLICY))).isEqualTo(ErrorCode.OPTIMISTIC_LOCK);
-            verify(policies, never()).save(anyString(), anyLong(), any(), anyString());
-        }
-
-        @Test
-        @DisplayName("changing the removal strategy while the SKU is being counted is COUNT_POLICY_CONFLICT")
-        void operationalChangeDuringCount() {
-            when(policies.hasActiveCount(SKU)).thenReturn(true);
-
-            assertThat(codeOf(() -> service.configure(ID, 3,
-                    policy(RemovalStrategy.FIFO, TrackingMode.LOT))))
-                    .isEqualTo(ErrorCode.COUNT_POLICY_CONFLICT);
-        }
-
-        @Test
-        @DisplayName("stock that does not fit the new policy is INVENTORY_POLICY_STOCK_CONFLICT")
-        void incompatibleWithStock() {
-            when(policies.incompatible(eq(SKU), any())).thenReturn(true);
-
-            assertThat(codeOf(() -> service.configure(ID, 3,
-                    policy(RemovalStrategy.FEFO, TrackingMode.SERIAL))))
-                    .isEqualTo(ErrorCode.INVENTORY_POLICY_STOCK_CONFLICT);
-            verify(policies, never()).save(anyString(), anyLong(), any(), anyString());
-        }
-
-        @Test
-        @DisplayName("a lost UPDATE race is OPTIMISTIC_LOCK")
-        void lostUpdate() {
-            when(policies.save(anyString(), anyLong(), any(), anyString())).thenReturn(false);
-
-            assertThat(codeOf(() -> service.configure(ID, 3, CURRENT_POLICY))).isEqualTo(ErrorCode.OPTIMISTIC_LOCK);
-        }
-
     }
 }

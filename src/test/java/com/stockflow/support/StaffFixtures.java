@@ -76,4 +76,13 @@ public final class StaffFixtures {
     public void setStatus(UUID user, String status) {
         tx.executeWithoutResult(s -> jdbc.update("UPDATE identity.app_user SET status = ? WHERE id = ?", status, user));
     }
+
+    public long messages(UUID user) {
+        return jdbc.queryForObject("SELECT count(*) FROM notification.user_notification WHERE recipient_id = ?", Long.class, user);
+    }
+
+    public java.util.List<String> titles(UUID user) {
+        return jdbc.queryForList("SELECT title FROM notification.user_notification WHERE recipient_id = ? ORDER BY created_at",
+                String.class, user);
+    }
 }

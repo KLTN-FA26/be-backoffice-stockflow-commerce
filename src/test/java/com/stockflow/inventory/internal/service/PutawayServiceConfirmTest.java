@@ -6,14 +6,11 @@ import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.DataScope;
 import com.stockflow.common.security.Role;
 import com.stockflow.contracts.PutawayCompleted;
-import com.stockflow.inventory.api.InventoryPolicy;
 import com.stockflow.inventory.api.ItemLogistics;
 import com.stockflow.inventory.api.MoveReference;
 import com.stockflow.inventory.api.ReclassifyStockPackagesCommand;
-import com.stockflow.inventory.api.RemovalStrategy;
 import com.stockflow.inventory.api.StockDisposition;
 import com.stockflow.inventory.api.StorageClass;
-import com.stockflow.inventory.api.TrackingMode;
 import com.stockflow.inventory.internal.domain.LocationId;
 import com.stockflow.inventory.internal.domain.PutawayRanker;
 import com.stockflow.inventory.internal.domain.PutawayRanker.Occupancy;
@@ -117,8 +114,7 @@ class PutawayServiceConfirmTest {
     private static ItemRow item(StorageClass storageClass) {
         ItemLogistics logistics = new ItemLogistics("PCS", null, new BigDecimal("0.010"), null, null, null, null, null,
                 null, null, 1, 1, storageClass, false, null);
-        return new ItemRow(UUID.randomUUID(), SKU, 1, logistics,
-                new InventoryPolicy(RemovalStrategy.FEFO, TrackingMode.LOT));
+        return new ItemRow(UUID.randomUUID(), SKU, 1, logistics);
     }
 
     private static CurrentUser clerkOf(String prefix) {

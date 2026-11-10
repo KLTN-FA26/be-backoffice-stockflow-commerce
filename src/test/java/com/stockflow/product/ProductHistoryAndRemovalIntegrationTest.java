@@ -12,11 +12,8 @@ import com.stockflow.common.storage.StorageException;
 import com.stockflow.common.storage.UploadInspection;
 import com.stockflow.contracts.CatalogListingChanged;
 import com.stockflow.contracts.ProductDiscontinued;
-import com.stockflow.inventory.api.InventoryPolicy;
 import com.stockflow.inventory.api.InventoryService;
-import com.stockflow.inventory.api.RemovalStrategy;
 import com.stockflow.inventory.internal.service.InventoryItems;
-import com.stockflow.inventory.api.TrackingMode;
 import com.stockflow.product.api.ListProductsQuery;
 import com.stockflow.product.api.ProductChange;
 import com.stockflow.product.api.ProductDiscontinuation;
@@ -411,7 +408,7 @@ class ProductHistoryAndRemovalIntegrationTest {
     // ------------------------------------------------------------------ suspended products
 
     @Test
-    @DisplayName("a suspended product is still maintained (variants, images, logistics, stock policy), listed as INACTIVE, never edited or put on sale")
+    @DisplayName("a suspended product is still maintained (variants, images, logistics), listed as INACTIVE, never edited or put on sale")
     void suspendedProductIsStillMaintained() throws Exception {
         ProductSummary approved = approved();
         UUID id = approved.productId();
@@ -427,9 +424,7 @@ class ProductHistoryAndRemovalIntegrationTest {
         var image = media.upload(id, defaultId, png(), editor, null);
         assertThat(media.describe(id, defaultId, image.id(), "Alt", 1, false).altText()).isEqualTo("Alt");
         var item = items.get(itemOf(defaultId));
-        assertThat(items.configure(item.id(), item.version(),
-                new InventoryPolicy(RemovalStrategy.FIFO, TrackingMode.NONE)).policy().removalStrategy())
-                .isEqualTo(RemovalStrategy.FIFO);
+        assertThat(items.describe(item.id(), item.version(), item.logistics()).version()).isEqualTo(item.version() + 1);
         assertThat(variants.block(id, defaultId).status()).isEqualTo(VariantStatus.BLOCKED);
     }
 
@@ -635,7 +630,7 @@ class ProductHistoryAndRemovalIntegrationTest {
     }
 
     @Test
-    @DisplayName("an OBSOLETE variant's item stays readable (its stock is still cleared); editing its logistics or policy is VARIANT_OBSOLETE")
+    @DisplayName("an OBSOLETE variant's item stays readable (its stock is still cleared); editing its logistics is VARIANT_OBSOLETE")
     void obsoleteVariantIsReadButNotEdited() {
         ProductSummary created = draft();
         UUID id = created.productId();
@@ -649,9 +644,6 @@ class ProductHistoryAndRemovalIntegrationTest {
         var obsolete = items.get(itemOf(extra.id()));
         assertThat(obsolete.sku()).isEqualTo(extra.sku());
 
-        assertThat(refusal(org.assertj.core.api.Assertions.catchThrowable(() -> items.configure(obsolete.id(),
-                obsolete.version(), new InventoryPolicy(RemovalStrategy.FIFO, TrackingMode.NONE))))
-                .errorCode()).isEqualTo(ErrorCode.VARIANT_OBSOLETE);
         assertThat(refusal(org.assertj.core.api.Assertions.catchThrowable(() -> items.describe(obsolete.id(),
                 obsolete.version(), obsolete.logistics()))).errorCode()).isEqualTo(ErrorCode.VARIANT_OBSOLETE);
         assertThat(items.get(obsolete.id()).version()).as("nothing was written").isEqualTo(obsolete.version());

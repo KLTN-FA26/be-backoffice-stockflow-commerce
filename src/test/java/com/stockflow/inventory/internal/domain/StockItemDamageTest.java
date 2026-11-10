@@ -29,7 +29,7 @@ class StockItemDamageTest {
 
     private static StockItem row(StockStatus status, int onHand) {
         return new StockItem(StockItemId.newId(), SKU, BIN, "L1", Quantity.of(onHand), status, List.of(), 0L,
-                RECEIVED, null);
+                RECEIVED);
     }
 
     private static StockItem available(int onHand) {
@@ -151,21 +151,6 @@ class StockItemDamageTest {
         assertThat(refusal(() -> damaged.giveUpRestored(Quantity.of(2)))).isEqualTo(ErrorCode.CONFLICT);
         assertThat(refusal(() -> source.requireUnheldDamaged(Quantity.of(1))))
                 .as("not a DAMAGED row").isEqualTo(ErrorCode.STOCK_STATUS_MISMATCH);
-    }
-
-    @Test
-    @DisplayName("a serial unit is one unit on its damaged row too")
-    void serialUnit() {
-        StockItem unit = new StockItem(StockItemId.newId(), SKU, BIN, null, Quantity.of(1),
-                StockStatus.AVAILABLE, List.of(), 0L, RECEIVED, "SN-0001");
-        StockItem damaged = StockItem.emptyLayerOf(unit, QUARANTINE, StockStatus.DAMAGED);
-
-        assertThat(refusal(() -> unit.giveUpDamaged(Quantity.of(2), NOW))).isEqualTo(ErrorCode.DAMAGE_EXCEEDS_FREE_STOCK);
-        unit.giveUpDamaged(Quantity.of(1), NOW);
-        damaged.takeUpDamaged(unit, Quantity.of(1), null, null, NOW);
-
-        assertThat(damaged.serialNumber()).isEqualTo("SN-0001");
-        assertThat(unit.onHand()).isEqualTo(Quantity.ZERO);
     }
 
     @Test

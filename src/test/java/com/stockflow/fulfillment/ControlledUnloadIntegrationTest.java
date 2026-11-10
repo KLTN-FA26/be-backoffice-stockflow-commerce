@@ -107,7 +107,7 @@ class ControlledUnloadIntegrationTest {
 
     @BeforeEach
     void setUp() {
-        coordinator = staff("ORDER_COORDINATOR");
+        coordinator = staff("WAREHOUSE_MANAGER", HCM);
         picker = staff("WAREHOUSE_STAFF", HCM);
         dispatcher = staff("WAREHOUSE_STAFF", HCM);
         UUID elsewhere = tx.execute(s -> otherWarehouse());
@@ -170,7 +170,7 @@ class ControlledUnloadIntegrationTest {
     }
 
     private ResultActions oc(MockHttpServletRequestBuilder request) throws Exception {
-        return as(coordinator, "ORDER_COORDINATOR", request);
+        return as(coordinator, "WAREHOUSE_MANAGER", request);
     }
 
     private ResultActions packer(MockHttpServletRequestBuilder request) throws Exception {
@@ -191,9 +191,9 @@ class ControlledUnloadIntegrationTest {
 
     private void stock(int sofas) {
         tx.executeWithoutResult(s -> jdbc.update("""
-                INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, version,
+                INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, version,
                     created_at, received_at)
-                VALUES (?, ?, 'HCM-A02-1-A', ?, 0, 'AVAILABLE', 0, NOW(), NOW() - interval '400 days')""",
+                VALUES (?, ?, 'HCM-A02-1-A', 'FX-LOT', ?, 0, 'AVAILABLE', 0, NOW(), NOW() - interval '400 days')""",
                 Identifiers.newId(), SOFA.code(), sofas));
     }
 
@@ -736,7 +736,7 @@ class ControlledUnloadIntegrationTest {
         String version = "{\"expectedVersion\":" + plan.path("version").asLong() + ",\"reasonCode\":\"XE_HONG\","
                 + "\"note\":\"x\"}";
         String override = "{\"packageId\":\"" + UUID.randomUUID() + "\"}";
-        for (String[] role : new String[][] {{"WAREHOUSE_STAFF", "d"}, {"ORDER_COORDINATOR", "c"}}) {
+        for (String[] role : new String[][] {{"WAREHOUSE_STAFF", "d"}, {"WAREHOUSE_MANAGER", "c"}}) {
             UUID user = role[1].equals("d") ? dispatcher : coordinator;
             as(user, role[0], body(post(PLANS + "/" + planId + "/controlled-cancellation"), version))
                     .andExpect(status().isForbidden());

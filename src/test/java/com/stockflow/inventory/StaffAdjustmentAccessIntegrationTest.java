@@ -20,18 +20,18 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * V20261014001200: the inventory planner, who may request an adjustment, may also read the adjustments,
+ * V20261014001200: the warehouse staff, who may request an adjustment, may also read the adjustments,
  * but deciding one stays with the holder of {@code inventory-stock-adjustments:APPROVE}.
  */
 @SecuredIntegrationTest
-class PlannerAdjustmentAccessIntegrationTest {
+class StaffAdjustmentAccessIntegrationTest {
 
     @Autowired MockMvc mockMvc;
     @MockitoBean JwtDecoder decoder;
     @org.springframework.beans.factory.annotation.Autowired org.springframework.jdbc.core.JdbcTemplate jdbc;
 
     private SecuredMvc mvc;
-    private final UUID planner = UUID.randomUUID();
+    private final UUID clerk = UUID.randomUUID();
 
     @BeforeEach
     void setUp() {
@@ -39,27 +39,27 @@ class PlannerAdjustmentAccessIntegrationTest {
     }
 
     @Test
-    @DisplayName("the planner lists stock adjustments")
-    void plannerListsAdjustments() throws Exception {
-        mvc.asRole(Role.INVENTORY_PLANNER, planner, get("/api/v1/inventory/adjustments"))
+    @DisplayName("the clerk lists stock adjustments")
+    void clerkListsAdjustments() throws Exception {
+        mvc.asRole(Role.WAREHOUSE_STAFF, clerk, get("/api/v1/inventory/adjustments"))
                 .andExpect(status().isOk());
     }
 
     @Test
-    @DisplayName("the planner opens one adjustment (an unknown id is a 404, not a 403)")
-    void plannerReadsOneAdjustment() throws Exception {
-        mvc.asRole(Role.INVENTORY_PLANNER, planner, get("/api/v1/inventory/adjustments/" + UUID.randomUUID()))
+    @DisplayName("the clerk opens one adjustment (an unknown id is a 404, not a 403)")
+    void clerkReadsOneAdjustment() throws Exception {
+        mvc.asRole(Role.WAREHOUSE_STAFF, clerk, get("/api/v1/inventory/adjustments/" + UUID.randomUUID()))
                 .andExpect(status().isNotFound());
     }
 
     @Test
-    @DisplayName("the planner still cannot approve or reject an adjustment")
-    void plannerCannotDecide() throws Exception {
+    @DisplayName("the clerk still cannot approve or reject an adjustment")
+    void clerkCannotDecide() throws Exception {
         UUID adjustment = UUID.randomUUID();
-        mvc.asRole(Role.INVENTORY_PLANNER, planner, post("/api/v1/inventory/adjustments/" + adjustment + "/approval"))
+        mvc.asRole(Role.WAREHOUSE_STAFF, clerk, post("/api/v1/inventory/adjustments/" + adjustment + "/approval"))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.errorCode").value("FORBIDDEN"));
-        mvc.asRole(Role.INVENTORY_PLANNER, planner, post("/api/v1/inventory/adjustments/" + adjustment + "/rejection")
+        mvc.asRole(Role.WAREHOUSE_STAFF, clerk, post("/api/v1/inventory/adjustments/" + adjustment + "/rejection")
                         .contentType(MediaType.APPLICATION_JSON).content("{\"reason\":\"not mine to decide\"}"))
                 .andExpect(status().isForbidden());
     }
@@ -71,7 +71,7 @@ class PlannerAdjustmentAccessIntegrationTest {
         String body = "{\"locationCode\":\"%s\",\"sku\":\"%s\",\"quantityDelta\":-1,"
                 .formatted(stock.get("location_code"), stock.get("sku")) + "\"reason\":\"SUBCONTRACT_LOSS\"}";
 
-        mvc.asRole(Role.INVENTORY_PLANNER, planner, post("/api/v1/inventory/adjustments")
+        mvc.asRole(Role.WAREHOUSE_STAFF, clerk, post("/api/v1/inventory/adjustments")
                         .contentType(MediaType.APPLICATION_JSON).content(body))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.errorCode").value("VALIDATION_FAILED"));

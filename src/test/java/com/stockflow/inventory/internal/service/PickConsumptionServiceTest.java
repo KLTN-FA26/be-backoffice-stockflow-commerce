@@ -142,7 +142,7 @@ class PickConsumptionServiceTest {
                 UUID.randomUUID(), Quantity.of(held), NOW.minusSeconds(3600), null, status,
                 status == ReservationStatus.RELEASED ? ReleaseReason.ORDER_CANCELLED : null,
                 status == ReservationStatus.HELD ? null : NOW.minusSeconds(60));
-        StockItem item = new StockItem(StockItemId.newId(), SOFA, location, "LOT-1", Quantity.of(onHand), StockStatus.AVAILABLE, List.of(hold), 0L, NOW.minusSeconds(86_400), null);
+        StockItem item = new StockItem(StockItemId.newId(), SOFA, location, "LOT-1", Quantity.of(onHand), StockStatus.AVAILABLE, List.of(hold), 0L, NOW.minusSeconds(86_400));
         when(stockItems.findByReservationIdForUpdate(ReservationId.of(reservationId))).thenReturn(Optional.of(item));
         when(stockItems.findByIdForUpdate(item.id())).thenReturn(Optional.of(item));
         return item;
@@ -274,7 +274,7 @@ class PickConsumptionServiceTest {
                     UUID.randomUUID(), Quantity.of(2), NOW.minusSeconds(3600), null, ReservationStatus.HELD, null, null);
             StockItem item = new StockItem(StockItemId.newId(), SOFA, new LocationId("HCM-PRD01"), "LOT-1",
                     Quantity.of(2), StockStatus.IN_PRODUCTION, List.of(hold), 0L,
-                    NOW.minusSeconds(86_400), null);
+                    NOW.minusSeconds(86_400));
             when(stockItems.findByReservationIdForUpdate(ReservationId.of(holdId))).thenReturn(Optional.of(item));
 
             assertThat(refusal(() -> service.consumeForPick(holdId, UUID.randomUUID(), PICKER)))
@@ -294,7 +294,7 @@ class PickConsumptionServiceTest {
             Reservation hold = new Reservation(ReservationId.of(holdId), UUID.randomUUID(), UUID.randomUUID(),
                     UUID.randomUUID(), Quantity.of(2), NOW.minusSeconds(3600), null, ReservationStatus.HELD, null, null);
             var carton = new com.stockflow.inventory.internal.domain.StockPackageId(UUID.randomUUID());
-            StockItem item = new StockItem(StockItemId.newId(), SOFA, BIN, "LOT-1", Quantity.of(4), StockStatus.AVAILABLE, List.of(hold), 0L, NOW.minusSeconds(86_400), null, carton);
+            StockItem item = new StockItem(StockItemId.newId(), SOFA, BIN, "LOT-1", Quantity.of(4), StockStatus.AVAILABLE, List.of(hold), 0L, NOW.minusSeconds(86_400), carton);
             when(stockItems.findIdByReservationId(ReservationId.of(holdId))).thenReturn(Optional.of(item.id()));
             when(stockItems.findById(item.id())).thenReturn(Optional.of(item));
             when(cycleCounts.findHolding(any())).thenReturn(Optional.empty());
@@ -377,7 +377,7 @@ class PickConsumptionServiceTest {
         void mergesIntoTheLayerElsewhere() {
             UUID hold = UUID.randomUUID();
             StockItem source = stockWithHold(BIN, 0, 3, ReservationStatus.CONSUMED, hold);
-            StockItem there = new StockItem(StockItemId.newId(), SOFA, OTHER_BIN, "LOT-1", Quantity.of(5), StockStatus.AVAILABLE, List.of(), 0L, source.receivedAt(), null);
+            StockItem there = new StockItem(StockItemId.newId(), SOFA, OTHER_BIN, "LOT-1", Quantity.of(5), StockStatus.AVAILABLE, List.of(), 0L, source.receivedAt());
             when(stockItems.findLooseBySkuAndLocation(SOFA, OTHER_BIN)).thenReturn(List.of(there));
             when(stockItems.findByIdForUpdate(there.id())).thenReturn(Optional.of(there));
 
@@ -393,7 +393,7 @@ class PickConsumptionServiceTest {
         void statusMismatch() {
             UUID hold = UUID.randomUUID();
             StockItem source = stockWithHold(BIN, 0, 3, ReservationStatus.CONSUMED, hold);
-            StockItem quarantined = new StockItem(StockItemId.newId(), SOFA, OTHER_BIN, "LOT-1", Quantity.of(5), StockStatus.QUARANTINE, List.of(), 0L, source.receivedAt(), null);
+            StockItem quarantined = new StockItem(StockItemId.newId(), SOFA, OTHER_BIN, "LOT-1", Quantity.of(5), StockStatus.QUARANTINE, List.of(), 0L, source.receivedAt());
             when(stockItems.findLooseBySkuAndLocation(SOFA, OTHER_BIN)).thenReturn(List.of(quarantined));
             when(stockItems.findByIdForUpdate(quarantined.id())).thenReturn(Optional.of(quarantined));
 

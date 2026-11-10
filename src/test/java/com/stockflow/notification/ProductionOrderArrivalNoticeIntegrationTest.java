@@ -1,7 +1,7 @@
 package com.stockflow.notification;
 
 import com.stockflow.contracts.ProductionOrderSent;
-import com.stockflow.support.AlertFixtures;
+import com.stockflow.support.StaffFixtures;
 import com.stockflow.support.Await;
 import com.stockflow.support.SecuredIntegrationTest;
 import jakarta.persistence.EntityManager;
@@ -28,7 +28,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * real staff directory and the permission rows as V20261113000200 left them. The notice is addressed to the holders of
  * {@code procurement-goods-receipts:CREATE}; the migration deleted {@code procurement-goods-receipts:APPROVE} and every
  * other purchasing grant, so a notice addressed to a deleted permission would reach nobody and nothing else would say
- * so. Warehouse managers and warehouse staff hold CREATE; a locked account, a manager of another warehouse, a planner
+ * so. Warehouse managers and warehouse staff hold CREATE; a locked account, a manager of another warehouse, a salesperson
  * and a customer do not receive it.
  */
 @SecuredIntegrationTest
@@ -40,18 +40,18 @@ class ProductionOrderArrivalNoticeIntegrationTest {
     @Autowired EntityManager entityManager;
     @MockitoBean JwtDecoder decoder;
 
-    private AlertFixtures fixtures;
+    private StaffFixtures fixtures;
     private UUID hcm;
     private UUID managerHcm;
     private UUID staffHcm;
     private UUID lockedManager;
     private UUID managerOther;
-    private UUID planner;
+    private UUID salesperson;
     private UUID customer;
 
     @BeforeEach
     void setUp() {
-        fixtures = new AlertFixtures(jdbc, tx, entityManager);
+        fixtures = new StaffFixtures(jdbc, tx, entityManager);
         hcm = fixtures.hcm();
         var other = fixtures.otherWarehouse();
         managerHcm = fixtures.staff("WAREHOUSE_MANAGER", hcm);
@@ -59,7 +59,7 @@ class ProductionOrderArrivalNoticeIntegrationTest {
         lockedManager = fixtures.staff("WAREHOUSE_MANAGER", hcm);
         fixtures.setStatus(lockedManager, "LOCKED");
         managerOther = fixtures.staff("WAREHOUSE_MANAGER", other.id());
-        planner = fixtures.staff("INVENTORY_PLANNER");
+        salesperson = fixtures.staff("SALES_STAFF");
         customer = fixtures.staff("CUSTOMER");
     }
 
@@ -83,7 +83,7 @@ class ProductionOrderArrivalNoticeIntegrationTest {
         assertThat(jdbc.queryForMap("SELECT category, link, source_type FROM notification.user_notification "
                 + "WHERE recipient_id = ?", managerHcm)).containsEntry("category", "PRODUCTION_ORDER")
                 .containsEntry("source_type", "PRODUCTION_ORDER").containsEntry("link", "/production/orders/" + order);
-        for (UUID nobody : List.of(lockedManager, managerOther, planner, customer)) {
+        for (UUID nobody : List.of(lockedManager, managerOther, salesperson, customer)) {
             assertThat(fixtures.messages(nobody)).as("messages of %s", nobody).isZero();
         }
     }

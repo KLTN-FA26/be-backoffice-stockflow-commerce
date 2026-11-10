@@ -42,8 +42,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.tuple;
 
 /**
- * SCRUM-473 carton lookup against the real view and tables. Each test counts a line of 2000 as one carton of 1000
- * and one of 980 at the receiving area; most then receive it, which leaves 20 loose beside the two cartons.
+ * SCRUM-473 carton lookup against the real view and tables. Each test counts a line of 2000 as two cartons of the
+ * standard 1000 at the receiving area; most then receive it, every unit into the cartons (team plan 4C-2). (An opened
+ * carton is no longer possible: nothing takes part of a carton, V20261111000200.)
  */
 @ProductionReceiptTest
 class StockPackageLookupIntegrationTest {
@@ -73,7 +74,7 @@ class StockPackageLookupIntegrationTest {
         sku = goods.sku();
         carton = goods.cartonUnitId();
         line = receivables.uncountedLine(goods, receivables.draftReceipt(goods, clerk), RECEIVING, 2);
-        lpns = count(new PackageCount(null, 1000), new PackageCount(null, 980)).stream()
+        lpns = count(PackageCount.fresh(), PackageCount.fresh()).stream()
                 .map(StockPackageView::lpn).toList();
     }
 
@@ -82,9 +83,9 @@ class StockPackageLookupIntegrationTest {
                 packages.length == 0 ? null : carton, RECEIVING, List.of(packages), clerk));
     }
 
-    /** Both cartons IN_STOCK, unopened, at the receiving area; 20 loose beside them. */
+    /** Both cartons IN_STOCK, unopened, at the receiving area; nothing loose. */
     private void receive() {
-        inventory.receive(new ReceiveStockCommand(line, new Sku(sku), null, null, RECEIVING, 2000, clerk, RECEIVED));
+        inventory.receive(new ReceiveStockCommand(line, new Sku(sku), "LOT-FX", RECEIVING, 2000, clerk, RECEIVED));
     }
 
     private PageResponse<StockPackageBalance> list(String location, String sku, List<StockPackageStatus> statuses) {
@@ -128,7 +129,7 @@ class StockPackageLookupIntegrationTest {
         StockPackageBalance.Detail found = lookup.byLpn(lpns.get(1));
 
         assertThat(found.carton().status()).isEqualTo(StockPackageStatus.RECEIVING);
-        assertThat(found.carton().receivedQty()).isEqualTo(980);
+        assertThat(found.carton().receivedQty()).isEqualTo(1000);
         assertThat(found.carton().onHand()).isZero();
         assertThat(found.carton().lotNumber()).isNull();
         assertThat(found.contents()).isEmpty();
@@ -144,33 +145,12 @@ class StockPackageLookupIntegrationTest {
     }
 
     @Test
-    @DisplayName("the receiving area after receipt: two whole cartons of 1980 units, 20 loose, 2000 in all")
+    @DisplayName("the receiving area after receipt: two whole cartons of 2000 units, nothing loose")
     void summaryAtTheReceivingArea() {
         receive();
 
         assertThat(lookup.atLocation(RECEIVING.toLowerCase(Locale.ROOT))).filteredOn(l -> l.sku().equals(sku))
-                .containsExactly(new LocationLine(sku, null, null, StockStatus.INBOUND, 2, 1980, 0, 0, 20, 2000));
-    }
-
-    @Test
-    @DisplayName("an opened carton is counted apart from the whole ones, with what is left in it")
-    void anOpenedCartonIsCountedApart() {
-        receive();
-        // 100 taken out of the 980 carton: its row falls and the carton is opened, as one commit (the contents check
-        // of V20261020000200 runs at commit and wants both). In tx: the pool runs with auto-commit off.
-        tx.executeWithoutResult(s -> {
-            jdbc.update("""
-                    update inventory.stock_item set on_hand = on_hand - 100
-                     where stock_package_id = (select id from inventory.stock_package where lpn = ?)""", lpns.get(1));
-            jdbc.update("update inventory.stock_package set unopened = false where lpn = ?", lpns.get(1));
-        });
-
-        assertThat(lookup.atLocation(RECEIVING)).filteredOn(l -> l.sku().equals(sku))
-                .containsExactly(new LocationLine(sku, null, null, StockStatus.INBOUND, 1, 1000, 1, 880, 20, 1900));
-        assertThat(lookup.byLpn(lpns.get(1)).carton()).satisfies(detail -> {
-            assertThat(detail.onHand()).isEqualTo(880);
-            assertThat(detail.unopened()).isFalse();
-        });
+                .containsExactly(new LocationLine(sku, null, StockStatus.INBOUND, 2, 2000, 0, 0, 0, 2000));
     }
 
     @Test
@@ -192,7 +172,7 @@ class StockPackageLookupIntegrationTest {
         assertThat(list(null, sku.toLowerCase(Locale.ROOT), null).items())
                 .extracting(StockPackageBalance::lpn, StockPackageBalance::locationCode, StockPackageBalance::onHand)
                 .containsExactly(tuple(lpns.get(0), BIN, 1000),
-                        tuple(lpns.get(1), RECEIVING, 980));
+                        tuple(lpns.get(1), RECEIVING, 1000));
         assertThat(list(BIN, sku, null).items()).extracting(StockPackageBalance::lpn).containsExactly(lpns.getFirst());
         assertThat(list(null, "NO-SUCH-SKU", null).totalElements()).isZero();
     }
@@ -228,7 +208,7 @@ class StockPackageLookupIntegrationTest {
     @Test
     @DisplayName("a VOID carton is left out of the list unless its status is asked for")
     void listHidesClosedCartonsByDefault() {
-        count(new PackageCount(lpns.getFirst(), 1000));   // the 980 carton, left out of the count, is voided
+        count(new PackageCount(lpns.getFirst()));   // the second carton, left out of the count, is voided
 
         assertThat(list(null, sku, null).items()).extracting(StockPackageBalance::lpn, StockPackageBalance::status)
                 .containsExactly(tuple(lpns.getFirst(), StockPackageStatus.RECEIVING));

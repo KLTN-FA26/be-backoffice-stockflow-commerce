@@ -820,20 +820,6 @@ class PackingServiceTest {
         }
 
         @Test
-        @DisplayName("a serial recorded on a picked line's hold becomes a serial the packer may scan")
-        void serialsFromTheHolds() {
-            UUID reservation = UUID.randomUUID();
-            when(pickLines.findByPickIdOrderBySequenceNoAscIdAsc(pick.getId())).thenReturn(List.of(
-                    pickedLine(lineId, 1, "L1", reservation)));
-            when(inventory.holds(any())).thenReturn(List.of(new HoldView(reservation, "SKU-A", "HCM-A-01", "L1", 1,
-                    HoldView.Status.CONSUMED, null, "SN-1")));
-
-            service.session(pick.getId(), actor);
-
-            assertThat(lastFacts.getFirst().serials()).containsExactly("SN-1");
-        }
-
-        @Test
         @DisplayName("a printed line has available what was picked of it, like any line")
         void printLineIsPicked() {
             UUID hold = UUID.randomUUID();

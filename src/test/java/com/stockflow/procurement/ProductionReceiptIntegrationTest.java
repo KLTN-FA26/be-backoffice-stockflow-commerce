@@ -488,7 +488,6 @@ class ProductionReceiptIntegrationTest {
         assertThat(line.productionOrderLineId()).isEqualTo(lineId(production));
         assertThat(line.quantity()).as("3 cartons of 50").isEqualTo(150);
         assertThat(line.lotNumber()).as("BR-03: the production order's code").isEqualTo(production.code());
-        assertThat(line.expiryDate()).as("BR-06").isNull();
         assertThat(line.unitOfMeasure()).isEqualTo("CARTON");
         assertThat(line.looseQuantity()).as("BR-12: nothing loose").isZero();
         assertThat(line.packages()).hasSize(3).allSatisfy(p -> {
@@ -524,18 +523,17 @@ class ProductionReceiptIntegrationTest {
         // Every refusal of the request at once, each on its field.
         UUID unknown = Identifiers.newId();
         Throwable refused = catchThrowable(() -> receipts.replaceLines(receipt.id(), List.of(
-                new NewLine(lineId(production), 0, null, null, a.receiving(), null, null,
+                new NewLine(lineId(production), 0, null, a.receiving(), null, null,
                         List.of(new NewPackage(null, 0), new NewPackage(null, 48)), null),
-                new NewLine(unknown, 0, "LOT-A", today.plusYears(1), a.bin(), null, null, List.of(), null))));
+                new NewLine(unknown, 0, "LOT-A", a.bin(), null, null, List.of(), null))));
         assertThat(code(refused)).isEqualTo(ErrorCode.RECEIPT_CARTON_NOT_STANDARD);
         assertThat(fields(refused)).containsExactlyInAnyOrder(
                 "lines[0].packages[1].quantity:RECEIPT_CARTON_NOT_STANDARD",
                 "lines[1].lotNumber:LOT_NOT_ALLOWED",
-                "lines[1].expiryDate:EXPIRY_NOT_ALLOWED",
                 "lines[1].productionOrderLineId:RECEIPT_LINE_NOT_ON_PRODUCTION_ORDER");
         assertThat(ErrorCode.RECEIPT_CARTON_NOT_STANDARD.httpStatus()).isEqualTo(422);
         Throwable noCarton = catchThrowable(() -> receipts.replaceLines(receipt.id(), List.of(
-                new NewLine(lineId(production), 100, null, null, a.bin(), null, "BOX", List.of(), "SOMETHING-ELSE"))));
+                new NewLine(lineId(production), 100, null, a.bin(), null, "BOX", List.of(), "SOMETHING-ELSE"))));
         assertThat(fields(noCarton)).containsExactlyInAnyOrder("lines[0].packages:VALIDATION_FAILED",
                 "lines[0].sku:RECEIPT_LINE_NOT_ON_PRODUCTION_ORDER", "lines[0].locationCode:LOCATION_AREA_MISMATCH",
                 "lines[0].unitOfMeasure:UOM_CONVERSION_NOT_FOUND", "lines[0].quantity:VALIDATION_FAILED");
@@ -736,7 +734,7 @@ class ProductionReceiptIntegrationTest {
             assertThat(task.quantity()).isEqualTo(PER_CARTON);
         });
         for (PutawayTaskView task : tasks) {
-            putaway.confirm(task.id(), a.bin(), lpns.get(task.stockPackageId()), null, clerk);
+            putaway.confirm(task.id(), a.bin(), lpns.get(task.stockPackageId()), clerk);
         }
 
         Await.until("the receipt to close", Duration.ofSeconds(20), () -> status(receipt.id()).equals("CLOSED"));

@@ -41,7 +41,7 @@ final class InventoryFixtures {
     /** As above, with the receipt time a FIFO policy ranks by. */
     static StockItem availableReceived(String sku, String location, String lot, int onHand,
                                        Instant receivedAt) {
-        return new StockItem(StockItemId.newId(), new Sku(sku), new LocationId(location), lot, Quantity.of(onHand), StockStatus.AVAILABLE, List.of(), 0L, receivedAt, null);
+        return new StockItem(StockItemId.newId(), new Sku(sku), new LocationId(location), lot, Quantity.of(onHand), StockStatus.AVAILABLE, List.of(), 0L, receivedAt);
     }
 
     static StockItem available(String location, int onHand) {

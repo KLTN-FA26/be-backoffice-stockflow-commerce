@@ -50,6 +50,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * knowing its receipt, purchase order and supplier; the lot is traced through putaway, the allocation the order's
  * release made, the pick that consumed it and the order it left for, with the balance left now; and the report
  * filters by SKU, lot number, warehouse and day, pages, and keeps a warehouse-bound clerk to their warehouses.
+ *
+ * <p>Since team plan 4C-2 every unit is received in a carton (kltn-docs 03 BR-12): the demo table's CARTON unit holds
+ * one piece, so a lot of 3 is three cartons, each with its own receipt, putaway and pick ledger line and its own
+ * allocation.</p>
  */
 @ProductionReceiptTest
 @org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc
@@ -151,7 +155,7 @@ class LotTraceIntegrationTest {
             assertThat(leg.orderNumber()).as("snapshot on the ledger line").isEqualTo(orderNumber);
             assertThat(leg.picked()).isEqualTo(4);
         });
-        assertThat(trace.holds()).singleElement().satisfies(hold -> {
+        assertThat(trace.holds()).hasSize(3).allSatisfy(hold -> {
             assertThat(hold.orderId()).isEqualTo(order);
             assertThat(hold.allocatedFrom()).isNotNull();
             assertThat(hold.orderNumber()).as("snapshot on the allocation").isEqualTo(orderNumber);
@@ -209,36 +213,32 @@ class LotTraceIntegrationTest {
     }
 
     @Test
-    @DisplayName("an expired lot is on hand but never available; a fresh one is, less what is held")
-    void expiredLotIsNotAvailable() {
+    @DisplayName("a lot's available units are its AVAILABLE units less what is held: nothing expires (01 BR-17)")
+    void lotIsAvailableLessWhatIsHeld() {
         String sku = "LOTX-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(java.util.Locale.ROOT);
-        LocalDate today = LocalDate.now(ZoneId.of("Asia/Ho_Chi_Minh"));
         tx.executeWithoutResult(s -> {
             UUID product = Identifiers.newId();
             jdbc.update("insert into product.products(id,code,name,slug) values (?,?,?,?)", product, sku, "Lot fixture",
                     sku.toLowerCase(java.util.Locale.ROOT));
             jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature)"
                     + " values (?,?,?,'Lot fixture','')", Identifiers.newId(), product, sku);
-            for (Object[] row : List.of(new Object[] {"HCM-A01-1-A", today.minusDays(1), 4, 0},
-                    new Object[] {"HCM-A01-1-B", today.plusDays(9), 5, 2})) {
+            // Two rows of one lot received together: the stock-row trigger puts both in the same UNTRACED lot.
+            java.time.Instant received = java.time.Instant.now().minusSeconds(30L * 24 * 3600);
+            for (Object[] row : List.of(new Object[] {"HCM-A01-1-A", 4, 0}, new Object[] {"HCM-A01-1-B", 5, 2})) {
                 jdbc.update("""
-                        INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, expiry_date, on_hand, reserved,
+                        INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved,
                                                           status, received_at, version, created_at)
-                        VALUES (?, ?, ?, 'X1', ?, ?, ?, 'AVAILABLE', NOW() - interval '30 days', 0, NOW())""",
-                        Identifiers.newId(), sku, row[0], row[1], row[2], row[3]);
+                        VALUES (?, ?, ?, 'X1', ?, ?, 'AVAILABLE', ?, 0, NOW())""",
+                        Identifiers.newId(), sku, row[0], row[1], row[2], java.sql.Timestamp.from(received));
             }
         });
 
         var lots = traces.lots(new LotTraces.Query(sku, "X1", null, null, null, 0, 20)).items();
-        assertThat(lots).hasSize(2).allSatisfy(lot -> assertThat(lot.origin()).isEqualTo("UNTRACED"));
-        assertThat(lots).filteredOn(lot -> lot.expiryDate().isBefore(today)).singleElement().satisfies(expired -> {
-            assertThat(expired.onHand()).isEqualTo(4);
-            assertThat(expired.available()).isZero();
-        });
-        assertThat(lots).filteredOn(lot -> !lot.expiryDate().isBefore(today)).singleElement().satisfies(fresh -> {
-            assertThat(fresh.onHand()).isEqualTo(5);
-            assertThat(fresh.held()).isEqualTo(2);
-            assertThat(fresh.available()).isEqualTo(3);
+        assertThat(lots).singleElement().satisfies(lot -> {
+            assertThat(lot.origin()).isEqualTo("UNTRACED");
+            assertThat(lot.onHand()).isEqualTo(9);
+            assertThat(lot.held()).isEqualTo(2);
+            assertThat(lot.available()).isEqualTo(7);
         });
     }
 }

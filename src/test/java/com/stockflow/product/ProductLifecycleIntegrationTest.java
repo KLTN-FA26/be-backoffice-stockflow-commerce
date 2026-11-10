@@ -47,7 +47,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 /**
  * SCRUM-461 over HTTP, through the real filter chain, the permission aspect and the seeded role grants
- * (SALES_MANAGER, SYSTEM_ADMIN, SALES_STAFF, WAREHOUSE_STAFF, PROCUREMENT_STAFF), against Postgres: the brand a
+ * (SALES_MANAGER, SYSTEM_ADMIN, SALES_STAFF, WAREHOUSE_STAFF, ACCOUNTANT), against Postgres: the brand a
  * submission needs, the version a PUT quotes, discontinuing with a reason (warnings, never a refusal; variants
  * OBSOLETE), suspending and resuming, the storefront's view of an INACTIVE product, deleting a draft, and the
  * history. Every refusal is asserted by its exact {@code errorCode} and, where the rule names one, its

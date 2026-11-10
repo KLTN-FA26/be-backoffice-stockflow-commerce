@@ -142,6 +142,9 @@ class GoodsReceiptPhotoIntegrationTest {
         assertThat(code(() -> photos.add(receipt, tableLine, GoodsReceiptPhotoStage.QC, photo("qc.jpg"), inspector)))
                 .as("receiving QC was removed").isEqualTo(ErrorCode.INVALID_RECEIPT_TRANSITION);
 
+        // Counted again before it is posted (a second carton of each, team plan 4C-2); the lines keep their ids.
+        receipts.replaceLines(receipt, List.of(goods.goods().get(0).line("HCM-RCV01", 2),
+                goods.goods().get(1).line("HCM-RCV01", 2)));
         assertThat(receipts.confirm(receipt, clerk).status()).isEqualTo(GoodsReceiptStatus.IN_PUTAWAY);
         assertThat(code(() -> photos.add(receipt, null, GoodsReceiptPhotoStage.RECEIPT, photo("late.jpg"), clerk)))
                 .as("the count is closed").isEqualTo(ErrorCode.INVALID_RECEIPT_TRANSITION);

@@ -32,8 +32,9 @@ import static org.assertj.core.api.Assertions.tuple;
 
 /**
  * SCRUM-92: the listener of {@code ReceiptStockReadyForPutaway} against a real PostgreSQL. A receipt line of 2000
- * units - a carton of 1000, a carton of 980 and 20 loose - is driven through {@code GoodsReceipts} exactly as
- * production does, and the tasks the asynchronous listener opens are read back through {@link PutawayTasks}.
+ * units - two cartons of 1000, every unit in a carton since team plan 4C-2 (kltn-docs 03 BR-12) - is driven through
+ * {@code GoodsReceipts} exactly as production does, and the tasks the asynchronous listener opens - one per carton,
+ * none for loose units (05 BR-08) - are read back through {@link PutawayTasks}.
  */
 @ProductionReceiptTest
 class PutawayTaskCreatorIntegrationTest {
@@ -57,13 +58,8 @@ class PutawayTaskCreatorIntegrationTest {
     /** Where cartons are put away to (or moved by hand to) in these tests. */
     private String shelf;
 
-    /** A confirmed receipt of 2000 units: cartons of 1000 and 980, 20 loose. */
+    /** A confirmed receipt of 2000 units: two cartons of 1000. */
     private void receipt() {
-        receipt(1000, 980);
-    }
-
-    /** A line of 2 cartons' worth of 1000, of which the cartons of {@code counts} are labelled; the rest is loose. */
-    private void receipt(int... counts) {
         String prefix = "T" + UUID.randomUUID().toString().substring(0, 6).toUpperCase(Locale.ROOT);
         receiving = prefix + "-RCV01";
         shelf = prefix + "-PUT01";
@@ -79,8 +75,7 @@ class PutawayTaskCreatorIntegrationTest {
         });
         ProductionReceivables.Receivable goods = receivables.sent(warehouse, 2, 1000);
         sku = goods.sku();
-        ProductionReceivables.Dock dock = receivables.onTheDock(goods, receiving, 2,
-                java.util.Arrays.stream(counts).boxed().toList(), clerk);
+        ProductionReceivables.Dock dock = receivables.onTheDock(goods, receiving, 2, clerk);
         receiptId = dock.receiptId();
         lineId = dock.lineId();
         lpn1 = dock.lpns().get(0);
@@ -123,13 +118,13 @@ class PutawayTaskCreatorIntegrationTest {
     }
 
     @Test
-    @DisplayName("confirmation opens a task per carton and one for the loose units")
-    void confirmationOpensATaskPerCartonAndOneLoose() {
+    @DisplayName("confirmation opens a task per carton, and none for loose units")
+    void confirmationOpensATaskPerCarton() {
         receipt();
-        awaitTasks(3);
+        awaitTasks(2);
 
         assertThat(tasks()).extracting(PutawayTaskView::quantity, PutawayTaskView::stockPackageId)
-                .containsExactlyInAnyOrder(tuple(1000, cartonId(lpn1)), tuple(980, cartonId(lpn2)), tuple(20, null));
+                .containsExactlyInAnyOrder(tuple(1000, cartonId(lpn1)), tuple(1000, cartonId(lpn2)));
         assertThat(tasks()).extracting(PutawayTaskView::goodsReceiptLineId).containsOnly(lineId);
     }
 
@@ -137,17 +132,17 @@ class PutawayTaskCreatorIntegrationTest {
     @DisplayName("an event delivered again opens nothing new")
     void redeliveredEventOpensNothingNew() {
         receipt();
-        awaitTasks(3);
+        awaitTasks(2);
 
         tx.executeWithoutResult(s -> redeliver(event(receiving, 2000)));
 
-        assertThat(tasks()).hasSize(3);
+        assertThat(tasks()).hasSize(2);
     }
 
     @Test
-    @DisplayName("a line wholly in cartons, put away and then redelivered, opens no loose task for stock already in bins")
+    @DisplayName("a line put away and then redelivered opens nothing for stock already in bins")
     void redeliveryAfterPutawayOpensNothing() {
-        receipt(1000, 1000);
+        receipt();
         awaitTasks(2);
         inventory.reclassifyStockPackages(new ReclassifyStockPackagesCommand(List.of(lpn1, lpn2), shelf,
                 StockDisposition.AVAILABLE, MoveReference.PUTAWAY_TASK, UUID.randomUUID(), clerk, null));
@@ -163,10 +158,10 @@ class PutawayTaskCreatorIntegrationTest {
      * no asynchronous listener racing the hand move; it is then handled directly.
      */
     @Test
-    @DisplayName("a carton moved by hand before the event is handled still gets its task, and loose is the true remainder")
+    @DisplayName("a carton moved by hand before the event is handled still gets its task")
     void cartonMovedByHandStillGetsATask() {
         receipt();
-        awaitTasks(3);
+        awaitTasks(2);
         tx.executeWithoutResult(s -> jdbc.update("delete from warehouse.putaway_task where goods_receipt_id = ?",
                 receiptId));
         inventory.moveStockPackages(new MoveStockPackagesCommand(lpn1, shelf, MoveReference.MOVE_TASK,
@@ -175,6 +170,6 @@ class PutawayTaskCreatorIntegrationTest {
         tx.executeWithoutResult(s -> redeliver(event(receiving, 2000)));
 
         assertThat(tasks()).extracting(PutawayTaskView::quantity, PutawayTaskView::stockPackageId)
-                .containsExactlyInAnyOrder(tuple(1000, cartonId(lpn1)), tuple(980, cartonId(lpn2)), tuple(20, null));
+                .containsExactlyInAnyOrder(tuple(1000, cartonId(lpn1)), tuple(1000, cartonId(lpn2)));
     }
 }

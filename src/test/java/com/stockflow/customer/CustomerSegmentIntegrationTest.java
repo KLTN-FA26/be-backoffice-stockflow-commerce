@@ -122,7 +122,7 @@ class CustomerSegmentIntegrationTest {
         send(get(SEGMENTS), token("WAREHOUSE_STAFF"), null).andExpect(status().isForbidden());
         send(get(SEGMENTS), token("CUSTOMER"), null).andExpect(status().isForbidden());
         send(post(SEGMENTS), sales, group).andExpect(status().isForbidden());
-        send(post(SEGMENTS), token("ORDER_COORDINATOR"), group).andExpect(status().isForbidden());
+        send(post(SEGMENTS), token("WAREHOUSE_MANAGER"), group).andExpect(status().isForbidden());
 
         // Input is checked; the code is canonical and unique.
         send(post(SEGMENTS), admin, Map.of("code", "Đại lý", "name", "X")).andExpect(status().isBadRequest())
@@ -135,10 +135,9 @@ class CustomerSegmentIntegrationTest {
         send(post(SEGMENTS), token("SYSTEM_ADMIN"), Map.of("code", "dai-ly-" + suffix, "name", "Again"))
                 .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("CONFLICT"));
 
-        // Sales and the coordinator read.
+        // Sales reads.
         send(get(SEGMENTS + "/" + segmentId), sales, null).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.name").value("Đại lý cấp 1"));
-        send(get(SEGMENTS), token("ORDER_COORDINATOR"), null).andExpect(status().isOk());
         send(get(SEGMENTS + "/" + UUID.randomUUID()), sales, null).andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.errorCode").value("SEGMENT_NOT_FOUND"));
 

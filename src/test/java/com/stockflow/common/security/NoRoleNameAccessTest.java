@@ -71,7 +71,7 @@ class NoRoleNameAccessTest {
                     "OpenAPI example of a role code"),
             // ---- who is told: the audience of a notification, not access
             new Allowed("notification/internal/service/OrderReferralNotificationListener.java",
-                    "List.of(Role.SALES_STAFF, Role.ORDER_COORDINATOR)", "who is told of a referred order"),
+                    "List.of(Role.SALES_STAFF)", "who is told of a referred order"),
             new Allowed("notification/internal/service/QuoteNotificationListener.java", "staff.activeStaff(Role.SALES_STAFF)",
                     "who is told of a quote with no handler"),
             // ---- checks on the user an action is about, not on the caller

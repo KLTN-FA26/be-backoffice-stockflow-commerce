@@ -30,8 +30,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 /**
  * SCRUM-473 carton lookup through the real filter chain, permission aspect and data scope. A line of 2000 is counted
- * through the real endpoint as cartons of 1000 and 980, then received: both cartons IN_STOCK at the receiving area,
- * 20 loose beside them.
+ * through the real endpoint as two cartons of the unit's standard 1000 (team plan 4C-2: every unit in a carton, every
+ * carton full), then received: both cartons IN_STOCK at the receiving area, nothing loose.
  */
 @SecuredProductionReceiptTest
 class StockPackageLookupHttpTest {
@@ -56,10 +56,10 @@ class StockPackageLookupHttpTest {
     void setUp() throws Exception {
         mvc = new SecuredMvc(mockMvc, decoder);
         clerk = staff("WAREHOUSE_STAFF", WAREHOUSE_HCM);
-        // 2 cartons' worth of 1000 ordered, cartons of 1000 and 980 counted: 20 stay loose beside them.
+        // Two cartons of 1000 ordered and counted: every unit is in a carton (team plan 4C-2).
         ProductionReceivables.Receivable goods = receivables.sent(WAREHOUSE_HCM, 2, 1000);
         sku = goods.sku();
-        lpns = receivables.onTheDock(goods, RECEIVING, 2, List.of(1000, 980), clerk).lpns();
+        lpns = receivables.onTheDock(goods, RECEIVING, 2, clerk).lpns();
     }
 
     /** A real account with this role, assigned to these warehouses. */
@@ -109,21 +109,21 @@ class StockPackageLookupHttpTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data[?(@.sku == '%s')].status", sku).value("INBOUND"))
                 .andExpect(jsonPath("$.data[?(@.sku == '%s')].wholeCartons", sku).value(2))
-                .andExpect(jsonPath("$.data[?(@.sku == '%s')].looseUnits", sku).value(20))
+                .andExpect(jsonPath("$.data[?(@.sku == '%s')].looseUnits", sku).value(0))
                 .andExpect(jsonPath("$.data[?(@.sku == '%s')].totalUnits", sku).value(2000));
         read(Role.WAREHOUSE_STAFF, clerk, "?sku=" + sku)
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.totalElements").value(2))
-                .andExpect(jsonPath("$.data.items[1].onHand").value(980))
+                .andExpect(jsonPath("$.data.items[1].onHand").value(1000))
                 .andExpect(jsonPath("$.data.items[1].status").value("IN_STOCK"));
     }
 
     @Test
-    @DisplayName("an inventory planner only reads cartons, and reads them")
-    void readOnlyRolesRead() throws Exception {
-        UUID planner = staff("INVENTORY_PLANNER", WAREHOUSE_HCM);
-        read(Role.INVENTORY_PLANNER, planner, "/" + lpns.getFirst()).andExpect(status().isOk());
-        read(Role.INVENTORY_PLANNER, planner, "/location-summary?location=" + RECEIVING).andExpect(status().isOk());
+    @DisplayName("an accountant holds nothing on cartons: 403 on the carton and on the summary")
+    void anAccountantReadsNothing() throws Exception {
+        UUID accountant = staff("ACCOUNTANT", WAREHOUSE_HCM);
+        read(Role.ACCOUNTANT, accountant, "/" + lpns.getFirst()).andExpect(status().isForbidden());
+        read(Role.ACCOUNTANT, accountant, "/location-summary?location=" + RECEIVING).andExpect(status().isForbidden());
     }
 
     @Test

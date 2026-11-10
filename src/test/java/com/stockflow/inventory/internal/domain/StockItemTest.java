@@ -395,7 +395,7 @@ class StockItemTest {
 
         private StockItem cartonRow(StockStatus status, List<Reservation> holds) {
             return new StockItem(StockItemId.newId(), SKU, LOCATION, "LOT-1", Quantity.of(10), status, holds, 0L,
-                    NOW, null, UUID.randomUUID(), carton);
+                    NOW, UUID.randomUUID(), carton);
         }
 
         @Test

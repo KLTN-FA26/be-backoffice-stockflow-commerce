@@ -145,7 +145,7 @@ class GoodsReceiptPutawayCloseIntegrationTest {
     private void putAwayCarton(PutawayTaskView task) {
         String lpn = jdbc.queryForObject("select lpn from inventory.stock_package where id = ?", String.class,
                 task.stockPackageId());
-        putaway.confirm(task.id(), bin, lpn, null, clerk);
+        putaway.confirm(task.id(), bin, lpn, clerk);
     }
 
     @Test

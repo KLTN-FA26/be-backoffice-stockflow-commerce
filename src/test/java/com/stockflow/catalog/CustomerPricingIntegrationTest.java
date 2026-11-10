@@ -406,11 +406,8 @@ class CustomerPricingIntegrationTest {
                 .andExpect(jsonPath("$.data[0].source").value("SEGMENT"))
                 .andExpect(jsonPath("$.data[0].tiers[0].unitPrice").value(11000000));
 
-        // Sales reads, never edits; the coordinator reads; warehouse and the customer do not read here.
+        // Sales reads, never edits; warehouse and the customer do not read here.
         mvc.perform(get(path).header("Authorization", "Bearer " + sales)).andExpect(status().isOk());
-        mvc.perform(get("/api/v1/catalog/segment-prices").param("segmentId", segment.toString())
-                .header("Authorization", "Bearer " + token(account("ORDER_COORDINATOR"))))
-                .andExpect(status().isOk()).andExpect(jsonPath("$.data.length()").value(1));
         mvc.perform(get(path).header("Authorization", "Bearer " + warehouse)).andExpect(status().isForbidden());
         mvc.perform(get(path).header("Authorization", "Bearer " + grouped.token())).andExpect(status().isForbidden());
         mvc.perform(put(path).header("Authorization", "Bearer " + sales).contentType("application/json")

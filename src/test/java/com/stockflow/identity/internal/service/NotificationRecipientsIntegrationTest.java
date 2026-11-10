@@ -35,26 +35,26 @@ class NotificationRecipientsIntegrationTest {
     private StaffFixtures fixtures;
     private UUID hcm;
     private StaffFixtures.Warehouse other;
-    private UUID planner;
+    private UUID salesManager;
     private UUID admin;
     private UUID managerHcm;
     private UUID managerOther;
     private UUID managerNowhere;
     private UUID staffHcm;
-    private UUID buyer;
+    private UUID accountant;
 
     @BeforeEach
     void setUp() {
         fixtures = new StaffFixtures(jdbc, tx, entityManager);
         hcm = fixtures.hcm();
         other = fixtures.otherWarehouse();
-        planner = fixtures.staff("INVENTORY_PLANNER");
+        salesManager = fixtures.staff("SALES_MANAGER");
         admin = fixtures.staff("SYSTEM_ADMIN");
         managerHcm = fixtures.staff("WAREHOUSE_MANAGER", hcm);
         managerOther = fixtures.staff("WAREHOUSE_MANAGER", other.id());
         managerNowhere = fixtures.staff("WAREHOUSE_MANAGER");
         staffHcm = fixtures.staff("WAREHOUSE_STAFF", hcm);
-        buyer = fixtures.staff("PROCUREMENT_STAFF");
+        accountant = fixtures.staff("ACCOUNTANT");
     }
 
     private List<UUID> ids(Set<String> roles, UUID warehouse) {
@@ -63,51 +63,51 @@ class NotificationRecipientsIntegrationTest {
 
     @Test
     void systemWideMeansPeopleWhoseScopeIsAllAndNobodyLimitedToWarehouses() {
-        List<UUID> found = ids(Set.of("INVENTORY_PLANNER", "WAREHOUSE_MANAGER", "SYSTEM_ADMIN"), null);
-        assertThat(found).contains(planner, admin);
+        List<UUID> found = ids(Set.of("SALES_MANAGER", "WAREHOUSE_MANAGER", "SYSTEM_ADMIN"), null);
+        assertThat(found).contains(salesManager, admin);
         assertThat(found).doesNotContain(managerHcm, managerOther, managerNowhere);
     }
 
     @Test
     void forAWarehouseItIsTheScopeAllRolesPlusThoseAssignedToIt() {
-        List<UUID> found = ids(Set.of("INVENTORY_PLANNER", "WAREHOUSE_MANAGER", "SYSTEM_ADMIN"), hcm);
-        assertThat(found).contains(planner, admin, managerHcm);
-        assertThat(found).doesNotContain(managerOther, managerNowhere, staffHcm, buyer);
-        assertThat(ids(Set.of("WAREHOUSE_MANAGER"), other.id())).contains(managerOther).doesNotContain(managerHcm, planner);
+        List<UUID> found = ids(Set.of("SALES_MANAGER", "WAREHOUSE_MANAGER", "SYSTEM_ADMIN"), hcm);
+        assertThat(found).contains(salesManager, admin, managerHcm);
+        assertThat(found).doesNotContain(managerOther, managerNowhere, staffHcm, accountant);
+        assertThat(ids(Set.of("WAREHOUSE_MANAGER"), other.id())).contains(managerOther).doesNotContain(managerHcm, salesManager);
     }
 
     @Test
     void onlyTheRolesAskedForCount() {
         List<UUID> found = ids(Set.of("WAREHOUSE_STAFF"), hcm);
-        assertThat(found).contains(staffHcm).doesNotContain(managerHcm, planner, admin);
-        assertThat(ids(Set.of("PROCUREMENT_STAFF"), null)).contains(buyer);
+        assertThat(found).contains(staffHcm).doesNotContain(managerHcm, salesManager, admin);
+        assertThat(ids(Set.of("ACCOUNTANT"), null)).contains(accountant);
         assertThat(ids(Set.of(), hcm)).isEmpty();
         assertThat(identities.notificationRecipients(null, hcm)).isEmpty();
     }
 
     @Test
     void aLockedOrDisabledAccountIsNeverTold() {
-        UUID locked = fixtures.staff("INVENTORY_PLANNER");
+        UUID locked = fixtures.staff("SALES_MANAGER");
         UUID disabled = fixtures.staff("WAREHOUSE_MANAGER", hcm);
         fixtures.setStatus(locked, "LOCKED");
         fixtures.setStatus(disabled, "DISABLED");
-        List<UUID> found = ids(Set.of("INVENTORY_PLANNER", "WAREHOUSE_MANAGER"), hcm);
-        assertThat(found).contains(planner, managerHcm).doesNotContain(locked, disabled);
+        List<UUID> found = ids(Set.of("SALES_MANAGER", "WAREHOUSE_MANAGER"), hcm);
+        assertThat(found).contains(salesManager, managerHcm).doesNotContain(locked, disabled);
     }
 
     @Test
     void aCustomerIsNeverToldEvenWhenTheyAlsoHoldAStaffRoleOrTheCustomerRoleIsAskedFor() {
         UUID customer = fixtures.staff("CUSTOMER");
-        UUID both = fixtures.staff("INVENTORY_PLANNER");
+        UUID both = fixtures.staff("SALES_MANAGER");
         fixtures.addRole(both, "CUSTOMER");
-        assertThat(ids(Set.of("CUSTOMER", "INVENTORY_PLANNER"), null)).contains(planner).doesNotContain(customer, both);
+        assertThat(ids(Set.of("CUSTOMER", "SALES_MANAGER"), null)).contains(salesManager).doesNotContain(customer, both);
         assertThat(ids(Set.of("CUSTOMER"), hcm)).doesNotContain(customer);
     }
 
     @Test
-    void aClerkWhoIsAlsoAPlannerHasTheBroadestScopeSoSeesEveryWarehouse() {
+    void aManagerWhoIsAlsoASalesManagerHasTheBroadestScopeSoSeesEveryWarehouse() {
         UUID both = fixtures.staff("WAREHOUSE_MANAGER", hcm);
-        fixtures.addRole(both, "INVENTORY_PLANNER");
+        fixtures.addRole(both, "SALES_MANAGER");
         assertThat(ids(Set.of("WAREHOUSE_MANAGER"), other.id())).contains(both);
         assertThat(ids(Set.of("WAREHOUSE_MANAGER"), null)).contains(both);
     }
@@ -115,13 +115,13 @@ class NotificationRecipientsIntegrationTest {
     @Test
     void aWarehouseNobodyIsAssignedToStillReachesTheScopeAllRoles() {
         UUID empty = UUID.randomUUID();
-        assertThat(ids(Set.of("INVENTORY_PLANNER", "WAREHOUSE_MANAGER"), empty)).contains(planner).doesNotContain(managerHcm);
+        assertThat(ids(Set.of("SALES_MANAGER", "WAREHOUSE_MANAGER"), empty)).contains(salesManager).doesNotContain(managerHcm);
     }
 
     @Test
     void theContactCarriesTheEmailAddressAndNothingElse() {
-        StaffContact contact = identities.notificationRecipients(Set.of("INVENTORY_PLANNER"), null).stream()
-                .filter(c -> c.userId().equals(planner)).findFirst().orElseThrow();
-        assertThat(contact.email()).isEqualTo("test-" + planner + "@example.com");
+        StaffContact contact = identities.notificationRecipients(Set.of("SALES_MANAGER"), null).stream()
+                .filter(c -> c.userId().equals(salesManager)).findFirst().orElseThrow();
+        assertThat(contact.email()).isEqualTo("test-" + salesManager + "@example.com");
     }
 }

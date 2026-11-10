@@ -123,7 +123,7 @@ class PickDamageIntegrationTest {
             jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature)"
                     + " values (?,?,?,'Pick damage fixture','')", Identifiers.newId(), product, sku);
         });
-        coordinator = staff("ORDER_COORDINATOR");
+        coordinator = staff("WAREHOUSE_MANAGER", DemoData.WAREHOUSE_HCM);
         manager = staff("WAREHOUSE_MANAGER", DemoData.WAREHOUSE_HCM);
         picker = staff("WAREHOUSE_STAFF", DemoData.WAREHOUSE_HCM);
         otherPicker = staff("WAREHOUSE_STAFF", DemoData.WAREHOUSE_HCM);
@@ -223,7 +223,7 @@ class PickDamageIntegrationTest {
     private UUID startedTask(OrderSummary order) throws Exception {
         String body = "{\"orderId\":\"" + order.orderId() + "\",\"assignedUserId\":\"" + picker + "\"}";
         UUID task = UUID.fromString(body(mvc.perform(post("/api/v1/fulfillment/tasks")
-                        .header("Authorization", token(coordinator, "ORDER_COORDINATOR"))
+                        .header("Authorization", token(coordinator, "WAREHOUSE_MANAGER"))
                         .contentType("application/json").content(body))
                 .andExpect(status().isCreated()).andReturn()).path("taskId").asText());
         mvc.perform(post("/api/v1/fulfillment/tasks/" + task + "/picking-start")
@@ -448,13 +448,13 @@ class PickDamageIntegrationTest {
                 .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("DAMAGED_STOCK_HELD"));
         String reallocate = "/api/v1/fulfillment/tasks/" + task + "/pick-lines/" + shortLine.path("lineId").asText()
                 + "/reallocation";
-        mvc.perform(post(reallocate).header("Authorization", token(coordinator, "ORDER_COORDINATOR")))
+        mvc.perform(post(reallocate).header("Authorization", token(coordinator, "WAREHOUSE_MANAGER")))
                 .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("INSUFFICIENT_STOCK"));
 
         // Cartons arrive on another bin: the coordinator reallocates the short line and the order goes on.
         cartons("HCM-A01-2-A", 2, 1, "L3", today.plusDays(40));
         JsonNode reallocated = body(mvc.perform(post(reallocate)
-                        .header("Authorization", token(coordinator, "ORDER_COORDINATOR")))
+                        .header("Authorization", token(coordinator, "WAREHOUSE_MANAGER")))
                 .andExpect(status().isOk()).andReturn());
         assertThat(reallocated).hasSize(1);
         assertThat(reallocated.get(0).path("locationCode").asText()).isEqualTo("HCM-A01-2-A");
@@ -660,7 +660,7 @@ class PickDamageIntegrationTest {
 
         mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put(
                                 "/api/v1/fulfillment/tasks/" + task + "/assignment")
-                        .header("Authorization", token(coordinator, "ORDER_COORDINATOR")).contentType("application/json")
+                        .header("Authorization", token(coordinator, "WAREHOUSE_MANAGER")).contentType("application/json")
                         .content("{\"assignedUserId\":\"" + otherPicker + "\"}"))
                 .andExpect(status().isOk());
         mvc.perform(post("/api/v1/fulfillment/tasks/" + task + "/pick-lines/" + replacement.path("lineId").asText()
@@ -707,7 +707,7 @@ class PickDamageIntegrationTest {
                 .containsEntry("reserved", 1);
 
         JsonNode reallocated = body(mvc.perform(post("/api/v1/fulfillment/tasks/" + task + "/pick-lines/" + shortLine
-                        + "/reallocation").header("Authorization", token(coordinator, "ORDER_COORDINATOR")))
+                        + "/reallocation").header("Authorization", token(coordinator, "WAREHOUSE_MANAGER")))
                 .andExpect(status().isOk()).andReturn());
         assertThat(reallocated).singleElement().satisfies(line -> {
             assertThat(line.path("locationCode").asText()).isEqualTo("HCM-A01-2-A");

@@ -131,7 +131,7 @@ class DispatchHandoverIntegrationTest {
 
     @BeforeEach
     void setUp() {
-        coordinator = staff("ORDER_COORDINATOR");
+        coordinator = staff("WAREHOUSE_MANAGER", HCM);
         manager = staff("WAREHOUSE_MANAGER", HCM);
         picker = staff("WAREHOUSE_STAFF", HCM);
         dispatcher = staff("WAREHOUSE_STAFF", HCM);
@@ -200,7 +200,7 @@ class DispatchHandoverIntegrationTest {
     }
 
     private ResultActions oc(MockHttpServletRequestBuilder request) throws Exception {
-        return as(coordinator, "ORDER_COORDINATOR", request);
+        return as(coordinator, "WAREHOUSE_MANAGER", request);
     }
 
     private JsonNode data(ResultActions result) throws Exception {
@@ -398,7 +398,7 @@ class DispatchHandoverIntegrationTest {
 
         // Who may load: not the coordinator (reads only), not a customer, not another warehouse.
         oc(get(BASE + "/loads/" + loadId)).andExpect(status().isOk());
-        as(coordinator, "ORDER_COORDINATOR", body(post(BASE + "/loads/" + loadId + "/scans"), "{\"scanId\":\""
+        as(coordinator, "WAREHOUSE_MANAGER", body(post(BASE + "/loads/" + loadId + "/scans"), "{\"scanId\":\""
                 + UUID.randomUUID() + "\",\"packageCode\":\"" + parcels.get(0) + "\"}")).andExpect(status().isForbidden());
         as(customerUser, "CUSTOMER", get(BASE + "/loads")).andExpect(status().isForbidden());
         as(dispatcherElsewhere, "WAREHOUSE_STAFF", get(BASE + "/loads/" + loadId)).andExpect(status().isForbidden())
@@ -941,9 +941,9 @@ class DispatchHandoverIntegrationTest {
      */
     private void stock(int sofas) {
         tx.executeWithoutResult(s -> jdbc.update("""
-                INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, version,
+                INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, version,
                     created_at, received_at)
-                VALUES (?, ?, 'HCM-A02-1-A', ?, 0, 'AVAILABLE', 0, NOW(), NOW() - interval '400 days')""",
+                VALUES (?, ?, 'HCM-A02-1-A', 'FX-LOT', ?, 0, 'AVAILABLE', 0, NOW(), NOW() - interval '400 days')""",
                 Identifiers.newId(), SOFA.code(), sofas));
     }
 

@@ -68,7 +68,7 @@ class TaskCandidatesIntegrationTest {
     void setUp() {
         north = warehouse();
         south = warehouse();
-        coordinator = staff("ORDER_COORDINATOR");
+        coordinator = staff("SYSTEM_ADMIN");
         managerNorth = staff("WAREHOUSE_MANAGER", north);
         pickerNorth = staff("WAREHOUSE_STAFF", north);
     }
@@ -177,7 +177,7 @@ class TaskCandidatesIntegrationTest {
     void anOrderWithAnOpenTaskIsNotListed() throws Exception {
         UUID opened = order("READY_TO_FULFILL", north, 3, 2);
         UUID other = order("READY_TO_FULFILL", north, 1, 1);
-        String oc = token(coordinator, "ORDER_COORDINATOR");
+        String oc = token(coordinator, "SYSTEM_ADMIN");
         String list = "/api/v1/fulfillment/task-candidates?warehouseId=" + north;
 
         mvc.perform(get(list).header("Authorization", oc))
@@ -232,7 +232,7 @@ class TaskCandidatesIntegrationTest {
                         .header("Authorization", token(managerNorth, "WAREHOUSE_MANAGER")))
                 .andExpect(status().isForbidden());
         mvc.perform(get("/api/v1/fulfillment/task-candidates?warehouseId=" + UUID.randomUUID())
-                        .header("Authorization", token(coordinator, "ORDER_COORDINATOR")))
+                        .header("Authorization", token(coordinator, "SYSTEM_ADMIN")))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.errorCode").value("WAREHOUSE_NOT_FOUND"));
         mvc.perform(get("/api/v1/fulfillment/task-candidates")
@@ -242,12 +242,12 @@ class TaskCandidatesIntegrationTest {
     }
 
     @Test
-    @DisplayName("a coordinator, not limited to warehouses, narrows by warehouse and pages")
+    @DisplayName("an administrator, not limited to warehouses, narrows by warehouse and pages")
     void coordinatorPages() throws Exception {
         UUID first = order("READY_TO_FULFILL", south, 6, 1);
         UUID second = order("READY_TO_FULFILL", south, 4, 1);
         UUID third = order("READY_TO_FULFILL", south, 2, 1);
-        String oc = token(coordinator, "ORDER_COORDINATOR");
+        String oc = token(coordinator, "SYSTEM_ADMIN");
 
         mvc.perform(get("/api/v1/fulfillment/task-candidates?warehouseId=" + south + "&page=0&size=2")
                         .header("Authorization", oc))

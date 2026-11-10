@@ -205,7 +205,7 @@ class PickConfirmationIntegrationTest {
                     INSERT INTO warehouse.bin (id, level_id, location_id, code, x, y, width, length, rotation, type)
                     VALUES (?, ?, ?, 'A', 0, 0, 5, 1.2, 0, 'PALLET')""", Identifiers.newId(), level, location);
         });
-        coordinator = staff("ORDER_COORDINATOR");
+        coordinator = staff("WAREHOUSE_MANAGER", HCM);
         managerHcm = staff("WAREHOUSE_MANAGER", HCM);
         managerHn = staff("WAREHOUSE_MANAGER", hn);
         pickerHcm = staff("WAREHOUSE_STAFF", HCM);
@@ -305,7 +305,7 @@ class PickConfirmationIntegrationTest {
     private UUID startedTask(OrderSummary order) throws Exception {
         String body = "{\"orderId\":\"" + order.orderId() + "\",\"assignedUserId\":\"" + pickerHcm + "\"}";
         UUID task = UUID.fromString(body(call(post("/api/v1/fulfillment/tasks")
-                .header("Authorization", token(coordinator, "ORDER_COORDINATOR"))
+                .header("Authorization", token(coordinator, "WAREHOUSE_MANAGER"))
                 .contentType("application/json").content(body))
                 .andExpect(status().isCreated()).andReturn()).path("taskId").asText());
         call(post("/api/v1/fulfillment/tasks/" + task + "/picking-start")
@@ -397,7 +397,7 @@ class PickConfirmationIntegrationTest {
         assertThat(jdbc.queryForObject(recount, Integer.class, location)).as("the same report again").isEqualTo(1);
 
         JsonNode added = body(call(post("/api/v1/fulfillment/tasks/" + task + "/pick-lines/" + lineId + "/reallocation")
-                .header("Authorization", token(coordinator, "ORDER_COORDINATOR")))
+                .header("Authorization", token(coordinator, "WAREHOUSE_MANAGER")))
                 .andExpect(status().isOk()).andReturn());
         assertThat(added).hasSize(1);
         String newLine = added.get(0).path("lineId").asText();
@@ -527,7 +527,7 @@ class PickConfirmationIntegrationTest {
         OrderSummary order = confirmedOrder(sofa(2));
         String body = "{\"orderId\":\"" + order.orderId() + "\",\"assignedUserId\":\"" + pickerHcm + "\"}";
         UUID task = UUID.fromString(body(call(post("/api/v1/fulfillment/tasks")
-                .header("Authorization", token(coordinator, "ORDER_COORDINATOR"))
+                .header("Authorization", token(coordinator, "WAREHOUSE_MANAGER"))
                 .contentType("application/json").content(body)).andReturn()).path("taskId").asText());
         // Lines exist from creation; confirming before picking started is a state conflict.
         JsonNode line = lines(task).get(0);
@@ -678,7 +678,7 @@ class PickConfirmationIntegrationTest {
         // The manager of the warehouse is not the assignee either: only the assignee confirms.
         confirm(task, lineId, managerHcm.toString(), "WAREHOUSE_MANAGER", scan)
                 .andExpect(status().isNotFound());
-        confirm(task, lineId, coordinator.toString(), "ORDER_COORDINATOR", scan)
+        confirm(task, lineId, coordinator.toString(), "WAREHOUSE_MANAGER", scan)
                 .andExpect(status().isForbidden()).andExpect(jsonPath("$.errorCode").value("FORBIDDEN"));
         confirm(task, lineId, customerUser.toString(), "CUSTOMER", scan)
                 .andExpect(status().isForbidden());
@@ -688,7 +688,7 @@ class PickConfirmationIntegrationTest {
         assertThat(ledgerRows("PICK", lineId)).isZero();
 
         String url = "/api/v1/fulfillment/tasks/" + task + "/pick-lines";
-        call(get(url).header("Authorization", token(coordinator, "ORDER_COORDINATOR"))).andExpect(status().isOk())
+        call(get(url).header("Authorization", token(coordinator, "WAREHOUSE_MANAGER"))).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.items.length()").value(1));
         call(get(url).header("Authorization", token(managerHcm, "WAREHOUSE_MANAGER"))).andExpect(status().isOk());
         call(get(url).header("Authorization", token(managerHn, "WAREHOUSE_MANAGER")))
@@ -697,7 +697,7 @@ class PickConfirmationIntegrationTest {
                 .andExpect(status().isNotFound());
         call(get(url).header("Authorization", token(customerUser, "CUSTOMER"))).andExpect(status().isForbidden());
         call(get("/api/v1/fulfillment/tasks/" + UUID.randomUUID() + "/pick-lines")
-                .header("Authorization", token(coordinator, "ORDER_COORDINATOR"))).andExpect(status().isNotFound());
+                .header("Authorization", token(coordinator, "WAREHOUSE_MANAGER"))).andExpect(status().isNotFound());
     }
 
     // ---- tasks opened before pick lines existed --------------------------------------------------
@@ -708,7 +708,7 @@ class PickConfirmationIntegrationTest {
         OrderSummary order = confirmedOrder(sofa(1));
         String body = "{\"orderId\":\"" + order.orderId() + "\",\"assignedUserId\":\"" + pickerHcm + "\"}";
         UUID task = UUID.fromString(body(call(post("/api/v1/fulfillment/tasks")
-                .header("Authorization", token(coordinator, "ORDER_COORDINATOR"))
+                .header("Authorization", token(coordinator, "WAREHOUSE_MANAGER"))
                 .contentType("application/json").content(body)).andReturn()).path("taskId").asText());
         // As it was before V20261014001000: a task, already picking, without a single line.
         tx.executeWithoutResult(s -> {
@@ -872,7 +872,7 @@ class PickConfirmationIntegrationTest {
                 .andExpect(jsonPath("$.data.items[*].warehouseId", not(hasItem(HCM.toString()))));
         call(get("/api/v1/fulfillment/put-backs").header("Authorization", token(managerHcm, "WAREHOUSE_MANAGER")))
                 .andExpect(status().isOk());
-        call(get("/api/v1/fulfillment/put-backs").header("Authorization", token(coordinator, "ORDER_COORDINATOR")))
+        call(get("/api/v1/fulfillment/put-backs").header("Authorization", token(coordinator, "WAREHOUSE_MANAGER")))
                 .andExpect(status().isForbidden());
         call(get("/api/v1/fulfillment/put-backs").header("Authorization", token(customerUser, "CUSTOMER")))
                 .andExpect(status().isForbidden());

@@ -35,7 +35,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 @Import({PostgresContainer.class, RedisContainer.class})
 class RolePermissionEditingIntegrationTest {
 
-    private static final String ROLE = "INVENTORY_PLANNER";
+    private static final String ROLE = "ACCOUNTANT";
     private static final String GRANTED = "procurement-goods-receipts:UPDATE";
 
     @Autowired

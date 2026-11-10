@@ -230,9 +230,9 @@ class AwaitingStockIntegrationTest {
     /** {@code units} pieces of the test's SKU free in the warehouse's bin: goods put away. */
     private void stock(int units) {
         tx.executeWithoutResult(s -> jdbc.update("""
-                INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, version,
+                INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, version,
                     created_at, received_at)
-                VALUES (?, ?, ?, ?, 0, 'AVAILABLE', 0, NOW(), clock_timestamp() - interval '2 days')""",
+                VALUES (?, ?, ?, 'FX-LOT', ?, 0, 'AVAILABLE', 0, NOW(), clock_timestamp() - interval '2 days')""",
                 Identifiers.newId(), sku.sku(), a.bin(), units));
     }
 

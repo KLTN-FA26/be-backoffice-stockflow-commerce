@@ -125,7 +125,7 @@ class PackingStationIntegrationTest {
 
     @BeforeEach
     void setUp() {
-        coordinator = staff("ORDER_COORDINATOR");
+        coordinator = staff("WAREHOUSE_MANAGER", HCM);
         managerHcm = staff("WAREHOUSE_MANAGER", HCM);
         pickerHcm = staff("WAREHOUSE_STAFF", HCM);
         packerHcm = staff("WAREHOUSE_STAFF", HCM);
@@ -254,7 +254,7 @@ class PackingStationIntegrationTest {
 
     /** OC opens the task for the picker, who picks every line by scan and completes picking. Returns the task. */
     private UUID pickedTask(OrderSummary order) throws Exception {
-        UUID task = UUID.fromString(data(as(coordinator, "ORDER_COORDINATOR", post(BASE + "/tasks")
+        UUID task = UUID.fromString(data(as(coordinator, "WAREHOUSE_MANAGER", post(BASE + "/tasks")
                 .contentType("application/json").content("{\"orderId\":\"" + order.orderId()
                         + "\",\"assignedUserId\":\"" + pickerHcm + "\"}"))
                 .andExpect(status().isCreated())).path("taskId").asText());
@@ -412,7 +412,7 @@ class PackingStationIntegrationTest {
             + "a second packer 409 PACKING_TAKEN; a manager steps in")
     void whoMayPack() throws Exception {
         OrderSummary order = paidOrder(sofa(1));
-        UUID task = UUID.fromString(data(as(coordinator, "ORDER_COORDINATOR", post(BASE + "/tasks")
+        UUID task = UUID.fromString(data(as(coordinator, "WAREHOUSE_MANAGER", post(BASE + "/tasks")
                 .contentType("application/json").content("{\"orderId\":\"" + order.orderId()
                         + "\",\"assignedUserId\":\"" + pickerHcm + "\"}"))
                 .andExpect(status().isCreated())).path("taskId").asText());
@@ -430,7 +430,7 @@ class PackingStationIntegrationTest {
         as(pickerHcm, "WAREHOUSE_STAFF", post(BASE + "/tasks/" + task + "/picking-completion"))
                 .andExpect(status().isOk());
 
-        as(coordinator, "ORDER_COORDINATOR", post(BASE + "/tasks/" + task + "/packing-start"))
+        as(coordinator, "WAREHOUSE_MANAGER", post(BASE + "/tasks/" + task + "/packing-start"))
                 .andExpect(status().isForbidden());
         as(customerUser, "CUSTOMER", get(BASE + "/packing-queue")).andExpect(status().isForbidden());
         as(packerElsewhere, "WAREHOUSE_STAFF", get(BASE + "/tasks/" + task + "/packing-session"))
@@ -449,7 +449,7 @@ class PackingStationIntegrationTest {
         as(managerHcm, "WAREHOUSE_MANAGER", post(BASE + "/tasks/" + task + "/packages").contentType("application/json")
                 .content("{\"packageType\":\"BAG\",\"kitOverrideReason\":\"test: one carton\"}")).andExpect(status().isCreated())
                 .andExpect(jsonPath("$.data.packageType").value("BAG"));
-        as(coordinator, "ORDER_COORDINATOR", get(BASE + "/tasks/" + task + "/packing-session"))
+        as(coordinator, "WAREHOUSE_MANAGER", get(BASE + "/tasks/" + task + "/packing-session"))
                 .andExpect(status().isForbidden());
     }
 
@@ -642,7 +642,7 @@ class PackingStationIntegrationTest {
             + "warehouse are refused; the session lists the shipment it made")
     void thePackerReadsTheTask() throws Exception {
         OrderSummary order = paidOrder(sofa(1));
-        UUID task = UUID.fromString(data(as(coordinator, "ORDER_COORDINATOR", post(BASE + "/tasks")
+        UUID task = UUID.fromString(data(as(coordinator, "WAREHOUSE_MANAGER", post(BASE + "/tasks")
                 .contentType("application/json").content("{\"orderId\":\"" + order.orderId()
                         + "\",\"assignedUserId\":\"" + pickerHcm + "\"}"))
                 .andExpect(status().isCreated())).path("taskId").asText());
@@ -680,9 +680,9 @@ class PackingStationIntegrationTest {
     /** Brings its own sofas, picked first (oldest): the class shares the demo stock with the tests above. */
     private void stock(int sofas) {
         tx.executeWithoutResult(s -> jdbc.update("""
-                INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, version,
+                INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, version,
                     created_at, received_at)
-                VALUES (?, ?, 'HCM-A02-1-A', ?, 0, 'AVAILABLE', 0, NOW(), NOW() - interval '400 days')""",
+                VALUES (?, ?, 'HCM-A02-1-A', 'FX-LOT', ?, 0, 'AVAILABLE', 0, NOW(), NOW() - interval '400 days')""",
                 Identifiers.newId(), SOFA.code(), sofas));
     }
 

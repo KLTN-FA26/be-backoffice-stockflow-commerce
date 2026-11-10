@@ -107,7 +107,7 @@ class StockDamageIntegrationTest {
     private UUID manager;
     private UUID managerElsewhere;
     private UUID qc;
-    private UUID planner;
+    private UUID salesperson;
 
     @BeforeEach
     void setUp() {
@@ -126,7 +126,7 @@ class StockDamageIntegrationTest {
         manager = staff("WAREHOUSE_MANAGER", DemoData.WAREHOUSE_HCM);
         managerElsewhere = staff("WAREHOUSE_MANAGER", otherWarehouse());
         qc = staff("WAREHOUSE_STAFF", DemoData.WAREHOUSE_HCM);
-        planner = staff("INVENTORY_PLANNER");
+        salesperson = staff("SALES_STAFF");
         recorded.clear();
     }
 
@@ -466,14 +466,14 @@ class StockDamageIntegrationTest {
         report(managerElsewhere, "WAREHOUSE_MANAGER", reportJson(UUID.randomUUID(), row, 1, "BROKEN", null, null),
                 jpeg("x.jpg")).andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.errorCode").value("OUT_OF_DATA_SCOPE"));
-        report(planner, "INVENTORY_PLANNER", reportJson(UUID.randomUUID(), row, 1, "BROKEN", null, null),
+        report(salesperson, "SALES_STAFF", reportJson(UUID.randomUUID(), row, 1, "BROKEN", null, null),
                 jpeg("x.jpg")).andExpect(status().isForbidden());
         // Another clerk finds damage too; a manager of the warehouse who did not report it decides.
         report(qc, "WAREHOUSE_STAFF", reportJson(UUID.randomUUID(), row, 1, "DIRTY_OR_MISPRINTED", null, null),
                 png("ink.png")).andExpect(status().isCreated());
         dispose(otherStaff, "WAREHOUSE_STAFF", reportId, "WRITE_OFF", 1, null, null).andExpect(status().isForbidden());
-        mvc.perform(get("/api/v1/inventory/damage-reports").header("Authorization", token(planner, "INVENTORY_PLANNER")))
-                .andExpect(status().isOk());
+        mvc.perform(get("/api/v1/inventory/damage-reports").header("Authorization", token(salesperson, "SALES_STAFF")))
+                .andExpect(status().isForbidden());
         // The table says four eyes again, whatever path wrote the decision.
         assertThat(org.assertj.core.api.Assertions.catchThrowable(() -> tx.executeWithoutResult(s -> jdbc.update("""
                 INSERT INTO inventory.stock_damage_disposition (id, damage_report_id, request_id, disposition_type,

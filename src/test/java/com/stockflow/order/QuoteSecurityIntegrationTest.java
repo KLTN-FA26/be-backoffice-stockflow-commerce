@@ -150,10 +150,10 @@ class QuoteSecurityIntegrationTest {
         send(get(QUOTES + "/" + id), b, null).andExpect(status().isNotFound());
         send(post(QUOTES + "/" + id + "/acceptance"), b, Map.of("version", version)).andExpect(status().isNotFound());
 
-        // The answer is APPROVE, granted to CUSTOMER only: Sales and the coordinator cannot answer.
+        // The answer is APPROVE, granted to CUSTOMER only: Sales and the warehouse manager cannot answer.
         send(post(QUOTES + "/" + id + "/acceptance"), sales, Map.of("version", version))
                 .andExpect(status().isForbidden());
-        send(post(QUOTES + "/" + id + "/acceptance"), token(user(), "ORDER_COORDINATOR"), Map.of("version", version))
+        send(post(QUOTES + "/" + id + "/acceptance"), token(user(), "WAREHOUSE_MANAGER"), Map.of("version", version))
                 .andExpect(status().isForbidden());
         // The customer may answer, but not use Sales' verbs.
         send(post(QUOTES + "/" + id + "/conversion"), a, Map.of("version", version)).andExpect(status().isForbidden());
@@ -162,18 +162,13 @@ class QuoteSecurityIntegrationTest {
                 .andExpect(jsonPath("$.data.status").value("CHANGES_REQUESTED"))
                 .andExpect(jsonPath("$.data.respondedBy").value(userA.toString()));
 
-        String coordinator = token(user(), "ORDER_COORDINATOR");
-        send(get(QUOTES + "/" + id), coordinator, null).andExpect(status().isOk());
-        send(post(QUOTES + "/" + id + "/conversion"), coordinator, Map.of("version", version + 1))
-                .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.errorCode").value("INVALID_QUOTE_TRANSITION"));
-        // Decision 2026-10-17: the coordinator reads quotes and turns accepted ones into orders; it never edits one.
-        send(post(QUOTES + "/" + id + "/sending"), coordinator, Map.of("version", version + 1))
-                .andExpect(status().isForbidden());
-        send(post(QUOTES + "/" + id + "/cancellation"), coordinator, Map.of("version", version + 1,
-                "reason", "Not mine to cancel")).andExpect(status().isForbidden());
-        send(post(QUOTES + "/" + id + "/revision"), coordinator, Map.of("version", version + 1))
-                .andExpect(status().isForbidden());
+        // The order-coordinator role is retired (V20261115000200): a warehouse manager has no part in quotes at all.
+        String manager = token(user(), "WAREHOUSE_MANAGER");
+        send(get(QUOTES + "/" + id), manager, null).andExpect(status().isForbidden());
+        for (String verb : List.of("conversion", "sending", "cancellation", "revision")) {
+            send(post(QUOTES + "/" + id + "/" + verb), manager, Map.of("version", version + 1))
+                    .andExpect(status().isForbidden());
+        }
     }
 
     @Test

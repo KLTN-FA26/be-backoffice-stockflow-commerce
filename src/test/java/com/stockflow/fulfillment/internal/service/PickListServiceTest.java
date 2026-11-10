@@ -157,7 +157,7 @@ class PickListServiceTest {
             OrderSummary order = FulfillmentFixtures.orderWith(task.getOrderId(), OrderStatus.PICKING,
                     List.of(FulfillmentFixtures.stockLine("SKU-A", resA)), null);
             when(inventory.holds(any())).thenReturn(List.of(new HoldView(resA, "SKU-A", "HCM-A-01", "LOT-1", 10,
-                    HoldView.Status.HELD, null, null, "LPN-20261028-000001", true)));
+                    HoldView.Status.HELD, null, "LPN-20261028-000001", true)));
             locationsIn(WAREHOUSE, "HCM-A-01");
 
             service.planLines(task, order);

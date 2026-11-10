@@ -157,10 +157,10 @@ class StockPackageLabelHttpTest {
     }
 
     @Test
-    @DisplayName("an inventory planner only reads cartons: 403")
-    void aPlannerCannotPrint() throws Exception {
-        UUID planner = staff("INVENTORY_PLANNER", WAREHOUSE_HCM);
-        print(Role.INVENTORY_PLANNER, planner,
+    @DisplayName("an accountant holds nothing on cartons: 403")
+    void anAccountantCannotPrint() throws Exception {
+        UUID accountant = staff("ACCOUNTANT", WAREHOUSE_HCM);
+        print(Role.ACCOUNTANT, accountant,
                 "{\"format\":\"THERMAL_ROLL\",\"receiptLineId\":\"" + receiptLineId + "\"}")
                 .andExpect(status().isForbidden());
     }

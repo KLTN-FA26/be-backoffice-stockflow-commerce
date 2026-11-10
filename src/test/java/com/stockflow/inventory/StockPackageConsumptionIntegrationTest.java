@@ -83,8 +83,8 @@ class StockPackageConsumptionIntegrationTest {
                         received_qty, location_code, status) values (?, ?, ?, ?, 5, 5, ?, 'IN_STOCK')""",
                     id, "LPN-" + sku + "-" + name, item, carton, SHELF);
             jdbc.update("""
-                    insert into inventory.stock_item (id, sku, location_code, received_at, on_hand, reserved, status,
-                        version, created_at, stock_package_id) values (?, ?, ?, ?, 5, 0, 'AVAILABLE', 0, now(), ?)""",
+                    insert into inventory.stock_item (id, sku, location_code, lot_number, received_at, on_hand, reserved, status,
+                        version, created_at, stock_package_id) values (?, ?, ?, 'FX-LOT', ?, 5, 0, 'AVAILABLE', 0, now(), ?)""",
                     Identifiers.newId(), sku, SHELF, java.sql.Timestamp.from(RECEIVED), id);
         });
         return id;

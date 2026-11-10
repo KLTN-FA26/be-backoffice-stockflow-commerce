@@ -33,7 +33,7 @@ class InventoryCatalogSecurityIntegrationTest {
     @Autowired org.springframework.transaction.support.TransactionTemplate tx;
     @Autowired IdentityService identity;
     @Autowired com.stockflow.catalog.internal.service.CatalogProjectionService projection;
-    private static final String TEST_ROLE = "INVENTORY_PLANNER";
+    private static final String TEST_ROLE = "ACCOUNTANT";
     private List<String> originalPermissions;
 
     @BeforeEach

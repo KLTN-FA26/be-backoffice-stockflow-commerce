@@ -109,7 +109,6 @@ class GoodsReceiptTest {
 
         receipt.replaceLines(List.of(first, line(UUID.randomUUID(), item, 2)));
         assertThat(receipt.lines()).as("two production order lines of one SKU share its lot").hasSize(2);
-        assertThat(first.expiryDate()).as("a production lot has no expiry").isNull();
     }
 
     @Test

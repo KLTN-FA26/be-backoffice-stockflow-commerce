@@ -183,18 +183,17 @@ values (?,?,'https://example.test/cover.jpg',true,now(),md5('demo:user:approver'
                 f.skuId());
     }
 
-    UUID stock(Fixture f, int quantity, Instant receipt, String serial) {
+    UUID stock(Fixture f, int quantity, Instant receipt) {
         UUID id = UUID.randomUUID();
         write(
                 """
-insert into inventory.stock_item(id,sku,location_code,on_hand,reserved,status,received_at,serial_number,created_at)
-values (?,?,'HCM-A01-1-A',?,0,'AVAILABLE',?,?,now())
+insert into inventory.stock_item(id,sku,location_code,lot_number,on_hand,reserved,status,received_at,created_at)
+values (?,?,'HCM-A01-1-A','UNTRACED',?,0,'AVAILABLE',?,now())
 """,
                 id,
                 f.sku(),
                 quantity,
-                receipt == null ? null : Timestamp.from(receipt),
-                serial);
+                receipt == null ? null : Timestamp.from(receipt));
         return id;
     }
 
@@ -205,21 +204,22 @@ values (?,?,'HCM-A01-1-A',?,0,'AVAILABLE',?,?,now())
                 2, null, receipt)).getFirst().stockItemId();
     }
 
-    InventoryPolicy policy(RemovalStrategy strategy, TrackingMode tracking) {
-        return new InventoryPolicy(strategy, tracking);
+    /** Describes the item with the logistics it already has: a write that advances the version and nothing else. */
+    InventoryItems.Detail touch(Fixture f, long expectedVersion) {
+        return items.describe(f.itemId(), expectedVersion, items.get(f.itemId()).logistics());
     }
 
     @Test
     void batchAvailabilityExcludesHoldsAndBlockedStock() {
         var a = fixture("DRAFT");
         var b = fixture("DRAFT");
-        UUID held = stock(a, 6, null, null);
+        UUID held = stock(a, 6, null);
         write("update inventory.stock_item set reserved=2 where id=?", held);
-        UUID blocked = stock(b, 10, null, null);
+        UUID blocked = stock(b, 10, null);
         write("update inventory.stock_item set status='QUARANTINE' where id=?", blocked);
         Instant qcReceipt = Instant.parse("2026-09-03T00:00:00Z");
         for (String status : List.of("INBOUND", "BLOCKED")) {
-            UUID pending = stock(a, 30, qcReceipt, null);
+            UUID pending = stock(a, 30, qcReceipt);
             write("update inventory.stock_item set status=? where id=?", status, pending);
             qcReceipt = qcReceipt.plusSeconds(1);
         }
@@ -263,7 +263,7 @@ values (?,?,'HCM-A01-1-A',?,0,'AVAILABLE',?,?,now())
     void accountCheckoutUsesServerPriceAndReplayKeepsTheAgreedSnapshot() {
         var f = fixture("APPROVED");
         gallery(f);
-        stock(f, 10, null, null);
+        stock(f, 10, null);
         var listing = catalog.edit(f.product(), 0, "checkout-" + f.sku(), null, null);
         catalog.price(
                 f.product(),
@@ -341,36 +341,13 @@ values (?,?,'HCM-A01-1-A',?,0,'AVAILABLE',?,?,now())
     void staleVersionCannotOverwrite() {
         var a = fixture("DRAFT");
         // "the SKU must belong to the product" is gone: the item is addressed by its own id (spec D1)
-        items.configure(a.itemId(),
-                0,
-                policy(RemovalStrategy.FEFO, TrackingMode.NONE));
-        assertThatThrownBy(
-                        () ->
-                                items.configure(a.itemId(),
-                                        0,
-                                        policy(RemovalStrategy.FEFO, TrackingMode.NONE)))
-                .isInstanceOf(BusinessException.class);
-    }
-
-    @Test
-    void legacyUnknownReceiptBlocksFifoWithoutChangingTheSku() {
-        var f = fixture("DRAFT");
-        stock(f, 10, null, null);
-        assertThatThrownBy(
-                        () ->
-                                items.configure(f.itemId(),
-                                        0,
-                                        policy(RemovalStrategy.FIFO, TrackingMode.NONE)))
-                .isInstanceOf(BusinessException.class);
-        assertThat(items.get(f.itemId()).version()).isZero();
+        touch(a, 0);
+        assertThatThrownBy(() -> touch(a, 0)).isInstanceOf(BusinessException.class);
     }
 
     @Test
     void fifoActuallyReservesTheOlderReceiptLayer() {
         var f = fixture("APPROVED");
-        items.configure(f.itemId(),
-                0,
-                policy(RemovalStrategy.FIFO, TrackingMode.NONE));
         // Since team plan 4C-2 an order line is given whole cartons only: two sealed cartons of 2, one per receipt.
         var newer = carton(f, Instant.parse("2026-09-02T00:00:00Z"));
         var older = carton(f, Instant.parse("2026-09-01T00:00:00Z"));
@@ -398,24 +375,6 @@ values (?,?,'HCM-A01-1-A',?,0,'AVAILABLE',?,?,now())
                                 Integer.class,
                                 newer))
                 .isZero();
-    }
-
-    @Test
-    void serialFlagIsEnforcedAtStockIngressAndCannotBeDisabledWithStock() {
-        var f = fixture("DRAFT");
-        var saved =
-                items.configure(f.itemId(),
-                        0,
-                        policy(RemovalStrategy.FIFO, TrackingMode.SERIAL));
-        assertThatThrownBy(() -> stock(f, 2, Instant.parse("2026-09-01T00:00:00Z"), "SN-1"))
-                .isInstanceOf(DataIntegrityViolationException.class);
-        stock(f, 1, Instant.parse("2026-09-01T00:00:00Z"), "SN-1");
-        assertThatThrownBy(
-                        () ->
-                                items.configure(f.itemId(),
-                                        saved.version(),
-                                        policy(RemovalStrategy.FIFO, TrackingMode.NONE)))
-                .isInstanceOf(BusinessException.class);
     }
 
     @Test
@@ -568,9 +527,7 @@ values (?,'Conflicting test rule',?,200,'VND',0,true,now())
                     () -> {
                         start.await();
                         try {
-                            items.configure(f.itemId(),
-                                    0,
-                                    policy(RemovalStrategy.FEFO, TrackingMode.NONE));
+                            touch(f, 0);
                             return true;
                         } catch (BusinessException e) {
                             assertThat(e.errorCode()).isEqualTo(ErrorCode.OPTIMISTIC_LOCK);
@@ -626,67 +583,12 @@ values (?,'Conflicting test rule',?,200,'VND',0,true,now())
     }
 
     @Test
-    void concurrentIngressIsSeenBeforePolicyChangeCanCommit() throws Exception {
-        var f = fixture("DRAFT");
-        try (var executor = Executors.newFixedThreadPool(2)) {
-            var inserted = new CountDownLatch(1);
-            var commit = new CountDownLatch(1);
-            var ingress =
-                    executor.submit(
-                            () ->
-                                    transactions.execute(
-                                            status -> {
-                                                stock(f, 2, Instant.parse("2026-09-01T00:00:00Z"), null);
-                                                inserted.countDown();
-                                                try {
-                                                    if (!commit.await(10, TimeUnit.SECONDS))
-                                                        throw new IllegalStateException(
-                                                                "Timed out");
-                                                } catch (InterruptedException e) {
-                                                    Thread.currentThread().interrupt();
-                                                    throw new IllegalStateException(e);
-                                                }
-                                                return true;
-                                            }));
-            assertThat(inserted.await(10, TimeUnit.SECONDS)).isTrue();
-            var changed =
-                    executor.submit(
-                            () -> {
-                                try {
-                                    items.configure(f.itemId(),
-                                            0,
-                                            policy(RemovalStrategy.FIFO, TrackingMode.SERIAL));
-                                    return true;
-                                } catch (BusinessException e) {
-                                    assertThat(e.errorCode())
-                                            .isEqualTo(ErrorCode.INVENTORY_POLICY_STOCK_CONFLICT);
-                                    return false;
-                                }
-                            });
-            commit.countDown();
-            assertThat(ingress.get(15, TimeUnit.SECONDS)).isTrue();
-            assertThat(changed.get(15, TimeUnit.SECONDS)).isFalse();
-        }
-    }
-
-    @Test
-    void canonicalVariantCreatesInventoryItemAndPolicyHasItsOwnVersion() {
+    void canonicalVariantCreatesInventoryItemWithItsOwnVersion() {
         var f = fixture("DRAFT");
         write("update product.variants set status='DRAFT' where id=?", f.skuId());
         var initial = items.get(f.itemId());
-        assertThat(initial.policy().trackingMode()).isEqualTo(TrackingMode.NONE);
-        var saved =
-                items.configure(f.itemId(),
-                        initial.version(),
-                        new InventoryPolicy(
-                                RemovalStrategy.FEFO, TrackingMode.LOT_SERIAL));
+        var saved = touch(f, initial.version());
         assertThat(saved.version()).isEqualTo(initial.version() + 1);
-        assertThat(
-                        jdbc.queryForObject(
-                                "select lot_tracked and serial_tracked from inventory.inventory_items where sku=?",
-                                Boolean.class,
-                                f.sku()))
-                .isTrue();
         assertThat(
                         jdbc.queryForObject(
                                 "select version from product.variants where id=?",

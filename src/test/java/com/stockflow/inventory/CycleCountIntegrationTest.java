@@ -782,7 +782,7 @@ class CycleCountIntegrationTest {
     void assigneeMustBeWarehouseStaff() {
         loose(BIN, 5);
         UUID clerk = staff("WAREHOUSE_STAFF", WAREHOUSE_HCM);
-        UUID inspector = staff("INVENTORY_PLANNER", WAREHOUSE_HCM);
+        UUID inspector = staff("SALES_STAFF", WAREHOUSE_HCM);
         UUID unassigned = staff("WAREHOUSE_STAFF");
 
         assertThat(cycleCounts.assignees(WAREHOUSE_HCM)).extracting(AssignableUser::userId)
