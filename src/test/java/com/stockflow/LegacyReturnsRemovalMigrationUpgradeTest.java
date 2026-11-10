@@ -240,9 +240,9 @@ class LegacyReturnsRemovalMigrationUpgradeTest {
                 }
 
                 // Only the withdrawn contract's unfinished publication went.
-                assertThat(RawSql.texts(db, "SELECT right(event_type, 17) || ':' || (completion_date IS NULL) FROM "
+                assertThat(RawSql.texts(db, "SELECT regexp_replace(event_type, '^.*[.]', '') || ':' || (completion_date IS NULL) FROM "
                         + "event_publication WHERE id::text LIKE '00000000-0000-4000-8000-0000000d44%' ORDER BY id"))
-                        .containsExactly("ReplacementWithdrawn:false", "ReturnApproved:true");
+                        .containsExactly("ReturnReplacementWithdrawn:false", "ReturnApproved:true");
             }
         }
     }
