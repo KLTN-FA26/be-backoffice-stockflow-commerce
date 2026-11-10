@@ -172,11 +172,20 @@ public final class CycleCount extends AggregateRoot {
      * A carton scanned at a bin of the count that the plan did not list (20 §4.2 b5): found, whatever the books say -
      * a LOST carton found again is the surplus this records.
      *
-     * @param booked whether the books have it at that bin now
-     * @param units  its standard count
+     * @param booked   whether the books have it at that bin now
+     * @param units    its standard count
+     * @param maxLines the most lines a count holds (20 BR-12: 500), planned and found together
+     * @throws BusinessException {@code CYCLE_COUNT_TOO_LARGE} when the count is full; {@code CYCLE_COUNT_SLOT_BUSY}
+     *         when the carton is already on it
      */
-    public CycleCountLine addLine(CountSlot slot, boolean booked, int units, UUID by, Instant at) {
+    public CycleCountLine addLine(CountSlot slot, boolean booked, int units, UUID by, Instant at, int maxLines) {
         requireOpen();
+        if (lines.size() >= maxLines) {
+            // The cap of a plan holds for what is found on the shelf too: one submission raises at most that many
+            // adjustments. tg_cycle_count_line_carton says it again.
+            throw new BusinessException(ErrorCode.CYCLE_COUNT_TOO_LARGE,
+                    "Count %s already has %d lines; plan a second count for the rest".formatted(number, lines.size()));
+        }
         // By lock key: a carton line that followed its carton to another bin is still that carton's line.
         if (lines.stream().anyMatch(l -> l.slot().lockKey().equals(slot.lockKey()))) {
             throw new BusinessException(ErrorCode.CYCLE_COUNT_SLOT_BUSY, "This carton is already on the count");

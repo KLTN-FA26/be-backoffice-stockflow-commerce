@@ -93,7 +93,8 @@ public interface CycleCounts {
      * @throws com.stockflow.common.error.BusinessException {@code STOCK_PACKAGE_NOT_FOUND} (also for a carton of
      *         another warehouse); {@code STOCK_PACKAGE_WRONG_LOCATION} (scanned away from its recorded bin: a move puts
      *         it right, not an adjustment); {@code CONFLICT} (a carton not in stock nor LOST);
-     *         {@code CYCLE_COUNT_SLOT_BUSY}; and as {@link #count}
+     *         {@code CYCLE_COUNT_SLOT_BUSY}; {@code CYCLE_COUNT_TOO_LARGE} (the count already holds 500 lines,
+     *         BR-12); and as {@link #count}
      */
     CycleCountView addLine(UUID id, AddCountLineCommand command);
 

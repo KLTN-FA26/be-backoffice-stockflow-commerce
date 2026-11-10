@@ -20,6 +20,7 @@ import com.stockflow.inventory.internal.repository.InventoryPolicyRepository;
 import com.stockflow.inventory.internal.service.CycleCounts.AddCountLineCommand;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -61,11 +62,14 @@ class CycleCountCountingService {
     private final StockOperations operations;
     private final WarehouseDirectory warehouseDirectory;
     private final Clock clock;
+    /** BR-12, as the plan reads it; not final: a test lowers it to reach the cap without 500 lines. */
+    private int maxLines;
 
     CycleCountCountingService(CycleCountRepository counts, CycleCountViewMapper views,
                               InventoryPolicyRepository policies, StockPackageRepository stockPackages,
                               StockItemRepository stockItems, StockOperations operations,
-                              WarehouseDirectory warehouseDirectory, Clock clock) {
+                              WarehouseDirectory warehouseDirectory, Clock clock,
+                              @Value("${stockflow.inventory.cycle-count-max-lines:500}") int maxLines) {
         this.counts = counts;
         this.views = views;
         this.policies = policies;
@@ -74,6 +78,7 @@ class CycleCountCountingService {
         this.operations = operations;
         this.warehouseDirectory = warehouseDirectory;
         this.clock = clock;
+        this.maxLines = maxLines;
     }
 
     /**
@@ -145,7 +150,8 @@ class CycleCountCountingService {
                             .formatted(carton.lpn(), carton.location(), location));
         }
         CountSlot slot = CountSlot.carton(carton.location(), content.sku(), content.lotNumber(), carton.id());
-        count.addLine(slot, booked(carton, location), carton.nominalQty(), command.actor(), clock.instant());
+        count.addLine(slot, booked(carton, location), carton.nominalQty(), command.actor(), clock.instant(),
+                maxLines);
         return views.of(counts.save(count), command.mayDecide());
     }
 

@@ -35,8 +35,8 @@
 --          several emptied rows; all but one are archived and detached (stock_package_id NULL). The ledger names
 --          the cartons on its own lines, so no history is lost.
 --   3. inventory.cycle_count_line: a line written from now on names a carton and records its units whole - book and
---      found are 0 or the carton's standard count (tg_cycle_count_line_carton). Lines of the history keep what they
---      say. A counted line of an open count whose figure is neither is set back to not counted (archived): it is
+--      found are 0 or the carton's standard count - and a count holds at most 500 lines (BR-12), found ones included
+--      (tg_cycle_count_line_carton). Lines of the history keep what they say. A counted line of an open count whose figure is neither is set back to not counted (archived): it is
 --      scanned again.
 --   4. inventory.stock_adjustment: a carton's adjustment moves the whole carton (quantity_delta = +/- nominal_qty)
 --      for one of the six reasons of BR-04, and a COUNT_VARIANCE names a carton (tg_stock_adjustment_whole_carton,
@@ -407,6 +407,13 @@ BEGIN
     END IF;
     IF NEW.stock_package_id IS NULL THEN
         RAISE EXCEPTION 'count line % names no carton; a count states cartons present or not found', NEW.id
+            USING ERRCODE = 'check_violation';
+    END IF;
+    -- BR-12: at most 500 cartons on one count, lines found on the shelf included. The count row is locked by every
+    -- writer of its lines (CycleCountRepository.findByIdForUpdate), so the tally cannot race.
+    IF TG_OP = 'INSERT'
+       AND (SELECT count(*) FROM inventory.cycle_count_line WHERE cycle_count_id = NEW.cycle_count_id) >= 500 THEN
+        RAISE EXCEPTION 'count % already has 500 lines; kltn-docs 20 BR-12 allows no more', NEW.cycle_count_id
             USING ERRCODE = 'check_violation';
     END IF;
     SELECT nominal_qty INTO standard FROM inventory.stock_package WHERE id = NEW.stock_package_id;
