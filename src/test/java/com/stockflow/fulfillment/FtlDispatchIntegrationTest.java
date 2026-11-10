@@ -330,7 +330,7 @@ class FtlDispatchIntegrationTest {
         String v1 = loadOf(plan, 1);
         String v2 = loadOf(plan, 2);
 
-        // Confirmation opened both vehicles' manifests with the shipment, each listing its own two parcels (a kit).
+        // Confirmation opened both vehicles' manifests with the shipment, each listing its own carton.
         JsonNode first = load(v1);
         JsonNode second = load(v2);
         for (JsonNode l : List.of(first, second)) {
@@ -339,7 +339,7 @@ class FtlDispatchIntegrationTest {
             assertThat(l.path("vehicleTypeCode").asText()).isEqualTo("TRUCK-1T25");
             assertThat(l.path("shipments")).singleElement().satisfies(s -> assertThat(s.path("shipmentId").asText())
                     .isEqualTo(shipment.toString()));
-            assertThat(l.path("expectedPackageCount").asInt()).isEqualTo(2);
+            assertThat(l.path("expectedPackageCount").asInt()).isEqualTo(1);
         }
         assertThat(first.path("vehicleSeq").asInt()).isEqualTo(1);
         assertThat(labels(first)).doesNotContainAnyElementsOf(labels(second));
@@ -382,24 +382,18 @@ class FtlDispatchIntegrationTest {
         wrong.path("fieldErrors").forEach(f -> fields.put(f.path("field").asText(), f.path("message").asText()));
         assertThat(fields).containsEntry("vehicleSeq", "2").containsEntry("loadCode", second.path("code").asText());
 
-        // Kit part 1 only: the kit is not whole - LOAD_NOT_FULLY_LOADED names part 2.
+        // Nothing scanned: the vehicle's carton is missing - LOAD_NOT_FULLY_LOADED names it.
         List<String> mine = labels(first);
-        Map<String, Integer> partOf = new HashMap<>();
-        first.path("shipments").get(0).path("packages").forEach(p -> partOf.put(p.path("labelCode").asText(),
-                p.path("kit").path("partNo").asInt()));
-        String part1 = mine.stream().filter(l -> partOf.get(l) == 1).findFirst().orElseThrow();
-        String part2 = mine.stream().filter(l -> partOf.get(l) == 2).findFirst().orElseThrow();
-        scanOnto(v1, part1).andExpect(status().isOk());
         JsonNode notWhole = body(handOver(v1).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("LOAD_NOT_FULLY_LOADED")));
-        assertThat(notWhole.path("message").asText()).contains(part2).contains("kit part 2/2");
-        scanOnto(v1, part2).andExpect(status().isOk());
+        assertThat(notWhole.path("message").asText()).contains(mine.getFirst());
+        scanOnto(v1, mine.getFirst()).andExpect(status().isOk());
 
         // The per-vehicle manifest: only this vehicle's parcels.
         JsonNode manifest = data(dispatch(get(LOADS + "/" + v1 + "/manifest")).andExpect(status().isOk()));
         assertThat(manifest.path("vehicleSeq").asInt()).isEqualTo(1);
         assertThat(manifest.path("loadPlanCode").asText()).isEqualTo(plan.path("code").asText());
-        assertThat(manifest.path("packageCount").asInt()).isEqualTo(2);
+        assertThat(manifest.path("packageCount").asInt()).isEqualTo(1);
         assertThat(manifest.path("shipments").get(0).path("orderNumber").asText()).isEqualTo(order.orderNumber());
         assertThat(manifest.path("shipments").get(0).path("packages").findValuesAsText("labelCode"))
                 .containsExactlyInAnyOrderElementsOf(mine);
@@ -1637,8 +1631,6 @@ class FtlDispatchIntegrationTest {
         // The carton that stays is loadable at once: its label did not change with the split.
         assertThat(labels(load(loadId))).hasSize(1);
         scanOnto(loadId, labels(load(loadId)).getFirst()).andExpect(status().isOk());
-        packer(get(BASE + "/tasks/" + packedShipment[1] + "/packages/" + goes + "/label")).andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.packageCount").value(1));
         scanOnto(loadId, labels(load(loadId)).getFirst()).andExpect(status().isOk());
         handOver(loadId).andExpect(status().isOk());
         assertThat(shipmentStatus(shipment)).isEqualTo("HANDED_OVER");

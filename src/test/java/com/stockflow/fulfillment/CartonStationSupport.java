@@ -43,6 +43,17 @@ final class CartonStationSupport {
         });
     }
 
+    /**
+     * A heavy sofa carton (500 kg): a 1.25 t truck carries two of them, so a shipment of four needs two trucks with two
+     * cartons each, as the two-part kits of the old repack station did.
+     */
+    static void giveSofaCartonsAWeight(TransactionTemplate tx, JdbcTemplate jdbc, String kg) {
+        tx.executeWithoutResult(s -> jdbc.update("""
+                UPDATE inventory.uom_conversions u SET weight_kg = ?::numeric
+                  FROM inventory.inventory_items i
+                 WHERE i.id = u.inventory_item_id AND i.sku = 'SOFA-3S-GREY' AND NOT u.is_base AND u.active""", kg));
+    }
+
     /** The carton spec of the SKU declares no size again, as the demo data has it. */
     static void clearCartonSize(TransactionTemplate tx, JdbcTemplate jdbc, String sku) {
         tx.executeWithoutResult(s -> jdbc.update("""

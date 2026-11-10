@@ -297,7 +297,7 @@ class LoadPlanIntegrationTest {
         Map<String, JsonNode> byShipment = new LinkedHashMap<>();
         candidates.forEach(c -> byShipment.put(c.path("shipmentId").asText(), c));
         assertThat(byShipment).containsKeys(shipmentA.toString(), shipmentB.toString());
-        assertThat(byShipment.get(shipmentA.toString()).path("packageCount").asInt()).isEqualTo(4);
+        assertThat(byShipment.get(shipmentA.toString()).path("packageCount").asInt()).isEqualTo(2);
         assertThat(byShipment.get(shipmentA.toString()).path("allowPartialShipment").asBoolean()).isFalse();
         JsonNode sofaCarton = byShipment.get(shipmentB.toString()).path("packages").get(0);
         assertThat(sofaCarton.path("lengthMm").asInt()).isEqualTo(2150);
@@ -318,7 +318,7 @@ class LoadPlanIntegrationTest {
         plan = step(plan, "/calculation", version(plan));
         assertThat(plan.path("status").asText()).isEqualTo("PLANNED");
         assertThat(plan.path("vehicles")).hasSize(1);
-        assertThat(plan.path("placedCount").asInt()).isEqualTo(5);
+        assertThat(plan.path("placedCount").asInt()).isEqualTo(3);
         assertThat(plan.path("unplacedCount").asInt()).isZero();
         assertThat(plan.path("solverMeta").path("algorithm").asText()).isNotBlank();
 
@@ -642,7 +642,7 @@ class LoadPlanIntegrationTest {
         assertThat(jdbc.queryForMap("SELECT status, cancel_reason FROM fulfillment.dispatch_load WHERE id = ?", loadId))
                 .containsEntry("status", "CANCELLED");
         assertThat(jdbc.queryForObject("SELECT status FROM fulfillment.package WHERE id = ?", String.class, parcel))
-                .isEqualTo("VOIDED");
+                .as("a labelled carton stays labelled; its shipment is cancelled").isEqualTo("LABELED");
         assertThat(jdbc.queryForObject("SELECT status FROM fulfillment.shipment WHERE id = ?", String.class, doomed[0]))
                 .isEqualTo("CANCELLED");
         // Review of #161 ("bỏ kiện & tính lại"): the vehicle that lost the parcel is flagged; the plan is confirmed only
@@ -740,8 +740,10 @@ class LoadPlanIntegrationTest {
         tx.executeWithoutResult(s -> publisher.publishEvent(new OrderCancelled(order.orderId(), order.orderNumber(),
                 DemoData.CUSTOMER_ID, "PACKED", "OTHER", "test", BigDecimal.ZERO, BigDecimal.ZERO, "VND", coordinator,
                 Instant.now())));
-        Await.until("the parcel is voided", ASYNC, () -> "VOIDED".equals(jdbc.queryForObject(
-                "SELECT status FROM fulfillment.package WHERE id = ?", String.class, parcel)));
+        // A labelled carton is not voided: the order cannot be cancelled once it is (08 BR-04), so this path only cleans up
+        // what a cancellation written around that rule leaves - the shipment is cancelled, the carton leaves the plan.
+        Await.until("the carton leaves the plan", ASYNC, () -> "ORDER_CANCELLED".equals(jdbc.queryForObject(
+                "SELECT release_reason FROM fulfillment.load_plan_package WHERE package_id = ?", String.class, parcel)));
         assertThat(jdbc.queryForObject("SELECT release_reason FROM fulfillment.load_plan_package WHERE package_id = ?",
                 String.class, parcel)).isEqualTo("ORDER_CANCELLED");
     }
