@@ -73,6 +73,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -330,10 +331,22 @@ class StockOperationsServiceImpl implements StockOperations {
 
         boolean byHand = reference == MoveReference.MOVE_TASK;
         if (byHand) {
-            List<StockPackageId> moved = ledger.cartonsMovedBy(StockMovement.ReferenceType.MOVE_TASK, referenceId);
+            List<StockMovementLog.MovedCarton> moved = ledger.cartonsMovedBy(StockMovement.ReferenceType.MOVE_TASK,
+                    referenceId);
             if (!moved.isEmpty()) {
+                // The same request only: the same cartons to the same place. Anything else reusing the id is another
+                // request, refused rather than answered with a move it did not ask for.
+                Set<StockPackageId> asked = seen.values().stream().map(StockPackage::id).collect(Collectors.toSet());
+                Set<StockPackageId> made = moved.stream().map(StockMovementLog.MovedCarton::carton)
+                        .collect(Collectors.toSet());
+                LocationId to = new LocationId(toCode);
+                if (!asked.equals(made) || moved.stream().anyMatch(m -> !m.to().equals(to))) {
+                    throw new BusinessException(ErrorCode.IDEMPOTENCY_KEY_REUSED,
+                            "Move request %s already moved other cartons, or to another place; send a new request id"
+                                    .formatted(referenceId));
+                }
                 log.info("Move request {} was already served; answering it again", referenceId);
-                return views(stockPackages.findAllById(moved), unitsById);
+                return views(stockPackages.findAllById(List.copyOf(made)), unitsById);
             }
         }
 

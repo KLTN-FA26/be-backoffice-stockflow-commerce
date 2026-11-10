@@ -133,6 +133,20 @@ class StockPackageRepositoryAdapter implements StockPackageRepository {
         return onHand;
     }
 
+    @Override
+    public java.util.OptionalInt cartonFactorOf(String sku) {
+        @SuppressWarnings("unchecked")
+        List<Object[]> units = entityManager.createNativeQuery("""
+                        select u.factor, u.default_shipping from inventory.uom_conversions u
+                          join inventory.inventory_items i on i.id = u.inventory_item_id
+                         where i.sku = :sku and u.active and not u.is_base""")
+                .setParameter("sku", sku).getResultList();
+        List<Object[]> chosen = units.size() == 1 ? units
+                : units.stream().filter(unit -> Boolean.TRUE.equals(unit[1])).toList();
+        return chosen.size() == 1 ? java.util.OptionalInt.of(((Number) chosen.getFirst()[0]).intValue())
+                : java.util.OptionalInt.empty();
+    }
+
     /**
      * The same read as {@link #onHandOf}, restricted to INBOUND rows: a native query through the entity manager, so
      * pending stock rows are flushed first.

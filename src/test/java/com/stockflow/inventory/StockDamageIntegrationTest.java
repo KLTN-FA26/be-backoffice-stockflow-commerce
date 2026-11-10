@@ -245,6 +245,17 @@ class StockDamageIntegrationTest {
         return inventory.availableToPromise(new Sku(sku));
     }
 
+    /**
+     * Unheld AVAILABLE units of the SKU, loose or not. The damage this class reports is of loose units, which available
+     * to promise no longer counts (it counts whole sealed cartons only, team plan 4C-2); this is the sellable stock a
+     * report takes them out of and a restore puts them back into.
+     */
+    private int sellable() {
+        return jdbc.queryForObject("""
+                SELECT coalesce(sum(on_hand - reserved), 0) FROM inventory.stock_item
+                 WHERE sku = ? AND status = 'AVAILABLE'""", Integer.class, sku);
+    }
+
     private void nothingChanged(int before) {
         assertThat(onHand(row)).isEqualTo(before);
         assertThat(reports()).isZero();
@@ -257,7 +268,7 @@ class StockDamageIntegrationTest {
     @Test
     @DisplayName("a report moves the damaged units to quarantine: ATP drops, one MOVE line, photos stored, announced")
     void reportMovesTheDamagedUnitsOutOfAtp() throws Exception {
-        assertThat(atp()).isEqualTo(10);
+        assertThat(sellable()).isEqualTo(10);
 
         JsonNode report = body(report(UUID.randomUUID(), row, 3)
                 .andExpect(status().isCreated())
@@ -274,7 +285,7 @@ class StockDamageIntegrationTest {
 
         assertThat(onHand(row)).isEqualTo(7);
         assertThat(damagedAt(QC01)).isEqualTo(3);
-        assertThat(atp()).as("out of ATP at once").isEqualTo(7);
+        assertThat(sellable()).as("out of ATP at once").isEqualTo(7);
         assertThat(jdbc.queryForMap("""
                 SELECT movement_type, from_location_code, to_location_code, quantity, from_status, to_status,
                        lot_number, actor_id
@@ -354,7 +365,7 @@ class StockDamageIntegrationTest {
     void restoreThenWriteOff() throws Exception {
         UUID reportId = UUID.fromString(body(report(UUID.randomUUID(), row, 4).andExpect(status().isCreated())
                 .andReturn()).path("id").asText());
-        assertThat(atp()).isEqualTo(6);
+        assertThat(sellable()).isEqualTo(6);
 
         dispose(manager, "WAREHOUSE_MANAGER", reportId, "RESTORE", 2, null, "HCM-A01-1-B")
                 .andExpect(status().isBadRequest()).andExpect(jsonPath("$.errorCode").value("VALIDATION_FAILED"));
@@ -368,7 +379,7 @@ class StockDamageIntegrationTest {
         assertThat(jdbc.queryForObject("""
                 SELECT on_hand FROM inventory.stock_item WHERE sku = ? AND location_code = 'HCM-A01-1-B'
                    AND status = 'AVAILABLE' AND lot_number = 'L1'""", Integer.class, sku)).isEqualTo(2);
-        assertThat(atp()).as("restored units sell again").isEqualTo(8);
+        assertThat(sellable()).as("restored units sell again").isEqualTo(8);
         assertThat(jdbc.queryForObject("""
                 SELECT count(*) FROM inventory.stock_movement WHERE reference_type = 'DAMAGE_REPORT' AND reference_id = ?
                    AND from_status = 'DAMAGED' AND to_status = 'AVAILABLE' AND to_location_code = 'HCM-A01-1-B'""",
@@ -412,7 +423,7 @@ class StockDamageIntegrationTest {
                 .andExpect(jsonPath("$.data.dispositions[0].disposition").value("RETURN_TO_SUPPLIER"));
 
         assertThat(damagedAt(QC01)).as("still here until the supplier collects them").isEqualTo(2);
-        assertThat(atp()).isEqualTo(8);
+        assertThat(sellable()).isEqualTo(8);
         assertThat(recorded.matching(StockDamageDisposed.class, event -> event.reportId().equals(reportId)))
                 .singleElement().satisfies(event -> assertThat(event.disposition()).isEqualTo("RETURN_TO_SUPPLIER"));
 
@@ -453,7 +464,7 @@ class StockDamageIntegrationTest {
                 .andExpect(jsonPath("$.data.status").value("CLOSED"));
 
         assertThat(damagedAt(QC01)).isZero();
-        assertThat(atp()).isEqualTo(8);
+        assertThat(sellable()).isEqualTo(8);
         assertThat(jdbc.queryForMap("""
                 SELECT movement_type, from_location_code, to_location_code, quantity, from_status
                   FROM inventory.stock_movement WHERE reference_type = 'DAMAGE_REPORT' AND reference_id = ?

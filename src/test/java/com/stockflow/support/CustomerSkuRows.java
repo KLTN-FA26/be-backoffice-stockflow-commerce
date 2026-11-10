@@ -107,13 +107,17 @@ public final class CustomerSkuRows {
         });
     }
 
-    /** {@code units} pieces of {@code sku} free in HCM, received a while ago. */
+    /**
+     * {@code units} pieces of {@code sku} free in HCM, received a while ago, as whole sealed cartons of its carton unit
+     * (what available to promise counts since team plan 4C-2); a remainder short of a carton is not stocked.
+     */
     public static void stock(JdbcTemplate jdbc, TransactionTemplate tx, String sku, int units) {
-        tx.executeWithoutResult(s -> jdbc.update("""
-                INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, version,
-                    created_at, received_at)
-                VALUES (?, ?, 'HCM-A02-1-A', 'UNTRACED', ?, 0, 'AVAILABLE', 0, NOW(),
-                    clock_timestamp() - interval '2 days')""",
-                Identifiers.newId(), sku, units));
+        tx.executeWithoutResult(s -> {
+            UUID unit = CartonRows.unit(jdbc, sku, units);
+            int factor = jdbc.queryForObject("SELECT factor FROM inventory.uom_conversions WHERE id = ?",
+                    Integer.class, unit);
+            CartonRows.stock(jdbc, sku, "HCM-A02-1-A", units / factor, factor, null,
+                    java.time.Instant.now().minus(java.time.Duration.ofDays(2)));
+        });
     }
 }

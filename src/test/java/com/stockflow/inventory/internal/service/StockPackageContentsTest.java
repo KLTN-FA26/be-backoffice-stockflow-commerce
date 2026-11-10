@@ -299,6 +299,21 @@ class StockPackageContentsTest {
         }
 
         @Test
+        @DisplayName("a LOST carton is found whole or not at all: part of it is STOCK_PACKAGE_TAKEN_WHOLE, still LOST")
+        void lostCartonIsNotFoundInPart() {
+            StockPackage lost = cartonWith(id, StockPackageStatus.LOST, false, 24);
+            StockItem emptied = row(id, 0);
+            rowsOf(lost, emptied);
+
+            BusinessException refused = catchThrowableOfType(BusinessException.class,
+                    () -> contents.adjust(id, 20, false, NOW));
+
+            assertThat(refused.errorCode()).isEqualTo(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE);
+            assertThat(lost.status()).isEqualTo(StockPackageStatus.LOST);
+            assertThat(emptied.onHand().value()).isZero();
+        }
+
+        @Test
         @DisplayName("a consumed or void carton takes nothing back")
         void closedCartonTakesNothing() {
             rowsOf(cartonWith(id, StockPackageStatus.CONSUMED, 24), row(id, 0));

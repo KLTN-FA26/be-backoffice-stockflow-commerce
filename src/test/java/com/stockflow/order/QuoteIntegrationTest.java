@@ -641,7 +641,7 @@ class QuoteIntegrationTest {
     @DisplayName("an order bought at the price list is not re-quoted: it is simply placed again")
     void aPriceListOrderIsNotRequoted() {
         OrderSummary listOrder = orders.placeOrder(new PlaceOrderCommand(UUID.randomUUID(), customerId,
-                List.of(new PlaceOrderCommand.Line(new Sku(sku), 2, Money.vnd(3000), null))));
+                List.of(new PlaceOrderCommand.Line(new Sku(sku), PER_CARTON, Money.vnd(3000), null))));
         assertThatThrownBy(() -> quotes.reorder(portal, new Quotes.Reorder(UUID.randomUUID(), listOrder.orderId())))
                 .extracting(QuoteIntegrationTest::code).isEqualTo(ErrorCode.ORDER_NOT_QUOTED);
         assertThatThrownBy(() -> quotes.reorder(sales, new Quotes.Reorder(UUID.randomUUID(), UUID.randomUUID())))

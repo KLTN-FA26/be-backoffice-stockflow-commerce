@@ -105,6 +105,11 @@ SELECT pg_temp.expect_fail('WC10b a carton found again without its units back on
     UPDATE inventory.stock_item SET on_hand = 0 WHERE id = md5('qa41:pk:row')::uuid;
     UPDATE inventory.stock_package SET status = 'LOST', closed_at = NOW() WHERE id = md5('qa41:pk')::uuid;
     UPDATE inventory.stock_package SET status = 'IN_STOCK', closed_at = NULL WHERE id = md5('qa41:pk')::uuid $q$);
+SELECT pg_temp.expect_fail('WC10c a lost carton found with part of its count on its row', $q$
+    UPDATE inventory.stock_item SET on_hand = 0 WHERE id = md5('qa41:pk:row')::uuid;
+    UPDATE inventory.stock_package SET status = 'LOST', closed_at = NOW() WHERE id = md5('qa41:pk')::uuid;
+    UPDATE inventory.stock_package SET status = 'IN_STOCK', closed_at = NULL WHERE id = md5('qa41:pk')::uuid;
+    UPDATE inventory.stock_item SET on_hand = 3 WHERE id = md5('qa41:pk:row')::uuid $q$);
 SELECT pg_temp.expect_fail('WC11 VOID back to receiving', $q$
     UPDATE inventory.stock_package SET status = 'VOID', closed_at = NOW() WHERE id = md5('qa41:rcv')::uuid;
     UPDATE inventory.stock_package SET status = 'RECEIVING', closed_at = NULL WHERE id = md5('qa41:rcv')::uuid $q$);
