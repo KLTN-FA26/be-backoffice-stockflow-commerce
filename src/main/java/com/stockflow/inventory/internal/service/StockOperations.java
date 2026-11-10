@@ -4,7 +4,6 @@ import com.stockflow.common.api.PageResponse;
 import com.stockflow.inventory.api.CountReceivingPackagesCommand;
 import com.stockflow.inventory.api.MoveStockPackagesCommand;
 import com.stockflow.inventory.api.ReceiveStockCommand;
-import com.stockflow.inventory.api.ReclassifyStockCommand;
 import com.stockflow.inventory.api.ReclassifyStockPackagesCommand;
 import com.stockflow.inventory.api.RequestAdjustmentCommand;
 import com.stockflow.inventory.api.StockAdjustmentStatus;
@@ -29,17 +28,11 @@ public interface StockOperations {
 
     StockMove receive(ReceiveStockCommand command);
 
-    /** See {@code InventoryService#receiveReturn}. */
-    StockMove receiveReturn(com.stockflow.inventory.api.ReceiveReturnCommand command);
-
     /** See {@code InventoryService#countReceivingPackages}. */
     List<StockPackageView> countReceivingPackages(CountReceivingPackagesCommand command);
 
     /** See {@code InventoryService#receivingPackagesOf}. */
     Map<UUID, List<StockPackageView>> receivingPackagesOf(Collection<UUID> receiptLineIds);
-
-    /** Loose stock out of quarantine, for a customer return's decision only; goes with team plan 4D-2. */
-    StockMove reclassify(ReclassifyStockCommand command);
 
     /** See {@code InventoryService#moveStockPackages}. */
     List<StockPackageView> moveStockPackages(MoveStockPackagesCommand command);

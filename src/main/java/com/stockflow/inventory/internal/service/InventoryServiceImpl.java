@@ -9,7 +9,6 @@ import com.stockflow.inventory.internal.domain.StockThresholds;
 import com.stockflow.inventory.api.MoveStockPackagesCommand;
 import com.stockflow.inventory.api.ReceiveStockCommand;
 import com.stockflow.inventory.api.OrderHold;
-import com.stockflow.inventory.api.ReclassifyStockCommand;
 import com.stockflow.inventory.api.ReclassifyStockPackagesCommand;
 import com.stockflow.inventory.api.RequestAdjustmentCommand;
 
@@ -187,16 +186,6 @@ class InventoryServiceImpl implements InventoryService {
     @Transactional(readOnly = true)
     public Map<UUID, List<StockPackageView>> receivingPackagesOf(Collection<UUID> receiptLineIds) {
         return operations.receivingPackagesOf(receiptLineIds);
-    }
-
-    @Override
-    public StockMove reclassify(ReclassifyStockCommand command) {
-        return operations.reclassify(command);
-    }
-
-    @Override
-    public StockMove receiveReturn(com.stockflow.inventory.api.ReceiveReturnCommand command) {
-        return operations.receiveReturn(command);
     }
 
     @Override
