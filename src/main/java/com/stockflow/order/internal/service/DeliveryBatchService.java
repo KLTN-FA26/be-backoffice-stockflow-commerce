@@ -99,6 +99,8 @@ public class DeliveryBatchService {
     private final OrderRepository orders;
     private final SalesContractRepository contracts;
     private final DeliveryBatchRecords records;
+    private final com.stockflow.order.internal.domain.ProductionOrderRepository productionOrders;
+    private final com.stockflow.order.api.ConsentMessages consentMessages;
     private final ShippingWarehouseService shippingWarehouses;
     private final FileTransfers files;
     private final StagedUploads staged;
@@ -107,7 +109,11 @@ public class DeliveryBatchService {
 
     DeliveryBatchService(OrderRepository orders, SalesContractRepository contracts, DeliveryBatchRecords records,
                          ShippingWarehouseService shippingWarehouses, FileTransfers files, StagedUploads staged,
-                         TransactionTemplate tx, Clock clock) {
+                         TransactionTemplate tx, Clock clock,
+                         com.stockflow.order.internal.domain.ProductionOrderRepository productionOrders,
+                         com.stockflow.order.api.ConsentMessages consentMessages) {
+        this.consentMessages = consentMessages;
+        this.productionOrders = productionOrders;
         this.orders = orders;
         this.contracts = contracts;
         this.records = records;
@@ -217,6 +223,30 @@ public class DeliveryBatchService {
         return Optional.empty();
     }
 
+    /**
+     * 4B-8 (15 §4.1, 17 §4.5): the batches every unit of which is in a delivered shipment, each with the moment its last
+     * shipment was delivered - what an installment after delivery tied to the batch counts from.
+     */
+    @Transactional(propagation = Propagation.SUPPORTS)
+    public Map<UUID, Instant> deliveredBatches(Order order) {
+        SalesContract contract = signedContract(order).orElse(null);
+        Map<UUID, Instant> delivered = new HashMap<>();
+        if (contract == null) {
+            return delivered;
+        }
+        Map<UUID, OrderLine> lines = linesById(order);
+        for (DeliveryBatch batch : contract.schedule()) {
+            int units = unitsOf(batch, lines);
+            if (units > 0 && shippedUnits(order, batch.id(), true) >= units) {
+                order.shipments().stream().filter(s -> batch.id().equals(s.deliveryBatchId()))
+                        .filter(s -> s.status() == OrderShipmentStatus.DELIVERED && s.outcomeAt() != null)
+                        .map(com.stockflow.order.internal.domain.OrderShipment::outcomeAt)
+                        .max(Comparator.naturalOrder()).ifPresent(at -> delivered.put(batch.id(), at));
+            }
+        }
+        return delivered;
+    }
+
     /** Whether the order works its schedule batch by batch: it has a signed contract with a delivery schedule. */
     @Transactional(propagation = Propagation.MANDATORY)
     public boolean scheduled(Order order) {
@@ -260,8 +290,12 @@ public class DeliveryBatchService {
 
     // ---- moving a window (BR-28) ----------------------------------------------------------------------------------
 
-    /** Where the browser uploads the customer's consent (an e-mail, a signed note) before the window is moved. */
-    @Transactional(readOnly = true)
+    /**
+     * Where the browser uploads the customer's consent (an e-mail, a signed note) before the window is moved. Not
+     * read-only: the order is read as the caller's data scope sees it, which locks its row ({@code findByIdInScope}),
+     * and Postgres refuses {@code SELECT ... FOR UPDATE} in a read-only transaction.
+     */
+    @Transactional
     public UploadSlot beginEvidenceUpload(CurrentUser user, UUID orderId, UUID batchId, UploadSlotRequest request) {
         Order order = orders.findByIdInScope(new OrderId(orderId))
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No order " + orderId));
@@ -312,6 +346,15 @@ public class DeliveryBatchService {
                 clock.instant()));
         log.info("Order {}: delivery batch {} moved from {}..{} to {}..{} ({})", order.orderNumber(), batch.seq(),
                 oldStart, oldEnd, change.windowStart(), change.windowEnd(), change.reason());
+        // 17 §4.5: a draft production order of the batch takes the new default needed-by date (BR-26); one already
+        // sent keeps its date - the production coordinator tells the producer.
+        for (com.stockflow.order.internal.domain.ProductionOrder draft : productionOrders.ofSalesOrder(orderId)) {
+            if (batch.id().equals(draft.deliveryBatchId()) && draft.followWindow(change.windowStart())) {
+                productionOrders.save(draft);
+                log.info("Production order {} of order {} is needed by {} now", draft.code(), order.orderNumber(),
+                        change.windowStart());
+            }
+        }
         return scheduleOf(order);
     }
 
@@ -342,6 +385,18 @@ public class DeliveryBatchService {
         if (order.shipments().stream().anyMatch(s -> batch.id().equals(s.deliveryBatchId()))) {
             throw new BusinessException(ErrorCode.DELIVERY_BATCH_WINDOW_LOCKED, ("Delivery batch %d of order %s has goods "
                     + "handed over; its window no longer moves").formatted(batch.seq(), order.orderNumber()));
+        }
+        if (change.evidenceMessageId() != null) {
+            // BR-28: the customer's consent - a message the customer sent, in their own conversation (about this order,
+            // or about none). The database checks the same (ordering.check_delivery_batch_of_order).
+            boolean theirs = consentMessages.find(change.evidenceMessageId())
+                    .filter(m -> m.fromCustomer() && order.customerId().equals(m.customerId())
+                            && (m.orderId() == null || m.orderId().equals(order.id().value())))
+                    .isPresent();
+            if (!theirs) {
+                throw new BusinessException(ErrorCode.VALIDATION_FAILED, ("The consent is a chat message the customer "
+                        + "of order %s sent in their own conversation").formatted(order.orderNumber()));
+            }
         }
         LocalDate today = BusinessCalendar.date(clock.instant());
         if (change.windowStart().isBefore(today)) {
@@ -397,11 +452,14 @@ public class DeliveryBatchService {
         return lines;
     }
 
-    /** The units a batch carries: its cartons of each line, in pieces. */
+    /**
+     * The units a batch carries: its cartons of each line, in pieces - a line without a carton count as one piece per
+     * carton, as {@code OrderService.batchUnits} and the release trigger count it.
+     */
     private static int unitsOf(DeliveryBatch batch, Map<UUID, OrderLine> lines) {
         return batch.lines().stream().mapToInt(l -> {
             OrderLine line = lines.get(l.orderLineId());
-            return line == null || line.unitsPerCarton() == null ? 0 : l.cartons() * line.unitsPerCarton();
+            return line == null ? 0 : l.cartons() * (line.unitsPerCarton() == null ? 1 : line.unitsPerCarton());
         }).sum();
     }
 

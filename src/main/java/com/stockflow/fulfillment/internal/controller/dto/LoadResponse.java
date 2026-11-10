@@ -43,7 +43,18 @@ public record LoadResponse(UUID loadId, String code, UUID warehouseId, String st
                            @JsonInclude(JsonInclude.Include.NON_NULL) UUID replacementLoadId,
                            @JsonInclude(JsonInclude.Include.NON_NULL) String replacementLoadCode,
                            String waybillNo, String carrierConnectionType,
-                           @JsonInclude(JsonInclude.Include.NON_NULL) CarrierBooking carrierBooking) {
+                           @JsonInclude(JsonInclude.Include.NON_NULL) CarrierBooking carrierBooking,
+                           @JsonInclude(JsonInclude.Include.NON_EMPTY) List<HandoverWarning> handoverWarnings) {
+
+    /**
+     * 4B-8 (kltn-docs 08 BR-11, 09 BR-18): an order on the vehicle whose goods may not leave yet, answered when loading
+     * starts - the handover refuses the vehicle until it may.
+     */
+    public record HandoverWarning(UUID orderId, String orderNumber, String reasonCode, java.math.BigDecimal amountDue,
+                                  String currency,
+                                  @JsonInclude(JsonInclude.Include.NON_NULL) Integer deliveryBatchSeq,
+                                  @JsonInclude(JsonInclude.Include.NON_NULL) java.time.LocalDate windowStart) {
+    }
 
     /**
      * The load's latest order at an API_BOOKING carrier (3-4): REQUESTED, BOOKED, FAILED, CANCELLED or CANCEL_FAILED

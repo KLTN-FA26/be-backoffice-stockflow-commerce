@@ -227,6 +227,21 @@ public final class ProductionOrder {
     }
 
     /**
+     * 4B-8 (kltn-docs 17 §4.5 "Dời cửa sổ giao", BR-26): the window of its delivery batch moved, so a draft takes the
+     * default needed-by date again - the first day of the window in force. One already submitted keeps its date: the
+     * production coordinator tells the producer if it must change.
+     *
+     * @return whether the date changed
+     */
+    public boolean followWindow(LocalDate windowStart) {
+        if (status != ProductionOrderStatus.DRAFT || windowStart == null || windowStart.equals(needByDate)) {
+            return false;
+        }
+        this.needByDate = windowStart;
+        return true;
+    }
+
+    /**
      * Every line makes no more cartons than {@code maxCartons} allows for its order line (what the batch lacks, BR-05);
      * a line it does not name may make none.
      *

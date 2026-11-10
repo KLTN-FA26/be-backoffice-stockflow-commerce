@@ -8,7 +8,8 @@
 --   1. ordering.quote.payment_term is NOT NULL without a default: it gets 'PREPAID', the neutral value
 --      ck_quote_payment_term and ck_quote_deposit accept (deposit_percent stays NULL).
 --   2. customer.credit_profile: the credit is the limit and the days to pay alone. ck_credit_profile_credit tied them
---      to allow_credit, which now stays at its default (false) - it is restated on the limit and the days only. The
+--      to allow_credit, which now stays at its default (false) - it is restated on the limit and the days only, after
+--      clearing a half-set pair the old rule allowed on a profile without credit (a limit with no days). The
 --      other term CHECKs hold on the defaults (allow_prepaid true, default_payment_term 'PREPAID', no deposit).
 --   3. customer.check_default_payment_schedule() and ordering.check_sales_contract_terms() asked for
 --      "allow_credit AND credit_limit > 0" before an installment after delivery: they ask for the limit only, as the
@@ -28,6 +29,14 @@ ALTER TABLE ordering.quote ALTER COLUMN payment_term SET DEFAULT 'PREPAID';
 
 -- 2. Credit is the limit and the days to pay ---------------------------------------------------------------------------
 ALTER TABLE customer.credit_profile DROP CONSTRAINT ck_credit_profile_credit;
+-- A profile without credit could carry a limit and no days, or days and no limit: the old CHECK tied them to allow_credit
+-- only. Neither half was credit anyone could use, and QD-1 keeps no data: both go, so the restated rule holds.
+UPDATE customer.credit_profile SET credit_limit = NULL, credit_term_days = NULL
+ WHERE (credit_limit IS NULL) <> (credit_term_days IS NULL);
+-- The update queues the deferred schedule check; it runs now, as the table is altered next (Postgres refuses an ALTER
+-- TABLE with trigger events pending), and the constraint goes back to deferred for the rest of the transaction.
+SET CONSTRAINTS customer.tg_credit_profile_payment_schedule_check IMMEDIATE;
+SET CONSTRAINTS customer.tg_credit_profile_payment_schedule_check DEFERRED;
 ALTER TABLE customer.credit_profile ADD CONSTRAINT ck_credit_profile_credit CHECK (
     (credit_limit IS NULL) = (credit_term_days IS NULL)
     AND (credit_limit IS NULL OR credit_limit >= 0)

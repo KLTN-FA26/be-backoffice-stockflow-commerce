@@ -643,6 +643,8 @@ class DispatchService implements Dispatching {
         }
         DispatchLoadJpaEntity header = locked.header();
         Instant now = clock.instant();
+        // 4B-8: the orders found unable to leave, answered with the load so the warehouse sees them now (08 BR-11).
+        List<Dispatching.HandoverWarning> warnings = List.of();
         if (load.status() != LoadStatus.LOADING && locked.plan() != null) {
             // Review of #162: an order that may not ship in parts leaves whole with the plan - refused before anything
             // is on board, so no vehicle is stuck half way (BR-14 forbids reopening once loading starts).
@@ -664,6 +666,9 @@ class DispatchService implements Dispatching {
             blocks.forEach(block -> log.warn("Load {}: order {} may not be handed over yet ({}, {} {} due)",
                     load.code(), block.orderNumber(), block.reasonCode(),
                     block.amountDue().stripTrailingZeros().toPlainString(), block.currency()));
+            warnings = blocks.stream().map(block -> new Dispatching.HandoverWarning(block.orderId(),
+                    block.orderNumber(), block.reasonCode(), block.amountDue(), block.currency(), block.batchSeq(),
+                    block.windowStart())).toList();
         }
         if (load.startLoading(actor.userId(), now)) {
             header = store.save(load, header);
@@ -674,7 +679,7 @@ class DispatchService implements Dispatching {
             log.info("Load {}: loading started (plan {} locked, BR-14)", load.code(),
                     locked.plan() == null ? null : locked.plan().plan().code());
         }
-        return detail(header, load);
+        return detail(header, load).withHandoverWarnings(warnings);
     }
 
     /** The shipments of the plan's placed parcels, with {@code also}. */

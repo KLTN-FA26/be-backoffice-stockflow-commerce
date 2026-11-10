@@ -51,5 +51,25 @@ public interface DeliveryBatchRecords {
     /** Oldest first. */
     List<WindowChange> windowChangesOf(UUID orderId);
 
+    /** A delivery window: its first and last day. */
+    record Window(LocalDate start, LocalDate end) {
+    }
+
+    /**
+     * The window of {@code batch} in force (17 BR-28): the latest move of it, or the one the contract was signed with.
+     * What every reader of a batch's dates goes by - the handover's gate, the production order's default needed-by date
+     * (BR-26), the coverage shown to Sales.
+     */
+    default Window windowInForce(UUID orderId, DeliveryBatch batch) {
+        WindowChange latest = null;
+        for (WindowChange change : windowChangesOf(orderId)) {
+            if (change.batchId().equals(batch.id())) {
+                latest = change;
+            }
+        }
+        return latest == null ? new Window(batch.windowStart(), batch.windowEnd())
+                : new Window(latest.newStart(), latest.newEnd());
+    }
+
     void recordWindowChange(UUID orderId, WindowChange change);
 }
