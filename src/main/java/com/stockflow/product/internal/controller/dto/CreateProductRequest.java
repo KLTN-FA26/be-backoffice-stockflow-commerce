@@ -1,6 +1,5 @@
 package com.stockflow.product.internal.controller.dto;
 
-import com.stockflow.product.api.ProductKind;
 import com.stockflow.product.api.TaxClass;
 import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.Valid;
@@ -56,9 +55,6 @@ public record CreateProductRequest(
 
         @NotNull(message = "taxClass is required")
         TaxClass taxClass,
-
-        @Schema(description = "STANDARD (sold as it is) or CUSTOMIZABLE (printed to a design); STANDARD when absent")
-        ProductKind kind,
 
         @Schema(description = "Variant axes; when present, every combination of their active options is created "
                 + "with the product, SKUs by the code rule, the first combination as the default variant")

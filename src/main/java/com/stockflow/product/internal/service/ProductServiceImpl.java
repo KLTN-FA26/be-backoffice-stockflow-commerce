@@ -162,7 +162,7 @@ class ProductServiceImpl implements ProductService {
         }
         Product product = Product.draft(command.code(), command.name(), command.nameEn(), command.brandId(),
                 command.categoryId(), command.shortDescription(), command.description(), command.descriptionEn(),
-                command.taxClass(), command.kind());
+                command.taxClass());
         products.save(product);
         UUID productId = product.id().value();
         history.record(productId, ProductChangeType.CREATED, null, null, ProductStatus.DRAFT.name(), null, List.of());
@@ -212,7 +212,7 @@ class ProductServiceImpl implements ProductService {
         requireReferences(command.brandId(), command.categoryId(), product.brandId(), product.categoryId());
         List<String> changed = product.updateDetails(command.name(), command.nameEn(), command.brandId(),
                 command.categoryId(), command.shortDescription(), command.description(), command.descriptionEn(),
-                command.taxClass(), command.kind());
+                command.taxClass());
         products.save(product);
         if (!changed.isEmpty()) {
             history.record(command.productId(), ProductChangeType.UPDATED, null, null, null, null, changed);
