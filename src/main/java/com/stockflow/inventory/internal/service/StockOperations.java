@@ -49,7 +49,8 @@ public interface StockOperations {
 
     /**
      * A person's request to write stock up or down. Refuses {@code COUNT_VARIANCE} ({@code VALIDATION_FAILED}): only a
-     * cycle count asks for that, through {@link #requestCountVariance}.
+     * cycle count asks for that, through {@link #requestCountVariance}. A request naming no lot is
+     * {@code STOCK_ADJUSTMENT_LOT_REQUIRED} (400, on {@code lotNumber}): every SKU is lot-tracked (team plan 5-5).
      */
     StockAdjustmentSummary requestAdjustment(RequestAdjustmentCommand command);
 

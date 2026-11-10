@@ -80,13 +80,16 @@ class OrderController {
 
     private final com.stockflow.order.internal.service.PartialShipments partialShipments;
     private final com.stockflow.order.internal.service.DuplicateOrders duplicateOrders;
+    private final com.stockflow.order.internal.service.OrderWarehouseVisibility warehouseVisibility;
 
     OrderController(OrderService orderService, CustomerService customerService, Quotes quotes,
                     CustomerOrders customerOrders,
                     com.stockflow.order.internal.service.TransferInstructions transferInstructions,
                     com.stockflow.identity.api.IdentityService identities,
                     com.stockflow.order.internal.service.PartialShipments partialShipments,
-                    com.stockflow.order.internal.service.DuplicateOrders duplicateOrders) {
+                    com.stockflow.order.internal.service.DuplicateOrders duplicateOrders,
+                    com.stockflow.order.internal.service.OrderWarehouseVisibility warehouseVisibility) {
+        this.warehouseVisibility = warehouseVisibility;
         this.duplicateOrders = duplicateOrders;
         this.partialShipments = partialShipments;
         this.identities = identities;
@@ -189,6 +192,8 @@ class OrderController {
                 .filter(order -> ownCustomerId == null || ownCustomerId.equals(order.customerId()))
                 // 17 §5.2: a DRAFT order is Sales' work, not yet the customer's to see.
                 .filter(order -> ownCustomerId == null || order.status() != OrderStatus.DRAFT)
+                // A warehouse manager reads the orders of their warehouses only (5-7 review M1); 404 like any other.
+                .filter(order -> ownCustomerId != null || warehouseVisibility.visible(orderId, user))
                 .map(order -> OrderWebMapper.toResponse(order, ownCustomerId == null))
                 .map(ApiResponse::ok)
                 .orElseThrow(() -> new BusinessException(
@@ -296,7 +301,9 @@ class OrderController {
 
     /**
      * The back-office order list (SCRUM-443, FE 440). Staff only: a customer holds
-     * {@code sales-orders:READ} too, for their own orders, and gets a 403 here rather than everyone's.
+     * {@code sales-orders:READ} too, for their own orders, and gets a 403 here rather than everyone's. A caller limited
+     * to warehouses - the warehouse manager, since team plan 5-7 - lists only the orders shipping from or released to
+     * their warehouses ({@code OrderWarehouseVisibility}), none when assigned none.
      * Parameters follow FE #12: {@code search}, {@code status} repeated, {@code sort=field,dir}.
      */
     @GetMapping
@@ -317,7 +324,8 @@ class OrderController {
         return ApiResponse.ok(orderService.list(new ListOrdersQuery(page,
                         size == null ? Pages.DEFAULT_PAGE_SIZE : size, search, OrderStatusFilter.parse(statuses),
                         customerId,
-                        placedFrom, placedTo, sort))
+                        placedFrom, placedTo, sort,
+                        com.stockflow.order.internal.service.OrderWarehouseVisibility.limitOf(user)))
                 .map(OrderWebMapper::toResponse));
     }
 
@@ -330,6 +338,7 @@ class OrderController {
         orderService.findById(orderId)
                 .filter(order -> ownCustomerId == null || ownCustomerId.equals(order.customerId()))
                 .filter(order -> ownCustomerId == null || order.status() != OrderStatus.DRAFT)
+                .filter(order -> ownCustomerId != null || warehouseVisibility.visible(orderId, user))
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No order with id " + orderId));
         List<com.stockflow.order.api.OrderStatusChange> changes = orderService.history(orderId);
         if (ownCustomerId != null) {

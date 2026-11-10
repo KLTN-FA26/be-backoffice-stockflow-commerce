@@ -678,7 +678,8 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
         }
         var criteria = new OrderSearchRepository.Criteria(query.search(), query.statuses(), query.customerId(),
                 query.placedFrom() == null ? null : query.placedFrom().atStartOfDay(BUSINESS_ZONE).toInstant(),
-                query.placedTo() == null ? null : query.placedTo().plusDays(1).atStartOfDay(BUSINESS_ZONE).toInstant());
+                query.placedTo() == null ? null : query.placedTo().plusDays(1).atStartOfDay(BUSINESS_ZONE).toInstant(),
+                query.warehouseIds());
         return Pages.toResponse(search.search(criteria, Pages.of(query.page(), query.size(), LIST_SORT.parse(query.sort()))));
     }
 

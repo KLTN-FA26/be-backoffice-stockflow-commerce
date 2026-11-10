@@ -775,6 +775,14 @@ class StockOperationsServiceImpl implements StockOperations {
                     "Stock does not expire; write it off as DAMAGED, LOST or OTHER");
         }
         WarehouseScope.requireLocation(command.locationCode());
+        // Every SKU is lot-tracked (01 BR-17, team plan 5-5): a layer is named by its lot. Without one the lookup
+        // below would answer STOCK_ITEM_NOT_FOUND, as if the stock did not exist, when the request is what is short.
+        if (blankToNull(command.lotNumber()) == null) {
+            throw new BusinessException(ErrorCode.STOCK_ADJUSTMENT_LOT_REQUIRED,
+                    "%s at %s: name the lot to adjust".formatted(command.sku(), command.locationCode()),
+                    List.of(new com.stockflow.common.api.FieldError("lotNumber",
+                            "required: every SKU is lot-tracked", "NotBlank")));
+        }
         LocationId location = new LocationId(command.locationCode());
         // The stock item must exist now; FOUND stock adds to a lot already recorded at the location.
         findLayer(command.sku(), location, command.lotNumber(), command.receivedAt())
