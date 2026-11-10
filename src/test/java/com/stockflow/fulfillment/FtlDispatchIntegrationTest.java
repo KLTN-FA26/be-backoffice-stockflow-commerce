@@ -109,8 +109,8 @@ class FtlDispatchIntegrationTest {
 
     @BeforeEach
     void setUp() {
-        CartonStationSupport.giveCartonsASize(jdbc);
-        parts = new CartonStationSupport.Parts(this::packer, jdbc, json);
+        CartonStationSupport.giveCartonsASize(tx, jdbc);
+        parts = new CartonStationSupport.Parts(this::packer, tx, jdbc, json);
         coordinator = staff("ORDER_COORDINATOR");
         picker = staff("WAREHOUSE_STAFF", HCM);
         dispatcher = staff("WAREHOUSE_STAFF", HCM);
