@@ -437,11 +437,14 @@ public class DeliveryBatchService {
         return lines;
     }
 
-    /** The units a batch carries: its cartons of each line, in pieces. */
+    /**
+     * The units a batch carries: its cartons of each line, in pieces - a line without a carton count as one piece per
+     * carton, as {@code OrderService.batchUnits} and the release trigger count it.
+     */
     private static int unitsOf(DeliveryBatch batch, Map<UUID, OrderLine> lines) {
         return batch.lines().stream().mapToInt(l -> {
             OrderLine line = lines.get(l.orderLineId());
-            return line == null || line.unitsPerCarton() == null ? 0 : l.cartons() * line.unitsPerCarton();
+            return line == null ? 0 : l.cartons() * (line.unitsPerCarton() == null ? 1 : line.unitsPerCarton());
         }).sum();
     }
 

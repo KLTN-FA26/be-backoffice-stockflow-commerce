@@ -176,8 +176,10 @@ AS $function$
 DECLARE
     the_batch   RECORD;
     the_order   RECORD;
-    previous     UUID;
-    bad_seq      INTEGER;
+    previous      UUID;
+    bad_seq       INTEGER;
+    wanted_units  BIGINT;
+    shipped_units BIGINT;
     starts_on    DATE;
 BEGIN
     IF NEW.delivery_batch_id IS NULL THEN
@@ -206,10 +208,19 @@ BEGIN
             SELECT b.id INTO previous FROM ordering.delivery_batch b
               JOIN ordering.sales_contract c ON c.id = b.contract_id
              WHERE c.order_id = NEW.order_id AND c.status IN ('SIGNED', 'COMPLETED') AND b.seq = the_batch.seq - 1;
+            -- Handed over in full: the units of its shipments not returned reach the units it carries (its cartons in
+            -- pieces, a line without a carton count as one piece per carton) - as DeliveryBatchService.nextToRelease.
+            SELECT coalesce(sum(l.cartons * coalesce(ol.units_per_carton, 1)), 0) INTO wanted_units
+              FROM ordering.delivery_batch_line l JOIN ordering.order_line ol ON ol.id = l.order_line_id
+             WHERE l.delivery_batch_id = previous;
+            SELECT coalesce(sum(sl.quantity), 0) INTO shipped_units
+              FROM ordering.order_shipment s JOIN ordering.order_shipment_line sl ON sl.shipment_id = s.id
+             WHERE s.delivery_batch_id = previous AND s.status <> 'RETURNED';
             IF NOT EXISTS (SELECT 1 FROM ordering.delivery_batch_release r WHERE r.delivery_batch_id = previous)
-                OR NOT EXISTS (SELECT 1 FROM ordering.order_shipment s WHERE s.delivery_batch_id = previous) THEN
-                RAISE EXCEPTION 'batch % of order % is released after batch % is handed over (17 BR-29)',
-                    the_batch.seq, NEW.order_id, the_batch.seq - 1 USING ERRCODE = 'check_violation';
+                OR shipped_units < wanted_units OR wanted_units = 0 THEN
+                RAISE EXCEPTION 'batch % of order % is released once batch % is handed over in full (% of % units, 17 BR-29)',
+                    the_batch.seq, NEW.order_id, the_batch.seq - 1, shipped_units, wanted_units
+                    USING ERRCODE = 'check_violation';
             END IF;
         END IF;
     ELSIF TG_TABLE_NAME = 'order_shipment' THEN
