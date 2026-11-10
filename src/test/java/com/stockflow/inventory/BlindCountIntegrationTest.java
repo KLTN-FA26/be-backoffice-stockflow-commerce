@@ -121,10 +121,10 @@ class BlindCountIntegrationTest {
      */
     private void movement(String from, String to, int quantity, UUID carton) {
         jdbc.update("""
-                insert into inventory.stock_movement (id, movement_type, sku, from_location_code, to_location_code,
-                    quantity, from_status, to_status, reference_type, reference_id, occurred_at, lot_id,
-                    from_stock_package_id, to_stock_package_id)
-                values (?, 'MOVE', ?, ?, ?, ?, 'AVAILABLE', 'AVAILABLE', 'ORDER', ?, now(), ?, ?, ?)""",
+                insert into inventory.stock_movement (id, movement_type, sku, lot_number, from_location_code,
+                    to_location_code, quantity, from_status, to_status, reference_type, reference_id, occurred_at,
+                    lot_id, from_stock_package_id, to_stock_package_id)
+                values (?, 'MOVE', ?, 'L1', ?, ?, ?, 'AVAILABLE', 'AVAILABLE', 'ORDER', ?, now(), ?, ?, ?)""",
                 Identifiers.newId(), sku, from, to, quantity, Identifiers.newId(), lot, carton, carton);
     }
 

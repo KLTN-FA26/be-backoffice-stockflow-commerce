@@ -137,9 +137,11 @@ class CartonAdjustmentIntegrationTest {
             UUID id = inventory.reserve(new ReserveStockCommand(UUID.randomUUID(), new Sku(sku), CARTON, order))
                     .reservationIds().getFirst();
             inventory.pinReservations(order);
-            inventory.allocate(new AllocateStockCommand(order, "HCM"));
-            return jdbc.queryForList("select stock_item_id from inventory.stock_reservation where order_id = ?"
-                    + " and allocated_from_id = ? and stock_item_id is not null", UUID.class, order, id);
+            UUID hold = inventory.allocate(new AllocateStockCommand(order, "HCM")).allocations().stream()
+                    .filter(allocation -> allocation.reservationId().equals(id)).findFirst().orElseThrow()
+                    .holdIds().getFirst();
+            return List.of(jdbc.queryForObject("select stock_item_id from inventory.stock_reservation where id = ?",
+                    UUID.class, hold));
         });
     }
 
