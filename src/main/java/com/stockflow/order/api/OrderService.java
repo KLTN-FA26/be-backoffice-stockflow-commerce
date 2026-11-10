@@ -85,8 +85,8 @@ public interface OrderService {
     /**
      * Goods of the order leave on a load plan's vehicle (SCRUM-392 LP-3: part of a shipment that is handed over only
      * with its last vehicle). The gate of {@link #recordHandover} runs - cancelled, on hold, not picking, money due
-     * before the goods leave - and an order that does not allow partial shipments must have every unit it still wants
-     * in the plan ({@code inPlan}). The first time, the order records it ({@code goodsLeftAt}): from then it is no
+     * before the goods leave - and an order that does not allow partial shipments must have in the plan
+     * ({@code inPlan}) every unit it must ship together ({@link #unitsDueTogether}). The first time, the order records it ({@code goodsLeftAt}): from then it is no
      * longer cancelled, only its remainder closed or returned. Takes the order's row lock.
      *
      * @param inPlan the units of the order's parcels in the plan not handed over yet; empty when they record no contents
@@ -286,4 +286,14 @@ public interface OrderService {
      * the order's contract.
      */
     java.util.Map<UUID, Integer> batchUnits(UUID orderId, UUID deliveryBatchId);
+
+    /**
+     * PACK-PARTIAL with 4B-8 (kltn-docs 17 BR-15): per order, the units that must leave together for its next shipment
+     * not to be a partial shipment - every unit it still wants, less the units of its delivery batches not released
+     * yet. A delivery schedule is a plan of whole shipments: shipping exactly the batch released ships nothing "in
+     * parts", so it needs no partial-shipment decision from Sales. For an order without a schedule it is everything
+     * it still wants. The rule fulfillment applies when it confirms a load plan, as the order applies it at loading
+     * start and at handover. Orders not found are left out.
+     */
+    java.util.Map<UUID, Integer> unitsDueTogether(java.util.Collection<UUID> orderIds);
 }

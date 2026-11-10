@@ -699,6 +699,23 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
         return units;
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Read without locks: the load plan's confirmation decides on it, and each order is checked again under its own
+     * lock when its goods leave.</p>
+     */
+    @Override
+    @Transactional(readOnly = true)
+    public java.util.Map<UUID, Integer> unitsDueTogether(java.util.Collection<UUID> orderIds) {
+        java.util.Map<UUID, Integer> units = new java.util.LinkedHashMap<>();
+        for (UUID orderId : new java.util.TreeSet<>(orderIds == null ? java.util.List.of() : orderIds)) {
+            repository.findById(new OrderId(orderId))
+                    .ifPresent(order -> units.put(orderId, order.unitsDueTogether(inFlight(order).orElse(null))));
+        }
+        return units;
+    }
+
     /** 4B-8: the delivery batch on its way out, if the order releases by batch. */
     private java.util.Optional<com.stockflow.order.internal.domain.BatchInFlight> inFlight(Order order) {
         return order.paidByContract() ? batches.inFlight(order) : java.util.Optional.empty();

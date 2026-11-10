@@ -995,8 +995,11 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
 
     /**
      * LP-4 / PACK-PARTIAL: an order that does not allow partial shipments leaves whole with this plan - nothing of it
-     * left behind on the tray, and every unit it still wants placed in this plan: not packed yet, or packed in a
-     * shipment in no plan or in another plan, is a partial shipment too ({@link PartialShipments}). Orders whose
+     * left behind on the tray, and every unit it must ship together placed in this plan: one not packed yet, or packed
+     * in a shipment in no plan or in another plan, makes it a partial shipment. "Together" is the order's count
+     * ({@code OrderService.unitsDueTogether}): for an order with a delivery schedule, the batch released, not the whole
+     * order - its later batches are planned shipments of their own, not goods left behind (4B-8, 17 BR-15). An order
+     * the order module no longer answers for is held to its whole remainder ({@link PartialShipments}). Orders whose
      * parcels carry no contents (packed before contents were recorded) are not counted.
      */
     private void requirePartialAllowed(LoadPlan plan, Map<UUID, LoadPlanParcels.Parcel> held) {
@@ -1027,17 +1030,26 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
                 }
             }
         }
+        Set<UUID> whole = new HashSet<>();
         ordersInPlan.forEach((orderId, order) -> {
-            if (!allowsPartial(order) && recorded.contains(orderId)
-                    && leaving.getOrDefault(orderId, 0) < PartialShipments.outstandingUnits(order)) {
-                refused.put(orderId, order);
+            if (!allowsPartial(order) && recorded.contains(orderId)) {
+                whole.add(orderId);
             }
         });
+        Map<UUID, Integer> together = parcels.unitsDueTogether(whole);
+        for (UUID orderId : whole) {
+            OrderSummary order = ordersInPlan.get(orderId);
+            int due = together.getOrDefault(orderId, PartialShipments.outstandingUnits(order));
+            if (leaving.getOrDefault(orderId, 0) < due) {
+                refused.put(orderId, order);
+            }
+        }
         if (!refused.isEmpty()) {
             List<String> numbers = refused.values().stream().map(OrderSummary::orderNumber).sorted().toList();
             throw new BusinessException(ErrorCode.ORDER_PARTIAL_SHIPMENT_NOT_ALLOWED, ("Order(s) %s do not allow "
-                    + "partial shipments, and this plan does not take all of them: place every package of the order in "
-                    + "this plan, or ask Sales to allow partial shipment (LP-4)").formatted(String.join(", ", numbers)),
+                    + "partial shipments, and this plan does not take all they must ship together: place every package "
+                    + "of the order (of its delivery batch released) in this plan, or ask Sales to allow partial shipment "
+                    + "(LP-4)").formatted(String.join(", ", numbers)),
                     numbers.stream().map(n -> FieldError.of("orderNumber", n)).toList());
         }
     }
