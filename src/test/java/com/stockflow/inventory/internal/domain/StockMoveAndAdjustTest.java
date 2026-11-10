@@ -8,7 +8,6 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
-import java.time.LocalDate;
 import java.util.List;
 import java.util.UUID;
 
@@ -26,8 +25,7 @@ class StockMoveAndAdjustTest {
     private static final UUID MANAGER = UUID.randomUUID();
 
     private static StockItem available(int onHand) {
-        StockItem item = new StockItem(StockItemId.newId(), SKU, BIN, "LOT-1", LocalDate.of(2027, 1, 1),
-                Quantity.of(onHand), StockStatus.AVAILABLE, List.of(), 0L);
+        StockItem item = new StockItem(StockItemId.newId(), SKU, BIN, "LOT-1", Quantity.of(onHand), StockStatus.AVAILABLE, List.of(), 0L);
         item.pullDomainEvents();
         return item;
     }
@@ -52,14 +50,13 @@ class StockMoveAndAdjustTest {
         }
 
         @Test
-        @DisplayName("the arriving stock keeps SKU, lot, expiry and status")
+        @DisplayName("the arriving stock keeps SKU, lot and status")
         void arrivalCopiesIdentity() {
-            StockItem source = StockItem.receive(SKU, BIN, "LOT-9", LocalDate.of(2027, 3, 1), Quantity.of(5));
+            StockItem source = StockItem.receive(SKU, BIN, "LOT-9", Quantity.of(5));
             StockItem arrived = StockItem.arrivedFrom(source, PRODUCTION, Quantity.of(2));
 
             assertThat(arrived.location()).isEqualTo(PRODUCTION);
             assertThat(arrived.lotNumber()).isEqualTo("LOT-9");
-            assertThat(arrived.expiryDate()).isEqualTo(LocalDate.of(2027, 3, 1));
             // Quarantined goods stay quarantined wherever they go: only QC makes stock sellable.
             assertThat(arrived.status()).isEqualTo(StockStatus.QUARANTINE);
             assertThat(arrived.onHand()).isEqualTo(Quantity.of(2));
@@ -72,13 +69,13 @@ class StockMoveAndAdjustTest {
         void sameLotNumberOtherExpiryOrLotIsOtherGoods() {
             Instant received = Instant.parse("2026-10-01T02:00:00Z");
             UUID lotA = UUID.randomUUID();
-            StockItem early = StockItem.receiveInbound(SKU, BIN, "L01", LocalDate.of(2027, 1, 31), Quantity.of(4),
+            StockItem early = StockItem.receiveInbound(SKU, BIN, "L01", Quantity.of(4),
                     received, lotA);
-            StockItem late = StockItem.receiveInbound(SKU, BIN, "L01", LocalDate.of(2027, 6, 30), Quantity.of(4),
+            StockItem late = StockItem.receiveInbound(SKU, BIN, "L01", Quantity.of(4),
                     received, UUID.randomUUID());
-            StockItem otherLot = StockItem.receiveInbound(SKU, BIN, "L01", LocalDate.of(2027, 1, 31), Quantity.of(4),
+            StockItem otherLot = StockItem.receiveInbound(SKU, BIN, "L01", Quantity.of(4),
                     received, UUID.randomUUID());
-            StockItem untagged = StockItem.receiveInbound(SKU, BIN, "L01", LocalDate.of(2027, 1, 31), Quantity.of(4),
+            StockItem untagged = StockItem.receiveInbound(SKU, BIN, "L01", Quantity.of(4),
                     received, null);
 
             assertThat(late.isSameGoodsAs(early)).as("another expiry").isFalse();

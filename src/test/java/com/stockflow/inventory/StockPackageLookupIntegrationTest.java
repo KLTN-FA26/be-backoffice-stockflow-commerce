@@ -18,16 +18,15 @@ import com.stockflow.inventory.internal.domain.StockPackageStatus;
 import com.stockflow.inventory.internal.domain.StockStatus;
 import com.stockflow.inventory.internal.service.StockPackageLookup;
 import com.stockflow.inventory.internal.service.StockPackageLookup.CartonQuery;
-import com.stockflow.procurement.internal.service.GoodsReceipts;
-import com.stockflow.support.IntegrationTest;
-import com.stockflow.support.PostgresContainer;
+import com.stockflow.support.DemoData;
+import com.stockflow.support.ProductionReceiptTest;
+import com.stockflow.support.ProductionReceivables;
 import com.stockflow.support.ReferenceRows;
 import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.support.TransactionTemplate;
 
@@ -47,17 +46,17 @@ import static org.assertj.core.api.Assertions.tuple;
  * standard 1000 at the receiving area; most then receive it, every unit into the cartons (team plan 4C-2). (An opened
  * carton is no longer possible: nothing takes part of a carton, V20261111000200.)
  */
-@IntegrationTest
-@Import(PostgresContainer.class)
+@ProductionReceiptTest
 class StockPackageLookupIntegrationTest {
 
     private static final String RECEIVING = "HCM-RCV01";
+    private static final String LOT = "LOT-FX";
     private static final String BIN = "HCM-A01-1-A";
     private static final Instant RECEIVED = Instant.parse("2026-01-02T00:00:00Z");
 
     @Autowired StockPackageLookup lookup;
     @Autowired InventoryService inventory;
-    @Autowired GoodsReceipts receipts;
+    @Autowired ProductionReceivables receivables;
     @Autowired JdbcTemplate jdbc;
     @Autowired TransactionTemplate tx;
     @Autowired EntityManager entityManager;
@@ -70,46 +69,12 @@ class StockPackageLookupIntegrationTest {
 
     @BeforeEach
     void setUp() {
-        sku = "SPL-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(Locale.ROOT);
         clerk = tx.execute(s -> ReferenceRows.user(entityManager));
-        UUID po = Identifiers.newId();
-        UUID revision = Identifiers.newId();
-        UUID poLine = Identifiers.newId();
-        tx.executeWithoutResult(s -> {
-            UUID product = Identifiers.newId();
-            jdbc.update("insert into product.products(id,code,name,slug) values (?,?,?,?)", product, sku,
-                    "Carton lookup fixture", sku.toLowerCase(Locale.ROOT));
-            jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature) values (?,?,?,?,'')",
-                    Identifiers.newId(), product, sku, "Carton lookup fixture");
-            UUID item = jdbc.queryForObject("select id from inventory.inventory_items where sku = ?", UUID.class, sku);
-            // BR-03: tg_goods_receipt_lines_item refuses a receipt line for an item with no weight or dimensions.
-            jdbc.update("update inventory.inventory_items set weight_kg = 0.5, length_cm = 10, width_cm = 8, height_cm = 6"
-                    + " where id = ?", item);
-            carton = Identifiers.newId();
-            jdbc.update("insert into inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)"
-                    + " values (?, ?, 'CARTON', 1000)", carton, item);
-
-            UUID submitter = ReferenceRows.user(entityManager);
-            UUID approver = ReferenceRows.user(entityManager);   // four eyes (ck_purchase_orders_four_eyes)
-            jdbc.update("""
-                    INSERT INTO procurement.purchase_orders (id, po_number, status, supplier_id, warehouse_id, currency,
-                        order_date, submitted_at, submitted_by, approved_at, approved_by, confirmed_at, confirmed_by,
-                        active_revision_id, version, created_at)
-                    SELECT ?, ?, 'CONFIRMED', s.id, w.id, 'VND', CURRENT_DATE, NOW(), ?, NOW(), ?, NOW(), ?, ?, 0, NOW()
-                      FROM procurement.suppliers s, warehouse.warehouse w WHERE s.code = 'GOVIET' AND w.prefix = 'HCM'""",
-                    po, "PO-SPL-" + po.toString().substring(24), submitter, approver, approver, revision);
-            jdbc.update("""
-                    INSERT INTO procurement.purchase_order_revisions (id, po_id, revision_no, kind, snapshot_header,
-                        changed_by, version, created_at) VALUES (?, ?, 0, 'INITIAL', '{}'::jsonb, ?, 0, NOW())""",
-                    revision, po, submitter);
-            jdbc.update("""
-                    INSERT INTO procurement.purchase_order_lines (id, po_id, po_revision_id, line_no, inventory_item_id,
-                        ordered_qty, unit_price, version, created_at) VALUES (?, ?, ?, 1, ?, 2000, 1000, 0, NOW())""",
-                    poLine, po, revision, item);
-        });
-        GoodsReceipts.ReceiptView draft = receipts.create(new GoodsReceipts.Create(po, "DN-SPL", null), clerk);
-        line = receipts.replaceLines(draft.id(), List.of(new GoodsReceipts.NewLine(poLine, 2000, null, null,
-                RECEIVING, null))).lines().getFirst().id();
+        // Two cartons of 1000 ordered; the clerk counts them below, so the line starts with none labelled.
+        ProductionReceivables.Receivable goods = receivables.sent(DemoData.WAREHOUSE_HCM, 2, 1000);
+        sku = goods.sku();
+        carton = goods.cartonUnitId();
+        line = receivables.uncountedLine(goods, receivables.draftReceipt(goods, clerk), RECEIVING, 2);
         lpns = count(PackageCount.fresh(), PackageCount.fresh()).stream()
                 .map(StockPackageView::lpn).toList();
     }
@@ -121,7 +86,7 @@ class StockPackageLookupIntegrationTest {
 
     /** Both cartons IN_STOCK, unopened, at the receiving area; nothing loose. */
     private void receive() {
-        inventory.receive(new ReceiveStockCommand(line, new Sku(sku), null, null, RECEIVING, 2000, clerk, RECEIVED));
+        inventory.receive(new ReceiveStockCommand(line, new Sku(sku), LOT, RECEIVING, 2000, clerk, RECEIVED));
     }
 
     private PageResponse<StockPackageBalance> list(String location, String sku, List<StockPackageStatus> statuses) {
@@ -186,7 +151,7 @@ class StockPackageLookupIntegrationTest {
         receive();
 
         assertThat(lookup.atLocation(RECEIVING.toLowerCase(Locale.ROOT))).filteredOn(l -> l.sku().equals(sku))
-                .containsExactly(new LocationLine(sku, null, null, StockStatus.INBOUND, 2, 2000, 0, 0, 0, 2000));
+                .containsExactly(new LocationLine(sku, LOT, StockStatus.INBOUND, 2, 2000, 0, 0, 0, 2000));
     }
 
     @Test

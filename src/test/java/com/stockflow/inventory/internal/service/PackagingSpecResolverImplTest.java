@@ -7,9 +7,6 @@ import com.stockflow.inventory.api.PackagingSpec;
 import com.stockflow.inventory.api.PackagingRequest;
 import com.stockflow.inventory.api.StorageClass;
 import com.stockflow.inventory.api.UomConversion;
-import com.stockflow.inventory.api.InventoryPolicy;
-import com.stockflow.inventory.api.RemovalStrategy;
-import com.stockflow.inventory.api.TrackingMode;
 import com.stockflow.inventory.internal.repository.InventoryPolicyRepository;
 import com.stockflow.inventory.internal.repository.InventoryPolicyRepository.ItemRow;
 import com.stockflow.inventory.internal.repository.UomConversionRepository;
@@ -48,8 +45,7 @@ class PackagingSpecResolverImplTest {
     }
 
     private static ItemRow row(boolean rotatable) {
-        return new ItemRow(ITEM, SKU.code(), 1, logistics(rotatable), new InventoryPolicy(null, null, null,
-                RemovalStrategy.FEFO, TrackingMode.NONE, false, null));
+        return new ItemRow(ITEM, SKU.code(), 1, logistics(rotatable));
     }
 
     private static UomConversion base() {

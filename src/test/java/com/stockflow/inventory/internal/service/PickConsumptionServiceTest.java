@@ -36,7 +36,6 @@ import org.springframework.context.ApplicationEventPublisher;
 
 import java.time.Clock;
 import java.time.Instant;
-import java.time.LocalDate;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
@@ -157,8 +156,7 @@ class PickConsumptionServiceTest {
                 UUID.randomUUID(), Quantity.of(held), NOW.minusSeconds(3600), null, status,
                 status == ReservationStatus.RELEASED ? ReleaseReason.ORDER_CANCELLED : null,
                 status == ReservationStatus.HELD ? null : NOW.minusSeconds(60));
-        StockItem item = new StockItem(StockItemId.newId(), SOFA, location, "LOT-1", LocalDate.of(2030, 1, 1),
-                Quantity.of(onHand), StockStatus.AVAILABLE, List.of(hold), 0L, NOW.minusSeconds(86_400), null);
+        StockItem item = new StockItem(StockItemId.newId(), SOFA, location, "LOT-1", Quantity.of(onHand), StockStatus.AVAILABLE, List.of(hold), 0L, NOW.minusSeconds(86_400));
         when(stockItems.findByReservationIdForUpdate(ReservationId.of(reservationId))).thenReturn(Optional.of(item));
         when(stockItems.findByIdForUpdate(item.id())).thenReturn(Optional.of(item));
         return item;
@@ -289,8 +287,8 @@ class PickConsumptionServiceTest {
             Reservation hold = new Reservation(ReservationId.of(holdId), UUID.randomUUID(), UUID.randomUUID(),
                     UUID.randomUUID(), Quantity.of(2), NOW.minusSeconds(3600), null, ReservationStatus.HELD, null, null);
             StockItem item = new StockItem(StockItemId.newId(), SOFA, new LocationId("HCM-PRD01"), "LOT-1",
-                    LocalDate.of(2030, 1, 1), Quantity.of(2), StockStatus.IN_PRODUCTION, List.of(hold), 0L,
-                    NOW.minusSeconds(86_400), null);
+                    Quantity.of(2), StockStatus.IN_PRODUCTION, List.of(hold), 0L,
+                    NOW.minusSeconds(86_400));
             when(stockItems.findByReservationIdForUpdate(ReservationId.of(holdId))).thenReturn(Optional.of(item));
 
             assertThat(refusal(() -> service.consumeForPick(holdId, UUID.randomUUID(), PICKER)))
@@ -310,8 +308,7 @@ class PickConsumptionServiceTest {
             Reservation hold = new Reservation(ReservationId.of(holdId), UUID.randomUUID(), UUID.randomUUID(),
                     UUID.randomUUID(), Quantity.of(2), NOW.minusSeconds(3600), null, ReservationStatus.HELD, null, null);
             var carton = new com.stockflow.inventory.internal.domain.StockPackageId(UUID.randomUUID());
-            StockItem item = new StockItem(StockItemId.newId(), SOFA, BIN, "LOT-1", LocalDate.of(2030, 1, 1),
-                    Quantity.of(4), StockStatus.AVAILABLE, List.of(hold), 0L, NOW.minusSeconds(86_400), null, carton);
+            StockItem item = new StockItem(StockItemId.newId(), SOFA, BIN, "LOT-1", Quantity.of(4), StockStatus.AVAILABLE, List.of(hold), 0L, NOW.minusSeconds(86_400), carton);
             when(stockItems.findIdByReservationId(ReservationId.of(holdId))).thenReturn(Optional.of(item.id()));
             when(stockItems.findById(item.id())).thenReturn(Optional.of(item));
             when(cycleCounts.findHolding(any())).thenReturn(Optional.empty());
@@ -364,9 +361,9 @@ class PickConsumptionServiceTest {
             StockPackage carton = new StockPackage(id, LPN, UUID.randomUUID(), UUID.randomUUID(), received, received,
                     bin, consumed ? StockPackageStatus.CONSUMED : StockPackageStatus.IN_STOCK, !consumed, null,
                     consumed ? NOW.minusSeconds(60) : null, 0L);
-            StockItem row = new StockItem(StockItemId.newId(), SOFA, bin, "LOT-1", LocalDate.of(2030, 1, 1),
+            StockItem row = new StockItem(StockItemId.newId(), SOFA, bin, "LOT-1",
                     consumed ? Quantity.ZERO : Quantity.of(received), rowStatus, List.of(reservation), 0L,
-                    NOW.minusSeconds(86_400), null, null, id);
+                    NOW.minusSeconds(86_400), null, id);
             when(stockItems.findIdByReservationId(ReservationId.of(hold))).thenReturn(Optional.of(row.id()));
             when(stockItems.findById(row.id())).thenReturn(Optional.of(row));
             when(stockItems.findByIdForUpdate(row.id())).thenReturn(Optional.of(row));
@@ -732,8 +729,8 @@ class PickConsumptionServiceTest {
             StockPackageId id = new StockPackageId(UUID.randomUUID());
             StockPackage carton = new StockPackage(id, LPN, UUID.randomUUID(), UUID.randomUUID(), count, count, bin,
                     StockPackageStatus.IN_STOCK, true, null, null, 0L);
-            StockItem row = new StockItem(StockItemId.newId(), SOFA, bin, "LOT-1", LocalDate.of(2030, 1, 1),
-                    Quantity.of(count), rowStatus, List.of(reservation), 0L, NOW.minusSeconds(86_400), null, null, id);
+            StockItem row = new StockItem(StockItemId.newId(), SOFA, bin, "LOT-1",
+                    Quantity.of(count), rowStatus, List.of(reservation), 0L, NOW.minusSeconds(86_400), null, id);
             when(stockItems.findIdByReservationId(ReservationId.of(hold))).thenReturn(Optional.of(row.id()));
             when(stockItems.findById(row.id())).thenReturn(Optional.of(row));
             when(stockItems.findByIdForUpdate(row.id())).thenReturn(Optional.of(row));
@@ -1058,9 +1055,8 @@ class PickConsumptionServiceTest {
             StockPackage carton = new StockPackage(id, lpn, UUID.randomUUID(), UUID.randomUUID(), 2, 2, bin,
                     StockPackageStatus.IN_STOCK, true, null, null, 0L);
             cartonsById.put(id, carton);
-            StockItem row = new StockItem(StockItemId.newId(), new Sku(sku), bin, "LOT-1", LocalDate.of(2030, 1, 1),
-                    Quantity.of(2), StockStatus.AVAILABLE, List.of(reservation), 0L, NOW.minusSeconds(86_400), null,
-                    null, id);
+            StockItem row = new StockItem(StockItemId.newId(), new Sku(sku), bin, "LOT-1",
+                    Quantity.of(2), StockStatus.AVAILABLE, List.of(reservation), 0L, NOW.minusSeconds(86_400), null, id);
             when(stockItems.findIdByReservationId(ReservationId.of(hold))).thenReturn(Optional.of(row.id()));
             when(stockItems.findById(row.id())).thenReturn(Optional.of(row));
             when(stockItems.findByIdForUpdate(row.id())).thenReturn(Optional.of(row));

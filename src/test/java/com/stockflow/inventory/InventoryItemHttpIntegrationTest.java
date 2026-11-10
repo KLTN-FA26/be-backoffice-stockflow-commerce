@@ -71,21 +71,16 @@ class InventoryItemHttpIntegrationTest {
                 + "\"weightKg\":0.120,\"requiresAdultSignature\":false}";
     }
 
-    private static String policyBody(long version, int reorderPoint) {
-        return "{\"version\":" + version + ",\"reorderPoint\":" + reorderPoint
-                + ",\"removalStrategy\":\"FEFO\",\"trackingMode\":\"NONE\",\"expiryTracked\":false}";
-    }
-
     @Test
-    void detailHasLogisticsPolicyAndEvaluation() throws Exception {
+    void detailHasLogisticsAndNoPolicy() throws Exception {
         UUID id = item("HTTP-D-" + suffix, null, "NORMAL");
         mvc.perform(get(BASE + "/" + id))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.id").value(id.toString()))
                 .andExpect(jsonPath("$.data.sku").value("HTTP-D-" + suffix))
                 .andExpect(jsonPath("$.data.logistics.unitOfMeasure").value("EACH"))
-                .andExpect(jsonPath("$.data.policy.removalStrategy").value("FEFO"))
-                .andExpect(jsonPath("$.data.evaluation.usableOnHand").value(0));
+                .andExpect(jsonPath("$.data.policy").doesNotExist())
+                .andExpect(jsonPath("$.data.evaluation").doesNotExist());
     }
 
     @Test
@@ -97,25 +92,16 @@ class InventoryItemHttpIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.version").value(v + 1))
                 .andExpect(jsonPath("$.data.logistics.weightKg").value(0.120))
-                .andExpect(jsonPath("$.data.policy").exists());
+                .andExpect(jsonPath("$.data.policy").doesNotExist());
     }
 
+    /** The stock policy is the same for every SKU (kltn-docs 01 BR-17, team plan 5-5): there is nothing to configure. */
     @Test
-    void putPolicyReturnsTheWholeItem() throws Exception {
+    void thereIsNoPolicyToConfigure() throws Exception {
         UUID id = item("HTTP-P-" + suffix, null, "NORMAL");
         mvc.perform(put(BASE + "/" + id + "/policy").contentType(MediaType.APPLICATION_JSON)
-                        .content(policyBody(versionOf(id), 500)))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.policy.reorderPoint").value(500))
-                .andExpect(jsonPath("$.data.logistics.unitOfMeasure").value("EACH"));
-    }
-
-    @Test
-    void negativeReorderPointIs400() throws Exception {
-        UUID id = item("HTTP-N-" + suffix, null, "NORMAL");
-        mvc.perform(put(BASE + "/" + id + "/policy").contentType(MediaType.APPLICATION_JSON)
-                        .content(policyBody(versionOf(id), -1)))
-                .andExpect(status().isBadRequest());
+                        .content("{\"version\":" + versionOf(id) + ",\"removalStrategy\":\"FIFO\",\"trackingMode\":\"LOT\"}"))
+                .andExpect(status().isNotFound());
     }
 
     @Test
@@ -232,21 +218,15 @@ class InventoryItemHttpIntegrationTest {
     }
 
     @Test
-    void listFiltersByStorageClassAndPolicyConfigured() throws Exception {
+    void listFiltersByStorageClassAndRowsCarryNoPolicy() throws Exception {
         String sku = "HTTP-C-" + suffix;
-        UUID id = item(sku, null, "COLD");
+        item(sku, null, "COLD");
         mvc.perform(get(BASE).param("sku", sku).param("storageClass", "COLD"))
-                .andExpect(jsonPath("$.data.totalElements").value(1));
+                .andExpect(jsonPath("$.data.totalElements").value(1))
+                .andExpect(jsonPath("$.data.items[0].trackingMode").doesNotExist())
+                .andExpect(jsonPath("$.data.items[0].policyConfigured").doesNotExist());
         mvc.perform(get(BASE).param("sku", sku).param("storageClass", "NORMAL"))
                 .andExpect(jsonPath("$.data.totalElements").value(0));
-        mvc.perform(get(BASE).param("sku", sku).param("policyConfigured", "true"))
-                .andExpect(jsonPath("$.data.totalElements").value(0));
-        mvc.perform(put(BASE + "/" + id + "/policy").contentType(MediaType.APPLICATION_JSON)
-                        .content(policyBody(versionOf(id), 10)))
-                .andExpect(status().isOk());
-        mvc.perform(get(BASE).param("sku", sku).param("policyConfigured", "true"))
-                .andExpect(jsonPath("$.data.totalElements").value(1))
-                .andExpect(jsonPath("$.data.items[0].policyConfigured").value(true));
     }
 
     @Test

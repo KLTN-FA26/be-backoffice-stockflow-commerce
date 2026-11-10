@@ -14,17 +14,14 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
-import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDate;
-import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 
 import static com.stockflow.inventory.internal.service.InventoryFixtures.NOW;
-import static com.stockflow.inventory.internal.service.InventoryFixtures.TODAY;
 import static com.stockflow.inventory.internal.service.InventoryFixtures.codeOf;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -46,7 +43,7 @@ class LotTraceServiceTest {
     private final LotTraceSearch search = mock(LotTraceSearch.class);
     private final WarehouseDirectory warehouses = mock(WarehouseDirectory.class);
     private final SlotsUnderCount underCount = mock(SlotsUnderCount.class);
-    private final LotTraceService service = new LotTraceService(search, underCount, warehouses, Clock.fixed(NOW, ZoneOffset.UTC));
+    private final LotTraceService service = new LotTraceService(search, underCount, warehouses);
 
     private static CurrentUser clerkOf(UUID id, String prefix) {
         return new CurrentUser(UUID.randomUUID(), "clerk", Set.of(Role.WAREHOUSE_STAFF), Set.of(), DataScope.WAREHOUSE,
@@ -54,7 +51,7 @@ class LotTraceServiceTest {
     }
 
     private static LotTrace.Summary summary() {
-        return new LotTrace.Summary(LOT, "INK-RED", "L1", null, NOW, "GOODS_RECEIPT", null, null, null, null, null, null,
+        return new LotTrace.Summary(LOT, "INK-RED", "L1", NOW, "GOODS_RECEIPT", null, null, null, null, null, null,
                 null, 100, 60, 50, 10);
     }
 
@@ -72,7 +69,6 @@ class LotTraceServiceTest {
         assertThat(blank.sku()).isNull();
         assertThat(blank.lotNumber()).isNull();
         assertThat(blank.warehouses()).isEmpty();
-        assertThat(blank.today()).isEqualTo(TODAY);
     }
 
     @Test
@@ -177,7 +173,7 @@ class LotTraceServiceTest {
     @Test
     @DisplayName("tracing an unknown lot is NOT_FOUND")
     void unknownLot() {
-        when(search.lot(LOT, Set.of(), TODAY)).thenReturn(Optional.empty());
+        when(search.lot(LOT, Set.of())).thenReturn(Optional.empty());
 
         assertThat(codeOf(() -> service.trace(LOT, null, BookVisibility.FULL))).isEqualTo(ErrorCode.NOT_FOUND);
     }
@@ -186,7 +182,7 @@ class LotTraceServiceTest {
     @DisplayName("a trace assembles the lot, its balances, holds and the orders it left for, all within the same scope")
     void trace() {
         LotTrace.Balance balance = new LotTrace.Balance("HCM-A01-1-A", "AVAILABLE", 60, 10);
-        when(search.lot(LOT, Set.of(), TODAY)).thenReturn(Optional.of(summary()));
+        when(search.lot(LOT, Set.of())).thenReturn(Optional.of(summary()));
         when(search.balances(LOT, Set.of())).thenReturn(List.of(balance));
         when(search.holds(LOT, Set.of())).thenReturn(List.of());
         when(search.orders(LOT, Set.of())).thenReturn(List.of());
@@ -200,7 +196,7 @@ class LotTraceServiceTest {
     @Test
     @DisplayName("a lot that the clerk's warehouses do not hold is NOT_FOUND, not leaked")
     void lotOutsideScope() {
-        when(search.lot(LOT, Set.of("HCM"), TODAY)).thenReturn(Optional.empty());
+        when(search.lot(LOT, Set.of("HCM"))).thenReturn(Optional.empty());
 
         WithCurrentUser.run(clerkOf(HCM, "HCM"), () ->
                 assertThat(codeOf(() -> service.trace(LOT, null, BookVisibility.FULL))).isEqualTo(ErrorCode.NOT_FOUND));
@@ -209,7 +205,7 @@ class LotTraceServiceTest {
     @Test
     @DisplayName("movements of an unknown lot is NOT_FOUND and no movement is read")
     void movementsOfUnknownLot() {
-        when(search.lot(LOT, Set.of(), TODAY)).thenReturn(Optional.empty());
+        when(search.lot(LOT, Set.of())).thenReturn(Optional.empty());
 
         assertThat(codeOf(() -> service.movements(LOT, null, null, null, 0, 20, BookVisibility.FULL))).isEqualTo(ErrorCode.NOT_FOUND);
         verify(search, never()).countMovements(any(), any(), any(), any(), anyBoolean());
@@ -218,7 +214,7 @@ class LotTraceServiceTest {
     @Test
     @DisplayName("movements with none in range: empty page, the movements query is skipped")
     void noMovements() {
-        when(search.lot(LOT, Set.of(), TODAY)).thenReturn(Optional.of(summary()));
+        when(search.lot(LOT, Set.of())).thenReturn(Optional.of(summary()));
         when(search.countMovements(any(), any(), any(), any(), anyBoolean())).thenReturn(0L);
 
         assertThat(service.movements(LOT, null, null, null, 0, 20, BookVisibility.FULL).items()).isEmpty();
@@ -233,7 +229,7 @@ class LotTraceServiceTest {
         Instant end = Instant.parse("2026-10-22T17:00:00Z");
         LotTrace.Movement movement = new LotTrace.Movement(UUID.randomUUID(), "RECEIPT", null, "HCM-RCV01", 100, null,
                 "QUARANTINE", "GOODS_RECEIPT", UUID.randomUUID(), null, null, null, NOW, null);
-        when(search.lot(LOT, Set.of(), TODAY)).thenReturn(Optional.of(summary()));
+        when(search.lot(LOT, Set.of())).thenReturn(Optional.of(summary()));
         when(search.countMovements(LOT, Set.of(), start, end, false)).thenReturn(1L);
         when(search.movements(LOT, Set.of(), start, end, 0L, 20, false)).thenReturn(List.of(movement));
 
@@ -248,7 +244,7 @@ class LotTraceServiceTest {
     void blindTraceMasksCountedLocations() {
         LotTrace.Balance counted = new LotTrace.Balance("HCM-A01-1-A", "AVAILABLE", 60, 10);
         LotTrace.Balance other = new LotTrace.Balance("HCM-A02-1-A", "AVAILABLE", 40, 0);
-        when(search.lot(LOT, Set.of(), TODAY)).thenReturn(Optional.of(summary()));
+        when(search.lot(LOT, Set.of())).thenReturn(Optional.of(summary()));
         when(search.balances(LOT, Set.of())).thenReturn(List.of(counted, other));
         when(search.holds(LOT, Set.of())).thenReturn(List.of());
         when(search.orders(LOT, Set.of())).thenReturn(List.of());
@@ -262,7 +258,7 @@ class LotTraceServiceTest {
     @Test
     @DisplayName("an approver (full visibility) never asks which slots are under count")
     void fullTraceSkipsTheCountLookup() {
-        when(search.lot(LOT, Set.of(), TODAY)).thenReturn(Optional.of(summary()));
+        when(search.lot(LOT, Set.of())).thenReturn(Optional.of(summary()));
         when(search.balances(LOT, Set.of())).thenReturn(List.of());
         when(search.holds(LOT, Set.of())).thenReturn(List.of());
         when(search.orders(LOT, Set.of())).thenReturn(List.of());
@@ -275,7 +271,7 @@ class LotTraceServiceTest {
     @Test
     @DisplayName("a blind reader's movements are read with hideCountedSlots=true, an approver's with false")
     void movementsPassTheVisibility() {
-        when(search.lot(LOT, Set.of(), TODAY)).thenReturn(Optional.of(summary()));
+        when(search.lot(LOT, Set.of())).thenReturn(Optional.of(summary()));
         when(search.countMovements(any(), any(), any(), any(), anyBoolean())).thenReturn(0L);
 
         service.movements(LOT, null, null, null, 0, 20, BookVisibility.HIDE_COUNTED_SLOTS);

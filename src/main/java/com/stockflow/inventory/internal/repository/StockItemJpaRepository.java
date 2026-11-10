@@ -7,7 +7,6 @@ import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
-import java.time.LocalDate;
 import java.time.Instant;
 import java.util.Collection;
 import java.util.List;
@@ -76,7 +75,7 @@ interface StockItemJpaRepository extends JpaRepository<StockItemJpaEntity, UUID>
      */
     @Query("""
             select new com.stockflow.inventory.internal.repository.AvailabilityRow(
-                s.id, s.locationCode, s.lotNumber, s.expiryDate, s.status, s.onHand, s.reserved, s.receivedAt,
+                s.id, s.locationCode, s.lotNumber, s.status, s.onHand, s.reserved, s.receivedAt,
                 s.stockPackageId,
                 case when p.unopened = true and s.reserved = 0 and s.onHand = p.receivedQty then true else false end)
             from StockItemJpaEntity s
@@ -101,19 +100,18 @@ interface StockItemJpaRepository extends JpaRepository<StockItemJpaEntity, UUID>
             where s.sku in :skus
               and s.status = com.stockflow.inventory.internal.domain.StockStatus.AVAILABLE
               and s.reserved = 0 and s.onHand > 0
-              and (s.expiryDate is null or s.expiryDate >= :today)
               and p.status = com.stockflow.inventory.internal.domain.StockPackageStatus.IN_STOCK
               and p.unopened = true and s.onHand = p.receivedQty
             """)
-    List<AllocatableRow> findAllocatable(@Param("skus") Collection<String> skus, @Param("today") LocalDate today);
+    List<AllocatableRow> findAllocatable(@Param("skus") Collection<String> skus);
 
     /** Subtotals for the warehouse roll-up; every status, because on-hand counts them all. */
     @Query("""
             select new com.stockflow.inventory.internal.repository.StockLevelRow(
-                s.locationCode, s.status, sum(s.onHand), sum(s.reserved), s.expiryDate)
+                s.locationCode, s.status, sum(s.onHand), sum(s.reserved))
             from StockItemJpaEntity s
             where s.sku = :sku
-            group by s.locationCode, s.status, s.expiryDate
+            group by s.locationCode, s.status
             """)
     List<StockLevelRow> findLevelRowsBySku(@Param("sku") String sku);
 
@@ -186,7 +184,7 @@ interface StockItemJpaRepository extends JpaRepository<StockItemJpaEntity, UUID>
 
     @Query("""
             select new com.stockflow.inventory.internal.domain.HoldDetail(r.id, s.sku, s.locationCode, s.lotNumber,
-                   r.quantity, r.status, r.expiresAt, s.expiryDate, s.serialNumber, p.lpn,
+                   r.quantity, r.status, r.expiresAt, p.lpn,
                    case when p.unopened = true and r.quantity = s.onHand and s.onHand = p.receivedQty
                         then true else false end)
             from ReservationJpaEntity r join r.stockItem s

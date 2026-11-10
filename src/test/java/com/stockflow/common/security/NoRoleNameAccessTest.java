@@ -72,12 +72,6 @@ class NoRoleNameAccessTest {
             // ---- who is told: the audience of a notification, not access
             new Allowed("notification/internal/service/QuoteNotificationListener.java", "staff.activeStaff(Role.SALES_STAFF)",
                     "who is told of a quote with no handler"),
-            new Allowed("notification/internal/service/InventoryAlertNotificationListener.java",
-                    "inventory-alert.stock-level-roles:", "stock-alert audience, configurable"),
-            new Allowed("notification/internal/service/InventoryAlertNotificationListener.java",
-                    "inventory-alert.expiry-roles:", "expiry-alert audience, configurable"),
-            new Allowed("application.yml", "stock-level-roles:", "stock-alert audience (who is told), not access"),
-            new Allowed("application.yml", "expiry-roles:", "expiry-alert audience (who is told), not access"),
             // ---- checks on the user an action is about, not on the caller
             new Allowed("fulfillment/internal/service/FulfillmentServiceImpl.java",
                     "Role.WAREHOUSE_STAFF.authority(), Role.WAREHOUSE_MANAGER.authority()",

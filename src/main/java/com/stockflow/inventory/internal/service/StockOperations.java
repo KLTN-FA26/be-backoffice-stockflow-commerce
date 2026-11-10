@@ -55,7 +55,8 @@ public interface StockOperations {
     /**
      * A person's request to write stock up or down: loose stock by (location, SKU, lot), or a whole carton by its LPN
      * (written off whole, team plan 4D-1). Refuses {@code COUNT_VARIANCE} ({@code VALIDATION_FAILED}): only a cycle
-     * count asks for that, through {@link #requestCountVariance}.
+     * count asks for that, through {@link #requestCountVariance}. A loose request naming no lot is
+     * {@code STOCK_ADJUSTMENT_LOT_REQUIRED} (400, on {@code lotNumber}): every SKU is lot-tracked (team plan 5-5).
      */
     StockAdjustmentSummary requestAdjustment(RequestAdjustmentCommand command);
 

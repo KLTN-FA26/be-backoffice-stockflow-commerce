@@ -52,9 +52,9 @@ public final class ConfirmedDesigns {
                     Integer.class, BLANK, BLANK);   // SCRUM-152: checkout reservations promise stock on no row
             if (free < units) {
                 jdbc.update("""
-                        INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, version,
+                        INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, version,
                             created_at, received_at)
-                        VALUES (?, ?, 'HCM-A02-1-A', ?, 0, 'AVAILABLE', 0, NOW(),
+                        VALUES (?, ?, 'HCM-A02-1-A', 'UNTRACED', ?, 0, 'AVAILABLE', 0, NOW(),
                             clock_timestamp() - interval '2 days' - random() * interval '300 days')""",
                         Identifiers.newId(), BLANK, units - free);
             }

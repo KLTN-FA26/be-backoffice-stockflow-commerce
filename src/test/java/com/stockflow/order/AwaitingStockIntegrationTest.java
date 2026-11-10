@@ -236,7 +236,7 @@ class AwaitingStockIntegrationTest {
     private void stock(int units) {
         assertThat(units % PER_CARTON).as("whole cartons").isZero();
         tx.executeWithoutResult(s -> com.stockflow.support.CartonRows.stockOfUnit(jdbc, sku.sku(),
-                sku.uomConversionId(), a.bin(), units / PER_CARTON, null, null,
+                sku.uomConversionId(), a.bin(), units / PER_CARTON, null,
                 Instant.now().minus(java.time.Duration.ofDays(2)), "AVAILABLE"));
     }
 

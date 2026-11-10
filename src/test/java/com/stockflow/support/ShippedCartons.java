@@ -76,7 +76,7 @@ public final class ShippedCartons {
                                                       handed_over_at, outcome_at, whole_order_handover)
                     VALUES (?, ?, ?, ?, ?, ?, NOW(), NOW(), NOW(), NOW(), TRUE)""", shipment, pack, orderId,
                     shipmentStatus, shipmentCode, DemoData.WAREHOUSE_HCM);
-            var stocked = CartonRows.stock(jdbc, sku, "HCM-A01-1-A", count, perCarton, lot, null,
+            var stocked = CartonRows.stock(jdbc, sku, "HCM-A01-1-A", count, perCarton, lot,
                     Instant.now().minusSeconds(30L * 86_400), "AVAILABLE");
             int no = Math.max(jdbc.queryForObject("SELECT COALESCE(MAX(package_no), 0) FROM fulfillment.package WHERE "
                     + "pack_id = ?", Integer.class, pack), jdbc.queryForObject("SELECT COALESCE(MAX(sequence_no), 0) FROM "

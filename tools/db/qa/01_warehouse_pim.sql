@@ -342,8 +342,7 @@ SELECT pg_temp.expect_fail('P19 stored media without its file metadata', $q$
     INSERT INTO product.media (id, variant_id, storage_key) VALUES (gen_random_uuid(), md5('demo:variant:SOFA-3S-GREY')::uuid, 'k/1.png') $q$);
 SELECT pg_temp.expect_fail('P20 inventory item for a sku that is no variant', $q$
     INSERT INTO inventory.inventory_items (id, sku) VALUES (gen_random_uuid(), 'NO-SUCH-SKU') $q$);
-SELECT pg_temp.expect_fail('P21 expiry tracked without lots', $q$
-    UPDATE inventory.inventory_items SET lot_tracked = FALSE WHERE sku = 'TABLE-OAK-160' $q$);
+-- P21 (expiry tracked without lots) went with expiry tracking (team plan 5-1, V20261111000300).
 SELECT pg_temp.expect_fail('P22 inventory item sku changed',
     $q$ UPDATE inventory.inventory_items SET sku = 'SOFA-3S-BE' WHERE sku = 'SOFA-3S-GREY' $q$);
 SELECT pg_temp.expect_fail('P23 variant deleted while it has an inventory item',

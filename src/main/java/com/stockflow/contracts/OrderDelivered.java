@@ -5,8 +5,8 @@ import java.time.Instant;
 import java.util.UUID;
 
 /**
- * Published by the <b>order</b> module when the carrier reports an order delivered and the Order
- * Coordinator records it (kltn-docs 09 §4.3, 17 §4.3; SCRUM-431).
+ * Published by the <b>order</b> module when the carrier reports an order delivered and the warehouse
+ * manager records it, or a carrier webhook does (kltn-docs 09 §4.3, 17 §4.3, BR-27; SCRUM-431).
  *
  * <p>Payment makes the installments of the order's contract paid after delivery due once the order is delivered in
  * full (15 §4.1 step 2, BR-09). Split shipments (decision G4-Q3, G3-2): one event per delivered shipment,

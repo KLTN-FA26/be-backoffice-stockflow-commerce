@@ -82,8 +82,8 @@ class CartonQuarantineServiceTest {
         StockItemId row = StockItemId.newId();
         when(stockItems.findIdsInStockPackage(cartonId)).thenReturn(List.of(row));
         when(stockItems.findById(row)).thenReturn(Optional.of(new StockItem(row, new Sku("CUP-12OZ"),
-                new LocationId(DOCK), "LOT-1", null, Quantity.of(10), StockStatus.INBOUND, List.of(), 0L,
-                Instant.parse("2026-11-01T00:00:00Z"), null, UUID.randomUUID(), cartonId)));
+                new LocationId(DOCK), "LOT-1", Quantity.of(10), StockStatus.INBOUND, List.of(), 0L,
+                Instant.parse("2026-11-01T00:00:00Z"), UUID.randomUUID(), cartonId)));
         when(operations.quarantine(anyString(), anyString(), anyString(), any())).thenReturn(new StockPackageView(
                 cartonId.value(), LPN, LINE, "CUP-12OZ", UUID.randomUUID(), "CARTON", 10, 10, 10, AREA, "IN_STOCK",
                 true));
@@ -124,8 +124,8 @@ class CartonQuarantineServiceTest {
         StockItemId row = StockItemId.newId();
         when(stockItems.findIdsInStockPackage(cartonId)).thenReturn(List.of(row));
         when(stockItems.findById(row)).thenReturn(Optional.of(new StockItem(row, new Sku("CUP-12OZ"),
-                new LocationId("WH1-A01-1-A"), "LOT-1", null, Quantity.of(10), StockStatus.AVAILABLE, List.of(), 0L,
-                Instant.parse("2026-11-01T00:00:00Z"), null, UUID.randomUUID(), cartonId)));
+                new LocationId("WH1-A01-1-A"), "LOT-1", Quantity.of(10), StockStatus.AVAILABLE, List.of(), 0L,
+                Instant.parse("2026-11-01T00:00:00Z"), UUID.randomUUID(), cartonId)));
 
         service.quarantine(LPN, AREA, "Torn", MANAGER);
 

@@ -57,9 +57,9 @@ class WarehouseScopeTest {
 
     @Test
     void aWarehouseSensitiveEndpointDoesNotCutAnUnlimitedCallerDown() {
-        CurrentUser planner = new CurrentUser(UUID.randomUUID(), "planner", Set.of(Role.INVENTORY_PLANNER),
+        CurrentUser admin = new CurrentUser(UUID.randomUUID(), "admin", Set.of(Role.SYSTEM_ADMIN),
                 Set.of(), DataScope.ALL, Set.of(), Set.of());
-        WithCurrentUser.run(planner, DataScope.WAREHOUSE, () -> {
+        WithCurrentUser.run(admin, DataScope.WAREHOUSE, () -> {
             assertThat(WarehouseScope.restriction()).isEmpty();
             WarehouseScope.requireLocation("HN-RCV01");
         });

@@ -483,7 +483,7 @@ class SalesRollupIntegrationTest {
     void orderStatusCountsOverHttp() throws Exception {
         OrderSummary order = placeTotal(1_000_000);
 
-        JsonNode counts = data(send(get(REPORTS + "/order-status-counts"), Role.ORDER_COORDINATOR)
+        JsonNode counts = data(send(get(REPORTS + "/order-status-counts"), Role.WAREHOUSE_MANAGER)
                 .andExpect(status().isOk()));
 
         assertThat(counts).hasSize(OrderStatus.values().length);
@@ -562,14 +562,13 @@ class SalesRollupIntegrationTest {
         mvc.perform(get(REPORTS + "/summary")).andExpect(status().isUnauthorized());
         mvc.perform(post(REPORTS + "/rebuild")).andExpect(status().isUnauthorized());
 
-        for (Role reader : List.of(Role.ACCOUNTANT, Role.SALES_MANAGER, Role.SYSTEM_ADMIN, Role.WAREHOUSE_MANAGER,
-                Role.ORDER_COORDINATOR)) {
+        for (Role reader : List.of(Role.ACCOUNTANT, Role.SALES_MANAGER, Role.SYSTEM_ADMIN, Role.WAREHOUSE_MANAGER)) {
             send(get(REPORTS + "/summary"), reader).andExpect(status().isOk());
             send(get(REPORTS + "/sales-daily"), reader).andExpect(status().isOk());
             send(get(REPORTS + "/top-products"), reader).andExpect(status().isOk());
             send(get(REPORTS + "/order-status-counts"), reader).andExpect(status().isOk());
         }
-        for (Role other : List.of(Role.WAREHOUSE_STAFF, Role.SALES_STAFF, Role.CUSTOMER, Role.INVENTORY_PLANNER)) {
+        for (Role other : List.of(Role.WAREHOUSE_STAFF, Role.SALES_STAFF, Role.CUSTOMER)) {
             send(get(REPORTS + "/summary"), other).andExpect(status().isForbidden());
             send(get(REPORTS + "/sales-daily"), other).andExpect(status().isForbidden());
             send(get(REPORTS + "/top-products"), other).andExpect(status().isForbidden());
@@ -578,8 +577,7 @@ class SalesRollupIntegrationTest {
         }
         // READ is not EXPORT: the two managers read the figures but do not rebuild them.
         send(post(REPORTS + "/rebuild"), Role.WAREHOUSE_MANAGER).andExpect(status().isForbidden());
-        send(post(REPORTS + "/rebuild"), Role.ORDER_COORDINATOR).andExpect(status().isForbidden());
-    }
+            }
 
     @Test
     @DisplayName("POST /rebuild recomputes the range and says what it did")

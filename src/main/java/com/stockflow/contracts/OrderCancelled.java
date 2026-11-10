@@ -6,7 +6,7 @@ import java.util.UUID;
 
 /**
  * Published by the <b>order</b> module when an order is cancelled, on every path: by the customer,
- * by Sales or the coordinator, on an approved cancellation request, after a failed payment, and when
+ * by Sales, on an approved cancellation request, after a failed payment, and when
  * an unpaid order's stock hold runs out (SCRUM-460).
  *
  * <p>kltn-docs 17 §4.5 and BR-03: a cancellation before shipping stops the warehouse work, so the modules that hold

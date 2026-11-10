@@ -171,18 +171,17 @@ SELECT pg_temp.expect_fail('PR2 a receipt against a SENT production order whose 
     SELECT pg_temp.receipt(md5('qa22:gr0')::uuid, 'GR-QA22-0', md5('qa22:po2')::uuid, 'HCM', TRUE) $q$);
 SELECT pg_temp.expect_fail('PR3 into another warehouse than the production order is received at (BR-01)', $q$
     SELECT pg_temp.receipt(md5('qa22:gr0')::uuid, 'GR-QA22-0', md5('qa22:po1')::uuid, 'QAW', TRUE) $q$);
-SELECT pg_temp.expect_fail('PR4 a production receipt naming a supplier and a reason', $q$
-    INSERT INTO procurement.goods_receipts (id, receipt_number, receipt_type, production_order_id, warehouse_id,
-                                            supplier_id, blind_reason, status, received_at, received_by)
-    SELECT md5('qa22:gr0')::uuid, 'GR-QA22-0', 'PRODUCTION', md5('qa22:po1')::uuid, w.id, s.id, 'gift', 'DRAFT', NOW(),
-           md5('demo:user:editor')::uuid
-      FROM warehouse.warehouse w, procurement.suppliers s WHERE w.prefix = 'HCM' AND s.code = 'GOVIET' $q$);
+SELECT pg_temp.expect_fail('PR4 a PURCHASE receipt started (purchasing was removed, V20261113000200)', $q$
+    INSERT INTO procurement.goods_receipts (id, receipt_number, receipt_type, warehouse_id, status, received_at,
+                                            received_by)
+    SELECT md5('qa22:gr0')::uuid, 'GR-QA22-0', 'PURCHASE', w.id, 'DRAFT', NOW(), md5('demo:user:editor')::uuid
+      FROM warehouse.warehouse w WHERE w.prefix = 'HCM' $q$);
 SELECT pg_temp.expect_fail('PR5 a PRODUCTION receipt against no production order', $q$
     INSERT INTO procurement.goods_receipts (id, receipt_number, receipt_type, warehouse_id, status, received_at,
                                             received_by)
     SELECT md5('qa22:gr0')::uuid, 'GR-QA22-0', 'PRODUCTION', w.id, 'DRAFT', NOW(), md5('demo:user:editor')::uuid
       FROM warehouse.warehouse w WHERE w.prefix = 'HCM' $q$);
-SELECT pg_temp.expect_fail('PR6 a purchase receipt with neither a PO nor a supplier (still blind-or-PO)', $q$
+SELECT pg_temp.expect_fail('PR6 a receipt that says nothing of what it is against (receipt_type has no default)', $q$
     INSERT INTO procurement.goods_receipts (id, receipt_number, warehouse_id, status, received_at, received_by)
     SELECT md5('qa22:gr0')::uuid, 'GR-QA22-0', w.id, 'DRAFT', NOW(), md5('demo:user:editor')::uuid
       FROM warehouse.warehouse w WHERE w.prefix = 'HCM' $q$);
@@ -193,9 +192,8 @@ SELECT pg_temp.expect_ok('PR8 a draft against the SENT production order with no 
 SELECT pg_temp.expect_fail('PR9 turned into a purchase receipt', $q$
     UPDATE procurement.goods_receipts SET receipt_type = 'PURCHASE', production_order_id = NULL
      WHERE id = md5('qa22:gr1')::uuid $q$);
-SELECT pg_temp.expect_fail('PR10 sent to the warehouse manager for approval (no tolerance, BR-02)', $q$
-    UPDATE procurement.goods_receipts SET status = 'PENDING_APPROVAL', approval_requested_at = NOW(),
-           approval_requested_by = md5('demo:user:editor')::uuid WHERE id = md5('qa22:gr1')::uuid $q$);
+SELECT pg_temp.expect_fail('PR10 sent to the warehouse manager for approval (no tolerance, BR-02: PENDING_APPROVAL is gone)', $q$
+    UPDATE procurement.goods_receipts SET status = 'PENDING_APPROVAL' WHERE id = md5('qa22:gr1')::uuid $q$);
 
 \echo '--- its lines: the production order''s, in its lot, in whole cartons (BR-03, BR-06, BR-11..BR-13)'
 SELECT pg_temp.expect_fail('PR11 a line of another production order', $q$

@@ -82,12 +82,10 @@ default (`CUSTOMER_EMAIL_ENABLED=false`): the business documents leave it to a l
 the portal invitation instead: invite a customer contact whose e-mail you own; the mail arrives and
 `notification.delivery_log` has a `SENT` row with a `provider_message_id`.
 
-Before deploying this feature, set all six `PO_BUYER_*` / `PO_RECEIVING_ADDRESS` values from
-`.env.example` in `/opt/stockflow/.env`. Compose refuses missing or empty values. Use the actual
-buyer identity and receiving address, including a valid reply-to email. Set
-`SUPPLIER_API_ALLOWED_HOSTS` only for approved supplier HTTPS hosts; leave it empty for email-only
-delivery. Validate with `docker compose config --quiet` before deploying. With `EMAIL_PROVIDER=smtp`, Mailpit
-captures messages for testing; it does not deliver them to external supplier inboxes.
+Purchasing is gone (4A-8): the six `PO_BUYER_*` / `PO_RECEIVING_ADDRESS` values and
+`SUPPLIER_API_ALLOWED_HOSTS` are no longer read and may be removed from `/opt/stockflow/.env`. Validate with
+`docker compose config --quiet` before deploying. With `EMAIL_PROVIDER=smtp`, Mailpit captures messages for testing;
+it does not deliver them to external producer inboxes.
 
 Back-office login rate limit: the Next.js back-office calls the API from its own server, so without
 help every admin shares one login rate-limit bucket. Set `BFF_ORIGIN_SECRET` (`openssl rand -hex 32`,

@@ -124,8 +124,8 @@ class PickLineCartonMigrationTest {
     private UUID stockRow(int onHand, UUID carton) {
         UUID id = Identifiers.newId();
         jdbc.update("""
-                insert into inventory.stock_item (id, sku, location_code, received_at, on_hand, reserved, status,
-                    version, created_at, stock_package_id) values (?, ?, ?, ?, ?, 0, 'AVAILABLE', 0, now(), ?)""",
+                insert into inventory.stock_item (id, sku, location_code, lot_number, received_at, on_hand, reserved, status,
+                    version, created_at, stock_package_id) values (?, ?, ?, 'UNTRACED', ?, ?, 0, 'AVAILABLE', 0, now(), ?)""",
                 id, sku, SHELF, java.sql.Timestamp.from(RECEIVED), onHand, carton);
         return id;
     }

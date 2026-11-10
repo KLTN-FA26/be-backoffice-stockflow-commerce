@@ -113,6 +113,16 @@ server {
         proxy_pass $app_upstream;
         include /etc/nginx/snippets/proxy-headers.conf;
     }
+
+    # A producer's signed links (4A-3): the query string is the credential. The access log drops it ($logged_uri in
+    # nginx.conf); an error-log line quotes the whole request with no way to change its format, so this location
+    # writes only crit and above - an upstream failure here shows in the application's log instead.
+    location /api/v1/production-order-files/ {
+        error_log /var/log/nginx/error.log crit;
+        set $app_upstream http://stockflow-app-1:8080;
+        proxy_pass $app_upstream;
+        include /etc/nginx/snippets/proxy-headers.conf;
+    }
 }
 
 # -----------------------------------------------------------------------------

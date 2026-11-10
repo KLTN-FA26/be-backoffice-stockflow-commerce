@@ -8,18 +8,28 @@ public final class OrderResources {
 
     /**
      * Cancelling someone else's order from the back office (kltn-docs 17 §2, §4.5). Its own resource
-     * so Sales can cancel without also being able to release orders to production, which
-     * {@code sales-orders:APPROVE} guards (SCRUM-256, SCRUM-459).
+     * so Sales can cancel without also being able to release orders, which {@link #RELEASES} guards (SCRUM-256,
+     * SCRUM-459).
      */
     public static final String ORDER_CANCELLATIONS = "sales-order-cancellations";
 
     /**
      * Releasing an order to a warehouse (kltn-docs 17 BR-03): the warehouse manager of that warehouse, so it is
-     * checked against the caller's warehouses too. Released by delivery batch since team plan 4B-8 (BR-29). Seeded by
-     * V20261116000300 - the same row and grants as team plan 5-7's V20261115000200, which splits it out of
-     * {@code sales-orders:APPROVE}; both are written ON CONFLICT DO NOTHING.
+     * checked against the caller's warehouses too. Split out of {@code sales-orders:APPROVE} with {@link #HOLDS}
+     * when the order coordinator role was retired (QD-12, team plan 5-7), so that neither side holds the other's
+     * work. Seeded by V20261115000200; team plan 4B-8 releases by delivery batch with it.
      */
     public static final String RELEASES = "sales-order-releases";
+
+    /** Putting an order on hold and resolving the hold (17 §5): Sales' (QD-12). Seeded by V20261115000200. */
+    public static final String HOLDS = "sales-order-holds";
+
+    /**
+     * Fulfillment's resource, declared there: recording that an order without shipments was delivered or was not
+     * answers to the same {@code :APPROVE} as a shipment's outcome (09 BR-02) - the warehouse manager's since team
+     * plan 5-7 (17 §2, BR-27).
+     */
+    public static final String DELIVERY_OUTCOMES = "fulfillment-delivery-outcomes";
 
     /** Orders over their customer's credit limit, waiting for whoever approves credit (SCRUM-427). */
     public static final String CREDIT_HOLDS = "sales-order-credit-holds";
@@ -28,9 +38,9 @@ public final class OrderResources {
     public static final String QUOTES = "sales-quotes";
 
     /**
-     * Turning an accepted quote into its order (decision 2026-10-17): Sales' and the order coordinator's, who does not
-     * edit quotes. Its own resource so neither {@code sales-quotes:UPDATE} (editing) nor {@code sales-orders:CREATE}
-     * (which the portal customer holds) has to stand for it. Seeded by V20261017000300.
+     * Turning an accepted quote into its order (decision 2026-10-17): Sales'. Its own resource so neither
+     * {@code sales-quotes:UPDATE} (editing) nor {@code sales-orders:CREATE} (which the portal customer holds) has to
+     * stand for it. Seeded by V20261017000300.
      */
     public static final String QUOTE_CONVERSIONS = "sales-quote-conversions";
 
@@ -75,7 +85,7 @@ public final class OrderResources {
     public static final String RMAS = "sales-rmas";
 
     /**
-     * The refund of goods that came back: UPDATE proposes (Sales, coordinator), APPROVE approves it - four eyes, the
+     * The refund of goods that came back: UPDATE proposes (Sales), APPROVE approves it - four eyes, the
      * Accountant (V20261101020000). Counting a returned parcel in ({@code sales-rma-receipts}) and QC's verdict
      * ({@code sales-rma-inspections}) went with team plan 4D-3: goods come back on a return receipt
      * ({@code procurement-goods-receipts}) and nobody inspects them (V20261114000200).

@@ -13,6 +13,8 @@ import com.stockflow.common.storage.FileStorage;
 import com.stockflow.common.storage.FileUpload;
 import com.stockflow.common.storage.IncomingFiles;
 import com.stockflow.inventory.internal.service.PutawayService;
+import com.stockflow.order.api.CancelOrderCommand;
+import com.stockflow.order.api.CancellationReasonCode;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.ProductionOrderReceiving;
@@ -408,34 +410,26 @@ class ProductionReceiptIntegrationTest {
         assertThat(receipt.producerId()).isEqualTo(producer.id());
         assertThat(receipt.producerName()).isEqualTo("Receiving test workshop");
         assertThat(receipt.warehouseId()).as("BR-01: at the warehouse it is received at").isEqualTo(a.id());
-        assertThat(receipt.purchaseOrderId()).isNull();
-        assertThat(receipt.supplierId()).isNull();
-        assertThat(receipt.withoutPurchaseOrder()).as("not a blind receipt").isFalse();
         assertThat(receipt.number()).matches("GR-\\d{8}-\\d{4,}");
         assertThat(receipt.lines()).isEmpty();
         assertThat(registration(receipt.id())).as("the production order knows of the draft").isEqualTo("DRAFT");
-        assertThat(jdbc.queryForMap("SELECT receipt_type, production_order_id, po_id, supplier_id "
+        assertThat(jdbc.queryForMap("SELECT receipt_type, production_order_id "
                 + "FROM procurement.goods_receipts WHERE id = ?", receipt.id()))
-                .containsEntry("receipt_type", "PRODUCTION").containsEntry("production_order_id", production.id())
-                .containsEntry("po_id", null).containsEntry("supplier_id", null);
+                .containsEntry("receipt_type", "PRODUCTION").containsEntry("production_order_id", production.id());
         assertThat(reread(production.id()).status()).as("nothing moves before a receipt is confirmed")
                 .isEqualTo(ProductionOrderStatus.SENT);
 
-        assertThat(receipts.list(null, null, null, null, null, null, null, production.id(), null, 0, 20, null)
+        assertThat(receipts.list(null, null, null, null, null, production.id(), null, 0, 20, null)
                 .items()).singleElement().satisfies(row -> {
                     assertThat(row.id()).isEqualTo(receipt.id());
                     assertThat(row.receiptType()).isEqualTo(GoodsReceiptType.PRODUCTION);
                     assertThat(row.productionOrderCode()).isEqualTo(production.code());
                     assertThat(row.producerName()).isEqualTo("Receiving test workshop");
-                    assertThat(row.withoutPurchaseOrder()).isFalse();
                 });
-        assertThat(receipts.list(null, null, a.id(), null, null, null, null, null, GoodsReceiptType.PRODUCTION, 0,
+        assertThat(receipts.list(null, a.id(), null, null, null, null, GoodsReceiptType.PRODUCTION, 0,
                 100, null).items()).extracting(GoodsReceipts.Row::id).contains(receipt.id());
-        assertThat(receipts.list(null, null, a.id(), null, null, null, null, null, GoodsReceiptType.PURCHASE, 0, 100,
+        assertThat(receipts.list(null, a.id(), null, null, null, null, GoodsReceiptType.PURCHASE, 0, 100,
                 null).items()).extracting(GoodsReceipts.Row::id).doesNotContain(receipt.id());
-        assertThat(receipts.list(null, null, a.id(), null, null, null, true, null, null, 0, 100, null).items())
-                .as("withoutPo keeps blind purchase receipts").extracting(GoodsReceipts.Row::id)
-                .doesNotContain(receipt.id());
         assertThat(receipts.get(receipt.id()).productionOrderCode()).isEqualTo(production.code());
     }
 
@@ -492,7 +486,6 @@ class ProductionReceiptIntegrationTest {
         assertThat(line.productionOrderLineId()).isEqualTo(lineId(production));
         assertThat(line.quantity()).as("3 cartons of 50").isEqualTo(150);
         assertThat(line.lotNumber()).as("BR-03: the production order's code").isEqualTo(production.code());
-        assertThat(line.expiryDate()).as("BR-06").isNull();
         assertThat(line.unitOfMeasure()).isEqualTo("CARTON");
         assertThat(line.looseQuantity()).as("BR-12: nothing loose").isZero();
         assertThat(line.packages()).hasSize(3).allSatisfy(p -> {
@@ -528,21 +521,17 @@ class ProductionReceiptIntegrationTest {
         // Every refusal of the request at once, each on its field.
         UUID unknown = Identifiers.newId();
         Throwable refused = catchThrowable(() -> receipts.replaceLines(receipt.id(), List.of(
-                new NewLine(null, 0, null, null, a.receiving(), null, null,
-                        List.of(new NewPackage(null, 0), new NewPackage(null, 48)), null, lineId(production)),
-                new NewLine(Identifiers.newId(), 0, "LOT-A", today.plusYears(1), a.bin(), null, null, List.of(), null,
-                        unknown))));
+                new NewLine(lineId(production), 0, null, a.receiving(), null, null,
+                        List.of(new NewPackage(null, 0), new NewPackage(null, 48)), null),
+                new NewLine(unknown, 0, "LOT-A", a.bin(), null, null, List.of(), null))));
         assertThat(code(refused)).isEqualTo(ErrorCode.RECEIPT_CARTON_NOT_STANDARD);
         assertThat(fields(refused)).containsExactlyInAnyOrder(
                 "lines[0].packages[1].quantity:RECEIPT_CARTON_NOT_STANDARD",
-                "lines[1].purchaseOrderLineId:VALIDATION_FAILED",
                 "lines[1].lotNumber:LOT_NOT_ALLOWED",
-                "lines[1].expiryDate:EXPIRY_NOT_ALLOWED",
                 "lines[1].productionOrderLineId:RECEIPT_LINE_NOT_ON_PRODUCTION_ORDER");
         assertThat(ErrorCode.RECEIPT_CARTON_NOT_STANDARD.httpStatus()).isEqualTo(422);
         Throwable noCarton = catchThrowable(() -> receipts.replaceLines(receipt.id(), List.of(
-                new NewLine(null, 100, null, null, a.bin(), null, "BOX", List.of(), "SOMETHING-ELSE",
-                        lineId(production)))));
+                new NewLine(lineId(production), 100, null, a.bin(), null, "BOX", List.of(), "SOMETHING-ELSE"))));
         assertThat(fields(noCarton)).containsExactlyInAnyOrder("lines[0].packages:VALIDATION_FAILED",
                 "lines[0].sku:RECEIPT_LINE_NOT_ON_PRODUCTION_ORDER", "lines[0].locationCode:LOCATION_AREA_MISMATCH",
                 "lines[0].unitOfMeasure:UOM_CONVERSION_NOT_FOUND", "lines[0].quantity:VALIDATION_FAILED");
@@ -626,7 +615,7 @@ class ProductionReceiptIntegrationTest {
         assertThat(lot).containsEntry("origin_type", "PRODUCTION_ORDER").containsEntry("lot_number", production.code())
                 .containsEntry("production_order_id", production.id())
                 .containsEntry("production_order_code", production.code()).containsEntry("goods_receipt_id", null)
-                .containsEntry("purchase_order_id", null).containsEntry("expiry_date", null)
+                .containsEntry("purchase_order_id", null)
                 .containsEntry("warehouse_id", a.id());
         assertThat(jdbc.queryForList("SELECT DISTINCT lot_id FROM inventory.stock_item WHERE sku = ?", UUID.class,
                 sku.sku())).containsExactly((UUID) lot.get("id"));
@@ -753,6 +742,69 @@ class ProductionReceiptIntegrationTest {
                 + "AND status = 'AVAILABLE' AND location_code = ?", Long.class, sku.sku(), a.bin()))
                 .isEqualTo(3L * PER_CARTON);
         assertThat(reread(production.id()).status()).isEqualTo(ProductionOrderStatus.PARTIALLY_RECEIVED);
+    }
+
+    @Test
+    @DisplayName("17 BR-07: the sales order cancelled while a draft receipt is open - the last draft settled, the "
+            + "production order is stopped and the producer told to stop, once")
+    void cancelledOrderStopsItsProductionOrderWhenTheLastDraftSettles() {
+        UUID orderId = confirmedOrderAtA();
+        ProductionOrder production = sentWithoutSample(orderId, 1);
+        ReceiptView receipt = start(production);
+        count(receipt, lineId(production), cartons(2));
+
+        asSales(() -> orders.cancel(orderId, new CancelOrderCommand(CancellationReasonCode.CUSTOMER_REQUEST,
+                "Customer changed supplier", null, sales.userId())));
+        assertThat(reread(production.id()).status().open()).as("a draft receipt keeps it open").isTrue();
+        assertThat(stoppedNotices(production.id())).isZero();
+
+        receipts.confirm(receipt.id(), clerk);
+
+        assertThat(reread(production.id()).status()).as("the last draft settled: received from, so closed, not cancelled")
+                .isEqualTo(ProductionOrderStatus.CLOSED);
+        Await.until("the producer is told to stop", Duration.ofSeconds(20),
+                () -> stoppedNotices(production.id()) >= 1);
+        assertThat(stoppedNotices(production.id())).as("exactly once").isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("17 BR-07: the last draft receipt cancelled with no one to name: the production order of a cancelled "
+            + "sales order is left open for the coordinator, and no producer is told yet")
+    void cancelledDraftWithNoActorLeavesItToTheCoordinator() {
+        UUID orderId = confirmedOrderAtA();
+        ProductionOrder production = sentWithoutSample(orderId, 1);
+        ReceiptView receipt = start(production);
+        asSales(() -> orders.cancel(orderId, new CancelOrderCommand(CancellationReasonCode.CUSTOMER_REQUEST,
+                "Customer changed supplier", null, sales.userId())));
+        assertThat(reread(production.id()).status().open()).as("a draft receipt keeps it open").isTrue();
+
+        // No current user in this context (no security): dropReceipt has no one to name as the one who stopped it.
+        receipts.cancel(receipt.id());
+
+        assertThat(status(receipt.id())).isEqualTo("CANCELLED");
+        assertThat(reread(production.id()).status()).as("left to the coordinator").isEqualTo(ProductionOrderStatus.SENT);
+        assertThat(stoppedNotices(production.id())).isZero();
+    }
+
+    @Test
+    @DisplayName("17 BR-07: a production order never sent, its sales order cancelled: stopped, and no producer is told")
+    void neverSentIsStoppedWithoutTellingTheProducer() {
+        UUID orderId = confirmedOrderAtA();
+        ProductionOrder draft = productionOrders.drawUp(orderId, 1, producer.id(), coordinator);
+
+        asSales(() -> orders.cancel(orderId, new CancelOrderCommand(CancellationReasonCode.CUSTOMER_REQUEST,
+                "Customer changed supplier", null, sales.userId())));
+
+        Await.until("the unsent production order is stopped", Duration.ofSeconds(20),
+                () -> !reread(draft.id()).status().open());
+        assertThat(reread(draft.id()).status()).isEqualTo(ProductionOrderStatus.CANCELLED);
+        assertThat(stoppedNotices(draft.id())).as("it was never sent: nothing to stop at the producer").isZero();
+    }
+
+    private long stoppedNotices(UUID productionOrderId) {
+        return jdbc.queryForObject("""
+                SELECT count(*) FROM event_publication WHERE event_type = ? AND serialized_event LIKE ?""", Long.class,
+                com.stockflow.contracts.ProductionOrderStopped.class.getName(), "%" + productionOrderId + "%");
     }
 
     @Test

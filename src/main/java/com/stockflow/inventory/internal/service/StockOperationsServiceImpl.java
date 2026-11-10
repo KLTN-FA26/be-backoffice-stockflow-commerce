@@ -619,10 +619,10 @@ class StockOperationsServiceImpl implements StockOperations {
             }
         }
 
-        // SCRUM-142: the receipt opens the lot - one per receipt and (SKU, lot number, expiry) - so a lot number
+        // SCRUM-142: the receipt opens the lot - one per receipt and (SKU, lot number) - so a lot number
         // another receipt used before is a different lot, and the trace knows the supplier and the documents.
         UUID lotId = command.origin() == null ? null : lots.openForReceipt(new StockLots.ReceiptLot(command.sku(), lot,
-                command.expiryDate(), command.receivedAt(), command.origin().goodsReceiptId(),
+                command.receivedAt(), command.origin().goodsReceiptId(),
                 command.origin().goodsReceiptNumber(), command.origin().purchaseOrderId(),
                 command.origin().purchaseOrderNumber(), command.origin().supplierId(), command.origin().supplierName(),
                 command.origin().warehouseId(), command.origin().productionOrderId(),
@@ -634,7 +634,7 @@ class StockOperationsServiceImpl implements StockOperations {
             carton.putInStock();   // refuses a carton never counted, or not at its standard count, before its row
             int counted = carton.receivedQty();
             stockItems.save(StockItem.receiveInboundInto(carton.id(), command.sku(), location, lot,
-                    command.expiryDate(), Quantity.of(counted), command.receivedAt(), lotId));
+                    Quantity.of(counted), command.receivedAt(), lotId));
             stockPackages.save(carton);
             StockMovement line = receiptLine(command, lot, location, counted, lotId, now).arriving(carton.id());
             ledger.append(line);
@@ -795,10 +795,24 @@ class StockOperationsServiceImpl implements StockOperations {
         if (command.reason() == StockAdjustmentReason.COUNT_VARIANCE) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A count variance comes from a cycle count");
         }
+        // Cups and packaging have no expiry (kltn-docs 01 BR-17, 20 BR-13): EXPIRED stays only on adjustments made
+        // before team plan 5-1. tg_stock_adjustment_no_new_expired refuses it in the table as well.
+        if (command.reason() == StockAdjustmentReason.EXPIRED) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "Stock does not expire; write it off as DAMAGED, LOST or OTHER");
+        }
         if (command.lpn() != null) {
             return requestCartonWriteOff(command);
         }
         WarehouseScope.requireLocation(command.locationCode());
+        // Every SKU is lot-tracked (01 BR-17, team plan 5-5): a layer is named by its lot. Without one the lookup
+        // below would answer STOCK_ITEM_NOT_FOUND, as if the stock did not exist, when the request is what is short.
+        if (blankToNull(command.lotNumber()) == null) {
+            throw new BusinessException(ErrorCode.STOCK_ADJUSTMENT_LOT_REQUIRED,
+                    "%s at %s: name the lot to adjust".formatted(command.sku(), command.locationCode()),
+                    List.of(new com.stockflow.common.api.FieldError("lotNumber",
+                            "required: every SKU is lot-tracked", "NotBlank")));
+        }
         LocationId location = new LocationId(command.locationCode());
         requireNoSurplusInStaging(location, command.quantityDelta());
         // The stock item must exist now; FOUND stock adds to a lot already recorded at the location.
@@ -909,8 +923,7 @@ class StockOperationsServiceImpl implements StockOperations {
         }
         List<CountVariance.Layer> layers = stockItems.findLooseBySkuAndLocation(slot.sku(), slot.location()).stream()
                 .filter(item -> Objects.equals(blankToNull(item.lotNumber()), slot.lotNumber()))
-                .map(item -> new CountVariance.Layer(item.id(), item.receivedAt(), item.expiryDate(),
-                        item.onHand().value(), item.reserved().value()))
+                .map(item -> new CountVariance.Layer(item.id(), item.receivedAt(), item.onHand().value(), item.reserved().value()))
                 .toList();
         List<StockAdjustmentSummary> asked = new ArrayList<>();
         for (CountVariance.Share share : CountVariance.split(delta, layers)) {
@@ -959,13 +972,11 @@ class StockOperationsServiceImpl implements StockOperations {
         }
         requireLoose(item);
         int delta = adjustment.quantityDelta();
-        // A configured FIFO SKU's layer is never raised (inventory.enforce_sku_policy: "reconcile via a new stock
-        // layer"): loose units found have no provable receipt, and putting them on an old layer would make them as
-        // old as it and first out. They land on a new layer beside it, received now; the adjustment still names the
-        // layer it was asked against. FEFO and unconfigured SKUs write the named layer up, as before.
-        StockItem target = delta > 0 && policies.replenishesByNewLayer(adjustment.sku().code())
-                ? StockItem.newLayerBeside(item, now)
-                : item;
+        // A layer is never raised (inventory.enforce_sku_policy: "reconcile via a new stock layer"): every SKU leaves
+        // stock first in, first out (kltn-docs 01 BR-17, team plan 5-5), and loose units found have no provable
+        // receipt - putting them on an old layer would make them as old as it and first out. They land on a new layer
+        // beside it, received now; the adjustment still names the layer it was asked against.
+        StockItem target = delta > 0 ? StockItem.newLayerBeside(item, now) : item;
         adjustment.approveAndPost(approverId, target, now);
         stockItems.save(target);
         StockAdjustment saved = adjustments.save(adjustment);

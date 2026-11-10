@@ -140,22 +140,22 @@ SELECT pg_temp.expect_fail('G9 a second group with the same code', $q$
     VALUES (gen_random_uuid(), 'QA-SEG-530', 'Again', 0, NOW()) $q$);
 
 \echo '--- grants'
-SELECT pg_temp.expect_ok('P12 catalog-customer-prices: Sales Manager edits, Sales and Coordinator read, Customer nothing', $q$
+SELECT pg_temp.expect_ok('P12 catalog-customer-prices: Sales Manager edits, Sales reads, the warehouse manager nothing beyond reading (the coordinator role is retired, 5-7), Customer nothing', $q$
     DO $d$ BEGIN
         IF EXISTS (SELECT 1 FROM identity.role_permission rp JOIN identity.app_role r ON r.id = rp.role_id
                    JOIN identity.permission p ON p.id = rp.permission_id
                    WHERE p.resource = 'catalog-customer-prices'
                      AND (r.code IN ('CUSTOMER', 'WAREHOUSE_STAFF')
-                          OR (r.code IN ('SALES_STAFF', 'ORDER_COORDINATOR') AND p.action NOT IN ('READ', 'VIEW_PAGE'))))
+                          OR (r.code IN ('SALES_STAFF', 'WAREHOUSE_MANAGER') AND p.action NOT IN ('READ', 'VIEW_PAGE'))))
         THEN RAISE EXCEPTION 'unexpected grant'; END IF;
     END $d$ $q$);
-SELECT pg_temp.expect_ok('G6 catalog-segment-prices: E-commerce and System Admin edit, Sales and Coordinator read, Customer nothing', $q$
+SELECT pg_temp.expect_ok('G6 catalog-segment-prices: E-commerce and System Admin edit, Sales reads, the warehouse manager nothing beyond reading (the coordinator role is retired, 5-7), Customer nothing', $q$
     DO $d$ BEGIN
         IF EXISTS (SELECT 1 FROM identity.role_permission rp JOIN identity.app_role r ON r.id = rp.role_id
                    JOIN identity.permission p ON p.id = rp.permission_id
                    WHERE p.resource = 'catalog-segment-prices'
                      AND (r.code IN ('CUSTOMER', 'WAREHOUSE_STAFF')
-                          OR (r.code IN ('SALES_STAFF', 'ORDER_COORDINATOR') AND p.action NOT IN ('READ', 'VIEW_PAGE'))))
+                          OR (r.code IN ('SALES_STAFF', 'WAREHOUSE_MANAGER') AND p.action NOT IN ('READ', 'VIEW_PAGE'))))
         THEN RAISE EXCEPTION 'unexpected grant'; END IF;
         IF (SELECT count(*) FROM identity.role_permission rp JOIN identity.app_role r ON r.id = rp.role_id
             JOIN identity.permission p ON p.id = rp.permission_id
@@ -164,13 +164,13 @@ SELECT pg_temp.expect_ok('G6 catalog-segment-prices: E-commerce and System Admin
         THEN RAISE EXCEPTION 'an administrator cannot edit group prices'; END IF;
     END $d$ $q$);
 
-SELECT pg_temp.expect_ok('G10 customer-segments: admins manage, Sales and Coordinator read, Customer and warehouse nothing', $q$
+SELECT pg_temp.expect_ok('G10 customer-segments: admins manage, Sales reads, the warehouse manager nothing beyond reading (the coordinator role is retired, 5-7), Customer and warehouse nothing', $q$
     DO $d$ BEGIN
         IF EXISTS (SELECT 1 FROM identity.role_permission rp JOIN identity.app_role r ON r.id = rp.role_id
                    JOIN identity.permission p ON p.id = rp.permission_id
                    WHERE p.resource = 'customer-segments'
                      AND (r.code IN ('CUSTOMER', 'WAREHOUSE_STAFF')
-                          OR (r.code IN ('SALES_STAFF', 'ORDER_COORDINATOR') AND p.action NOT IN ('READ', 'VIEW_PAGE'))))
+                          OR (r.code IN ('SALES_STAFF', 'WAREHOUSE_MANAGER') AND p.action NOT IN ('READ', 'VIEW_PAGE'))))
         THEN RAISE EXCEPTION 'unexpected grant'; END IF;
         IF (SELECT count(*) FROM identity.role_permission rp JOIN identity.app_role r ON r.id = rp.role_id
             JOIN identity.permission p ON p.id = rp.permission_id

@@ -118,17 +118,16 @@ SELECT pg_temp.expect_fail('LC13 a STATUS_CHANGE that changes no status', $q$
             'AVAILABLE', 'STOCK_PACKAGE', gen_random_uuid(), NOW()) $q$);
 
 \echo '--- every unit has a lot (20 BR-22): any SKU may carry one, a lot-tracked one must'
-SELECT pg_temp.expect_ok('LC14 a lot on stock of a SKU that is not lot-tracked (the demo sofa)', $q$
+SELECT pg_temp.expect_ok('LC14 a lot on stock of the demo sofa', $q$
     INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at,
                                       received_at)
     VALUES (md5('qa40:lot')::uuid, 'SOFA-3S-GREY', 'HCM-A01-1-A', 'LOT-QA40', 2, 0, 'AVAILABLE', NOW(), NOW()) $q$);
-SELECT pg_temp.expect_ok('LC15 ... and more of it later', $q$
+SELECT pg_temp.expect_ok('LC15 ... and more of it later, the application naming the layer it merges into (5-5, QA 70)', $q$
+    SET LOCAL stockflow.same_receipt_merge = '7918ee7c-02ad-dfa8-d9b1-020bc6616749';
     UPDATE inventory.stock_item SET on_hand = on_hand + 1 WHERE id = md5('qa40:lot')::uuid $q$);
-SELECT pg_temp.expect_fail('LC16 stock of a lot-tracked SKU (the oak table) with no lot', $q$
-    INSERT INTO inventory.stock_item (id, sku, location_code, expiry_date, on_hand, reserved, status, created_at,
-                                      received_at)
-    VALUES (gen_random_uuid(), 'TABLE-OAK-160', 'HCM-A01-1-A', CURRENT_DATE + 365, 2, 0, 'AVAILABLE', NOW(),
-            NOW()) $q$);
+SELECT pg_temp.expect_fail('LC16 stock of any SKU (the oak table) with no lot: every SKU is lot-tracked since 5-5 (QA 70)', $q$
+    INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, created_at, received_at)
+    VALUES (gen_random_uuid(), 'TABLE-OAK-160', 'HCM-A01-1-A', 2, 0, 'AVAILABLE', NOW(), NOW()) $q$);
 
 \echo '--- the cartons it made are cartons like any other'
 SELECT pg_temp.expect_fail('LC17 a carton it made is opened and sealed again', $q$

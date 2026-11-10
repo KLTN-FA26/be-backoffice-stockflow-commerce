@@ -33,7 +33,7 @@ class InventoryCatalogSecurityIntegrationTest {
     @Autowired org.springframework.transaction.support.TransactionTemplate tx;
     @Autowired IdentityService identity;
     @Autowired com.stockflow.catalog.internal.service.CatalogProjectionService projection;
-    private static final String TEST_ROLE = "INVENTORY_PLANNER";
+    private static final String TEST_ROLE = "ACCOUNTANT";
     private List<String> originalPermissions;
 
     @BeforeEach
@@ -200,9 +200,9 @@ values (?,?,'Table',?,'DRAFT')
 
     @Test
     void inventoryControlsRequireTheMatchingPermission() throws Exception {
-        String path = "/api/v1/inventory/items/" + UUID.randomUUID() + "/policy";
+        String path = "/api/v1/inventory/items/" + UUID.randomUUID() + "/logistics";
         String body =
-                "{\"version\":0,\"reorderPoint\":5,\"removalStrategy\":\"FIFO\",\"trackingMode\":\"NONE\",\"expiryTracked\":false}";
+                "{\"version\":0,\"unitOfMeasure\":\"EACH\",\"storageClass\":\"NORMAL\",\"requiresAdultSignature\":false}";
         mvc.perform(put(path).contentType("application/json").content(body))
                 .andExpect(status().isUnauthorized());
         mvc.perform(

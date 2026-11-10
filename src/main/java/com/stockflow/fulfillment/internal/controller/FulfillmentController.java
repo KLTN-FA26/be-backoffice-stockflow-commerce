@@ -173,7 +173,7 @@ class FulfillmentController {
 
     /**
      * The pick list: one line per hold of the order's stock lines, in walking order (print lines have
-     * none, docs 07 BR-06). The assignee, and managers and coordinators of the task's warehouse.
+     * none, docs 07 BR-06). The assignee, and managers of the task's warehouse.
      */
     @GetMapping("/tasks/{taskId}/pick-lines")
     @RequiresPermission(resource = FulfillmentResources.PICK_LISTS, action = Action.READ)
@@ -232,7 +232,7 @@ class FulfillmentController {
     /**
      * X-SHORT (kltn-docs 07 §4.4 step 9, BR-09): the assignee is at the line's bin and cannot take its carton -
      * {@code NOT_FOUND} or {@code DAMAGED} - a picking step, so the picking permission. The line turns SHORT of the
-     * whole carton, nothing is deducted, the order goes ON_HOLD ({@code INVENTORY}) for the coordinator and the carton
+     * whole carton, nothing is deducted, the order goes ON_HOLD ({@code INVENTORY}) for the warehouse manager and the carton
      * is counted blind. The same report again answers 200 with the line unchanged.
      */
     @PostMapping("/tasks/{taskId}/pick-lines/{lineId}/short")
@@ -248,7 +248,7 @@ class FulfillmentController {
      * Resolves a SHORT line by reallocation (07 §4.4 step 10): as many whole cartons are allocated from other pickable
      * bins of the warehouse, FIFO, never the short one; the answer is the new lines to pick. The order resumes
      * once no line is SHORT. Too little stock is 409 {@code INSUFFICIENT_STOCK} and nothing changes. A decision of
-     * whoever assigns the work (the coordinator, the warehouse manager), not of the picker.
+     * whoever assigns the work (the warehouse manager), not of the picker.
      */
     @PostMapping("/tasks/{taskId}/pick-lines/{lineId}/reallocation")
     @RequiresPermission(resource = FulfillmentResources.TASK_ASSIGNMENT, action = Action.UPDATE)

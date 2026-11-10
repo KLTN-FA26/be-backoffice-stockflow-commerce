@@ -109,7 +109,7 @@ public final class CustomerSkuRows {
 
     /**
      * A SKU of {@code customerId} that handles like the catalogue SKU {@code like}: the same weight, sizes, packages
-     * (a two-package sofa is packed as a kit, LP2-6), storage class and lot / expiry tracking, and a barcode of its own.
+     * (a two-package sofa is packed as a kit, LP2-6), storage class, and a barcode of its own.
      * What a test of picking, packing or loading needs since every order is a contract's, whose lines are only ever the
      * customer's own SKUs (14 BR-04): the demo catalogue's goods, as the customer's.
      */
@@ -124,7 +124,7 @@ public final class CustomerSkuRows {
                        package_weight_kg = c.package_weight_kg, package_length_cm = c.package_length_cm,
                        package_width_cm = c.package_width_cm, package_height_cm = c.package_height_cm,
                        package_count = c.package_count, pack_size = c.pack_size, storage_class = c.storage_class,
-                       lot_tracked = c.lot_tracked, expiry_tracked = c.expiry_tracked, barcode = ?
+                       barcode = ?
                   FROM inventory.inventory_items c
                  WHERE i.sku = ? AND c.sku = ?""", barcode, issued.sku(), like));
         // Shipped as the catalogue SKU ships (its own packages), not in the issued carton's box.
@@ -176,7 +176,7 @@ public final class CustomerSkuRows {
                     "PK" + units, units);
             UUID pack = jdbc.queryForObject("SELECT id FROM inventory.uom_conversions WHERE inventory_item_id = ? "
                     + "AND unit_of_measure = ?", UUID.class, item, "PK" + units);
-            CartonRows.stockOfUnit(jdbc, sku, pack, "HCM-A01-1-A", 1, null, null, received, "AVAILABLE");
+            CartonRows.stockOfUnit(jdbc, sku, pack, "HCM-A01-1-A", 1, null, received, "AVAILABLE");
         });
     }
 }

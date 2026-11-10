@@ -90,12 +90,6 @@ values (?,?,?,'Move fixture','')
                             Identifiers.newId(),
                             product,
                             sku.code());
-                    jdbc.update(
-                            """
-update inventory.inventory_items set lot_tracked=true,policy_configured=true
-where sku=?
-""",
-                            sku.code());
                 });
         insertStock(BIN, 10, "AVAILABLE");
         tx.executeWithoutResult(s -> carton = CartonRows.stock(jdbc, sku.code(), BIN, 1, 10, lot,

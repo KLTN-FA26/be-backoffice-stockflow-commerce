@@ -33,7 +33,10 @@ public record StorageLocationView(UUID id, Kind kind, UUID warehouseId, String l
         this(id, kind, warehouseId, locationCode, storageClass, status, effectiveStatus, usable, null);
     }
 
-    /** What owns the location: a bin on a shelf level, a storage area on the floor, or a print subcontractor. */
+    /**
+     * What owns the location: a bin on a shelf level, a storage area on the floor, or - legacy, since subcontracting
+     * went with purchasing (4A-8) - a print subcontractor.
+     */
     public enum Kind { BIN, AREA, SUBCONTRACTOR }
 
     /** The storage condition the location offers; a SKU goes only where its own class matches (BR-01). */

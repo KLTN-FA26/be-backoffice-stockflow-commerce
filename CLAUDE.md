@@ -192,8 +192,8 @@ reserve:
 
 allocate (OrderReleaseService.release, or task creation for a never-released CONFIRMED order):
 1. SKU locks (sorted) → the order's SKU reservations FOR UPDATE
-2. plan: StockAllocator over projections of pickable, usable bins of THAT warehouse; FEFO, then real
-   received_at (BR-STK-006); expired stock never
+2. plan: StockAllocator over projections of pickable, usable bins of THAT warehouse; FIFO by real
+   received_at for every SKU (no expiry since team plan 5-1, kltn-docs 01 BR-17)
 3. lock each stock row once, in id order (findByIdForUpdate refreshes) → StockItem.allocate
 4. SKU reservation → ALLOCATED; the order line swaps its id for the allocation ids
 ```
@@ -284,7 +284,7 @@ book quantity, so nothing is frozen while people count. `CycleCountCountingServi
 `@Transactional` method: count row `FOR UPDATE` → SKU advisory locks in sorted order → cartons `FOR UPDATE` (a carton line
 follows its carton to its current bin) → `COMPLETED` → `StockOperations.requestCountVariance` per differing
 line, which raises pending `COUNT_VARIANCE` adjustments through the SCRUM-145 four-eyes mechanism — a loose
-shortage split over the slot's rows, free units first then held ones, each FEFO (`CYCLE_COUNT_STALE` rolls
+shortage split over the slot's rows, free units first then held ones, each FIFO (`CYCLE_COUNT_STALE` rolls
 the whole submission back), one adjustment per carton. Nothing posts here: review and posting are the
 adjustment's own `PENDING_APPROVAL → POSTED`, and a SHORT_PICK slot stays out of ATP until its line's
 adjustments are decided. A slot with a pending `COUNT_VARIANCE` adjustment is busy — for new counts and for
@@ -340,7 +340,7 @@ stores no assignee, warehouse or suggestion reasons (no migration; Tú owns the 
 
 ### Picking by carton (SCRUM-473)
 
-`StockAllocator.plan` keeps FEFO/FIFO first and orders only the group where the need runs out: whole sealed cartons
+`StockAllocator.plan` keeps FIFO first and orders only the group where the need runs out: whole sealed cartons
 (largest first, while each fits), then opened cartons and loose units (smallest first), then a sealed carton broken
 last. A sealed carton another order holds part of counts as opened. The facts come from the same projection
 (`AvailabilityRow.stockPackageId`, `wholeCarton`), so every caller of `plan` - order release and short-pick

@@ -7,7 +7,7 @@ import java.util.UUID;
 
 /**
  * The vehicle-type catalogue of full-truckload load planning (SCRUM-287; kltn-docs 09 §3, §4.2). Read by dispatch
- * staff and coordinators; kept by the warehouse manager. The ISO container presets (20DC, 40DC, 40HC, 45HC) are seeded.
+ * staff and managers; kept by the warehouse manager. The ISO container presets (20DC, 40DC, 40HC, 45HC) are seeded.
  */
 public interface VehicleTypes {
 

@@ -22,25 +22,21 @@ class InventoryItemDirectoryAdapter implements InventoryItemDirectory {
     @Override
     public Optional<InventoryItemPolicy> policyOf(UUID inventoryItemId) {
         @SuppressWarnings("unchecked")
-        List<Object[]> rows = entityManager.createNativeQuery("""
-                        SELECT sku, lot_tracked, expiry_tracked, max_shelf_life_days
-                          FROM inventory.inventory_items WHERE id = :id""")
+        List<String> rows = entityManager.createNativeQuery(
+                        "SELECT sku FROM inventory.inventory_items WHERE id = :id")
                 .setParameter("id", inventoryItemId)
                 .getResultList();
-        return rows.stream().findFirst().map(row -> new InventoryItemPolicy(inventoryItemId, (String) row[0],
-                (Boolean) row[1], (Boolean) row[2], days(row[3])));
+        return rows.stream().findFirst().map(sku -> new InventoryItemPolicy(inventoryItemId, sku));
     }
 
     @Override
     public Optional<InventoryItemPolicy> policyOf(String sku) {
         @SuppressWarnings("unchecked")
-        List<Object[]> rows = entityManager.createNativeQuery("""
-                        SELECT id, lot_tracked, expiry_tracked, max_shelf_life_days
-                          FROM inventory.inventory_items WHERE sku = :sku""")
+        List<UUID> rows = entityManager.createNativeQuery(
+                        "SELECT id FROM inventory.inventory_items WHERE sku = :sku")
                 .setParameter("sku", sku)
                 .getResultList();
-        return rows.stream().findFirst().map(row -> new InventoryItemPolicy((UUID) row[0], sku,
-                (Boolean) row[1], (Boolean) row[2], days(row[3])));
+        return rows.stream().findFirst().map(id -> new InventoryItemPolicy(id, sku));
     }
 
     @Override
@@ -49,19 +45,13 @@ class InventoryItemDirectoryAdapter implements InventoryItemDirectory {
             return java.util.Map.of();
         }
         @SuppressWarnings("unchecked")
-        List<Object[]> rows = entityManager.createNativeQuery("""
-                        SELECT id, sku, lot_tracked, expiry_tracked, max_shelf_life_days
-                          FROM inventory.inventory_items WHERE id IN (:ids)""")
+        List<Object[]> rows = entityManager.createNativeQuery(
+                        "SELECT id, sku FROM inventory.inventory_items WHERE id IN (:ids)")
                 .setParameter("ids", java.util.Set.copyOf(inventoryItemIds))
                 .getResultList();
         var policies = new java.util.HashMap<UUID, InventoryItemPolicy>();
-        rows.forEach(row -> policies.put((UUID) row[0], new InventoryItemPolicy((UUID) row[0], (String) row[1],
-                (Boolean) row[2], (Boolean) row[3], days(row[4]))));
+        rows.forEach(row -> policies.put((UUID) row[0], new InventoryItemPolicy((UUID) row[0], (String) row[1])));
         return policies;
-    }
-
-    private static Integer days(Object column) {
-        return column == null ? null : ((Number) column).intValue();
     }
 
     @Override

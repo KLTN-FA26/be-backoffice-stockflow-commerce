@@ -29,19 +29,16 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * Who may read and who may edit an inventory item, through the real filter chain: warehouse staff read but cannot
- * write, the planner and the warehouse manager write, and holding only the product module's UPDATE is not enough
+ * write, the warehouse manager writes, and holding only the product module's UPDATE is not enough
  * because the item has its own permission resource.
  */
 @SecuredIntegrationTest
 class InventoryItemSecurityIntegrationTest {
 
-    private static final String POLICY_BODY =
-            "{\"version\":%d,\"reorderPoint\":20,\"removalStrategy\":\"FEFO\",\"trackingMode\":\"NONE\","
-                    + "\"expiryTracked\":false}";
     private static final String LOGISTICS_BODY =
             "{\"version\":%d,\"unitOfMeasure\":\"EACH\",\"storageClass\":\"NORMAL\",\"requiresAdultSignature\":false}";
     /** The role whose grants the last test rewrites; restored afterwards, as InventoryCatalogSecurityIntegrationTest does. */
-    private static final String REWRITTEN_ROLE = "INVENTORY_PLANNER";
+    private static final String REWRITTEN_ROLE = "ACCOUNTANT";
 
     @Autowired MockMvc mockMvc;
     @MockitoBean JwtDecoder decoder;
@@ -97,18 +94,13 @@ class InventoryItemSecurityIntegrationTest {
         mvc.asRole(Role.WAREHOUSE_STAFF, user, put(url("/logistics")).contentType(MediaType.APPLICATION_JSON)
                         .content(LOGISTICS_BODY.formatted(version())))
                 .andExpect(status().isForbidden());
-        mvc.asRole(Role.WAREHOUSE_STAFF, user, put(url("/policy")).contentType(MediaType.APPLICATION_JSON)
-                        .content(POLICY_BODY.formatted(version())))
-                .andExpect(status().isForbidden());
     }
 
     @Test
-    void plannerAndManagerWrite() throws Exception {
-        for (Role role : List.of(Role.INVENTORY_PLANNER, Role.WAREHOUSE_MANAGER)) {
-            mvc.asRole(role, UUID.randomUUID(), put(url("/policy")).contentType(MediaType.APPLICATION_JSON)
-                            .content(POLICY_BODY.formatted(version())))
-                    .andExpect(status().isOk());
-        }
+    void managerWrites() throws Exception {
+        mvc.asRole(Role.WAREHOUSE_MANAGER, UUID.randomUUID(), put(url("/logistics"))
+                        .contentType(MediaType.APPLICATION_JSON).content(LOGISTICS_BODY.formatted(version())))
+                .andExpect(status().isOk());
     }
 
     @Test
@@ -122,9 +114,6 @@ class InventoryItemSecurityIntegrationTest {
         identity.updateRolePermissions(new UpdateRolePermissionsCommand(REWRITTEN_ROLE,
                 identity.roleMatrix(REWRITTEN_ROLE).version(), List.of("product-products:UPDATE")));
         String token = TestTokens.bearer(decoder, UUID.randomUUID(), Map.of("scope_level", "ALL"), REWRITTEN_ROLE);
-        mockMvc.perform(put(url("/policy")).header("Authorization", token).contentType(MediaType.APPLICATION_JSON)
-                        .content(POLICY_BODY.formatted(version())))
-                .andExpect(status().isForbidden());
         mockMvc.perform(put(url("/logistics")).header("Authorization", token).contentType(MediaType.APPLICATION_JSON)
                         .content(LOGISTICS_BODY.formatted(version())))
                 .andExpect(status().isForbidden());

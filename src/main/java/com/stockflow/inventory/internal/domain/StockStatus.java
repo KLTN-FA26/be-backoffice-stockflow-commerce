@@ -13,8 +13,11 @@ package com.stockflow.inventory.internal.domain;
  *   INBOUND ──putaway──▶ AVAILABLE ──damageFound──▶ DAMAGED
  *                            │
  *   returned goods: QUARANTINE ──passed──▶ (putaway) AVAILABLE
- *                     └──condemned──▶ BLOCKED      └──expiryReached──▶ EXPIRED
+ *                     └──condemned──▶ BLOCKED
  * </pre>
+ *
+ * <p>{@link #EXPIRED} is no longer reached: cups and packaging have no expiry date and the expiry sweep is gone
+ * (kltn-docs 01 BR-17, 20 BR-13; team plan 5-1).</p>
  *
  * <p>{@link StockItem#receive} still creates {@link #QUARANTINE} stock; the receipt flow that
  * starts goods as {@link #INBOUND} arrives with SCRUM-435.</p>
@@ -37,7 +40,11 @@ public enum StockStatus {
     /** Damaged in handling; awaiting a write-off decision. */
     DAMAGED,
 
-    /** Past its expiry date. Kept as a row so the loss stays traceable, never sold. */
+    /**
+     * Legacy: past its expiry date, set by the nightly expiry sweep removed in team plan 5-1. Nothing enters it any more
+     * ({@code tg_stock_item_no_new_expired}); kept because rows and ledger lines recorded before carry it. Never
+     * sellable; an approved adjustment writes what is left off.
+     */
     EXPIRED,
 
     /**

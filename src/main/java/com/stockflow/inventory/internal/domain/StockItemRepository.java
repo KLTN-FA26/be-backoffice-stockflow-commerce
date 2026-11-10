@@ -2,7 +2,6 @@ package com.stockflow.inventory.internal.domain;
 
 import com.stockflow.common.domain.Sku;
 
-import java.time.LocalDate;
 import java.time.Instant;
 import java.util.Collection;
 import java.util.List;
@@ -63,12 +62,12 @@ public interface StockItemRepository {
     List<StockItem> findAvailableBySku(Sku sku);
 
     /**
-     * The stock rows of these SKUs a release could allocate: AVAILABLE, unexpired, each the whole content of a sealed
-     * carton in stock that nothing holds (team plan 4C-2; kltn-docs 07 BR-03). Available to promise is counted from
-     * these, so checkout never promises loose units or an opened carton that no release would hand out. Where they
-     * stand is the caller's to judge (pickable bins are the warehouse module's).
+     * The stock rows of these SKUs a release could allocate: AVAILABLE, each the whole content of a sealed carton in
+     * stock that nothing holds (team plan 4C-2; kltn-docs 07 BR-03). Available to promise is counted from these, so
+     * checkout never promises loose units or an opened carton that no release would hand out. Where they stand is the
+     * caller's to judge (pickable bins are the warehouse module's). Nothing expires (team plan 5-1).
      */
-    List<Allocatable> findAllocatable(Collection<String> skus, LocalDate today);
+    List<Allocatable> findAllocatable(Collection<String> skus);
 
     /** A row {@link #findAllocatable} returns: the carton's units at its location. */
     record Allocatable(StockItemId id, String sku, String locationCode, int units) {
@@ -153,7 +152,7 @@ public interface StockItemRepository {
      * left or into their layer at another bin). The database refuses to raise an existing FIFO layer's
      * {@code on_hand} — replenishment must be a new layer, or FIFO loses the age of the incoming units — and
      * this tells it, for this row and this statement only, that nothing new is entering: the units carry the
-     * same receipt time, lot, expiry and serial, which the database checks as before.
+     * same receipt time, lot and serial, which the database checks as before.
      */
     StockItem saveMerged(StockItem stockItem);
 }

@@ -54,12 +54,12 @@ class ProductLifecycleController {
 
     /**
      * Terminal (WBS 3.1.8.1). BR-PRD-005 is a warning (kltn-docs 01 step 12): the product is discontinued
-     * and the response lists the purchase order lines and order lines that still refer to it. The body
+     * and the response lists the production order lines and order lines that still refer to it. The body
      * carries the reason (mandatory) and the version the screen read.
      */
     @PostMapping("/{productId}/discontinuation")
     @Operation(summary = "Discontinue an approved, published or suspended product, with a reason; "
-            + "open purchase orders and orders are reported as warnings, never refused")
+            + "open production orders and orders are reported as warnings, never refused")
     @RequiresPermission(resource = ProductResources.LIFECYCLE, action = Action.APPROVE)
     public ApiResponse<ProductDiscontinuationResponse> discontinue(@PathVariable UUID productId,
                                                                    @Valid @RequestBody DiscontinueProductRequest request) {
@@ -68,7 +68,7 @@ class ProductLifecycleController {
     }
 
     @PostMapping("/{productId}/suspension")
-    @Operation(summary = "Suspend an approved or published product (INACTIVE): hidden, no new purchase order lines")
+    @Operation(summary = "Suspend an approved or published product (INACTIVE): hidden, no new quote or order lines")
     @RequiresPermission(resource = ProductResources.LIFECYCLE, action = Action.APPROVE)
     public ApiResponse<ProductResponse> suspend(@PathVariable UUID productId,
                                                 @Valid @RequestBody SuspendProductRequest request) {

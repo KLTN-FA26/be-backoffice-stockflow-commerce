@@ -129,7 +129,7 @@ class StagingIntegrationTest {
             CartonRows.stock(jdbc, SOFA.code(), SOFA_BIN, 3, 1, null, longAgo);
             CartonRows.stock(jdbc, SOFA.code(), OTHER_SOFA_BIN, 3, 1, null, longAgo);
         });
-        coordinator = staff("ORDER_COORDINATOR");
+        coordinator = staff("WAREHOUSE_MANAGER", HCM);
         managerHcm = staff("WAREHOUSE_MANAGER", HCM);
         pickerHcm = staff("WAREHOUSE_STAFF", HCM);
         otherPickerHcm = staff("WAREHOUSE_STAFF", HCM);
@@ -208,7 +208,7 @@ class StagingIntegrationTest {
     }
 
     private String oc() {
-        return token(coordinator, "ORDER_COORDINATOR");
+        return token(coordinator, "WAREHOUSE_MANAGER");
     }
 
     private String manager() {

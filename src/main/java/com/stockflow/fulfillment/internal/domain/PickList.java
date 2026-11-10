@@ -277,7 +277,7 @@ public final class PickList {
      * The picker is at the line's bin and cannot take its carton - not there, or damaged (07 §4.4 step 9, X-SHORT): the
      * line turns SHORT of the whole carton, with the reason; nothing is picked and no stock is deducted. A carton is
      * taken whole or not at all (BR-04), so there is no count of units found. The order stops (the caller puts it
-     * ON_HOLD) and the carton is counted blind (BR-09) until the coordinator reallocates. The same report again - same
+     * ON_HOLD) and the carton is counted blind (BR-09) until the warehouse manager reallocates. The same report again - same
      * bin, same reason - answers with the line as it is.
      *
      * <p>A STAGED line too (team plan 4C-5, review M2; kltn-docs 20 §4.9 step 4): its carton was moved to the staging
@@ -330,7 +330,7 @@ public final class PickList {
     }
 
     /**
-     * The coordinator moved a SHORT line's allocation to other bins of the warehouse: the short line is
+     * The warehouse manager moved a SHORT line's allocation to other bins of the warehouse: the short line is
      * superseded (CANCELLED, its shortfall kept) and one new OPEN line per new allocation follows the last stop.
      *
      * @throws BusinessException {@code PICK_LINE_NOT_OPEN} unless the line is SHORT;
@@ -360,7 +360,7 @@ public final class PickList {
         return added;
     }
 
-    /** Whether a line is still SHORT, waiting for the coordinator. */
+    /** Whether a line is still SHORT, waiting for the warehouse manager. */
     public boolean hasShortLines() {
         return lines.stream().anyMatch(line -> line.status() == PickLineStatus.SHORT);
     }

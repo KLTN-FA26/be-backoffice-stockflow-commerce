@@ -26,8 +26,20 @@ public interface OrderSearchRepository {
      * @param placedBefore exclusive; null for no upper bound
      */
     record Criteria(String search, List<OrderStatus> statuses, UUID customerId,
-                    Instant placedFrom, Instant placedBefore) {
+                    Instant placedFrom, Instant placedBefore, java.util.Set<UUID> warehouseIds) {
+
+        /** No warehouse limit. */
+        public Criteria(String search, List<OrderStatus> statuses, UUID customerId, Instant placedFrom,
+                        Instant placedBefore) {
+            this(search, statuses, customerId, placedFrom, placedBefore, null);
+        }
     }
+
+    /**
+     * Whether the order ships from, or was released to, one of {@code warehouseIds} (team plan 5-7 review M1): what a
+     * caller limited to warehouses may read of it. False for an unknown order and for an empty set.
+     */
+    boolean inWarehouses(UUID orderId, java.util.Set<UUID> warehouseIds);
 
     /** Rows carry the contact block and shipping address — the list shows the recipient — but no lines. */
     Page<OrderSummary> search(Criteria criteria, Pageable pageable);

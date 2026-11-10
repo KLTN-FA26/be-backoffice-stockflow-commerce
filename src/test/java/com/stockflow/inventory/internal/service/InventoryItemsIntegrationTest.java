@@ -8,11 +8,8 @@ import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.CurrentUserProvider;
 import com.stockflow.common.security.DataScope;
-import com.stockflow.inventory.api.InventoryPolicy;
 import com.stockflow.inventory.api.ItemLogistics;
-import com.stockflow.inventory.api.RemovalStrategy;
 import com.stockflow.inventory.api.StorageClass;
-import com.stockflow.inventory.api.TrackingMode;
 import com.stockflow.product.api.ProductService;
 import com.stockflow.product.internal.service.ProductTaxonomyService;
 import com.stockflow.product.internal.service.ProductVariantService;
@@ -96,14 +93,12 @@ class InventoryItemsIntegrationTest {
     }
 
     @Test
-    void getReturnsTheThreeGroups() {
+    void getReturnsTheItem() {
         var f = fixture();
         var d = items.get(f.itemId());
         assertThat(d.id()).isEqualTo(f.itemId());
         assertThat(d.sku()).isEqualTo(f.sku());
         assertThat(d.logistics().unitOfMeasure()).isEqualTo("EACH");
-        assertThat(d.policy().removalStrategy()).isEqualTo(RemovalStrategy.FEFO);
-        assertThat(d.evaluation().usableOnHand()).isZero();
     }
 
     @Test
@@ -121,15 +116,6 @@ class InventoryItemsIntegrationTest {
     }
 
     @Test
-    void configureSavesThePolicy() {
-        var f = fixture();
-        var before = items.get(f.itemId());
-        var after = items.configure(f.itemId(), before.version(),
-                new InventoryPolicy(500, null, null, RemovalStrategy.FEFO, TrackingMode.NONE, false, null));
-        assertThat(after.policy().reorderPoint()).isEqualTo(500);
-    }
-
-    @Test
     void writesAuditTheItemIdNotTheVariant() {
         var f = fixture();
         var before = items.get(f.itemId());
@@ -143,9 +129,7 @@ class InventoryItemsIntegrationTest {
     void writesNoProductHistory() {
         var f = fixture();
         var before = items.get(f.itemId());
-        var described = items.describe(f.itemId(), before.version(), logistics("EACH", null, "0.120"));
-        items.configure(f.itemId(), described.version(),
-                new InventoryPolicy(10, 2, 20, RemovalStrategy.FIFO, TrackingMode.NONE, false, null));
+        items.describe(f.itemId(), before.version(), logistics("EACH", null, "0.120"));
         assertThat(jdbc.queryForObject("""
                 select count(*) from product.product_change_log
                 where change_type in ('LOGISTICS','INVENTORY_CONTROL') and product_id = ?""",
@@ -161,35 +145,13 @@ class InventoryItemsIntegrationTest {
         assertThat(after.version()).isEqualTo(before.version() + 1);
     }
 
-    /**
-     * Every unit carries a lot (kltn-docs 20 BR-22): V20261111000110 labels the stock that had none {@code UNTRACED},
-     * also of SKUs that are not lot-tracked, so a lot on their stock does not conflict with their policy - or every
-     * policy edit of such a SKU would be refused from then on.
-     */
     @Test
-    void aLotOnStockOfASkuThatIsNotLotTrackedDoesNotConflict() {
+    void unitChangeWhileStockIsHeldIs409() {
         var f = fixture();
         tx.executeWithoutResult(s -> jdbc.update("""
                 insert into inventory.stock_item(id,sku,location_code,lot_number,on_hand,reserved,status,received_at,
                     created_at)
                 values (?,?,'HCM-A01-1-A','UNTRACED',5,0,'AVAILABLE',now(),now())""", UUID.randomUUID(), f.sku()));
-        try {
-            var before = items.get(f.itemId());
-            var after = items.configure(f.itemId(), before.version(),
-                    new InventoryPolicy(500, null, null, RemovalStrategy.FEFO, TrackingMode.NONE, false, null));
-            assertThat(after.policy().trackingMode()).isEqualTo(TrackingMode.NONE);
-            assertThat(after.policy().reorderPoint()).isEqualTo(500);
-        } finally {
-            tx.executeWithoutResult(s -> jdbc.update("delete from inventory.stock_item where sku = ?", f.sku()));
-        }
-    }
-
-    @Test
-    void unitChangeWhileStockIsHeldIs409() {
-        var f = fixture();
-        tx.executeWithoutResult(s -> jdbc.update("""
-                insert into inventory.stock_item(id,sku,location_code,on_hand,reserved,status,received_at,created_at)
-                values (?,?,'HCM-A01-1-A',5,0,'AVAILABLE',now(),now())""", UUID.randomUUID(), f.sku()));
         var before = items.get(f.itemId());
         try {
             assertThat(codeOf(() -> items.describe(f.itemId(), before.version(), logistics("BOX", null, "0.120"))))
@@ -213,52 +175,12 @@ class InventoryItemsIntegrationTest {
     }
 
     @Test
-    void staleVersionOnPolicyIsOptimisticLock() {
+    void aStaleVersionIsOptimisticLock() {
         var f = fixture();
         var before = items.get(f.itemId());
-        items.describe(f.itemId(), before.version(), logistics("EACH", null, "0.120"));
-        assertThat(codeOf(() -> items.configure(f.itemId(), before.version(),
-                new InventoryPolicy(500, null, null, RemovalStrategy.FEFO, TrackingMode.NONE, false, null))))
-                .isEqualTo(ErrorCode.OPTIMISTIC_LOCK);
-    }
-
-    @Test
-    void staleVersionOnLogisticsIsOptimisticLock() {
-        var f = fixture();
-        var before = items.get(f.itemId());
-        items.configure(f.itemId(), before.version(),
-                new InventoryPolicy(500, null, null, RemovalStrategy.FEFO, TrackingMode.NONE, false, null));
+        items.describe(f.itemId(), before.version(), logistics("EACH", null, "0.130"));
         assertThat(codeOf(() -> items.describe(f.itemId(), before.version(), logistics("EACH", null, "0.120"))))
                 .isEqualTo(ErrorCode.OPTIMISTIC_LOCK);
     }
 
-    @Test
-    void sharedVersionRefusesTheSecondGroup() {
-        var f = fixture();
-        long v = items.get(f.itemId()).version();
-        items.describe(f.itemId(), v, logistics("EACH", null, "0.120"));
-        assertThat(codeOf(() -> items.configure(f.itemId(), v,
-                new InventoryPolicy(500, null, null, RemovalStrategy.FEFO, TrackingMode.NONE, false, null))))
-                .isEqualTo(ErrorCode.OPTIMISTIC_LOCK);
-    }
-
-    @Test
-    void policySaveStillReevaluatesAlerts() {
-        // An approved product's SKU: a REORDER alert is raised only for a SKU a purchase order may take (#120).
-        String sku = tx.execute(s -> ReferenceRows.approvedProduct(entityManager).sku());
-        var f = new Fixture(null, sku, itemId(sku));
-        tx.executeWithoutResult(s -> jdbc.update("""
-                insert into inventory.stock_item(id,sku,location_code,on_hand,reserved,status,received_at,created_at)
-                values (?,?,'HCM-A01-1-A',5,0,'AVAILABLE',now(),now())""", UUID.randomUUID(), f.sku()));
-        try {
-            var before = items.get(f.itemId());
-            items.configure(f.itemId(), before.version(),
-                    new InventoryPolicy(500, null, null, RemovalStrategy.FEFO, TrackingMode.NONE, false, null));
-            Await.until("the alert from the policy-change listener", Duration.ofSeconds(30), () -> jdbc.queryForObject(
-                    "SELECT count(*) FROM inventory.stock_alert WHERE sku = ? AND kind = 'REORDER' AND status = 'OPEN'",
-                    Long.class, f.sku()) == 1);
-        } finally {
-            tx.executeWithoutResult(s -> jdbc.update("delete from inventory.stock_item where sku = ?", f.sku()));
-        }
-    }
 }

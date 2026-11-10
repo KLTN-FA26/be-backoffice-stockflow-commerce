@@ -42,19 +42,18 @@ class BinOccupancyQueryIntegrationTest {
         skuA = "BOQ-A-" + suffix;
         skuB = "BOQ-B-" + suffix;
         tx.executeWithoutResult(s -> {
-            item(skuA, "2.000", true);
-            item(skuB, null, false);
+            item(skuA, "2.000");
+            item(skuB, null);
         });
     }
 
-    private void item(String sku, String weight, boolean lotTracked) {
+    private void item(String sku, String weight) {
         UUID product = Identifiers.newId();
         jdbc.update("insert into product.products(id,code,name,slug) values (?,?,?,?)", product, sku,
                 "Occupancy fixture", sku.toLowerCase(Locale.ROOT));
         jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature) values (?,?,?,?,'')",
                 Identifiers.newId(), product, sku, "Occupancy fixture");
-        jdbc.update("update inventory.inventory_items set weight_kg = ?::numeric, lot_tracked = ? where sku = ?",
-                weight, lotTracked, sku);
+        jdbc.update("update inventory.inventory_items set weight_kg = ?::numeric where sku = ?", weight, sku);
     }
 
     private void stock(String sku, String bin, int onHand, String lot) {
@@ -73,7 +72,7 @@ class BinOccupancyQueryIntegrationTest {
         Occupancy before = query.occupancyOf(List.of(BIN), skuA, "LOT-1").getOrDefault(BIN, Occupancy.EMPTY);
         stock(skuA, BIN, 10, "LOT-1");
         stock(skuA, BIN, 5, "LOT-2");
-        stock(skuB, BIN, 7, null);
+        stock(skuB, BIN, 7, "LOT-B");
 
         Map<String, Occupancy> out = query.occupancyOf(List.of(BIN, EMPTY_BIN), skuA, "LOT-1");
 

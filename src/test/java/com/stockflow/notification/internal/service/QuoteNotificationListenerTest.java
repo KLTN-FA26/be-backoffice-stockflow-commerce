@@ -1,6 +1,5 @@
 package com.stockflow.notification.internal.service;
 
-import com.stockflow.common.http.RestClientFactory;
 import com.stockflow.contracts.CustomerActedOnQuote;
 import com.stockflow.notification.api.Inbox;
 import com.stockflow.notification.api.InboxMessage;
@@ -38,7 +37,7 @@ class QuoteNotificationListenerTest {
             mock(com.stockflow.identity.api.IdentityService.class);
     private final Inbox inbox = mock(Inbox.class);
     private final QuoteNotificationListener listener = new QuoteNotificationListener(
-            new NotificationSender(new SmtpEmailTransport(mail), mock(RestClientFactory.class), "noreply@stockflow.local", ""),
+            new NotificationSender(new SmtpEmailTransport(mail), "noreply@stockflow.local"),
             new StaffDirectory(identity), new StaffNotices(inbox));
 
     @BeforeEach

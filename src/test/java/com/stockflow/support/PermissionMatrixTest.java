@@ -118,6 +118,12 @@ class PermissionMatrixTest {
             Map.entry("POST /api/v1/fulfillment/carrier-webhooks/{carrierCode}",
                     "public: carriers' webhooks; the carrier's configured header or HMAC signature is the authorisation (permitAll for POST, 3-5)"),
             Map.entry("GET /api/v1/public/products/{productId}/gallery", "public: published product images (permitAll)"),
+            Map.entry("GET /api/v1/production-order-files/{id}/slip",
+                    "public: a producer's link to its production order slip; the HMAC-signed, time-limited link is the "
+                            + "authorisation, checked again on use with the order still open (permitAll for GET, 4A-3)"),
+            Map.entry("GET /api/v1/production-order-files/{id}/print-files/{designSnapshotId}",
+                    "public: a producer's link to a print file of its production order; the signed link is the "
+                            + "authorisation, the file's recorded digest checked before it is handed out (permitAll for GET, 4A-3)"),
             Map.entry("GET /api/v1/catalog/categories",
                     "any signed-in user: the storefront category navigation, visible categories only (SCRUM-171)"),
             Map.entry("GET /api/v1/catalog/products", "any signed-in user: published storefront catalog, no private data"),
@@ -257,11 +263,11 @@ class PermissionMatrixTest {
      * always included SYSTEM_ADMIN. Plus the one deliberate change of the same migration (ACCREAD, 2026-10-21).
      */
     private static final Map<String, Set<Role>> SEEDED_HOLDERS = Map.ofEntries(
-            Map.entry("fulfillment-task-assignment:CREATE", Set.of(Role.ORDER_COORDINATOR, Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
-            Map.entry("fulfillment-task-assignment:UPDATE", Set.of(Role.ORDER_COORDINATOR, Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
-            Map.entry("fulfillment-task-oversight:READ", Set.of(Role.ORDER_COORDINATOR, Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
+            Map.entry("fulfillment-task-assignment:CREATE", Set.of(Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
+            Map.entry("fulfillment-task-assignment:UPDATE", Set.of(Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
+            Map.entry("fulfillment-task-oversight:READ", Set.of(Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             Map.entry("fulfillment-pick-lists:READ", Set.of(Role.WAREHOUSE_STAFF, Role.WAREHOUSE_MANAGER,
-                    Role.ORDER_COORDINATOR, Role.SYSTEM_ADMIN)),
+                    Role.SYSTEM_ADMIN)),
             Map.entry("fulfillment-picking:READ", Set.of(Role.WAREHOUSE_STAFF, Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             Map.entry("fulfillment-picking:UPDATE", Set.of(Role.WAREHOUSE_STAFF, Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             Map.entry("fulfillment-packages:READ", Set.of(Role.WAREHOUSE_STAFF, Role.WAREHOUSE_MANAGER,
@@ -271,19 +277,19 @@ class PermissionMatrixTest {
             Map.entry("fulfillment-packing:APPROVE", Set.of(Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             Map.entry("fulfillment-carriers:UPDATE", Set.of(Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             Map.entry("fulfillment-vehicle-types:VIEW_PAGE", Set.of(Role.WAREHOUSE_STAFF, Role.WAREHOUSE_MANAGER,
-                    Role.ORDER_COORDINATOR, Role.SYSTEM_ADMIN)),
+                    Role.SYSTEM_ADMIN)),
             Map.entry("fulfillment-vehicle-types:READ", Set.of(Role.WAREHOUSE_STAFF, Role.WAREHOUSE_MANAGER,
-                    Role.ORDER_COORDINATOR, Role.SYSTEM_ADMIN)),
+                    Role.SYSTEM_ADMIN)),
             Map.entry("fulfillment-vehicle-types:UPDATE", Set.of(Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             Map.entry("fulfillment-load-plans:VIEW_PAGE", Set.of(Role.WAREHOUSE_STAFF, Role.WAREHOUSE_MANAGER,
-                    Role.ORDER_COORDINATOR, Role.SYSTEM_ADMIN)),
+                    Role.SYSTEM_ADMIN)),
             Map.entry("fulfillment-load-plans:READ", Set.of(Role.WAREHOUSE_STAFF, Role.WAREHOUSE_MANAGER,
-                    Role.ORDER_COORDINATOR, Role.SYSTEM_ADMIN)),
+                    Role.SYSTEM_ADMIN)),
             Map.entry("fulfillment-load-plans:CREATE", Set.of(Role.WAREHOUSE_STAFF, Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             Map.entry("fulfillment-load-plans:UPDATE", Set.of(Role.WAREHOUSE_STAFF, Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
-            Map.entry("fulfillment-load-estimates:CREATE", Set.of(Role.ORDER_COORDINATOR, Role.WAREHOUSE_MANAGER,
+            Map.entry("fulfillment-load-estimates:CREATE", Set.of(Role.SALES_STAFF, Role.WAREHOUSE_MANAGER,
                     Role.SYSTEM_ADMIN)),
-            Map.entry("fulfillment-load-estimates:READ", Set.of(Role.ORDER_COORDINATOR, Role.WAREHOUSE_MANAGER,
+            Map.entry("fulfillment-load-estimates:READ", Set.of(Role.SALES_STAFF, Role.WAREHOUSE_MANAGER,
                     Role.SYSTEM_ADMIN)),
             Map.entry("fulfillment-dispatch:UPDATE", Set.of(Role.WAREHOUSE_STAFF, Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             // SCRUM-474 UNLOAD-DESIGN point 6: only the warehouse manager (and the admin) calls off after loading started.
@@ -320,7 +326,7 @@ class PermissionMatrixTest {
             // 4B-6, kltn-docs 15 §2: the accountant records and voids receipts; Sales, the coordinator and the customer
             // (scope OWN) read the installments.
             Map.entry("payment-installments:READ", Set.of(Role.ACCOUNTANT, Role.SALES_STAFF, Role.SALES_MANAGER,
-                    Role.ORDER_COORDINATOR, Role.CUSTOMER, Role.SYSTEM_ADMIN)),
+                    Role.CUSTOMER, Role.SYSTEM_ADMIN)),
             Map.entry("payment-receipts:CREATE", Set.of(Role.ACCOUNTANT, Role.SYSTEM_ADMIN)),
             Map.entry("payment-receipts:UPDATE", Set.of(Role.ACCOUNTANT, Role.SYSTEM_ADMIN)),
             // 4B-9, kltn-docs 15 §4.5 step 16: the accountant records and voids refunds; Sales and the customer (scope
@@ -332,7 +338,7 @@ class PermissionMatrixTest {
             // 4B-7, kltn-docs 17 §4.2 step 2: Sales chooses the shipping warehouse; those who follow the order read it.
             Map.entry("sales-order-shipping-warehouses:UPDATE", Set.of(Role.SALES_STAFF, Role.SYSTEM_ADMIN)),
             Map.entry("sales-order-shipping-warehouses:READ", Set.of(Role.SALES_STAFF, Role.SALES_MANAGER,
-                    Role.ORDER_COORDINATOR, Role.WAREHOUSE_MANAGER, Role.PRODUCTION_COORDINATOR, Role.SYSTEM_ADMIN)),
+                    Role.WAREHOUSE_MANAGER, Role.PRODUCTION_COORDINATOR, Role.SYSTEM_ADMIN)),
             // 4A-2, kltn-docs 17 §4.3, BR-23: the coordinator draws production orders up, the Sales Manager approves.
             Map.entry("production-orders:CREATE", Set.of(Role.PRODUCTION_COORDINATOR, Role.SYSTEM_ADMIN)),
             Map.entry("production-orders:UPDATE", Set.of(Role.PRODUCTION_COORDINATOR, Role.SYSTEM_ADMIN)),
@@ -344,21 +350,22 @@ class PermissionMatrixTest {
             Map.entry("sales-producers:UPDATE", Set.of(Role.PRODUCTION_COORDINATOR, Role.SYSTEM_ADMIN)),
             Map.entry("sales-producers:READ", Set.of(Role.PRODUCTION_COORDINATOR, Role.SALES_MANAGER, Role.SALES_STAFF,
                     Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
-            Map.entry("fulfillment-delivery-outcomes:UPDATE", Set.of(Role.ORDER_COORDINATOR, Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
-            Map.entry("fulfillment-delivery-outcomes:APPROVE", Set.of(Role.ORDER_COORDINATOR, Role.SYSTEM_ADMIN)),
+            Map.entry("fulfillment-delivery-outcomes:UPDATE", Set.of(Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
+            Map.entry("fulfillment-delivery-outcomes:APPROVE", Set.of(Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             Map.entry("customer-status:APPROVE", Set.of(Role.SALES_MANAGER, Role.SYSTEM_ADMIN)),
             Map.entry("catalog-storefront:READ", Set.of(Role.CUSTOMER, Role.SYSTEM_ADMIN)),
             Map.entry("platform-actuator:READ", Set.of(Role.SALES_MANAGER, Role.SYSTEM_ADMIN)),
             Map.entry("platform-actuator:UPDATE", Set.of(Role.SALES_MANAGER, Role.SYSTEM_ADMIN)),
-            Map.entry("sales-order-cancellations:READ", Set.of(Role.SALES_STAFF, Role.ORDER_COORDINATOR, Role.SYSTEM_ADMIN)),
-            Map.entry("sales-orders:READ", Set.of(Role.CUSTOMER, Role.SALES_STAFF, Role.ORDER_COORDINATOR, Role.ACCOUNTANT,
-                    Role.PRODUCTION_COORDINATOR, Role.SYSTEM_ADMIN)),
-            Map.entry("sales-orders:VIEW_PAGE", Set.of(Role.CUSTOMER, Role.SALES_STAFF, Role.ORDER_COORDINATOR,
-                    Role.ACCOUNTANT, Role.PRODUCTION_COORDINATOR, Role.SYSTEM_ADMIN)),
+            Map.entry("sales-order-cancellations:READ", Set.of(Role.SALES_STAFF, Role.SYSTEM_ADMIN)),
+            // The warehouse manager reads the orders of their warehouses only (V20261115000200, 5-7 review M1).
+            Map.entry("sales-orders:READ", Set.of(Role.CUSTOMER, Role.SALES_STAFF, Role.ACCOUNTANT,
+                    Role.PRODUCTION_COORDINATOR, Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
+            Map.entry("sales-orders:VIEW_PAGE", Set.of(Role.CUSTOMER, Role.SALES_STAFF,
+                    Role.ACCOUNTANT, Role.PRODUCTION_COORDINATOR, Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             // WH-READ-COORD (V20261023000500): the release dialog needs a warehouse to pick.
             // SCRUM-474 5b (V20261029004000): the user-management screen picks warehouses too.
             Map.entry("warehouse-warehouses:READ", Set.of(Role.WAREHOUSE_MANAGER, Role.WAREHOUSE_STAFF,
-                    Role.INVENTORY_PLANNER, Role.PROCUREMENT_STAFF, Role.SALES_STAFF, Role.ORDER_COORDINATOR,
+                    Role.SALES_STAFF,
                     Role.SALES_MANAGER, Role.SYSTEM_ADMIN)));
 
     /** A valid body for the customer-reachable write handlers, so validation (400) cannot hide a missing owner check. */
@@ -680,7 +687,8 @@ class PermissionMatrixTest {
 
     /**
      * The create-task dialog's order list answers to the permission that opens the task, warehouse-scoped - not to the
-     * sales order list's {@code sales-orders:READ}, which the warehouse manager who opens tasks does not hold. Granting
+     * sales order list's {@code sales-orders:READ} (which the warehouse manager holds since 5-7 review M1, limited to
+     * their warehouses' orders, but which is not what opens a task). Granting
      * task creation to another role opens the list to it with no code change.
      */
     @Test
@@ -695,8 +703,7 @@ class PermissionMatrixTest {
                 .isEqualTo(PermissionCode.parse("fulfillment-task-assignment:CREATE"));
         assertThat(candidates.scope()).isEqualTo(DataScope.WAREHOUSE);
         ResolvedAuthorization manager = roles.resolve(List.of(Role.WAREHOUSE_MANAGER.authority()));
-        assertThat(manager.permissions()).contains(PermissionCode.parse("fulfillment-task-assignment:CREATE"))
-                .doesNotContain(PermissionCode.parse("sales-orders:READ"));
+        assertThat(manager.permissions()).contains(PermissionCode.parse("fulfillment-task-assignment:CREATE"));
     }
 
     /**
@@ -723,9 +730,6 @@ class PermissionMatrixTest {
             assertThat(PermissionCode.of(rp.resource(), rp.action())).as(key).isEqualTo(PermissionCode.parse(code));
         });
         assertThat(byKey.get("GET /api/v1/orders/me/{orderId}/delivery-batches").rp().scope()).isEqualTo(DataScope.OWN);
-        assertThat(roles.resolve(List.of(Role.ORDER_COORDINATOR.authority())).permissions())
-                .as("the coordinator no longer releases (17 BR-03)")
-                .doesNotContain(PermissionCode.parse("sales-order-releases:UPDATE"));
         assertThat(roles.resolve(List.of(Role.CUSTOMER.authority())).permissions())
                 .doesNotContain(PermissionCode.parse("sales-contracts:READ"), PermissionCode.parse("sales-contracts:UPDATE"));
     }
@@ -830,17 +834,18 @@ class PermissionMatrixTest {
     }
 
     /**
-     * WH-READ-COORD (V20261023000500): the order-release dialog makes the coordinator pick a warehouse, so the list
-     * must answer 200 to that role - READ only, so the screen and the writes stay refused.
+     * WH-READ-COORD (V20261023000500, carried to Sales when the order coordinator was retired by V20261115000200):
+     * Sales picks a shipping warehouse, so the list must answer 200 to that role - READ only, so the screen and the
+     * writes stay refused.
      */
     @Test
-    void theOrderCoordinatorListsWarehousesToReleaseTo() throws Exception {
+    void salesListsWarehouses() throws Exception {
         SecuredMvc http = new SecuredMvc(mvc, decoder);
-        UUID coordinator = tx.execute(s -> ReferenceRows.user(entityManager));
-        assertThat(http.asRole(Role.ORDER_COORDINATOR, coordinator, MockMvcRequestBuilders.get("/api/v1/warehouses"))
-                .andReturn().getResponse().getStatus()).as("GET /api/v1/warehouses as ORDER_COORDINATOR").isEqualTo(200);
+        UUID sales = tx.execute(s -> ReferenceRows.user(entityManager));
+        assertThat(http.asRole(Role.SALES_STAFF, sales, MockMvcRequestBuilders.get("/api/v1/warehouses"))
+                .andReturn().getResponse().getStatus()).as("GET /api/v1/warehouses as SALES_STAFF").isEqualTo(200);
         // Spring validates a body before the guard runs (400), so the refused writes are read from the grants.
-        assertThat(roles.resolve(List.of(Role.ORDER_COORDINATOR.authority())).permissions())
+        assertThat(roles.resolve(List.of(Role.SALES_STAFF.authority())).permissions())
                 .contains(PermissionCode.parse("warehouse-warehouses:READ"))
                 .doesNotContain(PermissionCode.parse("warehouse-warehouses:VIEW_PAGE"),
                         PermissionCode.parse("warehouse-warehouses:CREATE"),

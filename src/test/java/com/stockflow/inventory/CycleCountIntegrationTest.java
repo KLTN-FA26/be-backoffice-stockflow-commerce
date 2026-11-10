@@ -33,11 +33,9 @@ import org.springframework.test.util.AopTestUtils;
 import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.transaction.support.TransactionTemplate;
 
-import java.sql.Date;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.time.LocalDate;
-import java.time.ZoneId;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -102,8 +100,6 @@ class CycleCountIntegrationTest {
                     "Cycle count fixture", sku.toLowerCase(Locale.ROOT));
             jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature) values (?,?,?,?,'')",
                     Identifiers.newId(), product, sku, "Cycle count fixture");
-            jdbc.update("update inventory.inventory_items set lot_tracked=true, expiry_tracked=true,"
-                    + " removal_strategy='FEFO', policy_configured=true where sku=?", sku);
             item = jdbc.queryForObject("select id from inventory.inventory_items where sku = ?", UUID.class, sku);
             cartonUnit = Identifiers.newId();
             jdbc.update("insert into inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)"
@@ -116,9 +112,9 @@ class CycleCountIntegrationTest {
     private UUID loose(String location, int onHand) {
         UUID id = Identifiers.newId();
         tx.executeWithoutResult(s -> jdbc.update("""
-                insert into inventory.stock_item (id, sku, location_code, lot_number, expiry_date, received_at, on_hand,
-                    reserved, status, version, created_at) values (?, ?, ?, ?, ?, ?, ?, 0, 'AVAILABLE', 0, now())""",
-                id, sku, location, lot, Date.valueOf(LocalDate.now().plusYears(1)), Timestamp.from(EARLY), onHand));
+                insert into inventory.stock_item (id, sku, location_code, lot_number, received_at, on_hand,
+                    reserved, status, version, created_at) values (?, ?, ?, ?, ?, ?, 0, 'AVAILABLE', 0, now())""",
+                id, sku, location, lot, Timestamp.from(EARLY), onHand));
         return id;
     }
 
@@ -131,11 +127,10 @@ class CycleCountIntegrationTest {
                         received_qty, location_code, status, unopened) values (?, ?, ?, ?, ?, ?, ?, 'IN_STOCK', ?)""",
                     id, lpn(name), item, cartonUnit, CARTON_FACTOR, quantity, location, unopened);
             jdbc.update("""
-                    insert into inventory.stock_item (id, sku, location_code, lot_number, expiry_date, received_at,
+                    insert into inventory.stock_item (id, sku, location_code, lot_number, received_at,
                         on_hand, reserved, status, version, created_at, stock_package_id)
-                    values (?, ?, ?, ?, ?, ?, ?, 0, 'AVAILABLE', 0, now(), ?)""",
-                    Identifiers.newId(), sku, location, lot, Date.valueOf(LocalDate.now().plusYears(1)),
-                    Timestamp.from(EARLY), quantity, id);
+                    values (?, ?, ?, ?, ?, ?, 0, 'AVAILABLE', 0, now(), ?)""",
+                    Identifiers.newId(), sku, location, lot, Timestamp.from(EARLY), quantity, id);
         });
         return id;
     }
@@ -241,7 +236,7 @@ class CycleCountIntegrationTest {
     }
 
     private List<CycleCountRepository.Frozen> frozen() {
-        return repository.frozen(List.of(sku), LocalDate.now(ZoneId.of("Asia/Ho_Chi_Minh")));
+        return repository.frozen(List.of(sku));
     }
 
     private static ErrorCode code(Throwable thrown) {
@@ -365,8 +360,13 @@ class CycleCountIntegrationTest {
         UUID row = loose(BIN, 10);
         CycleCountView planned = planBin(BIN).count();
         UUID line = planned.lines().get(0).id();
-        // A receipt after planning: the books say 12 when the shelf is counted.
-        tx.executeWithoutResult(s -> jdbc.update("update inventory.stock_item set on_hand = 12 where id = ?", row));
+        // A receipt after planning: a layer of its own (a layer is never raised in place), so the books say 12 when
+        // the shelf is counted.
+        UUID later = Identifiers.newId();
+        tx.executeWithoutResult(s -> jdbc.update("""
+                insert into inventory.stock_item (id, sku, location_code, lot_number, received_at, on_hand,
+                    reserved, status, version, created_at) values (?, ?, ?, ?, ?, 2, 0, 'AVAILABLE', 0, now())""",
+                later, sku, BIN, lot, Timestamp.from(EARLY.plusSeconds(3600))));
 
         CycleCountView counted = cycleCounts.count(planned.id(), line, 11, null, counter, false);
 
@@ -395,7 +395,8 @@ class CycleCountIntegrationTest {
 
         operations.approve((UUID) asked.get("id"), manager);
 
-        assertThat(onHand(row)).isEqualTo(11);
+        assertThat(onHand(row)).as("the shortage comes off the older layer, first in first out").isEqualTo(9);
+        assertThat(onHand(later)).isEqualTo(2);
     }
 
     @Test
@@ -789,7 +790,7 @@ class CycleCountIntegrationTest {
     void assigneeMustBeWarehouseStaff() {
         loose(BIN, 5);
         UUID clerk = staff("WAREHOUSE_STAFF", WAREHOUSE_HCM);
-        UUID inspector = staff("INVENTORY_PLANNER", WAREHOUSE_HCM);
+        UUID inspector = staff("SALES_STAFF", WAREHOUSE_HCM);
         UUID unassigned = staff("WAREHOUSE_STAFF");
 
         assertThat(cycleCounts.assignees(WAREHOUSE_HCM)).extracting(AssignableUser::userId)

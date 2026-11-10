@@ -132,11 +132,11 @@ CREATE FUNCTION pg_temp.grants(role_code TEXT, permission_code TEXT) RETURNS BOO
                      JOIN identity.permission p ON p.id = rp.permission_id
                     WHERE r.code = role_code AND p.code = permission_code)
 $$;
-SELECT pg_temp.expect_true('SW15 Sales chooses; the manager, coordinator and warehouse manager read; not the customer',
+SELECT pg_temp.expect_true('SW15 Sales chooses; the Sales Manager and the warehouse manager read; the order coordinator is retired (5-7), nor does the customer',
     pg_temp.grants('SALES_STAFF', 'sales-order-shipping-warehouses:UPDATE')
     AND pg_temp.grants('SALES_MANAGER', 'sales-order-shipping-warehouses:READ')
     AND NOT pg_temp.grants('SALES_MANAGER', 'sales-order-shipping-warehouses:UPDATE')
-    AND pg_temp.grants('ORDER_COORDINATOR', 'sales-order-shipping-warehouses:READ')
+    AND NOT EXISTS (SELECT 1 FROM identity.app_role WHERE code = 'ORDER_COORDINATOR')
     AND pg_temp.grants('WAREHOUSE_MANAGER', 'sales-order-shipping-warehouses:READ')
     AND NOT pg_temp.grants('CUSTOMER', 'sales-order-shipping-warehouses:READ'));
 

@@ -35,12 +35,11 @@ class StockLotsAdapter implements StockLots {
                             lot.productionOrderCode())).getId());
         }
         return jpa.findByGoodsReceiptIdAndSku(lot.goodsReceiptId(), lot.sku().code()).stream()
-                .filter(found -> Objects.equals(found.getLotNumber(), lot.lotNumber())
-                        && Objects.equals(found.getExpiryDate(), lot.expiryDate()))
+                .filter(found -> Objects.equals(found.getLotNumber(), lot.lotNumber()))
                 .map(StockLotJpaEntity::getId)
                 .findFirst()
                 .orElseGet(() -> jpa.saveAndFlush(new StockLotJpaEntity(Identifiers.newId(), lot.sku().code(),
-                        lot.lotNumber(), lot.expiryDate(), lot.receivedAt(), lot.goodsReceiptId(),
+                        lot.lotNumber(), lot.receivedAt(), lot.goodsReceiptId(),
                         lot.goodsReceiptNumber(), lot.purchaseOrderId(), lot.purchaseOrderNumber(), lot.supplierId(),
                         lot.supplierName(), lot.warehouseId())).getId());
     }

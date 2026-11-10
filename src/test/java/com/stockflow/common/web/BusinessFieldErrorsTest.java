@@ -32,13 +32,13 @@ class BusinessFieldErrorsTest {
             var response = handler.handleBusiness(new BusinessException(ErrorCode.RECEIPT_LOT_DATA_INVALID,
                     "Line 2: CUP is lot-tracked", List.of(
                             new FieldError("lines[1].lotNumber", "CUP is lot-tracked", "LOT_REQUIRED"),
-                            new FieldError("lines[1].expiryDate", "untranslated detail", "NO_SUCH_KEY"))));
+                            new FieldError("lines[1].locationCode", "untranslated detail", "NO_SUCH_KEY"))));
 
             assertThat(response.getStatusCode().value()).isEqualTo(409);
             assertThat(response.getBody().errorCode()).isEqualTo("RECEIPT_LOT_DATA_INVALID");
             assertThat(response.getBody().fieldErrors()).containsExactly(
                     new FieldError("lines[1].lotNumber", "Hãy nhập số lô", "LOT_REQUIRED"),
-                    new FieldError("lines[1].expiryDate", "untranslated detail", "NO_SUCH_KEY"));
+                    new FieldError("lines[1].locationCode", "untranslated detail", "NO_SUCH_KEY"));
         } finally {
             LocaleContextHolder.resetLocaleContext();
         }

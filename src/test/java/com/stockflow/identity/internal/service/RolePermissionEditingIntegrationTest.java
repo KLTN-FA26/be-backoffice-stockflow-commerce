@@ -35,8 +35,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 @Import({PostgresContainer.class, RedisContainer.class})
 class RolePermissionEditingIntegrationTest {
 
-    private static final String ROLE = "INVENTORY_PLANNER";
-    private static final String PO_APPROVE = "procurement-purchase-orders:APPROVE";
+    private static final String ROLE = "ACCOUNTANT";
+    private static final String GRANTED = "procurement-goods-receipts:UPDATE";
 
     @Autowired
     private IdentityService identity;
@@ -96,19 +96,19 @@ class RolePermissionEditingIntegrationTest {
 
     @Test
     void aGrantReachesTheNextLookupEvenWithAWarmCache() {
-        assertThat(resolved()).doesNotContain(PermissionCode.parse(PO_APPROVE));   // warms the cache
+        assertThat(resolved()).doesNotContain(PermissionCode.parse(GRANTED));   // warms the cache
         RoleMatrixView before = identity.roleMatrix(ROLE);
 
         RoleMatrixView saved = identity.updateRolePermissions(
-                new UpdateRolePermissionsCommand(ROLE, before.version(), plus(original, PO_APPROVE)));
+                new UpdateRolePermissionsCommand(ROLE, before.version(), plus(original, GRANTED)));
 
         assertThat(saved.version()).isEqualTo(before.version() + 1);
-        assertThat(granted(saved)).contains(PO_APPROVE);
+        assertThat(granted(saved)).contains(GRANTED);
         assertThat(identity.roleMatrix(ROLE).version()).isEqualTo(saved.version());
-        assertThat(resolved()).contains(PermissionCode.parse(PO_APPROVE));
+        assertThat(resolved()).contains(PermissionCode.parse(GRANTED));
 
         identity.updateRolePermissions(new UpdateRolePermissionsCommand(ROLE, saved.version(), original));
-        assertThat(resolved()).doesNotContain(PermissionCode.parse(PO_APPROVE));
+        assertThat(resolved()).doesNotContain(PermissionCode.parse(GRANTED));
     }
 
     private int grantRows(String role) {
@@ -134,13 +134,13 @@ class RolePermissionEditingIntegrationTest {
     @Test
     void aSaveAgainstAVersionSomeoneElseMovedPastIsRefused() {
         long loaded = identity.roleMatrix(ROLE).version();
-        identity.updateRolePermissions(new UpdateRolePermissionsCommand(ROLE, loaded, plus(original, PO_APPROVE)));
+        identity.updateRolePermissions(new UpdateRolePermissionsCommand(ROLE, loaded, plus(original, GRANTED)));
 
         assertThatThrownBy(() -> identity.updateRolePermissions(
                 new UpdateRolePermissionsCommand(ROLE, loaded, original)))
                 .isInstanceOfSatisfying(BusinessException.class,
                         ex -> assertThat(ex.errorCode()).isEqualTo(ErrorCode.ROLE_PERMISSIONS_CHANGED));
-        assertThat(granted(identity.roleMatrix(ROLE))).contains(PO_APPROVE);
+        assertThat(granted(identity.roleMatrix(ROLE))).contains(GRANTED);
     }
 
     @Test
@@ -148,7 +148,7 @@ class RolePermissionEditingIntegrationTest {
         long loaded = identity.roleMatrix(ROLE).version();
 
         assertThatThrownBy(() -> identity.updateRolePermissions(new UpdateRolePermissionsCommand(ROLE, loaded,
-                List.of("procurement-purchase-orders:READ", "no-such-screen:READ", "not a code"))))
+                List.of("procurement-goods-receipts:READ", "no-such-screen:READ", "not a code"))))
                 .isInstanceOfSatisfying(BusinessException.class, ex -> {
                     assertThat(ex.errorCode()).isEqualTo(ErrorCode.UNKNOWN_PERMISSION);
                     assertThat(ex.getMessage()).contains("no-such-screen:READ", "not a code");

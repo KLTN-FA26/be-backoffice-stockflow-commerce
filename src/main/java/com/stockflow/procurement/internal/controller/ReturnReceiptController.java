@@ -59,7 +59,7 @@ class ReturnReceiptController {
                     `RETURN_RECEIPT_ALREADY_OPEN` (409, one receipt not cancelled per shipment and per return \
                     request; `details.receiptId` names it), `LOCATION_NOT_FOUND`, `LOCATION_AREA_MISMATCH`, \
                     `LOCATION_NOT_USABLE`.""")
-    @RequiresPermission(resource = PurchaseOrderResources.GOODS_RECEIPTS, action = Action.CREATE)
+    @RequiresPermission(resource = GoodsReceiptResources.GOODS_RECEIPTS, action = Action.CREATE)
     public ApiResponse<ReturnReceiptView> create(@Valid @RequestBody CreateReturnReceiptRequest request,
                                                  @AuthenticatedUser CurrentUser user) {
         return ApiResponse.ok(receipts.create(new ReturnReceiptService.Create(request.shipmentId(),
@@ -68,7 +68,7 @@ class ReturnReceiptController {
 
     @GetMapping
     @Operation(summary = "Return receipts, newest first")
-    @RequiresPermission(resource = PurchaseOrderResources.GOODS_RECEIPTS, action = Action.READ)
+    @RequiresPermission(resource = GoodsReceiptResources.GOODS_RECEIPTS, action = Action.READ)
     public ApiResponse<PageResponse<ReturnReceiptService.ReturnReceiptRow>> list(
             @RequestParam(name = "status", required = false) List<GoodsReceiptStatus> statuses,
             @RequestParam(required = false) UUID warehouseId,
@@ -89,7 +89,7 @@ class ReturnReceiptController {
                     `expectedCartons` is what the source carried - the shipment's cartons, or those delivered on the \
                     return request's order - each `scanned` when it is on the receipt (03 §4.2 step 11). Fewer \
                     scanned than expected does not stop the confirmation.""")
-    @RequiresPermission(resource = PurchaseOrderResources.GOODS_RECEIPTS, action = Action.READ)
+    @RequiresPermission(resource = GoodsReceiptResources.GOODS_RECEIPTS, action = Action.READ)
     public ApiResponse<ReturnReceiptView> get(@PathVariable UUID receiptId) {
         return ApiResponse.ok(receipts.get(receiptId));
     }
@@ -102,7 +102,7 @@ class ReturnReceiptController {
                     (409). It keeps its LPN, SKU, count and lot. The same LPN again is the same carton: a \
                     `condition` sent replaces the one noted before. `INVALID_RECEIPT_TRANSITION` once the receipt \
                     is not a draft.""")
-    @RequiresPermission(resource = PurchaseOrderResources.GOODS_RECEIPTS, action = Action.UPDATE)
+    @RequiresPermission(resource = GoodsReceiptResources.GOODS_RECEIPTS, action = Action.UPDATE)
     public ApiResponse<ReturnReceiptView> scan(@PathVariable UUID receiptId,
                                                @Valid @RequestBody ScanReturnCartonRequest request,
                                                @AuthenticatedUser CurrentUser user) {
@@ -111,7 +111,7 @@ class ReturnReceiptController {
 
     @DeleteMapping("/{receiptId}/cartons/{lpn}")
     @Operation(summary = "Take a carton scanned by mistake off a DRAFT return receipt")
-    @RequiresPermission(resource = PurchaseOrderResources.GOODS_RECEIPTS, action = Action.UPDATE)
+    @RequiresPermission(resource = GoodsReceiptResources.GOODS_RECEIPTS, action = Action.UPDATE)
     public ApiResponse<ReturnReceiptView> removeCarton(@PathVariable UUID receiptId, @PathVariable String lpn) {
         return ApiResponse.ok(receipts.removeCarton(receiptId, lpn));
     }
@@ -125,14 +125,14 @@ class ReturnReceiptController {
                     `ReturnedGoodsReceived` is published for the order and payment. Confirmed again, it answers as \
                     it is. `INVALID_RECEIPT_TRANSITION` (cancelled, or no carton), \
                     `INVALID_STOCK_PACKAGE_TRANSITION` (a carton came back on another receipt meanwhile).""")
-    @RequiresPermission(resource = PurchaseOrderResources.GOODS_RECEIPTS, action = Action.UPDATE)
+    @RequiresPermission(resource = GoodsReceiptResources.GOODS_RECEIPTS, action = Action.UPDATE)
     public ApiResponse<ReturnReceiptView> confirm(@PathVariable UUID receiptId, @AuthenticatedUser CurrentUser user) {
         return ApiResponse.ok(receipts.confirm(receiptId, user.userId()));
     }
 
     @PostMapping("/{receiptId}/cancellation")
     @Operation(summary = "Cancel a DRAFT return receipt; nothing was received (03 BR-05)")
-    @RequiresPermission(resource = PurchaseOrderResources.GOODS_RECEIPTS, action = Action.UPDATE)
+    @RequiresPermission(resource = GoodsReceiptResources.GOODS_RECEIPTS, action = Action.UPDATE)
     public ApiResponse<ReturnReceiptView> cancel(@PathVariable UUID receiptId) {
         return ApiResponse.ok(receipts.cancel(receiptId));
     }

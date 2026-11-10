@@ -3,44 +3,33 @@ package com.stockflow.inventory.internal.service;
 import com.stockflow.common.api.PageResponse;
 import com.stockflow.common.audit.AuditAction;
 import com.stockflow.common.audit.Auditable;
-import com.stockflow.common.domain.BusinessCalendar;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.persistence.Pages;
 import com.stockflow.common.security.CurrentUserProvider;
-import com.stockflow.contracts.SkuInventoryControlChanged;
-import com.stockflow.inventory.api.InventoryPolicy;
 import com.stockflow.inventory.api.ItemLogistics;
 import com.stockflow.inventory.api.SkuRetirement;
-import com.stockflow.inventory.api.StockThresholdEvaluation;
-import com.stockflow.inventory.api.TrackingMode;
 import com.stockflow.inventory.internal.domain.ItemLogisticsRules;
-import com.stockflow.inventory.internal.domain.StockPolicy;
-import com.stockflow.inventory.internal.domain.StockThresholds;
 import com.stockflow.inventory.internal.repository.InventoryItemSearch;
 import com.stockflow.inventory.internal.repository.InventoryPolicyRepository;
 import com.stockflow.inventory.internal.repository.InventoryPolicyRepository.ItemRow;
 
 import org.springframework.beans.factory.ObjectProvider;
-import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.time.Clock;
-import java.util.Objects;
 import java.util.UUID;
 
 /**
  * The only place an inventory item is edited. It locks the item and reads it once, then applies the rules: the version
- * check (a stale or shared version is {@code OPTIMISTIC_LOCK} for both groups), stock compatibility, active counts and
- * barcode uniqueness. A policy save publishes {@link SkuInventoryControlChanged} so stock alerts are re-evaluated. The
- * audit row names the item id: the same item is reached from any number of variants or none, so a variant id would
+ * check (a stale or shared version is {@code OPTIMISTIC_LOCK}), the unit of measure of stock already held, and barcode
+ * uniqueness. There is no stock policy to check any more (team plan 5-5, kltn-docs 01 BR-17). The audit row names the item id: the same item is reached from any number of variants or none, so a variant id would
  * make its trail depend on the route taken. No product history is written and no product status is consulted; a
  * product under review does not freeze its warehouse data.
  *
  * <p>A retired SKU does ({@link SkuRetirement}, #120): an {@code OBSOLETE} variant keeps its stock only to ship it or
- * adjust it away, so its item is still read like any other but an edit of either group is {@code VARIANT_OBSOLETE},
+ * adjust it away, so its item is still read like any other but an edit of its logistics is {@code VARIANT_OBSOLETE},
  * not a 404 that would say the item does not exist.</p>
  */
 @Service
@@ -48,20 +37,15 @@ import java.util.UUID;
 class InventoryItemsImpl implements InventoryItems {
     private final InventoryPolicyRepository policies;
     private final InventoryItemSearch search;
-    private final Clock clock;
     private final CurrentUserProvider users;
-    private final ApplicationEventPublisher events;
     /** Absent when the module owning SKUs is not loaded (an inventory-only module test): nothing is retired then. */
     private final ObjectProvider<SkuRetirement> retirement;
 
-    InventoryItemsImpl(InventoryPolicyRepository policies, InventoryItemSearch search, Clock clock,
-                       CurrentUserProvider users, ApplicationEventPublisher events,
+    InventoryItemsImpl(InventoryPolicyRepository policies, InventoryItemSearch search, CurrentUserProvider users,
                        ObjectProvider<SkuRetirement> retirement) {
         this.policies = policies;
         this.search = search;
-        this.clock = clock;
         this.users = users;
-        this.events = events;
         this.retirement = retirement;
     }
 
@@ -69,10 +53,9 @@ class InventoryItemsImpl implements InventoryItems {
     @Transactional(readOnly = true)
     public PageResponse<Summary> search(ItemQuery query) {
         var criteria = new InventoryItemSearch.Criteria(blankToNull(query.sku()), blankToNull(query.q()),
-                query.storageClass(), query.policyConfigured());
+                query.storageClass());
         return Pages.toResponse(search.items(criteria, Pages.of(query.page(), query.size()))
-                .map(r -> new Summary(r.id(), r.sku(), r.unitOfMeasure(), r.barcode(), r.storageClass(),
-                        TrackingMode.of(r.lotTracked(), r.serialTracked()), r.policyConfigured())));
+                .map(r -> new Summary(r.id(), r.sku(), r.unitOfMeasure(), r.barcode(), r.storageClass())));
     }
 
     private static String blankToNull(String value) {
@@ -89,13 +72,6 @@ class InventoryItemsImpl implements InventoryItems {
     @Auditable(action = AuditAction.UPDATE, resourceType = "inventory-item", resourceId = "#id")
     public Detail describe(UUID id, long expectedVersion, ItemLogistics logistics) {
         saveLogistics(id, expectedVersion, logistics);
-        return detail(row(id));
-    }
-
-    @Override
-    @Auditable(action = AuditAction.UPDATE, resourceType = "inventory-item", resourceId = "#id")
-    public Detail configure(UUID id, long expectedVersion, InventoryPolicy policy) {
-        savePolicy(id, expectedVersion, policy);
         return detail(row(id));
     }
 
@@ -135,32 +111,9 @@ class InventoryItemsImpl implements InventoryItems {
         return locked;
     }
 
-    /** One read of the row, so the version, the logistics and the policy shown are those of the same save. */
+    /** One read of the row, so the version and the logistics shown are those of the same save. */
     private Detail detail(ItemRow row) {
-        return new Detail(row.id(), row.sku(), row.version(), row.logistics(), row.policy(),
-                evaluate(row.sku(), row.policy()));
-    }
-
-    private void savePolicy(UUID id, long expectedVersion, InventoryPolicy policy) {
-        StockPolicy.validate(policy);
-        ItemRow current = lockEditable(id);
-        if (current.version() != expectedVersion) throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK);
-        String sku = current.sku();
-        var previous = current.policy();
-        boolean operationalChange =
-                previous.removalStrategy() != policy.removalStrategy()
-                        || previous.trackingMode() != policy.trackingMode()
-                        || previous.expiryTracked() != policy.expiryTracked()
-                        || !Objects.equals(previous.maxShelfLifeDays(), policy.maxShelfLifeDays());
-        if (operationalChange && policies.hasActiveCount(sku))
-            throw new BusinessException(ErrorCode.COUNT_POLICY_CONFLICT);
-        if (policies.incompatible(sku, policy)) {
-            throw new BusinessException(ErrorCode.INVENTORY_POLICY_STOCK_CONFLICT);
-        }
-        if (!policies.save(sku, expectedVersion, policy, actor()))
-            throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK);
-        // The UPDATE matched version = expectedVersion and set version + 1, under the item's lock.
-        events.publishEvent(new SkuInventoryControlChanged(sku, expectedVersion + 1, clock.instant()));
+        return new Detail(row.id(), row.sku(), row.version(), row.logistics());
     }
 
     private void saveLogistics(UUID id, long expectedVersion, ItemLogistics logistics) {
@@ -185,16 +138,6 @@ class InventoryItemsImpl implements InventoryItems {
             throw new BusinessException(ErrorCode.CONFLICT,
                     "Another inventory item already has barcode " + logistics.barcode());
         }
-    }
-
-    private StockThresholdEvaluation evaluate(String sku, InventoryPolicy p) {
-        long quantity = policies.usableOnHand(sku, BusinessCalendar.date(clock.instant()));
-        return new StockThresholdEvaluation(
-                quantity,
-                p.reorderPoint(),
-                p.safetyStock(),
-                StockThresholds.reorderRequired(quantity, p.reorderPoint()),
-                StockThresholds.belowSafetyStock(quantity, p.safetyStock()));
     }
 
     private String actor() {

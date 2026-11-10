@@ -74,8 +74,6 @@ class SameReceiptMergeIntegrationTest {
                     "FIFO fixture", sku.toLowerCase(Locale.ROOT));
             jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature) values (?,?,?,?,'')",
                     Identifiers.newId(), product, sku, "FIFO fixture");
-            jdbc.update("update inventory.inventory_items set lot_tracked=true, removal_strategy='FIFO',"
-                    + " policy_configured=true where sku=?", sku);
             jdbc.update("""
                     insert into inventory.stock_item (id, sku, location_code, lot_number, received_at, on_hand, reserved,
                         status, version, created_at) values (?, ?, ?, ?, ?, 10, 0, 'AVAILABLE', 0, now())""",
@@ -311,7 +309,7 @@ class SameReceiptMergeIntegrationTest {
                 insert into inventory.stock_item (id, sku, location_code, lot_number, received_at, on_hand, reserved,
                     status, version, created_at) values (?, ?, ?, ?, clock_timestamp() + interval '1 hour', 1, 0,
                     'INBOUND', 0, now())""", Identifiers.newId(), sku, "HCM-RCV01", lot + "-L")))
-                .hasMessageContaining("Invalid receipt/expiry date");
+                .hasMessageContaining("Invalid receipt date");
         tx.executeWithoutResult(s -> jdbc.update("""
                 insert into inventory.stock_item (id, sku, location_code, lot_number, received_at, on_hand, reserved,
                     status, version, created_at) values (?, ?, ?, ?, clock_timestamp() + interval '2 seconds', 1, 0,

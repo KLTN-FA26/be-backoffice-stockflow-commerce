@@ -41,11 +41,10 @@ final class StockItemPersistenceMapper {
                 new Sku(entity.getSku()),
                 new LocationId(entity.getLocationCode()),
                 entity.getLotNumber(),
-                entity.getExpiryDate(),
                 Quantity.of(entity.getOnHand()),
                 entity.getStatus(),
                 reservations,
-                entity.getVersion(), entity.getReceivedAt(), entity.getSerialNumber(), entity.getLotId(),
+                entity.getVersion(), entity.getReceivedAt(), entity.getLotId(),
                 entity.getStockPackageId() == null ? null : new StockPackageId(entity.getStockPackageId()));
     }
 
@@ -71,10 +70,9 @@ final class StockItemPersistenceMapper {
                 item.sku().code(),
                 item.location().code(),
                 item.lotNumber(),
-                item.expiryDate(),
                 item.onHand().value(),
                 item.reserved().value(),
-                item.status(), item.receivedAt(), item.serialNumber(), item.lotId(),
+                item.status(), item.receivedAt(), item.lotId(),
                 item.stockPackageId() == null ? null : item.stockPackageId().value());
         entity.replaceReservations(toEntities(item));
         return entity;

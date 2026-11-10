@@ -74,7 +74,7 @@ class LoadEstimateIntegrationTest {
     @BeforeEach
     void setUp() {
         http = new SecuredMvc(mvc, decoder);
-        coordinator = user("ORDER_COORDINATOR");
+        coordinator = user("SALES_STAFF");
         manager = user("WAREHOUSE_MANAGER", HCM);
         UUID elsewhere = tx.execute(s -> otherWarehouse());
         managerElsewhere = user("WAREHOUSE_MANAGER", elsewhere);
@@ -205,7 +205,7 @@ class LoadEstimateIntegrationTest {
     @Test
     @DisplayName("LP2-3: an item never measured blocks only its line: estimated without it, listed in missing")
     void missingPackagingBlocksOnlyThatLine() throws Exception {
-        JsonNode estimate = data(estimate(Role.ORDER_COORDINATOR, coordinator, body(order, "ORDER", container))
+        JsonNode estimate = data(estimate(Role.SALES_STAFF, coordinator, body(order, "ORDER", container))
                 .andExpect(status().isCreated()));
 
         assertThat(estimate.path("incomplete").asBoolean()).isTrue();
@@ -220,7 +220,7 @@ class LoadEstimateIntegrationTest {
                 .containsExactlyInAnyOrder(palletSku, kitSku);
         assertThat(estimate.path("vehicles").get(0).path("boxes")).hasSize(2 + 3 * 2);
         // Stored with the estimate: GET answers the same.
-        as(Role.ORDER_COORDINATOR, coordinator, get(BASE + "?sourceType=ORDER&sourceId=" + order))
+        as(Role.SALES_STAFF, coordinator, get(BASE + "?sourceType=ORDER&sourceId=" + order))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.incomplete").value(true))
                 .andExpect(jsonPath("$.data.missing[0].inventoryItemId").value(bareItem.toString()));
         assertThat(jdbc.queryForObject("SELECT incomplete FROM fulfillment.load_estimate WHERE source_id = ?",
@@ -238,7 +238,7 @@ class LoadEstimateIntegrationTest {
                 WHERE id = ?""", weightlessItem));
         UUID unmeasured = tx.execute(s -> order("READY_TO_FULFILL", Map.of(bareSku, 2, weightless, 1)));
 
-        estimate(Role.ORDER_COORDINATOR, coordinator, body(unmeasured, "ORDER", container))
+        estimate(Role.SALES_STAFF, coordinator, body(unmeasured, "ORDER", container))
                 .andExpect(status().isUnprocessableEntity())
                 .andExpect(jsonPath("$.errorCode").value("LOAD_ESTIMATE_PACKAGING_MISSING"))
                 .andExpect(jsonPath("$.fieldErrors.length()").value(2))
@@ -279,7 +279,7 @@ class LoadEstimateIntegrationTest {
             jdbc.update("UPDATE ordering.order_line SET cancelled_quantity = 1 WHERE id = ?", lines.get(kitSku));
         });
 
-        JsonNode estimate = data(estimate(Role.ORDER_COORDINATOR, coordinator, body(partial, "ORDER", container))
+        JsonNode estimate = data(estimate(Role.SALES_STAFF, coordinator, body(partial, "ORDER", container))
                 .andExpect(status().isCreated()));
 
         Map<String, JsonNode> bySku = new HashMap<>();
@@ -298,11 +298,11 @@ class LoadEstimateIntegrationTest {
     void confirmedOrderNeedsItsTargetWarehouse() throws Exception {
         measureTheBareItem();
         UUID confirmed = tx.execute(s -> order("CONFIRMED", Map.of(palletSku, 30)));
-        estimate(Role.ORDER_COORDINATOR, coordinator, body(confirmed, "ORDER", container))
+        estimate(Role.SALES_STAFF, coordinator, body(confirmed, "ORDER", container))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.errorCode").value("VALIDATION_FAILED"))
                 .andExpect(jsonPath("$.fieldErrors[0].field").value("warehouseId"));
-        estimate(Role.ORDER_COORDINATOR, coordinator, bodyFor(confirmed, "ORDER", UUID.randomUUID(), container))
+        estimate(Role.SALES_STAFF, coordinator, bodyFor(confirmed, "ORDER", UUID.randomUUID(), container))
                 .andExpect(status().isNotFound());
         estimate(Role.WAREHOUSE_MANAGER, managerElsewhere, bodyFor(confirmed, "ORDER", HCM, container))
                 .andExpect(status().isForbidden())
@@ -315,7 +315,7 @@ class LoadEstimateIntegrationTest {
                 .andExpect(status().isForbidden());
 
         // A released order keeps its own warehouse.
-        estimate(Role.ORDER_COORDINATOR, coordinator, bodyFor(order, "ORDER", UUID.randomUUID(), container))
+        estimate(Role.SALES_STAFF, coordinator, bodyFor(order, "ORDER", UUID.randomUUID(), container))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.fieldErrors[0].code").value("WarehouseMismatch"));
     }
@@ -334,7 +334,7 @@ class LoadEstimateIntegrationTest {
             java.util.concurrent.CompletableFuture<ResultActions> request = java.util.concurrent.CompletableFuture
                     .supplyAsync(() -> {
                         try {
-                            return estimate(Role.ORDER_COORDINATOR, coordinator, body(order, "ORDER", container));
+                            return estimate(Role.SALES_STAFF, coordinator, body(order, "ORDER", container));
                         } catch (Exception e) {
                             throw new IllegalStateException(e);
                         }
@@ -370,7 +370,7 @@ class LoadEstimateIntegrationTest {
     @DisplayName("pallet with a remainder, a kit of 2 boxes, a measured item: lines and the viewer's Layout")
     void estimatesIntoTheLayoutContract() throws Exception {
         measureTheBareItem();
-        JsonNode estimate = data(estimate(Role.ORDER_COORDINATOR, coordinator, body(order, "ORDER", container))
+        JsonNode estimate = data(estimate(Role.SALES_STAFF, coordinator, body(order, "ORDER", container))
                 .andExpect(status().isCreated()));
 
         assertThat(estimate.path("status").asText()).isEqualTo("CURRENT");
@@ -440,7 +440,7 @@ class LoadEstimateIntegrationTest {
         assertThat(meta.path("placedBoxes").asInt()).isEqualTo(10);
 
         // GET by id answers what the POST did.
-        JsonNode read = data(as(Role.ORDER_COORDINATOR, coordinator, get(BASE + "/" + estimate.path("id").asText()))
+        JsonNode read = data(as(Role.SALES_STAFF, coordinator, get(BASE + "/" + estimate.path("id").asText()))
                 .andExpect(status().isOk()));
         assertThat(read).isEqualTo(estimate);
     }
@@ -449,7 +449,7 @@ class LoadEstimateIntegrationTest {
     @DisplayName("the fixed seed: estimating again gives the same layout, and supersedes the earlier estimate")
     void repeatableAndSuperseding() throws Exception {
         measureTheBareItem();
-        JsonNode first = data(estimate(Role.ORDER_COORDINATOR, coordinator, body(order, "ORDER", container))
+        JsonNode first = data(estimate(Role.SALES_STAFF, coordinator, body(order, "ORDER", container))
                 .andExpect(status().isCreated()));
         JsonNode second = data(estimate(Role.WAREHOUSE_MANAGER, manager, body(order, "ORDER", container))
                 .andExpect(status().isCreated()));
@@ -458,9 +458,9 @@ class LoadEstimateIntegrationTest {
         assertThat(second.path("vehicles")).isEqualTo(first.path("vehicles"));
         assertThat(second.path("lines")).isEqualTo(first.path("lines"));
 
-        as(Role.ORDER_COORDINATOR, coordinator, get(BASE + "/" + first.path("id").asText()))
+        as(Role.SALES_STAFF, coordinator, get(BASE + "/" + first.path("id").asText()))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("SUPERSEDED"));
-        as(Role.ORDER_COORDINATOR, coordinator, get(BASE + "?sourceType=ORDER&sourceId=" + order))
+        as(Role.SALES_STAFF, coordinator, get(BASE + "?sourceType=ORDER&sourceId=" + order))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.id").value(second.path("id").asText()))
                 .andExpect(jsonPath("$.data.status").value("CURRENT"));
@@ -489,24 +489,24 @@ class LoadEstimateIntegrationTest {
         measureTheBareItem();
         for (String status : List.of("DRAFT", "PENDING_PAYMENT", "ON_HOLD", "SHIPPED")) {
             UUID refused = tx.execute(s -> order(status, Map.of(palletSku, 1)));
-            estimate(Role.ORDER_COORDINATOR, coordinator, bodyFor(refused, "ORDER", HCM, container))
+            estimate(Role.SALES_STAFF, coordinator, bodyFor(refused, "ORDER", HCM, container))
                     .andExpect(status().isConflict())
                     .andExpect(jsonPath("$.errorCode").value("LOAD_ESTIMATE_SOURCE_NOT_ELIGIBLE"));
         }
         UUID confirmed = tx.execute(s -> order("CONFIRMED", Map.of(palletSku, 1)));
         // Transfers between warehouses were removed: TRANSFER is no source type any more.
-        estimate(Role.ORDER_COORDINATOR, coordinator, body(UUID.randomUUID(), "TRANSFER", container))
+        estimate(Role.SALES_STAFF, coordinator, body(UUID.randomUUID(), "TRANSFER", container))
                 .andExpect(status().isBadRequest());
-        estimate(Role.ORDER_COORDINATOR, coordinator, body(UUID.randomUUID(), "ORDER", container))
+        estimate(Role.SALES_STAFF, coordinator, body(UUID.randomUUID(), "ORDER", container))
                 .andExpect(status().isNotFound());
         UUID retired = tx.execute(s -> vehicleType("INACTIVE"));
-        estimate(Role.ORDER_COORDINATOR, coordinator, body(order, "ORDER", retired))
+        estimate(Role.SALES_STAFF, coordinator, body(order, "ORDER", retired))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("VEHICLE_TYPE_INACTIVE"));
-        as(Role.ORDER_COORDINATOR, coordinator, get(BASE + "/" + UUID.randomUUID()))
+        as(Role.SALES_STAFF, coordinator, get(BASE + "/" + UUID.randomUUID()))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.errorCode").value("LOAD_ESTIMATE_NOT_FOUND"));
-        as(Role.ORDER_COORDINATOR, coordinator, get(BASE + "?sourceType=ORDER&sourceId=" + confirmed))
+        as(Role.SALES_STAFF, coordinator, get(BASE + "?sourceType=ORDER&sourceId=" + confirmed))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.errorCode").value("LOAD_ESTIMATE_NOT_FOUND"));
     }

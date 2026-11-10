@@ -476,7 +476,7 @@ class PickListService implements PickLists {
 
     /**
      * X-SHORT step 02: ON_HOLD with reason INVENTORY (kltn-docs 17 edge "short pick"). An order already ON_HOLD - a
-     * second short line, or held for another reason by the coordinator - is stopped already and stays as it is: a
+     * second short line, or held for another reason by the warehouse manager - is stopped already and stays as it is: a
      * hold is not stacked on a hold. Locks the order, so the caller keeps the order pick, order, stock rows.
      */
     private void holdForInventory(UUID orderId, UUID by, String note) {

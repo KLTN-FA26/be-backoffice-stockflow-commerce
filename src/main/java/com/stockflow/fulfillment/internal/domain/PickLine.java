@@ -235,7 +235,7 @@ public final class PickLine {
 
     /**
      * The picker could not take the carton, for {@code reason} (07 §4.4 step 9): nothing is taken and nothing is
-     * deducted - the line is short of the whole carton and waits for the coordinator.
+     * deducted - the line is short of the whole carton and waits for the warehouse manager.
      */
     void reportShort(ShortPickReason reason, String scannedLocation) {
         this.status = PickLineStatus.SHORT;

@@ -23,10 +23,8 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.transaction.support.TransactionTemplate;
 
-import java.sql.Date;
 import java.sql.Timestamp;
 import java.time.Instant;
-import java.time.LocalDate;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
@@ -42,9 +40,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 /**
  * The cycle-count endpoints through the real filter chain, permission aspect and data scope, with the seeded role
- * grants: the planner plans and counts but does not decide, so a blind count never shows them the books; the
- * warehouse manager decides and sees them; the warehouse staff count what they are assigned (they hold UPDATE since
- * {@code V20261028001000}) but neither plan nor decide. Four eyes runs through both halves: nobody replaces the
+ * grants: the warehouse staff count (they hold UPDATE since
+ * {@code V20261028001000}) but neither plan nor decide, so a blind count never shows them the books; the warehouse
+ * manager plans, decides and sees them (the planner role was retired by V20261115000200). Four eyes runs through both halves: nobody replaces the
  * assignee's figure but the assignee, and nobody approves the variance of a line they counted.
  */
 @SecuredIntegrationTest
@@ -63,16 +61,16 @@ class CycleCountHttpSecurityIntegrationTest {
 
     private SecuredMvc mvc;
     private String sku;
-    /** A real account: a count the planner enters names them in counted_by, a foreign key. */
-    private UUID planner;
+    /** A real account of warehouse staff: a count they enter names them in counted_by, a foreign key. */
+    private UUID counter;
     private UUID manager;
 
     @BeforeEach
     void setUp() {
         mvc = new SecuredMvc(mockMvc, decoder);
         sku = "CCH-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(Locale.ROOT);
-        planner = tx.execute(s -> ReferenceRows.user(entityManager));
         manager = staff("WAREHOUSE_MANAGER", WAREHOUSE_HCM);
+        counter = staff("WAREHOUSE_STAFF", WAREHOUSE_HCM);
         tx.executeWithoutResult(s -> {
             UUID product = Identifiers.newId();
             jdbc.update("insert into product.products(id,code,name,slug) values (?,?,?,?)", product, sku,
@@ -80,10 +78,9 @@ class CycleCountHttpSecurityIntegrationTest {
             jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature) values (?,?,?,?,'')",
                     Identifiers.newId(), product, sku, "Cycle count HTTP fixture");
             jdbc.update("""
-                    insert into inventory.stock_item (id, sku, location_code, expiry_date, received_at, on_hand,
-                        reserved, status, version, created_at) values (?, ?, ?, ?, ?, 10, 0, 'AVAILABLE', 0, now())""",
-                    Identifiers.newId(), sku, BIN, Date.valueOf(LocalDate.now().plusYears(1)),
-                    Timestamp.from(Instant.parse("2026-01-02T00:00:00Z")));
+                    insert into inventory.stock_item (id, sku, location_code, lot_number, received_at, on_hand,
+                        reserved, status, version, created_at) values (?, ?, ?, 'UNTRACED', ?, 10, 0, 'AVAILABLE', 0, now())""",
+                    Identifiers.newId(), sku, BIN, Timestamp.from(Instant.parse("2026-01-02T00:00:00Z")));
         });
     }
 
@@ -147,10 +144,10 @@ class CycleCountHttpSecurityIntegrationTest {
     @DisplayName("after submission a counter still sees no expected quantity, note or adjustment; the manager does")
     void counterNeverSeesTheBooks() throws Exception {
         CycleCountView count = planned();
-        cycleCounts.count(count.id(), count.lines().get(0).id(), 7, null, planner, false);
-        cycleCounts.submit(count.id(), planner, false);
+        cycleCounts.count(count.id(), count.lines().get(0).id(), 7, null, counter, false);
+        cycleCounts.submit(count.id(), counter, false);
 
-        mvc.asRole(Role.INVENTORY_PLANNER, planner, get(BASE + "/" + count.id()))
+        mvc.asRole(Role.WAREHOUSE_STAFF, counter, get(BASE + "/" + count.id()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("COMPLETED"))
                 .andExpect(jsonPath("$.data.lines[0].countedQty").value(7))
@@ -169,15 +166,6 @@ class CycleCountHttpSecurityIntegrationTest {
     @DisplayName("a plan answers with the books only to who decides; the list carries line tallies, never lines, and "
             + "the variance tally only for who decides")
     void planAndListShowTheBooksOnlyToWhoDecides() throws Exception {
-        String planned = mvc.asRole(Role.INVENTORY_PLANNER, planner, post(BASE)
-                        .contentType(MediaType.APPLICATION_JSON).content(planBody()))
-                .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.data.count.lines[0].countedQty").doesNotExist())
-                .andExpect(jsonPath("$.data.count.lines[0].expectedQty").doesNotExist())
-                .andReturn().getResponse().getContentAsString();
-        UUID first = UUID.fromString(com.jayway.jsonpath.JsonPath.read(planned, "$.data.count.id"));
-        cycleCounts.cancel(first, "Planned again by the manager", "test");
-
         String managers = mvc.asRole(Role.WAREHOUSE_MANAGER, manager, post(BASE)
                         .contentType(MediaType.APPLICATION_JSON).content(planBody()))
                 .andExpect(status().isCreated())
@@ -185,11 +173,11 @@ class CycleCountHttpSecurityIntegrationTest {
                 .andReturn().getResponse().getContentAsString();
         String id = com.jayway.jsonpath.JsonPath.read(managers, "$.data.count.id");
         cycleCounts.count(UUID.fromString(id), UUID.fromString(com.jayway.jsonpath.JsonPath.read(managers,
-                "$.data.count.lines[0].id")), 7, null, planner, false);
+                "$.data.count.lines[0].id")), 7, null, counter, false);
 
         String row = "$.data.items[?(@.id == '" + id + "')]";
         String list = BASE + "?warehouseId=" + WAREHOUSE_HCM + "&status=IN_PROGRESS&size=50";
-        mvc.asRole(Role.INVENTORY_PLANNER, planner, get(list))
+        mvc.asRole(Role.WAREHOUSE_STAFF, counter, get(list))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath(row + ".lineCount").value(org.hamcrest.Matchers.contains(1)))
                 .andExpect(jsonPath(row + ".countedCount").value(org.hamcrest.Matchers.contains(1)))
@@ -248,14 +236,14 @@ class CycleCountHttpSecurityIntegrationTest {
         CycleCountView count = planned();
         String path = BASE + "/" + count.id() + "/lines/" + count.lines().get(0).id() + "/count";
 
-        mvc.asRole(Role.INVENTORY_PLANNER, planner, put(path).contentType(MediaType.APPLICATION_JSON).content("{}"))
+        mvc.asRole(Role.WAREHOUSE_STAFF, counter, put(path).contentType(MediaType.APPLICATION_JSON).content("{}"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.errorCode").value("VALIDATION_FAILED"));
-        mvc.asRole(Role.INVENTORY_PLANNER, planner, put(path).contentType(MediaType.APPLICATION_JSON)
+        mvc.asRole(Role.WAREHOUSE_STAFF, counter, put(path).contentType(MediaType.APPLICATION_JSON)
                         .content("{\"countedQty\":3,\"present\":true}"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.errorCode").value("VALIDATION_FAILED"));
-        mvc.asRole(Role.INVENTORY_PLANNER, planner, put(path).contentType(MediaType.APPLICATION_JSON)
+        mvc.asRole(Role.WAREHOUSE_STAFF, counter, put(path).contentType(MediaType.APPLICATION_JSON)
                         .content("{\"countedQty\":9}"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("IN_PROGRESS"))
@@ -326,7 +314,7 @@ class CycleCountHttpSecurityIntegrationTest {
         cycleCounts.cancel(second.id(), "next case", "test");
 
         CycleCountView open = planned();
-        mvc.asRole(Role.INVENTORY_PLANNER, planner, put(countPath(open)).contentType(MediaType.APPLICATION_JSON)
+        mvc.asRole(Role.WAREHOUSE_STAFF, counter, put(countPath(open)).contentType(MediaType.APPLICATION_JSON)
                         .content(qty(5)))
                 .andExpect(status().isOk());
         mvc.asRole(Role.WAREHOUSE_MANAGER, manager, put(countPath(open)).contentType(MediaType.APPLICATION_JSON)

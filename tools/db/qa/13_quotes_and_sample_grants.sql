@@ -239,7 +239,7 @@ $$;
 SELECT pg_temp.expect_true('GR3 only the customer answers a quote; Sales drafts and converts',
     pg_temp.grants('CUSTOMER', 'sales-quotes:APPROVE')
     AND NOT pg_temp.grants('SALES_STAFF', 'sales-quotes:APPROVE')
-    AND NOT pg_temp.grants('ORDER_COORDINATOR', 'sales-quotes:APPROVE')
+    AND NOT pg_temp.grants('WAREHOUSE_MANAGER', 'sales-quotes:APPROVE')
     AND pg_temp.grants('SALES_STAFF', 'sales-quotes:CREATE')
     AND pg_temp.grants('SALES_STAFF', 'sales-quotes:UPDATE')
     AND NOT pg_temp.grants('CUSTOMER', 'sales-quotes:CREATE'));

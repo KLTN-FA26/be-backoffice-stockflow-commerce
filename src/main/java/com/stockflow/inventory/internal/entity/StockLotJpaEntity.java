@@ -8,7 +8,6 @@ import jakarta.persistence.Enumerated;
 import jakarta.persistence.Table;
 
 import java.time.Instant;
-import java.time.LocalDate;
 import java.util.UUID;
 
 /**
@@ -28,9 +27,6 @@ public class StockLotJpaEntity extends BaseEntity {
 
     @Column(name = "lot_number", length = 64, updatable = false)
     private String lotNumber;
-
-    @Column(name = "expiry_date", updatable = false)
-    private LocalDate expiryDate;
 
     @Column(name = "received_at", updatable = false)
     private Instant receivedAt;
@@ -69,13 +65,12 @@ public class StockLotJpaEntity extends BaseEntity {
     protected StockLotJpaEntity() {
     }
 
-    public StockLotJpaEntity(UUID id, String sku, String lotNumber, LocalDate expiryDate, Instant receivedAt,
+    public StockLotJpaEntity(UUID id, String sku, String lotNumber, Instant receivedAt,
                              UUID goodsReceiptId, String goodsReceiptNumber, UUID purchaseOrderId,
                              String purchaseOrderNumber, UUID supplierId, String supplierName, UUID warehouseId) {
         super(id);
         this.sku = sku;
         this.lotNumber = lotNumber;
-        this.expiryDate = expiryDate;
         this.receivedAt = receivedAt;
         this.origin = Origin.GOODS_RECEIPT;
         this.goodsReceiptId = goodsReceiptId;
@@ -88,12 +83,12 @@ public class StockLotJpaEntity extends BaseEntity {
     }
 
     /**
-     * The lot of a production order's SKU (4A-5, kltn-docs 03 BR-03): numbered with the production order's code, no
-     * expiry date (BR-06), received when its first goods were, at the warehouse the production order is received at.
+     * The lot of a production order's SKU (4A-5, kltn-docs 03 BR-03): numbered with the production order's code,
+     * received when its first goods were, at the warehouse the production order is received at.
      */
     public static StockLotJpaEntity ofProductionOrder(UUID id, String sku, Instant receivedAt, UUID warehouseId,
                                                       UUID productionOrderId, String productionOrderCode) {
-        StockLotJpaEntity lot = new StockLotJpaEntity(id, sku, productionOrderCode, null, receivedAt, null, null, null,
+        StockLotJpaEntity lot = new StockLotJpaEntity(id, sku, productionOrderCode, receivedAt, null, null, null,
                 null, null, null, warehouseId);
         lot.origin = Origin.PRODUCTION_ORDER;
         lot.productionOrderId = productionOrderId;
@@ -103,7 +98,6 @@ public class StockLotJpaEntity extends BaseEntity {
 
     public String getSku() { return sku; }
     public String getLotNumber() { return lotNumber; }
-    public LocalDate getExpiryDate() { return expiryDate; }
     public Instant getReceivedAt() { return receivedAt; }
     public Origin getOrigin() { return origin; }
     public UUID getGoodsReceiptId() { return goodsReceiptId; }

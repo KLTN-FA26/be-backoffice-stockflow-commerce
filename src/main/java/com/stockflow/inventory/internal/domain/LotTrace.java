@@ -1,7 +1,6 @@
 package com.stockflow.inventory.internal.domain;
 
 import java.time.Instant;
-import java.time.LocalDate;
 import java.util.List;
 import java.util.UUID;
 
@@ -27,21 +26,21 @@ public record LotTrace(Summary lot, List<Balance> balances, List<Hold> holds, Li
      *                         recorded (an adjustment that found goods, stock older than lot tracking)
      * @param receivedQuantity units its receipt ledger lines brought in
      * @param onHand           units of it on hand now, in any status
-     * @param available        units free to promise now: AVAILABLE, not past expiry, not held
+     * @param available        units free to promise now: AVAILABLE and not held
      * @param held             units on hand now held by allocations or other holds
      */
-    public record Summary(UUID lotId, String sku, String lotNumber, LocalDate expiryDate, Instant receivedAt,
+    public record Summary(UUID lotId, String sku, String lotNumber, Instant receivedAt,
                           String origin, UUID goodsReceiptId, String goodsReceiptNumber, UUID purchaseOrderId,
                           String purchaseOrderNumber, UUID supplierId, String supplierName, UUID receivingWarehouseId,
                           long receivedQuantity, long onHand, long available, long held, UUID productionOrderId,
                           String productionOrderCode) {
 
         /** A lot that is not a production order's. */
-        public Summary(UUID lotId, String sku, String lotNumber, LocalDate expiryDate, Instant receivedAt, String origin,
+        public Summary(UUID lotId, String sku, String lotNumber, Instant receivedAt, String origin,
                        UUID goodsReceiptId, String goodsReceiptNumber, UUID purchaseOrderId, String purchaseOrderNumber,
                        UUID supplierId, String supplierName, UUID receivingWarehouseId, long receivedQuantity,
                        long onHand, long available, long held) {
-            this(lotId, sku, lotNumber, expiryDate, receivedAt, origin, goodsReceiptId, goodsReceiptNumber,
+            this(lotId, sku, lotNumber, receivedAt, origin, goodsReceiptId, goodsReceiptNumber,
                     purchaseOrderId, purchaseOrderNumber, supplierId, supplierName, receivingWarehouseId,
                     receivedQuantity, onHand, available, held, null, null);
         }

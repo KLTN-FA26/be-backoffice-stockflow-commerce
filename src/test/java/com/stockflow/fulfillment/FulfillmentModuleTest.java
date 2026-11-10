@@ -34,6 +34,11 @@ class FulfillmentModuleTest {
 
     @Autowired FulfillmentService fulfillment;
     @Autowired ApplicationContext context;
+    // notification (booted here) asks the order module for production orders; order is not booted.
+    @org.springframework.test.context.bean.override.mockito.MockitoBean
+    com.stockflow.notification.api.ProductionOrderDirectory productionOrderDirectoryMock;
+    @org.springframework.test.context.bean.override.mockito.MockitoBean
+    com.stockflow.notification.api.ProductionOrderResends productionOrderResendsMock;
     // A dependency of a bootstrapped dependency, not of this module: explicit ports only, the slice must not boot more.
     @MockitoBean com.stockflow.payment.api.PaymentService paymentServiceMock;
     @MockitoBean com.stockflow.catalog.api.CatalogService catalogServiceMock;
@@ -69,7 +74,7 @@ class FulfillmentModuleTest {
     @Test
     @DisplayName("a module outside fulfillment's declared dependencies is not in this context")
     void unrelatedModulesAreAbsent() {
-        assertThatThrownBy(() -> context.getBean(com.stockflow.procurement.api.ProcurementService.class))
+        assertThatThrownBy(() -> context.getBean(com.stockflow.reporting.api.ReportingService.class))
                 .isInstanceOf(org.springframework.beans.factory.NoSuchBeanDefinitionException.class);
     }
 }

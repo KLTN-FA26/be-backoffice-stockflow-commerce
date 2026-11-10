@@ -9,13 +9,9 @@ import com.stockflow.common.security.Role;
 import com.stockflow.contracts.StockReservationReleased;
 import com.stockflow.inventory.api.AllocateStockCommand;
 import com.stockflow.inventory.api.AllocateStockResult;
-import com.stockflow.inventory.api.InventoryControlService;
-import com.stockflow.inventory.api.InventoryPolicy;
 import com.stockflow.inventory.api.OrderHold;
-import com.stockflow.inventory.api.RemovalStrategy;
 import com.stockflow.inventory.api.ReserveStockCommand;
 import com.stockflow.inventory.api.ReserveStockResult;
-import com.stockflow.inventory.api.TrackingMode;
 import com.stockflow.inventory.internal.domain.CycleCountRepository;
 import com.stockflow.inventory.internal.domain.HeldStock;
 import com.stockflow.inventory.internal.domain.InsufficientStockException;
@@ -44,7 +40,7 @@ import org.springframework.context.ApplicationEventPublisher;
 
 import java.time.Clock;
 import java.time.Duration;
-import java.time.LocalDate;
+import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.HashMap;
 import java.util.List;
@@ -54,7 +50,6 @@ import java.util.Set;
 import java.util.UUID;
 
 import static com.stockflow.inventory.internal.service.InventoryFixtures.NOW;
-import static com.stockflow.inventory.internal.service.InventoryFixtures.TODAY;
 import static com.stockflow.inventory.internal.service.InventoryFixtures.codeOf;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.catchThrowableOfType;
@@ -70,7 +65,7 @@ import static org.mockito.Mockito.when;
 
 /**
  * SCRUM-152 / kltn-docs 14 BR-07, 04c F-FUL step 02: checkout reserves a quantity of a SKU on no bin; releasing the
- * order to a warehouse allocates bins and lots (FEFO); a hold gives way when its order is cancelled or never pays.
+ * order to a warehouse allocates bins and lots (FIFO); a hold gives way when its order is cancelled or never pays.
  */
 class InventoryServiceImplReservationTest {
 
@@ -82,7 +77,6 @@ class InventoryServiceImplReservationTest {
     private final ApplicationEventPublisher publisher = mock(ApplicationEventPublisher.class);
     private final StockOperations operations = mock(StockOperations.class);
     private final InventoryItemDirectory itemDirectory = mock(InventoryItemDirectory.class);
-    private final InventoryControlService controls = mock(InventoryControlService.class);
     private final InventoryPolicyRepository policies = mock(InventoryPolicyRepository.class);
     private final SkuReservationRepository skuReservations = mock(SkuReservationRepository.class);
     private final LocationDirectory locations = mock(LocationDirectory.class);
@@ -90,14 +84,12 @@ class InventoryServiceImplReservationTest {
     private final StockPackageRepository stockPackages = mock(StockPackageRepository.class);
     private final InventoryServiceImpl service = new InventoryServiceImpl(repository,
             new InventoryEventPublisher(publisher), operations, itemDirectory, Clock.fixed(NOW, ZoneOffset.UTC),
-            controls, policies, skuReservations, locations, cycleCounts, stockPackages, TTL);
+            policies, skuReservations, locations, cycleCounts, stockPackages, TTL);
 
     private final Map<StockItemId, StockItem> rows = new HashMap<>();
 
     @BeforeEach
     void defaults() {
-        when(controls.policy(any())).thenReturn(new InventoryPolicy(null, null, null, RemovalStrategy.FEFO,
-                TrackingMode.LOT, false, null));
         when(repository.findByIdForUpdate(any())).thenAnswer(c -> Optional.ofNullable(rows.get(c.<StockItemId>getArgument(0))));
         when(repository.findById(any())).thenAnswer(c -> Optional.ofNullable(rows.get(c.<StockItemId>getArgument(0))));
         when(locations.pickable(anyCollection())).thenAnswer(c -> {
@@ -108,8 +100,15 @@ class InventoryServiceImplReservationTest {
         });
     }
 
-    private StockItem stock(String location, String lot, LocalDate expiry, int onHand) {
-        StockItem item = InventoryFixtures.available(CUP.code(), location, lot, expiry, onHand);
+    private StockItem stock(String location, String lot, int onHand) {
+        StockItem item = InventoryFixtures.available(CUP.code(), location, lot, onHand);
+        rows.put(item.id(), item);
+        return item;
+    }
+
+    /** As {@link #stock}, received at {@code receivedAt}: the time FIFO ranks by. */
+    private StockItem received(String location, String lot, int onHand, Instant receivedAt) {
+        StockItem item = InventoryFixtures.availableReceived(CUP.code(), location, lot, onHand, receivedAt);
         rows.put(item.id(), item);
         return item;
     }
@@ -117,15 +116,14 @@ class InventoryServiceImplReservationTest {
     /** Each row as the whole content of a sealed carton: what allocation draws on since team plan 4C-2. */
     private void availabilityIs(StockItem... items) {
         when(repository.findAvailabilityBySku(CUP)).thenReturn(java.util.Arrays.stream(items).map(item ->
-                new StockAllocator.Candidate(item.id(), item.location(), item.lotNumber(), item.expiryDate(),
-                        item.status(), item.available(), item.receivedAt(), UUID.randomUUID(), true)).toList());
+                new StockAllocator.Candidate(item.id(), item.location(), item.lotNumber(), item.status(), item.available(), item.receivedAt(), UUID.randomUUID(), true)).toList());
     }
 
     /** {@code units} of the cup as one whole sealed carton a release could allocate, on a pickable bin. */
     private StockItemRepository.Allocatable allocatableIs(int units) {
         StockItemRepository.Allocatable carton = new StockItemRepository.Allocatable(new StockItemId(UUID.randomUUID()),
                 CUP.code(), "HCM-A01-1-A", units);
-        when(repository.findAllocatable(any(), any())).thenReturn(List.of(carton));
+        when(repository.findAllocatable(any())).thenReturn(List.of(carton));
         return carton;
     }
 
@@ -190,9 +188,9 @@ class InventoryServiceImplReservationTest {
         void frozenUnitsAreNotPromised() {
             StockItemRepository.Allocatable doubtful = new StockItemRepository.Allocatable(
                     new StockItemId(UUID.randomUUID()), CUP.code(), "HCM-A02-1-A", 15);
-            when(repository.findAllocatable(any(), any())).thenReturn(List.of(new StockItemRepository.Allocatable(
+            when(repository.findAllocatable(any())).thenReturn(List.of(new StockItemRepository.Allocatable(
                     new StockItemId(UUID.randomUUID()), CUP.code(), "HCM-A01-1-A", 85), doubtful));
-            when(cycleCounts.frozen(anyCollection(), any())).thenReturn(List.of(
+            when(cycleCounts.frozen(anyCollection())).thenReturn(List.of(
                     new CycleCountRepository.Frozen(doubtful.id().value(), "CUP-12OZ", "HCM-A02-1-A", 15)));
 
             assertThat(codeOf(() -> service.reserve(new ReserveStockCommand(requestId, CUP, 86, ORDER))))
@@ -234,7 +232,7 @@ class InventoryServiceImplReservationTest {
         @Test
         @DisplayName("a retry of a checkout made before SKU reservations existed finds its holds on the stock items")
         void replayOfStockItemHolds() {
-            StockItem item = stock("HCM-A01-1-A", "L1", null, 50);
+            StockItem item = stock("HCM-A01-1-A", "L1", 50);
             item.reserve(ORDER, requestId, UUID.randomUUID(), Quantity.of(12), NOW);
             when(repository.findWithReservationsForRequest(requestId)).thenReturn(List.of(item));
             allocatableIs(38);
@@ -289,10 +287,10 @@ class InventoryServiceImplReservationTest {
         }
 
         @Test
-        @DisplayName("FEFO: the lot expiring first is drawn first, across bins; the reservation becomes ALLOCATED")
-        void allocatesFefo() {
-            StockItem later = stock("HCM-A01-1-A", "L2", TODAY.plusDays(90), 30);
-            StockItem sooner = stock("HCM-A02-1-A", "L1", TODAY.plusDays(10), 20);
+        @DisplayName("FIFO: the lot received first is drawn first, across bins; the reservation becomes ALLOCATED")
+        void allocatesFifo() {
+            StockItem later = received("HCM-A01-1-A", "L2", 30, NOW.minusSeconds(60));
+            StockItem sooner = received("HCM-A02-1-A", "L1", 20, NOW.minusSeconds(3600));
             availabilityIs(later, sooner);
             SkuReservation reservation = hold("CUP-12OZ", 50);
             when(skuReservations.findHeldForOrder(ORDER)).thenReturn(List.of(reservation));
@@ -316,7 +314,7 @@ class InventoryServiceImplReservationTest {
         @Test
         @DisplayName("allocations are never expiring: they are pinned to their order")
         void allocationsDoNotExpire() {
-            StockItem bin = stock("HCM-A01-1-A", "L1", null, 10);
+            StockItem bin = stock("HCM-A01-1-A", "L1", 10);
             availabilityIs(bin);
             SkuReservation reservation = hold("CUP-12OZ", 10);
             when(skuReservations.findHeldForOrder(ORDER)).thenReturn(List.of(reservation));
@@ -333,9 +331,9 @@ class InventoryServiceImplReservationTest {
         @Test
         @DisplayName("only the warehouse's own bins are drawn from, never a bin that is not pickable (module 06 BR-12)")
         void onlyPickableBinsOfTheWarehouse() {
-            StockItem otherWarehouse = stock("HN-A01-1-A", "L0", TODAY.plusDays(1), 500);
-            StockItem qc = stock("HCM-QC01", "L0", TODAY.plusDays(1), 500);
-            StockItem pickable = stock("HCM-A01-1-A", "L1", TODAY.plusDays(30), 40);
+            StockItem otherWarehouse = stock("HN-A01-1-A", "L0", 500);
+            StockItem qc = stock("HCM-QC01", "L0", 500);
+            StockItem pickable = stock("HCM-A01-1-A", "L1", 40);
             availabilityIs(otherWarehouse, qc, pickable);
             SkuReservation reservation = hold("CUP-12OZ", 40);
             when(skuReservations.findHeldForOrder(ORDER)).thenReturn(List.of(reservation));
@@ -351,7 +349,7 @@ class InventoryServiceImplReservationTest {
         @Test
         @DisplayName("a warehouse that cannot cover the line is INSUFFICIENT_STOCK, naming the warehouse and both numbers")
         void shortWarehouse() {
-            availabilityIs(stock("HCM-A01-1-A", "L1", null, 10));
+            availabilityIs(stock("HCM-A01-1-A", "L1", 10));
             SkuReservation reservation = hold("CUP-12OZ", 40);
             when(skuReservations.findHeldForOrder(ORDER)).thenReturn(List.of(reservation));
             when(skuReservations.findHeldForOrderForUpdate(ORDER)).thenReturn(List.of(reservation));
@@ -367,10 +365,10 @@ class InventoryServiceImplReservationTest {
         @Test
         @DisplayName("units in doubt at a recount are not allocated")
         void frozenLayersAreSkipped() {
-            StockItem doubtful = stock("HCM-A01-1-A", "L1", TODAY.plusDays(5), 30);
-            StockItem fine = stock("HCM-A02-1-A", "L2", TODAY.plusDays(50), 30);
+            StockItem doubtful = stock("HCM-A01-1-A", "L1", 30);
+            StockItem fine = stock("HCM-A02-1-A", "L2", 30);
             availabilityIs(doubtful, fine);
-            when(cycleCounts.frozen(anyCollection(), any())).thenReturn(List.of(
+            when(cycleCounts.frozen(anyCollection())).thenReturn(List.of(
                     new CycleCountRepository.Frozen(doubtful.id().value(), "CUP-12OZ", "HCM-A01-1-A", 30)));
             SkuReservation reservation = hold("CUP-12OZ", 30);
             when(skuReservations.findHeldForOrder(ORDER)).thenReturn(List.of(reservation));
@@ -385,8 +383,8 @@ class InventoryServiceImplReservationTest {
         @Test
         @DisplayName("two lines of one SKU do not draw the same units twice: the second sees what the first took")
         void secondLineSeesWhatTheFirstTook() {
-            StockItem first30 = stock("HCM-A01-1-A", "L1", TODAY.plusDays(10), 30);
-            StockItem then20 = stock("HCM-A02-1-A", "L2", TODAY.plusDays(20), 20);
+            StockItem first30 = stock("HCM-A01-1-A", "L1", 30);
+            StockItem then20 = stock("HCM-A02-1-A", "L2", 20);
             availabilityIs(first30, then20);
             SkuReservation first = hold("CUP-12OZ", 30);
             SkuReservation second = hold("CUP-12OZ", 30);
@@ -403,8 +401,8 @@ class InventoryServiceImplReservationTest {
         @Test
         @DisplayName("each SKU is locked once, in sorted order, before the reservations and the rows")
         void lockOrder() {
-            StockItem bin = stock("HCM-A01-1-A", "L1", TODAY.plusDays(10), 5);
-            StockItem other = stock("HCM-A02-1-A", "L2", TODAY.plusDays(20), 5);
+            StockItem bin = stock("HCM-A01-1-A", "L1", 5);
+            StockItem other = stock("HCM-A02-1-A", "L2", 5);
             availabilityIs(bin, other);
             SkuReservation a = hold("CUP-12OZ", 5);
             SkuReservation b = hold("CUP-12OZ", 5);
@@ -430,7 +428,7 @@ class InventoryServiceImplReservationTest {
         @DisplayName("payment received: every live hold of the order is pinned, SKU reservations and stock holds, and counted")
         void pin() {
             SkuReservation sku = hold("CUP-12OZ", 10);
-            StockItem item = stock("HCM-A01-1-A", "L1", null, 50);
+            StockItem item = stock("HCM-A01-1-A", "L1", 50);
             item.reserve(ORDER, UUID.randomUUID(), UUID.randomUUID(), Quantity.of(5), NOW);
             when(skuReservations.findHeldForOrderForUpdate(ORDER)).thenReturn(List.of(sku));
             when(repository.findWithReservationsForOrder(ORDER)).thenReturn(List.of(item));
@@ -471,7 +469,7 @@ class InventoryServiceImplReservationTest {
         @Test
         @DisplayName("allocations are never rearmed: they do not expire (X-RESV)")
         void allocationsStayPinned() {
-            StockItem bin = stock("HCM-A01-1-A", "L1", null, 50);
+            StockItem bin = stock("HCM-A01-1-A", "L1", 50);
             SkuReservation source = hold("CUP-12OZ", 10);
             bin.allocate(source, UUID.randomUUID(), Quantity.of(10), NOW);
             when(repository.findWithReservationsForOrder(ORDER)).thenReturn(List.of(bin));
@@ -564,7 +562,7 @@ class InventoryServiceImplReservationTest {
         @Test
         @DisplayName("a hold on a stock row is released and the units are free again")
         void releasesStockHold() {
-            StockItem bin = stock("HCM-A01-1-A", "L1", null, 50);
+            StockItem bin = stock("HCM-A01-1-A", "L1", 50);
             Reservation reservation = bin.reserve(ORDER, UUID.randomUUID(), UUID.randomUUID(), Quantity.of(20), NOW);
             when(repository.findByReservationIdForUpdate(reservation.id())).thenReturn(Optional.of(bin));
 
@@ -584,7 +582,7 @@ class InventoryServiceImplReservationTest {
         @Test
         @DisplayName("a clerk cannot release a hold in another warehouse's bin")
         void otherWarehouseBin() {
-            StockItem bin = stock("HN-A01-1-A", "L1", null, 50);
+            StockItem bin = stock("HN-A01-1-A", "L1", 50);
             Reservation reservation = bin.reserve(ORDER, UUID.randomUUID(), UUID.randomUUID(), Quantity.of(20), NOW);
             when(repository.findByReservationIdForUpdate(reservation.id())).thenReturn(Optional.of(bin));
 

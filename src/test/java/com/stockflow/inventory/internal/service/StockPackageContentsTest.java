@@ -57,8 +57,7 @@ class StockPackageContentsTest {
     }
 
     private static StockItem row(StockPackageId carton, int onHand) {
-        return new StockItem(StockItemId.newId(), new Sku("CUP-12OZ"), new LocationId("HCM-A01-1-A"), "L1", null,
-                Quantity.of(onHand), StockStatus.AVAILABLE, List.of(), 0L, NOW, null, carton);
+        return new StockItem(StockItemId.newId(), new Sku("CUP-12OZ"), new LocationId("HCM-A01-1-A"), "L1", Quantity.of(onHand), StockStatus.AVAILABLE, List.of(), 0L, NOW, null, carton);
     }
 
     private static StockItem loose(int onHand) {

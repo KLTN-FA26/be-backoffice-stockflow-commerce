@@ -57,10 +57,10 @@ class StockflowJwtAuthenticationConverterTest {
     void permissionsComeFromTheLookupAndAPermissionsClaimIsIgnored() {
         var converter = converterGranting(new ResolvedAuthorization(Set.of(PO_READ), DataScope.ALL));
 
-        var auth = converter.convert(token(List.of("PROCUREMENT_STAFF"), List.of("identity-rbac:APPROVE")));
+        var auth = converter.convert(token(List.of("WAREHOUSE_STAFF"), List.of("identity-rbac:APPROVE")));
 
         assertThat(authorities(auth.getAuthorities()))
-                .containsExactlyInAnyOrder("PROCUREMENT_STAFF", "procurement-purchase-orders:READ");
+                .containsExactlyInAnyOrder("WAREHOUSE_STAFF", "procurement-purchase-orders:READ");
     }
 
     /** Custom roles exist since SCRUM-455: the lookup, which only knows real roles, decides. */
@@ -68,11 +68,11 @@ class StockflowJwtAuthenticationConverterTest {
     void customRoleCodesReachTheLookup() {
         var converter = converterGranting(new ResolvedAuthorization(Set.of(PO_READ), DataScope.ALL));
 
-        var auth = converter.convert(token(List.of("PROCUREMENT_STAFF", "SHIFT_LEAD"), null));
+        var auth = converter.convert(token(List.of("WAREHOUSE_STAFF", "SHIFT_LEAD"), null));
 
-        assertThat(asked).containsExactly(List.of("PROCUREMENT_STAFF", "SHIFT_LEAD"));
+        assertThat(asked).containsExactly(List.of("WAREHOUSE_STAFF", "SHIFT_LEAD"));
         assertThat(authorities(auth.getAuthorities()))
-                .containsExactlyInAnyOrder("PROCUREMENT_STAFF", "SHIFT_LEAD", "procurement-purchase-orders:READ");
+                .containsExactlyInAnyOrder("WAREHOUSE_STAFF", "SHIFT_LEAD", "procurement-purchase-orders:READ");
     }
 
     /** A value not shaped like a role code could pass for a permission authority; it never gets in. */
@@ -80,9 +80,9 @@ class StockflowJwtAuthenticationConverterTest {
     void malformedRoleValuesAreDroppedBeforeTheLookup() {
         var converter = converterGranting(new ResolvedAuthorization(Set.of(PO_READ), DataScope.ALL));
 
-        var auth = converter.convert(token(List.of("PROCUREMENT_STAFF", "identity-rbac:APPROVE", "lower_case", ""), null));
+        var auth = converter.convert(token(List.of("WAREHOUSE_STAFF", "identity-rbac:APPROVE", "lower_case", ""), null));
 
-        assertThat(asked).containsExactly(List.of("PROCUREMENT_STAFF"));
+        assertThat(asked).containsExactly(List.of("WAREHOUSE_STAFF"));
         assertThat(authorities(auth.getAuthorities()))
                 .doesNotContain("identity-rbac:APPROVE", "lower_case", "");
     }
@@ -112,13 +112,13 @@ class StockflowJwtAuthenticationConverterTest {
     void currentUserTakesTheResolvedScopeNowThatTheTokenHasNoScopeClaim() {
         var converter = converterGranting(new ResolvedAuthorization(Set.of(PO_READ), DataScope.ALL));
         SecurityContextHolder.getContext().setAuthentication(
-                converter.convert(token(List.of("PROCUREMENT_STAFF"), null)));
+                converter.convert(token(List.of("WAREHOUSE_STAFF"), null)));
 
         CurrentUser user = new CurrentUserProvider().current().orElseThrow();
 
         // Read from the claim this would be OWN, narrowing every scoped query for every user.
         assertThat(user.scope()).isEqualTo(DataScope.ALL);
         assertThat(user.permissions()).containsExactly(PO_READ);
-        assertThat(user.roles()).containsExactly(Role.PROCUREMENT_STAFF);
+        assertThat(user.roles()).containsExactly(Role.WAREHOUSE_STAFF);
     }
 }

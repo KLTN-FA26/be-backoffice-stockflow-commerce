@@ -464,7 +464,7 @@ public final class Order extends AggregateRoot {
     }
 
     /**
-     * The carrier delivered it, as the Order Coordinator records when the carrier reports back
+     * The carrier delivered it, as the warehouse manager records when the carrier reports back
      * (kltn-docs 09 §4.3, 17 §4.3): SHIPPED or DELIVERY_FAILED (a retry) → DELIVERED. Payment makes the contract's
      * installments paid after delivery due from the event (15 §4.1 step 2).
      *
@@ -1167,7 +1167,7 @@ public final class Order extends AggregateRoot {
     }
 
     /**
-     * The carrier delivered one shipment (09 §4.3 step 1; the Order Coordinator records it, BR-02). The order is
+     * The carrier delivered one shipment (09 §4.3 step 1; the warehouse manager records it, BR-02). The order is
      * DELIVERED once every shipment arrived; {@code OrderDelivered} names the shipment. Nothing is billed on delivery
      * since 4B-10: what is paid after delivery is the contract's installments.
      *

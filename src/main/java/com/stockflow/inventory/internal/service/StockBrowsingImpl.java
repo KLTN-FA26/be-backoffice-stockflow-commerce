@@ -1,7 +1,6 @@
 package com.stockflow.inventory.internal.service;
 
 import com.stockflow.common.api.PageResponse;
-import com.stockflow.common.domain.BusinessCalendar;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.persistence.Pages;
@@ -16,7 +15,6 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Clock;
-import java.time.LocalDate;
 import java.util.Collection;
 import java.util.Locale;
 import java.util.Set;
@@ -27,7 +25,7 @@ import java.util.UUID;
 class StockBrowsingImpl implements StockBrowsing {
 
     private static final SortWhitelist STOCK_SORT =
-            SortWhitelist.of("locationCode", "sku", "lotNumber", "expiryDate", "onHand", "receivedAt")
+            SortWhitelist.of("locationCode", "sku", "lotNumber", "onHand", "receivedAt")
                     .withDefault("locationCode", Sort.Direction.ASC);
 
     private final StockBrowseSearch search;
@@ -81,7 +79,6 @@ class StockBrowsingImpl implements StockBrowsing {
         }
         var criteria = new StockBrowseSearch.StockCriteria(prefix, location, query.sku(), query.lotNumber(),
                 query.statuses(), query.includeEmpty());
-        LocalDate today = BusinessCalendar.date(clock.instant());
         // Ordering by on hand would rank a hidden quantity against the visible ones: not for a blind reader.
         String sort = visibility.hidesCountedSlots() && query.sort() != null
                 && query.sort().strip().toLowerCase(Locale.ROOT).startsWith("onhand") ? null : query.sort();
@@ -92,7 +89,7 @@ class StockBrowsingImpl implements StockBrowsing {
                 : Set.of();
         return Pages.toResponse(page.map(row -> {
             var view = new StockRow(row.stockItemId(), row.sku(), row.locationCode(), row.lotNumber(),
-                    row.expiryDate(), row.onHand(), row.reserved(), available(row, today), row.status(),
+                    row.onHand(), row.reserved(), available(row), row.status(),
                     row.receivedAt(), false);
             return held.contains(row.stockItemId()) ? view.hidden() : view;
         }));
@@ -103,9 +100,8 @@ class StockBrowsingImpl implements StockBrowsing {
         return underCount.stockItemsUnderCount(stockItemIds);
     }
 
-    private static int available(StockBrowseSearch.StockRow row, LocalDate today) {
-        boolean sellable = row.status() == StockStatus.AVAILABLE
-                && (row.expiryDate() == null || !row.expiryDate().isBefore(today));
+    private static int available(StockBrowseSearch.StockRow row) {
+        boolean sellable = row.status() == StockStatus.AVAILABLE;
         return sellable ? Math.max(0, row.onHand() - row.reserved()) : 0;
     }
 

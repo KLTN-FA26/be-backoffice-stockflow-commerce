@@ -128,7 +128,7 @@ class PickListServiceTest {
         private final UUID resB = UUID.randomUUID();
 
         private HoldView held(UUID reservation, String sku, String location, int qty, HoldView.Status status) {
-            return new HoldView(reservation, sku, location, "LOT-1", qty, status, null, null, null, lpnOf(sku), true);
+            return new HoldView(reservation, sku, location, "LOT-1", qty, status, null, lpnOf(sku), true);
         }
 
         private void locationsIn(UUID warehouse, String... codes) {
@@ -165,7 +165,7 @@ class PickListServiceTest {
             OrderSummary order = FulfillmentFixtures.orderWith(task.getOrderId(), OrderStatus.PICKING,
                     List.of(FulfillmentFixtures.stockLine("SKU-A", resA)), null);
             when(inventory.holds(any())).thenReturn(List.of(new HoldView(resA, "SKU-A", "HCM-A-01", "LOT-1", 10,
-                    HoldView.Status.HELD, null, null, null, "LPN-20261028-000001", true)));
+                    HoldView.Status.HELD, null, "LPN-20261028-000001", true)));
             locationsIn(WAREHOUSE, "HCM-A-01");
 
             service.planLines(task, order);
@@ -185,7 +185,7 @@ class PickListServiceTest {
             OrderSummary order = FulfillmentFixtures.orderWith(task.getOrderId(), OrderStatus.PICKING,
                     List.of(FulfillmentFixtures.stockLine("SKU-A", resA)), null);
             when(inventory.holds(any())).thenReturn(List.of(new HoldView(resA, "SKU-A", "HCM-A-01", "LOT-1", 3,
-                    HoldView.Status.HELD, null, null)));
+                    HoldView.Status.HELD, null)));
             locationsIn(WAREHOUSE, "HCM-A-01");
 
             assertThat(refusal(() -> service.planLines(task, order)).errorCode())
@@ -268,7 +268,7 @@ class PickListServiceTest {
             OrderSummary order = FulfillmentFixtures.orderWith(task.getOrderId(), OrderStatus.PICKING,
                     List.of(FulfillmentFixtures.stockLine("SKU-A", res)), null);
             when(inventory.holds(any())).thenReturn(List.of(new HoldView(res, "SKU-A", "HCM-A-01", "L", 2,
-                    HoldView.Status.HELD, null, null)));
+                    HoldView.Status.HELD, null)));
             when(warehouses.findLocation("HCM-A-01")).thenReturn(Optional.empty());
 
             assertThat(refusal(() -> service.requireAllPicked(task, order)).errorCode())
@@ -577,7 +577,7 @@ class PickListServiceTest {
             when(inventory.reallocate(any())).thenReturn(List.of(new StockReservation(hold,
                     UUID.randomUUID(), location, "LOT-2", 5)));
             when(inventory.holds(any())).thenReturn(List.of(new HoldView(hold, "SKU-A", location, "LOT-2", 5,
-                    HoldView.Status.HELD, null, null, null, "LPN-NEW", true)));
+                    HoldView.Status.HELD, null, "LPN-NEW", true)));
             when(warehouses.findLocation(location)).thenReturn(Optional.of(new StorageLocationView(UUID.randomUUID(),
                     StorageLocationView.Kind.BIN, WAREHOUSE, location, null, null, null, true)));
         }
@@ -989,7 +989,7 @@ class PickListServiceTest {
 
         private void holdsInHcm(UUID hold, String location, String lpn) {
             when(inventory.holds(any())).thenAnswer(call -> List.of(new HoldView(hold, "SKU-A", location, "LOT-1", 4,
-                    HoldView.Status.HELD, null, null, null, lpn, true)));
+                    HoldView.Status.HELD, null, lpn, true)));
             when(warehouses.findLocation(location)).thenReturn(Optional.of(new StorageLocationView(UUID.randomUUID(),
                     StorageLocationView.Kind.BIN, WAREHOUSE, location, null, null, null, true)));
         }
@@ -1054,9 +1054,9 @@ class PickListServiceTest {
             UUID later = UUID.randomUUID();
             holdsInHcm(later, "HCM-A-05", "LPN-NEW");
             when(inventory.holds(any())).thenAnswer(call -> List.of(
-                    new HoldView(reservation, "SKU-A", "HCM-A-01", "LOT-1", 3, HoldView.Status.HELD, null, null, null,
+                    new HoldView(reservation, "SKU-A", "HCM-A-01", "LOT-1", 3, HoldView.Status.HELD, null,
                             "LPN-SKU-A", true),
-                    new HoldView(later, "SKU-A", "HCM-A-05", "LOT-1", 4, HoldView.Status.HELD, null, null, null,
+                    new HoldView(later, "SKU-A", "HCM-A-05", "LOT-1", 4, HoldView.Status.HELD, null,
                             "LPN-NEW", true)));
 
             var added = service.planLines(task, orderHolding(reservation, later));

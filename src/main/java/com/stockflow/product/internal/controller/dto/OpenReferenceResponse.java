@@ -8,10 +8,10 @@ import java.util.UUID;
 @Schema(name = "OpenReference", description = "An open document that still refers to a SKU of the product")
 public record OpenReferenceResponse(
 
-        @Schema(description = "PURCHASE_ORDER_LINE or SALES_ORDER_LINE", example = "PURCHASE_ORDER_LINE")
+        @Schema(description = "PRODUCTION_ORDER_LINE or SALES_ORDER_LINE", example = "PRODUCTION_ORDER_LINE")
         String kind,
 
-        @Schema(example = "PO-20261014-0001")
+        @Schema(example = "PRD-20261014-0001")
         String documentNumber,
 
         UUID documentId,

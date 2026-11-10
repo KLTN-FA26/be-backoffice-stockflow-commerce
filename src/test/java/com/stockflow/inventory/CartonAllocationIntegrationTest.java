@@ -67,8 +67,6 @@ class CartonAllocationIntegrationTest {
                     "Carton fixture", sku.toLowerCase(Locale.ROOT));
             jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature) values (?,?,?,?,'')",
                     Identifiers.newId(), product, sku, "Carton fixture");
-            jdbc.update("update inventory.inventory_items set removal_strategy='FIFO', policy_configured=true"
-                    + " where sku=?", sku);
         });
     }
 

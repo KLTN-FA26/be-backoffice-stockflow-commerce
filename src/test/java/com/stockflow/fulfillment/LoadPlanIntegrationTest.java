@@ -110,7 +110,7 @@ class LoadPlanIntegrationTest {
     void setUp() {
         CartonStationSupport.giveCartonsASize(tx, jdbc);
         parts = new CartonStationSupport.Parts(this::packer, tx, jdbc, json);
-        coordinator = staff("ORDER_COORDINATOR");
+        coordinator = staff("WAREHOUSE_MANAGER", HCM);
         sales = staff("SALES_STAFF");
         manager = staff("WAREHOUSE_MANAGER", HCM);
         picker = staff("WAREHOUSE_STAFF", HCM);
@@ -165,7 +165,7 @@ class LoadPlanIntegrationTest {
     }
 
     private ResultActions oc(MockHttpServletRequestBuilder request) throws Exception {
-        return as(coordinator, "ORDER_COORDINATOR", request);
+        return as(coordinator, "WAREHOUSE_MANAGER", request);
     }
 
     private ResultActions packer(MockHttpServletRequestBuilder request) throws Exception {
@@ -784,8 +784,9 @@ class LoadPlanIntegrationTest {
         String url = PLANS + "/" + plan.path("loadPlanId").asText();
         oc(get(url)).andExpect(status().isOk());
         oc(get(PLANS)).andExpect(status().isOk());
-        oc(body(post(PLANS), createBody(UUID.randomUUID(), List.of(), List.of()))).andExpect(status().isForbidden());
-        oc(body(post(url + "/calculation"), version(plan))).andExpect(status().isForbidden());
+        as(sales, "SALES_STAFF", body(post(PLANS), createBody(UUID.randomUUID(), List.of(), List.of())))
+                .andExpect(status().isForbidden());
+        as(sales, "SALES_STAFF", body(post(url + "/calculation"), version(plan))).andExpect(status().isForbidden());
         as(sales, "SALES_STAFF", get(url)).andExpect(status().isForbidden());
         as(customerUser, "CUSTOMER", get(PLANS)).andExpect(status().isForbidden());
         as(dispatcherElsewhere, "WAREHOUSE_STAFF", get(url)).andExpect(status().isForbidden())

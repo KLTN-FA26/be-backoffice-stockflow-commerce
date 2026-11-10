@@ -20,6 +20,13 @@ public final class CartonRows {
     public record Carton(UUID id, String lpn, UUID stockItemId) {
     }
 
+    /**
+     * The lot of a carton a test gives none: every unit has one since team plan 5-5 (kltn-docs 01 BR-17), and the
+     * database refuses live stock without it ({@code inventory.enforce_sku_policy}). It is the lot 4C-1 gave the demo
+     * stock that had none, so a test's cartons and the demo's are one lot, as the lot-less stock of both once was.
+     */
+    public static final String DEFAULT_LOT = "UNTRACED";
+
     private CartonRows() {
     }
 
@@ -42,23 +49,24 @@ public final class CartonRows {
         return id;
     }
 
-    /** {@code count} AVAILABLE cartons of {@code factor} units at {@code location}, received at {@code receivedAt}. */
+    /**
+     * {@code count} AVAILABLE cartons of {@code factor} units at {@code location}, received at {@code receivedAt}; a
+     * null {@code lotNumber} is {@link #DEFAULT_LOT}.
+     */
     public static List<Carton> stock(JdbcTemplate jdbc, String sku, String location, int count, int factor,
                                      String lotNumber, Instant receivedAt) {
-        return stock(jdbc, sku, location, count, factor, lotNumber, null, receivedAt, "AVAILABLE");
+        return stock(jdbc, sku, location, count, factor, lotNumber, receivedAt, "AVAILABLE");
     }
 
-    /** The same, with the expiry date and stock status of the rows. */
+    /** The same, with the stock status of the rows. */
     public static List<Carton> stock(JdbcTemplate jdbc, String sku, String location, int count, int factor,
-                                     String lotNumber, java.time.LocalDate expiryDate, Instant receivedAt,
-                                     String status) {
-        return stockOfUnit(jdbc, sku, unit(jdbc, sku, factor), location, count, lotNumber, expiryDate, receivedAt, status);
+                                     String lotNumber, Instant receivedAt, String status) {
+        return stockOfUnit(jdbc, sku, unit(jdbc, sku, factor), location, count, lotNumber, receivedAt, status);
     }
 
     /** {@code count} cartons of exactly this carton unit of the SKU, however many carton units the SKU has. */
     public static List<Carton> stockOfUnit(JdbcTemplate jdbc, String sku, UUID unit, String location, int count,
-                                           String lotNumber, java.time.LocalDate expiryDate, Instant receivedAt,
-                                           String status) {
+                                           String lotNumber, Instant receivedAt, String status) {
         int perCarton = jdbc.queryForObject("SELECT factor FROM inventory.uom_conversions WHERE id = ?", Integer.class,
                 unit);
         List<Carton> made = new ArrayList<>();
@@ -72,11 +80,10 @@ public final class CartonRows {
                       FROM inventory.uom_conversions WHERE id = ?""", id, lpn, location, unit);
             UUID row = Identifiers.newId();
             jdbc.update("""
-                    INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, expiry_date, on_hand, reserved,
+                    INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved,
                                                       status, version, created_at, received_at, stock_package_id)
-                    VALUES (?, ?, ?, ?, ?, ?, 0, ?, 0, NOW(), ?, ?)""",
-                    row, sku, location, lotNumber, expiryDate == null ? null : java.sql.Date.valueOf(expiryDate),
-                    perCarton, status, Timestamp.from(receivedAt), id);
+                    VALUES (?, ?, ?, ?, ?, 0, ?, 0, NOW(), ?, ?)""",
+                    row, sku, location, lotNumber == null ? DEFAULT_LOT : lotNumber, perCarton, status, Timestamp.from(receivedAt), id);
             made.add(new Carton(id, lpn, row));
         }
         return made;

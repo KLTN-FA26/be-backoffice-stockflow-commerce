@@ -179,7 +179,7 @@ class UserAndRoleManagementIntegrationTest {
 
     @Test
     void lockingAndDisablingEndSessionsAndBlockSignIn() {
-        CreatedStaffUser created = create("INVENTORY_PLANNER");
+        CreatedStaffUser created = create("SALES_MANAGER");
         UUID id = created.user().userId();
         identity.login(new LoginCommand(created.user().username(), created.temporaryPassword(), "127.0.0.1", "t"));
 
@@ -227,7 +227,7 @@ class UserAndRoleManagementIntegrationTest {
 
     @Test
     void theHistoryKeepsEveryActionNewestFirstAndTheLatestShowsOnDetailAndList() {
-        CreatedStaffUser created = create("INVENTORY_PLANNER");
+        CreatedStaffUser created = create("SALES_MANAGER");
         UUID id = created.user().userId();
         UUID actorId = create("SALES_STAFF").user().userId();
         CurrentUser admin = new CurrentUser(actorId, "an.admin", Set.of(Role.SYSTEM_ADMIN),
@@ -323,7 +323,7 @@ class UserAndRoleManagementIntegrationTest {
 
     @Test
     void unlockingAnActiveAccountStillEndsARunningWrongPasswordLockout() {
-        CreatedStaffUser created = create("ORDER_COORDINATOR");
+        CreatedStaffUser created = create("SALES_STAFF");
         UUID id = created.user().userId();
         for (int i = 0; i < 5; i++) {
             refused(ErrorCode.UNAUTHORIZED,
@@ -341,7 +341,7 @@ class UserAndRoleManagementIntegrationTest {
 
     @Test
     void theAutomaticLockAfterWrongPasswordsTakesNoReasonAndWritesNoHistory() {
-        CreatedStaffUser created = create("ORDER_COORDINATOR");
+        CreatedStaffUser created = create("SALES_STAFF");
         for (int i = 0; i < 5; i++) {
             refused(ErrorCode.UNAUTHORIZED,
                     () -> identity.login(new LoginCommand(created.user().username(), "Wrong0Password", "2.2.2.2", "t")));
@@ -384,7 +384,7 @@ class UserAndRoleManagementIntegrationTest {
 
     @Test
     void aResetPasswordIsTemporaryAndSignsTheAccountOut() {
-        CreatedStaffUser created = create("PROCUREMENT_STAFF");
+        CreatedStaffUser created = create("ACCOUNTANT");
         UUID id = created.user().userId();
         identity.login(new LoginCommand(created.user().username(), created.temporaryPassword(), "127.0.0.1", "t"));
 
@@ -401,7 +401,7 @@ class UserAndRoleManagementIntegrationTest {
 
     @Test
     void aTemporaryPasswordStopsWorkingAfter72HoursAndAnAdministratorResetRestartsTheClock() {
-        CreatedStaffUser created = create("PROCUREMENT_STAFF");
+        CreatedStaffUser created = create("ACCOUNTANT");
         UUID id = created.user().userId();
         String username = created.user().username();
         assertThat(jdbc.queryForObject("SELECT temporary_password_set_at FROM identity.app_user WHERE id = ?",
@@ -425,7 +425,7 @@ class UserAndRoleManagementIntegrationTest {
 
     @Test
     void anAccountFlaggedBeforeTheTimestampExistedDoesNotExpire() {
-        CreatedStaffUser created = create("PROCUREMENT_STAFF");
+        CreatedStaffUser created = create("ACCOUNTANT");
         setTemporaryPasswordSetAt(created.user().userId(), "NULL");
 
         assertThat(identity.login(new LoginCommand(created.user().username(), created.temporaryPassword(),
@@ -434,7 +434,7 @@ class UserAndRoleManagementIntegrationTest {
 
     @Test
     void theForcedChangeKeepsTheCurrentSessionAndEndsEveryOtherOneWithoutBeingAsked() {
-        CreatedStaffUser created = create("PROCUREMENT_STAFF");
+        CreatedStaffUser created = create("ACCOUNTANT");
         UUID id = created.user().userId();
         for (int i = 0; i < 3; i++) {
             identity.login(new LoginCommand(created.user().username(), created.temporaryPassword(), "127.0.0.1", "d" + i));
@@ -464,7 +464,7 @@ class UserAndRoleManagementIntegrationTest {
 
     @Test
     void fiveWrongPasswordsLockTheAccountUntilUnlocked() {
-        CreatedStaffUser created = create("ORDER_COORDINATOR");
+        CreatedStaffUser created = create("SALES_STAFF");
         String username = created.user().username();
         for (int i = 0; i < 5; i++) {
             refused(ErrorCode.UNAUTHORIZED, () -> identity.login(new LoginCommand(username, "Wrong0Password", "1.1.1.1", "t")));
@@ -528,7 +528,7 @@ class UserAndRoleManagementIntegrationTest {
         identity.createRole(new CreateRoleCommand(custom, "Custom", null, null, null));
 
         refused(ErrorCode.PRIVILEGE_ESCALATION,
-                () -> as(caller, () -> identity.grantPermission(custom, "procurement-purchase-orders:APPROVE")));
+                () -> as(caller, () -> identity.grantPermission(custom, "procurement-goods-receipts:UPDATE")));
         RoleMatrixView ok = as(caller, () -> identity.grantPermission(custom, "product-products:READ"));
         assertThat(granted(ok)).contains("product-products:READ");
         identity.deleteRole(custom);
@@ -599,7 +599,7 @@ class UserAndRoleManagementIntegrationTest {
                 () -> identity.createRole(new CreateRoleCommand("ACCOUNTANT", "Dup", null, null, null)));
         assertThat(identity.listRoles()).filteredOn(RoleSummary::system)
                 .extracting(RoleSummary::code).contains("SYSTEM_ADMIN", "CUSTOMER", "WAREHOUSE_STAFF")
-                .doesNotContain("PRODUCTION_STAFF");
+                .doesNotContain("PRODUCTION_STAFF", "ORDER_COORDINATOR", "INVENTORY_PLANNER", "PROCUREMENT_STAFF");
     }
 
     // ---- warehouse data scope (SCRUM-457) -----------------------------------------------------
@@ -608,8 +608,8 @@ class UserAndRoleManagementIntegrationTest {
     void warehouseRolesAreLimitedToTheirAssignedWarehousesResolvedPerRequest() {
         assertThat(lookup.resolve(List.of("WAREHOUSE_STAFF")).scope()).isEqualTo(DataScope.WAREHOUSE);
         assertThat(lookup.resolve(List.of("WAREHOUSE_STAFF", "WAREHOUSE_MANAGER")).scope()).isEqualTo(DataScope.WAREHOUSE);
-        // The broadest of a user's roles: a clerk who also plans plans across warehouses.
-        assertThat(lookup.resolve(List.of("WAREHOUSE_STAFF", "INVENTORY_PLANNER")).scope()).isEqualTo(DataScope.ALL);
+        // The broadest of a user's roles: a clerk who also holds a company-wide role is not narrowed to a warehouse.
+        assertThat(lookup.resolve(List.of("WAREHOUSE_STAFF", "SALES_MANAGER")).scope()).isEqualTo(DataScope.ALL);
 
         StaffUser clerk = create("WAREHOUSE_STAFF").user();
         assertThat(clerk.warehouseIds()).isEmpty();

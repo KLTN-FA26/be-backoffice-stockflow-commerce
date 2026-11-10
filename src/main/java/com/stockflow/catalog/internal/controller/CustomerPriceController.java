@@ -29,7 +29,7 @@ import java.util.UUID;
 
 /**
  * Back office: customers' own prices by SKU and quantity tier (SCRUM-428). Sales Manager edits
- * (kltn-docs 13 §2); Sales and the Order Coordinator read - Sales to start a quote from the customer's
+ * (kltn-docs 13 §2); Sales reads - to start a quote from the customer's
  * price (14 step 2). Only staff hold this resource, so there is no portal path through here; customers
  * read their own prices through {@code GET /api/v1/catalog/products/prices}.
  */

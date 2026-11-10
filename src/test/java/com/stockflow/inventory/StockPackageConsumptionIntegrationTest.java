@@ -65,8 +65,6 @@ class StockPackageConsumptionIntegrationTest {
                     "Carton fixture", sku.toLowerCase(Locale.ROOT));
             jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature) values (?,?,?,?,'')",
                     Identifiers.newId(), product, sku, "Carton fixture");
-            jdbc.update("update inventory.inventory_items set removal_strategy='FIFO', policy_configured=true"
-                    + " where sku=?", sku);
             item = jdbc.queryForObject("select id from inventory.inventory_items where sku = ?", UUID.class, sku);
             carton = Identifiers.newId();
             jdbc.update("insert into inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)"
@@ -83,8 +81,8 @@ class StockPackageConsumptionIntegrationTest {
                         received_qty, location_code, status) values (?, ?, ?, ?, 5, 5, ?, 'IN_STOCK')""",
                     id, "LPN-" + sku + "-" + name, item, carton, SHELF);
             jdbc.update("""
-                    insert into inventory.stock_item (id, sku, location_code, received_at, on_hand, reserved, status,
-                        version, created_at, stock_package_id) values (?, ?, ?, ?, 5, 0, 'AVAILABLE', 0, now(), ?)""",
+                    insert into inventory.stock_item (id, sku, location_code, lot_number, received_at, on_hand, reserved, status,
+                        version, created_at, stock_package_id) values (?, ?, ?, 'UNTRACED', ?, 5, 0, 'AVAILABLE', 0, now(), ?)""",
                     Identifiers.newId(), sku, SHELF, java.sql.Timestamp.from(RECEIVED), id);
         });
         return id;

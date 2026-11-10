@@ -8,7 +8,7 @@ import java.util.UUID;
 /**
  * The carrier catalogue (G4-2a; kltn-docs 09 §3: a shipment is handed to a carrier "chọn từ danh sách hãng đã khai
  * báo: tên, liên hệ") and each carrier's connection settings (3-1; 09 §4.1 step 2, BR-21). Read by dispatch staff and
- * coordinators; kept by the warehouse manager.
+ * managers; kept by the warehouse manager.
  */
 public interface Carriers {
 

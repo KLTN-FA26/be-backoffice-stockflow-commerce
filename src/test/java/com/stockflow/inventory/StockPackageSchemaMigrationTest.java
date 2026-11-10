@@ -64,9 +64,9 @@ class StockPackageSchemaMigrationTest {
                 "INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty,"
                         + " received_qty, location_code, status, unopened) VALUES (" + id + ", 'IT-" + name + "', "
                         + SOFA + ", " + unit + ", 10, " + held + ", '" + location + "', 'IN_STOCK', FALSE)",
-                "INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, created_at,"
+                "INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at,"
                         + " received_at, stock_package_id) VALUES (md5('it:pk:" + name + ":row')::uuid, 'SOFA-3S-GREY', '"
-                        + location + "', " + held + ", 0, 'AVAILABLE', NOW(), NOW() - interval '1 day', " + id + ")");
+                        + location + "', 'IT-LOT', " + held + ", 0, 'AVAILABLE', NOW(), NOW() - interval '1 day', " + id + ")");
         return id;
     }
 
@@ -172,9 +172,9 @@ class StockPackageSchemaMigrationTest {
     void anEmptiedRowStaysInItsStockPackageWithoutPinningIt() throws Exception {
         try (Connection db = connect()) {
             String pkg = inStock(db, "EMPTIED", unit(db, "EMPTIED"), "HCM-A01-1-A", 4);
-            update(db, "INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, created_at,"
+            update(db, "INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at,"
                     + " received_at, stock_package_id) VALUES (md5('it:pk:EMPTIED:empty')::uuid, 'SOFA-3S-GREY',"
-                    + " 'HCM-A01-1-A', 0, 0, 'AVAILABLE', NOW(), NOW() - interval '2 day', " + pkg + ")");
+                    + " 'HCM-A01-1-A', 'IT-LOT', 0, 0, 'AVAILABLE', NOW(), NOW() - interval '2 day', " + pkg + ")");
 
             // A serial picked out of the carton leaves its row at 0; the carton moves on without it.
             transaction(db,
@@ -185,8 +185,8 @@ class StockPackageSchemaMigrationTest {
             // A carton's layer is one row wherever it is: a put-back fills the emptied row, it does not open a
             // second row of the same layer on the carton's new bin.
             refused(db, "a second row of the emptied layer in the same stock package, on another bin",
-                    "INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, created_at,"
-                            + " received_at, stock_package_id) SELECT gen_random_uuid(), sku, 'HCM-A01-1-B', 1, 0,"
+                    "INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at,"
+                            + " received_at, stock_package_id) SELECT gen_random_uuid(), sku, 'HCM-A01-1-B', lot_number, 1, 0,"
                             + " 'AVAILABLE', NOW(), received_at, stock_package_id FROM inventory.stock_item"
                             + " WHERE id = md5('it:pk:EMPTIED:empty')::uuid");
             // And the carton goes back to the bin its emptied row never left.
@@ -236,9 +236,9 @@ class StockPackageSchemaMigrationTest {
             String carton = "INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id,"
                     + " nominal_qty, received_qty, location_code, status, unopened) VALUES (" + pkg + ", 'IT-FULL', "
                     + SOFA + ", " + unit + ", 10, 6, 'HCM-A01-1-A', 'IN_STOCK', FALSE)";
-            String row = "INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, created_at,"
+            String row = "INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at,"
                     + " received_at, stock_package_id) VALUES (md5('it:pk:FULL:row')::uuid, 'SOFA-3S-GREY',"
-                    + " 'HCM-A01-1-A', %d, 0, 'AVAILABLE', NOW(), NOW() - interval '1 day', " + pkg + ")";
+                    + " 'HCM-A01-1-A', 'IT-LOT', %d, 0, 'AVAILABLE', NOW(), NOW() - interval '1 day', " + pkg + ")";
 
             SQLException overfilled = catchThrowableOfType(SQLException.class,
                     () -> transaction(db, carton, row.formatted(7)));

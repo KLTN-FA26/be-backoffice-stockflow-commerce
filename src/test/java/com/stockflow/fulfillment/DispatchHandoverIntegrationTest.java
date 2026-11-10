@@ -129,6 +129,7 @@ class DispatchHandoverIntegrationTest {
     private UUID customerUser;
     private UUID otherCustomerUser;
     private UUID customer;
+    private UUID sales;
     private UUID ghn;
     private UUID ghtk;
     private UUID truck5t;
@@ -138,7 +139,8 @@ class DispatchHandoverIntegrationTest {
 
     @BeforeEach
     void setUp() {
-        coordinator = staff("ORDER_COORDINATOR");
+        coordinator = staff("WAREHOUSE_MANAGER", HCM);
+        sales = staff("SALES_STAFF");
         manager = staff("WAREHOUSE_MANAGER", HCM);
         picker = staff("WAREHOUSE_STAFF", HCM);
         dispatcher = staff("WAREHOUSE_STAFF", HCM);
@@ -215,7 +217,12 @@ class DispatchHandoverIntegrationTest {
     }
 
     private ResultActions oc(MockHttpServletRequestBuilder request) throws Exception {
-        return as(coordinator, "ORDER_COORDINATOR", request);
+        return as(coordinator, "WAREHOUSE_MANAGER", request);
+    }
+
+    /** What the retired order coordinator did for the customer - holds, cancellation requests - Sales does now. */
+    private ResultActions sales(MockHttpServletRequestBuilder request) throws Exception {
+        return as(sales, "SALES_STAFF", request);
     }
 
     private JsonNode data(ResultActions result) throws Exception {
@@ -433,9 +440,9 @@ class DispatchHandoverIntegrationTest {
         String loadId = load.path("loadId").asText();
         assertThat(load.path("code").asText()).matches("LD-\\d{8}-\\d{4}");
 
-        // Who may load: not the coordinator (reads only), not a customer, not another warehouse.
+        // Who may load: not Sales, not a customer, not another warehouse.
         oc(get(BASE + "/loads/" + loadId)).andExpect(status().isOk());
-        as(coordinator, "ORDER_COORDINATOR", body(post(BASE + "/loads/" + loadId + "/scans"), "{\"scanId\":\""
+        as(sales, "SALES_STAFF", body(post(BASE + "/loads/" + loadId + "/scans"), "{\"scanId\":\""
                 + UUID.randomUUID() + "\",\"packageCode\":\"" + parcels.get(0) + "\"}")).andExpect(status().isForbidden());
         as(customerUser, "CUSTOMER", get(BASE + "/loads")).andExpect(status().isForbidden());
         as(dispatcherElsewhere, "WAREHOUSE_STAFF", get(BASE + "/loads/" + loadId)).andExpect(status().isForbidden())
@@ -528,10 +535,11 @@ class DispatchHandoverIntegrationTest {
         as(otherCustomerUser, "CUSTOMER", get("/api/v1/orders/me/" + order.orderId()))
                 .andExpect(status().isNotFound());
 
-        // 09 BR-02: the coordinator records the outcome; warehouse staff and the manager may not (only RETURNED).
+        // 09 BR-02: the warehouse manager records the outcome (the order coordinator, who did, is retired); warehouse
+        // staff and Sales may not (only RETURNED).
         as(dispatcher, "WAREHOUSE_STAFF", body(post(BASE + "/shipments/" + shipment + "/delivery-outcome"),
                 "{\"outcome\":\"DELIVERED\"}")).andExpect(status().isForbidden());
-        as(manager, "WAREHOUSE_MANAGER", body(post(BASE + "/shipments/" + shipment + "/delivery-outcome"),
+        as(sales, "SALES_STAFF", body(post(BASE + "/shipments/" + shipment + "/delivery-outcome"),
                 "{\"outcome\":\"DELIVERED\"}")).andExpect(status().isForbidden());
         oc(body(post("/api/v1/orders/" + order.orderId() + "/delivery"), "{}")).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("ORDER_DELIVERY_VIA_SHIPMENT"));
@@ -610,11 +618,11 @@ class DispatchHandoverIntegrationTest {
         UUID heldShipment = ship(pickedTask(held), false, 2);
         String heldLoad = vehicle(ghn, heldShipment).path("loadId").asText();
         scan(heldLoad, labels(heldShipment).getFirst()).andExpect(status().isOk());
-        oc(body(post("/api/v1/orders/" + held.orderId() + "/hold"), "{\"reasonCode\":\"ADDRESS\","
+        sales(body(post("/api/v1/orders/" + held.orderId() + "/hold"), "{\"reasonCode\":\"ADDRESS\","
                 + "\"note\":\"ward missing\"}")).andExpect(status().isOk());
         handOver(heldLoad).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("ORDER_INVALID_TRANSITION"));
-        oc(body(post("/api/v1/orders/" + held.orderId() + "/hold/resolution"), "{\"note\":\"ward fixed\"}"))
+        sales(body(post("/api/v1/orders/" + held.orderId() + "/hold/resolution"), "{\"note\":\"ward fixed\"}"))
                 .andExpect(status().isOk());
         handOver(heldLoad).andExpect(status().isOk());
         assertThat(statusOf(held)).isEqualTo(OrderStatus.SHIPPED);
@@ -980,7 +988,7 @@ class DispatchHandoverIntegrationTest {
     /** {@code sofas} of the test customer's sofa free at HCM, received long ago: picked first. */
     private void stock(int sofas) {
         tx.executeWithoutResult(s -> jdbc.update("""
-                INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, version,
+                INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, version,
                     created_at, received_at)
                 VALUES (?, ?, 'HCM-A02-1-A', ?, 0, 'AVAILABLE', 0, NOW(), NOW() - interval '400 days')""",
                 Identifiers.newId(), sofa.code(), sofas));
@@ -1038,7 +1046,7 @@ class DispatchHandoverIntegrationTest {
         String cancel = "/api/v1/orders/" + order.orderId() + "/cancellation";
         String first = data(as(customerUser, "CUSTOMER", body(post(cancel), "{\"reasonCode\":\"CUSTOMER_REQUEST\"}"))
                 .andExpect(status().isAccepted())).path("requestId").asText();
-        oc(body(post("/api/v1/orders/" + order.orderId() + "/cancellation-requests/" + first + "/rejection"),
+        sales(body(post("/api/v1/orders/" + order.orderId() + "/cancellation-requests/" + first + "/rejection"),
                 "{\"note\":\"already printed for you\"}")).andExpect(status().isOk());
         String second = data(as(customerUser, "CUSTOMER", body(post(cancel), "{\"reasonCode\":\"CUSTOMER_REQUEST\"}"))
                 .andExpect(status().isAccepted())).path("requestId").asText();
@@ -1053,7 +1061,7 @@ class DispatchHandoverIntegrationTest {
         assertThat(closed.get("decided_by")).isNull();
         assertThat(closed.get("decided_at")).isNotNull();
         assertThat((String) closed.get("decision_note")).contains("PACKED").contains("can no longer be cancelled");
-        oc(body(post("/api/v1/orders/" + order.orderId() + "/cancellation-requests/" + second + "/approval"), "{}"))
+        sales(body(post("/api/v1/orders/" + order.orderId() + "/cancellation-requests/" + second + "/approval"), "{}"))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("ORDER_CANCELLATION_REQUEST_NOT_PENDING"));
 
@@ -1077,7 +1085,7 @@ class DispatchHandoverIntegrationTest {
         String request = data(as(customerUser, "CUSTOMER", body(post("/api/v1/orders/" + approved.orderId()
                 + "/cancellation"), "{\"reasonCode\":\"CUSTOMER_REQUEST\"}")).andExpect(status().isAccepted()))
                 .path("requestId").asText();
-        oc(body(post("/api/v1/orders/" + approved.orderId() + "/cancellation-requests/" + request + "/approval"), "{}"))
+        sales(body(post("/api/v1/orders/" + approved.orderId() + "/cancellation-requests/" + request + "/approval"), "{}"))
                 .andExpect(status().isOk());
         assertThat(jdbc.queryForObject("SELECT status FROM ordering.order_cancellation_request WHERE id = ?::uuid",
                 String.class, request)).isEqualTo("APPROVED");
@@ -1086,7 +1094,7 @@ class DispatchHandoverIntegrationTest {
         String pending = data(as(customerUser, "CUSTOMER", body(post("/api/v1/orders/" + cancelled.orderId()
                 + "/cancellation"), "{\"reasonCode\":\"CUSTOMER_REQUEST\"}")).andExpect(status().isAccepted()))
                 .path("requestId").asText();
-        oc(body(post("/api/v1/orders/" + cancelled.orderId() + "/admin-cancellation"),
+        sales(body(post("/api/v1/orders/" + cancelled.orderId() + "/admin-cancellation"),
                 "{\"reasonCode\":\"OUT_OF_STOCK\"}")).andExpect(status().isOk());
         assertThat(jdbc.queryForMap("SELECT status, decision_note FROM ordering.order_cancellation_request "
                 + "WHERE id = ?::uuid", pending)).containsEntry("status", "EXPIRED")

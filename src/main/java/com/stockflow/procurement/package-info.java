@@ -1,14 +1,15 @@
 /**
- * <b>Suppliers, purchase orders, goods receipt, invoice matching</b>
+ * <b>Goods receipt</b>: receiving against production orders, then putaway (4A-5, kltn-docs 03)
  *
- * <p>WBS 3.2 + 3.3 + 3.4 · database schema {@code procurement}</p>
+ * <p>WBS 3.3 · database schema {@code procurement}. Suppliers, purchase orders, supplier invoices and subcontracting
+ * were removed with purchasing (4A-8, kltn-docs 00 of 04/11); their tables stay until 4A-9 archives and drops them.
+ * The module keeps its name until 4A-10 (QD-15).</p>
  *
- * <p><b>May depend on:</b> product, inventory, warehouse, notification, identity, fulfillment and order -
- * receiving against a production order (4A-5) reads and moves it through {@code order :: api}'s
- * {@code ProductionOrderReceiving}; a return receipt (team plan 4D-2) checks what comes back against the
- * shipment's cartons ({@code fulfillment :: api}) or the return request ({@code order :: api}). Neither order nor
- * fulfillment depends on procurement, so there is no cycle. Plus {@code common} and {@code contracts}, which are
- * available to every module.</p>
+ * <p><b>May depend on:</b> inventory, warehouse, identity, fulfillment and order - receiving against a production
+ * order reads and moves it through {@code order :: api}'s {@code ProductionOrderReceiving}; a return receipt (team plan
+ * 4D-2) checks what comes back against the shipment's cartons ({@code fulfillment :: api}) or the return request
+ * ({@code order :: api}). Neither order nor fulfillment depends on procurement, so there is no cycle. Plus
+ * {@code common} and {@code contracts}, which are available to every module.</p>
  *
  * <p>The module has two packages and the split is the whole point:</p>
  * <ul>
@@ -18,6 +19,6 @@
  *       you reaching in; {@code ModularityTest} will.</li>
  * </ul>
  */
-@org.springframework.modulith.ApplicationModule(allowedDependencies = {"product :: api", "inventory :: api", "warehouse :: api", "notification :: api",
+@org.springframework.modulith.ApplicationModule(allowedDependencies = {"inventory :: api", "warehouse :: api",
         "identity :: api", "fulfillment :: api", "order :: api"})
 package com.stockflow.procurement;

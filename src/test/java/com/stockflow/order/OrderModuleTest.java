@@ -38,6 +38,7 @@ class OrderModuleTest {
     @MockitoBean com.stockflow.notification.api.NotificationService notificationServiceMock;
     // R4 (4B-8): order's own port for the customer's chat consent, implemented by chat, which is not booted here.
     @MockitoBean com.stockflow.order.api.ConsentMessages consentMessagesMock;
+    @MockitoBean com.stockflow.notification.api.ProductionOrderResends productionOrderResendsMock;
 
     @Test
     @DisplayName("order starts and answers through its api with the other modules absent")
@@ -49,7 +50,7 @@ class OrderModuleTest {
     @Test
     @DisplayName("a module outside order's declared dependencies is not in this context")
     void unrelatedModulesAreAbsent() {
-        assertThatThrownBy(() -> context.getBean(com.stockflow.procurement.api.ProcurementService.class))
+        assertThatThrownBy(() -> context.getBean(com.stockflow.fulfillment.api.FulfillmentService.class))
                 .isInstanceOf(org.springframework.beans.factory.NoSuchBeanDefinitionException.class);
     }
 }

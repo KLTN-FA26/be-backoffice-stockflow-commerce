@@ -104,7 +104,7 @@ class ControlledUnloadIntegrationTest {
     @BeforeEach
     void setUp() {
         CartonStationSupport.giveCartonsASize(tx, jdbc);
-        coordinator = staff("ORDER_COORDINATOR");
+        coordinator = staff("WAREHOUSE_MANAGER", HCM);
         picker = staff("WAREHOUSE_STAFF", HCM);
         dispatcher = staff("WAREHOUSE_STAFF", HCM);
         UUID elsewhere = tx.execute(s -> otherWarehouse());
@@ -168,7 +168,7 @@ class ControlledUnloadIntegrationTest {
     }
 
     private ResultActions oc(MockHttpServletRequestBuilder request) throws Exception {
-        return as(coordinator, "ORDER_COORDINATOR", request);
+        return as(coordinator, "WAREHOUSE_MANAGER", request);
     }
 
     private ResultActions packer(MockHttpServletRequestBuilder request) throws Exception {
@@ -719,8 +719,9 @@ class ControlledUnloadIntegrationTest {
         String version = "{\"expectedVersion\":" + plan.path("version").asLong() + ",\"reasonCode\":\"XE_HONG\","
                 + "\"note\":\"x\"}";
         String override = "{\"packageId\":\"" + UUID.randomUUID() + "\"}";
-        for (String[] role : new String[][] {{"WAREHOUSE_STAFF", "d"}, {"ORDER_COORDINATOR", "c"}}) {
-            UUID user = role[1].equals("d") ? dispatcher : coordinator;
+        UUID salesperson = staff("SALES_STAFF");
+        for (String[] role : new String[][] {{"WAREHOUSE_STAFF", "d"}, {"SALES_STAFF", "s"}}) {
+            UUID user = role[1].equals("d") ? dispatcher : salesperson;
             as(user, role[0], body(post(PLANS + "/" + planId + "/controlled-cancellation"), version))
                     .andExpect(status().isForbidden());
             as(user, role[0], body(post(LOADS + "/" + loadId + "/controlled-cancellation"), XE_HONG))

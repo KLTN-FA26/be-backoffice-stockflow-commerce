@@ -121,7 +121,7 @@ class CartonCheckStationIntegrationTest {
 
     @BeforeEach
     void setUp() {
-        coordinator = staff("ORDER_COORDINATOR");
+        coordinator = staff("WAREHOUSE_MANAGER", HCM);
         manager = staff("WAREHOUSE_MANAGER", HCM);
         picker = staff("WAREHOUSE_STAFF", HCM);
         packer = staff("WAREHOUSE_STAFF", HCM);
@@ -192,7 +192,7 @@ class CartonCheckStationIntegrationTest {
     }
 
     private ResultActions oc(MockHttpServletRequestBuilder request) throws Exception {
-        return as(coordinator, "ORDER_COORDINATOR", request);
+        return as(coordinator, "WAREHOUSE_MANAGER", request);
     }
 
     private ResultActions dispatch(MockHttpServletRequestBuilder request) throws Exception {

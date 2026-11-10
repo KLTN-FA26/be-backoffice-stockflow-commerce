@@ -27,7 +27,7 @@ import java.util.UUID;
 
 /**
  * Back office: customer-group prices by SKU (user decision P7). Sales Manager and System Admin edit; Sales
- * and the Order Coordinator read - Sales negotiates on the quote, never on the group's price. Grants:
+ * reads - and negotiates on the quote, never on the group's price. Grants:
  * V20261017000530.
  */
 @RestController

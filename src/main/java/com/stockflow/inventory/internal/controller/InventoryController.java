@@ -90,7 +90,7 @@ class InventoryController {
     }
 
     @GetMapping("/stock-items")
-    @Operation(summary = "Stock for one SKU, broken down by location, earliest expiry first")
+    @Operation(summary = "Stock for one SKU, broken down by location, oldest receipt first")
     @RequiresPermission(resource = InventoryResources.STOCK_ITEMS,
             action = Action.READ, scope = DataScope.WAREHOUSE)
     public ApiResponse<List<StockItemResponse>> stockItems(@RequestParam("sku") String sku,
@@ -109,7 +109,7 @@ class InventoryController {
     @Operation(summary = "Every stock row of one warehouse, in any status, page by page (SCRUM-462)",
             description = "location narrows to a location code prefix inside the warehouse (HCM-A01); rows with"
                     + " nothing on hand are left out unless includeEmpty=true. Sort: locationCode (default), sku,"
-                    + " lotNumber, expiryDate, onHand, receivedAt.")
+                    + " lotNumber, onHand, receivedAt.")
     @RequiresPermission(resource = InventoryResources.STOCK_ITEMS,
             action = Action.READ, scope = DataScope.WAREHOUSE)
     public ApiResponse<PageResponse<WarehouseStockItemResponse>> warehouseStock(

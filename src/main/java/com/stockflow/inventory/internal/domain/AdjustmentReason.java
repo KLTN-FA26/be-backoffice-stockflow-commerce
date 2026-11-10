@@ -12,6 +12,10 @@ public enum AdjustmentReason {
     DAMAGED,
     LOST,
     FOUND,
+    /**
+     * Legacy, read only: adjustments recorded before team plan 5-1 carry it. Stock no longer expires (kltn-docs 01
+     * BR-17), the request path refuses it and {@code tg_stock_adjustment_no_new_expired} refuses a new row with it.
+     */
     EXPIRED,
     DATA_CORRECTION,
     /** Blanks spoiled in printing or failed at QC (kltn-docs 19). Stock only goes down. */
@@ -20,13 +24,24 @@ public enum AdjustmentReason {
     SAMPLE,
     /** Needs a note: "other" with no explanation is not a reason. */
     OTHER,
-    /** Blanks spoilt or missing at a print subcontractor (04c G8, decision Q9). Stock only goes down. */
+    /**
+     * Legacy: blanks spoilt or missing at a print subcontractor (04c G8, decision Q9). Stock only goes down.
+     * Subcontracting went with purchasing (4A-8): kept for the adjustments that have it, refused for a new one.
+     */
     SUBCONTRACT_LOSS,
     /**
      * What a cycle count found against the books (SCRUM-164), either way. Only a count asks for it; approving one that
      * empties a carton marks the carton LOST, since a count that finds nothing found it missing.
      */
     COUNT_VARIANCE;
+
+    /**
+     * A reason only adjustments of the past carry: no new adjustment takes it. {@code ck_stock_adjustment_reason}
+     * still lists it, for those rows; the refusal is here and in nothing else.
+     */
+    public boolean legacy() {
+        return this == SUBCONTRACT_LOSS;
+    }
 
     /** Scrap and samples consume blanks; they never bring stock back. */
     public boolean onlyWritesDown() {

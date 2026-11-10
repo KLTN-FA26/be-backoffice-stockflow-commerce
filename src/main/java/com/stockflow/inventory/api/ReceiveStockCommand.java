@@ -3,7 +3,6 @@ package com.stockflow.inventory.api;
 import com.stockflow.common.domain.Sku;
 
 import java.time.Instant;
-import java.time.LocalDate;
 import java.util.Objects;
 import java.util.UUID;
 
@@ -19,10 +18,11 @@ import java.util.UUID;
  *                      returns the ledger line already written instead of counting the goods twice; it also
  *                      names the cartons the goods go into
  * @param quantity      everything the line received, in base units: exactly what the line's cartons hold
- * @param lotNumber     null for a SKU that is not lot-tracked
+ * @param lotNumber     required: every SKU is lot-tracked (kltn-docs 01 BR-17, 03 BR-03; team plan 5-5), and the
+ *                      database refuses live stock without a lot ({@code inventory.enforce_sku_policy})
  * @param actorId       who confirmed the receipt, for the ledger
  * @param receivedAt    when the receipt was confirmed: the new stock layer's receipt time (one layer
- *                      per receipt), which FIFO and the shelf-life policy read
+ *                      per receipt), which FIFO reads. There is no expiry date: a receipt records none (03 BR-06)
  * @param origin        the receipt, purchase order and supplier, for the lot the receipt opens (SCRUM-142); null
  *                      when the caller has none, and the stock then joins an UNTRACED lot
  */
@@ -30,7 +30,6 @@ public record ReceiveStockCommand(
         UUID receiptLineId,
         Sku sku,
         String lotNumber,
-        LocalDate expiryDate,
         String locationCode,
         int quantity,
         UUID actorId,
@@ -38,9 +37,9 @@ public record ReceiveStockCommand(
         ReceiptOrigin origin
 ) {
 
-    public ReceiveStockCommand(UUID receiptLineId, Sku sku, String lotNumber, LocalDate expiryDate, String locationCode,
-                               int quantity, UUID actorId, Instant receivedAt) {
-        this(receiptLineId, sku, lotNumber, expiryDate, locationCode, quantity, actorId, receivedAt, null);
+    public ReceiveStockCommand(UUID receiptLineId, Sku sku, String lotNumber, String locationCode, int quantity,
+                               UUID actorId, Instant receivedAt) {
+        this(receiptLineId, sku, lotNumber, locationCode, quantity, actorId, receivedAt, null);
     }
 
     public ReceiveStockCommand {
@@ -48,6 +47,9 @@ public record ReceiveStockCommand(
         Objects.requireNonNull(sku, "sku");
         Objects.requireNonNull(locationCode, "locationCode");
         Objects.requireNonNull(receivedAt, "receivedAt");
+        if (lotNumber == null || lotNumber.isBlank()) {
+            throw new IllegalArgumentException("Every SKU is lot-tracked: a receipt names its lot");
+        }
         if (quantity <= 0) {
             throw new IllegalArgumentException("A receipt needs a positive quantity");
         }

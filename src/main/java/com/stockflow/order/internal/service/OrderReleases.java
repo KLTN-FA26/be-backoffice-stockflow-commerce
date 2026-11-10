@@ -5,7 +5,7 @@ import com.stockflow.order.api.OrderSummary;
 import java.util.UUID;
 
 /**
- * Release of an order by the Order Coordinator (SCRUM-423). Not on {@code order :: api}: only this
+ * Release of an order by the warehouse manager of the warehouse (SCRUM-423, 17 BR-03). Not on {@code order :: api}: only this
  * module's controller drives it; other modules learn of it from {@code OrderReleased}.
  */
 public interface OrderReleases {

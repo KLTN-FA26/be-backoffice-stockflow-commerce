@@ -19,7 +19,7 @@ public interface LoadEstimateJpaRepository extends BaseJpaRepository<LoadEstimat
                                                                         String status);
 
     /**
-     * Serialises the transactions that store an estimate of this source until they end, so two coordinators
+     * Serialises the transactions that store an estimate of this source until they end, so two people
      * estimating the same order at once both succeed, one after the other, the later superseding the earlier - instead
      * of the second insert failing on the one-current index. Wrapped in a sub-select because
      * {@code pg_advisory_xact_lock} returns {@code void}.

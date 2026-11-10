@@ -15,7 +15,6 @@ import jakarta.persistence.LockModeType;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Repository;
 
-import java.time.LocalDate;
 import java.time.Instant;
 import java.util.Collection;
 import java.util.List;
@@ -135,11 +134,11 @@ class StockItemRepositoryAdapter implements StockItemRepository {
     }
 
     @Override
-    public List<Allocatable> findAllocatable(Collection<String> skus, LocalDate today) {
+    public List<Allocatable> findAllocatable(Collection<String> skus) {
         if (skus.isEmpty()) {
             return List.of();      // "in ()" is not valid SQL, and there is nothing to ask
         }
-        return jpa.findAllocatable(skus, today).stream()
+        return jpa.findAllocatable(skus).stream()
                 .map(row -> new Allocatable(new StockItemId(row.id()), row.sku(), row.locationCode(), row.units()))
                 .toList();
     }

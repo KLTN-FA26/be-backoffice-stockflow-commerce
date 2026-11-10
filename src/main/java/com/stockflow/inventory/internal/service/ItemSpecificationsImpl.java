@@ -41,12 +41,8 @@ class ItemSpecificationsImpl implements ItemSpecifications {
                 l.widthCm(), l.heightCm(), l.packageWeightKg(), l.packageLengthCm(), l.packageWidthCm(),
                 l.packageHeightCm(), l.packageCount(), l.packSize(), l.storageClass(), l.requiresAdultSignature(),
                 l.shippingRestrictionNote(), l.rotatable());
-        InventoryItems.Detail described = items.describe(targetId, items.get(targetId).version(), withoutBarcode);
-        // An unconfigured source has the default policy, not a decision: configuring the copy would turn the default
-        // into one, and the item would drop off the list of items whose policy is still to be set.
-        if (sourceSummary.policyConfigured()) {
-            items.configure(targetId, described.version(), from.policy());
-        }
+        // No stock policy to copy: every SKU has the same one (kltn-docs 01 BR-17, team plan 5-5).
+        items.describe(targetId, items.get(targetId).version(), withoutBarcode);
         List<UomConversion> packing = units.conversionsOf(List.of(source)).getOrDefault(source.code(), List.of());
         for (UomConversion unit : packing) {
             if (unit.base() || !unit.active()) {
@@ -66,7 +62,7 @@ class ItemSpecificationsImpl implements ItemSpecifications {
     }
 
     private InventoryItems.Summary summaryOf(Sku sku) {
-        return items.search(new InventoryItems.ItemQuery(sku.code(), null, null, null, 0, 1)).items().stream()
+        return items.search(new InventoryItems.ItemQuery(sku.code(), null, null, 0, 1)).items().stream()
                 .findFirst()
                 .orElseThrow(() -> new BusinessException(ErrorCode.INVENTORY_ITEM_NOT_FOUND,
                         "No inventory item for " + sku.code()));

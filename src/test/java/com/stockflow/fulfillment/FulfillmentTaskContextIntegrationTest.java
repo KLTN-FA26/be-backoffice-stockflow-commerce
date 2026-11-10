@@ -105,7 +105,7 @@ class FulfillmentTaskContextIntegrationTest {
                                                  version, created_at)
                 VALUES (?, 'Second warehouse', 'ACTIVE', ?, 'Somewhere', 'M', 50, 50, 0, NOW())""",
                 hn, "F" + UUID.randomUUID().toString().substring(0, 6).toUpperCase(Locale.ROOT)));
-        coordinator = staff("ORDER_COORDINATOR");
+        coordinator = staff("SYSTEM_ADMIN");
         managerHcm = staff("WAREHOUSE_MANAGER", HCM);
         managerHn = staff("WAREHOUSE_MANAGER", hn);
         pickerHcm = staff("WAREHOUSE_STAFF", HCM);
@@ -207,7 +207,7 @@ class FulfillmentTaskContextIntegrationTest {
     @DisplayName("a task from a confirmed order carries the order number, the warehouse of its holds and the assignee's name")
     void createStoresTheContext() throws Exception {
         OrderSummary order = confirmedOrder();
-        String oc = token(coordinator, "ORDER_COORDINATOR");
+        String oc = token(coordinator, "SYSTEM_ADMIN");
 
         call(post("/api/v1/fulfillment/tasks").header("Authorization", oc).contentType("application/json")
                 .content(create(order.orderId(), pickerHcm)))
@@ -237,7 +237,7 @@ class FulfillmentTaskContextIntegrationTest {
     @DisplayName("an assignee of another warehouse is refused on assignedUserId and nothing is created")
     void assigneeFromAnotherWarehouse() throws Exception {
         OrderSummary order = confirmedOrder();
-        String oc = token(coordinator, "ORDER_COORDINATOR");
+        String oc = token(coordinator, "SYSTEM_ADMIN");
 
         call(post("/api/v1/fulfillment/tasks").header("Authorization", oc).contentType("application/json")
                 .content(create(order.orderId(), pickerHn)))
@@ -274,7 +274,7 @@ class FulfillmentTaskContextIntegrationTest {
         assertThat(jdbc.queryForList("SELECT status FROM inventory.stock_reservation WHERE order_id = ?",
                 String.class, order.orderId())).as("nothing of the sofa held at the second warehouse").isEmpty();
 
-        call(post("/api/v1/fulfillment/tasks").header("Authorization", token(coordinator, "ORDER_COORDINATOR"))
+        call(post("/api/v1/fulfillment/tasks").header("Authorization", token(coordinator, "SYSTEM_ADMIN"))
                 .contentType("application/json").content(create(order.orderId(), pickerHn)))
                 .andExpect(status().is4xxClientError());
         assertThat(jdbc.queryForObject("SELECT count(*) FROM fulfillment.pick WHERE order_id = ?", Integer.class,
@@ -325,7 +325,7 @@ class FulfillmentTaskContextIntegrationTest {
     @DisplayName("the detail carries the lines to pick; the assignee sees it, another picker gets 404, another warehouse's manager 403")
     void detailCarriesLines() throws Exception {
         OrderSummary order = confirmedOrder();
-        call(post("/api/v1/fulfillment/tasks").header("Authorization", token(coordinator, "ORDER_COORDINATOR"))
+        call(post("/api/v1/fulfillment/tasks").header("Authorization", token(coordinator, "SYSTEM_ADMIN"))
                 .contentType("application/json").content(create(order.orderId(), pickerHcm)))
                 .andExpect(status().isCreated());
         UUID task = jdbc.queryForObject("SELECT id FROM fulfillment.pick WHERE order_id = ?", UUID.class,
@@ -410,7 +410,7 @@ class FulfillmentTaskContextIntegrationTest {
 
         // A coordinator is not limited to a warehouse and can look at one.
         call(get("/api/v1/fulfillment/tasks").param("warehouseId", hn.toString())
-                .header("Authorization", token(coordinator, "ORDER_COORDINATOR")))
+                .header("Authorization", token(coordinator, "SYSTEM_ADMIN")))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.items.length()").value(1))
                 .andExpect(jsonPath("$.data.items[0].taskId").value(inHn.toString()));
@@ -430,7 +430,7 @@ class FulfillmentTaskContextIntegrationTest {
     @Test
     @DisplayName("assignees: the active warehouse staff and managers of that warehouse, by name only; scoped and permissioned")
     void assignees() throws Exception {
-        String oc = token(coordinator, "ORDER_COORDINATOR");
+        String oc = token(coordinator, "SYSTEM_ADMIN");
 
         call(get("/api/v1/fulfillment/assignees").param("warehouseId", HCM.toString()).header("Authorization", oc))
                 .andExpect(status().isOk())

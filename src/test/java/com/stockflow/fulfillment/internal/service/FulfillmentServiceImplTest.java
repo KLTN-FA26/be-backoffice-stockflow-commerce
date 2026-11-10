@@ -105,7 +105,7 @@ class FulfillmentServiceImplTest {
     @Test
     void onlyWarehouseStaffPack() {
         var pick = pickedTask(UUID.randomUUID());
-        assertThat(refusal(() -> service.completePacking(pick.getId(), coordinator())).errorCode())
+        assertThat(refusal(() -> service.completePacking(pick.getId(), salesperson())).errorCode())
                 .isEqualTo(ErrorCode.FORBIDDEN);
         verify(packing, never()).complete(any(), any(), any());
     }
@@ -204,8 +204,14 @@ class FulfillmentServiceImplTest {
                 .toList());
     }
 
-    private CurrentUser coordinator() {
-        return new CurrentUser(UUID.randomUUID(), "oc", Set.of(Role.ORDER_COORDINATOR), seeded(Role.ORDER_COORDINATOR), DataScope.ALL,
+    /** A warehouse manager whose data scope is not narrowed to warehouses: what the retired coordinator stood for. */
+    private CurrentUser unlimitedManager() {
+        return new CurrentUser(UUID.randomUUID(), "oc", Set.of(Role.WAREHOUSE_MANAGER), seeded(Role.WAREHOUSE_MANAGER), DataScope.ALL,
+                Set.of(), Set.of());
+    }
+
+    private CurrentUser salesperson() {
+        return new CurrentUser(UUID.randomUUID(), "sales", Set.of(Role.SALES_STAFF), seeded(Role.SALES_STAFF), DataScope.ALL,
                 Set.of(), Set.of());
     }
 
@@ -230,7 +236,7 @@ class FulfillmentServiceImplTest {
         when(orders.findById(order.orderId())).thenReturn(Optional.of(order));
         when(picks.findAllByOrderId(order.orderId())).thenReturn(List.of());
 
-        var thrown = refusal(() -> service.createTask(order.orderId(), UUID.randomUUID(), coordinator()));
+        var thrown = refusal(() -> service.createTask(order.orderId(), UUID.randomUUID(), unlimitedManager()));
 
         assertThat(thrown.errorCode()).isEqualTo(ErrorCode.PICK_TASK_STATE_CONFLICT);
         assertThat(thrown.getMessage()).contains("READY_TO_FULFILL", "CONFIRMED");
@@ -250,7 +256,7 @@ class FulfillmentServiceImplTest {
                 PackStatus.PENDING, null)));
         when(identities.displayNames(any())).thenReturn(java.util.Map.of(picker, "Kho Nam"));
 
-        var task = service.createTask(order.orderId(), picker, coordinator());
+        var task = service.createTask(order.orderId(), picker, unlimitedManager());
 
         assertThat(task.orderNumber()).isEqualTo("SO-20261014-0001");
         assertThat(task.warehouseId()).isEqualTo(HN);
@@ -276,7 +282,7 @@ class FulfillmentServiceImplTest {
         when(packs.findByPickId(any())).thenReturn(Optional.of(new PackJpaEntity(UUID.randomUUID(), UUID.randomUUID(),
                 PackStatus.PENDING, null)));
 
-        assertThat(service.createTask(order.orderId(), picker, coordinator()).warehouseId()).isEqualTo(HCM);
+        assertThat(service.createTask(order.orderId(), picker, unlimitedManager()).warehouseId()).isEqualTo(HCM);
     }
 
     @Test
@@ -290,7 +296,7 @@ class FulfillmentServiceImplTest {
         when(packs.findByPickId(any())).thenReturn(Optional.of(new PackJpaEntity(UUID.randomUUID(), UUID.randomUUID(),
                 PackStatus.PENDING, null)));
 
-        assertThat(service.createTask(order.orderId(), picker, coordinator()).warehouseId()).isEqualTo(HCM);
+        assertThat(service.createTask(order.orderId(), picker, unlimitedManager()).warehouseId()).isEqualTo(HCM);
     }
 
     @Test
@@ -300,7 +306,7 @@ class FulfillmentServiceImplTest {
         when(orders.findById(order.orderId())).thenReturn(Optional.of(order));
         when(picks.findAllByOrderId(order.orderId())).thenReturn(List.of());
 
-        var thrown = refusal(() -> service.createTask(order.orderId(), UUID.randomUUID(), coordinator()));
+        var thrown = refusal(() -> service.createTask(order.orderId(), UUID.randomUUID(), unlimitedManager()));
 
         assertThat(thrown.errorCode()).isEqualTo(ErrorCode.FULFILLMENT_HOLDS_OUTSIDE_WAREHOUSE);
         assertThat(thrown.getMessage()).contains("TABLE-OAK-160").doesNotContain("SOFA-3S-GREY");
@@ -315,7 +321,7 @@ class FulfillmentServiceImplTest {
         when(orders.findById(order.orderId())).thenReturn(Optional.of(order));
         when(picks.findAllByOrderId(order.orderId())).thenReturn(List.of());
 
-        assertThat(refusal(() -> service.createTask(order.orderId(), UUID.randomUUID(), coordinator())).errorCode())
+        assertThat(refusal(() -> service.createTask(order.orderId(), UUID.randomUUID(), unlimitedManager())).errorCode())
                 .isEqualTo(ErrorCode.PICK_TASK_STATE_CONFLICT);
     }
 
@@ -328,7 +334,7 @@ class FulfillmentServiceImplTest {
         when(orders.findById(order.orderId())).thenReturn(Optional.of(order));
         when(picks.findAllByOrderId(order.orderId())).thenReturn(List.of());
 
-        var thrown = refusal(() -> service.createTask(order.orderId(), inHn, coordinator()));
+        var thrown = refusal(() -> service.createTask(order.orderId(), inHn, unlimitedManager()));
 
         assertThat(thrown.errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
         assertThat(thrown.fieldErrors()).singleElement().satisfies(error -> {
@@ -366,7 +372,7 @@ class FulfillmentServiceImplTest {
         when(packs.findByPickId(existing.getId())).thenReturn(Optional.of(new PackJpaEntity(UUID.randomUUID(),
                 existing.getId(), PackStatus.PENDING, null)));
 
-        var task = service.createTask(existing.getOrderId(), picker, coordinator());
+        var task = service.createTask(existing.getOrderId(), picker, unlimitedManager());
 
         assertThat(task.taskId()).isEqualTo(existing.getId());
         assertThat(task.orderNumber()).isEqualTo("SO-OLD");
@@ -389,7 +395,7 @@ class FulfillmentServiceImplTest {
 
     @Test
     void theListRefusesAnUnknownStatus() {
-        var thrown = refusal(() -> service.listTasks(coordinator(), new FulfillmentTaskQuery("DONE", null, null, 0, 20)));
+        var thrown = refusal(() -> service.listTasks(unlimitedManager(), new FulfillmentTaskQuery("DONE", null, null, 0, 20)));
 
         assertThat(thrown.errorCode()).isEqualTo(ErrorCode.UNSUPPORTED_PARAMETER);
         assertThat(thrown.fieldErrors()).singleElement().satisfies(error -> assertThat(error.field()).isEqualTo("status"));
@@ -452,13 +458,13 @@ class FulfillmentServiceImplTest {
                 PackStatus.PENDING, null)));
         assignable(HCM, local);
 
-        var thrown = refusal(() -> service.assign(pick.getId(), stranger, coordinator()));
+        var thrown = refusal(() -> service.assign(pick.getId(), stranger, unlimitedManager()));
         assertThat(thrown.errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
         assertThat(thrown.fieldErrors()).singleElement()
                 .satisfies(error -> assertThat(error.field()).isEqualTo("assignedUserId"));
         assertThat(pick.getAssignedUserId()).isNull();
 
-        assertThat(service.assign(pick.getId(), local, coordinator()).assignedUserId()).isEqualTo(local);
+        assertThat(service.assign(pick.getId(), local, unlimitedManager()).assignedUserId()).isEqualTo(local);
     }
 
     @Test
@@ -467,7 +473,7 @@ class FulfillmentServiceImplTest {
         assignable(HCM, picker);
         when(warehouses.findWarehouse(HCM)).thenReturn(Optional.of(new WarehouseView(HCM, "HCM", "Kho HCM", "x", true)));
 
-        var assignees = service.assignees(HCM, coordinator());
+        var assignees = service.assignees(HCM, unlimitedManager());
 
         assertThat(assignees).singleElement().satisfies(one -> {
             assertThat(one.userId()).isEqualTo(picker);
@@ -477,7 +483,7 @@ class FulfillmentServiceImplTest {
                 .isEqualTo(ErrorCode.OUT_OF_DATA_SCOPE);
         assertThat(refusal(() -> service.assignees(HCM, user(UUID.randomUUID(), Role.WAREHOUSE_STAFF))).errorCode())
                 .isEqualTo(ErrorCode.FORBIDDEN);
-        assertThat(refusal(() -> service.assignees(UUID.randomUUID(), coordinator())).errorCode())
+        assertThat(refusal(() -> service.assignees(UUID.randomUUID(), unlimitedManager())).errorCode())
                 .isEqualTo(ErrorCode.WAREHOUSE_NOT_FOUND);
     }
 
@@ -585,10 +591,6 @@ class FulfillmentServiceImplTest {
                     code.apply(FulfillmentPermissions.TASK_OVERSIGHT, read),
                     code.apply(FulfillmentPermissions.PICKING, update), code.apply(FulfillmentPermissions.PACKING, update),
                     code.apply(FulfillmentPermissions.PACKING, approve));
-            case ORDER_COORDINATOR -> Set.of(code.apply(FulfillmentPermissions.PICK_LISTS, read),
-                    code.apply(FulfillmentPermissions.TASK_ASSIGNMENT, create),
-                    code.apply(FulfillmentPermissions.TASK_ASSIGNMENT, update),
-                    code.apply(FulfillmentPermissions.TASK_OVERSIGHT, read));
             default -> Set.of();
         };
     }
@@ -624,7 +626,7 @@ class FulfillmentServiceImplTest {
         UUID picker = UUID.randomUUID();
         var order = releasedOrder(picker);
 
-        var task = service.createTask(order.orderId(), picker, null, "HCM-STG01", coordinator());
+        var task = service.createTask(order.orderId(), picker, null, "HCM-STG01", unlimitedManager());
 
         assertThat(task.destination()).isEqualTo(com.stockflow.fulfillment.api.PickDestination.DISPATCH);
         assertThat(task.stagingLocationCode()).isNull();
@@ -643,7 +645,7 @@ class FulfillmentServiceImplTest {
                 stagingView(HCM, "HCM-STG00", false, StorageLocationView.AreaType.STAGING)));
 
         var task = service.createTask(order.orderId(), picker, com.stockflow.fulfillment.api.PickDestination.STAGING, null,
-                coordinator());
+                unlimitedManager());
 
         assertThat(task.destination()).isEqualTo(com.stockflow.fulfillment.api.PickDestination.STAGING);
         assertThat(task.stagingLocationCode()).isEqualTo("HCM-STG01");
@@ -658,7 +660,7 @@ class FulfillmentServiceImplTest {
                 stagingView(HCM, "HCM-STG02", true, StorageLocationView.AreaType.STAGING)));
 
         service.createTask(order.orderId(), picker, com.stockflow.fulfillment.api.PickDestination.STAGING, " HCM-STG02 ",
-                coordinator());
+                unlimitedManager());
 
         assertThat(savedByCreateTask().getStagingLocationCode()).isEqualTo("HCM-STG02");
     }
@@ -679,7 +681,7 @@ class FulfillmentServiceImplTest {
 
         for (String code : List.of("HCM-A01-1-A", "HCM-PACK01", "HN-STG01", "HCM-STG09", "HCM-NOWHERE")) {
             var thrown = refusal(() -> service.createTask(order.orderId(), picker,
-                    com.stockflow.fulfillment.api.PickDestination.STAGING, code, coordinator()));
+                    com.stockflow.fulfillment.api.PickDestination.STAGING, code, unlimitedManager()));
 
             assertThat(thrown.errorCode()).as(code).isEqualTo(ErrorCode.STAGING_AREA_INVALID);
             assertThat(thrown.fieldErrors()).as(code).singleElement()
@@ -696,14 +698,14 @@ class FulfillmentServiceImplTest {
 
         when(warehouses.areasOf(HCM, StorageLocationView.AreaType.STAGING)).thenReturn(List.of());
         assertThat(refusal(() -> service.createTask(order.orderId(), picker,
-                com.stockflow.fulfillment.api.PickDestination.STAGING, null, coordinator())).errorCode())
+                com.stockflow.fulfillment.api.PickDestination.STAGING, null, unlimitedManager())).errorCode())
                 .as("none").isEqualTo(ErrorCode.STAGING_AREA_INVALID);
 
         when(warehouses.areasOf(HCM, StorageLocationView.AreaType.STAGING)).thenReturn(List.of(
                 stagingView(HCM, "HCM-STG01", true, StorageLocationView.AreaType.STAGING),
                 stagingView(HCM, "HCM-STG02", true, StorageLocationView.AreaType.STAGING)));
         var several = refusal(() -> service.createTask(order.orderId(), picker,
-                com.stockflow.fulfillment.api.PickDestination.STAGING, "  ", coordinator()));
+                com.stockflow.fulfillment.api.PickDestination.STAGING, "  ", unlimitedManager()));
         assertThat(several.errorCode()).as("several").isEqualTo(ErrorCode.STAGING_AREA_INVALID);
         assertThat(several.fieldErrors()).singleElement()
                 .satisfies(error -> assertThat(error.message()).contains("HCM-STG01").contains("HCM-STG02"));
@@ -728,13 +730,13 @@ class FulfillmentServiceImplTest {
         assertThat(changed.stagingLocationCode()).isEqualTo("HCM-STG01");
 
         var back = service.changeDestination(pick.getId(), com.stockflow.fulfillment.api.PickDestination.DISPATCH,
-                "HCM-STG01", coordinator());
+                "HCM-STG01", unlimitedManager());
         assertThat(back.destination()).isEqualTo(com.stockflow.fulfillment.api.PickDestination.DISPATCH);
         assertThat(back.stagingLocationCode()).isNull();
 
         pick.start(picker, now);
         var late = refusal(() -> service.changeDestination(pick.getId(),
-                com.stockflow.fulfillment.api.PickDestination.STAGING, null, coordinator()));
+                com.stockflow.fulfillment.api.PickDestination.STAGING, null, unlimitedManager()));
         assertThat(late.errorCode()).isEqualTo(ErrorCode.PICK_TASK_STATE_CONFLICT);
         assertThat(pick.getDestination()).isEqualTo(com.stockflow.fulfillment.api.PickDestination.DISPATCH);
     }

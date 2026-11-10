@@ -19,7 +19,7 @@ import java.util.UUID;
 public interface PickLists {
 
     /**
-     * A task's lines in walking order. The assignee, and managers and coordinators of the task's
+     * A task's lines in walking order. The assignee, and managers of the task's
      * warehouse, may read them.
      *
      * @throws com.stockflow.common.error.BusinessException {@code NOT_FOUND}, {@code OUT_OF_DATA_SCOPE}
@@ -75,7 +75,7 @@ public interface PickLists {
      * X-SHORT resolved by reallocation: inventory releases the short allocation and allocates as many whole cartons
      * from other pickable bins of the warehouse (FIFO, never the short bin; 07 §4.4 step 10); the order line holds the new
      * allocations, the short line is superseded by one new line per allocation, and once no line is SHORT any
-     * more the order resumes. A coordinator or the warehouse's manager.
+     * more the order resumes. The warehouse's manager.
      *
      * @return the new lines
      * @throws com.stockflow.common.error.BusinessException {@code NOT_FOUND}; {@code OUT_OF_DATA_SCOPE};
@@ -90,7 +90,7 @@ public interface PickLists {
      * rest of an order that waited for stock, allocated since - and they become lines of the same task, after its last
      * stop, keeping its destination. A STAGED or PICKED task goes back to PICKING for its assignee, and the order to
      * PICKING if it is not (unless it is on hold). Refused once the task's packing is complete: its cartons left with a
-     * shipment, and the rest is a new delivery round. The warehouse manager (or the coordinator). Nothing new to plan
+     * shipment, and the rest is a new delivery round. The warehouse manager (or the warehouse manager). Nothing new to plan
      * is answered with no lines, changing nothing.
      *
      * @return the lines added

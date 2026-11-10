@@ -400,7 +400,7 @@ class CycleCountRepositoryAdapter implements CycleCountRepository {
      * promise the doubted free units again; the count is already on its way to settle them.</p>
      */
     @Override
-    public List<Frozen> frozen(Collection<String> skus, LocalDate today) {
+    public List<Frozen> frozen(Collection<String> skus) {
         if (skus.isEmpty()) {
             return List.of();
         }
@@ -408,7 +408,6 @@ class CycleCountRepositoryAdapter implements CycleCountRepository {
                 SELECT s.id, s.sku, s.location_code, s.on_hand - s.reserved AS free
                   FROM inventory.stock_item s
                  WHERE s.sku IN (:skus) AND s.status = 'AVAILABLE' AND s.on_hand > s.reserved
-                   AND (s.expiry_date IS NULL OR s.expiry_date >= :today)
                    AND EXISTS (SELECT 1 FROM inventory.cycle_count c
                                  JOIN inventory.cycle_count_line l ON l.cycle_count_id = c.id
                                 WHERE ((c.trigger_type = 'SHORT_PICK' AND %s)
@@ -423,7 +422,7 @@ class CycleCountRepositoryAdapter implements CycleCountRepository {
                                            AND l.location_code = s.location_code AND l.sku = s.sku
                                            AND COALESCE(l.lot_number, '') = COALESCE(btrim(s.lot_number), ''))))"""
                         .formatted(CountBusy.BUSY),
-                new MapSqlParameterSource().addValue("skus", skus).addValue("today", today),
+                new MapSqlParameterSource().addValue("skus", skus),
                 (rs, row) -> new Frozen(rs.getObject("id", UUID.class), rs.getString("sku"),
                         rs.getString("location_code"), rs.getLong("free")));
     }

@@ -21,13 +21,10 @@ public interface LotTraceSearch {
     /**
      * @param from inclusive; with {@code to}, a lot must have a ledger line in this window (inside {@code warehouses})
      * @param to    exclusive
-     * @param today the business date: stock past its expiry on this day is on hand but not available
      */
-    record Filter(String sku, String lotNumber, Set<String> warehouses, Instant from, Instant to,
-                  java.time.LocalDate today) {
+    record Filter(String sku, String lotNumber, Set<String> warehouses, Instant from, Instant to) {
         public Filter {
             warehouses = warehouses == null ? Set.of() : Set.copyOf(warehouses);
-            java.util.Objects.requireNonNull(today, "today");
         }
     }
 
@@ -35,8 +32,8 @@ public interface LotTraceSearch {
 
     List<LotTrace.Summary> lots(Filter filter, long offset, int limit);
 
-    /** The lot, when it exists and — with {@code warehouses} — was in one of them; availability as of {@code today}. */
-    Optional<LotTrace.Summary> lot(UUID lotId, Set<String> warehouses, java.time.LocalDate today);
+    /** The lot, when it exists and — with {@code warehouses} — was in one of them. */
+    Optional<LotTrace.Summary> lot(UUID lotId, Set<String> warehouses);
 
     List<LotTrace.Balance> balances(UUID lotId, Set<String> warehouses);
 

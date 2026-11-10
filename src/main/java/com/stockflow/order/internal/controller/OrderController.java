@@ -68,7 +68,7 @@ import java.util.UUID;
         label = "Orders",
         route = "/sales/orders",
         apiPath = "/api/v1/orders",
-        actions = {Action.VIEW_PAGE, Action.READ, Action.CREATE, Action.UPDATE, Action.APPROVE, Action.EXPORT})
+        actions = {Action.VIEW_PAGE, Action.READ, Action.CREATE, Action.UPDATE, Action.EXPORT})
 class OrderController {
 
     private final OrderService orderService;
@@ -77,11 +77,14 @@ class OrderController {
     private final com.stockflow.identity.api.IdentityService identities;
 
     private final com.stockflow.order.internal.service.PartialShipments partialShipments;
+    private final com.stockflow.order.internal.service.OrderWarehouseVisibility warehouseVisibility;
 
     OrderController(OrderService orderService, CustomerService customerService,
                     CustomerOrders customerOrders,
                     com.stockflow.identity.api.IdentityService identities,
-                    com.stockflow.order.internal.service.PartialShipments partialShipments) {
+                    com.stockflow.order.internal.service.PartialShipments partialShipments,
+                    com.stockflow.order.internal.service.OrderWarehouseVisibility warehouseVisibility) {
+        this.warehouseVisibility = warehouseVisibility;
         this.partialShipments = partialShipments;
         this.identities = identities;
         this.orderService = orderService;
@@ -102,6 +105,8 @@ class OrderController {
                 .filter(order -> ownCustomerId == null || ownCustomerId.equals(order.customerId()))
                 // 17 §5.2: a DRAFT order is Sales' work, not yet the customer's to see.
                 .filter(order -> ownCustomerId == null || order.status() != OrderStatus.DRAFT)
+                // A warehouse manager reads the orders of their warehouses only (5-7 review M1); 404 like any other.
+                .filter(order -> ownCustomerId != null || warehouseVisibility.visible(orderId, user))
                 .map(order -> OrderWebMapper.toResponse(order, ownCustomerId == null))
                 .map(ApiResponse::ok)
                 .orElseThrow(() -> new BusinessException(
@@ -162,8 +167,8 @@ class OrderController {
      *
      * <p>SCRUM-242/WBS 3.17.4. Same underlying {@link OrderService#cancel}, but {@code scope =
      * ALL} and its own resource, {@code sales-order-cancellations:UPDATE}: kltn-docs 17 §2 has Sales
-     * handle cancellations, while releasing an order to production ({@code sales-orders:APPROVE})
-     * stays with the coordinator. A customer's role is never granted it, so this endpoint is
+     * handle cancellations, while releasing an order ({@code sales-order-releases:UPDATE}) is the
+     * warehouse manager's. A customer's role is never granted it, so this endpoint is
      * unreachable for them even though it accepts the same path shape as {@link #cancel}.</p>
      */
     @PostMapping("/{orderId}/admin-cancellation")
@@ -209,7 +214,9 @@ class OrderController {
 
     /**
      * The back-office order list (SCRUM-443, FE 440). Staff only: a customer holds
-     * {@code sales-orders:READ} too, for their own orders, and gets a 403 here rather than everyone's.
+     * {@code sales-orders:READ} too, for their own orders, and gets a 403 here rather than everyone's. A caller limited
+     * to warehouses - the warehouse manager, since team plan 5-7 - lists only the orders shipping from or released to
+     * their warehouses ({@code OrderWarehouseVisibility}), none when assigned none.
      * Parameters follow FE #12: {@code search}, {@code status} repeated, {@code sort=field,dir}.
      */
     @GetMapping
@@ -230,7 +237,8 @@ class OrderController {
         return ApiResponse.ok(orderService.list(new ListOrdersQuery(page,
                         size == null ? Pages.DEFAULT_PAGE_SIZE : size, search, OrderStatusFilter.parse(statuses),
                         customerId,
-                        placedFrom, placedTo, sort))
+                        placedFrom, placedTo, sort,
+                        com.stockflow.order.internal.service.OrderWarehouseVisibility.limitOf(user)))
                 .map(OrderWebMapper::toResponse));
     }
 
@@ -243,6 +251,7 @@ class OrderController {
         orderService.findById(orderId)
                 .filter(order -> ownCustomerId == null || ownCustomerId.equals(order.customerId()))
                 .filter(order -> ownCustomerId == null || order.status() != OrderStatus.DRAFT)
+                .filter(order -> ownCustomerId != null || warehouseVisibility.visible(orderId, user))
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No order with id " + orderId));
         List<com.stockflow.order.api.OrderStatusChange> changes = orderService.history(orderId);
         if (ownCustomerId != null) {

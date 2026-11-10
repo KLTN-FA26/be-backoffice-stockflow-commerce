@@ -2,12 +2,11 @@ package com.stockflow.inventory.internal.controller;
 
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.security.Role;
-import com.stockflow.procurement.internal.service.GoodsReceipts;
-import com.stockflow.procurement.internal.service.GoodsReceipts.NewPackage;
 import com.jayway.jsonpath.JsonPath;
 import com.stockflow.support.Await;
 import com.stockflow.support.ReferenceRows;
-import com.stockflow.support.SecuredIntegrationTest;
+import com.stockflow.support.ProductionReceivables;
+import com.stockflow.support.SecuredProductionReceiptTest;
 import com.stockflow.support.SecuredMvc;
 import com.stockflow.warehouse.api.PutawayTasks;
 import jakarta.persistence.EntityManager;
@@ -24,7 +23,6 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.Duration;
-import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
 
@@ -39,7 +37,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * line of 40 units - two cartons of 20, every unit in a carton since team plan 4C-2 - is confirmed, and the
  * asynchronous creator opens a task per carton.
  */
-@SecuredIntegrationTest
+@SecuredProductionReceiptTest
 class PutawayHttpTest {
 
     private static final String RECEIVING = "HCM-RCV01";
@@ -47,7 +45,7 @@ class PutawayHttpTest {
 
     @Autowired MockMvc mockMvc;
     @MockitoBean JwtDecoder decoder;
-    @Autowired GoodsReceipts receipts;
+    @Autowired ProductionReceivables receivables;
     @Autowired PutawayTasks putawayTasks;
     @Autowired JdbcTemplate jdbc;
     @Autowired TransactionTemplate tx;
@@ -73,45 +71,8 @@ class PutawayHttpTest {
 
     /** A confirmed two-step receipt line into HCM: two cartons, with their tasks opened. */
     private Received receive() {
-        String sku = "PH-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(Locale.ROOT);
-        UUID po = Identifiers.newId();
-        UUID revision = Identifiers.newId();
-        UUID poLine = Identifiers.newId();
-        tx.executeWithoutResult(s -> {
-            UUID product = Identifiers.newId();
-            jdbc.update("insert into product.products(id,code,name,slug) values (?,?,?,?)", product, sku,
-                    "Putaway read fixture", sku.toLowerCase(Locale.ROOT));
-            jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature) values (?,?,?,?,'')",
-                    Identifiers.newId(), product, sku, "Putaway read fixture");
-            UUID item = jdbc.queryForObject("select id from inventory.inventory_items where sku = ?", UUID.class, sku);
-            // BR-03: tg_goods_receipt_lines_item refuses a receipt line for an item with no weight or dimensions.
-            jdbc.update("update inventory.inventory_items set weight_kg = 0.5, length_cm = 10, width_cm = 8, height_cm = 6"
-                    + " where id = ?", item);
-            jdbc.update("insert into inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)"
-                    + " values (?, ?, 'CARTON', 20)", Identifiers.newId(), item);
-
-            UUID submitter = ReferenceRows.user(entityManager);
-            UUID approver = ReferenceRows.user(entityManager);   // four eyes (ck_purchase_orders_four_eyes)
-            jdbc.update("""
-                    INSERT INTO procurement.purchase_orders (id, po_number, status, supplier_id, warehouse_id, currency,
-                        order_date, submitted_at, submitted_by, approved_at, approved_by, confirmed_at, confirmed_by,
-                        active_revision_id, version, created_at)
-                    SELECT ?, ?, 'CONFIRMED', s.id, ?, 'VND', CURRENT_DATE, NOW(), ?, NOW(), ?, NOW(), ?, ?, 0, NOW()
-                      FROM procurement.suppliers s WHERE s.code = 'GOVIET'""",
-                    po, "PO-PH-" + po.toString().substring(24), WAREHOUSE_HCM, submitter, approver, approver, revision);
-            jdbc.update("""
-                    INSERT INTO procurement.purchase_order_revisions (id, po_id, revision_no, kind, snapshot_header,
-                        changed_by, version, created_at) VALUES (?, ?, 0, 'INITIAL', '{}'::jsonb, ?, 0, NOW())""",
-                    revision, po, submitter);
-            jdbc.update("""
-                    INSERT INTO procurement.purchase_order_lines (id, po_id, po_revision_id, line_no, inventory_item_id,
-                        ordered_qty, unit_price, version, created_at) VALUES (?, ?, ?, 1, ?, 2000, 1000, 0, NOW())""",
-                    poLine, po, revision, item);
-        });
-        UUID receiptId = receipts.create(new GoodsReceipts.Create(po, "DN-PH", null), clerk).id();
-        receipts.replaceLines(receiptId, List.of(new GoodsReceipts.NewLine(poLine, 40, null, null, RECEIVING, null,
-                "CARTON", List.of(new NewPackage(null, 20), new NewPackage(null, 20)))));
-        receipts.confirm(receiptId, clerk);
+        ProductionReceivables.Receivable goods = receivables.sent(WAREHOUSE_HCM, 2, 20);
+        UUID receiptId = receivables.onTheDock(goods, RECEIVING, 2, clerk).receiptId();
         Await.until("two putaway tasks", Duration.ofSeconds(20),
                 () -> putawayTasks.tasksOfReceipt(receiptId).size() >= 2);
         return new Received(receiptId, putawayTasks.tasksOfReceipt(receiptId).stream()
@@ -249,8 +210,8 @@ class PutawayHttpTest {
     @DisplayName("a role without UPDATE on putaway tasks: 403")
     void readOnlyRoleGets403() throws Exception {
         String[] scan = scanOfCartonTask();
-        UUID planner = staff("INVENTORY_PLANNER", WAREHOUSE_HCM);
-        mvc.asRole(Role.INVENTORY_PLANNER, planner, post(TASKS + "/" + cartonTask + "/confirmations")
+        UUID accountant = staff("ACCOUNTANT", WAREHOUSE_HCM);
+        mvc.asRole(Role.ACCOUNTANT, accountant, post(TASKS + "/" + cartonTask + "/confirmations")
                         .contentType(MediaType.APPLICATION_JSON).content(body(scan[0], scan[1])))
                 .andExpect(status().isForbidden());
     }
