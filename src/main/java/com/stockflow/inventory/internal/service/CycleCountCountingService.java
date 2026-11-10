@@ -42,6 +42,12 @@ import java.util.stream.Collectors;
  * counted (BR-09), from the carton under its lock: IN_STOCK at the line's bin is booked; LOST, or emptied since, is
  * not.</p>
  *
+ * <p><b>Blind (BR-07).</b> A counter who may not decide counts, on a blind count, learns the books from nothing here -
+ * not from the view ({@link CycleCountViewMapper}) and not from a refusal either: where a carton is recorded, what
+ * status it has, whether it left the warehouse or changed since it was counted are answered to them with one neutral
+ * message ({@link #revealsBooks}); who may decide, or anyone on a count that is not blind, hears the detail. The codes
+ * stay what they are, so a client still knows what to do.</p>
+ *
  * <p><b>Lock order</b>, the one every writer of stock keeps (#125): the count row ({@code FOR UPDATE}), then the SKU
  * advisory lock, then - adding a line - the slot lock a plan takes, then the carton ({@code FOR UPDATE}). Taking the
  * count row first serialises everything done to one count; taking the SKU before the carton is what an approval of
@@ -100,11 +106,12 @@ class CycleCountCountingService {
         }
         policies.lock(line.slot().sku().code());
         StockPackage carton = lockCarton(line.slot().stockPackageId());
+        boolean reveal = revealsBooks(count, mayDecide);
         if (carton.status() == StockPackageStatus.IN_STOCK) {
             // The line object is the aggregate's own: relocating it moves this very slot.
-            follow(count, line, carton, prefixOf(count));
+            follow(count, line, carton, prefixOf(count), reveal);
         }
-        requireFindable(carton, found);
+        requireFindable(carton, found, reveal);
         count.count(lineId, found, booked(carton, line.slot().location()), carton.nominalQty(), actor,
                 clock.instant());
         return views.of(counts.save(count), mayDecide);
@@ -140,14 +147,17 @@ class CycleCountCountingService {
         policies.lock(content.sku().code());
         requireFree(count, CountSlot.carton(seen.location(), content.sku(), content.lotNumber(), seen.id()));
         StockPackage carton = lockCarton(seen.id());
+        boolean reveal = revealsBooks(count, command.mayDecide());
         if (carton.status() != StockPackageStatus.IN_STOCK && carton.status() != StockPackageStatus.LOST) {
-            throw new BusinessException(ErrorCode.CONFLICT,
-                    "Carton %s is %s and cannot be counted".formatted(carton.lpn(), carton.status()));
+            throw new BusinessException(ErrorCode.CONFLICT, reveal
+                    ? "Carton %s is %s and cannot be counted".formatted(carton.lpn(), carton.status())
+                    : cannotCountHere(carton, location));
         }
         if (!carton.location().equals(location)) {
-            throw new BusinessException(ErrorCode.STOCK_PACKAGE_WRONG_LOCATION,
-                    "Carton %s is recorded at %s, not %s; move it (or bring it back) before counting it here"
-                            .formatted(carton.lpn(), carton.location(), location));
+            throw new BusinessException(ErrorCode.STOCK_PACKAGE_WRONG_LOCATION, reveal
+                    ? "Carton %s is recorded at %s, not %s; move it (or bring it back) before counting it here"
+                            .formatted(carton.lpn(), carton.location(), location)
+                    : cannotCountHere(carton, location));
         }
         CountSlot slot = CountSlot.carton(carton.location(), content.sku(), content.lotNumber(), carton.id());
         count.addLine(slot, booked(carton, location), carton.nominalQty(), command.actor(), clock.instant(),
@@ -178,6 +188,7 @@ class CycleCountCountingService {
         // A cancelled count is answered as closed before any stock lock, as count and addLine answer it - not with
         // whatever a carton check would say about a line nobody will count again.
         requireOpen(count);
+        boolean reveal = revealsBooks(count, mayDecide);
         List<CycleCountLine> counted = count.lines().stream()
                 .filter(line -> line.isCounted() && line.slot().isCarton())
                 .toList();
@@ -189,9 +200,10 @@ class CycleCountCountingService {
                     .map(line -> line.slot().stockPackageId()).toList())) {
                 CycleCountLine line = byCarton.get(carton.id().value());
                 if (!asJudged(line, carton)) {
-                    throw new BusinessException(ErrorCode.CYCLE_COUNT_STALE,
-                            "Line %s: carton %s is %s at %s since it was counted; count the line again".formatted(
-                                    line.id(), carton.lpn(), carton.status(), carton.location()));
+                    throw new BusinessException(ErrorCode.CYCLE_COUNT_STALE, reveal
+                            ? "Line %s: carton %s is %s at %s since it was counted; count the line again".formatted(
+                                    line.id(), carton.lpn(), carton.status(), carton.location())
+                            : "Line %s changed since it was counted; count it again".formatted(line.id()));
                 }
             }
         }
@@ -241,24 +253,46 @@ class CycleCountCountingService {
     }
 
     /** Only a carton that can hold stock is found; any carton can be not found. */
-    private static void requireFindable(StockPackage carton, boolean found) {
+    private static void requireFindable(StockPackage carton, boolean found, boolean reveal) {
         if (found && carton.status() != StockPackageStatus.IN_STOCK && carton.status() != StockPackageStatus.LOST) {
-            throw new BusinessException(ErrorCode.CONFLICT,
-                    "Carton %s is %s and cannot be found on the shelf".formatted(carton.lpn(), carton.status()));
+            throw new BusinessException(ErrorCode.CONFLICT, reveal
+                    ? "Carton %s is %s and cannot be found on the shelf".formatted(carton.lpn(), carton.status())
+                    : "Carton %s cannot be counted found on this line; ask the warehouse manager".formatted(
+                            carton.lpn()));
         }
+    }
+
+    /**
+     * Whether a refusal may say what the books hold (BR-07): to who may decide counts, or on a count that is not blind.
+     * The view applies the same rule ({@code CycleCountViewMapper}).
+     */
+    private static boolean revealsBooks(CycleCount count, boolean mayDecide) {
+        return mayDecide || !count.blind();
+    }
+
+    /** The one answer a blind counter gets for a carton that cannot be added here, whatever the books say of it. */
+    private static String cannotCountHere(StockPackage carton, LocationId location) {
+        return "Carton %s cannot be counted at %s; ask the warehouse manager".formatted(carton.lpn(), location);
     }
 
     /**
      * The line follows its carton to the bin it was moved to whole, inside the count's warehouse. A carton that left
      * the warehouse is no longer this count's to count.
+     *
+     * <p>A blind counter sees the line's new bin: kept on purpose (review 4C-3, L2). It says where to look for the
+     * carton - a whole move, by putaway or quarantine, while a count holds it, since a move by hand is refused - not
+     * what the carton holds, and a line left at a bin the carton is no longer at would ask the counter to find it
+     * where it is not.</p>
      */
-    private static void follow(CycleCount count, CycleCountLine line, StockPackage carton, String prefix) {
+    private static void follow(CycleCount count, CycleCountLine line, StockPackage carton, String prefix,
+                               boolean reveal) {
         if (carton.location().equals(line.slot().location())) {
             return;
         }
         if (!prefix.equals(carton.location().warehouseCode())) {
-            throw new BusinessException(ErrorCode.STOCK_PACKAGE_WRONG_LOCATION,
-                    "Carton %s has left warehouse %s".formatted(carton.lpn(), prefix));
+            throw new BusinessException(ErrorCode.STOCK_PACKAGE_WRONG_LOCATION, reveal
+                    ? "Carton %s has left warehouse %s".formatted(carton.lpn(), prefix)
+                    : "Carton %s cannot be counted on this line; ask the warehouse manager".formatted(carton.lpn()));
         }
         count.relocateCarton(line.id(), carton.location());
     }
