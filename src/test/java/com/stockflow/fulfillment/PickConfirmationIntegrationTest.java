@@ -787,8 +787,8 @@ class PickConfirmationIntegrationTest {
     @Test
     @DisplayName("cancelled after picking: the line waits in /put-backs; put back restores on_hand once, with a ledger row")
     void putBackAfterCancellation() throws Exception {
-        // The whole carton comes back, IN_STOCK and sealed, onto the bin it left. Another bin is a production
-        // bug (V4C4-BUG-2: the ledger line flushes before the carton moves) pinned by putBackOntoAnotherBin.
+        // The whole carton comes back, IN_STOCK and sealed, onto the bin it left. Another bin is
+        // covered by putBackOntoAnotherBin.
         OrderSummary order = confirmedOrder(sofa(1));
         UUID task = startedTask(order);
         JsonNode line = lines(task).get(0);
@@ -907,7 +907,6 @@ class PickConfirmationIntegrationTest {
     }
 
     @Test
-    @org.junit.jupiter.api.Disabled("Production bug 4C-4-B2: a put-back onto ANOTHER bin fails 409 - the PUT_BACK ledger insert is flushed before the carton UPDATE, so tg check_stock_movement_package sees the carton at its old bin")
     @DisplayName("a carton put back onto ANOTHER bin: IN_STOCK sealed there, its row with it, one ledger line naming it")
     void putBackOntoAnotherBin() throws Exception {
         OrderSummary order = confirmedOrder(sofa(1));
