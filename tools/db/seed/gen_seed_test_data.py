@@ -199,8 +199,10 @@ def stored_file(prefix, file_id, content_type, stored_at, title):
 
 # ============================================================================ 1. staff
 section("1. staff and their roles")
-# bcrypt(10) of "Stockflow@2026", in Spring's DelegatingPasswordEncoder format.
-PASSWORD = "{bcrypt}$2a$10$pJyMk7pxJnqmYnhXEyDxMO37YZy2oSDSBtAY40vsZuDmfN6kLvg6y"
+# bcrypt(10) of "Stockflow@2026", in Spring's DelegatingPasswordEncoder format: the published demo password, the
+# default of the psql variable seed_password_hash (review S-5). A server anyone can reach is loaded with its own hash.
+DEMO_PASSWORD = "{bcrypt}$2a$10$pJyMk7pxJnqmYnhXEyDxMO37YZy2oSDSBtAY40vsZuDmfN6kLvg6y"
+PASSWORD = Raw(":'seed_password_hash'")
 U = {}
 ROLE = lambda code: Raw(f"(SELECT id FROM identity.app_role WHERE code = '{code}')")
 STAFF = [
@@ -579,11 +581,25 @@ ins("fulfillment.carrier", at(date(2026, 8, 21), 9), id=CARRIER["XT-NAMBAC"], co
 # Ahamove: API_BOOKING when the loader passes the sealed key (seal_ahamove_key.py), else MANUAL until it is entered on
 # the carrier screen - the database refuses API_BOOKING without a sealed key, and the key is never committed.
 raw(r"""\if :{?ahamove_api_key_sealed}
+\set ahamove_api true
 \else
+\set ahamove_api false
 \set ahamove_api_key_sealed ''
 \set ahamove_webhook_auth_sealed ''
 \set ahamove_api_account ''
 \endif""")
+
+
+def api_or_manual(api, manual=None):
+    """What Ahamove's API and webhook write when the carrier loads API_BOOKING, and what a person records instead when
+    it loads MANUAL (no sealed key; review S-2): a psql \\if on the variable set just above. Both branches leave the
+    generator's own state the same."""
+    raw(r"\if :ahamove_api")
+    api()
+    raw(r"\else")
+    if manual:
+        manual()
+    raw(r"\endif")
 raw(f"""INSERT INTO fulfillment.carrier (id, code, name, contact_name, contact_phone, status, connection_type,
        webhook_enabled, webhook_auth_header, webhook_auth_value_sealed, api_environment, api_account, api_key_sealed,
        failure_reason_map, created_at, created_by)
@@ -596,14 +612,21 @@ SELECT {q(CARRIER['AHAMOVE'])}, 'AHAMOVE', 'Ahamove', 'Ahamove Partner Support',
        {q(at(date(2026, 8, 21), 9))}, 'seed'
   FROM (SELECT :'ahamove_api_key_sealed' <> '' AS sealed) k;""")
 COUNTS["fulfillment.carrier"] += 1
-for p, (prov, addr) in {"HAN": ("01", WH["HAN"][1]), "BDG": ("79", WH["BDG"][1])}.items():
-    ins("fulfillment.carrier_pickup_point", id=uid(f"pickup:AHAMOVE:{p}"), carrier_id=CARRIER["AHAMOVE"],
-        warehouse_id=WID[p], province_code=prov, address=addr, contact_name=f"Kho {p}", contact_phone="0909000" + prov)
-for code, svc in (("TRUCK-1T25", "TRUCK-1000"), ("TRUCK-2T5", "TRUCK-2000")):
-    for prov, city in (("01", "HAN"), ("79", "SGN")):
-        ins("fulfillment.carrier_service_code", id=uid(f"svc:{code}:{prov}"), carrier_id=CARRIER["AHAMOVE"],
-            vehicle_type_id=Raw(f"(SELECT id FROM fulfillment.vehicle_type WHERE code = '{code}')"),
-            province_code=prov, carrier_city_code=city, service_code=f"{city}-{svc}")
+
+
+def ahamove_settings():
+    for p, (prov, addr) in {"HAN": ("01", WH["HAN"][1]), "BDG": ("79", WH["BDG"][1])}.items():
+        ins("fulfillment.carrier_pickup_point", id=uid(f"pickup:AHAMOVE:{p}"), carrier_id=CARRIER["AHAMOVE"],
+            warehouse_id=WID[p], province_code=prov, address=addr, contact_name=f"Kho {p}",
+            contact_phone="0909000" + prov)
+    for code, svc in (("TRUCK-1T25", "TRUCK-1000"), ("TRUCK-2T5", "TRUCK-2000")):
+        for prov, city in (("01", "HAN"), ("79", "SGN")):
+            ins("fulfillment.carrier_service_code", id=uid(f"svc:{code}:{prov}"), carrier_id=CARRIER["AHAMOVE"],
+                vehicle_type_id=Raw(f"(SELECT id FROM fulfillment.vehicle_type WHERE code = '{code}')"),
+                province_code=prov, carrier_city_code=city, service_code=f"{city}-{svc}")
+
+
+api_or_manual(ahamove_settings)
 
 # ============================================================================ 8. the sales cycle
 # Seller block of every contract (kltn-docs 18 BR-05).
@@ -1335,7 +1358,17 @@ class Trip:
         commit()
 
     def ahamove_booking(self, when, order_no, failed_first=False):
-        """The vehicle booked through Ahamove's API (09 §4.2 step 6): the booking, and the calls it took."""
+        """The vehicle booked through Ahamove's API (09 §4.2 step 6): the booking, and the calls it took. With Ahamove
+        loaded MANUAL the manager booked it in Ahamove's app and typed its order number as the waybill."""
+        api_or_manual(lambda: self._ahamove_api_booking(when, order_no, failed_first),
+                      lambda: ins("fulfillment.waybill_change", when, id=uid(f"waybill:{self.key}"), load_id=self.load,
+                                  old_waybill_no=None, new_waybill_no=order_no, source="MANUAL",
+                                  changed_by=self.manager, changed_at=when + timedelta(seconds=2)))
+        self.waybill = order_no
+        upd("fulfillment.dispatch_load", self.load, waybill_no=order_no)
+        commit()
+
+    def _ahamove_api_booking(self, when, order_no, failed_first):
         o = self.shipments[0]["order"]
         stops = [{"address": WH[self.p][1], "name": f"Kho {self.p}", "mobile": "0909000111"},
                  {"address": o.c["addr"], "name": o.c["contact"], "mobile": o.c["phone"]}]
@@ -1362,11 +1395,8 @@ class Trip:
             ins("fulfillment.carrier_api_call", t, id=uid(f"api:{self.key}:{k}"), carrier_id=CARRIER["AHAMOVE"],
                 booking_id=booking, operation=op, outcome=outcome, http_status=http, request_body=req,
                 response_body=resp, error=resp if outcome == "REFUSED" else None, duration_ms=ms, called_at=t)
-        self.waybill = order_no
         ins("fulfillment.waybill_change", when, id=uid(f"waybill:{self.key}"), load_id=self.load, old_waybill_no=None,
             new_waybill_no=order_no, source="API", changed_by=None, changed_at=when + timedelta(seconds=2))
-        upd("fulfillment.dispatch_load", self.load, waybill_no=order_no)
-        commit()
 
     def load_cartons(self, when, count=None):
         upd("fulfillment.dispatch_load", self.load, status="LOADING", loading_started_at=when,
@@ -1424,9 +1454,14 @@ class Trip:
         commit()
 
     def milestone(self, kind, when, event=None):
-        ins("fulfillment.tracking_milestone", when, id=uid(f"milestone:{self.key}:{kind}"), load_id=self.load,
-            milestone=kind, carrier_reported_at=when, source="CARRIER_WEBHOOK" if event else "MANUAL",
-            carrier_event_id=event, recorded_at=when + timedelta(seconds=3))
+        def write(event):
+            ins("fulfillment.tracking_milestone", when, id=uid(f"milestone:{self.key}:{kind}"), load_id=self.load,
+                milestone=kind, carrier_reported_at=when, source="CARRIER_WEBHOOK" if event else "MANUAL",
+                carrier_event_id=event, recorded_at=when + timedelta(seconds=3))
+        if event:
+            api_or_manual(lambda: write(event), lambda: write(None))
+        else:
+            write(None)
         commit()
 
 
@@ -1444,14 +1479,14 @@ def carrier_event(trip, kind, when, result="APPLIED", shipment=None, note=None, 
                                                                                                          "ASSIGNING"),
                           "sub_status": kind, "accept_time": int(when.timestamp())})
     matched = trip is not None and result in ("APPLIED", "DUPLICATE", "STALE", "NEEDS_REVIEW")
-    ins("fulfillment.carrier_event", when, id=eid, carrier_id=CARRIER["AHAMOVE"], carrier_code="AHAMOVE",
+    api_or_manual(lambda: ins("fulfillment.carrier_event", when, id=eid, carrier_id=CARRIER["AHAMOVE"], carrier_code="AHAMOVE",
         received_at=when + timedelta(seconds=4), payload=payload, signature_valid=signature,
         event_kind=kind if signature else None, carrier_reference=ref, carrier_reported_at=when,
         dedupe_key=dedupe or f"{ref}:{kind}", warehouse_id=WID[trip.p] if matched else None,
         load_id=trip.load if matched else None, shipment_id=shipment["id"] if shipment and matched else None,
         result=result, result_note=note, decided_at=None if result == "RECEIVED" else when + timedelta(seconds=5),
         resolved_by=U[resolved[0]] if resolved else None, resolved_at=resolved[1] if resolved else None,
-        resolution_note=resolved[2] if resolved else None)
+        resolution_note=resolved[2] if resolved else None))
     commit()
     return eid
 
@@ -1462,9 +1497,14 @@ def deliver(sh, when, by, failure=None, event=None):
     status = "DELIVERY_FAILED" if failure else "DELIVERED"
     upd("fulfillment.shipment", sh["id"], status=status, outcome_at=when, outcome_by=by, failure_reason=failure,
         failure_note="Khách vắng nhà, hẹn giao lại" if failure else None)
-    ins("fulfillment.shipment_event", when, id=uid(f"sev:{sh['id']}:{sh['events']}"), shipment_id=sh["id"],
-        status=status, occurred_at=when, source="CARRIER_WEBHOOK" if event else "MANUAL", carrier_event_id=event,
-        recorded_by=None if event else by, note="Khách vắng nhà" if failure else "Đã giao, khách ký nhận")
+    def write(event):
+        ins("fulfillment.shipment_event", when, id=uid(f"sev:{sh['id']}:{sh['events']}"), shipment_id=sh["id"],
+            status=status, occurred_at=when, source="CARRIER_WEBHOOK" if event else "MANUAL", carrier_event_id=event,
+            recorded_by=None if event else by, note="Khách vắng nhà" if failure else "Đã giao, khách ký nhận")
+    if event:
+        api_or_manual(lambda: write(event), lambda: write(None))
+    else:
+        write(None)
     sh["events"] += 1
     upd("ordering.order_shipment", sh["order_shipment"], status=status, outcome_at=when, outcome_by=by,
         failure_reason=failure, failure_note="Khách vắng nhà" if failure else None)
@@ -1640,6 +1680,7 @@ def return_request(o, key, when, reason, status, cartons=0, channel="PORTAL", no
             received_by=staff, receiving_location_code=qrt)
         upd("ordering.return_request_line", lid, received_quantity=units)
         hist.append(("AWAITING_RETURN", "RECEIVED", t + timedelta(hours=1), staff, f"Nhận lại {len(back)} thùng"))
+        o.move("RETURNED", t + timedelta(hours=1), staff, f"Hàng hoàn theo {number} đã về kho")
     for k, (frm, to, at_, by, why) in enumerate(hist):
         ins("ordering.return_request_status_history", at_, id=uid(f"rsh:{key}:{k}"), return_request_id=rid,
             from_status=frm, to_status=to, reason=why, actor_id=by, occurred_at=at_)
@@ -1945,10 +1986,18 @@ HEADER = r"""--
 --   "SET CONSTRAINTS ALL IMMEDIATE; SET CONSTRAINTS ALL DEFERRED;" pair marks where the application would commit:
 --   the deferred constraint triggers check the state each step leaves, as they would at the end of its transaction.
 -- * Ahamove is booked through its API (connection API_BOOKING) only when its staging key is given at load time,
---   sealed with the deployment's STOCKFLOW_SECRETS_KEY - the key is never in this file:
---     export STOCKFLOW_SECRETS_KEY=... AHAMOVE_STAGING_API_KEY=... AHAMOVE_API_ACCOUNT=...
---     psql -v ON_ERROR_STOP=1 ... $(python tools/db/seed/seal_ahamove_key.py) -f tools/db/seed/seed_test_data.sql
---   Without it Ahamove is a MANUAL carrier, with the same history, until the key is entered on the carrier screen.
+--   sealed with the deployment's STOCKFLOW_SECRETS_KEY - the key is never in this file, nor on a command line:
+--     read -rs STOCKFLOW_SECRETS_KEY; read -rs AHAMOVE_STAGING_API_KEY; read -rs AHAMOVE_WEBHOOK_TOKEN
+--     read -r AHAMOVE_API_ACCOUNT
+--     {{ STOCKFLOW_SECRETS_KEY=$STOCKFLOW_SECRETS_KEY AHAMOVE_STAGING_API_KEY=$AHAMOVE_STAGING_API_KEY \
+--       AHAMOVE_WEBHOOK_TOKEN=$AHAMOVE_WEBHOOK_TOKEN AHAMOVE_API_ACCOUNT=$AHAMOVE_API_ACCOUNT \
+--       python tools/db/seed/seal_ahamove_key.py; cat tools/db/seed/seed_test_data.sql; }} \
+--       | psql -v ON_ERROR_STOP=1 -h <host> -U stockflow -d stockflow
+--   (the script writes \set lines, so the sealed values travel on psql's input, not its argv). Without them Ahamove is
+--   a MANUAL carrier until its key is entered on the carrier screen, and its trips carry what a person records - typed
+--   waybill numbers, manual milestones and outcomes - instead of API bookings, API calls and webhook events.
+-- * DEMO PASSWORD: every account below signs in with the published password Stockflow@2026. Fine on a laptop; on a
+--   server anyone can reach, give the accounts a hash of your own: -v seed_password_hash='{{bcrypt}}$2a$10$...'.
 -- * The design files, contract scans, sample photos and return photos it names are in tools/db/seed/files/
 --   (key = path), real files whose size and SHA-256 the rows carry: upload them to the bucket too.
 --     local:  docker cp tools/db/seed/files stockflow-minio:/tmp/seed-files && docker exec stockflow-minio sh -c \
@@ -1959,7 +2008,7 @@ HEADER = r"""--
 --               "mc alias set local http://localhost:9000 \"\$MINIO_ROOT_USER\" \"\$MINIO_ROOT_PASSWORD\" >/dev/null &&
 --                mc mirror --overwrite /tmp/seed-files local/$(grep ^S3_BUCKET= .env | cut -d= -f2) && rm -rf /tmp/seed-files"
 -- * Every row has created_by = 'seed' where the table has the column; ids are md5('seed:' || key)::uuid.
--- * Sign in with any account below, password  Stockflow@2026
+-- * Sign in with any account below, password  Stockflow@2026 (unless seed_password_hash was given)
 --     quanly.hn / quanly.bd (WAREHOUSE_MANAGER), kho.hn1, kho.hn2, kho.bd1, kho.bd2 (WAREHOUSE_STAFF),
 --     sales1, sales2 (SALES_STAFF), truongkd (SALES_MANAGER), ketoan (ACCOUNTANT), dieuphoi (PRODUCTION_COORDINATOR);
 --     nv.nghiviec is DISABLED, nv.bikhoa LOCKED. Customers: kh.<code>, e.g. kh.caphemoc, kh.trasuamay (CUSTOMER).
@@ -2026,6 +2075,10 @@ def emit():
 
 PRELUDE = r"""
 \set ON_ERROR_STOP on
+\if :{?seed_password_hash}
+\else
+\set seed_password_hash '""" + DEMO_PASSWORD + r"""'
+\endif
 BEGIN;
 SET LOCAL statement_timeout = 0;
 SET LOCAL lock_timeout = '30s';

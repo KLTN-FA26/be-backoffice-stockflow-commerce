@@ -1,13 +1,20 @@
 #!/usr/bin/env python3
 """
-Seals the Ahamove staging credentials for the seeded Ahamove carrier and prints them as psql variables, so the seed can
-make that carrier API_BOOKING without the key ever being written into a file of the repository:
+Seals the Ahamove staging credentials for the seeded Ahamove carrier and writes them as psql \\set lines, so the seed
+can make that carrier API_BOOKING without the key ever being written into a file of the repository, typed into a
+shell's history, or put on a command line where `ps` shows it (review S-3, S-4):
 
-    export STOCKFLOW_SECRETS_KEY=...            # the deployment's own secrets key (base64 of 32 bytes)
-    export AHAMOVE_STAGING_API_KEY=...          # the partner API key Ahamove issued for staging
-    export AHAMOVE_API_ACCOUNT=...              # the partner account (the mobile number the key belongs to)
-    export AHAMOVE_WEBHOOK_TOKEN=...            # optional: the value Ahamove sends in X-Ahamove-Token (random if unset)
-    psql -v ON_ERROR_STOP=1 ... $(python tools/db/seed/seal_ahamove_key.py) -f tools/db/seed/seed_test_data.sql
+    read -rs STOCKFLOW_SECRETS_KEY        # the deployment's own secrets key (base64 of 32 bytes)
+    read -rs AHAMOVE_STAGING_API_KEY      # the partner API key Ahamove issued for staging
+    read -rs AHAMOVE_WEBHOOK_TOKEN        # the value Ahamove is configured to send in X-Ahamove-Token
+    read -r  AHAMOVE_API_ACCOUNT          # the partner account (the mobile number the key belongs to)
+    { STOCKFLOW_SECRETS_KEY=$STOCKFLOW_SECRETS_KEY AHAMOVE_STAGING_API_KEY=$AHAMOVE_STAGING_API_KEY \\
+      AHAMOVE_WEBHOOK_TOKEN=$AHAMOVE_WEBHOOK_TOKEN AHAMOVE_API_ACCOUNT=$AHAMOVE_API_ACCOUNT \\
+      python tools/db/seed/seal_ahamove_key.py; cat tools/db/seed/seed_test_data.sql; } \\
+      | psql -v ON_ERROR_STOP=1 -h <host> -U stockflow -d stockflow
+
+The variables are given to this one process only, and the sealed values reach psql on its input. Nothing secret is
+printed: the webhook token is never generated here, so it is never shown - it is the value configured at Ahamove.
 
 Without these variables the seed still loads, and Ahamove is a MANUAL carrier until its key is entered on the carrier
 screen (the database refuses API_BOOKING without a sealed key, ck_carrier_connection_api_booking).
@@ -150,24 +157,24 @@ def main():
     if "--self-test" in sys.argv:
         self_test()
         return
-    env = {name: os.environ.get(name, "").strip() for name in
-           ("STOCKFLOW_SECRETS_KEY", "AHAMOVE_STAGING_API_KEY", "AHAMOVE_API_ACCOUNT", "AHAMOVE_WEBHOOK_TOKEN")}
-    missing = [n for n in ("STOCKFLOW_SECRETS_KEY", "AHAMOVE_STAGING_API_KEY", "AHAMOVE_API_ACCOUNT") if not env[n]]
+    names = ("STOCKFLOW_SECRETS_KEY", "AHAMOVE_STAGING_API_KEY", "AHAMOVE_API_ACCOUNT", "AHAMOVE_WEBHOOK_TOKEN")
+    env = {name: os.environ.get(name, "").strip() for name in names}
+    missing = [n for n in names if not env[n]]
     if missing:
         sys.exit("seal_ahamove_key.py: set " + ", ".join(missing))
     key = base64.b64decode(env["STOCKFLOW_SECRETS_KEY"])
     if len(key) != 32:
         sys.exit("seal_ahamove_key.py: STOCKFLOW_SECRETS_KEY must be base64 of exactly 32 bytes")
-    token = env["AHAMOVE_WEBHOOK_TOKEN"] or secrets.token_urlsafe(32)
-    if not env["AHAMOVE_WEBHOOK_TOKEN"]:
-        print(f"Ahamove webhook header to configure: X-Ahamove-Token: {token}", file=sys.stderr)
+    token = env["AHAMOVE_WEBHOOK_TOKEN"]
     account = env["AHAMOVE_API_ACCOUNT"]
-    if not (3 <= len(account) <= 64) or any(not 33 <= ord(ch) <= 126 for ch in account):
-        sys.exit("seal_ahamove_key.py: AHAMOVE_API_ACCOUNT is 3 to 64 printable characters without spaces")
+    if not (3 <= len(account) <= 64) or any(not 33 <= ord(ch) <= 126 or ch in "'\\" for ch in account):
+        sys.exit("seal_ahamove_key.py: AHAMOVE_API_ACCOUNT is 3 to 64 printable characters without spaces or quotes")
     api_key = seal(key, env["AHAMOVE_STAGING_API_KEY"], f"carrier:{CARRIER_ID}:api-key")
-    print(f"-v ahamove_api_key_sealed={api_key} "
-          f"-v ahamove_webhook_auth_sealed={seal(key, token, f'carrier:{CARRIER_ID}:webhook-auth-value')} "
-          f"-v ahamove_api_account={account}")
+    auth = seal(key, token, f"carrier:{CARRIER_ID}:webhook-auth-value")
+    # Base64 and the account's printable characters hold no quote, so each value is one quoted psql word.
+    print(f"\\set ahamove_api_key_sealed '{api_key}'")
+    print(f"\\set ahamove_webhook_auth_sealed '{auth}'")
+    print(f"\\set ahamove_api_account '{account}'")
 
 
 if __name__ == "__main__":
