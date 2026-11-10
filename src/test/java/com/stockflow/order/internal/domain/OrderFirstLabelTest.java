@@ -99,6 +99,41 @@ class OrderFirstLabelTest {
     }
 
     @Test
+    @DisplayName("an order put on hold (a wrong address) is not labelled: the check runs under the order's lock, so a hold "
+            + "placed after the station's own read still stops the label that would lock the address (review L3)")
+    void heldOrderIsNotLabelled() {
+        Order order = picking();
+        order.putOnHold(com.stockflow.order.api.HoldReason.ADDRESS, "street number missing", STAFF, NOW);
+        assertThat(code(catchThrowable(() -> order.recordFirstLabel(NOW)))).isEqualTo(ErrorCode.PACK_STATE_CONFLICT);
+        assertThat(order.firstLabeledAt()).isNull();
+        assertThat(order.packedForGood()).isFalse();
+
+        order.resolveHold("address corrected", STAFF, NOW.plusSeconds(60));
+        assertThat(order.status()).isEqualTo(OrderStatus.PICKING);
+        assertThat(order.recordFirstLabel(NOW.plusSeconds(120))).isTrue();
+    }
+
+    @Test
+    @DisplayName("only a released, picking or partly shipped order is labelled: one not released yet, or packed already, "
+            + "is PACK_STATE_CONFLICT under the lock and nothing is recorded")
+    void onlyWhileTheWarehouseWorksOnIt() {
+        Order confirmed = Order.draft(OrderNumber.of(LocalDate.of(2026, 11, 13), 8), UUID.randomUUID(), UUID.randomUUID(),
+                List.of(Order.line(new Sku("CUP-12OZ"), 10, Money.vnd(100_000), null)), NOW);
+        confirmed.applyTerms(com.stockflow.order.api.PaymentTerm.PREPAID, null, null, null);
+        confirmed.lines().forEach(line -> confirmed.attachReservations(line.id(), List.of(UUID.randomUUID())));
+        confirmed.submit();
+        confirmed.recordPayment(confirmed.total(), NOW);
+        assertThat(confirmed.status()).isEqualTo(OrderStatus.CONFIRMED);
+        assertThat(code(catchThrowable(() -> confirmed.recordFirstLabel(NOW)))).isEqualTo(ErrorCode.PACK_STATE_CONFLICT);
+        assertThat(confirmed.firstLabeledAt()).isNull();
+
+        Order packed = picking();
+        packed.markPacked(NOW, STAFF);
+        assertThat(code(catchThrowable(() -> packed.recordFirstLabel(NOW)))).isEqualTo(ErrorCode.PACK_STATE_CONFLICT);
+        assertThat(packed.firstLabeledAt()).isNull();
+    }
+
+    @Test
     @DisplayName("rehydration restores the lock without recording it again")
     void rehydration() {
         Order order = picking();

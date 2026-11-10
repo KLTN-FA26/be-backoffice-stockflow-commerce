@@ -58,7 +58,7 @@ END $$;
 
 -- ---------------------------------------------------------------------------------------------
 -- Fixtures: order A (task A, six cartons) is the one the labels lock; order B (task B, two cartons) stays unlocked until
--- L15; order C has no task and is the one that gets cancelled.
+-- L15; order C has no task and is the one that gets cancelled; order D (no task either) is put on hold (V20261113000710).
 -- Every line is a PICKED carton of one sofa, held for its order and named by its LPN.
 -- ---------------------------------------------------------------------------------------------
 INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, currency, placed_at, created_at,
@@ -66,7 +66,7 @@ INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, 
                                      shipping_province_code, shipping_country_code)
 SELECT md5('qa65:order:' || k)::uuid, 'SO-QA-65' || k, 'c0000000-0000-4000-8000-000000000001', gen_random_uuid(),
        'PENDING_PAYMENT', 1, 'VND', NOW(), NOW(), 'Ms Lan', '0900000001', '1 Le Loi', 'W1', 'P1', 'VN'
-  FROM (VALUES ('A'), ('B'), ('C')) v(k);
+  FROM (VALUES ('A'), ('B'), ('C'), ('D')) v(k);
 INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency)
 SELECT md5('qa65:ol:' || k)::uuid, md5('qa65:order:' || k)::uuid, 'SOFA-3S-GREY', 8, 1, 'VND'
   FROM (VALUES ('A'), ('B')) v(k);
@@ -257,6 +257,25 @@ SELECT pg_temp.expect_ok('L15 and its first label time is set once', $q$
 SELECT pg_temp.expect_fail_by('L16 ... after which its address is locked too', 'tg_order_label_lock', $q$
     UPDATE ordering.customer_order SET shipping_line1 = '3 Hai Ba Trung' WHERE id = md5('qa65:order:B')::uuid $q$);
 
+\echo '--- no first label on an order on hold (V20261113000710; review L3, 08 edge "a wrong address is caught before the first label")'
+SELECT pg_temp.expect_fail_by('L17 put on hold and labelled in one statement', 'tg_order_label_lock', $q$
+    UPDATE ordering.customer_order SET status = 'ON_HOLD', hold_reason = 'ADDRESS', status_before_hold = 'PENDING_PAYMENT',
+           first_labeled_at = NOW() WHERE id = md5('qa65:order:D')::uuid $q$);
+SELECT pg_temp.expect_ok('L18 an ADDRESS hold on an order not labelled', $q$
+    UPDATE ordering.customer_order SET status = 'ON_HOLD', hold_reason = 'ADDRESS', status_before_hold = 'PENDING_PAYMENT'
+     WHERE id = md5('qa65:order:D')::uuid $q$);
+SELECT pg_temp.expect_fail_by('L19 a held order gets its first label', 'tg_order_label_lock', $q$
+    UPDATE ordering.customer_order SET first_labeled_at = NOW() WHERE id = md5('qa65:order:D')::uuid $q$);
+SELECT pg_temp.expect_ok('L20 while held, its address is corrected (that is what the hold is for)', $q$
+    UPDATE ordering.customer_order SET shipping_line1 = '9 Nguyen Hue' WHERE id = md5('qa65:order:D')::uuid $q$);
+SELECT pg_temp.expect_ok('L21 the hold resolved, the first label is recorded', $q$
+    UPDATE ordering.customer_order SET status = 'PENDING_PAYMENT', hold_reason = NULL, status_before_hold = NULL
+     WHERE id = md5('qa65:order:D')::uuid;
+    UPDATE ordering.customer_order SET first_labeled_at = NOW() WHERE id = md5('qa65:order:D')::uuid $q$);
+SELECT pg_temp.expect_ok('L22 a hold put on an order already labelled is not this rule''s concern (its label stands)', $q$
+    UPDATE ordering.customer_order SET status = 'ON_HOLD', hold_reason = 'CUSTOMER', status_before_hold = 'PENDING_PAYMENT'
+     WHERE id = md5('qa65:order:D')::uuid $q$);
+
 \echo '--- a reprint raises the label version, never lowers it (08 BR-08)'
 SELECT pg_temp.expect_ok('R1 a reprint: LABELED stays LABELED, the version goes 1 -> 2', $q$
     UPDATE fulfillment.package SET label_version = 2 WHERE id = md5('qa65:pkg:1')::uuid $q$);
@@ -396,5 +415,8 @@ SELECT pg_temp.expect_true('X2 no pack is left in a status the session does not 
     NOT EXISTS (SELECT 1 FROM fulfillment.pack WHERE status NOT IN ('PENDING', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED')));
 SELECT pg_temp.expect_true('X3 a carton row always has both its line and its LPN',
     NOT EXISTS (SELECT 1 FROM fulfillment.package WHERE (pick_line_id IS NULL) <> (lpn IS NULL)));
+SELECT pg_temp.expect_true('X4 cartons are found by LPN through ix_package_lpn, every LPN not null (V20261113000710)',
+    EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname = 'fulfillment' AND tablename = 'package'
+               AND indexname = 'ix_package_lpn' AND indexdef LIKE '%(lpn)%' AND indexdef LIKE '%lpn IS NOT NULL%'));
 
 ROLLBACK;

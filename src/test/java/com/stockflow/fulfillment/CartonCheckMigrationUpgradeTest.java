@@ -29,6 +29,8 @@ class CartonCheckMigrationUpgradeTest {
 
     private static final String BEFORE = "20261113000600";
     private static final String MIGRATION = "20261113000700";
+    /** The review fixes after it: an index on package(lpn), no first label on an order on hold. */
+    private static final String REVIEW_FIXES = "20261113000710";
 
     private static final String PACK_PACKING = id(1);
     private static final String PACK_PENDING = id(2);
@@ -133,6 +135,55 @@ class CartonCheckMigrationUpgradeTest {
                         .as("a labelled carton loads like a sealed parcel").contains("LABELED");
                 assertThat(RawSql.text(db, "SELECT pg_get_functiondef('fulfillment.check_load_plan_package'::regproc)"))
                         .contains("LABELED");
+            }
+        }
+    }
+
+    @Test
+    @DisplayName("V20261113000710 after it (review L3, L6): changes no data; cartons get an index by LPN; a held order is "
+            + "not labelled, a labelled one may still be held, and the address lock stands")
+    void reviewFixesOnTheMigratedData() throws Exception {
+        try (var postgres = new PostgreSQLContainer<>("postgres:16-alpine")) {
+            postgres.start();
+            flyway(postgres, BEFORE).migrate();
+            try (Connection db = DriverManager.getConnection(postgres.getJdbcUrl(), postgres.getUsername(),
+                    postgres.getPassword())) {
+                seed(db);
+                flyway(postgres, MIGRATION).migrate();
+                String orders = "SELECT id::text || ':' || status || ':' || coalesce(first_labeled_at::text, '-') "
+                        + "FROM ordering.customer_order ORDER BY id";
+                String packages = "SELECT id::text || ':' || status FROM fulfillment.package ORDER BY id";
+                var ordersBefore = RawSql.texts(db, orders);
+                var packagesBefore = RawSql.texts(db, packages);
+                assertThat(RawSql.number(db, "SELECT count(*) FROM pg_indexes WHERE indexname = 'ix_package_lpn'")).isZero();
+
+                var result = flyway(postgres, REVIEW_FIXES).migrate();
+                assertThat(result.migrations).extracting(m -> m.version).containsExactly(REVIEW_FIXES);
+
+                assertThat(RawSql.texts(db, orders)).as("no order changed").isEqualTo(ordersBefore);
+                assertThat(RawSql.texts(db, packages)).as("no package changed").isEqualTo(packagesBefore);
+                assertThat(RawSql.text(db, "SELECT indexdef FROM pg_indexes WHERE schemaname = 'fulfillment' "
+                        + "AND indexname = 'ix_package_lpn'")).contains("(lpn)").contains("lpn IS NOT NULL");
+
+                // An ADDRESS hold on an order nobody labelled: no first label until it is resolved.
+                RawSql.update(db, "UPDATE ordering.customer_order SET status = 'ON_HOLD', hold_reason = 'ADDRESS', "
+                        + "status_before_hold = 'PICKING' WHERE id = '" + ORDER_NOT_PACKED + "'::uuid");
+                refusedWith(db, "tg_order_label_lock", "UPDATE ordering.customer_order SET first_labeled_at = NOW() "
+                        + "WHERE id = '" + ORDER_NOT_PACKED + "'::uuid");
+                RawSql.update(db, "UPDATE ordering.customer_order SET shipping_line1 = 'Corrected' WHERE id = '"
+                        + ORDER_NOT_PACKED + "'::uuid");
+                RawSql.update(db, "UPDATE ordering.customer_order SET status = 'PICKING', hold_reason = NULL, "
+                        + "status_before_hold = NULL WHERE id = '" + ORDER_NOT_PACKED + "'::uuid");
+                RawSql.update(db, "UPDATE ordering.customer_order SET first_labeled_at = NOW() WHERE id = '"
+                        + ORDER_NOT_PACKED + "'::uuid");
+
+                // An order labelled already (packed by the repack station) may be held; its lock is unchanged.
+                RawSql.update(db, "UPDATE ordering.customer_order SET status = 'ON_HOLD', hold_reason = 'CUSTOMER', "
+                        + "status_before_hold = 'PICKING' WHERE id = '" + ORDER_PACKED + "'::uuid");
+                refusedWith(db, "tg_order_label_lock", "UPDATE ordering.customer_order SET shipping_line1 = 'Elsewhere' "
+                        + "WHERE id = '" + ORDER_PACKED + "'::uuid");
+                refusedWith(db, "tg_order_label_lock", "UPDATE ordering.customer_order SET first_labeled_at = NULL "
+                        + "WHERE id = '" + ORDER_PACKED + "'::uuid");
             }
         }
     }

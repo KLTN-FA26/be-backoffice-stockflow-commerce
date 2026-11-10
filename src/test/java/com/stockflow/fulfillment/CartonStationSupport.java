@@ -62,6 +62,12 @@ final class CartonStationSupport {
                  WHERE i.id = u.inventory_item_id AND i.sku = ? AND NOT u.is_base AND u.active""", sku));
     }
 
+    /** The manager corrects the SKU's carton spec (08 edge case: the real carton differs from the declared one). */
+    static void correctCartonSize(TransactionTemplate tx, JdbcTemplate jdbc, String sku, String length, String width,
+                                  String height, String weight) {
+        tx.executeWithoutResult(s -> size(jdbc, sku, length, width, height, weight));
+    }
+
     private static void size(JdbcTemplate jdbc, String sku, String length, String width, String height, String weight) {
         jdbc.update("""
                 UPDATE inventory.uom_conversions u SET length_cm = ?::numeric, width_cm = ?::numeric,
