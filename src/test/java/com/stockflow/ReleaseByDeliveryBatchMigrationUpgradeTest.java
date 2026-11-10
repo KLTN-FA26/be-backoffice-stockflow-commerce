@@ -87,9 +87,11 @@ class ReleaseByDeliveryBatchMigrationUpgradeTest {
                 + "00000000-0000-4000-8000-0000000000a1' WHERE id = '" + ORDER + "'");
         RawSql.update(db, "INSERT INTO ordering.sales_contract (id, contract_number, order_id, status, seller_name, "
                 + "seller_tax_code, seller_address, seller_representative, seller_representative_title, buyer_name, "
-                + "buyer_address, buyer_representative, buyer_representative_title, free_sample_rounds, signed_at, "
+                + "buyer_address, buyer_representative, buyer_representative_title, free_sample_rounds, sent_at, sent_by, "
+                + "sent_document_key, signed_at, "
                 + "signed_by, signed_on, signed_file_key, signed_file_name) VALUES ('" + contract + "', 'HD-UPG-8', '"
                 + ORDER + "', 'SIGNED', 'S', '0101', 'A', 'A', 'D', 'B', 'B', 'B', 'D', 2, NOW(), "
+                + "'00000000-0000-4000-8000-0000000000a1', 'documents/hd.pdf', NOW(), "
                 + "'00000000-0000-4000-8000-0000000000a1', CURRENT_DATE, 'k', 'f')");
         RawSql.update(db, "INSERT INTO ordering.delivery_batch (id, contract_id, seq, window_start, window_end) VALUES ('"
                 + batch + "', '" + contract + "', 1, CURRENT_DATE + 1, CURRENT_DATE + 2)");
