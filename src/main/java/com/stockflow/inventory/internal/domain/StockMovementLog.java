@@ -9,11 +9,16 @@ public interface StockMovementLog {
     void append(StockMovement movement);
 
     /**
-     * The cartons a document moved whole: the carton named on the arriving side of its MOVE lines, each once, in no
-     * particular order; empty when it moved none. How a person's repeated carton move is recognised (kltn-docs 11
-     * BR-07): the request id is the reference.
+     * The cartons a document moved whole, and where to: the carton named on the arriving side of its MOVE lines, each
+     * once, in no particular order; empty when it moved none. How a person's repeated carton move is recognised
+     * (kltn-docs 11 BR-07): the request id is the reference, and the cartons and the place say whether the repeat is
+     * the same request.
      */
-    java.util.List<StockPackageId> cartonsMovedBy(StockMovement.ReferenceType referenceType, UUID referenceId);
+    java.util.List<MovedCarton> cartonsMovedBy(StockMovement.ReferenceType referenceType, UUID referenceId);
+
+    /** A carton a document moved, and the location it moved it to. */
+    record MovedCarton(StockPackageId carton, LocationId to) {
+    }
 
     /**
      * The line a document already caused, if any — how a retried move is recognised as one that

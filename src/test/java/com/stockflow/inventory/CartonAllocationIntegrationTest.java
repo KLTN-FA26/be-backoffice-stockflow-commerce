@@ -10,6 +10,7 @@ import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.api.MoveReference;
 import com.stockflow.inventory.api.MoveStockPackagesCommand;
 import com.stockflow.inventory.api.ReserveStockCommand;
+import com.stockflow.inventory.api.StockPackageView;
 import com.stockflow.support.CartonRows;
 import com.stockflow.support.DemoData;
 import com.stockflow.support.IntegrationTest;
@@ -120,8 +121,18 @@ class CartonAllocationIntegrationTest {
     }
 
     private void moveByHand(List<String> lpns, String to) {
-        tx.executeWithoutResult(s -> inventory.moveStockPackages(new MoveStockPackagesCommand(lpns, to,
-                MoveReference.MOVE_TASK, Identifiers.newId(), clerk)));
+        moveByHand(Identifiers.newId(), lpns, to);
+    }
+
+    private List<String> moveByHand(UUID request, List<String> lpns, String to) {
+        return tx.execute(s -> inventory.moveStockPackages(new MoveStockPackagesCommand(lpns, to,
+                MoveReference.MOVE_TASK, request, clerk))).stream().map(StockPackageView::lpn).toList();
+    }
+
+    private int handMoves(String lpn) {
+        return jdbc.queryForObject("""
+                select count(*) from inventory.stock_movement m join inventory.stock_package p on p.id = m.to_stock_package_id
+                 where p.lpn = ? and m.movement_type = 'MOVE' and m.reference_type = 'MOVE_TASK'""", Integer.class, lpn);
     }
 
     @Test
@@ -143,10 +154,11 @@ class CartonAllocationIntegrationTest {
     void shortCartonsRefuseTheRelease() {
         carton(2);
         carton(3);
-        // The third carton is sellable - checkout promised it - but not on a pickable bin: the release cannot take it.
-        tx.executeWithoutResult(s -> CartonRows.stock(jdbc, sku, "HCM-RCV01", 1, FACTOR, null,
-                Instant.parse("2026-01-01T00:00:00Z")));
+        String third = carton(4);
         UUID order = reserved(30);
+        // Promised at checkout, the third carton is taken off the pick face before the release: two whole cartons are
+        // left on pickable bins for a line of three.
+        moveByHand(List.of(third), "HCM-RCV01");
 
         BusinessException refused = catchThrowableOfType(BusinessException.class, () -> release(order));
 
@@ -159,16 +171,35 @@ class CartonAllocationIntegrationTest {
     }
 
     @Test
-    @DisplayName("a line that is no sum of whole cartons is short too: no carton is broken for the remainder")
-    void noCartonIsBrokenForARemainder() {
+    @DisplayName("a reservation counts cartons (20 §5.6): units that are no whole number of cartons are refused at"
+            + " checkout, so no carton is ever broken for a remainder")
+    void reservationCountsCartons() {
         carton(2);
         carton(3);
-        UUID order = reserved(15);
 
-        BusinessException refused = catchThrowableOfType(BusinessException.class, () -> release(order));
+        BusinessException refused = catchThrowableOfType(BusinessException.class, () -> reserved(15));
 
-        assertThat(refused.errorCode()).isEqualTo(ErrorCode.INSUFFICIENT_STOCK);
-        assertThat(heldUnits()).isZero();
+        assertThat(refused.errorCode()).isEqualTo(ErrorCode.RESERVATION_NOT_WHOLE_CARTONS);
+        assertThat(jdbc.queryForObject("select count(*) from inventory.stock_reservation where sku = ?",
+                Integer.class, sku)).isZero();
+    }
+
+    @Test
+    @DisplayName("available to promise counts only cartons a release could allocate: not a carton off a pickable"
+            + " bin, nor loose units on one")
+    void onlyAllocatableStockIsPromised() {
+        carton(2);
+        tx.executeWithoutResult(s -> {
+            CartonRows.stock(jdbc, sku, "HCM-RCV01", 1, FACTOR, null, Instant.parse("2026-01-03T00:00:00Z"));
+            jdbc.update("""
+                    insert into inventory.stock_item (id, sku, location_code, on_hand, reserved, status, version,
+                        created_at, received_at) values (?, ?, ?, 7, 0, 'AVAILABLE', 0, now(), now())""",
+                    Identifiers.newId(), sku, SHELF);
+        });
+
+        assertThat(inventory.availableToPromise(new Sku(sku))).isEqualTo(10);
+        assertThat(catchThrowableOfType(BusinessException.class, () -> reserved(20)).errorCode())
+                .isEqualTo(ErrorCode.INSUFFICIENT_STOCK);
     }
 
     @Test
@@ -183,6 +214,37 @@ class CartonAllocationIntegrationTest {
         assertThat(refused.errorCode()).isEqualTo(ErrorCode.STOCK_PACKAGE_HELD);
         assertThat(refused.getMessage()).contains(held);
         assertThat(locationOf(held)).isEqualTo(SHELF);
+    }
+
+    @Test
+    @DisplayName("11 BR-07: the same request again is answered from the ledger; its id reused for other cartons or"
+            + " another place is IDEMPOTENCY_KEY_REUSED, and nothing moves")
+    void moveRequestIdIsOneRequest() {
+        String a = carton(2);
+        String b = carton(3);
+        UUID request = Identifiers.newId();
+        moveByHand(request, List.of(a), OTHER_BIN);
+
+        assertThat(moveByHand(request, List.of(a), OTHER_BIN)).as("the same request").containsExactly(a);
+        assertThat(handMoves(a)).isEqualTo(1);
+        for (Runnable other : List.<Runnable>of(() -> moveByHand(request, List.of(b), OTHER_BIN),
+                () -> moveByHand(request, List.of(a, b), OTHER_BIN), () -> moveByHand(request, List.of(a), SHELF))) {
+            assertThat(catchThrowableOfType(BusinessException.class, other::run).errorCode())
+                    .isEqualTo(ErrorCode.IDEMPOTENCY_KEY_REUSED);
+        }
+        assertThat(locationOf(a)).isEqualTo(OTHER_BIN);
+        assertThat(locationOf(b)).isEqualTo(SHELF);
+        assertThat(handMoves(a)).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("an LPN scanned in lower case, with spaces, names its carton, as at picking (11 BR-10)")
+    void moveLpnIsCaseInsensitive() {
+        String a = carton(2);
+
+        assertThat(moveByHand(Identifiers.newId(), List.of(" " + a.toLowerCase(Locale.ROOT) + " "), OTHER_BIN))
+                .containsExactly(a);
+        assertThat(locationOf(a)).isEqualTo(OTHER_BIN);
     }
 
     @Test

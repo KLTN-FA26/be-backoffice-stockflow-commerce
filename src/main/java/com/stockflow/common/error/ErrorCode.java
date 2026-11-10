@@ -593,6 +593,7 @@ public enum ErrorCode {
     PICK_TASK_STATE_CONFLICT("The task cannot do that in its current status", 409),
     /** The hold behind a pick line was released, expired or already consumed: nothing is deducted. */
     RESERVATION_NOT_ACTIVE("The stock hold is no longer active", 409),
+    RESERVATION_NOT_WHOLE_CARTONS("A stock reservation is a whole number of the SKU's cartons", 422),
     /**
      * A hold that is not an order's goods on a shelf - one on a legacy print-shop row (IN_PRODUCTION):
      * a pick does not close it (review of #109). The code keeps its name for clients that read it.

@@ -102,9 +102,9 @@ public interface InventoryService {
     AllocateStockResult allocate(AllocateStockCommand command);
 
     /**
-     * X-SHORT reallocation: the allocation came up short at its bin. It is released, and the same quantity is
-     * allocated again in the same warehouse, as whole cartons in the SKU's removal order, from any pickable bin but
-     * that one (07 BR-03: reallocation too gives whole cartons). Joins the caller's
+     * X-SHORT reallocation: the allocation came up short - its carton was not found whole. It is released, and the
+     * same quantity is allocated again in the same warehouse, as whole cartons in the SKU's removal order, from any
+     * pickable carton but that one, its bin's other cartons included (07 BR-03, BR-09). Joins the caller's
      * transaction. Idempotent on the command's request id.
      *
      * @return the new allocations, in pick order
