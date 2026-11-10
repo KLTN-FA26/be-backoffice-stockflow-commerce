@@ -8,16 +8,15 @@ import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.DataScope;
 import com.stockflow.common.security.Role;
-import com.stockflow.contracts.PaymentCaptured;
-import com.stockflow.contracts.PaymentMethod;
 import com.stockflow.contracts.StockDeducted;
 import com.stockflow.fulfillment.internal.service.PickLists;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.OrderSummary;
-import com.stockflow.order.api.PlaceOrderCommand;
 import com.stockflow.support.Await;
+import com.stockflow.support.ConfirmedOrders;
+import com.stockflow.support.CustomerSkuRows;
 import com.stockflow.support.DemoData;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
@@ -33,7 +32,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.TestConfiguration;
-import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.modulith.events.ApplicationModuleListener;
@@ -48,7 +47,6 @@ import org.springframework.test.web.servlet.RequestBuilder;
 import org.springframework.test.web.servlet.ResultActions;
 import org.springframework.transaction.support.TransactionTemplate;
 
-import java.math.BigDecimal;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -78,13 +76,16 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * wrong scan is refused with its own code and writes nothing, two simultaneous confirmations deduct once,
  * and the goods of an order cancelled after picking go back onto a bin exactly once.
  *
- * <p>The demo SOFA stock is shared with the rest of the suite, so every unit a test takes off the books
- * is put back in {@link #cleanUp} (which also exercises the put-back as the system).</p>
+ * <p>Every order is a contract's, confirmed by its installment on signing ({@link ConfirmedOrders}), so its lines are
+ * the demo customer's own SKUs (14 BR-04): a sofa and a table issued per test that handle like the catalogue's, stocked
+ * where the demo stock of those is. Every unit a test picks is still put back in {@link #cleanUp} (which also
+ * exercises the put-back as the system).</p>
  */
 @IntegrationTest
 @Import({PostgresContainer.class, RedisContainer.class, PickConfirmationIntegrationTest.DeductionListener.class})
 @AutoConfigureMockMvc
-@TestPropertySource(properties = {"stockflow.security.enabled=true", "stockflow.catalog.projection-retry-ms=3600000"})
+@TestPropertySource(properties = {"stockflow.security.enabled=true", "stockflow.upload-inspection.enabled=false",
+        "stockflow.catalog.projection-retry-ms=3600000"})
 class PickConfirmationIntegrationTest {
 
     @org.springframework.beans.factory.annotation.Autowired
@@ -95,9 +96,6 @@ class PickConfirmationIntegrationTest {
         return grants.resolve(java.util.List.of(role.authority())).permissions();
     }
 
-    private static final Sku SOFA = new Sku("SOFA-3S-GREY");
-    private static final Sku TABLE = new Sku("TABLE-OAK-160");
-    private static final String SOFA_BARCODE = "8930000000011";
     private static final Duration ASYNC = Duration.ofSeconds(10);
     private static final UUID HCM = DemoData.WAREHOUSE_HCM;
 
@@ -127,13 +125,12 @@ class PickConfirmationIntegrationTest {
     @Autowired MockMvc mvc;
     @MockitoBean JwtDecoder decoder;
     @Autowired OrderService orders;
-    @Autowired com.stockflow.order.internal.service.OrderReleases releases;
     @Autowired InventoryService inventory;
     @Autowired PickLists pickLists;
     @Autowired JdbcTemplate jdbc;
     @Autowired TransactionTemplate tx;
     @Autowired EntityManager entityManager;
-    @Autowired ApplicationEventPublisher publisher;
+    @Autowired ApplicationContext context;
     @Autowired ObjectMapper json;
     @Autowired DeductionListener.Received deductions;
 
@@ -147,9 +144,22 @@ class PickConfirmationIntegrationTest {
     private UUID pickerHn;
     private UUID customerUser;
     private final List<UUID> placed = new ArrayList<>();
+    private ConfirmedOrders confirmedOrders;
+    /** The demo customer's own sofa and table (14 BR-04), handled like the catalogue's, stocked at HCM per test. */
+    private Sku sofaSku;
+    private Sku tableSku;
+    private String sofaBarcode;
 
     @BeforeEach
     void setUp() {
+        confirmedOrders = new ConfirmedOrders(context);
+        sofaSku = new Sku(CustomerSkuRows.like(jdbc, tx, entityManager, DemoData.CUSTOMER_ID, "SOFA-3S-GREY", 50).sku());
+        tableSku = new Sku(CustomerSkuRows.like(jdbc, tx, entityManager, DemoData.CUSTOMER_ID, "TABLE-OAK-160", 50).sku());
+        sofaBarcode = CustomerSkuRows.barcode(jdbc, sofaSku.code());
+        // Where the demo stock of the catalogue's sofa and table is (V-demo seed): two sofa bins, the table's lot.
+        stock(sofaSku, "HCM-A01-2-B", 25, null, null);
+        stock(sofaSku, "HCM-A02-1-A", 8, null, null);
+        stock(tableSku, "HCM-B01-1-A", 12, "LOT-2026-03", java.time.LocalDate.of(2027, 3, 31));
         hn = Identifiers.newId();
         String prefix = "F" + UUID.randomUUID().toString().substring(0, 5).toUpperCase(Locale.ROOT);
         hnBin = prefix + "-A01-1-A";
@@ -226,6 +236,14 @@ class PickConfirmationIntegrationTest {
 
     // ---- fixtures ----------------------------------------------------------------------------
 
+    private void stock(Sku sku, String location, int units, String lot, java.time.LocalDate expiry) {
+        tx.executeWithoutResult(s -> jdbc.update("""
+                INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, expiry_date, on_hand, reserved,
+                                                  status, version, created_at, received_at)
+                VALUES (?, ?, ?, ?, ?, ?, 0, 'AVAILABLE', 0, NOW(), NOW() - interval '30 days')""",
+                Identifiers.newId(), sku.code(), location, lot, expiry, units));
+    }
+
     private UUID staff(String role, UUID... warehouses) {
         UUID user = tx.execute(s -> ReferenceRows.user(entityManager));
         tx.executeWithoutResult(s -> {
@@ -248,26 +266,20 @@ class PickConfirmationIntegrationTest {
         return "Bearer " + value;
     }
 
-    /** A paid stock-only order of the demo customer, its stock held at HCM, released there (READY_TO_FULFILL). */
-    private OrderSummary confirmedOrder(PlaceOrderCommand.Line... lines) {
-        OrderSummary order = orders.placeOrder(new PlaceOrderCommand(UUID.randomUUID(), DemoData.CUSTOMER_ID,
-                List.of(lines)));
-        placed.add(order.orderId());
-        BigDecimal total = order.total().amount();
-        UUID payment = Identifiers.newId();
-        tx.executeWithoutResult(s -> jdbc.update("""
-                INSERT INTO payment.payment (id, order_id, amount, currency, method, status, captured_at, created_at)
-                VALUES (?, ?, ?, 'VND', 'BANK_TRANSFER', 'CAPTURED', NOW(), NOW())""", payment, order.orderId(), total));
-        tx.executeWithoutResult(s -> publisher.publishEvent(new PaymentCaptured(order.orderId(), payment, total, "VND",
-                PaymentMethod.BANK_TRANSFER)));
-        Await.until("order confirmed", ASYNC,
-                () -> orders.findById(order.orderId()).orElseThrow().status() == OrderStatus.CONFIRMED);
+    /**
+     * A confirmed order of the demo customer - its contract paid on signing - shipping from HCM, its stock held there,
+     * released there (READY_TO_FULFILL).
+     */
+    private OrderSummary confirmedOrder(ConfirmedOrders.Line... lines) {
+        UUID order = confirmedOrders.confirmed(DemoData.CUSTOMER_ID, lines).orderId();
+        placed.add(order);
         // G3-2 (kltn-docs 17 BR-02): only a released order enters fulfillment.
-        return releases.release(order.orderId(), DemoData.WAREHOUSE_HCM, coordinator);
+        return confirmedOrders.release(order, DemoData.WAREHOUSE_HCM, coordinator);
     }
 
-    private static PlaceOrderCommand.Line sofa(int quantity) {
-        return new PlaceOrderCommand.Line(SOFA, quantity, Money.vnd(12_000_000), null);
+    /** {@code quantity} sofas, at least two: one carton of them (a contract's lines are cartons, 14 BR-08). */
+    private static ConfirmedOrders.Line sofa(int quantity) {
+        return ConfirmedOrders.Line.units(sofaSku, quantity, Money.vnd(12_000_000));
     }
 
     private ResultActions call(RequestBuilder request) throws Exception {
@@ -335,28 +347,28 @@ class PickConfirmationIntegrationTest {
     @Test
     @DisplayName("X-SHORT: a short line stops the order and deducts nothing; reallocated elsewhere, it is picked there")
     void shortPickIsReallocatedAndPicked() throws Exception {
-        OrderSummary order = confirmedOrder(sofa(1));
+        OrderSummary order = confirmedOrder(sofa(2));
         UUID task = startedTask(order);
         JsonNode line = lines(task).get(0);
         String lineId = line.path("lineId").asText();
         String location = line.path("locationCode").asText();
-        int before = onHand(location, SOFA);
+        int before = onHand(location, sofaSku);
 
         call(post("/api/v1/fulfillment/tasks/" + task + "/pick-lines/" + lineId + "/short")
                 .header("Authorization", token(pickerHcm, "WAREHOUSE_STAFF"))
                 .contentType("application/json").content("{\"locationCode\":\"" + location + "\",\"foundQuantity\":0}"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("SHORT"))
-                .andExpect(jsonPath("$.data.shortQty").value(1));
+                .andExpect(jsonPath("$.data.shortQty").value(2));
         assertThat(orders.findById(order.orderId()).orElseThrow().status()).isEqualTo(OrderStatus.ON_HOLD);
         assertThat(orders.findById(order.orderId()).orElseThrow().lifecycle().holdReason())
                 .as("X-SHORT: held for stock").isEqualTo(com.stockflow.order.api.HoldReason.INVENTORY);
-        assertThat(onHand(location, SOFA)).as("nothing deducted").isEqualTo(before);
+        assertThat(onHand(location, sofaSku)).as("nothing deducted").isEqualTo(before);
         assertThat(ledgerRows("PICK", lineId)).isZero();
         // X-SHORT step 03: a blind recount of that bin and SKU, opened once even if the short is reported again.
         String recount = "SELECT count(*) FROM inventory.cycle_count c JOIN inventory.cycle_count_line l"
                 + " ON l.cycle_count_id = c.id WHERE c.trigger_type = 'SHORT_PICK' AND c.status = 'PLANNED' AND c.is_blind"
-                + " AND l.location_code = ? AND l.sku = 'SOFA-3S-GREY'";
+                + " AND l.location_code = ? AND l.sku = '" + sofaSku.code() + "'";
         assertThat(jdbc.queryForObject(recount, Integer.class, location)).isEqualTo(1);
         call(post("/api/v1/fulfillment/tasks/" + task + "/pick-lines/" + lineId + "/short")
                 .header("Authorization", token(pickerHcm, "WAREHOUSE_STAFF"))
@@ -379,7 +391,7 @@ class PickConfirmationIntegrationTest {
                 .containsExactly(UUID.fromString(jdbc.queryForObject(
                         "SELECT reservation_id::text FROM fulfillment.pick_line WHERE id = ?::uuid", String.class, newLine)));
 
-        confirm(task, newLine, pickerHcm.toString(), "WAREHOUSE_STAFF", scan(newLocation, "SOFA-3S-GREY", 1))
+        confirm(task, newLine, pickerHcm.toString(), "WAREHOUSE_STAFF", scan(newLocation, sofaSku.code(), 2))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("PICKED"));
         assertThat(ledgerRows("PICK", newLine)).isEqualTo(1);
@@ -390,42 +402,42 @@ class PickConfirmationIntegrationTest {
     @Test
     @DisplayName("a confirmed line deducts its hold: on_hand, hold CONSUMED, one PICK ledger row, StockDeducted in the registry")
     void confirmationDeductsWithLedgerAndEvent() throws Exception {
-        OrderSummary order = confirmedOrder(sofa(1));
+        OrderSummary order = confirmedOrder(sofa(2));
         UUID task = startedTask(order);
         JsonNode lines = lines(task);
         assertThat(lines).hasSize(1);
         JsonNode line = lines.get(0);
         String lineId = line.path("lineId").asText();
         String location = line.path("locationCode").asText();
-        assertThat(line.path("sku").asText()).isEqualTo("SOFA-3S-GREY");
-        assertThat(line.path("barcode").asText()).isEqualTo(SOFA_BARCODE);
-        assertThat(line.path("allocatedQty").asInt()).isEqualTo(1);
+        assertThat(line.path("sku").asText()).isEqualTo(sofaSku.code());
+        assertThat(line.path("barcode").asText()).isEqualTo(sofaBarcode);
+        assertThat(line.path("allocatedQty").asInt()).isEqualTo(2);
         assertThat(line.path("status").asText()).isEqualTo("OPEN");
         assertThat(line.path("sequenceNo").asInt()).isEqualTo(1);
         assertThat(line.path("orderLineId").asText()).isEqualTo(order.lines().getFirst().lineId().toString());
-        int before = onHand(location, SOFA);
+        int before = onHand(location, sofaSku);
 
         // Scanned by barcode, the location in lower case: both accepted.
         confirm(task, lineId, pickerHcm.toString(), "WAREHOUSE_STAFF",
-                scan(location.toLowerCase(Locale.ROOT), SOFA_BARCODE, 1))
+                scan(location.toLowerCase(Locale.ROOT), sofaBarcode, 2))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("PICKED"))
-                .andExpect(jsonPath("$.data.pickedQty").value(1))
+                .andExpect(jsonPath("$.data.pickedQty").value(2))
                 .andExpect(jsonPath("$.data.pickedAt").exists());
 
-        assertThat(onHand(location, SOFA)).isEqualTo(before - 1);
+        assertThat(onHand(location, sofaSku)).isEqualTo(before - 2);
         assertThat(holdStatus(lineId)).isEqualTo("CONSUMED");
         assertThat(ledgerRows("PICK", lineId)).isEqualTo(1);
         assertThat(jdbc.queryForMap("""
                 SELECT from_location_code, to_location_code, quantity, actor_id, from_status FROM inventory.stock_movement
                  WHERE reference_type = 'PICK_LINE' AND reference_id = ?::uuid""", lineId))
                 .containsEntry("from_location_code", location).containsEntry("to_location_code", null)
-                .containsEntry("quantity", 1).containsEntry("actor_id", pickerHcm)
+                .containsEntry("quantity", 2).containsEntry("actor_id", pickerHcm)
                 .containsEntry("from_status", "AVAILABLE");
         assertThat(jdbc.queryForMap("""
                 SELECT consumed_at IS NOT NULL AS consumed, scanned_location_code, scanned_code, picked_by
                   FROM fulfillment.pick_line WHERE id = ?::uuid""", lineId))
-                .containsEntry("consumed", true).containsEntry("scanned_code", SOFA_BARCODE)
+                .containsEntry("consumed", true).containsEntry("scanned_code", sofaBarcode)
                 .containsEntry("picked_by", pickerHcm);
         // The event committed with the deduction, in the publication registry, and reached a listener.
         assertThat(jdbc.queryForObject("""
@@ -433,13 +445,13 @@ class PickConfirmationIntegrationTest {
                  WHERE event_type LIKE '%StockDeducted' AND serialized_event LIKE ?""", Integer.class,
                 "%" + order.orderId() + "%")).isEqualTo(1);
         Await.until("StockDeducted delivered", ASYNC, () -> deductions.events().stream()
-                .anyMatch(event -> event.orderId().equals(order.orderId()) && event.quantity() == 1));
+                .anyMatch(event -> event.orderId().equals(order.orderId()) && event.quantity() == 2));
 
         // The same scan again: 200, nothing more deducted.
-        confirm(task, lineId, pickerHcm.toString(), "WAREHOUSE_STAFF", scan(location, "SOFA-3S-GREY", 1))
+        confirm(task, lineId, pickerHcm.toString(), "WAREHOUSE_STAFF", scan(location, sofaSku.code(), 2))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("PICKED"));
-        assertThat(onHand(location, SOFA)).isEqualTo(before - 1);
+        assertThat(onHand(location, sofaSku)).isEqualTo(before - 2);
         assertThat(ledgerRows("PICK", lineId)).isEqualTo(1);
 
         // Every line picked: the task completes.
@@ -452,7 +464,7 @@ class PickConfirmationIntegrationTest {
                 .header("Authorization", token(pickerHcm, "WAREHOUSE_STAFF")))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.pickStatus").value("PICKED"));
-        assertThat(onHand(location, SOFA)).isEqualTo(before - 1);
+        assertThat(onHand(location, sofaSku)).isEqualTo(before - 2);
         assertThat(ledgerRows("PICK", lineId)).isEqualTo(1);
         // The audit trail has the confirmation.
         assertThat(jdbc.queryForObject("""
@@ -464,7 +476,7 @@ class PickConfirmationIntegrationTest {
     @Test
     @DisplayName("an order of two SKUs gets one line per hold in walking order, with the lot of each")
     void linesFollowTheHolds() throws Exception {
-        OrderSummary order = confirmedOrder(sofa(1), new PlaceOrderCommand.Line(TABLE, 1, Money.vnd(3_000_000), null));
+        OrderSummary order = confirmedOrder(sofa(2), ConfirmedOrders.Line.units(tableSku, 2, Money.vnd(3_000_000)));
         UUID task = startedTask(order);
 
         JsonNode lines = lines(task);
@@ -472,7 +484,7 @@ class PickConfirmationIntegrationTest {
         assertThat(lines).hasSize(2);
         assertThat(lines.get(0).path("locationCode").asText())
                 .isLessThan(lines.get(1).path("locationCode").asText());
-        JsonNode table = lines.get(0).path("sku").asText().equals("TABLE-OAK-160") ? lines.get(0) : lines.get(1);
+        JsonNode table = lines.get(0).path("sku").asText().equals(tableSku.code()) ? lines.get(0) : lines.get(1);
         assertThat(table.path("lotNumber").asText()).isEqualTo("LOT-2026-03");
         assertThat(table.path("locationCode").asText()).isEqualTo("HCM-B01-1-A");
         // Completion waits for both.
@@ -495,31 +507,31 @@ class PickConfirmationIntegrationTest {
         String lineId = line.path("lineId").asText();
         String location = line.path("locationCode").asText();
         String picker = pickerHcm.toString();
-        confirm(task, lineId, picker, "WAREHOUSE_STAFF", scan(location, "SOFA-3S-GREY", 2))
+        confirm(task, lineId, picker, "WAREHOUSE_STAFF", scan(location, sofaSku.code(), 2))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("PICK_TASK_STATE_CONFLICT"));
         call(post("/api/v1/fulfillment/tasks/" + task + "/picking-start")
                 .header("Authorization", token(pickerHcm, "WAREHOUSE_STAFF"))).andExpect(status().isOk());
-        int before = onHand(location, SOFA);
+        int before = onHand(location, sofaSku);
         String otherBin = location.equals("HCM-A01-2-B") ? "HCM-A02-1-A" : "HCM-A01-2-B";
 
-        confirm(task, lineId, picker, "WAREHOUSE_STAFF", scan(otherBin, "SOFA-3S-GREY", 2))
+        confirm(task, lineId, picker, "WAREHOUSE_STAFF", scan(otherBin, sofaSku.code(), 2))
                 .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("PICK_LOCATION_MISMATCH"));
-        confirm(task, lineId, picker, "WAREHOUSE_STAFF", scan(location, "TABLE-OAK-160", 2))
+        confirm(task, lineId, picker, "WAREHOUSE_STAFF", scan(location, tableSku.code(), 2))
                 .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("PICK_ITEM_MISMATCH"));
-        confirm(task, lineId, picker, "WAREHOUSE_STAFF", scan(location, "SOFA-3S-GREY", 3))
+        confirm(task, lineId, picker, "WAREHOUSE_STAFF", scan(location, sofaSku.code(), 3))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("PICK_QUANTITY_EXCEEDS_ALLOCATION"));
-        confirm(task, lineId, picker, "WAREHOUSE_STAFF", scan(location, "SOFA-3S-GREY", 1))
+        confirm(task, lineId, picker, "WAREHOUSE_STAFF", scan(location, sofaSku.code(), 1))
                 .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("PICK_QUANTITY_SHORT"));
-        confirm(task, UUID.randomUUID().toString(), picker, "WAREHOUSE_STAFF", scan(location, "SOFA-3S-GREY", 2))
+        confirm(task, UUID.randomUUID().toString(), picker, "WAREHOUSE_STAFF", scan(location, sofaSku.code(), 2))
                 .andExpect(status().isNotFound()).andExpect(jsonPath("$.errorCode").value("NOT_FOUND"));
         confirm(task, lineId, picker, "WAREHOUSE_STAFF", "{\"locationCode\":\"" + location
-                + "\",\"scannedCode\":\"SOFA-3S-GREY\",\"quantity\":0}")
+                + "\",\"scannedCode\":\"" + sofaSku.code() + "\",\"quantity\":0}")
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.errorCode").value("VALIDATION_FAILED"))
                 .andExpect(jsonPath("$.fieldErrors[0].field").value("quantity"));
-        confirm(task, lineId, picker, "WAREHOUSE_STAFF", "{\"scannedCode\":\"SOFA-3S-GREY\",\"quantity\":2}")
+        confirm(task, lineId, picker, "WAREHOUSE_STAFF", "{\"scannedCode\":\"" + sofaSku.code() + "\",\"quantity\":2}")
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.fieldErrors[0].field").value("locationCode"));
         call(post("/api/v1/fulfillment/tasks/" + task + "/picking-completion")
@@ -527,7 +539,7 @@ class PickConfirmationIntegrationTest {
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("PICK_LINES_INCOMPLETE"));
 
-        assertThat(onHand(location, SOFA)).isEqualTo(before);
+        assertThat(onHand(location, sofaSku)).isEqualTo(before);
         assertThat(lineStatus(lineId)).isEqualTo("OPEN");
         assertThat(holdStatus(lineId)).isEqualTo("HELD");
         assertThat(ledgerRows("PICK", lineId)).isZero();
@@ -540,7 +552,7 @@ class PickConfirmationIntegrationTest {
     void holdNoLongerActive() throws Exception {
         // An allocation never expires (X-RESV, ck_stock_reservation_allocation): only a release can close it.
         for (String how : List.of("RELEASED")) {
-            OrderSummary order = confirmedOrder(sofa(1));
+            OrderSummary order = confirmedOrder(sofa(2));
             UUID task = startedTask(order);
             JsonNode line = lines(task).get(0);
             String lineId = line.path("lineId").asText();
@@ -560,13 +572,13 @@ class PickConfirmationIntegrationTest {
                              WHERE id = (SELECT stock_item_id FROM inventory.stock_reservation WHERE id = ?)""", hold);
                 });
             }
-            int before = onHand(location, SOFA);
+            int before = onHand(location, sofaSku);
 
-            confirm(task, lineId, pickerHcm.toString(), "WAREHOUSE_STAFF", scan(location, "SOFA-3S-GREY", 1))
+            confirm(task, lineId, pickerHcm.toString(), "WAREHOUSE_STAFF", scan(location, sofaSku.code(), 2))
                     .andExpect(status().isConflict())
                     .andExpect(jsonPath("$.errorCode").value("RESERVATION_NOT_ACTIVE"));
 
-            assertThat(onHand(location, SOFA)).as(how).isEqualTo(before);
+            assertThat(onHand(location, sofaSku)).as(how).isEqualTo(before);
             assertThat(lineStatus(lineId)).as(how).isEqualTo("OPEN");
             assertThat(holdStatus(lineId)).as(how).isEqualTo(how);
             assertThat(ledgerRows("PICK", lineId)).as(how).isZero();
@@ -579,13 +591,13 @@ class PickConfirmationIntegrationTest {
     @Test
     @DisplayName("two confirmations of one line at the same moment deduct it once")
     void concurrentConfirmationsDeductOnce() throws Exception {
-        OrderSummary order = confirmedOrder(sofa(1));
+        OrderSummary order = confirmedOrder(sofa(2));
         UUID task = startedTask(order);
         JsonNode line = lines(task).get(0);
         String lineId = line.path("lineId").asText();
         String location = line.path("locationCode").asText();
-        int before = onHand(location, SOFA);
-        String scan = scan(location, "SOFA-3S-GREY", 1);
+        int before = onHand(location, sofaSku);
+        String scan = scan(location, sofaSku.code(), 2);
         String header = token(pickerHcm, "WAREHOUSE_STAFF");
         String url = "/api/v1/fulfillment/tasks/" + task + "/pick-lines/" + lineId + "/confirmation";
 
@@ -608,7 +620,7 @@ class PickConfirmationIntegrationTest {
             pool.shutdownNow();
         }
 
-        assertThat(onHand(location, SOFA)).isEqualTo(before - 1);
+        assertThat(onHand(location, sofaSku)).isEqualTo(before - 2);
         assertThat(ledgerRows("PICK", lineId)).isEqualTo(1);
         assertThat(holdStatus(lineId)).isEqualTo("CONSUMED");
         assertThat(lineStatus(lineId)).isEqualTo("PICKED");
@@ -619,11 +631,11 @@ class PickConfirmationIntegrationTest {
     @Test
     @DisplayName("scope: another warehouse 403, a picker not assigned 404, QC / OC / customer 403; readers see the lines")
     void scope() throws Exception {
-        OrderSummary order = confirmedOrder(sofa(1));
+        OrderSummary order = confirmedOrder(sofa(2));
         UUID task = startedTask(order);
         JsonNode line = lines(task).get(0);
         String lineId = line.path("lineId").asText();
-        String scan = scan(line.path("locationCode").asText(), "SOFA-3S-GREY", 1);
+        String scan = scan(line.path("locationCode").asText(), sofaSku.code(), 2);
 
         confirm(task, lineId, pickerHn.toString(), "WAREHOUSE_STAFF", scan)
                 .andExpect(status().isForbidden()).andExpect(jsonPath("$.errorCode").value("OUT_OF_DATA_SCOPE"));
@@ -661,7 +673,7 @@ class PickConfirmationIntegrationTest {
     @Test
     @DisplayName("a task with no lines gets them at picking-start; a PICKING one cannot complete until they are picked")
     void linesArePlannedLazilyForOlderTasks() throws Exception {
-        OrderSummary order = confirmedOrder(sofa(1));
+        OrderSummary order = confirmedOrder(sofa(2));
         String body = "{\"orderId\":\"" + order.orderId() + "\",\"assignedUserId\":\"" + pickerHcm + "\"}";
         UUID task = UUID.fromString(body(call(post("/api/v1/fulfillment/tasks")
                 .header("Authorization", token(coordinator, "ORDER_COORDINATOR"))
@@ -689,7 +701,7 @@ class PickConfirmationIntegrationTest {
         assertThat(lines(task)).hasSize(1);
 
         confirm(task, lines.get(0).path("lineId").asText(), pickerHcm.toString(), "WAREHOUSE_STAFF",
-                scan(lines.get(0).path("locationCode").asText(), "SOFA-3S-GREY", 1)).andExpect(status().isOk());
+                scan(lines.get(0).path("locationCode").asText(), sofaSku.code(), 2)).andExpect(status().isOk());
         call(post("/api/v1/fulfillment/tasks/" + task + "/picking-completion").header("Authorization", picker))
                 .andExpect(status().isOk());
     }
@@ -699,15 +711,15 @@ class PickConfirmationIntegrationTest {
     @Test
     @DisplayName("cancelled after picking: the line waits in /put-backs; put back restores on_hand once, with a ledger row")
     void putBackAfterCancellation() throws Exception {
-        OrderSummary order = confirmedOrder(sofa(1));
+        OrderSummary order = confirmedOrder(sofa(2));
         UUID task = startedTask(order);
         JsonNode line = lines(task).get(0);
         String lineId = line.path("lineId").asText();
         String location = line.path("locationCode").asText();
-        int before = onHand(location, SOFA);
-        confirm(task, lineId, pickerHcm.toString(), "WAREHOUSE_STAFF", scan(location, "SOFA-3S-GREY", 1))
+        int before = onHand(location, sofaSku);
+        confirm(task, lineId, pickerHcm.toString(), "WAREHOUSE_STAFF", scan(location, sofaSku.code(), 2))
                 .andExpect(status().isOk());
-        assertThat(onHand(location, SOFA)).isEqualTo(before - 1);
+        assertThat(onHand(location, sofaSku)).isEqualTo(before - 2);
         String putBackUrl = "/api/v1/fulfillment/tasks/" + task + "/pick-lines/" + lineId + "/put-back";
         String picker = token(otherPickerHcm, "WAREHOUSE_STAFF");   // anyone of the warehouse, not only the picker
 
@@ -721,8 +733,8 @@ class PickConfirmationIntegrationTest {
                 jdbc.queryForObject("SELECT status FROM fulfillment.pick WHERE id = ?", String.class, task)));
         assertThat(jdbc.queryForObject("SELECT needs_put_back FROM fulfillment.pick WHERE id = ?", Boolean.class, task))
                 .isTrue();
-        // The hold was consumed, so cancelling did not give the unit back: it is still off the books.
-        assertThat(onHand(location, SOFA)).isEqualTo(before - 1);
+        // The hold was consumed, so cancelling did not give the units back: they are still off the books.
+        assertThat(onHand(location, sofaSku)).isEqualTo(before - 2);
 
         call(get("/api/v1/fulfillment/put-backs").param("warehouseId", HCM.toString()).param("size", "200")
                 .header("Authorization", picker))
@@ -733,9 +745,9 @@ class PickConfirmationIntegrationTest {
                 .andExpect(jsonPath("$.data.items[?(@.lineId=='" + lineId + "')].fromLocationCode")
                         .value(org.hamcrest.Matchers.contains(location)))
                 .andExpect(jsonPath("$.data.items[?(@.lineId=='" + lineId + "')].pickedQty")
-                        .value(org.hamcrest.Matchers.contains(1)));
+                        .value(org.hamcrest.Matchers.contains(2)));
         // Picking a cancelled task's line again is refused.
-        confirm(task, lineId, pickerHcm.toString(), "WAREHOUSE_STAFF", scan(location, "SOFA-3S-GREY", 1))
+        confirm(task, lineId, pickerHcm.toString(), "WAREHOUSE_STAFF", scan(location, sofaSku.code(), 2))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("PICK_TASK_STATE_CONFLICT"));
 
@@ -754,15 +766,15 @@ class PickConfirmationIntegrationTest {
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.fieldErrors[0].field").value("locationCode"));
         assertThat(ledgerRows("PUT_BACK", lineId)).isZero();
-        assertThat(onHand(location, SOFA)).isEqualTo(before - 1);
+        assertThat(onHand(location, sofaSku)).isEqualTo(before - 2);
 
         call(post(putBackUrl).header("Authorization", picker).contentType("application/json")
                 .content("{\"locationCode\":\"" + location + "\"}"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("PUT_BACK"))
-                .andExpect(jsonPath("$.data.putBackQty").value(1))
+                .andExpect(jsonPath("$.data.putBackQty").value(2))
                 .andExpect(jsonPath("$.data.putBackLocationCode").value(location));
-        assertThat(onHand(location, SOFA)).isEqualTo(before);
+        assertThat(onHand(location, sofaSku)).isEqualTo(before);
         assertThat(ledgerRows("PUT_BACK", lineId)).isEqualTo(1);
         assertThat(jdbc.queryForMap("""
                 SELECT from_location_code, to_location_code, to_status, actor_id FROM inventory.stock_movement
@@ -775,7 +787,7 @@ class PickConfirmationIntegrationTest {
                 .content("{\"locationCode\":\"" + location + "\"}"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("PUT_BACK"));
-        assertThat(onHand(location, SOFA)).isEqualTo(before);
+        assertThat(onHand(location, sofaSku)).isEqualTo(before);
         assertThat(ledgerRows("PUT_BACK", lineId)).isEqualTo(1);
         call(get("/api/v1/fulfillment/put-backs").param("warehouseId", HCM.toString()).param("size", "200")
                 .header("Authorization", picker))

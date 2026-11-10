@@ -107,6 +107,37 @@ public final class CustomerSkuRows {
         });
     }
 
+    /**
+     * A SKU of {@code customerId} that handles like the catalogue SKU {@code like}: the same weight, sizes, packages
+     * (a two-package sofa is packed as a kit, LP2-6), storage class and lot / expiry tracking, and a barcode of its own.
+     * What a test of picking, packing or loading needs since every order is a contract's, whose lines are only ever the
+     * customer's own SKUs (14 BR-04): the demo catalogue's goods, as the customer's.
+     */
+    public static Issued like(JdbcTemplate jdbc, TransactionTemplate tx, EntityManager em, UUID customerId, String like,
+                              int unitsPerCarton) {
+        Issued issued = issue(jdbc, tx, em, customerId, unitsPerCarton);
+        String barcode = "29" + String.format("%011d", Math.floorMod(UUID.randomUUID().getLeastSignificantBits(),
+                100_000_000_000L));
+        tx.executeWithoutResult(s -> jdbc.update("""
+                UPDATE inventory.inventory_items i
+                   SET weight_kg = c.weight_kg, length_cm = c.length_cm, width_cm = c.width_cm, height_cm = c.height_cm,
+                       package_weight_kg = c.package_weight_kg, package_length_cm = c.package_length_cm,
+                       package_width_cm = c.package_width_cm, package_height_cm = c.package_height_cm,
+                       package_count = c.package_count, pack_size = c.pack_size, storage_class = c.storage_class,
+                       lot_tracked = c.lot_tracked, expiry_tracked = c.expiry_tracked, barcode = ?
+                  FROM inventory.inventory_items c
+                 WHERE i.sku = ? AND c.sku = ?""", barcode, issued.sku(), like));
+        // Shipped as the catalogue SKU ships (its own packages), not in the issued carton's box.
+        tx.executeWithoutResult(s -> jdbc.update(
+                "UPDATE inventory.uom_conversions SET default_shipping = FALSE WHERE id = ?", issued.uomConversionId()));
+        return issued;
+    }
+
+    /** The barcode of {@code sku}'s item. */
+    public static String barcode(JdbcTemplate jdbc, String sku) {
+        return jdbc.queryForObject("SELECT barcode FROM inventory.inventory_items WHERE sku = ?", String.class, sku);
+    }
+
     /** {@code units} pieces of {@code sku} free in HCM, received a while ago. */
     public static void stock(JdbcTemplate jdbc, TransactionTemplate tx, String sku, int units) {
         tx.executeWithoutResult(s -> jdbc.update("""

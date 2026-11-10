@@ -6,14 +6,12 @@ import com.stockflow.common.domain.Money;
 import com.stockflow.common.domain.Sku;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.security.DataScope;
-import com.stockflow.contracts.PaymentCaptured;
-import com.stockflow.contracts.PaymentMethod;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.OrderSummary;
-import com.stockflow.order.api.PlaceOrderCommand;
 import com.stockflow.order.internal.service.OrderReleases;
-import com.stockflow.support.Await;
+import com.stockflow.support.ConfirmedOrders;
+import com.stockflow.support.CustomerSkuRows;
 import com.stockflow.support.DemoData;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
@@ -28,7 +26,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
-import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.oauth2.jwt.Jwt;
@@ -39,8 +37,6 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.ResultActions;
 import org.springframework.transaction.support.TransactionTemplate;
 
-import java.math.BigDecimal;
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -63,12 +59,12 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @IntegrationTest
 @Import({PostgresContainer.class, RedisContainer.class})
 @AutoConfigureMockMvc
-// The same properties and mock as InventoryCatalogSecurityIntegrationTest, so the application context is shared.
-@TestPropertySource(properties = {"stockflow.security.enabled=true", "stockflow.catalog.projection-retry-ms=3600000"})
+// The same properties and mock as PickDamageIntegrationTest, so the application context is shared: signing a contract
+// stores its scan, and no virus scanner runs in tests.
+@TestPropertySource(properties = {"stockflow.security.enabled=true", "stockflow.upload-inspection.enabled=false",
+        "stockflow.catalog.projection-retry-ms=3600000"})
 class FulfillmentTaskContextIntegrationTest {
 
-    private static final Sku SOFA = new Sku("SOFA-3S-GREY");
-    private static final Duration ASYNC = Duration.ofSeconds(10);
     private static final UUID HCM = DemoData.WAREHOUSE_HCM;
 
     @Autowired MockMvc mvc;
@@ -78,7 +74,7 @@ class FulfillmentTaskContextIntegrationTest {
     @Autowired JdbcTemplate jdbc;
     @Autowired TransactionTemplate tx;
     @Autowired EntityManager entityManager;
-    @Autowired ApplicationEventPublisher publisher;
+    @Autowired ApplicationContext context;
 
     private UUID hn;
     private UUID coordinator;
@@ -90,11 +86,17 @@ class FulfillmentTaskContextIntegrationTest {
     private UUID salesUser;
     private UUID customerUser;
     private final List<UUID> placed = new ArrayList<>();
+    private ConfirmedOrders confirmedOrders;
+    /** The demo customer's own sofa (a contract's lines are only ever that, 14 BR-04), with stock at HCM. */
+    private Sku sofa;
     /** Orders inserted as rows by {@link #taskRow}: removed again with their picks. */
     private final List<UUID> rowOrders = new ArrayList<>();
 
     @BeforeEach
     void setUp() {
+        confirmedOrders = new ConfirmedOrders(context);
+        sofa = new Sku(CustomerSkuRows.like(jdbc, tx, entityManager, DemoData.CUSTOMER_ID, "SOFA-3S-GREY", 50).sku());
+        CustomerSkuRows.stock(jdbc, tx, sofa.code(), 10);
         hn = Identifiers.newId();
         tx.executeWithoutResult(s -> jdbc.update("""
                 INSERT INTO warehouse.warehouse (id, name, status, prefix, address, map_unit, map_width, map_height,
@@ -150,26 +152,21 @@ class FulfillmentTaskContextIntegrationTest {
         return "Bearer " + value;
     }
 
-    /** A paid stock-only order of the demo customer, holding one sofa at HCM, released there (READY_TO_FULFILL). */
+    /**
+     * A confirmed order of the demo customer - one carton of two sofas, its contract paid on signing - shipping from
+     * HCM, its sofas held there, released there (READY_TO_FULFILL).
+     */
     private OrderSummary confirmedOrder() {
         // G3-2 (kltn-docs 17 BR-02): only a released order enters fulfillment.
-        return releases.release(paidOrder().orderId(), DemoData.WAREHOUSE_HCM, coordinator);
+        return confirmedOrders.release(paidOrder().orderId(), DemoData.WAREHOUSE_HCM, coordinator);
     }
 
-    /** Paid and CONFIRMED, not released yet. */
+    /** Signed and its installment on signing paid: CONFIRMED, no shipping warehouse chosen yet, nothing held. */
     private OrderSummary paidOrder() {
-        OrderSummary order = orders.placeOrder(new PlaceOrderCommand(UUID.randomUUID(), DemoData.CUSTOMER_ID,
-                List.of(new PlaceOrderCommand.Line(SOFA, 1, Money.vnd(12_000_000), null))));
-        placed.add(order.orderId());
-        UUID payment = Identifiers.newId();
-        tx.executeWithoutResult(s -> jdbc.update("""
-                INSERT INTO payment.payment (id, order_id, amount, currency, method, status, captured_at, created_at)
-                VALUES (?, ?, 12000000, 'VND', 'BANK_TRANSFER', 'CAPTURED', NOW(), NOW())""", payment, order.orderId()));
-        tx.executeWithoutResult(s -> publisher.publishEvent(new PaymentCaptured(order.orderId(), payment,
-                new BigDecimal("12000000"), "VND", PaymentMethod.BANK_TRANSFER)));
-        Await.until("order confirmed", ASYNC,
-                () -> orders.findById(order.orderId()).orElseThrow().status() == OrderStatus.CONFIRMED);
-        return orders.findById(order.orderId()).orElseThrow();
+        UUID order = confirmedOrders.confirmed(DemoData.CUSTOMER_ID,
+                ConfirmedOrders.Line.units(sofa, 2, Money.vnd(12_000_000))).orderId();
+        placed.add(order);
+        return orders.findById(order).orElseThrow();
     }
 
     /** A task of {@code warehouse} written as a row: how it got there is not what these tests are about. */
@@ -260,19 +257,20 @@ class FulfillmentTaskContextIntegrationTest {
     }
 
     @Test
-    @DisplayName("a release to a warehouse that cannot pick the order is refused with 409, and nothing moves")
+    @DisplayName("a release from a shipping warehouse that holds none of the order is refused with 409, and nothing moves")
     void holdsOutsideTheOrderWarehouse() throws Exception {
         OrderSummary order = paidOrder();
-        // SCRUM-152: the release allocates, so a warehouse without the sofa refuses the release itself - before the
-        // order is READY_TO_FULFILL, rather than at task creation as when release did not look at the holds.
+        // 4B-7 (17 §4.2 step 5): a contract's order is released from its shipping warehouse once every carton is held
+        // there. The second warehouse has no sofa, so choosing it holds nothing and the release is refused - before the
+        // order is READY_TO_FULFILL, rather than at task creation.
+        confirmedOrders.ship(order.orderId(), hn);
         BusinessException refused = (BusinessException) org.assertj.core.api.Assertions.catchThrowable(
                 () -> releases.release(order.orderId(), hn, coordinator));
-        assertThat(refused.errorCode()).isEqualTo(ErrorCode.INSUFFICIENT_STOCK);
-        assertThat(refused.getMessage()).contains("SOFA-3S-GREY");
+        assertThat(refused.errorCode()).isEqualTo(ErrorCode.ORDER_STOCK_NOT_HELD);
+        assertThat(refused.getMessage()).contains(sofa.code());
         assertThat(orders.findById(order.orderId()).orElseThrow().status()).isEqualTo(OrderStatus.CONFIRMED);
-        assertThat(jdbc.queryForList("""
-                SELECT status FROM inventory.stock_reservation WHERE order_id = ? AND stock_item_id IS NULL""",
-                String.class, order.orderId())).containsOnly("HELD");
+        assertThat(jdbc.queryForList("SELECT status FROM inventory.stock_reservation WHERE order_id = ?",
+                String.class, order.orderId())).as("nothing of the sofa held at the second warehouse").isEmpty();
 
         call(post("/api/v1/fulfillment/tasks").header("Authorization", token(coordinator, "ORDER_COORDINATOR"))
                 .contentType("application/json").content(create(order.orderId(), pickerHn)))
@@ -339,8 +337,8 @@ class FulfillmentTaskContextIntegrationTest {
                 .andExpect(jsonPath("$.data.assignedUserName").value("test-" + pickerHcm))
                 .andExpect(jsonPath("$.data.lines.length()").value(1))
                 .andExpect(jsonPath("$.data.lines[0].lineId").value(order.lines().getFirst().lineId().toString()))
-                .andExpect(jsonPath("$.data.lines[0].sku").value("SOFA-3S-GREY"))
-                .andExpect(jsonPath("$.data.lines[0].quantity").value(1))
+                .andExpect(jsonPath("$.data.lines[0].sku").value(sofa.code()))
+                .andExpect(jsonPath("$.data.lines[0].quantity").value(2))
                 .andExpect(jsonPath("$.data.lines[0].printLine").value(false))
                 .andExpect(jsonPath("$.data.lines[0].designSnapshotId").doesNotExist());
         call(get(url).header("Authorization", token(otherPickerHcm, "WAREHOUSE_STAFF")))

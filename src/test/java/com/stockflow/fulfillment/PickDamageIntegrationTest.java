@@ -9,6 +9,7 @@ import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.OrderSummary;
 import com.stockflow.support.ConfirmedOrders;
+import com.stockflow.support.CustomerSkuRows;
 import com.stockflow.support.DemoData;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
@@ -68,7 +69,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * damaged units (FEFO), or, when there is none, a SHORT line waits for the coordinator's reallocation with the order
  * ON_HOLD (X-SHORT). Then the order is picked to the end.
  *
- * <p>Each test owns a fresh SKU and its stock, so nothing here touches the demo stock other tests count on.</p>
+ * <p>Each test owns a fresh SKU of the demo customer's own and its stock, so nothing here touches the demo stock other
+ * tests count on. Every order is a contract's, confirmed by its installment on signing ({@link ConfirmedOrders}).</p>
  */
 @IntegrationTest
 @Import({PostgresContainer.class, RedisContainer.class})
@@ -103,14 +105,8 @@ class PickDamageIntegrationTest {
     void setUp() {
         confirmedOrders = new ConfirmedOrders(context);
         today = LocalDate.now(ZoneId.of("Asia/Ho_Chi_Minh"));
-        sku = "PKD-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(Locale.ROOT);
-        tx.executeWithoutResult(s -> {
-            UUID product = Identifiers.newId();
-            jdbc.update("insert into product.products(id,code,name,slug) values (?,?,?,?)", product, sku,
-                    "Pick damage fixture", sku.toLowerCase(Locale.ROOT));
-            jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature)"
-                    + " values (?,?,?,'Pick damage fixture','')", Identifiers.newId(), product, sku);
-        });
+        // The demo customer's own SKU: a contract's lines are only ever that (14 BR-04).
+        sku = CustomerSkuRows.issue(jdbc, tx, entityManager, DemoData.CUSTOMER_ID, 50).sku();
         coordinator = staff("ORDER_COORDINATOR");
         manager = staff("WAREHOUSE_MANAGER", DemoData.WAREHOUSE_HCM);
         picker = staff("WAREHOUSE_STAFF", DemoData.WAREHOUSE_HCM);

@@ -54,12 +54,12 @@ import java.util.function.Supplier;
  * {@link OrderReleases}. The only rows written by SQL are what another module owns and a test has no business creating
  * through it: the customer's legal profile a contract names (18 BR-05), the users, and a carton unit of the SKU.</p>
  *
- * <p>The DRAFT order is built through the domain rather than through {@code Quotes.convert}: a quote names only the
- * customer's own SKUs at the customer's own prices (14 BR-04, BR-05), while the tests downstream pick demo catalogue
- * stock; and the conversion itself is {@code QuoteIntegrationTest}'s subject. Since 4B-2 every line of a contract is
- * cartons ({@code SALES_CONTRACT_ORDER_NOT_CARTONS}), and {@code ck_order_line_cartons} wants more than one piece to a
- * carton: {@link Line#units} orders {@code n >= 2} pieces as one carton of {@code n}, under a unit {@code PK<n>} of the
- * SKU created on first use - the units every test before 4B-10 counted stay what it counts.</p>
+ * <p>The DRAFT order is built through the domain rather than through {@code Quotes.convert}, which is
+ * {@code QuoteIntegrationTest}'s subject. What a converted quote leaves still holds here, in the database: every line
+ * is cartons of a SKU the customer owns ({@code tg_order_line_carton_unit}, 14 BR-04, BR-08) - issue one with
+ * {@link CustomerSkuRows} - and {@code ck_order_line_cartons} wants more than one piece to a carton. {@link Line#units}
+ * orders {@code n >= 2} pieces as one carton of {@code n}, under a unit {@code PK<n>} of the SKU created on first use,
+ * so a test keeps counting the pieces it counted before.</p>
  *
  * <p>Built from the test's {@link ApplicationContext} ({@code @Autowired ApplicationContext context}), so a test class
  * needs no field per collaborator. A test using it must run with {@code stockflow.upload-inspection.enabled=false}:
@@ -76,7 +76,7 @@ public final class ConfirmedOrders {
     /**
      * A line of the order.
      *
-     * @param sku            the SKU, a catalogue one or the customer's own
+     * @param sku            a SKU of the order's customer (14 BR-04)
      * @param cartons        cartons ordered
      * @param unitsPerCarton pieces in one carton, more than one ({@code ck_order_line_cartons})
      * @param unitPrice      VND for one piece
