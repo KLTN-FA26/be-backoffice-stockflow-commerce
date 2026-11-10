@@ -191,7 +191,6 @@ public enum ErrorCode {
     UOM_CONVERSION_IN_USE("This unit of measure is the base unit, is still sold in, or is used by a document", 409),
     /** The variant already sells in this unit. */
     SALES_UNIT_DUPLICATE("The variant already sells in this unit", 409),
-    DESIGN_QUOTE_REQUIRED("An accepted design quote matching this order line is required",409),
     INSUFFICIENT_STOCK("Not enough available stock", 409),
     /** The destination already holds this SKU and lot in another status (stock of two statuses does not merge). */
     STOCK_STATUS_MISMATCH("The destination holds this lot in a different status", 409),
@@ -836,8 +835,6 @@ public enum ErrorCode {
     PORTAL_INVITATION_INVALID("This portal invitation is invalid or no longer available", 400),
     /** Resending would reset a password the customer already chose. */
     PORTAL_ACCOUNT_ALREADY_ACTIVE("This customer has already activated their portal account", 409),
-    /** Guest checkout is permanently disabled by the B2B-only decision. */
-    GUEST_CHECKOUT_DISABLED("Guest checkout is not available", 403),
     INVALID_PURCHASE_ORDER_TRANSITION("This purchase order cannot move to that status right now", 409),
     /** Only a DRAFT standard order is edited in place; afterwards changes go through a revision (BR-02, BR-10). */
     PURCHASE_ORDER_NOT_EDITABLE("Only a draft standard purchase order can be edited", 409),

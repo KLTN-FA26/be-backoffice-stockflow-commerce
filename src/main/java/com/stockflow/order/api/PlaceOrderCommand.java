@@ -7,8 +7,8 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * Intent: place an order - an accepted quote's (the quote service converts it), or a test's fixture until 4B-10. There
- * is no cart and no checkout any more (team plan 5-2).
+ * Intent: place the order an accepted quote becomes (the quote service converts it, {@code QuotedOrders}). There is no
+ * cart and no checkout any more (team plan 5-2), and no other way to place an order (4B-10).
  *
  * <p>Records with compact-constructor validation, so an instance that exists is structurally
  * valid. The caller cannot hand the service a command with zero lines and discover the problem
@@ -23,20 +23,6 @@ public record PlaceOrderCommand(
         List<Line> lines,
         List<Fee> fees
 ) {
-
-    /**
-     * Without fee lines (before 4B-3, and every checkout). No payment terms since 4B-10: an order is paid by its sales
-     * contract's installments.
-     */
-    public PlaceOrderCommand(UUID requestId, UUID customerId, UUID shippingAddressId, UUID billingAddressId,
-                             boolean snapshotCustomer, List<Line> lines) {
-        this(requestId, customerId, shippingAddressId, billingAddressId, snapshotCustomer, lines, List.of());
-    }
-
-    /** Compatibility constructor for trusted internal callers and existing integrations. */
-    public PlaceOrderCommand(UUID requestId, UUID customerId, List<Line> lines) {
-        this(requestId, customerId, null, null, false, lines);
-    }
 
     public PlaceOrderCommand {
         if (requestId == null) throw new IllegalArgumentException("requestId is required");
@@ -76,7 +62,7 @@ public record PlaceOrderCommand(
      * @param carton           how a line of the customer's own SKU was ordered (4B-2): {@code quantity} is its pieces;
      *                         null for any other line
      * @param taxRate          the VAT rate fixed on the accepted quote line (4B-3, 14 BR-21), a percentage; null for a
-     *                         line without VAT (checkout)
+     *                         line without VAT
      */
     public record Line(Sku sku, int quantity, Money unitPrice, UUID designSnapshotId,
                        java.time.LocalDate requestedDeliveryDate, Carton carton, java.math.BigDecimal taxRate) {

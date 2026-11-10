@@ -8,28 +8,12 @@ import java.util.UUID;
 /**
  * THE public API of the order module.
  *
- * <p>Narrow on purpose. Other modules need to place an order and to look one up; they do not need
+ * <p>Narrow on purpose. Other modules need to look an order up and move it along; they do not need
  * to add a line, change an address or transition a status, so those are not here. Every method
  * added to this interface is a coupling point that can never be removed without touching every
  * caller.</p>
  */
 public interface OrderService {
-
-    /**
-     * Place an order: create it, reserve the stock, publish the fact.
-     *
-     * <p>All of it in one transaction. See {@code OrderServiceImpl} for why that sentence is the
-     * entire justification for this architecture.</p>
-     *
-     * <p><b>Test fixture only - no production caller.</b> Since team plan 5-2 the customer does not place orders
-     * (kltn-docs 14 BR-01, BR-02) and nothing prices the lines: each is placed at the price on the command, so a
-     * production caller would set its own prices. An order of the business is drawn up from an accepted quote. Kept as
-     * the tests' way to an order holding stock until 4B-10 replaces it and removes this method.</p>
-     */
-    OrderSummary placeOrder(PlaceOrderCommand command);
-
-    /** Retained for caller compatibility; always refuses guest checkout under the B2B policy. */
-    OrderSummary placeGuestOrder(PlaceGuestOrderCommand command);
 
     Optional<OrderSummary> findById(UUID orderId);
 

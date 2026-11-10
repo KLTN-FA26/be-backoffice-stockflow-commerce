@@ -227,15 +227,6 @@ public final class Order extends AggregateRoot {
                 shippingAddress, billingAddress);
     }
 
-    public static Order guestDraft(OrderNumber orderNumber, UUID requestId, List<OrderLine> lines,
-                                   Instant now, String contactName, String contactEmail,
-                                   String contactPhone, OrderAddressSnapshot shippingAddress,
-                                   OrderAddressSnapshot billingAddress) {
-        return new Order(OrderId.newId(), orderNumber, null, requestId, lines, OrderStatus.DRAFT,
-                now, null, 0L, contactName, contactEmail, contactPhone, shippingAddress,
-                billingAddress);
-    }
-
     /**
      * Factory for a line, so callers never need to reach for {@code OrderLine}'s constructor.
      *

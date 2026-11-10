@@ -1,8 +1,6 @@
 package com.stockflow.order.internal.service;
 
 import com.stockflow.inventory.api.InventoryService;
-import com.stockflow.inventory.api.ReserveStockResult;
-import com.stockflow.inventory.api.ReserveStockCommand;
 import com.stockflow.customer.api.CheckoutCustomer;
 import com.stockflow.customer.api.CustomerService;
 import com.stockflow.order.api.CancelOrderCommand;
@@ -14,7 +12,6 @@ import com.stockflow.order.api.OrderStatusChange;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.OrderSummary;
 import com.stockflow.order.api.PlaceOrderCommand;
-import com.stockflow.order.api.PlaceGuestOrderCommand;
 import com.stockflow.order.internal.domain.Order;
 import com.stockflow.order.internal.domain.OrderId;
 import com.stockflow.order.internal.domain.OrderFee;
@@ -57,10 +54,12 @@ import java.util.stream.Collectors;
 /**
  * Order orchestration — and <b>the single clearest illustration of what this architecture buys</b>.
  *
- * <h2>Read {@link #placeOrder} against its distributed equivalent</h2>
+ * <h2>Read {@link #cancel} against its distributed equivalent</h2>
  *
- * <p>In the microservices build this operation spanned two services and needed all of the
- * following, none of which is business logic:</p>
+ * <p>Checkout, the operation this class was first written around, is gone (team plan 5-2, 4B-10): an order is drawn
+ * up from an accepted quote and holds stock once its shipping warehouse is chosen. What it illustrated still holds for
+ * every operation here that touches an order and its stock together. In the microservices build placing an order
+ * spanned two services and needed all of the following, none of which is business logic:</p>
  * <ol>
  *   <li>write the order row plus an {@code outbox_event} row in one local transaction;</li>
  *   <li>a relay thread polling the outbox and publishing {@code OrderPlaced} to Kafka;</li>
@@ -75,9 +74,9 @@ import java.util.stream.Collectors;
  * </ol>
  *
  * <p>Roughly 600 lines across two services, four Kafka topics, and a class of bug — the customer
- * paid, the stock was never held — that only shows up under load. Below, the same operation is one
- * method, and the failure mode is gone: if anything throws, the transaction rolls back and both
- * the order and the reservation cease to exist together.</p>
+ * paid, the stock was never held — that only shows up under load. Here the same kind of operation is one
+ * method, and the failure mode is gone: if anything throws, the transaction rolls back and the order and its
+ * stock holds change together or not at all.</p>
  *
  * <h2>What was given up</h2>
  *
@@ -142,35 +141,14 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
     /**
      * {@inheritDoc}
      *
-     * <p><b>One transaction covers everything below.</b> The order rows, every stock reservation,
-     * and the {@code event_publication} row for {@code OrderPlaced} all commit together or none of
-     * them do. There is no window in which an order exists without its stock.</p>
-     *
-     * <p>No production code calls this since team plan 5-2: the customer does not place orders (kltn-docs 14 BR-01,
-     * BR-02), so checkout ({@code POST /api/v1/orders}) is gone and nothing is priced for one. It stays as the tests'
-     * way to an order holding stock until 4B-10 replaces it with an order drawn up through a contract; every line is
-     * placed at the price on the command, which the test chose.</p>
-     */
-    @Override
-    public OrderSummary placeOrder(PlaceOrderCommand command) {
-        return place(command, false);
-    }
-
-    /**
-     * {@inheritDoc}
-     *
-     * <p>Every line - design lines included - is placed at the price on the command, which the quote service computed
-     * from the accepted quote, and the order is a DRAFT for its contract: no stock is held and no terms are applied
-     * here. On an internal interface, not on {@code OrderService}: only the quote service converts.</p>
+     * <p>Every line is placed at the price on the command, which the quote service computed from the accepted quote,
+     * and the order is a DRAFT for its contract: no stock is held and no terms are applied here. The order rows and
+     * their history commit with the quote's conversion, in the caller's transaction. The only way an order is created
+     * since checkout went (team plan 5-2, kltn-docs 14 BR-01, BR-02) and {@code placeOrder} with it (4B-10).</p>
      */
     @Override
     public OrderSummary placeQuotedOrder(PlaceOrderCommand command) {
-        return place(command, true);
-    }
-
-    private OrderSummary place(PlaceOrderCommand command, boolean quotePriced) {
-        // Idempotency first. A double-clicked "Place order" must not create two orders, and this
-        // check is cheap compared to discovering the duplicate after the customer has paid twice.
+        // Idempotency first: a retried conversion of the same quote must not create a second order.
         Optional<Order> alreadyPlaced = repository.findByRequestId(command.requestId());
         if (alreadyPlaced.isPresent()) {
             if (!command.customerId().equals(alreadyPlaced.get().customerId())) {
@@ -181,22 +159,14 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
             return toSummary(alreadyPlaced.get());
         }
 
-        // SCRUM-298 is a separate integration: a design line is priced by an accepted quote (SCRUM-448), which arrives
-        // through placeQuotedOrder.
-        if (!quotePriced && command.snapshotCustomer()
-                && command.lines().stream().anyMatch(line -> line.designSnapshotId() != null)) {
-            throw new BusinessException(ErrorCode.DESIGN_QUOTE_REQUIRED);
-        }
         // Another customer's own SKU is not there for this customer (kltn-docs 13 BR-02), whoever places the order.
         customerSkus.requireVisibleTo(command.lines().stream().map(line -> line.sku().code()).toList(),
                 command.customerId());
         LocalDate today = LocalDate.ofInstant(clock.instant(), ZoneOffset.UTC);
         OrderNumber orderNumber = repository.nextOrderNumber(today);
 
-        // Line ids derived from the checkout request id and the line's position, not random.
-        // A random id would make the per-line reservation key below different on every attempt,
-        // which quietly breaks the retry-safety this method advertises: a retry would look like a
-        // brand-new request to inventory and hold the stock a second time.
+        // Line ids derived from the request id and the line's position, not random: a retried conversion writes the
+        // same rows.
         List<OrderLine> lines = new ArrayList<>();
         for (int index = 0; index < command.lines().size(); index++) {
             PlaceOrderCommand.Line line = command.lines().get(index);
@@ -231,51 +201,14 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
         // 4B-3: the quote's fee lines (14 BR-09).
         order.attachFees(command.fees().stream().map(fee -> OrderFee.of(deterministicFeeId(command.requestId(),
                 fee.kind(), fee.sku()), fee.kind(), fee.sku(), fee.amount(), fee.taxRate())).toList());
-        if (quotePriced) {
-            // 4B-5 (kltn-docs 14 §4.2 step 7): an accepted quote becomes a DRAFT order - no stock held, no terms, no
-            // credit checked. Its sales contract takes it on: sent, signed, then held for credit, waiting for the
-            // installment on signing, or confirmed (SalesContracts). How it is paid is the contract's plan's: an order has
-            // no payment terms of its own since 4B-10.
-            Order saved = repository.save(order);
-            log.info("Order {} drafted for customer {} from an accepted quote, {} line(s), total {}",
-                    saved.orderNumber(), saved.customerId(), saved.lines().size(), saved.total());
-            return toSummary(saved);
-        }
-        // Direct in-process call across the module boundary, through inventory's published port.
-        // It joins this transaction. If reserve() throws InsufficientStockException on line 3,
-        // lines 1 and 2 are rolled back with the order — no compensation code, no saga state, no
-        // possibility of a half-reserved order surviving the failure.
-        inventory.prepareReservation(
-                order.lines().stream().map(OrderLine::sku).collect(Collectors.toSet()));
-        for (OrderLine line : order.lines()) {
-            ReserveStockResult reservation = inventory.reserve(new ReserveStockCommand(
-                    // A derived, deterministic request id: a retry of this same checkout produces
-                    // the same key, so inventory recognises the replay instead of double-holding.
-                                    deterministicRequestId(command.requestId(), line.id()),
-                    line.sku(),
-                    line.quantity(),
-                    order.id().value()));
-            // All of the ids, not the first: a line drawn from two lots comes back with two holds,
-            // and cancelling has to release both.
-            order.attachReservations(line.id(), reservation.reservationIds());
-        }
-
-        // 4B-10: no payment terms, no credit at checkout - the order waits in PENDING_PAYMENT. Nothing in the system
-        // confirms it any more (the money ledger went); orders are confirmed through their sales contract. Checkout
-        // itself goes with 5-2.
-        order.submit();
+        // 4B-5 (kltn-docs 14 §4.2 step 7): an accepted quote becomes a DRAFT order - no stock held, no terms, no credit
+        // checked. Its sales contract takes it on: sent, signed, then held for credit, waiting for the installment on
+        // signing, or confirmed (SalesContracts). How it is paid is the contract's plan's: an order has no payment terms
+        // of its own since 4B-10. Its stock is held once a shipping warehouse is chosen for it (4B-7).
         Order saved = repository.save(order);
-        events.publishEventsOf(order);
-
-        log.info("Placed order {} for customer {} with {} line(s), total {} ({})",
-                saved.orderNumber(), saved.customerId(), saved.lines().size(), saved.total(), saved.status());
+        log.info("Order {} drafted for customer {} from an accepted quote, {} line(s), total {}",
+                saved.orderNumber(), saved.customerId(), saved.lines().size(), saved.total());
         return toSummary(saved);
-    }
-
-    @Override
-    public OrderSummary placeGuestOrder(PlaceGuestOrderCommand command) {
-        // Guard the module API as well as HTTP: no caller may reserve stock for a guest.
-        throw new BusinessException(ErrorCode.GUEST_CHECKOUT_DISABLED);
     }
 
     @Override
@@ -287,8 +220,7 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
     /**
      * {@inheritDoc}
      *
-     * <p>Symmetrical with {@link #placeOrder}: the status change and every stock release are one
-     * transaction. The distributed version needed a compensating command per line plus a
+     * <p>The status change and every stock release are one transaction. The distributed version needed a compensating command per line plus a
      * reconciliation job for the ones that got lost.</p>
      *
      * <p>SCRUM-242/WBS 3.17.4: looks the order up via {@link OrderRepository#findByIdInScope},
@@ -491,9 +423,7 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
      * {@inheritDoc}
      *
      * <p>{@code customerId} must come from the controller resolving {@code @AuthenticatedUser},
-     * never from a client-supplied parameter — this method applies no scope check of its own, the
-     * same trust boundary {@link #placeOrder} already relies on for {@code
-     * PlaceOrderCommand.customerId()}.</p>
+     * never from a client-supplied parameter — this method applies no scope check of its own.</p>
      */
     @Override
     @Transactional(readOnly = true)
@@ -867,19 +797,6 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
         });
     }
 
-    /**
-     * Same input, same id, every time.
-     *
-     * <p>A random {@code UUID.randomUUID()} here would defeat inventory's idempotency check on the
-     * first retry: the same checkout would arrive with a new key and hold the stock a second time.
-     * Deriving the id from the checkout's request id and the line id makes the retry recognisable.
-     * Type 3 (name-based) semantics, built from the two ids so the result is stable across
-     * processes and restarts.</p>
-     */
-    private static UUID deterministicRequestId(UUID requestId, UUID lineId) {
-        return UUID.nameUUIDFromBytes((requestId + ":" + lineId).getBytes(StandardCharsets.UTF_8));
-    }
-
     /** A fee line's id from the request and what it is for: a retried placement writes the same row. */
     static UUID deterministicFeeId(UUID requestId, com.stockflow.order.api.FeeKind kind,
                                    com.stockflow.common.domain.Sku sku) {
@@ -887,7 +804,7 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
                 .getBytes(java.nio.charset.StandardCharsets.UTF_8));
     }
 
-    /** Stable line identity: same checkout request, same position, same id. */
+    /** Stable line identity: same request, same position, same id. */
     private static UUID deterministicLineId(UUID requestId, int index) {
         return UUID.nameUUIDFromBytes((requestId + "#line#" + index).getBytes(StandardCharsets.UTF_8));
     }
