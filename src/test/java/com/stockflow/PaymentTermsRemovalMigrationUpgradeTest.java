@@ -43,7 +43,8 @@ class PaymentTermsRemovalMigrationUpgradeTest {
                 seed(db);
 
                 var result = flyway(postgres, MIGRATION).migrate();
-                assertThat(result.migrations).extracting(m -> m.version).containsExactly(MIGRATION);
+                // Merged with the other lines, migrations of theirs may sit between BEFORE and this one (final rescope merge).
+                assertThat(result.migrations).extracting(m -> m.version).last().isEqualTo(MIGRATION);
 
                 assertThat(RawSql.number(db, "SELECT count(*) FROM customer.credit_profile"))
                         .as("every credit profile kept").isEqualTo(3);

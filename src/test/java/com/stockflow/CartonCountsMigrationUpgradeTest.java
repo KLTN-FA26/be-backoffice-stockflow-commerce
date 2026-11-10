@@ -143,7 +143,8 @@ class CartonCountsMigrationUpgradeTest {
                 // ---- the migration, at last
                 long cartonsBefore = RawSql.number(db, "SELECT count(*) FROM inventory.stock_package");
                 var result = flyway(postgres, MIGRATION).migrate();
-                assertThat(result.migrations).extracting(m -> m.version).containsExactly(MIGRATION);
+                // Merged with the other lines, migrations of theirs may sit between BEFORE and this one (final rescope merge).
+                assertThat(result.migrations).extracting(m -> m.version).last().isEqualTo(MIGRATION);
 
                 archived(db, cartonsBefore);
                 relabelled(db);
@@ -171,7 +172,8 @@ class CartonCountsMigrationUpgradeTest {
                 RawSql.update(db, "SET session_replication_role = DEFAULT");
 
                 var result = flyway(postgres, MIGRATION).migrate();
-                assertThat(result.migrations).extracting(m -> m.version).containsExactly(MIGRATION);
+                // Merged with the other lines, migrations of theirs may sit between BEFORE and this one (final rescope merge).
+                assertThat(result.migrations).extracting(m -> m.version).last().isEqualTo(MIGRATION);
 
                 assertThat(RawSql.texts(db, "SELECT row_id::text FROM platform.legacy_archive WHERE source_table = "
                         + "'inventory.stock_package' ORDER BY 1")).as("only the draft carton counted off its standard")
@@ -330,7 +332,9 @@ class CartonCountsMigrationUpgradeTest {
         refusedBy(db, "a restock of more than a carton", "23514", "adjusted whole", adjustmentSql("ADJ-UPG3-N2", 5,
                 "FOUND"), BIN, CUP, USER_1, W);
         for (String reason : new String[]{"EXPIRED", "SCRAP", "SAMPLE", "SUBCONTRACT_LOSS"}) {
-            refusedBy(db, "a carton adjusted for " + reason, "23514", "lists six", adjustmentSql("ADJ-UPG3-R" + reason
+            // EXPIRED meets 5-1's tg_stock_adjustment_no_new_expired first on the merged branch (V20261111000300).
+            refusedBy(db, "a carton adjusted for " + reason, "23514", reason.equals("EXPIRED") ? "EXPIRED" : "lists six",
+                    adjustmentSql("ADJ-UPG3-R" + reason
                     .substring(0, 3), -4, reason), BIN, CUP, USER_1, W);
         }
         refusedBy(db, "a count variance of no carton", "23514", "count variance of no carton", "INSERT INTO "

@@ -66,7 +66,8 @@ class ReleaseByDeliveryBatchMigrationUpgradeTest {
                         .as("granted to the warehouse manager and the administrator").isEqualTo(2);
                 assertThat(version(db, "WAREHOUSE_MANAGER")).as("it held the permission already: not touched again")
                         .isEqualTo(managerBefore);
-                assertThat(version(db, "SYSTEM_ADMIN")).as("it gained the grant").isGreaterThan(adminBefore);
+                // 5-7 (V20261115000200) granted it before BEFORE on the merged branch: nothing to gain, the version stays.
+                assertThat(version(db, "SYSTEM_ADMIN")).as("it held the grant already").isEqualTo(adminBefore);
                 assertThat(version(db, "WAREHOUSE_STAFF")).isEqualTo(staffBefore);
             }
         }
@@ -116,13 +117,15 @@ class ReleaseByDeliveryBatchMigrationUpgradeTest {
                 + "total_amount, currency, placed_at, created_at, contract_signed_at) VALUES ('" + ORDER
                 + "', 'SO-UPG-8', '" + CUSTOMER + "', gen_random_uuid(), 'CONFIRMED', 1000, 'VND', NOW(), NOW(), NOW())");
         RawSql.update(db, pick("00000000-0000-4000-8000-0000000000f1", null).replace("', 'PICKING'", "', 'PICKING'"));
-        // The permission is already there, held by the warehouse manager - as cluster 2's own migration would leave it.
+        // The permission is already there, held by the warehouse manager - as cluster 2's own migration leaves it, which on
+        // the merged branch runs before BEFORE (V20261115000200); written again only where it is missing.
         RawSql.update(db, "INSERT INTO identity.permission (id, code, resource, action, description, version, created_at, "
                 + "created_by) VALUES (gen_random_uuid(), 'sales-order-releases:UPDATE', 'sales-order-releases', "
-                + "'UPDATE', 'Release an order', 0, NOW(), 'flyway')");
+                + "'UPDATE', 'Release an order', 0, NOW(), 'flyway') ON CONFLICT (code) DO NOTHING");
         RawSql.update(db, "INSERT INTO identity.role_permission (id, role_id, permission_id, version, created_at, "
                 + "created_by) SELECT gen_random_uuid(), r.id, p.id, 0, NOW(), 'flyway' FROM identity.app_role r, "
-                + "identity.permission p WHERE r.code = 'WAREHOUSE_MANAGER' AND p.code = 'sales-order-releases:UPDATE'");
+                + "identity.permission p WHERE r.code = 'WAREHOUSE_MANAGER' AND p.code = 'sales-order-releases:UPDATE' "
+                + "ON CONFLICT DO NOTHING");
         RawSql.update(db, "SET session_replication_role = origin");
     }
 

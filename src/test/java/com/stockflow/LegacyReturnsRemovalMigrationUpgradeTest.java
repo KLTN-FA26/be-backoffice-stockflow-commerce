@@ -119,14 +119,16 @@ class LegacyReturnsRemovalMigrationUpgradeTest {
             VALUES ('00000000-0000-4000-8000-0000000d4121', '00000000-0000-4000-8000-0000000d4105', '00000000-0000-4000-8000-0000000d4013', 'SOFA-3S-GREY', FALSE, 100, 1, 1, 1, 'SOFA-3S-GREY', 1, 0, 'DEFECTIVE', 1),
                    ('00000000-0000-4000-8000-0000000d4122', '00000000-0000-4000-8000-0000000d4105', '00000000-0000-4000-8000-0000000d4014', 'TABLE-OAK-160', FALSE, 100, 1, 1, 1, 'TABLE-OAK-160', 1, 0, 'DEFECTIVE', 1),
                    ('00000000-0000-4000-8000-0000000d4123', '00000000-0000-4000-8000-0000000d4105', '00000000-0000-4000-8000-0000000d4015', 'SOFA-3S-GREY', FALSE, 100, 1, 1, 1, 'SOFA-3S-GREY', 1, 0, 'DEFECTIVE', 1);
-            INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, storage_class, is_pickable, is_putaway_target, status)
-            VALUES ('00000000-0000-4000-8000-0000000d4201', md5('demo:wh:HCM')::uuid, 'AREA', 'HCM-QC77', 'OVERSIZE', FALSE, FALSE, 'ACTIVE'),
-                   ('00000000-0000-4000-8000-0000000d4202', md5('demo:wh:HCM')::uuid, 'AREA', 'HCM-QC78', 'OVERSIZE', FALSE, FALSE, 'ACTIVE');
+            INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, is_pickable, is_putaway_target, status)
+            VALUES ('00000000-0000-4000-8000-0000000d4201', md5('demo:wh:HCM')::uuid, 'AREA', 'HCM-QC77', FALSE, FALSE, 'ACTIVE'),
+                   ('00000000-0000-4000-8000-0000000d4202', md5('demo:wh:HCM')::uuid, 'AREA', 'HCM-QC78', FALSE, FALSE, 'ACTIVE');
             INSERT INTO warehouse.area (id, warehouse_id, location_id, code, type, name, x, y, width, length, rotation, is_obstacle, status)
             VALUES (gen_random_uuid(), md5('demo:wh:HCM')::uuid, '00000000-0000-4000-8000-0000000d4201', 'QC77', 'QUALITY_CONTROL', 'QC77', 70, 2, 3, 3, 0, FALSE, 'ACTIVE'),
                    (gen_random_uuid(), md5('demo:wh:HCM')::uuid, '00000000-0000-4000-8000-0000000d4202', 'QC78', 'QUALITY_CONTROL', 'QC78', 70, 8, 3, 3, 0, FALSE, 'ACTIVE');
-            INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, version, created_at)
-            VALUES ('00000000-0000-4000-8000-0000000d4301', 'SOFA-3S-GREY', 'HCM-QC77', 3, 0, 'BLOCKED', 0, NOW());
+            INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, lot_id, on_hand, reserved, status, version, created_at)
+            VALUES ('00000000-0000-4000-8000-0000000d4301', 'SOFA-3S-GREY', 'HCM-QC77', 'UNTRACED',
+                    (SELECT id FROM inventory.stock_lot WHERE sku = 'SOFA-3S-GREY' AND lot_number = 'UNTRACED' LIMIT 1),
+                    3, 0, 'BLOCKED', 0, NOW());
             INSERT INTO event_publication (id, listener_id, event_type, serialized_event, publication_date, completion_date)
             VALUES ('00000000-0000-4000-8000-0000000d4401', 'l1', 'com.stockflow.contracts.ReturnReplacementWithdrawn', '{}', NOW(), NULL),
                    ('00000000-0000-4000-8000-0000000d4402', 'l1', 'com.stockflow.contracts.ReturnReplacementWithdrawn', '{}', NOW(), NOW()),

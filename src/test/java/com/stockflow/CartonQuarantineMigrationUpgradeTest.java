@@ -54,7 +54,8 @@ class CartonQuarantineMigrationUpgradeTest {
                 seed(db, false);
 
                 var result = flyway(postgres, MIGRATION).migrate();
-                assertThat(result.migrations).extracting(m -> m.version).containsExactly(MIGRATION);
+                // Merged with the other lines, migrations of theirs may sit between BEFORE and this one (final rescope merge).
+                assertThat(result.migrations).extracting(m -> m.version).last().isEqualTo(MIGRATION);
 
                 // The receipt's task is a RECEIPT task; the return-line task is archived whole and gone, with its column.
                 assertThat(RawSql.text(db, "SELECT source FROM warehouse.putaway_task WHERE id = ?::uuid",

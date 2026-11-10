@@ -26,7 +26,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class SelfOrderingRemovalMigrationUpgradeTest {
 
     // The migration just before it on this branch (the carton line, 4C-1/4C-2, sits between 4B-10 and it).
-    private static final String BEFORE = "20261111000200";
+    private static final String BEFORE = "20261112000300";   // the migration right before it on the merged branch (final rescope merge), so other lines' role version bumps run first
     private static final String MIGRATION = "20261113000100";
 
     @Test
@@ -99,7 +99,8 @@ class SelfOrderingRemovalMigrationUpgradeTest {
                 RawSql.update(db, "SET session_replication_role = DEFAULT");
 
                 var result = flyway(postgres, MIGRATION).migrate();
-                assertThat(result.migrations).extracting(m -> m.version).containsExactly(MIGRATION);
+                // Merged with the other lines, migrations of theirs may sit between BEFORE and this one (final rescope merge).
+                assertThat(result.migrations).extracting(m -> m.version).last().isEqualTo(MIGRATION);
 
                 // Archived whole before the tables went.
                 assertThat(RawSql.numbersByText(db, "SELECT source_table, count(*) FROM platform.legacy_archive WHERE "

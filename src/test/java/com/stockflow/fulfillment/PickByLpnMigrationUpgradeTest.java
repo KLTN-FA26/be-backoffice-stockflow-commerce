@@ -130,7 +130,8 @@ class PickByLpnMigrationUpgradeTest {
 
                 // ---- settled: the migration runs
                 var result = flyway(postgres, MIGRATION).migrate();
-                assertThat(result.migrations).extracting(m -> m.version).containsExactly(MIGRATION);
+                // Merged with the other lines, migrations of theirs may sit between BEFORE and this one (final rescope merge).
+                assertThat(result.migrations).extracting(m -> m.version).last().isEqualTo(MIGRATION);
 
                 // A SHORT task is PICKING, archived as it was; nothing else is touched in the table.
                 assertThat(RawSql.text(db, "SELECT status FROM fulfillment.pick WHERE id = ?::uuid", SHORT_TASK))
@@ -213,6 +214,8 @@ class PickByLpnMigrationUpgradeTest {
                 // What a database whose orders were all picked by carton holds: lines with their LPN, a whole put-back
                 // naming its carton in the ledger, a SHORT line with its reason, a line a damage report made.
                 RawSql.update(db, "SET session_replication_role = replica");
+                RawSql.update(db, "INSERT INTO inventory.inventory_items (id, sku) VALUES (gen_random_uuid(), ?) "
+                        + "ON CONFLICT DO NOTHING", SKU);
                 carton(db, id(410), lpn(410), BIN, "IN_STOCK", true, 5, null);
                 row(db, id(411), BIN, 5, id(410));
                 reservation(db, id(412), id(411), 5, "HELD", orderNo(id(400)));
@@ -221,7 +224,8 @@ class PickByLpnMigrationUpgradeTest {
                 RawSql.update(db, "SET session_replication_role = DEFAULT");
 
                 var result = flyway(postgres, MIGRATION).migrate();
-                assertThat(result.migrations).extracting(m -> m.version).containsExactly(MIGRATION);
+                // Merged with the other lines, migrations of theirs may sit between BEFORE and this one (final rescope merge).
+                assertThat(result.migrations).extracting(m -> m.version).last().isEqualTo(MIGRATION);
 
                 assertThat(RawSql.texts(db, "SELECT conname || ':' || convalidated FROM pg_constraint WHERE conname IN "
                         + "('ck_pick_line_lpn', 'ck_pick_line_short_reported', 'ck_pick_line_put_back_whole', "
@@ -335,6 +339,10 @@ class PickByLpnMigrationUpgradeTest {
      */
     private static void seedHistory(Connection db) throws SQLException {
         RawSql.update(db, "SET session_replication_role = replica");
+        // The SKU's inventory item: on the merged branch V20261113000300 (4C-3) runs between BEFORE and this migration
+        // and gives lot-less rows the SKU's UNTRACED lot, whose foreign key wants the item.
+        RawSql.update(db, "INSERT INTO inventory.inventory_items (id, sku) VALUES (gen_random_uuid(), ?) "
+                + "ON CONFLICT DO NOTHING", SKU);
         // Cartons and their rows, one per hold that is in a carton: LPN-UPG4-<n> holds the 3xx row it was named after.
         carton(db, id(310), lpn(310), BIN, "IN_STOCK", true, 4, null);
         carton(db, id(311), lpn(311), BIN, "IN_STOCK", true, 2, null);

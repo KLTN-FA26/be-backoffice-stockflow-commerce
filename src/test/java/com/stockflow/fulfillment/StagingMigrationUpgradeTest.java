@@ -188,11 +188,11 @@ class StagingMigrationUpgradeTest {
                         + "map_height, created_at) VALUES (?::uuid, 'Upgrade warehouse', 'ACTIVE', ?, 'x', 'M', 50, 50, NOW())",
                         warehouse, warehouse.equals(WAREHOUSE) ? "UPG5" : "UPG6");
             }
-            RawSql.update(db, "INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, storage_class, "
-                    + "is_pickable, is_putaway_target, status) VALUES (?::uuid, ?::uuid, 'BIN', ?, 'NORMAL', TRUE, TRUE, 'ACTIVE')",
+            RawSql.update(db, "INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, "
+                    + "is_pickable, is_putaway_target, status) VALUES (?::uuid, ?::uuid, 'BIN', ?, TRUE, TRUE, 'ACTIVE')",
                     id(1), WAREHOUSE, BIN);
-            RawSql.update(db, "INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, storage_class, "
-                    + "is_pickable, is_putaway_target, status) VALUES (?::uuid, ?::uuid, 'AREA', ?, 'NORMAL', FALSE, FALSE, 'ACTIVE')",
+            RawSql.update(db, "INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, "
+                    + "is_pickable, is_putaway_target, status) VALUES (?::uuid, ?::uuid, 'AREA', ?, FALSE, FALSE, 'ACTIVE')",
                     PACKING_LOCATION_ID, WAREHOUSE, PACKING_AREA);
             RawSql.update(db, "INSERT INTO warehouse.area (id, warehouse_id, location_id, code, type, name, x, y, width, "
                     + "length, rotation, is_obstacle, status) VALUES (?::uuid, ?::uuid, ?::uuid, 'PACK01', 'PACKING', 'Packing', "
@@ -200,9 +200,12 @@ class StagingMigrationUpgradeTest {
             RawSql.update(db, "INSERT INTO inventory.inventory_items (id, sku, policy_configured, lot_tracked, "
                     + "removal_strategy) VALUES (gen_random_uuid(), ?, TRUE, FALSE, 'FEFO')", SKU);
             // Stock standing in the packing area, and the ledger line that put it there.
-            RawSql.update(db, "INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, "
-                    + "created_at, received_at) VALUES (?::uuid, ?, ?, 'L-1', 3, 0, 'AVAILABLE', NOW(), NOW())",
-                    id(2), SKU, PACKING_AREA);
+            // lot_id is NOT NULL since V20261113000300 (4C-3), earlier than BEFORE on the merged branch.
+            RawSql.update(db, "INSERT INTO inventory.stock_lot (id, sku, lot_number, received_at, origin_type, created_at) "
+                    + "VALUES (?::uuid, ?, 'L-1', NOW(), 'UNTRACED', NOW())", id(9), SKU);
+            RawSql.update(db, "INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, lot_id, on_hand, reserved, "
+                    + "status, created_at, received_at) VALUES (?::uuid, ?, ?, 'L-1', ?::uuid, 3, 0, 'AVAILABLE', NOW(), NOW())",
+                    id(2), SKU, PACKING_AREA, id(9));
             RawSql.update(db, "INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, to_location_code, "
                     + "quantity, reference_type, reference_id, occurred_at) VALUES (?::uuid, 'MOVE', ?, ?, ?, 3, "
                     + "'RETURN_REQUEST_LINE', gen_random_uuid(), NOW())", OLD_MOVE, SKU, BIN, PACKING_AREA);
@@ -239,9 +242,9 @@ class StagingMigrationUpgradeTest {
     private static String areaOnly(String warehouse, String locationCode, String code, String type, boolean pickable,
                                    boolean putaway) {
         return """
-                WITH l AS (INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, storage_class,
+                WITH l AS (INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code,
                                                                    is_pickable, is_putaway_target, status)
-                           VALUES (gen_random_uuid(), '%1$s'::uuid, 'AREA', '%2$s', 'NORMAL', %5$s, %6$s, 'ACTIVE')
+                           VALUES (gen_random_uuid(), '%1$s'::uuid, 'AREA', '%2$s', %5$s, %6$s, 'ACTIVE')
                            RETURNING id)
                 INSERT INTO warehouse.area (id, warehouse_id, location_id, code, type, name, x, y, width, length, rotation,
                                             is_obstacle, status)

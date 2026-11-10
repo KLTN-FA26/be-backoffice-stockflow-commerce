@@ -44,8 +44,10 @@ class UnitDamageRemovalMigrationUpgradeTest {
             INSERT INTO fulfillment.pick (id, order_id, order_number, warehouse_id, status, created_at)
             VALUES ('00000000-0000-4000-8000-0000000d5101', '00000000-0000-4000-8000-0000000d5001', 'SO-UPG5C6-1', md5('demo:wh:HCM')::uuid, 'PICKING', NOW());
             -- A damaged unit nothing could replace: held on a loose DAMAGED row in quarantine, the line SHORT with no carton.
-            INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, version, created_at, received_at)
-            VALUES ('00000000-0000-4000-8000-0000000d5201', 'SOFA-3S-GREY', 'HCM-QC01', 'UNTRACED', 1, 1, 'DAMAGED', 0, NOW(), NOW());
+            INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, lot_id, on_hand, reserved, status, version, created_at, received_at)
+            VALUES ('00000000-0000-4000-8000-0000000d5201', 'SOFA-3S-GREY', 'HCM-QC01', 'UNTRACED',
+                    (SELECT id FROM inventory.stock_lot WHERE sku = 'SOFA-3S-GREY' AND lot_number = 'UNTRACED' LIMIT 1),
+                    1, 1, 'DAMAGED', 0, NOW(), NOW());
             INSERT INTO inventory.stock_reservation (id, stock_item_id, order_id, root_request_id, request_id, quantity, reserved_at, expires_at, status, sku)
             VALUES ('00000000-0000-4000-8000-0000000d5301', '00000000-0000-4000-8000-0000000d5201', '00000000-0000-4000-8000-0000000d5001', gen_random_uuid(), gen_random_uuid(), 1, NOW(), NULL, 'HELD', 'SOFA-3S-GREY');
             INSERT INTO fulfillment.pick_line (id, pick_id, order_line_id, reservation_id, sku, location_code, sequence_no, allocated_qty, short_qty, status, damage_report_id)

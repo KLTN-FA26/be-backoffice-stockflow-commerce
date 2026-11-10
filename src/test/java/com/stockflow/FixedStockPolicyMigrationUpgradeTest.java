@@ -62,7 +62,7 @@ class FixedStockPolicyMigrationUpgradeTest {
                 for (String area : new String[] {"RCV01", "RCV02"}) {
                     UUID location = UUID.randomUUID();
                     RawSql.update(db, "INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, "
-                            + "storage_class, is_pickable, is_putaway_target, status) VALUES (?, ?, 'AREA', ?, 'NORMAL', "
+                            + "is_pickable, is_putaway_target, status) VALUES (?, ?, 'AREA', ?, "
                             + "FALSE, FALSE, 'ACTIVE')", location, warehouse, "FSP-" + area);
                     RawSql.update(db, "INSERT INTO warehouse.area (id, warehouse_id, location_id, code, type, name, x, y, "
                             + "width, length, rotation, is_obstacle, status) VALUES (gen_random_uuid(), ?, ?, ?, "

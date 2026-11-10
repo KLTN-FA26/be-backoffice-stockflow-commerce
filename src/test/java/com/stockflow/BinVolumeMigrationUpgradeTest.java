@@ -43,7 +43,8 @@ class BinVolumeMigrationUpgradeTest {
                 seed(db);
 
                 var result = flyway(postgres, MIGRATION).migrate();
-                assertThat(result.migrations).extracting(m -> m.version).containsExactly(MIGRATION);
+                // Merged with the other lines, migrations of theirs may sit between BEFORE and this one (final rescope merge).
+                assertThat(result.migrations).extracting(m -> m.version).last().isEqualTo(MIGRATION);
 
                 // The columns are gone.
                 assertThat(RawSql.number(db, "SELECT count(*) FROM information_schema.columns WHERE "

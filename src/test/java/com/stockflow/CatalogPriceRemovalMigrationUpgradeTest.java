@@ -24,7 +24,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class CatalogPriceRemovalMigrationUpgradeTest {
 
-    private static final String BEFORE = "20261108002400";
+    private static final String BEFORE = "20261108003200";   // the migration right before it on the merged branch (final rescope merge), so other lines' role version bumps run first
     private static final String MIGRATION = "20261110000100";
 
     @Test
@@ -76,7 +76,8 @@ class CatalogPriceRemovalMigrationUpgradeTest {
                 RawSql.update(db, "SET session_replication_role = DEFAULT");
 
                 var result = flyway(postgres, MIGRATION).migrate();
-                assertThat(result.migrations).extracting(m -> m.version).containsExactly(MIGRATION);
+                // Merged with the other lines, migrations of theirs may sit between BEFORE and this one (final rescope merge).
+                assertThat(result.migrations).extracting(m -> m.version).last().isEqualTo(MIGRATION);
 
                 // Archived whole before it went: every rule, the promotion, the entry's price.
                 assertThat(RawSql.text(db, "SELECT (row_data ->> 'price') || ':' || (row_data ->> 'version') || ':' || "

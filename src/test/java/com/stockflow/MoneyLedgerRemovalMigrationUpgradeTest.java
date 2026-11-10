@@ -23,7 +23,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class MoneyLedgerRemovalMigrationUpgradeTest {
 
-    private static final String BEFORE = "20261113000710";
+    private static final String BEFORE = "20261115000300";   // the migration right before it on the merged branch (final rescope merge), so other lines' role version bumps run first
     private static final String MIGRATION = "20261116000100";
     private static final String CUSTOMER = "00000000-0000-4000-8000-0000000000c1";
     private static final String ACCOUNTANT = "00000000-0000-4000-8000-0000000000a1";
@@ -42,7 +42,8 @@ class MoneyLedgerRemovalMigrationUpgradeTest {
                 long warehouseBefore = version(db, "WAREHOUSE_STAFF");
 
                 var result = flyway(postgres, MIGRATION).migrate();
-                assertThat(result.migrations).extracting(m -> m.version).containsExactly(MIGRATION);
+                // Merged with the other lines, migrations of theirs may sit between BEFORE and this one (final rescope merge).
+                assertThat(result.migrations).extracting(m -> m.version).last().isEqualTo(MIGRATION);
 
                 assertThat(RawSql.texts(db, "SELECT table_name FROM information_schema.tables WHERE table_schema = "
                         + "'payment' ORDER BY 1")).as("what is left of payment")

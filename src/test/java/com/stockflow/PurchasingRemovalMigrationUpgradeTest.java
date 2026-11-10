@@ -353,7 +353,8 @@ class PurchasingRemovalMigrationUpgradeTest {
                         + "'procurement' AND table_name IN " + inList(DROPPED_PROCUREMENT_TABLES))).isZero();
                 assertThat(RawSql.texts(db, "SELECT table_name FROM information_schema.tables WHERE table_schema = "
                         + "'procurement' AND table_type = 'BASE TABLE' ORDER BY 1"))
-                        .containsExactly("goods_receipt_lines", "goods_receipt_photos", "goods_receipts");
+                        .containsExactly("goods_receipt_lines", "goods_receipt_photos", "goods_receipt_return_cartons",
+                                "goods_receipts");   // return cartons: 4D-2, earlier in the merged version order
                 assertThat(RawSql.number(db, "SELECT count(*) FROM information_schema.tables WHERE (table_schema, "
                         + "table_name) IN (('notification', 'po_delivery_control'), ('notification', 'po_retry_cursor'), "
                         + "('warehouse', 'subcontractor_site'))")).isZero();
@@ -448,8 +449,8 @@ class PurchasingRemovalMigrationUpgradeTest {
                 db.setAutoCommit(false);
                 try {
                     RawSql.update(db, "INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, "
-                            + "storage_class, is_pickable, is_putaway_target, status) VALUES (md5('locO')::uuid, "
-                            + "md5('wh')::uuid, 'AREA', 'PMG-OVF', 'NORMAL', FALSE, FALSE, 'ACTIVE')");
+                            + "is_pickable, is_putaway_target, status) VALUES (md5('locO')::uuid, "
+                            + "md5('wh')::uuid, 'AREA', 'PMG-OVF', FALSE, FALSE, 'ACTIVE')");   // no storage class since 5-4
                     RawSql.update(db, "INSERT INTO warehouse.area (id, warehouse_id, location_id, code, type, name, x, y, "
                             + "width, length, rotation, is_obstacle, status) VALUES (md5('areaO')::uuid, md5('wh')::uuid, "
                             + "md5('locO')::uuid, 'OVF', 'OVERFLOW', 'Overflow', 0, 0, 5, 5, 0, FALSE, 'ACTIVE')");
@@ -460,12 +461,12 @@ class PurchasingRemovalMigrationUpgradeTest {
                 assertThat(RawSql.number(db, "SELECT count(*) FROM warehouse.area WHERE id = md5('areaO')::uuid"))
                         .isEqualTo(1);
                 refusedWith(db, "owned by no bin and no area", "INSERT INTO warehouse.storage_location (id, "
-                        + "warehouse_id, kind, location_code, storage_class, is_pickable, is_putaway_target, status) "
-                        + "VALUES (gen_random_uuid(), md5('wh')::uuid, 'SUBCONTRACTOR', 'PMG-SUB-2', 'NORMAL', FALSE, "
+                        + "warehouse_id, kind, location_code, is_pickable, is_putaway_target, status) "
+                        + "VALUES (gen_random_uuid(), md5('wh')::uuid, 'SUBCONTRACTOR', 'PMG-SUB-2', FALSE, "
                         + "FALSE, 'ACTIVE')");
                 refusedWith(db, "owned by no bin and no area", "INSERT INTO warehouse.storage_location (id, "
-                        + "warehouse_id, kind, location_code, storage_class, is_pickable, is_putaway_target, status) "
-                        + "VALUES (gen_random_uuid(), md5('wh')::uuid, 'AREA', 'PMG-LOST', 'NORMAL', FALSE, FALSE, "
+                        + "warehouse_id, kind, location_code, is_pickable, is_putaway_target, status) "
+                        + "VALUES (gen_random_uuid(), md5('wh')::uuid, 'AREA', 'PMG-LOST', FALSE, FALSE, "
                         + "'ACTIVE')");
                 assertThat(RawSql.number(db, "SELECT count(*) FROM warehouse.storage_location WHERE location_code = "
                         + "'PMG-SUB-1'")).as("the subcontractor location there was stays").isEqualTo(1);
