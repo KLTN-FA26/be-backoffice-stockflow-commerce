@@ -1139,18 +1139,18 @@ public final class Order extends AggregateRoot {
         }
         Money value = worthWith(quantities);
         int leaving = quantities.values().stream().mapToInt(Integer::intValue).sum();
-        int later = batch == null ? 0 : batch.laterUnits();
-        boolean everythingGoes = outstandingUnits() - later == leaving;
+        int together = unitsDueTogether(batch);
+        boolean everythingGoes = together == leaving;
         if (status == OrderStatus.PICKING && everythingGoes) {
             throw new InvalidOrderTransitionException(orderNumber, status, "pack it before handing everything over");
         }
         // PACK-PARTIAL (lead's decision 2026-10-21): goods left behind - not in this shipment nor in the others signed
         // over with it - make this a partial shipment, which Sales decides on the order, not the warehouse.
         int leavingWith = quantitiesOf(handover.leavingWith()).values().stream().mapToInt(Integer::intValue).sum();
-        if (!allowPartialShipment && outstandingUnits() - later > leaving + leavingWith) {
+        if (!allowPartialShipment && together > leaving + leavingWith) {
             throw new BusinessException(ErrorCode.ORDER_PARTIAL_SHIPMENT_NOT_ALLOWED,
                     "Order %s does not allow partial shipments: %d unit(s) would stay behind. Hand everything over "
-                            .formatted(orderNumber, outstandingUnits() - later - leaving - leavingWith)
+                            .formatted(orderNumber, together - leaving - leavingWith)
                             + "together, or ask Sales to allow partial shipment on the order");
         }
         shipments.add(OrderShipment.handedOver(handover.shipmentId(), quantities, value.amount(),
@@ -1460,6 +1460,20 @@ public final class Order extends AggregateRoot {
     /** Units neither closed nor in a shipment that is still with the carrier or the customer. */
     public int outstandingUnits() {
         return lines.stream().mapToInt(l -> l.quantity() - l.cancelledQuantity() - shippedUnits(l.id(), false)).sum();
+    }
+
+    /**
+     * PACK-PARTIAL with 4B-8 (kltn-docs 17 BR-15, §4.5): the units that must leave together for a shipment of this
+     * order not to be a partial shipment - every unit it still wants ({@link #outstandingUnits}), less the units of the
+     * delivery batches after the one in flight. A delivery schedule is a plan of whole shipments, so a shipment of
+     * exactly the batch released leaves nothing behind; only a shipment short of that batch is "in parts" and needs
+     * Sales' decision ({@link #allowPartialShipment}). The one count the handover, a vehicle leaving and the load
+     * plan's confirmation (through {@code OrderService.unitsDueTogether}) all compare with. Never below zero.
+     *
+     * @param batch the batch in flight; null for an order that does not ship by batch - everything it still wants
+     */
+    public int unitsDueTogether(BatchInFlight batch) {
+        return Math.max(0, outstandingUnits() - (batch == null ? 0 : batch.laterUnits()));
     }
 
     /** Units neither closed nor ever handed over. */
@@ -1963,14 +1977,14 @@ public final class Order extends AggregateRoot {
         requirePlanCarriesTheRest(inPlan, null);
     }
 
-    /** 4B-8: units of the batches not released yet are not the plan's to carry. */
+    /** 4B-8: units of the batches not released yet are not the plan's to carry ({@link #unitsDueTogether}). */
     public void requirePlanCarriesTheRest(Map<UUID, Integer> inPlan, BatchInFlight batch) {
         requireNotCancelled("its goods are not loaded");
         if (inPlan == null || allowPartialShipment) {
             return;
         }
         int carried = inPlan.values().stream().mapToInt(Integer::intValue).sum();
-        int expected = outstandingUnits() - (batch == null ? 0 : batch.laterUnits());
+        int expected = unitsDueTogether(batch);
         if (expected > carried) {
             throw new BusinessException(ErrorCode.ORDER_PARTIAL_SHIPMENT_NOT_ALLOWED, ("Order %s does not allow partial "
                     + "shipments: %d unit(s) are not in this load plan. Put them in the plan, or ask Sales to allow "

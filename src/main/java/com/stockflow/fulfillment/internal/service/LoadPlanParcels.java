@@ -120,6 +120,14 @@ class LoadPlanParcels {
     }
 
     /**
+     * Per order, the units that must leave together for it not to ship in parts (the order's count: a scheduled order's
+     * released delivery batch, not the whole order, 17 BR-15). Orders not found are left out.
+     */
+    Map<UUID, Integer> unitsDueTogether(Collection<UUID> orderIds) {
+        return orderIds.isEmpty() ? Map.of() : orders.unitsDueTogether(orderIds);
+    }
+
+    /**
      * The parcel as the planner sees it, or null when it has no sizes or weight (09 BR-09; edge "kiện thiếu kích thước
      * → chặn tính phương án").
      */
