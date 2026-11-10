@@ -227,6 +227,19 @@ public interface OrderService {
     void recordPackingStarted(UUID orderId);
 
     /**
+     * The check station labelled a shipping carton of the order (4C-6, kltn-docs 08 §4.3 step 7): the first time, the
+     * order is locked - no cancellation, no change of delivery address (08 BR-04, 17 BR-12, BR-16) - and a customer's
+     * cancellation request still waiting expires. Joins the caller's transaction, which must exist, and takes the
+     * order's row lock, so a cancellation in flight either came first ({@code ORDER_CANCELLED}: nothing is labelled) or
+     * is refused afterwards. A hold put on after the station read the order is refused the same way, under the lock.
+     * Idempotent.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code NOT_FOUND}; {@code ORDER_CANCELLED};
+     *         {@code PACK_STATE_CONFLICT} while the order is on hold or in a status the station does not label in
+     */
+    void recordFirstLabel(UUID orderId);
+
+    /**
      * The order's status read under its row lock, in the caller's transaction: what fulfillment checks before it
      * carries on work for the order, so a cancellation cannot slip in between the check and the work (audit of #109).
      * Empty for an unknown order.

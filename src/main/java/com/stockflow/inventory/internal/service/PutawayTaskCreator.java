@@ -24,16 +24,16 @@ import java.util.stream.Collectors;
  * warehouse's putaway tasks for them (SCRUM-92).
  *
  * <p>One task per carton of the line that is IN_STOCK with INBOUND units, wherever it stands now (a carton is put
- * away from wherever it stands, so a hand move must not hide it), sized by those units, plus one loose task for what
- * the line has beyond those cartons. Cartons are read here, not carried by the event, because the event is published
- * by procurement, which does not know them. A carton already put away, or quarantined since, has no INBOUND units
- * and opens nothing.</p>
+ * away from wherever it stands, so a hand move must not hide it), sized by those units (kltn-docs 05 BR-08: each task
+ * is one carton). Nothing else: a receipt puts every unit into a carton (team plan 4C-2), so there is no loose
+ * remainder to put away; a line with units beyond its cartons could only be one received before that, and is logged
+ * rather than given a task nobody could confirm. Cartons are read here, not carried by the event, because the event is
+ * published by procurement, which does not know them. A carton already put away, or quarantined since, has no INBOUND
+ * units and opens nothing.</p>
  *
  * <p>An event line whose receipt line already has any putaway task is skipped whole. The event is published at most
- * once per receipt line, so an existing task means this line was processed; recomputing would be wrong, because the
- * loose remainder is derived from INBOUND units that putaway has since consumed, and a redelivery after the cartons
- * were put away would open a loose task for stock already in bins. The task that exists is what makes a redelivery
- * (the publication registry retries after a failure) harmless.</p>
+ * once per receipt line, so an existing task means this line was processed. The task that exists is what makes a
+ * redelivery (the publication registry retries after a failure) harmless.</p>
  *
  * <p>This listener writes nothing but tasks and moves no stock.</p>
  *
@@ -41,6 +41,8 @@ import java.util.stream.Collectors;
  */
 @Component
 public class PutawayTaskCreator {
+
+    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(PutawayTaskCreator.class);
 
     private final PutawayTasks tasks;
     private final StockPackageRepository stockPackages;
@@ -74,9 +76,9 @@ public class PutawayTaskCreator {
                 tasks.open(new NewPutawayTask(event.receiptId(), line.receiptLineId(), line.sku(), units,
                         carton.id().value()));
             }
-            int loose = line.quantity() - inCartons;
-            if (loose > 0) {
-                tasks.open(new NewPutawayTask(event.receiptId(), line.receiptLineId(), line.sku(), loose, null));
+            if (line.quantity() > inCartons) {
+                log.warn("Receipt line {} received {} x {} but its cartons hold {}; units outside a carton get no "
+                        + "putaway task", line.receiptLineId(), line.quantity(), line.sku(), inCartons);
             }
         }
     }

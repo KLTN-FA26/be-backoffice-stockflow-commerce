@@ -5,8 +5,7 @@ import com.stockflow.inventory.api.InventoryPolicy;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.api.LowStockItem;
 import com.stockflow.inventory.api.MoveReference;
-import com.stockflow.inventory.api.ReceiveStockCommand;
-import com.stockflow.inventory.api.ReclassifyStockCommand;
+import com.stockflow.inventory.api.ReclassifyStockPackagesCommand;
 import com.stockflow.inventory.api.RemovalStrategy;
 import com.stockflow.inventory.api.RequestAdjustmentCommand;
 import com.stockflow.inventory.api.StockAdjustmentReason;
@@ -19,6 +18,7 @@ import com.stockflow.inventory.internal.repository.StockAlertDirtyRepository;
 import com.stockflow.inventory.internal.repository.StockAlertRepository;
 import com.stockflow.support.AlertFixtures;
 import com.stockflow.support.Await;
+import com.stockflow.support.CartonRows;
 import com.stockflow.support.SecuredIntegrationTest;
 import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.BeforeEach;
@@ -41,8 +41,8 @@ import static com.stockflow.support.AlertFixtures.HCM_BIN_2;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Low-stock alerts end to end (SCRUM-147, 165): real stock writes (adjustment, receipt and putaway, a raw UPDATE) mark the
- * SKU dirty through the trigger, the drain evaluates it, the event reaches the inbox listener, and the planner is told
+ * Low-stock alerts end to end (SCRUM-147, 165): stock writes (an adjustment, a received carton and its putaway, a raw
+ * UPDATE) mark the SKU dirty through the trigger, the drain evaluates it, the event reaches the inbox listener, and the planner is told
  * once. Thresholds, recovery, the re-touch window, once per day, the nightly reconcile and the policy-change listener.
  */
 @SecuredIntegrationTest
@@ -252,16 +252,19 @@ class StockAlertIntegrationTest {
         adjust(-42);
         drainer.drain();
         awaitPlannerMessages(1);
-        // Postgres keeps microseconds; Linux clocks give nanoseconds, and the layer is found by its receipt time.
+        // Since team plan 4C-2 every unit is received in a carton, and a receipt names a real receipt line: the carton
+        // of 100 is written as a confirmed receipt leaves it - IN_STOCK at the receiving area, its row INBOUND - and the
+        // stock trigger marks the SKU dirty as it does for any stock write.
         Instant receivedAt = Instant.now().minusSeconds(60).truncatedTo(java.time.temporal.ChronoUnit.MICROS);
-        UUID line = UUID.randomUUID();
-        inventory.receive(new ReceiveStockCommand(line, new Sku(sku), null, null, "HCM-RCV01", 100, clerk, receivedAt));
+        String lpn = tx.execute(s -> CartonRows.stock(jdbc, sku, "HCM-RCV01", 1, 100, null, null, receivedAt,
+                "INBOUND")).getFirst().lpn();
         drainer.drain();
         // INBOUND stock is not usable yet: the alert stays open.
         assertThat(open(Kind.REORDER)).isPresent();
 
-        inventory.reclassify(new ReclassifyStockCommand(new Sku(sku), null, "HCM-RCV01", HCM_BIN_2, 100,
-                StockDisposition.AVAILABLE, MoveReference.PUTAWAY_TASK, UUID.randomUUID(), clerk, null, receivedAt));
+        // Putaway is per carton: the whole carton goes to the bin as AVAILABLE.
+        inventory.reclassifyStockPackages(new ReclassifyStockPackagesCommand(lpn, HCM_BIN_2,
+                StockDisposition.AVAILABLE, MoveReference.PUTAWAY_TASK, UUID.randomUUID(), clerk, null));
         drainer.drain();
         awaitEventsDelivered();
 

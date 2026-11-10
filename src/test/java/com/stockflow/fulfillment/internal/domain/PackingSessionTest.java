@@ -116,7 +116,7 @@ class PackingSessionTest {
     void overPicked() {
         var shortPicked = new PackingSession.Line(CUPS, "CUP-12OZ", null, 10, 7, false, null, Map.of(), Set.of(), true,
                 false);
-        var session = new PackingSession(UUID.randomUUID(), "SO-1", PackStatus.PACKING, NOW, PACKER, null, null,
+        var session = new PackingSession(UUID.randomUUID(), "SO-1", PackStatus.IN_PROGRESS, NOW, PACKER, null, null,
                 List.of(shortPicked), List.of(), List.of());
         var box = session.openPackage(UUID.randomUUID(), null, NOW);
         assertThat(code(catchThrowable(() -> session.scan(UUID.randomUUID(), box.id(), "CUP-12OZ", null, null, 8, null,
@@ -128,7 +128,7 @@ class PackingSessionTest {
     void serials() {
         var line = new PackingSession.Line(CUPS, "SCALE-1", null, 2, 2, false, null, Map.of(), Set.of("SN-1", "SN-2"),
                 true, false);
-        var session = new PackingSession(UUID.randomUUID(), "SO-1", PackStatus.PACKING, NOW, PACKER, null, null,
+        var session = new PackingSession(UUID.randomUUID(), "SO-1", PackStatus.IN_PROGRESS, NOW, PACKER, null, null,
                 List.of(line), List.of(), List.of());
         var box = session.openPackage(UUID.randomUUID(), null, NOW);
         assertThat(code(catchThrowable(() -> session.scan(UUID.randomUUID(), box.id(), "SCALE-1", null, "SN-9", 1,
@@ -228,7 +228,7 @@ class PackingSessionTest {
         assertThat(first.lines()).containsExactly(Map.entry(CUPS, 6));
         UUID shipment1 = UUID.randomUUID();
         session.ship(first, shipment1, PACKER, NOW);
-        assertThat(session.status()).isEqualTo(PackStatus.PACKING);
+        assertThat(session.status()).isEqualTo(PackStatus.IN_PROGRESS);
         assertThat(session.shippedOf(CUPS)).isEqualTo(6);
         assertThat(code(catchThrowable(() -> session.complete(true, "again", true, PACKER, NOW))))
                 .isEqualTo(ErrorCode.PACK_NOTHING_TO_SHIP);
@@ -246,7 +246,7 @@ class PackingSessionTest {
         assertThat(rest.partial()).isFalse();
         assertThat(spare.status()).as("an empty open package is voided").isEqualTo(PackageStatus.VOIDED);
         session.ship(rest, UUID.randomUUID(), PACKER, NOW);
-        assertThat(session.status()).isEqualTo(PackStatus.PACKED);
+        assertThat(session.status()).isEqualTo(PackStatus.COMPLETED);
         assertThat(session.packedBy()).isEqualTo(PACKER);
         assertThat(rest.lines()).as("the printed cups ship like any other line: no design is checked (08 §1)")
                 .containsEntry(PRINTED, 4);
@@ -275,7 +275,7 @@ class PackingSessionTest {
                 PackageStatus.SEALED, null, box(), new BigDecimal("5"), true, false, false, false, NOW, PACKER, null,
                 null, Map.of(new PackingSession.ContentKey(LIDS, null, null), 5), NOW);
         var lids = new PackingSession.Line(LIDS, "LID-90", null, 5, 5, false, null, Map.of(), Set.of(), true, false);
-        var session = new PackingSession(UUID.randomUUID(), "SO-1", PackStatus.PACKING, NOW, PACKER, null, null,
+        var session = new PackingSession(UUID.randomUUID(), "SO-1", PackStatus.IN_PROGRESS, NOW, PACKER, null, null,
                 List.of(lids), List.of(parcel), List.of(scanned));
         assertThat(session.scan(scanned, parcel.id(), "LID-90", null, null, 1, null, PACKER, NOW))
                 .as("a scan read back is a replay, even on a sealed package").isFalse();
@@ -290,7 +290,7 @@ class PackingSessionTest {
         var back = new PackingSession.Parcel(UUID.randomUUID(), 1, "PKG-SO-1-1", PackageType.CARTON,
                 PackageStatus.SEALED, UUID.randomUUID(), box(), new BigDecimal("5"), true, false, false, false, NOW,
                 PACKER, null, null, Map.of(new PackingSession.ContentKey(LIDS, null, null), 5), NOW).markReturned();
-        var session = new PackingSession(UUID.randomUUID(), "SO-1", PackStatus.PACKING, NOW, PACKER, null, null,
+        var session = new PackingSession(UUID.randomUUID(), "SO-1", PackStatus.IN_PROGRESS, NOW, PACKER, null, null,
                 List.of(lids), List.of(back), List.of());
         assertThat(session.packedOf(LIDS)).isZero();
         assertThat(session.shippedOf(LIDS)).isZero();
@@ -322,7 +322,7 @@ class PackingSessionTest {
     void mixedLotAndLotLessUnits() {
         var cups = new PackingSession.Line(CUPS, "CUP-12OZ", null, 5, 5, false, null,
                 Map.of("L1", 3, PackingSession.NO_LOT, 2), Set.of(), true, false);
-        var session = new PackingSession(UUID.randomUUID(), "SO-1", PackStatus.PACKING, NOW, PACKER, null, null,
+        var session = new PackingSession(UUID.randomUUID(), "SO-1", PackStatus.IN_PROGRESS, NOW, PACKER, null, null,
                 List.of(cups), List.of(), List.of());
         var box = session.openPackage(UUID.randomUUID(), null, NOW);
         session.scan(UUID.randomUUID(), box.id(), "CUP-12OZ", null, null, 2, null, PACKER, NOW);
@@ -334,5 +334,35 @@ class PackingSessionTest {
                 .containsEntry(new PackingSession.ContentKey(CUPS, "L1", null), 3);
         assertThat(code(catchThrowable(() -> session.scan(UUID.randomUUID(), box.id(), "CUP-12OZ",
                 PackingSession.NO_LOT, null, 1, null, PACKER, NOW)))).isEqualTo(ErrorCode.PACK_QUANTITY_EXCEEDS_ORDER);
+    }
+
+    @Test
+    @DisplayName("V20261111000110: goods of lot UNTRACED have no lot label, so they are scanned without one - after the "
+            + "units picked without a lot, each kind only up to what was picked of it - or by the name UNTRACED")
+    void untracedGoodsAreScannedWithoutALot() {
+        var cups = new PackingSession.Line(CUPS, "CUP-12OZ", null, 6, 6, false, null,
+                Map.of("UNTRACED", 3, PackingSession.NO_LOT, 1, "L1", 2), Set.of(), true, false);
+        var session = new PackingSession(UUID.randomUUID(), "SO-1", PackStatus.IN_PROGRESS, NOW, PACKER, null, null,
+                List.of(cups), List.of(), List.of());
+        var box = session.openPackage(UUID.randomUUID(), null, NOW);
+        session.scan(UUID.randomUUID(), box.id(), "CUP-12OZ", null, null, 1, null, PACKER, NOW);
+        session.scan(UUID.randomUUID(), box.id(), "CUP-12OZ", null, null, 2, null, PACKER, NOW);
+        session.scan(UUID.randomUUID(), box.id(), "CUP-12OZ", "untraced", null, 1, null, PACKER, NOW);
+        assertThat(box.contents()).containsEntry(new PackingSession.ContentKey(CUPS, null, null), 1)
+                .containsEntry(new PackingSession.ContentKey(CUPS, "UNTRACED", null), 3);
+        assertThat(code(catchThrowable(() -> session.scan(UUID.randomUUID(), box.id(), "CUP-12OZ", null, null, 1,
+                null, PACKER, NOW)))).as("every lot-less and UNTRACED unit is packed").isEqualTo(
+                ErrorCode.PACK_LOT_MISMATCH);
+        session.scan(UUID.randomUUID(), box.id(), "CUP-12OZ", "L1", null, 2, null, PACKER, NOW);
+        assertThat(session.packedOf(CUPS)).isEqualTo(6);
+
+        var tracked = new PackingSession.Line(CUPS, "CUP-12OZ", null, 2, 2, false, null, Map.of("L1", 2), Set.of(),
+                true, false);
+        var other = new PackingSession(UUID.randomUUID(), "SO-2", PackStatus.IN_PROGRESS, NOW, PACKER, null, null,
+                List.of(tracked), List.of(), List.of());
+        var parcel = other.openPackage(UUID.randomUUID(), null, NOW);
+        assertThat(code(catchThrowable(() -> other.scan(UUID.randomUUID(), parcel.id(), "CUP-12OZ", null, null, 1,
+                null, PACKER, NOW)))).as("a lot that has a label is still scanned").isEqualTo(
+                ErrorCode.VALIDATION_FAILED);
     }
 }

@@ -124,79 +124,6 @@ class InventoryCatalogIntegrationTest {
                 + " values (?,?,?,12500000,'VND',true,now())", UUID.randomUUID(), "BASE:" + sku, sku);
     }
 
-    @Test
-    void stockMoveKeepsCanonicalSerialAndReceiptIdentity() {
-        var f = fixture("APPROVED");
-        items.configure(f.itemId(),
-                0,
-                policy(null, RemovalStrategy.FIFO, TrackingMode.SERIAL, false));
-        var received = Instant.parse("2026-09-01T00:00:00Z");
-        var source = stock(f, 1, received, null, "MOVE-SERIAL");
-        write("update inventory.stock_item set location_code='HCM-A01-1-B' where id=?", source);
-        var command =
-                new MoveStockCommand(
-                        UUID.randomUUID(),
-                        new Sku(f.sku()),
-                        null,
-                        "HCM-A01-1-B",
-                        "HCM-PACK01",
-                        1,
-                        MoveReference.MOVE_TASK,
-                        null,
-                        jdbc.queryForObject(
-                                "select id from identity.app_user where"
-                                    + " id=md5('demo:user:editor')::uuid",
-                                UUID.class));
-        var moved = inventory.move(command);
-        assertThat(
-                        jdbc.queryForMap(
-                                """
-                                select on_hand,serial_number,received_at from inventory.stock_item
-                                where sku=? and location_code='HCM-PACK01'
-                                """,
-                                f.sku()))
-                .containsEntry("on_hand", 1)
-                .containsEntry("serial_number", "MOVE-SERIAL")
-                .containsEntry("received_at", Timestamp.from(received));
-        assertThat(inventory.move(command).movementId()).isEqualTo(moved.movementId());
-    }
-
-    @Test
-    void stockMoveDoesNotChooseAnArbitraryReceiptLayer() {
-        var f = fixture("APPROVED");
-        items.configure(f.itemId(),
-                0,
-                policy(null, RemovalStrategy.FIFO, TrackingMode.NONE, false));
-        stock(f, 3, Instant.parse("2026-09-01T00:00:00Z"), null, null);
-        stock(f, 4, Instant.parse("2026-09-02T00:00:00Z"), null, null);
-        var command =
-                new MoveStockCommand(
-                        UUID.randomUUID(),
-                        new Sku(f.sku()),
-                        null,
-                        "HCM-A01-1-A",
-                        "HCM-PACK01",
-                        1,
-                        MoveReference.MOVE_TASK,
-                        null,
-                        jdbc.queryForObject(
-                                "select id from identity.app_user where"
-                                    + " id=md5('demo:user:editor')::uuid",
-                                UUID.class));
-        assertThatThrownBy(() -> inventory.move(command))
-                .isInstanceOfSatisfying(
-                        BusinessException.class,
-                        ex ->
-                                assertThat(ex.errorCode())
-                                        .isEqualTo(ErrorCode.INVENTORY_POLICY_STOCK_CONFLICT));
-        assertThat(
-                        jdbc.queryForObject(
-                                "select sum(on_hand) from inventory.stock_item where sku=?",
-                                Integer.class,
-                                f.sku()))
-                .isEqualTo(7);
-    }
-
     record Fixture(UUID product, UUID skuId, String sku, UUID itemId) {}
 
     int write(String sql, Object... args) {
@@ -274,6 +201,13 @@ values (?,?,'HCM-A01-1-A',?,0,'AVAILABLE',?,?,?,?,now())
         return id;
     }
 
+    /** One sealed carton of 2 units at HCM-A01-1-A; its stock row's id. */
+    UUID carton(Fixture f, Instant receipt) {
+        // In a transaction: the pool does not auto-commit, and the carton and its row are checked together at commit.
+        return transactions.execute(status -> com.stockflow.support.CartonRows.stock(jdbc, f.sku(), "HCM-A01-1-A", 1,
+                2, null, receipt)).getFirst().stockItemId();
+    }
+
     InventoryPolicy policy(
             Integer threshold, RemovalStrategy strategy, TrackingMode tracking, boolean expiry) {
         return new InventoryPolicy(
@@ -284,23 +218,29 @@ values (?,?,'HCM-A01-1-A',?,0,'AVAILABLE',?,?,?,?,now())
     void batchAvailabilityExcludesHoldsBlockedAndExpiredStock() {
         var a = fixture("DRAFT");
         var b = fixture("DRAFT");
-        UUID held = stock(a, 6, null, null, null);
-        write("update inventory.stock_item set reserved=2 where id=?", held);
-        UUID blocked = stock(b, 10, null, null, null);
-        write("update inventory.stock_item set status='QUARANTINE' where id=?", blocked);
-        Instant qcReceipt = Instant.parse("2026-09-03T00:00:00Z");
-        for (String status : List.of("INBOUND", "BLOCKED")) {
-            UUID pending = stock(a, 30, qcReceipt, null, null);
-            write("update inventory.stock_item set status=? where id=?", status, pending);
-            qcReceipt = qcReceipt.plusSeconds(1);
-        }
-        stock(a, 20, Instant.parse("2026-01-01T00:00:00Z"), LocalDate.of(2000, 1, 1), null);
+        Instant received = Instant.parse("2026-01-02T00:00:00Z");
+        // Since team plan 4C-2 only whole sealed cartons nothing holds are promised: two free cartons of 2 count; a
+        // held one, cartons not AVAILABLE, an expired one and loose units do not.
+        transactions.executeWithoutResult(s -> {
+            com.stockflow.support.CartonRows.stock(jdbc, a.sku(), "HCM-A01-1-A", 2, 2, null, received);
+            UUID held = com.stockflow.support.CartonRows.stock(jdbc, a.sku(), "HCM-A01-1-A", 1, 2, null, received)
+                    .getFirst().stockItemId();
+            jdbc.update("update inventory.stock_item set reserved=2 where id=?", held);
+            for (String status : List.of("INBOUND", "BLOCKED")) {
+                com.stockflow.support.CartonRows.stock(jdbc, a.sku(), "HCM-A01-1-A", 1, 2, null, null, received, status);
+            }
+            com.stockflow.support.CartonRows.stock(jdbc, a.sku(), "HCM-A01-1-A", 1, 2, null, LocalDate.of(2000, 1, 1),
+                    received, "AVAILABLE");
+            com.stockflow.support.CartonRows.stock(jdbc, b.sku(), "HCM-A01-1-A", 1, 10, null, null, received,
+                    "QUARANTINE");
+        });
+        stock(a, 7, Instant.parse("2026-01-01T00:00:00Z"), null, null);
         var available = inventory.availableQuantities(Set.of(a.sku(), b.sku(), "MISSING-SKU"));
         assertThat(available.get(a.sku())).isEqualTo(4L);
         assertThat(available.getOrDefault(b.sku(), 0L)).isZero();
         assertThat(available.getOrDefault("MISSING-SKU", 0L)).isZero();
-        // Policy uses usable on-hand before reservations; QC stock is still excluded.
-        assertThat(items.get(a.itemId()).evaluation().usableOnHand()).isEqualTo(6L);
+        // Policy uses usable on-hand before reservations, loose units included; QC and expired stock are excluded.
+        assertThat(items.get(a.itemId()).evaluation().usableOnHand()).isEqualTo(13L);
     }
 
     @Test
@@ -338,7 +278,9 @@ values (?,?,'HCM-A01-1-A',?,0,'AVAILABLE',?,?,?,?,now())
     void placedOrderKeepsTheCommandPriceAndReplayKeepsTheAgreedSnapshot() {
         var f = fixture("APPROVED");
         gallery(f);
-        stock(f, 10, null, null, null);
+        // Ten cartons of one: what available to promise counts since team plan 4C-2.
+        transactions.executeWithoutResult(s -> com.stockflow.support.CartonRows.stock(jdbc, f.sku(), "HCM-A01-1-A",
+                10, 1, null, Instant.parse("2026-01-02T00:00:00Z")));
         var listing = catalog.edit(f.product(), 0, "checkout-" + f.sku(), null, null);
         catalog.price(
                 f.product(),
@@ -452,8 +394,9 @@ values (?,?,'HCM-A01-1-A',?,0,'AVAILABLE',?,?,?,?,now())
         items.configure(f.itemId(),
                 0,
                 policy(2, RemovalStrategy.FIFO, TrackingMode.NONE, false));
-        var newer = stock(f, 5, Instant.parse("2026-09-02T00:00:00Z"), null, null);
-        var older = stock(f, 5, Instant.parse("2026-09-01T00:00:00Z"), null, null);
+        // Since team plan 4C-2 an order line is given whole cartons only: two sealed cartons of 2, one per receipt.
+        var newer = carton(f, Instant.parse("2026-09-02T00:00:00Z"));
+        var older = carton(f, Instant.parse("2026-09-01T00:00:00Z"));
         var placed = orders.placeOrder(
                 new PlaceOrderCommand(
                         UUID.randomUUID(),

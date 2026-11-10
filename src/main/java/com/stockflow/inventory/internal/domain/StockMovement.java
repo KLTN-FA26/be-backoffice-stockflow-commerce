@@ -130,6 +130,12 @@ public record StockMovement(
          */
         DAMAGE_REPORT,
         /** A return line (SCRUM-260): goods counted in from the customer, and out of quarantine again. */
-        RETURN_REQUEST_LINE
+        RETURN_REQUEST_LINE,
+        /**
+         * The carton loose or opened stock was boxed into when every unit went into a whole carton (V20261111000110,
+         * team plan 4C-1): a MOVE that stays in place, into the carton this names, or that relabels a carton's units
+         * of no lot as lot {@code UNTRACED}. Historical only: the application never repacks, it moves whole cartons.
+         */
+        STOCK_PACKAGE
     }
 }

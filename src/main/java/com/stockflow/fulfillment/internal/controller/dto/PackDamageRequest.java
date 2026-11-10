@@ -20,8 +20,8 @@ public record PackDamageRequest(
         @NotNull(message = "requestId is required")
         UUID requestId,
 
-        @Schema(description = "1 to the units the line brought to packing, less any reported damaged already",
-                example = "2")
+        @Schema(description = "Every unit the line brought to packing: a carton is reported damaged whole (team plan "
+                + "4C-4)", example = "24")
         @NotNull(message = "damagedQuantity is required")
         @Positive(message = "damagedQuantity must be at least 1")
         Integer damagedQuantity,

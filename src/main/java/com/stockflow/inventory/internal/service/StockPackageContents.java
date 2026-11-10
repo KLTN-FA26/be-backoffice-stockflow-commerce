@@ -32,7 +32,10 @@ import java.util.stream.Collectors;
  * advisory lock, then the cartons ({@code FOR UPDATE}, in id order), then their stock rows by id.</b> A caller
  * therefore {@link #lockFor locks} the cartons of the rows it is about to lock - after the SKU lock, before the
  * rows - marks each row it {@link LockedCartons#tookFrom took units from}, and {@link #settle settles} once its
- * rows are saved: each carton taken from is opened, and closed CONSUMED when nothing is left in it.</p>
+ * rows are saved: each carton taken from is closed CONSUMED, and must be empty - a carton leaves stock whole (team
+ * plan 4C-2; kltn-docs 07 BR-03, 11 BR-04), so taking part of one is refused ({@code STOCK_PACKAGE_TAKEN_WHOLE}) and
+ * the caller's transaction rolls back. The database says the same: {@code tg_stock_package_transition} refuses to
+ * open a carton in stock.</p>
  *
  * <p>Taking from a carton that was not locked first is refused at once ({@link IllegalStateException}): it is the
  * lock order broken, and the commit-time check would otherwise surface the miss as a 500 - or not at all.</p>
@@ -63,13 +66,26 @@ class StockPackageContents {
                 .collect(Collectors.toMap(StockPackage::id, Function.identity())));
     }
 
-    /** After the rows are saved: every carton taken from is opened, or CONSUMED once empty. */
+    /**
+     * After the rows are saved: every carton taken from is CONSUMED. One with units left in it was taken from in
+     * part - a pick of part of a hold, damage reported on some of its units - which no carton allows any more.
+     */
     public void settle(LockedCartons cartons, Instant now) {
         for (StockPackageId id : cartons.taken) {
             StockPackage carton = cartons.locked.get(id);
-            carton.contentsTaken(stockItems.onHandInStockPackage(id), now);
+            int left = stockItems.onHandInStockPackage(id);
+            if (left > 0) {
+                throw takenInPart(carton, left);
+            }
+            carton.consume(now);
             stockPackages.save(carton);
         }
+    }
+
+    private static BusinessException takenInPart(StockPackage carton, int left) {
+        return new BusinessException(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE,
+                "%s would keep %d unit(s); a carton is taken whole, never in part".formatted(carton.lpn(), left),
+                java.util.List.of(), Map.of("lpn", carton.lpn()));
     }
 
     /**
@@ -77,7 +93,8 @@ class StockPackageContents {
      * spec 2026-10-23 section 6). Call under the SKU lock; the carton and then its rows, by id, are locked here.
      *
      * <ul>
-     *   <li>Written up: a LOST carton is found first. The units go onto the row that holds the carton's stock, or
+     *   <li>Written up: a LOST carton is found first, whole and sealed - a write-up of less than it was counted in at
+     *       is refused ({@code STOCK_PACKAGE_TAKEN_WHOLE}). The units go onto the row that holds the carton's stock, or
      *       onto its first row when none does - rows are never deleted at zero, so a lost carton still has the row it
      *       was emptied from. An IN_STOCK one must already be open: an unopened carton holds exactly what was counted
      *       into it. Never above what was counted into it ({@code STOCK_PACKAGE_OVERFILLED}).</li>
@@ -85,7 +102,9 @@ class StockPackageContents {
      *       shortfall that would cut into a hold is refused whole ({@link InsufficientStockException}), as for loose
      *       stock: a customer's hold is never cancelled by a correction; the holds are reallocated first.</li>
      *   <li>Then, by what is left: nothing, and {@code missingWhenEmpty} (a count that found nothing found the carton
-     *       missing) - LOST; nothing otherwise - CONSUMED; something after a write-down - opened.</li>
+     *       missing) - LOST; nothing otherwise - CONSUMED. Something left after a write-down would open the carton,
+     *       which no carton allows any more (team plan 4C-2): refused, {@code STOCK_PACKAGE_TAKEN_WHOLE}. A count
+     *       states a carton present or missing, never part of one (team plan 4C-3).</li>
      * </ul>
      *
      * <p>The rows and the carton are saved here, so the commit-time check finds them consistent in every branch.</p>
@@ -124,8 +143,59 @@ class StockPackageContents {
         return changes;
     }
 
+    /**
+     * A picked carton back into stock whole, at {@code to} (kltn-docs 07 BR-05, 20 §4.6 steps 5-6): its order was
+     * cancelled after the pick. The carton goes CONSUMED → IN_STOCK, sealed ({@link StockPackage#restock}); its row
+     * follows it and gets its units back, so it is the same carton, LPN and receipt layer it was. Call under the SKU
+     * lock; the carton and then its row are locked here (the global order: carton before stock row).
+     *
+     * @throws BusinessException {@code STOCK_PACKAGE_TAKEN_WHOLE} when {@code units} is not what was counted into
+     *         it; {@code INVALID_STOCK_PACKAGE_TRANSITION} when it is not CONSUMED
+     */
+    public StockItem restock(StockPackageId id, com.stockflow.inventory.internal.domain.StockItemId rowId,
+                             com.stockflow.inventory.internal.domain.LocationId to, int units) {
+        return restock(id, rowId, to, units, false);
+    }
+
+    /**
+     * As {@link #restock(StockPackageId, com.stockflow.inventory.internal.domain.StockItemId,
+     * com.stockflow.inventory.internal.domain.LocationId, int)}; with {@code quarantine}, the units come back QUARANTINE
+     * instead of AVAILABLE: a carton the check station removed as damaged (team plan 4C-6, kltn-docs 08 §4.2 step 4).
+     */
+    public StockItem restock(StockPackageId id, com.stockflow.inventory.internal.domain.StockItemId rowId,
+                             com.stockflow.inventory.internal.domain.LocationId to, int units, boolean quarantine) {
+        StockPackage carton = stockPackages.findAllByIdForUpdate(List.of(id)).stream().findFirst()
+                .orElseThrow(() -> new IllegalStateException("No stock package " + id.value()));
+        StockItem row = stockItems.findByIdForUpdate(rowId).orElseThrow(() ->
+                new IllegalStateException("Stock row %s of %s vanished".formatted(rowId.value(), carton.lpn())));
+        if (carton.receivedQty() == null || units != carton.receivedQty() || !row.onHand().isZero()) {
+            throw new BusinessException(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE, ("%s comes back into stock whole, %s "
+                    + "unit(s); not %d").formatted(carton.lpn(), carton.receivedQty(), units), List.of(),
+                    Map.of("lpn", carton.lpn()));
+        }
+        carton.restock(to);
+        row.followPackageTo(to);
+        row.putBack(com.stockflow.inventory.internal.domain.Quantity.of(units));
+        if (quarantine) {
+            row.quarantineInPackage();
+        }
+        // The carton first: saveMerged flushes before its own statement, so the carton stands at its new place before
+        // the caller's ledger line names it there (check_stock_movement_package reads it on insert).
+        stockPackages.save(carton);
+        // Units back in the carton they were counted into: the same receipt layer, so the FIFO trigger is told it is
+        // a merge (V20261017000450), as for any write-up of a carton.
+        stockItems.saveMerged(row);
+        return row;
+    }
+
     private static List<RowChange> fill(StockPackage carton, List<StockItem> rows, int units) {
         if (carton.status() == StockPackageStatus.LOST) {
+            // Found whole or not at all: it comes back sealed, so it must hold what was counted into it again.
+            if (held(rows) + units != carton.receivedQty()) {
+                throw new BusinessException(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE, ("%s was counted in at %d; it is found "
+                        + "whole or not at all, not with %d").formatted(carton.lpn(), carton.receivedQty(),
+                        held(rows) + units), List.of(), Map.of("lpn", carton.lpn()));
+            }
             carton.found();
         } else if (carton.status() != StockPackageStatus.IN_STOCK) {
             throw new BusinessException(ErrorCode.INVALID_STOCK_PACKAGE_TRANSITION,
@@ -162,6 +232,9 @@ class StockPackageContents {
         if (free < units) {
             throw new InsufficientStockException(rows.getFirst().sku().code(), units, free);
         }
+        if (units < held(rows)) {
+            throw takenInPart(carton, held(rows) - units);
+        }
         List<RowChange> changes = new ArrayList<>();
         int remaining = units;
         for (StockItem row : rows) {
@@ -181,8 +254,8 @@ class StockPackageContents {
             } else {
                 carton.consume(now);
             }
-        } else if (carton.unopened()) {
-            carton.open();
+        } else {
+            throw takenInPart(carton, held(rows));
         }
         return changes;
     }
@@ -203,6 +276,11 @@ class StockPackageContents {
 
         private LockedCartons(Map<StockPackageId, StockPackage> locked) {
             this.locked = locked;
+        }
+
+        /** The locked carton {@code id}; empty when it was not among those locked. */
+        java.util.Optional<StockPackage> carton(StockPackageId id) {
+            return java.util.Optional.ofNullable(id == null ? null : locked.get(id));
         }
 
         /** {@code row} gave up units; nothing to do for loose stock. */

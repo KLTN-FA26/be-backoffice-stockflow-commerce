@@ -171,6 +171,12 @@ class PermissionMatrixTest {
             Map.entry("POST /api/v1/fulfillment/tasks/{taskId}/packages/{packageId}/reopening", "fulfillment-packing:UPDATE"),
             Map.entry("DELETE /api/v1/fulfillment/tasks/{taskId}/packages/{packageId}", "fulfillment-packing:UPDATE"),
             Map.entry("POST /api/v1/fulfillment/tasks/{taskId}/packing-completion", "fulfillment-packing:UPDATE"),
+            // 4C-6: the carton check and labelling station - the packing station's resources, five new endpoints
+            Map.entry("POST /api/v1/fulfillment/tasks/{taskId}/carton-checks", "fulfillment-packing:UPDATE"),
+            Map.entry("POST /api/v1/fulfillment/tasks/{taskId}/carton-labels", "fulfillment-packing:UPDATE"),
+            Map.entry("POST /api/v1/fulfillment/tasks/{taskId}/cartons/{lpn}/label-reprint", "fulfillment-packing:UPDATE"),
+            Map.entry("POST /api/v1/fulfillment/tasks/{taskId}/cartons/{lpn}/removal", "fulfillment-packing:UPDATE"),
+            Map.entry("POST /api/v1/fulfillment/tasks/{taskId}/shipping-labels", "fulfillment-packing:READ"),
             Map.entry("GET /api/v1/fulfillment/tasks/{taskId}/packages/{packageId}/label", "fulfillment-packing:READ"),
             Map.entry("POST /api/v1/fulfillment/carriers", "fulfillment-carriers:UPDATE"),
             Map.entry("PUT /api/v1/fulfillment/carriers/{carrierId}", "fulfillment-carriers:UPDATE"),

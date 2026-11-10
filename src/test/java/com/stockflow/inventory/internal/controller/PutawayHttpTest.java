@@ -36,7 +36,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 /**
  * SCRUM-92 reading putaway tasks through the real filter chain, permission aspect and data scope. A two-step receipt
- * line of 40 units - cartons of 20 and 15, 5 loose - is confirmed, and the asynchronous creator opens its tasks.
+ * line of 40 units - two cartons of 20, every unit in a carton since team plan 4C-2 - is confirmed, and the
+ * asynchronous creator opens a task per carton.
  */
 @SecuredIntegrationTest
 class PutawayHttpTest {
@@ -56,7 +57,6 @@ class PutawayHttpTest {
     private UUID clerk;
     private UUID receiptId;
     private UUID cartonTask;
-    private UUID looseTask;
 
     @BeforeEach
     void setUp() {
@@ -65,14 +65,13 @@ class PutawayHttpTest {
         Received received = receive();
         receiptId = received.receiptId();
         cartonTask = received.cartonTask();
-        looseTask = received.looseTask();
     }
 
     /** What one confirmed receipt of the fixture opened. */
-    private record Received(UUID receiptId, UUID cartonTask, UUID looseTask) {
+    private record Received(UUID receiptId, UUID cartonTask) {
     }
 
-    /** A confirmed two-step receipt line into HCM: two cartons and a loose remainder, with their tasks opened. */
+    /** A confirmed two-step receipt line into HCM: two cartons, with their tasks opened. */
     private Received receive() {
         String sku = "PH-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(Locale.ROOT);
         UUID po = Identifiers.newId();
@@ -89,7 +88,7 @@ class PutawayHttpTest {
             jdbc.update("update inventory.inventory_items set weight_kg = 0.5, length_cm = 10, width_cm = 8, height_cm = 6"
                     + " where id = ?", item);
             jdbc.update("insert into inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)"
-                    + " values (?, ?, 'CARTON', 1000)", Identifiers.newId(), item);
+                    + " values (?, ?, 'CARTON', 20)", Identifiers.newId(), item);
 
             UUID submitter = ReferenceRows.user(entityManager);
             UUID approver = ReferenceRows.user(entityManager);   // four eyes (ck_purchase_orders_four_eyes)
@@ -111,14 +110,12 @@ class PutawayHttpTest {
         });
         UUID receiptId = receipts.create(new GoodsReceipts.Create(po, "DN-PH", null), clerk).id();
         receipts.replaceLines(receiptId, List.of(new GoodsReceipts.NewLine(poLine, 40, null, null, RECEIVING, null,
-                "CARTON", List.of(new NewPackage(null, 20), new NewPackage(null, 15)))));
+                "CARTON", List.of(new NewPackage(null, 20), new NewPackage(null, 20)))));
         receipts.confirm(receiptId, clerk);
-        Await.until("three putaway tasks", Duration.ofSeconds(20),
-                () -> putawayTasks.tasksOfReceipt(receiptId).size() >= 3);
+        Await.until("two putaway tasks", Duration.ofSeconds(20),
+                () -> putawayTasks.tasksOfReceipt(receiptId).size() >= 2);
         return new Received(receiptId, putawayTasks.tasksOfReceipt(receiptId).stream()
-                .filter(t -> t.stockPackageId() != null && t.quantity() == 20).findFirst().orElseThrow().id(),
-                putawayTasks.tasksOfReceipt(receiptId).stream().filter(t -> t.stockPackageId() == null)
-                        .findFirst().orElseThrow().id());
+                .filter(t -> t.stockPackageId() != null).findFirst().orElseThrow().id());
     }
 
     /** A real account with this role, assigned to these warehouses. */
@@ -162,21 +159,11 @@ class PutawayHttpTest {
     }
 
     @Test
-    @DisplayName("a loose task is read from where its units wait, with no LPN")
-    void looseTaskHasNoLpn() throws Exception {
-        mvc.asRole(Role.WAREHOUSE_STAFF, clerk, get(TASKS + "/" + looseTask))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.quantity").value(5))
-                .andExpect(jsonPath("$.data.sourceLocationCode").value(RECEIVING))
-                .andExpect(jsonPath("$.data.lpn").doesNotExist());
-    }
-
-    @Test
     @DisplayName("a receipt's tasks are listed without suggestions, and a status filter narrows them")
     void listByReceipt() throws Exception {
         mvc.asRole(Role.WAREHOUSE_STAFF, clerk, get(TASKS).param("receiptId", receiptId.toString()))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.totalElements").value(3))
+                .andExpect(jsonPath("$.data.totalElements").value(2))
                 .andExpect(jsonPath("$.data.items[0].suggestions.length()").value(0));
         mvc.asRole(Role.WAREHOUSE_STAFF, clerk, get(TASKS).param("receiptId", receiptId.toString())
                         .param("status", "DONE"))
@@ -194,15 +181,15 @@ class PutawayHttpTest {
     }
 
     @Test
-    @DisplayName("the warehouse list resolves the sources of loose tasks of several receipts in one batch")
-    void listByWarehouseResolvesLooseTasksOfTwoReceipts() throws Exception {
+    @DisplayName("the warehouse list resolves the sources and cartons of tasks of several receipts in one batch")
+    void listByWarehouseResolvesTasksOfTwoReceipts() throws Exception {
         Received second = receive();
         mvc.asRole(Role.WAREHOUSE_STAFF, clerk, get(TASKS).param("warehouseId", WAREHOUSE_HCM.toString())
                         .param("size", "200"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.items[?(@.id == '" + looseTask + "')].sourceLocationCode")
+                .andExpect(jsonPath("$.data.items[?(@.id == '" + cartonTask + "')].sourceLocationCode")
                         .value(Matchers.contains(RECEIVING)))
-                .andExpect(jsonPath("$.data.items[?(@.id == '" + second.looseTask() + "')].sourceLocationCode")
+                .andExpect(jsonPath("$.data.items[?(@.id == '" + second.cartonTask() + "')].sourceLocationCode")
                         .value(Matchers.contains(RECEIVING)))
                 .andExpect(jsonPath("$.data.items[?(@.id == '" + second.cartonTask() + "')].lpn")
                         .value(Matchers.contains(Matchers.notNullValue())));

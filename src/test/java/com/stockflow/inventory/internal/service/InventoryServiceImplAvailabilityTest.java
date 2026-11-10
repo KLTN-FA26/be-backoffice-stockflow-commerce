@@ -74,11 +74,11 @@ class InventoryServiceImplAvailabilityTest {
     private final SkuReservationRepository skuReservations = mock(SkuReservationRepository.class);
     private final CycleCountRepository cycleCounts = mock(CycleCountRepository.class);
     private final StockPackageRepository stockPackages = mock(StockPackageRepository.class);
+    private final LocationDirectory locations = mock(LocationDirectory.class);
     private final InventoryServiceImpl service = new InventoryServiceImpl(repository,
             new InventoryEventPublisher(mock(ApplicationEventPublisher.class)), operations,
             mock(InventoryItemDirectory.class), Clock.fixed(NOW, ZoneOffset.UTC), controls, policies, skuReservations,
-            mock(LocationDirectory.class), cycleCounts, stockPackages,
-            mock(com.stockflow.inventory.internal.domain.StockDamageReportRepository.class), Duration.ofMinutes(30));
+            locations, cycleCounts, stockPackages, Duration.ofMinutes(30));
 
     private final Map<StockItemId, StockItem> rows = new HashMap<>();
 
@@ -88,6 +88,18 @@ class InventoryServiceImplAvailabilityTest {
                 TrackingMode.LOT, false, null));
         when(repository.findByIdForUpdate(any())).thenAnswer(c -> Optional.ofNullable(rows.get(c.<StockItemId>getArgument(0))));
         when(repository.findById(any())).thenAnswer(c -> Optional.ofNullable(rows.get(c.<StockItemId>getArgument(0))));
+        // Every location is a pickable bin but a QC area.
+        when(locations.pickable(org.mockito.ArgumentMatchers.anyCollection())).thenAnswer(c -> {
+            Map<String, UUID> pickable = new HashMap<>();
+            c.<java.util.Collection<String>>getArgument(0).stream().filter(code -> !code.contains("-QC"))
+                    .forEach(code -> pickable.put(code, UUID.randomUUID()));
+            return pickable;
+        });
+    }
+
+    /** A whole sealed carton nothing holds: what the repository offers as allocatable. */
+    private static StockItemRepository.Allocatable carton(String sku, String location, int units) {
+        return new StockItemRepository.Allocatable(new StockItemId(UUID.randomUUID()), sku, location, units);
     }
 
     private StockItem stock(String location, String lot, LocalDate expiry, int onHand) {
@@ -105,10 +117,10 @@ class InventoryServiceImplAvailabilityTest {
     @DisplayName("a reservation TTL that is not positive is refused at construction")
     void ttlMustBePositive() {
         assertThatThrownBy(() -> new InventoryServiceImpl(repository, null, operations, null, Clock.systemUTC(),
-                controls, policies, skuReservations, null, cycleCounts, stockPackages, null, Duration.ZERO))
+                controls, policies, skuReservations, null, cycleCounts, stockPackages, Duration.ZERO))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> new InventoryServiceImpl(repository, null, operations, null, Clock.systemUTC(),
-                controls, policies, skuReservations, null, cycleCounts, stockPackages, null, Duration.ofMinutes(-1)))
+                controls, policies, skuReservations, null, cycleCounts, stockPackages, Duration.ofMinutes(-1)))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
@@ -117,13 +129,16 @@ class InventoryServiceImplAvailabilityTest {
     class Atp {
 
         @Test
-        @DisplayName("is unheld sellable stock minus live SKU reservations minus units in doubt, never below zero")
+        @DisplayName("is the allocatable cartons minus live SKU reservations, never below zero; a carton in doubt at a "
+                + "recount is not promised")
         void netFigure() {
-            when(repository.availableQuantities(any(), any())).thenReturn(Map.of("CUP-12OZ", 100L, "LID-12OZ", 10L));
+            StockItemRepository.Allocatable doubtful = carton("CUP-12OZ", "HCM-A02-1-A", 20);
+            when(repository.findAllocatable(anyCollection(), any())).thenReturn(List.of(
+                    carton("CUP-12OZ", "HCM-A01-1-A", 50), carton("CUP-12OZ", "HCM-A01-1-B", 30), doubtful,
+                    carton("LID-12OZ", "HCM-A01-1-A", 10)));
             when(skuReservations.heldBySku(anyCollection())).thenReturn(Map.of("CUP-12OZ", 30L, "LID-12OZ", 50L));
             when(cycleCounts.frozen(anyCollection(), any())).thenReturn(List.of(
-                    new CycleCountRepository.Frozen(UUID.randomUUID(), "CUP-12OZ", "HCM-A01-1-A", 5),
-                    new CycleCountRepository.Frozen(UUID.randomUUID(), "CUP-12OZ", "HCM-A02-1-A", 15)));
+                    new CycleCountRepository.Frozen(doubtful.id().value(), "CUP-12OZ", "HCM-A02-1-A", 20)));
 
             Map<String, Long> atp = service.availableQuantities(Set.of("cup-12oz", "LID-12OZ"));
 
@@ -132,10 +147,22 @@ class InventoryServiceImplAvailabilityTest {
         }
 
         @Test
+        @DisplayName("team plan 4C-2: only cartons a release could allocate are promised - none on a bin nobody picks"
+                + " from (the repository already leaves out loose units and opened or held cartons)")
+        void onlyAllocatableStockIsPromised() {
+            when(repository.findAllocatable(anyCollection(), any())).thenReturn(List.of(
+                    carton("CUP-12OZ", "HCM-A01-1-A", 40), carton("CUP-12OZ", "HCM-QC01", 60)));
+
+            assertThat(service.availableQuantities(Set.of("CUP-12OZ"))).containsEntry("CUP-12OZ", 40L);
+            assertThat(service.availableToPromise(List.of(CUP))).containsEntry(CUP, 40);
+            assertThat(service.availableToPromise(CUP)).isEqualTo(40);
+        }
+
+        @Test
         @DisplayName("asking for no SKU reads nothing")
         void noSkus() {
             assertThat(service.availableQuantities(Set.of())).isEmpty();
-            verify(repository, never()).availableQuantities(any(), any());
+            verify(repository, never()).findAllocatable(any(), any());
         }
 
         @Test
@@ -143,7 +170,7 @@ class InventoryServiceImplAvailabilityTest {
         void todayIsBusinessDate() {
             service.availableQuantities(Set.of("CUP-12OZ"));
 
-            verify(repository).availableQuantities(Set.of("CUP-12OZ"), TODAY);
+            verify(repository).findAllocatable(Set.of("CUP-12OZ"), TODAY);
         }
 
         @Test
@@ -156,10 +183,12 @@ class InventoryServiceImplAvailabilityTest {
         @DisplayName("for a list, every SKU asked for gets an answer: no stock is 0, and reservations and doubt reduce it")
         void listAnswersEverySku() {
             Sku lid = new Sku("LID-12OZ");
-            when(repository.sumAvailableBySkus(anyCollection(), any())).thenReturn(Map.of(CUP, 100));
+            StockItemRepository.Allocatable doubtful = carton("CUP-12OZ", "HCM-A01-1-B", 20);
+            when(repository.findAllocatable(anyCollection(), any())).thenReturn(List.of(
+                    carton("CUP-12OZ", "HCM-A01-1-A", 80), doubtful));
             when(skuReservations.heldBySku(anyCollection())).thenReturn(Map.of("CUP-12OZ", 30L));
             when(cycleCounts.frozen(anyCollection(), any())).thenReturn(List.of(
-                    new CycleCountRepository.Frozen(UUID.randomUUID(), "CUP-12OZ", "HCM-A01-1-A", 20)));
+                    new CycleCountRepository.Frozen(doubtful.id().value(), "CUP-12OZ", "HCM-A01-1-B", 20)));
 
             Map<Sku, Integer> atp = service.availableToPromise(List.of(CUP, lid, CUP));
 
@@ -169,7 +198,8 @@ class InventoryServiceImplAvailabilityTest {
         @Test
         @DisplayName("for a list, reservations above the stock leave 0, not a negative figure")
         void listNeverNegative() {
-            when(repository.sumAvailableBySkus(anyCollection(), any())).thenReturn(Map.of(CUP, 10));
+            when(repository.findAllocatable(anyCollection(), any())).thenReturn(List.of(
+                    carton("CUP-12OZ", "HCM-A01-1-A", 10)));
             when(skuReservations.heldBySku(anyCollection())).thenReturn(Map.of("CUP-12OZ", 25L));
 
             assertThat(service.availableToPromise(List.of(CUP))).containsEntry(CUP, 0);
@@ -239,6 +269,21 @@ class InventoryServiceImplAvailabilityTest {
         }
 
         @Test
+        @DisplayName("team plan 4C-5: stock in a staging area counts on hand and available but promises nothing (20 BR-20)")
+        void stagingPromisesNothing() {
+            when(locations.stagingAreas()).thenReturn(Set.of("HCM-STG01"));
+            when(repository.findLevelLinesBySku(CUP)).thenReturn(List.of(
+                    new StockLevelLine(new LocationId("HCM-A01-1-A"), StockStatus.AVAILABLE, 10, 0, null),
+                    new StockLevelLine(new LocationId("HCM-STG01"), StockStatus.AVAILABLE, 40, 0, null)));
+
+            StockLevel level = service.levelsOf(CUP).get(0);
+
+            assertThat(level.onHand()).isEqualTo(50);
+            assertThat(level.available()).as("it is sellable stock, held for an order or waiting to go back").isEqualTo(50);
+            assertThat(level.atp()).as("but nobody can be promised it").isEqualTo(10);
+        }
+
+        @Test
         @DisplayName("BR-SEC-002: a warehouse-bound caller sees only their own warehouses' levels")
         void scoped() {
             when(repository.findLevelLinesBySku(CUP)).thenReturn(List.of(
@@ -289,6 +334,18 @@ class InventoryServiceImplAvailabilityTest {
                     new CycleCountRepository.Frozen(doubtful.id().value(), "CUP-12OZ", "HCM-A02-1-A", 10)));
 
             assertThat(service.availabilityOf(CUP)).extracting(StockAvailability::lotNumber).containsExactly("L2");
+        }
+
+        @Test
+        @DisplayName("team plan 4C-5: a staging area's stock is not offered by bin: nobody takes stock from there")
+        void stagingAreaIsLeftOut() {
+            when(locations.stagingAreas()).thenReturn(Set.of("HCM-STG01"));
+            StockItem staged = stock("HCM-STG01", "L1", null, 10);
+            StockItem bin = stock("HCM-A01-1-A", "L2", null, 10);
+            when(repository.findAvailableBySku(CUP)).thenReturn(List.of(staged, bin));
+
+            assertThat(service.availabilityOf(CUP)).extracting(StockAvailability::locationCode)
+                    .containsExactly("HCM-A01-1-A");
         }
 
         @Test

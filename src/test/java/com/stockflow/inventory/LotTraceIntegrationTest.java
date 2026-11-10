@@ -10,7 +10,7 @@ import com.stockflow.common.security.Role;
 import com.stockflow.inventory.api.AllocateStockCommand;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.api.MoveReference;
-import com.stockflow.inventory.api.ReclassifyStockCommand;
+import com.stockflow.inventory.api.ReclassifyStockPackagesCommand;
 import com.stockflow.inventory.api.ReserveStockCommand;
 import com.stockflow.inventory.api.StockDisposition;
 import com.stockflow.inventory.api.StockReservation;
@@ -21,6 +21,7 @@ import com.stockflow.procurement.internal.service.GoodsReceipts;
 import com.stockflow.support.DemoData;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
+import com.stockflow.support.ReceiptCartons;
 import com.stockflow.support.ReferenceRows;
 import com.stockflow.support.WithCurrentUser;
 import jakarta.persistence.EntityManager;
@@ -33,7 +34,6 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.transaction.support.TransactionTemplate;
 
-import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.List;
@@ -52,6 +52,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * knowing its receipt, purchase order and supplier; the lot is traced through putaway, the allocation the order's
  * release made, the pick that consumed it and the order it left for, with the balance left now; and the report
  * filters by SKU, lot number, warehouse and day, pages, and keeps a warehouse-bound clerk to their warehouses.
+ *
+ * <p>Since team plan 4C-2 every unit is received in a carton (kltn-docs 03 BR-12): the demo table's CARTON unit holds
+ * one piece, so a lot of 3 is three cartons, each with its own receipt, putaway and pick ledger line and its own
+ * allocation.</p>
  */
 @IntegrationTest
 @org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc
@@ -109,7 +113,7 @@ class LotTraceIntegrationTest {
         UUID line = jdbc.queryForObject("SELECT id FROM procurement.purchase_order_lines WHERE po_id = ?", UUID.class, po);
         GoodsReceipts.ReceiptView draft = receipts.create(new GoodsReceipts.Create(po, "DN-LT", null), clerk);
         receipts.replaceLines(draft.id(), List.of(new GoodsReceipts.NewLine(line, quantity, lotNumber, expiry,
-                "HCM-RCV01", null)));
+                "HCM-RCV01", null, ReceiptCartons.DEMO_UNIT, ReceiptCartons.demo(quantity))));
         return receipts.confirm(draft.id(), clerk);
     }
 
@@ -118,13 +122,15 @@ class LotTraceIntegrationTest {
                 receipt.id());
     }
 
-    /** Putaway: the lot's INBOUND units at the receiving area onto {@link #BIN} as AVAILABLE. */
-    private void putAway(UUID lot, int quantity) {
-        Instant receivedAt = jdbc.queryForObject(
-                "SELECT received_at FROM inventory.stock_lot WHERE id = ?", java.sql.Timestamp.class, lot).toInstant();
-        tx.executeWithoutResult(s -> inventory.reclassify(new ReclassifyStockCommand(new Sku(TABLE), lotNumber,
-                "HCM-RCV01", BIN, quantity, StockDisposition.AVAILABLE, MoveReference.PUTAWAY_TASK, Identifiers.newId(),
-                clerk, "putaway", receivedAt)));
+    /** Putaway: the receipt's cartons, INBOUND at the receiving area, onto {@link #BIN} as AVAILABLE. */
+    private void putAway(GoodsReceipts.ReceiptView receipt) {
+        List<String> lpns = receipt.lines().getFirst().packages().stream().map(GoodsReceipts.PackageView::lpn).toList();
+        tx.executeWithoutResult(s -> inventory.reclassifyStockPackages(new ReclassifyStockPackagesCommand(lpns, BIN,
+                StockDisposition.AVAILABLE, MoveReference.PUTAWAY_TASK, Identifiers.newId(), clerk, "putaway")));
+    }
+
+    private UUID lotOfRow(UUID stockItemId) {
+        return jdbc.queryForObject("SELECT lot_id FROM inventory.stock_item WHERE id = ?", UUID.class, stockItemId);
     }
 
     private UUID order() {
@@ -152,17 +158,24 @@ class LotTraceIntegrationTest {
         UUID lot2 = lotOf(second);
         assertThat(lot1).isNotEqualTo(lot2);
 
-        putAway(lot1, 3);
-        putAway(lot2, 2);
+        putAway(first);
+        putAway(second);
         UUID order = order();
         tx.executeWithoutResult(s -> inventory.reserve(new ReserveStockCommand(UUID.randomUUID(), new Sku(TABLE), 4,
                 order)));
         List<StockReservation> allocated = tx.execute(s -> inventory.allocate(new AllocateStockCommand(order, "HCM")))
                 .allocations().get(0).holds();
         assertThat(allocated).extracting(StockReservation::locationCode).containsOnly(BIN);
-        assertThat(allocated).extracting(StockReservation::quantity).containsExactly(3, 1);   // FEFO tie: older receipt first
-        UUID pickLine = Identifiers.newId();
-        tx.executeWithoutResult(s -> consumption.consumeForPick(allocated.get(0).reservationId(), pickLine, clerk));
+        assertThat(allocated).as("whole cartons of one").extracting(StockReservation::quantity)
+                .containsExactly(1, 1, 1, 1);
+        List<StockReservation> ofLot1 = allocated.stream().filter(h -> lot1.equals(lotOfRow(h.stockItemId()))).toList();
+        assertThat(ofLot1).as("FEFO tie: the older receipt's three cartons first").hasSize(3);
+        List<UUID> pickLines = List.of(Identifiers.newId(), Identifiers.newId(), Identifiers.newId());
+        for (int i = 0; i < ofLot1.size(); i++) {
+            UUID hold = ofLot1.get(i).reservationId();
+            UUID pickLine = pickLines.get(i);
+            tx.executeWithoutResult(s -> consumption.consumeForPick(hold, pickLine, clerk));
+        }
 
         // The lot as received, and what is left of it.
         LotTrace trace = traces.trace(lot1, null);
@@ -183,17 +196,21 @@ class LotTraceIntegrationTest {
             assertThat(leg.orderNumber()).as("snapshot on the ledger line").isEqualTo(orderNumber);
             assertThat(leg.picked()).isEqualTo(3);
         });
-        assertThat(trace.holds()).singleElement().satisfies(hold -> {
+        assertThat(trace.holds()).hasSize(3).allSatisfy(hold -> {
             assertThat(hold.orderId()).isEqualTo(order);
             assertThat(hold.allocatedFrom()).isNotNull();
             assertThat(hold.orderNumber()).as("snapshot on the allocation").isEqualTo(orderNumber);
             assertThat(hold.status()).isEqualTo("CONSUMED");
         });
         var ledger = traces.movements(lot1, null, null, null, 0, 20).items();
-        assertThat(ledger).extracting(LotTrace.Movement::type).containsExactly("RECEIPT", "MOVE", "PICK");
-        assertThat(ledger.get(2).referenceId()).isEqualTo(pickLine);
-        assertThat(ledger.get(2).orderId()).isEqualTo(order);
-        assertThat(ledger.get(2).orderNumber()).isEqualTo(orderNumber);
+        assertThat(ledger).extracting(LotTrace.Movement::type).as("one line per carton")
+                .containsExactly("RECEIPT", "RECEIPT", "RECEIPT", "MOVE", "MOVE", "MOVE", "PICK", "PICK", "PICK");
+        assertThat(ledger.subList(6, 9)).extracting(LotTrace.Movement::referenceId)
+                .containsExactlyInAnyOrderElementsOf(pickLines);
+        assertThat(ledger.subList(6, 9)).allSatisfy(pick -> {
+            assertThat(pick.orderId()).isEqualTo(order);
+            assertThat(pick.orderNumber()).isEqualTo(orderNumber);
+        });
 
         LotTrace other = traces.trace(lot2, null);
         assertThat(other.lot().goodsReceiptId()).isEqualTo(second.id());
@@ -247,7 +264,7 @@ class LotTraceIntegrationTest {
         mvc.perform(get("/api/v1/inventory/lots/{id}/movements", lot1).param("size", "2"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.items.length()").value(2))
-                .andExpect(jsonPath("$.data.totalElements").value(3));
+                .andExpect(jsonPath("$.data.totalElements").value(9));
         mvc.perform(get("/api/v1/inventory/lots/{id}", UUID.randomUUID())).andExpect(status().isNotFound());
     }
 

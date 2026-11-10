@@ -185,6 +185,52 @@ class AreaAndBoundaryControllerHttpTest {
         assertThat(sent.getValue().operationalStatus()).isEqualTo(DoorStatus.OPEN);
     }
 
+    /** Team plan 4C-5: stock arrives in a staging area only by picking, so it is neither pickable nor a putaway target. */
+    @Test
+    void aPickableOrPutawayStagingAreaNeverReachesTheService() {
+        for (String settings : new String[] {"\"pickable\":true,\"putawayTarget\":false",
+                "\"pickable\":false,\"putawayTarget\":true"}) {
+            assertThatThrownBy(() -> mvc.perform(post("/api/v1/warehouses/{id}/areas", WAREHOUSE)
+                    .contentType("application/json").content("""
+                            {"code":"stg02","type":"STAGING","name":"Khu cho xuat",
+                             "footprint":{"x":20,"y":25,"width":5,"length":5,"rotation":0},
+                             "location":{"capacityUnits":500,%s}}
+                            """.formatted(settings))))
+                    .as(settings).rootCause().isInstanceOf(BusinessException.class)
+                    .extracting(e -> ((BusinessException) e).errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
+        }
+        verifyNoInteractions(areas);
+    }
+
+    @Test
+    void updatingAnAreaIntoAPickableStagingAreaNeverReachesTheService() {
+        assertThatThrownBy(() -> mvc.perform(put("/api/v1/areas/{id}", UUID.randomUUID())
+                .contentType("application/json").content("""
+                        {"type":"STAGING","name":"Khu cho xuat","version":1,
+                         "footprint":{"x":20,"y":25,"width":5,"length":5,"rotation":0},
+                         "location":{"capacityUnits":500,"pickable":true,"putawayTarget":false}}
+                        """)))
+                .rootCause().isInstanceOf(BusinessException.class)
+                .extracting(e -> ((BusinessException) e).errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
+        verifyNoInteractions(areas);
+    }
+
+    @Test
+    void aStagingAreaThatIsNeitherIsHandedToTheService() throws Exception {
+        when(areas.createArea(any())).thenReturn(new AreaSummary(UUID.randomUUID(), WAREHOUSE, "STG02",
+                AreaType.STAGING, "Khu cho xuat", FLOOR, false, LocationStatus.ACTIVE, 0, UUID.randomUUID(),
+                "HCM-STG02", StorageClass.NORMAL, 500, null, false, false));
+
+        mvc.perform(post("/api/v1/warehouses/{id}/areas", WAREHOUSE).contentType("application/json").content("""
+                        {"code":"stg02","type":"STAGING","name":"Khu cho xuat",
+                         "footprint":{"x":20,"y":25,"width":5,"length":5,"rotation":0},
+                         "location":{"capacityUnits":500,"pickable":false,"putawayTarget":false}}
+                        """))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.type").value("STAGING"))
+                .andExpect(jsonPath("$.data.pickable").value(false));
+    }
+
     @Test
     void aZeroLengthBoundaryNeverReachesTheService() {
         assertThatThrownBy(() -> mvc.perform(post("/api/v1/warehouses/{id}/boundaries", WAREHOUSE)

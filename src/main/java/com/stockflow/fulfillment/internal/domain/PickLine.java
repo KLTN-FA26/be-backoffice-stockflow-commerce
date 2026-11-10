@@ -5,8 +5,19 @@ import java.util.Objects;
 import java.util.UUID;
 
 /**
- * One stop of a pick list: take {@code allocatedQty} of {@code sku} (from {@code lotNumber}) off
- * {@code locationCode}, against one hold (docs 07 step 2: "allocation at a bin and lot").
+ * One stop of a pick list: take carton {@code lpn} - {@code allocatedQty} of {@code sku}, its whole standard count -
+ * off {@code locationCode}, against the one hold on it (kltn-docs 07 §4.1 step 2: "mỗi thùng đã phân bổ một dòng";
+ * BR-04).
+ *
+ * <p>A line planned now always names its carton ({@link #open}); only a SHORT line a unit-level damage report made for
+ * damaged units nothing replaced holds them on a loose quarantine row and names none ({@link #fromDamage}, until team
+ * plan 5-6). A stored line is rehydrated as it was, loose history included ({@code ck_pick_line_lpn} spares rows written
+ * before V20261113000400).</p>
+ *
+ * <p>A line of a STAGING task is staged rather than picked (team plan 4C-5, 07 §4.2 step 5): the whole carton taken
+ * ({@code pickedQty}), moved to the staging area ({@code stagedAt}, {@code stagedLocationCode}), not deducted
+ * ({@code consumedAt} null) until the task moves to dispatch and the line turns PICKED ({@code ck_pick_line_staged},
+ * {@code ck_pick_line_picked}).</p>
  *
  * <p>An entity of the {@link PickList} aggregate: it changes only through the list, which checks the
  * task's status and the scan before it lets a line move. Mutable, because its status genuinely
@@ -33,11 +44,16 @@ public final class PickLine {
     private String putBackLocationCode;
     private UUID putBackBy;
     private Instant putBackAt;
-    /** Units the picker did not find at the bin (X-SHORT); positive only on a SHORT line or one reallocated since. */
+    /**
+     * Units the picker could not take (X-SHORT); positive only on a SHORT line or one reallocated since. A short reported
+     * per carton is the whole line; a smaller figure is history from before cartons.
+     */
     private int shortQty;
-    /** The carton the hold is in (SCRUM-473), null for loose stock: the line is confirmed by scanning it. */
+    /** Why the carton could not be taken (07 §4.4 step 9); null on a line never reported short, and on old ones. */
+    private ShortPickReason shortReason;
+    /** The carton the hold is in (SCRUM-473): the line is confirmed, and put back, by scanning it. Null on history. */
     private String lpn;
-    /** The hold was the carton's whole sealed content when planned: a hint for the picker, not a rule. */
+    /** The hold was the carton's whole sealed content when planned - always, since 4C-2 allocates whole cartons only. */
     private boolean wholeCarton;
     /** Units the picker found damaged at the bin (SCRUM-277); positive only on the line a damage report superseded. */
     private int damagedQty;
@@ -45,6 +61,10 @@ public final class PickLine {
     private UUID damageReportId;
     /** Units of a picked line found damaged at the packing bench (R8): back in quarantine, no longer this line's. */
     private int packingDamagedQty;
+    /** When the carton was moved to the staging area (4C-5); kept once the line moved on to PICKED or PUT_BACK. */
+    private Instant stagedAt;
+    /** The staging area the carton was moved to; set with {@link #stagedAt}. */
+    private String stagedLocationCode;
 
     /** Rehydrates a stored line that was never short. */
     public PickLine(UUID id, UUID orderLineId, UUID reservationId, String sku, String locationCode,
@@ -134,34 +154,112 @@ public final class PickLine {
     }
 
     /**
-     * A line a damage report made (SCRUM-277): the good units still to pick at the bin, a replacement allocation
-     * elsewhere (OPEN, {@code shortQty} 0), or the damaged share nothing could replace (SHORT by all of it, waiting for
-     * the coordinator's reallocation like any short line). {@code lpn} is the carton its hold is in, null for loose
-     * stock (SCRUM-473; {@code tg_pick_line_carton}). Package-private: only {@link PickList} plans lines.
+     * Rehydrates a stored line with why it was short ({@code ck_pick_line_short_reason}: the whole line, SHORT or
+     * reallocated since).
+     */
+    public PickLine(UUID id, UUID orderLineId, UUID reservationId, String sku, String locationCode,
+                    String lotNumber, int sequenceNo, int allocatedQty, int pickedQty, PickLineStatus status,
+                    UUID pickedBy, Instant pickedAt, Instant consumedAt, String scannedLocationCode,
+                    String scannedCode, int putBackQty, String putBackLocationCode, UUID putBackBy,
+                    Instant putBackAt, int shortQty, ShortPickReason shortReason, String lpn, boolean wholeCarton,
+                    int damagedQty, UUID damageReportId, int packingDamagedQty) {
+        this(id, orderLineId, reservationId, sku, locationCode, lotNumber, sequenceNo, allocatedQty, pickedQty, status,
+                pickedBy, pickedAt, consumedAt, scannedLocationCode, scannedCode, putBackQty, putBackLocationCode,
+                putBackBy, putBackAt, shortQty, lpn, wholeCarton, damagedQty, damageReportId, packingDamagedQty);
+        if (shortReason != null && (shortQty != allocatedQty
+                || status != PickLineStatus.SHORT && status != PickLineStatus.CANCELLED)) {
+            throw new IllegalArgumentException("Only a line short of its whole carton carries a short reason");
+        }
+        this.shortReason = shortReason;
+    }
+
+    /**
+     * Rehydrates a stored line with when and where its carton was staged ({@code ck_pick_line_staged}: both or
+     * neither; a STAGED line not deducted).
+     */
+    public PickLine(UUID id, UUID orderLineId, UUID reservationId, String sku, String locationCode,
+                    String lotNumber, int sequenceNo, int allocatedQty, int pickedQty, PickLineStatus status,
+                    UUID pickedBy, Instant pickedAt, Instant consumedAt, String scannedLocationCode,
+                    String scannedCode, int putBackQty, String putBackLocationCode, UUID putBackBy,
+                    Instant putBackAt, int shortQty, ShortPickReason shortReason, String lpn, boolean wholeCarton,
+                    int damagedQty, UUID damageReportId, int packingDamagedQty, Instant stagedAt,
+                    String stagedLocationCode) {
+        this(id, orderLineId, reservationId, sku, locationCode, lotNumber, sequenceNo, allocatedQty, pickedQty, status,
+                pickedBy, pickedAt, consumedAt, scannedLocationCode, scannedCode, putBackQty, putBackLocationCode,
+                putBackBy, putBackAt, shortQty, shortReason, lpn, wholeCarton, damagedQty, damageReportId,
+                packingDamagedQty);
+        if ((stagedAt == null) != (stagedLocationCode == null)
+                || status == PickLineStatus.STAGED && (stagedAt == null || consumedAt != null)) {
+            throw new IllegalArgumentException("A staged line says when and where, and is not deducted");
+        }
+        this.stagedAt = stagedAt;
+        this.stagedLocationCode = stagedLocationCode;
+    }
+
+    /**
+     * A line a damage report made (SCRUM-277): a replacement carton elsewhere (OPEN, {@code shortQty} 0, its
+     * {@code lpn}), or the damaged carton's units nothing could replace (SHORT by all of it, waiting for the
+     * coordinator's reallocation like any short line). Only the latter names no carton: inventory keeps those units on a
+     * loose DAMAGED row in quarantine ({@code tg_pick_line_carton}, {@code ck_pick_line_lpn}). Package-private: only
+     * {@link PickList} plans lines.
      */
     static PickLine fromDamage(UUID id, UUID orderLineId, UUID reservationId, String sku, String locationCode,
                                String lotNumber, int sequenceNo, int allocatedQty, boolean shortOfAll,
                                UUID damageReportId, String lpn, boolean wholeCarton) {
-        return new PickLine(id, orderLineId, reservationId, sku, locationCode, lotNumber, sequenceNo, allocatedQty, 0,
+        if (lpn == null && !shortOfAll) {
+            throw new IllegalArgumentException("A replacement line is a carton and names it");
+        }
+        return new PickLine(id, orderLineId, Objects.requireNonNull(reservationId, "reservationId"), sku, locationCode, lotNumber, sequenceNo, allocatedQty, 0,
                 shortOfAll ? PickLineStatus.SHORT : PickLineStatus.OPEN, null, null, null, null, null, 0, null, null,
                 null, shortOfAll ? allocatedQty : 0, lpn, wholeCarton, 0,
                 Objects.requireNonNull(damageReportId, "damageReportId"), 0);
     }
 
-    /** A new line, open, nothing picked. Package-private: only {@link PickList} plans lines. */
+    /**
+     * A new line, open, nothing picked: one carton, named by its LPN (07 BR-04, BR-10; {@code ck_pick_line_lpn}).
+     * Package-private: only {@link PickList} plans lines.
+     */
     static PickLine open(UUID id, UUID orderLineId, UUID reservationId, String sku, String locationCode,
                          String lotNumber, int sequenceNo, int allocatedQty, String lpn, boolean wholeCarton) {
-        return new PickLine(id, orderLineId, reservationId, sku, locationCode, lotNumber, sequenceNo, allocatedQty,
-                0, PickLineStatus.OPEN, null, null, null, null, null, 0, null, null, null, 0, lpn, wholeCarton);
+        return new PickLine(id, orderLineId, Objects.requireNonNull(reservationId, "reservationId"), sku, locationCode,
+                lotNumber, sequenceNo, allocatedQty, 0, PickLineStatus.OPEN, null, null, null, null, null, 0, null, null,
+                null, 0, Objects.requireNonNull(lpn, "lpn: a pick line is a carton"), wholeCarton);
     }
 
-    void pick(String scannedLocation, String scannedItem, UUID actor, Instant now) {
+    /** The carton was taken whole: the line is PICKED with its whole allocation (BR-04: no quantity is entered). */
+    void pick(String scannedLocation, String scannedLpn, UUID actor, Instant now) {
         this.status = PickLineStatus.PICKED;
         this.pickedQty = allocatedQty;
         this.pickedBy = Objects.requireNonNull(actor, "actor");
         this.pickedAt = Objects.requireNonNull(now, "now");
         this.scannedLocationCode = scannedLocation;
-        this.scannedCode = scannedItem;
+        this.scannedCode = scannedLpn;
+    }
+
+    /**
+     * The carton was taken whole, for a STAGING task (07 §4.2 step 5): the line is STAGED - the carton moved to
+     * {@code stagingLocationCode} by the caller in the same transaction, still held for the order, nothing deducted.
+     */
+    void stage(String scannedLocation, String scannedLpn, String stagingLocationCode, UUID actor, Instant now) {
+        this.status = PickLineStatus.STAGED;
+        this.pickedQty = allocatedQty;
+        this.pickedBy = Objects.requireNonNull(actor, "actor");
+        this.pickedAt = Objects.requireNonNull(now, "now");
+        this.scannedLocationCode = scannedLocation;
+        this.scannedCode = scannedLpn;
+        this.stagedAt = now;
+        this.stagedLocationCode = Objects.requireNonNull(stagingLocationCode, "stagingLocationCode");
+    }
+
+    /**
+     * The task moved to dispatch (07 §4.3 step 8): the staged carton is PICKED where it stands; the caller deducts it in
+     * the same transaction and records it with {@link #recordConsumed}. Who picked it and when stay the picker's scan.
+     */
+    void dispatchStaged() {
+        if (status != PickLineStatus.STAGED) {
+            throw new IllegalStateException("Only a STAGED line moves to dispatch; it is " + status);
+        }
+        this.status = PickLineStatus.PICKED;
     }
 
     /** The hold behind the line was deducted, in the same transaction as {@link #pick}. */
@@ -187,12 +285,15 @@ public final class PickLine {
     }
 
     /**
-     * The picker found {@code found} of the allocated units at the bin (X-SHORT): nothing is taken and nothing is
-     * deducted - the line records the shortfall and waits for the coordinator.
+     * The picker could not take the carton, for {@code reason} (07 §4.4 step 9): nothing is taken and nothing is
+     * deducted - the line is short of the whole carton and waits for the coordinator.
      */
-    void reportShort(int found, String scannedLocation) {
+    void reportShort(ShortPickReason reason, String scannedLocation) {
         this.status = PickLineStatus.SHORT;
-        this.shortQty = allocatedQty - found;
+        // A staged line had taken its carton (pickedQty); short now, it holds none of it (ck_pick_line_within_allocation).
+        this.pickedQty = 0;
+        this.shortQty = allocatedQty;
+        this.shortReason = Objects.requireNonNull(reason, "reason");
         this.scannedLocationCode = scannedLocation;
     }
 
@@ -250,9 +351,12 @@ public final class PickLine {
     public UUID putBackBy() { return putBackBy; }
     public Instant putBackAt() { return putBackAt; }
     public int shortQty() { return shortQty; }
+    public ShortPickReason shortReason() { return shortReason; }
     public String lpn() { return lpn; }
     public boolean wholeCarton() { return wholeCarton; }
     public int damagedQty() { return damagedQty; }
     public UUID damageReportId() { return damageReportId; }
     public int packingDamagedQty() { return packingDamagedQty; }
+    public Instant stagedAt() { return stagedAt; }
+    public String stagedLocationCode() { return stagedLocationCode; }
 }

@@ -243,6 +243,35 @@ class OrderServiceImplLifecycleTest {
     }
 
     @Test
+    @DisplayName("the first label locks the order once and closes a pending cancellation request as EXPIRED (4C-6, 08 BR-04)")
+    void theFirstLabelLocksTheOrderAndClosesThePendingRequest() {
+        Order order = loaded(OrderFixtures.releasedPrepaid());
+        CancellationRequest pending = CancellationRequest.open(order.id().value(), UUID.randomUUID(),
+                CancellationReasonCode.CUSTOMER_REQUEST, null, NOW);
+        when(requests.findPending(order.id().value())).thenReturn(Optional.of(pending));
+
+        service.recordFirstLabel(order.id().value());
+        service.recordFirstLabel(order.id().value());
+
+        assertThat(order.firstLabeledAt()).isEqualTo(NOW);
+        verify(repository, org.mockito.Mockito.times(1)).save(order);
+        verify(requests, org.mockito.Mockito.times(1)).save(pending);
+        assertThat(pending.decisionNote()).contains("labelled").contains("can no longer be cancelled");
+    }
+
+    @Test
+    @DisplayName("a label on an unknown order is NOT_FOUND, on a cancelled one ORDER_CANCELLED, and neither saves anything")
+    void aLabelNeedsAnOrderThatCanBeLabelled() {
+        when(repository.findByIdForUpdate(any())).thenReturn(Optional.empty());
+        assertThat(codeOf(() -> service.recordFirstLabel(UUID.randomUUID()))).isEqualTo(ErrorCode.NOT_FOUND);
+
+        Order cancelled = loaded(OrderFixtures.releasedPrepaid());
+        cancelled.cancel(CancellationReasonCode.OUT_OF_STOCK, null, null, STAFF, NOW);
+        assertThat(codeOf(() -> service.recordFirstLabel(cancelled.id().value()))).isEqualTo(ErrorCode.ORDER_CANCELLED);
+        verify(repository, never()).save(any());
+    }
+
+    @Test
     @DisplayName("a partial handover moves the order to PARTIALLY_FULFILLED and the rest can be closed, freeing its holds")
     void closingTheRestReleasesTheHoldsOfTheClosedUnits() {
         Order order = OrderFixtures.releasedPrepaid();

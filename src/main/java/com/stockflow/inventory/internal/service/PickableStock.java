@@ -4,12 +4,13 @@ import com.stockflow.common.domain.BusinessCalendar;
 import com.stockflow.common.domain.Sku;
 import com.stockflow.inventory.internal.domain.CycleCountRepository;
 import com.stockflow.inventory.internal.domain.LocationDirectory;
-import com.stockflow.inventory.internal.domain.LocationId;
 import com.stockflow.inventory.internal.domain.StockAllocator;
 import com.stockflow.inventory.internal.domain.StockItemId;
 import com.stockflow.inventory.internal.domain.StockItemRepository;
 
 import java.time.Instant;
+import java.time.LocalDate;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -39,16 +40,41 @@ final class PickableStock {
         this.cycleCounts = cycleCounts;
     }
 
-    /** Sellable stock of {@code sku} on pickable, usable locations of {@code warehouseCode}, never at {@code excluded}. */
-    List<StockAllocator.Candidate> candidates(Sku sku, String warehouseCode, LocationId excluded, Instant now) {
+    /**
+     * Sellable stock of {@code sku} on pickable, usable locations of {@code warehouseCode}, never the row
+     * {@code excluded}: a short pick's carton (kltn-docs 07 BR-09). Only that carton is in doubt - the picker scanned it
+     * by its LPN - so the other cartons of its bin stay pickable.
+     */
+    List<StockAllocator.Candidate> candidates(Sku sku, String warehouseCode, StockItemId excluded, Instant now) {
         Set<StockItemId> frozen = cycleCounts.frozen(List.of(sku.code()), BusinessCalendar.date(now)).stream()
                 .map(layer -> new StockItemId(layer.stockItemId())).collect(Collectors.toSet());
         List<StockAllocator.Candidate> inWarehouse = stockItems.findAvailabilityBySku(sku).stream()
                 .filter(c -> c.location().warehouseCode().equals(warehouseCode))
-                .filter(c -> !c.location().equals(excluded))
+                .filter(c -> !c.stockItemId().equals(excluded))
                 .filter(c -> !frozen.contains(c.stockItemId()))
                 .toList();
         Map<String, UUID> pickable = locations.pickable(inWarehouse.stream().map(c -> c.location().code()).toList());
         return inWarehouse.stream().filter(c -> pickable.containsKey(c.location().code())).toList();
+    }
+
+    /**
+     * Units of each SKU a release could allocate, across every warehouse (a checkout reservation is promised against
+     * the whole system): whole sealed cartons nothing holds, unexpired, on pickable bins, none a recount has frozen -
+     * what {@link #candidates} offers the planner, summed (team plan 4C-2; kltn-docs 07 BR-03, 20 §5.6). Loose units
+     * and an opened carton are on hand but never allocated, so they are not promised. Absent keys mean zero.
+     */
+    Map<String, Long> allocatableBySku(Collection<String> skus, LocalDate today) {
+        List<StockItemRepository.Allocatable> rows = stockItems.findAllocatable(skus, today);
+        if (rows.isEmpty()) {
+            return Map.of();
+        }
+        Set<StockItemId> frozen = cycleCounts.frozen(skus, today).stream()
+                .map(layer -> new StockItemId(layer.stockItemId())).collect(Collectors.toSet());
+        Map<String, UUID> pickable = locations.pickable(rows.stream()
+                .map(StockItemRepository.Allocatable::locationCode).distinct().toList());
+        return rows.stream()
+                .filter(row -> !frozen.contains(row.id()) && pickable.containsKey(row.locationCode()))
+                .collect(Collectors.groupingBy(StockItemRepository.Allocatable::sku,
+                        Collectors.summingLong(StockItemRepository.Allocatable::units)));
     }
 }

@@ -17,6 +17,7 @@ import com.stockflow.procurement.internal.service.GoodsReceiptPhotoService.Photo
 import com.stockflow.procurement.internal.service.GoodsReceipts;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
+import com.stockflow.support.ReceiptCartons;
 import com.stockflow.support.ReferenceRows;
 import com.stockflow.support.TestUsers;
 import com.stockflow.support.WithCurrentUser;
@@ -89,6 +90,7 @@ class GoodsReceiptPhotoIntegrationTest {
     private UUID receipt;
     private UUID sofaLine;
     private UUID tableLine;
+    private String lot;
 
     @BeforeEach
     void setUp() {
@@ -98,7 +100,7 @@ class GoodsReceiptPhotoIntegrationTest {
         inspector = tx.execute(s -> ReferenceRows.user(entityManager));
         po = order();
         receipt = receipts.create(new GoodsReceipts.Create(po, "DN-PHOTO", null), clerk).id();
-        String lot = "PH-" + UUID.randomUUID().toString().substring(0, 8);
+        lot = "PH-" + UUID.randomUUID().toString().substring(0, 8);
         var counted = receipts.replaceLines(receipt, List.of(
                 new GoodsReceipts.NewLine(poLine(po, SOFA), 4, null, null, "HCM-RCV01", null),
                 new GoodsReceipts.NewLine(poLine(po, TABLE), 6, lot, LocalDate.now().plusYears(1), "HCM-RCV01", null)));
@@ -186,6 +188,12 @@ class GoodsReceiptPhotoIntegrationTest {
         assertThat(code(() -> photos.add(receipt, tableLine, GoodsReceiptPhotoStage.QC, photo("qc.jpg"), inspector)))
                 .as("receiving QC was removed").isEqualTo(ErrorCode.INVALID_RECEIPT_TRANSITION);
 
+        // Counted into cartons of one before it is posted (team plan 4C-2, kltn-docs 03 BR-12); the lines keep their ids.
+        receipts.replaceLines(receipt, List.of(
+                new GoodsReceipts.NewLine(poLine(po, SOFA), 4, null, null, "HCM-RCV01", null, ReceiptCartons.DEMO_UNIT,
+                        ReceiptCartons.demo(4)),
+                new GoodsReceipts.NewLine(poLine(po, TABLE), 6, lot, LocalDate.now().plusYears(1), "HCM-RCV01", null,
+                        ReceiptCartons.DEMO_UNIT, ReceiptCartons.demo(6))));
         assertThat(receipts.confirm(receipt, clerk).status()).isEqualTo(GoodsReceiptStatus.IN_PUTAWAY);
         assertThat(code(() -> photos.add(receipt, null, GoodsReceiptPhotoStage.RECEIPT, photo("late.jpg"), clerk)))
                 .as("the count is closed").isEqualTo(ErrorCode.INVALID_RECEIPT_TRANSITION);

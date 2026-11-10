@@ -11,6 +11,7 @@ import com.stockflow.procurement.internal.service.GoodsReceipts;
 import com.stockflow.procurement.internal.service.SupplierInvoices;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
+import com.stockflow.support.ReceiptCartons;
 import com.stockflow.support.ReferenceRows;
 import jakarta.persistence.EntityManager;
 import org.assertj.core.api.ThrowableAssert;
@@ -123,12 +124,16 @@ class SupplierInvoiceIntegrationTest {
                   ON i.id = l.inventory_item_id WHERE l.po_id = ? AND i.sku = ?""", UUID.class, po, sku);
     }
 
-    /** Counts {@code quantity} of {@code sku} in on one receipt and posts it; returns the receipt. */
+    /**
+     * Counts {@code quantity} of {@code sku} in on one receipt and posts it; returns the receipt. Every unit is in a
+     * carton of the demo CARTON unit, one piece each (team plan 4C-2, kltn-docs 03 BR-12).
+     */
     private GoodsReceipts.ReceiptView received(UUID po, String sku, int quantity) {
         GoodsReceipts.ReceiptView draft = receipts.create(new GoodsReceipts.Create(po, "DN-" + lot, null), clerk);
         boolean tracked = sku.equals(TABLE);
         receipts.replaceLines(draft.id(), List.of(new GoodsReceipts.NewLine(poLine(po, sku), quantity,
-                tracked ? lot : null, tracked ? LocalDate.now().plusYears(1) : null, "HCM-RCV01", null)));
+                tracked ? lot : null, tracked ? LocalDate.now().plusYears(1) : null, "HCM-RCV01", null,
+                ReceiptCartons.DEMO_UNIT, ReceiptCartons.demo(quantity))));
         return receipts.confirm(draft.id(), clerk);
     }
 

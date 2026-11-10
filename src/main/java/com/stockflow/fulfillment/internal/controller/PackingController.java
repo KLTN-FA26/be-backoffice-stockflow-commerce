@@ -1,10 +1,8 @@
 package com.stockflow.fulfillment.internal.controller;
 
 import com.stockflow.common.api.ApiResponse;
-import com.stockflow.common.api.PageResponse;
 import com.stockflow.common.audit.AuditAction;
 import com.stockflow.common.audit.Auditable;
-import com.stockflow.common.persistence.Pages;
 import com.stockflow.common.security.Action;
 import com.stockflow.common.security.AuthenticatedUser;
 import com.stockflow.common.security.CurrentUser;
@@ -21,7 +19,6 @@ import com.stockflow.fulfillment.internal.controller.dto.PackScanRequest;
 import com.stockflow.fulfillment.internal.controller.dto.PackageKitResponse;
 import com.stockflow.fulfillment.internal.controller.dto.PackageLabelResponse;
 import com.stockflow.fulfillment.internal.controller.dto.PackageResponse;
-import com.stockflow.fulfillment.internal.controller.dto.PackingQueueRowResponse;
 import com.stockflow.fulfillment.internal.controller.dto.PackingSessionResponse;
 import com.stockflow.fulfillment.internal.controller.dto.PickDamageResponse;
 import com.stockflow.fulfillment.internal.controller.dto.SealPackageRequest;
@@ -54,8 +51,10 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * The packing station (G4-5, SCRUM-278/281/282; kltn-docs 08): the queue, the packing session of a task, its packages
- * and their labels. Completing packing stays on {@code POST /tasks/{taskId}/packing-completion}.
+ * What is left of the repack station (G4-5, SCRUM-278/281/282; kltn-docs 08 before 2026-11-04) until team plan 4C-7
+ * removes it: packages, kits, scans, seal, reopen, void and their labels, and damage found after picking. The queue, the
+ * session and its start moved to the carton check station ({@link CartonCheckController}, team plan 4C-6), and
+ * {@code POST /tasks/{taskId}/packing-completion} completes a check: a repack parcel no longer ships.
  *
  * <p>{@code fulfillment-packages:READ} ({@link FulfillmentPackageResourceDeclaration}) to look at the queue and a
  * session; {@code fulfillment-packing} to work the station: UPDATE to pack, READ for a label, and APPROVE to work
@@ -74,33 +73,6 @@ class PackingController {
         this.packing = packing;
         this.mapper = mapper;
         this.pickMapper = pickMapper;
-    }
-
-    /** Picked orders waiting at the packing table, oldest pick first (SCRUM-281). */
-    @GetMapping("/packing-queue")
-    @RequiresPermission(resource = FulfillmentResources.PACKAGES, action = Action.READ)
-    public ApiResponse<PageResponse<PackingQueueRowResponse>> queue(@AuthenticatedUser CurrentUser actor,
-            @RequestParam(required = false) UUID warehouseId,
-            @RequestParam(required = false) String status,
-            @RequestParam(defaultValue = "0") int page,
-            @RequestParam(required = false) Integer size) {
-        return ApiResponse.ok(packing.queue(warehouseId, status, page, size == null ? Pages.DEFAULT_PAGE_SIZE : size,
-                actor).map(mapper::toResponse));
-    }
-
-    /** A packer takes the order at the table; again, answered as it is. 409 PACKING_NOT_READY before picking ends. */
-    @PostMapping("/tasks/{taskId}/packing-start")
-    @RequiresPermission(resource = FulfillmentResources.PACKING, action = Action.UPDATE)
-    @Auditable(action = AuditAction.TRANSITION, resourceType = "fulfillment-task", resourceId = "#taskId")
-    public ApiResponse<PackingSessionResponse> start(@PathVariable UUID taskId, @AuthenticatedUser CurrentUser actor) {
-        return ApiResponse.ok(mapper.toResponse(packing.start(taskId, actor)));
-    }
-
-    @GetMapping("/tasks/{taskId}/packing-session")
-    @RequiresPermission(resource = FulfillmentResources.PACKAGES, action = Action.READ)
-    public ApiResponse<PackingSessionResponse> session(@PathVariable UUID taskId,
-                                                       @AuthenticatedUser CurrentUser actor) {
-        return ApiResponse.ok(mapper.toResponse(packing.session(taskId, actor)));
     }
 
     /** A new empty package. Send an {@code Idempotency-Key}: each call opens another. */
@@ -231,7 +203,9 @@ class PackingController {
      * (BR-STK-003). Take the units out of their parcel first. They go back into stock as DAMAGED in quarantine; the
      * task goes back to picking for what replaces them - new lines elsewhere, or a SHORT line, the order ON_HOLD
      * ({@code INVENTORY}) for the coordinator, when nothing could - and packing resumes once it is picked again. The
-     * same report again answers 200 with what it made; retries carry the same {@code requestId}.
+     * same report again answers 200 with what it made; retries carry the same {@code requestId}. Always the whole
+     * carton the line picked (team plan 4C-4; kltn-docs 08): part of one is 409 {@code STOCK_PACKAGE_TAKEN_WHOLE}, since
+     * its good units would be deducted with no carton to go back into.
      */
     @PostMapping(value = "/tasks/{taskId}/pick-lines/{lineId}/damage-after-pick",
             consumes = org.springframework.http.MediaType.MULTIPART_FORM_DATA_VALUE)

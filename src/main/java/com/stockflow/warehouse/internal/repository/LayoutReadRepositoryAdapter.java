@@ -162,6 +162,18 @@ class LayoutReadRepositoryAdapter implements LayoutReadRepository, LocationLooku
     }
 
     @Override
+    public java.util.List<String> findAreaLocationCodes(com.stockflow.warehouse.internal.domain.AreaType type) {
+        return entityManager.createQuery("""
+                        select loc.locationCode
+                        from AreaJpaEntity a
+                        join a.location loc
+                        where a.type = :type
+                        """, String.class)
+                .setParameter("type", type)
+                .getResultList();
+    }
+
+    @Override
     public java.util.List<LocationRow> findAreas(UUID warehouseId, com.stockflow.warehouse.internal.domain.AreaType type) {
         return entityManager.createQuery("""
                         select loc.id, loc.kind, loc.warehouseId, loc.locationCode, loc.storageClass,

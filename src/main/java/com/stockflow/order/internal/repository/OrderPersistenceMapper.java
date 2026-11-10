@@ -79,6 +79,7 @@ final class OrderPersistenceMapper {
         order.restorePartialShipment(entity.isAllowPartialShipment());
         order.restoreFulfilmentStarted(entity.getFulfilmentStartedAt());
         order.restorePackingStarted(entity.getPackingStartedAt());
+        order.restoreFirstLabeled(entity.getFirstLabeledAt());
         order.restoreLifecycle(entity.getHoldReason(), entity.getStatusBeforeHold(), entity.getHoldNote(),
                 entity.getShippedAt(), entity.getDeliveredAt(), entity.getDeliveryFailureReason(),
                 entity.getCompletedAt(), entity.getRefundedAt(), entity.getClosedAt());
@@ -133,6 +134,7 @@ final class OrderPersistenceMapper {
         entity.applyClosedAmount(order.closedAmount());
         entity.applyFulfilmentStarted(order.fulfilmentStartedAt());
         entity.applyPackingStarted(order.packingStartedAt());
+        entity.applyFirstLabeled(order.firstLabeledAt());
         entity.applyLifecycle(order.holdReason(), order.statusBeforeHold(), order.holdNote(), order.shippedAt(),
                 order.deliveredAt(), order.deliveryFailureReason(), order.completedAt(), order.refundedAt(),
                 order.closedAt());
@@ -181,7 +183,7 @@ final class OrderPersistenceMapper {
                 new OrderSummary.Lifecycle(entity.getHoldReason(), entity.getStatusBeforeHold(), entity.getHoldNote(),
                         entity.getPackedAt(), entity.getShippedAt(), entity.getDeliveredAt(),
                         entity.getDeliveryFailureReason(), entity.getCompletedAt(), entity.getClosedAt(), null, null,
-                        List.of(), List.of(), entity.isAllowPartialShipment()),
+                        List.of(), List.of(), entity.isAllowPartialShipment(), null, null, entity.getFirstLabeledAt()),
                 rowCharges(entity));
     }
 

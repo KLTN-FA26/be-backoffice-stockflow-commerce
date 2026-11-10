@@ -12,6 +12,9 @@ interface StockMovementJpaRepository extends BaseJpaRepository<StockMovementJpaE
     Optional<StockMovementJpaEntity> findFirstByMovementTypeAndReferenceTypeAndReferenceIdOrderByIdAsc(
             StockMovement.MovementType movementType, StockMovement.ReferenceType referenceType, UUID referenceId);
 
+    java.util.List<StockMovementJpaEntity> findByMovementTypeAndReferenceTypeAndReferenceIdOrderByIdAsc(
+            StockMovement.MovementType movementType, StockMovement.ReferenceType referenceType, UUID referenceId);
+
     Optional<StockMovementJpaEntity>
             findFirstByMovementTypeAndReferenceTypeAndReferenceIdAndFromStockPackageIdIsNullAndToStockPackageIdIsNullOrderByIdAsc(
             StockMovement.MovementType movementType, StockMovement.ReferenceType referenceType, UUID referenceId);
@@ -26,6 +29,15 @@ interface StockMovementJpaRepository extends BaseJpaRepository<StockMovementJpaE
             @org.springframework.data.repository.query.Param("type") StockMovement.MovementType type,
             @org.springframework.data.repository.query.Param("referenceType") StockMovement.ReferenceType referenceType,
             @org.springframework.data.repository.query.Param("referenceIds") java.util.Collection<UUID> referenceIds);
+
+    @org.springframework.data.jpa.repository.Query("""
+            select distinct m.toStockPackageId, m.toLocationCode from StockMovementJpaEntity m
+            where m.movementType = com.stockflow.inventory.internal.domain.StockMovement.MovementType.MOVE
+              and m.referenceType = :referenceType and m.referenceId = :referenceId and m.toStockPackageId is not null
+            """)
+    java.util.List<Object[]> cartonsMovedBy(
+            @org.springframework.data.repository.query.Param("referenceType") StockMovement.ReferenceType referenceType,
+            @org.springframework.data.repository.query.Param("referenceId") UUID referenceId);
 
     @org.springframework.data.jpa.repository.Query("""
             select coalesce(sum(m.quantity), 0) from StockMovementJpaEntity m

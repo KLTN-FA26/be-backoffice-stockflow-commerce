@@ -269,6 +269,10 @@ public enum ErrorCode {
     RECEIPT_LINE_HAS_PACKAGES("This receipt line has labelled cartons", 409),
     /** SCRUM-473: the cartons counted on a receipt line hold more units than the line received. */
     RECEIPT_PACKAGES_EXCEED_LINE("The cartons hold more than the receipt line", 422),
+    /** Kltn-docs 03 BR-12: every unit received is in a carton; units outside one are not received. */
+    RECEIPT_LINE_NOT_IN_CARTONS("Every unit of a receipt line must be in a carton", 422),
+    /** Kltn-docs 03 BR-13: a carton holds the SKU's standard count; one of another count is not received. */
+    RECEIPT_PACKAGE_NOT_STANDARD("A carton must hold the SKU's standard count", 422),
     /** SCRUM-92: no putaway task with this id. */
     PUTAWAY_TASK_NOT_FOUND("Putaway task not found", 404),
     /** SCRUM-92: the task has been put away completely; nothing is left to move. */
@@ -529,12 +533,18 @@ public enum ErrorCode {
     FULFILLMENT_HOLDS_OUTSIDE_WAREHOUSE("Stock held for this order is in another warehouse", 409),
     /** SCRUM-267 (docs 07 step 6): the bin scanned is not the one this pick line takes its goods from. */
     PICK_LOCATION_MISMATCH("The scanned location is not this line's", 409),
-    /** SCRUM-274: the code scanned is neither this line's SKU nor its barcode. */
-    PICK_ITEM_MISMATCH("The scanned item is not this line's SKU", 409),
-    /** Docs 07 BR-04: never more than the line's allocation; more needs a re-allocation. */
-    PICK_QUANTITY_EXCEEDS_ALLOCATION("More than allocated to this line", 409),
-    /** Fewer than allocated: a short pick, reported through the short-pick flow (SCRUM-268). */
-    PICK_QUANTITY_SHORT("Fewer than allocated - report a short pick", 409),
+    /**
+     * Kltn-docs 07 BR-10 (team plan 4C-4): the code scanned is not this line's carton LPN - a SKU, a barcode or another
+     * carton is refused, to pick a line or to put it back. No quantity is scanned any more (BR-04), so the former
+     * PICK_QUANTITY_EXCEEDS_ALLOCATION and PICK_QUANTITY_SHORT are gone.
+     */
+    PICK_ITEM_MISMATCH("The scanned code is not this line's carton LPN", 409),
+    /**
+     * Team plan 4C-4 (kltn-docs 07 BR-04, BR-10): the stock held for a pick line is in no carton, so no LPN could
+     * confirm it. A guard: allocation takes whole cartons only, and a damage report's share restored as loose units is
+     * reallocated to cartons (INSUFFICIENT_STOCK when there are none) rather than kept.
+     */
+    PICK_HOLD_NOT_IN_CARTON("The stock held for this line is in no carton; reallocate it to whole cartons", 409),
     PICK_LINE_NOT_OPEN("This line is no longer open", 409),
     /** A cycle count already completed or cancelled. */
     CYCLE_COUNT_NOT_OPEN("This cycle count is no longer open", 409),
@@ -565,6 +575,10 @@ public enum ErrorCode {
     STOCK_PACKAGE_WRONG_LOCATION("The carton is not at this location", 422),
     /** A carton counted above its received quantity. */
     STOCK_PACKAGE_OVERFILLED("A carton cannot hold more than it was received with", 422),
+    /** Kltn-docs 11 BR-05: a carton held or allocated for an order is not moved by hand; its picker would find it gone. */
+    STOCK_PACKAGE_HELD("The carton is held for an order and cannot be moved by hand", 409),
+    /** Team plan 4C-2 (07 BR-03, 11 BR-04): stock leaves a carton whole; nothing takes part of one. */
+    STOCK_PACKAGE_TAKEN_WHOLE("A carton is taken whole; part of it cannot be taken", 409),
     /** Docs 07 step 9: a pick task closes only when every line is picked. */
     PICK_LINES_INCOMPLETE("Some lines are not picked yet", 409),
     PICK_TASK_STATE_CONFLICT("The task cannot do that in its current status", 409),
@@ -572,6 +586,7 @@ public enum ErrorCode {
     RESERVATION_NOT_ACTIVE("The stock hold is no longer active", 409),
     /** 4B-7 (20 BR-17): a hold at the order's shipping warehouse is allocated there only. */
     RESERVATION_WAREHOUSE_MISMATCH("The stock is held at another warehouse", 409),
+    RESERVATION_NOT_WHOLE_CARTONS("A stock reservation is a whole number of the SKU's cartons", 422),
     /**
      * A hold that is not an order's goods on a shelf - one on a legacy print-shop row (IN_PRODUCTION):
      * a pick does not close it (review of #109). The code keeps its name for clients that read it.
@@ -580,6 +595,18 @@ public enum ErrorCode {
     /** Docs 07 BR-05: only goods picked for an order cancelled afterwards go back to a bin. */
     PUT_BACK_NOT_REQUIRED("Nothing on this line needs putting back", 409),
     PUT_BACK_LOCATION_INVALID("Put back onto an active bin of the task's warehouse", 409),
+    /**
+     * Kltn-docs 11 BR-09, 20 BR-20 (team plan 4C-5): a staging area holds cartons picked for an order; stock enters it
+     * only by picking, and leaves it only when the task moves to dispatch or by the put-back - never by hand.
+     */
+    STAGING_MOVE_NOT_ALLOWED("Stock enters a staging area only by picking, and leaves it by dispatch or put-back", 409),
+    /** Kltn-docs 07 §3 (4C-5): a STAGING task names an active staging area of its own warehouse. */
+    STAGING_AREA_INVALID("Choose an active staging area of the task's warehouse", 422),
+    /**
+     * Kltn-docs 07 §4.3 step 8 and its edge case of an order on hold while its task is STAGED (4C-5): the order keeps
+     * its cartons in the staging area; the task moves to dispatch once the hold is resolved.
+     */
+    PICK_ORDER_ON_HOLD("The order is on hold; its cartons stay in the staging area until the hold is resolved", 409),
     /** G4-5 (docs 08 step 1): packing starts once picking is complete. */
     PACKING_NOT_READY("Picking must finish before packing starts", 409),
     /** G4-5: another packer took this order at the packing table; a warehouse manager may step in. */
@@ -611,6 +638,23 @@ public enum ErrorCode {
     /** PACK-PARTIAL (lead's decision 2026-10-21): the order does not allow a partial shipment; Sales decides. */
     PACK_PARTIAL_NOT_ALLOWED("Partial shipments are not allowed", 409),
     PACK_NOTHING_TO_SHIP("No sealed package is waiting to ship", 409),
+    /**
+     * Kltn-docs 08 §4.2 step 3, BR-05 (team plan 4C-6): the scanned LPN is not a carton picked for this task - another
+     * order's, one never picked, or an unreadable code. Refused; the warehouse manager checks the picking and the stock.
+     */
+    CARTON_NOT_IN_TASK("This carton was not picked for this order's task", 409),
+    /**
+     * Team plan 4C-6: the repack station's parcels (open, kit, scan, take out, seal, reopen, void) no longer ship - the
+     * LPN carton is the shipping carton, checked and labelled at the check station. Refused until 4C-7 removes them.
+     */
+    REPACK_RETIRED("Packing is done at the carton check station: parcels are no longer packed", 410),
+    /** Kltn-docs 08 BR-08 (4C-6): a shipping label prints only for a carton whose LPN was scanned at the check. */
+    CARTON_NOT_CHECKED("Only a checked carton gets a shipping label", 409),
+    /**
+     * Kltn-docs 08 BR-07 (4C-6): the SKU's carton spec declares no size or full weight, so no shipping label prints and
+     * the check cannot complete until the warehouse manager completes it on the item.
+     */
+    CARTON_SPEC_UNMEASURED("The SKU's carton spec has no size or weight: no shipping label can print", 422),
     /** SCRUM-287 LP2-6: a kit ("bộ") ships whole - a part of it is not sealed, or part 1 holds no unit yet. */
     KIT_INCOMPLETE("A kit has parts that are not sealed yet", 409),
     /** LP2-5: a kit has as many parts as its item ships boxes ({@code package_count}); one box is no kit. */

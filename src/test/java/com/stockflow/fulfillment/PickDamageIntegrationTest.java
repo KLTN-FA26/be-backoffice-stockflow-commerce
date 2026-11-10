@@ -14,6 +14,7 @@ import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.OrderSummary;
 import com.stockflow.order.api.PlaceOrderCommand;
 import com.stockflow.support.Await;
+import com.stockflow.support.CartonRows;
 import com.stockflow.support.DemoData;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
@@ -43,7 +44,6 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
-import java.sql.Timestamp;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
@@ -74,6 +74,11 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * as DAMAGED, the good ones stay to be picked, and the order is made whole - other stock of the warehouse replaces the
  * damaged units (FEFO), or, when there is none, a SHORT line waits for the coordinator's reallocation with the order
  * ON_HOLD (X-SHORT). Then the order is picked to the end.
+ *
+ * <p>Stock is whole sealed cartons (team plan 4C-2): each pick line is one carton, picked by its LPN, and a carton is
+ * reported damaged at its bin whole - part of one is refused ({@code STOCK_PACKAGE_TAKEN_WHOLE}). Found at packing,
+ * the carton was already taken whole, so any of its units may be reported. A test that needs arbitrary quantities
+ * uses cartons of one unit; a SKU has one carton size, and each test owns its SKU.</p>
  *
  * <p>Each test owns a fresh SKU and its stock, so nothing here touches the demo stock other tests count on.</p>
  */
@@ -141,14 +146,25 @@ class PickDamageIntegrationTest {
 
     // ---- fixtures --------------------------------------------------------------------------------------------
 
-    private UUID stock(String location, int onHand, String lot, LocalDate expiry) {
-        UUID id = Identifiers.newId();
-        tx.executeWithoutResult(s -> jdbc.update("""
-                INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, expiry_date, on_hand, reserved,
-                                                  status, received_at, version, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, 0, 'AVAILABLE', ?, 0, NOW())""", id, sku, location, lot, expiry, onHand,
-                Timestamp.from(Instant.parse("2026-10-01T03:00:00Z"))));
-        return id;
+    /**
+     * {@code count} sealed AVAILABLE cartons of {@code factor} units of this test's SKU at {@code location}. The SKU's
+     * carton size is fixed by the first call, so a test uses one factor throughout.
+     */
+    private List<CartonRows.Carton> cartons(String location, int count, int factor, String lot, LocalDate expiry) {
+        return tx.execute(s -> CartonRows.stock(jdbc, sku, location, count, factor, lot, expiry,
+                Instant.parse("2026-10-01T03:00:00Z"), "AVAILABLE"));
+    }
+
+    /** The SKU's AVAILABLE stock at a bin, over all its cartons. */
+    private Map<String, Object> bin(String location) {
+        return jdbc.queryForMap("""
+                SELECT COALESCE(SUM(on_hand), 0)::int AS on_hand, COALESCE(SUM(reserved), 0)::int AS reserved
+                  FROM inventory.stock_item WHERE sku = ? AND location_code = ? AND status = 'AVAILABLE'""",
+                sku, location);
+    }
+
+    private String cartonStatus(String lpn) {
+        return jdbc.queryForObject("SELECT status FROM inventory.stock_package WHERE lpn = ?", String.class, lpn);
     }
 
     private UUID otherWarehouse() {
@@ -242,11 +258,12 @@ class PickDamageIntegrationTest {
         return mvc.perform(request.header("Authorization", token(user, role)));
     }
 
-    private ResultActions confirm(UUID task, String line, String location, int quantity) throws Exception {
+    /** Scans the line's bin, then its carton's LPN: the only confirmation there is (kltn-docs 07 section 4.2 step 5). */
+    private ResultActions confirm(UUID task, String line, String location) throws Exception {
+        String lpn = jdbc.queryForObject("SELECT lpn FROM fulfillment.pick_line WHERE id = ?::uuid", String.class, line);
         return mvc.perform(post("/api/v1/fulfillment/tasks/" + task + "/pick-lines/" + line + "/confirmation")
                 .header("Authorization", token(picker, "WAREHOUSE_STAFF")).contentType("application/json")
-                .content("{\"locationCode\":\"" + location + "\",\"scannedCode\":\"" + sku + "\",\"quantity\":"
-                        + quantity + "}"));
+                .content("{\"locationCode\":\"" + location + "\",\"lpn\":\"" + lpn + "\"}"));
     }
 
     /** Damage found at the packing bench (R8): no bin to scan, the units are the line's. */
@@ -265,28 +282,30 @@ class PickDamageIntegrationTest {
         return mvc.perform(call.header("Authorization", token(user, role)));
     }
 
-    /** Every open line of the task picked, the task completed and packing started by the picker. */
-    private void pickedAndAtPacking(UUID task) throws Exception {
+    /** Every open line of the task picked. */
+    private void pickOpenLines(UUID task) throws Exception {
         for (JsonNode next : lines(task)) {
             if (next.path("status").asText().equals("OPEN")) {
-                confirm(task, next.path("lineId").asText(), next.path("locationCode").asText(),
-                        next.path("allocatedQty").asInt()).andExpect(status().isOk());
+                confirm(task, next.path("lineId").asText(), next.path("locationCode").asText())
+                        .andExpect(status().isOk())
+                        .andExpect(jsonPath("$.data.status").value("PICKED"));
             }
         }
+    }
+
+    /** Every open line of the task picked and the task completed: its cartons wait at the dispatch area. */
+    private void pickedAndAtPacking(UUID task) throws Exception {
+        pickOpenLines(task);
         mvc.perform(post("/api/v1/fulfillment/tasks/" + task + "/picking-completion")
                 .header("Authorization", token(picker, "WAREHOUSE_STAFF"))).andExpect(status().isOk());
-        mvc.perform(post("/api/v1/fulfillment/tasks/" + task + "/packing-start")
-                .header("Authorization", token(picker, "WAREHOUSE_STAFF"))).andExpect(status().isOk());
+        // The check is not started: once the station holds a line's carton, damage after the pick is refused there
+        // (PACK_STATE_CONFLICT, 4C-6) - a damaged carton is removed at the station instead.
     }
 
-    private JsonNode packingLine(UUID task) throws Exception {
-        return body(mvc.perform(get("/api/v1/fulfillment/tasks/" + task + "/packing-session")
-                        .header("Authorization", token(picker, "WAREHOUSE_STAFF")))
-                .andExpect(status().isOk()).andReturn()).path("lines").get(0);
-    }
-
-    private Map<String, Object> row(UUID id) {
-        return jdbc.queryForMap("SELECT on_hand, reserved, status FROM inventory.stock_item WHERE id = ?", id);
+    /** Units of the task's picked lines still good: what the check station can label (the picked cartons). */
+    private int goodPickedUnits(UUID task) {
+        return jdbc.queryForObject("SELECT COALESCE(SUM(picked_qty - packing_damaged_qty), 0) FROM fulfillment.pick_line "
+                + "WHERE pick_id = ? AND status = 'PICKED'", Integer.class, task);
     }
 
     private int damagedInQuarantine() {
@@ -302,72 +321,101 @@ class PickDamageIntegrationTest {
     // ---- the flows ----------------------------------------------------------------------------------------------
 
     @Test
-    @DisplayName("damage with other stock: good units stay to pick, the damaged ones are replaced FEFO, the order goes on")
-    void damagedUnitsAreReplacedAndTheOrderIsPicked() throws Exception {
-        UUID first = stock("HCM-A01-1-A", 5, "L1", today.plusDays(10));
-        UUID later = stock("HCM-A01-1-B", 10, "L2", today.plusDays(30));
+    @DisplayName("a damaged carton at its bin: replaced FEFO by the next whole carton, the other lines stay to pick, the "
+            + "order goes on")
+    void damagedCartonIsReplacedAndTheOrderIsPicked() throws Exception {
+        cartons("HCM-A01-1-A", 5, 1, "L1", today.plusDays(10));
+        cartons("HCM-A01-1-B", 10, 1, "L2", today.plusDays(30));
         OrderSummary order = releasedOrder(4);
         UUID task = startedTask(order);
         JsonNode line = lines(task).get(0);
         String lineId = line.path("lineId").asText();
+        String damagedLpn = line.path("lpn").asText();
         assertThat(line.path("locationCode").asText()).isEqualTo("HCM-A01-1-A");
+        assertThat(line.path("wholeCarton").asBoolean()).isTrue();
         UUID hold = UUID.fromString(jdbc.queryForObject(
                 "SELECT reservation_id::text FROM fulfillment.pick_line WHERE id = ?::uuid", String.class, lineId));
 
         JsonNode outcome = body(damage(task, lineId, picker, "WAREHOUSE_STAFF",
-                damageJson(UUID.randomUUID(), "hcm-a01-1-a", 2), true)
+                damageJson(UUID.randomUUID(), "hcm-a01-1-a", 1), true)
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.damagedQuantity").value(2))
+                .andExpect(jsonPath("$.data.damagedQuantity").value(1))
                 .andExpect(jsonPath("$.data.orderOnHold").value(false))
                 .andExpect(jsonPath("$.data.damageLocationCode").value("HCM-QC01"))
                 .andExpect(jsonPath("$.data.line.status").value("CANCELLED"))
-                .andExpect(jsonPath("$.data.line.damagedQty").value(2))
+                .andExpect(jsonPath("$.data.line.damagedQty").value(1))
                 .andReturn());
 
-        // The good units at the bin, then the replacement: FEFO takes the last free unit of the same lot first.
+        // The carton went to quarantine whole; FEFO replaces it with the last free carton of the same lot.
         JsonNode made = outcome.path("lines");
-        assertThat(made).hasSize(3);
-        assertThat(made.get(0).path("locationCode").asText()).isEqualTo("HCM-A01-1-A");
-        assertThat(made.get(0).path("allocatedQty").asInt()).isEqualTo(2);
-        assertThat(made.get(1).path("locationCode").asText()).isEqualTo("HCM-A01-1-A");
-        assertThat(made.get(1).path("allocatedQty").asInt()).isEqualTo(1);
-        assertThat(made.get(2).path("locationCode").asText()).isEqualTo("HCM-A01-1-B");
-        assertThat(made.get(2).path("allocatedQty").asInt()).isEqualTo(1);
-        assertThat(made).allSatisfy(next -> assertThat(next.path("status").asText()).isEqualTo("OPEN"));
+        assertThat(made).singleElement().satisfies(next -> {
+            assertThat(next.path("locationCode").asText()).isEqualTo("HCM-A01-1-A");
+            assertThat(next.path("allocatedQty").asInt()).isEqualTo(1);
+            assertThat(next.path("lpn").asText()).isNotBlank().isNotEqualTo(damagedLpn);
+            assertThat(next.path("status").asText()).isEqualTo("OPEN");
+        });
 
-        assertThat(row(first)).containsEntry("on_hand", 3).containsEntry("reserved", 3);
-        assertThat(row(later)).containsEntry("on_hand", 10).containsEntry("reserved", 1);
-        assertThat(damagedInQuarantine()).isEqualTo(2);
+        assertThat(bin("HCM-A01-1-A")).containsEntry("on_hand", 4).containsEntry("reserved", 4);
+        assertThat(bin("HCM-A01-1-B")).containsEntry("on_hand", 10).containsEntry("reserved", 0);
+        assertThat(cartonStatus(damagedLpn)).as("emptied into quarantine").isEqualTo("CONSUMED");
+        assertThat(damagedInQuarantine()).isEqualTo(1);
         assertThat(order(order.orderId()).status()).isEqualTo(OrderStatus.PICKING);
-        assertThat(order(order.orderId()).lines().get(0).reservationIds()).as("the allocation and its replacements")
-                .hasSize(3).contains(hold);
+        assertThat(order(order.orderId()).lines().get(0).reservationIds())
+                .as("the three cartons still to pick and the replacement").hasSize(4).doesNotContain(hold);
         UUID reportId = UUID.fromString(outcome.path("damageReportId").asText());
         assertThat(jdbc.queryForMap("""
                 SELECT origin, pick_line_id, order_id, reservation_id, impaired_reservation_id, quantity
                   FROM inventory.stock_damage_report WHERE id = ?""", reportId))
                 .containsEntry("origin", "PICKING").containsEntry("pick_line_id", UUID.fromString(lineId))
                 .containsEntry("order_id", order.orderId()).containsEntry("reservation_id", hold)
-                .containsEntry("impaired_reservation_id", null).containsEntry("quantity", 2);
+                .containsEntry("impaired_reservation_id", null).containsEntry("quantity", 1);
         assertThat(jdbc.queryForObject("""
                 SELECT count(*) FROM inventory.stock_movement WHERE reference_type = 'DAMAGE_REPORT' AND reference_id = ?
                    AND order_id = ? AND to_status = 'DAMAGED'""", Integer.class, reportId, order.orderId())).isEqualTo(1);
 
-        for (JsonNode next : made) {
-            confirm(task, next.path("lineId").asText(), next.path("locationCode").asText(),
-                    next.path("allocatedQty").asInt()).andExpect(status().isOk())
-                    .andExpect(jsonPath("$.data.status").value("PICKED"));
-        }
+        pickOpenLines(task);
         mvc.perform(post("/api/v1/fulfillment/tasks/" + task + "/picking-completion")
                         .header("Authorization", token(picker, "WAREHOUSE_STAFF")))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.pickStatus").value("PICKED"));
-        assertThat(row(first)).containsEntry("on_hand", 0).containsEntry("reserved", 0);
-        assertThat(row(later)).containsEntry("on_hand", 9).containsEntry("reserved", 0);
+        assertThat(bin("HCM-A01-1-A")).containsEntry("on_hand", 0).containsEntry("reserved", 0);
+        assertThat(bin("HCM-A01-1-B")).containsEntry("on_hand", 10).containsEntry("reserved", 0);
+    }
+
+    @Test
+    @DisplayName("part of a carton damaged at its bin is refused - a carton is taken whole; the whole carton is reported")
+    void partOfACartonIsNotReportedAtTheBin() throws Exception {
+        String damagedLpn = cartons("HCM-A01-1-A", 1, 4, "L1", today.plusDays(10)).getFirst().lpn();
+        cartons("HCM-A01-1-B", 1, 4, "L2", today.plusDays(30));
+        OrderSummary order = releasedOrder(4);
+        UUID task = startedTask(order);
+        String lineId = lines(task).get(0).path("lineId").asText();
+
+        damage(task, lineId, picker, "WAREHOUSE_STAFF", damageJson(UUID.randomUUID(), "HCM-A01-1-A", 2), true)
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("STOCK_PACKAGE_TAKEN_WHOLE"));
+        assertThat(jdbc.queryForObject("SELECT status FROM fulfillment.pick_line WHERE id = ?::uuid", String.class,
+                lineId)).isEqualTo("OPEN");
+        assertThat(bin("HCM-A01-1-A")).containsEntry("on_hand", 4).containsEntry("reserved", 4);
+        assertThat(cartonStatus(damagedLpn)).isEqualTo("IN_STOCK");
+        assertThat(damagedInQuarantine()).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM inventory.stock_damage_report WHERE sku = ?",
+                Integer.class, sku)).isZero();
+
+        JsonNode made = body(damage(task, lineId, picker, "WAREHOUSE_STAFF",
+                damageJson(UUID.randomUUID(), "HCM-A01-1-A", 4), true).andExpect(status().isOk()).andReturn())
+                .path("lines");
+        assertThat(made).singleElement().satisfies(next -> {
+            assertThat(next.path("locationCode").asText()).isEqualTo("HCM-A01-1-B");
+            assertThat(next.path("allocatedQty").asInt()).isEqualTo(4);
+        });
+        assertThat(cartonStatus(damagedLpn)).isEqualTo("CONSUMED");
+        assertThat(damagedInQuarantine()).isEqualTo(4);
     }
 
     @Test
     @DisplayName("damage with no other stock: SHORT line, order ON_HOLD; write-off waits; reallocated, picked, written off")
     void noOtherStockHoldsTheOrderUntilReallocated() throws Exception {
-        UUID only = stock("HCM-A01-1-A", 3, "L1", today.plusDays(10));
+        cartons("HCM-A01-1-A", 3, 1, "L1", today.plusDays(10));
         OrderSummary order = releasedOrder(3);
         UUID task = startedTask(order);
         String lineId = lines(task).get(0).path("lineId").asText();
@@ -377,16 +425,14 @@ class PickDamageIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.orderOnHold").value(true))
                 .andReturn());
-        JsonNode made = outcome.path("lines");
-        assertThat(made).hasSize(2);
-        assertThat(made.get(0).path("status").asText()).isEqualTo("OPEN");
-        assertThat(made.get(0).path("allocatedQty").asInt()).isEqualTo(2);
-        JsonNode shortLine = made.get(1);
+        JsonNode shortLine = outcome.path("lines").get(0);
+        assertThat(outcome.path("lines")).hasSize(1);
         assertThat(shortLine.path("status").asText()).isEqualTo("SHORT");
         assertThat(shortLine.path("shortQty").asInt()).isEqualTo(1);
         assertThat(order(order.orderId()).status()).isEqualTo(OrderStatus.ON_HOLD);
         assertThat(order(order.orderId()).lifecycle().holdReason()).isEqualTo(HoldReason.INVENTORY);
-        assertThat(row(only)).containsEntry("on_hand", 2).containsEntry("reserved", 2);
+        assertThat(bin("HCM-A01-1-A")).as("the other two cartons, still the order's")
+                .containsEntry("on_hand", 2).containsEntry("reserved", 2);
         assertThat(jdbc.queryForMap("""
                 SELECT on_hand, reserved FROM inventory.stock_item WHERE sku = ? AND status = 'DAMAGED'""", sku))
                 .as("the order's share stays promised on the damaged units").containsEntry("on_hand", 1)
@@ -404,8 +450,8 @@ class PickDamageIntegrationTest {
         mvc.perform(post(reallocate).header("Authorization", token(coordinator, "ORDER_COORDINATOR")))
                 .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("INSUFFICIENT_STOCK"));
 
-        // Stock arrives on another bin: the coordinator reallocates the short line and the order goes on.
-        UUID arrived = stock("HCM-A01-2-A", 2, "L3", today.plusDays(40));
+        // Cartons arrive on another bin: the coordinator reallocates the short line and the order goes on.
+        cartons("HCM-A01-2-A", 2, 1, "L3", today.plusDays(40));
         JsonNode reallocated = body(mvc.perform(post(reallocate)
                         .header("Authorization", token(coordinator, "ORDER_COORDINATOR")))
                 .andExpect(status().isOk()).andReturn());
@@ -422,20 +468,19 @@ class PickDamageIntegrationTest {
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("CLOSED"));
         assertThat(damagedInQuarantine()).isZero();
 
-        confirm(task, made.get(0).path("lineId").asText(), "HCM-A01-1-A", 2).andExpect(status().isOk());
-        confirm(task, reallocated.get(0).path("lineId").asText(), "HCM-A01-2-A", 1).andExpect(status().isOk());
+        pickOpenLines(task);
         mvc.perform(post("/api/v1/fulfillment/tasks/" + task + "/picking-completion")
                         .header("Authorization", token(picker, "WAREHOUSE_STAFF")))
                 .andExpect(status().isOk());
-        assertThat(row(only)).containsEntry("on_hand", 0);
-        assertThat(row(arrived)).containsEntry("on_hand", 1).containsEntry("reserved", 0);
+        assertThat(bin("HCM-A01-1-A")).containsEntry("on_hand", 0);
+        assertThat(bin("HCM-A01-2-A")).containsEntry("on_hand", 1).containsEntry("reserved", 0);
     }
 
     @Test
-    @DisplayName("all of a line damaged: its allocation closes DAMAGED and the replacement elsewhere picks it all")
+    @DisplayName("a damaged carton of several units: its allocation closes DAMAGED and a whole carton elsewhere replaces it")
     void wholeLineDamaged() throws Exception {
-        UUID first = stock("HCM-A01-1-A", 2, "L1", today.plusDays(10));
-        stock("HCM-A01-1-B", 5, "L2", today.plusDays(30));
+        String damagedLpn = cartons("HCM-A01-1-A", 1, 2, "L1", today.plusDays(10)).getFirst().lpn();
+        cartons("HCM-A01-1-B", 2, 2, "L2", today.plusDays(30));
         OrderSummary order = releasedOrder(2);
         UUID task = startedTask(order);
         String lineId = lines(task).get(0).path("lineId").asText();
@@ -452,7 +497,8 @@ class PickDamageIntegrationTest {
         });
         assertThat(jdbc.queryForMap("SELECT status, release_reason FROM inventory.stock_reservation WHERE id = ?", hold))
                 .containsEntry("status", "RELEASED").containsEntry("release_reason", "DAMAGED");
-        assertThat(row(first)).containsEntry("on_hand", 0).containsEntry("reserved", 0);
+        assertThat(bin("HCM-A01-1-A")).containsEntry("on_hand", 0).containsEntry("reserved", 0);
+        assertThat(cartonStatus(damagedLpn)).isEqualTo("CONSUMED");
         assertThat(order(order.orderId()).lines().get(0).reservationIds()).doesNotContain(hold).hasSize(1);
     }
 
@@ -461,15 +507,17 @@ class PickDamageIntegrationTest {
     @Test
     @DisplayName("damage at packing: back into quarantine from nowhere, replaced FEFO, task back to picking, packed whole")
     void damageAtPackingIsReplaced() throws Exception {
-        UUID first = stock("HCM-A01-1-A", 5, "L1", today.plusDays(10));
-        stock("HCM-A01-1-B", 10, "L2", today.plusDays(30));
+        cartons("HCM-A01-1-A", 5, 1, "L1", today.plusDays(10));
+        cartons("HCM-A01-1-B", 10, 1, "L2", today.plusDays(30));
         OrderSummary order = releasedOrder(3);
         UUID task = startedTask(order);
-        String lineId = lines(task).get(0).path("lineId").asText();
+        JsonNode planned = lines(task);
+        String lineId = planned.get(0).path("lineId").asText();
+        String goodLineId = planned.get(1).path("lineId").asText();
         UUID hold = UUID.fromString(jdbc.queryForObject(
                 "SELECT reservation_id::text FROM fulfillment.pick_line WHERE id = ?::uuid", String.class, lineId));
         pickedAndAtPacking(task);
-        assertThat(row(first)).containsEntry("on_hand", 2).containsEntry("reserved", 0);
+        assertThat(bin("HCM-A01-1-A")).containsEntry("on_hand", 2).containsEntry("reserved", 0);
         UUID request = UUID.randomUUID();
 
         JsonNode outcome = body(packDamage(task, lineId, picker, "WAREHOUSE_STAFF", request, 1, true)
@@ -477,7 +525,7 @@ class PickDamageIntegrationTest {
                 .andExpect(jsonPath("$.data.orderOnHold").value(false))
                 .andExpect(jsonPath("$.data.damageLocationCode").value("HCM-QC01"))
                 .andExpect(jsonPath("$.data.line.status").value("PICKED"))
-                .andExpect(jsonPath("$.data.line.pickedQty").value(3))
+                .andExpect(jsonPath("$.data.line.pickedQty").value(1))
                 .andExpect(jsonPath("$.data.line.packingDamagedQty").value(1))
                 .andReturn());
         JsonNode made = outcome.path("lines");
@@ -501,12 +549,12 @@ class PickDamageIntegrationTest {
                 .containsEntry("to_location_code", "HCM-QC01").containsEntry("to_status", "DAMAGED")
                 .containsEntry("quantity", 1).containsEntry("order_id", order.orderId());
         assertThat(damagedInQuarantine()).isEqualTo(1);
-        assertThat(row(first)).as("the bin keeps what it had, one unit of it now allocated")
+        assertThat(bin("HCM-A01-1-A")).as("the bin keeps what it had, one carton of it now allocated")
                 .containsEntry("on_hand", 2).containsEntry("reserved", 1);
         assertThat(jdbc.queryForObject("SELECT status FROM fulfillment.pick WHERE id = ?", String.class, task))
                 .isEqualTo("PICKING");
         assertThat(order(order.orderId()).lines().get(0).reservationIds())
-                .as("the consumed hold still names the good units; the replacement joins it").hasSize(2)
+                .as("the consumed hold stays on record; the replacement joins the order's three").hasSize(4)
                 .contains(hold);
         mvc.perform(post("/api/v1/fulfillment/tasks/" + task + "/packing-start")
                         .header("Authorization", token(picker, "WAREHOUSE_STAFF")))
@@ -520,25 +568,24 @@ class PickDamageIntegrationTest {
         assertThat(damagedInQuarantine()).isEqualTo(1);
 
         pickedAndAtPacking(task);
-        JsonNode packing = packingLine(task);
-        assertThat(packing.path("available").asInt()).as("two good units and the replacement").isEqualTo(3);
-        assertThat(packing.path("lots").get(0).path("available").asInt()).isEqualTo(3);
-        assertThat(row(first)).containsEntry("on_hand", 1).containsEntry("reserved", 0);
+        assertThat(goodPickedUnits(task)).as("two good cartons and the replacement").isEqualTo(3);
+        assertThat(bin("HCM-A01-1-A")).containsEntry("on_hand", 1).containsEntry("reserved", 0);
 
-        // Cancelled now: the line puts back what it still has, never the unit in quarantine.
+        // Cancelled now: a good line puts its carton back; the unit in quarantine stays there.
         WithCurrentUser.run(TestUsers.admin(), DataScope.ALL, () -> orders.cancel(order.orderId(), "CUSTOMER_REQUEST"));
-        mvc.perform(post("/api/v1/fulfillment/tasks/" + task + "/pick-lines/" + lineId + "/put-back")
+        mvc.perform(post("/api/v1/fulfillment/tasks/" + task + "/pick-lines/" + goodLineId + "/put-back")
                         .header("Authorization", token(picker, "WAREHOUSE_STAFF")).contentType("application/json")
-                        .content("{\"locationCode\":\"HCM-A01-1-A\"}"))
-                .andExpect(status().isOk()).andExpect(jsonPath("$.data.putBackQty").value(2));
-        assertThat(row(first)).containsEntry("on_hand", 3);
+                        .content("{\"locationCode\":\"HCM-A01-1-A\",\"lpn\":\"" + planned.get(1).path("lpn").asText()
+                                + "\"}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.putBackQty").value(1));
+        assertThat(bin("HCM-A01-1-A")).containsEntry("on_hand", 2);
         assertThat(damagedInQuarantine()).isEqualTo(1);
     }
 
     @Test
     @DisplayName("damage at packing with no other stock: SHORT line on the impaired share, order ON_HOLD, task at picking")
     void damageAtPackingWithNoOtherStock() throws Exception {
-        stock("HCM-A01-1-A", 2, "L1", today.plusDays(10));
+        cartons("HCM-A01-1-A", 1, 2, "L1", today.plusDays(10));
         OrderSummary order = releasedOrder(2);
         UUID task = startedTask(order);
         String lineId = lines(task).get(0).path("lineId").asText();
@@ -557,13 +604,14 @@ class PickDamageIntegrationTest {
                 SELECT on_hand, reserved FROM inventory.stock_item WHERE sku = ? AND status = 'DAMAGED'""", sku))
                 .as("the order's share stays promised on the damaged units").containsEntry("on_hand", 2)
                 .containsEntry("reserved", 2);
-        assertThat(packingLine(task).path("available").asInt()).isZero();
+        assertThat(goodPickedUnits(task)).isZero();
     }
 
     @Test
-    @DisplayName("damage at packing: units in a parcel come out first; never more than the line brought; packer only")
+    @DisplayName("damage at packing: a photo is needed; a carton is reported whole or not at all; once the check station "
+            + "holds the carton it is removed there, never reported (PACK_STATE_CONFLICT)")
     void damageAtPackingRefusals() throws Exception {
-        stock("HCM-A01-1-A", 6, "L1", today.plusDays(10));
+        cartons("HCM-A01-1-A", 3, 2, "L1", today.plusDays(10));
         OrderSummary order = releasedOrder(2);
         UUID task = startedTask(order);
         String lineId = lines(task).get(0).path("lineId").asText();
@@ -572,36 +620,31 @@ class PickDamageIntegrationTest {
         packDamage(task, lineId, picker, "WAREHOUSE_STAFF", UUID.randomUUID(), 1, true)
                 .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("PICK_LINE_NOT_OPEN"));
         pickedAndAtPacking(task);
-        UUID parcel = UUID.fromString(body(mvc.perform(post("/api/v1/fulfillment/tasks/" + task + "/packages")
-                        .header("Authorization", token(picker, "WAREHOUSE_STAFF")).contentType("application/json")
-                        .content("{}")).andExpect(status().isCreated()).andReturn()).path("packageId").asText());
-        mvc.perform(post("/api/v1/fulfillment/tasks/" + task + "/packages/" + parcel + "/scans")
-                .header("Authorization", token(picker, "WAREHOUSE_STAFF")).contentType("application/json")
-                .content("{\"scanId\":\"" + UUID.randomUUID() + "\",\"scannedCode\":\"" + sku
-                        + "\",\"lotNumber\":\"L1\",\"quantity\":2}")).andExpect(status().isOk());
 
-        packDamage(task, lineId, picker, "WAREHOUSE_STAFF", UUID.randomUUID(), 1, true)
-                .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("PACK_DAMAGED_UNITS_PACKED"));
-        packDamage(task, lineId, picker, "WAREHOUSE_STAFF", UUID.randomUUID(), 3, true)
-                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.errorCode").value("VALIDATION_FAILED"));
-        packDamage(task, lineId, otherPicker, "WAREHOUSE_STAFF", UUID.randomUUID(), 1, true)
-                .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("PACKING_TAKEN"));
-
-        // Out of the parcel again: reported with a photo only.
-        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete(
-                        "/api/v1/fulfillment/tasks/" + task + "/packages/" + parcel)
-                .header("Authorization", token(picker, "WAREHOUSE_STAFF"))).andExpect(status().isOk());
-        packDamage(task, lineId, picker, "WAREHOUSE_STAFF", UUID.randomUUID(), 1, false)
+        packDamage(task, lineId, picker, "WAREHOUSE_STAFF", UUID.randomUUID(), 2, false)
                 .andExpect(status().isBadRequest()).andExpect(jsonPath("$.errorCode").value("DAMAGE_PHOTO_REQUIRED"));
+        // A carton is reported damaged whole: a part of it, or more than it holds, is 409 and writes nothing.
+        for (int part : new int[] {1, 3}) {
+            packDamage(task, lineId, picker, "WAREHOUSE_STAFF", UUID.randomUUID(), part, true)
+                    .andExpect(status().isConflict())
+                    .andExpect(jsonPath("$.errorCode").value("STOCK_PACKAGE_TAKEN_WHOLE"));
+        }
+
+        // The check starts and receives the carton: the whole-carton report is now the station's removal, not this.
+        mvc.perform(post("/api/v1/fulfillment/tasks/" + task + "/packing-start")
+                .header("Authorization", token(picker, "WAREHOUSE_STAFF"))).andExpect(status().isOk());
+        packDamage(task, lineId, picker, "WAREHOUSE_STAFF", UUID.randomUUID(), 2, true)
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("PACK_STATE_CONFLICT"));
         assertThat(damagedInQuarantine()).isZero();
         assertThat(jdbc.queryForObject("SELECT count(*) FROM inventory.stock_damage_report WHERE sku = ?",
                 Integer.class, sku)).isZero();
     }
 
     @Test
-    @DisplayName("damage at packing, picker gone home: the coordinator hands the reopened task to someone who is here")
-    void reopenedTaskIsReassigned() throws Exception {
-        stock("HCM-A01-1-A", 5, "L1", today.plusDays(10));
+    @DisplayName("damage at packing reopens the task for its own picker: handing it to someone else is refused once picking "
+            + "started (07 BR-08, team plan 4C-5), so the assignee picks the replacement")
+    void reopenedTaskStaysWithItsAssignee() throws Exception {
+        cartons("HCM-A01-1-A", 5, 1, "L1", today.plusDays(10));
         OrderSummary order = releasedOrder(2);
         UUID task = startedTask(order);
         String lineId = lines(task).get(0).path("lineId").asText();
@@ -613,31 +656,45 @@ class PickDamageIntegrationTest {
                                 "/api/v1/fulfillment/tasks/" + task + "/assignment")
                         .header("Authorization", token(coordinator, "ORDER_COORDINATOR")).contentType("application/json")
                         .content("{\"assignedUserId\":\"" + otherPicker + "\"}"))
-                .andExpect(status().isOk());
-        mvc.perform(post("/api/v1/fulfillment/tasks/" + task + "/pick-lines/" + replacement.path("lineId").asText()
-                        + "/confirmation").header("Authorization", token(otherPicker, "WAREHOUSE_STAFF"))
-                        .contentType("application/json")
-                        .content("{\"locationCode\":\"" + replacement.path("locationCode").asText()
-                                + "\",\"scannedCode\":\"" + sku + "\",\"quantity\":1}"))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("PICK_TASK_STATE_CONFLICT"));
+        assertThat(jdbc.queryForObject("SELECT assigned_user_id FROM fulfillment.pick WHERE id = ?", UUID.class, task))
+                .as("the task stays with the person who picked it").isEqualTo(picker);
+
+        String confirmation = "{\"locationCode\":\"" + replacement.path("locationCode").asText()
+                + "\",\"lpn\":\"" + replacement.path("lpn").asText() + "\"}";
+        String url = "/api/v1/fulfillment/tasks/" + task + "/pick-lines/" + replacement.path("lineId").asText()
+                + "/confirmation";
+        mvc.perform(post(url).header("Authorization", token(otherPicker, "WAREHOUSE_STAFF"))
+                        .contentType("application/json").content(confirmation))
+                .andExpect(status().isNotFound());
+        mvc.perform(post(url).header("Authorization", token(picker, "WAREHOUSE_STAFF"))
+                        .contentType("application/json").content(confirmation))
                 .andExpect(status().isOk());
         mvc.perform(post("/api/v1/fulfillment/tasks/" + task + "/picking-completion")
-                        .header("Authorization", token(otherPicker, "WAREHOUSE_STAFF")))
+                        .header("Authorization", token(picker, "WAREHOUSE_STAFF")))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.pickStatus").value("PICKED"));
     }
 
-    @Test
-    @DisplayName("nothing replaced the damaged units, then they prove fine: restored with the order's share, the "
-            + "short line reallocated onto them where they are, picked")
-    void impairedUnitsRestoredBackToTheOrder() throws Exception {
-        UUID only = stock("HCM-A01-1-A", 2, "L1", today.plusDays(10));
+    /** What the two reallocation tests start from: a carton damaged with nothing to replace it, then restored loose. */
+    private record Restored(OrderSummary order, UUID task, String shortLine) { }
+
+    /**
+     * The only free carton damaged at the bin, nothing replaces it (SHORT line, order ON_HOLD); the manager finds the
+     * unit fine and restores it onto HCM-A01-2-A, where it is loose stock the order holds again. {@code beforeRestore}
+     * runs between the report and the restore: stock that arrives meanwhile.
+     */
+    private Restored damagedThenRestoredLoose(Runnable beforeRestore) throws Exception {
+        cartons("HCM-A01-1-A", 2, 1, "L1", today.plusDays(10));
         OrderSummary order = releasedOrder(2);
         UUID task = startedTask(order);
         String lineId = lines(task).get(0).path("lineId").asText();
         JsonNode outcome = body(damage(task, lineId, picker, "WAREHOUSE_STAFF",
                 damageJson(UUID.randomUUID(), "HCM-A01-1-A", 1), true).andExpect(status().isOk()).andReturn());
         UUID reportId = UUID.fromString(outcome.path("damageReportId").asText());
-        String shortLine = outcome.path("lines").get(1).path("lineId").asText();
+        assertThat(outcome.path("lines")).hasSize(1);
+        String shortLine = outcome.path("lines").get(0).path("lineId").asText();
         assertThat(order(order.orderId()).status()).isEqualTo(OrderStatus.ON_HOLD);
+        beforeRestore.run();
 
         String writeOff = "{\"requestId\":\"" + UUID.randomUUID() + "\",\"disposition\":\"WRITE_OFF\",\"quantity\":1}";
         mvc.perform(post("/api/v1/inventory/damage-reports/" + reportId + "/dispositions")
@@ -645,7 +702,7 @@ class PickDamageIntegrationTest {
                         .contentType("application/json").content(writeOff))
                 .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("DAMAGED_STOCK_HELD"));
         String restore = "{\"requestId\":\"" + UUID.randomUUID() + "\",\"disposition\":\"RESTORE\",\"quantity\":1,"
-                + "\"note\":\"Kiểm lại: chỉ trầy thùng, ly nguyên\",\"restoreLocationCode\":\"HCM-A01-2-A\"}";
+                + "\"note\":\"Kiem lai: chi tray thung, ly nguyen\",\"restoreLocationCode\":\"HCM-A01-2-A\"}";
         mvc.perform(post("/api/v1/inventory/damage-reports/" + reportId + "/dispositions")
                         .header("Authorization", token(manager, "WAREHOUSE_MANAGER"))
                         .contentType("application/json").content(restore))
@@ -653,24 +710,108 @@ class PickDamageIntegrationTest {
         assertThat(damagedInQuarantine()).isZero();
         assertThat(jdbc.queryForMap("""
                 SELECT on_hand, reserved FROM inventory.stock_item WHERE sku = ? AND location_code = 'HCM-A01-2-A'""",
-                sku)).as("the unit is the order's again, on the bin").containsEntry("on_hand", 1)
+                sku)).as("the unit is the order's again, loose, on the bin").containsEntry("on_hand", 1)
                 .containsEntry("reserved", 1);
+        return new Restored(order, task, shortLine);
+    }
 
-        JsonNode reallocated = body(mvc.perform(post("/api/v1/fulfillment/tasks/" + task + "/pick-lines/" + shortLine
+    private int pickLineCount(UUID task) {
+        return jdbc.queryForObject("SELECT count(*) FROM fulfillment.pick_line WHERE pick_id = ?", Integer.class, task);
+    }
+
+    @Test
+    @DisplayName("restored loose units are no line's hold: with no other free whole carton the reallocation is 409 "
+            + "INSUFFICIENT_STOCK and nothing changes")
+    void restoredLooseUnitsWithNoFreeCartonStayShort() throws Exception {
+        Restored restored = damagedThenRestoredLoose(() -> { });
+        int lines = pickLineCount(restored.task());
+
+        mvc.perform(post("/api/v1/fulfillment/tasks/" + restored.task() + "/pick-lines/" + restored.shortLine()
                         + "/reallocation").header("Authorization", token(coordinator, "ORDER_COORDINATOR")))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("INSUFFICIENT_STOCK"));
+
+        assertThat(order(restored.order().orderId()).status()).as("still held for stock").isEqualTo(OrderStatus.ON_HOLD);
+        assertThat(jdbc.queryForObject("SELECT status FROM fulfillment.pick_line WHERE id = ?::uuid", String.class,
+                restored.shortLine())).isEqualTo("SHORT");
+        assertThat(pickLineCount(restored.task())).as("no new pick line").isEqualTo(lines);
+        assertThat(jdbc.queryForMap("""
+                SELECT on_hand, reserved FROM inventory.stock_item WHERE sku = ? AND location_code = 'HCM-A01-2-A'""",
+                sku)).as("the restored unit is untouched").containsEntry("on_hand", 1).containsEntry("reserved", 1);
+    }
+
+    @Test
+    @DisplayName("one free whole carton arrives: the SHORT line is reallocated onto it, the restored loose unit is released "
+            + "and stays loose, the order goes back to picking")
+    void restoredLooseUnitsGiveWayToAFreeCarton() throws Exception {
+        String[] free = new String[1];
+        Restored restored = damagedThenRestoredLoose(() ->
+                free[0] = cartons("HCM-A01-1-B", 1, 1, "L2", today.plusDays(30)).getFirst().lpn());
+
+        JsonNode reallocated = body(mvc.perform(post("/api/v1/fulfillment/tasks/" + restored.task() + "/pick-lines/"
+                        + restored.shortLine() + "/reallocation")
+                        .header("Authorization", token(coordinator, "ORDER_COORDINATOR")))
                 .andExpect(status().isOk()).andReturn());
+
         assertThat(reallocated).singleElement().satisfies(line -> {
-            assertThat(line.path("locationCode").asText()).isEqualTo("HCM-A01-2-A");
+            assertThat(line.path("locationCode").asText()).isEqualTo("HCM-A01-1-B");
+            assertThat(line.path("lpn").asText()).isEqualTo(free[0]);
             assertThat(line.path("status").asText()).isEqualTo("OPEN");
         });
-        assertThat(order(order.orderId()).status()).as("resumed").isEqualTo(OrderStatus.PICKING);
-        confirm(task, outcome.path("lines").get(0).path("lineId").asText(), "HCM-A01-1-A", 1)
-                .andExpect(status().isOk());
-        confirm(task, reallocated.get(0).path("lineId").asText(), "HCM-A01-2-A", 1).andExpect(status().isOk());
-        mvc.perform(post("/api/v1/fulfillment/tasks/" + task + "/picking-completion")
-                        .header("Authorization", token(picker, "WAREHOUSE_STAFF")))
-                .andExpect(status().isOk());
-        assertThat(row(only)).containsEntry("on_hand", 0);
+        assertThat(order(restored.order().orderId()).status()).as("resumed").isEqualTo(OrderStatus.PICKING);
+        assertThat(jdbc.queryForObject("SELECT status FROM fulfillment.pick_line WHERE id = ?::uuid", String.class,
+                restored.shortLine())).isEqualTo("CANCELLED");
+        assertThat(jdbc.queryForMap("""
+                SELECT on_hand, reserved, stock_package_id FROM inventory.stock_item
+                 WHERE sku = ? AND location_code = 'HCM-A01-2-A'""", sku))
+                .as("the restored unit is released, and is still loose stock").containsEntry("on_hand", 1)
+                .containsEntry("reserved", 0).containsEntry("stock_package_id", null);
+    }
+
+    @Test
+    @DisplayName("damage at packing is the whole carton or nothing: a part is 409 and writes nothing; the whole carton "
+            + "is 200 and, the order cancelled, leaves nothing to put back")
+    void packingDamageIsWholeCartonOrNothing() throws Exception {
+        cartons("HCM-A01-1-A", 3, 4, "L1", today.plusDays(10));
+        OrderSummary order = releasedOrder(4);
+        UUID task = startedTask(order);
+        JsonNode line = lines(task).get(0);
+        String lineId = line.path("lineId").asText();
+        String lpn = line.path("lpn").asText();
+        pickedAndAtPacking(task);
+
+        for (int part : new int[] {1, 2, 3}) {
+            packDamage(task, lineId, picker, "WAREHOUSE_STAFF", UUID.randomUUID(), part, true)
+                    .andExpect(status().isConflict())
+                    .andExpect(jsonPath("$.errorCode").value("STOCK_PACKAGE_TAKEN_WHOLE"));
+        }
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM inventory.stock_damage_report WHERE sku = ?", Integer.class,
+                sku)).as("no report").isZero();
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM inventory.stock_movement WHERE sku = ? AND reference_type = 'DAMAGE_REPORT'""",
+                Integer.class, sku)).as("no ledger line").isZero();
+        assertThat(jdbc.queryForMap("SELECT status, packing_damaged_qty FROM fulfillment.pick_line WHERE id = ?::uuid",
+                lineId)).as("the line is as it was").containsEntry("status", "PICKED")
+                .containsEntry("packing_damaged_qty", 0);
+        assertThat(damagedInQuarantine()).isZero();
+
+        packDamage(task, lineId, picker, "WAREHOUSE_STAFF", UUID.randomUUID(), 4, true)
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.line.packingDamagedQty").value(4));
+        assertThat(damagedInQuarantine()).isEqualTo(4);
+        packDamage(task, lineId, picker, "WAREHOUSE_STAFF", UUID.randomUUID(), 4, true)
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("STOCK_PACKAGE_TAKEN_WHOLE"));
+
+        WithCurrentUser.run(TestUsers.admin(), DataScope.ALL, () -> orders.cancel(order.orderId(), "CUSTOMER_REQUEST"));
+        Await.until("task cancelled", ASYNC, () -> "CANCELLED".equals(
+                jdbc.queryForObject("SELECT status FROM fulfillment.pick WHERE id = ?", String.class, task)));
+        mvc.perform(get("/api/v1/fulfillment/put-backs").param("warehouseId", DemoData.WAREHOUSE_HCM.toString())
+                        .param("size", "200").header("Authorization", token(manager, "WAREHOUSE_MANAGER")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[*].lineId", org.hamcrest.Matchers.not(
+                        org.hamcrest.Matchers.hasItem(lineId))));
+        mvc.perform(post("/api/v1/fulfillment/tasks/" + task + "/pick-lines/" + lineId + "/put-back")
+                        .header("Authorization", token(manager, "WAREHOUSE_MANAGER")).contentType("application/json")
+                        .content("{\"locationCode\":\"HCM-A01-1-B\",\"lpn\":\"" + lpn + "\"}"))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("PUT_BACK_NOT_REQUIRED"));
     }
 
     // ---- retries, refusals, races ------------------------------------------------------------------------------
@@ -678,8 +819,8 @@ class PickDamageIntegrationTest {
     @Test
     @DisplayName("the same report again answers with what it made; another one on the superseded line is refused")
     void replay() throws Exception {
-        stock("HCM-A01-1-A", 5, "L1", today.plusDays(10));
-        stock("HCM-A01-1-B", 5, "L2", today.plusDays(30));
+        cartons("HCM-A01-1-A", 5, 1, "L1", today.plusDays(10));
+        cartons("HCM-A01-1-B", 5, 1, "L2", today.plusDays(30));
         OrderSummary order = releasedOrder(3);
         UUID task = startedTask(order);
         String lineId = lines(task).get(0).path("lineId").asText();
@@ -694,9 +835,9 @@ class PickDamageIntegrationTest {
         assertThat(again.path("damageReportId").asText()).isEqualTo(first);
         assertThat(again.path("reportNumber").asText()).startsWith("DMG-");
         assertThat(again.path("damageLocationCode").asText()).isEqualTo("HCM-QC01");
-        assertThat(again.path("lines")).hasSize(2);
+        assertThat(again.path("lines")).hasSize(1);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM fulfillment.pick_line WHERE pick_id = ?", Integer.class,
-                task)).isEqualTo(3);
+                task)).as("three cartons planned, one replacement").isEqualTo(4);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM inventory.stock_damage_report WHERE sku = ?",
                 Integer.class, sku)).isEqualTo(1);
         assertThat(damagedInQuarantine()).isEqualTo(1);
@@ -707,7 +848,7 @@ class PickDamageIntegrationTest {
     @Test
     @DisplayName("only the assignee, in the task's warehouse, at the line's bin, an open line, a photo: else nothing")
     void refusals() throws Exception {
-        UUID only = stock("HCM-A01-1-A", 4, "L1", today.plusDays(10));
+        cartons("HCM-A01-1-A", 2, 2, "L1", today.plusDays(10));
         OrderSummary order = releasedOrder(2);
         UUID task = startedTask(order);
         JsonNode lines = lines(task);
@@ -717,22 +858,25 @@ class PickDamageIntegrationTest {
                 .andExpect(status().isNotFound());
         damage(task, lineId, pickerElsewhere, "WAREHOUSE_STAFF", damageJson(UUID.randomUUID(), "HCM-A01-1-A", 1),
                 true).andExpect(status().isForbidden()).andExpect(jsonPath("$.errorCode").value("OUT_OF_DATA_SCOPE"));
+        // More than the carton holds is no better than a part of it: a carton is reported damaged whole (4C-4).
         damage(task, lineId, picker, "WAREHOUSE_STAFF", damageJson(UUID.randomUUID(), "HCM-A01-1-A", 3), true)
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("STOCK_PACKAGE_TAKEN_WHOLE"));
+        damage(task, lineId, picker, "WAREHOUSE_STAFF", damageJson(UUID.randomUUID(), "HCM-A01-1-A", 0), true)
                 .andExpect(status().isBadRequest()).andExpect(jsonPath("$.errorCode").value("VALIDATION_FAILED"));
-        damage(task, lineId, picker, "WAREHOUSE_STAFF", damageJson(UUID.randomUUID(), "HCM-A01-1-B", 1), true)
+        damage(task, lineId, picker, "WAREHOUSE_STAFF", damageJson(UUID.randomUUID(), "HCM-A01-1-B", 2), true)
                 .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("PICK_LOCATION_MISMATCH"));
-        damage(task, lineId, picker, "WAREHOUSE_STAFF", damageJson(UUID.randomUUID(), "HCM-A01-1-A", 1), false)
+        damage(task, lineId, picker, "WAREHOUSE_STAFF", damageJson(UUID.randomUUID(), "HCM-A01-1-A", 2), false)
                 .andExpect(status().isBadRequest()).andExpect(jsonPath("$.errorCode").value("DAMAGE_PHOTO_REQUIRED"));
-        assertThat(row(only)).containsEntry("on_hand", 4).containsEntry("reserved", 2);
+        assertThat(bin("HCM-A01-1-A")).containsEntry("on_hand", 4).containsEntry("reserved", 2);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM inventory.stock_damage_report WHERE sku = ?",
                 Integer.class, sku)).isZero();
 
         // A picked line, and a task whose order was cancelled, take no damage report.
-        confirm(task, lineId, "HCM-A01-1-A", 2).andExpect(status().isOk());
-        damage(task, lineId, picker, "WAREHOUSE_STAFF", damageJson(UUID.randomUUID(), "HCM-A01-1-A", 1), true)
+        confirm(task, lineId, "HCM-A01-1-A").andExpect(status().isOk());
+        damage(task, lineId, picker, "WAREHOUSE_STAFF", damageJson(UUID.randomUUID(), "HCM-A01-1-A", 2), true)
                 .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("PICK_LINE_NOT_OPEN"));
         WithCurrentUser.run(TestUsers.admin(), DataScope.ALL, () -> orders.cancel(order.orderId(), "CUSTOMER_REQUEST"));
-        damage(task, lineId, picker, "WAREHOUSE_STAFF", damageJson(UUID.randomUUID(), "HCM-A01-1-A", 1), true)
+        damage(task, lineId, picker, "WAREHOUSE_STAFF", damageJson(UUID.randomUUID(), "HCM-A01-1-A", 2), true)
                 .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("PICK_TASK_STATE_CONFLICT"));
         assertThat(damagedInQuarantine()).isZero();
     }
@@ -740,14 +884,16 @@ class PickDamageIntegrationTest {
     @Test
     @DisplayName("a confirmation and a damage report of one line at the same moment: one wins, the other is refused")
     void confirmationRacesDamage() throws Exception {
-        UUID only = stock("HCM-A01-1-A", 6, "L1", today.plusDays(10));
+        cartons("HCM-A01-1-A", 3, 2, "L1", today.plusDays(10));
         OrderSummary order = releasedOrder(2);
         UUID task = startedTask(order);
-        String lineId = lines(task).get(0).path("lineId").asText();
+        JsonNode line = lines(task).get(0);
+        String lineId = line.path("lineId").asText();
         String confirmHeader = token(picker, "WAREHOUSE_STAFF");
         String damageHeader = token(picker, "WAREHOUSE_STAFF");
-        String scan = "{\"locationCode\":\"HCM-A01-1-A\",\"scannedCode\":\"" + sku + "\",\"quantity\":2}";
-        byte[] report = damageJson(UUID.randomUUID(), "HCM-A01-1-A", 1).getBytes(StandardCharsets.UTF_8);
+        String scan = "{\"locationCode\":\"HCM-A01-1-A\",\"lpn\":\"" + line.path("lpn").asText() + "\"}";
+        // The whole carton: part of one is refused whatever the race, and would prove nothing.
+        byte[] report = damageJson(UUID.randomUUID(), "HCM-A01-1-A", 2).getBytes(StandardCharsets.UTF_8);
 
         ExecutorService pool = Executors.newFixedThreadPool(2);
         CountDownLatch go = new CountDownLatch(1);
@@ -780,10 +926,10 @@ class PickDamageIntegrationTest {
                 lineId);
         if (status.equals("PICKED")) {
             assertThat(damagedInQuarantine()).isZero();
-            assertThat(row(only)).containsEntry("on_hand", 4).containsEntry("reserved", 0);
+            assertThat(bin("HCM-A01-1-A")).containsEntry("on_hand", 4).containsEntry("reserved", 0);
         } else {
             assertThat(status).isEqualTo("CANCELLED");
-            assertThat(damagedInQuarantine()).isEqualTo(1);
+            assertThat(damagedInQuarantine()).isEqualTo(2);
             assertThat(jdbc.queryForObject("""
                     SELECT count(*) FROM inventory.stock_movement WHERE movement_type = 'PICK' AND reference_id = ?::uuid""",
                     Integer.class, lineId)).isZero();

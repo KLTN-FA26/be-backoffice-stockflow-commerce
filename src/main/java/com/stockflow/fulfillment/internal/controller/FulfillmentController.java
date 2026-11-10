@@ -76,7 +76,8 @@ class FulfillmentController {
     @Auditable(action = AuditAction.CREATE, resourceType = "fulfillment-task", resourceId = "#result?.data()?.taskId()")
     public ApiResponse<FulfillmentTaskResponse> create(@Valid @RequestBody CreateTaskRequest request,
                                                @AuthenticatedUser CurrentUser actor) {
-        return ApiResponse.ok(mapper.toResponse(fulfillment.createTask(request.orderId(), request.assignedUserId(), actor)));
+        return ApiResponse.ok(mapper.toResponse(fulfillment.createTask(request.orderId(), request.assignedUserId(),
+                request.destination(), request.stagingLocationCode(), actor)));
     }
 
     @GetMapping("/tasks")
@@ -113,6 +114,46 @@ class FulfillmentController {
         return ApiResponse.ok(mapper.toResponse(fulfillment.assign(taskId, request.assignedUserId(), actor)));
     }
 
+    /**
+     * Where a PENDING task takes its cartons (kltn-docs 07 §4.1 step 3, BR-08): {@code DISPATCH}, or {@code STAGING}
+     * into {@code stagingLocationCode} (optional when the warehouse has one active staging area). Past PENDING, 409
+     * {@code PICK_TASK_STATE_CONFLICT}; a staging area that is not one of the warehouse's, 422 {@code STAGING_AREA_INVALID}.
+     */
+    @PutMapping("/tasks/{taskId}/destination")
+    @RequiresPermission(resource = FulfillmentResources.TASK_ASSIGNMENT, action = Action.UPDATE)
+    @Auditable(action = AuditAction.UPDATE, resourceType = "fulfillment-task", resourceId = "#taskId")
+    public ApiResponse<FulfillmentTaskResponse> changeDestination(@PathVariable UUID taskId,
+            @Valid @RequestBody DestinationRequest request, @AuthenticatedUser CurrentUser actor) {
+        return ApiResponse.ok(mapper.toResponse(fulfillment.changeDestination(taskId, request.destination(),
+                request.stagingLocationCode(), actor)));
+    }
+
+    /**
+     * Moves a STAGED task to dispatch, all of it (kltn-docs 07 §4.3 step 8, BR-11): every staged carton is deducted
+     * where it stands and the task is PICKED, ready for checking and labelling. A decision of whoever assigns the work
+     * (the warehouse manager). Not STAGED, 409 {@code PICK_TASK_STATE_CONFLICT}; the order on hold, 409
+     * {@code PICK_ORDER_ON_HOLD}. Again, 200 with the task as it is.
+     */
+    @PostMapping("/tasks/{taskId}/dispatch-transfer")
+    @RequiresPermission(resource = FulfillmentResources.TASK_ASSIGNMENT, action = Action.UPDATE)
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "fulfillment-task", resourceId = "#taskId")
+    public ApiResponse<FulfillmentTaskResponse> moveToDispatch(@PathVariable UUID taskId,
+                                                               @AuthenticatedUser CurrentUser actor) {
+        return ApiResponse.ok(mapper.toResponse(fulfillment.moveToDispatch(taskId, actor)));
+    }
+
+    /**
+     * A top-up (kltn-docs 07 §4.3 step 7, BR-07): cartons the order holds that no line of the task takes yet become new
+     * lines of the same task, keeping its destination; a STAGED or PICKED task goes back to PICKING. The answer is the
+     * new lines - none when there is nothing new.
+     */
+    @PostMapping("/tasks/{taskId}/top-up")
+    @RequiresPermission(resource = FulfillmentResources.TASK_ASSIGNMENT, action = Action.UPDATE)
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "fulfillment-task", resourceId = "#taskId")
+    public ApiResponse<List<PickLineResponse>> topUp(@PathVariable UUID taskId, @AuthenticatedUser CurrentUser actor) {
+        return ApiResponse.ok(pickLists.topUp(taskId, actor).stream().map(mapper::toResponse).toList());
+    }
+
     @GetMapping("/tasks/{taskId}")
     @RequiresPermission(resource = FulfillmentResources.PICK_LISTS, action = Action.READ)
     public ApiResponse<FulfillmentTaskResponse> find(@PathVariable UUID taskId,
@@ -132,7 +173,10 @@ class FulfillmentController {
         return ApiResponse.ok(mapper.toResponse(fulfillment.startPicking(taskId, actor)));
     }
 
-    /** Closes picking once every line is PICKED: {@code 409 PICK_LINES_INCOMPLETE} otherwise (docs 07 step 9). */
+    /**
+     * Closes picking once every line is PICKED - or STAGED, for a STAGING task, which then waits STAGED for the move to
+     * dispatch: {@code 409 PICK_LINES_INCOMPLETE} otherwise (docs 07 step 6).
+     */
     @PostMapping("/tasks/{taskId}/picking-completion")
     @RequiresPermission(resource = FulfillmentResources.PICKING, action = Action.UPDATE)
     @Auditable(action = AuditAction.TRANSITION, resourceType = "fulfillment-task", resourceId = "#taskId")
@@ -155,10 +199,11 @@ class FulfillmentController {
     }
 
     /**
-     * Confirms one line by scan (SCRUM-267/274, docs 07 step 6): location, then SKU or barcode, then the
-     * quantity, which must be the whole allocation. The line's hold is deducted in the same transaction
-     * ({@code inventory :: consumption}, SCRUM-275). Only the assignee; the same scan again answers 200
-     * with the line unchanged. Send an {@code Idempotency-Key} per scan.
+     * Confirms one line by scan (kltn-docs 07 §4.2 step 5): the bin, then the carton's LPN - only the line's own; a SKU,
+     * a barcode or another carton is 409 {@code PICK_ITEM_MISMATCH} (BR-10). No quantity: the carton is taken whole
+     * (BR-04). In the same transaction ({@code inventory :: consumption}, SCRUM-275): a DISPATCH task deducts the line's
+     * hold (PICKED); a STAGING task moves the carton to its staging area, still held, nothing deducted (STAGED). Only
+     * the assignee; the same scan again answers 200 with the line unchanged. Send an {@code Idempotency-Key} per scan.
      */
     @PostMapping("/tasks/{taskId}/pick-lines/{lineId}/confirmation")
     @RequiresPermission(resource = FulfillmentResources.PICKING, action = Action.UPDATE)
@@ -166,7 +211,7 @@ class FulfillmentController {
     public ApiResponse<PickLineResponse> confirmPick(@PathVariable UUID taskId, @PathVariable UUID lineId,
             @Valid @RequestBody ConfirmPickRequest request, @AuthenticatedUser CurrentUser actor) {
         return ApiResponse.ok(mapper.toResponse(pickLists.confirm(taskId, lineId, request.locationCode(),
-                request.scannedCode(), request.quantity(), actor)));
+                request.lpn(), actor)));
     }
 
     /**
@@ -184,23 +229,25 @@ class FulfillmentController {
     }
 
     /**
-     * Puts everything one line picked back onto an active bin of the task's warehouse, as AVAILABLE
-     * stock (SCRUM-275). Any warehouse staff member or manager of that warehouse, not only the picker. The
-     * same line again answers 200 with the line unchanged.
+     * Puts the carton one line picked back onto an active bin of the task's warehouse, whole, as AVAILABLE stock,
+     * confirmed by scanning its LPN (kltn-docs 07 §4.5 step 14): the carton is IN_STOCK there again, sealed, with its
+     * LPN and count. Any warehouse staff member or manager of that warehouse, not only the picker. The same line and
+     * LPN again answers 200 with the line unchanged.
      */
     @PostMapping("/tasks/{taskId}/pick-lines/{lineId}/put-back")
     @RequiresPermission(resource = FulfillmentResources.PICKING, action = Action.UPDATE)
     @Auditable(action = AuditAction.TRANSITION, resourceType = "fulfillment-task", resourceId = "#taskId")
     public ApiResponse<PickLineResponse> putBack(@PathVariable UUID taskId, @PathVariable UUID lineId,
             @Valid @RequestBody PutBackRequest request, @AuthenticatedUser CurrentUser actor) {
-        return ApiResponse.ok(mapper.toResponse(pickLists.putBack(taskId, lineId, request.locationCode(), actor)));
+        return ApiResponse.ok(mapper.toResponse(pickLists.putBack(taskId, lineId, request.locationCode(),
+                request.lpn(), actor)));
     }
 
     /**
-     * X-SHORT (docs 04c): the assignee is at the line's bin and finds fewer units than allocated - a picking step,
-     * so the picking permission. The line turns
-     * SHORT, nothing is deducted, and the order goes ON_HOLD ({@code INVENTORY}) for the coordinator. The
-     * same report again answers 200 with the line unchanged.
+     * X-SHORT (kltn-docs 07 §4.4 step 9, BR-09): the assignee is at the line's bin and cannot take its carton -
+     * {@code NOT_FOUND} or {@code DAMAGED} - a picking step, so the picking permission. The line turns SHORT of the
+     * whole carton, nothing is deducted, the order goes ON_HOLD ({@code INVENTORY}) for the coordinator and the carton
+     * is counted blind. The same report again answers 200 with the line unchanged.
      */
     @PostMapping("/tasks/{taskId}/pick-lines/{lineId}/short")
     @RequiresPermission(resource = FulfillmentResources.PICKING, action = Action.UPDATE)
@@ -208,7 +255,7 @@ class FulfillmentController {
     public ApiResponse<PickLineResponse> reportShort(@PathVariable UUID taskId, @PathVariable UUID lineId,
             @Valid @RequestBody ShortPickRequest request, @AuthenticatedUser CurrentUser actor) {
         return ApiResponse.ok(mapper.toResponse(pickLists.reportShort(taskId, lineId, request.locationCode(),
-                request.foundQuantity(), actor)));
+                request.reason(), actor)));
     }
 
     /** Step one of a damage photo uploaded straight to storage, for the task's assignee: a signed PUT. */
@@ -235,13 +282,14 @@ class FulfillmentController {
     }
 
     /**
-     * SCRUM-277: the assignee is at the line's bin and finds some of the allocated units damaged - a picking step, so
-     * the picking permission. {@code multipart/form-data}: a JSON part {@code report} and one to five image parts
-     * {@code photos} (BR-STK-003). The damaged units go to quarantine as DAMAGED; the line gives way to a line for the
-     * good units at the same bin and, for the damaged ones, to new lines where other stock replaced them - or a SHORT
-     * line, the order ON_HOLD ({@code INVENTORY}) for the coordinator, when none could. The same report again answers
-     * 200 with what it made. Retries carry the same {@code requestId}: uploads are not buffered by the idempotency
-     * filter.
+     * SCRUM-277: the assignee is at the line's bin and finds its carton damaged - a picking step, so the picking
+     * permission. Always the whole carton ({@code damagedQuantity} = the line's; otherwise 409
+     * {@code STOCK_PACKAGE_TAKEN_WHOLE}). {@code multipart/form-data}: a JSON part {@code report} and one to five image
+     * parts {@code photos} (BR-STK-003). The units go to quarantine as DAMAGED; the line gives way to new lines where
+     * whole cartons replaced it - or a SHORT line, the order ON_HOLD ({@code INVENTORY}) for the coordinator, when none
+     * could. The same report again answers 200 with what it made. Retries carry the same {@code requestId}: uploads
+     * are not buffered by the idempotency filter. Until team plan 5-6 removes it; a short pick with reason
+     * {@code DAMAGED} is the docs' way (07 §4.4).
      */
     @PostMapping(value = "/tasks/{taskId}/pick-lines/{lineId}/damage",
             consumes = org.springframework.http.MediaType.MULTIPART_FORM_DATA_VALUE)
@@ -277,8 +325,8 @@ class FulfillmentController {
     }
 
     /**
-     * Resolves a SHORT line by reallocation (X-SHORT step 04): the same quantity is allocated on other pickable
-     * bins of the warehouse, FEFO, never the short one; the answer is the new lines to pick. The order resumes
+     * Resolves a SHORT line by reallocation (07 §4.4 step 10): as many whole cartons are allocated from other pickable
+     * bins of the warehouse, FIFO, never the short one; the answer is the new lines to pick. The order resumes
      * once no line is SHORT. Too little stock is 409 {@code INSUFFICIENT_STOCK} and nothing changes. A decision of
      * whoever assigns the work (the coordinator, the warehouse manager), not of the picker.
      */
@@ -308,8 +356,18 @@ class FulfillmentController {
         return ApiResponse.ok(mapper.toResponse(fulfillment.completePacking(taskId, completion, actor)));
     }
 
-    record CreateTaskRequest(@NotNull UUID orderId, @NotNull UUID assignedUserId) { }
+    /**
+     * {@code destination} defaults to {@code DISPATCH}; {@code stagingLocationCode} names the staging area of a
+     * {@code STAGING} task, optional when the warehouse has exactly one active staging area.
+     */
+    record CreateTaskRequest(@NotNull UUID orderId, @NotNull UUID assignedUserId,
+                             com.stockflow.fulfillment.api.PickDestination destination,
+                             @Size(max = 64) String stagingLocationCode) { }
+    /** As {@link CreateTaskRequest}: the staging area is ignored for a {@code DISPATCH} task. */
+    record DestinationRequest(@NotNull com.stockflow.fulfillment.api.PickDestination destination,
+                              @Size(max = 64) String stagingLocationCode) { }
+    /** The bin, as scanned, and why its carton cannot be taken. A carton is short whole: no quantity is entered. */
     record ShortPickRequest(@NotBlank @Size(max = 64) String locationCode,
-                            @NotNull @jakarta.validation.constraints.PositiveOrZero Integer foundQuantity) { }
+                            @NotNull com.stockflow.fulfillment.internal.domain.ShortPickReason reason) { }
     record AssignmentRequest(@NotNull UUID assignedUserId) { }
 }

@@ -2,8 +2,9 @@
  * <b>Stock consumption: the one door through which picked goods leave the books.</b>
  *
  * <p>A second named interface of {@code inventory}, next to {@code api}, and deliberately narrower.
- * Deducting stock and putting picked goods back are not things any module may do: exactly one caller,
- * {@code fulfillment}, is entitled to say "these units have left the shelf" (or "are back on it").
+ * Deducting stock, putting picked goods back, and moving an order's cartons into and out of a staging area (team plan
+ * 4C-5) are not things any module may do: exactly one caller, {@code fulfillment}, is entitled to say "these units have
+ * left the shelf" (or "are back on it", or "wait in the staging area for their order").
  * Putting {@link com.stockflow.inventory.consumption.PickConsumption} on {@code inventory :: api}
  * would hand that power to every module that may read availability. As its own named interface it is
  * reachable only by a module that lists {@code "inventory :: consumption"} in its

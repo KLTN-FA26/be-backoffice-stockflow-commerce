@@ -154,13 +154,13 @@ class CustomerOrdersService implements CustomerOrders {
     /**
      * G3-2: what the portal may offer, from the same rules the order applies - so the portal stops keeping its own
      * list of cancellable statuses. A customer cancels at once until the order is released; after that, up to the
-     * first completed package, asks (one request at a time).
+     * first labelled carton (08 BR-04), asks (one request at a time).
      */
     private AllowedActions allowedActions(OrderSummary summary) {
         OrderStatus status = summary.status();
         boolean cancel = status.customerMayCancelDirectly();
         var lifecycle = summary.lifecycle();
-        boolean packed = lifecycle != null && lifecycle.packedAt() != null;
+        boolean packed = lifecycle != null && lifecycle.packedForGood();
         boolean request = !cancel && !packed && status.canTransitionTo(OrderStatus.CANCELLED)
                 && !cancellationRequests.hasPending(summary.orderId());
         return new AllowedActions(cancel, request);

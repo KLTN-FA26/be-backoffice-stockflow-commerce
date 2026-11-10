@@ -88,7 +88,7 @@ class PackingService implements Packing {
     /** The order statuses packing may change parcels in: released, picking, or the rest of a split order. */
     private static final Set<OrderStatus> PACKABLE = EnumSet.of(OrderStatus.READY_TO_FULFILL, OrderStatus.PICKING,
             OrderStatus.PARTIALLY_FULFILLED);
-    private static final EnumSet<PackStatus> QUEUED = EnumSet.of(PackStatus.PENDING, PackStatus.PACKING);
+    private static final EnumSet<PackStatus> QUEUED = EnumSet.of(PackStatus.PENDING, PackStatus.IN_PROGRESS);
     /** The most picked-but-unpacked tasks the queue reads at once; far above what one warehouse has waiting. */
     private static final int QUEUE_WORKING_SET = Pages.MAX_PAGE_SIZE * 10;
 
@@ -239,6 +239,7 @@ class PackingService implements Packing {
 
     @Override
     public Parcel openPackage(UUID taskId, String type, String kitOverrideReason, CurrentUser actor) {
+        requireNotRetired();
         Context ctx = forWork(taskId);
         requirePackable(ctx.order());
         PackingSession session = load(ctx);
@@ -255,6 +256,7 @@ class PackingService implements Packing {
 
     @Override
     public Kit openKit(UUID taskId, OpenKit request, CurrentUser actor) {
+        requireNotRetired();
         Context ctx = forWork(taskId);
         requirePackable(ctx.order());
         PackingSession session = load(ctx);
@@ -281,6 +283,7 @@ class PackingService implements Packing {
 
     @Override
     public Session scan(UUID taskId, UUID packageId, Scan scan, CurrentUser actor) {
+        requireNotRetired();
         Context ctx = forWork(taskId);
         if (isReplay(ctx, packageId, scan.scanId())) {
             return view(ctx, load(ctx));
@@ -300,6 +303,7 @@ class PackingService implements Packing {
     @Override
     public Session removeUnits(UUID taskId, UUID packageId, UUID orderLineId, String lotNumber, String serialNumber,
                                int quantity, UUID scanId, CurrentUser actor) {
+        requireNotRetired();
         Context ctx = forWork(taskId);
         UUID id = scanId == null ? Identifiers.newId() : scanId;
         if (isReplay(ctx, packageId, id)) {
@@ -335,6 +339,7 @@ class PackingService implements Packing {
 
     @Override
     public Parcel seal(UUID taskId, UUID packageId, Seal seal, CurrentUser actor) {
+        requireNotRetired();
         Context ctx = forWork(taskId);
         requirePackable(ctx.order());
         PackingSession session = load(ctx);
@@ -351,6 +356,7 @@ class PackingService implements Packing {
 
     @Override
     public Parcel reopen(UUID taskId, UUID packageId, CurrentUser actor) {
+        requireNotRetired();
         Context ctx = forWork(taskId);
         requireNotPlanned(ctx, packageId);
         requirePackable(ctx.order());
@@ -363,6 +369,7 @@ class PackingService implements Packing {
 
     @Override
     public Session voidPackage(UUID taskId, UUID packageId, CurrentUser actor) {
+        requireNotRetired();
         Context ctx = forWork(taskId);
         requireNotPlanned(ctx, packageId);
         requirePackable(ctx.order());
@@ -443,7 +450,7 @@ class PackingService implements Packing {
                 return new Completed(replay.get().getId(), ctx.order());
             }
         }
-        if (ctx.pack().getStatus() == PackStatus.PACKED) {
+        if (ctx.pack().getStatus() == PackStatus.COMPLETED) {
             // Completed before: answered as it is (a retried completion), with the last shipment it made.
             List<ShipmentJpaEntity> made = shipments.findByPackIdOrderByReadyAtAscIdAsc(ctx.pack().getId());
             return new Completed(made.isEmpty() ? null : made.get(made.size() - 1).getId(), ctx.order());
@@ -519,7 +526,9 @@ class PackingService implements Packing {
                 row.apply(shipment);
                 shipments.save(row);
                 timeline.record(shipment, ShipmentStatus.READY_TO_DISPATCH, null, pick.getOrderNumber(), null, null);
-                packages.findByShipmentIdOrderByPackageNoAsc(row.getId()).forEach(parcel -> {
+                // A shipping carton of the check station (4C-6) is the check's to remove, never voided here.
+                packages.findByShipmentIdOrderByPackageNoAsc(row.getId()).stream().filter(p -> !p.isCarton())
+                        .forEach(parcel -> {
                     parcel.apply(parcel.getShipmentId(), parcel.getPackageType(), PackageStatus.VOIDED, parcel.getWeightKg(),
                             parcel.getLengthCm(), parcel.getWidthCm(), parcel.getHeightCm(), parcel.getDimWeightKg(),
                             parcel.isRotatable(), parcel.isRotatableOverridden(), parcel.isFragile(),
@@ -529,7 +538,7 @@ class PackingService implements Packing {
             }
         }
         for (PackageJpaEntity parcel : packages.findByPackIdOrderByPackageNoAsc(pack.getId())) {
-            if (parcel.getStatus() != PackageStatus.VOIDED && parcel.getShipmentId() == null) {
+            if (!parcel.isCarton() && parcel.getStatus() != PackageStatus.VOIDED && parcel.getShipmentId() == null) {
                 parcel.apply(null, parcel.getPackageType(), PackageStatus.VOIDED, parcel.getWeightKg(),
                         parcel.getLengthCm(), parcel.getWidthCm(), parcel.getHeightCm(), parcel.getDimWeightKg(),
                         parcel.isRotatable(), parcel.isRotatableOverridden(), parcel.isFragile(),
@@ -613,10 +622,17 @@ class PackingService implements Packing {
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND,
                         "Task %s has no pick line %s".formatted(taskId, lineId)));
         pickLists.requireDamageableAfterPick(pick, lineId, damage.damagedQuantity());
+        // 4C-6: once the check station holds the line's carton, a damaged carton is removed there - REMOVED, then whole
+        // into quarantine through the put-back queue - so it is never both a live shipping carton and quarantined stock.
+        if (packages.findByPickLineIdIn(List.of(lineId)).stream()
+                .anyMatch(carton -> carton.getStatus() != PackageStatus.REMOVED)) {
+            throw new BusinessException(ErrorCode.PACK_STATE_CONFLICT, ("Carton %s is at the check station: remove it "
+                    + "there as damaged, and it goes to quarantine through the put-back queue").formatted(line.getLpn()));
+        }
         Optional<PackJpaEntity> pack = packs.findByPickId(pick.getId());
         if (pack.isPresent()) {
             PackingSession session = load(new Context(pick, pack.get(), order));
-            if (session.status() == PackStatus.PACKING) {
+            if (session.status() == PackStatus.IN_PROGRESS) {
                 session.requireWorkable(actor.userId(), isManager(actor));
             }
             String serial = line.getReservationId() == null ? null
@@ -638,6 +654,16 @@ class PackingService implements Packing {
     }
 
     // ------------------------------------------------------------------ internals
+
+    /**
+     * Team plan 4C-6: the LPN carton is the shipping carton, checked and labelled at the check station, and completion
+     * ships only its cartons - a repack parcel would never ship. Its writes are refused, before anything is read or
+     * numbered (the check's cartons share the session's package numbers), until 4C-7 removes this station.
+     */
+    private static void requireNotRetired() {
+        throw new BusinessException(ErrorCode.REPACK_RETIRED, "Check and label the order's cartons at the check "
+                + "station (POST /tasks/{taskId}/carton-checks): parcels are no longer packed");
+    }
 
     private record Context(PickJpaEntity pick, PackJpaEntity pack, OrderSummary order) { }
 

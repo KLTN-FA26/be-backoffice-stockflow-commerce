@@ -25,7 +25,7 @@ public record PickDamageRequest(
         @Size(max = 64, message = "locationCode is at most 64 characters")
         String locationCode,
 
-        @Schema(description = "1 to the line's allocated quantity", example = "2")
+        @Schema(description = "The line's allocated quantity: a carton is reported damaged whole", example = "24")
         @NotNull(message = "damagedQuantity is required")
         @Positive(message = "damagedQuantity must be at least 1")
         Integer damagedQuantity,

@@ -26,7 +26,9 @@ import static org.assertj.core.api.Assertions.catchThrowable;
 
 /**
  * SCRUM-473 design §3 against a real PostgreSQL: a draft receipt's count labels, recounts, moves and voids the
- * line's cartons through inventory, answers with their LPNs, and confirming puts the goods into them.
+ * line's cartons through inventory, answers with their LPNs, and confirming puts the goods into them. Since team plan
+ * 4C-2 every carton holds its unit's standard count (kltn-docs 03 BR-13) and every unit received is in one (BR-12):
+ * a carton listed at another count is refused at the count, a line with units outside its cartons at the confirmation.
  *
  * <p>Nothing here runs in a test transaction: V20261020000200 checks a carton against its stock rows at commit, so
  * every call commits as production's would. Each test has its own SKU (2 steps: no QC, no lot) with a CARTON unit of
@@ -135,10 +137,10 @@ class GoodsReceiptPackageIntegrationTest {
         return receipts.replaceLines(receiptId, List.of(line)).lines().getFirst();
     }
 
-    /** 4990 units: four cartons of 1000, one of 980, 10 loose. */
+    /** 5000 units: five cartons of 1000. */
     private GoodsReceipts.LineView fiveCartons() {
-        return count(line(4990, "CARTON", area, new NewPackage(null, 1000), new NewPackage(null, 1000),
-                new NewPackage(null, 1000), new NewPackage(null, 1000), new NewPackage(null, 980)));
+        return count(line(5000, "CARTON", area, new NewPackage(null, 1000), new NewPackage(null, 1000),
+                new NewPackage(null, 1000), new NewPackage(null, 1000), new NewPackage(null, 1000)));
     }
 
     private static NewPackage recount(GoodsReceipts.PackageView carton, int quantity) {
@@ -162,12 +164,12 @@ class GoodsReceiptPackageIntegrationTest {
     }
 
     @Test
-    @DisplayName("five cartons on a line of 4990: five LPNs in the answer, the line in CARTON, 10 loose")
+    @DisplayName("five cartons on a line of 5000: five LPNs in the answer, the line in CARTON, nothing loose")
     void draftCartonsGetLpns() {
         GoodsReceipts.LineView line = fiveCartons();
 
         assertThat(line.unitOfMeasure()).isEqualTo("CARTON");
-        assertThat(line.looseQuantity()).isEqualTo(10);
+        assertThat(line.looseQuantity()).isZero();
         assertThat(line.units()).as("every unit of the item for the picker, the base unit first, then by code")
                 .containsExactly(new GoodsReceipts.UnitView(baseUnit, 1, true, true, true),
                         new GoodsReceipts.UnitView("BOX", 500, false, true, false),
@@ -179,7 +181,7 @@ class GoodsReceiptPackageIntegrationTest {
         });
         assertThat(line.packages()).extracting(GoodsReceipts.PackageView::lpn).doesNotHaveDuplicates().isSorted();
         assertThat(line.packages()).extracting(GoodsReceipts.PackageView::quantity)
-                .containsExactlyInAnyOrder(1000, 1000, 1000, 1000, 980);
+                .containsOnly(1000);
         assertThat(line.packages()).as("while RECEIVING, what is in a carton is what was counted into it")
                 .allSatisfy(p -> assertThat(p.receivedQty()).isEqualTo(p.quantity()));
         assertThat(jdbc.queryForObject("select uom_conversion_id from procurement.goods_receipt_lines where id = ?",
@@ -190,20 +192,37 @@ class GoodsReceiptPackageIntegrationTest {
     }
 
     @Test
-    @DisplayName("a recount naming two of the five keeps their LPNs, recounts the first to 990 and voids the other three")
+    @DisplayName("a recount naming two of the five keeps their LPNs and voids the other three")
     void recountKeepsAndVoids() {
         List<GoodsReceipts.PackageView> first = fiveCartons().packages();
 
-        GoodsReceipts.LineView again = count(line(4990, "CARTON", area, recount(first.get(0), 990),
+        GoodsReceipts.LineView again = count(line(5000, "CARTON", area, recount(first.get(0), 1000),
                 recount(first.get(1), 1000)));
 
         assertThat(again.id()).as("the line keeps its id").isEqualTo(fiveCartonsLineId());
         assertThat(again.packages()).extracting(GoodsReceipts.PackageView::lpn, GoodsReceipts.PackageView::quantity)
-                .containsExactly(org.assertj.core.groups.Tuple.tuple(first.get(0).lpn(), 990),
+                .containsExactly(org.assertj.core.groups.Tuple.tuple(first.get(0).lpn(), 1000),
                         org.assertj.core.groups.Tuple.tuple(first.get(1).lpn(), 1000));
-        assertThat(again.looseQuantity()).isEqualTo(4990 - 1990);
+        assertThat(again.looseQuantity()).isEqualTo(5000 - 2000);
         assertThat(statuses(again.id())).filteredOn("VOID"::equals).hasSize(3);
         assertThat(statuses(again.id())).filteredOn("RECEIVING"::equals).hasSize(2);
+    }
+
+    @Test
+    @DisplayName("03 BR-13: a carton counted at another figure than its unit's 1000 is refused on its quantity, and"
+            + " nothing changes")
+    void cartonOffItsStandardCountIsRefused() {
+        List<GoodsReceipts.PackageView> first = fiveCartons().packages();
+
+        Throwable short990 = catchThrowable(() -> count(line(5000, "CARTON", area, recount(first.get(0), 990))));
+        Throwable over = catchThrowable(() -> count(line(5000, "CARTON", area, recount(first.get(0), 1000),
+                new NewPackage(null, 1010))));
+
+        assertThat(code(short990)).isEqualTo(ErrorCode.RECEIPT_PACKAGE_NOT_STANDARD);
+        assertThat(fields(short990)).containsExactly("lines[0].packages[0].quantity:RECEIPT_PACKAGE_NOT_STANDARD");
+        assertThat(fields(over)).containsExactly("lines[0].packages[1].quantity:RECEIPT_PACKAGE_NOT_STANDARD");
+        assertThat(statuses(fiveCartonsLineId())).as("the five cartons as they were").hasSize(5)
+                .containsOnly("RECEIVING");
     }
 
     private UUID fiveCartonsLineId() {
@@ -216,7 +235,7 @@ class GoodsReceiptPackageIntegrationTest {
     void recountMovesCartonsWithTheLine() {
         List<GoodsReceipts.PackageView> first = fiveCartons().packages();
 
-        GoodsReceipts.LineView moved = count(line(4990, "CARTON", otherArea,
+        GoodsReceipts.LineView moved = count(line(5000, "CARTON", otherArea,
                 first.stream().map(p -> recount(p, p.quantity())).toArray(NewPackage[]::new)));
 
         assertThat(moved.locationCode()).isEqualTo(otherArea);
@@ -232,14 +251,14 @@ class GoodsReceiptPackageIntegrationTest {
     void unitChangeWithCartonsKept() {
         List<GoodsReceipts.PackageView> first = fiveCartons().packages();
 
-        Throwable kept = catchThrowable(() -> count(line(4990, "BOX", area, recount(first.get(0), 500))));
+        Throwable kept = catchThrowable(() -> count(line(5000, "BOX", area, recount(first.get(0), 500))));
 
         assertThat(code(kept)).isEqualTo(ErrorCode.RECEIPT_LINE_HAS_PACKAGES);
         assertThat(fields(kept)).containsExactly("lines[0].unitOfMeasure:RECEIPT_LINE_HAS_PACKAGES");
         assertThat(statuses(fiveCartonsLineId())).as("nothing changed").containsOnly("RECEIVING").hasSize(5);
 
-        GoodsReceipts.LineView changed = count(line(4990, "BOX", area, new NewPackage(null, 500),
-                new NewPackage(null, 490)));
+        GoodsReceipts.LineView changed = count(line(5000, "BOX", area, new NewPackage(null, 500),
+                new NewPackage(null, 500)));
 
         assertThat(changed.unitOfMeasure()).isEqualTo("BOX");
         assertThat(changed.packages()).extracting(GoodsReceipts.PackageView::nominalQty).containsOnly(500);
@@ -254,7 +273,7 @@ class GoodsReceiptPackageIntegrationTest {
     void lowerCaseLpnRecounts() {
         List<GoodsReceipts.PackageView> first = fiveCartons().packages();
 
-        GoodsReceipts.LineView again = count(line(4990, "carton", area, first.stream()
+        GoodsReceipts.LineView again = count(line(5000, "carton", area, first.stream()
                 .map(p -> new NewPackage(" " + p.lpn().toLowerCase(Locale.ROOT) + " ", p.quantity()))
                 .toArray(NewPackage[]::new)));
 
@@ -271,10 +290,10 @@ class GoodsReceiptPackageIntegrationTest {
         tx.executeWithoutResult(s -> jdbc.update(
                 "update inventory.inventory_items set lot_tracked = true where sku = ?", sku));
         UUID lineId = count(lotLine("L1", 4990, "CARTON", area, new NewPackage(null, 1000),
-                new NewPackage(null, 980))).id();
+                new NewPackage(null, 1000))).id();
 
         Throwable live = catchThrowable(() -> count(lotLine("L2", 4990, "CARTON", area, new NewPackage(null, 1000),
-                new NewPackage(null, 980))));
+                new NewPackage(null, 1000))));
 
         assertThat(code(live)).isEqualTo(ErrorCode.RECEIPT_LINE_HAS_PACKAGES);
         assertThat(statuses(lineId)).as("the cartons are untouched").hasSize(2).containsOnly("RECEIVING");
@@ -328,7 +347,7 @@ class GoodsReceiptPackageIntegrationTest {
     @DisplayName("rule 5: cartons holding more than the line are refused on lines[0].packages, and nothing is saved")
     void cartonsAboveLine() {
         Throwable refused = catchThrowable(() -> count(line(1500, "CARTON", area, new NewPackage(null, 1000),
-                new NewPackage(null, 980))));
+                new NewPackage(null, 1000))));
 
         assertThat(code(refused)).isEqualTo(ErrorCode.RECEIPT_PACKAGES_EXCEED_LINE);
         assertThat(fields(refused)).containsExactly("lines[0].packages:RECEIPT_PACKAGES_EXCEED_LINE");
@@ -352,7 +371,7 @@ class GoodsReceiptPackageIntegrationTest {
     }
 
     @Test
-    @DisplayName("confirm: cartons IN_STOCK and unopened, one INBOUND row each, the remainder one loose row")
+    @DisplayName("confirm: cartons IN_STOCK and unopened, one INBOUND row of 1000 in each, nothing loose")
     void confirmIntoCartons() {
         UUID lineId = fiveCartons().id();
 
@@ -367,17 +386,29 @@ class GoodsReceiptPackageIntegrationTest {
                  where s.sku = ? order by s.on_hand""",
                 (rs, n) -> rs.getInt("on_hand") + ":" + rs.getString("status") + ":"
                         + (rs.getObject("received_qty") == null ? "loose" : "carton of " + rs.getInt("received_qty")),
-                sku)).containsExactly("10:INBOUND:loose", "980:INBOUND:carton of 980",
-                "1000:INBOUND:carton of 1000", "1000:INBOUND:carton of 1000", "1000:INBOUND:carton of 1000",
-                "1000:INBOUND:carton of 1000");
+                sku)).hasSize(5).containsOnly("1000:INBOUND:carton of 1000");
         assertThat(jdbc.queryForObject("select uom_conversion_id from procurement.goods_receipt_lines where id = ?",
                 UUID.class, lineId)).isEqualTo(carton);
         GoodsReceipts.LineView line = confirmed.lines().getFirst();
         assertThat(line.packages()).hasSize(5).extracting(GoodsReceipts.PackageView::status).containsOnly("IN_STOCK");
-        assertThat(line.packages()).extracting(GoodsReceipts.PackageView::receivedQty)
-                .containsExactlyInAnyOrder(1000, 1000, 1000, 1000, 980);
-        assertThat(line.looseQuantity()).as("the line less what was counted into cartons").isEqualTo(10);
-        assertThat(receipts.get(receiptId).lines().getFirst().looseQuantity()).as("read again").isEqualTo(10);
+        assertThat(line.packages()).extracting(GoodsReceipts.PackageView::receivedQty).containsOnly(1000);
+        assertThat(line.looseQuantity()).isZero();
+    }
+
+    @Test
+    @DisplayName("03 BR-12: a line with units outside its cartons is not confirmed - RECEIPT_LINE_NOT_IN_CARTONS,"
+            + " nothing received, the receipt still a draft")
+    void unitsOutsideCartonsAreNotReceived() {
+        UUID lineId = count(line(1010, "CARTON", area, new NewPackage(null, 1000))).id();
+
+        Throwable refused = catchThrowable(() -> receipts.confirm(receiptId, clerk));
+
+        assertThat(code(refused)).isEqualTo(ErrorCode.RECEIPT_LINE_NOT_IN_CARTONS);
+        assertThat(jdbc.queryForObject("select count(*) from inventory.stock_item where sku = ?", Integer.class, sku))
+                .isZero();
+        assertThat(statuses(lineId)).containsExactly("RECEIVING");
+        assertThat(jdbc.queryForObject("select status from procurement.goods_receipts where id = ?", String.class,
+                receiptId)).isEqualTo("DRAFT");
     }
 
     @Test
@@ -392,20 +423,6 @@ class GoodsReceiptPackageIntegrationTest {
         assertThat(jdbc.queryForObject("""
                 select count(*) from inventory.stock_item where sku = ? and stock_package_id is null""",
                 Integer.class, sku)).as("no loose row").isZero();
-    }
-
-    @Test
-    @DisplayName("a carton holding more than its unit's 1000 is kept as counted: IN_STOCK, unopened, 1010 on hand")
-    void excessCartonIsKept() {
-        UUID lineId = count(line(1010, "CARTON", area, new NewPackage(null, 1010))).id();
-
-        receipts.confirm(receiptId, clerk);
-
-        assertThat(jdbc.queryForObject("""
-                select status || ':' || unopened || ':' || nominal_qty from inventory.stock_package
-                 where goods_receipt_line_id = ?""", String.class, lineId)).isEqualTo("IN_STOCK:true:1000");
-        assertThat(jdbc.queryForList("select on_hand from inventory.stock_item where sku = ?", Integer.class, sku))
-                .containsExactly(1010);
     }
 
     // ---- SCRUM-473: the unit the PO line was ordered in -------------------------------------------

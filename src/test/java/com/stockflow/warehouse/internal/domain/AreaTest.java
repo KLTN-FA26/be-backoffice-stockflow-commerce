@@ -130,4 +130,31 @@ class AreaTest {
         assertThat(area.holdsPlace()).isFalse();
         assertThat(errorOf(() -> area.changeStatus(null))).isEqualTo(ErrorCode.VALIDATION_FAILED);
     }
+
+    @Test
+    @DisplayName("a STAGING area is neither pickable nor a putaway target, and owns a location like any storage area (4C-5)")
+    void stagingAreaIsNeitherPickableNorAPutawayTarget() {
+        LocationSettings neither = new LocationSettings(500, new BigDecimal("2000"), false, false);
+        Area staging = Area.create(newId(), WAREHOUSE, "stg02",
+                new AreaDetails(AreaType.STAGING, "Khu cho xuat", FLOOR, false, null, neither), "hn", AreaTest::newId);
+
+        assertThat(staging.location().locationCode()).isEqualTo("HN-STG02");
+        assertThat(staging.location().pickable()).isFalse();
+        assertThat(staging.location().putawayTarget()).isFalse();
+
+        assertThat(errorOf(() -> new AreaDetails(AreaType.STAGING, "Khu", FLOOR, false, null,
+                new LocationSettings(500, new BigDecimal("2000"), true, false)))).as("pickable")
+                .isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThat(errorOf(() -> new AreaDetails(AreaType.STAGING, "Khu", FLOOR, false, null, SETTINGS)))
+                .as("a putaway target (the default settings of the tests)").isEqualTo(ErrorCode.VALIDATION_FAILED);
+        // any other storage type may be either
+        assertThat(details(AreaType.DISPATCH).settings().putawayTarget()).isTrue();
+    }
+
+    @Test
+    @DisplayName("PACKING is no area type: it merged into DISPATCH (06 BR-22)")
+    void packingIsGone() {
+        assertThat(java.util.Arrays.stream(AreaType.values()).map(Enum::name)).doesNotContain("PACKING")
+                .contains("STAGING", "DISPATCH");
+    }
 }

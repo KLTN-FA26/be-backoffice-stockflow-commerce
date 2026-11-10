@@ -1,6 +1,8 @@
 package com.stockflow.inventory;
 
 import com.stockflow.common.domain.Sku;
+import com.stockflow.common.error.BusinessException;
+import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.api.ReserveStockCommand;
@@ -27,12 +29,13 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.catchThrowable;
 
 /**
- * SCRUM-473 (#141) against a real PostgreSQL and its commit-time checks (V20261020000200): units taken out of a
- * carton open it, the last unit closes it CONSUMED, the ledger names the carton the units left, and two picks
- * from one carton are serialised on it. Before #141 the first partial pick of an unopened carton was refused at
- * commit as a 500 ("unopened with N counted in, but holds M").
+ * SCRUM-473 (#141) against a real PostgreSQL and its commit-time checks (V20261020000200), since team plan 4C-2 with
+ * whole cartons only: an order line is given whole cartons, never part of one, so a pick takes a carton whole and
+ * closes it CONSUMED in one go; the ledger names the carton the units left, and two picks of cartons of one SKU at
+ * once both commit.
  */
 @IntegrationTest
 @Import(PostgresContainer.class)
@@ -119,33 +122,35 @@ class StockPackageConsumptionIntegrationTest {
     }
 
     @Test
-    @DisplayName("a pick out of a carton opens it, the last unit closes it CONSUMED, and the ledger names the carton")
-    void pickOpensThenEmpties() {
+    @DisplayName("a carton is never allocated in part; a pick takes it whole, closes it CONSUMED, the ledger names it")
+    void pickTakesTheCartonWhole() {
         UUID box = cartonOnShelf("A");
         UUID order = confirmedOrder();
 
-        UUID first = hold(order, 3);
-        tx.executeWithoutResult(s -> pickConsumption.consumeForPick(first, Identifiers.newId(), clerk));
-        assertThat(carton(box)).containsEntry("status", "IN_STOCK").containsEntry("unopened", false)
-                .containsEntry("closed", false).containsEntry("held", 2L);
+        assertThat(((BusinessException) catchThrowable(() -> hold(order, 3))).errorCode())
+                .as("3 of a carton of 5: a reservation counts cartons")
+                .isEqualTo(ErrorCode.RESERVATION_NOT_WHOLE_CARTONS);
+        assertThat(carton(box)).containsEntry("status", "IN_STOCK").containsEntry("unopened", true)
+                .containsEntry("held", 5L);
 
-        UUID rest = hold(order, 2);
-        tx.executeWithoutResult(s -> pickConsumption.consumeForPick(rest, Identifiers.newId(), clerk));
+        UUID whole = hold(order, 5);
+        tx.executeWithoutResult(s -> pickConsumption.consumeForPick(whole, Identifiers.newId(), clerk));
         assertThat(carton(box)).containsEntry("status", "CONSUMED").containsEntry("closed", true)
                 .containsEntry("held", 0L);
 
         assertThat(jdbc.queryForList("""
                 select from_stock_package_id from inventory.stock_movement
-                 where sku = ? and movement_type = 'PICK'""", UUID.class, sku)).containsExactly(box, box);
+                 where sku = ? and movement_type = 'PICK'""", UUID.class, sku)).containsExactly(box);
     }
 
     @Test
-    @DisplayName("two picks out of one carton at once are serialised on the carton: both commit, nothing is refused")
-    void concurrentPicksAreSerialised() throws Exception {
+    @DisplayName("two picks of two cartons of one SKU at once both commit, each carton CONSUMED, nothing refused")
+    void concurrentPicksBothCommit() throws Exception {
         UUID box = cartonOnShelf("C");
+        UUID other = cartonOnShelf("D");
         UUID order = confirmedOrder();
-        UUID one = hold(order, 2);
-        UUID two = hold(order, 2);
+        UUID one = hold(order, 5);
+        UUID two = hold(order, 5);
         CountDownLatch start = new CountDownLatch(1);
 
         CompletableFuture<Void> a = CompletableFuture.runAsync(() -> {
@@ -159,8 +164,8 @@ class StockPackageConsumptionIntegrationTest {
         start.countDown();
         CompletableFuture.allOf(a, b).get(30, TimeUnit.SECONDS);
 
-        assertThat(carton(box)).containsEntry("status", "IN_STOCK").containsEntry("unopened", false)
-                .containsEntry("held", 1L);
+        assertThat(carton(box)).containsEntry("status", "CONSUMED").containsEntry("held", 0L);
+        assertThat(carton(other)).containsEntry("status", "CONSUMED").containsEntry("held", 0L);
         assertThat(jdbc.queryForList("select status from inventory.stock_reservation where id in (?, ?)",
                 String.class, one, two)).containsOnly("CONSUMED");
     }

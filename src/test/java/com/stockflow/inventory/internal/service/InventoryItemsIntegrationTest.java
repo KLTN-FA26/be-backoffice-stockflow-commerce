@@ -161,6 +161,29 @@ class InventoryItemsIntegrationTest {
         assertThat(after.version()).isEqualTo(before.version() + 1);
     }
 
+    /**
+     * Every unit carries a lot (kltn-docs 20 BR-22): V20261111000110 labels the stock that had none {@code UNTRACED},
+     * also of SKUs that are not lot-tracked, so a lot on their stock does not conflict with their policy - or every
+     * policy edit of such a SKU would be refused from then on.
+     */
+    @Test
+    void aLotOnStockOfASkuThatIsNotLotTrackedDoesNotConflict() {
+        var f = fixture();
+        tx.executeWithoutResult(s -> jdbc.update("""
+                insert into inventory.stock_item(id,sku,location_code,lot_number,on_hand,reserved,status,received_at,
+                    created_at)
+                values (?,?,'HCM-A01-1-A','UNTRACED',5,0,'AVAILABLE',now(),now())""", UUID.randomUUID(), f.sku()));
+        try {
+            var before = items.get(f.itemId());
+            var after = items.configure(f.itemId(), before.version(),
+                    new InventoryPolicy(500, null, null, RemovalStrategy.FEFO, TrackingMode.NONE, false, null));
+            assertThat(after.policy().trackingMode()).isEqualTo(TrackingMode.NONE);
+            assertThat(after.policy().reorderPoint()).isEqualTo(500);
+        } finally {
+            tx.executeWithoutResult(s -> jdbc.update("delete from inventory.stock_item where sku = ?", f.sku()));
+        }
+    }
+
     @Test
     void unitChangeWhileStockIsHeldIs409() {
         var f = fixture();

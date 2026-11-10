@@ -102,18 +102,35 @@ class PickLineCartonMigrationTest {
         return lpn;
     }
 
-    private void loose(int quantity) {
-        tx.executeWithoutResult(s -> stockRow(quantity, null));
+    /**
+     * A hold of {@code quantity} on a row of {@code onHand} loose units, written as rows. Allocation no longer draws on
+     * loose stock (team plan 4C-2), but loose holds still exist - a put-back, a return, a hold made before - and a pick
+     * line on one must still name no carton.
+     */
+    private UUID looseHold(int onHand, int quantity) {
+        return tx.execute(s -> {
+            UUID row = stockRow(onHand, null);
+            UUID reservation = Identifiers.newId();
+            jdbc.update("""
+                    INSERT INTO inventory.stock_reservation (id, stock_item_id, order_id, root_request_id, request_id,
+                                                             quantity, reserved_at, expires_at, status)
+                    VALUES (?, ?, ?, ?, ?, ?, NOW(), NOW() + INTERVAL '1 day', 'HELD')""",
+                    reservation, row, order, UUID.randomUUID(), UUID.randomUUID(), quantity);
+            jdbc.update("UPDATE inventory.stock_item SET reserved = reserved + ? WHERE id = ?", quantity, row);
+            return reservation;
+        });
     }
 
-    private void stockRow(int onHand, UUID carton) {
+    private UUID stockRow(int onHand, UUID carton) {
+        UUID id = Identifiers.newId();
         jdbc.update("""
                 insert into inventory.stock_item (id, sku, location_code, received_at, on_hand, reserved, status,
                     version, created_at, stock_package_id) values (?, ?, ?, ?, ?, 0, 'AVAILABLE', 0, now(), ?)""",
-                Identifiers.newId(), sku, SHELF, java.sql.Timestamp.from(RECEIVED), onHand, carton);
+                id, sku, SHELF, java.sql.Timestamp.from(RECEIVED), onHand, carton);
+        return id;
     }
 
-    /** Reserves and allocates {@code quantity} for the order; returns the one hold it made. */
+    /** Reserves and allocates {@code quantity} for the order - one whole carton; returns the one hold it made. */
     private UUID hold(int quantity) {
         List<UUID> holds = tx.execute(s -> {
             inventory.reserve(new ReserveStockCommand(UUID.randomUUID(), new Sku(sku), quantity, order));
@@ -163,8 +180,7 @@ class PickLineCartonMigrationTest {
     @DisplayName("a hold on loose units names no carton")
     void lpnOnALooseHoldIsRefused() {
         String lpn = carton("A");
-        loose(5);
-        UUID reservation = hold(3);
+        UUID reservation = looseHold(5, 3);
 
         assertThatThrownBy(() -> line(reservation, lpn, false)).isInstanceOf(DataAccessException.class);
     }
@@ -173,7 +189,7 @@ class PickLineCartonMigrationTest {
     @DisplayName("a line on a carton hold must name the carton")
     void lineOnACartonHoldWithoutLpnIsRefused() {
         carton("A");
-        UUID reservation = hold(4);
+        UUID reservation = hold(10);
 
         assertThatThrownBy(() -> line(reservation, null, false)).isInstanceOf(DataAccessException.class);
     }
@@ -181,29 +197,51 @@ class PickLineCartonMigrationTest {
     @Test
     @DisplayName("a whole-carton line names its carton")
     void wholeCartonNeedsAnLpn() {
-        loose(5);
-        UUID reservation = hold(5);
+        UUID reservation = looseHold(5, 5);
 
+        // Since V20261113000400 any line without an LPN is refused first, by ck_pick_line_lpn (rule 3 of 4C-4).
         assertThatThrownBy(() -> line(reservation, null, true)).isInstanceOf(DataAccessException.class)
-                .hasMessageContaining("ck_pick_line_whole_carton");
+                .hasMessageContaining("ck_pick_line_lpn");
+        // The one line that may name no carton - the units of a damage report - still cannot be a whole carton.
+        assertThatThrownBy(() -> tx.executeWithoutResult(s -> jdbc.update("""
+                INSERT INTO fulfillment.pick_line (id, pick_id, order_line_id, reservation_id, sku, location_code,
+                    sequence_no, allocated_qty, lpn, whole_carton, damage_report_id)
+                VALUES (?, ?, ?, ?, ?, ?, 1, 1, NULL, TRUE, ?)""",
+                Identifiers.newId(), pick, orderLine, reservation, sku, SHELF, Identifiers.newId())))
+                .isInstanceOf(DataAccessException.class).hasMessageContaining("ck_pick_line_whole_carton");
     }
 
+    /**
+     * The backfill of V20261028003000 (and step 3 of V20261113000400, which repeats it) on a line written before: such a
+     * line cannot be written any more, so the old state is made inside a transaction that is rolled back - the lpn rule
+     * lifted, the carton trigger off - and the assertion is made before it ends. {@code PickByLpnMigrationUpgradeTest}
+     * runs the migration itself.
+     */
     @Test
     @DisplayName("lines planned before the migration are given the LPN of their hold's carton")
     void backfillNamesTheCartonOfExistingLines() {
         String lpn = carton("A");
         UUID reservation = hold(10);
         tx.executeWithoutResult(s -> {
+            jdbc.execute("ALTER TABLE fulfillment.pick_line DROP CONSTRAINT ck_pick_line_lpn");
             jdbc.execute("ALTER TABLE fulfillment.pick_line DISABLE TRIGGER tg_pick_line_carton");
             line(reservation, null, false);
             // The line's deferred keys (fk_pick_line_damage_report, SCRUM-277) are checked now: PostgreSQL refuses an
             // ALTER TABLE while a trigger event of the table is still pending.
             jdbc.execute("SET CONSTRAINTS ALL IMMEDIATE");
             jdbc.execute("ALTER TABLE fulfillment.pick_line ENABLE TRIGGER tg_pick_line_carton");
+            assertThat(jdbc.queryForObject("select lpn from fulfillment.pick_line where reservation_id = ?",
+                    String.class, reservation)).isNull();
             jdbc.update(BACKFILL);
+
+            assertThat(jdbc.queryForObject("select lpn from fulfillment.pick_line where reservation_id = ?",
+                    String.class, reservation)).isEqualTo(lpn);
+            s.setRollbackOnly();
         });
 
-        assertThat(jdbc.queryForObject("select lpn from fulfillment.pick_line where reservation_id = ?",
-                String.class, reservation)).isEqualTo(lpn);
+        assertThat(jdbc.queryForObject("select count(*) from fulfillment.pick_line where reservation_id = ?",
+                Integer.class, reservation)).as("rolled back, with the rule lifted for it alone").isZero();
+        assertThat(jdbc.queryForObject("select count(*) from pg_constraint where conname = 'ck_pick_line_lpn'",
+                Integer.class)).isOne();
     }
 }

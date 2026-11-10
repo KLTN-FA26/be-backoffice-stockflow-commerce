@@ -42,8 +42,8 @@ END $$;
 
 -- Packing units: a carton of 10 sofas, a carton of 5 tables, and a case of 4 sofas nobody uses.
 INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, length_cm, width_cm, height_cm, weight_kg)
-VALUES (md5('qa:unit:SOFA-CARTON')::uuid, md5('demo:item:SOFA-3S-GREY')::uuid, 'CARTON', 10, 60, 40, 50, 12),
-       (md5('qa:unit:TABLE-CARTON')::uuid, md5('demo:item:TABLE-OAK-160')::uuid, 'CARTON', 5, 80, 60, 40, 30),
+VALUES (md5('qa:unit:SOFA-CARTON')::uuid, md5('demo:item:SOFA-3S-GREY')::uuid, 'QA_CARTON', 10, 60, 40, 50, 12),
+       (md5('qa:unit:TABLE-CARTON')::uuid, md5('demo:item:TABLE-OAK-160')::uuid, 'QA_CARTON', 5, 80, 60, 40, 30),
        (md5('qa:unit:SOFA-CASE')::uuid, md5('demo:item:SOFA-3S-GREY')::uuid, 'CASE', 4, NULL, NULL, NULL, NULL);
 -- The supplier's old carton of 10 sofas, retired during the run (docs 01 edge case "NCC đổi quy cách thùng").
 INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)
@@ -85,17 +85,19 @@ SELECT pg_temp.expect_fail('K11 emptied but left IN_STOCK', $q$
     UPDATE inventory.stock_item SET on_hand = 0 WHERE id = md5('qa:pk:1:row')::uuid $q$);
 SELECT pg_temp.expect_fail('K12 CONSUMED while still holding stock', $q$
     UPDATE inventory.stock_package SET unopened = FALSE, status = 'CONSUMED', closed_at = NOW() WHERE id = md5('qa:pk:1')::uuid $q$);
-SELECT pg_temp.expect_ok('K13 opened, and part of it leaves for QC as loose stock', $q$
+-- V20261111000200 (team plan 4C-2): a carton is taken whole; one in stock is never opened (QA 41).
+SELECT pg_temp.expect_fail('K13 opened, and part of it leaves for QC as loose stock', $q$
     UPDATE inventory.stock_package SET unopened = FALSE WHERE id = md5('qa:pk:1')::uuid;
     UPDATE inventory.stock_item SET on_hand = 6 WHERE id = md5('qa:pk:1:row')::uuid;
     INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, created_at, received_at)
     VALUES (gen_random_uuid(), 'SOFA-3S-GREY', 'HCM-QC01', 4, 0, 'QUARANTINE', NOW(), NOW() - interval '1 hour') $q$);
-SELECT pg_temp.expect_fail('K14 an opened stock package marked unopened again', $q$
-    UPDATE inventory.stock_package SET unopened = TRUE WHERE id = md5('qa:pk:1')::uuid $q$);
+SELECT pg_temp.expect_fail('K14 a stock package in stock marked opened', $q$
+    UPDATE inventory.stock_package SET unopened = FALSE WHERE id = md5('qa:pk:1')::uuid $q$);
 SELECT pg_temp.expect_ok('K15 emptied and CONSUMED in one transaction', $q$
     UPDATE inventory.stock_item SET on_hand = 0 WHERE id = md5('qa:pk:1:row')::uuid;
-    UPDATE inventory.stock_package SET status = 'CONSUMED', closed_at = NOW() WHERE id = md5('qa:pk:1')::uuid $q$);
-SELECT pg_temp.expect_fail('K16 CONSUMED back to IN_STOCK', $q$
+    UPDATE inventory.stock_package SET status = 'CONSUMED', unopened = FALSE, closed_at = NOW()
+     WHERE id = md5('qa:pk:1')::uuid $q$);
+SELECT pg_temp.expect_fail('K16 CONSUMED back to IN_STOCK opened, with part of its count', $q$
     UPDATE inventory.stock_package SET status = 'IN_STOCK', closed_at = NULL WHERE id = md5('qa:pk:1')::uuid;
     UPDATE inventory.stock_item SET on_hand = 6 WHERE id = md5('qa:pk:1:row')::uuid $q$);
 
@@ -105,11 +107,12 @@ SELECT pg_temp.expect_ok('K17 made in the warehouse (repacked): created IN_STOCK
     VALUES (md5('qa:pk:2')::uuid, 'QA-LPN-2', md5('demo:item:SOFA-3S-GREY')::uuid, md5('qa:unit:SOFA-CARTON')::uuid, 10, 4, 'HCM-A01-1-A', 'IN_STOCK');
     INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, created_at, received_at, stock_package_id)
     VALUES (md5('qa:pk:2:row')::uuid, 'SOFA-3S-GREY', 'HCM-A01-1-A', 4, 0, 'AVAILABLE', NOW(), NOW() - interval '2 hour', md5('qa:pk:2')::uuid) $q$);
-SELECT pg_temp.expect_ok('K18 not found by a count (LOST, emptied), then found again', $q$
-    UPDATE inventory.stock_package SET unopened = FALSE WHERE id = md5('qa:pk:2')::uuid;
+SELECT pg_temp.expect_ok('K18 not found by a count (LOST, emptied), then found again whole, sealed', $q$
     UPDATE inventory.stock_item SET on_hand = 0 WHERE id = md5('qa:pk:2:row')::uuid;
-    UPDATE inventory.stock_package SET status = 'LOST', closed_at = NOW() WHERE id = md5('qa:pk:2')::uuid;
-    UPDATE inventory.stock_package SET status = 'IN_STOCK', closed_at = NULL WHERE id = md5('qa:pk:2')::uuid;
+    UPDATE inventory.stock_package SET status = 'LOST', unopened = FALSE, closed_at = NOW()
+     WHERE id = md5('qa:pk:2')::uuid;
+    UPDATE inventory.stock_package SET status = 'IN_STOCK', unopened = TRUE, closed_at = NULL
+     WHERE id = md5('qa:pk:2')::uuid;
     UPDATE inventory.stock_item SET on_hand = 4 WHERE id = md5('qa:pk:2:row')::uuid $q$);
 SELECT pg_temp.expect_fail('K19 created already CONSUMED (skipping the lifecycle)', $q$
     INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, received_qty, location_code, status, unopened, closed_at)
@@ -346,7 +349,7 @@ SELECT pg_temp.expect_fail('D7 an opened carton filled past what was counted int
     VALUES (gen_random_uuid(), 'SOFA-3S-GREY', 'HCM-A01-1-A', 1, 0, 'AVAILABLE', NOW(), NOW() - interval '2 day', md5('qa:pk:doc')::uuid) $q$);
 SELECT pg_temp.expect_true('D8 the balance view reads the carton as one row', $c$
     (SELECT lpn || ':' || on_hand || ':' || reserved || ':' || available || ':' || unit_of_measure
-       FROM inventory.stock_package_balance WHERE stock_package_id = md5('qa:pk:doc')::uuid) = 'QA-LPN-D1:6:0:6:CARTON' $c$);
+       FROM inventory.stock_package_balance WHERE stock_package_id = md5('qa:pk:doc')::uuid) = 'QA-LPN-D1:6:0:6:QA_CARTON' $c$);
 
 \echo '--- permissions (V20261020000700)'
 SELECT pg_temp.expect_true('P1 SYSTEM_ADMIN holds every inventory-stock-packages permission', $c$

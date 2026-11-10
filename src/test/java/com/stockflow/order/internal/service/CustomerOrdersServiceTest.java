@@ -227,6 +227,22 @@ class CustomerOrdersServiceTest {
         }
 
         @Test
+        @DisplayName("once a carton is labelled (4C-6, 08 BR-04) the order is locked although nothing is packed yet: the "
+                + "portal offers no cancellation request the order would refuse (review L4)")
+        void actionsAfterTheFirstLabel() {
+            Order order = OrderFixtures.releasedPrepaid();
+            order.recordFirstLabel(NOW);
+            order(order);
+
+            OrderSummary summary = OrderFixtures.summaryOf(order);
+            assertThat(summary.lifecycle().packedAt()).isNull();
+            assertThat(summary.lifecycle().firstLabeledAt()).isEqualTo(NOW);
+            assertThat(summary.lifecycle().packedForGood()).isTrue();
+            assertThat(service.myOrder(order.customerId(), order.id().value()).allowedActions())
+                    .isEqualTo(new CustomerOrders.AllowedActions(false, false, false));
+        }
+
+        @Test
         @DisplayName("the latest cancellation request is shown with how it was decided, without who decided")
         void cancellationRequestIsShown() {
             Order order = order(OrderFixtures.releasedPrepaid());
