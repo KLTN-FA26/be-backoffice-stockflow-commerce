@@ -2,7 +2,6 @@ package com.stockflow.inventory.internal.domain;
 
 import com.stockflow.common.domain.Sku;
 
-import java.time.Instant;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
@@ -109,20 +108,8 @@ public interface StockItemRepository {
      */
     List<StockItemId> findIdsInStockPackages(Collection<StockPackageId> stockPackageIds);
 
-    /** Every stock item holding at least one reservation that expired before {@code cutoff}. */
-    List<StockItem> findWithReservationsExpiredBefore(Instant cutoff, int limit);
-
     /** Locates the aggregate that owns a reservation, given only the id order handed back. */
     Optional<StockItem> findByReservationIdForUpdate(ReservationId reservationId);
-
-    /**
-     * Every stock item holding at least one live reservation for this order.
-     *
-     * <p>One order line can be spread over several lots, so cancelling an order has to reach all
-     * of them. Takes a raw {@code UUID} rather than an {@code OrderId} type because {@code order}
-     * owns that concept — inventory only stores the reference.</p>
-     */
-    List<StockItem> findWithReservationsForOrder(java.util.UUID orderId);
 
     /** The stock item a reservation is on, without locking it — so it can be locked in id order with another. */
     Optional<StockItemId> findIdByReservationId(ReservationId reservationId);

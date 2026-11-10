@@ -109,7 +109,7 @@ public class StockItemJpaEntity extends BaseEntity {
      * {@code cascade = ALL}, {@code orphanRemoval = true}, and no repository of their own.
      *
      * <p>{@code FetchType.LAZY} because the ATP read path never touches them, and
-     * {@code @BatchSize} to stop the sweeper's list query from issuing one SELECT per item.</p>
+     * {@code @BatchSize} to stop a list query from issuing one SELECT per item.</p>
      */
     @OneToMany(mappedBy = "stockItem", cascade = CascadeType.ALL,
             orphanRemoval = true, fetch = FetchType.LAZY)

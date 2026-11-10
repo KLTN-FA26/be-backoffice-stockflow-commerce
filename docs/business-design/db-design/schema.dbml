@@ -1399,10 +1399,6 @@ Table inventory.stock_lot [headercolor: #3E7C4A] {
   origin_type           inventory.stock_lot_origin_type [not null]
   goods_receipt_id      uuid
   goods_receipt_number  varchar(30)
-  purchase_order_id     uuid
-  purchase_order_number varchar(30)
-  supplier_id           uuid
-  supplier_name         varchar(200)
   warehouse_id          uuid
   version               bigint [not null, default: 0]
   created_at            timestamptz [not null, default: `now()`]
@@ -4508,6 +4504,8 @@ Ref: fulfillment.dispatch_load_unload.load_id > fulfillment.dispatch_load.id [de
 Ref: fulfillment.dispatch_load_unload.package_id > fulfillment.package.id [delete: restrict]
 Ref: fulfillment.dispatch_load_unload.shipment_id > fulfillment.shipment.id [delete: restrict]
 Ref: fulfillment.dispatch_load_unload.unloaded_by > identity.app_user.id
+Ref: fulfillment.load_estimate.source_id > ordering.customer_order.id [delete: cascade]
+Ref: fulfillment.load_estimate.warehouse_id > warehouse.warehouse.id [delete: restrict]
 Ref: fulfillment.load_placement.(load_plan_id, package_id) > fulfillment.load_plan_package.(load_plan_id, package_id) [delete: restrict]
 Ref: fulfillment.load_placement.(load_plan_vehicle_id, load_plan_id) > fulfillment.load_plan_vehicle.(id, load_plan_id) [delete: cascade]
 Ref: fulfillment.load_plan.calculated_by > identity.app_user.id

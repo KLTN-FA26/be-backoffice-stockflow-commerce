@@ -2,16 +2,12 @@ package com.stockflow.inventory.internal.controller;
 
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.api.StockAvailability;
-import com.stockflow.inventory.api.ReserveStockResult;
-import com.stockflow.inventory.api.ReserveStockCommand;
 import com.stockflow.inventory.internal.service.StockConsumption;
-import com.stockflow.inventory.internal.controller.dto.ReservationResponse;
 import com.stockflow.inventory.internal.controller.dto.ReservationRowResponse;
 import com.stockflow.inventory.internal.controller.dto.WarehouseStockItemResponse;
 import com.stockflow.inventory.internal.domain.ReservationStatus;
 import com.stockflow.inventory.internal.domain.StockStatus;
 import com.stockflow.inventory.internal.service.StockBrowsing;
-import com.stockflow.inventory.internal.controller.dto.ReserveStockRequest;
 import com.stockflow.inventory.internal.controller.dto.StockItemResponse;
 import com.stockflow.inventory.internal.controller.dto.StockLevelResponse;
 import com.stockflow.common.api.ApiResponse;
@@ -26,16 +22,12 @@ import com.stockflow.common.security.PermissionResource;
 import com.stockflow.common.security.RequiresPermission;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
-import jakarta.validation.Valid;
-import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
-import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
@@ -144,25 +136,6 @@ class InventoryController {
         return ApiResponse.ok(warehouse == null || warehouse.isBlank()
                 ? inventoryService.availableToPromise(new Sku(sku))
                 : inventoryService.availableToPromise(new Sku(sku), warehouse));
-    }
-
-    /**
-     * Reserve stock over HTTP.
-     *
-     * <p>This endpoint exists for operations tooling and for a future external caller. The
-     * checkout path does <b>not</b> go through it — {@code order} calls
-     * {@code InventoryService.reserve(...)} as a Java method inside its own transaction. Routing an
-     * internal call through the network stack would give up exactly the atomicity that made the
-     * monolith worth building.</p>
-     */
-    @PostMapping("/reservations")
-    @ResponseStatus(HttpStatus.CREATED)
-    @Operation(summary = "Hold stock for an order line")
-    @RequiresPermission(resource = InventoryResources.RESERVATIONS, action = Action.CREATE)
-    public ApiResponse<ReservationResponse> reserve(@Valid @RequestBody ReserveStockRequest request) {
-        ReserveStockResult result = inventoryService.reserve(new ReserveStockCommand(
-                request.requestId(), new Sku(request.sku()), request.quantity(), request.orderId()));
-        return ApiResponse.ok(mapper.toResponse(result));
     }
 
     @GetMapping("/reservations")

@@ -623,12 +623,10 @@ class StockOperationsServiceImpl implements StockOperations {
         }
 
         // SCRUM-142: the receipt opens the lot - one per receipt and (SKU, lot number) - so a lot number
-        // another receipt used before is a different lot, and the trace knows the supplier and the documents.
+        // another receipt used before is a different lot, and the trace knows the documents.
         UUID lotId = command.origin() == null ? null : lots.openForReceipt(new StockLots.ReceiptLot(command.sku(), lot,
                 command.receivedAt(), command.origin().goodsReceiptId(),
-                command.origin().goodsReceiptNumber(), command.origin().purchaseOrderId(),
-                command.origin().purchaseOrderNumber(), command.origin().supplierId(), command.origin().supplierName(),
-                command.origin().warehouseId(), command.origin().productionOrderId(),
+                command.origin().goodsReceiptNumber(), command.origin().warehouseId(), command.origin().productionOrderId(),
                 command.origin().productionOrderCode()));
         Instant now = clock.instant();
 
@@ -790,9 +788,11 @@ class StockOperationsServiceImpl implements StockOperations {
     // ------------------------------------------------------------------ adjustments
 
     /**
-     * Loose stock only (rows in no carton): what a customer return still asks for its returned goods (scrap, sent
-     * back), until returns are received by carton (team plan 4D-2/4D-3). A carton is adjusted whole, by LPN
-     * ({@link #requestPackageAdjustment}); the lookup reaches no carton's row ({@link #findLayer}).
+     * By LPN: a carton written off whole ({@link #requestCartonWriteOff}). Without one, a loose layer - a row in no
+     * carton, emptied when stock went into cartons (team plan 4C-1/4C-2) - can only be written down, and it holds
+     * nothing, so nothing is added to it ({@code STOCK_NOT_IN_CARTON}, review M-5): a carton found is restocked by a
+     * count of it. A carton is adjusted whole ({@link #requestPackageAdjustment}); the lookup reaches no carton's row
+     * ({@link #findLayer}).
      */
     @Override
     @Auditable(action = AuditAction.CREATE, resourceType = "stock-adjustment", resourceId = "#result?.adjustmentId()")
@@ -811,6 +811,7 @@ class StockOperationsServiceImpl implements StockOperations {
         if (command.lpn() != null) {
             return requestCartonWriteOff(command);
         }
+        requireNoLooseSurplus(command.quantityDelta(), command.sku() + " at " + command.locationCode());
         WarehouseScope.requireLocation(command.locationCode());
         // Every SKU is lot-tracked (01 BR-17, team plan 5-5): a layer is named by its lot. Without one the lookup
         // below would answer STOCK_ITEM_NOT_FOUND, as if the stock did not exist, when the request is what is short.
@@ -1050,6 +1051,8 @@ class StockOperationsServiceImpl implements StockOperations {
         }
         requireLoose(item);
         int delta = adjustment.quantityDelta();
+        // An adjustment asked before review M-5 could still add loose units; it is refused here, as it is asked.
+        requireNoLooseSurplus(delta, "adjustment " + adjustment.number());
         // A layer is never raised (inventory.enforce_sku_policy: "reconcile via a new stock layer"): every SKU leaves
         // stock first in, first out (kltn-docs 01 BR-17, team plan 5-5), and loose units found have no provable
         // receipt - putting them on an old layer would make them as old as it and first out. They land on a new layer
@@ -1204,6 +1207,17 @@ class StockOperationsServiceImpl implements StockOperations {
      * A move or an adjustment named by (SKU, location, lot, receipt time) reaches loose stock only ({@link #findLayer});
      * stated here as well, so a lookup changed later cannot take units out of a carton without opening it (#141).
      */
+    /**
+     * Stock is kept in whole cartons (review M-5, {@code ck_stock_item_whole_cartons}): units are never added to a row
+     * in no carton. Said here so the person hears why, rather than a 500 from the table.
+     */
+    private static void requireNoLooseSurplus(int delta, String what) {
+        if (delta > 0) {
+            throw new BusinessException(ErrorCode.STOCK_NOT_IN_CARTON, ("%s: %d unit(s) in no carton; stock is kept in "
+                    + "whole cartons - restock a carton found by counting it, by its LPN").formatted(what, delta));
+        }
+    }
+
     private static void requireLoose(StockItem item) {
         if (!item.isLoose()) {
             throw new IllegalStateException("Stock row %s is in stock package %s; it is changed through its carton"

@@ -41,18 +41,6 @@ public class StockLotJpaEntity extends BaseEntity {
     @Column(name = "goods_receipt_number", length = 30, updatable = false)
     private String goodsReceiptNumber;
 
-    @Column(name = "purchase_order_id", updatable = false)
-    private UUID purchaseOrderId;
-
-    @Column(name = "purchase_order_number", length = 30, updatable = false)
-    private String purchaseOrderNumber;
-
-    @Column(name = "supplier_id", updatable = false)
-    private UUID supplierId;
-
-    @Column(name = "supplier_name", length = 200, updatable = false)
-    private String supplierName;
-
     @Column(name = "warehouse_id", updatable = false)
     private UUID warehouseId;
 
@@ -66,8 +54,7 @@ public class StockLotJpaEntity extends BaseEntity {
     }
 
     public StockLotJpaEntity(UUID id, String sku, String lotNumber, Instant receivedAt,
-                             UUID goodsReceiptId, String goodsReceiptNumber, UUID purchaseOrderId,
-                             String purchaseOrderNumber, UUID supplierId, String supplierName, UUID warehouseId) {
+                             UUID goodsReceiptId, String goodsReceiptNumber, UUID warehouseId) {
         super(id);
         this.sku = sku;
         this.lotNumber = lotNumber;
@@ -75,10 +62,6 @@ public class StockLotJpaEntity extends BaseEntity {
         this.origin = Origin.GOODS_RECEIPT;
         this.goodsReceiptId = goodsReceiptId;
         this.goodsReceiptNumber = goodsReceiptNumber;
-        this.purchaseOrderId = purchaseOrderId;
-        this.purchaseOrderNumber = purchaseOrderNumber;
-        this.supplierId = supplierId;
-        this.supplierName = supplierName;
         this.warehouseId = warehouseId;
     }
 
@@ -88,8 +71,8 @@ public class StockLotJpaEntity extends BaseEntity {
      */
     public static StockLotJpaEntity ofProductionOrder(UUID id, String sku, Instant receivedAt, UUID warehouseId,
                                                       UUID productionOrderId, String productionOrderCode) {
-        StockLotJpaEntity lot = new StockLotJpaEntity(id, sku, productionOrderCode, receivedAt, null, null, null,
-                null, null, null, warehouseId);
+        StockLotJpaEntity lot = new StockLotJpaEntity(id, sku, productionOrderCode, receivedAt, null, null,
+                warehouseId);
         lot.origin = Origin.PRODUCTION_ORDER;
         lot.productionOrderId = productionOrderId;
         lot.productionOrderCode = productionOrderCode;
@@ -102,10 +85,6 @@ public class StockLotJpaEntity extends BaseEntity {
     public Origin getOrigin() { return origin; }
     public UUID getGoodsReceiptId() { return goodsReceiptId; }
     public String getGoodsReceiptNumber() { return goodsReceiptNumber; }
-    public UUID getPurchaseOrderId() { return purchaseOrderId; }
-    public String getPurchaseOrderNumber() { return purchaseOrderNumber; }
-    public UUID getSupplierId() { return supplierId; }
-    public String getSupplierName() { return supplierName; }
     public UUID getWarehouseId() { return warehouseId; }
     public UUID getProductionOrderId() { return productionOrderId; }
     public String getProductionOrderCode() { return productionOrderCode; }

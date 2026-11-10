@@ -482,8 +482,6 @@ stockflow:
         max-bytes: 1065536
 
   inventory:
-    # How often the sweeper looks for holds that outlived their expiry. ISO-8601 duration.
-    reservation-sweep-interval: PT1M
     # Most lines one planned cycle count may hold (SCRUM-146); a wider scope is refused so the count stays countable.
     cycle-count-max-lines: 500
 

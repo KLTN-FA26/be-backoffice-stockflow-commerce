@@ -38,7 +38,6 @@ public interface StockLots {
      * {@code productionOrderCode} are set for goods received against a production order (4A-5), null otherwise.
      */
     record ReceiptLot(Sku sku, String lotNumber, Instant receivedAt, UUID goodsReceiptId,
-                      String goodsReceiptNumber, UUID purchaseOrderId, String purchaseOrderNumber, UUID supplierId,
-                      String supplierName, UUID warehouseId, UUID productionOrderId, String productionOrderCode) {
+                      String goodsReceiptNumber, UUID warehouseId, UUID productionOrderId, String productionOrderCode) {
     }
 }

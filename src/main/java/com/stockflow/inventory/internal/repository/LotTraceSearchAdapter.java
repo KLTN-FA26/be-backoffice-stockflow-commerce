@@ -145,8 +145,7 @@ class LotTraceSearchAdapter implements LotTraceSearch {
         String receipts = inWarehouses("m.to_location_code", warehouses, params);
         return """
                 SELECT l.id, l.sku, l.lot_number, l.received_at, l.origin_type, l.goods_receipt_id,
-                       l.goods_receipt_number, l.purchase_order_id, l.purchase_order_number, l.supplier_id,
-                       l.supplier_name, l.warehouse_id, l.production_order_id, l.production_order_code,
+                       l.goods_receipt_number, l.warehouse_id, l.production_order_id, l.production_order_code,
                        COALESCE((SELECT sum(m.quantity) FROM inventory.stock_movement m
                                   WHERE m.lot_id = l.id AND m.movement_type = 'RECEIPT'""" + receipts + "), 0) AS received,"
                 + """
@@ -228,9 +227,7 @@ class LotTraceSearchAdapter implements LotTraceSearch {
 
     private static LotTrace.Summary summary(ResultSet rs) throws SQLException {
         return new LotTrace.Summary(uuid(rs, "id"), rs.getString("sku"), rs.getString("lot_number"), instant(rs, "received_at"), rs.getString("origin_type"), uuid(rs, "goods_receipt_id"),
-                rs.getString("goods_receipt_number"), uuid(rs, "purchase_order_id"),
-                rs.getString("purchase_order_number"), uuid(rs, "supplier_id"), rs.getString("supplier_name"),
-                uuid(rs, "warehouse_id"), rs.getLong("received"), rs.getLong("on_hand"), rs.getLong("available"),
+                rs.getString("goods_receipt_number"), uuid(rs, "warehouse_id"), rs.getLong("received"), rs.getLong("on_hand"), rs.getLong("available"),
                 rs.getLong("held"), uuid(rs, "production_order_id"), rs.getString("production_order_code"));
     }
 
