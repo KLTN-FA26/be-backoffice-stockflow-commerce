@@ -205,9 +205,9 @@ still needed is skipped, never broken. Allocations are `stock_reservation` rows 
 consumes exactly one. A delivery-scheduled order is released one batch at a time (17 BR-29).
 
 There are no expiring reservations and no sweeper: the manual reservation endpoint, `InventoryService.reserve` and
-`ReservationSweeper` with its TTL are removed (a V20261117 migration releases leftover expiring holds). Stock is held
+`ReservationSweeper` with its TTL are removed (V20261117000300 closes leftover expiring holds and drops `inventory-reservations:CREATE`). Stock is held
 only for a signed contract's order and allocated at release. The whole-carton rule is stated twice, in the aggregate
-and as a CHECK on `inventory.stock_item` (stock is never loose).
+and as `ck_stock_item_whole_cartons` on `inventory.stock_item` (V20261117000100; stock is never loose, domain error `STOCK_NOT_IN_CARTON`).
 
 ### Production orders and receiving
 

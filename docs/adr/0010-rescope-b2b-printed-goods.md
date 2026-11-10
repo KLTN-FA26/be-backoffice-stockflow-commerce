@@ -66,7 +66,7 @@ moved to the step where the business **promises goods to a customer's order**:
 
 | Document | State |
 |---|---|
-| ADR-0005 | **Decision stands.** Its Context point 1 and its examples (`OrderServiceImpl.placeOrder`, `PaymentCaptured`, "failed checkout", `PlaceOrderIntegrationTest`) describe the shop that no longer exists; read them as the history of why, and this ADR for the current instance. Its 30-minute reservation and expiry sweep are gone too: the manual reservation endpoint, `InventoryService.reserve` and `ReservationSweeper` are removed, and a V20261117 migration releases leftover expiring holds. |
+| ADR-0005 | **Decision stands.** Its Context point 1 and its examples (`OrderServiceImpl.placeOrder`, `PaymentCaptured`, "failed checkout", `PlaceOrderIntegrationTest`) describe the shop that no longer exists; read them as the history of why, and this ADR for the current instance. Its 30-minute reservation and expiry sweep are gone too: the manual reservation endpoint, `InventoryService.reserve` and `ReservationSweeper` are removed, and V20261117000300 closes leftover expiring holds and drops the `inventory-reservations:CREATE` permission; V20261117000100 adds `ck_stock_item_whole_cartons` (no loose stock, `STOCK_NOT_IN_CARTON`); V20261117000200 adds the missing `load_estimate` foreign keys and drops the purchase-order and supplier columns of `stock_lot`. |
 | ADR-0001..0003 | still superseded by ADR-0005 |
 | ADR-0007 | stands (cross-schema foreign keys) |
 | `docs/business-design/**` | superseded by kltn-docs; kept as history, with a banner on its index files. Its `db-design/schema.dbml` is current (generated from the migrated database) |
