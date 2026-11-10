@@ -239,6 +239,7 @@ class PackingService implements Packing {
 
     @Override
     public Parcel openPackage(UUID taskId, String type, String kitOverrideReason, CurrentUser actor) {
+        requireNotRetired();
         Context ctx = forWork(taskId);
         requirePackable(ctx.order());
         PackingSession session = load(ctx);
@@ -255,6 +256,7 @@ class PackingService implements Packing {
 
     @Override
     public Kit openKit(UUID taskId, OpenKit request, CurrentUser actor) {
+        requireNotRetired();
         Context ctx = forWork(taskId);
         requirePackable(ctx.order());
         PackingSession session = load(ctx);
@@ -281,6 +283,7 @@ class PackingService implements Packing {
 
     @Override
     public Session scan(UUID taskId, UUID packageId, Scan scan, CurrentUser actor) {
+        requireNotRetired();
         Context ctx = forWork(taskId);
         if (isReplay(ctx, packageId, scan.scanId())) {
             return view(ctx, load(ctx));
@@ -300,6 +303,7 @@ class PackingService implements Packing {
     @Override
     public Session removeUnits(UUID taskId, UUID packageId, UUID orderLineId, String lotNumber, String serialNumber,
                                int quantity, UUID scanId, CurrentUser actor) {
+        requireNotRetired();
         Context ctx = forWork(taskId);
         UUID id = scanId == null ? Identifiers.newId() : scanId;
         if (isReplay(ctx, packageId, id)) {
@@ -335,6 +339,7 @@ class PackingService implements Packing {
 
     @Override
     public Parcel seal(UUID taskId, UUID packageId, Seal seal, CurrentUser actor) {
+        requireNotRetired();
         Context ctx = forWork(taskId);
         requirePackable(ctx.order());
         PackingSession session = load(ctx);
@@ -351,6 +356,7 @@ class PackingService implements Packing {
 
     @Override
     public Parcel reopen(UUID taskId, UUID packageId, CurrentUser actor) {
+        requireNotRetired();
         Context ctx = forWork(taskId);
         requireNotPlanned(ctx, packageId);
         requirePackable(ctx.order());
@@ -363,6 +369,7 @@ class PackingService implements Packing {
 
     @Override
     public Session voidPackage(UUID taskId, UUID packageId, CurrentUser actor) {
+        requireNotRetired();
         Context ctx = forWork(taskId);
         requireNotPlanned(ctx, packageId);
         requirePackable(ctx.order());
@@ -647,6 +654,16 @@ class PackingService implements Packing {
     }
 
     // ------------------------------------------------------------------ internals
+
+    /**
+     * Team plan 4C-6: the LPN carton is the shipping carton, checked and labelled at the check station, and completion
+     * ships only its cartons - a repack parcel would never ship. Its writes are refused, before anything is read or
+     * numbered (the check's cartons share the session's package numbers), until 4C-7 removes this station.
+     */
+    private static void requireNotRetired() {
+        throw new BusinessException(ErrorCode.REPACK_RETIRED, "Check and label the order's cartons at the check "
+                + "station (POST /tasks/{taskId}/carton-checks): parcels are no longer packed");
+    }
 
     private record Context(PickJpaEntity pick, PackJpaEntity pack, OrderSummary order) { }
 

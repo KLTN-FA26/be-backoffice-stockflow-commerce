@@ -647,6 +647,11 @@ public enum ErrorCode {
      * order's, one never picked, or an unreadable code. Refused; the warehouse manager checks the picking and the stock.
      */
     CARTON_NOT_IN_TASK("This carton was not picked for this order's task", 409),
+    /**
+     * Team plan 4C-6: the repack station's parcels (open, kit, scan, take out, seal, reopen, void) no longer ship - the
+     * LPN carton is the shipping carton, checked and labelled at the check station. Refused until 4C-7 removes them.
+     */
+    REPACK_RETIRED("Packing is done at the carton check station: parcels are no longer packed", 410),
     /** Kltn-docs 08 BR-08 (4C-6): a shipping label prints only for a carton whose LPN was scanned at the check. */
     CARTON_NOT_CHECKED("Only a checked carton gets a shipping label", 409),
     /**
