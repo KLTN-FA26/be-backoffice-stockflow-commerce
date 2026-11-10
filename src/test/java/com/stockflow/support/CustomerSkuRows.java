@@ -149,7 +149,7 @@ public final class CustomerSkuRows {
                     Integer.class, unit);
             java.time.Instant received = java.time.Instant.now().minus(java.time.Duration.ofDays(2));
             if (units % factor == 0) {
-                CartonRows.stock(jdbc, sku, "HCM-A02-1-A", units / factor, factor, null, received);
+                CartonRows.stock(jdbc, sku, "HCM-A01-1-A", units / factor, factor, null, received);
                 return;
             }
             // A carton of exactly {@code units} pieces: the unit {@code ConfirmedOrders.Line#units} orders it in.
@@ -162,7 +162,7 @@ public final class CustomerSkuRows {
                     "PK" + units, units);
             UUID pack = jdbc.queryForObject("SELECT id FROM inventory.uom_conversions WHERE inventory_item_id = ? "
                     + "AND unit_of_measure = ?", UUID.class, item, "PK" + units);
-            CartonRows.stockOfUnit(jdbc, sku, pack, "HCM-A02-1-A", 1, null, null, received, "AVAILABLE");
+            CartonRows.stockOfUnit(jdbc, sku, pack, "HCM-A01-1-A", 1, null, null, received, "AVAILABLE");
         });
     }
 }
