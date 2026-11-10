@@ -1,28 +1,18 @@
 package com.stockflow.notification.internal.service;
 
 import com.stockflow.common.api.PageResponse;
-import com.stockflow.common.error.BusinessException;
-import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.persistence.Pages;
-import com.stockflow.notification.api.AmendmentDeliveryStatus;
 import com.stockflow.notification.api.DeliveryAttemptSummary;
 import com.stockflow.notification.api.NotificationService;
 import com.stockflow.notification.api.PortalInvitationMail;
-import com.stockflow.notification.internal.domain.NotificationChannel;
-import com.stockflow.notification.internal.domain.SupplierEndpointPolicy;
 import com.stockflow.notification.internal.repository.DeliveryLogJpaRepository;
-import com.stockflow.notification.internal.repository.PoDeliveryControlRepository;
 
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.util.Collection;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.UUID;
 
 /** Exposes delivery evidence without permitting callers to bypass the durable event workflow. */
@@ -30,26 +20,12 @@ import java.util.UUID;
 @Transactional
 class NotificationServiceImpl implements NotificationService {
 
-    /** The failure code of the attempt that closes an own delivery an amendment notice superseded. */
-    static final String SUPERSEDED_BY_AMENDMENT = "SUPERSEDED_BY_AMENDMENT";
-
-    /** The failure code of an amendment notice closed unsent because the order was cancelled meanwhile. */
-    static final String SUPERSEDED_BY_CANCELLATION = "SUPERSEDED_BY_CANCELLATION";
-
     private final DeliveryLogJpaRepository logs;
-    private final SupplierEndpointPolicy policy;
-    private final PoDeliveryControlRepository controls;
     private final NotificationSender sender;
 
-    NotificationServiceImpl(
-            DeliveryLogJpaRepository logs,
-            PoDeliveryControlRepository controls,
-            NotificationSender sender,
-            @Value("${stockflow.notification.supplier-api-allowed-hosts:}") String hosts) {
+    NotificationServiceImpl(DeliveryLogJpaRepository logs, NotificationSender sender) {
         this.logs = logs;
-        this.controls = controls;
         this.sender = sender;
-        this.policy = new SupplierEndpointPolicy(hosts);
     }
 
     @Override
@@ -59,136 +35,15 @@ class NotificationServiceImpl implements NotificationService {
     }
 
     @Override
-    public void validateSupplierDelivery(String channel, String recipient) {
-        try {
-            policy.validate(channel, recipient);
-        } catch (IllegalArgumentException invalid) {
-            throw new BusinessException(ErrorCode.SUPPLIER_DELIVERY_CONTACT_INVALID);
-        }
-    }
-
-    @Override
-    public int prepareSupplierDelivery(UUID id, boolean recovery) {
-        var control = controls.lock(id);
-        String reference = "purchase-order:" + id;
-        if (control.suppressed() || logs.existsByExternalReference(reference))
-            throw new BusinessException(
-                    ErrorCode.CONFLICT, "Delivery is suppressed or already successful");
-        if (!recovery) return control.generation();
-        if (!logs.existsByOperationReferenceAndDeliveryGenerationAndTerminalTrue(
-                reference, control.generation()))
-            throw new BusinessException(
-                    ErrorCode.CONFLICT, "Only a terminal failed delivery can be recovered");
-        int generation = Math.addExact(control.generation(), 1);
-        controls.advance(id, generation);
-        return generation;
-    }
-
-    @Override
-    public void suppressSupplierDelivery(UUID id) {
-        controls.suppress(id);
-    }
-
-    @Override
-    public void prepareSupplierCancellation(UUID id) {
-        controls.requestCancellation(id);
-    }
-
-    @Override
-    public void supersedeSupplierDelivery(UUID id, String channel, String recipient) {
-        var control = controls.lock(id);
-        String reference = "purchase-order:" + id;
-        if (control.suppressed()
-                || logs.existsByExternalReference(reference)
-                || logs.existsByOperationReferenceAndDeliveryGenerationAndTerminalTrue(
-                        reference, control.generation())) return;
-        int generation = Math.addExact(control.generation(), 1);
-        controls.advance(id, generation);
-        logs.saveAndFlush(
-                DeliveryAttemptRecorder.superseded(
-                        reference,
-                        "purchase-order.sent",
-                        NotificationChannel.valueOf(channel),
-                        recipient,
-                        SUPERSEDED_BY_AMENDMENT,
-                        generation,
-                        1));
-    }
-
-    @Override
     @Transactional(readOnly = true)
-    public Map<UUID, String> purchaseOrderDeliveryStatuses(Collection<UUID> ids) {
-        if (ids.isEmpty()) return Map.of();
-        var references = ids.stream().map(id -> "purchase-order:" + id).toList();
-        var result = new HashMap<UUID, String>();
-        for (var row : logs.latestStatuses(references)) {
-            result.put(
-                    UUID.fromString(row.getReference().substring("purchase-order:".length())),
-                    switch (row.getStatus()) {
-                        case "SENT" -> "DELIVERED";
-                        case "QUEUED", "SUPPRESSED" -> row.getStatus();
-                        default -> row.getTerminal() ? "FAILED" : "RETRYING";
-                    });
-        }
-        return result;
+    public PageResponse<DeliveryAttemptSummary> productionOrderDeliveries(UUID productionOrderId, int page, int size) {
+        return attempts(ProductionOrderMailListener.references(productionOrderId), page, size);
     }
 
-    @Override
-    @Transactional(readOnly = true)
-    public Map<UUID, String> purchaseOrderCancellationStatuses(Collection<UUID> ids) {
-        if (ids.isEmpty()) return Map.of();
-        var result = new HashMap<UUID, String>();
-        for (var row :
-                logs.cancellationStatuses(
-                        ids.stream()
-                                .map(id -> "purchase-order:" + id + ":cancellation")
-                                .toList())) {
-            var id =
-                    UUID.fromString(
-                            row.getReference()
-                                    .substring(
-                                            "purchase-order:".length(),
-                                            row.getReference().lastIndexOf(':')));
-            result.put(
-                    id,
-                    "SENT".equals(row.getStatus())
-                            ? "DELIVERED"
-                            : "QUEUED".equals(row.getStatus())
-                                    ? "QUEUED"
-                                    : row.getTerminal() ? "FAILED" : "RETRYING");
-        }
-        return result;
-    }
-
-    @Override
-    @Transactional(readOnly = true)
-    public Map<UUID, AmendmentDeliveryStatus> purchaseOrderAmendmentStatuses(Collection<UUID> ids) {
-        if (ids.isEmpty()) return Map.of();
-        var result = new HashMap<UUID, AmendmentDeliveryStatus>();
-        for (var row : logs.amendmentStatuses(ids.stream().map(UUID::toString).toList())) {
-            result.put(
-                    UUID.fromString(row.getReference()),
-                    new AmendmentDeliveryStatus(
-                            row.getRevision(),
-                            switch (row.getStatus()) {
-                                case "SENT" -> "DELIVERED";
-                                default -> row.getTerminal() ? "FAILED" : "RETRYING";
-                            }));
-        }
-        return result;
-    }
-
-    @Override
-    @Transactional(readOnly = true)
-    public PageResponse<DeliveryAttemptSummary> purchaseOrderDeliveries(
-            UUID purchaseOrderId, int page, int size) {
+    private PageResponse<DeliveryAttemptSummary> attempts(List<String> references, int page, int size) {
         var pageable = Pages.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt", "id"));
         return Pages.toResponse(
-                logs.findByOperationReferenceIn(
-                                List.of(
-                                        "purchase-order:" + purchaseOrderId,
-                                        "purchase-order:" + purchaseOrderId + ":cancellation"),
-                                pageable)
+                logs.findByOperationReferenceIn(references, pageable)
                         .map(
                                 log ->
                                         new DeliveryAttemptSummary(

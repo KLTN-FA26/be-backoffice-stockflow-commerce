@@ -98,6 +98,20 @@ public class ReservationJpaEntity {
     @Column(name = "allocated_from_id", updatable = false)
     private UUID allocatedFrom;
 
+    /** 4B-7: the warehouse a SKU reservation is held at; null for a checkout hold and for every allocation. */
+    @Column(name = "warehouse_code", updatable = false, length = 64)
+    private String warehouseCode;
+
+    /** 4B-7: a new SKU reservation held at {@code code} (20 BR-17). */
+    public ReservationJpaEntity heldAt(String code) {
+        this.warehouseCode = code;
+        return this;
+    }
+
+    public String getWarehouseCode() {
+        return warehouseCode;
+    }
+
     protected ReservationJpaEntity() {
     }
 

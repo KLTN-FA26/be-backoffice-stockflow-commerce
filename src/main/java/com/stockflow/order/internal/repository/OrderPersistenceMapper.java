@@ -77,6 +77,8 @@ final class OrderPersistenceMapper {
         order.restoreFulfilmentFacts(entity.getPrintingStartedAt(), entity.getPackedAt());
         order.restoreGoodsLeft(entity.getGoodsLeftAt());
         order.restoreContractSigned(entity.getContractSignedAt());
+        order.restoreShippingWarehouse(entity.getShippingWarehouseId(), entity.getShippingWarehouseChosenAt(),
+                entity.getShippingWarehouseChosenBy());
         order.restoreReplacement(entity.getReplacesReturnRequestId());
         order.restoreBalance(entity.getBalancePolicy());
         order.restorePartialShipment(entity.isAllowPartialShipment());
@@ -135,6 +137,8 @@ final class OrderPersistenceMapper {
         entity.applyFulfilmentFacts(order.printingStartedAt(), order.packedAt());
         entity.applyGoodsLeft(order.goodsLeftAt());
         entity.applyContractSigned(order.contractSignedAt());
+        entity.applyShippingWarehouse(order.shippingWarehouseId(), order.shippingWarehouseChosenAt(),
+                order.shippingWarehouseChosenBy());
         entity.applyPlaced(order.placedAt());
         entity.applyBalance(order.balancePolicy());
         entity.applyPartialShipment(order.allowPartialShipment());

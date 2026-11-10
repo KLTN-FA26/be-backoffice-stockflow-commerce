@@ -346,8 +346,8 @@ public final class ReturnRequest extends AggregateRoot {
             case CLOSED -> new BusinessException(ErrorCode.RETURN_ORDER_NOT_RETURNABLE,
                     "Order %s is closed for good (BR-05): it takes no return".formatted(order.orderNumber()));
             // RETURNED as an order status is goods that came back undelivered (RTO), or a return being settled.
-            case DRAFT, PENDING_CONTRACT, PENDING_PAYMENT, CONFIRMED, IN_PRODUCTION, READY_TO_FULFILL, PICKING,
-                 PARTIALLY_FULFILLED, PACKED, ON_HOLD, SHIPPED, DELIVERY_FAILED, RETURNED -> new BusinessException(
+            case DRAFT, PENDING_CONTRACT, PENDING_PAYMENT, CONFIRMED, AWAITING_STOCK, IN_PRODUCTION, READY_TO_FULFILL,
+                 PICKING, PARTIALLY_FULFILLED, PACKED, ON_HOLD, SHIPPED, DELIVERY_FAILED, RETURNED -> new BusinessException(
                     ErrorCode.RETURN_ORDER_NOT_DELIVERED,
                     "Order %s is %s: only a delivered order can be returned".formatted(order.orderNumber(), status));
         };

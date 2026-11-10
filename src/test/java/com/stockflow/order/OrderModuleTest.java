@@ -36,6 +36,7 @@ class OrderModuleTest {
     // customer (bootstrapped) invites portal accounts and mails the invitation (SCRUM-429): its ports, not the modules.
     @MockitoBean com.stockflow.identity.api.PortalAccountService portalAccountServiceMock;
     @MockitoBean com.stockflow.notification.api.NotificationService notificationServiceMock;
+    @MockitoBean com.stockflow.notification.api.ProductionOrderResends productionOrderResendsMock;
 
     @Test
     @DisplayName("order starts and answers through its api with the other modules absent")
@@ -47,7 +48,7 @@ class OrderModuleTest {
     @Test
     @DisplayName("a module outside order's declared dependencies is not in this context")
     void unrelatedModulesAreAbsent() {
-        assertThatThrownBy(() -> context.getBean(com.stockflow.procurement.api.ProcurementService.class))
+        assertThatThrownBy(() -> context.getBean(com.stockflow.fulfillment.api.FulfillmentService.class))
                 .isInstanceOf(org.springframework.beans.factory.NoSuchBeanDefinitionException.class);
     }
 }

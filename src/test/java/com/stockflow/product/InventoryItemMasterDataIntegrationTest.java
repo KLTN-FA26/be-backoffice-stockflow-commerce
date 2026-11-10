@@ -8,7 +8,6 @@ import com.stockflow.common.security.CurrentUserProvider;
 import com.stockflow.common.security.DataScope;
 import com.stockflow.common.storage.UploadInspection;
 import com.stockflow.inventory.api.ItemLogistics;
-import com.stockflow.inventory.api.ItemPurchasing;
 import com.stockflow.inventory.api.StorageClass;
 import com.stockflow.inventory.api.UomConversion;
 import com.stockflow.inventory.api.UomConversionDraft;
@@ -19,7 +18,6 @@ import com.stockflow.product.api.ProductService;
 import com.stockflow.product.api.ProductSummary;
 import com.stockflow.product.api.TaxClass;
 import com.stockflow.product.internal.service.ProductVariantService;
-import com.stockflow.product.internal.service.SkuPurchasingService;
 import com.stockflow.product.internal.service.SkuUnitService;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
@@ -52,7 +50,7 @@ import static org.mockito.Mockito.when;
 
 /**
  * The inventory item master data kltn-docs 01 §3 asks for and the item lacked: the blank foreign keys
- * (glossary "Phôi"), purchasing information (default supplier, reference price, lead time, MOQ; BR-06),
+ * (glossary "Phôi"),
  * the rotatable flag (E13), units of measure (BR-09, BR-10) and the variant's sales units (BR-11).
  * Real database, real services, through the product module as the controllers call them.
  */
@@ -63,7 +61,6 @@ class InventoryItemMasterDataIntegrationTest {
     @Autowired ProductService products;
     @Autowired ProductVariantService variants;
     @Autowired InventoryItems items;
-    @Autowired SkuPurchasingService purchasing;
     @Autowired SkuUnitService units;
     @Autowired JdbcTemplate jdbc;
     @Autowired EntityManager entityManager;
@@ -92,47 +89,6 @@ class InventoryItemMasterDataIntegrationTest {
     /** Logistics are edited on the inventory item by its own id (#118). */
     private UUID itemId() {
         return jdbc.queryForObject("SELECT id FROM inventory.inventory_items WHERE sku = ?", UUID.class, sku);
-    }
-
-    // ---- purchasing ------------------------------------------------------------------------------------------
-
-    @Test
-    @DisplayName("purchasing info lives on the item: default supplier checked, version shared with logistics")
-    void purchasingInformation() {
-        var before = purchasing.purchasing(productId, variantId);
-        assertThat(before.purchasing()).isEqualTo(new ItemPurchasing(null, null, null, null, null));
-        UUID goviet = supplier("GOVIET");
-
-        var after = purchasing.describe(productId, variantId, before.version(),
-                new ItemPurchasing(goviet, new BigDecimal("1250.50"), "VND", 10, 500));
-        assertThat(after.version()).isGreaterThan(before.version());
-        assertThat(after.purchasing().defaultSupplierId()).isEqualTo(goviet);
-        assertThat(after.purchasing().referencePurchasePrice()).isEqualByComparingTo("1250.50");
-        assertThat(after.purchasing().moq()).isEqualTo(500);
-        assertThat(items.get(itemId()).version()).isEqualTo(after.version());
-        assertThat(history()).contains("PURCHASING");
-
-        assertCode(() -> purchasing.describe(productId, variantId, before.version(),
-                new ItemPurchasing(null, null, null, null, null)), ErrorCode.OPTIMISTIC_LOCK);
-        assertCode(() -> purchasing.describe(productId, variantId, after.version(),
-                new ItemPurchasing(UUID.randomUUID(), null, null, null, null)), ErrorCode.SUPPLIER_NOT_FOUND);
-        UUID inactive = inactiveSupplier();
-        assertCode(() -> purchasing.describe(productId, variantId, after.version(),
-                new ItemPurchasing(inactive, null, null, null, null)), ErrorCode.SUPPLIER_INACTIVE);
-        assertField(() -> purchasing.describe(productId, variantId, after.version(),
-                new ItemPurchasing(null, new BigDecimal("10"), null, null, null)), "referencePurchaseCurrency");
-        assertField(() -> purchasing.describe(productId, variantId, after.version(),
-                new ItemPurchasing(null, null, null, 366, null)), "leadTimeDays");
-        assertField(() -> purchasing.describe(productId, variantId, after.version(),
-                new ItemPurchasing(null, null, null, null, 0)), "moq");
-
-        // An unchanged default supplier is not asked again: deactivated later, it does not block a price edit.
-        tx.executeWithoutResult(s -> jdbc.update(
-                "UPDATE inventory.inventory_items SET default_supplier_id = ? WHERE sku = ?", inactive, sku));
-        var current = purchasing.purchasing(productId, variantId);
-        var repriced = purchasing.describe(productId, variantId, current.version(),
-                new ItemPurchasing(inactive, new BigDecimal("99"), "USD", null, null));
-        assertThat(repriced.purchasing().referencePurchaseCurrency()).isEqualTo("USD");
     }
 
     // ---- rotatable -------------------------------------------------------------------------------------------
@@ -346,18 +302,6 @@ class InventoryItemMasterDataIntegrationTest {
         return new ItemLogistics(unit, l.barcode(), l.weightKg(), l.lengthCm(), l.widthCm(), l.heightCm(),
                 l.packageWeightKg(), l.packageLengthCm(), l.packageWidthCm(), l.packageHeightCm(), l.packageCount(),
                 l.packSize(), l.storageClass(), l.requiresAdultSignature(), l.shippingRestrictionNote(), l.rotatable());
-    }
-
-    private UUID supplier(String code) {
-        return jdbc.queryForObject("SELECT id FROM procurement.suppliers WHERE code = ?", UUID.class, code);
-    }
-
-    private UUID inactiveSupplier() {
-        UUID id = Identifiers.newId();
-        tx.executeWithoutResult(s -> jdbc.update(
-                "INSERT INTO procurement.suppliers (id, code, name, status) VALUES (?, ?, ?, 'INACTIVE')",
-                id, "OFF" + suffix, "Inactive " + suffix));
-        return id;
     }
 
     private List<String> history() {

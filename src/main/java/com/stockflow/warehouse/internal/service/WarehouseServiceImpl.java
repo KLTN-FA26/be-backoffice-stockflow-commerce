@@ -88,6 +88,12 @@ class WarehouseServiceImpl implements WarehouseService {
     }
 
     @Override
+    public java.util.List<WarehouseView> activeWarehouses() {
+        return locations.findActiveWarehouseHeaders().stream().map(w -> new WarehouseView(w.id(), w.prefix(), w.name(),
+                w.address(), true)).toList();
+    }
+
+    @Override
     public java.util.List<String> shelfCodesOf(UUID warehouseId, UUID zoneId) {
         if (warehouseId == null || zoneId == null) {
             return java.util.List.of();

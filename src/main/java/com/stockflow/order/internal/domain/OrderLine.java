@@ -136,6 +136,17 @@ public final class OrderLine {
         return !reservationIds.isEmpty();
     }
 
+    /**
+     * 4B-7: holds added to a line of an order of a contract - its first holds at the shipping warehouse, or stock that
+     * arrived after them (17 §4.2 step 3). Unlike a checkout's one attach, a line is held over time.
+     */
+    void holdMore(List<UUID> more) {
+        if (more == null) {
+            return;
+        }
+        more.stream().filter(id -> !reservationIds.contains(id)).distinct().forEach(reservationIds::add);
+    }
+
     public Money lineTotal() {
         return unitPrice.times(quantity);
     }

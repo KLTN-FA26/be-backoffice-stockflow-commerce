@@ -16,13 +16,15 @@ import java.util.UUID;
  * stock it becomes is counted in whole units, so the domain carries an int and this maps the column
  * as it is.
  *
- * <p>The PO line, item and lot are what the line IS and are never written again. What was counted —
+ * <p>The production order line, item and lot are what the line IS and are never written again. What was counted —
  * where, how many, note — is recounted while the receipt is a draft
  * ({@link #recount}); {@code tg_goods_receipt_lines_frozen} refuses it once the receipt is past DRAFT.</p>
  *
- * <p>{@code uom_conversion_id}: the packing unit the line's cartons are in, NULL for a line counted loose in the
- * base unit (V20261020000400). Recounted with the rest while DRAFT; {@code tg_goods_receipt_lines_unit} checks it
- * is a unit of the line's item.</p>
+ * <p>{@code uom_conversion_id}: the packing unit the line's cartons are in - a production line counts whole cartons
+ * of its standard count (kltn-docs 03 BR-12, BR-13). Recounted with the rest while DRAFT;
+ * {@code tg_goods_receipt_lines_unit} checks it is a unit of the line's item. It and {@code lot_number} are NOT NULL
+ * since {@code V20261113000200}: no line is counted loose or without a lot any more, and an old purchase line was
+ * given its item's base unit and its receipt's number.</p>
  */
 @Entity
 @Table(name = "goods_receipt_lines", schema = "procurement")
@@ -32,8 +34,12 @@ public class GoodsReceiptLineJpaEntity extends BaseEntity {
     @JoinColumn(name = "receipt_id", nullable = false, updatable = false)
     private GoodsReceiptJpaEntity receipt;
 
-    @Column(name = "po_line_id", updatable = false)
-    private UUID poLineId;
+    /**
+     * 4A-5: the production order line a line of a production receipt counts; null on a historical purchase receipt,
+     * whose {@code po_line_id} went with purchasing ({@code V20261113000200} archived and dropped it).
+     */
+    @Column(name = "production_order_line_id", updatable = false)
+    private UUID productionOrderLineId;
 
     @Column(name = "inventory_item_id", nullable = false, updatable = false)
     private UUID inventoryItemId;
@@ -44,23 +50,22 @@ public class GoodsReceiptLineJpaEntity extends BaseEntity {
     @Column(name = "received_qty", nullable = false, precision = 18, scale = 3)
     private BigDecimal receivedQty;
 
-    @Column(name = "lot_number", length = 64, updatable = false)
+    @Column(name = "lot_number", nullable = false, length = 64, updatable = false)
     private String lotNumber;
 
     @Column(name = "note", length = 255)
     private String note;
 
-    @Column(name = "uom_conversion_id")
+    @Column(name = "uom_conversion_id", nullable = false)
     private UUID uomConversionId;
 
     protected GoodsReceiptLineJpaEntity() {
     }
 
-    public GoodsReceiptLineJpaEntity(UUID id, UUID poLineId, UUID inventoryItemId, UUID locationId,
-                                     BigDecimal receivedQty, String lotNumber, String note,
-                                     UUID uomConversionId) {
+    public GoodsReceiptLineJpaEntity(UUID id, UUID productionOrderLineId, UUID inventoryItemId, UUID locationId,
+                                     BigDecimal receivedQty, String lotNumber, String note, UUID uomConversionId) {
         super(id);
-        this.poLineId = poLineId;
+        this.productionOrderLineId = productionOrderLineId;
         this.inventoryItemId = inventoryItemId;
         this.locationId = locationId;
         this.receivedQty = receivedQty;
@@ -83,7 +88,7 @@ public class GoodsReceiptLineJpaEntity extends BaseEntity {
         this.uomConversionId = uomConversionId;
     }
 
-    public UUID getPoLineId() { return poLineId; }
+    public UUID getProductionOrderLineId() { return productionOrderLineId; }
     public UUID getInventoryItemId() { return inventoryItemId; }
     public UUID getLocationId() { return locationId; }
     public BigDecimal getReceivedQty() { return receivedQty; }

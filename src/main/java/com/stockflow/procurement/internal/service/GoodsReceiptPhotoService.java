@@ -34,7 +34,7 @@ import java.util.UUID;
 /**
  * Photos taken while goods are received (04b F-RCV step 05: the warehouse, of what arrived, while the receipt is
  * counted). Photos QC took while receiving QC existed stay, as stage {@code QC}; no step takes one any more (kltn-docs
- * 03 BR-07). Evidence for a dispute with the supplier: kept
+ * 03 BR-07). Evidence for a dispute with the producer: kept
  * append-only ({@code procurement.goods_receipt_photos}), private, shown through display copies without the phone's
  * metadata ({@link FileCategory#QC_EVIDENCE}).
  *

@@ -13,12 +13,15 @@ import java.util.UUID;
 @Schema(name = "LotTrace")
 public record LotTraceResponse(Lot lot, List<Balance> balances, List<Hold> holds, List<OrderLeg> orders) {
 
-    @Schema(name = "Lot", description = "A lot as received: one per goods receipt and (SKU, lot number)")
+    @Schema(name = "Lot", description = "A lot as received: one per goods receipt and (SKU, lot number); for goods "
+            + "received against a production order, one per production order and SKU across its receipts, numbered "
+            + "with the production order's code (kltn-docs 03 BR-03)")
     public record Lot(UUID lotId, String sku,
                       @Schema(description = "As printed; another receipt may use the same number for another lot")
                       String lotNumber,
                       Instant receivedAt,
-                      @Schema(description = "GOODS_RECEIPT, or UNTRACED for stock that entered without a receipt")
+                      @Schema(description = "GOODS_RECEIPT, PRODUCTION_ORDER, or UNTRACED for stock that entered "
+                              + "without a receipt")
                       String origin,
                       UUID goodsReceiptId, String goodsReceiptNumber, UUID purchaseOrderId, String purchaseOrderNumber,
                       UUID supplierId,
@@ -31,7 +34,13 @@ public record LotTraceResponse(Lot lot, List<Balance> balances, List<Hold> holds
                       @Schema(description = "Free now: AVAILABLE and not held")
                       long available,
                       @Schema(description = "On hand now and held by allocations or other holds")
-                      long held) { }
+                      long held,
+                      @Schema(description = "The production order a PRODUCTION_ORDER lot is of; null otherwise",
+                              nullable = true)
+                      UUID productionOrderId,
+                      @Schema(description = "Its code as it read when the first goods arrived: also the lot number",
+                              nullable = true)
+                      String productionOrderCode) { }
 
     @Schema(name = "LotBalance")
     public record Balance(String locationCode, String status,

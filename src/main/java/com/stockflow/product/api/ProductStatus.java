@@ -37,7 +37,7 @@ public enum ProductStatus {
     PUBLISHED,
 
     /**
-     * Suspended (kltn-docs 01 §5.1 "Inactive"): not shown, no new purchase order lines, orders and
+     * Suspended (kltn-docs 01 §5.1 "Inactive"): not shown, no new quote or order lines, orders and
      * receipts already running continue. Resuming returns it to {@link #APPROVED}; it goes back on
      * the storefront only by being published again. Its variants and images can still be maintained.
      */

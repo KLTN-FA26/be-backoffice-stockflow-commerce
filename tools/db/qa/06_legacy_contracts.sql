@@ -80,9 +80,5 @@ SELECT pg_temp.expect_true('putaway names a receipt and its line together, both 
     SELECT count(*) = 3 FROM pg_constraint
      WHERE conrelid = 'warehouse.putaway_task'::regclass
        AND conname IN ('ck_putaway_task_receipt_pair', 'fk_putaway_task_receipt', 'fk_putaway_task_receipt_line') $q$);
-SELECT pg_temp.expect_fail('delivery decision for no purchase order', $q$
-    INSERT INTO procurement.po_delivery_decision (id, purchase_order_id, generation, expected_at, reconciled,
-                                                  acknowledge_past_due, channel, recipient, actor, requested_at)
-    VALUES (gen_random_uuid(), gen_random_uuid(), 0, CURRENT_DATE, FALSE, FALSE, 'EMAIL', 'a@b.test', 'qa', NOW()) $q$);
 
 ROLLBACK;

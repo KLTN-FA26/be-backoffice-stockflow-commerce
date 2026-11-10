@@ -48,8 +48,14 @@ public interface WarehouseService {
      */
     java.util.Map<String, UUID> pickableLocations(java.util.Collection<String> locationCodes);
 
-    /** @return empty when no warehouse has this id; a purchase order receives into one (SCRUM-390) */
+    /** @return empty when no warehouse has this id; a goods receipt receives into one (SCRUM-390) */
     Optional<WarehouseView> findWarehouse(UUID warehouseId);
+
+    /**
+     * 4B-7 (kltn-docs 17 §4.2 step 2): every ACTIVE warehouse, by code - the warehouses an order may ship from, which
+     * Sales chooses among.
+     */
+    java.util.List<WarehouseView> activeWarehouses();
 
     /**
      * The own codes of the shelves in a zone ({@code A01}, not {@code HCM-A01}), sorted. A cycle count planned by

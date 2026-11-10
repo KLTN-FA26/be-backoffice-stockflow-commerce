@@ -19,7 +19,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * G3-2 (SCRUM-246): the order lifecycle, every pair of statuses. The expected table is written here a second time, by
  * hand, from kltn-docs 17 §5 and the G3-2 decisions, so a change to {@link OrderStatus#canTransitionTo} is a change
- * someone made on purpose in two places. 19 x 19 = 361 pairs, each allowed or refused.
+ * someone made on purpose in two places. 21 x 21 = 441 pairs, each allowed or refused.
  */
 class OrderStatusTest {
 
@@ -29,15 +29,18 @@ class OrderStatusTest {
             // DRAFT when its contract is cancelled.
             Map.entry(PENDING_CONTRACT, EnumSet.of(DRAFT, PENDING_PAYMENT, CONFIRMED, ON_HOLD, CANCELLED)),
             Map.entry(PENDING_PAYMENT, EnumSet.of(CONFIRMED, CANCELLED)),
-            Map.entry(CONFIRMED, EnumSet.of(IN_PRODUCTION, READY_TO_FULFILL, ON_HOLD, CANCELLED)),
+            // 4A-6 (17 §5.1): AWAITING_STOCK once a production order for its short next batch is sent.
+            Map.entry(CONFIRMED, EnumSet.of(AWAITING_STOCK, IN_PRODUCTION, READY_TO_FULFILL, ON_HOLD, CANCELLED)),
+            // 17 §5.1: released with every carton held; what it has handed over first; held; cancelled.
+            Map.entry(AWAITING_STOCK, EnumSet.of(READY_TO_FULFILL, PARTIALLY_FULFILLED, ON_HOLD, CANCELLED)),
             // Legacy edges (IN_PRODUCTION is entered no more, V20261108000100); PARTIALLY_FULFILLED was PACK-EARLY.
             Map.entry(IN_PRODUCTION, EnumSet.of(READY_TO_FULFILL, PARTIALLY_FULFILLED, ON_HOLD, CANCELLED)),
             Map.entry(READY_TO_FULFILL, EnumSet.of(PICKING, PACKED, PARTIALLY_FULFILLED, ON_HOLD, CANCELLED)),
             Map.entry(PICKING, EnumSet.of(PACKED, PARTIALLY_FULFILLED, ON_HOLD, CANCELLED)),
             Map.entry(PARTIALLY_FULFILLED, EnumSet.of(PACKED, SHIPPED, DELIVERY_FAILED, DELIVERED, RETURNED, ON_HOLD)),
             Map.entry(PACKED, EnumSet.of(SHIPPED, PARTIALLY_FULFILLED, ON_HOLD)),
-            Map.entry(ON_HOLD, EnumSet.of(CONFIRMED, PENDING_PAYMENT, IN_PRODUCTION, READY_TO_FULFILL, PICKING,
-                    PARTIALLY_FULFILLED, PACKED, CANCELLED)),
+            Map.entry(ON_HOLD, EnumSet.of(CONFIRMED, PENDING_PAYMENT, AWAITING_STOCK, IN_PRODUCTION, READY_TO_FULFILL,
+                    PICKING, PARTIALLY_FULFILLED, PACKED, CANCELLED)),
             Map.entry(SHIPPED, EnumSet.of(DELIVERED, DELIVERY_FAILED, PARTIALLY_FULFILLED)),
             Map.entry(DELIVERY_FAILED, EnumSet.of(DELIVERED, RETURNED, PARTIALLY_FULFILLED)),
             Map.entry(DELIVERED, EnumSet.of(COMPLETED, RETURN_REQUESTED, DELIVERY_FAILED)),
@@ -81,8 +84,8 @@ class OrderStatusTest {
     @DisplayName("nothing is cancelled from PACKED on (decision 2026-10-17) nor after SHIPPED (BR-031)")
     void cancellationStopsAtTheFirstPackage() {
         assertThat(EnumSet.allOf(OrderStatus.class).stream().filter(s -> s.canTransitionTo(CANCELLED)))
-                .containsExactlyInAnyOrder(DRAFT, PENDING_CONTRACT, PENDING_PAYMENT, CONFIRMED, IN_PRODUCTION,
-                        READY_TO_FULFILL, PICKING, ON_HOLD);
+                .containsExactlyInAnyOrder(DRAFT, PENDING_CONTRACT, PENDING_PAYMENT, CONFIRMED, AWAITING_STOCK,
+                        IN_PRODUCTION, READY_TO_FULFILL, PICKING, ON_HOLD);
     }
 
     @Test
@@ -101,8 +104,9 @@ class OrderStatusTest {
     @Test
     @DisplayName("credit exposure: every live status before the outcome of delivery is counted, nothing after")
     void creditExposureComesFromTheStateMachine() {
-        assertThat(OrderStatus.creditExposureStatuses()).containsExactlyInAnyOrder(CONFIRMED, IN_PRODUCTION,
-                READY_TO_FULFILL, PICKING, PARTIALLY_FULFILLED, PACKED, ON_HOLD, SHIPPED, DELIVERY_FAILED);
+        assertThat(OrderStatus.creditExposureStatuses()).containsExactlyInAnyOrder(CONFIRMED, AWAITING_STOCK,
+                IN_PRODUCTION, READY_TO_FULFILL, PICKING, PARTIALLY_FULFILLED, PACKED, ON_HOLD, SHIPPED,
+                DELIVERY_FAILED);
         // A status that can still be delivered (and so billed) must be counted. RETURN_REQUESTED → DELIVERED is an
         // RMA refused (decision 2026-10-21): the goods were delivered and billed already.
         for (OrderStatus status : values()) {
@@ -116,7 +120,7 @@ class OrderStatusTest {
     @DisplayName("stock is held from submission until the goods are handed over")
     void holdsStock() {
         assertThat(EnumSet.allOf(OrderStatus.class).stream().filter(OrderStatus::holdsStock))
-                .containsExactlyInAnyOrder(PENDING_PAYMENT, CONFIRMED, IN_PRODUCTION, READY_TO_FULFILL, PICKING,
-                        PARTIALLY_FULFILLED, PACKED, ON_HOLD);
+                .containsExactlyInAnyOrder(PENDING_PAYMENT, CONFIRMED, AWAITING_STOCK, IN_PRODUCTION, READY_TO_FULFILL,
+                        PICKING, PARTIALLY_FULFILLED, PACKED, ON_HOLD);
     }
 }

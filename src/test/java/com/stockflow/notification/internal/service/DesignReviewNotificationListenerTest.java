@@ -1,6 +1,5 @@
 package com.stockflow.notification.internal.service;
 
-import com.stockflow.common.http.RestClientFactory;
 import com.stockflow.contracts.DesignSubmittedForReview;
 import com.stockflow.identity.api.IdentityService;
 import com.stockflow.identity.api.StaffContact;
@@ -30,8 +29,7 @@ class DesignReviewNotificationListenerTest {
     private final IdentityService identity = mock(IdentityService.class);
     private final Inbox inbox = mock(Inbox.class);
     private final DesignReviewNotificationListener listener = new DesignReviewNotificationListener(
-            new NotificationSender(new SmtpEmailTransport(mock(JavaMailSender.class)), mock(RestClientFactory.class),
-                    "noreply@stockflow.local", ""),
+            new NotificationSender(new SmtpEmailTransport(mock(JavaMailSender.class)), "noreply@stockflow.local"),
             new StaffDirectory(identity), new StaffNotices(inbox));
 
     private final DesignSubmittedForReview event = new DesignSubmittedForReview(UUID.randomUUID(), UUID.randomUUID(),

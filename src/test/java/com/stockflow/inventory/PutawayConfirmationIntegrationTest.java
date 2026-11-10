@@ -7,15 +7,14 @@ import com.stockflow.common.id.Identifiers;
 import com.stockflow.contracts.PutawayCompleted;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.api.MoveReference;
+import com.stockflow.inventory.api.MoveStockCommand;
 import com.stockflow.inventory.api.MoveStockPackagesCommand;
 import com.stockflow.inventory.internal.repository.BinOccupancyQuery;
 import com.stockflow.inventory.internal.service.PutawayService;
 import com.stockflow.inventory.internal.service.PutawayService.TaskView;
-import com.stockflow.procurement.internal.service.GoodsReceipts;
-import com.stockflow.procurement.internal.service.GoodsReceipts.NewPackage;
 import com.stockflow.support.Await;
-import com.stockflow.support.IntegrationTest;
-import com.stockflow.support.PostgresContainer;
+import com.stockflow.support.ProductionReceiptTest;
+import com.stockflow.support.ProductionReceivables;
 import com.stockflow.support.RecordedEvents;
 import com.stockflow.support.ReferenceRows;
 import com.stockflow.warehouse.api.PutawayTaskView;
@@ -42,18 +41,17 @@ import java.util.concurrent.TimeUnit;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * SCRUM-92: confirming a putaway by scan against a real PostgreSQL. A receipt line of 30 units - three cartons of 10,
- * the SKU's carton count - is received into a warehouse of its own whose bins the tests shape, so the hard rules for a
- * bin the clerk chose can each be broken in turn without touching the shared demo stock. Every task is one carton,
- * put away whole by scanning its LPN (kltn-docs 05 BR-08; team plan 4C-2): there are no loose tasks to confirm.
+ * SCRUM-92: confirming a putaway by scan against a real PostgreSQL. A two-step receipt line of 40 units - cartons of
+ * 10 and 10, 20 loose - is received into a warehouse of its own whose bins the tests shape, so the hard rules for a
+ * bin the clerk chose can each be broken in turn without touching the shared demo stock.
  */
-@IntegrationTest
-@Import({PostgresContainer.class, RecordedEvents.class})
+@ProductionReceiptTest
+@Import(RecordedEvents.class)
 class PutawayConfirmationIntegrationTest {
 
     @Autowired PutawayService putaway;
     @Autowired PutawayTasks putawayTasks;
-    @Autowired GoodsReceipts receipts;
+    @Autowired ProductionReceivables receivables;
     @Autowired InventoryService inventory;
     @Autowired RecordedEvents.Recorder recorded;
     @Autowired JdbcTemplate jdbc;
@@ -69,59 +67,29 @@ class PutawayConfirmationIntegrationTest {
     private String lpn1;
     private String lpn2;
     private UUID cartonTask;
+    private UUID looseTask;
     private int shelfX;
 
     @BeforeEach
     void setUp() {
-        sku = "PCF-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(Locale.ROOT);
         prefix = "P" + UUID.randomUUID().toString().substring(0, 6).toUpperCase(Locale.ROOT);
         receiving = prefix + "-RCV01";
         warehouse = Identifiers.newId();
         clerk = tx.execute(s -> ReferenceRows.user(entityManager));
-        UUID po = Identifiers.newId();
-        UUID revision = Identifiers.newId();
-        UUID poLine = Identifiers.newId();
         tx.executeWithoutResult(s -> {
-            UUID product = Identifiers.newId();
-            jdbc.update("insert into product.products(id,code,name,slug) values (?,?,?,?)", product, sku,
-                    "Putaway confirmation fixture", sku.toLowerCase(Locale.ROOT));
-            jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature) values (?,?,?,?,'')",
-                    Identifiers.newId(), product, sku, "Putaway confirmation fixture");
-            UUID item = jdbc.queryForObject("select id from inventory.inventory_items where sku = ?", UUID.class, sku);
-            // BR-03: tg_goods_receipt_lines_item refuses a receipt line for an item with no weight or dimensions.
-            jdbc.update("update inventory.inventory_items set weight_kg = 0.5, length_cm = 10, width_cm = 8,"
-                    + " height_cm = 6 where id = ?", item);
-            jdbc.update("insert into inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)"
-                    + " values (?, ?, 'CARTON', 10)", Identifiers.newId(), item);
             warehouse(warehouse, prefix);
             area(warehouse, "RCV01", receiving, "RECEIVING", 1);
-
-            UUID submitter = ReferenceRows.user(entityManager);
-            UUID approver = ReferenceRows.user(entityManager);   // four eyes (ck_purchase_orders_four_eyes)
-            jdbc.update("""
-                    INSERT INTO procurement.purchase_orders (id, po_number, status, supplier_id, warehouse_id, currency,
-                        order_date, submitted_at, submitted_by, approved_at, approved_by, confirmed_at, confirmed_by,
-                        active_revision_id, version, created_at)
-                    SELECT ?, ?, 'CONFIRMED', s.id, ?, 'VND', CURRENT_DATE, NOW(), ?, NOW(), ?, NOW(), ?, ?, 0, NOW()
-                      FROM procurement.suppliers s WHERE s.code = 'GOVIET'""",
-                    po, "PO-PC-" + po.toString().substring(24), warehouse, submitter, approver, approver, revision);
-            jdbc.update("""
-                    INSERT INTO procurement.purchase_order_revisions (id, po_id, revision_no, kind, snapshot_header,
-                        changed_by, version, created_at) VALUES (?, ?, 0, 'INITIAL', '{}'::jsonb, ?, 0, NOW())""",
-                    revision, po, submitter);
-            jdbc.update("""
-                    INSERT INTO procurement.purchase_order_lines (id, po_id, po_revision_id, line_no, inventory_item_id,
-                        ordered_qty, unit_price, version, created_at) VALUES (?, ?, ?, 1, ?, 500, 1000, 0, NOW())""",
-                    poLine, po, revision, item);
         });
-        receiptId = receipts.create(new GoodsReceipts.Create(po, "DN-PC", null), clerk).id();
-        receipts.replaceLines(receiptId, List.of(new GoodsReceipts.NewLine(poLine, 30, null, receiving, null,
-                "CARTON", List.of(new NewPackage(null, 10), new NewPackage(null, 10), new NewPackage(null, 10)))));
-        GoodsReceipts.LineView line = receipts.confirm(receiptId, clerk).lines().getFirst();
-        lpn1 = line.packages().get(0).lpn();
-        lpn2 = line.packages().get(1).lpn();
+        // 4 cartons' worth of 10 on the production order, two of them labelled: 20 units stay loose.
+        ProductionReceivables.Receivable goods = receivables.sent(warehouse, 4, 10);
+        sku = goods.sku();
+        ProductionReceivables.Dock dock = receivables.onTheDock(goods, receiving, 4, List.of(10, 10), clerk);
+        receiptId = dock.receiptId();
+        lpn1 = dock.lpns().get(0);
+        lpn2 = dock.lpns().get(1);
         Await.until("three putaway tasks", Duration.ofSeconds(20), () -> tasks().size() >= 3);
         cartonTask = taskOf(lpn1);
+        looseTask = tasks().stream().filter(t -> t.stockPackageId() == null).findFirst().orElseThrow().id();
         recorded.clear();
     }
 
@@ -193,7 +161,11 @@ class PutawayConfirmationIntegrationTest {
     }
 
     private TaskView confirmCarton(UUID task, String lpn, String bin) {
-        return putaway.confirm(task, bin, lpn, clerk);
+        return putaway.confirm(task, bin, lpn, null, clerk);
+    }
+
+    private TaskView confirmLoose(String bin, int quantity) {
+        return putaway.confirm(looseTask, bin, null, quantity, clerk);
     }
 
     private int ledgerLines(UUID task) {
@@ -234,12 +206,39 @@ class PutawayConfirmationIntegrationTest {
     }
 
     @Test
-    @DisplayName("every unit of the line is in a carton: one task per carton and no loose task (05 BR-08)")
-    void oneTaskPerCartonAndNoLooseTask() {
-        assertThat(tasks()).hasSize(3).allSatisfy(task -> {
-            assertThat(task.stockPackageId()).isNotNull();
-            assertThat(task.quantity()).isEqualTo(10);
-        });
+    @DisplayName("loose units are put away in two bins: IN_PROGRESS after 12, DONE after 8 more, one event")
+    void looseConfirmedInTwoBins() {
+        String first = roomyBin("A01");
+        String second = roomyBin("A02");
+
+        TaskView part = confirmLoose(first, 12);
+
+        assertThat(part.status()).isEqualTo("IN_PROGRESS");
+        assertThat(part.left()).isEqualTo(8);
+        assertThat(recorded.matching(PutawayCompleted.class, e -> e.putawayTaskId().equals(looseTask))).isEmpty();
+
+        TaskView done = confirmLoose(second, 8);
+
+        assertThat(done.status()).isEqualTo("DONE");
+        assertThat(done.left()).isZero();
+        assertThat(done.targetLocationCode()).isEqualTo(second);
+        assertThat(jdbc.queryForObject("select coalesce(sum(quantity), 0) from inventory.stock_movement"
+                + " where reference_type = 'PUTAWAY_TASK' and reference_id = ?", Integer.class, looseTask))
+                .isEqualTo(20);
+        assertThat(recorded.matching(PutawayCompleted.class, e -> e.putawayTaskId().equals(looseTask)))
+                .hasSize(1);
+    }
+
+    @Test
+    @DisplayName("more loose units than are left, or none: PUTAWAY_QUANTITY_EXCEEDED")
+    void looseMoreThanLeftRefused() {
+        String bin = roomyBin("A01");
+        confirmLoose(bin, 12);
+
+        assertThat(refusal(() -> confirmLoose(bin, 9)).errorCode()).isEqualTo(ErrorCode.PUTAWAY_QUANTITY_EXCEEDED);
+        assertThat(refusal(() -> putaway.confirm(looseTask, bin, null, null, clerk)).errorCode())
+                .isEqualTo(ErrorCode.PUTAWAY_QUANTITY_EXCEEDED);
+        assertThat(ledgerLines(looseTask)).isEqualTo(1);
     }
 
     @Test
@@ -253,12 +252,16 @@ class PutawayConfirmationIntegrationTest {
     }
 
     @Test
-    @DisplayName("another carton's LPN, or none: PUTAWAY_LPN_MISMATCH")
+    @DisplayName("another carton's LPN, or none: PUTAWAY_LPN_MISMATCH; a quantity on a carton task or an LPN on a loose one: VALIDATION_FAILED")
     void wrongScanRefused() {
         String bin = roomyBin("A01");
 
         assertThat(refusal(() -> confirmCarton(cartonTask, lpn2, bin)).errorCode()).isEqualTo(ErrorCode.PUTAWAY_LPN_MISMATCH);
         assertThat(refusal(() -> confirmCarton(cartonTask, null, bin)).errorCode()).isEqualTo(ErrorCode.PUTAWAY_LPN_MISMATCH);
+        assertThat(refusal(() -> putaway.confirm(cartonTask, bin, lpn1, 10, clerk)).errorCode())
+                .isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThat(refusal(() -> putaway.confirm(looseTask, bin, lpn1, 5, clerk)).errorCode())
+                .isEqualTo(ErrorCode.VALIDATION_FAILED);
         assertThat(ledgerLines(cartonTask)).isZero();
     }
 
@@ -338,6 +341,8 @@ class PutawayConfirmationIntegrationTest {
     @Test
     @DisplayName("a bin the weight does not fit in: LOCATION_CAPACITY_EXCEEDED")
     void weightRefused() {
+        tx.executeWithoutResult(t -> jdbc.update("update inventory.inventory_items set weight_kg = 0.5 where sku = ?",
+                sku));
         String bin = bin(warehouse, "A01", "NORMAL", 500, 4, "ACTIVE");   // 10 units of 0.5 kg weigh 5
 
         assertThat(refusal(() -> confirmCarton(cartonTask, lpn1, bin)).errorCode())
@@ -351,9 +356,9 @@ class PutawayConfirmationIntegrationTest {
         int before = inventory.availableToPromise(new Sku(sku));
 
         confirmCarton(cartonTask, lpn1, bin);
-        confirmCarton(taskOf(lpn2), lpn2, bin);
+        confirmLoose(bin, 12);
 
-        assertThat(inventory.availableToPromise(new Sku(sku))).isEqualTo(before + 10 + 10);
+        assertThat(inventory.availableToPromise(new Sku(sku))).isEqualTo(before + 10 + 12);
     }
 
     @Test
@@ -409,6 +414,17 @@ class PutawayConfirmationIntegrationTest {
         }
     }
 
+    /** Rows of the carton (or the loose goods) in the bin by status, for the in-place cases. */
+    private List<java.util.Map<String, Object>> stockRows(String where, Object arg) {
+        return jdbc.queryForList("select status, location_code, on_hand from inventory.stock_item where " + where
+                + " order by status", arg);
+    }
+
+    private int statusChangeLines(UUID task) {
+        return jdbc.queryForObject("select count(*) from inventory.stock_movement where movement_type = 'STATUS_CHANGE'"
+                + " and reference_type = 'PUTAWAY_TASK' and reference_id = ?", Integer.class, task);
+    }
+
     @Test
     @DisplayName("a carton already moved by hand into the chosen bin is put away in place: AVAILABLE, unopened, DONE,"
             + " one ledger line from the bin to the bin; a bin with room for just this carton is not full of it twice")
@@ -448,5 +464,64 @@ class PutawayConfirmationIntegrationTest {
         assertThat(jdbc.queryForObject("select unopened from inventory.stock_package where lpn = ?", Boolean.class,
                 lpn1)).isTrue();
         assertThat(recorded.matching(PutawayCompleted.class, e -> e.putawayTaskId().equals(cartonTask))).hasSize(1);
+    }
+
+    @Test
+    @DisplayName("loose units all moved by hand into the chosen bin as INBOUND are put away in place: AVAILABLE, no"
+            + " second row, no unique-key violation")
+    void looseAlreadyInTheChosenBin() {
+        String bin = roomyBin("A01");
+        moveLooseByHand(bin, 20);
+
+        TaskView done = confirmLoose(bin, 20);
+
+        assertThat(done.status()).isEqualTo("DONE");
+        assertThat(stockRows("location_code = ? and stock_package_id is null and sku = '" + sku + "'", bin))
+                .singleElement().satisfies(row -> {
+                    assertThat(row.get("status")).isEqualTo("AVAILABLE");
+                    assertThat(row.get("on_hand")).isEqualTo(20);
+                });
+        assertThat(statusChangeLines(looseTask)).isEqualTo(1);
+        assertThat(ledgerLines(looseTask)).isZero();
+    }
+
+    @Test
+    @DisplayName("part of the loose units already in the chosen bin: that part is put away in place and the rest merges"
+            + " into it")
+    void looseSplitBetweenTheBinAndReceiving() {
+        String bin = roomyBin("A01");
+        moveLooseByHand(bin, 5);
+
+        TaskView done = confirmLoose(bin, 20);
+
+        assertThat(done.status()).isEqualTo("DONE");
+        assertThat(stockRows("location_code = ? and stock_package_id is null and sku = '" + sku + "'", bin))
+                .singleElement().satisfies(row -> {
+                    assertThat(row.get("status")).isEqualTo("AVAILABLE");
+                    assertThat(row.get("on_hand")).isEqualTo(20);
+                });
+        assertThat(jdbc.queryForObject("select coalesce(sum(quantity), 0) from inventory.stock_movement"
+                + " where reference_type = 'PUTAWAY_TASK' and reference_id = ?", Integer.class, looseTask))
+                .isEqualTo(20);
+    }
+
+    @Test
+    @DisplayName("fewer units than the INBOUND row already in the chosen bin cannot be put away there: a business"
+            + " error, nothing changes")
+    void loosePartOfTheRowInTheBinRefused() {
+        String bin = roomyBin("A01");
+        moveLooseByHand(bin, 20);
+
+        BusinessException refused = refusal(() -> confirmLoose(bin, 12));
+
+        assertThat(refused.errorCode()).isEqualTo(ErrorCode.STOCK_STATUS_MISMATCH);
+        assertThat(stockRows("location_code = ? and stock_package_id is null and sku = '" + sku + "'", bin))
+                .singleElement().satisfies(row -> assertThat(row.get("status")).isEqualTo("INBOUND"));
+        assertThat(statusChangeLines(looseTask)).isZero();
+    }
+
+    private void moveLooseByHand(String bin, int quantity) {
+        tx.executeWithoutResult(s -> inventory.move(new MoveStockCommand(UUID.randomUUID(), new Sku(sku), null,
+                receiving, bin, quantity, MoveReference.MOVE_TASK, UUID.randomUUID(), clerk)));
     }
 }

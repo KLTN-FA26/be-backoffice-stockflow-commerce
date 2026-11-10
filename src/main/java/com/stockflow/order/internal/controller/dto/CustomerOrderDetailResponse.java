@@ -25,8 +25,9 @@ public record CustomerOrderDetailResponse(
         @Schema(example = "ON_HOLD")
         String status,
 
-        @Schema(example = "UNDER_REVIEW", description = "What the customer reads: AWAITING_PAYMENT, UNDER_REVIEW, "
-                + "CONFIRMED, IN_PRODUCTION, PREPARING, SHIPPING, DELIVERED, CANCELLED or RETURNED")
+        @Schema(example = "UNDER_REVIEW", description = "What the customer reads: AWAITING_CONTRACT, AWAITING_PAYMENT, "
+                + "UNDER_REVIEW, CONFIRMED, AWAITING_STOCK, IN_PRODUCTION (legacy), PREPARING, SHIPPING, DELIVERED, "
+                + "CANCELLED or RETURNED")
         String statusGroup,
 
         @Schema(example = "AWAITING_CREDIT_APPROVAL", description = "Set only while the order is ON_HOLD: "

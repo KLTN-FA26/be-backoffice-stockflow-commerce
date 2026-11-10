@@ -202,6 +202,8 @@ class CustomerOrdersService implements CustomerOrders {
             case PENDING_CONTRACT -> StatusGroup.AWAITING_CONTRACT;
             case ON_HOLD -> StatusGroup.UNDER_REVIEW;
             case CONFIRMED -> StatusGroup.CONFIRMED;
+            // 17 §5.2: "Đang chờ hàng".
+            case AWAITING_STOCK -> StatusGroup.AWAITING_STOCK;
             case IN_PRODUCTION -> StatusGroup.IN_PRODUCTION;
             case READY_TO_FULFILL, PICKING, PARTIALLY_FULFILLED, PACKED -> StatusGroup.PREPARING;
             case SHIPPED, DELIVERY_FAILED -> StatusGroup.SHIPPING;
@@ -253,8 +255,8 @@ class CustomerOrdersService implements CustomerOrders {
             case CLOSED -> statusGroup(status, lifecycle) == StatusGroup.RETURNED ? DeliveryState.RETURNED
                     : DeliveryState.DELIVERED;
             case RETURNED, REFUNDED, PARTIALLY_REFUNDED -> DeliveryState.RETURNED;
-            case DRAFT, PENDING_CONTRACT, PENDING_PAYMENT, CONFIRMED, IN_PRODUCTION, READY_TO_FULFILL, PICKING,
-                 CANCELLED -> DeliveryState.NOT_SHIPPED;
+            case DRAFT, PENDING_CONTRACT, PENDING_PAYMENT, CONFIRMED, AWAITING_STOCK, IN_PRODUCTION, READY_TO_FULFILL,
+                 PICKING, CANCELLED -> DeliveryState.NOT_SHIPPED;
         };
     }
 

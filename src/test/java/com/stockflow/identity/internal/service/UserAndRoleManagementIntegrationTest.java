@@ -528,7 +528,7 @@ class UserAndRoleManagementIntegrationTest {
         identity.createRole(new CreateRoleCommand(custom, "Custom", null, null, null));
 
         refused(ErrorCode.PRIVILEGE_ESCALATION,
-                () -> as(caller, () -> identity.grantPermission(custom, "procurement-purchase-orders:APPROVE")));
+                () -> as(caller, () -> identity.grantPermission(custom, "procurement-goods-receipts:UPDATE")));
         RoleMatrixView ok = as(caller, () -> identity.grantPermission(custom, "product-products:READ"));
         assertThat(granted(ok)).contains("product-products:READ");
         identity.deleteRole(custom);

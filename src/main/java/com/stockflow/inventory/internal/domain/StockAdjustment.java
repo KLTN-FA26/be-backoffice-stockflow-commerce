@@ -129,9 +129,19 @@ public final class StockAdjustment extends AggregateRoot {
 
     public UUID cycleCountLineId() { return cycleCountLineId; }
 
+    /**
+     * A new adjustment, pending approval.
+     *
+     * @throws BusinessException {@code VALIDATION_FAILED} for a {@link AdjustmentReason#legacy() legacy} reason: a
+     *         print subcontractor's loss belongs to subcontracting, which went with purchasing (4A-8)
+     */
     public static StockAdjustment request(String number, LocationId location, Sku sku, String lotNumber,
                                           int quantityDelta, AdjustmentReason reason, String note,
                                           UUID requestedBy, Instant now) {
+        if (reason != null && reason.legacy()) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, ("%s is a reason of past adjustments only: "
+                    + "subcontracting is gone").formatted(reason));
+        }
         return new StockAdjustment(Identifiers.newId(), number, location, sku, lotNumber, quantityDelta,
                 reason, note, requestedBy, now, AdjustmentStatus.PENDING_APPROVAL, null, null, null, null, null, 0L);
     }

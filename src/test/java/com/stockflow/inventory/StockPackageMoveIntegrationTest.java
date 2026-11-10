@@ -13,22 +13,20 @@ import com.stockflow.inventory.api.ReceiveStockCommand;
 import com.stockflow.inventory.api.ReclassifyStockPackagesCommand;
 import com.stockflow.inventory.api.StockDisposition;
 import com.stockflow.inventory.api.StockPackageView;
-import com.stockflow.procurement.internal.service.GoodsReceipts;
-import com.stockflow.support.IntegrationTest;
-import com.stockflow.support.PostgresContainer;
+import com.stockflow.support.DemoData;
+import com.stockflow.support.ProductionReceiptTest;
+import com.stockflow.support.ProductionReceivables;
 import com.stockflow.support.ReferenceRows;
 import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.Instant;
 import java.util.List;
-import java.util.Locale;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -37,11 +35,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /**
  * SCRUM-473: a carton received into stock moves and is reclassified whole, keeping its LPN, its stock row and its
  * unopened state. Commits like production: the carton's rows are checked against it at commit (V20261020000200).
- * Each test counts a line of 2000 as two cartons of the standard 1000 and receives it, then works on the first
- * carton.
+ * Each test counts a line of 2000 as one carton of 1000 and one of 980 and receives it (20 loose), then works on
+ * the first carton.
  */
-@IntegrationTest
-@Import(PostgresContainer.class)
+@ProductionReceiptTest
 class StockPackageMoveIntegrationTest {
 
     private static final String RECEIVING = "HCM-RCV01";
@@ -50,7 +47,7 @@ class StockPackageMoveIntegrationTest {
     private static final Instant RECEIVED = Instant.parse("2026-01-02T00:00:00Z");
 
     @Autowired InventoryService inventory;
-    @Autowired GoodsReceipts receipts;
+    @Autowired ProductionReceivables receivables;
     @Autowired JdbcTemplate jdbc;
     @Autowired TransactionTemplate tx;
     @Autowired EntityManager entityManager;
@@ -62,45 +59,12 @@ class StockPackageMoveIntegrationTest {
 
     @BeforeEach
     void setUp() {
-        sku = "SPM-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(Locale.ROOT);
         clerk = tx.execute(s -> ReferenceRows.user(entityManager));
-        UUID po = Identifiers.newId();
-        UUID revision = Identifiers.newId();
-        UUID poLine = Identifiers.newId();
-        tx.executeWithoutResult(s -> {
-            UUID product = Identifiers.newId();
-            jdbc.update("insert into product.products(id,code,name,slug) values (?,?,?,?)", product, sku,
-                    "Receiving carton fixture", sku.toLowerCase(Locale.ROOT));
-            jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature) values (?,?,?,?,'')",
-                    Identifiers.newId(), product, sku, "Receiving carton fixture");
-            UUID item = jdbc.queryForObject("select id from inventory.inventory_items where sku = ?", UUID.class, sku);
-            // BR-03: tg_goods_receipt_lines_item refuses a receipt line for an item with no weight or dimensions.
-            jdbc.update("update inventory.inventory_items set weight_kg = 0.5, length_cm = 10, width_cm = 8, height_cm = 6"
-                    + " where id = ?", item);
-            carton = Identifiers.newId();
-            jdbc.update("insert into inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)"
-                    + " values (?, ?, 'CARTON', 1000)", carton, item);
-
-            UUID submitter = ReferenceRows.user(entityManager);
-            UUID approver = ReferenceRows.user(entityManager);   // four eyes (ck_purchase_orders_four_eyes)
-            jdbc.update("""
-                    INSERT INTO procurement.purchase_orders (id, po_number, status, supplier_id, warehouse_id, currency,
-                        order_date, submitted_at, submitted_by, approved_at, approved_by, confirmed_at, confirmed_by,
-                        active_revision_id, version, created_at)
-                    SELECT ?, ?, 'CONFIRMED', s.id, w.id, 'VND', CURRENT_DATE, NOW(), ?, NOW(), ?, NOW(), ?, ?, 0, NOW()
-                      FROM procurement.suppliers s, warehouse.warehouse w WHERE s.code = 'GOVIET' AND w.prefix = 'HCM'""",
-                    po, "PO-SPM-" + po.toString().substring(24), submitter, approver, approver, revision);
-            jdbc.update("""
-                    INSERT INTO procurement.purchase_order_revisions (id, po_id, revision_no, kind, snapshot_header,
-                        changed_by, version, created_at) VALUES (?, ?, 0, 'INITIAL', '{}'::jsonb, ?, 0, NOW())""",
-                    revision, po, submitter);
-            jdbc.update("""
-                    INSERT INTO procurement.purchase_order_lines (id, po_id, po_revision_id, line_no, inventory_item_id,
-                        ordered_qty, unit_price, version, created_at) VALUES (?, ?, ?, 1, ?, 2000, 1000, 0, NOW())""",
-                    poLine, po, revision, item);
-        });
-        GoodsReceipts.ReceiptView draft = receipts.create(new GoodsReceipts.Create(po, "DN-SPM", null), clerk);
-        line = receipts.replaceLines(draft.id(), List.of(new GoodsReceipts.NewLine(poLine, 2000, null, RECEIVING, null))).lines().getFirst().id();
+        // Two cartons of 1000 ordered; the clerk counts them below, so the line starts with none labelled.
+        ProductionReceivables.Receivable goods = receivables.sent(DemoData.WAREHOUSE_HCM, 2, 1000);
+        sku = goods.sku();
+        carton = goods.cartonUnitId();
+        line = receivables.uncountedLine(goods, receivables.draftReceipt(goods, clerk), RECEIVING, 2);
     }
 
     private String lpn;
@@ -113,8 +77,8 @@ class StockPackageMoveIntegrationTest {
 
     /** Counts the two cartons and receives the line: the first carton is IN_STOCK, unopened, with one INBOUND row. */
     private void receiveCartons() {
-        lpn = count(PackageCount.fresh(), PackageCount.fresh()).getFirst().lpn();
-        inventory.receive(new ReceiveStockCommand(line, new Sku(sku), null, RECEIVING, 2000, clerk, RECEIVED));
+        lpn = count(new PackageCount(null, 1000), new PackageCount(null, 980)).getFirst().lpn();
+        inventory.receive(new ReceiveStockCommand(line, new Sku(sku), null, null, RECEIVING, 2000, clerk, RECEIVED));
         cartonId = jdbc.queryForObject("select id from inventory.stock_package where lpn = ?", UUID.class, lpn);
     }
 
@@ -162,7 +126,7 @@ class StockPackageMoveIntegrationTest {
     }
 
     @Test
-    @DisplayName("another warehouse is refused: MOVE_ACROSS_WAREHOUSES (stock never changes warehouse)")
+    @DisplayName("another warehouse is refused as the loose move is: MOVE_ACROSS_WAREHOUSES")
     void moveRefusesAnotherWarehouse() {
         receiveCartons();
 
@@ -183,7 +147,7 @@ class StockPackageMoveIntegrationTest {
     @Test
     @DisplayName("a closed (VOID) carton does not move: INVALID_STOCK_PACKAGE_TRANSITION")
     void moveRefusesAClosedCarton() {
-        lpn = count(PackageCount.fresh()).getFirst().lpn();
+        lpn = count(new PackageCount(null, 1000)).getFirst().lpn();
         count();   // the empty list voids it
 
         assertThatThrownBy(() -> inventory.moveStockPackages(move(BIN)))
@@ -233,10 +197,26 @@ class StockPackageMoveIntegrationTest {
 
         assertThat(moved).extracting(StockPackageView::lpn).containsExactlyElementsOf(both);
         assertThat(moved).extracting(StockPackageView::locationCode).containsOnly(BIN);
-        assertThat(moved).extracting(StockPackageView::quantity).containsExactly(1000, 1000);
+        assertThat(moved).extracting(StockPackageView::quantity).containsExactly(1000, 980);
         assertThat(jdbc.queryForObject("""
                 select count(*) from inventory.stock_movement
                  where movement_type = 'MOVE' and sku = ? and from_stock_package_id = to_stock_package_id""",
                 Integer.class, sku)).isEqualTo(2);
+    }
+
+    @Test
+    @DisplayName("a loose move under the reference a carton moved with is not taken for a replay: the loose units move")
+    void looseMoveAfterCartonUnderOneReference() {
+        receiveCartons();
+        UUID reference = Identifiers.newId();
+        inventory.moveStockPackages(new MoveStockPackagesCommand(lpn, BIN, MoveReference.MOVE_TASK, reference, clerk));
+
+        inventory.move(new com.stockflow.inventory.api.MoveStockCommand(Identifiers.newId(), new Sku(sku), null,
+                RECEIVING, BIN, 20, MoveReference.MOVE_TASK, reference, clerk, RECEIVED));
+
+        assertThat(jdbc.queryForObject("""
+                select coalesce(sum(on_hand), 0) from inventory.stock_item
+                 where sku = ? and location_code = ? and stock_package_id is null""",
+                Integer.class, sku, BIN)).isEqualTo(20);
     }
 }

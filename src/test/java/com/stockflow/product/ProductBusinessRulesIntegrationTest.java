@@ -5,7 +5,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.stockflow.product.api.ProductService;
 import com.stockflow.product.internal.service.ProductTaxonomyService;
 import com.stockflow.product.internal.service.ProductTaxonomyService.CategoryDetails;
-import com.stockflow.support.ApprovalLimitFixtures;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
 import com.stockflow.support.ProductFixtures;
@@ -208,7 +207,7 @@ class ProductBusinessRulesIntegrationTest {
     @Test
     @DisplayName("another brand, or a discontinued product, is not a duplicate")
     void otherBrandOrDiscontinuedIsNotADuplicate() throws Exception {
-        UUID approverUser = tx.execute(s -> ApprovalLimitFixtures.approver(entityManager));
+        UUID approverUser = tx.execute(s -> ReferenceRows.user(entityManager));
         var old = ProductFixtures.approved(products, tax, "OLD" + suffix, editorUser, approverUser);
         products.discontinue(old.productId(), "replaced", old.version());
         ProductFixtures.Taxonomy other = ProductFixtures.taxonomy(taxonomy, suffix + "O");

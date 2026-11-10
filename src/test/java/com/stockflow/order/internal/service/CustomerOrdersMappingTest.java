@@ -57,6 +57,9 @@ class CustomerOrdersMappingTest {
         assertThat(CustomerOrdersService.statusGroup(OrderStatus.PENDING_PAYMENT)).isEqualTo(StatusGroup.AWAITING_PAYMENT);
         assertThat(CustomerOrdersService.statusGroup(OrderStatus.ON_HOLD)).isEqualTo(StatusGroup.UNDER_REVIEW);
         assertThat(CustomerOrdersService.statusGroup(OrderStatus.CONFIRMED)).isEqualTo(StatusGroup.CONFIRMED);
+        assertThat(CustomerOrdersService.statusGroup(OrderStatus.AWAITING_STOCK)).as("17 §5.2: Đang chờ hàng")
+                .isEqualTo(StatusGroup.AWAITING_STOCK);
+        assertThat(CustomerOrdersService.deliveryState(OrderStatus.AWAITING_STOCK)).isEqualTo(DeliveryState.NOT_SHIPPED);
         assertThat(CustomerOrdersService.statusGroup(OrderStatus.IN_PRODUCTION)).isEqualTo(StatusGroup.IN_PRODUCTION);
         assertThat(CustomerOrdersService.statusGroup(OrderStatus.READY_TO_FULFILL)).isEqualTo(StatusGroup.PREPARING);
         assertThat(CustomerOrdersService.statusGroup(OrderStatus.PICKING)).isEqualTo(StatusGroup.PREPARING);
