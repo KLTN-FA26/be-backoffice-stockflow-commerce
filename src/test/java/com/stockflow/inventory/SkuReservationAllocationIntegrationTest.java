@@ -246,9 +246,10 @@ class SkuReservationAllocationIntegrationTest {
                         concat(times(5, "HCM-A01-1-B"), times(5, "HCM-A01-1-A"), times(2, "HCM-A02-2-A")));
         assertThat(allocate(order, "HCM").allocations()).as("allocating again changes nothing").isEmpty();
         assertThat(reservedEverywhere()).isEqualTo(12);
-        // SCRUM-476: Inventory Level shows the 12 allocated units apart from the other holds, ATP unchanged.
+        // SCRUM-476: Inventory Level shows the 12 allocated units apart from the other holds; ATP is what is left to
+        // allocate on pickable bins, 17 - 12 (review C4 P-1: HCM-RCV01's 5 are on hand, never promised).
         assertThat(inventory.levelsOf(new Sku(sku)))
-                .containsExactly(new com.stockflow.inventory.api.StockLevel(sku, "HCM", 22, 22, 0, 12, 10));
+                .containsExactly(new com.stockflow.inventory.api.StockLevel(sku, "HCM", 22, 22, 0, 12, 5));
     }
 
     @Test

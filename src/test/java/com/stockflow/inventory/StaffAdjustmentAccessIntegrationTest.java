@@ -85,20 +85,17 @@ class StaffAdjustmentAccessIntegrationTest {
     }
 
     @Test
-    @DisplayName("an adjustment of a loose layer without a lot is STOCK_ADJUSTMENT_LOT_REQUIRED on lotNumber, not a 404 "
-            + "(5-5 review)")
+    @DisplayName("an adjustment named by bin and lot, with or without a lot, is STOCK_NOT_IN_CARTON: stock is adjusted by "
+            + "carton only (review C4 P-3; was STOCK_ADJUSTMENT_LOT_REQUIRED for the loose layer, 5-5 review)")
     void adjustmentWithoutALotIsRefused() {
-        // Since 4C-3 the HTTP request names a carton by LPN and carries no lot; the loose-layer path is the inventory
-        // API's (InventoryService.requestAdjustment), where the rule still stands.
-        for (String lot : new String[] {null, "  "}) {
+        // Since 4C-3 the HTTP request names a carton by LPN and carries no lot; since P-3 the inventory API's loose
+        // path (InventoryService.requestAdjustment without an LPN) is refused before its lot is looked at.
+        for (String lot : new String[] {null, "  ", "L-ANY"}) {
             BusinessException refused = org.assertj.core.api.Assertions.catchThrowableOfType(BusinessException.class,
                     () -> inventory.requestAdjustment(new RequestAdjustmentCommand("HCM-A01-1-B", new Sku("SOFA-3S-GREY"),
                             lot, -1, StockAdjustmentReason.DAMAGED, null, clerk)));
             org.assertj.core.api.Assertions.assertThat(refused).as("lot %s", lot).isNotNull();
-            org.assertj.core.api.Assertions.assertThat(refused.errorCode())
-                    .isEqualTo(ErrorCode.STOCK_ADJUSTMENT_LOT_REQUIRED);
-            org.assertj.core.api.Assertions.assertThat(refused.fieldErrors())
-                    .extracting(com.stockflow.common.api.FieldError::field).containsExactly("lotNumber");
+            org.assertj.core.api.Assertions.assertThat(refused.errorCode()).isEqualTo(ErrorCode.STOCK_NOT_IN_CARTON);
         }
     }
 }
