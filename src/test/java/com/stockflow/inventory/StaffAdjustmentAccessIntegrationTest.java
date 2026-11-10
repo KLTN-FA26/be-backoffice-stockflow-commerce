@@ -29,6 +29,7 @@ class StaffAdjustmentAccessIntegrationTest {
     @Autowired MockMvc mockMvc;
     @MockitoBean JwtDecoder decoder;
     @org.springframework.beans.factory.annotation.Autowired org.springframework.jdbc.core.JdbcTemplate jdbc;
+    @org.springframework.beans.factory.annotation.Autowired org.springframework.transaction.support.TransactionTemplate tx;
 
     private SecuredMvc mvc;
     private final UUID clerk = UUID.randomUUID();
@@ -66,9 +67,13 @@ class StaffAdjustmentAccessIntegrationTest {
     @Test
     @DisplayName("4A-8: an adjustment for SUBCONTRACT_LOSS is refused, 400 VALIDATION_FAILED: subcontracting is gone")
     void subcontractLossIsRefused() throws Exception {
-        // Every row has a lot, and an adjustment names the layer it changes.
-        var stock = jdbc.queryForMap("SELECT sku, location_code, lot_number FROM inventory.stock_item WHERE on_hand > 0 "
-                + "AND status = 'AVAILABLE' ORDER BY sku, location_code LIMIT 1");
+        // An adjustment names a loose layer (a carton is only ever changed by a count), and every layer has a lot.
+        tx.executeWithoutResult(s -> jdbc.update("INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, "
+                + "received_at, on_hand, reserved, status, version, created_at) VALUES (gen_random_uuid(), "
+                + "'SOFA-3S-GREY', 'HCM-A01-1-B', 'L-ADJ-' || substr(gen_random_uuid()::text, 1, 8), now() - interval "
+                + "'1 hour', 3, 0, 'AVAILABLE', 0, now())"));
+        var stock = jdbc.queryForMap("SELECT sku, location_code, lot_number FROM inventory.stock_item WHERE lot_number "
+                + "LIKE 'L-ADJ-%' ORDER BY created_at DESC LIMIT 1");
         String body = "{\"locationCode\":\"%s\",\"sku\":\"%s\",\"lotNumber\":\"%s\",\"quantityDelta\":-1,"
                 .formatted(stock.get("location_code"), stock.get("sku"), stock.get("lot_number"))
                 + "\"reason\":\"SUBCONTRACT_LOSS\"}";
