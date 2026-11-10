@@ -636,6 +636,18 @@ public enum ErrorCode {
     /** PACK-PARTIAL (lead's decision 2026-10-21): the order does not allow a partial shipment; Sales decides. */
     PACK_PARTIAL_NOT_ALLOWED("Partial shipments are not allowed", 409),
     PACK_NOTHING_TO_SHIP("No sealed package is waiting to ship", 409),
+    /**
+     * Kltn-docs 08 §4.2 step 3, BR-05 (team plan 4C-6): the scanned LPN is not a carton picked for this task - another
+     * order's, one never picked, or an unreadable code. Refused; the warehouse manager checks the picking and the stock.
+     */
+    CARTON_NOT_IN_TASK("This carton was not picked for this order's task", 409),
+    /** Kltn-docs 08 BR-08 (4C-6): a shipping label prints only for a carton whose LPN was scanned at the check. */
+    CARTON_NOT_CHECKED("Only a checked carton gets a shipping label", 409),
+    /**
+     * Kltn-docs 08 BR-07 (4C-6): the SKU's carton spec declares no size or full weight, so no shipping label prints and
+     * the check cannot complete until the warehouse manager completes it on the item.
+     */
+    CARTON_SPEC_UNMEASURED("The SKU's carton spec has no size or weight: no shipping label can print", 422),
     /** SCRUM-287 LP2-6: a kit ("bộ") ships whole - a part of it is not sealed, or part 1 holds no unit yet. */
     KIT_INCOMPLETE("A kit has parts that are not sealed yet", 409),
     /** LP2-5: a kit has as many parts as its item ships boxes ({@code package_count}); one box is no kit. */

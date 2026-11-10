@@ -3,13 +3,11 @@ package com.stockflow.fulfillment.internal.service;
 import com.stockflow.common.api.FieldError;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
-import com.stockflow.fulfillment.internal.domain.PackageStatus;
 import com.stockflow.fulfillment.internal.domain.loadplanning.CargoPackage;
 import com.stockflow.fulfillment.internal.entity.PackageJpaEntity;
-import com.stockflow.fulfillment.internal.entity.PackageLineJpaEntity;
 import com.stockflow.fulfillment.internal.entity.ShipmentJpaEntity;
 import com.stockflow.fulfillment.internal.repository.PackageJpaRepository;
-import com.stockflow.fulfillment.internal.repository.PackageLineJpaRepository;
+import com.stockflow.fulfillment.internal.repository.ParcelContents;
 import com.stockflow.fulfillment.internal.repository.ShipmentJpaRepository;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderSummary;
@@ -61,16 +59,16 @@ class LoadPlanParcels {
         }
 
         boolean plannable() {
-            return carton != null && row.getStatus() == PackageStatus.SEALED;
+            return carton != null && row.getStatus().ships();
         }
     }
 
     private final PackageJpaRepository packages;
-    private final PackageLineJpaRepository lines;
+    private final ParcelContents lines;
     private final ShipmentJpaRepository shipments;
     private final OrderService orders;
 
-    LoadPlanParcels(PackageJpaRepository packages, PackageLineJpaRepository lines, ShipmentJpaRepository shipments,
+    LoadPlanParcels(PackageJpaRepository packages, ParcelContents lines, ShipmentJpaRepository shipments,
                     OrderService orders) {
         this.packages = packages;
         this.lines = lines;
@@ -96,9 +94,9 @@ class LoadPlanParcels {
                         .map(PackageJpaEntity::getShipmentId).filter(java.util.Objects::nonNull).distinct().toList())
                 .stream().collect(Collectors.toMap(ShipmentJpaEntity::getId, Function.identity()));
         Map<UUID, OrderSummary> orderById = ordersOf(shipmentById.values());
-        Map<UUID, List<PackageLineJpaEntity>> linesByPackage = lines.findByPackageIdIn(rows.stream()
+        Map<UUID, List<ParcelContents.Line>> linesByPackage = lines.of(rows.stream()
                         .map(PackageJpaEntity::getId).toList()).stream()
-                .collect(Collectors.groupingBy(PackageLineJpaEntity::getPackageId));
+                .collect(Collectors.groupingBy(ParcelContents.Line::packageId));
         Map<UUID, Parcel> out = new LinkedHashMap<>();
         for (PackageJpaEntity row : rows) {
             ShipmentJpaEntity shipment = row.getShipmentId() == null ? null : shipmentById.get(row.getShipmentId());
@@ -147,7 +145,7 @@ class LoadPlanParcels {
         for (Parcel p : parcels) {
             if (!p.plannable()) {
                 problems.add(new FieldError(p.packageId().toString(), "package " + p.row().getLabelCode()
-                        + " is not sealed with its sizes and weight", "LOAD_PLAN_PACKAGE_UNMEASURED"));
+                        + " is not sealed or labelled with its sizes and weight", "LOAD_PLAN_PACKAGE_UNMEASURED"));
             }
         }
         if (!problems.isEmpty()) {
@@ -161,14 +159,14 @@ class LoadPlanParcels {
         return value != null && value.signum() > 0;
     }
 
-    private static String partName(PackageJpaEntity row, List<PackageLineJpaEntity> lines,
+    private static String partName(PackageJpaEntity row, List<ParcelContents.Line> lines,
                                    Map<UUID, String> skuByLine) {
         if (row.getKit() != null) {
             String sku = skuByLine.getOrDefault(row.getKit().orderLineId(), row.getLabelCode());
             return sku + " " + row.getKit().partNo() + "/" + row.getKit().partCount();
         }
         TreeSet<String> skus = new TreeSet<>();
-        lines.forEach(l -> skus.add(skuByLine.getOrDefault(l.getOrderLineId(), "?")));
+        lines.forEach(l -> skus.add(skuByLine.getOrDefault(l.orderLineId(), "?")));
         return skus.isEmpty() ? row.getLabelCode() : String.join(" + ", skus);
     }
 }

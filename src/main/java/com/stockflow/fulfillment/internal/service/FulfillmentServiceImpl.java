@@ -64,12 +64,12 @@ class FulfillmentServiceImpl implements FulfillmentService {
     private final InventoryService inventory;
     private final WarehouseService warehouses;
     private final PickListService pickLists;
-    private final PackingService packing;
+    private final CartonCheckService cartonChecks;
 
     FulfillmentServiceImpl(PickJpaRepository picks, PackJpaRepository packs, OrderService orders,
             IdentityService identities, InventoryService inventory,
-            WarehouseService warehouses, PickListService pickLists, PackingService packing, Clock clock) {
-        this.packing = packing;
+            WarehouseService warehouses, PickListService pickLists, CartonCheckService cartonChecks, Clock clock) {
+        this.cartonChecks = cartonChecks;
         this.picks = picks;
         this.packs = packs;
         this.orders = orders;
@@ -319,15 +319,22 @@ class FulfillmentServiceImpl implements FulfillmentService {
         return completePacking(taskId, PackingCompletion.whole(), actor);
     }
 
-    /** G4-5: see {@link PackingService#complete}; the answer is the task, with the shipment and the payment warning. */
+    /**
+     * The check station's completion (team plan 4C-6, kltn-docs 08 §4.4): see {@link CartonCheckService#complete}; the
+     * answer is the task, with the shipment and the warning of an installment due before delivery still unpaid.
+     */
     @Override
     public FulfillmentTask completePacking(UUID taskId, PackingCompletion completion, CurrentUser actor) {
         require(actor, FulfillmentPermissions.PACKING, Action.UPDATE);
-        PackingService.Completed outcome = packing.complete(taskId, completion == null ? PackingCompletion.whole()
-                : completion, actor);
+        CartonCheckService.Completed outcome = cartonChecks.complete(taskId, completion == null
+                ? PackingCompletion.whole() : completion, actor);
         FulfillmentTask task = toTask(requirePick(taskId));
-        return outcome.shipmentId() == null ? task
-                : withPaymentWarning(task, outcome.order()).withShipment(outcome.shipmentId());
+        if (outcome.shipmentId() == null) {
+            return task;
+        }
+        FulfillmentTask shipped = task.withShipment(outcome.shipmentId());
+        return outcome.paymentDue() == null ? shipped : shipped.withPaymentDue(new FulfillmentTask.PaymentDue(
+                outcome.paymentDue().amount(), outcome.paymentDue().currency()));
     }
 
     private FulfillmentTask toTask(PickJpaEntity pick) {
@@ -357,18 +364,6 @@ class FulfillmentServiceImpl implements FulfillmentService {
                 pick.getAssignedAt(), pick.getStartedAt(), pick.getPickedAt(), pack == null ? null : pack.getPackedAt(),
                 lines, null, null, pick.getDestination(), pick.getStagingLocationCode(), pick.getStagedAt(),
                 pick.getMovedToDispatchAt());
-    }
-
-    /**
-     * G3-Q4 / G2-3: the early warning at packing - the order still owes money its terms want before the goods leave,
-     * so the handover will be refused until the accountant records it.
-     */
-    private static FulfillmentTask withPaymentWarning(FulfillmentTask task, OrderSummary packed) {
-        var due = packed == null || packed.lifecycle() == null ? null : packed.lifecycle().amountDueBeforeHandover();
-        if (due == null || due.signum() <= 0) {
-            return task;
-        }
-        return task.withPaymentDue(new FulfillmentTask.PaymentDue(due, packed.total().currency().getCurrencyCode()));
     }
 
     private String nameOf(UUID userId) {

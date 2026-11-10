@@ -100,12 +100,16 @@ class PickListService implements PickLists {
     private final OrderReservations orderReservations;
     private final PickDamageReporting damages;
     private final TransactionOperations tx;
+    /** 4C-6: the check station's shipping cartons, to know a line whose carton was removed as damaged. */
+    private final com.stockflow.fulfillment.internal.repository.PackageJpaRepository packages;
 
 
     PickListService(PickJpaRepository picks, PickLineJpaRepository pickLines, OrderService orders,
                     InventoryService inventory, InventoryControlService itemControls, PickConsumption consumption,
                     WarehouseService warehouses, Clock clock, OrderReservations orderReservations,
-                    PickDamageReporting damages, TransactionOperations tx) {
+                    PickDamageReporting damages, TransactionOperations tx,
+                    com.stockflow.fulfillment.internal.repository.PackageJpaRepository packages) {
+        this.packages = packages;
         this.damages = damages;
         this.tx = tx;
         this.orderReservations = orderReservations;
@@ -255,21 +259,34 @@ class PickListService implements PickLists {
             }
             allowed.ifPresent(ids -> where.add(ids.isEmpty() ? cb.disjunction() : pick.get("warehouseId").in(ids)));
             task.select(pick.get("id")).where(where.toArray(Predicate[]::new));
-            return cb.and(root.get("status").in(PickLineStatus.PICKED, PickLineStatus.STAGED),
-                    cb.gt(root.get("pickedQty"), root.<Integer>get("packingDamagedQty")), cb.exists(task));
+            // 4C-6: a carton the check station removed as damaged waits too, cancelled task or not, for quarantine.
+            var live = query.subquery(UUID.class);
+            var livePick = live.from(PickJpaEntity.class);
+            List<Predicate> liveWhere = new ArrayList<>(List.of(cb.equal(livePick.get("id"), root.get("pickId"))));
+            if (warehouseId != null) {
+                liveWhere.add(cb.equal(livePick.get("warehouseId"), warehouseId));
+            }
+            allowed.ifPresent(ids -> liveWhere.add(ids.isEmpty() ? cb.disjunction()
+                    : livePick.get("warehouseId").in(ids)));
+            live.select(livePick.get("id")).where(liveWhere.toArray(Predicate[]::new));
+            return cb.and(cb.gt(root.get("pickedQty"), root.<Integer>get("packingDamagedQty")), cb.or(
+                    cb.and(root.get("status").in(PickLineStatus.PICKED, PickLineStatus.STAGED), cb.exists(task)),
+                    cb.and(cb.equal(root.get("status"), PickLineStatus.PICKED), cb.exists(removedDamaged(root, query,
+                            cb)), cb.exists(live))));
         };
         Page<PickLineJpaEntity> found = pickLines.findAll(waiting,
                 Pages.of(page, size, Sort.by(Sort.Direction.ASC, "pickedAt", "id")));
         Map<UUID, PickJpaEntity> tasks = picks.findAllById(found.getContent().stream()
                         .map(PickLineJpaEntity::getPickId).collect(Collectors.toSet())).stream()
                 .collect(Collectors.toMap(PickJpaEntity::getId, Function.identity()));
+        Set<UUID> damaged = removedDamaged(found.getContent().stream().map(PickLineJpaEntity::getId).toList());
         return Pages.toResponse(found, row -> {
             PickJpaEntity task = tasks.get(row.getPickId());
             // A staged carton stands in the staging area, not at the bin it was picked from (4C-5).
             return new PutBackRow(row.getPickId(), task.getOrderNumber(), task.getWarehouseId(), row.getId(),
                     row.getSku(), row.getLotNumber(), row.getLpn(), row.getGoodQty(),
                     row.getStatus() == PickLineStatus.STAGED ? row.getStagedLocationCode() : row.getLocationCode(),
-                    row.getPickedAt());
+                    row.getPickedAt(), damaged.contains(row.getId()));
         });
     }
 
@@ -288,10 +305,12 @@ class PickListService implements PickLists {
         PickList list = toList(pick, stored);
         PickList.PutBackTarget target = warehouses.findLocation(locationCode.trim())
                 .map(view -> new PickList.PutBackTarget(view.locationCode(), view.warehouseId(),
-                        view.kind() == StorageLocationView.Kind.BIN, view.usable()))
+                        view.kind() == StorageLocationView.Kind.BIN, view.usable(),
+                        view.areaType() == StorageLocationView.AreaType.QUARANTINE))
                 .orElse(null);
 
-        PickList.PutBack outcome = list.putBack(lineId, lpn, target, actor.userId(), clock.instant());
+        boolean damaged = removedDamaged(List.of(lineId)).contains(lineId);
+        PickList.PutBack outcome = list.putBack(lineId, lpn, target, damaged, actor.userId(), clock.instant());
         PickLine line = outcome.line();
         String barcode = barcodesOf(List.of(line.sku())).get(line.sku());
         if (outcome.repeated()) {
@@ -305,6 +324,8 @@ class PickListService implements PickLists {
                 line.putBackLocationCode(), actor.userId());
         if (outcome.fromStaging()) {
             consumption.unstage(command);
+        } else if (outcome.toQuarantine()) {
+            consumption.putBackToQuarantine(command);
         } else {
             consumption.putBack(command);
         }
@@ -312,6 +333,32 @@ class PickListService implements PickLists {
         log.info("Pick line {} of task {} put back: carton {} ({} x {}) onto {}", line.id(), taskId, line.lpn(),
                 line.putBackQty(), line.sku(), line.putBackLocationCode());
         return view(taskId, line, barcode);
+    }
+
+    /**
+     * The lines among {@code lineIds} whose carton the check station removed as damaged (4C-6): they go into quarantine
+     * through the put-back queue (08 §4.2 step 4).
+     */
+    private Set<UUID> removedDamaged(Collection<UUID> lineIds) {
+        return lineIds.isEmpty() ? Set.of() : packages.findByPickLineIdIn(lineIds).stream()
+                .filter(carton -> carton.getStatus() == com.stockflow.fulfillment.internal.domain.PackageStatus.REMOVED
+                        && carton.getRemovalReason() == com.stockflow.fulfillment.internal.domain.CartonCheck
+                        .RemovalReason.DAMAGED)
+                .map(com.stockflow.fulfillment.internal.entity.PackageJpaEntity::getPickLineId)
+                .collect(Collectors.toSet());
+    }
+
+    /** The criteria twin of {@link #removedDamaged(Collection)}: a removed, damaged carton of the line {@code root}. */
+    private static jakarta.persistence.criteria.Subquery<UUID> removedDamaged(
+            jakarta.persistence.criteria.Root<PickLineJpaEntity> root, jakarta.persistence.criteria.CriteriaQuery<?> query,
+            jakarta.persistence.criteria.CriteriaBuilder cb) {
+        var carton = query.subquery(UUID.class);
+        var row = carton.from(com.stockflow.fulfillment.internal.entity.PackageJpaEntity.class);
+        carton.select(row.get("id")).where(cb.equal(row.get("pickLineId"), root.get("id")),
+                cb.equal(row.get("status"), com.stockflow.fulfillment.internal.domain.PackageStatus.REMOVED),
+                cb.equal(row.get("removalReason"),
+                        com.stockflow.fulfillment.internal.domain.CartonCheck.RemovalReason.DAMAGED));
+        return carton;
     }
 
     @Override

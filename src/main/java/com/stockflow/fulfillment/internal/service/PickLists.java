@@ -183,6 +183,16 @@ public interface PickLists {
      * @param pickedQty what goes back: what the line picked, less what was found damaged at packing - the whole
      *                  carton, or the put-back is refused
      */
+    /**
+     * @param quarantine the check station removed the carton as damaged (4C-6): it goes into a quarantine area, not
+     *                   onto a bin
+     */
     record PutBackRow(UUID taskId, String orderNumber, UUID warehouseId, UUID lineId, String sku, String lotNumber,
-                      String lpn, int pickedQty, String fromLocationCode, Instant pickedAt) { }
+                      String lpn, int pickedQty, String fromLocationCode, Instant pickedAt, boolean quarantine) {
+        PutBackRow(UUID taskId, String orderNumber, UUID warehouseId, UUID lineId, String sku, String lotNumber,
+                   String lpn, int pickedQty, String fromLocationCode, Instant pickedAt) {
+            this(taskId, orderNumber, warehouseId, lineId, sku, lotNumber, lpn, pickedQty, fromLocationCode, pickedAt,
+                    false);
+        }
+    }
 }

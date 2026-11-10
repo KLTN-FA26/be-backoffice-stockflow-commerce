@@ -294,25 +294,25 @@ public final class PackingSession {
     public boolean start(UUID actor, boolean manager, Instant now) {
         switch (status) {
             case PENDING -> {
-                status = PackStatus.PACKING;
+                status = PackStatus.IN_PROGRESS;
                 startedAt = now;
                 startedBy = Objects.requireNonNull(actor, "actor");
                 return true;
             }
-            case PACKING -> {
+            case IN_PROGRESS -> {
                 requireOwner(actor, manager);
                 return false;
             }
-            case PACKED -> {
+            case COMPLETED -> {
                 return false;
             }
             default -> throw new BusinessException(ErrorCode.PACK_STATE_CONFLICT, "Packing is " + status);
         }
     }
 
-    /** Only while PACKING, and only the packer who took it or a warehouse manager. */
+    /** Only while IN_PROGRESS, and only the packer who took it or a warehouse manager. */
     public void requireWorkable(UUID actor, boolean manager) {
-        if (status != PackStatus.PACKING) {
+        if (status != PackStatus.IN_PROGRESS) {
             throw new BusinessException(ErrorCode.PACK_STATE_CONFLICT, status == PackStatus.PENDING
                     ? "Start packing first" : "Packing is " + status + "; parcels cannot change now");
         }
@@ -628,7 +628,7 @@ public final class PackingSession {
      */
     public Completion complete(boolean partialRequested, String reason, boolean partialAllowed, UUID actor,
                                Instant now) {
-        if (status != PackStatus.PACKING) {
+        if (status != PackStatus.IN_PROGRESS) {
             throw new BusinessException(ErrorCode.PACK_STATE_CONFLICT, "Packing is " + status);
         }
         requireWholeKits();
@@ -676,7 +676,7 @@ public final class PackingSession {
 
     /**
      * The completion's parcels are now in {@code shipmentId}. When nothing the order wants is left, the session is
-     * PACKED (08 §5); otherwise it stays PACKING for the rest.
+     * COMPLETED (08 §5); otherwise it stays IN_PROGRESS for the rest.
      */
     public void ship(Completion completion, UUID shipmentId, UUID actor, Instant now) {
         completion.parcels().forEach(parcel -> {
@@ -684,7 +684,7 @@ public final class PackingSession {
             changed.add(parcel.id);
         });
         if (!completion.partial()) {
-            status = PackStatus.PACKED;
+            status = PackStatus.COMPLETED;
             packedAt = now;
             packedBy = actor;
         }

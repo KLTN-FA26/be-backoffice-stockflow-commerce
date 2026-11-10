@@ -88,7 +88,7 @@ class PackingService implements Packing {
     /** The order statuses packing may change parcels in: released, picking, or the rest of a split order. */
     private static final Set<OrderStatus> PACKABLE = EnumSet.of(OrderStatus.READY_TO_FULFILL, OrderStatus.PICKING,
             OrderStatus.PARTIALLY_FULFILLED);
-    private static final EnumSet<PackStatus> QUEUED = EnumSet.of(PackStatus.PENDING, PackStatus.PACKING);
+    private static final EnumSet<PackStatus> QUEUED = EnumSet.of(PackStatus.PENDING, PackStatus.IN_PROGRESS);
     /** The most picked-but-unpacked tasks the queue reads at once; far above what one warehouse has waiting. */
     private static final int QUEUE_WORKING_SET = Pages.MAX_PAGE_SIZE * 10;
 
@@ -443,7 +443,7 @@ class PackingService implements Packing {
                 return new Completed(replay.get().getId(), ctx.order());
             }
         }
-        if (ctx.pack().getStatus() == PackStatus.PACKED) {
+        if (ctx.pack().getStatus() == PackStatus.COMPLETED) {
             // Completed before: answered as it is (a retried completion), with the last shipment it made.
             List<ShipmentJpaEntity> made = shipments.findByPackIdOrderByReadyAtAscIdAsc(ctx.pack().getId());
             return new Completed(made.isEmpty() ? null : made.get(made.size() - 1).getId(), ctx.order());
@@ -519,7 +519,9 @@ class PackingService implements Packing {
                 row.apply(shipment);
                 shipments.save(row);
                 timeline.record(shipment, ShipmentStatus.READY_TO_DISPATCH, null, pick.getOrderNumber(), null, null);
-                packages.findByShipmentIdOrderByPackageNoAsc(row.getId()).forEach(parcel -> {
+                // A shipping carton of the check station (4C-6) is the check's to remove, never voided here.
+                packages.findByShipmentIdOrderByPackageNoAsc(row.getId()).stream().filter(p -> !p.isCarton())
+                        .forEach(parcel -> {
                     parcel.apply(parcel.getShipmentId(), parcel.getPackageType(), PackageStatus.VOIDED, parcel.getWeightKg(),
                             parcel.getLengthCm(), parcel.getWidthCm(), parcel.getHeightCm(), parcel.getDimWeightKg(),
                             parcel.isRotatable(), parcel.isRotatableOverridden(), parcel.isFragile(),
@@ -529,7 +531,7 @@ class PackingService implements Packing {
             }
         }
         for (PackageJpaEntity parcel : packages.findByPackIdOrderByPackageNoAsc(pack.getId())) {
-            if (parcel.getStatus() != PackageStatus.VOIDED && parcel.getShipmentId() == null) {
+            if (!parcel.isCarton() && parcel.getStatus() != PackageStatus.VOIDED && parcel.getShipmentId() == null) {
                 parcel.apply(null, parcel.getPackageType(), PackageStatus.VOIDED, parcel.getWeightKg(),
                         parcel.getLengthCm(), parcel.getWidthCm(), parcel.getHeightCm(), parcel.getDimWeightKg(),
                         parcel.isRotatable(), parcel.isRotatableOverridden(), parcel.isFragile(),
@@ -616,7 +618,7 @@ class PackingService implements Packing {
         Optional<PackJpaEntity> pack = packs.findByPickId(pick.getId());
         if (pack.isPresent()) {
             PackingSession session = load(new Context(pick, pack.get(), order));
-            if (session.status() == PackStatus.PACKING) {
+            if (session.status() == PackStatus.IN_PROGRESS) {
                 session.requireWorkable(actor.userId(), isManager(actor));
             }
             String serial = line.getReservationId() == null ? null

@@ -63,19 +63,33 @@ public final class PickList {
     public record Hold(UUID reservationId, String sku, String locationCode, UUID warehouseId, String lotNumber,
                        int quantity, boolean live, String lpn, boolean wholeCarton) { }
 
-    /** Where a put-back wants to go, as the warehouse map describes it; null fields for an unknown code. */
-    public record PutBackTarget(String locationCode, UUID warehouseId, boolean bin, boolean usable) { }
+    /**
+     * Where a put-back wants to go, as the warehouse map describes it; null fields for an unknown code.
+     *
+     * @param quarantine a QUARANTINE area: where a carton the check station removed as damaged goes (4C-6)
+     */
+    public record PutBackTarget(String locationCode, UUID warehouseId, boolean bin, boolean usable,
+                                boolean quarantine) {
+        public PutBackTarget(String locationCode, UUID warehouseId, boolean bin, boolean usable) {
+            this(locationCode, warehouseId, bin, usable, false);
+        }
+    }
 
     /** A confirmation's outcome: the line, and whether it had been picked by an earlier identical scan. */
     public record Confirmation(PickLine line, boolean repeated) { }
 
     /**
-     * A put-back's outcome: the line, whether it had been put back already, and whether it came from the staging area -
-     * never deducted, so the carton is moved back rather than booked back (07 §4.5 step 14).
+     * A put-back's outcome: the line, whether it had been put back already, whether it came from the staging area -
+     * never deducted, so the carton is moved back rather than booked back (07 §4.5 step 14) - and whether it goes into
+     * quarantine, a carton the check station removed as damaged (08 §4.2 step 4, 4C-6).
      */
-    public record PutBack(PickLine line, boolean repeated, boolean fromStaging) {
+    public record PutBack(PickLine line, boolean repeated, boolean fromStaging, boolean toQuarantine) {
         public PutBack(PickLine line, boolean repeated) {
-            this(line, repeated, false);
+            this(line, repeated, false, false);
+        }
+
+        public PutBack(PickLine line, boolean repeated, boolean fromStaging) {
+            this(line, repeated, fromStaging, false);
         }
     }
 
@@ -551,14 +565,28 @@ public final class PickList {
      *         {@code PUT_BACK_LOCATION_INVALID}
      */
     public PutBack putBack(UUID lineId, String scannedLpn, PutBackTarget target, UUID actor, Instant now) {
+        return putBack(lineId, scannedLpn, target, false, actor, now);
+    }
+
+    /**
+     * As {@link #putBack(UUID, String, PutBackTarget, UUID, Instant)}; with {@code removedDamaged}, the line's carton
+     * was removed from the order at the check station as damaged (kltn-docs 08 §4.2 step 4, team plan 4C-6): it goes
+     * whole into a usable QUARANTINE area of the task's warehouse, whether or not the task was cancelled since, and is
+     * kept apart there from good stock.
+     *
+     * @throws BusinessException as the other; {@code PUT_BACK_LOCATION_INVALID} for a damaged carton's target that is
+     *         not a quarantine area of the warehouse
+     */
+    public PutBack putBack(UUID lineId, String scannedLpn, PutBackTarget target, boolean removedDamaged, UUID actor,
+                           Instant now) {
         PickLine line = requireLine(lineId);
         if (line.status() == PickLineStatus.PUT_BACK && lpnMatches(line, scannedLpn)) {
             return new PutBack(line, true);
         }
         boolean staged = line.status() == PickLineStatus.STAGED;
-        if (status != PickStatus.CANCELLED || !needsPutBack
-                || line.status() != PickLineStatus.PICKED && !staged
-                || line.goodQty() == 0 || line.lpn() == null) {
+        boolean queued = removedDamaged ? line.status() == PickLineStatus.PICKED
+                : status == PickStatus.CANCELLED && needsPutBack && (line.status() == PickLineStatus.PICKED || staged);
+        if (!queued || line.goodQty() == 0 || line.lpn() == null) {
             throw new BusinessException(ErrorCode.PUT_BACK_NOT_REQUIRED,
                     "Task %s, line %s: nothing to put back".formatted(status, line.status()));
         }
@@ -570,12 +598,18 @@ public final class PickList {
                     + "damaged at packing; the rest is not a whole carton and does not go back onto a bin")
                     .formatted(line.packingDamagedQty(), line.lpn()));
         }
-        if (target == null || !target.bin() || !target.usable() || !warehouseId.equals(target.warehouseId())) {
+        if (removedDamaged) {
+            if (target == null || !target.quarantine() || !target.usable()
+                    || !warehouseId.equals(target.warehouseId())) {
+                throw new BusinessException(ErrorCode.PUT_BACK_LOCATION_INVALID,
+                        "A damaged carton goes into an active quarantine area of this task's warehouse");
+            }
+        } else if (target == null || !target.bin() || !target.usable() || !warehouseId.equals(target.warehouseId())) {
             throw new BusinessException(ErrorCode.PUT_BACK_LOCATION_INVALID,
                     "Goods go back onto an active bin of this task's warehouse");
         }
         line.putBack(target.locationCode(), actor, now);
-        return new PutBack(line, false, staged);
+        return new PutBack(line, false, staged, removedDamaged);
     }
 
     // ------------------------------------------------------------------ queries

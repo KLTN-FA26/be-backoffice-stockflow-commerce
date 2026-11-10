@@ -351,6 +351,20 @@ units; a draft revision that names no unit keeps the line's own, so a client tha
 one. Receiving takes the ordered unit for cartons listed with none (`GoodsReceiptServiceImpl.cartonUnit`) - a default,
 never a rule.
 
+### Carton check and labelling (team plan 4C-6)
+
+The LPN carton is the shipping carton (kltn-docs 08 BR-02): nothing is packed again. `CartonCheckService`
+(`CartonCheckController`) works a task's `fulfillment.pack` row as the check session (`PENDING → IN_PROGRESS →
+COMPLETED`, `CANCELLED`) and one `fulfillment.package` row per PICKED pick line as its shipping carton (`pick_line_id`,
+`lpn`; `TO_CHECK → CHECKED → LABELED`, or `REMOVED`); the rules are on the pure `CartonCheck`. What a carton holds is its
+pick line's, read by `ParcelContents` (a repack parcel's is still `package_line`). Labelling takes the SKU's carton
+spec (`InventoryControlService.cartonSpec`: the carton unit's size and full weight) and volumetric weight; the first
+label calls `OrderService.recordFirstLabel`, which locks cancellation and the delivery address
+(`customer_order.first_labeled_at`). Lock order: pick → order. Completion (`packing-completion`) makes the LABELED cartons
+one shipment, which loads and hands over as a sealed parcel did (`PackageStatus.ships()`; loaders scan the LPN). A carton
+removed as damaged waits in the put-back queue and goes whole into a QUARANTINE area
+(`PickConsumption.putBackToQuarantine`). The repack station's endpoints stay until 4C-7.
+
 ---
 
 ## 5. Known traps — do not reintroduce these
