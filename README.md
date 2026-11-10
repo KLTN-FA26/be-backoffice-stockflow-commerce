@@ -215,7 +215,7 @@ The compiler allows both — it is all one jar. The build does not.
 |---|---|---|
 | **When** | you need the result inside your transaction | you are announcing a fact |
 | **Coupling** | caller declares the dependency | publisher knows nobody |
-| **Example** | `order → inventory.reserve()` | `payment` publishes `PaymentCaptured` |
+| **Example** | `order → inventory.reserve()` | `payment` publishes `PaymentReceiptRecorded` |
 
 `order → inventory` is a call: an order without its stock is a bug, so the two must commit
 together. `payment → order` is an event: payment succeeded whatever order does next, and a direct
