@@ -12,15 +12,14 @@ import java.util.UUID;
  */
 public interface InventoryItemSearch {
 
-    record Row(UUID id, String sku, String unitOfMeasure, String barcode, StorageClass storageClass,
-               boolean lotTracked, boolean serialTracked, boolean policyConfigured) {
+    record Row(UUID id, String sku, String unitOfMeasure, String barcode, StorageClass storageClass) {
     }
 
     /**
      * @param sku exact match
      * @param q   substring of the SKU or the barcode, case-insensitive; {@code %} and {@code _} match themselves
      */
-    record Criteria(String sku, String q, StorageClass storageClass, Boolean policyConfigured) {
+    record Criteria(String sku, String q, StorageClass storageClass) {
     }
 
     /** Ordered by SKU, which is unique, so a page boundary never moves between two reads. */

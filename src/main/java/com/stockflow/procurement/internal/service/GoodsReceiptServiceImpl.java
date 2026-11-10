@@ -868,18 +868,15 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
     }
 
     /**
-     * BR-03, each refusal on its own field with its own code ({@code LOT_REQUIRED}, {@code LOT_NOT_ALLOWED}) under
-     * RECEIPT_LOT_DATA_INVALID. There is no expiry to check: a receipt records none (03 BR-06).
+     * BR-03: every line needs a lot number ({@code LOT_REQUIRED} under RECEIPT_LOT_DATA_INVALID), since every SKU is
+     * lot-tracked (kltn-docs 01 BR-17). There is no item that is not lot-tracked any more to refuse a lot for (team
+     * plan 5-5), and no expiry to check: a receipt records none (03 BR-06). {@code inventory.check_receivable_item}
+     * refuses the same line in the database.
      */
     private static void checkLotData(LineErrors errors, int index, InventoryItemPolicy item, String lot) {
-        ErrorCode code = ErrorCode.RECEIPT_LOT_DATA_INVALID;
-        if (item.lotTracked() && lot == null) {
-            errors.add(index, "lotNumber", code, "LOT_REQUIRED",
+        if (lot == null) {
+            errors.add(index, "lotNumber", ErrorCode.RECEIPT_LOT_DATA_INVALID, "LOT_REQUIRED",
                     "%s is lot-tracked: each line needs a lot number (BR-03)".formatted(item.sku()));
-        }
-        if (!item.lotTracked() && lot != null) {
-            errors.add(index, "lotNumber", code, "LOT_NOT_ALLOWED",
-                    "%s is not lot-tracked; leave the lot number empty".formatted(item.sku()));
         }
     }
 
@@ -994,7 +991,8 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
                             : order.line(line.poLineId()).map(ReceivingPurchaseOrder.Line::lineNo).orElse(null),
                     line.inventoryItemId(), item == null ? null : item.sku(), line.receivedQuantity(),
                     line.lotNumber(), code(where, line.locationId()), line.note(),
-                    item != null && item.lotTracked(),
+                    // Every SKU is lot-tracked (01 BR-17): kept on the line for the receipt form, always true.
+                    true,
                     line.receivedQuantity(), lineWarnings, line.uomConversionId() == null ? null : unitCodes.get(line.uomConversionId()),
                     line.receivedQuantity() - inCartons, packages,
                     item == null ? List.of() : unitsBySku.getOrDefault(item.sku(), List.of()).stream()

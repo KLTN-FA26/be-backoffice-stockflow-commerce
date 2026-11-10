@@ -559,16 +559,17 @@ public class ReturnRequestService {
             throw new BusinessException(ErrorCode.RETURN_QUANTITIES_INVALID,
                     "%s is not a SKU: record it as an unexpected item".formatted(code));
         }
-        var item = inventory.itemPolicy(sku).orElseThrow(() -> new BusinessException(
+        inventory.itemPolicy(sku).orElseThrow(() -> new BusinessException(
                 ErrorCode.RETURN_QUANTITIES_INVALID,
                 "%s is not one of our stock items: record it as an unexpected item".formatted(code)));
+        // Every SKU is lot-tracked (kltn-docs 01 BR-17, team plan 5-5): the stock row takes the lot, so it is read off
+        // the goods whatever the SKU.
         boolean lotGiven = receipt.lotNumber() != null && !receipt.lotNumber().isBlank();
-        if (item.lotTracked() && !lotGiven) {
+        if (!lotGiven) {
             throw new BusinessException(ErrorCode.RETURN_QUANTITIES_INVALID,
                     "%s is lot-tracked: read the lot number off the goods".formatted(code));
         }
-        return item.lotTracked() ? receipt
-                : new ReturnRequest.Receipt(receipt.lineId(), receipt.quantity(), receipt.sku(), null);
+        return receipt;
     }
 
     // ================================================================================================= inspection

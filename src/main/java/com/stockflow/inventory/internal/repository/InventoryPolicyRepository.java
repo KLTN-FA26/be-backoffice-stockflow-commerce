@@ -4,9 +4,6 @@ import com.stockflow.inventory.api.InventoryControlItem;
 import com.stockflow.inventory.api.InventoryItemLogistics;
 import com.stockflow.inventory.api.ItemLogistics;
 import com.stockflow.inventory.api.StorageClass;
-import com.stockflow.inventory.api.InventoryPolicy;
-import com.stockflow.inventory.api.RemovalStrategy;
-import com.stockflow.inventory.api.TrackingMode;
 
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
@@ -17,7 +14,15 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
-/** Writes only inventory schema. The same advisory lock is taken by the stock-row trigger. */
+/**
+ * Plain SQL over {@code inventory.inventory_items}: the SKU advisory lock, whether items are in use, and the logistics.
+ * Writes only the inventory schema. The same advisory lock is taken by the stock-row trigger
+ * ({@code inventory.enforce_sku_policy}).
+ *
+ * <p>The name is older than its job: the per-SKU stock policy it once read and wrote (removal strategy, lot and serial
+ * tracking) went in team plan 5-5 - every SKU is lot-tracked, without serial numbers, first in first out (kltn-docs 01
+ * BR-17) - and the trigger states that fixed policy for every SKU.</p>
+ */
 @Repository
 public class InventoryPolicyRepository {
     private final JdbcTemplate jdbc;
@@ -49,47 +54,24 @@ public class InventoryPolicyRepository {
                 + ") and inventory.item_in_use(id, sku) order by sku", String.class, skus.toArray());
     }
 
-    /**
-     * Whether the database refuses to raise an existing stock layer of this SKU ({@code inventory.enforce_sku_policy},
-     * V20261017000450): a configured FIFO item, whose new units must be a new receipt layer or FIFO loses their age.
-     * An unconfigured item is not checked by the trigger, whatever its strategy says.
-     */
-    public boolean replenishesByNewLayer(String sku) {
-        return Boolean.TRUE.equals(jdbc.queryForObject("select exists (select 1 from inventory.inventory_items"
-                + " where sku = ? and policy_configured and removal_strategy = 'FIFO')", Boolean.class, sku));
-    }
-
-    public boolean hasActiveCount(String sku) {
-        return Boolean.TRUE.equals(
-                jdbc.queryForObject(
-                        """
-                        select exists(select 1 from inventory.cycle_count_line l
-                        join inventory.cycle_count c on c.id=l.cycle_count_id
-                        where c.status in ('PLANNED','IN_PROGRESS') and l.sku=?)
-                        """,
-                        Boolean.class,
-                        sku));
-    }
-
     public Optional<InventoryControlItem> findItem(String sku) {
         return jdbc.query("select * from inventory.inventory_items where sku = ?", (rs, n) ->
-                new InventoryControlItem(rs.getString("sku"), rs.getString("unit_of_measure"), rs.getLong("version"),
-                        policy(rs)), sku).stream().findFirst();
+                new InventoryControlItem(rs.getString("sku"), rs.getString("unit_of_measure"), rs.getLong("version")),
+                sku).stream().findFirst();
     }
 
-    /** One inventory item, both groups and the version, as they stood together. */
-    public record ItemRow(java.util.UUID id, String sku, long version, ItemLogistics logistics,
-                          InventoryPolicy policy) {
+    /** One inventory item, its logistics and the version, as they stood together. */
+    public record ItemRow(java.util.UUID id, String sku, long version, ItemLogistics logistics) {
     }
 
     /**
-     * The whole item in one SELECT. Reading the logistics, the policy and the version separately lets a concurrent
-     * save land between the reads, and the result would label one save's values with another's version.
+     * The whole item in one SELECT. Reading the logistics and the version separately lets a concurrent save land
+     * between the reads, and the result would label one save's values with another's version.
      */
     public Optional<ItemRow> findById(java.util.UUID id) {
         return jdbc.query("select * from inventory.inventory_items where id = ?", (rs, n) ->
                 new ItemRow(rs.getObject("id", java.util.UUID.class), rs.getString("sku"), rs.getLong("version"),
-                        logistics(rs), policy(rs)), id).stream().findFirst();
+                        logistics(rs)), id).stream().findFirst();
     }
 
     /** The items with these SKUs, in one SELECT; a SKU without an item is simply absent. */
@@ -100,13 +82,7 @@ public class InventoryPolicyRepository {
         return jdbc.query("select * from inventory.inventory_items where sku = any (?)", ps ->
                 ps.setArray(1, ps.getConnection().createArrayOf("text", skus.toArray())), (rs, n) ->
                 new ItemRow(rs.getObject("id", UUID.class), rs.getString("sku"), rs.getLong("version"),
-                        logistics(rs), policy(rs)));
-    }
-
-    private static InventoryPolicy policy(java.sql.ResultSet rs) throws java.sql.SQLException {
-        return new InventoryPolicy(
-                RemovalStrategy.valueOf(rs.getString("removal_strategy")),
-                TrackingMode.of(rs.getBoolean("lot_tracked"), rs.getBoolean("serial_tracked")));
+                        logistics(rs)));
     }
 
     private static ItemLogistics logistics(java.sql.ResultSet rs) throws java.sql.SQLException {
@@ -127,54 +103,6 @@ public class InventoryPolicyRepository {
         return jdbc.queryForList("select sku from inventory.inventory_items where id = ?", String.class, id)
                 .stream()
                 .findFirst();
-    }
-
-    public Optional<InventoryPolicy> find(String sku) {
-        return findItem(sku).map(InventoryControlItem::policy);
-    }
-
-    /**
-     * Whether stock of {@code sku} breaks {@code p}: the twin of {@code inventory.enforce_sku_policy}, which refuses
-     * the same rows at write time. A lot conflicts with no policy (V20261111000110): every unit carries one (kltn-docs
-     * 20 BR-22, lot {@code UNTRACED} for what had none), so only a lot-tracked SKU's stock without one does.
-     */
-    public boolean incompatible(String sku, InventoryPolicy p) {
-        Long count =
-                jdbc.queryForObject(
-                        """
-select count(*) from inventory.stock_item where sku = ? and (on_hand > 0 or reserved > 0)
-and ((? and nullif(trim(lot_number), '') is null)
-  or (? and (nullif(trim(serial_number), '') is null or on_hand > 1))
-  or (not ? and serial_number is not null)
-  or (? = 'FIFO' and received_at is null))
-""",
-                        Long.class,
-                        sku,
-                        p.trackingMode().lotTracked(),
-                        p.trackingMode().serialTracked(),
-                        p.trackingMode().serialTracked(),
-                        p.removalStrategy().name());
-        return count != null && count > 0;
-    }
-
-    /**
-     * Saves the policy. There are no thresholds and no expiry settings any more: the module raises no stock alert and
-     * tracks no expiry (kltn-docs 20 BR-13, 01 BR-17; team plan 5-1).
-     */
-    public boolean save(String sku, long version, InventoryPolicy p, String actor) {
-        return jdbc.update(
-                        """
-update inventory.inventory_items set removal_strategy=?, lot_tracked=?, serial_tracked=?,
-    policy_configured=true, version=version+1, last_modified_at=now(), last_modified_by=?
-where sku=? and version=?
-""",
-                        p.removalStrategy().name(),
-                        p.trackingMode().lotTracked(),
-                        p.trackingMode().serialTracked(),
-                        actor,
-                        sku,
-                        version)
-                == 1;
     }
 
     public Optional<InventoryItemLogistics> findLogistics(String sku) {

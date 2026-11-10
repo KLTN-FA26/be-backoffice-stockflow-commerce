@@ -10,25 +10,19 @@ import java.util.UUID;
  *
  * @param expiresAt  null once pinned: the hold no longer waits for payment. The hold's deadline, not the goods':
  *                   cups and packaging have no expiry date (kltn-docs 01 BR-17)
- * @param serialNumber the unit's serial number for a serial-tracked SKU (one unit per stock row), else null; packing
- *                     checks a scanned serial against it (kltn-docs 08 step 2)
  * @param lpn          the carton the held units are in (SCRUM-473), null for loose stock or a SKU reservation: the
  *                     picker scans it, since the hold is deducted from that carton and no other
  * @param wholeCarton  the hold is its carton's whole, sealed content: the picker takes the carton as it stands
+ *
+ * <p>No serial number: nothing is serial-tracked (kltn-docs 01 BR-17, team plan 5-5).</p>
  */
 public record HoldView(UUID reservationId, String sku, String locationCode, String lotNumber, int quantity,
-                       Status status, Instant expiresAt, String serialNumber, String lpn, boolean wholeCarton) {
-
-    /** Without the serial number: goods that have none. */
-    public HoldView(UUID reservationId, String sku, String locationCode, String lotNumber, int quantity,
-                    Status status, Instant expiresAt) {
-        this(reservationId, sku, locationCode, lotNumber, quantity, status, expiresAt, null);
-    }
+                       Status status, Instant expiresAt, String lpn, boolean wholeCarton) {
 
     /** On loose stock, or a SKU reservation. */
     public HoldView(UUID reservationId, String sku, String locationCode, String lotNumber, int quantity,
-                    Status status, Instant expiresAt, String serialNumber) {
-        this(reservationId, sku, locationCode, lotNumber, quantity, status, expiresAt, serialNumber, null, false);
+                    Status status, Instant expiresAt) {
+        this(reservationId, sku, locationCode, lotNumber, quantity, status, expiresAt, null, false);
     }
 
 

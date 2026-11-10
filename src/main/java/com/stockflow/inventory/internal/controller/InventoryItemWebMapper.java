@@ -1,11 +1,9 @@
 package com.stockflow.inventory.internal.controller;
 
-import com.stockflow.inventory.api.InventoryPolicy;
 import com.stockflow.inventory.api.ItemLogistics;
 import com.stockflow.inventory.internal.controller.dto.InventoryItemResponse;
 import com.stockflow.inventory.internal.controller.dto.InventoryItemSummaryResponse;
 import com.stockflow.inventory.internal.controller.dto.UpdateItemLogisticsRequest;
-import com.stockflow.inventory.internal.controller.dto.UpdateItemPolicyRequest;
 import com.stockflow.inventory.internal.service.InventoryItems;
 import org.springframework.stereotype.Component;
 
@@ -16,18 +14,16 @@ class InventoryItemWebMapper {
 
     InventoryItemResponse toResponse(InventoryItems.Detail d) {
         var l = d.logistics();
-        var p = d.policy();
         return new InventoryItemResponse(d.id(), d.sku(), d.version(),
                 new InventoryItemResponse.Logistics(l.unitOfMeasure(), l.barcode(), l.weightKg(), l.lengthCm(),
                         l.widthCm(), l.heightCm(), l.packageWeightKg(), l.packageLengthCm(), l.packageWidthCm(),
                         l.packageHeightCm(), l.packageCount(), l.packSize(), l.storageClass().name(),
-                        l.requiresAdultSignature(), l.shippingRestrictionNote(), l.rotatable()),
-                new InventoryItemResponse.Policy(p.removalStrategy().name(), p.trackingMode().name()));
+                        l.requiresAdultSignature(), l.shippingRestrictionNote(), l.rotatable()));
     }
 
     InventoryItemSummaryResponse toSummary(InventoryItems.Summary s) {
         return new InventoryItemSummaryResponse(s.id(), s.sku(), s.unitOfMeasure(), s.barcode(),
-                s.storageClass().name(), s.trackingMode().name(), s.policyConfigured());
+                s.storageClass().name());
     }
 
     ItemLogistics toLogistics(UpdateItemLogisticsRequest r) {
@@ -36,9 +32,5 @@ class InventoryItemWebMapper {
                 Objects.requireNonNullElse(r.packageCount(), 1), Objects.requireNonNullElse(r.packSize(), 1),
                 r.storageClass(), r.requiresAdultSignature(), r.shippingRestrictionNote(),
                 !Boolean.FALSE.equals(r.rotatable()));
-    }
-
-    InventoryPolicy toPolicy(UpdateItemPolicyRequest r) {
-        return new InventoryPolicy(r.removalStrategy(), r.trackingMode());
     }
 }

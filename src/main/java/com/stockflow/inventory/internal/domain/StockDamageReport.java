@@ -66,9 +66,12 @@ public final class StockDamageReport extends AggregateRoot {
             Objects.requireNonNull(warehouseId, "warehouseId");
         }
 
-        /** The goods of {@code row}, in warehouse {@code warehouseId}. */
+        /**
+         * The goods of {@code row}, in warehouse {@code warehouseId}. No serial number: stock has none since team plan
+         * 5-5 (kltn-docs 01 BR-17); the report's own column goes with damage reports in 5-6.
+         */
         public static DamagedGoods of(StockItem row, UUID warehouseId) {
-            return new DamagedGoods(row.id(), row.sku(), row.lotNumber(), row.serialNumber(), row.receivedAt(),
+            return new DamagedGoods(row.id(), row.sku(), row.lotNumber(), null, row.receivedAt(),
                     row.lotId(), row.location(), row.stockPackageId(), warehouseId);
         }
     }

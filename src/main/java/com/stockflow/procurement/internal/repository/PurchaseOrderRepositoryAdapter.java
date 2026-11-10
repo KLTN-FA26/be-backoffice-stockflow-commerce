@@ -582,7 +582,7 @@ class PurchaseOrderRepositoryAdapter
                 PackingUnit unit = l.packingUnit();
                 return new POLineSummary(l.id(), l.lineNo(), l.inventoryItemId(), l.sku().code(), l.description(),
                         l.uom(), l.quantityOrdered(), l.quantityReceived(), l.unitPrice().amount(), l.taxRate(),
-                        l.total(), l.status().name(), policy != null && policy.lotTracked(),
+                        l.total(), l.status().name(), policy != null,
                         unit == null ? null : unit.unitOfMeasure(), unit == null ? null : unit.factor(),
                         unit == null ? null : unit.count());
             }).toList();

@@ -227,13 +227,13 @@ public interface InventoryService {
      */
     List<StockPackageView> reclassifyStockPackages(ReclassifyStockPackagesCommand command);
 
-    /** The receiving policy of an inventory item, empty when no such item exists. */
+    /** The inventory item with this id, empty when no such item exists. */
     Optional<InventoryItemPolicy> itemPolicy(UUID inventoryItemId);
 
     /** The same, by SKU: the inventory item a variant has, empty when it has none yet. */
     Optional<InventoryItemPolicy> itemPolicy(Sku sku);
 
-    /** The receiving policy of each inventory item that exists, in one query (SCRUM-464). */
+    /** Each inventory item that exists, in one query (SCRUM-464). */
     java.util.Map<UUID, InventoryItemPolicy> itemPolicies(java.util.Collection<UUID> inventoryItemIds);
 
     /** The SKU of each inventory item that exists, for a list of purchase order lines in one query. */

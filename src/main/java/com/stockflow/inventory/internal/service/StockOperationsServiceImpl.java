@@ -746,7 +746,7 @@ class StockOperationsServiceImpl implements StockOperations {
             // The same receipt, not a replenishment: the policy trigger lets a FIFO layer grow only when told so.
             stockItems.saveMerged(item);
         } else {
-            stockItems.save(StockItem.receive(command.sku(), location, lot, quantity, command.receivedAt(), null));
+            stockItems.save(StockItem.receive(command.sku(), location, lot, quantity, command.receivedAt()));
         }
         StockMovement line = new StockMovement(Identifiers.newId(), StockMovement.MovementType.RETURN_IN,
                 command.sku(), lot, null, location, quantity.value(), StockStatus.QUARANTINE,
@@ -864,13 +864,11 @@ class StockOperationsServiceImpl implements StockOperations {
         }
         requireLoose(item);
         int delta = adjustment.quantityDelta();
-        // A configured FIFO SKU's layer is never raised (inventory.enforce_sku_policy: "reconcile via a new stock
-        // layer"): loose units found have no provable receipt, and putting them on an old layer would make them as
-        // old as it and first out. They land on a new layer beside it, received now; the adjustment still names the
-        // layer it was asked against. FEFO and unconfigured SKUs write the named layer up, as before.
-        StockItem target = delta > 0 && policies.replenishesByNewLayer(adjustment.sku().code())
-                ? StockItem.newLayerBeside(item, now)
-                : item;
+        // A layer is never raised (inventory.enforce_sku_policy: "reconcile via a new stock layer"): every SKU leaves
+        // stock first in, first out (kltn-docs 01 BR-17, team plan 5-5), and loose units found have no provable
+        // receipt - putting them on an old layer would make them as old as it and first out. They land on a new layer
+        // beside it, received now; the adjustment still names the layer it was asked against.
+        StockItem target = delta > 0 ? StockItem.newLayerBeside(item, now) : item;
         adjustment.approveAndPost(approverId, target, now);
         stockItems.save(target);
         StockAdjustment saved = adjustments.save(adjustment);

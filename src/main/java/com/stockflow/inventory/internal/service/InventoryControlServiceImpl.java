@@ -6,9 +6,6 @@ import com.stockflow.common.error.ErrorCode;
 import com.stockflow.inventory.api.InventoryControlItem;
 import com.stockflow.inventory.api.InventoryItemLogistics;
 import com.stockflow.inventory.api.InventoryControlService;
-import com.stockflow.inventory.api.InventoryPolicy;
-import com.stockflow.inventory.api.RemovalStrategy;
-import com.stockflow.inventory.api.TrackingMode;
 import com.stockflow.inventory.internal.repository.InventoryPolicyRepository;
 
 import org.springframework.stereotype.Service;
@@ -28,13 +25,6 @@ class InventoryControlServiceImpl implements InventoryControlService {
     public InventoryControlItem item(Sku sku) {
         return policies.findItem(sku.code())
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
-    }
-
-    @Override
-    @Transactional(readOnly = true)
-    public InventoryPolicy policy(Sku sku) {
-        return policies.find(sku.code())
-                .orElse(new InventoryPolicy(RemovalStrategy.FIFO, TrackingMode.NONE));
     }
 
     @Override

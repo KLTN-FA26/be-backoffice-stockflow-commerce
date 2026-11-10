@@ -194,7 +194,7 @@ interface StockItemJpaRepository extends JpaRepository<StockItemJpaEntity, UUID>
 
     @Query("""
             select new com.stockflow.inventory.internal.domain.HoldDetail(r.id, s.sku, s.locationCode, s.lotNumber,
-                   r.quantity, r.status, r.expiresAt, s.serialNumber, p.lpn,
+                   r.quantity, r.status, r.expiresAt, p.lpn,
                    case when p.unopened = true and r.quantity = s.onHand and s.onHand = p.receivedQty
                         then true else false end)
             from ReservationJpaEntity r join r.stockItem s

@@ -923,10 +923,10 @@ class StockDamageService implements StockDamages, PickDamageReporting {
         return there.status() == StockStatus.DAMAGED && there.isSameGoodsAs(source);
     }
 
-    /** The loose row of this receipt layer (lot, serial, receipt time) at {@code location}: the natural key's row. */
+    /** The loose row of this receipt layer (lot, receipt time) at {@code location}: the natural key's row. */
     private Optional<StockItem> layerAt(StockItem goods, LocationId location) {
         return stockItems.findLooseBySkuAndLocation(goods.sku(), location).stream()
-                .filter(item -> item.isLayer(goods.lotNumber(), goods.serialNumber(), goods.receivedAt()))
+                .filter(item -> item.isLayer(goods.lotNumber(), goods.receivedAt()))
                 .findFirst();
     }
 

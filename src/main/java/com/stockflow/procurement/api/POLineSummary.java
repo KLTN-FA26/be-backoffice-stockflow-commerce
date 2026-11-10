@@ -5,9 +5,9 @@ import java.util.UUID;
 
 /**
  * One purchase order line. {@code quantityReceived} is what the confirmed goods receipts counted in
- * against it; {@code status} is OPEN, PARTIALLY_RECEIVED, RECEIVED, CLOSED or CANCELLED. {@code lotTracked} is
- * the item's receiving policy (BR-03), for a receipt form to check before saving (SCRUM-464); a receipt records no
- * expiry (03 BR-06).
+ * against it; {@code status} is OPEN, PARTIALLY_RECEIVED, RECEIVED, CLOSED or CANCELLED. {@code lotTracked} tells a
+ * receipt form to ask for a lot (BR-03, SCRUM-464): true for every line whose item exists, since every SKU is
+ * lot-tracked (01 BR-17, team plan 5-5); a receipt records no expiry (03 BR-06).
  */
 public record POLineSummary(
         UUID lineId,

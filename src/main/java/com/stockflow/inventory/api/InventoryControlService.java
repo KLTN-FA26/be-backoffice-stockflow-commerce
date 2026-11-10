@@ -9,8 +9,6 @@ import com.stockflow.common.domain.Sku;
 public interface InventoryControlService {
     InventoryControlItem item(Sku sku);
 
-    InventoryPolicy policy(Sku sku);
-
     /** The SKU's physical and handling data. {@code INVENTORY_ITEM_NOT_FOUND} when it has no item. */
     InventoryItemLogistics logistics(Sku sku);
 }

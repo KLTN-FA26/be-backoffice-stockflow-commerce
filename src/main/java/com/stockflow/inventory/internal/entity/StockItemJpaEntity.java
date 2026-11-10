@@ -42,26 +42,23 @@ import java.util.UUID;
 public class StockItemJpaEntity extends BaseEntity {
     @Column(name = "received_at")
     private java.time.Instant receivedAt;
-    @Column(name = "serial_number", length = 100)
-    private String serialNumber;
     /** The lot of these units (SCRUM-142); {@code tg_stock_item_lot} fills it on insert when the application did not. */
     @Column(name = "lot_id")
     private UUID lotId;
     public UUID getLotId() { return lotId; }
     public java.time.Instant getReceivedAt() { return receivedAt; }
-    public String getSerialNumber() { return serialNumber; }
     public StockItemJpaEntity(UUID id, String sku, String locationCode, String lotNumber,
                        int onHand, int reserved, StockStatus status,
-                       java.time.Instant receivedAt, String serialNumber) {
+                       java.time.Instant receivedAt) {
         this(id, sku, locationCode, lotNumber, onHand, reserved, status);
-        this.receivedAt = receivedAt; this.serialNumber = serialNumber;
+        this.receivedAt = receivedAt;
     }
 
     /** A new row as the mapper writes it: its lot (null: the trigger resolves it) and its stock package (null: loose). */
     public StockItemJpaEntity(UUID id, String sku, String locationCode, String lotNumber,
                        int onHand, int reserved, StockStatus status,
-                       java.time.Instant receivedAt, String serialNumber, UUID lotId, UUID stockPackageId) {
-        this(id, sku, locationCode, lotNumber, onHand, reserved, status, receivedAt, serialNumber);
+                       java.time.Instant receivedAt, UUID lotId, UUID stockPackageId) {
+        this(id, sku, locationCode, lotNumber, onHand, reserved, status, receivedAt);
         this.lotId = lotId;
         this.stockPackageId = stockPackageId;
     }

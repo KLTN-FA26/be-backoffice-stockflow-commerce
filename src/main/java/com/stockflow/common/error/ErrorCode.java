@@ -31,8 +31,12 @@ public enum ErrorCode {
     VALIDATION_FAILED("Invalid request data", 400),
     /** A customization template's model, limits or print areas cannot be printed as given (kltn-docs 01 BR-21). */
     PRINT_CONFIG_INVALID("The customization template is not valid", 400),
-    INVENTORY_POLICY_INVALID("Invalid SKU inventory policy", 400),
-    INVENTORY_POLICY_STOCK_CONFLICT("Existing stock is incompatible with this policy", 409),
+    /**
+     * Stock that cannot be used as asked: blocked or expired stock to ship, several layers where one is meant, a
+     * layer the fixed stock policy refuses to raise. The name is from the configurable policy team plan 5-5 removed
+     * (with {@code INVENTORY_POLICY_INVALID} and {@code COUNT_POLICY_CONFLICT}); kept, since clients match on it.
+     */
+    INVENTORY_POLICY_STOCK_CONFLICT("This stock cannot be used this way; reconcile it first", 409),
     CATALOG_SLUG_EXISTS("This storefront URL is already reserved", 409),
     CATALOG_LISTING_REQUIRED("Configure the storefront listing before publishing", 409),
     /** Publishing, and since SCRUM-461 a purchase order line too (the field error carries this code): the product is not approved. */
@@ -182,7 +186,6 @@ public enum ErrorCode {
     PO_LINE_UNIT_INVALID("The unit is retired; order in an active unit", 409),
     PO_LINE_PRICE_REQUIRED("A unit price is required: the catalog price is in another currency", 409),
     CHECKOUT_PRICE_CHANGED("The selling price changed; review the basket and confirm again", 409),
-    COUNT_POLICY_CONFLICT("Reconcile the active count and SKU tracking policy before proceeding",409),
     /** The inventory item already has a unit with this code (its base unit included). */
     UOM_CONVERSION_DUPLICATE("This SKU already has a unit of measure with this code", 409),
     /**

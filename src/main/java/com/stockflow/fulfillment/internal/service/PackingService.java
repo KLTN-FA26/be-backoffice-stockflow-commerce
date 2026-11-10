@@ -619,10 +619,8 @@ class PackingService implements Packing {
             if (session.status() == PackStatus.PACKING) {
                 session.requireWorkable(actor.userId(), isManager(actor));
             }
-            String serial = line.getReservationId() == null ? null
-                    : inventory.holds(List.of(line.getReservationId())).stream().findFirst()
-                            .map(HoldView::serialNumber).orElse(null);
-            session.requireUnpacked(line.getOrderLineId(), line.getLotNumber(), serial, damage.damagedQuantity());
+            // No serial number to match: stock has none since team plan 5-5 (kltn-docs 01 BR-17).
+            session.requireUnpacked(line.getOrderLineId(), line.getLotNumber(), null, damage.damagedQuantity());
         }
         return Optional.empty();
     }
@@ -727,8 +725,8 @@ class PackingService implements Packing {
             int available = rows.stream().mapToInt(PickLineJpaEntity::getGoodQty).sum();
             for (PickLineJpaEntity row : rows) {
                 HoldView hold = row.getReservationId() == null ? null : holds.get(row.getReservationId());
-                collect(lots, serials, row.getLotNumber(), hold == null ? null : hold.serialNumber(),
-                        row.getGoodQty());
+                // No serial numbers: stock has none since team plan 5-5 (kltn-docs 01 BR-17).
+                collect(lots, serials, row.getLotNumber(), null, row.getGoodQty());
             }
             if (print) {
                 // Legacy (see the method's javadoc): printed goods in-house production delivered to packing.
@@ -736,7 +734,7 @@ class PackingService implements Packing {
                     HoldView hold = takenByPicks.contains(id) ? null : holds.get(id);
                     if (hold != null && hold.status() == HoldView.Status.CONSUMED) {
                         available += hold.quantity();
-                        collect(lots, serials, hold.lotNumber(), hold.serialNumber(), hold.quantity());
+                        collect(lots, serials, hold.lotNumber(), null, hold.quantity());
                     }
                 }
             }

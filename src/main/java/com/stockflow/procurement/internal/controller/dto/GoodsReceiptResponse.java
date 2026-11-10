@@ -40,7 +40,8 @@ public record GoodsReceiptResponse(UUID id, String number, UUID purchaseOrderId,
     }
 
     /**
-     * {@code lotTracked}: whether the line needs a lot (BR-03). A receipt records no expiry (03 BR-06).
+     * {@code lotTracked}: whether the line needs a lot (BR-03) - always true, every SKU is lot-tracked (01 BR-17); kept
+     * for the receipt form. A receipt records no expiry (03 BR-06).
      * {@code unitOfMeasure}: the packing unit of the line's cartons, null for a loose line. {@code looseQuantity}:
      * the part counted into no carton (the line less the cartons' {@code receivedQty}). {@code packages}: the line's cartons by LPN, voided ones left out (SCRUM-473).
      * {@code units}: every unit of the line's item, for the counting screen's unit picker.
