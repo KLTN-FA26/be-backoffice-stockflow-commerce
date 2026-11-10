@@ -366,8 +366,8 @@ rows). Cartons are scanned by LPN and checked against `fulfillment :: api` `Ship
 those delivered on the order). Confirming is one transaction: receipt `FOR UPDATE` → `inventory :: api`
 `CartonReturns.receive` (SKU locks → cartons → rows; each carton CONSUMED → IN_STOCK sealed, its row QUARANTINE in its
 own lot, one RECEIPT ledger line with reference `GOODS_RECEIPT`) → receipt `CLOSED` (no putaway) →
-`ReturnedGoodsReceived` after commit. Until team plan 4C-6 a shipment's cartons are inferred from the order lines its
-parcels carried (`ShippedCartonQueries`); after it, they are `fulfillment.package.lpn`.
+`ReturnedGoodsReceived` after commit. A shipment's cartons are its LABELED `fulfillment.package` rows
+(`ShippedCartonQueries`).
 
 ### Returns, refunded (team plan 4D-3)
 
@@ -392,7 +392,7 @@ label calls `OrderService.recordFirstLabel`, which locks cancellation and the de
 (`customer_order.first_labeled_at`). Lock order: pick → order. Completion (`packing-completion`) makes the LABELED cartons
 one shipment, which loads and hands over as a sealed parcel did (`PackageStatus.ships()`; loaders scan the LPN). A carton
 removed as damaged waits in the put-back queue and goes whole into a QUARANTINE area
-(`PickConsumption.putBackToQuarantine`). The repack station's endpoints stay until 4C-7.
+(`PickConsumption.putBackToQuarantine`). The repack station (parcels, kits, `package_line`, n/N labels) went with 4C-7.
 
 ---
 

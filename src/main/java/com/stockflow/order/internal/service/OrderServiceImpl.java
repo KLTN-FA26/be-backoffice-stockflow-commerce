@@ -522,16 +522,6 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
 
     @Override
     @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
-    public void recordPackingStarted(UUID orderId) {
-        Order order = lockOrder(orderId);
-        if (order.recordPackingStarted(clock.instant())) {
-            repository.save(order);
-            log.info("Order {}: packing started", order.orderNumber());
-        }
-    }
-
-    @Override
-    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
     public void recordFirstLabel(UUID orderId) {
         Order order = lockOrder(orderId);
         if (order.recordFirstLabel(clock.instant())) {

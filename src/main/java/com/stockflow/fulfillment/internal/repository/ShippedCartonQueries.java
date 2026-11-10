@@ -11,11 +11,8 @@ import java.util.UUID;
 /**
  * Which cartons left on which shipment (team plan 4D-2), read straight from the pick and the packing records.
  *
- * <p>Until the carton check station (team plan 4C-6) a shipment's packages are repacked parcels that name order lines,
- * not cartons: a carton picked for an order line is taken to have left on every shipment that carried that line. For
- * an order shipped whole - the rule, every order ships as a full truckload - that is exact; for an order line split
- * over several shipments it names the line's cartons on each of them. Once 4C-6 is in, the shipping carton is the
- * package itself ({@code fulfillment.package.lpn}, {@code shipment_id}), and {@link #cartonsOn} reads that instead.</p>
+ * <p>The shipping carton is the LPN carton itself (team plan 4C-6, kltn-docs 08 BR-02): a shipment carried the
+ * cartons its {@code fulfillment.package} rows name, LABELED on it, each the carton its pick line took whole.</p>
  */
 @Component
 public class ShippedCartonQueries {
@@ -54,8 +51,8 @@ public class ShippedCartonQueries {
     }
 
     /**
-     * The cartons of the order {@code orderId} that left on these shipments, by LPN: picked whole for a line the
-     * shipments carried, and neither put back nor taken out damaged before they left.
+     * The cartons of the order {@code orderId} that left on these shipments, by LPN: the shipping cartons labelled on
+     * them, each with what its pick line took.
      */
     @SuppressWarnings("unchecked")
     public List<Row> cartonsOn(UUID orderId, Collection<UUID> shipmentIds) {
@@ -63,15 +60,12 @@ public class ShippedCartonQueries {
             return List.of();
         }
         List<Object[]> rows = entityManager.createNativeQuery("""
-                        SELECT l.lpn, l.sku, l.lot_number, l.picked_qty - l.put_back_qty - l.packing_damaged_qty
-                          FROM fulfillment.pick_line l
+                        SELECT l.lpn, l.sku, l.lot_number, l.picked_qty
+                          FROM fulfillment.package p
+                          JOIN fulfillment.pick_line l ON l.id = p.pick_line_id
                           JOIN fulfillment.pick k ON k.id = l.pick_id
-                         WHERE k.order_id = :order AND l.lpn IS NOT NULL
-                           AND l.picked_qty - l.put_back_qty - l.packing_damaged_qty > 0
-                           AND l.order_line_id IN (SELECT pl.order_line_id
-                                                     FROM fulfillment.package p
-                                                     JOIN fulfillment.package_line pl ON pl.package_id = p.id
-                                                    WHERE p.shipment_id IN (:shipments))
+                         WHERE k.order_id = :order AND p.shipment_id IN (:shipments) AND p.status = 'LABELED'
+                           AND l.picked_qty > 0
                          ORDER BY l.lpn, l.id""")
                 .setParameter("order", orderId).setParameter("shipments", shipmentIds).getResultList();
         return rows.stream()

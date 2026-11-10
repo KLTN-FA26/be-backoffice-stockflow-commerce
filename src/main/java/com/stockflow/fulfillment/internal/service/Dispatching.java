@@ -39,14 +39,13 @@ public interface Dispatching {
     record PendingUnload(UUID packageId, String labelCode, UUID shipmentId, String shipmentCode, String reason,
                          Instant requestedAt, String reasonCode) { }
 
-    /** @param kit the kit it is a part of (SCRUM-287 LP2-6): every part is scanned; null for an ordinary parcel */
     record LoadParcel(UUID packageId, String labelCode, BigDecimal weightKg, boolean loaded, Instant loadedAt,
-                      UUID loadedBy, com.stockflow.fulfillment.internal.domain.KitPart kit, Instant labelOutdatedAt) { }
+                      UUID loadedBy) { }
 
     /**
      * A shipment on the manifest.
      *
-     * @param taskId the fulfillment task it was packed in: where its label is reprinted ({@code LABEL_OUTDATED})
+     * @param taskId the fulfillment task it was checked in: where its cartons' labels are reprinted
      */
     record LoadShipment(UUID shipmentId, String code, UUID orderId, String orderNumber, UUID taskId, String status,
                         int packageCount, int loadedCount, List<LoadParcel> packages) { }
@@ -92,8 +91,7 @@ public interface Dispatching {
                             List<ManifestParcel> packages) { }
 
     record ManifestParcel(String labelCode, BigDecimal weightKg, BigDecimal lengthCm, BigDecimal widthCm,
-                          BigDecimal heightCm, boolean loaded, com.stockflow.fulfillment.internal.domain.KitPart kit,
-                          Instant labelOutdatedAt) { }
+                          BigDecimal heightCm, boolean loaded) { }
 
     /**
      * A load plan's vehicle booked with a carrier outside the system (09 §4.2 step 6); plate, driver and the carrier's

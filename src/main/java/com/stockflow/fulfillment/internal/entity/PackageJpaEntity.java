@@ -2,9 +2,7 @@ package com.stockflow.fulfillment.internal.entity;
 
 import com.stockflow.common.persistence.BaseEntity;
 import com.stockflow.fulfillment.internal.domain.CartonCheck;
-import com.stockflow.fulfillment.internal.domain.KitPart;
 import com.stockflow.fulfillment.internal.domain.PackageStatus;
-import com.stockflow.fulfillment.internal.domain.PackageType;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
@@ -31,8 +29,6 @@ public class PackageJpaEntity extends BaseEntity {
     @Column(name = "package_no", nullable = false, updatable = false) private int packageNo;
     @Column(name = "label_code", nullable = false, updatable = false, length = 48) private String labelCode;
     @Enumerated(EnumType.STRING)
-    @Column(name = "package_type", nullable = false, length = 16) private PackageType packageType;
-    @Enumerated(EnumType.STRING)
     @Column(name = "status", nullable = false, length = 16) private PackageStatus status;
     @Column(name = "weight_kg", precision = 10, scale = 3) private BigDecimal weightKg;
     @Column(name = "length_cm", precision = 10, scale = 2) private BigDecimal lengthCm;
@@ -41,21 +37,10 @@ public class PackageJpaEntity extends BaseEntity {
     @Column(name = "dim_weight_kg", precision = 10, scale = 3) private BigDecimal dimWeightKg;
     @Column(name = "rotatable", nullable = false) private boolean rotatable;
     @Column(name = "rotatable_overridden", nullable = false) private boolean rotatableOverridden;
-    @Column(name = "fragile", nullable = false) private boolean fragile;
-    @Column(name = "fragile_overridden", nullable = false) private boolean fragileOverridden;
     @Column(name = "sealed_at") private Instant sealedAt;
     @Column(name = "sealed_by") private UUID sealedBy;
     @Column(name = "voided_at") private Instant voidedAt;
     @Column(name = "voided_by") private UUID voidedBy;
-    /** SCRUM-287 LP2-6: the kit ("bộ") it is a part of; all three null for an ordinary parcel. Fixed at opening. */
-    @Column(name = "kit_group_id", updatable = false) private UUID kitGroupId;
-    @Column(name = "kit_part_no", updatable = false) private Short kitPartNo;
-    @Column(name = "kit_part_count", updatable = false) private Short kitPartCount;
-    @Column(name = "kit_order_line_id", updatable = false) private UUID kitOrderLineId;
-    /** KIT-FORCE: why this ordinary parcel holds units of an item that ships as several boxes. */
-    @Column(name = "kit_override_reason", length = 500) private String kitOverrideReason;
-    /** SCRUM-392: moved to another shipment since its label was printed; reprint before loading. */
-    @Column(name = "label_outdated_at") private Instant labelOutdatedAt;
     /** 4C-6: the pick line that took this shipping carton; null for a repack parcel. Fixed. */
     @Column(name = "pick_line_id", updatable = false) private UUID pickLineId;
     /** 4C-6: the carton's LPN - the shipping carton itself (kltn-docs 08 BR-02). Fixed. */
@@ -80,7 +65,6 @@ public class PackageJpaEntity extends BaseEntity {
         this.packId = packId;
         this.packageNo = packageNo;
         this.labelCode = labelCode;
-        this.packageType = PackageType.CARTON;
         this.status = PackageStatus.OPEN;
         this.rotatable = true;
     }
@@ -150,51 +134,18 @@ public class PackageJpaEntity extends BaseEntity {
     /** Whether this row is a shipping carton of the check station rather than a repack parcel. */
     public boolean isCarton() { return pickLineId != null; }
 
-    /** A part of a kit (LP2-6): its group, part number and the kit's size are fixed when the kit is opened. */
-    public PackageJpaEntity(UUID id, UUID packId, int packageNo, String labelCode, KitPart kit) {
-        this(id, packId, packageNo, labelCode);
-        if (kit != null) {
-            this.kitGroupId = kit.groupId();
-            this.kitPartNo = (short) kit.partNo();
-            this.kitPartCount = (short) kit.partCount();
-            this.kitOrderLineId = kit.orderLineId();
-        }
-    }
-
-    @SuppressWarnings("java:S107")
-    public void apply(UUID shipmentId, PackageType type, PackageStatus status, BigDecimal weightKg,
-                      BigDecimal lengthCm, BigDecimal widthCm, BigDecimal heightCm, BigDecimal dimWeightKg,
-                      boolean rotatable, boolean rotatableOverridden, boolean fragile, boolean fragileOverridden,
-                      Instant sealedAt, UUID sealedBy, Instant voidedAt, UUID voidedBy) {
+    /**
+     * The parcel moves to another shipment: a load plan left it behind and its shipment was split (SCRUM-392). A
+     * shipping carton's label names neither the shipment nor n/N (4C-6), so nothing is to be reprinted.
+     */
+    public void moveToShipment(UUID shipmentId) {
         this.shipmentId = shipmentId;
-        this.packageType = type;
-        this.status = status;
-        this.weightKg = weightKg;
-        this.lengthCm = lengthCm;
-        this.widthCm = widthCm;
-        this.heightCm = heightCm;
-        this.dimWeightKg = dimWeightKg;
-        this.rotatable = rotatable;
-        this.rotatableOverridden = rotatableOverridden;
-        this.fragile = fragile;
-        this.fragileOverridden = fragileOverridden;
-        this.sealedAt = sealedAt;
-        this.sealedBy = sealedBy;
-        this.voidedAt = voidedAt;
-        this.voidedBy = voidedBy;
     }
 
     public UUID getPackId() { return packId; }
     public UUID getShipmentId() { return shipmentId; }
     public int getPackageNo() { return packageNo; }
     public String getLabelCode() { return labelCode; }
-    public Instant getLabelOutdatedAt() { return labelOutdatedAt; }
-
-    /** SCRUM-392: the label names another shipment than the parcel's now (set), or was reprinted (null). */
-    public void markLabelOutdated(Instant at) {
-        this.labelOutdatedAt = at;
-    }
-    public PackageType getPackageType() { return packageType; }
     public PackageStatus getStatus() { return status; }
     public BigDecimal getWeightKg() { return weightKg; }
     public BigDecimal getLengthCm() { return lengthCm; }
@@ -203,19 +154,8 @@ public class PackageJpaEntity extends BaseEntity {
     public BigDecimal getDimWeightKg() { return dimWeightKg; }
     public boolean isRotatable() { return rotatable; }
     public boolean isRotatableOverridden() { return rotatableOverridden; }
-    public boolean isFragile() { return fragile; }
-    public boolean isFragileOverridden() { return fragileOverridden; }
     public Instant getSealedAt() { return sealedAt; }
     public UUID getSealedBy() { return sealedBy; }
     public Instant getVoidedAt() { return voidedAt; }
     public UUID getVoidedBy() { return voidedBy; }
-
-    public String getKitOverrideReason() { return kitOverrideReason; }
-
-    public void setKitOverrideReason(String kitOverrideReason) { this.kitOverrideReason = kitOverrideReason; }
-
-    /** The kit part it is, or null for an ordinary parcel. */
-    public KitPart getKit() {
-        return kitGroupId == null ? null : new KitPart(kitGroupId, kitPartNo, kitPartCount, kitOrderLineId);
-    }
 }

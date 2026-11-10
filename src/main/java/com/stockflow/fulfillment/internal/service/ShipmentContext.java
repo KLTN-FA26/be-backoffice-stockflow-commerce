@@ -13,8 +13,8 @@ import java.util.UUID;
 import java.util.stream.Collectors;
 
 /**
- * What a screen needs beside a shipment (FE #61): the fulfillment task it was packed in - where its label is
- * reprinted after {@code LABEL_OUTDATED}. (It also gave the order's currency for the COD amounts, which went with COD.)
+ * What a screen needs beside a shipment (FE #61): the fulfillment task its cartons were checked in - where their
+ * shipping labels are reprinted. (It also gave the order's currency for the COD amounts, which went with COD.)
  */
 @Component
 class ShipmentContext {

@@ -1,7 +1,6 @@
 package com.stockflow.fulfillment.internal.repository;
 
 import com.stockflow.fulfillment.internal.entity.PackageJpaEntity;
-import com.stockflow.fulfillment.internal.entity.PackageLineJpaEntity;
 import com.stockflow.fulfillment.internal.entity.PickLineJpaEntity;
 import org.springframework.stereotype.Component;
 
@@ -15,13 +14,10 @@ import java.util.stream.Collectors;
 
 /**
  * What shipping parcels hold, per order line: what the handover reports to the order, what a load plan names a parcel
- * by and checks a partial order against (09). Two kinds of row hold goods differently (team plan 4C-6):
- * <ul>
- *   <li>a shipping carton of the check station holds what its pick line took - the carton whole, the line's order line;
- *       nothing is copied onto the carton row;</li>
- *   <li>a repack parcel holds its {@code package_line} totals (until team plan 4C-7 removes that station).</li>
- * </ul>
- * Read in two or three queries for any number of parcels.
+ * by and checks a partial order against (09). A shipping carton of the check station holds what its pick line took -
+ * the carton whole, the line's order line (team plan 4C-6); nothing is copied onto the carton row. A repack parcel of
+ * before 4C-6 has no contents on record any more (its {@code package_line} rows went with 4C-7). Read in two queries
+ * for any number of parcels.
  */
 @Component
 public class ParcelContents {
@@ -30,13 +26,10 @@ public class ParcelContents {
     public record Line(UUID packageId, UUID orderLineId, int quantity) { }
 
     private final PackageJpaRepository packages;
-    private final PackageLineJpaRepository packageLines;
     private final PickLineJpaRepository pickLines;
 
-    ParcelContents(PackageJpaRepository packages, PackageLineJpaRepository packageLines,
-                   PickLineJpaRepository pickLines) {
+    ParcelContents(PackageJpaRepository packages, PickLineJpaRepository pickLines) {
         this.packages = packages;
-        this.packageLines = packageLines;
         this.pickLines = pickLines;
     }
 
@@ -55,11 +48,6 @@ public class ParcelContents {
             for (PackageJpaEntity carton : cartons) {
                 PickLineJpaEntity line = lines.get(carton.getPickLineId());
                 out.add(new Line(carton.getId(), line.getOrderLineId(), line.getAllocatedQty()));
-            }
-        }
-        if (cartons.size() < packageIds.size()) {
-            for (PackageLineJpaEntity line : packageLines.findByPackageIdIn(packageIds)) {
-                out.add(new Line(line.getPackageId(), line.getOrderLineId(), line.getQuantity()));
             }
         }
         return out;

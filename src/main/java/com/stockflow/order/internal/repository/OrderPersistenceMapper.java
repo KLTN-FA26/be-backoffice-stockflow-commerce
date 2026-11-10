@@ -84,7 +84,6 @@ final class OrderPersistenceMapper {
         order.restoreRemainderFee(entity.getRemainderFeeAmount(), entity.getRemainderFeeRetainedAmount(),
                 entity.getRemainderFeePaidAmount());
         order.restoreFulfilmentStarted(entity.getFulfilmentStartedAt());
-        order.restorePackingStarted(entity.getPackingStartedAt());
         order.restoreFirstLabeled(entity.getFirstLabeledAt());
         order.restoreLifecycle(entity.getHoldReason(), entity.getStatusBeforeHold(), entity.getHoldNote(),
                 entity.getShippedAt(), entity.getDeliveredAt(), entity.getDeliveryFailureReason(),
@@ -145,7 +144,6 @@ final class OrderPersistenceMapper {
                 order.remainderFeePaidAmount());
         entity.applyClosedAmount(order.closedAmount());
         entity.applyFulfilmentStarted(order.fulfilmentStartedAt());
-        entity.applyPackingStarted(order.packingStartedAt());
         entity.applyFirstLabeled(order.firstLabeledAt());
         entity.applyLifecycle(order.holdReason(), order.statusBeforeHold(), order.holdNote(), order.shippedAt(),
                 order.deliveredAt(), order.deliveryFailureReason(), order.completedAt(), order.refundedAt(),

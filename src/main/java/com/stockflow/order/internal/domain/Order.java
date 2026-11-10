@@ -169,12 +169,6 @@ public final class Order extends AggregateRoot {
      */
     private Instant fulfilmentStartedAt;
     /**
-     * When fulfillment opened the order's first package, in the same transaction under this order's row lock
-     * ({@link #recordPackingStarted}). Every order ships as a full truckload (kltn-docs 09 BR-08): there is no
-     * delivery mode to choose or lock.
-     */
-    private Instant packingStartedAt;
-    /**
      * 4C-6: when the order's first shipping carton was labelled at the check station, in that transaction under this
      * order's row lock ({@link #recordFirstLabel}). From then the order is not cancelled and its delivery address does
      * not change (kltn-docs 08 BR-04, 17 BR-12, BR-16): the label printed on the carton carries it.
@@ -1056,25 +1050,6 @@ public final class Order extends AggregateRoot {
         this.fulfilmentStartedAt = at;
     }
 
-    /**
-     * Fulfillment opened a package of the order: packing started. Idempotent.
-     *
-     * @return whether this was the first package
-     */
-    public boolean recordPackingStarted(Instant at) {
-        java.util.Objects.requireNonNull(at, "at");
-        if (status == OrderStatus.CANCELLED) {
-            throw new BusinessException(ErrorCode.ORDER_CANCELLED,
-                    "Order %s is cancelled; nothing of it is packed".formatted(orderNumber));
-        }
-        if (packingStartedAt != null) {
-            return false;
-        }
-        packingStartedAt = at;
-        return true;
-    }
-
-    public Instant packingStartedAt() { return packingStartedAt; }
 
     /**
      * The check station printed the order's first shipping label (kltn-docs 08 §4.3 step 7, BR-04): from now the order
@@ -1116,11 +1091,6 @@ public final class Order extends AggregateRoot {
     /** Rehydration of when the first shipping label was printed. */
     public void restoreFirstLabeled(Instant at) {
         this.firstLabeledAt = at;
-    }
-
-    /** Rehydration of when packing started. */
-    public void restorePackingStarted(Instant packingStarted) {
-        this.packingStartedAt = packingStarted;
     }
 
     /** Rehydration of the partial-shipment decision. */

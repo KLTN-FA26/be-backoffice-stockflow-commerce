@@ -21,12 +21,11 @@ public interface LoadPlans {
 
     /**
      * A parcel as planning shows it: sizes in whole mm (measured cm rounded up), its place ({@code vehicleSeq}) or why
-     * it has none ({@code unplacedReason}). {@code partName} is its SKU ({@code SKU n/N} for a kit part).
+     * it has none ({@code unplacedReason}). {@code partName} is its SKU.
      */
     record ParcelView(UUID packageId, String labelCode, UUID shipmentId, String shipmentCode, String partName,
                       int lengthMm, int widthMm, int heightMm, BigDecimal weightKg, boolean rotatable,
-                      UUID kitGroupId, Integer kitPartNo, Integer kitPartCount, Integer vehicleSeq,
-                      String unplacedReason) { }
+                      Integer vehicleSeq, String unplacedReason) { }
 
     /**
      * A full-truckload shipment waiting for dispatch with the parcels no live plan holds (LP-5: chosen whole).

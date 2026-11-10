@@ -551,20 +551,6 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
                     problems);
         }
         Map<UUID, LoadPlanParcels.Parcel> all = parcels.of(plan.activePackageIds());
-        // A kit goes in whole (LP-3): a part taken from the tray brings the rest of its kit from the tray.
-        Set<UUID> kits = new HashSet<>();
-        given.forEach(id -> {
-            var kit = all.get(id).row().getKit();
-            if (kit != null) {
-                kits.add(kit.groupId());
-            }
-        });
-        tray.forEach(id -> {
-            var kit = all.get(id).row().getKit();
-            if (kit != null && kits.contains(kit.groupId())) {
-                given.add(id);
-            }
-        });
         Map<UUID, CargoPackage> cartons = cartons(all);
         List<CargoPackage> offered = given.stream().map(cartons::get).toList();
         LoadPlanRequest request = new LoadPlanRequest(offered, List.of(vehicle.spec()), SelectionMode.SINGLE_TYPE,
@@ -1128,12 +1114,10 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
 
     private static ParcelView parcelView(LoadPlanParcels.Parcel p, Integer seq, String unplacedReason) {
         CargoPackage c = p.carton();
-        var kit = p.row().getKit();
         return new ParcelView(p.packageId(), p.row().getLabelCode(), p.row().getShipmentId(),
                 p.shipment() == null ? null : p.shipment().getCode(), p.partName(), c == null ? 0 : c.lengthMm(),
                 c == null ? 0 : c.widthMm(), c == null ? 0 : c.heightMm(), p.row().getWeightKg(), p.row().isRotatable(),
-                kit == null ? null : kit.groupId(), kit == null ? null : kit.partNo(),
-                kit == null ? null : kit.partCount(), seq, unplacedReason);
+                seq, unplacedReason);
     }
 
     private PlanDetail detail(LoadPlanJpaEntity header, LoadPlan plan) {

@@ -670,26 +670,7 @@ public enum ErrorCode {
     /** G4-5: another packer took this order at the packing table; a warehouse manager may step in. */
     PACKING_TAKEN("Another packer is packing this order", 409),
     PACK_STATE_CONFLICT("Packing cannot do that in its current status", 409),
-    /** Docs 08 step 2, BR-01: the scanned item is not on the order (a wrong item). */
-    PACK_ITEM_NOT_IN_ORDER("This item is not in the order", 409),
     /** The scanned code is on two lines of the order (a plain and a printed cup of one SKU): name the line. */
-    /** G4-5: a scan id already recorded on another package or task: the client reused it; send a new one. */
-    PACK_SCAN_ID_CONFLICT("This scan id was already used for another package", 409),
-    PACK_SCAN_AMBIGUOUS("This item is on several lines of the order: name the line", 409),
-    /** Docs 08 BR-01: an over-scan, more than the order line still wants. */
-    PACK_QUANTITY_EXCEEDS_ORDER("More than the order line still wants", 409),
-    /** More than was picked (or produced) for the line: the rest has not reached packing. */
-    PACK_QUANTITY_EXCEEDS_PICKED("More than reached packing for this line", 409),
-    /** R8: units reported damaged at packing are still in a parcel; they are taken out of it first. */
-    PACK_DAMAGED_UNITS_PACKED("Those units are in a parcel: take them out before reporting them damaged", 409),
-    /** Docs 08 BR-01: the lot scanned was not picked for this line, or more of it than was picked. */
-    PACK_LOT_MISMATCH("This lot was not picked for this line", 409),
-    /** Docs 08 step 2: the serial scanned was not picked for this line, or is packed already. */
-    PACK_SERIAL_MISMATCH("This serial number was not picked for this line, or is packed already", 409),
-    PACKAGE_SEALED("The package is already sealed", 409),
-    PACKAGE_EMPTY("The package has nothing in it", 409),
-    /** Docs 08 BR-03, 09 BR-01: a package with goods in it is weighed, measured and sealed before it ships. */
-    PACKAGE_NOT_SEALED("A package is still open: seal it or take it apart", 409),
     PACKAGE_SHIPPED("The package is in a shipment already", 409),
     /** Docs 08 BR-01: everything the order still wants must be packed, or a partial shipment asked for. */
     PACKING_INCOMPLETE("Not everything is packed yet", 409),
@@ -701,11 +682,6 @@ public enum ErrorCode {
      * order's, one never picked, or an unreadable code. Refused; the warehouse manager checks the picking and the stock.
      */
     CARTON_NOT_IN_TASK("This carton was not picked for this order's task", 409),
-    /**
-     * Team plan 4C-6: the repack station's parcels (open, kit, scan, take out, seal, reopen, void) no longer ship - the
-     * LPN carton is the shipping carton, checked and labelled at the check station. Refused until 4C-7 removes them.
-     */
-    REPACK_RETIRED("Packing is done at the carton check station: parcels are no longer packed", 410),
     /** Kltn-docs 08 BR-08 (4C-6): a shipping label prints only for a carton whose LPN was scanned at the check. */
     CARTON_NOT_CHECKED("Only a checked carton gets a shipping label", 409),
     /**
@@ -713,16 +689,6 @@ public enum ErrorCode {
      * the check cannot complete until the warehouse manager completes it on the item.
      */
     CARTON_SPEC_UNMEASURED("The SKU's carton spec has no size or weight: no shipping label can print", 422),
-    /** SCRUM-287 LP2-6: a kit ("bộ") ships whole - a part of it is not sealed, or part 1 holds no unit yet. */
-    KIT_INCOMPLETE("A kit has parts that are not sealed yet", 409),
-    /** LP2-5: a kit has as many parts as its item ships boxes ({@code package_count}); one box is no kit. */
-    KIT_PART_COUNT_MISMATCH("The kit's parts do not match how many boxes the item ships as", 422),
-    /** LP2-6: only part 1 of a kit holds goods, and one unit of its item. */
-    KIT_CONTENTS_INVALID("Only part 1 of a kit holds goods: one unit of its item", 409),
-    /** LP2-6 (review of #155): part 1 of a kit takes the item of the line the kit was opened for, no other. */
-    KIT_ITEM_MISMATCH("This kit was opened for another item", 422),
-    /** KIT-FORCE (lead's decision 2026-10-22): an item that ships as several boxes goes in an ordinary package only with a reason. */
-    KIT_OVERRIDE_REASON_REQUIRED("This item ships as a kit: give a reason to pack it in an ordinary package", 422),
     /** Docs 09 §5: the shipment's status does not allow the step. */
     SHIPMENT_STATE_CONFLICT("The shipment cannot do that in its current status", 409),
     // ---- G4-2a loading and handover (kltn-docs 09 §4.1, §5): 404 / 400 / 409 kept together with the flow
@@ -824,8 +790,6 @@ public enum ErrorCode {
     /** 3-3 (09 §4.4): the file is not the system's template table; the message says why. */
     WAYBILL_IMPORT_INVALID_FILE("This file cannot be read as the waybill import template", 400),
     WAYBILL_IMPORT_NOT_FOUND("Waybill import not found", 404),
-    /** SCRUM-392: the parcel moved to another shipment (a left-behind split) since its label was printed: reprint it. */
-    LABEL_OUTDATED("The package label is out of date; reprint it", 409),
     LOAD_SCAN_ID_CONFLICT("This scan id was already used for another package or load", 409),
     /** SCRUM-392: parcels of a cancelled order are still on the vehicle; unload them before it is handed over. */
     LOAD_UNLOAD_PENDING("Parcels of a cancelled order are still on this vehicle; unload them first", 409),

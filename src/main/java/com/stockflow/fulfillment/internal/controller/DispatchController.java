@@ -89,7 +89,7 @@ class DispatchController {
     @PostMapping("/{loadId}/scans")
     @Operation(summary = "Scan a parcel onto the vehicle by its label code; the same scanId again answers as before. "
             + "404 PACKAGE_NOT_FOUND; 409 PACKAGE_NOT_IN_LOAD, PACKAGE_ALREADY_LOADED, PACKAGE_NOT_READY, "
-            + "LABEL_OUTDATED, PACKAGE_UNLOAD_PENDING, LOAD_SCAN_ID_CONFLICT, INVALID_LOAD_TRANSITION")
+            + "PACKAGE_UNLOAD_PENDING, LOAD_SCAN_ID_CONFLICT, INVALID_LOAD_TRANSITION")
     @RequiresPermission(resource = FulfillmentResources.DISPATCH, action = Action.UPDATE)
     @Auditable(action = AuditAction.UPDATE, resourceType = "dispatch-load", resourceId = "#loadId")
     public ApiResponse<LoadResponse> scan(@PathVariable UUID loadId, @Valid @RequestBody LoadScanRequest request,

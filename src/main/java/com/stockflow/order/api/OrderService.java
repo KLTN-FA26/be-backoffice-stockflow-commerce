@@ -230,14 +230,6 @@ public interface OrderService {
     void recordPacked(UUID orderId);
 
     /**
-     * Fulfillment opened a package of the order: packing started. Joins the caller's transaction and takes the order's
-     * row lock. Idempotent.
-     *
-     * @throws com.stockflow.common.error.BusinessException {@code NOT_FOUND}; {@code ORDER_CANCELLED}
-     */
-    void recordPackingStarted(UUID orderId);
-
-    /**
      * The check station labelled a shipping carton of the order (4C-6, kltn-docs 08 §4.3 step 7): the first time, the
      * order is locked - no cancellation, no change of delivery address (08 BR-04, 17 BR-12, BR-16) - and a customer's
      * cancellation request still waiting expires. Joins the caller's transaction, which must exist, and takes the
