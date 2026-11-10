@@ -36,11 +36,6 @@ Enum product.product_attributes_role {
   DESCRIPTIVE
 }
 
-Enum product.products_kind {
-  STANDARD
-  CUSTOMIZABLE
-}
-
 Enum product.products_status {
   DRAFT
   PENDING_APPROVAL
@@ -1439,7 +1434,7 @@ Table product.products [headercolor: #2E86AB] {
   description        text
   description_en     text
   tax_class          product.products_tax_class
-  kind               product.products_kind [not null, default: 'STANDARD']
+  kind               varchar(16) [not null, default: 'CUSTOMIZABLE']
   status             product.products_status [not null, default: 'DRAFT']
   rejection_reason   text
   seo_title          varchar(255)
