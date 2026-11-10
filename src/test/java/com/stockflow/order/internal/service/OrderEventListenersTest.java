@@ -32,7 +32,7 @@ class OrderEventListenersTest {
     class Installments {
 
         private final OrderRepository repository = mock(OrderRepository.class);
-        private final InstallmentOrdersAdapter adapter = new InstallmentOrdersAdapter(repository);
+        private final InstallmentOrdersAdapter adapter = new InstallmentOrdersAdapter(repository, mock(DeliveryBatchService.class));
 
         @Test
         @DisplayName("a confirmed order reports whose it is, its status, its currency and that it may be held")

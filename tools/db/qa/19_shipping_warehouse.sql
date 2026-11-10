@@ -102,7 +102,8 @@ SELECT pg_temp.expect_ok('SW11 allocated on a bin of HCM, where it is held (rele
                                              reserved_at, status, sku, allocated_from_id)
     VALUES (gen_random_uuid(), '11111111-1111-4111-8111-111111111111', md5('qa19:contract')::uuid, gen_random_uuid(),
             gen_random_uuid(), 25, NOW(), 'HELD', 'SOFA-3S-GREY', md5('qa19:hold')::uuid);
-    UPDATE inventory.stock_item SET reserved = reserved + 25 WHERE id = '11111111-1111-4111-8111-111111111111' $q$);
+    -- 4C-2: a bin holds whole cartons, so the demo row has little on hand; the 25 are added to both.
+    UPDATE inventory.stock_item SET on_hand = on_hand + 25, reserved = reserved + 25 WHERE id = '11111111-1111-4111-8111-111111111111' $q$);
 
 \echo '--- released from where it ships (BR-22)'
 SELECT pg_temp.expect_fail('SW12 an order of a contract released with no shipping warehouse', $q$

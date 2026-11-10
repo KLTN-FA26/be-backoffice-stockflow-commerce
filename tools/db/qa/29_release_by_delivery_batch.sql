@@ -220,14 +220,16 @@ SELECT pg_temp.expect_fail('BR19 a window change that names a chat message that 
 SELECT pg_temp.expect_ok('BR20 batch 1 handed over on the first day of its window', $q$
     INSERT INTO ordering.order_shipment (id, order_id, status, amount, handed_over_at, delivery_batch_id)
     VALUES (md5('qa29:shipment1')::uuid, md5('qa29:order')::uuid, 'HANDED_OVER', 1100000,
-            NOW() + interval '31 days', md5('qa29:b1')::uuid) $q$);
+            NOW() + interval '31 days', md5('qa29:b1')::uuid);
+    INSERT INTO ordering.order_shipment_line (shipment_id, order_line_id, quantity)
+    VALUES (md5('qa29:shipment1')::uuid, md5('qa29:line')::uuid, 500) $q$);
 SELECT pg_temp.expect_fail('BR21 batch 1''s window moves no more once a carton of it left', $q$
     INSERT INTO ordering.delivery_batch_window_change (id, delivery_batch_id, order_id, old_window_start, old_window_end,
         new_window_start, new_window_end, reason_code, note, evidence_file_key, evidence_file_name, changed_by, changed_at)
     VALUES (gen_random_uuid(), md5('qa29:b1')::uuid, md5('qa29:order')::uuid, CURRENT_DATE + 30, CURRENT_DATE + 32,
             CURRENT_DATE + 31, CURRENT_DATE + 33, 'SELLER_DELAY', 'late', 'files/e.pdf', 'e.pdf',
             md5('demo:user:editor')::uuid, NOW()) $q$);
-SELECT pg_temp.expect_ok('BR22 now batch 2 is released (batch 1 handed over, its window in force from day 48 is not asked yet)', $q$
+SELECT pg_temp.expect_ok('BR22 now batch 2 is released (batch 1 handed over in full, 500 units, 17 BR-29; its window in force from day 48 is not asked yet)', $q$
     INSERT INTO ordering.delivery_batch_release (delivery_batch_id, order_id, seq, warehouse_id, released_at, released_by)
     VALUES (md5('qa29:b2')::uuid, md5('qa29:order')::uuid, 2, md5('demo:wh:HCM')::uuid, NOW(),
             md5('demo:user:editor')::uuid) $q$);
