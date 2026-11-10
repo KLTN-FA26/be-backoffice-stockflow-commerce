@@ -24,6 +24,7 @@ import com.stockflow.order.internal.domain.Producer;
 import com.stockflow.order.internal.domain.ProductionOrder;
 import com.stockflow.order.internal.domain.ProductionOrderStatus;
 import com.stockflow.order.internal.domain.ProductionOrderStatusChanged;
+import com.stockflow.order.internal.service.DeliveryBatchService;
 import com.stockflow.order.internal.service.OrderReleases;
 import com.stockflow.order.internal.service.ProducerService;
 import com.stockflow.order.internal.service.ProductionOrderService;
@@ -106,6 +107,7 @@ class AwaitingStockIntegrationTest {
     private static Warehouse a;
 
     @Autowired ProductionOrderService productionOrders;
+    @Autowired DeliveryBatchService deliveryBatches;
     @Autowired ProducerService producers;
     @Autowired SalesContracts contracts;
     @Autowired OrderService orders;
@@ -226,13 +228,15 @@ class AwaitingStockIntegrationTest {
         });
     }
 
-    /** {@code units} pieces of the test's SKU free in the warehouse's bin: goods put away. */
+    /**
+     * {@code units} pieces of the test's SKU free in the warehouse's bin as whole sealed cartons of 50: goods put away
+     * (stock is whole LPN cartons since team plan 4C-2).
+     */
     private void stock(int units) {
-        tx.executeWithoutResult(s -> jdbc.update("""
-                INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, version,
-                    created_at, received_at)
-                VALUES (?, ?, ?, ?, 0, 'AVAILABLE', 0, NOW(), clock_timestamp() - interval '2 days')""",
-                Identifiers.newId(), sku.sku(), a.bin(), units));
+        assertThat(units % PER_CARTON).as("whole cartons").isZero();
+        tx.executeWithoutResult(s -> com.stockflow.support.CartonRows.stockOfUnit(jdbc, sku.sku(),
+                sku.uomConversionId(), a.bin(), units / PER_CARTON, null, null,
+                Instant.now().minus(java.time.Duration.ofDays(2)), "AVAILABLE"));
     }
 
     /** A new order of a contract, 12 + 8 cartons, everything paid before delivery: CONFIRMED at signing. */
@@ -340,6 +344,45 @@ class AwaitingStockIntegrationTest {
     // ---- scenarios --------------------------------------------------------------------------------------------------
 
     @Test
+    @DisplayName("R2 (17 §4.5, BR-26): a moved window moves the needed-by date of its batch's DRAFT "
+            + "production order and is the default of one drawn up after it; one already sent keeps its date; coverage "
+            + "shows the window in force")
+    void aMovedWindowMovesTheDraftsNeededByDate() {
+        UUID orderId = confirmedOrder();
+        choose(orderId);
+        ProductionOrder sentFirst = sent(drawUp(orderId, 1));
+        ProductionOrder draftSecond = drawUp(orderId, 2);
+        assertThat(sentFirst.needByDate()).isEqualTo(today.plusDays(21));
+        assertThat(draftSecond.needByDate()).isEqualTo(today.plusDays(35));
+
+        UUID consent = com.stockflow.support.ChatRows.message(jdbc, tx, customerId, orderId, "CUSTOMER");
+        moveWindow(orderId, 1, today.plusDays(24), consent);
+        moveWindow(orderId, 2, today.plusDays(42), consent);
+
+        assertThat(productionOrders.detail(sentFirst.id()).order().needByDate())
+                .as("sent: the coordinator tells the producer, the date stays").isEqualTo(today.plusDays(21));
+        ProductionOrder followed = productionOrders.detail(draftSecond.id()).order();
+        assertThat(followed.needByDate()).as("a draft follows the window in force").isEqualTo(today.plusDays(42));
+        assertThat(shippingWarehouses.coverage(orderId).batches()).extracting(BatchCoverage::windowStart)
+                .as("coverage reads the window in force").containsExactly(today.plusDays(24), today.plusDays(42));
+
+        productionOrders.cancel(followed.id(), followed.version(), "drawn up again", coordinator);
+        assertThat(drawUp(orderId, 2).needByDate()).as("drawn up after the move: the new window's first day")
+                .isEqualTo(today.plusDays(42));
+    }
+
+    /** Sales moves batch {@code seq}'s window to start on {@code start}, with the customer's consent in chat (BR-28). */
+    private void moveWindow(UUID orderId, int seq, LocalDate start, UUID consent) {
+        UUID batch = jdbc.queryForObject("""
+                SELECT b.id FROM ordering.delivery_batch b JOIN ordering.sales_contract c ON c.id = b.contract_id
+                 WHERE c.order_id = ? AND b.seq = ?""", UUID.class, orderId, seq);
+        asSales(() -> deliveryBatches.changeWindow(sales, orderId, batch, new DeliveryBatchService.WindowChange(start,
+                start.plusDays(2), com.stockflow.order.internal.domain.WindowChangeReason.SELLER_DELAY,
+                "The producer is late", null, consent)));
+    }
+
+
+    @Test
     @DisplayName("BR-04, BR-11, 17 §5.1: a short order waits once a production order is sent, records printing once, "
             + "holds what is put away and is released from AWAITING_STOCK with every carton held")
     void waitsForStockThenReleased() {
@@ -386,7 +429,8 @@ class AwaitingStockIntegrationTest {
         assertThat(jdbc.queryForObject("""
                 SELECT COALESCE(sum(quantity), 0) FROM inventory.stock_reservation
                  WHERE order_id = ? AND allocated_from_id IS NOT NULL AND status = 'HELD'""", Long.class, orderId))
-                .as("every carton allocated on the bin").isEqualTo((long) CARTONS * PER_CARTON);
+                .as("4B-8 (17 BR-29): the release is batch 1's - its 12 cartons allocated on the bin")
+                .isEqualTo(12L * PER_CARTON);
     }
 
     @Test
