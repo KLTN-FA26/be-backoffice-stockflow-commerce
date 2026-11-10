@@ -2,8 +2,6 @@ package com.stockflow.order;
 
 import com.stockflow.common.domain.Money;
 import com.stockflow.common.security.DataScope;
-import com.stockflow.contracts.PaymentCaptured;
-import com.stockflow.contracts.PaymentMethod;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.common.domain.Sku;
 import com.stockflow.order.api.OrderService;
@@ -11,21 +9,23 @@ import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.OrderSummary;
 import com.stockflow.order.api.PlaceOrderCommand;
 import com.stockflow.support.Await;
+import com.stockflow.support.ConfirmedOrders;
+import com.stockflow.support.CustomerSkuRows;
 import com.stockflow.support.DemoData;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
 import com.stockflow.support.TestUsers;
 import com.stockflow.support.WithCurrentUser;
+import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.ApplicationContext;
-import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.context.TestPropertySource;
 import org.springframework.transaction.support.TransactionTemplate;
 
-import java.math.BigDecimal;
 import java.time.Duration;
 import java.util.List;
 import java.util.UUID;
@@ -34,14 +34,19 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * kltn-docs 14 BR-07 (SCRUM-465): a stock hold has a deadline only while its order waits for
- * payment. Paid, its holds are pinned and survive the expiry sweep; unpaid past the deadline, the
- * order is cancelled and its stock released.
+ * payment. A contract's order, confirmed and holding at its shipping warehouse, holds with no deadline and survives the
+ * expiry sweep (4B-7, 17 §4.2); a checkout order unpaid past the deadline is cancelled and its stock released.
+ *
+ * <p>Money arriving for an order already cancelled is no longer this test's: since 4B-10 nothing publishes a
+ * {@code PaymentCaptured}, and a receipt names an installment, which the cancellation settled (4B-9).</p>
  *
  * <p>The sweep is run directly rather than waited for, and a deadline is moved into the past in the
  * database instead of sleeping through the configured TTL. Every test puts its stock back.</p>
  */
 @IntegrationTest
 @Import(PostgresContainer.class)
+@TestPropertySource(properties = {"stockflow.upload-inspection.enabled=false",
+        "stockflow.notification.email.customer.enabled=false"})
 class PaidOrderHoldIntegrationTest {
 
     /** From the demo seed: 25 units at HCM-A01-2-B plus 8 at HCM-A02-1-A. */
@@ -51,20 +56,13 @@ class PaidOrderHoldIntegrationTest {
     @Autowired OrderService orders;
     @Autowired InventoryService inventory;
     @Autowired TransactionTemplate transactions;
-    @Autowired ApplicationEventPublisher publisher;
+    @Autowired EntityManager entityManager;
     @Autowired ApplicationContext context;
     @Autowired JdbcTemplate jdbc;
 
     private UUID place(int quantity) {
         return orders.placeOrder(new PlaceOrderCommand(UUID.randomUUID(), DemoData.CUSTOMER_ID, List.of(
                 new PlaceOrderCommand.Line(SOFA, quantity, Money.vnd(12_000_000), null)))).orderId();
-    }
-
-    /** As the payment module will: the whole total, published in a transaction, delivered after commit. */
-    private void paymentCaptured(UUID orderId) {
-        BigDecimal total = orders.findById(orderId).orElseThrow().total().amount();
-        transactions.executeWithoutResult(status -> publisher.publishEvent(new PaymentCaptured(
-                orderId, UUID.randomUUID(), total, "VND", PaymentMethod.BANK_TRANSFER)));
     }
 
     private OrderStatus statusOf(UUID orderId) {
@@ -110,23 +108,26 @@ class PaidOrderHoldIntegrationTest {
     }
 
     @Test
-    @DisplayName("a paid order's holds are pinned and survive the expiry sweep")
-    void paidHoldsArePinned() throws Exception {
-        int before = inventory.availableToPromise(SOFA);
-        UUID orderId = place(2);
-        assertThat(holdStates(orderId)).allMatch(state -> state.equals("HELD:deadline"));
+    @DisplayName("a contract's confirmed order holds at its shipping warehouse with no deadline and survives the sweep")
+    void paidHoldsArePinned() {
+        // The demo customer's own sofa (a contract's lines are only ever that, 14 BR-04), stocked for this test.
+        Sku sofa = new Sku(CustomerSkuRows.like(jdbc, transactions, entityManager, DemoData.CUSTOMER_ID,
+                "SOFA-3S-GREY", 50).sku());
+        CustomerSkuRows.stock(jdbc, transactions, sofa.code(), 5);
+        ConfirmedOrders confirmedOrders = new ConfirmedOrders(context);
+        UUID orderId = confirmedOrders.confirmed(DemoData.CUSTOMER_ID,
+                ConfirmedOrders.Line.units(sofa.code(), 2, 12_000_000)).orderId();
+        assertThat(holdStates(orderId)).as("a contract's order holds nothing before its warehouse is chosen").isEmpty();
 
-        paymentCaptured(orderId);
-        Await.until("order confirmed", ASYNC, () -> statusOf(orderId) == OrderStatus.CONFIRMED);
-
+        confirmedOrders.ship(orderId, DemoData.WAREHOUSE_HCM);
         assertThat(holdStates(orderId)).isNotEmpty().allMatch(state -> state.equals("HELD:pinned"));
         deadlinePassed(orderId);   // nothing to move: pinned holds have no deadline
         sweep();
         assertThat(holdStates(orderId)).allMatch(state -> state.equals("HELD:pinned"));
-        assertThat(inventory.availableToPromise(SOFA)).isEqualTo(before - 2);
+        assertThat(inventory.availableToPromise(sofa)).isEqualTo(3);
 
         cleanUp(orderId);
-        assertThat(inventory.availableToPromise(SOFA)).isEqualTo(before);
+        assertThat(inventory.availableToPromise(sofa)).isEqualTo(5);
     }
 
     @Test
@@ -144,26 +145,6 @@ class PaidOrderHoldIntegrationTest {
                 || state.startsWith("RELEASED"));
         assertThat(jdbc.queryForObject("SELECT cancellation_reason FROM ordering.customer_order WHERE id = ?",
                 String.class, orderId)).startsWith("PAYMENT_NOT_RECEIVED");
-        assertThat(inventory.availableToPromise(SOFA)).isEqualTo(before);
-    }
-
-    @Test
-    @DisplayName("money arriving after the order was cancelled leaves it cancelled, without failing")
-    void paymentAfterCancellationIsLeftForRefund() throws Exception {
-        int before = inventory.availableToPromise(SOFA);
-        UUID orderId = place(1);
-        deadlinePassed(orderId);
-        sweep();
-        Await.until("order cancelled", ASYNC, () -> statusOf(orderId) == OrderStatus.CANCELLED);
-
-        paymentCaptured(orderId);
-        // The listener runs asynchronously; give it the same window, then check nothing moved.
-        Thread.sleep(1_500);
-        assertThat(statusOf(orderId)).isEqualTo(OrderStatus.CANCELLED);
-        assertThat(jdbc.queryForObject("""
-                SELECT count(*) FROM event_publication
-                WHERE event_type LIKE '%PaymentCaptured' AND completion_date IS NULL
-                  AND serialized_event LIKE ?""", Integer.class, "%" + orderId + "%")).isZero();
         assertThat(inventory.availableToPromise(SOFA)).isEqualTo(before);
     }
 }
