@@ -235,7 +235,6 @@ Enum warehouse.area_status {
 
 Enum warehouse.area_type {
   RECEIVING
-  QUALITY_CONTROL
   QUARANTINE
   DISPATCH
   STAGING
@@ -670,17 +669,10 @@ Enum ordering.return_request_reason_code {
   OTHER
 }
 
-Enum ordering.return_request_requested_resolution {
-  REPLACEMENT
-  REFUND
-  CREDIT_NOTE
-}
-
 Enum ordering.return_request_status {
   REQUESTED
   AWAITING_RETURN
   RECEIVED
-  INSPECTED
   SETTLEMENT_PENDING
   RESOLVED
   REJECTED
@@ -699,13 +691,6 @@ Enum ordering.return_request_evidence_stage {
   CLAIM
   RECEIPT
   INSPECTION
-}
-
-Enum ordering.return_request_line_item_condition {
-  UNOPENED
-  GOOD
-  DAMAGED
-  DEFECTIVE
 }
 
 Enum ordering.sales_contract_status {
@@ -2862,7 +2847,6 @@ Table ordering.customer_order [headercolor: #C0392B] {
   fulfilment_started_at         timestamptz
   packing_started_at            timestamptz
   goods_left_at                 timestamptz
-  replaces_return_request_id    uuid
   closed_amount                 decimal(19,4) [not null, default: 0]
   tax_amount                    decimal(19,4) [not null, default: 0]
   net_amount                    decimal(19,4) [note: 'generated: (total_amount - tax_amount)']
@@ -3254,68 +3238,49 @@ Table ordering.return_number_sequence [headercolor: #C0392B] {
 }
 
 Table ordering.return_request [headercolor: #C0392B] {
-  id                            uuid [pk]
-  rma_number                    varchar(30) [not null, unique]
-  order_id                      uuid [not null]
-  customer_id                   uuid [not null]
-  status                        ordering.return_request_status [not null]
-  reason_code                   ordering.return_request_reason_code [not null]
-  note                          varchar(2000)
-  requested_at                  timestamptz [not null]
-  decided_by                    uuid
-  decided_at                    timestamptz
-  rejection_reason              varchar(500)
-  received_at                   timestamptz
-  version                       bigint [not null, default: 0]
-  created_at                    timestamptz [not null, default: `now()`]
-  created_by                    varchar(100)
-  last_modified_at              timestamptz
-  last_modified_by              varchar(100)
-  order_number                  varchar(32) [not null]
-  request_id                    uuid [not null, unique]
-  channel                       ordering.return_request_channel [not null]
-  requested_by                  uuid [not null]
-  requested_resolution          ordering.return_request_requested_resolution [not null]
-  currency                      varchar(3) [not null, default: 'VND']
-  decision_note                 varchar(1000)
-  return_required               boolean
-  return_deadline               timestamptz
-  received_by                   uuid
-  receiving_location_code       varchar(64)
-  receipt_note                  varchar(1000)
-  parcel_count                  int [not null, default: 0]
-  window_override_reason        varchar(500)
-  inspected_by                  uuid
-  inspected_at                  timestamptz
-  inspection_note               varchar(1000)
-  money_mode                    varchar(16)
-  settlement_amount             decimal(19,4) [not null, default: 0]
-  proposed_by                   uuid
-  proposed_at                   timestamptz
-  resolution_note               varchar(1000)
-  settled_by                    uuid
-  settled_at                    timestamptz
-  refunded_amount               decimal(19,4) [not null, default: 0]
-  credited_amount               decimal(19,4) [not null, default: 0]
-  offset_amount                 decimal(19,4) [not null, default: 0]
-  credit_transfer_id            uuid
-  replacement_order_id          uuid
-  vat_adjustment_required       boolean [not null, default: false]
-  cancelled_by                  uuid
-  cancellation_reason           varchar(500)
-  closed_at                     timestamptz
-  withdrawal_status             varchar(16)
-  withdrawal_reason             varchar(500)
-  withdrawal_amount             decimal(19,4) [not null, default: 0]
-  withdrawal_proposed_by        uuid
-  withdrawal_proposed_at        timestamptz
-  withdrawal_decided_by         uuid
-  withdrawal_decided_at         timestamptz
-  withdrawal_decision_note      varchar(500)
-  withdrawal_offset_amount      decimal(19,4) [not null, default: 0]
-  withdrawal_credited_amount    decimal(19,4) [not null, default: 0]
-  withdrawal_credit_transfer_id uuid
-  goods_receipt_id              uuid
+  id                      uuid [pk]
+  rma_number              varchar(30) [not null, unique]
+  order_id                uuid [not null]
+  customer_id             uuid [not null]
+  status                  ordering.return_request_status [not null]
+  reason_code             ordering.return_request_reason_code [not null]
+  note                    varchar(2000)
+  requested_at            timestamptz [not null]
+  decided_by              uuid
+  decided_at              timestamptz
+  rejection_reason        varchar(500)
+  received_at             timestamptz
+  version                 bigint [not null, default: 0]
+  created_at              timestamptz [not null, default: `now()`]
+  created_by              varchar(100)
+  last_modified_at        timestamptz
+  last_modified_by        varchar(100)
+  order_number            varchar(32) [not null]
+  request_id              uuid [not null, unique]
+  channel                 ordering.return_request_channel [not null]
+  requested_by            uuid [not null]
+  requested_resolution    varchar(16) [not null, default: 'REFUND']
+  currency                varchar(3) [not null, default: 'VND']
+  decision_note           varchar(1000)
+  return_required         boolean
+  return_deadline         timestamptz
+  received_by             uuid
+  receiving_location_code varchar(64)
+  window_override_reason  varchar(500)
+  money_mode              varchar(16)
+  settlement_amount       decimal(19,4) [not null, default: 0]
+  proposed_by             uuid
+  proposed_at             timestamptz
+  resolution_note         varchar(1000)
+  settled_by              uuid
+  settled_at              timestamptz
+  refunded_amount         decimal(19,4) [not null, default: 0]
+  offset_amount           decimal(19,4) [not null, default: 0]
+  vat_adjustment_required boolean [not null, default: false]
+  cancelled_by            uuid
+  cancellation_reason     varchar(500)
+  closed_at               timestamptz
+  goods_receipt_id        uuid
 }
 
 Table ordering.return_request_discrepancy [headercolor: #C0392B] {
@@ -3347,40 +3312,22 @@ Table ordering.return_request_evidence [headercolor: #C0392B] {
 }
 
 Table ordering.return_request_line [headercolor: #C0392B] {
-  id                            uuid [pk]
-  return_request_id             uuid [not null]
-  order_line_id                 uuid [not null]
-  quantity                      int [not null]
-  item_condition                ordering.return_request_line_item_condition
-  version                       bigint [not null, default: 0]
-  created_at                    timestamptz [not null, default: `now()`]
-  created_by                    varchar(100)
-  last_modified_at              timestamptz
-  last_modified_by              varchar(100)
-  sku                           varchar(64) [not null]
-  custom_printed                boolean [not null]
-  unit_price                    decimal(19,4) [not null]
-  approved_quantity             int
-  received_sku                  varchar(64)
-  received_quantity             int
-  lot_number                    varchar(64)
-  accepted_quantity             int
-  rejected_quantity             int
-  inspection_note               varchar(1000)
-  restock_quantity              int [not null, default: 0]
-  scrap_quantity                int [not null, default: 0]
-  customer_return_quantity      int [not null, default: 0]
-  restock_location_code         varchar(64)
-  received_plain                boolean
-  disposal_consent_note         varchar(500)
-  scrap_adjustment_id           uuid
-  customer_return_adjustment_id uuid
-  replacement_quantity          int [not null, default: 0]
-  credit_quantity               int [not null, default: 0]
-  credit_amount                 decimal(19,4) [not null, default: 0]
-  replacement_order_line_id     uuid
-  refund_quantity               int [not null, default: 0]
-  refund_amount                 decimal(19,4) [not null, default: 0]
+  id                uuid [pk]
+  return_request_id uuid [not null]
+  order_line_id     uuid [not null]
+  quantity          int [not null]
+  version           bigint [not null, default: 0]
+  created_at        timestamptz [not null, default: `now()`]
+  created_by        varchar(100)
+  last_modified_at  timestamptz
+  last_modified_by  varchar(100)
+  sku               varchar(64) [not null]
+  custom_printed    boolean [not null]
+  unit_price        decimal(19,4) [not null]
+  approved_quantity int
+  received_quantity int
+  refund_quantity   int [not null, default: 0]
+  refund_amount     decimal(19,4) [not null, default: 0]
   indexes {
     (return_request_id, order_line_id) [unique]
   }
@@ -5559,7 +5506,6 @@ Ref: ordering.contract_payment_installment.contract_id > ordering.sales_contract
 Ref: ordering.contract_payment_installment.delivery_batch_id > ordering.delivery_batch.id [delete: cascade]
 Ref: ordering.customer_order.customer_id > customer.customer.id [delete: restrict]
 Ref: ordering.customer_order.released_by > identity.app_user.id
-Ref: ordering.customer_order.replaces_return_request_id > ordering.return_request.id [delete: restrict]
 Ref: ordering.customer_order.shipping_warehouse_chosen_by > identity.app_user.id
 Ref: ordering.customer_order.shipping_warehouse_id > warehouse.warehouse.id [delete: restrict]
 Ref: ordering.customer_order.warehouse_id > warehouse.warehouse.id [delete: restrict]
@@ -5624,33 +5570,22 @@ Ref: ordering.quote_price_tier.quote_line_id > ordering.quote_line.id [delete: c
 Ref: ordering.quote_status_history.changed_by > identity.app_user.id
 Ref: ordering.quote_status_history.quote_id > ordering.quote.id [delete: cascade]
 Ref: ordering.return_request.cancelled_by > identity.app_user.id
-Ref: ordering.return_request.credit_transfer_id > payment.customer_transfer.id [delete: restrict]
 Ref: ordering.return_request.customer_id > customer.customer.id [delete: restrict]
 Ref: ordering.return_request.decided_by > identity.app_user.id
 Ref: ordering.return_request.goods_receipt_id > procurement.goods_receipts.id [delete: restrict]
-Ref: ordering.return_request.inspected_by > identity.app_user.id
 Ref: ordering.return_request.order_id > ordering.customer_order.id [delete: restrict]
 Ref: ordering.return_request.proposed_by > identity.app_user.id
 Ref: ordering.return_request.received_by > identity.app_user.id
 Ref: ordering.return_request.receiving_location_code > warehouse.storage_location.location_code [delete: restrict]
-Ref: ordering.return_request.replacement_order_id > ordering.customer_order.id [delete: restrict]
 Ref: ordering.return_request.requested_by > identity.app_user.id
 Ref: ordering.return_request.settled_by > identity.app_user.id
-Ref: ordering.return_request.withdrawal_credit_transfer_id > payment.customer_transfer.id [delete: restrict]
-Ref: ordering.return_request.withdrawal_decided_by > identity.app_user.id
-Ref: ordering.return_request.withdrawal_proposed_by > identity.app_user.id
 Ref: ordering.return_request_discrepancy.recorded_by > identity.app_user.id
 Ref: ordering.return_request_discrepancy.return_request_id > ordering.return_request.id [delete: cascade]
 Ref: ordering.return_request_discrepancy.return_request_line_id > ordering.return_request_line.id [delete: cascade]
 Ref: ordering.return_request_evidence.return_request_id > ordering.return_request.id [delete: cascade]
 Ref: ordering.return_request_evidence.uploaded_by > identity.app_user.id
-Ref: ordering.return_request_line.customer_return_adjustment_id > inventory.stock_adjustment.id [delete: restrict]
 Ref: ordering.return_request_line.order_line_id > ordering.order_line.id [delete: restrict]
-Ref: ordering.return_request_line.received_sku > inventory.inventory_items.sku [delete: restrict]
-Ref: ordering.return_request_line.replacement_order_line_id > ordering.order_line.id [delete: restrict]
-Ref: ordering.return_request_line.restock_location_code > warehouse.storage_location.location_code [delete: restrict]
 Ref: ordering.return_request_line.return_request_id > ordering.return_request.id [delete: cascade]
-Ref: ordering.return_request_line.scrap_adjustment_id > inventory.stock_adjustment.id [delete: restrict]
 Ref: ordering.return_request_line.sku > product.variants.sku [delete: restrict]
 Ref: ordering.return_request_status_history.actor_id > identity.app_user.id
 Ref: ordering.return_request_status_history.return_request_id > ordering.return_request.id [delete: cascade]
