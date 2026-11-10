@@ -23,7 +23,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class MoneyLedgerRemovalMigrationUpgradeTest {
 
-    private static final String BEFORE = "20261113000110";
+    private static final String BEFORE = "20261113000710";
     private static final String MIGRATION = "20261116000100";
     private static final String CUSTOMER = "00000000-0000-4000-8000-0000000000c1";
     private static final String ACCOUNTANT = "00000000-0000-4000-8000-0000000000a1";

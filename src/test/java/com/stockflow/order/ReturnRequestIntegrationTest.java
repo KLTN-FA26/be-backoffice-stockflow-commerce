@@ -140,7 +140,8 @@ class ReturnRequestIntegrationTest {
     /** A CONFIRMED order of {@code units} pieces, at least two: one carton of them (14 BR-08), its stock in HCM. */
     private OrderSummary place(int units) {
         // Stock for the order and for what the returns of it send out again (a replacement order holds its own).
-        CustomerSkuRows.stock(jdbc, tx, sku, units + 10);
+        CustomerSkuRows.stock(jdbc, tx, sku, units);
+        CustomerSkuRows.stock(jdbc, tx, sku, units);
         UUID orderId = confirmedOrders.confirmed(customer, ConfirmedOrders.Line.units(sku, units, PRICE)).orderId();
         placed.add(orderId);
         return orders.findById(orderId).orElseThrow();

@@ -255,8 +255,8 @@ public final class ConfirmedOrders {
     }
 
     /**
-     * The same with the cartons of every line split over {@code batches} delivery batches, the first three weeks out,
-     * each next one two weeks after the one before (4B-8); a line's cartons must divide by the number of batches.
+     * The same with the cartons of every line split over {@code batches} delivery batches, the first from today,
+     * each next one two weeks after the one before; the first opens today, because a batch is not handed over before its window (4B-8, 09 BR-04) and the tests hand over at once; a line's cartons must divide by the number of batches.
      */
     public Signed sign(UUID orderId, List<SalesContracts.Installment> plan, int batches) {
         legalProfile(customerOf(orderId));
@@ -269,7 +269,7 @@ public final class ConfirmedOrders {
             final int part = b;
             List<SalesContracts.BatchLine> batch = lines.stream().map(row -> new SalesContracts.BatchLine(
                     (UUID) row.get("id"), ((Number) row.get("cartons")).intValue() / batches)).toList();
-            schedule.add(new SalesContracts.Batch(today.plusDays(21 + 14L * part), today.plusDays(23 + 14L * part),
+            schedule.add(new SalesContracts.Batch(today.plusDays(14L * part), today.plusDays(2 + 14L * part),
                     batch));
         }
         SalesContracts.ContractView drafted = asSales(() -> contracts.create(sales(), orderId,

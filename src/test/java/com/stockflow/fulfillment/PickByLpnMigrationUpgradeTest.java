@@ -27,7 +27,7 @@ import static org.assertj.core.api.Assertions.catchThrowable;
  */
 class PickByLpnMigrationUpgradeTest {
 
-    private static final String BEFORE = "20261111000200";
+    private static final String BEFORE = "20261113000110";
     private static final String MIGRATION = "20261113000400";
 
     private static final String WAREHOUSE = "00000000-0000-4000-8000-0000000c4000";
