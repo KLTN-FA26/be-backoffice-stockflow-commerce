@@ -83,6 +83,13 @@ class FixedStockPolicyMigrationUpgradeTest {
                         serialUnit, TABLE);
                 RawSql.update(db, "INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, "
                         + "version, created_at) VALUES (?, ?, 'FSP-RCV02', 0, 0, 'AVAILABLE', 0, NOW())", emptied, SOFA);
+                // Rows told apart only by their serial number (L1): three loose units of one lot, place and receipt time, and
+                // two units in cartons of one lot and receipt time. Without the serial the new layer keys would collide.
+                for (int i = 1; i <= 3; i++) {
+                    RawSql.update(db, "INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, serial_number, "
+                            + "on_hand, reserved, status, received_at, version, created_at) VALUES (gen_random_uuid(), ?, "
+                            + "'FSP-RCV01', 'LOT-S', ?, 1, 0, 'AVAILABLE', '2026-10-01T00:00:00Z', 0, NOW())", TABLE, "SN-" + i);
+                }
                 RawSql.update(db, "SET session_replication_role = origin");
                 long rows = RawSql.number(db, "SELECT count(*) FROM inventory.stock_item");
                 long onHand = RawSql.number(db, "SELECT sum(on_hand) FROM inventory.stock_item");
@@ -96,6 +103,11 @@ class FixedStockPolicyMigrationUpgradeTest {
                 // Nothing of the stock is lost.
                 assertThat(RawSql.number(db, "SELECT count(*) FROM inventory.stock_item")).isEqualTo(rows);
                 assertThat(RawSql.number(db, "SELECT sum(on_hand) FROM inventory.stock_item")).isEqualTo(onHand);
+                // L1: the three serial-only twins survive, told apart by receipt time now, and the unique key exists.
+                assertThat(RawSql.number(db, "SELECT count(DISTINCT received_at) FROM inventory.stock_item WHERE sku = ? "
+                        + "AND lot_number = 'LOT-S'", TABLE)).isEqualTo(3);
+                assertThat(RawSql.number(db, "SELECT count(*) FROM inventory.stock_item WHERE sku = ? AND lot_number = "
+                        + "'LOT-S' AND on_hand = 1", TABLE)).isEqualTo(3);
                 assertThat(RawSql.text(db, "SELECT lot_number || '|' || on_hand FROM inventory.stock_item WHERE id = ?",
                         serialUnit)).isEqualTo("LOT-SER|1");
                 assertThat(RawSql.number(db, "SELECT count(*) FROM inventory.stock_item WHERE id = ? AND lot_number IS "

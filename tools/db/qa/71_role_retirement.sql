@@ -51,13 +51,16 @@ SELECT pg_temp.expect_true('RR6 Sales holds an order and asks the load estimate 
     AND pg_temp.grants('SALES_STAFF', 'fulfillment-load-estimates:READ')
     AND pg_temp.grants('SALES_STAFF', 'fulfillment-load-estimates:CREATE')
     AND NOT pg_temp.grants('WAREHOUSE_MANAGER', 'sales-order-holds:UPDATE'));
-SELECT pg_temp.expect_true('RR7 the planner''s two exports went to the warehouse manager, whom nobody else shares them with',
-    pg_temp.grants('WAREHOUSE_MANAGER', 'inventory-stock-items:EXPORT')
-    AND pg_temp.grants('WAREHOUSE_MANAGER', 'inventory-stock-movements:EXPORT')
-    AND NOT pg_temp.grants('SALES_STAFF', 'inventory-stock-items:EXPORT')
-    AND NOT pg_temp.grants('WAREHOUSE_STAFF', 'inventory-stock-items:EXPORT'));
-SELECT pg_temp.expect_true('RR8 the warehouse manager reads no sales order (all customers'' prices): released from an id, not a list',
-    NOT pg_temp.grants('WAREHOUSE_MANAGER', 'sales-orders:READ'));
+SELECT pg_temp.expect_true('RR7 the planner''s two exports guarded no endpoint and went with the role: nobody but the System Admin holds them',
+    NOT EXISTS (SELECT 1 FROM identity.role_permission rp
+                  JOIN identity.app_role r ON r.id = rp.role_id
+                  JOIN identity.permission p ON p.id = rp.permission_id
+                 WHERE p.code IN ('inventory-stock-items:EXPORT', 'inventory-stock-movements:EXPORT')
+                   AND r.code <> 'SYSTEM_ADMIN'));
+SELECT pg_temp.expect_true('RR8 the warehouse manager finds the orders to release: sales-orders:READ and VIEW_PAGE (limited to their warehouses in code, 17 BR-03)',
+    pg_temp.grants('WAREHOUSE_MANAGER', 'sales-orders:READ')
+    AND pg_temp.grants('WAREHOUSE_MANAGER', 'sales-orders:VIEW_PAGE')
+    AND NOT pg_temp.grants('WAREHOUSE_STAFF', 'sales-orders:READ'));
 SELECT pg_temp.expect_true('RR9 what PROCUREMENT_STAFF did (receiving) is held by warehouse staff and the manager',
     pg_temp.grants('WAREHOUSE_STAFF', 'procurement-goods-receipts:CREATE')
     AND pg_temp.grants('WAREHOUSE_MANAGER', 'procurement-goods-receipts:CREATE')

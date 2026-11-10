@@ -351,10 +351,11 @@ class PermissionMatrixTest {
             Map.entry("platform-actuator:READ", Set.of(Role.SALES_MANAGER, Role.SYSTEM_ADMIN)),
             Map.entry("platform-actuator:UPDATE", Set.of(Role.SALES_MANAGER, Role.SYSTEM_ADMIN)),
             Map.entry("sales-order-cancellations:READ", Set.of(Role.SALES_STAFF, Role.SYSTEM_ADMIN)),
+            // The warehouse manager reads the orders of their warehouses only (V20261115000200, 5-7 review M1).
             Map.entry("sales-orders:READ", Set.of(Role.CUSTOMER, Role.SALES_STAFF, Role.ACCOUNTANT,
-                    Role.PRODUCTION_COORDINATOR, Role.SYSTEM_ADMIN)),
+                    Role.PRODUCTION_COORDINATOR, Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             Map.entry("sales-orders:VIEW_PAGE", Set.of(Role.CUSTOMER, Role.SALES_STAFF,
-                    Role.ACCOUNTANT, Role.PRODUCTION_COORDINATOR, Role.SYSTEM_ADMIN)),
+                    Role.ACCOUNTANT, Role.PRODUCTION_COORDINATOR, Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             // WH-READ-COORD (V20261023000500): the release dialog needs a warehouse to pick.
             // SCRUM-474 5b (V20261029004000): the user-management screen picks warehouses too.
             Map.entry("warehouse-warehouses:READ", Set.of(Role.WAREHOUSE_MANAGER, Role.WAREHOUSE_STAFF,
@@ -667,7 +668,8 @@ class PermissionMatrixTest {
 
     /**
      * The create-task dialog's order list answers to the permission that opens the task, warehouse-scoped - not to the
-     * sales order list's {@code sales-orders:READ}, which the warehouse manager who opens tasks does not hold. Granting
+     * sales order list's {@code sales-orders:READ} (which the warehouse manager holds since 5-7 review M1, limited to
+     * their warehouses' orders, but which is not what opens a task). Granting
      * task creation to another role opens the list to it with no code change.
      */
     @Test
@@ -682,8 +684,7 @@ class PermissionMatrixTest {
                 .isEqualTo(PermissionCode.parse("fulfillment-task-assignment:CREATE"));
         assertThat(candidates.scope()).isEqualTo(DataScope.WAREHOUSE);
         ResolvedAuthorization manager = roles.resolve(List.of(Role.WAREHOUSE_MANAGER.authority()));
-        assertThat(manager.permissions()).contains(PermissionCode.parse("fulfillment-task-assignment:CREATE"))
-                .doesNotContain(PermissionCode.parse("sales-orders:READ"));
+        assertThat(manager.permissions()).contains(PermissionCode.parse("fulfillment-task-assignment:CREATE"));
     }
 
     /**

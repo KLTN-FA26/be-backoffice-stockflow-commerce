@@ -113,9 +113,10 @@ class RoleRetirementMigrationUpgradeTest {
 
                 // The work is held by the role that took it, and the role versions moved for those who gained.
                 assertThat(grants(db, "WAREHOUSE_MANAGER")).contains("sales-order-releases:UPDATE",
-                        "fulfillment-delivery-outcomes:APPROVE", "inventory-stock-items:EXPORT",
-                        "inventory-stock-movements:EXPORT", "fulfillment-task-assignment:CREATE",
-                        "fulfillment-task-assignment:UPDATE");
+                        "fulfillment-delivery-outcomes:APPROVE", "sales-orders:READ", "sales-orders:VIEW_PAGE",
+                        "fulfillment-task-assignment:CREATE", "fulfillment-task-assignment:UPDATE")
+                        .as("the planner's exports guarded nothing and went with the role")
+                        .doesNotContain("inventory-stock-items:EXPORT", "inventory-stock-movements:EXPORT");
                 assertThat(grants(db, "SALES_STAFF")).contains("sales-order-holds:UPDATE",
                         "fulfillment-load-estimates:READ", "fulfillment-load-estimates:CREATE")
                         .doesNotContain("sales-order-releases:UPDATE", "fulfillment-task-assignment:CREATE");

@@ -219,8 +219,8 @@ class TaskCandidatesIntegrationTest {
                     .andExpect(jsonPath("$.data.items[0].lines[0].sku").value("SOFA-3S-GREY"))
                     .andExpect(jsonPath("$.data.items[0].lines[0].printed").value(false));
         }
-        // The reason this list exists: the sales order list is not a warehouse manager's.
-        mvc.perform(get("/api/v1/orders").header("Authorization", manager)).andExpect(status().isForbidden());
+        // The sales order list is the manager's too, but limited to their warehouses' orders (OrderWarehouseVisibilityHttpTest).
+        mvc.perform(get("/api/v1/orders").header("Authorization", manager)).andExpect(status().isOk());
     }
 
     @Test

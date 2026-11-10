@@ -83,4 +83,18 @@ class StaffAdjustmentAccessIntegrationTest {
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.errorCode").value("VALIDATION_FAILED"));
     }
+
+    @Test
+    @DisplayName("an adjustment without a lot is 400 STOCK_ADJUSTMENT_LOT_REQUIRED on lotNumber, not a 404 (5-5 review)")
+    void adjustmentWithoutALotIsRefused() throws Exception {
+        for (String lot : new String[] {"", ",\"lotNumber\":\"  \""}) {
+            String body = "{\"locationCode\":\"HCM-A01-1-B\",\"sku\":\"SOFA-3S-GREY\"" + lot
+                    + ",\"quantityDelta\":-1,\"reason\":\"DAMAGED\"}";
+            mvc.asRole(Role.SYSTEM_ADMIN, clerk, post("/api/v1/inventory/adjustments")
+                            .contentType(MediaType.APPLICATION_JSON).content(body))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.errorCode").value("STOCK_ADJUSTMENT_LOT_REQUIRED"))
+                    .andExpect(jsonPath("$.fieldErrors[0].field").value("lotNumber"));
+        }
+    }
 }
