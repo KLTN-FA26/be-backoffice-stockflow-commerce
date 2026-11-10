@@ -261,7 +261,8 @@ class PurchasingRemovalMigrationUpgradeTest {
                         + "TRUE, FALSE, TRUE, 0, NOW() FROM inventory.inventory_items WHERE sku = 'PMG-NB'");
                 RawSql.update(db, "SET session_replication_role = DEFAULT");
                 var result = flyway(postgres, MIGRATION).migrate();
-                assertThat(result.migrations).extracting(m -> m.version).containsExactly(MIGRATION);
+                // The carton line's migrations (V20261111000110..0300) sit between BEFORE and this one on the merged chain.
+                assertThat(result.migrations).extracting(m -> m.version).endsWith(MIGRATION);
                 assertThat(RawSql.text(db, "SELECT lot_number || ':' || (uom_conversion_id IS NOT NULL) FROM "
                         + "procurement.goods_receipt_lines WHERE id = md5('l9')::uuid"))
                         .as("a line counted in base units of an item that has one now names it")
@@ -299,7 +300,8 @@ class PurchasingRemovalMigrationUpgradeTest {
                         + "inventory.inventory_items i ON i.id = u.inventory_item_id WHERE i.sku = 'PMG-B' AND u.is_base");
 
                 var result = flyway(postgres, MIGRATION).migrate();
-                assertThat(result.migrations).extracting(m -> m.version).containsExactly(MIGRATION);
+                // The carton line's migrations (V20261111000110..0300) sit between BEFORE and this one on the merged chain.
+                assertThat(result.migrations).extracting(m -> m.version).endsWith(MIGRATION);
 
                 // Archived whole, per source table; the DRAFT order with the rest.
                 Map<String, Long> archived = RawSql.numbersByText(db, "SELECT source_table, count(*) FROM "
