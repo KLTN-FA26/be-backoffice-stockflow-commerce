@@ -219,8 +219,30 @@ class OrderRepositoryAdapter implements OrderRepository, OrderSearchRepository {
                         Specs.eq("customerId", criteria.customerId()))
                 .and(statusIn(criteria.statuses()))
                 .and(placedBetween(criteria.placedFrom(), criteria.placedBefore()))
-                .and(matches(criteria.search()));
+                .and(matches(criteria.search()))
+                .and(inWarehouses(criteria.warehouseIds()));
         return jpa.findAll(spec, pageable).map(OrderPersistenceMapper::toListSummary);
+    }
+
+    /**
+     * Orders shipping from (4B-7) or released to one of {@code ids}; null: no limit. Not {@code Specs.eq}/{@code in},
+     * which answer "all" for a missing value: an empty set here is a caller assigned to no warehouse, who sees nothing.
+     */
+    private static Specification<OrderJpaEntity> inWarehouses(java.util.Set<UUID> ids) {
+        if (ids == null) {
+            return null;
+        }
+        return (root, query, cb) -> ids.isEmpty() ? cb.disjunction()
+                : cb.or(root.get("shippingWarehouseId").in(ids), root.get("warehouseId").in(ids));
+    }
+
+    @Override
+    public boolean inWarehouses(UUID orderId, java.util.Set<UUID> warehouseIds) {
+        if (orderId == null || warehouseIds == null || warehouseIds.isEmpty()) {
+            return false;
+        }
+        return jpa.count(Specification.<OrderJpaEntity>where((root, query, cb) -> cb.equal(root.get("id"), orderId))
+                .and(inWarehouses(warehouseIds))) > 0;
     }
 
     @Override
