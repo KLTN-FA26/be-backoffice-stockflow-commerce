@@ -66,10 +66,12 @@ class StaffAdjustmentAccessIntegrationTest {
     @Test
     @DisplayName("4A-8: an adjustment for SUBCONTRACT_LOSS is refused, 400 VALIDATION_FAILED: subcontracting is gone")
     void subcontractLossIsRefused() throws Exception {
-        var stock = jdbc.queryForMap("SELECT sku, location_code FROM inventory.stock_item WHERE on_hand > 0 "
-                + "AND status = 'AVAILABLE' ORDER BY sku LIMIT 1");
-        String body = "{\"locationCode\":\"%s\",\"sku\":\"%s\",\"quantityDelta\":-1,"
-                .formatted(stock.get("location_code"), stock.get("sku")) + "\"reason\":\"SUBCONTRACT_LOSS\"}";
+        // Every row has a lot, and an adjustment names the layer it changes.
+        var stock = jdbc.queryForMap("SELECT sku, location_code, lot_number FROM inventory.stock_item WHERE on_hand > 0 "
+                + "AND status = 'AVAILABLE' ORDER BY sku, location_code LIMIT 1");
+        String body = "{\"locationCode\":\"%s\",\"sku\":\"%s\",\"lotNumber\":\"%s\",\"quantityDelta\":-1,"
+                .formatted(stock.get("location_code"), stock.get("sku"), stock.get("lot_number"))
+                + "\"reason\":\"SUBCONTRACT_LOSS\"}";
 
         mvc.asRole(Role.SYSTEM_ADMIN, clerk, post("/api/v1/inventory/adjustments")
                         .contentType(MediaType.APPLICATION_JSON).content(body))

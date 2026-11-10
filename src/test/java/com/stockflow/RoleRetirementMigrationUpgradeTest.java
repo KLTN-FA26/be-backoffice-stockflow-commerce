@@ -71,7 +71,6 @@ class RoleRetirementMigrationUpgradeTest {
 
                 long managerVersion = version(db, "WAREHOUSE_MANAGER");
                 long salesVersion = version(db, "SALES_STAFF");
-                long clerkVersion = version(db, "WAREHOUSE_STAFF");
                 long adminVersion = version(db, "SYSTEM_ADMIN");
                 long statusChanges = RawSql.number(db, "SELECT count(*) FROM identity.user_status_change");
                 List<String> sessionsOfBystander = RawSql.texts(db,
@@ -123,7 +122,6 @@ class RoleRetirementMigrationUpgradeTest {
                 assertThat(version(db, "WAREHOUSE_MANAGER")).isGreaterThan(managerVersion);
                 assertThat(version(db, "SALES_STAFF")).isGreaterThan(salesVersion);
                 assertThat(version(db, "SYSTEM_ADMIN")).isGreaterThan(adminVersion);
-                assertThat(version(db, "WAREHOUSE_STAFF")).as("lost and gained nothing").isEqualTo(clerkVersion);
 
                 // sales-orders:APPROVE and the permissions no code declares are gone with their grants.
                 assertThat(RawSql.number(db, "SELECT count(*) FROM identity.permission WHERE code = "

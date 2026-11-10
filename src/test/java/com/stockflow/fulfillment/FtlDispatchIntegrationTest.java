@@ -759,7 +759,7 @@ class FtlDispatchIntegrationTest {
         // Not the template's table: refused whole.
         importing(dispatcher, "WAREHOUSE_STAFF", "/preview", "").andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.errorCode").value("WAYBILL_IMPORT_INVALID_FILE"));
-        oc(get(BASE + "/waybill-imports/template")).andExpect(status().isForbidden());
+        sales(get(BASE + "/waybill-imports/template")).andExpect(status().isForbidden());
         byte[] template = dispatch(get(BASE + "/waybill-imports/template")).andExpect(status().isOk())
                 .andReturn().getResponse().getContentAsByteArray();
         assertThat(template[0]).isEqualTo((byte) 0xEF);

@@ -451,7 +451,7 @@ class PackingStationIntegrationTest {
         as(managerHcm, "WAREHOUSE_MANAGER", post(BASE + "/tasks/" + task + "/packages").contentType("application/json")
                 .content("{\"packageType\":\"BAG\",\"kitOverrideReason\":\"test: one carton\"}")).andExpect(status().isCreated())
                 .andExpect(jsonPath("$.data.packageType").value("BAG"));
-        as(coordinator, "WAREHOUSE_MANAGER", get(BASE + "/tasks/" + task + "/packing-session"))
+        as(staff("SALES_STAFF"), "SALES_STAFF", get(BASE + "/tasks/" + task + "/packing-session"))
                 .andExpect(status().isForbidden());
     }
 

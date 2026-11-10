@@ -233,8 +233,10 @@ class ProductVariantOptionsIntegrationTest {
     @Test
     void aRenameOfAReferencedSkuIsARefusedTransition() {
         UUID product = productWithAxes();
-        jdbc.update("insert into catalog.pricing_rule(id, name, sku, price, currency, active, version, created_at) "
-                + "values (?, 'rule', ?, 1, 'VND', true, 0, now())", UUID.randomUUID(), newCode);
+        // A lot of the SKU is a document that names it (inventory.item_in_use); the price rules that served here are
+        // not read by the guard any more, so a document the guard does read stands in for them.
+        jdbc.update("insert into inventory.stock_lot(id, sku, lot_number, received_at, origin_type, created_at) "
+                + "values (?, ?, 'L-REF', now(), 'UNTRACED', now())", UUID.randomUUID(), newCode);
 
         assertThat(errorOf(() -> variants.add(product, new NewVariant("CUP-RENAMED", null, List.of(cap12, clear), null))))
                 .isEqualTo(ErrorCode.INVALID_VARIANT_TRANSITION);

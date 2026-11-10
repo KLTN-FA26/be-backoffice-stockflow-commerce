@@ -498,10 +498,11 @@ class DispatchHandoverIntegrationTest {
         as(otherCustomerUser, "CUSTOMER", get("/api/v1/orders/me/" + order.orderId()))
                 .andExpect(status().isNotFound());
 
-        // 09 BR-02: the coordinator records the outcome; warehouse staff and the manager may not (only RETURNED).
+        // 09 BR-02: the warehouse manager records the outcome (the order coordinator, who did, is retired); warehouse
+        // staff and Sales may not (only RETURNED).
         as(dispatcher, "WAREHOUSE_STAFF", body(post(BASE + "/shipments/" + shipment + "/delivery-outcome"),
                 "{\"outcome\":\"DELIVERED\"}")).andExpect(status().isForbidden());
-        as(manager, "WAREHOUSE_MANAGER", body(post(BASE + "/shipments/" + shipment + "/delivery-outcome"),
+        as(sales, "SALES_STAFF", body(post(BASE + "/shipments/" + shipment + "/delivery-outcome"),
                 "{\"outcome\":\"DELIVERED\"}")).andExpect(status().isForbidden());
         oc(body(post("/api/v1/orders/" + order.orderId() + "/delivery"), "{}")).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("ORDER_DELIVERY_VIA_SHIPMENT"));
