@@ -23,16 +23,6 @@ public interface StockLots {
     UUID openForReceipt(ReceiptLot lot);
 
     /**
-     * Who supplied a lot, as its receipt recorded it: where damaged goods of the lot go back to
-     * (RETURN_TO_SUPPLIER). Empty for an unknown lot, or one with no receipt behind it (UNTRACED).
-     */
-    java.util.Optional<LotSupplier> supplierOf(UUID lotId);
-
-    /** The supplier a lot came from, snapshotted on the lot when it was received. */
-    record LotSupplier(UUID supplierId, String supplierName) {
-    }
-
-    /**
      * What a receipt knows about the goods it brings in, snapshotted onto the lot. {@code productionOrderId} and
      * {@code productionOrderCode} are set for goods received against a production order (4A-5), null otherwise.
      */

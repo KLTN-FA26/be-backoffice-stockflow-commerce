@@ -8,7 +8,7 @@ same checks (type by its bytes, size, malware scan, SHA-256) before a file is at
 
 - A 50 MB design no longer ties up a backend request for the whole of a slow upload.
 - Phone photos can be uploaded the moment they are taken, while the user fills in the form; the
-  final "Report damage" / "Add photo" call is a small JSON request.
+  final "Add photo" call is a small JSON request.
 - The final call is JSON, so it is retried safely (the platform's `Idempotency-Key` filter applies,
   and attaching the same upload twice answers with the first result).
 
@@ -62,9 +62,6 @@ canvas `toBlob`): a 5 MB photo becomes a few hundred KB, and the SHA-256 is of t
 | Return photo, customer / Sales | `POST /api/v1/returns/{returnId}/evidence/uploads` | `POST /api/v1/returns/{returnId}/evidence` `{uploadId}` |
 | Return photo, warehouse | `POST /api/v1/returns/{returnId}/receipt-evidence/uploads` | `POST /api/v1/returns/{returnId}/receipt-evidence` `{uploadId}` |
 | Return photo, QC | `POST /api/v1/returns/{returnId}/inspection-evidence/uploads` | `POST /api/v1/returns/{returnId}/inspection-evidence` `{uploadId}` |
-| Damage on the shelf | `POST /api/v1/inventory/damage-reports/photo-uploads` | `POST /api/v1/inventory/damage-reports` body of `report` + `photoUploadIds: [...]` |
-| Damage while picking | `POST /api/v1/fulfillment/tasks/{taskId}/damage-photo-uploads` | `POST /api/v1/fulfillment/tasks/{taskId}/pick-lines/{lineId}/damage` body of `report` + `photoUploadIds` |
-| Damage at packing | `POST /api/v1/fulfillment/tasks/{taskId}/packing-damage-photo-uploads` | `POST /api/v1/fulfillment/tasks/{taskId}/pick-lines/{lineId}/damage-after-pick` body of `report` + `photoUploadIds` |
 | Supplier invoice scan | `POST /api/v1/supplier-invoices/{invoiceId}/scan/uploads` | `POST /api/v1/supplier-invoices/{invoiceId}/scan` `{uploadId}` |
 | Purchase order document (new) | `POST /api/v1/purchase-orders/{purchaseOrderId}/attachments/uploads` | `POST /api/v1/purchase-orders/{purchaseOrderId}/attachments` `{uploadId, category}` |
 | Receiving photo (new) | `POST /api/v1/goods-receipts/{receiptId}/photos/uploads[?receiptLineId=]` | `POST /api/v1/goods-receipts/{receiptId}/photos` `{uploadId, receiptLineId?}` |
@@ -91,7 +88,7 @@ The attach endpoints share their path with the multipart ones; the `Content-Type
 picks which one runs. Each slot endpoint needs the same permission as its attach endpoint.
 
 Accepted types and sizes are the category's: design PNG/JPEG/WebP/PDF up to 50 MB; return photos
-JPEG/PNG/WebP up to 15 MB; damage and goods receipt photos JPEG/PNG up to 20 MB; invoice scans PDF/JPEG/PNG up to 15 MB.
+JPEG/PNG/WebP up to 15 MB; goods receipt photos JPEG/PNG up to 20 MB; invoice scans PDF/JPEG/PNG up to 15 MB.
 
 ## Design preflight (BR-DSG-001)
 
@@ -107,10 +104,10 @@ finding remains; rejecting is always allowed.
 
 - Download links (`.../download-url`) now name the file: the browser saves `HD-0012.pdf`, not the
   storage key. Use them for documents.
-- Image links (renditions, return and damage photos) are `inline` and may be cached by the browser
+- Image links (renditions, return and goods receipt photos) are `inline` and may be cached by the browser
   for as long as the link lives (`expiresAt`); reuse a link instead of asking for a new one while it
   is valid.
-- Return, damage and goods receipt photos are shown as display copies: upright, re-encoded, without the phone's
+- Return and goods receipt photos are shown as display copies: upright, re-encoded, without the phone's
   metadata (GPS). Their detail views carry `thumbnailUrl` per photo (256 px); if a thumbnail fails to
   load (a photo stored before copies existed), fall back to the photo's `download-url`. Add
   `?original=true` to a photo's `download-url` to save it exactly as uploaded.

@@ -75,9 +75,10 @@ public enum FileCategory {
             Set.of("application/pdf", "image/jpeg", "image/png")),
 
     /**
-     * Photographs taken during goods receipt (receiving QC's from before it was removed among them) and of damaged
-     * stock. Evidence - never deleted casually. The {@code qc-evidence/} prefix stays: stored keys and the database's
-     * checks name it.
+     * Photographs taken during goods receipt (receiving QC's from before it was removed among them). Evidence - never
+     * deleted casually. The {@code qc-evidence/} prefix stays: stored keys and the database's checks name it. The photos
+     * of unit-level damage reports were stored here too; since team plan 5-6 (V20261114000400) no record names them,
+     * so the orphaned-file sweep reports them and deletes them when told to.
      */
     QC_EVIDENCE("qc-evidence", 20 * 1024 * 1024,
             Set.of("image/jpeg", "image/png")),
@@ -91,7 +92,7 @@ public enum FileCategory {
             Set.of("image/jpeg", "image/png", "image/webp")),
 
     /**
-     * Display copies of evidence photos (return and damage photos): re-encoded without metadata at
+     * Display copies of evidence photos (return and goods-receipt photos): re-encoded without metadata at
      * {@link StorageKeys#evidenceCopyOf}, written next to the original by the platform, never uploaded. Private like the
      * originals; what a reviewer is shown.
      */

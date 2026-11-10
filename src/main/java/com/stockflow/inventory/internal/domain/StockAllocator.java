@@ -29,8 +29,8 @@ import java.util.UUID;
  * <p><b>FIFO, k &lt; N.</b> Cartons go in the SKU's removal order - received first, first out (finished goods have no
  * expiry, 07 BR-03.3), or earliest expiry first for a SKU whose policy says so - and the plan takes them while each fits
  * in what is still needed. When the warehouse has only k of the N cartons, the plan lists those k and reports the
- * rest short ({@link Plan#shortUnits}); it holds nothing itself. No caller holds k &lt; N yet: a release, a
- * reallocation and a damage replacement all refuse or drop a short plan until the order can wait for the rest
+ * rest short ({@link Plan#shortUnits}); it holds nothing itself. No caller holds k &lt; N yet: a release and a
+ * reallocation both refuse or drop a short plan until the order can wait for the rest
  * ({@code AWAITING_STOCK}, team plan 4A-6, which sends the shortfall to a Production Order, 07 BR-03.4). A carton
  * larger than what is still needed is never broken to fill the gap: it is skipped, and the gap stays short.</p>
  *

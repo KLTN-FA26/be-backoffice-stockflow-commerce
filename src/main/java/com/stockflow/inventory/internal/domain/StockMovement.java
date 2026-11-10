@@ -105,7 +105,10 @@ public record StockMovement(
         CONSUMPTION,
         /** Goods a customer sent back under a return request, into quarantine (SCRUM-260, OQ-12). */
         RETURN_IN,
-        /** Damaged goods handed back to their supplier, out of quarantine and off the books (V20261101030000). */
+        /**
+         * Legacy: damaged goods a damage report handed back to their supplier (V20261101030000). Damage reports went with
+         * team plan 5-6 (V20261114000400); the value stays for the lines written before.
+         */
         SUPPLIER_RETURN
     }
 
@@ -125,8 +128,9 @@ public record StockMovement(
          */
         PACKAGE,
         /**
-         * A damage report (V20261101030000): units found damaged moved to quarantine as DAMAGED, or a manager's
-         * decision restored them to a bin. A write-off references its posted {@code STOCK_ADJUSTMENT} instead.
+         * Legacy: a damage report (V20261101030000) moved units found damaged to quarantine as DAMAGED, or restored them
+         * to a bin. Damage reports went with team plan 5-6 (V20261114000400); the value stays for the lines written
+         * before.
          */
         DAMAGE_REPORT,
         /** A return line (SCRUM-260): goods counted in from the customer, and out of quarantine again. */

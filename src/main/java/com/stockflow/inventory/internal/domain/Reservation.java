@@ -37,8 +37,8 @@ public final class Reservation {
      */
     private final UUID rootRequestId;
     private final UUID requestId;
-    /** Fixed when the hold is made; lowered only when part of it is taken off a damaged row (stock damage). */
-    private Quantity quantity;
+    /** Fixed when the hold is made: an allocation takes a carton whole, and a hold is released whole. */
+    private final Quantity quantity;
     private final Instant reservedAt;
     /** Null once pinned: the order left PENDING_PAYMENT and the hold no longer expires (SCRUM-465). */
     private Instant expiresAt;
@@ -156,15 +156,6 @@ public final class Reservation {
                 : ReservationStatus.RELEASED;
         this.releaseReason = reason;
         this.closedAt = now;
-    }
-
-    /** The hold covers {@code by} fewer units, keeping its id; a hold of zero is a release, not this. */
-    void reduceBy(Quantity by) {
-        requireActive("reduce");
-        if (by.isZero() || !by.isLessThan(quantity)) {
-            throw new IllegalArgumentException("A hold of %s cannot be reduced by %s".formatted(quantity, by));
-        }
-        this.quantity = quantity.minus(by);
     }
 
     /**
