@@ -62,4 +62,15 @@ class PlannerAdjustmentAccessIntegrationTest {
                         .contentType(MediaType.APPLICATION_JSON).content("{\"reason\":\"not mine to decide\"}"))
                 .andExpect(status().isForbidden());
     }
+    @Test
+    @DisplayName("4A-8: an adjustment for SUBCONTRACT_LOSS is refused, 400 VALIDATION_FAILED: subcontracting is gone")
+    void subcontractLossIsRefused() throws Exception {
+        String body = "{\"locationCode\":\"HCM-A01-1-A\",\"sku\":\"SOFA-3S-GREY\",\"quantityDelta\":-1,"
+                + "\"reason\":\"SUBCONTRACT_LOSS\"}";
+
+        mvc.asRole(Role.INVENTORY_PLANNER, planner, post("/api/v1/inventory/adjustments")
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("VALIDATION_FAILED"));
+    }
 }

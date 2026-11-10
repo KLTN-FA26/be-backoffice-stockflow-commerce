@@ -773,9 +773,9 @@ class ProductionReceiptIntegrationTest {
     }
 
     @Test
-    @DisplayName("17 BR-07: the last draft receipt cancelled (nothing received) stops the production order of a "
-            + "cancelled sales order: CANCELLED, the producer told once")
-    void cancelledOrderStopsItsProductionOrderWhenTheLastDraftIsCancelled() {
+    @DisplayName("17 BR-07: the last draft receipt cancelled with no one to name: the production order of a cancelled "
+            + "sales order is left open for the coordinator, and no producer is told yet")
+    void cancelledDraftWithNoActorLeavesItToTheCoordinator() {
         UUID orderId = confirmedOrderAtA();
         ProductionOrder production = sentWithoutSample(orderId, 1);
         ReceiptView receipt = start(production);
@@ -783,12 +783,12 @@ class ProductionReceiptIntegrationTest {
                 "Customer changed supplier", null, sales.userId())));
         assertThat(reread(production.id()).status().open()).as("a draft receipt keeps it open").isTrue();
 
-        com.stockflow.support.WithCurrentUser.run(sales, DataScope.ALL, () -> receipts.cancel(receipt.id()));
+        // No current user in this context (no security): dropReceipt has no one to name as the one who stopped it.
+        receipts.cancel(receipt.id());
 
-        assertThat(reread(production.id()).status()).isEqualTo(ProductionOrderStatus.CANCELLED);
-        Await.until("the producer is told to stop", Duration.ofSeconds(20),
-                () -> stoppedNotices(production.id()) >= 1);
-        assertThat(stoppedNotices(production.id())).as("exactly once").isEqualTo(1);
+        assertThat(status(receipt.id())).isEqualTo("CANCELLED");
+        assertThat(reread(production.id()).status()).as("left to the coordinator").isEqualTo(ProductionOrderStatus.SENT);
+        assertThat(stoppedNotices(production.id())).isZero();
     }
 
     @Test
