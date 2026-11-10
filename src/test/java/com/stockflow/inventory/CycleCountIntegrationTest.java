@@ -572,7 +572,7 @@ class CycleCountIntegrationTest {
         cycleCounts.count(planned.id(), line, false, counter, false);
         moveWhole(box, BIN2);
 
-        Throwable stale = catchThrowable(() -> cycleCounts.submit(planned.id(), counter, false));
+        Throwable stale = catchThrowable(() -> cycleCounts.submit(planned.id(), counter, true));
 
         assertThat(code(stale)).isEqualTo(ErrorCode.CYCLE_COUNT_STALE);
         assertThat(stale).hasMessageContaining(line.toString()).hasMessageContaining(lpn("S"));
@@ -589,7 +589,7 @@ class CycleCountIntegrationTest {
         cycleCounts.count(first.id(), line, false, counter, false);
         consumeWhole(emptied);
 
-        Throwable stale = catchThrowable(() -> cycleCounts.submit(first.id(), counter, false));
+        Throwable stale = catchThrowable(() -> cycleCounts.submit(first.id(), counter, true));
 
         assertThat(code(stale)).isEqualTo(ErrorCode.CYCLE_COUNT_STALE);
         assertThat(stale).hasMessageContaining(line.toString()).hasMessageContaining(lpn("E"));
@@ -671,7 +671,7 @@ class CycleCountIntegrationTest {
         CycleCountView second = planBin(BIN2).count();
         cycleCounts.count(second.id(), second.lines().get(0).id(), true, counter, false);
         Throwable elsewhere = catchThrowable(() -> cycleCounts.addLine(second.id(),
-                new AddCountLineCommand(BIN2, lpn("L"), counter, false)));
+                new AddCountLineCommand(BIN2, lpn("L"), counter, true)));
         assertThat(code(elsewhere)).isEqualTo(ErrorCode.STOCK_PACKAGE_WRONG_LOCATION);
         assertThat(elsewhere).hasMessageContaining(BIN);
         // Brought back to its bin, it is scanned there - the LPN and code typed in lower case.
@@ -1059,6 +1059,7 @@ class CycleCountIntegrationTest {
 
         // Decided, the carton is free for a count again.
         operations.reject(writeOff.adjustmentId(), manager, "Fine");
+        cycleCounts.cancel(planned.count().id(), "Replanned", "test");
         assertThat(planBin(BIN).skipped()).isEmpty();
     }
 
@@ -1083,8 +1084,9 @@ class CycleCountIntegrationTest {
         carton(BIN, "A");
         carton(BIN2, "B");
         CycleCountView planned = planBin(BIN).count();
-        Object counting = AopTestUtils.getUltimateTargetObject(
-                ReflectionTestUtils.getField(AopTestUtils.getUltimateTargetObject(cycleCounts), "counting"));
+        Object facade = AopTestUtils.getUltimateTargetObject(cycleCounts);
+        Object countingBean = ReflectionTestUtils.getField(facade, "counting");
+        Object counting = AopTestUtils.getUltimateTargetObject(countingBean);
         Object cap = ReflectionTestUtils.getField(counting, "maxLines");
         assertThat(cap).isEqualTo(500);
         ReflectionTestUtils.setField(counting, "maxLines", 1);
