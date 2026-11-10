@@ -260,8 +260,12 @@ public class DeliveryBatchService {
 
     // ---- moving a window (BR-28) ----------------------------------------------------------------------------------
 
-    /** Where the browser uploads the customer's consent (an e-mail, a signed note) before the window is moved. */
-    @Transactional(readOnly = true)
+    /**
+     * Where the browser uploads the customer's consent (an e-mail, a signed note) before the window is moved. Not
+     * read-only: the order is read as the caller's data scope sees it, which locks its row ({@code findByIdInScope}),
+     * and Postgres refuses {@code SELECT ... FOR UPDATE} in a read-only transaction.
+     */
+    @Transactional
     public UploadSlot beginEvidenceUpload(CurrentUser user, UUID orderId, UUID batchId, UploadSlotRequest request) {
         Order order = orders.findByIdInScope(new OrderId(orderId))
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No order " + orderId));
