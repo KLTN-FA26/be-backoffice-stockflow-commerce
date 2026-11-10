@@ -175,6 +175,42 @@ class StockPackageContents {
         return row;
     }
 
+    /**
+     * A carton that left stock whole comes back on a return receipt (team plan 4D-2; kltn-docs 03 §4.2 step 12,
+     * BR-03, BR-14): CONSUMED → IN_STOCK at the QUARANTINE area {@code to}, sealed, with its LPN
+     * ({@link StockPackage#restock}); its one row follows it and gets the carton's count back, QUARANTINE, in its own
+     * lot ({@link StockItem#receiveReturnInPackage}). Call under the SKU lock, with every carton the caller brings
+     * back already locked (the global order: the cartons, then their rows); the carton and then its row are locked
+     * here.
+     *
+     * @throws BusinessException {@code INVALID_STOCK_PACKAGE_TRANSITION} when it is not CONSUMED - in stock already,
+     *         never received, lost or voided; {@code STOCK_PACKAGE_TAKEN_WHOLE} when it has no single empty row to
+     *         come back into (part of it was written off or turned up elsewhere: it cannot come back whole)
+     */
+    public StockItem returnIntoQuarantine(StockPackageId id, com.stockflow.inventory.internal.domain.LocationId to) {
+        StockPackage carton = stockPackages.findAllByIdForUpdate(List.of(id)).stream().findFirst()
+                .orElseThrow(() -> new IllegalStateException("No stock package " + id.value()));
+        if (carton.status() != StockPackageStatus.CONSUMED) {
+            throw new BusinessException(ErrorCode.INVALID_STOCK_PACKAGE_TRANSITION, ("%s is %s; only a carton that "
+                    + "left stock comes back on a return").formatted(carton.lpn(), carton.status()), List.of(),
+                    Map.of("lpn", carton.lpn()));
+        }
+        List<com.stockflow.inventory.internal.domain.StockItemId> rowIds = stockItems.findIdsInStockPackage(id);
+        StockItem row = rowIds.size() != 1 ? null : stockItems.findByIdForUpdate(rowIds.get(0)).orElse(null);
+        if (row == null || carton.receivedQty() == null || !row.onHand().isZero() || !row.reserved().isZero()) {
+            throw new BusinessException(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE, ("%s cannot come back whole: it is not "
+                    + "one empty row of %s unit(s)").formatted(carton.lpn(), carton.receivedQty()), List.of(),
+                    Map.of("lpn", carton.lpn()));
+        }
+        carton.restock(to);
+        row.followPackageTo(to);
+        row.receiveReturnInPackage(com.stockflow.inventory.internal.domain.Quantity.of(carton.receivedQty()));
+        // The carton first, as in restock: it stands at its new place before the ledger line names it there.
+        stockPackages.save(carton);
+        stockItems.saveMerged(row);
+        return row;
+    }
+
     private static List<RowChange> fill(StockPackage carton, List<StockItem> rows, int units) {
         if (carton.status() == StockPackageStatus.LOST) {
             // Found whole or not at all: it comes back sealed, so it must hold what was counted into it again.
