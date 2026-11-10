@@ -219,7 +219,7 @@ The compiler allows both — it is all one jar. The build does not.
 | **Coupling** | caller declares the dependency | publisher knows nobody |
 | **Example** | `order → inventory.holdAtWarehouse()` | `payment` publishes `PaymentReceiptRecorded` |
 
-`order → inventory` is a call: an order without its stock is a bug, so the two must commit
+`order → inventory` is a call: a hold without its order, or an order whose hold was lost, is a bug, so the two must commit
 together. `payment → order` is an event: payment succeeded whatever order does next, and a direct
 call would create a cycle, since order already listens to payment.
 

@@ -164,8 +164,11 @@ same order. `SalesContracts` (`order/internal/service/`) draws the contract up f
 payment plan, free sample rounds), sends it and records it signed; the installments live in `payment`. Money reaches
 the order as an event: `PaymentEventListener` (`@ApplicationModuleListener`) takes `PaymentReceiptRecorded` /
 `PaymentReceiptVoided`, because a receipt the accountant recorded must not wait for, or be rolled back by, what the
-order does next. An order is CONFIRMED when the installments due on signing are paid; a void the accountant agreed to
-puts it ON_HOLD (15 BR-07, BR-13). There is no money ledger and no "payment failed" event: an order has no money of
+order does next. `accept` does not convert: `convert` is Sales' own step afterwards. At signing an order takes one of three routes to
+CONFIRMED (`Order.contractSigned`, `confirmByInstallments`, `approveCredit`): payment due at signing, so
+PENDING_PAYMENT until the receipts pay those installments; nothing due at signing, so CONFIRMED at once; or a failed
+credit check, so ON_HOLD(CREDIT) until it is approved, then the same rule. A void the accountant agreed to puts a
+confirmed order ON_HOLD (15 BR-07, BR-13). There is no money ledger and no "payment failed" event: an order has no money of
 its own, only its contract's installments. Money that must share a transaction (a cancellation's settlement, the
 handover's check) is a direct call through `payment :: api`.
 
@@ -201,8 +204,10 @@ FEFO, no loose or opened stock (kltn-docs 01 BR-17, 07 BR-03; team plan 5-1, 4C-
 still needed is skipped, never broken. Allocations are `stock_reservation` rows with `allocated_from_id`; a pick line
 consumes exactly one. A delivery-scheduled order is released one batch at a time (17 BR-29).
 
-`ReservationSweeper` (`@SchedulerLock`, every minute) still runs, but only drains reservations that carry a deadline,
-which are the ones made before holds lost theirs; contract holds are never swept.
+There are no expiring reservations and no sweeper: the manual reservation endpoint, `InventoryService.reserve` and
+`ReservationSweeper` with its TTL are removed (a V20261117 migration releases leftover expiring holds). Stock is held
+only for a signed contract's order and allocated at release. The whole-carton rule is stated twice, in the aggregate
+and as a CHECK on `inventory.stock_item` (stock is never loose).
 
 ### Production orders and receiving
 

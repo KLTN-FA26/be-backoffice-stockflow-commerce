@@ -33,7 +33,7 @@ rebuilt on deploy; historical enum constants stay):
 | storefront prices, cart, checkout, online payment, COD, parcel carriers | Sales quote; customers pay by bank transfer against contract installments; every order is a full truckload (5-2, 5-3, V20261108000400) |
 | money ledger, per-order payment terms | an order has no money of its own, only its contract's installments (4B-10, 4B-11) |
 | the old return flow (QC, replacement order, credit) | returned cartons go to quarantine; refund and adjustment invoice (4D-1..4D-4) |
-| roles `ORDER_COORDINATOR`, `INVENTORY_PLANNER`, `PROCUREMENT_STAFF` | seven roles remain; the permissions moved (5-5, 5-7, 5-8) |
+| roles `ORDER_COORDINATOR`, `INVENTORY_PLANNER`, `PROCUREMENT_STAFF` | seven staff roles (System Admin included) plus Customer remain: eight in `Role`; the permissions moved (5-5, 5-7, 5-8) |
 
 **What replaced it:** quotes and sales contracts with delivery batches and payment plans (4B); installments, payment
 receipts and refund records in `payment`; production orders sent to producers, with print sample rounds, schedule and
@@ -45,7 +45,7 @@ webhooks (3). Every module has code now; the "skeleton" status in earlier notes 
 ## What now justifies the in-transaction design
 
 ADR-0005 justified one transaction by **checkout**: place an order and reserve its stock together, or oversell. Checkout
-no longer exists, and the old 30-minute reservation with its expiry sweep went with it. The reason has not gone; it has
+no longer exists, and the old 30-minute reservation with its expiry sweep, the manual reservation endpoint and `InventoryService.reserve` went with it: no reservation expires, and stock is held only for a signed contract's order and allocated at release. The reason has not gone; it has
 moved to the step where the business **promises goods to a customer's order**:
 
 * Sales choose the shipping warehouse of a signed contract's order and the order holds the whole cartons available there
@@ -66,7 +66,7 @@ moved to the step where the business **promises goods to a customer's order**:
 
 | Document | State |
 |---|---|
-| ADR-0005 | **Decision stands.** Its Context point 1 and its examples (`OrderServiceImpl.placeOrder`, `PaymentCaptured`, "failed checkout", `PlaceOrderIntegrationTest`) describe the shop that no longer exists; read them as the history of why, and this ADR for the current instance. The reservation sweeper still runs but only for reservations that carry a deadline (those made before holds lost it). |
+| ADR-0005 | **Decision stands.** Its Context point 1 and its examples (`OrderServiceImpl.placeOrder`, `PaymentCaptured`, "failed checkout", `PlaceOrderIntegrationTest`) describe the shop that no longer exists; read them as the history of why, and this ADR for the current instance. Its 30-minute reservation and expiry sweep are gone too: the manual reservation endpoint, `InventoryService.reserve` and `ReservationSweeper` are removed, and a V20261117 migration releases leftover expiring holds. |
 | ADR-0001..0003 | still superseded by ADR-0005 |
 | ADR-0007 | stands (cross-schema foreign keys) |
 | `docs/business-design/**` | superseded by kltn-docs; kept as history, with a banner on its index files. Its `db-design/schema.dbml` is current (generated from the migrated database) |
