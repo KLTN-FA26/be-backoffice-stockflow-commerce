@@ -10,20 +10,15 @@ import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.security.DataScope;
 import com.stockflow.contracts.OrderCancelled;
 import com.stockflow.contracts.ShipmentStatusChanged;
-import com.stockflow.customer.api.CommercialTerm;
-import com.stockflow.customer.api.CustomerService;
-import com.stockflow.customer.api.DepositBalancePolicy;
-import com.stockflow.customer.api.SaveCreditTermsCommand;
 import com.stockflow.order.api.CancelOrderCommand;
 import com.stockflow.order.api.CancellationReasonCode;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.OrderSummary;
-import com.stockflow.order.api.PaymentTerm;
-import com.stockflow.order.api.PlaceOrderCommand;
-import com.stockflow.order.internal.service.OrderReleases;
-import com.stockflow.payment.internal.service.ReceivableService;
+import com.stockflow.order.internal.service.SalesContracts;
 import com.stockflow.support.Await;
+import com.stockflow.support.ConfirmedOrders;
+import com.stockflow.support.CustomerSkuRows;
 import com.stockflow.support.DemoData;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
@@ -38,6 +33,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.context.ApplicationContext;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -54,7 +50,6 @@ import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
-import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -79,21 +74,26 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * G4-2a (SCRUM-288/292/293) through the real filter chain, permission aspect, warehouse scope and database: a load
  * plan's vehicle booked with a carrier and loading, parcels scanned against its manifest (every wrong scan refused with
  * its own code, a retried scan harmless), the signature that hands the shipments over and moves the order in the same
- * transaction (09 BR-03), the outcomes the coordinator records and what they bill, and the customer's view of their
+ * transaction (09 BR-03), the outcomes the coordinator records and what they make due, and the customer's view of their
  * shipments (BR-05). Every order ships as a full truckload through a load plan and nothing is collected on delivery
  * (kltn-docs 09 BR-08): the plan is only the way onto a vehicle here, {@link LoadPlanIntegrationTest} tests it.
+ *
+ * <p>Every order is a contract's ({@link ConfirmedOrders}): paid in full on signing, paying 30% on signing and the rest
+ * before delivery - which holds the goods at the signature until it is paid (15 BR-08) - or paying after delivery on the
+ * customer's approved credit, due once the order is delivered in full (15 BR-09). Its lines are the test customer's own
+ * sofa (14 BR-04), handled like the catalogue's, in cartons of at least two.</p>
  *
  * <p>Its own context, hence its own database: shipped orders keep their stock.</p>
  */
 @IntegrationTest
 @Import({PostgresContainer.class, RedisContainer.class, RecordedEvents.class})
 @AutoConfigureMockMvc
-@TestPropertySource(properties = {"stockflow.security.enabled=true", "stockflow.catalog.projection-retry-ms=3600000",
+@TestPropertySource(properties = {"stockflow.security.enabled=true", "stockflow.upload-inspection.enabled=false",
+        "stockflow.catalog.projection-retry-ms=3600000",
         "stockflow.fulfillment.load-planning.solver-budget=PT2S",
         "stockflow.fulfillment.load-planning.solver-wall-limit=PT2S", "stockflow.test.context=dispatch-handover"})
 class DispatchHandoverIntegrationTest {
 
-    private static final Sku SOFA = new Sku("SOFA-3S-GREY");
     private static final Duration ASYNC = Duration.ofSeconds(15);
     private static final UUID HCM = DemoData.WAREHOUSE_HCM;
     private static final String BASE = "/api/v1/fulfillment";
@@ -105,13 +105,11 @@ class DispatchHandoverIntegrationTest {
     @Autowired MockMvc mvc;
     @MockitoBean JwtDecoder decoder;
     @Autowired OrderService orders;
-    @Autowired OrderReleases releases;
-    @Autowired CustomerService customers;
-    @Autowired ReceivableService receivables;
     @Autowired JdbcTemplate jdbc;
     @Autowired TransactionTemplate tx;
     @Autowired EntityManager entityManager;
     @Autowired ApplicationEventPublisher publisher;
+    @Autowired ApplicationContext context;
     @Autowired ObjectMapper json;
     @Autowired RecordedEvents.Recorder recorded;
 
@@ -128,6 +126,9 @@ class DispatchHandoverIntegrationTest {
     private UUID ghn;
     private UUID ghtk;
     private UUID truck5t;
+    private ConfirmedOrders confirmedOrders;
+    /** The test customer's own sofa (see the class comment). */
+    private Sku sofa;
 
     @BeforeEach
     void setUp() {
@@ -143,6 +144,15 @@ class DispatchHandoverIntegrationTest {
         otherCustomerUser = staff("CUSTOMER");
         customer = customerOf(customerUser);
         customerOf(otherCustomerUser);
+        confirmedOrders = new ConfirmedOrders(context);
+        sofa = new Sku(CustomerSkuRows.like(jdbc, tx, entityManager, customer, "SOFA-3S-GREY", 50).sku());
+        stock(40);
+        // Credit approved by accounting, ample: a contract paying after delivery fits it (15 BR-11).
+        tx.executeWithoutResult(s -> jdbc.update("""
+                INSERT INTO customer.credit_profile (id, customer_id, allow_prepaid, allow_deposit, allow_credit,
+                    default_payment_term, credit_limit, credit_term_days, approved_by, approved_at)
+                VALUES (?, ?, true, false, true, 'PREPAID', 10000000000, 30, ?, NOW())""", Identifiers.newId(),
+                customer, accountant));
         // Truck hirers of the test's own: the parcel carriers are retired (V20261108001300).
         ghn = tx.execute(s -> ReferenceRows.truckCarrier(entityManager, "Xe tải Nhanh"));
         ghtk = tx.execute(s -> ReferenceRows.truckCarrier(entityManager, "Xe tải Tiết Kiệm"));
@@ -211,38 +221,61 @@ class DispatchHandoverIntegrationTest {
         return request.contentType("application/json").content(content);
     }
 
-    /** SCRUM-484: terms that exist are changed against the version read; the first set carries none. */
-    private Long currentTermsVersion(UUID customerId) {
-        var terms = customers.creditTerms(customerId);
-        return terms.configured() ? terms.version() : null;
+    /** How a contract asks to be paid (15 §4.1-§4.3). */
+    private enum Plan {
+        /** Everything on signing: paid, nothing is owed when the goods leave. */
+        PAID_ON_SIGNING,
+        /** 30% on signing (paid), the rest before delivery: owed until paid, and the handover waits for it. */
+        DEPOSIT_BEFORE_DELIVERY,
+        /** Everything after delivery, on the customer's credit: the goods leave unpaid. */
+        AFTER_DELIVERY;
+
+        List<SalesContracts.Installment> installments() {
+            return switch (this) {
+                case PAID_ON_SIGNING -> ConfirmedOrders.paidOnSigning();
+                case DEPOSIT_BEFORE_DELIVERY -> List.of(
+                        new SalesContracts.Installment("Deposit", "ON_SIGNING", null, new BigDecimal("30"), 0, null),
+                        new SalesContracts.Installment("Before delivery", "BEFORE_DELIVERY", null,
+                                new BigDecimal("70"), null, null));
+                case AFTER_DELIVERY -> List.of(new SalesContracts.Installment("After delivery", "AFTER_DELIVERY", null,
+                        new BigDecimal("100"), 30, null));
+            };
+        }
     }
 
-    /** An order of the test customer on {@code term}, its money received as that term wants, released at HCM. */
-    private OrderSummary order(PaymentTerm term, DepositBalancePolicy policy, int sofas, long price) {
-        customers.saveCreditTerms(new SaveCreditTermsCommand(customer, true, true, true,
-                CommercialTerm.valueOf(term.name()), new BigDecimal("30"), new BigDecimal("10000000000"), 30,
-                "test terms", accountant, currentTermsVersion(customer), policy));
-        OrderSummary order = orders.placeOrder(new PlaceOrderCommand(UUID.randomUUID(), customer, null, null, false,
-                List.of(new PlaceOrderCommand.Line(SOFA, sofas, Money.vnd(price), null)), term, null, null));
+    /**
+     * An order of the test customer for {@code sofas} sofas (at least two: one carton) at {@code price}, its contract
+     * signed with {@code plan} and its installment on signing paid - CONFIRMED - released at HCM.
+     */
+    private OrderSummary order(Plan plan, int sofas, long price) {
+        ConfirmedOrders.Signed signed = confirmedOrders.signed(customer, plan.installments(),
+                ConfirmedOrders.Line.units(sofa, sofas, Money.vnd(price)));
+        UUID orderId = confirmedOrders.pay(signed).orderId();
         // Split shipments throughout: Sales allowed them on the order (PACK-PARTIAL, lead's decision 2026-10-21).
         tx.executeWithoutResult(s -> jdbc.update(
-                "UPDATE ordering.customer_order SET allow_partial_shipment = TRUE WHERE id = ?", order.orderId()));
-        BigDecimal total = order.total().amount();
-        if (term == PaymentTerm.PREPAID) {
-            pay(order, total);
-        } else if (term == PaymentTerm.DEPOSIT) {
-            pay(order, total.multiply(new BigDecimal("0.3")));
-        }
-        Await.until("order confirmed", ASYNC,
-                () -> orders.findById(order.orderId()).orElseThrow().status() == OrderStatus.CONFIRMED);
-        return releases.release(order.orderId(), HCM, coordinator);
+                "UPDATE ordering.customer_order SET allow_partial_shipment = TRUE WHERE id = ?", orderId));
+        return confirmedOrders.release(orderId, HCM, coordinator);
     }
 
-    private void pay(OrderSummary order, BigDecimal amount) {
-        receivables.recordTransfer(new ReceivableService.RecordTransferCommand(customer,
-                "FT" + UUID.randomUUID().toString().replace("-", "").substring(0, 12).toUpperCase(), amount, "VND",
-                LocalDate.now(ZoneId.of("Asia/Ho_Chi_Minh")), null, "payment", accountant,
-                List.of(new ReceivableService.OrderPayment(order.orderId(), amount))));
+    /** What the order's installment before delivery asks, paid in full by a receipt. */
+    private void payBeforeDelivery(OrderSummary order) {
+        Map<String, Object> installment = jdbc.queryForMap("""
+                SELECT id, amount FROM payment.installment WHERE order_id = ? AND milestone = 'BEFORE_DELIVERY'""",
+                order.orderId());
+        confirmedOrders.pay(customer, (UUID) installment.get("id"), (BigDecimal) installment.get("amount"));
+    }
+
+    /** The order's installment paid after delivery: its status, amount and due day once it is reached. */
+    private Map<String, Object> afterDelivery(OrderSummary order) {
+        return jdbc.queryForMap("""
+                SELECT status, amount::bigint AS amount, reached_at, due_date FROM payment.installment
+                 WHERE order_id = ? AND milestone = 'AFTER_DELIVERY'""", order.orderId());
+    }
+
+    /** 15 §4.1 step 2, BR-09: delivered in full, what the order pays after delivery is due (payment, after commit). */
+    private void awaitDueAfterDelivery(OrderSummary order) {
+        Await.until("the installment after delivery due", ASYNC,
+                () -> "DUE".equals(afterDelivery(order).get("status")));
     }
 
     private OrderStatus statusOf(OrderSummary order) {
@@ -271,7 +304,7 @@ class DispatchHandoverIntegrationTest {
             UUID parcel = UUID.fromString(data(as(picker, "WAREHOUSE_STAFF", body(post(BASE + "/tasks/" + task
                     + "/packages"), ONE_CARTON)).andExpect(status().isCreated())).path("packageId").asText());
             as(picker, "WAREHOUSE_STAFF", body(post(BASE + "/tasks/" + task + "/packages/" + parcel + "/scans"),
-                    "{\"scanId\":\"" + UUID.randomUUID() + "\",\"scannedCode\":\"" + SOFA.code() + "\",\"quantity\":"
+                    "{\"scanId\":\"" + UUID.randomUUID() + "\",\"scannedCode\":\"" + sofa.code() + "\",\"quantity\":"
                             + units + "}")).andExpect(status().isOk());
             as(picker, "WAREHOUSE_STAFF", body(post(BASE + "/tasks/" + task + "/packages/" + parcel + "/seal"),
                     MEASURES)).andExpect(status().isOk());
@@ -375,11 +408,11 @@ class DispatchHandoverIntegrationTest {
     // ---- the whole flow ------------------------------------------------------------------------
 
     @Test
-    @DisplayName("prepaid stock order: its load plan's vehicle booked with a carrier and loading, every scan rule, "
+    @DisplayName("an order paid on signing: its load plan's vehicle booked with a carrier and loading, every scan rule, "
             + "signature hands it over (order SHIPPED), repeat harmless, manifest, customer view, delivered (order "
             + "DELIVERED), who may do what")
     void aStockOrderLeavesOnASignedManifest() throws Exception {
-        OrderSummary order = order(PaymentTerm.PREPAID, null, 2, 12_000_000);
+        OrderSummary order = order(Plan.PAID_ON_SIGNING, 2, 12_000_000);
         UUID shipment = ship(pickedTask(order), false, 1, 1);
         List<String> parcels = labels(shipment);
         assertThat(statusOf(order)).isEqualTo(OrderStatus.PACKED);
@@ -511,9 +544,10 @@ class DispatchHandoverIntegrationTest {
 
     @Test
     @DisplayName("a credit order in two shipments on two vehicles, the later one first: PARTIALLY_FULFILLED, then "
-            + "SHIPPED, each shipment with its own vehicle's carrier; delivered one by one, each opens its receivable")
+            + "SHIPPED, each shipment with its own vehicle's carrier; delivered one by one, the last makes what it "
+            + "pays after delivery due")
     void twoShipmentsLeaveOnTwoVehicles() throws Exception {
-        OrderSummary order = order(PaymentTerm.CREDIT, null, 2, 5_000_000);                    // 10M on credit
+        OrderSummary order = order(Plan.AFTER_DELIVERY, 2, 5_000_000);                    // 10M on credit
         UUID task = pickedTask(order);
         UUID s1 = ship(task, true, 1);
         UUID s2 = ship(task, false, 1);
@@ -534,21 +568,23 @@ class DispatchHandoverIntegrationTest {
 
         outcome(s1, "{\"outcome\":\"DELIVERED\"}").andExpect(status().isOk());
         assertThat(statusOf(order)).as("one of two delivered").isEqualTo(OrderStatus.SHIPPED);
+        assertThat(afterDelivery(order).get("status")).as("15 BR-09: a part delivered makes nothing due yet")
+                .isEqualTo("NOT_DUE");
         outcome(s2, "{\"outcome\":\"DELIVERED\"}").andExpect(status().isOk());
         assertThat(statusOf(order)).isEqualTo(OrderStatus.DELIVERED);
-        Await.until("a receivable per shipment", ASYNC, () -> jdbc.queryForObject(
-                "SELECT count(*) FROM payment.receivable WHERE order_id = ?", Long.class, order.orderId()) == 2);
-        assertThat(jdbc.queryForList("SELECT shipment_id::text || ':' || amount::bigint FROM payment.receivable "
-                + "WHERE order_id = ?", String.class, order.orderId()))
-                .containsExactlyInAnyOrder(s1 + ":5000000", s2 + ":5000000");
+        awaitDueAfterDelivery(order);
+        Map<String, Object> due = afterDelivery(order);
+        assertThat(due.get("amount")).isEqualTo(10_000_000L);
+        assertThat(due.get("due_date")).as("its days to pay from the delivery in full").isEqualTo(java.sql.Date.valueOf(
+                LocalDate.now(java.time.ZoneId.of("Asia/Ho_Chi_Minh")).plusDays(30)));
     }
 
     @Test
-    @DisplayName("G3-Q4: a deposit order whose balance is due before delivery is refused at the signature (naming the "
-            + "shipment) and nothing moves; paid, it goes. An order on hold is refused too; resolved, it goes")
+    @DisplayName("G3-Q4, 15 BR-08: an order whose installment before delivery is unpaid is refused at the signature "
+            + "(naming the shipment) and nothing moves; paid, it goes. An order on hold is refused too; resolved, it goes")
     void unpaidOrHeldOrdersDoNotLeave() throws Exception {
-        OrderSummary order = order(PaymentTerm.DEPOSIT, DepositBalancePolicy.BEFORE_DELIVERY, 1, 4_000_000);
-        UUID shipment = ship(pickedTask(order), false, 1);
+        OrderSummary order = order(Plan.DEPOSIT_BEFORE_DELIVERY, 2, 2_000_000);  // 4M: 1.2M paid, 2.8M before delivery
+        UUID shipment = ship(pickedTask(order), false, 2);
         String load = vehicle(ghn, shipment).path("loadId").asText();
         scan(load, labels(shipment).getFirst()).andExpect(status().isOk());
         handOver(load).andExpect(status().isConflict())
@@ -559,12 +595,14 @@ class DispatchHandoverIntegrationTest {
         dispatch(get(BASE + "/loads/" + load)).andExpect(jsonPath("$.data.status").value("LOADING"));
         assertThat(shipmentRow(shipment)).containsEntry("status", "READY_TO_DISPATCH");
         assertThat(statusOf(order)).isEqualTo(OrderStatus.PACKED);
-        pay(order, new BigDecimal("2800000"));
+        assertThat(jdbc.queryForObject("SELECT amount::bigint FROM payment.installment WHERE order_id = ? "
+                + "AND milestone = 'BEFORE_DELIVERY'", Long.class, order.orderId())).isEqualTo(2_800_000L);
+        payBeforeDelivery(order);
         handOver(load).andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("DISPATCHED"));
         assertThat(statusOf(order)).isEqualTo(OrderStatus.SHIPPED);
 
-        OrderSummary held = order(PaymentTerm.PREPAID, null, 1, 3_000_000);
-        UUID heldShipment = ship(pickedTask(held), false, 1);
+        OrderSummary held = order(Plan.PAID_ON_SIGNING, 2, 1_500_000);
+        UUID heldShipment = ship(pickedTask(held), false, 2);
         String heldLoad = vehicle(ghn, heldShipment).path("loadId").asText();
         scan(heldLoad, labels(heldShipment).getFirst()).andExpect(status().isOk());
         oc(body(post("/api/v1/orders/" + held.orderId() + "/hold"), "{\"reasonCode\":\"ADDRESS\","
@@ -581,7 +619,7 @@ class DispatchHandoverIntegrationTest {
     @DisplayName("the wrong parcel: open (not sealed), of a shipment in no load plan, in another load plan, on board "
             + "another vehicle - each refused with its own code; each vehicle hands over its own")
     void wrongParcelsAreRefused() throws Exception {
-        OrderSummary order = order(PaymentTerm.PREPAID, null, 3, 1_000_000);
+        OrderSummary order = order(Plan.PAID_ON_SIGNING, 3, 1_000_000);
         UUID task = pickedTask(order);
         UUID a = ship(task, true, 1);
         UUID b = ship(task, true, 1);
@@ -601,7 +639,7 @@ class DispatchHandoverIntegrationTest {
 
         // A parcel of a shipment waiting for dispatch but in no load plan.
         as(picker, "WAREHOUSE_STAFF", body(post(BASE + "/tasks/" + task + "/packages/" + open + "/scans"),
-                "{\"scanId\":\"" + UUID.randomUUID() + "\",\"scannedCode\":\"" + SOFA.code() + "\",\"quantity\":1}"))
+                "{\"scanId\":\"" + UUID.randomUUID() + "\",\"scannedCode\":\"" + sofa.code() + "\",\"quantity\":1}"))
                 .andExpect(status().isOk());
         as(picker, "WAREHOUSE_STAFF", body(post(BASE + "/tasks/" + task + "/packages/" + open + "/seal"), MEASURES))
                 .andExpect(status().isOk());
@@ -635,9 +673,10 @@ class DispatchHandoverIntegrationTest {
 
     @Test
     @DisplayName("09 §4.3: failed (customer absent) then delivered on a retry; another failed then returned; OTHER "
-            + "needs a note; an outcome before the handover is refused; a credit order's delivery opens its receivable")
+            + "needs a note; an outcome before the handover is refused; an order on credit, delivered, owes what it pays "
+            + "after delivery")
     void outcomesPerShipment() throws Exception {
-        OrderSummary order = order(PaymentTerm.PREPAID, null, 2, 1_000_000);
+        OrderSummary order = order(Plan.PAID_ON_SIGNING, 2, 1_000_000);
         UUID task = pickedTask(order);
         UUID first = ship(task, true, 1);
         UUID second = ship(task, false, 1);
@@ -673,22 +712,24 @@ class DispatchHandoverIntegrationTest {
         assertThat(after.status()).as("one delivered, one back: what is left may ship again")
                 .isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
 
-        OrderSummary credit = order(PaymentTerm.CREDIT, null, 1, 2_000_000);
-        UUID creditShipment = ship(pickedTask(credit), false, 1);
+        OrderSummary credit = order(Plan.AFTER_DELIVERY, 2, 1_000_000);
+        UUID creditShipment = ship(pickedTask(credit), false, 2);
         String creditLoad = vehicle(ghn, creditShipment).path("loadId").asText();
         scan(creditLoad, labels(creditShipment).getFirst()).andExpect(status().isOk());
         handOver(creditLoad).andExpect(status().isOk());
+        assertThat(afterDelivery(credit).get("status")).as("left unpaid, nothing due yet").isEqualTo("NOT_DUE");
         outcome(creditShipment, "{\"outcome\":\"DELIVERED\"}").andExpect(status().isOk());
-        Await.until("credit receivable", ASYNC, () -> jdbc.queryForObject(
-                "SELECT count(*) FROM payment.receivable WHERE order_id = ? AND shipment_id = ?", Long.class,
-                credit.orderId(), creditShipment) == 1);
-        as(accountant, "ACCOUNTANT", get("/api/v1/receivables?customerId=" + customer)).andExpect(status().isOk());
+        awaitDueAfterDelivery(credit);
+        as(accountant, "ACCOUNTANT", get("/api/v1/installments?customerId=" + customer + "&status=DUE"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[*].orderId").value(org.hamcrest.Matchers.hasItem(
+                        credit.orderId().toString())));
     }
 
     @Test
     @DisplayName("two dispatchers: scanning the same load at once both land; signing at once hands over once")
     void twoDispatchersOnOneLoad() throws Exception {
-        OrderSummary order = order(PaymentTerm.PREPAID, null, 2, 1_000_000);
+        OrderSummary order = order(Plan.PAID_ON_SIGNING, 2, 1_000_000);
         UUID shipment = ship(pickedTask(order), false, 1, 1);
         List<String> parcels = labels(shipment);
         String load = vehicle(ghn, shipment).path("loadId").asText();
@@ -723,10 +764,10 @@ class DispatchHandoverIntegrationTest {
             + "2026-10-17); were it cancelled, its shipment leaves the vehicle's manifest, its parcel on board stays "
             + "locked until it is unloaded, and the signature goes without it")
     void cancelledBetweenPackingAndHandover() throws Exception {
-        OrderSummary order = order(PaymentTerm.PREPAID, null, 1, 1_000_000);
-        UUID shipment = ship(pickedTask(order), false, 1);
-        OrderSummary other = order(PaymentTerm.PREPAID, null, 1, 1_000_000);
-        UUID stays = ship(pickedTask(other), false, 1);
+        OrderSummary order = order(Plan.PAID_ON_SIGNING, 2, 1_000_000);
+        UUID shipment = ship(pickedTask(order), false, 2);
+        OrderSummary other = order(Plan.PAID_ON_SIGNING, 2, 1_000_000);
+        UUID stays = ship(pickedTask(other), false, 2);
         String load = vehicle(ghn, shipment, stays).path("loadId").asText();
         String doomed = labels(shipment).getFirst();
         scan(load, doomed).andExpect(status().isOk());
@@ -764,10 +805,10 @@ class DispatchHandoverIntegrationTest {
     @Test
     @DisplayName("review #1: parcels packed before they recorded contents (V20261021000300 shapes) leave as the whole "
             + "order - marked so - and their outcomes take the whole-order path; the customer sees one shipment; the "
-            + "credit order's delivery opens its one receivable")
+            + "order on credit, delivered, owes what it pays after delivery")
     void parcelsWithoutContentsLeaveAsTheWholeOrder() throws Exception {
-        OrderSummary order = order(PaymentTerm.CREDIT, null, 1, 2_000_000);
-        UUID shipment = ship(pickedTask(order), false, 1);
+        OrderSummary order = order(Plan.AFTER_DELIVERY, 2, 1_000_000);
+        UUID shipment = ship(pickedTask(order), false, 2);
         // What V20261021000300 made of a pack completed by the old flow: a sealed parcel with no recorded contents.
         tx.executeWithoutResult(t -> jdbc.update("DELETE FROM fulfillment.package_line WHERE package_id IN "
                 + "(SELECT id FROM fulfillment.package WHERE shipment_id = ?)", shipment));
@@ -791,10 +832,8 @@ class DispatchHandoverIntegrationTest {
                 .andExpect(jsonPath("$.data.shipments[0].failureReason").value("CUSTOMER_ABSENT"));
         outcome(shipment, "{\"outcome\":\"DELIVERED\"}").andExpect(status().isOk());
         assertThat(statusOf(order)).isEqualTo(OrderStatus.DELIVERED);
-        Await.until("the order's receivable", ASYNC, () -> jdbc.queryForObject(
-                "SELECT count(*) FROM payment.receivable WHERE order_id = ?", Long.class, order.orderId()) == 1);
-        assertThat(jdbc.queryForObject("SELECT amount::bigint FROM payment.receivable WHERE order_id = ?", Long.class,
-                order.orderId())).isEqualTo(2_000_000L);
+        awaitDueAfterDelivery(order);
+        assertThat(afterDelivery(order).get("amount")).isEqualTo(2_000_000L);
         as(customerUser, "CUSTOMER", get("/api/v1/orders/me/" + order.orderId())).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.shipments[0].status").value("DELIVERED"));
     }
@@ -802,8 +841,8 @@ class DispatchHandoverIntegrationTest {
     @Test
     @DisplayName("review #3: L1 {O1, O2} and L2 {O2, O1} signed at once - no deadlock, both orders shipped")
     void crossedLoadsDoNotDeadlock() throws Exception {
-        OrderSummary o1 = order(PaymentTerm.PREPAID, null, 2, 1_000_000);
-        OrderSummary o2 = order(PaymentTerm.PREPAID, null, 2, 1_000_000);
+        OrderSummary o1 = order(Plan.PAID_ON_SIGNING, 2, 1_000_000);
+        OrderSummary o2 = order(Plan.PAID_ON_SIGNING, 2, 1_000_000);
         UUID t1 = pickedTask(o1);
         UUID t2 = pickedTask(o2);
         UUID o1a = ship(t1, true, 1);
@@ -834,8 +873,8 @@ class DispatchHandoverIntegrationTest {
     @DisplayName("review: a scan without scanId is accepted (one is made); two load plans created with one requestId at "
             + "once both answer the same plan")
     void scanIdOptionalAndConcurrentPlanReplays() throws Exception {
-        OrderSummary order = order(PaymentTerm.PREPAID, null, 1, 1_000_000);
-        UUID shipment = ship(pickedTask(order), false, 1);
+        OrderSummary order = order(Plan.PAID_ON_SIGNING, 2, 1_000_000);
+        UUID shipment = ship(pickedTask(order), false, 2);
         String create = planBody(UUID.randomUUID(), shipment);
         String a = token(dispatcher, "WAREHOUSE_STAFF");
         String b = token(secondDispatcher, "WAREHOUSE_STAFF");
@@ -854,9 +893,9 @@ class DispatchHandoverIntegrationTest {
             + "loading, scan, sign, outcome); shipments carry their task (label reprint)")
     void systemAdminAndShipmentContext() throws Exception {
         UUID admin = staff("SYSTEM_ADMIN");
-        OrderSummary order = order(PaymentTerm.PREPAID, null, 1, 1_000_000);
+        OrderSummary order = order(Plan.PAID_ON_SIGNING, 2, 1_000_000);
         UUID task = pickedTask(order);
-        UUID shipment = ship(task, false, 1);
+        UUID shipment = ship(task, false, 2);
         JsonNode carrier = data(as(admin, "SYSTEM_ADMIN", body(post(BASE + "/carriers"),
                 "{\"code\":\"SYSADM\",\"name\":\"Admin carrier\"}")).andExpect(status().isCreated()));
         as(admin, "SYSTEM_ADMIN", body(put(BASE + "/carriers/" + carrier.path("carrierId").asText()),
@@ -918,8 +957,7 @@ class DispatchHandoverIntegrationTest {
                 .andExpect(jsonPath("$.data.status").value("INACTIVE"));
 
         // A load plan's vehicle is booked with a carrier in use only.
-        stock(1);
-        UUID shipment = ship(pickedTask(order(PaymentTerm.PREPAID, null, 1, 1_000_000)), false, 1);
+        UUID shipment = ship(pickedTask(order(Plan.PAID_ON_SIGNING, 2, 1_000_000)), false, 2);
         String loadId = plannedVehicle(shipment);
         String booking = BASE + "/loads/" + loadId + "/booking";
         dispatch(body(post(booking), "{\"carrierId\":\"" + aha.path("carrierId").asText() + "\"}"))
@@ -934,28 +972,24 @@ class DispatchHandoverIntegrationTest {
 
     // ---- E2E QA 2026-10-21 ---------------------------------------------------------------------------
 
-    /**
-     * Brings its own sofas: this class shares one database and the demo stock is counted by the tests above, so each
-     * of these adds what it is about to use instead of eating theirs.
-     */
+    /** {@code sofas} of the test customer's sofa free at HCM, received long ago: picked first. */
     private void stock(int sofas) {
         tx.executeWithoutResult(s -> jdbc.update("""
                 INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, version,
                     created_at, received_at)
                 VALUES (?, ?, 'HCM-A02-1-A', ?, 0, 'AVAILABLE', 0, NOW(), NOW() - interval '400 days')""",
-                Identifiers.newId(), SOFA.code(), sofas));
+                Identifiers.newId(), sofa.code(), sofas));
     }
 
-    /** Packs, plans, loads and delivers one credit order: its delivery opens one receivable. */
+    /** Packs, plans, loads and delivers one order on credit: delivered, what it pays after delivery is due. */
     private OrderSummary deliveredOnCredit(long price) throws Exception {
-        OrderSummary order = order(PaymentTerm.CREDIT, null, 1, price);
-        UUID shipment = ship(pickedTask(order), false, 1);
+        OrderSummary order = order(Plan.AFTER_DELIVERY, 2, price);
+        UUID shipment = ship(pickedTask(order), false, 2);
         String load = vehicle(ghn, shipment).path("loadId").asText();
         scan(load, labels(shipment).getFirst()).andExpect(status().isOk());
         handOver(load).andExpect(status().isOk());
         outcome(shipment, "{\"outcome\":\"DELIVERED\"}").andExpect(status().isOk());
-        Await.until("credit receivable", ASYNC, () -> jdbc.queryForObject(
-                "SELECT count(*) FROM payment.receivable WHERE order_id = ?", Long.class, order.orderId()) == 1);
+        awaitDueAfterDelivery(order);
         return order;
     }
 
@@ -963,8 +997,7 @@ class DispatchHandoverIntegrationTest {
     @DisplayName("E2E F1: a pick without its pack row (seeded data) no longer 404s the task list - it reads as packing "
             + "not started, in the list, the PICKING filter and the task itself")
     void aTaskWithoutItsPackRowDoesNotBreakTheList() throws Exception {
-        stock(1);
-        OrderSummary order = order(PaymentTerm.PREPAID, null, 1, 1_000_000);
+        OrderSummary order = order(Plan.PAID_ON_SIGNING, 2, 1_000_000);
         UUID task = UUID.fromString(data(oc(body(post(BASE + "/tasks"), "{\"orderId\":\"" + order.orderId()
                 + "\",\"assignedUserId\":\"" + picker + "\"}")).andExpect(status().isCreated())).path("taskId").asText());
         as(picker, "WAREHOUSE_STAFF", post(BASE + "/tasks/" + task + "/picking-start")).andExpect(status().isOk());
@@ -996,8 +1029,7 @@ class DispatchHandoverIntegrationTest {
     @DisplayName("E2E: a second cancellation request (the first rejected) closes as EXPIRED, with a note the customer "
             + "reads, when the order is packed - it can no longer be approved; handover and delivery leave it so")
     void aPendingCancellationRequestClosesWhenTheOrderIsPacked() throws Exception {
-        stock(1);
-        OrderSummary order = order(PaymentTerm.PREPAID, null, 1, 1_000_000);
+        OrderSummary order = order(Plan.PAID_ON_SIGNING, 2, 1_000_000);
         String cancel = "/api/v1/orders/" + order.orderId() + "/cancellation";
         String first = data(as(customerUser, "CUSTOMER", body(post(cancel), "{\"reasonCode\":\"CUSTOMER_REQUEST\"}"))
                 .andExpect(status().isAccepted())).path("requestId").asText();
@@ -1009,7 +1041,7 @@ class DispatchHandoverIntegrationTest {
         UUID task = pickedTask(order);
         assertThat(jdbc.queryForObject("SELECT status FROM ordering.order_cancellation_request WHERE id = ?::uuid",
                 String.class, second)).as("still deciding while picked").isEqualTo("PENDING");
-        UUID shipment = ship(task, false, 1);
+        UUID shipment = ship(task, false, 2);
         Map<String, Object> closed = jdbc.queryForMap("SELECT status, decided_by, decided_at, decision_note "
                 + "FROM ordering.order_cancellation_request WHERE id = ?::uuid", second);
         assertThat(closed.get("status")).isEqualTo("EXPIRED");
@@ -1036,8 +1068,7 @@ class DispatchHandoverIntegrationTest {
     @DisplayName("E2E: a request still pending when staff cancel the order closes as EXPIRED; an approved one stays "
             + "APPROVED (the approval is saved before the cancellation that closes pending ones)")
     void cancellingTheOrderClosesAPendingRequestButNotTheApprovedOne() throws Exception {
-        stock(2);
-        OrderSummary approved = order(PaymentTerm.PREPAID, null, 1, 1_000_000);
+        OrderSummary approved = order(Plan.PAID_ON_SIGNING, 2, 1_000_000);
         String request = data(as(customerUser, "CUSTOMER", body(post("/api/v1/orders/" + approved.orderId()
                 + "/cancellation"), "{\"reasonCode\":\"CUSTOMER_REQUEST\"}")).andExpect(status().isAccepted()))
                 .path("requestId").asText();
@@ -1046,7 +1077,7 @@ class DispatchHandoverIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT status FROM ordering.order_cancellation_request WHERE id = ?::uuid",
                 String.class, request)).isEqualTo("APPROVED");
 
-        OrderSummary cancelled = order(PaymentTerm.PREPAID, null, 1, 1_000_000);
+        OrderSummary cancelled = order(Plan.PAID_ON_SIGNING, 2, 1_000_000);
         String pending = data(as(customerUser, "CUSTOMER", body(post("/api/v1/orders/" + cancelled.orderId()
                 + "/cancellation"), "{\"reasonCode\":\"CUSTOMER_REQUEST\"}")).andExpect(status().isAccepted()))
                 .path("requestId").asText();
@@ -1058,22 +1089,22 @@ class DispatchHandoverIntegrationTest {
     }
 
     @Test
-    @DisplayName("E2E: GET /receivables?orderId= returns that order's receivables only (it used to ignore the filter)")
-    void receivablesFilterByOrder() throws Exception {
-        stock(2);
+    @DisplayName("E2E (was GET /receivables?orderId=, 4B-10): GET /installments?orderId= returns that order's "
+            + "installments only; the accountant reads them, a customer does not")
+    void installmentsFilterByOrder() throws Exception {
         OrderSummary one = deliveredOnCredit(1_000_000);
         OrderSummary two = deliveredOnCredit(2_000_000);
-        JsonNode page = data(as(accountant, "ACCOUNTANT", get("/api/v1/receivables?orderId=" + one.orderId()))
+        JsonNode page = data(as(accountant, "ACCOUNTANT", get("/api/v1/installments?orderId=" + one.orderId()))
                 .andExpect(status().isOk()));
         assertThat(page.path("items")).hasSize(1);
         assertThat(page.path("items").get(0).path("orderId").asText()).isEqualTo(one.orderId().toString());
-        as(accountant, "ACCOUNTANT", get("/api/v1/receivables?orderId=" + two.orderId() + "&customerId=" + customer))
+        as(accountant, "ACCOUNTANT", get("/api/v1/installments?orderId=" + two.orderId() + "&customerId=" + customer))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.items.length()").value(1))
                 .andExpect(jsonPath("$.data.items[0].orderId").value(two.orderId().toString()));
-        as(accountant, "ACCOUNTANT", get("/api/v1/receivables?orderId=" + UUID.randomUUID()))
+        as(accountant, "ACCOUNTANT", get("/api/v1/installments?orderId=" + UUID.randomUUID()))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.items.length()").value(0));
-        as(accountant, "ACCOUNTANT", get("/api/v1/receivables?orderId=not-a-uuid")).andExpect(status().isBadRequest());
-        as(customerUser, "CUSTOMER", get("/api/v1/receivables?orderId=" + one.orderId()))
+        as(accountant, "ACCOUNTANT", get("/api/v1/installments?orderId=not-a-uuid")).andExpect(status().isBadRequest());
+        as(customerUser, "CUSTOMER", get("/api/v1/installments?orderId=" + one.orderId()))
                 .andExpect(status().isForbidden());
     }
 
@@ -1081,8 +1112,7 @@ class DispatchHandoverIntegrationTest {
     @DisplayName("E2E: packing-queue rows carry their status (the value the status filter matches): PENDING until a "
             + "packer takes the order, PACKING after")
     void packingQueueRowsCarryTheirStatus() throws Exception {
-        stock(1);
-        OrderSummary order = order(PaymentTerm.PREPAID, null, 1, 1_000_000);
+        OrderSummary order = order(Plan.PAID_ON_SIGNING, 2, 1_000_000);
         UUID task = pickedTask(order);
         java.util.function.Function<String, JsonNode> row = query -> {
             try {
@@ -1143,8 +1173,8 @@ class DispatchHandoverIntegrationTest {
     @DisplayName("LP2-6: a kit of 2 leaves only with both parts scanned - a part left behind holds back its shipment, "
             + "named with its kit; the load and the manifest show each part's kit")
     void everyPartOfAKitIsScanned() throws Exception {
-        stock(1);
-        OrderSummary order = order(PaymentTerm.PREPAID, null, 1, 1_000_000);
+        // Two sofas (one carton): one leaves now, in its kit - a shipment of that kit alone.
+        OrderSummary order = order(Plan.PAID_ON_SIGNING, 2, 1_000_000);
         UUID task = pickedTask(order);
         UUID line = order.lines().getFirst().lineId();
         as(picker, "WAREHOUSE_STAFF", post(BASE + "/tasks/" + task + "/packing-start")).andExpect(status().isOk());
@@ -1154,14 +1184,15 @@ class DispatchHandoverIntegrationTest {
         kit.path("packages").forEach(p -> parts.add(p.path("packageId").asText()));
         assertThat(parts).hasSize(2);
         as(picker, "WAREHOUSE_STAFF", body(post(BASE + "/tasks/" + task + "/packages/" + parts.get(0) + "/scans"),
-                "{\"scanId\":\"" + UUID.randomUUID() + "\",\"scannedCode\":\"" + SOFA.code() + "\",\"quantity\":1}"))
+                "{\"scanId\":\"" + UUID.randomUUID() + "\",\"scannedCode\":\"" + sofa.code() + "\",\"quantity\":1}"))
                 .andExpect(status().isOk());
         for (String part : parts) {
             as(picker, "WAREHOUSE_STAFF", body(post(BASE + "/tasks/" + task + "/packages/" + part + "/seal"),
                     MEASURES)).andExpect(status().isOk());
         }
         UUID shipment = UUID.fromString(data(as(picker, "WAREHOUSE_STAFF", body(post(BASE + "/tasks/" + task
-                + "/packing-completion"), "{}")).andExpect(status().isOk())).path("shipmentId").asText());
+                + "/packing-completion"), "{\"partial\":true,\"note\":\"one sofa now\"}")).andExpect(status().isOk()))
+                .path("shipmentId").asText());
         List<String> labels = labels(shipment);
         assertThat(labels).hasSize(2);
 
@@ -1182,7 +1213,7 @@ class DispatchHandoverIntegrationTest {
         scan(load, labels.get(1)).andExpect(status().isOk());
         handOver(load).andExpect(status().isOk());
         assertThat(shipmentRow(shipment)).containsEntry("status", "HANDED_OVER");
-        assertThat(statusOf(order)).isEqualTo(OrderStatus.SHIPPED);
+        assertThat(statusOf(order)).as("one sofa of two gone").isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
         JsonNode manifest = data(dispatch(get(BASE + "/loads/" + load + "/manifest")).andExpect(status().isOk()));
         assertThat(manifest.path("packageCount").asInt()).isEqualTo(2);
         assertThat(manifest.path("shipments").get(0).path("packages").findValuesAsText("groupId"))
@@ -1196,7 +1227,7 @@ class DispatchHandoverIntegrationTest {
         List<String> parts = new ArrayList<>();
         kit.path("packages").forEach(p -> parts.add(p.path("packageId").asText()));
         as(picker, "WAREHOUSE_STAFF", body(post(BASE + "/tasks/" + task + "/packages/" + parts.get(0) + "/scans"),
-                "{\"scanId\":\"" + UUID.randomUUID() + "\",\"scannedCode\":\"" + SOFA.code() + "\",\"quantity\":1}"))
+                "{\"scanId\":\"" + UUID.randomUUID() + "\",\"scannedCode\":\"" + sofa.code() + "\",\"quantity\":1}"))
                 .andExpect(status().isOk());
         for (String part : parts) {
             as(picker, "WAREHOUSE_STAFF", body(post(BASE + "/tasks/" + task + "/packages/" + part + "/seal"),
@@ -1209,8 +1240,7 @@ class DispatchHandoverIntegrationTest {
     @DisplayName("review of #155: a kit shipped in part of the order and returned stays whole on its shipment; its unit is "
             + "packed again in a new kit and ships with the rest")
     void aReturnedKitIsPackedAgain() throws Exception {
-        stock(2);
-        OrderSummary order = order(PaymentTerm.PREPAID, null, 2, 1_000_000);
+        OrderSummary order = order(Plan.PAID_ON_SIGNING, 2, 1_000_000);
         UUID task = pickedTask(order);
         UUID line = order.lines().getFirst().lineId();
         as(picker, "WAREHOUSE_STAFF", post(BASE + "/tasks/" + task + "/packing-start")).andExpect(status().isOk());
