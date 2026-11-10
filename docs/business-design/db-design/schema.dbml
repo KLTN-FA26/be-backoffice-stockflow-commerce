@@ -1010,14 +1010,6 @@ Enum fulfillment.pack_status {
   CANCELLED
 }
 
-Enum fulfillment.package_package_type {
-  CARTON
-  BAG
-  PALLET
-  CRATE
-  OTHER
-}
-
 Enum fulfillment.package_status {
   OPEN
   SEALED
@@ -2845,7 +2837,6 @@ Table ordering.customer_order [headercolor: #C0392B] {
   remainder_fee_retained_amount decimal(19,4) [not null, default: 0]
   remainder_fee_paid_amount     decimal(19,4) [not null, default: 0]
   fulfilment_started_at         timestamptz
-  packing_started_at            timestamptz
   goods_left_at                 timestamptz
   closed_amount                 decimal(19,4) [not null, default: 0]
   tax_amount                    decimal(19,4) [not null, default: 0]
@@ -4460,7 +4451,6 @@ Table fulfillment.package [headercolor: #2C7873] {
   width_cm             decimal(10,2)
   height_cm            decimal(10,2)
   dim_weight_kg        decimal(10,3)
-  tracking_number      varchar(128)
   label_url            varchar(500)
   status               fulfillment.package_status [not null, default: 'OPEN']
   sealed_at            timestamptz
@@ -4470,20 +4460,11 @@ Table fulfillment.package [headercolor: #2C7873] {
   last_modified_at     timestamptz
   last_modified_by     varchar(100)
   label_code           varchar(48) [not null, unique]
-  package_type         fulfillment.package_package_type [not null, default: 'CARTON']
   rotatable            boolean [not null, default: true]
   rotatable_overridden boolean [not null, default: false]
-  fragile              boolean [not null, default: false]
-  fragile_overridden   boolean [not null, default: false]
   sealed_by            uuid
   voided_at            timestamptz
   voided_by            uuid
-  kit_group_id         uuid
-  kit_part_no          smallint
-  kit_part_count       smallint
-  kit_order_line_id    uuid
-  kit_override_reason  varchar(500)
-  label_outdated_at    timestamptz
   pick_line_id         uuid [unique]
   lpn                  varchar(30)
   checked_at           timestamptz
@@ -4497,40 +4478,7 @@ Table fulfillment.package [headercolor: #2C7873] {
   removal_note         varchar(500)
   indexes {
     (pack_id, package_no) [unique]
-    (kit_group_id, kit_part_no) [unique]
   }
-}
-
-Table fulfillment.package_line [headercolor: #2C7873] {
-  id               uuid [pk]
-  package_id       uuid [not null]
-  order_line_id    uuid [not null]
-  quantity         int [not null]
-  version          bigint [not null, default: 0]
-  created_at       timestamptz [not null, default: `now()`]
-  created_by       varchar(100)
-  last_modified_at timestamptz
-  last_modified_by varchar(100)
-  indexes {
-    (package_id, order_line_id) [unique]
-  }
-}
-
-Table fulfillment.package_scan [headercolor: #2C7873] {
-  id               uuid [pk]
-  package_id       uuid [not null]
-  order_line_id    uuid [not null]
-  scanned_code     varchar(64) [not null]
-  lot_number       varchar(64)
-  serial_number    varchar(100)
-  quantity         int [not null]
-  scanned_by       uuid [not null]
-  scanned_at       timestamptz [not null]
-  version          bigint [not null, default: 0]
-  created_at       timestamptz [not null, default: `now()`]
-  created_by       varchar(100)
-  last_modified_at timestamptz
-  last_modified_by varchar(100)
 }
 
 Table fulfillment.pick [headercolor: #2C7873] {
@@ -5742,7 +5690,6 @@ Ref: fulfillment.pack.packed_by > identity.app_user.id
 Ref: fulfillment.pack.pick_id > fulfillment.pick.id
 Ref: fulfillment.pack.started_by > identity.app_user.id
 Ref: fulfillment.package.checked_by > identity.app_user.id
-Ref: fulfillment.package.kit_order_line_id > ordering.order_line.id [delete: restrict]
 Ref: fulfillment.package.labeled_by > identity.app_user.id
 Ref: fulfillment.package.lpn > inventory.stock_package.lpn
 Ref: fulfillment.package.pack_id > fulfillment.pack.id [delete: restrict]
@@ -5751,11 +5698,6 @@ Ref: fulfillment.package.removed_by > identity.app_user.id
 Ref: fulfillment.package.sealed_by > identity.app_user.id
 Ref: fulfillment.package.shipment_id > fulfillment.shipment.id [delete: restrict]
 Ref: fulfillment.package.voided_by > identity.app_user.id
-Ref: fulfillment.package_line.order_line_id > ordering.order_line.id [delete: restrict]
-Ref: fulfillment.package_line.package_id > fulfillment.package.id [delete: cascade]
-Ref: fulfillment.package_scan.order_line_id > ordering.order_line.id [delete: restrict]
-Ref: fulfillment.package_scan.package_id > fulfillment.package.id [delete: restrict]
-Ref: fulfillment.package_scan.scanned_by > identity.app_user.id
 Ref: fulfillment.pick.assigned_user_id > identity.app_user.id
 Ref: fulfillment.pick.moved_to_dispatch_by > identity.app_user.id
 Ref: fulfillment.pick.order_id > ordering.customer_order.id [delete: restrict]
@@ -6008,8 +5950,6 @@ TableGroup fulfillment_group [color: #2C7873] {
   fulfillment.load_waybill_file
   fulfillment.pack
   fulfillment.package
-  fulfillment.package_line
-  fulfillment.package_scan
   fulfillment.pick
   fulfillment.pick_line
   fulfillment.shipment
