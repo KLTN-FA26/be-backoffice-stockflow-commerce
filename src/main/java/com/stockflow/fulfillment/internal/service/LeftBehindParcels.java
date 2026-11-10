@@ -3,7 +3,6 @@ package com.stockflow.fulfillment.internal.service;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.fulfillment.internal.domain.LoadPlan;
 import com.stockflow.fulfillment.internal.domain.LoadPlanReleaseReason;
-import com.stockflow.fulfillment.internal.domain.PackageStatus;
 import com.stockflow.fulfillment.internal.domain.Shipment;
 import com.stockflow.fulfillment.internal.entity.PackageJpaEntity;
 import com.stockflow.fulfillment.internal.entity.ShipmentJpaEntity;
@@ -31,8 +30,8 @@ import java.util.stream.Collectors;
  * split shipment)" (SCRUM-392, review of #162): a shipment with parcels placed in a plan and parcels left behind at its
  * confirmation is split when the plan's first vehicle starts loading - BR-14's point of no return, so a plan reopened or
  * cancelled before it leaves its shipments untouched. The left-behind parcels move to a new shipment waiting for
- * dispatch, free for a later trip; their labels - and those of the parcels that stay, whose n/N changed - are marked
- * outdated and are reprinted before they are loaded. Until then a shipment partly held by a plan is not planned elsewhere (LP-5).
+ * dispatch, free for a later trip. A shipping carton's label names neither the shipment nor n/N (team plan 4C-6), so
+ * nothing is reprinted (the repack parcels whose labels did went with 4C-7). Until then a shipment partly held by a plan is not planned elsewhere (LP-5).
  * LP-4 already refused this for an order that does not allow partial shipments. Idempotent: a parcel already moved is
  * not moved again.
  */
@@ -77,7 +76,7 @@ class LeftBehindParcels {
         leftBehind.forEach((shipmentId, ids) -> {
             ShipmentJpaEntity row = rows.get(shipmentId);
             List<PackageJpaEntity> ofShipment = packages.findByShipmentIdOrderByPackageNoAsc(shipmentId).stream()
-                    .filter(p -> p.getStatus() == PackageStatus.SEALED).toList();
+                    .filter(p -> p.getStatus().ships()).toList();
             List<PackageJpaEntity> moving = ofShipment.stream().filter(p -> ids.contains(p.getId())).toList();
             int staying = ofShipment.size() - moving.size();
             if (moving.isEmpty() || staying < 1) {
@@ -95,21 +94,11 @@ class LeftBehindParcels {
             shipments.saveAndFlush(ShipmentJpaEntity.of(rest));
             timeline.record(rest, null, order, orderNumber, null, null);
             for (PackageJpaEntity parcel : moving) {
-                parcel.apply(rest.id(), parcel.getPackageType(), parcel.getStatus(), parcel.getWeightKg(),
-                        parcel.getLengthCm(), parcel.getWidthCm(), parcel.getHeightCm(), parcel.getDimWeightKg(),
-                        parcel.isRotatable(), parcel.isRotatableOverridden(), parcel.isFragile(),
-                        parcel.isFragileOverridden(), parcel.getSealedAt(), parcel.getSealedBy(), parcel.getVoidedAt(),
-                        parcel.getVoidedBy());
-                parcel.markLabelOutdated(at);
+                parcel.moveToShipment(rest.id());
                 packages.save(parcel);
             }
-            // The parcels that stay are now n of a smaller N: their labels are reprinted too (review of #162).
-            ofShipment.stream().filter(p -> !ids.contains(p.getId())).forEach(parcel -> {
-                parcel.markLabelOutdated(at);
-                packages.save(parcel);
-            });
             packages.flush();
-            log.info("Load plan {}: {} left-behind parcel(s) of shipment {} split off as shipment {} (labels to reprint)",
+            log.info("Load plan {}: {} left-behind parcel(s) of shipment {} split off as shipment {}",
                     plan.code(), moving.size(), row.getCode(), rest.code());
         });
     }

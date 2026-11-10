@@ -169,13 +169,13 @@ class CustomerOrdersService implements CustomerOrders {
     /**
      * G3-2: what the portal may offer, from the same rules the order applies - so the portal stops keeping its own
      * list of cancellable statuses. A customer cancels at once until the order is released; after that, up to the
-     * first completed package, asks (one request at a time); reorders an order that came from a quote.
+     * first labelled carton (08 BR-04), asks (one request at a time); reorders an order that came from a quote.
      */
     private AllowedActions allowedActions(OrderSummary summary) {
         OrderStatus status = summary.status();
         boolean cancel = status.customerMayCancelDirectly();
         var lifecycle = summary.lifecycle();
-        boolean packed = lifecycle != null && lifecycle.packedAt() != null;
+        boolean packed = lifecycle != null && lifecycle.packedForGood();
         boolean request = !cancel && !packed && status.canTransitionTo(OrderStatus.CANCELLED)
                 && !cancellationRequests.hasPending(summary.orderId());
         return new AllowedActions(cancel, request, quotes.findByConvertedOrderId(summary.orderId()).isPresent());
@@ -202,6 +202,8 @@ class CustomerOrdersService implements CustomerOrders {
             case PENDING_CONTRACT -> StatusGroup.AWAITING_CONTRACT;
             case ON_HOLD -> StatusGroup.UNDER_REVIEW;
             case CONFIRMED -> StatusGroup.CONFIRMED;
+            // 17 §5.2: "Đang chờ hàng".
+            case AWAITING_STOCK -> StatusGroup.AWAITING_STOCK;
             case IN_PRODUCTION -> StatusGroup.IN_PRODUCTION;
             case READY_TO_FULFILL, PICKING, PARTIALLY_FULFILLED, PACKED -> StatusGroup.PREPARING;
             case SHIPPED, DELIVERY_FAILED -> StatusGroup.SHIPPING;
@@ -253,8 +255,8 @@ class CustomerOrdersService implements CustomerOrders {
             case CLOSED -> statusGroup(status, lifecycle) == StatusGroup.RETURNED ? DeliveryState.RETURNED
                     : DeliveryState.DELIVERED;
             case RETURNED, REFUNDED, PARTIALLY_REFUNDED -> DeliveryState.RETURNED;
-            case DRAFT, PENDING_CONTRACT, PENDING_PAYMENT, CONFIRMED, IN_PRODUCTION, READY_TO_FULFILL, PICKING,
-                 CANCELLED -> DeliveryState.NOT_SHIPPED;
+            case DRAFT, PENDING_CONTRACT, PENDING_PAYMENT, CONFIRMED, AWAITING_STOCK, IN_PRODUCTION, READY_TO_FULFILL,
+                 PICKING, CANCELLED -> DeliveryState.NOT_SHIPPED;
         };
     }
 

@@ -87,6 +87,23 @@ public interface InventoryService {
     void prepareReservation(java.util.Set<Sku> skus);
 
     /**
+     * 4B-7 (17 §4.2 step 3, BR-21; 20 §5.6, BR-17): hold, for an order of a contract, as many whole cartons of the SKU
+     * as its shipping warehouse has available to promise, up to {@code cartons} - a SKU reservation at that warehouse,
+     * on no bin, with no deadline. What is not available is held later, when stock arrives; nothing is refused for a
+     * shortage. Joins the caller's transaction, under the SKU's advisory lock (take {@link #prepareReservation} first
+     * for several SKUs). Idempotent on the command's request id.
+     */
+    HoldStockResult holdAtWarehouse(HoldStockCommand command);
+
+    /**
+     * 4B-7 (17 §4.2 step 2, 20 BR-01): what each warehouse has available to promise of the SKU, by warehouse code -
+     * unheld sellable stock less the SKU's reservations held there, never more than is left system-wide. Every
+     * warehouse holding the SKU is listed, whatever the caller's warehouse scope: the order's choice is the business's,
+     * not a view of a warehouse.
+     */
+    Map<String, Integer> availableToPromiseByWarehouse(Sku sku);
+
+    /**
      * HELD → ALLOCATED (docs 03 §6, 04c F-FUL step 02): the order was released to a warehouse; each live SKU
      * reservation of the order becomes allocations of whole LPN cartons on pickable bins of that warehouse, one
      * allocation per carton, in the SKU's removal order - the earliest receipt first (FIFO, kltn-docs 07 BR-03) - and
@@ -104,8 +121,9 @@ public interface InventoryService {
     /**
      * X-SHORT reallocation: the allocation came up short - its carton was not found whole. It is released, and the
      * same quantity is allocated again in the same warehouse, as whole cartons in the SKU's removal order, from any
-     * pickable carton but that one, its bin's other cartons included (07 BR-03, BR-09). Joins the caller's
-     * transaction. Idempotent on the command's request id.
+     * pickable carton but that one, its bin's other cartons included (07 BR-03, BR-09). A damage report's impaired
+     * share restored onto a bin is reallocated like any other: it is restored as loose units, and a pick line takes a
+     * carton (team plan 4C-4). Joins the caller's transaction. Idempotent on the command's request id.
      *
      * @return the new allocations, in pick order
      * @throws com.stockflow.common.error.BusinessException {@code RESERVATION_NOT_FOUND} (unknown, or another
@@ -186,23 +204,6 @@ public interface InventoryService {
      * one is absent.
      */
     Map<UUID, List<StockPackageView>> receivingPackagesOf(Collection<UUID> receiptLineIds);
-
-    /**
-     * Move units and change their status in one step (a return's decision, putaway); see
-     * {@link ReclassifyStockCommand}. Same locking and errors as {@link #move}.
-     */
-    StockMove reclassify(ReclassifyStockCommand command);
-
-    /**
-     * Count goods a customer returned (SCRUM-260) in at a quarantine location as QUARANTINE stock, writing a RETURN_IN
-     * ledger line that names the return line and the order (see {@link ReceiveReturnCommand}). Joins the caller's
-     * transaction: the return's receipt and the stock it creates commit together. Lines of one parcel received at one
-     * time and of the same SKU and lot share one stock layer. Idempotent on the return line.
-     *
-     * @throws com.stockflow.common.error.BusinessException {@code LOCATION_NOT_FOUND}, {@code LOCATION_NOT_USABLE};
-     *         {@code STOCK_STATUS_MISMATCH} when the layer at that location is not in quarantine
-     */
-    StockMove receiveReturn(ReceiveReturnCommand command);
 
     /**
      * Move labelled cartons whole (SCRUM-473; kltn-docs 11 BR-04): each carton and its rows change location together,

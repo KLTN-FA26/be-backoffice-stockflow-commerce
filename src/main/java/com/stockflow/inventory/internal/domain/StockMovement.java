@@ -136,6 +136,12 @@ public record StockMovement(
          * team plan 4C-1): a MOVE that stays in place, into the carton this names, or that relabels a carton's units
          * of no lot as lot {@code UNTRACED}. Historical only: the application never repacks, it moves whole cartons.
          */
-        STOCK_PACKAGE
+        STOCK_PACKAGE,
+        /**
+         * A return receipt (team plan 4D-2; kltn-docs 03 §4.2, BR-14): a carton that came back, received whole into
+         * quarantine, one RECEIPT line per carton naming it ({@code ck_stock_movement_return_receipt}). The receipt
+         * itself, not a line of it: a return receipt has cartons, not lines.
+         */
+        GOODS_RECEIPT
     }
 }

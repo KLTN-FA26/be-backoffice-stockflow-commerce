@@ -2,6 +2,7 @@ package com.stockflow.procurement.internal.entity;
 
 import com.stockflow.common.persistence.BaseEntity;
 import com.stockflow.procurement.internal.domain.GoodsReceiptStatus;
+import com.stockflow.procurement.internal.domain.GoodsReceiptType;
 import com.stockflow.procurement.internal.domain.ReceiptApproval;
 import jakarta.persistence.CascadeType;
 import jakarta.persistence.Column;
@@ -11,6 +12,7 @@ import jakarta.persistence.Enumerated;
 import jakarta.persistence.FetchType;
 import jakarta.persistence.OneToMany;
 import jakarta.persistence.Table;
+import org.hibernate.annotations.SQLRestriction;
 
 import java.time.Instant;
 import java.util.ArrayList;
@@ -19,9 +21,15 @@ import java.util.UUID;
 
 /**
  * {@code procurement.goods_receipts}. Not the domain model; see {@code GoodsReceipt}.
+ *
+ * <p>Every receipt but a RETURN one (team plan 4D-2): a return receipt shares the table and the numbering, but is
+ * another document - cartons scanned by LPN, no lines, DRAFT to CLOSED - mapped by {@code ReturnReceiptJpaEntity}.
+ * Without the restriction a return receipt read here would be taken for a purchase receipt with no purchase order and
+ * no reason, which {@code GoodsReceipt} refuses to be.</p>
  */
 @Entity
 @Table(name = "goods_receipts", schema = "procurement")
+@SQLRestriction("receipt_type <> 'RETURN'")
 public class GoodsReceiptJpaEntity extends BaseEntity {
 
     @Column(name = "receipt_number", nullable = false, length = 30, updatable = false)
@@ -32,6 +40,14 @@ public class GoodsReceiptJpaEntity extends BaseEntity {
 
     @Column(name = "po_revision_id", updatable = false)
     private UUID purchaseOrderRevisionId;
+
+    /** 4A-5: PURCHASE (a PO, or blind) or PRODUCTION (one production order); never changes. */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "receipt_type", nullable = false, length = 16, updatable = false)
+    private GoodsReceiptType receiptType;
+
+    @Column(name = "production_order_id", updatable = false)
+    private UUID productionOrderId;
 
     @Column(name = "warehouse_id", nullable = false, updatable = false)
     private UUID warehouseId;
@@ -101,12 +117,22 @@ public class GoodsReceiptJpaEntity extends BaseEntity {
     public GoodsReceiptJpaEntity(UUID id, String receiptNumber, UUID purchaseOrderId, UUID purchaseOrderRevisionId,
                                  UUID warehouseId, UUID supplierId, String blindReason, Instant receivedAt,
                                  UUID receivedBy, String deliveryNote, String note) {
+        this(id, receiptNumber, GoodsReceiptType.PURCHASE, purchaseOrderId, purchaseOrderRevisionId, null, warehouseId,
+                supplierId, blindReason, receivedAt, receivedBy, deliveryNote, note);
+    }
+
+    public GoodsReceiptJpaEntity(UUID id, String receiptNumber, GoodsReceiptType receiptType, UUID purchaseOrderId,
+                                 UUID purchaseOrderRevisionId, UUID productionOrderId, UUID warehouseId,
+                                 UUID supplierId, String blindReason, Instant receivedAt, UUID receivedBy,
+                                 String deliveryNote, String note) {
         super(id);
         this.supplierId = supplierId;
         this.blindReason = blindReason;
         this.receiptNumber = receiptNumber;
+        this.receiptType = receiptType;
         this.purchaseOrderId = purchaseOrderId;
         this.purchaseOrderRevisionId = purchaseOrderRevisionId;
+        this.productionOrderId = productionOrderId;
         this.warehouseId = warehouseId;
         this.receivedAt = receivedAt;
         this.receivedBy = receivedBy;
@@ -144,6 +170,8 @@ public class GoodsReceiptJpaEntity extends BaseEntity {
     public String getReceiptNumber() { return receiptNumber; }
     public UUID getPurchaseOrderId() { return purchaseOrderId; }
     public UUID getPurchaseOrderRevisionId() { return purchaseOrderRevisionId; }
+    public GoodsReceiptType getReceiptType() { return receiptType; }
+    public UUID getProductionOrderId() { return productionOrderId; }
     public UUID getWarehouseId() { return warehouseId; }
     public UUID getSupplierId() { return supplierId; }
     public String getBlindReason() { return blindReason; }

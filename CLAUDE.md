@@ -233,7 +233,7 @@ instance only. Bounded batches.
                         never the reverse (cancelling an order locks stock rows in its own transaction
                         and touches the pick only later, in the OrderCancelled listener)
 2. scope + assignee   ← WarehouseScope.requireWarehouse(pick.warehouseId), then only the assignee
-3. PickList.confirm   ← domain: location, SKU or barcode, exact allocation (BR-04); same scan again = done
+3. PickList.confirm   ← domain: location, then the line's own LPN only (BR-10); no quantity, the carton is whole (BR-04, 4C-4); same scan again = done
 4. PickConsumption.consumeForPick(reservationId, pickLineId, actor)
                       ← inventory, same transaction: locks the stock row, hold → CONSUMED, on_hand falls,
                         one stock_movement(PICK, PICK_LINE) row, StockDeducted published.
@@ -244,9 +244,29 @@ instance only. Bounded batches.
 `PickConsumption` lives in `inventory/consumption/`, a second named interface next to `api`. Only
 `fulfillment` lists `"inventory :: consumption"` in its `allowedDependencies`
 (`InventoryConsumptionBoundaryTest` pins that): deducting stock is not something any module may do.
-The same interface books put-backs — goods picked for an order cancelled afterwards go back onto a bin
-of the same warehouse as AVAILABLE stock, one `stock_movement(PUT_BACK, PICK_LINE)` row per line
-(`POST /fulfillment/tasks/{id}/pick-lines/{lineId}/put-back`, docs 07 BR-05).
+The same interface books put-backs — the carton picked for an order cancelled afterwards goes back onto a bin
+of the same warehouse whole, scanned by LPN: CONSUMED → IN_STOCK sealed, its row AVAILABLE again, one
+`stock_movement(PUT_BACK, PICK_LINE)` row naming the carton per line
+(`POST /fulfillment/tasks/{id}/pick-lines/{lineId}/put-back`, docs 07 BR-05, §4.5 step 14; team plan 4C-4).
+A short pick is per carton with a reason (`NOT_FOUND` / `DAMAGED`): the line SHORT, the order on hold, a blind
+count of the carton (07 §4.4 step 9, BR-09).
+
+**The staging area (team plan 4C-5, 07 §1, §4.3; 20 §4.9).** A task has a `destination`, chosen while it is PENDING
+(as is its assignee, 07 BR-08; `tg_pick_pending_edits`): `DISPATCH` deducts each carton at the scan, as above;
+`STAGING` calls `PickConsumption.stage` instead - the carton and its one row move whole to the task's staging area
+(one `MOVE, PICK_LINE` row), the allocation still HELD on it; the line is STAGED and the task completes STAGED. The
+warehouse manager moves the whole task to dispatch (`POST /fulfillment/tasks/{id}/dispatch-transfer`, refused while
+the order is ON_HOLD): one bulk `consumeStaged` for every staged line - all SKU locks sorted, then the cartons, then
+the rows - lines PICKED, task PICKED; a carton no longer IN_STOCK in the staging area is refused, not shipped. A carton
+missing or damaged in the staging area is a short pick of its STAGED line (20 §4.9 step 4), scanned at the staging
+area, by the assignee or whoever assigns the work. A cancelled order's staged carton goes back
+by `unstage` (a second `MOVE`, nothing was deducted). Stock in a STAGING area is out of ATP even once a cancellation
+released it (ATP counts only whole cartons a release could allocate, and a staging area is never pickable), never
+allocated, never moved by hand (`StockOperationsServiceImpl.requireMovableBetween`, `tg_stock_movement_staging`),
+never reported damaged on the shelf, and written down by a count or an adjustment but never up. Lock order of the move to
+dispatch: pick → order → SKU locks → carton → row. A top-up (`POST …/top-up`, 07 §4.3 step 7) plans lines for holds no
+line has yet, in the same task; a STAGED or PICKED task goes back to PICKING with its order, and a task whose
+packing is complete is refused.
 
 `POST /api/v1/inventory/reservations/{reservationId}/consumption` still exists for operations (closing a
 hold by hand) and runs the same implementation, writing a `PICK` ledger row that names the order. Nothing
@@ -334,6 +354,45 @@ into base units before the supplier's MOQ / pack multiple are checked, and the l
 units; a draft revision that names no unit keeps the line's own, so a client that knows nothing of units cannot drop
 one. Receiving takes the ordered unit for cartons listed with none (`GoodsReceiptServiceImpl.cartonUnit`) - a default,
 never a rule.
+
+### Return receipts (team plan 4D-2)
+
+Goods that come back never go straight into stock: a goods receipt of type `RETURN` (`ReturnReceiptService`,
+`/api/v1/goods-receipts/returns`) is opened for one shipment the carrier returned (`RETURNED`) or one approved return
+request (`AWAITING_RETURN`), at the warehouse the goods left from, into a QUARANTINE area. It shares
+`procurement.goods_receipts` and the numbering with the other receipts but is its own aggregate (`ReturnReceipt`,
+`ReturnReceiptJpaEntity` with `@SQLRestriction("receipt_type = 'RETURN'")`; `GoodsReceiptJpaEntity` excludes those
+rows). Cartons are scanned by LPN and checked against `fulfillment :: api` `ShipmentCartons` (the shipment's cartons, or
+those delivered on the order). Confirming is one transaction: receipt `FOR UPDATE` → `inventory :: api`
+`CartonReturns.receive` (SKU locks → cartons → rows; each carton CONSUMED → IN_STOCK sealed, its row QUARANTINE in its
+own lot, one RECEIPT ledger line with reference `GOODS_RECEIPT`) → receipt `CLOSED` (no putaway) →
+`ReturnedGoodsReceived` after commit. A shipment's cartons are its LABELED `fulfillment.package` rows
+(`ShippedCartonQueries`).
+
+### Returns, refunded (team plan 4D-3)
+
+A return request (`ReturnRequestService`) is approved on its photos and its goods always come back (kltn-docs 17 BR-18):
+`REQUESTED → AWAITING_RETURN →` (return receipt confirmed) `RECEIVED → SETTLEMENT_PENDING → RESOLVED`. The receipt's
+`ReturnedGoodsReceived` reaches the order through `ReturnedGoodsListener` (after commit, own transaction, idempotent on
+the receipt id). There is no QC, no replacement order and no credit: Sales propose a refund per line (at most approved
+and received), a second person approves, and `PaymentService.settleReturn` settles it in the same transaction as an
+`order_settlement` of kind `GOODS_RETURNED` (the value with VAT comes off what the installments still owe; the rest is
+refundable). The accountant records refunds (4B-9); each record publishes `OrderRefundRecorded`, and a RETURNED order
+with no open return moves to REFUNDED / PARTIALLY_REFUNDED once everything refundable is refunded.
+
+### Carton check and labelling (team plan 4C-6)
+
+The LPN carton is the shipping carton (kltn-docs 08 BR-02): nothing is packed again. `CartonCheckService`
+(`CartonCheckController`) works a task's `fulfillment.pack` row as the check session (`PENDING → IN_PROGRESS →
+COMPLETED`, `CANCELLED`) and one `fulfillment.package` row per PICKED pick line as its shipping carton (`pick_line_id`,
+`lpn`; `TO_CHECK → CHECKED → LABELED`, or `REMOVED`); the rules are on the pure `CartonCheck`. What a carton holds is its
+pick line's, read by `ParcelContents` (a repack parcel's is still `package_line`). Labelling takes the SKU's carton
+spec (`InventoryControlService.cartonSpec`: the carton unit's size and full weight) and volumetric weight; the first
+label calls `OrderService.recordFirstLabel`, which locks cancellation and the delivery address
+(`customer_order.first_labeled_at`). Lock order: pick → order. Completion (`packing-completion`) makes the LABELED cartons
+one shipment, which loads and hands over as a sealed parcel did (`PackageStatus.ships()`; loaders scan the LPN). A carton
+removed as damaged waits in the put-back queue and goes whole into a QUARANTINE area
+(`PickConsumption.putBackToQuarantine`). The repack station (parcels, kits, `package_line`, n/N labels) went with 4C-7.
 
 ---
 

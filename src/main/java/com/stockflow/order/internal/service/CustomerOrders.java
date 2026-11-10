@@ -35,8 +35,12 @@ public interface CustomerOrders {
     enum StatusGroup {
         /** 4B-5 (17 §5.2 "Chờ ký hợp đồng"): the contract was sent and waits to be signed. */
         AWAITING_CONTRACT,
-        AWAITING_PAYMENT, UNDER_REVIEW, CONFIRMED, IN_PRODUCTION, PREPARING, SHIPPING, DELIVERED, CANCELLED,
-        RETURNED
+        AWAITING_PAYMENT, UNDER_REVIEW, CONFIRMED,
+        /** 4A-6 (17 §5.2 "Đang chờ hàng"): AWAITING_STOCK - its goods are being produced to be received into stock. */
+        AWAITING_STOCK,
+        /** Legacy: an order released with lines printed in house; no order enters IN_PRODUCTION any more. */
+        IN_PRODUCTION,
+        PREPARING, SHIPPING, DELIVERED, CANCELLED, RETURNED
     }
 
     /**

@@ -24,10 +24,13 @@ import com.stockflow.inventory.api.ReceiptOrigin;
 import com.stockflow.inventory.api.StockPackageView;
 import com.stockflow.inventory.api.UomConversion;
 import com.stockflow.inventory.api.UomConversionService;
+import com.stockflow.order.api.ProductionOrderReceiving;
+import com.stockflow.order.api.ReceivableProductionOrder;
 import com.stockflow.procurement.internal.domain.ExpiryWarning;
 import com.stockflow.procurement.internal.domain.GoodsReceipt;
 import com.stockflow.procurement.internal.domain.GoodsReceiptRepository;
 import com.stockflow.procurement.internal.domain.GoodsReceiptStatus;
+import com.stockflow.procurement.internal.domain.GoodsReceiptType;
 import com.stockflow.procurement.internal.domain.ReceiptLine;
 import com.stockflow.procurement.internal.domain.ReceivingLocation;
 import com.stockflow.procurement.internal.domain.ReceivingLocations;
@@ -52,6 +55,7 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -71,6 +75,18 @@ import java.util.UUID;
  * <p>SCRUM-477 (BR-RCP-001): a count beyond a PO line's over-receipt tolerance is not refused. Confirming it sends the
  * receipt to PENDING_APPROVAL, with nothing counted in; {@link #approve} posts the whole count, {@link #rejectExcess}
  * cuts it back to the tolerance and posts the rest, both for a user other than the receiver.</p>
+ *
+ * <p>4A-5 (kltn-docs 03 §4.1, BR-01..BR-15): receipts against a production order, through {@code order :: api}
+ * ({@link ProductionOrderReceiving}). Whole cartons of each production order line's standard count, in the production
+ * order's lot, never more than the line orders on all its receipts not cancelled (BR-02): nothing over is received, so
+ * nothing waits for approval. Confirming counts the cartons in and moves the production order on in the same
+ * transaction.</p>
+ *
+ * <p><b>Lock order of a production receipt</b> - starting, counting, confirming and cancelling alike: the production
+ * order's sales order, then the production order ({@link ProductionOrderReceiving#lock}), then the goods receipt
+ * ({@code FOR UPDATE}), then inventory's SKU advisory locks (counting or receiving the cartons, by SKU then line). The
+ * order module takes the same first two for every write to a production order, so a receipt and a cancellation or an
+ * approval of the same production order wait for each other instead of deadlocking.</p>
  */
 @Service
 @Transactional
@@ -89,6 +105,7 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
     private final GoodsReceiptRepository receipts;
     private final GoodsReceiptSearch search;
     private final ReceivingPurchaseOrders orders;
+    private final ProductionOrderReceiving receiving;
     private final ReceivingLocations locations;
     private final InventoryService inventory;
     private final WarehouseService warehouses;
@@ -100,13 +117,14 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
     private final Clock clock;
 
     GoodsReceiptServiceImpl(GoodsReceiptRepository receipts, GoodsReceiptSearch search, ReceivingPurchaseOrders orders,
-                            ReceivingLocations locations, InventoryService inventory, WarehouseService warehouses,
-                            IdentityService identity, InventoryControlService inventoryControl,
-                            UomConversionService units, CurrentUserProvider users,
-                            ApplicationEventPublisher events, Clock clock) {
+                            ProductionOrderReceiving receiving, ReceivingLocations locations, InventoryService inventory,
+                            WarehouseService warehouses, IdentityService identity,
+                            InventoryControlService inventoryControl, UomConversionService units,
+                            CurrentUserProvider users, ApplicationEventPublisher events, Clock clock) {
         this.receipts = receipts;
         this.search = search;
         this.orders = orders;
+        this.receiving = receiving;
         this.locations = locations;
         this.inventory = inventory;
         this.warehouses = warehouses;
@@ -166,6 +184,40 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
     /**
      * {@inheritDoc}
      *
+     * <p>The production order is locked first ({@link ProductionOrderReceiving#lock}: its sales order, then it), so the
+     * answer "it can receive goods" still holds when the draft is registered with it: a cancellation or a closing waits
+     * on the same lock and then finds the draft. Its warehouse is the receipt's (BR-01), and the caller is one of its
+     * staff (BR-SEC-002).</p>
+     */
+    @Override
+    @Auditable(action = AuditAction.CREATE, resourceType = "goods-receipt", resourceId = "#result?.id()")
+    public ReceiptView createForProductionOrder(CreateForProductionOrder command, UUID userId) {
+        if (command.productionOrderId() == null) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "The production order is required",
+                    List.of(new FieldError("productionOrderId", "The production order is required",
+                            ErrorCode.VALIDATION_FAILED.name())));
+        }
+        // The caller's warehouse first, read without a lock: one scoped to another warehouse learns nothing of the
+        // production order and holds no lock on it or on its sales order.
+        ReceivableProductionOrder read = receiving.find(command.productionOrderId()).orElseThrow(() ->
+                notFoundProduction(command.productionOrderId()));
+        com.stockflow.common.security.WarehouseScope.requireWarehouse(read.receivingWarehouseId());
+        ReceivableProductionOrder production = receiving.lock(command.productionOrderId()).orElseThrow(() ->
+                notFoundProduction(command.productionOrderId()));
+        requireReceivable(production);
+        Instant now = clock.instant();
+        GoodsReceipt saved = receipts.save(GoodsReceipt.productionDraft(Identifiers.newId(),
+                receipts.nextNumber(LocalDate.ofInstant(now, BUSINESS_ZONE)), production.id(),
+                production.receivingWarehouseId(), userId, blankToNull(command.deliveryNote()),
+                blankToNull(command.note()), now));
+        receiving.openReceipt(production.id(), saved.id(), saved.number());
+        log.info("Receipt {} started against production order {}", saved.number(), production.code());
+        return view(saved, null, production);
+    }
+
+    /**
+     * {@inheritDoc}
+     *
      * <p>A reference only (owner decision NOPO-ATTACH): the order is not locked, not read for its state and not
      * written; nothing is counted against it.</p>
      */
@@ -205,14 +257,19 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
      * label, recount, move and void them, for every line that has cartons now or had some before; the response
      * then carries their LPNs. The lines are taken SKU by SKU in code order, so two counts never take two SKUs'
      * locks the other way round.</p>
+     *
+     * <p>4A-5: a receipt against a production order is counted by {@link #replaceProductionLines}.</p>
      */
     @Override
     @Auditable(action = AuditAction.UPDATE, resourceType = "goods-receipt", resourceId = "#receiptId")
     public ReceiptView replaceLines(UUID receiptId, List<NewLine> newLines) {
         GoodsReceipt receipt = load(receiptId);
         receipt.requireCountable();
+        if (receipt.againstProductionOrder()) {
+            return replaceProductionLines(receipt, newLines);
+        }
         // SCRUM-478: a receipt without a PO has no order; its lines name the item by SKU.
-        ReceivingPurchaseOrder order = receipt.blind() ? null : orderOf(receipt);
+        ReceivingPurchaseOrder order = orderOf(receipt);
         LocalDate receivedOn = LocalDate.ofInstant(receipt.receivedAt(), BUSINESS_ZONE);
         Map<String, ReceiptLine> current = new HashMap<>();
         for (ReceiptLine line : receipt.lines()) {
@@ -305,6 +362,10 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
             InventoryItemPolicy item = items.computeIfAbsent(itemId, this::policy);
             String lot = blankToNull(in.lotNumber());
             int before = errors.size();
+            if (in.quantity() < 1) {
+                // The request leaves it out only for a production receipt, which counts it from the cartons.
+                errors.add(i, "quantity", ErrorCode.VALIDATION_FAILED, "A line receives at least 1 unit");
+            }
             ReceivingLocation location = errors.area(i, in.locationCode(), RECEIVING, receipt.warehouseId());
             checkLotData(errors, i, item, lot, in.expiryDate(), receivedOn);
             if (!seen.add(lineKey(poLineId, itemId, lot))) {
@@ -332,16 +393,353 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
         requireNoCartonsOnDroppedLines(receipt, counted);
         receipt.replaceLines(counted);
         GoodsReceipt saved = receipts.save(receipt);
+        countCartons(cartonCounts);
+        return view(saved, order);
+    }
 
+    /**
+     * Inventory labels, recounts, moves and voids each line's cartons, once the count is saved - so a new line's row
+     * exists for the cartons' foreign key - SKU by SKU in code order, then by line: two counts never take two SKUs'
+     * locks the other way round.
+     */
+    private void countCartons(List<CartonCount> cartonCounts) {
         UUID actor = users.current().map(CurrentUser::userId).orElse(null);
-        cartonCounts.sort(Comparator.comparing(CartonCount::sku).thenComparing(CartonCount::lineId));
-        for (CartonCount count : cartonCounts) {
+        List<CartonCount> ordered = new ArrayList<>(cartonCounts);
+        ordered.sort(Comparator.comparing(CartonCount::sku).thenComparing(CartonCount::lineId));
+        for (CartonCount count : ordered) {
             inventory.countReceivingPackages(new CountReceivingPackagesCommand(count.lineId(), new Sku(count.sku()),
                     count.unitId(), count.locationCode(), count.packages().stream()
                     .map(p -> new CountReceivingPackagesCommand.PackageCount(p.lpn()))
                     .toList(), actor));
         }
-        return view(saved, order);
+    }
+
+    // ------------------------------------------------------------------ production orders (4A-5)
+
+    /**
+     * kltn-docs 03 §4.1 step 2: the whole count of a production receipt, one line per production order line, each
+     * listing its cartons. Locked as every production receipt write is (see the class comment): the production order,
+     * then the receipt, then - through inventory - the SKUs. Every line is checked before anything is refused, each
+     * refusal on its own field ({@code lines[i].productionOrderLineId}, {@code .locationCode}, {@code .packages},
+     * {@code .packages[j].quantity}, {@code .packages[j].lpn}, {@code .unitOfMeasure}, {@code .quantity},
+     * {@code .lotNumber}, {@code .expiryDate}, {@code .purchaseOrderLineId}, {@code .sku}).
+     *
+     * <p>BR-02 counts the cartons of every other receipt of the production order line that is not cancelled - drafts
+     * included, as the documents say - under the production order's lock, so two counts cannot each see room the
+     * other takes; {@code tg_goods_receipt_lines_production_cartons} counts the same again at the save. Every carton
+     * holds the line's standard count (BR-13): a carton of another count is not listed, it goes back to the producer.
+     * A line keeps its id across counts (its cartons point at it).</p>
+     */
+    private ReceiptView replaceProductionLines(GoodsReceipt read, List<NewLine> newLines) {
+        ReceivableProductionOrder production = lockProduction(read);
+        GoodsReceipt receipt = loadForUpdate(read.id());
+        receipt.requireDraft("change the lines of");
+        requireReceivable(production);
+        Map<UUID, ReceiptLine> current = new HashMap<>();
+        receipt.lines().forEach(line -> current.put(line.productionOrderLineId(), line));
+        Map<UUID, List<StockPackageView>> labelled = receipt.lines().isEmpty() ? Map.of()
+                : inventory.receivingPackagesOf(receipt.lines().stream().map(ReceiptLine::id).toList());
+        // The items of the SKUs the count names, one read each, and all their units in one.
+        Map<String, InventoryItemPolicy> items = new HashMap<>();
+        Set<UUID> named = new LinkedHashSet<>();
+        for (NewLine in : newLines) {
+            Optional<ReceivableProductionOrder.Line> line = in.productionOrderLineId() == null ? Optional.empty()
+                    : production.line(in.productionOrderLineId());
+            line.ifPresent(found -> {
+                named.add(found.id());
+                if (!items.containsKey(found.sku())) {
+                    itemBySku(found.sku()).ifPresent(policy -> items.put(found.sku(), policy));
+                }
+            });
+        }
+        Map<String, List<UomConversion>> unitsBySku = items.isEmpty() ? Map.of()
+                : units.conversionsOf(items.keySet().stream().map(Sku::new).toList());
+        Map<UUID, Integer> elsewhere = receipts.unitsOnOtherProductionReceipts(named, receipt.id());
+
+        LineErrors errors = new LineErrors();
+        List<ReceiptLine> counted = new ArrayList<>();
+        List<CartonCount> cartonCounts = new ArrayList<>();
+        Set<UUID> seen = new HashSet<>();
+        for (int i = 0; i < newLines.size(); i++) {
+            NewLine in = newLines.get(i);
+            int before = errors.size();
+            if (in.purchaseOrderLineId() != null) {
+                errors.add(i, "purchaseOrderLineId", ErrorCode.VALIDATION_FAILED, ("Receipt %s is against production "
+                        + "order %s: its lines name production order lines").formatted(receipt.number(),
+                        production.code()));
+            }
+            if (blankToNull(in.lotNumber()) != null) {
+                errors.add(i, "lotNumber", ErrorCode.RECEIPT_LOT_DATA_INVALID, "LOT_NOT_ALLOWED", ("The lot is "
+                        + "production order %s's code, assigned by the system (BR-03)").formatted(production.code()));
+            }
+            if (in.expiryDate() != null) {
+                errors.add(i, "expiryDate", ErrorCode.RECEIPT_LOT_DATA_INVALID, "EXPIRY_NOT_ALLOWED",
+                        "Finished goods carry no expiry date (BR-06)");
+            }
+            if (in.productionOrderLineId() == null) {
+                errors.add(i, "productionOrderLineId", ErrorCode.VALIDATION_FAILED,
+                        "The production order line counted is required");
+                continue;
+            }
+            ReceivableProductionOrder.Line line = production.line(in.productionOrderLineId()).orElse(null);
+            if (line == null) {
+                errors.add(i, "productionOrderLineId", ErrorCode.RECEIPT_LINE_NOT_ON_PRODUCTION_ORDER,
+                        "Line %s is not a line of production order %s".formatted(in.productionOrderLineId(),
+                                production.code()));
+                continue;
+            }
+            String label = "%s of %s".formatted(line.sku(), production.code());
+            if (!seen.add(line.id())) {
+                errors.add(i, "productionOrderLineId", ErrorCode.DUPLICATE_RECEIPT_LINE,
+                        "%s is already counted above; put all its cartons on one line".formatted(label));
+            }
+            String sku = blankToNull(in.sku());
+            if (sku != null && !sku.equals(line.sku())) {
+                errors.add(i, "sku", ErrorCode.RECEIPT_LINE_NOT_ON_PRODUCTION_ORDER, ("%s is not the SKU of %s: goods "
+                        + "not on the production order are not received").formatted(sku, label));
+            }
+            InventoryItemPolicy item = items.get(line.sku());
+            if (item == null) {
+                errors.add(i, "productionOrderLineId", ErrorCode.INVENTORY_ITEM_NOT_FOUND,
+                        "No inventory item with SKU " + line.sku());
+                continue;
+            }
+            if (item.expiryTracked()) {
+                errors.add(i, "productionOrderLineId", ErrorCode.RECEIPT_LOT_DATA_INVALID, "EXPIRY_REQUIRED",
+                        ("%s is set up as expiry-tracked, but finished goods carry no expiry date (BR-06): its "
+                                + "inventory policy is corrected first").formatted(line.sku()));
+            }
+            ReceivingLocation location = errors.area(i, in.locationCode(), RECEIVING, receipt.warehouseId());
+            ReceiptLine was = current.get(line.id());
+            UUID lineId = was == null ? Identifiers.newId() : was.id();
+            List<StockPackageView> cartonsBefore = labelled.getOrDefault(lineId, List.of());
+            int cartons = standardCartons(errors, i, in, line);
+            UomConversion unit = productionCartonUnit(errors, i, in, line,
+                    unitsBySku.getOrDefault(line.sku(), List.of()), was == null ? null : was.uomConversionId(),
+                    cartonsBefore);
+            int quantity = cartons * line.unitsPerCarton();
+            if (in.quantity() != 0 && in.quantity() != quantity) {
+                errors.add(i, "quantity", ErrorCode.VALIDATION_FAILED, ("%d carton(s) of %d hold %d units, not %d: "
+                        + "leave the quantity out, it is counted from the cartons").formatted(cartons,
+                        line.unitsPerCarton(), quantity, in.quantity()));
+            }
+            int onOthers = elsewhere.getOrDefault(line.id(), 0) / line.unitsPerCarton();
+            if (cartons > 0 && onOthers + cartons > line.cartons()) {
+                errors.add(i, "packages", ErrorCode.RECEIPT_EXCEEDS_PRODUCTION_ORDER, ("%s orders %d carton(s) and %d "
+                        + "are on its other receipts not cancelled, drafts included: %d more at most, not %d (BR-02)")
+                        .formatted(label, line.cartons(), onOthers, Math.max(line.cartons() - onOthers, 0), cartons));
+            }
+            if (errors.size() == before) {
+                counted.add(ReceiptLine.countedForProductionOrder(lineId, line.id(), item.inventoryItemId(),
+                        location.id(), quantity, production.code(), blankToNull(in.note()), unit.id()));
+                cartonCounts.add(new CartonCount(lineId, line.sku(), unit.id(), location.code(), in.packages().stream()
+                        .map(carton -> new NewPackage(carton.lpn(), line.unitsPerCarton())).toList()));
+            }
+        }
+        errors.throwIfAny();
+        requireNoCartonsOnDroppedLines(receipt, counted);
+        receipt.replaceLines(counted);
+        GoodsReceipt saved = receipts.save(receipt);
+        countCartons(cartonCounts);
+        return view(saved, null, production);
+    }
+
+    /**
+     * BR-12, BR-13: a line is received in cartons, at least one, each holding the line's standard count - a carton
+     * listed with no count holds it. Answers how many cartons are listed.
+     */
+    private static int standardCartons(LineErrors errors, int index, NewLine in, ReceivableProductionOrder.Line line) {
+        if (in.packages().isEmpty()) {
+            errors.add(index, "packages", ErrorCode.VALIDATION_FAILED,
+                    "Goods are received in cartons: list at least one (BR-12)");
+            return 0;
+        }
+        Set<String> named = new HashSet<>();
+        for (int j = 0; j < in.packages().size(); j++) {
+            NewPackage carton = in.packages().get(j);
+            if (carton.quantity() != 0 && carton.quantity() != line.unitsPerCarton()) {
+                errors.add(index, "packages[%d].quantity".formatted(j), ErrorCode.RECEIPT_CARTON_NOT_STANDARD,
+                        ("A carton of %s holds its standard %d; one of %d is not received, it goes back to the producer "
+                                + "(BR-13)").formatted(line.sku(), line.unitsPerCarton(), carton.quantity()));
+            }
+            String lpn = StockPackageView.normalLpn(carton.lpn());
+            if (lpn != null && !named.add(lpn)) {
+                errors.add(index, "packages[%d].lpn".formatted(j), ErrorCode.VALIDATION_FAILED,
+                        "%s is listed twice".formatted(lpn));
+            }
+        }
+        return in.packages().size();
+    }
+
+    /**
+     * The packing unit a production line's cartons are in: the SKU's carton specification holding the line's standard
+     * count (kltn-docs 01 BR-11). {@code unitOfMeasure} names it when the SKU has several of that count; otherwise the
+     * line's own unit when it still fits (a recount), else the one active unit of that count, else the one of them
+     * that is the default shipping unit. Null, with the refusal recorded on {@code unitOfMeasure}, when none fits. As
+     * for purchase lines (design §3 rule 7), a carton of another unit is not kept while the line changes unit.
+     */
+    private static UomConversion productionCartonUnit(LineErrors errors, int index, NewLine in,
+                                                      ReceivableProductionOrder.Line line,
+                                                      List<UomConversion> itemUnits, UUID lineUnitId,
+                                                      List<StockPackageView> cartonsBefore) {
+        List<UomConversion> fitting = itemUnits.stream()
+                .filter(unit -> !unit.base() && unit.factor() == line.unitsPerCarton()).toList();
+        String code = blankToNull(in.unitOfMeasure());
+        UomConversion unit;
+        if (code != null) {
+            Optional<UomConversion> found = unitByCode(itemUnits, code);
+            if (found.isEmpty()) {
+                errors.add(index, "unitOfMeasure", ErrorCode.UOM_CONVERSION_NOT_FOUND,
+                        "%s has no unit %s".formatted(line.sku(), code));
+                return null;
+            }
+            if (!fitting.contains(found.get())) {
+                errors.add(index, "unitOfMeasure", ErrorCode.RECEIPT_LINE_UNIT_INVALID, ("%s is not a carton of %s "
+                        + "holding its standard %d (BR-13)").formatted(code, line.sku(), line.unitsPerCarton()));
+                return null;
+            }
+            unit = found.get();
+        } else {
+            Optional<UomConversion> kept = fitting.stream().filter(u -> u.id().equals(lineUnitId)).findFirst();
+            List<UomConversion> active = fitting.stream().filter(UomConversion::active).toList();
+            List<UomConversion> shipping = active.stream().filter(UomConversion::defaultShipping).toList();
+            if (kept.isPresent()) {
+                unit = kept.get();
+            } else if (active.size() == 1) {
+                unit = active.getFirst();
+            } else if (shipping.size() == 1) {
+                unit = shipping.getFirst();
+            } else if (active.isEmpty()) {
+                errors.add(index, "unitOfMeasure", ErrorCode.RECEIPT_LINE_UNIT_INVALID, ("%s has no active carton of "
+                        + "%d: its carton specification is set up first (01 BR-11)").formatted(line.sku(),
+                        line.unitsPerCarton()));
+                return null;
+            } else {
+                errors.add(index, "unitOfMeasure", ErrorCode.VALIDATION_FAILED, ("%s has several cartons of %d (%s): "
+                        + "name the one the goods arrived in").formatted(line.sku(), line.unitsPerCarton(),
+                        String.join(", ", active.stream().map(UomConversion::unitOfMeasure).toList())));
+                return null;
+            }
+        }
+        if (!unit.active() && !unit.id().equals(lineUnitId)) {
+            errors.add(index, "unitOfMeasure", ErrorCode.RECEIPT_LINE_UNIT_INVALID,
+                    "%s is retired; cartons are labelled in an active packing unit".formatted(unit.unitOfMeasure()));
+            return null;
+        }
+        Set<String> named = new HashSet<>();
+        in.packages().forEach(carton -> Optional.ofNullable(StockPackageView.normalLpn(carton.lpn()))
+                .ifPresent(named::add));
+        List<String> keptInOtherUnit = cartonsBefore.stream()
+                .filter(carton -> named.contains(carton.lpn()) && !unit.id().equals(carton.uomConversionId()))
+                .map(StockPackageView::lpn).toList();
+        if (!keptInOtherUnit.isEmpty()) {
+            errors.add(index, "unitOfMeasure", ErrorCode.RECEIPT_LINE_HAS_PACKAGES,
+                    "Cartons %s are in another unit; leave them out to void them before the line changes unit"
+                            .formatted(String.join(", ", keptInOtherUnit)));
+        }
+        return unit;
+    }
+
+    /**
+     * kltn-docs 03 §4.1 step 6. Locked as counting is - the production order (its sales order first), then the receipt -
+     * and what counting checked is checked again, since another receipt may have been counted or confirmed meanwhile:
+     * the receipt is a draft with lines, the production order can still receive goods, every line's cartons hold its
+     * quantity in the standard count, and BR-02 holds. The goods are then counted in as INBOUND stock in their cartons,
+     * in the production order's lot, and the production order moves on ({@link ProductionOrderReceiving#recordReceipt}).
+     * No tolerance and no approval: what is over was refused while counting.
+     */
+    private ReceiptView confirmProduction(GoodsReceipt read, UUID userId) {
+        ReceivableProductionOrder production = lockProduction(read);
+        GoodsReceipt receipt = loadForUpdate(read.id());
+        // Microseconds, as the database keeps them: also the receipt time of the stock layers this creates.
+        receipt.confirm(userId, clock.instant().truncatedTo(java.time.temporal.ChronoUnit.MICROS));
+        requireReceivable(production);
+        requireStandardCartons(receipt);
+        requireWithinProductionOrder(receipt, production);
+        return post(receipt, null, production, userId);
+    }
+
+    /**
+     * BR-12, BR-13 at confirmation: every line's cartons - at least one - hold all its units, each its standard count,
+     * so receiving leaves nothing loose. A count that drifted from its cartons is counted again.
+     */
+    private void requireStandardCartons(GoodsReceipt receipt) {
+        Map<UUID, List<StockPackageView>> cartons = inventory.receivingPackagesOf(
+                receipt.lines().stream().map(ReceiptLine::id).toList());
+        for (ReceiptLine line : receipt.lines()) {
+            List<StockPackageView> labelled = cartons.getOrDefault(line.id(), List.of()).stream()
+                    .filter(carton -> "RECEIVING".equals(carton.status())).toList();
+            boolean standard = labelled.stream().allMatch(carton -> Objects.equals(carton.receivedQty(),
+                    carton.nominalQty()));
+            if (labelled.isEmpty() || !standard || countedIntoCartons(labelled) != line.receivedQuantity()) {
+                throw new BusinessException(ErrorCode.RECEIPT_CARTON_NOT_STANDARD, ("Receipt %s: a line of %d units has "
+                        + "%d carton(s) holding %d; every unit is received in a carton of its standard count (BR-12, "
+                        + "BR-13) - count the line again").formatted(receipt.number(), line.receivedQuantity(),
+                        labelled.size(), countedIntoCartons(labelled)));
+            }
+        }
+    }
+
+    /** BR-02 at confirmation: every line within what its production order line orders, all refusals named at once. */
+    private void requireWithinProductionOrder(GoodsReceipt receipt, ReceivableProductionOrder production) {
+        Map<UUID, Integer> elsewhere = receipts.unitsOnOtherProductionReceipts(receipt.lines().stream()
+                .map(ReceiptLine::productionOrderLineId).toList(), receipt.id());
+        List<FieldError> over = new ArrayList<>();
+        for (int i = 0; i < receipt.lines().size(); i++) {
+            ReceiptLine line = receipt.lines().get(i);
+            ReceivableProductionOrder.Line ordered = production.line(line.productionOrderLineId()).orElseThrow(() ->
+                    new IllegalStateException("Receipt %s counts a line its production order does not have"
+                            .formatted(receipt.number())));
+            int onOthers = elsewhere.getOrDefault(ordered.id(), 0) / ordered.unitsPerCarton();
+            int here = line.receivedQuantity() / ordered.unitsPerCarton();
+            if (onOthers + here > ordered.cartons()) {
+                over.add(new FieldError("lines[%d].packages".formatted(i), ("%s of %s orders %d carton(s) and %d are on "
+                        + "its other receipts not cancelled: %d more at most, not %d (BR-02)").formatted(ordered.sku(),
+                        production.code(), ordered.cartons(), onOthers, Math.max(ordered.cartons() - onOthers, 0),
+                        here), ErrorCode.RECEIPT_EXCEEDS_PRODUCTION_ORDER.name()));
+            }
+        }
+        if (!over.isEmpty()) {
+            throw new BusinessException(ErrorCode.RECEIPT_EXCEEDS_PRODUCTION_ORDER, "Receipt %s: %s".formatted(
+                    receipt.number(), String.join("; ", over.stream().map(FieldError::message).toList())), over);
+        }
+    }
+
+    /** Cartons of each production order line on a receipt. */
+    private static Map<UUID, Integer> cartonsPerProductionOrderLine(GoodsReceipt receipt,
+                                                                    ReceivableProductionOrder production) {
+        Map<UUID, Integer> cartons = new LinkedHashMap<>();
+        for (ReceiptLine line : receipt.lines()) {
+            int per = production.line(line.productionOrderLineId()).orElseThrow().unitsPerCarton();
+            cartons.merge(line.productionOrderLineId(), line.receivedQuantity() / per, Integer::sum);
+        }
+        return cartons;
+    }
+
+    /** Cancelled while a draft, under the production order's lock; the production order lets the draft go. */
+    private ReceiptView cancelProduction(GoodsReceipt read) {
+        ReceivableProductionOrder production = lockProduction(read);
+        GoodsReceipt receipt = loadForUpdate(read.id());
+        receipt.cancel();
+        // Cartons labelled while counting held no stock and their labels are no longer valid (RECEIVING → VOID).
+        inventory.voidStockPackagesOfReceiptLines(receipt.lines().stream().map(ReceiptLine::id).toList());
+        GoodsReceipt saved = receipts.save(receipt);
+        receiving.dropReceipt(production.id(), saved.id(), users.current().map(CurrentUser::userId).orElse(null));
+        log.info("Receipt {} against production order {} cancelled", saved.number(), production.code());
+        return view(saved, null, production);
+    }
+
+    /** The receipt's production order, locked: its sales order first, then it (see the class comment). */
+    private ReceivableProductionOrder lockProduction(GoodsReceipt receipt) {
+        return receiving.lock(receipt.productionOrderId()).orElseThrow(() -> new IllegalStateException(
+                "Receipt %s points at a missing production order".formatted(receipt.number())));
+    }
+
+    /** BR-01, BR-15: goods are received against it now. */
+    private static void requireReceivable(ReceivableProductionOrder production) {
+        if (!production.receivable()) {
+            throw new BusinessException(ErrorCode.PRODUCTION_ORDER_NOT_RECEIVABLE, production.notReceivableReason());
+        }
     }
 
     /**
@@ -552,6 +950,9 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
     @Auditable(action = AuditAction.TRANSITION, resourceType = "goods-receipt", resourceId = "#receiptId")
     public ReceiptView confirm(UUID receiptId, UUID userId) {
         GoodsReceipt receipt = load(receiptId);
+        if (receipt.againstProductionOrder()) {
+            return confirmProduction(receipt, userId);
+        }
         if (receipt.blind()) {
             // BR-RCP-002: a receipt without a PO is never posted by whoever counted it - it always waits for the manager.
             receipt.requestApproval(userId, clock.instant().truncatedTo(java.time.temporal.ChronoUnit.MICROS));
@@ -577,7 +978,7 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
         // the stock layers this creates.
         Instant now = clock.instant().truncatedTo(java.time.temporal.ChronoUnit.MICROS);
         receipt.confirm(userId, now);
-        return post(receipt, order, userId);
+        return post(receipt, order, null, userId);
     }
 
     /**
@@ -599,7 +1000,7 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
         if (order != null) {
             requireReceivable(order);
         }
-        return post(receipt, order, approverId);
+        return post(receipt, order, null, approverId);
     }
 
     /**
@@ -637,7 +1038,7 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
             return view(cancelled, order);
         }
         requireReceivable(order);
-        return post(receipt, order, approverId);
+        return post(receipt, order, null, approverId);
     }
 
     /**
@@ -658,9 +1059,9 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
         return view(cancelled, null);
     }
 
-    /** The receipt's order, locked; null for a receipt without one (SCRUM-478). */
+    /** The receipt's order, locked; null for a receipt without one (SCRUM-478, or against a production order). */
     private ReceivingPurchaseOrder lockOrder(GoodsReceipt receipt) {
-        if (receipt.blind()) {
+        if (receipt.purchaseOrderId() == null) {
             return null;
         }
         return orders.lock(receipt.purchaseOrderId()).orElseThrow(() ->
@@ -669,20 +1070,29 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
 
     /**
      * The count is final and the receipt has already moved on in the aggregate (confirmed, or decided by the manager):
-     * save it, count the goods in as INBOUND stock, move the order's progress and send the events.
+     * save it, count the goods in as INBOUND stock, move the order's progress - the purchase order's, or the production
+     * order's ({@code production}, 4A-5) - and send the events.
      */
-    private ReceiptView post(GoodsReceipt receipt, ReceivingPurchaseOrder order, UUID userId) {
+    private ReceiptView post(GoodsReceipt receipt, ReceivingPurchaseOrder order, ReceivableProductionOrder production,
+                             UUID userId) {
         GoodsReceipt saved = receipts.save(receipt);
 
         Map<UUID, ReceivingLocation> where = locations.byIds(
                 saved.lines().stream().map(ReceiptLine::locationId).toList());
         Map<UUID, InventoryItemPolicy> items = new HashMap<>();
-        // SCRUM-142: the lots this receipt opens remember it, its order and its supplier as they read now.
-        // A receipt without a PO (BR-RCP-002) names no order, and the supplier it carries itself.
-        UUID supplierId = order == null ? saved.supplierId() : order.supplierId();
-        ReceiptOrigin origin = new ReceiptOrigin(saved.id(), saved.number(), order == null ? null : order.id(),
-                order == null ? null : order.number(), supplierId, orders.supplierName(supplierId).orElse(null),
-                saved.warehouseId());
+        ReceiptOrigin origin;
+        if (production != null) {
+            // 4A-5: the lot is the production order's - one per production order and SKU across its receipts (BR-03).
+            origin = ReceiptOrigin.ofProductionOrder(saved.id(), saved.number(), saved.warehouseId(), production.id(),
+                    production.code());
+        } else {
+            // SCRUM-142: the lots this receipt opens remember it, its order and its supplier as they read now.
+            // A receipt without a PO (BR-RCP-002) names no order, and the supplier it carries itself.
+            UUID supplierId = order == null ? saved.supplierId() : order.supplierId();
+            origin = new ReceiptOrigin(saved.id(), saved.number(), order == null ? null : order.id(),
+                    order == null ? null : order.number(), supplierId, orders.supplierName(supplierId).orElse(null),
+                    saved.warehouseId());
+        }
         saved.lines().forEach(line -> items.computeIfAbsent(line.inventoryItemId(), this::policy));
         // Each receive takes its SKU's advisory lock: in replaceLines' order - SKU, then line id - so a confirm and a
         // count of two receipts sharing SKUs cannot take them in opposite orders and deadlock.
@@ -719,19 +1129,29 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
             orders.recordProgress(order, lineStatuses, orderStatus, userId, saved.id(), saved.number());
             orderLabel = "against %s, order now %s".formatted(order.number(), orderStatus);
         }
+        // 4A-5 (17 §4.3 step 11): the production order counts the cartons in and moves on, in this transaction.
+        ReceivableProductionOrder after = production;
+        if (production != null) {
+            after = receiving.recordReceipt(production.id(), saved.id(),
+                    cartonsPerProductionOrderLine(saved, production), userId, saved.confirmedAt());
+            orderLabel = "against %s, production order now %s".formatted(after.code(), after.status());
+        }
 
         events.publishEvent(new GoodsReceiptConfirmed(saved.id(), saved.number(), order == null ? null : order.id(),
                 saved.warehouseId(), confirmedLines, saved.confirmedAt()));
         events.publishEvent(new ReceiptStockReadyForPutaway(saved.id(), saved.number(), saved.warehouseId(),
                 readyLines));
         log.info("Confirmed receipt {} ({}): {} line(s)", saved.number(), orderLabel, saved.lines().size());
-        return view(saved, order);
+        return view(saved, order, after);
     }
 
     @Override
     @Auditable(action = AuditAction.TRANSITION, resourceType = "goods-receipt", resourceId = "#receiptId")
     public ReceiptView cancel(UUID receiptId) {
         GoodsReceipt receipt = load(receiptId);
+        if (receipt.againstProductionOrder()) {
+            return cancelProduction(receipt);
+        }
         receipt.cancel();
         // Cartons labelled while counting held no stock and their labels are no longer valid (RECEIVING → VOID).
         inventory.voidStockPackagesOfReceiptLines(receipt.lines().stream().map(ReceiptLine::id).toList());
@@ -751,9 +1171,10 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
     @Transactional(readOnly = true)
     public PageResponse<Row> list(List<GoodsReceiptStatus> statuses, UUID purchaseOrderId, UUID warehouseId,
                                   String text, Instant receivedFrom, Instant receivedTo, Boolean withoutPurchaseOrder,
-                                  int page, int size, String sort) {
+                                  UUID productionOrderId, GoodsReceiptType receiptType, int page, int size,
+                                  String sort) {
         var criteria = new GoodsReceiptSearch.Criteria(statuses, purchaseOrderId, warehouseId, blankToNull(text),
-                receivedFrom, receivedTo, withoutPurchaseOrder);
+                receivedFrom, receivedTo, withoutPurchaseOrder, productionOrderId, receiptType);
         var rows = search.search(criteria, Pages.of(page, size, SORT.parse(sort)));
         // SCRUM-464: one query each for the orders, the people and the warehouses of the page.
         var labels = search.orderLabels(rows.stream().map(GoodsReceiptSearch.Row::purchaseOrderId)
@@ -763,18 +1184,25 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
                 .filter(Objects::nonNull).toList());
         var names = identity.displayNames(rows.stream()
                 .flatMap(r -> java.util.stream.Stream.of(r.receivedBy(), r.confirmedBy())).toList());
+        // 4A-5: the production orders of the page, in one call.
+        var productionOrders = receiving.findAll(rows.stream().map(GoodsReceiptSearch.Row::productionOrderId)
+                .filter(Objects::nonNull).distinct().toList());
         Map<UUID, Optional<WarehouseView>> where = new HashMap<>();
         return Pages.toResponse(rows.map(r -> {
             var label = r.purchaseOrderId() == null ? null : labels.get(r.purchaseOrderId());
+            var production = r.productionOrderId() == null ? null : productionOrders.get(r.productionOrderId());
             var warehouse = where.computeIfAbsent(r.warehouseId(), warehouses::findWarehouse);
             return new Row(r.id(), r.number(), r.purchaseOrderId(), label == null ? null : label.purchaseOrderNumber(),
                     r.purchaseOrderId() == null ? r.supplierId() : label == null ? null : label.supplierId(),
-                    r.purchaseOrderId() == null ? supplierNames.get(r.supplierId())
+                    r.purchaseOrderId() == null ? (r.supplierId() == null ? null : supplierNames.get(r.supplierId()))
                             : label == null ? null : label.supplierName(),
                     r.warehouseId(), warehouse.map(WarehouseView::prefix).orElse(null),
                     warehouse.map(WarehouseView::name).orElse(null), r.status(), r.deliveryNote(), r.receivedAt(),
                     r.receivedBy(), names.get(r.receivedBy()), r.confirmedAt(), r.confirmedBy(),
-                    names.get(r.confirmedBy()), r.closedAt(), r.purchaseOrderId() == null);
+                    names.get(r.confirmedBy()), r.closedAt(),
+                    r.purchaseOrderId() == null && r.productionOrderId() == null, r.receiptType(),
+                    r.productionOrderId(), production == null ? null : production.code(),
+                    production == null ? null : production.producerName());
         }));
     }
 
@@ -959,9 +1387,12 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
         return receipt;
     }
 
-    /** The receipt's order; null for a receipt without one ({@link GoodsReceipt#blind}, SCRUM-478). */
+    /**
+     * The receipt's order; null for a receipt without one ({@link GoodsReceipt#blind}, SCRUM-478), or against a
+     * production order (4A-5).
+     */
     private ReceivingPurchaseOrder orderOf(GoodsReceipt receipt) {
-        if (receipt.blind()) {
+        if (receipt.purchaseOrderId() == null) {
             return null;
         }
         return orders.find(receipt.purchaseOrderId()).orElseThrow(() ->
@@ -971,6 +1402,15 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
     // ------------------------------------------------------------------ view
 
     private ReceiptView view(GoodsReceipt receipt, ReceivingPurchaseOrder order) {
+        return view(receipt, order, receipt.againstProductionOrder()
+                ? receiving.find(receipt.productionOrderId()).orElse(null) : null);
+    }
+
+    /**
+     * The receipt as the screens show it. {@code production}: its production order (4A-5), which each line is shown
+     * against - ordered, received so far, this receipt, what remains (03 §3 output, §4.1 step 3); null otherwise.
+     */
+    private ReceiptView view(GoodsReceipt receipt, ReceivingPurchaseOrder order, ReceivableProductionOrder production) {
         Set<UUID> locationIds = new HashSet<>();
         for (ReceiptLine line : receipt.lines()) {
             locationIds.add(line.locationId());
@@ -1007,6 +1447,14 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
             overTolerance(order, receipt.id(), countedPerPoLine(receipt))
                     .forEach(over -> overPoLines.add(over.poLineId()));
         }
+        // A draft's cartons are not counted in yet: what remains on the production order line leaves them out.
+        boolean pending = receipt.status() == GoodsReceiptStatus.DRAFT;
+        // A draft's room on each line is what every other receipt not cancelled leaves - other drafts too, as BR-02
+        // counts them - not only what was confirmed: a figure the hard stop would refuse is no figure to count to.
+        Map<UUID, Integer> elsewhere = production == null || !pending ? Map.of()
+                : receipts.unitsOnOtherProductionReceipts(receipt.lines().stream()
+                        .map(ReceiptLine::productionOrderLineId).filter(java.util.Objects::nonNull).toList(),
+                        receipt.id());
         List<LineView> lines = receipt.lines().stream().map(line -> {
             InventoryItemPolicy item = items.get(line.inventoryItemId());
             List<String> lineWarnings = new ArrayList<>();
@@ -1037,7 +1485,11 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
                                     u.defaultPurchase()))
                             .toList(),
                     order == null ? null : order.line(line.poLineId())
-                            .map(ReceivingPurchaseOrder.Line::uomConversionId).map(unitCodes::get).orElse(null));
+                            .map(ReceivingPurchaseOrder.Line::uomConversionId).map(unitCodes::get).orElse(null),
+                    line.productionOrderLineId(), production == null || line.productionOrderLineId() == null ? null
+                            : production.line(line.productionOrderLineId())
+                            .map(ordered -> progress(ordered, line, pending,
+                                    elsewhere.getOrDefault(ordered.id(), 0))).orElse(null));
         }).toList();
         List<String> warnings = new ArrayList<>();
         if (lines.stream().anyMatch(l -> l.warnings().contains(ExpiryWarning.EXPIRY_NEAR))) {
@@ -1052,13 +1504,14 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
         Optional.ofNullable(receipt.purchaseOrderId()).ifPresent(labelled::add);
         Optional.ofNullable(receipt.referencedPurchaseOrderId()).ifPresent(labelled::add);
         var labels = labelled.isEmpty() ? Map.<UUID, GoodsReceiptSearch.OrderLabel>of() : search.orderLabels(labelled);
-        var label = receipt.blind() ? null : labels.get(receipt.purchaseOrderId());
+        var label = receipt.purchaseOrderId() == null ? null : labels.get(receipt.purchaseOrderId());
         var referenced = receipt.referencedPurchaseOrderId() == null ? null
                 : labels.get(receipt.referencedPurchaseOrderId());
-        UUID supplierId = receipt.blind() ? receipt.supplierId() : order.supplierId();
-        String supplierName = receipt.blind()
-                ? search.supplierNames(List.of(receipt.supplierId())).get(receipt.supplierId())
-                : label == null ? null : label.supplierName();
+        // A production receipt (4A-5) has neither: the producer is on the production order.
+        UUID supplierId = receipt.purchaseOrderId() != null ? order.supplierId() : receipt.supplierId();
+        String supplierName = receipt.purchaseOrderId() != null ? (label == null ? null : label.supplierName())
+                : receipt.supplierId() == null ? null
+                : search.supplierNames(List.of(receipt.supplierId())).get(receipt.supplierId());
         var warehouse = warehouses.findWarehouse(receipt.warehouseId());
         return new ReceiptView(receipt.id(), receipt.number(), receipt.purchaseOrderId(),
                 order == null ? null : order.number(), supplierId, supplierName, receipt.warehouseId(),
@@ -1070,7 +1523,25 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
                         names.get(a.requestedBy()), a.decision(), a.decidedAt(), a.decidedBy(),
                         a.decidedBy() == null ? null : names.get(a.decidedBy()), a.reason())).orElse(null),
                 receipt.blind(), receipt.blindReason(), receipt.referencedPurchaseOrderId(),
-                referenced == null ? null : referenced.purchaseOrderNumber());
+                referenced == null ? null : referenced.purchaseOrderNumber(), receipt.type(),
+                receipt.productionOrderId(), production == null ? null : production.code(),
+                production == null ? null : production.status(), production == null ? null : production.producerId(),
+                production == null ? null : production.producerName());
+    }
+
+    /**
+     * A production line against what its production order line orders, in cartons and units (4A-5). A draft's remaining
+     * cartons leave out {@code unitsElsewhere}, what other receipts not cancelled hold of the line (confirmed or draft);
+     * a confirmed receipt's are what the production order still awaits.
+     */
+    private static ProductionLineProgress progress(ReceivableProductionOrder.Line ordered, ReceiptLine line,
+                                                   boolean pending, int unitsElsewhere) {
+        int per = ordered.unitsPerCarton();
+        int here = line.receivedQuantity() / per;
+        int remaining = Math.max(pending ? ordered.cartons() - unitsElsewhere / per - here
+                : ordered.cartons() - ordered.receivedCartons(), 0);
+        return new ProductionLineProgress(per, ordered.cartons(), ordered.receivedCartons(), here, remaining,
+                ordered.cartons() * per, ordered.receivedCartons() * per, here * per, remaining * per);
     }
 
     private static String code(Map<UUID, ReceivingLocation> where, UUID id) {
@@ -1079,5 +1550,9 @@ class GoodsReceiptServiceImpl implements GoodsReceipts {
 
     private static String blankToNull(String value) {
         return value == null || value.isBlank() ? null : value.trim();
+    }
+
+    private static BusinessException notFoundProduction(UUID id) {
+        return new BusinessException(ErrorCode.PRODUCTION_ORDER_NOT_FOUND, "No production order " + id);
     }
 }

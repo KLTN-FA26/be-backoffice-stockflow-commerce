@@ -24,6 +24,9 @@ public enum Role {
     /** Was ECOMMERCE_ADMIN; renamed by V20261107000100 (kltn-docs 00 §2, 2026-11-05) with its id and grants. */
     SALES_MANAGER(Roles.SALES_MANAGER, "Product data and approval, internal prices, print setup, design review, staff accounts"),
     PROCUREMENT_STAFF(Roles.PROCUREMENT_STAFF, "Purchase orders and supplier coordination"),
+    /** Added by V20261108002600 (kltn-docs 00 §2.1, decision 2026-11-07): production orders and the producers. */
+    PRODUCTION_COORDINATOR(Roles.PRODUCTION_COORDINATOR,
+            "Production orders for what a confirmed order lacks: producers, lead times, print samples, progress"),
     ACCOUNTANT(Roles.ACCOUNTANT, "Supplier invoices, three-way matching, reconciliation"),
     /** Holds every permission, and its grants cannot be edited at runtime (V20260929000200). */
     SYSTEM_ADMIN(Roles.SYSTEM_ADMIN, "Every permission: users, roles, permissions and all modules");

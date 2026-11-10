@@ -31,8 +31,8 @@ import java.util.UUID;
 
 /**
  * A signed contract's installments (4B-6, kltn-docs 15 §4.1, §4.3, §5.1, §5.2): opened with the signature, due when
- * their milestone comes, OVERDUE past their due day, CANCELLED with their order. Receipts pay them
- * ({@link PaymentReceiptService}).
+ * their milestone comes, OVERDUE past their due day. Receipts pay them ({@link PaymentReceiptService}); a cancellation
+ * or a closure of the rest settles them with the order ({@link OrderSettlementService}, 4B-9).
  *
  * <ul>
  *   <li>ON_SIGNING: due from the signature, by the day signed plus its days.</li>
@@ -140,23 +140,6 @@ public class InstallmentService {
         }
     }
 
-    /**
-     * The order was cancelled (15 §4.6 step 18, BR-15): its installments not paid in full are no longer owed. What
-     * they were paid stays on them; the fee and the refund are 4B-9's.
-     */
-    public void orderCancelled(UUID orderId, Instant at) {
-        int cancelled = 0;
-        for (Installment installment : book.lockOfOrder(orderId)) {
-            if (installment.cancel(at)) {
-                book.save(installment);
-                cancelled++;
-            }
-        }
-        if (cancelled > 0) {
-            log.info("Order {} cancelled: {} installment(s) cancelled", orderId, cancelled);
-        }
-    }
-
     /** 15 §4.1 step 4: every night, installments past their due day and not paid in full become OVERDUE. */
     public int markOverdue() {
         List<UUID> marked = book.markOverdue(LocalDate.now(clock.withZone(BUSINESS_ZONE)));
@@ -184,7 +167,8 @@ public class InstallmentService {
                 .map(Installment::outstanding).reduce(BigDecimal.ZERO, BigDecimal::add);
         BigDecimal onSigning = live.stream().filter(i -> i.milestone() == InstallmentMilestone.ON_SIGNING)
                 .map(Installment::outstanding).reduce(BigDecimal.ZERO, BigDecimal::add);
-        BigDecimal total = live.stream().map(Installment::amount).reduce(BigDecimal.ZERO, BigDecimal::add);
+        // What closures took off is no longer owed (4B-9, 15 §4.6 step 19).
+        BigDecimal total = live.stream().map(Installment::owedAmount).reduce(BigDecimal.ZERO, BigDecimal::add);
         BigDecimal paid = live.stream().map(Installment::paidAmount).reduce(BigDecimal.ZERO, BigDecimal::add);
         InstallmentStanding.ContractPaymentStatus status = live.isEmpty() ? null
                 : live.stream().allMatch(i -> i.status() == InstallmentStatus.PAID)

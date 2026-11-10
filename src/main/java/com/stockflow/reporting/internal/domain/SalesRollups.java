@@ -41,9 +41,10 @@ public final class SalesRollups {
     }
 
     /**
-     * A return gave money back for goods of an order (SCRUM-260): its credited value and units come off the revenue of
-     * the day that order was placed, as a cancellation's do - so a day's revenue is what was sold that day, less what was
-     * cancelled or credited back for it. Free replacement goods take nothing off: the goods were sold once.
+     * A return gave money back for goods of an order (SCRUM-260; refunds only since team plan 4D-3): the refunded value
+     * and units come off the revenue of the day that order was placed, as a cancellation's do - so a day's revenue is
+     * what was sold that day, less what was cancelled or refunded for it. The withdrawals of replacement orders recorded
+     * before 4D-3 stay as they were taken.
      *
      * @return false if this return's {@code event} was applied before, or it credited nothing
      */

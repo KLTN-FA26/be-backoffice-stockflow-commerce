@@ -66,6 +66,15 @@ class WarehouseServiceImpl implements WarehouseService {
     }
 
     @Override
+    public java.util.Set<String> areaLocationCodes(StorageLocationView.AreaType type) {
+        if (type == null) {
+            return java.util.Set.of();
+        }
+        return java.util.Set.copyOf(locations.findAreaLocationCodes(
+                com.stockflow.warehouse.internal.domain.AreaType.valueOf(type.name())));
+    }
+
+    @Override
     public java.util.Map<String, UUID> pickableLocations(java.util.Collection<String> locationCodes) {
         java.util.Map<String, UUID> pickable = new java.util.HashMap<>();
         if (locationCodes == null || locationCodes.isEmpty()) {
@@ -85,6 +94,12 @@ class WarehouseServiceImpl implements WarehouseService {
         }
         return locations.findWarehouseHeader(warehouseId).map(w -> new WarehouseView(w.id(), w.prefix(), w.name(),
                 w.address(), w.status() == WarehouseStatus.ACTIVE));
+    }
+
+    @Override
+    public java.util.List<WarehouseView> activeWarehouses() {
+        return locations.findActiveWarehouseHeaders().stream().map(w -> new WarehouseView(w.id(), w.prefix(), w.name(),
+                w.address(), true)).toList();
     }
 
     @Override

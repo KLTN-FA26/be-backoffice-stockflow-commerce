@@ -21,6 +21,9 @@ public interface LocationLookupRepository {
 
     java.util.List<LocationRow> findAreas(UUID warehouseId, com.stockflow.warehouse.internal.domain.AreaType type);
 
+    /** The location codes of every area of {@code type}, in every warehouse, whatever their status. */
+    java.util.List<String> findAreaLocationCodes(com.stockflow.warehouse.internal.domain.AreaType type);
+
     /** The locations among {@code locationCodes} flagged {@code is_pickable}, whatever their status. */
     java.util.List<LocationRow> findPickable(java.util.Collection<String> locationCodes);
 
@@ -32,6 +35,9 @@ public interface LocationLookupRepository {
 
     /** The warehouse itself, for other modules naming it on a document (a purchase order's receiving warehouse). */
     Optional<WarehouseHeader> findWarehouseHeader(UUID warehouseId);
+
+    /** Every ACTIVE warehouse, by code (4B-7: those an order may ship from). */
+    java.util.List<WarehouseHeader> findActiveWarehouseHeaders();
 
     /**
      * The bins of a warehouse a putaway may choose from: BIN locations of {@code storageClass} flagged {@code is_putaway_target} whose warehouse, shelf

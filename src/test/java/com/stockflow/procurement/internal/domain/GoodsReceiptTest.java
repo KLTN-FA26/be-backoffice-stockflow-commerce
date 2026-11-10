@@ -410,4 +410,101 @@ class GoodsReceiptTest {
         assertThatThrownBy(() -> receipt.referencePurchaseOrder(po, SUPPLIER)).extracting(GoodsReceiptTest::code)
                 .isEqualTo(ErrorCode.INVALID_RECEIPT_TRANSITION);
     }
+
+    // ------------------------------------------------------------------ 4A-5: against a production order
+
+    private static final UUID PRODUCTION_ORDER = UUID.randomUUID();
+
+    private static GoodsReceipt productionDraft() {
+        return GoodsReceipt.productionDraft(UUID.randomUUID(), "GR-20261109-0001", PRODUCTION_ORDER,
+                UUID.randomUUID(), USER, "DN-1", null, NOW);
+    }
+
+    private static ReceiptLine productionLine(UUID productionOrderLine, UUID item, int cartons) {
+        return ReceiptLine.countedForProductionOrder(UUID.randomUUID(), productionOrderLine, item, UUID.randomUUID(),
+                cartons * 50, "PRD-20261109-0001", null, UUID.randomUUID());
+    }
+
+    @Test
+    @DisplayName("4A-5: a receipt against a production order names it and nothing of a purchase receipt's")
+    void productionShape() {
+        GoodsReceipt receipt = productionDraft();
+        assertThat(receipt.type()).isEqualTo(GoodsReceiptType.PRODUCTION);
+        assertThat(receipt.againstProductionOrder()).isTrue();
+        assertThat(receipt.productionOrderId()).isEqualTo(PRODUCTION_ORDER);
+        assertThat(receipt.blind()).as("not a receipt without any document").isFalse();
+        assertThat(receipt.purchaseOrderId()).isNull();
+        assertThat(receipt.supplierId()).isNull();
+        assertThat(receipt.status()).isEqualTo(GoodsReceiptStatus.DRAFT);
+        assertThat(draft().type()).isEqualTo(GoodsReceiptType.PURCHASE);
+        assertThat(blindDraft().type()).isEqualTo(GoodsReceiptType.PURCHASE);
+        assertThat(draft().productionOrderId()).isNull();
+
+        UUID id = UUID.randomUUID();
+        UUID warehouse = UUID.randomUUID();
+        assertThatThrownBy(() -> new GoodsReceipt(id, "GR-1", UUID.randomUUID(), UUID.randomUUID(), PRODUCTION_ORDER,
+                warehouse, null, null, null, NOW, USER, null, null, List.of(), GoodsReceiptStatus.DRAFT, null, null,
+                null, null, 0L)).as("and a PO").isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new GoodsReceipt(id, "GR-1", null, null, PRODUCTION_ORDER, warehouse, SUPPLIER,
+                "gift", null, NOW, USER, null, null, List.of(), GoodsReceiptStatus.DRAFT, null, null, null, null, 0L))
+                .as("and a supplier with a reason").isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new GoodsReceipt(id, "GR-1", null, null, PRODUCTION_ORDER, warehouse, null, null,
+                null, NOW, USER, null, null, List.of(line(5, false)), GoodsReceiptStatus.DRAFT, null, null, null, null,
+                0L)).as("with a PO line").isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new GoodsReceipt(id, "GR-1", null, null, PRODUCTION_ORDER, warehouse, null, null,
+                null, NOW, USER, null, null, List.of(), GoodsReceiptStatus.PENDING_APPROVAL, null, null, null,
+                ReceiptApproval.requested(USER, NOW), 0L)).as("waiting for approval")
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new GoodsReceipt(id, "GR-1", null, null, null, warehouse, null, null, null, NOW, USER,
+                null, null, List.of(), GoodsReceiptStatus.DRAFT, null, null, null, null, 0L))
+                .as("against nothing at all, with no supplier or reason").isInstanceOf(NullPointerException.class);
+    }
+
+    @Test
+    @DisplayName("4A-5: its lines are production order lines, one each; a PO receipt takes none of them")
+    void productionLines() {
+        GoodsReceipt receipt = productionDraft();
+        UUID lineA = UUID.randomUUID();
+        UUID item = UUID.randomUUID();
+        ReceiptLine first = productionLine(lineA, item, 3);
+        assertThatThrownBy(() -> receipt.replaceLines(List.of(first, productionLine(lineA, item, 1))))
+                .extracting(GoodsReceiptTest::code).isEqualTo(ErrorCode.DUPLICATE_RECEIPT_LINE);
+        receipt.replaceLines(List.of(first, productionLine(UUID.randomUUID(), item, 2)));
+        assertThat(receipt.lines()).as("two production order lines of one SKU share its lot").hasSize(2);
+        assertThat(first.expiryDate()).isNull();
+        assertThat(first.poLineId()).isNull();
+        assertThatThrownBy(() -> receipt.replaceLines(List.of(line(5, false))))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> draft().replaceLines(List.of(productionLine(lineA, item, 1))))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new ReceiptLine(UUID.randomUUID(), UUID.randomUUID(), lineA, item, UUID.randomUUID(),
+                50, "PRD-1", null, null, null)).as("a PO line and a production order line")
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    @DisplayName("4A-5: confirmed straight to putaway - nothing over is received, so nothing waits for approval")
+    void productionConfirmsWithoutApproval() {
+        GoodsReceipt receipt = productionDraft();
+        assertThatThrownBy(() -> receipt.confirm(USER, NOW)).as("no line").extracting(GoodsReceiptTest::code)
+                .isEqualTo(ErrorCode.INVALID_RECEIPT_TRANSITION);
+        receipt.replaceLines(List.of(productionLine(UUID.randomUUID(), UUID.randomUUID(), 4)));
+        assertThatThrownBy(() -> receipt.requestApproval(USER, NOW)).extracting(GoodsReceiptTest::code)
+                .isEqualTo(ErrorCode.INVALID_RECEIPT_TRANSITION);
+        assertThatThrownBy(() -> receipt.referencePurchaseOrder(UUID.randomUUID(), SUPPLIER))
+                .satisfies(e -> assertThat(code(e)).isEqualTo(ErrorCode.INVALID_RECEIPT_TRANSITION))
+                .hasMessageContaining("production order");
+
+        receipt.confirm(USER, NOW);
+        assertThat(receipt.status()).isEqualTo(GoodsReceiptStatus.IN_PUTAWAY);
+        assertThat(receipt.confirmedBy()).isEqualTo(USER);
+        assertThatThrownBy(() -> receipt.requireDraft("change the lines of")).extracting(GoodsReceiptTest::code)
+                .isEqualTo(ErrorCode.INVALID_RECEIPT_TRANSITION);
+        assertThatThrownBy(receipt::cancel).extracting(GoodsReceiptTest::code)
+                .isEqualTo(ErrorCode.INVALID_RECEIPT_TRANSITION);
+
+        GoodsReceipt cancelled = productionDraft();
+        cancelled.cancel();
+        assertThat(cancelled.status()).isEqualTo(GoodsReceiptStatus.CANCELLED);
+    }
 }

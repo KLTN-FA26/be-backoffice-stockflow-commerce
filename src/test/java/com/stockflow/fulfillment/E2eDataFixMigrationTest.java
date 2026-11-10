@@ -114,7 +114,7 @@ class E2eDataFixMigrationTest {
                           FROM fulfillment.pick p JOIN ordering.customer_order o ON o.id = p.order_id
                           LEFT JOIN fulfillment.pack k ON k.pick_id = p.id
                          WHERE o.order_number LIKE 'SO-E2E-%' ORDER BY o.order_number"""))
-                        .containsExactly("SO-E2E-gone|CANCELLED|t|f", "SO-E2E-haspack|PACKING|t|t",
+                        .containsExactly("SO-E2E-gone|CANCELLED|t|f", "SO-E2E-haspack|IN_PROGRESS|t|t",
                                 "SO-E2E-picking|PENDING|t|f");
                 assertThat(rows(sql, "SELECT count(*) FROM fulfillment.pick p WHERE NOT EXISTS "
                         + "(SELECT 1 FROM fulfillment.pack k WHERE k.pick_id = p.id)")).containsExactly("0");

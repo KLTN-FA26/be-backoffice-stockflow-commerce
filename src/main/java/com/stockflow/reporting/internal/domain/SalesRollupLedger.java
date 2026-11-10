@@ -33,8 +33,8 @@ public interface SalesRollupLedger {
     void clearDay(LocalDate day);
 
     /**
-     * Records that a return's money (the resolution, or the withdrawal of its replacement - {@code event}) was taken off
-     * the rollups, keeping what it took: the paying order's placed day, the credited value and units.
+     * Records that a return's money ({@code event}: its refund, or - before team plan 4D-3 - the withdrawal of its
+     * replacement) was taken off the rollups, keeping what it took: the order's placed day, the value and units.
      *
      * @return true if this call recorded it, false if it was recorded before (and nothing was changed)
      */

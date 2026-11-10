@@ -14,7 +14,6 @@ import com.stockflow.fulfillment.internal.domain.CarrierConnectionType;
 import com.stockflow.fulfillment.internal.domain.DispatchLoad;
 import com.stockflow.fulfillment.internal.domain.LoadPlan;
 import com.stockflow.fulfillment.internal.domain.LoadStatus;
-import com.stockflow.fulfillment.internal.domain.PackageStatus;
 import com.stockflow.fulfillment.internal.domain.Shipment;
 import com.stockflow.fulfillment.internal.domain.ShipmentStatus;
 import com.stockflow.fulfillment.internal.domain.UnloadReasonCode;
@@ -25,7 +24,6 @@ import com.stockflow.fulfillment.internal.entity.DispatchLoadShipmentJpaEntity;
 import com.stockflow.fulfillment.internal.entity.LoadPlanJpaEntity;
 import com.stockflow.fulfillment.internal.entity.LoadPlanVehicleJpaEntity;
 import com.stockflow.fulfillment.internal.entity.PackageJpaEntity;
-import com.stockflow.fulfillment.internal.entity.PackageLineJpaEntity;
 import com.stockflow.fulfillment.internal.entity.PickJpaEntity;
 import com.stockflow.fulfillment.internal.entity.ShipmentJpaEntity;
 import com.stockflow.fulfillment.internal.repository.CarrierJpaRepository;
@@ -35,7 +33,7 @@ import com.stockflow.fulfillment.internal.repository.DispatchLoadShipmentJpaRepo
 import com.stockflow.fulfillment.internal.repository.DispatchLoadStore;
 import com.stockflow.fulfillment.internal.repository.LoadNumbers;
 import com.stockflow.fulfillment.internal.repository.PackageJpaRepository;
-import com.stockflow.fulfillment.internal.repository.PackageLineJpaRepository;
+import com.stockflow.fulfillment.internal.repository.ParcelContents;
 import com.stockflow.fulfillment.internal.repository.PickJpaRepository;
 import com.stockflow.fulfillment.internal.repository.ShipmentJpaRepository;
 import com.stockflow.identity.api.IdentityService;
@@ -93,7 +91,7 @@ class DispatchService implements Dispatching {
     private final ShipmentJpaRepository shipments;
     private final com.stockflow.fulfillment.internal.repository.ShipmentLocks locks;
     private final PackageJpaRepository packages;
-    private final PackageLineJpaRepository packageLines;
+    private final ParcelContents contents;
     private final PickJpaRepository picks;
     private final CarrierJpaRepository carriers;
     private final ShipmentTimeline timeline;
@@ -113,7 +111,7 @@ class DispatchService implements Dispatching {
                     DispatchLoadPackageJpaRepository loaded, DispatchLoadStore store, LoadNumbers numbers,
                     ShipmentJpaRepository shipments, com.stockflow.fulfillment.internal.repository.ShipmentLocks locks,
                     PackageJpaRepository packages,
-                    PackageLineJpaRepository packageLines, PickJpaRepository picks, CarrierJpaRepository carriers,
+                    ParcelContents contents, PickJpaRepository picks, CarrierJpaRepository carriers,
                     ShipmentTimeline timeline, ShipmentContext context, OrderService orders,
                     WarehouseService warehouses,
                     IdentityService identities, PlanVehicles planVehicles, LeftBehindParcels leftBehind,
@@ -129,7 +127,7 @@ class DispatchService implements Dispatching {
         this.shipments = shipments;
         this.locks = locks;
         this.packages = packages;
-        this.packageLines = packageLines;
+        this.contents = contents;
         this.picks = picks;
         this.carriers = carriers;
         this.timeline = timeline;
@@ -210,24 +208,15 @@ class DispatchService implements Dispatching {
         if (recorded.isPresent()) {
             // A scan id is answered first: the same scan again gets the answer it got, whatever happened since.
             boolean same = recorded.get().getLoadId().equals(loadId) && packages.findById(
-                    recorded.get().getPackageId()).map(p -> p.getLabelCode().equalsIgnoreCase(code)).orElse(false);
+                    recorded.get().getPackageId()).map(p -> p.getLabelCode().equalsIgnoreCase(code)
+                            || code.equalsIgnoreCase(p.getLpn())).orElse(false);
             if (!same) {
                 throw new BusinessException(ErrorCode.LOAD_SCAN_ID_CONFLICT,
                         "Scan %s was recorded for another package or load; send a new scanId".formatted(scanId));
             }
             return detail(header, load);
         }
-        PackageJpaEntity parcel = packages.findByLabelCode(code)
-                .or(() -> packages.findByLabelCode(code.toUpperCase(Locale.ROOT)))
-                .orElseThrow(() -> new BusinessException(ErrorCode.PACKAGE_NOT_FOUND,
-                        "No package labelled " + code));
-        if (parcel.getLabelOutdatedAt() != null && load.activeParcels().stream()
-                .noneMatch(l -> l.packageId().equals(parcel.getId()))) {
-            // Review of #162: it moved to another shipment since its label was printed (a left-behind parcel split
-            // off): the label names the old shipment and n/N - reprint it first.
-            throw new BusinessException(ErrorCode.LABEL_OUTDATED, ("Package %s moved to another shipment since its "
-                    + "label was printed: reprint its label before loading it").formatted(parcel.getLabelCode()));
-        }
+        PackageJpaEntity parcel = parcelScanned(code);
         DispatchLoad.ShipmentFacts shipment = null;
         if (parcel.getShipmentId() != null) {
             ShipmentJpaEntity row = shipments.findById(parcel.getShipmentId()).orElseThrow();
@@ -320,7 +309,22 @@ class DispatchService implements Dispatching {
         timeline.record(shipment, ShipmentStatus.READY_TO_DISPATCH, order, null, carrier.getName(), loadCode);
     }
 
-    /** Per shipment, the units of each order line in its sealed parcels ({@code package_line}, 08 BR-01). */
+    /**
+     * The parcel a loader scanned: a repack parcel by its label code, or a shipping carton by its LPN - the code its
+     * shipping label prints (team plan 4C-6, kltn-docs 08 §4.3 step 6) - the newest labelled carton of that LPN.
+     */
+    private PackageJpaEntity parcelScanned(String code) {
+        String upper = code.toUpperCase(Locale.ROOT);
+        return packages.findByLabelCode(code)
+                .or(() -> packages.findByLabelCode(upper))
+                .or(() -> packages.findLabeledByLpn(upper).stream().findFirst())
+                .orElseThrow(() -> new BusinessException(ErrorCode.PACKAGE_NOT_FOUND, "No package labelled " + code));
+    }
+
+    /**
+     * Per shipment, the units of each order line in its shipping parcels (08 BR-01): a labelled carton's pick line, a
+     * sealed repack parcel's {@code package_line} ({@link ParcelContents}).
+     */
     private Map<UUID, List<ShipmentHandover.Line>> linesOf(List<PackageJpaEntity> sealed) {
         if (sealed.isEmpty()) {
             return Map.of();
@@ -328,9 +332,9 @@ class DispatchService implements Dispatching {
         Map<UUID, UUID> shipmentOf = sealed.stream().collect(Collectors.toMap(PackageJpaEntity::getId,
                 PackageJpaEntity::getShipmentId));
         Map<UUID, Map<UUID, Integer>> totals = new HashMap<>();
-        for (PackageLineJpaEntity line : packageLines.findByPackageIdIn(shipmentOf.keySet())) {
-            totals.computeIfAbsent(shipmentOf.get(line.getPackageId()), id -> new LinkedHashMap<>())
-                    .merge(line.getOrderLineId(), line.getQuantity(), Integer::sum);
+        for (ParcelContents.Line line : contents.of(shipmentOf.keySet())) {
+            totals.computeIfAbsent(shipmentOf.get(line.packageId()), id -> new LinkedHashMap<>())
+                    .merge(line.orderLineId(), line.quantity(), Integer::sum);
         }
         Map<UUID, List<ShipmentHandover.Line>> result = new HashMap<>();
         totals.forEach((shipment, lines) -> result.put(shipment, lines.entrySet().stream()
@@ -670,9 +674,7 @@ class DispatchService implements Dispatching {
     public LoadDetail unload(UUID loadId, String packageCode, CurrentUser actor) {
         Locked locked = lockForChange(loadId);
         String code = packageCode == null ? "" : packageCode.trim();
-        PackageJpaEntity parcel = packages.findByLabelCode(code)
-                .or(() -> packages.findByLabelCode(code.toUpperCase(Locale.ROOT)))
-                .orElseThrow(() -> new BusinessException(ErrorCode.PACKAGE_NOT_FOUND, "No package labelled " + code));
+        PackageJpaEntity parcel = parcelScanned(code);
         Instant now = clock.instant();
         boolean changed = locked.load().confirmUnload(parcel.getId(), parcel.getLabelCode(), actor.userId(), now);
         return finishUnload(locked, parcel, changed, "scanned off", now);
@@ -920,12 +922,11 @@ class DispatchService implements Dispatching {
         // The parcels the plan placed on this vehicle - only those are checked against the scans (LP-3).
         Set<UUID> placedHere = ctx.placedHere();
         List<PackageJpaEntity> here = placedHere.isEmpty() ? List.of() : packages.findAllById(placedHere).stream()
-                .filter(p -> p.getStatus() == PackageStatus.SEALED && p.getShipmentId() != null).toList();
+                .filter(p -> p.getStatus().ships() && p.getShipmentId() != null).toList();
         Map<UUID, Set<UUID>> parcelsByShipment = here.stream().collect(Collectors.groupingBy(
                 PackageJpaEntity::getShipmentId, Collectors.mapping(PackageJpaEntity::getId, Collectors.toSet())));
         Map<UUID, String> labels = here.stream().collect(Collectors.toMap(PackageJpaEntity::getId,
-                p -> p.getKit() == null ? p.getLabelCode() : "%s (kit part %d/%d)".formatted(p.getLabelCode(),
-                        p.getKit().partNo(), p.getKit().partCount())));
+                PackageJpaEntity::getLabelCode));
         load.handOver(new DispatchLoad.Handover(request.carrierRepresentative(), request.vehiclePlate(),
                 request.driverPhone(), request.signatureRef(), Boolean.TRUE.equals(request.signed()), request.note()),
                 parcelsByShipment, labels, by, now);
@@ -983,7 +984,7 @@ class DispatchService implements Dispatching {
             }
             completing.sort(Comparator.comparing(ShipmentJpaEntity::getReadyAt).thenComparing(ShipmentJpaEntity::getId));
             List<PackageJpaEntity> sealed = packages.findByShipmentIdIn(completing.stream().map(ShipmentJpaEntity::getId)
-                    .toList()).stream().filter(p -> p.getStatus() == PackageStatus.SEALED).toList();
+                    .toList()).stream().filter(p -> p.getStatus().ships()).toList();
             Map<UUID, List<ShipmentHandover.Line>> linesByShipment = linesOf(sealed);
             Map<UUID, Long> parcelCount = sealed.stream().collect(Collectors.groupingBy(PackageJpaEntity::getShipmentId,
                     Collectors.counting()));
@@ -1025,11 +1026,11 @@ class DispatchService implements Dispatching {
                 .forEach(m -> shipmentOf.put(m.packageId(), m.shipmentId()));
         Map<UUID, Map<UUID, Integer>> totals = new HashMap<>();
         if (!shipmentOf.isEmpty()) {
-            for (PackageLineJpaEntity line : packageLines.findByPackageIdIn(shipmentOf.keySet())) {
-                ShipmentJpaEntity row = rows.get(shipmentOf.get(line.getPackageId()));
+            for (ParcelContents.Line line : contents.of(shipmentOf.keySet())) {
+                ShipmentJpaEntity row = rows.get(shipmentOf.get(line.packageId()));
                 if (row != null && row.getStatus() == ShipmentStatus.READY_TO_DISPATCH) {
                     totals.computeIfAbsent(row.getOrderId(), k -> new LinkedHashMap<>())
-                            .merge(line.getOrderLineId(), line.getQuantity(), Integer::sum);
+                            .merge(line.orderLineId(), line.quantity(), Integer::sum);
                 }
             }
         }
@@ -1080,7 +1081,7 @@ class DispatchService implements Dispatching {
                 .collect(Collectors.toMap(ShipmentJpaEntity::getId, Function.identity()));
         Map<UUID, List<PackageJpaEntity>> parcels = onManifest.isEmpty() ? Map.of()
                 : packages.findByShipmentIdIn(onManifest.keySet()).stream()
-                .filter(p -> p.getStatus() == PackageStatus.SEALED)
+                .filter(p -> p.getStatus().ships())
                 .filter(p -> placedHere == null || placedHere.contains(p.getId()))
                 .sorted(Comparator.comparing(PackageJpaEntity::getLabelCode))
                 .collect(Collectors.groupingBy(PackageJpaEntity::getShipmentId));
@@ -1103,8 +1104,7 @@ class DispatchService implements Dispatching {
                             : address.phone(),
                     address == null ? null : addressLine(address), own.size(), shipmentWeight,
                     own.stream().map(p -> new ManifestParcel(p.getLabelCode(), p.getWeightKg(), p.getLengthCm(),
-                            p.getWidthCm(), p.getHeightCm(), onVehicle.contains(p.getId()), p.getKit(),
-                            p.getLabelOutdatedAt())).toList()));
+                            p.getWidthCm(), p.getHeightCm(), onVehicle.contains(p.getId()))).toList()));
         }
         CarrierJpaEntity carrier = header.getCarrierId() == null ? null
                 : carriers.findById(header.getCarrierId()).orElse(null);
@@ -1169,7 +1169,7 @@ class DispatchService implements Dispatching {
         PlanVehicles.PlanOfLoad ctx = header.getLoadPlanVehicleId() == null ? null : planVehicles.read(header);
         Set<UUID> placedHere = ctx == null ? null : ctx.placedHere();
         Map<UUID, List<PackageJpaEntity>> parcels = ids.isEmpty() ? Map.of() : packages.findByShipmentIdIn(ids)
-                .stream().filter(p -> p.getStatus() == PackageStatus.SEALED)
+                .stream().filter(p -> p.getStatus().ships())
                 .filter(p -> placedHere == null || placedHere.contains(p.getId()))
                 .sorted(Comparator.comparing(PackageJpaEntity::getLabelCode))
                 .collect(Collectors.groupingBy(PackageJpaEntity::getShipmentId));
@@ -1186,7 +1186,7 @@ class DispatchService implements Dispatching {
             List<LoadParcel> own = parcels.getOrDefault(member.shipmentId(), List.of()).stream().map(p -> {
                 DispatchLoad.Loaded l = onVehicle.get(p.getId());
                 return new LoadParcel(p.getId(), p.getLabelCode(), p.getWeightKg(), l != null,
-                        l == null ? null : l.loadedAt(), l == null ? null : l.loadedBy(), p.getKit(), p.getLabelOutdatedAt());
+                        l == null ? null : l.loadedAt(), l == null ? null : l.loadedBy());
             }).toList();
             expected += own.size();
             lines.add(new LoadShipment(row.getId(), row.getCode(), row.getOrderId(),

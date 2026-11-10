@@ -439,6 +439,25 @@ public final class StockItem extends AggregateRoot {
     }
 
     /**
+     * The carton this row is the contents of came back on a return receipt (team plan 4D-2; kltn-docs 03 §4.2 step
+     * 12, BR-04, BR-14): the row, emptied when its carton was picked, gets the carton's units back, in QUARANTINE and
+     * in its own lot - out of ATP until a warehouse manager releases the carton or writes it off (20 §4.8). Whatever
+     * status the empty row was left in, the goods come back in quarantine: nobody has looked at them yet. Only an
+     * empty row holding nothing for anyone: a carton comes back whole, once.
+     */
+    public void receiveReturnInPackage(Quantity quantity) {
+        if (stockPackageId == null) {
+            throw new IllegalStateException("Stock item %s is loose; only a carton comes back on a return".formatted(id));
+        }
+        if (!onHand.isZero() || !reserved().isZero()) {
+            throw new IllegalStateException("Stock item %s still holds %s (%s held); a carton comes back into an empty row"
+                    .formatted(id, onHand, reserved()));
+        }
+        this.status = StockStatus.QUARANTINE;
+        moveIn(quantity);
+    }
+
+    /**
      * Pin every active hold of {@code orderId} on this stock row: its order is no longer waiting for
      * payment, so the holds must not expire (kltn-docs 14 BR-07, SCRUM-465). Nothing else changes —
      * the quantities held stay exactly as they are.

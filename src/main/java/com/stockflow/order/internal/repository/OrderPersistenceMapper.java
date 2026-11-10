@@ -77,13 +77,14 @@ final class OrderPersistenceMapper {
         order.restoreFulfilmentFacts(entity.getPrintingStartedAt(), entity.getPackedAt());
         order.restoreGoodsLeft(entity.getGoodsLeftAt());
         order.restoreContractSigned(entity.getContractSignedAt());
-        order.restoreReplacement(entity.getReplacesReturnRequestId());
+        order.restoreShippingWarehouse(entity.getShippingWarehouseId(), entity.getShippingWarehouseChosenAt(),
+                entity.getShippingWarehouseChosenBy());
         order.restoreBalance(entity.getBalancePolicy());
         order.restorePartialShipment(entity.isAllowPartialShipment());
         order.restoreRemainderFee(entity.getRemainderFeeAmount(), entity.getRemainderFeeRetainedAmount(),
                 entity.getRemainderFeePaidAmount());
         order.restoreFulfilmentStarted(entity.getFulfilmentStartedAt());
-        order.restorePackingStarted(entity.getPackingStartedAt());
+        order.restoreFirstLabeled(entity.getFirstLabeledAt());
         order.restoreLifecycle(entity.getHoldReason(), entity.getStatusBeforeHold(), entity.getHoldNote(),
                 entity.getShippedAt(), entity.getDeliveredAt(), entity.getDeliveryFailureReason(),
                 entity.getCompletedAt(), entity.getRefundedAt(), entity.getClosedAt(), entity.getBilledAmount(),
@@ -121,7 +122,6 @@ final class OrderPersistenceMapper {
         entity.addMissingFees(toFeeEntities(order));
         entity.applyTax(order.taxTotal().amount());
         applyTermsAndRelease(order, entity);
-        entity.applyReplacement(order.replacesReturnRequestId());
         return entity;
     }
 
@@ -135,6 +135,8 @@ final class OrderPersistenceMapper {
         entity.applyFulfilmentFacts(order.printingStartedAt(), order.packedAt());
         entity.applyGoodsLeft(order.goodsLeftAt());
         entity.applyContractSigned(order.contractSignedAt());
+        entity.applyShippingWarehouse(order.shippingWarehouseId(), order.shippingWarehouseChosenAt(),
+                order.shippingWarehouseChosenBy());
         entity.applyPlaced(order.placedAt());
         entity.applyBalance(order.balancePolicy());
         entity.applyPartialShipment(order.allowPartialShipment());
@@ -142,7 +144,7 @@ final class OrderPersistenceMapper {
                 order.remainderFeePaidAmount());
         entity.applyClosedAmount(order.closedAmount());
         entity.applyFulfilmentStarted(order.fulfilmentStartedAt());
-        entity.applyPackingStarted(order.packingStartedAt());
+        entity.applyFirstLabeled(order.firstLabeledAt());
         entity.applyLifecycle(order.holdReason(), order.statusBeforeHold(), order.holdNote(), order.shippedAt(),
                 order.deliveredAt(), order.deliveryFailureReason(), order.completedAt(), order.refundedAt(),
                 order.closedAt(), order.billedAmount(), order.receivablePaidAmount(), order.remainderRefundAmount());
@@ -197,7 +199,7 @@ final class OrderPersistenceMapper {
                         entity.getPackedAt(), entity.getShippedAt(), entity.getDeliveredAt(),
                         entity.getDeliveryFailureReason(), entity.getCompletedAt(), entity.getClosedAt(),
                         entity.getBilledAmount(), null, null, null, List.of(), List.of(),
-                        entity.isAllowPartialShipment()),
+                        entity.isAllowPartialShipment(), null, entity.getFirstLabeledAt()),
                 rowCharges(entity));
     }
 

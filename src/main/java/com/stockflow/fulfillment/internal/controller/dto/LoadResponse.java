@@ -63,22 +63,12 @@ public record LoadResponse(UUID loadId, String code, UUID warehouseId, String st
                                 @JsonInclude(JsonInclude.Include.NON_NULL) String reasonCode) {
     }
 
-    /**
-     * @param taskId the fulfillment task it was packed in: reprint its label at
-     *               {@code GET /fulfillment/tasks/{taskId}/packages/{packageId}/label} (after LABEL_OUTDATED)
-     */
+    /** @param taskId the fulfillment task its cartons were checked and labelled in */
     public record Shipment(UUID shipmentId, String code, UUID orderId, String orderNumber, UUID taskId, String status,
                            int packageCount, int loadedCount, List<Parcel> packages) {
     }
 
-    /**
-     * @param kit             the kit it is a part of (SCRUM-287 LP2-6); absent for an ordinary parcel
-     * @param labelOutdated   its label no longer matches the parcel (moved to another shipment, or its n/N changed):
-     *                        scanning it is 409 LABEL_OUTDATED until the label is reprinted
-     * @param labelOutdatedAt since when; null when {@code labelOutdated} is false
-     */
     public record Parcel(UUID packageId, String labelCode, BigDecimal weightKg, boolean loaded, Instant loadedAt,
-                         UUID loadedBy, @JsonInclude(JsonInclude.Include.NON_NULL) KitPartResponse kit,
-                         boolean labelOutdated, Instant labelOutdatedAt) {
+                         UUID loadedBy) {
     }
 }

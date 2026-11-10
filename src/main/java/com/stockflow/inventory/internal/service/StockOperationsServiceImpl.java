@@ -14,7 +14,6 @@ import com.stockflow.common.persistence.SortWhitelist;
 import com.stockflow.inventory.api.CountReceivingPackagesCommand;
 import com.stockflow.inventory.api.MoveReference;
 import com.stockflow.inventory.api.MoveStockPackagesCommand;
-import com.stockflow.inventory.api.ReclassifyStockCommand;
 import com.stockflow.inventory.api.ReclassifyStockPackagesCommand;
 import com.stockflow.inventory.api.ReceiveStockCommand;
 import com.stockflow.inventory.api.RequestAdjustmentCommand;
@@ -142,120 +141,32 @@ class StockOperationsServiceImpl implements StockOperations {
         this.lots = lots;
     }
 
-    // ------------------------------------------------------------------ loose stock: returns only
-
-    @Override
-    @Auditable(action = AuditAction.UPDATE, resourceType = "stock-move", resourceId = "#command.referenceId()")
-    public StockMove reclassify(ReclassifyStockCommand command) {
-        return relocate(command.sku(), command.lotNumber(), command.receivedAt(), command.fromLocation(),
-                command.toLocation(), command.quantity(), StockStatus.valueOf(command.disposition().name()),
-                StockMovement.ReferenceType.valueOf(command.reference().name()), command.referenceId(),
-                command.actorId(), blankToNull(command.reason()));
-    }
-
-    /**
-     * The last loose move: a customer return's decision ({@code ReturnRequestService}), whose goods
-     * {@link #receiveReturn} still counts in loose. Nothing else moves loose units since team plan 4C-2 - a person
-     * moves cartons whole ({@link #moveStockPackages}), putaway puts cartons away - and this goes too when returns are
-     * received by carton (team plan 4D-2, kltn-docs 20 §4.4). {@code receivedAt} picks the stock layer when the source
-     * holds several.
-     */
-    private StockMove relocate(Sku sku, String lotNumber, Instant receivedAt, String fromCode, String toCode,
-                               int qty, StockStatus target, StockMovement.ReferenceType referenceType,
-                               UUID referenceId, UUID actorId, String reason) {
-        // BR-SEC-002 (SCRUM-457): both ends in a warehouse the caller is assigned to. First, so a
-        // replay cannot reveal a move made in someone else's warehouse.
-        WarehouseScope.requireLocation(fromCode);
-        WarehouseScope.requireLocation(toCode);
-        // Match policy edits/reservations: take the SKU lock before any stock-row locks.
-        policies.lock(sku.code());
-
-        // Replay first: a retried move must not move the goods again. Loose lines only - this moves loose stock,
-        // and a carton moved whole under the same reference is not this move's earlier attempt (SCRUM-473).
-        Optional<StockMovement> done = ledger.findLooseByReference(StockMovement.MovementType.MOVE, referenceType,
-                referenceId);
-        if (done.isPresent()) {
-            return toMove(done.get());
-        }
-
-        return moveLayer(sku, lotNumber, receivedAt, new LocationId(fromCode), new LocationId(toCode), qty, target,
-                referenceType, referenceId, actorId, reason);
-    }
-
-    /** What {@link #relocate} does once scope, the SKU lock and the replay lookup are behind it. */
-    private StockMove moveLayer(Sku sku, String lotNumber, Instant receivedAt, LocationId from, LocationId to,
-                                int qty, StockStatus target, StockMovement.ReferenceType referenceType,
-                                UUID referenceId, UUID actorId, String reason) {
-        requireMovableBetween(from, to);
-        Quantity quantity = Quantity.of(qty);
-
-        StockItem sourceView = findLayer(sku, from, lotNumber, receivedAt)
-                .orElseThrow(() -> new BusinessException(ErrorCode.STOCK_ITEM_NOT_FOUND,
-                        "No %s%s at %s".formatted(sku, lotSuffix(lotNumber), from)));
-        Optional<StockItem> destinationView = findLayer(sku, to, lotNumber, sourceView.receivedAt())
-                .filter(item -> java.util.Objects.equals(item.receivedAt(), sourceView.receivedAt()));
-
-        // Lock in id order, as reserve() does: two moves crossing the same pair in opposite
-        // directions would otherwise deadlock.
-        List<StockItem> toLock = destinationView.isPresent()
-                ? List.of(sourceView, destinationView.get()) : List.of(sourceView);
-        StockItem source = null;
-        StockItem destination = null;
-        for (StockItem view : toLock.stream()
-                .sorted(Comparator.comparing(item -> item.id().value().toString())).toList()) {
-            StockItem locked = stockItems.findByIdForUpdate(view.id()).orElseThrow(() ->
-                    new IllegalStateException("Stock item %s vanished mid-move".formatted(view.id())));
-            if (locked.id().equals(sourceView.id())) {
-                source = locked;
-            } else {
-                destination = locked;
-            }
-        }
-        Objects.requireNonNull(source, "source");
-
-        if (target != null && source.status() != StockStatus.INBOUND && source.status() != StockStatus.QUARANTINE) {
-            throw new BusinessException(ErrorCode.STOCK_STATUS_MISMATCH,
-                    "%s%s at %s is %s; only INBOUND or QUARANTINE stock takes a receiving decision".formatted(
-                            sku, lotSuffix(lotNumber), from, source.status()));
-        }
-        StockStatus arriving = target != null ? target : source.status();
-        if (destination != null && !destination.canReceiveFrom(source, arriving)) {
-            throw new BusinessException(
-                    destination.status() == arriving
-                            ? ErrorCode.INVENTORY_POLICY_STOCK_CONFLICT
-                            : ErrorCode.STOCK_STATUS_MISMATCH,
-                    "%s holds %s%s as %s; this stock would arrive as %s".formatted(to, sku,
-                            lotSuffix(lotNumber), destination.status(), arriving));
-        }
-
-        StockStatus before = source.status();
-        requireLoose(source);
-        source.moveOut(quantity);
-        stockItems.save(source);
-        if (destination == null) {
-            stockItems.save(StockItem.arrivedAs(source, to, quantity, arriving));
-        } else {
-            destination.moveIn(quantity);
-            stockItems.saveMerged(destination);
-        }
-
-        Instant now = clock.instant();
-        StockMovement line = new StockMovement(Identifiers.newId(), StockMovement.MovementType.MOVE,
-                sku, blankToNull(lotNumber), from, to, quantity.value(), before, arriving,
-                referenceType, referenceId, reason, actorId, now).ofLot(source.lotId());
-        ledger.append(line);
-        log.info("Moved {} x {}{} from {} to {} ({} -> {})", quantity, sku, lotSuffix(lotNumber), from, to,
-                before, arriving);
-        return toMove(line);
-    }
-
     /**
      * What every move of stock needs of its two ends, loose or in a carton: two different locations, in one
      * warehouse (docs 11 BR-01: stock never changes warehouse - a Production Order delivers straight to the warehouse
      * that ships), and a destination that can take stock. Only the destination is checked (issue
      * #67): taking stock out of a blocked bin or a shelf in maintenance is how it gets emptied, and an adjustment
      * at a bin blocked for counting must still post.
+     *
+     * <p>Neither end is a staging area (kltn-docs 11 BR-09, 20 BR-20, team plan 4C-5): a carton there was picked for an
+     * order and leaves only when its task moves to dispatch or, the order cancelled, by the put-back - both picking's
+     * own moves ({@code PickConsumptionService}), never this one. {@code tg_stock_movement_staging} says the same of the
+     * ledger.</p>
      */
+    /**
+     * Review L5 (team plan 4C-5; kltn-docs 20 BR-20): stock enters a staging area only by picking, always carrying an
+     * order's allocation. A count or an adjustment may write stock there down - a carton missing is a shortage - but
+     * never add to it: found units would be nobody's, out of available to promise, unpickable and unmovable, stranded
+     * until written down again. {@code tg_stock_movement_staging} refuses the same ledger line.
+     */
+    private void requireNoSurplusInStaging(LocationId location, int delta) {
+        if (delta > 0 && locations.isStagingArea(location)) {
+            throw new BusinessException(ErrorCode.STAGING_MOVE_NOT_ALLOWED, ("%s is a staging area: a count or an "
+                    + "adjustment writes stock there down, never up; stock enters it only by picking").formatted(location),
+                    List.of(), Map.of("locationCode", location.code()));
+        }
+    }
+
     private void requireMovableBetween(LocationId from, LocationId to) {
         if (from.equals(to)) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A move needs two different locations");
@@ -263,6 +174,13 @@ class StockOperationsServiceImpl implements StockOperations {
         if (!from.warehouseCode().equals(to.warehouseCode())) {
             throw new BusinessException(ErrorCode.MOVE_ACROSS_WAREHOUSES,
                     "%s and %s are in different warehouses; stock moves only inside one".formatted(from, to));
+        }
+        for (LocationId end : List.of(from, to)) {
+            if (locations.isStagingArea(end)) {
+                throw new BusinessException(ErrorCode.STAGING_MOVE_NOT_ALLOWED, ("%s is a staging area: stock enters it "
+                        + "only by picking for an order, and leaves it by dispatch or put-back").formatted(end),
+                        List.of(), Map.of("locationCode", end.code()));
+            }
         }
         requireUsable(to);
     }
@@ -707,7 +625,8 @@ class StockOperationsServiceImpl implements StockOperations {
                 command.expiryDate(), command.receivedAt(), command.origin().goodsReceiptId(),
                 command.origin().goodsReceiptNumber(), command.origin().purchaseOrderId(),
                 command.origin().purchaseOrderNumber(), command.origin().supplierId(), command.origin().supplierName(),
-                command.origin().warehouseId()));
+                command.origin().warehouseId(), command.origin().productionOrderId(),
+                command.origin().productionOrderCode()));
         Instant now = clock.instant();
 
         StockMove first = null;
@@ -866,61 +785,6 @@ class StockOperationsServiceImpl implements StockOperations {
 
     // ------------------------------------------------------------------ returns
 
-    /**
-     * SCRUM-260: a returned parcel's goods into quarantine (OQ-12: never straight into sellable stock). The lines of one
-     * parcel are counted at one time, and two of them may carry the same SKU and lot (two designs printed on one blank,
-     * a wrong item that is another line's SKU): they share the layer the first one opened, as the natural key
-     * (SKU, location, lot, receipt time) says they must.
-     */
-    @Override
-    @Auditable(action = AuditAction.CREATE, resourceType = "stock-return-receipt", resourceId = "#command.returnLineId()")
-    public StockMove receiveReturn(com.stockflow.inventory.api.ReceiveReturnCommand command) {
-        WarehouseScope.requireLocation(command.locationCode());
-        policies.lock(command.sku().code());
-        // One ledger line per parcel of the line: a retried parcel finds the line's total already reached.
-        long booked = ledger.sumQuantityByReference(List.of(StockMovement.MovementType.RETURN_IN),
-                StockMovement.ReferenceType.RETURN_REQUEST_LINE, command.returnLineId());
-        if (booked >= command.lineTotal()) {
-            return toMove(ledger.findByReference(StockMovement.MovementType.RETURN_IN,
-                    StockMovement.ReferenceType.RETURN_REQUEST_LINE, command.returnLineId()).orElseThrow());
-        }
-        if (booked + command.quantity() != command.lineTotal()) {
-            throw new IllegalStateException("Return line %s has %d unit(s) booked; %d more do not make %d".formatted(
-                    command.returnLineId(), booked, command.quantity(), command.lineTotal()));
-        }
-        LocationId location = new LocationId(command.locationCode());
-        switch (locations.stateOf(location)) {
-            case UNKNOWN -> throw new BusinessException(ErrorCode.LOCATION_NOT_FOUND, "No location " + location);
-            case UNUSABLE -> throw new BusinessException(ErrorCode.LOCATION_NOT_USABLE,
-                    "%s cannot take stock now: it, its shelf or its warehouse is not active".formatted(location));
-            case USABLE -> { }
-        }
-        String lot = blankToNull(command.lotNumber());
-        Quantity quantity = Quantity.of(command.quantity());
-        Optional<StockItem> layer = findLayer(command.sku(), location, lot, command.receivedAt());
-        if (layer.isPresent()) {
-            StockItem item = stockItems.findByIdForUpdate(layer.get().id()).orElseThrow();
-            requireLoose(item);
-            if (item.status() != StockStatus.QUARANTINE) {
-                throw new BusinessException(ErrorCode.STOCK_STATUS_MISMATCH,
-                        "%s holds %s%s as %s; returned goods arrive in quarantine".formatted(location, command.sku(),
-                                lotSuffix(lot), item.status()));
-            }
-            item.moveIn(quantity);
-            // The same receipt, not a replenishment: the policy trigger lets a FIFO layer grow only when told so.
-            stockItems.saveMerged(item);
-        } else {
-            stockItems.save(StockItem.receive(command.sku(), location, lot, null, quantity, command.receivedAt(), null));
-        }
-        StockMovement line = new StockMovement(Identifiers.newId(), StockMovement.MovementType.RETURN_IN,
-                command.sku(), lot, null, location, quantity.value(), StockStatus.QUARANTINE,
-                StockMovement.ReferenceType.RETURN_REQUEST_LINE, command.returnLineId(), "Returned by the customer",
-                command.actorId(), clock.instant()).forOrder(command.orderId());
-        ledger.append(line);
-        log.info("Returned {} x {}{} into {}", quantity, command.sku(), lotSuffix(lot), location);
-        return toMove(line);
-    }
-
     // ------------------------------------------------------------------ adjustments
 
     @Override
@@ -936,6 +800,7 @@ class StockOperationsServiceImpl implements StockOperations {
         }
         WarehouseScope.requireLocation(command.locationCode());
         LocationId location = new LocationId(command.locationCode());
+        requireNoSurplusInStaging(location, command.quantityDelta());
         // The stock item must exist now; FOUND stock adds to a lot already recorded at the location.
         findLayer(command.sku(), location, command.lotNumber(), command.receivedAt())
                 .orElseThrow(() -> new BusinessException(ErrorCode.STOCK_ITEM_NOT_FOUND,
@@ -1032,6 +897,7 @@ class StockOperationsServiceImpl implements StockOperations {
             return List.of();
         }
         WarehouseScope.requireLocation(slot.location().code());
+        requireNoSurplusInStaging(slot.location(), delta);
         policies.lock(slot.sku().code());
         Instant now = clock.instant();
         LocalDate day = LocalDate.ofInstant(now, BUSINESS_ZONE);

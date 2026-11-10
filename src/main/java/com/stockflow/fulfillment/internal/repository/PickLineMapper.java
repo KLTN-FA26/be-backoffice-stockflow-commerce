@@ -16,7 +16,8 @@ public final class PickLineMapper {
                 e.getLotNumber(), e.getSequenceNo(), e.getAllocatedQty(), e.getPickedQty(), e.getStatus(),
                 e.getPickedBy(), e.getPickedAt(), e.getConsumedAt(), e.getScannedLocationCode(), e.getScannedCode(),
                 e.getPutBackQty(), e.getPutBackLocationCode(), e.getPutBackBy(), e.getPutBackAt(), e.getShortQty(),
-                e.getLpn(), e.isWholeCarton(), e.getDamagedQty(), e.getDamageReportId(), e.getPackingDamagedQty());
+                e.getShortReason(), e.getLpn(), e.isWholeCarton(), e.getDamagedQty(), e.getDamageReportId(),
+                e.getPackingDamagedQty(), e.getStagedAt(), e.getStagedLocationCode());
     }
 
     /** A row for a line the aggregate just planned. */
@@ -32,8 +33,9 @@ public final class PickLineMapper {
         entity.apply(line.pickedQty(), line.status(), line.pickedBy(), line.pickedAt(), line.consumedAt(),
                 line.scannedLocationCode(), line.scannedCode(), line.putBackQty(), line.putBackLocationCode(),
                 line.putBackBy(), line.putBackAt());
-        entity.recordShort(line.shortQty());
+        entity.recordShort(line.shortQty(), line.shortReason());
         entity.recordDamage(line.damagedQty(), line.damageReportId());
         entity.recordDamageAfterPick(line.packingDamagedQty());
+        entity.recordStaged(line.stagedAt(), line.stagedLocationCode());
     }
 }

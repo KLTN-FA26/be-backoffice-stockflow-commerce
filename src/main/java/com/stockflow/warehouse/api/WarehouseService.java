@@ -41,15 +41,28 @@ public interface WarehouseService {
     java.util.List<StorageLocationView> areasOf(UUID warehouseId, StorageLocationView.AreaType type);
 
     /**
+     * The location codes of every storage area of {@code type}, in every warehouse, whatever their status. Inventory
+     * leaves the stock standing in a {@code STAGING} area out of available to promise with these (kltn-docs 20 BR-20):
+     * staging areas are a handful of locations, so the set is small, and asking for it beats a cross-schema join.
+     */
+    java.util.Set<String> areaLocationCodes(StorageLocationView.AreaType type);
+
+    /**
      * The locations among {@code locationCodes} a picker may take stock from right now: flagged pickable
      * ({@code is_pickable}, module 06 BR-12) and usable, i.e. their effective status is ACTIVE. Each maps to its
      * warehouse. A code that is unknown, not pickable or not usable is absent. Allocation (SCRUM-152) chooses bins
-     * from these only, so an order is never allocated stock in a receiving area, a QC area or a blocked bin.
+     * from these only, so an order is never allocated stock in a receiving area, a quarantine area or a blocked bin.
      */
     java.util.Map<String, UUID> pickableLocations(java.util.Collection<String> locationCodes);
 
     /** @return empty when no warehouse has this id; a purchase order receives into one (SCRUM-390) */
     Optional<WarehouseView> findWarehouse(UUID warehouseId);
+
+    /**
+     * 4B-7 (kltn-docs 17 §4.2 step 2): every ACTIVE warehouse, by code - the warehouses an order may ship from, which
+     * Sales chooses among.
+     */
+    java.util.List<WarehouseView> activeWarehouses();
 
     /**
      * The own codes of the shelves in a zone ({@code A01}, not {@code HCM-A01}), sorted. A cycle count planned by

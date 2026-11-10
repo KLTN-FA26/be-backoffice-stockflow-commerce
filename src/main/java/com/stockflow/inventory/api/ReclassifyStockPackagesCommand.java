@@ -6,10 +6,9 @@ import java.util.UUID;
 
 /**
  * A decision about whole cartons (SCRUM-473, SCRUM-92): they go to {@code toLocationCode} and their rows become
- * AVAILABLE (putaway), QUARANTINE or BLOCKED in the same step, each keeping its LPN and staying unopened. The
- * carton-sized counterpart of
- * {@link ReclassifyStockCommand}, which would split a carton's row. Several at once for the reason
- * {@link MoveStockPackagesCommand} gives.
+ * AVAILABLE (putaway), QUARANTINE or BLOCKED in the same step, each keeping its LPN and staying unopened. Its loose
+ * counterpart, which moved part of a row, went with the last loose stock - a customer return's QC decision - in team
+ * plan 4D-3. Several at once for the reason {@link MoveStockPackagesCommand} gives.
  *
  * <p>Only INBOUND or QUARANTINE rows can be reclassified. AVAILABLE is putaway and takes INBOUND rows - or, for the
  * putaway of a carton a warehouse manager released from quarantine ({@code quarantineRelease}, kltn-docs 05 §4.4,

@@ -174,9 +174,10 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
     @Column(name = "fulfilment_started_at")
     private Instant fulfilmentStartedAt;
 
-    /** V20261022000800: when the order's first package was opened. */
-    @Column(name = "packing_started_at")
-    private Instant packingStartedAt;
+
+    /** V20261113000700 (4C-6): when the order's first shipping label was printed - its lock (08 BR-04). */
+    @Column(name = "first_labeled_at")
+    private Instant firstLabeledAt;
 
     @Column(name = "warehouse_id")
     private UUID warehouseId;
@@ -217,9 +218,15 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
     @Column(name = "contract_signed_at")
     private Instant contractSignedAt;
 
-    /** V20261101020000 (SCRUM-260): the return whose accepted units this free order replaces; set once, at placing. */
-    @Column(name = "replaces_return_request_id", updatable = false)
-    private UUID replacesReturnRequestId;
+    /** V20261108002500 (4B-7): the warehouse an order of a contract ships from, who chose it and when. */
+    @Column(name = "shipping_warehouse_id")
+    private UUID shippingWarehouseId;
+
+    @Column(name = "shipping_warehouse_chosen_at")
+    private Instant shippingWarehouseChosenAt;
+
+    @Column(name = "shipping_warehouse_chosen_by")
+    private UUID shippingWarehouseChosenBy;
 
     /** V20261017000430, decision Q2: the terms of an agreed amount kept on cancellation. */
     @Column(name = "cancellation_fee_amount", precision = 19, scale = 4)
@@ -353,11 +360,12 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
 
     public Instant getFulfilmentStartedAt() { return fulfilmentStartedAt; }
 
-    public void applyPackingStarted(Instant packingStarted) {
-        this.packingStartedAt = packingStarted;
+
+    public void applyFirstLabeled(Instant firstLabeled) {
+        this.firstLabeledAt = firstLabeled;
     }
 
-    public Instant getPackingStartedAt() { return packingStartedAt; }
+    public Instant getFirstLabeledAt() { return firstLabeledAt; }
 
     public void applyRemainderFee(java.math.BigDecimal fee, java.math.BigDecimal retained, java.math.BigDecimal paid) {
         this.remainderFeeAmount = fee == null ? java.math.BigDecimal.ZERO : fee;
@@ -456,16 +464,19 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
         this.contractSignedAt = at;
     }
 
+    public void applyShippingWarehouse(UUID warehouse, Instant chosenAt, UUID chosenBy) {
+        this.shippingWarehouseId = warehouse;
+        this.shippingWarehouseChosenAt = chosenAt;
+        this.shippingWarehouseChosenBy = chosenBy;
+    }
+
+    public UUID getShippingWarehouseId() { return shippingWarehouseId; }
+    public Instant getShippingWarehouseChosenAt() { return shippingWarehouseChosenAt; }
+    public UUID getShippingWarehouseChosenBy() { return shippingWarehouseChosenBy; }
+
     public void applyPlaced(Instant at) {
         this.placedAt = at;
     }
-
-    /** Written on insert only (the column is not updatable): an order replaces a return from the day it is placed. */
-    public void applyReplacement(UUID returnRequestId) {
-        this.replacesReturnRequestId = returnRequestId;
-    }
-
-    public UUID getReplacesReturnRequestId() { return replacesReturnRequestId; }
 
     public Instant getGoodsLeftAt() { return goodsLeftAt; }
     public Instant getContractSignedAt() { return contractSignedAt; }

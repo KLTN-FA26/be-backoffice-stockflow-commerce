@@ -12,8 +12,9 @@ import java.time.Instant;
 import java.util.UUID;
 
 /**
- * JPA mapping of a pack - the packing session of a task (table {@code fulfillment.pack}). Not the domain model: the
- * rules are on {@code PackingSession}, which {@link #apply} copies back.
+ * JPA mapping of a task's check session (table {@code fulfillment.pack}; team plan 4C-6, kltn-docs 08 §5.1). Not the
+ * domain model: the rules are on {@code CartonCheck} (and on {@code PackingSession}, the repack station kept until 4C-7),
+ * which {@link #apply} copies back. {@code packed_at} / {@code packed_by} are when and by whom it was COMPLETED.
  */
 @Entity
 @Table(name = "pack", schema = "fulfillment")
@@ -53,7 +54,7 @@ public class PackJpaEntity extends BaseEntity {
     public UUID getStartedBy() { return startedBy; }
     public UUID getPackedBy() { return packedBy; }
 
-    /** The order was cancelled (SCRUM-460): any label made for the parcel is void with it. */
+    /** The order was cancelled (SCRUM-460, 08 BR-04): any label made for its cartons is void with it. */
     public void cancel() { status = PackStatus.CANCELLED; }
 
     /** What the packing session decided. */

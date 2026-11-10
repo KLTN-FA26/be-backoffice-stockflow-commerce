@@ -53,6 +53,14 @@ class StockMovementLogAdapter implements StockMovementLog, StockLedgerSearch {
     }
 
     @Override
+    public java.util.List<StockMovement> findAllByReference(StockMovement.MovementType type,
+                                                            StockMovement.ReferenceType referenceType,
+                                                            UUID referenceId) {
+        return jpa.findByMovementTypeAndReferenceTypeAndReferenceIdOrderByIdAsc(type, referenceType, referenceId)
+                .stream().map(StockMovementLogAdapter::toDomain).toList();
+    }
+
+    @Override
     public Optional<StockMovement> findLooseByReference(StockMovement.MovementType type,
                                                         StockMovement.ReferenceType referenceType, UUID referenceId) {
         return jpa.findFirstByMovementTypeAndReferenceTypeAndReferenceIdAndFromStockPackageIdIsNullAndToStockPackageIdIsNullOrderByIdAsc(

@@ -13,6 +13,8 @@ final class PaymentResources {
     static final String INSTALLMENTS = "payment-installments";
     /** 4B-6: receipts the accountant records against installments from the bank statement, and voids. */
     static final String RECEIPTS = "payment-receipts";
+    /** 4B-9: what cancellations and closures left to refund, and the accountant's records of the refunds made. */
+    static final String REFUNDS = "payment-refunds";
 
     private PaymentResources() {
     }

@@ -10,9 +10,14 @@ import org.springframework.stereotype.Component;
 import java.math.BigDecimal;
 
 /**
- * A cancelled order's money (SCRUM-460, kltn-docs 15 §4.4, 17 §4.5): what was still awaited is
+ * A cancelled order's money in the money ledger (SCRUM-460, kltn-docs 15 §4.4, 17 §4.5): what was still awaited is
  * cancelled, what was received minus any fee kept is asked back. Refunds wait as PENDING for the
  * accountant (15 §2), never paid out by this listener.
+ *
+ * <p>A contract order's installments are not this listener's: payment settles them in the cancelling transaction
+ * ({@code OrderSettlementService}, 4B-9) - their cancellation, the fee and the amount to refund - so a receipt can never
+ * slip between the cancellation and its settlement. The ledger holds no money of a contract order, and the order
+ * announces no fee owed for one, so nothing here touches it.</p>
  */
 @Component("paymentOrderCancelledListener")
 class OrderCancelledListener {
@@ -22,14 +27,12 @@ class OrderCancelledListener {
     private final CancelledOrderSettlement settlement;
     private final com.stockflow.payment.api.OrderPayables orders;
     private final ReceivableService receivables;
-    private final InstallmentService installments;
 
     OrderCancelledListener(CancelledOrderSettlement settlement, com.stockflow.payment.api.OrderPayables orders,
-                           ReceivableService receivables, InstallmentService installments) {
+                           ReceivableService receivables) {
         this.settlement = settlement;
         this.orders = orders;
         this.receivables = receivables;
-        this.installments = installments;
     }
 
     @ApplicationModuleListener
@@ -49,8 +52,6 @@ class OrderCancelledListener {
             }
         }
         receivables.cancellationOwed(event);
-        // 4B-6 (15 §4.6 step 18): the installments of a contract order not paid in full are no longer owed.
-        installments.orderCancelled(event.orderId(), event.cancelledAt());
         log.info("Order {} cancelled: {} awaited payment(s) cancelled, {} {} to refund",
                 event.orderNumber(), cancelled, refundable, event.currency());
     }

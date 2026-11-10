@@ -363,11 +363,50 @@ public enum ErrorCode {
     CUSTOMER_LEGAL_PROFILE_MISSING("The customer's registered address and legal representative are recorded before a contract is drawn up", 409),
     /** 4B-4 (18 §3): the legal profile read before it was recorded. */
     LEGAL_PROFILE_NOT_FOUND("The customer's legal profile is not recorded yet", 404),
-    /** 4B-4: stockflow.order.seller.* is blank in this deployment. */
+    /** 4A-2: no production order with that id (for a warehouse-bound caller: none received at their warehouses). */
+    PRODUCTION_ORDER_NOT_FOUND("Production order not found", 404),
+    /** 4A-2 (17 §5.3): the production order's status does not allow this. */
+    PRODUCTION_ORDER_STATUS_INVALID("The production order is not in a status that allows this", 409),
+    /** 4A-2 (17 BR-23): the one who drew a production order up does not approve it. */
+    PRODUCTION_ORDER_SELF_APPROVAL("A production order is approved by someone who did not draw it up", 409),
+    /** 4A-2 (17 BR-05): production orders come from a confirmed order of a contract with a shipping warehouse. */
+    PRODUCTION_ORDER_NOT_ALLOWED("A production order is drawn up for a confirmed order of a contract", 409),
+    /** 4A-2 (17 BR-05): the delivery batch lacks nothing - held, or on its way. */
+    PRODUCTION_ORDER_NOTHING_SHORT("The delivery batch lacks nothing to produce", 409),
+    /** 4A-2: a line makes no more than its delivery batch lacks. */
+    PRODUCTION_ORDER_EXCEEDS_SHORTAGE("A line makes more cartons than the delivery batch lacks", 409),
+    /**
+     * 4A-5 (kltn-docs 03 BR-01, BR-15): goods are received against a production order IN_PRODUCTION or
+     * PARTIALLY_RECEIVED - or SENT / ACCEPTED when no print sample is to be approved first - and nothing else.
+     */
+    PRODUCTION_ORDER_NOT_RECEIVABLE("Goods cannot be received against this production order now", 409),
+    /** 4A-5 (03 BR-02): the cartons on the receipts not cancelled, drafts included, never exceed what the line orders. */
+    RECEIPT_EXCEEDS_PRODUCTION_ORDER("More cartons than the production order line orders", 409),
+    /** 4A-5 (03 edge cases): a production order with a draft receipt is neither cancelled nor closed. */
+    PRODUCTION_ORDER_HAS_DRAFT_RECEIPTS("A receipt against this production order is still a draft; confirm or cancel it first", 409),
+    /** 4A-5 (03 §4.1 step 2): a receipt line counts a line of the receipt's production order. */
+    RECEIPT_LINE_NOT_ON_PRODUCTION_ORDER("This line is not a line of the receipt's production order", 409),
+    /** 4A-5 (03 BR-12, BR-13): every carton received holds exactly the SKU's standard count. */
+    RECEIPT_CARTON_NOT_STANDARD("A carton received holds exactly the standard count of its SKU", 422),
+    /** 4A-2: an INACTIVE producer takes no new production order. */
+    PRODUCER_INACTIVE("This producer takes no new production order", 409),
+    /** 4A-2 (17 BR-05): the print files changed since the design was approved. */
+    PRINT_FILE_MISMATCH("The print files no longer match the approved design", 409),
+    /** 4A-1: no producer with that id. */
+    PRODUCER_NOT_FOUND("Producer not found", 404),
+    /** 4A-1: a producer's code identifies it for good. */
+    PRODUCER_CODE_TAKEN("A producer has this code already", 409),
+    /** 4B-7 (17 §4.2 step 2): only a CONFIRMED order of a contract gets a shipping warehouse. */
+    ORDER_SHIPPING_WAREHOUSE_NOT_ALLOWED("The shipping warehouse is chosen for a confirmed order of a contract", 409),
+    /** 4B-7 (17 BR-22): the shipping warehouse changes only while nothing is held for the order. */
+    ORDER_SHIPPING_WAREHOUSE_LOCKED("Stock is held at the order's shipping warehouse; it can no longer change", 409),
+    /** 4B-7 (17 BR-22): an order of a contract is released from its shipping warehouse only. */
+    ORDER_SHIPPING_WAREHOUSE_MISMATCH("The order ships from another warehouse", 409),
     /** 4B-5: an order confirmed by its contract holds no stock until its shipping warehouse is chosen (4B-7). */
     ORDER_STOCK_NOT_HELD("This order holds no stock yet; its shipping warehouse is chosen and its stock held first", 409),
     /** 4B-5: an order of a contract is paid by the contract's installments, not by the order's own terms. */
     ORDER_PAID_BY_CONTRACT("This order is paid by its sales contract's installments", 409),
+    /** 4B-4: stockflow.order.seller.* is blank in this deployment. */
     SELLER_PROFILE_UNAVAILABLE("The seller's company details are not configured; contracts cannot be drawn up", 503),
     /**
      * 4B-2 (kltn-docs 14 BR-04, 13 BR-02): a quote line, an order line placed from one, or a customer price names one
@@ -380,9 +419,10 @@ public enum ErrorCode {
     /** A deposit order is released only once the deposit has arrived (kltn-docs 15 §4.2). */
     ORDER_DEPOSIT_NOT_RECEIVED("The deposit for this order has not arrived yet", 409),
     /**
-     * A print line names the blank its design is printed on, and printed goods enter stock only from a producer outside
-     * the system, against a Production Order (kltn-docs 17) that is not built yet: releasing would allocate, pick and
-     * ship plain blanks. Lifted when lines name the customer's own printed SKU and its goods are received.
+     * A legacy print line - a blank with a design snapshot, placed before lines named the customer's own SKU (4B-2) -
+     * names the blank its design is printed on, whose printed goods were never received into stock: releasing would
+     * allocate, pick and ship plain blanks. A line of the customer's own SKU is not refused: its goods arrive printed,
+     * received against a production order, as stock (4A-6, team plan QD-16).
      */
     ORDER_PRINT_GOODS_NOT_RECEIVED("This order has printed goods that are not in stock yet; it is released once they "
             + "are received from the producer", 409),
@@ -416,36 +456,21 @@ public enum ErrorCode {
     /** A defect is approved on evidence: at least one photo of the problem. */
     RETURN_EVIDENCE_REQUIRED("Add at least one photo of the problem before the return is approved", 409),
     RETURN_EVIDENCE_LIMIT_REACHED("This return has as many photos as it may hold", 409),
-    /** Goods worth more than the no-return threshold must come back before anything is credited. */
-    RETURN_GOODS_REQUIRED("Goods of this value must be sent back before the return is decided", 409),
-    /** OQ-12 / BR-RMA-002: printed goods never go back on sale; only stock items that pass QC do. */
-    RETURN_RESTOCK_NOT_ALLOWED("Only plain stock goes back on sale; custom-printed goods never do", 409),
+    /** Kltn-docs 17 BR-18 (team plan 4D-3): the goods of an approved return always come back on a return receipt. */
+    RETURN_GOODS_REQUIRED("The goods of this return must be sent back before it is refunded", 409),
     /**
-     * Four eyes on anything of value (BR-PAY-003 without approver limits): a claim Sales opened, a resolution, the
-     * withdrawal of a replacement - each approved by someone else than who opened or proposed it.
+     * Four eyes on anything of value (BR-PAY-003 without approver limits): a claim Sales opened, and a refund - each
+     * approved by someone else than who opened or proposed it.
      */
     RETURN_SELF_APPROVAL("A return cannot be approved by the person who opened or proposed it", 409),
-    /** Rejected units are still the customer's: scrapped only when the customer agreed, and the consent is recorded. */
-    RETURN_DISPOSAL_CONSENT_REQUIRED("Rejected goods belong to the customer: send them back, or record the customer's "
-            + "consent to scrap them", 409),
-    /** Goods back on sale go to a usable bin of the warehouse that received them, where they can be picked. */
-    RETURN_RESTOCK_LOCATION_INVALID("Returned goods go back on sale at a usable bin of the same warehouse", 409),
-    /** A free replacement order is cancelled only by withdrawing it through its return, which credits the units. */
-    RETURN_REPLACEMENT_ORDER_LOCKED("A replacement order is cancelled through its return, which credits the units "
-            + "instead", 409),
-    /** The replacement order already left for picking or shipping: it can no longer be withdrawn. */
-    RETURN_REPLACEMENT_NOT_WITHDRAWABLE("This replacement order can no longer be withdrawn", 409),
-    /** Approved units have not arrived yet: QC waits, or says no more parcels are coming. */
-    RETURN_PARCELS_OUTSTANDING("Approved units of this return have not arrived yet", 409),
-    /** The order received less money than the refund asks; credit the rest instead. */
-    RETURN_REFUND_EXCEEDS_PAID("The refund is more than the order has received", 409),
-    /** A customer with overdue receivables is credited, never paid out in cash. */
-    RETURN_REFUND_CUSTOMER_OVERDUE("The customer has overdue receivables: credit the return against them instead of "
-            + "refunding cash", 409),
-    /** BR-CUS-003: a customer who is not ACTIVE opens no return themselves and gets no new (replacement) order. */
+    /** BR-CUS-003: a customer who is not ACTIVE opens no return themselves. */
     RETURN_CUSTOMER_NOT_ACTIVE("The customer account is not active", 409),
-    /** Returned goods are received into a quarantine or QC area, never straight onto a bin (OQ-12). */
-    RETURN_RECEIVING_LOCATION_INVALID("Returned goods are received into a quarantine or QC area of the warehouse", 409),
+    /**
+     * Team plan 4D-3 (kltn-docs 15 §4.5): a return is refunded against the order's installments; an order paid any
+     * other way (a checkout order of before contracts) has none, and its return is refunded outside the system.
+     */
+    RETURN_REFUND_NO_INSTALLMENTS("This order is not paid through a contract's installments; refund it outside the "
+            + "system", 409),
     PAYMENT_TERM_NOT_ALLOWED("This payment term is not available for this order", 409),
     /** SCRUM-427: credit approval or refusal on an order that is not waiting for one. */
     ORDER_NOT_ON_CREDIT_HOLD("This order is not waiting for a credit decision", 409),
@@ -509,6 +534,14 @@ public enum ErrorCode {
     /** 4B-6, 15 BR-13: the void leaves a confirmed order short of its installment on signing; the accountant agrees to hold it. */
     PAYMENT_RECEIPT_VOID_NEEDS_HOLD("Voiding this receipt leaves a confirmed order unpaid: confirm putting it on hold",
             409),
+    /** 4B-9, 15 BR-14: a refund recorded is never more than what the order still has to refund. */
+    REFUND_EXCEEDS_REFUNDABLE("This refund is more than the order still has to refund", 409),
+    /** 4B-9: no refund record with that id. */
+    REFUND_RECORD_NOT_FOUND("Refund record not found", 404),
+    /** 4B-9, 15 §4.5 step 16: a refund record is voided once. */
+    REFUND_RECORD_ALREADY_VOIDED("This refund record is already voided", 409),
+    /** 4B-9: one outgoing bank statement line, one live refund record. */
+    REFUND_REFERENCE_IN_USE("This bank statement line is already recorded as a refund", 409),
     /**
      * SCRUM-190 (kltn-docs 14 edge case "trùng đơn"): the same customer placed an order with the same lines recently.
      * Nothing is created; {@code details} names that order ({@code orderId}, {@code orderNumber}, {@code placedAt}) and
@@ -539,12 +572,18 @@ public enum ErrorCode {
     FULFILLMENT_HOLDS_OUTSIDE_WAREHOUSE("Stock held for this order is in another warehouse", 409),
     /** SCRUM-267 (docs 07 step 6): the bin scanned is not the one this pick line takes its goods from. */
     PICK_LOCATION_MISMATCH("The scanned location is not this line's", 409),
-    /** SCRUM-274: the code scanned is neither this line's SKU nor its barcode. */
-    PICK_ITEM_MISMATCH("The scanned item is not this line's SKU", 409),
-    /** Docs 07 BR-04: never more than the line's allocation; more needs a re-allocation. */
-    PICK_QUANTITY_EXCEEDS_ALLOCATION("More than allocated to this line", 409),
-    /** Fewer than allocated: a short pick, reported through the short-pick flow (SCRUM-268). */
-    PICK_QUANTITY_SHORT("Fewer than allocated - report a short pick", 409),
+    /**
+     * Kltn-docs 07 BR-10 (team plan 4C-4): the code scanned is not this line's carton LPN - a SKU, a barcode or another
+     * carton is refused, to pick a line or to put it back. No quantity is scanned any more (BR-04), so the former
+     * PICK_QUANTITY_EXCEEDS_ALLOCATION and PICK_QUANTITY_SHORT are gone.
+     */
+    PICK_ITEM_MISMATCH("The scanned code is not this line's carton LPN", 409),
+    /**
+     * Team plan 4C-4 (kltn-docs 07 BR-04, BR-10): the stock held for a pick line is in no carton, so no LPN could
+     * confirm it. A guard: allocation takes whole cartons only, and a damage report's share restored as loose units is
+     * reallocated to cartons (INSUFFICIENT_STOCK when there are none) rather than kept.
+     */
+    PICK_HOLD_NOT_IN_CARTON("The stock held for this line is in no carton; reallocate it to whole cartons", 409),
     PICK_LINE_NOT_OPEN("This line is no longer open", 409),
     /** A cycle count already completed or cancelled. */
     CYCLE_COUNT_NOT_OPEN("This cycle count is no longer open", 409),
@@ -588,12 +627,24 @@ public enum ErrorCode {
      * putaway task, or a write-off of it awaits approval, or it is not yet given the putaway task of its receipt.
      */
     STOCK_PACKAGE_DECISION_PENDING("A decision about this carton is already under way", 409),
+    /** Team plan 4D-2 (kltn-docs 09 BR-06): a return receipt is opened for a shipment the carrier brought back. */
+    SHIPMENT_NOT_RETURNED("The shipment has not come back to the warehouse", 409),
+    /** Team plan 4D-2 (kltn-docs 17 §4.10): a return receipt is opened for a return request approved and awaiting its goods. */
+    RETURN_NOT_AWAITING_GOODS("This return request is not waiting for its goods", 409),
+    /** Team plan 4D-2: goods come back once - one return receipt not cancelled per shipment and per return request. */
+    RETURN_RECEIPT_ALREADY_OPEN("A return receipt for these goods already exists", 409),
+    /** Team plan 4D-2 (kltn-docs 03 BR-14): a return receipt takes only cartons of its shipment or order. */
+    RETURN_CARTON_NOT_OF_SOURCE("This carton did not leave on the shipment or order the receipt is for", 409),
+    /** Team plan 4D-2 (kltn-docs 03 §4.2 step 10): a carton still in the warehouse has not come back. */
+    RETURN_CARTON_IN_WAREHOUSE("This carton is in the warehouse; it has not come back", 409),
     /** Docs 07 step 9: a pick task closes only when every line is picked. */
     PICK_LINES_INCOMPLETE("Some lines are not picked yet", 409),
     PICK_TASK_STATE_CONFLICT("The task cannot do that in its current status", 409),
     /** The hold behind a pick line was released, expired or already consumed: nothing is deducted. */
     RESERVATION_NOT_ACTIVE("The stock hold is no longer active", 409),
     RESERVATION_NOT_WHOLE_CARTONS("A stock reservation is a whole number of the SKU's cartons", 422),
+    /** 4B-7 (20 BR-17): a hold at the order's shipping warehouse is allocated there only. */
+    RESERVATION_WAREHOUSE_MISMATCH("The stock is held at another warehouse", 409),
     /**
      * A hold that is not an order's goods on a shelf - one on a legacy print-shop row (IN_PRODUCTION):
      * a pick does not close it (review of #109). The code keeps its name for clients that read it.
@@ -602,47 +653,42 @@ public enum ErrorCode {
     /** Docs 07 BR-05: only goods picked for an order cancelled afterwards go back to a bin. */
     PUT_BACK_NOT_REQUIRED("Nothing on this line needs putting back", 409),
     PUT_BACK_LOCATION_INVALID("Put back onto an active bin of the task's warehouse", 409),
+    /**
+     * Kltn-docs 11 BR-09, 20 BR-20 (team plan 4C-5): a staging area holds cartons picked for an order; stock enters it
+     * only by picking, and leaves it only when the task moves to dispatch or by the put-back - never by hand.
+     */
+    STAGING_MOVE_NOT_ALLOWED("Stock enters a staging area only by picking, and leaves it by dispatch or put-back", 409),
+    /** Kltn-docs 07 §3 (4C-5): a STAGING task names an active staging area of its own warehouse. */
+    STAGING_AREA_INVALID("Choose an active staging area of the task's warehouse", 422),
+    /**
+     * Kltn-docs 07 §4.3 step 8 and its edge case of an order on hold while its task is STAGED (4C-5): the order keeps
+     * its cartons in the staging area; the task moves to dispatch once the hold is resolved.
+     */
+    PICK_ORDER_ON_HOLD("The order is on hold; its cartons stay in the staging area until the hold is resolved", 409),
     /** G4-5 (docs 08 step 1): packing starts once picking is complete. */
     PACKING_NOT_READY("Picking must finish before packing starts", 409),
     /** G4-5: another packer took this order at the packing table; a warehouse manager may step in. */
     PACKING_TAKEN("Another packer is packing this order", 409),
     PACK_STATE_CONFLICT("Packing cannot do that in its current status", 409),
-    /** Docs 08 step 2, BR-01: the scanned item is not on the order (a wrong item). */
-    PACK_ITEM_NOT_IN_ORDER("This item is not in the order", 409),
     /** The scanned code is on two lines of the order (a plain and a printed cup of one SKU): name the line. */
-    /** G4-5: a scan id already recorded on another package or task: the client reused it; send a new one. */
-    PACK_SCAN_ID_CONFLICT("This scan id was already used for another package", 409),
-    PACK_SCAN_AMBIGUOUS("This item is on several lines of the order: name the line", 409),
-    /** Docs 08 BR-01: an over-scan, more than the order line still wants. */
-    PACK_QUANTITY_EXCEEDS_ORDER("More than the order line still wants", 409),
-    /** More than was picked (or produced) for the line: the rest has not reached packing. */
-    PACK_QUANTITY_EXCEEDS_PICKED("More than reached packing for this line", 409),
-    /** R8: units reported damaged at packing are still in a parcel; they are taken out of it first. */
-    PACK_DAMAGED_UNITS_PACKED("Those units are in a parcel: take them out before reporting them damaged", 409),
-    /** Docs 08 BR-01: the lot scanned was not picked for this line, or more of it than was picked. */
-    PACK_LOT_MISMATCH("This lot was not picked for this line", 409),
-    /** Docs 08 step 2: the serial scanned was not picked for this line, or is packed already. */
-    PACK_SERIAL_MISMATCH("This serial number was not picked for this line, or is packed already", 409),
-    PACKAGE_SEALED("The package is already sealed", 409),
-    PACKAGE_EMPTY("The package has nothing in it", 409),
-    /** Docs 08 BR-03, 09 BR-01: a package with goods in it is weighed, measured and sealed before it ships. */
-    PACKAGE_NOT_SEALED("A package is still open: seal it or take it apart", 409),
     PACKAGE_SHIPPED("The package is in a shipment already", 409),
     /** Docs 08 BR-01: everything the order still wants must be packed, or a partial shipment asked for. */
     PACKING_INCOMPLETE("Not everything is packed yet", 409),
     /** PACK-PARTIAL (lead's decision 2026-10-21): the order does not allow a partial shipment; Sales decides. */
     PACK_PARTIAL_NOT_ALLOWED("Partial shipments are not allowed", 409),
     PACK_NOTHING_TO_SHIP("No sealed package is waiting to ship", 409),
-    /** SCRUM-287 LP2-6: a kit ("bộ") ships whole - a part of it is not sealed, or part 1 holds no unit yet. */
-    KIT_INCOMPLETE("A kit has parts that are not sealed yet", 409),
-    /** LP2-5: a kit has as many parts as its item ships boxes ({@code package_count}); one box is no kit. */
-    KIT_PART_COUNT_MISMATCH("The kit's parts do not match how many boxes the item ships as", 422),
-    /** LP2-6: only part 1 of a kit holds goods, and one unit of its item. */
-    KIT_CONTENTS_INVALID("Only part 1 of a kit holds goods: one unit of its item", 409),
-    /** LP2-6 (review of #155): part 1 of a kit takes the item of the line the kit was opened for, no other. */
-    KIT_ITEM_MISMATCH("This kit was opened for another item", 422),
-    /** KIT-FORCE (lead's decision 2026-10-22): an item that ships as several boxes goes in an ordinary package only with a reason. */
-    KIT_OVERRIDE_REASON_REQUIRED("This item ships as a kit: give a reason to pack it in an ordinary package", 422),
+    /**
+     * Kltn-docs 08 §4.2 step 3, BR-05 (team plan 4C-6): the scanned LPN is not a carton picked for this task - another
+     * order's, one never picked, or an unreadable code. Refused; the warehouse manager checks the picking and the stock.
+     */
+    CARTON_NOT_IN_TASK("This carton was not picked for this order's task", 409),
+    /** Kltn-docs 08 BR-08 (4C-6): a shipping label prints only for a carton whose LPN was scanned at the check. */
+    CARTON_NOT_CHECKED("Only a checked carton gets a shipping label", 409),
+    /**
+     * Kltn-docs 08 BR-07 (4C-6): the SKU's carton spec declares no size or full weight, so no shipping label prints and
+     * the check cannot complete until the warehouse manager completes it on the item.
+     */
+    CARTON_SPEC_UNMEASURED("The SKU's carton spec has no size or weight: no shipping label can print", 422),
     /** Docs 09 §5: the shipment's status does not allow the step. */
     SHIPMENT_STATE_CONFLICT("The shipment cannot do that in its current status", 409),
     // ---- G4-2a loading and handover (kltn-docs 09 §4.1, §5): 404 / 400 / 409 kept together with the flow
@@ -744,8 +790,6 @@ public enum ErrorCode {
     /** 3-3 (09 §4.4): the file is not the system's template table; the message says why. */
     WAYBILL_IMPORT_INVALID_FILE("This file cannot be read as the waybill import template", 400),
     WAYBILL_IMPORT_NOT_FOUND("Waybill import not found", 404),
-    /** SCRUM-392: the parcel moved to another shipment (a left-behind split) since its label was printed: reprint it. */
-    LABEL_OUTDATED("The package label is out of date; reprint it", 409),
     LOAD_SCAN_ID_CONFLICT("This scan id was already used for another package or load", 409),
     /** SCRUM-392: parcels of a cancelled order are still on the vehicle; unload them before it is handed over. */
     LOAD_UNLOAD_PENDING("Parcels of a cancelled order are still on this vehicle; unload them first", 409),

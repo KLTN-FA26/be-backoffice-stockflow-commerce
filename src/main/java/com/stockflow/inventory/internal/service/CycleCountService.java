@@ -196,7 +196,7 @@ class CycleCountService implements CycleCounts {
         return new PlannedCount(views.of(planned, showExpected), skipped(busy));
     }
 
-    /** SKUs alone mean bins: stock in a receiving or QC area is still being received or inspected, not stored. */
+    /** SKUs alone mean bins: stock in a receiving or quarantine area is being received or decided on, not stored. */
     private List<CountLineDraft> onlyBins(List<CountLineDraft> drafts) {
         if (drafts.isEmpty()) {
             return drafts;

@@ -154,6 +154,16 @@ class StockPackageContents {
      */
     public StockItem restock(StockPackageId id, com.stockflow.inventory.internal.domain.StockItemId rowId,
                              com.stockflow.inventory.internal.domain.LocationId to, int units) {
+        return restock(id, rowId, to, units, false);
+    }
+
+    /**
+     * As {@link #restock(StockPackageId, com.stockflow.inventory.internal.domain.StockItemId,
+     * com.stockflow.inventory.internal.domain.LocationId, int)}; with {@code quarantine}, the units come back QUARANTINE
+     * instead of AVAILABLE: a carton the check station removed as damaged (team plan 4C-6, kltn-docs 08 §4.2 step 4).
+     */
+    public StockItem restock(StockPackageId id, com.stockflow.inventory.internal.domain.StockItemId rowId,
+                             com.stockflow.inventory.internal.domain.LocationId to, int units, boolean quarantine) {
         StockPackage carton = stockPackages.findAllByIdForUpdate(List.of(id)).stream().findFirst()
                 .orElseThrow(() -> new IllegalStateException("No stock package " + id.value()));
         StockItem row = stockItems.findByIdForUpdate(rowId).orElseThrow(() ->
@@ -166,11 +176,50 @@ class StockPackageContents {
         carton.restock(to);
         row.followPackageTo(to);
         row.putBack(com.stockflow.inventory.internal.domain.Quantity.of(units));
+        if (quarantine) {
+            row.quarantineInPackage();
+        }
         // The carton first: saveMerged flushes before its own statement, so the carton stands at its new place before
         // the caller's ledger line names it there (check_stock_movement_package reads it on insert).
         stockPackages.save(carton);
         // Units back in the carton they were counted into: the same receipt layer, so the FIFO trigger is told it is
         // a merge (V20261017000450), as for any write-up of a carton.
+        stockItems.saveMerged(row);
+        return row;
+    }
+
+    /**
+     * A carton that left stock whole comes back on a return receipt (team plan 4D-2; kltn-docs 03 §4.2 step 12,
+     * BR-03, BR-14): CONSUMED → IN_STOCK at the QUARANTINE area {@code to}, sealed, with its LPN
+     * ({@link StockPackage#restock}); its one row follows it and gets the carton's count back, QUARANTINE, in its own
+     * lot ({@link StockItem#receiveReturnInPackage}). Call under the SKU lock, with every carton the caller brings
+     * back already locked (the global order: the cartons, then their rows); the carton and then its row are locked
+     * here.
+     *
+     * @throws BusinessException {@code INVALID_STOCK_PACKAGE_TRANSITION} when it is not CONSUMED - in stock already,
+     *         never received, lost or voided; {@code STOCK_PACKAGE_TAKEN_WHOLE} when it has no single empty row to
+     *         come back into (part of it was written off or turned up elsewhere: it cannot come back whole)
+     */
+    public StockItem returnIntoQuarantine(StockPackageId id, com.stockflow.inventory.internal.domain.LocationId to) {
+        StockPackage carton = stockPackages.findAllByIdForUpdate(List.of(id)).stream().findFirst()
+                .orElseThrow(() -> new IllegalStateException("No stock package " + id.value()));
+        if (carton.status() != StockPackageStatus.CONSUMED) {
+            throw new BusinessException(ErrorCode.INVALID_STOCK_PACKAGE_TRANSITION, ("%s is %s; only a carton that "
+                    + "left stock comes back on a return").formatted(carton.lpn(), carton.status()), List.of(),
+                    Map.of("lpn", carton.lpn()));
+        }
+        List<com.stockflow.inventory.internal.domain.StockItemId> rowIds = stockItems.findIdsInStockPackage(id);
+        StockItem row = rowIds.size() != 1 ? null : stockItems.findByIdForUpdate(rowIds.get(0)).orElse(null);
+        if (row == null || carton.receivedQty() == null || !row.onHand().isZero() || !row.reserved().isZero()) {
+            throw new BusinessException(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE, ("%s cannot come back whole: it is not "
+                    + "one empty row of %s unit(s)").formatted(carton.lpn(), carton.receivedQty()), List.of(),
+                    Map.of("lpn", carton.lpn()));
+        }
+        carton.restock(to);
+        row.followPackageTo(to);
+        row.receiveReturnInPackage(com.stockflow.inventory.internal.domain.Quantity.of(carton.receivedQty()));
+        // The carton first, as in restock: it stands at its new place before the ledger line names it there.
+        stockPackages.save(carton);
         stockItems.saveMerged(row);
         return row;
     }
@@ -263,6 +312,11 @@ class StockPackageContents {
 
         private LockedCartons(Map<StockPackageId, StockPackage> locked) {
             this.locked = locked;
+        }
+
+        /** The locked carton {@code id}; empty when it was not among those locked. */
+        java.util.Optional<StockPackage> carton(StockPackageId id) {
+            return java.util.Optional.ofNullable(id == null ? null : locked.get(id));
         }
 
         /** {@code row} gave up units; nothing to do for loose stock. */

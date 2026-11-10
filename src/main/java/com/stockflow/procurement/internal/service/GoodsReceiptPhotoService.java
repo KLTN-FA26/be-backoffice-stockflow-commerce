@@ -36,7 +36,8 @@ import java.util.UUID;
  * counted). Photos QC took while receiving QC existed stay, as stage {@code QC}; no step takes one any more (kltn-docs
  * 03 BR-07). Evidence for a dispute with the supplier: kept
  * append-only ({@code procurement.goods_receipt_photos}), private, shown through display copies without the phone's
- * metadata ({@link FileCategory#QC_EVIDENCE}).
+ * metadata ({@link FileCategory#QC_EVIDENCE}). A return receipt (team plan 4D-2) keeps its photos here too, of the
+ * cartons' condition as they came back (09-removal E: receipt photos are kept), while it is a draft.
  *
  * <p>A photo is checked, scanned and stored the way every upload is - sent through the backend or straight to the
  * object store ({@link IncomingFiles}) - with no transaction held while that happens; a short transaction then locks

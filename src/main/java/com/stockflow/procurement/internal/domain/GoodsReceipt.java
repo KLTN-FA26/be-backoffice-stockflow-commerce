@@ -19,6 +19,11 @@ import java.util.UUID;
  * A goods receipt against one purchase order (docs 03, SCRUM-435): what arrived, counted, then put away. There is no
  * quality check at the warehouse (kltn-docs 03 BR-07): a confirmed count goes straight on to putaway.
  *
+ * <p>4A-5 (kltn-docs 03 §4.1): a receipt is against exactly one of a purchase order (with its revision), nothing at
+ * all (blind, with a supplier and a reason), or a production order ({@link GoodsReceiptType#PRODUCTION}). A production
+ * receipt goes DRAFT → IN_PUTAWAY → CLOSED, or DRAFT → CANCELLED: there is no tolerance, so it never waits for the
+ * warehouse manager (BR-02 refuses what is over instead), and its lines count production order lines.</p>
+ *
  * <pre>
  *   DRAFT ──confirm──▶ IN_PUTAWAY ──(putaway, SCRUM-92)──▶ CLOSED
  *     │ │
@@ -47,6 +52,7 @@ public final class GoodsReceipt extends AggregateRoot {
     private final String number;
     private final UUID purchaseOrderId;
     private final UUID purchaseOrderRevisionId;
+    private final UUID productionOrderId;
     private final UUID warehouseId;
     private final UUID supplierId;
     private final String blindReason;
@@ -67,13 +73,14 @@ public final class GoodsReceipt extends AggregateRoot {
     /**
      * {@code purchaseOrderId} and {@code purchaseOrderRevisionId} are both null on a blind receipt (SCRUM-478), which
      * then names its {@code supplierId} and {@code blindReason} instead; {@code referencedPurchaseOrderId} is the PO
-     * attached to it afterwards, a reference only.
+     * attached to it afterwards, a reference only. A receipt against a production order (4A-5) names
+     * {@code productionOrderId} and none of the others, and never asks for approval.
      */
-    public GoodsReceipt(UUID id, String number, UUID purchaseOrderId, UUID purchaseOrderRevisionId, UUID warehouseId,
-                        UUID supplierId, String blindReason, UUID referencedPurchaseOrderId,
-                        Instant receivedAt, UUID receivedBy, String deliveryNote, String note, List<ReceiptLine> lines,
-                        GoodsReceiptStatus status, Instant confirmedAt, UUID confirmedBy, Instant closedAt,
-                        ReceiptApproval approval, long version) {
+    public GoodsReceipt(UUID id, String number, UUID purchaseOrderId, UUID purchaseOrderRevisionId,
+                        UUID productionOrderId, UUID warehouseId, UUID supplierId, String blindReason,
+                        UUID referencedPurchaseOrderId, Instant receivedAt, UUID receivedBy, String deliveryNote,
+                        String note, List<ReceiptLine> lines, GoodsReceiptStatus status, Instant confirmedAt,
+                        UUID confirmedBy, Instant closedAt, ReceiptApproval approval, long version) {
         this.id = Objects.requireNonNull(id, "id");
         this.number = Objects.requireNonNull(number, "number");
         if ((purchaseOrderId == null) != (purchaseOrderRevisionId == null)) {
@@ -81,7 +88,15 @@ public final class GoodsReceipt extends AggregateRoot {
         }
         this.purchaseOrderId = purchaseOrderId;
         this.purchaseOrderRevisionId = purchaseOrderRevisionId;
-        if (purchaseOrderId == null) {
+        this.productionOrderId = productionOrderId;
+        if (productionOrderId != null) {
+            if (purchaseOrderId != null || supplierId != null || blindReason != null
+                    || referencedPurchaseOrderId != null || approval != null
+                    || status == GoodsReceiptStatus.PENDING_APPROVAL) {
+                throw new IllegalArgumentException("A receipt against a production order has no PO, supplier, reason,"
+                        + " reference or approval");
+            }
+        } else if (purchaseOrderId == null) {
             Objects.requireNonNull(supplierId, "supplierId");
             if (blindReason == null || blindReason.isBlank()) {
                 throw new IllegalArgumentException("A receipt without a PO has a reason");
@@ -105,6 +120,18 @@ public final class GoodsReceipt extends AggregateRoot {
         this.approval = approval;
         this.version = version;
         requireDistinctLines(this.lines);
+        requireLinesOfItsKind(this.lines);
+    }
+
+    /** A purchase receipt: against a PO, or blind (SCRUM-478). */
+    public GoodsReceipt(UUID id, String number, UUID purchaseOrderId, UUID purchaseOrderRevisionId, UUID warehouseId,
+                        UUID supplierId, String blindReason, UUID referencedPurchaseOrderId,
+                        Instant receivedAt, UUID receivedBy, String deliveryNote, String note, List<ReceiptLine> lines,
+                        GoodsReceiptStatus status, Instant confirmedAt, UUID confirmedBy, Instant closedAt,
+                        ReceiptApproval approval, long version) {
+        this(id, number, purchaseOrderId, purchaseOrderRevisionId, null, warehouseId, supplierId, blindReason,
+                referencedPurchaseOrderId, receivedAt, receivedBy, deliveryNote, note, lines, status, confirmedAt,
+                confirmedBy, closedAt, approval, version);
     }
 
     public static GoodsReceipt draft(UUID id, String number, UUID purchaseOrderId, UUID purchaseOrderRevisionId,
@@ -131,9 +158,37 @@ public final class GoodsReceipt extends AggregateRoot {
                 null, null, null, 0L);
     }
 
-    /** True for a receipt with no purchase order (BR-RCP-002). */
+    /**
+     * 4A-5 (kltn-docs 03 §4.1): a DRAFT against one production order, at the warehouse it is received at. The caller has
+     * checked that goods can be received against it (BR-01, BR-15).
+     */
+    public static GoodsReceipt productionDraft(UUID id, String number, UUID productionOrderId, UUID warehouseId,
+                                               UUID receivedBy, String deliveryNote, String note, Instant now) {
+        return new GoodsReceipt(id, number, null, null, Objects.requireNonNull(productionOrderId, "productionOrderId"),
+                warehouseId, null, null, null, now, receivedBy, deliveryNote, note, List.of(), GoodsReceiptStatus.DRAFT,
+                null, null, null, null, 0L);
+    }
+
+    /** True for a receipt with no purchase order and no production order (BR-RCP-002). */
     public boolean blind() {
-        return purchaseOrderId == null;
+        return purchaseOrderId == null && productionOrderId == null;
+    }
+
+    /** True for a receipt against a production order (4A-5). */
+    public boolean againstProductionOrder() {
+        return productionOrderId != null;
+    }
+
+    public GoodsReceiptType type() {
+        return productionOrderId != null ? GoodsReceiptType.PRODUCTION : GoodsReceiptType.PURCHASE;
+    }
+
+    /**
+     * A draft still: its count may be replaced. For a caller that checks the receipt's own state before the rules it
+     * must look elsewhere for, so the answer names the receipt rather than a rule it could not have broken.
+     */
+    public void requireDraft(String verb) {
+        requireStatus(GoodsReceiptStatus.DRAFT, verb);
     }
 
     // ------------------------------------------------------------------ counting
@@ -151,6 +206,7 @@ public final class GoodsReceipt extends AggregateRoot {
     public void replaceLines(List<ReceiptLine> counted) {
         requireCountable();
         requireDistinctLines(counted);
+        requireLinesOfItsKind(counted);
         lines.clear();
         lines.addAll(counted);
     }
@@ -175,6 +231,10 @@ public final class GoodsReceipt extends AggregateRoot {
      */
     public void requestApproval(UUID userId, Instant now) {
         requireStatus(GoodsReceiptStatus.DRAFT, "send for approval");
+        if (againstProductionOrder()) {
+            throw new BusinessException(ErrorCode.INVALID_RECEIPT_TRANSITION, ("Receipt %s is against a production "
+                    + "order: nothing over is received, so nothing waits for approval (03 BR-02)").formatted(number));
+        }
         requireLines();
         this.approval = ReceiptApproval.requested(Objects.requireNonNull(userId, "userId"),
                 Objects.requireNonNull(now, "now"));
@@ -262,7 +322,7 @@ public final class GoodsReceipt extends AggregateRoot {
     }
 
     private void requirePurchaseOrder(String verb) {
-        if (blind()) {
+        if (purchaseOrderId == null) {
             throw new BusinessException(ErrorCode.INVALID_RECEIPT_TRANSITION,
                     "Cannot %s receipt %s: it has no purchase order".formatted(verb, number));
         }
@@ -271,7 +331,8 @@ public final class GoodsReceipt extends AggregateRoot {
     private void requirePurchaseOrderless(String verb) {
         if (!blind()) {
             throw new BusinessException(ErrorCode.INVALID_RECEIPT_TRANSITION,
-                    "Cannot %s receipt %s: it is against a purchase order".formatted(verb, number));
+                    "Cannot %s receipt %s: it is against a %s".formatted(verb, number,
+                            againstProductionOrder() ? "production order" : "purchase order"));
         }
     }
 
@@ -363,12 +424,16 @@ public final class GoodsReceipt extends AggregateRoot {
         }
     }
 
-    /** One line per PO line and lot, as {@code uk_goods_receipt_lines_lot} says. */
+    /**
+     * One line per PO line and lot, as {@code uk_goods_receipt_lines_lot} says; one per production order line on a
+     * production receipt ({@code uk_goods_receipt_lines_production_order_line}).
+     */
     private static void requireDistinctLines(List<ReceiptLine> candidate) {
         Set<String> keys = new HashSet<>();
         for (ReceiptLine line : candidate) {
             // One line per PO line and lot; a blind receipt has no PO line, so one per item and lot.
-            String what = line.poLineId() == null ? "item " + line.inventoryItemId() : "PO line " + line.poLineId();
+            String what = line.productionOrderLineId() != null ? "production order line " + line.productionOrderLineId()
+                    : line.poLineId() == null ? "item " + line.inventoryItemId() : "PO line " + line.poLineId();
             if (!keys.add(what + "|" + Objects.toString(line.lotNumber(), ""))) {
                 throw new BusinessException(ErrorCode.DUPLICATE_RECEIPT_LINE,
                         "%s%s appears twice; put the whole quantity of a lot on one line".formatted(
@@ -377,10 +442,22 @@ public final class GoodsReceipt extends AggregateRoot {
         }
     }
 
+    /** A line counts a production order line exactly when its receipt is against a production order (4A-5). */
+    private void requireLinesOfItsKind(List<ReceiptLine> candidate) {
+        for (ReceiptLine line : candidate) {
+            if ((line.productionOrderLineId() != null) != againstProductionOrder()) {
+                throw new IllegalArgumentException("A line counts a production order line exactly when its receipt is"
+                        + " against a production order");
+            }
+        }
+    }
+
     public UUID id() { return id; }
     public String number() { return number; }
     public UUID purchaseOrderId() { return purchaseOrderId; }
     public UUID purchaseOrderRevisionId() { return purchaseOrderRevisionId; }
+    /** The production order a PRODUCTION receipt is against (4A-5); null on a purchase receipt. */
+    public UUID productionOrderId() { return productionOrderId; }
     public UUID warehouseId() { return warehouseId; }
     /** The supplier of a receipt without a PO; null on a receipt against one (the PO names the supplier). */
     public UUID supplierId() { return supplierId; }

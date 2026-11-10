@@ -155,6 +155,13 @@ public class CustomerSkuService implements CustomerSkus {
 
     @Override
     @Transactional(readOnly = true)
+    public Optional<CustomerSku> find(String sku) {
+        // The source quy cách is not read: a production order needs the design, not what it was drawn on.
+        return variants.findBySku(sku).filter(v -> v.getOwnerCustomerId() != null).map(v -> view(v, null));
+    }
+
+    @Override
+    @Transactional(readOnly = true)
     public Map<String, UUID> ownersOf(java.util.Collection<String> skus) {
         if (skus == null || skus.isEmpty()) {
             return Map.of();

@@ -47,6 +47,20 @@ class SkuReservationTest {
     }
 
     @Test
+    @DisplayName("4B-7 (20 §5.6, BR-17): held at a warehouse for an order of a contract, with no deadline")
+    void heldAtAWarehouse() {
+        SkuReservation reservation = SkuReservation.holdAt("HCM", SKU, UUID.randomUUID(), UUID.randomUUID(),
+                Quantity.of(100), 150, NOW);
+        assertThat(reservation.warehouseCode()).isEqualTo("HCM");
+        assertThat(reservation.expiresAt()).as("no deadline: it lasts until release or cancellation").isNull();
+        assertThat(reservation.isExpiredAt(NOW.plus(Duration.ofDays(365)))).isFalse();
+        assertThat(reservation.status()).isEqualTo(ReservationStatus.HELD);
+        assertThatThrownBy(() -> SkuReservation.holdAt("HCM", SKU, UUID.randomUUID(), UUID.randomUUID(),
+                Quantity.of(100), 99, NOW)).isInstanceOfSatisfying(InsufficientStockException.class,
+                refused -> assertThat(refused.available()).isEqualTo(99));
+    }
+
+    @Test
     @DisplayName("expires, pins and re-arms like a checkout hold; release is idempotent and announced once")
     void lifecycle() {
         SkuReservation reservation = open(2, 10);

@@ -40,21 +40,37 @@ public final class OrderResources {
     public static final String PARTIAL_SHIPMENTS = "sales-order-partial-shipments";
 
     /**
+     * 4B-7 (kltn-docs 17 §4.2 steps 2-3): the warehouse an order of a contract ships from, and how much of its stock is
+     * held there - UPDATE for Sales, who chooses it; READ for those who follow the order. Not
+     * {@code sales-orders:UPDATE}, which the portal customer holds for their own orders.
+     */
+    public static final String SHIPPING_WAREHOUSES = "sales-order-shipping-warehouses";
+
+    /**
+     * 4A-1 (kltn-docs 17 §4.3): the producer catalogue - kept by the Production Coordinator (00 §2.1, 2026-11-07), read
+     * by the Sales Manager, Sales and the warehouse manager. A new code: the old {@code production-*} codes went with
+     * in-house production (V20261108000100).
+     */
+    public static final String PRODUCERS = "sales-producers";
+
+    /**
+     * 4A-2 (kltn-docs 17 §4.3, BR-23): production orders - the Production Coordinator draws up, edits, submits, cancels
+     * and closes (CREATE, UPDATE); the Sales Manager approves and returns (APPROVE); Sales and the warehouse manager read.
+     */
+    public static final String PRODUCTION_ORDERS = "production-orders";
+
+    /**
      * Return requests (SCRUM-243, seeded by V20260903000100, UPDATE added by V20261101020000): CREATE opens one and adds
      * photos (the customer on their own orders, Sales on any), UPDATE withdraws one, READ lists them, APPROVE is Sales'
      * review (approve, reject).
      */
     public static final String RMAS = "sales-rmas";
 
-    /** Counting a returned parcel into quarantine: the warehouse's step (V20261101020000). */
-    public static final String RMA_RECEIPTS = "sales-rma-receipts";
-
-    /** QC's verdict on returned goods and where they go (V20261101020000). */
-    public static final String RMA_INSPECTIONS = "sales-rma-inspections";
-
     /**
-     * How accepted units are made good: UPDATE proposes (Sales, coordinator), APPROVE approves a resolution with money
-     * - four eyes, the Accountant (V20261101020000).
+     * The refund of goods that came back: UPDATE proposes (Sales, coordinator), APPROVE approves it - four eyes, the
+     * Accountant (V20261101020000). Counting a returned parcel in ({@code sales-rma-receipts}) and QC's verdict
+     * ({@code sales-rma-inspections}) went with team plan 4D-3: goods come back on a return receipt
+     * ({@code procurement-goods-receipts}) and nobody inspects them (V20261114000200).
      */
     public static final String RMA_RESOLUTIONS = "sales-rma-resolutions";
 

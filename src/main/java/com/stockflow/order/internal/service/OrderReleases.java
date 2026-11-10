@@ -11,12 +11,14 @@ import java.util.UUID;
 public interface OrderReleases {
 
     /**
-     * Release a CONFIRMED order (paid in full, or a deposit order whose deposit is in) from a warehouse: to
-     * READY_TO_FULFILL, every line allocated on bins of that warehouse.
+     * Release a CONFIRMED order (paid in full, or a deposit order whose deposit is in) - or an order of a contract
+     * AWAITING_STOCK whose stock is now all held (4A-6) - from a warehouse: to READY_TO_FULFILL, every line allocated on
+     * bins of that warehouse.
      *
      * @throws com.stockflow.common.error.BusinessException {@code WAREHOUSE_NOT_FOUND},
-     *         {@code ORDER_PRINT_GOODS_NOT_RECEIVED} (a print line: its goods are not received yet),
-     *         {@code ORDER_DEPOSIT_NOT_RECEIVED}, {@code CONFLICT} (not in a releasable status)
+     *         {@code ORDER_PRINT_GOODS_NOT_RECEIVED} (a legacy print line - a blank with a design snapshot - whose goods
+     *         were never received; QD-16), {@code ORDER_STOCK_NOT_HELD}, {@code ORDER_DEPOSIT_NOT_RECEIVED},
+     *         {@code CONFLICT} (not in a releasable status)
      */
     OrderSummary release(UUID orderId, UUID warehouseId, UUID releasedBy);
 }

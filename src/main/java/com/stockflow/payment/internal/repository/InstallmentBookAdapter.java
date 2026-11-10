@@ -57,7 +57,8 @@ class InstallmentBookAdapter implements InstallmentBook, InstallmentSearch {
                 i.contractId(), i.contractInstallmentId(), i.orderId(), i.customerId(), i.contractNumber(),
                 i.orderNumber(), i.seq(), i.name(), i.milestone(), i.deliveryBatchId(), i.deliveryBatchSeq(),
                 i.amount(), i.currency(), i.dueDays()));
-        entity.apply(i.paidAmount(), i.reachedAt(), i.dueDate(), i.status(), i.paidAt(), i.cancelledAt());
+        entity.apply(i.paidAmount(), i.reducedAmount(), i.reachedAt(), i.dueDate(), i.status(), i.paidAt(),
+                i.cancelledAt());
         return toDomain(installments.saveAndFlush(entity));
     }
 
@@ -116,8 +117,8 @@ class InstallmentBookAdapter implements InstallmentBook, InstallmentSearch {
     @Override
     public BigDecimal afterDeliveryUnpaid(UUID customerId) {
         return decimal(entityManager.createNativeQuery("""
-                        SELECT COALESCE(SUM(amount - paid_amount), 0) FROM payment.installment
-                         WHERE customer_id = :customer AND milestone = 'AFTER_DELIVERY'
+                        SELECT COALESCE(SUM(amount - reduced_amount - paid_amount), 0) FROM payment.installment
+                         WHERE customer_id = :customer AND milestone IN ('AFTER_DELIVERY', 'CANCELLATION_FEE')
                            AND status NOT IN ('PAID', 'CANCELLED')""")
                 .setParameter("customer", customerId)
                 .getSingleResult());
@@ -126,7 +127,8 @@ class InstallmentBookAdapter implements InstallmentBook, InstallmentSearch {
     @Override
     public Overdue overdue(UUID customerId) {
         Object[] row = (Object[]) entityManager.createNativeQuery("""
-                        SELECT COALESCE(SUM(amount - paid_amount), 0), MIN(due_date) FROM payment.installment
+                        SELECT COALESCE(SUM(amount - reduced_amount - paid_amount), 0), MIN(due_date)
+                          FROM payment.installment
                          WHERE customer_id = :customer AND status = 'OVERDUE'""")
                 .setParameter("customer", customerId)
                 .getSingleResult();
@@ -253,8 +255,8 @@ class InstallmentBookAdapter implements InstallmentBook, InstallmentSearch {
         return new Installment(e.getId(), e.getContractId(), e.getContractInstallmentId(), e.getOrderId(),
                 e.getCustomerId(), e.getContractNumber(), e.getOrderNumber(), e.getSeq(), e.getName(),
                 e.getMilestone(), e.getDeliveryBatchId(), e.getDeliveryBatchSeq(), e.getAmount(), e.getPaidAmount(),
-                e.getCurrency(), e.getDueDays(), e.getReachedAt(), e.getDueDate(), e.getStatus(), e.getPaidAt(),
-                e.getCancelledAt(), e.getVersion());
+                e.getReducedAmount(), e.getCurrency(), e.getDueDays(), e.getReachedAt(), e.getDueDate(),
+                e.getStatus(), e.getPaidAt(), e.getCancelledAt(), e.getVersion());
     }
 
     private static PaymentReceipt toDomain(PaymentReceiptJpaEntity e, List<PaymentReceipt.Line> lines) {
