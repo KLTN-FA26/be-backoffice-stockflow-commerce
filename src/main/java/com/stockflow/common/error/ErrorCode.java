@@ -588,6 +588,16 @@ public enum ErrorCode {
      * putaway task, or a write-off of it awaits approval, or it is not yet given the putaway task of its receipt.
      */
     STOCK_PACKAGE_DECISION_PENDING("A decision about this carton is already under way", 409),
+    /** Team plan 4D-2 (kltn-docs 09 BR-06): a return receipt is opened for a shipment the carrier brought back. */
+    SHIPMENT_NOT_RETURNED("The shipment has not come back to the warehouse", 409),
+    /** Team plan 4D-2 (kltn-docs 17 §4.10): a return receipt is opened for a return request approved and awaiting its goods. */
+    RETURN_NOT_AWAITING_GOODS("This return request is not waiting for its goods", 409),
+    /** Team plan 4D-2: goods come back once - one return receipt not cancelled per shipment and per return request. */
+    RETURN_RECEIPT_ALREADY_OPEN("A return receipt for these goods already exists", 409),
+    /** Team plan 4D-2 (kltn-docs 03 BR-14): a return receipt takes only cartons of its shipment or order. */
+    RETURN_CARTON_NOT_OF_SOURCE("This carton did not leave on the shipment or order the receipt is for", 409),
+    /** Team plan 4D-2 (kltn-docs 03 §4.2 step 10): a carton still in the warehouse has not come back. */
+    RETURN_CARTON_IN_WAREHOUSE("This carton is in the warehouse; it has not come back", 409),
     /** Docs 07 step 9: a pick task closes only when every line is picked. */
     PICK_LINES_INCOMPLETE("Some lines are not picked yet", 409),
     PICK_TASK_STATE_CONFLICT("The task cannot do that in its current status", 409),

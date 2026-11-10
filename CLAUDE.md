@@ -335,6 +335,20 @@ units; a draft revision that names no unit keeps the line's own, so a client tha
 one. Receiving takes the ordered unit for cartons listed with none (`GoodsReceiptServiceImpl.cartonUnit`) - a default,
 never a rule.
 
+### Return receipts (team plan 4D-2)
+
+Goods that come back never go straight into stock: a goods receipt of type `RETURN` (`ReturnReceiptService`,
+`/api/v1/goods-receipts/returns`) is opened for one shipment the carrier returned (`RETURNED`) or one approved return
+request (`AWAITING_RETURN`), at the warehouse the goods left from, into a QUARANTINE area. It shares
+`procurement.goods_receipts` and the numbering with the other receipts but is its own aggregate (`ReturnReceipt`,
+`ReturnReceiptJpaEntity` with `@SQLRestriction("receipt_type = 'RETURN'")`; `GoodsReceiptJpaEntity` excludes those
+rows). Cartons are scanned by LPN and checked against `fulfillment :: api` `ShipmentCartons` (the shipment's cartons, or
+those delivered on the order). Confirming is one transaction: receipt `FOR UPDATE` → `inventory :: api`
+`CartonReturns.receive` (SKU locks → cartons → rows; each carton CONSUMED → IN_STOCK sealed, its row QUARANTINE in its
+own lot, one RECEIPT ledger line with reference `GOODS_RECEIPT`) → receipt `CLOSED` (no putaway) →
+`ReturnedGoodsReceived` after commit. Until team plan 4C-6 a shipment's cartons are inferred from the order lines its
+parcels carried (`ShippedCartonQueries`); after it, they are `fulfillment.package.lpn`.
+
 ---
 
 ## 5. Known traps — do not reintroduce these
