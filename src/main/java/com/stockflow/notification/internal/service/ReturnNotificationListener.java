@@ -4,7 +4,6 @@ import com.stockflow.contracts.ReturnApproved;
 import com.stockflow.contracts.ReturnClosed;
 import com.stockflow.contracts.ReturnReceived;
 import com.stockflow.contracts.ReturnRejected;
-import com.stockflow.contracts.ReturnReplacementWithdrawn;
 import com.stockflow.contracts.ReturnRequested;
 import com.stockflow.contracts.ReturnResolved;
 
@@ -15,7 +14,7 @@ import org.springframework.transaction.event.TransactionalEventListener;
 import java.util.Optional;
 
 /**
- * Tells the customer how its return (RMA, SCRUM-243/260) moves: received, approved, refused, goods in, settled,
+ * Tells the customer how its return (RMA, SCRUM-243/260) moves: received, approved, refused, goods in, refunded,
  * withdrawn or expired. A separate listener from {@link OrderNotificationListener} because the return is its own
  * document with its own events, but the same mechanics for the same reasons: {@code @Async @TransactionalEventListener}
  * without a transaction (no connection held while the provider answers), wording in {@link CustomerEmailComposer},
@@ -68,12 +67,6 @@ class ReturnNotificationListener {
     @TransactionalEventListener
     public void on(ReturnClosed event) {
         deliver(composer.returnClosed(event));
-    }
-
-    @Async
-    @TransactionalEventListener
-    public void on(ReturnReplacementWithdrawn event) {
-        deliver(composer.returnReplacementWithdrawn(event));
     }
 
     private void deliver(Optional<CustomerMessage> message) {

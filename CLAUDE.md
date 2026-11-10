@@ -349,6 +349,17 @@ own lot, one RECEIPT ledger line with reference `GOODS_RECEIPT`) → receipt `CL
 `ReturnedGoodsReceived` after commit. Until team plan 4C-6 a shipment's cartons are inferred from the order lines its
 parcels carried (`ShippedCartonQueries`); after it, they are `fulfillment.package.lpn`.
 
+### Returns, refunded (team plan 4D-3)
+
+A return request (`ReturnRequestService`) is approved on its photos and its goods always come back (kltn-docs 17 BR-18):
+`REQUESTED → AWAITING_RETURN →` (return receipt confirmed) `RECEIVED → SETTLEMENT_PENDING → RESOLVED`. The receipt's
+`ReturnedGoodsReceived` reaches the order through `ReturnedGoodsListener` (after commit, own transaction, idempotent on
+the receipt id). There is no QC, no replacement order and no credit: Sales propose a refund per line (at most approved
+and received), a second person approves, and `PaymentService.settleReturn` settles it in the same transaction as an
+`order_settlement` of kind `GOODS_RETURNED` (the value with VAT comes off what the installments still owe; the rest is
+refundable). The accountant records refunds (4B-9); each record publishes `OrderRefundRecorded`, and a RETURNED order
+with no open return moves to REFUNDED / PARTIALLY_REFUNDED once everything refundable is refunded.
+
 ---
 
 ## 5. Known traps — do not reintroduce these

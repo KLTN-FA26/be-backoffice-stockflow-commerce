@@ -79,7 +79,6 @@ final class OrderPersistenceMapper {
         order.restoreContractSigned(entity.getContractSignedAt());
         order.restoreShippingWarehouse(entity.getShippingWarehouseId(), entity.getShippingWarehouseChosenAt(),
                 entity.getShippingWarehouseChosenBy());
-        order.restoreReplacement(entity.getReplacesReturnRequestId());
         order.restoreBalance(entity.getBalancePolicy());
         order.restorePartialShipment(entity.isAllowPartialShipment());
         order.restoreRemainderFee(entity.getRemainderFeeAmount(), entity.getRemainderFeeRetainedAmount(),
@@ -123,7 +122,6 @@ final class OrderPersistenceMapper {
         entity.addMissingFees(toFeeEntities(order));
         entity.applyTax(order.taxTotal().amount());
         applyTermsAndRelease(order, entity);
-        entity.applyReplacement(order.replacesReturnRequestId());
         return entity;
     }
 

@@ -456,36 +456,21 @@ public enum ErrorCode {
     /** A defect is approved on evidence: at least one photo of the problem. */
     RETURN_EVIDENCE_REQUIRED("Add at least one photo of the problem before the return is approved", 409),
     RETURN_EVIDENCE_LIMIT_REACHED("This return has as many photos as it may hold", 409),
-    /** Goods worth more than the no-return threshold must come back before anything is credited. */
-    RETURN_GOODS_REQUIRED("Goods of this value must be sent back before the return is decided", 409),
-    /** OQ-12 / BR-RMA-002: printed goods never go back on sale; only stock items that pass QC do. */
-    RETURN_RESTOCK_NOT_ALLOWED("Only plain stock goes back on sale; custom-printed goods never do", 409),
+    /** Kltn-docs 17 BR-18 (team plan 4D-3): the goods of an approved return always come back on a return receipt. */
+    RETURN_GOODS_REQUIRED("The goods of this return must be sent back before it is refunded", 409),
     /**
-     * Four eyes on anything of value (BR-PAY-003 without approver limits): a claim Sales opened, a resolution, the
-     * withdrawal of a replacement - each approved by someone else than who opened or proposed it.
+     * Four eyes on anything of value (BR-PAY-003 without approver limits): a claim Sales opened, and a refund - each
+     * approved by someone else than who opened or proposed it.
      */
     RETURN_SELF_APPROVAL("A return cannot be approved by the person who opened or proposed it", 409),
-    /** Rejected units are still the customer's: scrapped only when the customer agreed, and the consent is recorded. */
-    RETURN_DISPOSAL_CONSENT_REQUIRED("Rejected goods belong to the customer: send them back, or record the customer's "
-            + "consent to scrap them", 409),
-    /** Goods back on sale go to a usable bin of the warehouse that received them, where they can be picked. */
-    RETURN_RESTOCK_LOCATION_INVALID("Returned goods go back on sale at a usable bin of the same warehouse", 409),
-    /** A free replacement order is cancelled only by withdrawing it through its return, which credits the units. */
-    RETURN_REPLACEMENT_ORDER_LOCKED("A replacement order is cancelled through its return, which credits the units "
-            + "instead", 409),
-    /** The replacement order already left for picking or shipping: it can no longer be withdrawn. */
-    RETURN_REPLACEMENT_NOT_WITHDRAWABLE("This replacement order can no longer be withdrawn", 409),
-    /** Approved units have not arrived yet: QC waits, or says no more parcels are coming. */
-    RETURN_PARCELS_OUTSTANDING("Approved units of this return have not arrived yet", 409),
-    /** The order received less money than the refund asks; credit the rest instead. */
-    RETURN_REFUND_EXCEEDS_PAID("The refund is more than the order has received", 409),
-    /** A customer with overdue receivables is credited, never paid out in cash. */
-    RETURN_REFUND_CUSTOMER_OVERDUE("The customer has overdue receivables: credit the return against them instead of "
-            + "refunding cash", 409),
-    /** BR-CUS-003: a customer who is not ACTIVE opens no return themselves and gets no new (replacement) order. */
+    /** BR-CUS-003: a customer who is not ACTIVE opens no return themselves. */
     RETURN_CUSTOMER_NOT_ACTIVE("The customer account is not active", 409),
-    /** Returned goods are received into a quarantine or QC area, never straight onto a bin (OQ-12). */
-    RETURN_RECEIVING_LOCATION_INVALID("Returned goods are received into a quarantine or QC area of the warehouse", 409),
+    /**
+     * Team plan 4D-3 (kltn-docs 15 §4.5): a return is refunded against the order's installments; an order paid any
+     * other way (a checkout order of before contracts) has none, and its return is refunded outside the system.
+     */
+    RETURN_REFUND_NO_INSTALLMENTS("This order is not paid through a contract's installments; refund it outside the "
+            + "system", 409),
     PAYMENT_TERM_NOT_ALLOWED("This payment term is not available for this order", 409),
     /** SCRUM-427: credit approval or refusal on an order that is not waiting for one. */
     ORDER_NOT_ON_CREDIT_HOLD("This order is not waiting for a credit decision", 409),

@@ -46,8 +46,8 @@ public class ReturnRequestQueries {
     public record Item(UUID id, String rmaNumber, UUID orderId, String orderNumber, UUID customerId,
                        ReturnStatus status, ReturnReason reason, ReturnResolution requestedResolution, String channel,
                        Instant requestedAt, Instant returnDeadline, BigDecimal settlementAmount,
-                       BigDecimal refundedAmount, BigDecimal creditedAmount, BigDecimal offsetAmount, String currency,
-                       boolean vatAdjustmentRequired, UUID replacementOrderId, Instant closedAt, long version) {
+                       BigDecimal refundedAmount, BigDecimal offsetAmount, String currency,
+                       boolean vatAdjustmentRequired, Instant closedAt, long version) {
     }
 
     /** One return with its status history, oldest first. */
@@ -124,7 +124,8 @@ public class ReturnRequestQueries {
                 .filter(found -> ownCustomerId == null || found.belongsTo(ownCustomerId))
                 .orElseThrow(() -> notFound(returnId));
         requireStaffWarehouse(request, ownCustomerId);
-        // A customer downloads their own photos of the claim; the warehouse's and QC's are staff records.
+        // A customer downloads their own photos of the claim; photos of an older return's receipt or inspection (before
+        // team plan 4D-3) are staff records.
         ReturnEvidence photo = request.evidence().stream().filter(e -> e.id().equals(evidenceId))
                 .filter(e -> ownCustomerId == null || e.stage() == ReturnEvidence.Stage.CLAIM).findFirst()
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No photo " + evidenceId));
@@ -145,9 +146,8 @@ public class ReturnRequestQueries {
     private static Item toItem(ReturnRequestSearch.ReturnRequestRow row) {
         return new Item(row.id(), row.rmaNumber(), row.orderId(), row.orderNumber(), row.customerId(), row.status(),
                 row.reason(), row.requestedResolution(), row.channel(), row.requestedAt(), row.returnDeadline(),
-                row.settlementAmount(), row.refundedAmount(), row.creditedAmount(), row.offsetAmount(),
-                row.currency(), row.vatAdjustmentRequired(), row.replacementOrderId(), row.closedAt(),
-                row.version());
+                row.settlementAmount(), row.refundedAmount(), row.offsetAmount(), row.currency(),
+                row.vatAdjustmentRequired(), row.closedAt(), row.version());
     }
 
     private static BusinessException notFound(UUID returnId) {

@@ -1,6 +1,5 @@
 package com.stockflow.reporting.internal.service;
 
-import com.stockflow.contracts.ReturnReplacementWithdrawn;
 import com.stockflow.contracts.ReturnResolved;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
@@ -76,26 +75,17 @@ class SalesRollupService {
     }
 
     /**
-     * {@code ReturnResolved}: the value a return credited back (set off, refunded, kept as credit) and the credited units
-     * come off the revenue of the day the paying order was placed. A resolution that only replaced goods takes nothing.
+     * {@code ReturnResolved}: the value of the units a return refunded, before VAT as revenue is counted (4B-3, D33),
+     * and those units come off the revenue of the day the order was placed (team plan 4D-3: a refund is the only way a
+     * return gives money back; nothing is replaced).
      */
     @Transactional
     public void returnResolved(ReturnResolved event) {
-        BigDecimal value = event.offsetAmount().add(event.refundedAmount()).add(event.creditedAmount());
         List<OrderContribution.Line> lines = event.lines().stream().filter(line -> line.creditQuantity() > 0)
                 .map(line -> new OrderContribution.Line(line.sku(), line.creditQuantity(), line.creditAmount()))
                 .toList();
+        BigDecimal value = lines.stream().map(OrderContribution.Line::revenue).reduce(BigDecimal.ZERO, BigDecimal::add);
         takeReturn(event.returnRequestId(), "RESOLVED", event.moneyOrderId(), event.currency(), value, lines);
-    }
-
-    /** {@code ReturnReplacementWithdrawn}: the replaced units were credited after all - off the paying order's day. */
-    @Transactional
-    public void replacementWithdrawn(ReturnReplacementWithdrawn event) {
-        BigDecimal value = event.offsetAmount().add(event.creditedAmount());
-        List<OrderContribution.Line> lines = event.lines().stream()
-                .map(line -> new OrderContribution.Line(line.sku(), line.quantity(), line.amount())).toList();
-        takeReturn(event.returnRequestId(), "REPLACEMENT_WITHDRAWN", event.paidOrderId(), event.currency(), value,
-                lines);
     }
 
     private void takeReturn(UUID returnRequestId, String event, UUID paidOrderId, String currency, BigDecimal value,
@@ -124,15 +114,11 @@ class SalesRollupService {
 
     /**
      * What an order adds to the rollups: empty for a DRAFT or PENDING_CONTRACT order (never counted: an order is a sale
-     * once its contract is signed, when {@code OrderPlaced} is published - 4B-5), for a free
-     * replacement order (its goods were sold - and counted - on the original order) and for an order in another
-     * currency than {@link #CURRENCY}.
+     * once its contract is signed, when {@code OrderPlaced} is published - 4B-5) and for an order in another currency
+     * than {@link #CURRENCY}.
      */
     static Optional<OrderContribution> contributionOf(OrderSummary order) {
         if (order.status() == OrderStatus.DRAFT || order.status() == OrderStatus.PENDING_CONTRACT) {
-            return Optional.empty();
-        }
-        if (order.lifecycle() != null && order.lifecycle().replacesReturnRequestId() != null) {
             return Optional.empty();
         }
         String currency = order.total().currency().getCurrencyCode();

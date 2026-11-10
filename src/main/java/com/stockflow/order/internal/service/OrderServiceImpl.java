@@ -584,12 +584,6 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
                 .orElseThrow(() -> new BusinessException(
                         ErrorCode.NOT_FOUND, "No order with id " + orderId));
         CancellationReasonCode code = reasonCode == null ? CancellationReasonCode.CUSTOMER_REQUEST : reasonCode;
-        // A replacement order is changed through its return, by Sales: neither cancelled here nor queued as a request
-        // a later approval would fail on.
-        if (order.replacesReturnRequestId() != null) {
-            throw new BusinessException(ErrorCode.RETURN_REPLACEMENT_ORDER_LOCKED,
-                    "Order %s ships replacements for a return: ask Sales to change it".formatted(order.orderNumber()));
-        }
         if (order.status().customerMayCancelDirectly()) {
             Order cancelled = cancelLoaded(order, new CancelOrderCommand(code, note, null, requestedBy));
             return new CancellationOutcome(CancellationOutcome.Result.CANCELLED, null, toSummary(cancelled));
@@ -1280,8 +1274,7 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
         return new OrderSummary.Lifecycle(order.holdReason(), order.statusBeforeHold(), order.holdNote(),
                 order.packedAt(), order.shippedAt(), order.deliveredAt(), order.deliveryFailureReason(), order.completedAt(),
                 order.closedAt(), order.billedAmount(), order.billable(), order.amountDue(),
-                order.amountDueBeforeHandover(), progress, shipments, order.allowPartialShipment(), order.goodsLeftAt(),
-                order.replacesReturnRequestId());
+                order.amountDueBeforeHandover(), progress, shipments, order.allowPartialShipment(), order.goodsLeftAt());
     }
 
     private static OrderAddressSnapshot toSnapshot(CheckoutCustomer.CheckoutAddress address) {
