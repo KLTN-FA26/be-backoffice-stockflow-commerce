@@ -78,8 +78,7 @@ class InventoryServiceImplAvailabilityTest {
     private final InventoryServiceImpl service = new InventoryServiceImpl(repository,
             new InventoryEventPublisher(mock(ApplicationEventPublisher.class)), operations,
             mock(InventoryItemDirectory.class), Clock.fixed(NOW, ZoneOffset.UTC), controls, policies, skuReservations,
-            locations, cycleCounts, stockPackages,
-            mock(com.stockflow.inventory.internal.domain.StockDamageReportRepository.class), Duration.ofMinutes(30));
+            locations, cycleCounts, stockPackages, Duration.ofMinutes(30));
 
     private final Map<StockItemId, StockItem> rows = new HashMap<>();
 
