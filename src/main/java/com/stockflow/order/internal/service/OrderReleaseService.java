@@ -1,6 +1,5 @@
 package com.stockflow.order.internal.service;
 
-import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.common.audit.AuditAction;
 import com.stockflow.common.audit.Auditable;
 import com.stockflow.common.error.BusinessException;
@@ -44,7 +43,6 @@ class OrderReleaseService implements OrderReleases {
     private final OrderEventPublisher events;
     private final OrderService orders;
     private final Clock clock;
-    private final InventoryService inventory;
     private final com.stockflow.payment.api.PaymentService paymentService;
     private final OrderStockAllocation allocation;
     private final com.stockflow.order.internal.domain.SalesContractRepository contracts;
@@ -54,7 +52,7 @@ class OrderReleaseService implements OrderReleases {
 
     OrderReleaseService(OrderRepository repository, WarehouseDirectory warehouses,
                         OrderEventPublisher events, OrderService orders, Clock clock,
-                        InventoryService inventory, com.stockflow.payment.api.PaymentService paymentService,
+                        com.stockflow.payment.api.PaymentService paymentService,
                         OrderStockAllocation allocation, com.stockflow.order.internal.domain.SalesContractRepository contracts,
                         ShippingWarehouseService shippingWarehouses, DeliveryBatchService batches,
                         com.stockflow.order.internal.domain.DeliveryBatchRecords batchRecords) {
@@ -68,7 +66,6 @@ class OrderReleaseService implements OrderReleases {
         this.events = events;
         this.orders = orders;
         this.clock = clock;
-        this.inventory = inventory;
         this.paymentService = paymentService;
     }
 
@@ -123,9 +120,6 @@ class OrderReleaseService implements OrderReleases {
         // this warehouse, FEFO - every line. All or nothing: a warehouse that cannot cover a line refuses the release,
         // and the order stays as it was.
         allocation.allocate(order, warehouseCode);
-        // From release on the order's holds must not expire (kltn-docs 14 BR-07, SCRUM-465). Idempotent for an
-        // order already paid and pinned.
-        inventory.pinReservations(orderId);
         repository.save(order);
         events.publishEventsOf(order);
         log.info("Released order {} from {}: {}", order.orderNumber(), warehouseCode, order.status());
@@ -147,7 +141,6 @@ class OrderReleaseService implements OrderReleases {
             order.releaseLaterBatch(warehouseId, warehouseCode, batch.id(), now);
         }
         allocation.allocate(order, warehouseCode, shippingWarehouses.heldFor(order, batch));
-        inventory.pinReservations(order.id().value());
         batchRecords.recordRelease(order.id().value(), new com.stockflow.order.internal.domain.DeliveryBatchRecords
                 .Release(batch.id(), batch.seq(), warehouseId, now, releasedBy));
         repository.save(order);

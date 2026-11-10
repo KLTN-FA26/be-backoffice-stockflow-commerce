@@ -8,18 +8,18 @@ import com.stockflow.common.id.Identifiers;
 import com.stockflow.contracts.StockReservationReleased;
 import com.stockflow.contracts.StockReserved;
 
-import java.time.Duration;
 import java.time.Instant;
 import java.util.Objects;
 import java.util.UUID;
 
 /**
- * <b>Reserved</b>, in the glossary's sense (docs 01): the soft, time-limited hold a checkout takes against a SKU,
- * tied to no location and no lot. It is what keeps the storefront from overselling; it says nothing about which
- * shelf the goods will come from.
+ * <b>Reserved</b>, in the glossary's sense (docs 01): the soft hold Sales takes against a SKU at an order's shipping
+ * warehouse (kltn-docs 17 §4.2), tied to no bin and no lot. It keeps the warehouse from promising the same cartons
+ * twice; it says nothing about which shelf the goods will come from. Since V20261117000300 no hold carries a
+ * deadline: the checkout's expiring reservation and its sweeper are gone.
  *
  * <p><b>Why it is not a {@link Reservation}.</b> A {@code Reservation} lives inside one {@link StockItem} and is
- * what a picker walks to. Choosing that stock item at checkout — what this module did until SCRUM-152 — picked a
+ * what a picker walks to. Choosing that stock item when the hold is taken — what this module did until SCRUM-152 — picked a
  * bin and a lot days before anybody knew which warehouse would ship the order, so FEFO was decided on stale data
  * and the coordinator's release could only discover afterwards that the stock sat in the wrong building. The
  * choice now happens at release ({@code InventoryService.allocate}): this hold turns {@code ALLOCATED} and lives
@@ -49,7 +49,7 @@ public final class SkuReservation extends AggregateRoot {
     private Instant closedAt;
     /**
      * 4B-7 (20 §5.6, BR-17): the warehouse the hold is at - an order of a contract holds its stock at its shipping
-     * warehouse only. Null for a checkout hold, promised against the whole system.
+     * warehouse only. Null on a hold of before 4B-7, promised against the whole system.
      */
     private final String warehouseCode;
 
@@ -87,25 +87,6 @@ public final class SkuReservation extends AggregateRoot {
     }
 
     /**
-     * Opens the hold for a checkout line. {@code available} is the SKU's available-to-promise read under its
-     * advisory lock; the caller passes it in because the figure spans every stock item and every other
-     * reservation of the SKU, which no aggregate sees.
-     *
-     * @throws InsufficientStockException when fewer than {@code quantity} units are available to promise
-     */
-    public static SkuReservation open(Sku sku, UUID orderId, UUID requestId, Quantity quantity, int available,
-                                      Instant now, Duration ttl) {
-        if (available < quantity.value()) {
-            throw new InsufficientStockException(sku.code(), quantity.value(), Math.max(available, 0));
-        }
-        SkuReservation reservation = new SkuReservation(new ReservationId(Identifiers.newId()), sku, orderId,
-                requestId, requestId, quantity, now, now.plus(ttl), ReservationStatus.HELD, null, null);
-        reservation.registerEvent(new StockEvent.Reserved(new StockReserved(orderId, sku.code(), null,
-                quantity.value(), reservation.expiresAt)));
-        return reservation;
-    }
-
-    /**
      * 4B-7 (17 §4.2 step 3, 20 §5.6): the hold an order of a contract takes at its shipping warehouse - by SKU, on no
      * bin, and with no deadline: it lasts until release, cancellation or a manual release. {@code available} is the
      * SKU's available-to-promise at that warehouse, read under the SKU's advisory lock.
@@ -130,27 +111,9 @@ public final class SkuReservation extends AggregateRoot {
         return status.isActive() && expiresAt != null && !now.isBefore(expiresAt);
     }
 
-    /** See {@link Reservation#pin()}. */
-    public boolean pin() {
-        if (!status.isActive() || expiresAt == null) {
-            return false;
-        }
-        this.expiresAt = null;
-        return true;
-    }
-
-    /** See {@link Reservation#rearm(Instant)}. */
-    public boolean rearm(Instant deadline) {
-        if (!status.isActive() || expiresAt != null) {
-            return false;
-        }
-        this.expiresAt = Objects.requireNonNull(deadline, "deadline");
-        return true;
-    }
-
     /**
-     * Give the hold up. A closed hold is left as it is — the cancellation, the payment failure and the sweeper can
-     * race on the same row, and none of them should fail because another got there first.
+     * Give the hold up. A closed hold is left as it is — a cancellation and a release by hand can race on the same
+     * row, and neither should fail because the other got there first.
      *
      * @return whether this call closed it
      */

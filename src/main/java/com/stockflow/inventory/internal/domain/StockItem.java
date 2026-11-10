@@ -6,9 +6,7 @@ import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.contracts.StockDeducted;
 import com.stockflow.contracts.StockReservationReleased;
-import com.stockflow.contracts.StockReserved;
 
-import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -56,13 +54,6 @@ public final class StockItem extends AggregateRoot {
     // final: an aggregate root has no subtypes. Beyond the modelling point, the constructor calls
     // checkInvariants(), and javac's this-escape lint is right to flag that on a non-final class -
     // a subclass could override a method it reaches before its own fields are initialised.
-
-    /**
-     * How long a checkout hold survives while its order waits for payment (kltn-docs 14 BR-07), when
-     * no other value is configured ({@code stockflow.inventory.reservation-ttl}). Once the order is
-     * paid or released the hold is pinned and no longer expires.
-     */
-    public static final Duration DEFAULT_RESERVATION_TTL = Duration.ofMinutes(30);
 
     private final StockItemId id;
     private final Sku sku;
@@ -442,75 +433,6 @@ public final class StockItem extends AggregateRoot {
     }
 
     /**
-     * Pin every active hold of {@code orderId} on this stock row: its order is no longer waiting for
-     * payment, so the holds must not expire (kltn-docs 14 BR-07, SCRUM-465). Nothing else changes —
-     * the quantities held stay exactly as they are.
-     *
-     * @return how many holds this call pinned (0 when they were all pinned already)
-     */
-    /** Gives the order's pinned holds here a deadline again; see {@link Reservation#rearm}. */
-    public int rearmReservationsOf(UUID orderId, Instant deadline) {
-        int rearmed = 0;
-        for (Reservation reservation : reservations) {
-            if (orderId.equals(reservation.orderId()) && reservation.rearm(deadline)) {
-                rearmed++;
-            }
-        }
-        return rearmed;
-    }
-
-    public int pinReservationsOf(UUID orderId) {
-        int pinned = 0;
-        for (Reservation reservation : reservations) {
-            if (orderId.equals(reservation.orderId()) && reservation.pin()) {
-                pinned++;
-            }
-        }
-        return pinned;
-    }
-
-    /**
-     * Hold stock for an order line at checkout (BRD 3.14.5).
-     *
-     * <p>Nothing is deducted — {@code onHand} is unchanged and the goods are still physically
-     * there. Only the promise is made, and it expires by itself if the order never pays.
-     *
-     * @throws IllegalStateException if the stock is not in a sellable status
-     * @throws InsufficientStockException if available-to-promise is below {@code quantity}
-     */
-    public Reservation reserve(
-            UUID orderId, UUID rootRequestId, UUID requestId, Quantity quantity, Instant now) {
-        return reserve(orderId, rootRequestId, requestId, quantity, now, DEFAULT_RESERVATION_TTL);
-    }
-
-    public Reservation reserve(
-            UUID orderId,
-            UUID rootRequestId,
-            UUID requestId,
-            Quantity quantity,
-            Instant now,
-            Duration ttl) {
-        Optional<Reservation> alreadyServed = findByRequestId(requestId);
-        if (alreadyServed.isPresent()) {
-            return alreadyServed.get();
-        }
-        requireHoldable(quantity, now, "order " + orderId);
-        Reservation reservation =
-                Reservation.open(orderId, rootRequestId, requestId, quantity, now, ttl);
-        reservations.add(reservation);
-        checkInvariants();
-        registerEvent(
-                new StockEvent.Reserved(
-                        new StockReserved(
-                                orderId,
-                                sku.code(),
-                                location.code(),
-                                quantity.value(),
-                                reservation.expiresAt())));
-        return reservation;
-    }
-
-    /**
      * Allocate part of a SKU reservation to this stock item (F-FUL step 02, BR-STK-006): the order was released to
      * this warehouse and the planner chose this bin and lot. A hard hold, pinned, that the picker will walk to; the
      * units stop being the SKU's soft reservation once the caller marks it {@link SkuReservation#markAllocated}.
@@ -540,6 +462,7 @@ public final class StockItem extends AggregateRoot {
         Reservation reservation = Reservation.allocate(orderId, allocatedFrom, rootRequestId, requestId, quantity, now);
         reservations.add(reservation);
         checkInvariants();
+        requireInCartonWhenStocked();
         registerEvent(new StockEvent.Allocated(new com.stockflow.contracts.StockAllocated(orderId,
                 reservation.id().value(), sku.code(), location.code(), lotNumber, quantity.value())));
         return reservation;
@@ -556,10 +479,10 @@ public final class StockItem extends AggregateRoot {
     }
 
     /**
-     * Give up a hold — order cancelled, payment failed, or the sweeper found it expired.
+     * Give up a hold — order cancelled, or released by hand.
      *
      * <p>Releasing an already-closed reservation is a no-op rather than an error, because the
-     * cancel path and the expiry sweeper can genuinely race on the same row, and neither should
+     * cancel path and a release by hand can genuinely race on the same row, and neither should
      * fail because the other got there first.
      */
     public void releaseReservation(ReservationId reservationId, ReleaseReason reason, Instant now) {
@@ -584,14 +507,6 @@ public final class StockItem extends AggregateRoot {
                                 reason.toContract())));
     }
 
-    /** Release every live hold that has outlived its {@code expiresAt}. Called by the sweeper. */
-    public int releaseExpired(Instant now) {
-        List<ReservationId> expired =
-                reservations.stream().filter(r -> r.isExpiredAt(now)).map(Reservation::id).toList();
-        expired.forEach(rid -> releaseReservation(rid, ReleaseReason.RESERVATION_EXPIRED, now));
-        return expired.size();
-    }
-
     /**
      * The goods have been picked: turn a hold into a real deduction (BRD 3.7 / 3.8).
      *
@@ -600,8 +515,8 @@ public final class StockItem extends AggregateRoot {
      *
      * <p>The hold is checked before the stock: a hold that was released, expired or consumed already is
      * {@code RESERVATION_NOT_ACTIVE} whatever happened to the lot since, so a picker is told the real
-     * reason (the order was cancelled) rather than a policy conflict. A HELD hold past its payment
-     * deadline counts as given up too, even before the sweeper closes it (kltn-docs 14 BR-07). Then the
+     * reason (the order was cancelled) rather than a policy conflict. A HELD hold past a deadline - one of
+     * before V20261117000300, which released them all - counts as given up too. Then the
      * stock: blocked or expired stock cannot be shipped ({@code INVENTORY_POLICY_STOCK_CONFLICT}, docs 07
      * BR-02), which is a short pick for the warehouse to resolve.</p>
      */
@@ -666,6 +581,7 @@ public final class StockItem extends AggregateRoot {
         }
         this.onHand = countedQuantity;
         checkInvariants();
+        requireInCartonWhenStocked();
     }
 
     // ------------------------------------------------------------------ moves and adjustments
@@ -702,6 +618,7 @@ public final class StockItem extends AggregateRoot {
         requirePositive(quantity);
         this.onHand = onHand.plus(quantity);
         checkInvariants();
+        requireInCartonWhenStocked();
     }
 
     /**
@@ -798,6 +715,7 @@ public final class StockItem extends AggregateRoot {
         }
         this.onHand = Quantity.of(Math.toIntExact(result));
         checkInvariants();
+        requireInCartonWhenStocked();
     }
 
     private static void requirePositive(Quantity quantity) {
@@ -807,6 +725,20 @@ public final class StockItem extends AggregateRoot {
     }
 
     // ------------------------------------------------------------------ invariants
+
+    /**
+     * Stock is kept in whole cartons only (kltn-docs 07 BR-03, 20 BR-14; team plan 4C-1, 4C-2): a row in no carton is
+     * a layer emptied before that, and holds nothing and nobody's hold. Checked by every mutation that can raise what a
+     * row holds or what is held on it - not by the constructor, which learns the row's carton only after the chain of
+     * {@code this(...)} calls that runs {@link #checkInvariants}. Stated again in the table by
+     * {@code ck_stock_item_whole_cartons} (V20261117000100).
+     */
+    private void requireInCartonWhenStocked() {
+        if (stockPackageId == null && (onHand.value() > 0 || reserved().value() > 0)) {
+            throw new IllegalStateException(("Stock item %s is in no carton but would hold %s (%s held): stock is kept "
+                    + "in whole cartons").formatted(id, onHand, reserved()));
+        }
+    }
 
     /**
      * Checked after every mutation and in the constructor, so an aggregate can never be observed in

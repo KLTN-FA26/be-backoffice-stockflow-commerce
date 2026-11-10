@@ -375,10 +375,20 @@ public class ReturnRequestService {
     /**
      * Sales propose the refund of the goods that came back (17 §4.10 step 40; RECEIVED → SETTLEMENT_PENDING): the units
      * per line, worth what the order line charged for them with VAT. A second person approves it.
+     *
+     * <p>Refused here already, not only at approval, for an order not paid through a contract's installments (review
+     * M-4): there is nothing for the refund to be settled against, and a proposal nobody can approve would only wait.</p>
+     *
+     * @throws BusinessException {@code RETURN_REFUND_NO_INSTALLMENTS}, as {@link #approveSettlement} does
      */
     @Auditable(action = AuditAction.UPDATE, resourceType = "return-request", resourceId = "#returnId")
     public ReturnRequest proposeRefund(UUID returnId, ProposeRefundCommand command, UUID by) {
         Locked locked = lock(returnId, null, command.version());
+        if (!locked.order().paidByContract()) {
+            throw new BusinessException(ErrorCode.RETURN_REFUND_NO_INSTALLMENTS, ("Order %s is not paid through a "
+                    + "contract's installments: refund return %s outside the system").formatted(
+                    locked.request().orderNumber(), locked.request().rmaNumber()));
+        }
         locked.request().proposeRefund(by, now(), command.units(), locked.order(), command.note());
         return finish(locked, by);
     }

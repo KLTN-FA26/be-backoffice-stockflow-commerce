@@ -7,7 +7,6 @@ import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
-import java.time.Instant;
 import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
@@ -149,30 +148,12 @@ interface StockItemJpaRepository extends JpaRepository<StockItemJpaEntity, UUID>
     @Query("select coalesce(sum(s.onHand), 0) from StockItemJpaEntity s where s.stockPackageId = :stockPackageId")
     long sumOnHandInStockPackage(@Param("stockPackageId") UUID stockPackageId);
 
-    /** Ids only, so the sweeper can page through the backlog before locking anything. */
-    @Query("""
-            select distinct s.id from ReservationJpaEntity r join r.stockItem s
-            where r.status = com.stockflow.inventory.internal.domain.ReservationStatus.HELD
-              and r.expiresAt < :cutoff
-            """)
-    List<UUID> findStockItemIdsWithExpiredReservations(@Param("cutoff") Instant cutoff,
-                                                       org.springframework.data.domain.Pageable page);
-
     @Query("""
             select distinct s.id from ReservationJpaEntity r join r.stockItem s
             where r.rootRequestId = :rootRequestId
               and r.status = com.stockflow.inventory.internal.domain.ReservationStatus.HELD
             """)
     List<UUID> findStockItemIdsForRequest(@Param("rootRequestId") UUID rootRequestId);
-
-    /** In id order: the caller locks each in turn, and two orders sharing rows must never lock them crosswise. */
-    @Query("""
-            select distinct s.id from ReservationJpaEntity r join r.stockItem s
-            where r.orderId = :orderId
-              and r.status = com.stockflow.inventory.internal.domain.ReservationStatus.HELD
-            order by r.stockItem.id
-            """)
-    List<UUID> findStockItemIdsHoldingOrder(@Param("orderId") UUID orderId);
 
     @Query("""
             select new com.stockflow.inventory.internal.domain.HeldStock(s.sku, s.locationCode, r.quantity)

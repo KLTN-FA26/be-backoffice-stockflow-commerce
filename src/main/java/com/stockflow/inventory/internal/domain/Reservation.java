@@ -87,17 +87,10 @@ public final class Reservation {
         }
     }
 
-    /** Factory for a brand-new hold. Package-private: only {@link StockItem} may open one. */
-    static Reservation open(UUID orderId, UUID rootRequestId, UUID requestId, Quantity quantity,
-                            Instant now, java.time.Duration ttl) {
-        return new Reservation(ReservationId.newId(), orderId, rootRequestId, requestId, quantity,
-                now, now.plus(ttl), ReservationStatus.HELD, null, null);
-    }
-
     /**
      * An allocation (F-FUL step 02): units of a {@link SkuReservation} placed on this stock item when the order was
-     * released to its warehouse. Pinned - an allocation has no {@code expires_at} (X-RESV). Package-private, like
-     * {@link #open}.
+     * released to its warehouse. Pinned - an allocation has no {@code expires_at} (X-RESV). Package-private: only
+     * {@link StockItem} places one.
      */
     static Reservation allocate(UUID orderId, UUID allocatedFrom, UUID rootRequestId, UUID requestId,
                                 Quantity quantity, Instant now) {
@@ -109,34 +102,6 @@ public final class Reservation {
     /** True once {@code expiresAt} has passed and nobody has consumed or released the hold. */
     public boolean isExpiredAt(Instant now) {
         return status.isActive() && expiresAt != null && !now.isBefore(expiresAt);
-    }
-
-    /**
-     * Keep the hold until the stock is consumed or the order releases it (kltn-docs 14 BR-07: a hold
-     * has a deadline only while its order waits for payment). Idempotent.
-     *
-     * @return true if this call pinned an active hold; false if it was already pinned or is closed
-     */
-    boolean pin() {
-        if (!status.isActive() || expiresAt == null) {
-            return false;
-        }
-        this.expiresAt = null;
-        return true;
-    }
-
-    /**
-     * The order is waiting for payment again (a credit order refused and switched to prepaid or
-     * deposit, SCRUM-427): a pinned hold gets a deadline, as at checkout (kltn-docs 14 BR-07).
-     *
-     * @return true if this call gave an active pinned hold its deadline
-     */
-    boolean rearm(Instant deadline) {
-        if (!status.isActive() || expiresAt != null || allocatedFrom != null) {
-            return false;
-        }
-        this.expiresAt = java.util.Objects.requireNonNull(deadline, "deadline");
-        return true;
     }
 
     public boolean isPinned() {
@@ -161,7 +126,7 @@ public final class Reservation {
     /**
      * A closed hold cannot be consumed or released again. A business refusal (409
      * {@code RESERVATION_NOT_ACTIVE}), not a programming error: a picker scanning goods whose order was
-     * just cancelled, or a hold the sweeper expired, reaches this through an ordinary request.
+     * just cancelled, or a hold released by hand, reaches this through an ordinary request.
      */
     private void requireActive(String operation) {
         if (status.isTerminal()) {

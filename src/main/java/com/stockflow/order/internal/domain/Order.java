@@ -320,35 +320,6 @@ public final class Order extends AggregateRoot {
                 .orElse(false);
     }
 
-    /**
-     * Submit the order for payment.
-     *
-     * <p>Refuses unless every line holds a reservation. The application service calls this only
-     * after {@code InventoryService.reserve(...)} has returned for each line, so in practice the
-     * check never fires — which is the point: it is the guard that catches the day somebody adds a
-     * code path that forgets to reserve.</p>
-     */
-    public void submit() {
-        // Validate BEFORE transitioning. The order matters even though the surrounding transaction
-        // would roll back anyway: a caller that catches this exception - a test, a batch importer -
-        // would otherwise hold an aggregate that says PENDING_PAYMENT while nothing is reserved,
-        // which is precisely the state this method exists to make impossible.
-        requireEveryLineReserved();
-        transitionTo(OrderStatus.PENDING_PAYMENT);
-        registerPlaced();
-    }
-
-    private void requireEveryLineReserved() {
-        List<OrderLine> unreserved = lines.stream()
-                .filter(line -> !line.isReserved())
-                .toList();
-        if (!unreserved.isEmpty()) {
-            throw new IllegalStateException(
-                    "Cannot submit order %s: %d line(s) hold no stock reservation"
-                            .formatted(orderNumber, unreserved.size()));
-        }
-    }
-
     private void registerPlaced() {
         registerEvent(new OrderEvent.Placed(new OrderPlaced(
                 id.value(),

@@ -23,10 +23,7 @@ public record LotTraceResponse(Lot lot, List<Balance> balances, List<Hold> holds
                       @Schema(description = "GOODS_RECEIPT, PRODUCTION_ORDER, or UNTRACED for stock that entered "
                               + "without a receipt")
                       String origin,
-                      UUID goodsReceiptId, String goodsReceiptNumber, UUID purchaseOrderId, String purchaseOrderNumber,
-                      UUID supplierId,
-                      @Schema(description = "As it read when the goods were received")
-                      String supplierName,
+                      UUID goodsReceiptId, String goodsReceiptNumber,
                       UUID receivingWarehouseId,
                       long receivedQuantity,
                       @Schema(description = "On hand now, any status, in the warehouses asked about")
