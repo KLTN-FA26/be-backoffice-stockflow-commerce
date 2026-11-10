@@ -302,10 +302,10 @@ class PickDamageIntegrationTest {
                 .header("Authorization", token(picker, "WAREHOUSE_STAFF"))).andExpect(status().isOk());
     }
 
-    private JsonNode packingLine(UUID task) throws Exception {
-        return body(mvc.perform(get("/api/v1/fulfillment/tasks/" + task + "/packing-session")
-                        .header("Authorization", token(picker, "WAREHOUSE_STAFF")))
-                .andExpect(status().isOk()).andReturn()).path("lines").get(0);
+    /** Units of the task's picked lines still good: what the check station can label (the picked cartons). */
+    private int goodPickedUnits(UUID task) {
+        return jdbc.queryForObject("SELECT COALESCE(SUM(picked_qty - packing_damaged_qty), 0) FROM fulfillment.pick_line "
+                + "WHERE pick_id = ? AND status = 'PICKED'", Integer.class, task);
     }
 
     private int damagedInQuarantine() {
@@ -568,9 +568,7 @@ class PickDamageIntegrationTest {
         assertThat(damagedInQuarantine()).isEqualTo(1);
 
         pickedAndAtPacking(task);
-        JsonNode packing = packingLine(task);
-        assertThat(packing.path("available").asInt()).as("two good cartons and the replacement").isEqualTo(3);
-        assertThat(packing.path("lots").get(0).path("available").asInt()).isEqualTo(3);
+        assertThat(goodPickedUnits(task)).as("two good cartons and the replacement").isEqualTo(3);
         assertThat(bin("HCM-A01-1-A")).containsEntry("on_hand", 1).containsEntry("reserved", 0);
 
         // Cancelled now: a good line puts its carton back; the unit in quarantine stays there.
@@ -606,7 +604,7 @@ class PickDamageIntegrationTest {
                 SELECT on_hand, reserved FROM inventory.stock_item WHERE sku = ? AND status = 'DAMAGED'""", sku))
                 .as("the order's share stays promised on the damaged units").containsEntry("on_hand", 2)
                 .containsEntry("reserved", 2);
-        assertThat(packingLine(task).path("available").asInt()).isZero();
+        assertThat(goodPickedUnits(task)).isZero();
     }
 
     @Test
