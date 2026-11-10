@@ -615,6 +615,13 @@ class PackingService implements Packing {
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND,
                         "Task %s has no pick line %s".formatted(taskId, lineId)));
         pickLists.requireDamageableAfterPick(pick, lineId, damage.damagedQuantity());
+        // 4C-6: once the check station holds the line's carton, a damaged carton is removed there - REMOVED, then whole
+        // into quarantine through the put-back queue - so it is never both a live shipping carton and quarantined stock.
+        if (packages.findByPickLineIdIn(List.of(lineId)).stream()
+                .anyMatch(carton -> carton.getStatus() != PackageStatus.REMOVED)) {
+            throw new BusinessException(ErrorCode.PACK_STATE_CONFLICT, ("Carton %s is at the check station: remove it "
+                    + "there as damaged, and it goes to quarantine through the put-back queue").formatted(line.getLpn()));
+        }
         Optional<PackJpaEntity> pack = packs.findByPickId(pick.getId());
         if (pack.isPresent()) {
             PackingSession session = load(new Context(pick, pack.get(), order));
