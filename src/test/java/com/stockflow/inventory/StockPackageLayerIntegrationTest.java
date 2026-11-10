@@ -5,7 +5,6 @@ import com.stockflow.common.id.Identifiers;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.api.RequestAdjustmentCommand;
 import com.stockflow.inventory.api.StockAdjustmentReason;
-import com.stockflow.inventory.internal.domain.LocationId;
 import com.stockflow.inventory.internal.domain.StockItemRepository;
 import com.stockflow.inventory.internal.domain.StockPackage;
 import com.stockflow.inventory.internal.domain.StockPackageId;
@@ -116,24 +115,21 @@ class StockPackageLayerIntegrationTest {
     }
 
     @Test
-    @DisplayName("an adjustment named by SKU, bin and lot is the loose layer's: emptied, it has nothing to write down, "
-            + "and no carton is opened for it")
+    @DisplayName("an adjustment named by SKU, bin and lot and no carton is refused when asked: stock is adjusted by "
+            + "carton only, and no carton is opened for it (review C4 P-3)")
     void adjustmentTakesTheLooseLayer() {
-        var requested = tx.execute(s -> operations.requestAdjustment(new RequestAdjustmentCommand(SHELF,
-                new Sku(sku), lot, -2, StockAdjustmentReason.DAMAGED, "torn", clerk)));
-        Throwable refused = org.assertj.core.api.Assertions.catchThrowable(() ->
-                tx.executeWithoutResult(s -> operations.approve(requested.adjustmentId(), approver)));
+        Throwable refused = org.assertj.core.api.Assertions.catchThrowable(() -> tx.execute(s ->
+                operations.requestAdjustment(new RequestAdjustmentCommand(SHELF, new Sku(sku), lot, -2,
+                        StockAdjustmentReason.DAMAGED, "torn", clerk))));
 
-        assertThat(refused).isInstanceOf(com.stockflow.inventory.internal.domain.InsufficientStockException.class);
+        assertThat(refused).isInstanceOfSatisfying(com.stockflow.common.error.BusinessException.class,
+                e -> assertThat(e.errorCode()).isEqualTo(com.stockflow.common.error.ErrorCode.STOCK_NOT_IN_CARTON));
         assertThat(rows()).containsExactly(SHELF + ":0:loose", SHELF + ":5:carton", SHELF + ":5:carton");
     }
 
     @Test
     @DisplayName("a row read back knows its carton; a carton is read, recounted, voided and locked through its port")
     void stockPackagePersistence() {
-        List<com.stockflow.inventory.internal.domain.StockItem> loose =
-                tx.execute(s -> stockItems.findLooseBySkuAndLocation(new Sku(sku), new LocationId(SHELF)));
-        assertThat(loose).singleElement().satisfies(row -> assertThat(row.isLoose()).isTrue());
         UUID packed = jdbc.queryForObject("""
                 select stock_package_id from inventory.stock_item where sku = ? and stock_package_id is not null
                  order by stock_package_id limit 1""", UUID.class, sku);

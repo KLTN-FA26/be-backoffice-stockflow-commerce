@@ -286,6 +286,23 @@ WHERE reference_type = 'STOCK_ADJUSTMENT' AND reference_id = ? AND movement_type
     }
 
     @Test
+    @DisplayName("review C4 P-2: a carton written off by LPN for SCRAP or SAMPLE is refused with its own code, before "
+            + "anything is looked up or written")
+    void scrapAndSampleAreNotCartonReasons() {
+        for (StockAdjustmentReason reason : java.util.List.of(StockAdjustmentReason.SCRAP, StockAdjustmentReason.SAMPLE)) {
+            assertThatThrownBy(() -> inventory.requestAdjustment(RequestAdjustmentCommand.ofCarton(other.lpn(), -10,
+                    reason, "x", clerk))).as(reason.name())
+                    .extracting(e -> ((BusinessException) e).errorCode())
+                    .isEqualTo(ErrorCode.STOCK_ADJUSTMENT_REASON_NOT_FOR_CARTON);
+            assertThatThrownBy(() -> inventory.requestAdjustment(RequestAdjustmentCommand.ofCarton("NO-SUCH-LPN", -10,
+                    reason, "x", clerk))).as("%s of an unknown carton: the reason is checked first", reason.name())
+                    .extracting(e -> ((BusinessException) e).errorCode())
+                    .isEqualTo(ErrorCode.STOCK_ADJUSTMENT_REASON_NOT_FOR_CARTON);
+        }
+        assertThat(onHand(BIN)).as("nothing written").isEqualTo(10);
+    }
+
+    @Test
     @DisplayName("review C4 M-5: units are never added to a row in no carton - a loose write-up is STOCK_NOT_IN_CARTON")
     void looseSurplusIsRefused() {
         assertThatThrownBy(() -> inventory.requestAdjustment(new RequestAdjustmentCommand(BIN, sku, lot, 2,

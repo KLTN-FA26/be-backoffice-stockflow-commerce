@@ -252,6 +252,20 @@ class SkuReservationAllocationIntegrationTest {
     }
 
     @Test
+    @DisplayName("review C4 P-1: stock in receiving and staging areas is on hand but promised by no warehouse either")
+    void areaStockIsNotPromisedAtItsWarehouse() {
+        tx.executeWithoutResult(s -> row("HCM-STG01", 3, "2025-08-01T00:00:00Z"));
+
+        assertThat(atp()).as("system-wide: the 17 cartons on pickable bins").isEqualTo(17);
+        assertThat(inventory.availableToPromiseByWarehouse(new Sku(sku))).as("HCM promises the same 17, not the 5 in "
+                + "HCM-RCV01 nor the 3 in HCM-STG01").containsEntry("HCM", 17);
+        assertThat(hold(order(), UUID.randomUUID(), 18).cartonsHeld()).as("18 is more than HCM promises").isZero();
+        reserve(order(), 17);
+        assertThat(inventory.availableToPromiseByWarehouse(new Sku(sku))).containsEntry("HCM", 0);
+        assertThat(atp()).isZero();
+    }
+
+    @Test
     @DisplayName("a warehouse that cannot cover the order allocates nothing and leaves the reservation held")
     void allocationIsAllOrNothing() {
         UUID order = order();

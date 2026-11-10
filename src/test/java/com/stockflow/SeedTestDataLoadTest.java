@@ -262,7 +262,9 @@ class SeedTestDataLoadTest {
     static void assertOrphanReportClean(String report) {
         java.util.List<String> lines = report.lines().filter(line -> !line.isBlank()).toList();
         assertThat(lines.stream().filter(line -> line.startsWith("values|")).toList()).as("section 1")
-                .isNotEmpty().allMatch(line -> line.endsWith("|0|ok"));
+                .isNotEmpty().allMatch(line -> line.endsWith("|0|ok"))
+                .as("load estimates are keyed since V20261117000200, not counted")
+                .noneMatch(line -> line.contains("load_estimate"));
         assertThat(lines).as("a foreign key left NOT VALID").noneMatch(line -> line.endsWith("|f"));
         assertThat(lines).as("section 3: unreviewed references").noneMatch(line -> line.startsWith("unreviewed|"));
     }
