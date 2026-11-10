@@ -318,10 +318,16 @@ class PickListService implements PickLists {
                                     CurrentUser actor) {
         PickJpaEntity pick = lockPick(taskId);
         WarehouseScope.requireWarehouse(pick.getWarehouseId());
-        pick.requireAssigned(actor.userId());
-        TaskAccess.orderInFulfilment(orders, pick);
         List<PickLineJpaEntity> stored = pickLines.findByPickIdOrderBySequenceNoAscIdAsc(pick.getId());
         PickList list = toList(pick, stored);
+        // A carton missing from the staging area (review M2, 20 §4.9 step 4) is found by whoever counts or checks it,
+        // often not the picker: the assignee or whoever assigns the work may report it. A shelf short is the picker's.
+        boolean stagedCarton = list.line(lineId).map(PickList::stagedCarton).orElse(false);
+        if (!stagedCarton || !actor.can(FulfillmentPermissions.TASK_ASSIGNMENT,
+                com.stockflow.common.security.Action.UPDATE)) {
+            pick.requireAssigned(actor.userId());
+        }
+        TaskAccess.orderInFulfilment(orders, pick);
         PickList.Confirmation outcome = list.reportShort(lineId, locationCode, reason);
         PickLine line = outcome.line();
         String barcode = barcodesOf(List.of(line.sku())).get(line.sku());
@@ -331,13 +337,13 @@ class PickListService implements PickLists {
         writeBack(list, stored, Set.of(line.id()));
         // 07 §4.4 step 9, BR-09: the order stops (INVENTORY); it does not cancel, and no stock is deducted.
         holdForInventory(pick.getOrderId(), actor.userId(), "Short pick: carton %s (%d x %s) at %s, %s".formatted(
-                line.lpn(), line.allocatedQty(), line.sku(), line.locationCode(), reason));
+                line.lpn(), line.allocatedQty(), line.sku(), PickList.expectedAt(line), reason));
         // BR-09: the books and the shelf disagree, so the carton is counted blind (or the count holding it answers),
         // which also keeps it out of allocation until the variance is decided (20 BR-11). The picker took none of it.
         var recount = consumption.requestRecount(requireHold(line, "reported short"), line.id(), 0);
         log.info("Short pick line {}: recount {} of carton {}", line.id(), recount.countNumber(), line.lpn());
         log.info("Pick line {} of task {} short: carton {} ({} x {}) at {}, {}", line.id(), taskId, line.lpn(),
-                line.allocatedQty(), line.sku(), line.locationCode(), reason);
+                line.allocatedQty(), line.sku(), PickList.expectedAt(line), reason);
         return view(taskId, line, barcode);
     }
 
@@ -383,6 +389,11 @@ class PickListService implements PickLists {
         writeBack(list, stored, Set.of(lineId));
         pickLines.flush();
         pickLines.saveAll(added.stream().map(line -> PickLineMapper.toNewEntity(pick.getId(), line)).toList());
+        if (pick.getStatus() == PickStatus.STAGED) {
+            // A carton short in the staging area (review M2): its replacements are picked, to the staging area again.
+            pick.reopen();
+            picks.save(pick);
+        }
         if (!list.hasShortLines()) {
             resumeAfterInventory(pick.getOrderId(), actor.userId(), "Short pick reallocated: line %s".formatted(lineId));
         }

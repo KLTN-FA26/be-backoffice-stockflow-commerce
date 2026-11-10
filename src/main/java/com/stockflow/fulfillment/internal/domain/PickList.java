@@ -266,30 +266,53 @@ public final class PickList {
      * ON_HOLD) and the carton is counted blind (BR-09) until the coordinator reallocates. The same report again - same
      * bin, same reason - answers with the line as it is.
      *
-     * @throws BusinessException {@code NOT_FOUND}; {@code PICK_TASK_STATE_CONFLICT} unless the task is PICKING;
-     *         {@code PICK_LINE_NOT_OPEN}, also for a line with no carton; {@code PICK_LOCATION_MISMATCH}
+     * <p>A STAGED line too (team plan 4C-5, review M2; kltn-docs 20 §4.9 step 4): its carton was moved to the staging
+     * area and is found missing or damaged there - a shortage of the goods held for the order, handled as a short pick.
+     * The scan is of the staging area, the task may be PICKING or STAGED, and the line turns SHORT the same way, nothing
+     * deducted; a STAGED task with a SHORT line cannot move to dispatch ({@link #requireAllPicked}), and the
+     * reallocation's new lines are picked to the staging area again. Without this a missing staged carton had no way
+     * out but cancelling the order, or being deducted by the move to dispatch as if it had shipped.</p>
+     *
+     * @throws BusinessException {@code NOT_FOUND}; {@code PICK_TASK_STATE_CONFLICT} unless the task is PICKING (or
+     *         STAGED, for a staged line); {@code PICK_LINE_NOT_OPEN} unless OPEN or STAGED, also for a line with no
+     *         carton; {@code PICK_LOCATION_MISMATCH} unless the scan is where the carton should be
      */
     public Confirmation reportShort(UUID lineId, String scannedLocation, ShortPickReason reason) {
         Objects.requireNonNull(reason, "reason");
         PickLine line = requireLine(lineId);
         if (line.status() == PickLineStatus.SHORT && line.shortReason() == reason
-                && sameCode(scannedLocation, line.locationCode())) {
+                && sameCode(scannedLocation, expectedAt(line))) {
             return new Confirmation(line, true);
         }
-        if (status != PickStatus.PICKING) {
+        boolean staged = line.status() == PickLineStatus.STAGED;
+        if (status != PickStatus.PICKING && !(staged && status == PickStatus.STAGED)) {
             throw new BusinessException(ErrorCode.PICK_TASK_STATE_CONFLICT,
-                    "Short picks are reported while the task is PICKING; it is " + status);
+                    "Short picks are reported while the task is PICKING (or STAGED, for a staged carton); it is "
+                            + status);
         }
-        if (line.status() != PickLineStatus.OPEN || line.lpn() == null) {
+        if (line.status() != PickLineStatus.OPEN && !staged || line.lpn() == null) {
             throw new BusinessException(ErrorCode.PICK_LINE_NOT_OPEN, line.lpn() == null
                     ? "The line names no carton to report" : "The line is " + line.status());
         }
-        if (!sameCode(scannedLocation, line.locationCode())) {
+        if (!sameCode(scannedLocation, expectedAt(line))) {
             throw new BusinessException(ErrorCode.PICK_LOCATION_MISMATCH,
-                    "This line is picked from " + line.locationCode());
+                    "This line's carton is at " + expectedAt(line));
         }
         line.reportShort(reason, scannedLocation.trim());
         return new Confirmation(line, false);
+    }
+
+    /**
+     * Where a line's carton should be: the staging area for a line staged (or reported short there), else its bin.
+     */
+    public static String expectedAt(PickLine line) {
+        return line.stagedLocationCode() != null ? line.stagedLocationCode() : line.locationCode();
+    }
+
+    /** Whether the line's carton was moved to the staging area by this task (still STAGED, or reported short there). */
+    public static boolean stagedCarton(PickLine line) {
+        return line.stagedLocationCode() != null
+                && (line.status() == PickLineStatus.STAGED || line.status() == PickLineStatus.SHORT);
     }
 
     /**
