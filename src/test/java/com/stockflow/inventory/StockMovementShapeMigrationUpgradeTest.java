@@ -63,7 +63,11 @@ class StockMovementShapeMigrationUpgradeTest {
 
     /** Both rules, on the upgraded database: develop's put-back and Sprint 2's consumption. */
     private static void assertShape(Connection db) throws SQLException {
-        update(db, INSERT, "PUT_BACK", SKU, null, BIN, "PICK_LINE");
+        // Since V20261113000400 (4C-4) a pick line's put-back names the carton it goes back into: the shape allows it,
+        // ck_stock_movement_put_back_carton refuses it without one, and the one develop wrote stays (NOT VALID).
+        refused(db, "a pick line's put-back that names no carton", INSERT, "PUT_BACK", SKU, null, BIN, "PICK_LINE");
+        assertThat(text(db, "SELECT convalidated::text FROM pg_constraint WHERE conname = 'ck_stock_movement_put_back_carton'"))
+                .isEqualTo("false");
         update(db, INSERT, "PUT_BACK", SKU, OTHER_BIN, BIN, "MOVE_TASK");
         refused(db, "a put-back from nowhere that is neither a pick line's nor an order's", INSERT, "PUT_BACK", SKU,
                 null, BIN, "MOVE_TASK");

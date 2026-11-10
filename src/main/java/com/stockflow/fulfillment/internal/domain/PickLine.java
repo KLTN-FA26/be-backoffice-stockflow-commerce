@@ -209,7 +209,7 @@ public final class PickLine {
         if (lpn == null && !shortOfAll) {
             throw new IllegalArgumentException("A replacement line is a carton and names it");
         }
-        return new PickLine(id, orderLineId, reservationId, sku, locationCode, lotNumber, sequenceNo, allocatedQty, 0,
+        return new PickLine(id, orderLineId, Objects.requireNonNull(reservationId, "reservationId"), sku, locationCode, lotNumber, sequenceNo, allocatedQty, 0,
                 shortOfAll ? PickLineStatus.SHORT : PickLineStatus.OPEN, null, null, null, null, null, 0, null, null,
                 null, shortOfAll ? allocatedQty : 0, lpn, wholeCarton, 0,
                 Objects.requireNonNull(damageReportId, "damageReportId"), 0);
@@ -221,9 +221,9 @@ public final class PickLine {
      */
     static PickLine open(UUID id, UUID orderLineId, UUID reservationId, String sku, String locationCode,
                          String lotNumber, int sequenceNo, int allocatedQty, String lpn, boolean wholeCarton) {
-        return new PickLine(id, orderLineId, reservationId, sku, locationCode, lotNumber, sequenceNo, allocatedQty,
-                0, PickLineStatus.OPEN, null, null, null, null, null, 0, null, null, null, 0,
-                Objects.requireNonNull(lpn, "lpn: a pick line is a carton"), wholeCarton);
+        return new PickLine(id, orderLineId, Objects.requireNonNull(reservationId, "reservationId"), sku, locationCode,
+                lotNumber, sequenceNo, allocatedQty, 0, PickLineStatus.OPEN, null, null, null, null, null, 0, null, null,
+                null, 0, Objects.requireNonNull(lpn, "lpn: a pick line is a carton"), wholeCarton);
     }
 
     /** The carton was taken whole: the line is PICKED with its whole allocation (BR-04: no quantity is entered). */

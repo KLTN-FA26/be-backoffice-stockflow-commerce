@@ -5,6 +5,7 @@ import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.DataScope;
 import com.stockflow.fulfillment.internal.domain.PickLineStatus;
 import com.stockflow.fulfillment.internal.domain.PickStatus;
+import com.stockflow.fulfillment.internal.domain.ShortPickReason;
 import com.stockflow.fulfillment.internal.entity.PickJpaEntity;
 import com.stockflow.fulfillment.internal.entity.PickLineJpaEntity;
 import com.stockflow.fulfillment.internal.repository.PickJpaRepository;
@@ -96,9 +97,14 @@ class PickListServiceTest {
 
     private PickLineJpaEntity line(String sku, String location, int allocated, UUID reservation) {
         PickLineJpaEntity row = new PickLineJpaEntity(UUID.randomUUID(), task.getId(), UUID.randomUUID(), reservation,
-                sku, location, "LOT-1", stored.size() + 1, allocated);
+                sku, location, "LOT-1", stored.size() + 1, allocated, lpnOf(sku), true);
         stored.add(row);
         return row;
+    }
+
+    /** The carton of a SKU's line in these tests: every line is one carton, named by its LPN (4C-4). */
+    private static String lpnOf(String sku) {
+        return "LPN-" + sku;
     }
 
     private void taskIs(PickStatus status) {
@@ -120,7 +126,7 @@ class PickListServiceTest {
         private final UUID resB = UUID.randomUUID();
 
         private HoldView held(UUID reservation, String sku, String location, int qty, HoldView.Status status) {
-            return new HoldView(reservation, sku, location, "LOT-1", qty, status, null, null);
+            return new HoldView(reservation, sku, location, "LOT-1", qty, status, null, null, null, lpnOf(sku), true);
         }
 
         private void locationsIn(UUID warehouse, String... codes) {
@@ -169,6 +175,19 @@ class PickListServiceTest {
                 assertThat(row.getLpn()).isEqualTo("LPN-20261028-000001");
                 assertThat(row.isWholeCarton()).isTrue();
             });
+        }
+
+        @Test
+        @DisplayName("a live hold on no carton is CONFLICT: a line is picked by its carton's LPN, so none is planned")
+        void looseHoldIsRefused() {
+            OrderSummary order = FulfillmentFixtures.orderWith(task.getOrderId(), OrderStatus.PICKING,
+                    List.of(FulfillmentFixtures.stockLine("SKU-A", resA)), null);
+            when(inventory.holds(any())).thenReturn(List.of(new HoldView(resA, "SKU-A", "HCM-A-01", "LOT-1", 3,
+                    HoldView.Status.HELD, null, null)));
+            locationsIn(WAREHOUSE, "HCM-A-01");
+
+            assertThat(refusal(() -> service.planLines(task, order)).errorCode()).isEqualTo(ErrorCode.CONFLICT);
+            verify(pickLines, never()).saveAll(any());
         }
 
         @Test
@@ -286,7 +305,7 @@ class PickListServiceTest {
     }
 
     @Nested
-    @DisplayName("confirming a line by scan (07 step 6, BR-04)")
+    @DisplayName("confirming a line by scan (07 section 4.2 step 5, BR-04, BR-10)")
     class Confirming {
 
         private final UUID reservation = UUID.randomUUID();
@@ -298,55 +317,60 @@ class PickListServiceTest {
         }
 
         @Test
-        @DisplayName("the exact allocation scanned at its bin picks the line and deducts its hold in the same call")
+        @DisplayName("the bin and the carton's LPN pick the whole carton and deduct its hold in the same call")
         void picksAndDeducts() {
-            var view = service.confirm(task.getId(), row.getId(), "HCM-A-01", "SKU-A", 3, actor);
+            var view = service.confirm(task.getId(), row.getId(), "HCM-A-01", "LPN-SKU-A", actor);
 
             assertThat(view.status()).isEqualTo("PICKED");
-            assertThat(view.pickedQty()).isEqualTo(3);
+            assertThat(view.pickedQty()).as("the whole carton, no quantity typed").isEqualTo(3);
+            assertThat(view.lpn()).isEqualTo("LPN-SKU-A");
             assertThat(row.getStatus()).isEqualTo(PickLineStatus.PICKED);
+            assertThat(row.getScannedCode()).isEqualTo("LPN-SKU-A");
             assertThat(row.getConsumedAt()).isEqualTo(NOW);
             verify(consumption).consumeForPick(reservation, row.getId(), picker);
             verify(pickLines).save(row);
         }
 
         @Test
-        @DisplayName("the SKU's barcode may be scanned instead of the SKU, and the view carries it")
-        void barcodeIsAccepted() {
-            var view = service.confirm(task.getId(), row.getId(), "HCM-A-01", "8930000000017", 3, actor);
+        @DisplayName("the LPN in any case, with spaces around it, is the same carton")
+        void lpnInAnyCase() {
+            service.confirm(task.getId(), row.getId(), " hcm-a-01 ", " lpn-sku-a ", actor);
 
-            assertThat(view.barcode()).isEqualTo("8930000000017");
             assertThat(row.getStatus()).isEqualTo(PickLineStatus.PICKED);
+            verify(consumption).consumeForPick(reservation, row.getId(), picker);
+        }
+
+        @Test
+        @DisplayName("the SKU, its barcode and another carton's LPN are PICK_ITEM_MISMATCH: nothing is deducted")
+        void onlyTheLinesLpnIsAccepted() {
+            for (String scan : new String[] {"SKU-A", "8930000000017", "LPN-SKU-Z", "", null}) {
+                assertThat(refusal(() -> service.confirm(task.getId(), row.getId(), "HCM-A-01", scan, actor))
+                        .errorCode()).as("scan %s", scan).isEqualTo(ErrorCode.PICK_ITEM_MISMATCH);
+            }
+            assertThat(row.getStatus()).isEqualTo(PickLineStatus.OPEN);
+            verifyNoInteractions(consumption);
+            verify(pickLines, never()).save(any());
         }
 
         @Test
         @DisplayName("the same scan again answers with the line and deducts nothing twice")
         void repeatedScanIsIdempotent() {
-            service.confirm(task.getId(), row.getId(), "HCM-A-01", "SKU-A", 3, actor);
+            service.confirm(task.getId(), row.getId(), "HCM-A-01", "LPN-SKU-A", actor);
 
-            var again = service.confirm(task.getId(), row.getId(), "HCM-A-01", "SKU-A", 3, actor);
+            var again = service.confirm(task.getId(), row.getId(), "HCM-A-01", "lpn-sku-a", actor);
 
             assertThat(again.status()).isEqualTo("PICKED");
             verify(consumption, org.mockito.Mockito.times(1)).consumeForPick(any(), any(), any());
         }
 
         @Test
-        @DisplayName("more than the allocation is PICK_QUANTITY_EXCEEDS_ALLOCATION; fewer is PICK_QUANTITY_SHORT")
-        void quantityMustMatchTheAllocation() {
-            assertThat(refusal(() -> service.confirm(task.getId(), row.getId(), "HCM-A-01", "SKU-A", 4, actor))
-                    .errorCode()).isEqualTo(ErrorCode.PICK_QUANTITY_EXCEEDS_ALLOCATION);
-            assertThat(refusal(() -> service.confirm(task.getId(), row.getId(), "HCM-A-01", "SKU-A", 2, actor))
-                    .errorCode()).isEqualTo(ErrorCode.PICK_QUANTITY_SHORT);
-            verifyNoInteractions(consumption);
-        }
-
-        @Test
-        @DisplayName("another location is PICK_LOCATION_MISMATCH; another item is PICK_ITEM_MISMATCH")
-        void scansMustMatch() {
-            assertThat(refusal(() -> service.confirm(task.getId(), row.getId(), "HCM-A-09", "SKU-A", 3, actor))
+        @DisplayName("another location is PICK_LOCATION_MISMATCH, checked before the carton")
+        void locationMustMatch() {
+            assertThat(refusal(() -> service.confirm(task.getId(), row.getId(), "HCM-A-09", "LPN-SKU-A", actor))
                     .errorCode()).isEqualTo(ErrorCode.PICK_LOCATION_MISMATCH);
-            assertThat(refusal(() -> service.confirm(task.getId(), row.getId(), "HCM-A-01", "SKU-Z", 3, actor))
-                    .errorCode()).isEqualTo(ErrorCode.PICK_ITEM_MISMATCH);
+            assertThat(refusal(() -> service.confirm(task.getId(), row.getId(), "HCM-A-09", "LPN-SKU-Z", actor))
+                    .errorCode()).isEqualTo(ErrorCode.PICK_LOCATION_MISMATCH);
+            verifyNoInteractions(consumption);
         }
 
         @Test
@@ -354,7 +378,7 @@ class PickListServiceTest {
         void onlyTheAssigneePicks() {
             CurrentUser other = FulfillmentFixtures.user();
 
-            assertThat(refusal(() -> service.confirm(task.getId(), row.getId(), "HCM-A-01", "SKU-A", 3, other))
+            assertThat(refusal(() -> service.confirm(task.getId(), row.getId(), "HCM-A-01", "LPN-SKU-A", other))
                     .errorCode()).isEqualTo(ErrorCode.NOT_FOUND);
             verifyNoInteractions(consumption);
         }
@@ -365,7 +389,7 @@ class PickListServiceTest {
             UUID id = UUID.randomUUID();
             when(picks.lockById(id)).thenReturn(Optional.empty());
 
-            assertThat(refusal(() -> service.confirm(id, row.getId(), "HCM-A-01", "SKU-A", 3, actor)).errorCode())
+            assertThat(refusal(() -> service.confirm(id, row.getId(), "HCM-A-01", "LPN-SKU-A", actor)).errorCode())
                     .isEqualTo(ErrorCode.NOT_FOUND);
         }
 
@@ -373,7 +397,7 @@ class PickListServiceTest {
         @DisplayName("a task of a warehouse the caller is not assigned to is OUT_OF_DATA_SCOPE")
         void outOfScope() {
             WithCurrentUser.run(FulfillmentFixtures.userOf(OTHER_WAREHOUSE), DataScope.WAREHOUSE, () ->
-                    assertThat(refusal(() -> service.confirm(task.getId(), row.getId(), "HCM-A-01", "SKU-A", 3, actor))
+                    assertThat(refusal(() -> service.confirm(task.getId(), row.getId(), "HCM-A-01", "LPN-SKU-A", actor))
                             .errorCode()).isEqualTo(ErrorCode.OUT_OF_DATA_SCOPE));
         }
 
@@ -383,7 +407,7 @@ class PickListServiceTest {
             when(orders.findById(task.getOrderId())).thenReturn(Optional.of(FulfillmentFixtures.orderWith(
                     task.getOrderId(), OrderStatus.CANCELLED, List.of(), null)));
 
-            assertThat(refusal(() -> service.confirm(task.getId(), row.getId(), "HCM-A-01", "SKU-A", 3, actor))
+            assertThat(refusal(() -> service.confirm(task.getId(), row.getId(), "HCM-A-01", "LPN-SKU-A", actor))
                     .errorCode()).isEqualTo(ErrorCode.PICK_TASK_STATE_CONFLICT);
             verifyNoInteractions(consumption);
         }
@@ -393,7 +417,7 @@ class PickListServiceTest {
         void taskMustBePicking() {
             taskIs(PickStatus.PENDING);
 
-            assertThat(refusal(() -> service.confirm(task.getId(), row.getId(), "HCM-A-01", "SKU-A", 3, actor))
+            assertThat(refusal(() -> service.confirm(task.getId(), row.getId(), "HCM-A-01", "LPN-SKU-A", actor))
                     .errorCode()).isEqualTo(ErrorCode.PICK_TASK_STATE_CONFLICT);
         }
 
@@ -402,15 +426,27 @@ class PickListServiceTest {
         void lineWithoutHold() {
             PickLineJpaEntity free = line("SKU-F", "HCM-A-03", 1, null);
 
-            service.confirm(task.getId(), free.getId(), "HCM-A-03", "SKU-F", 1, actor);
+            service.confirm(task.getId(), free.getId(), "HCM-A-03", "LPN-SKU-F", actor);
 
             assertThat(free.getStatus()).isEqualTo(PickLineStatus.PICKED);
+            verifyNoInteractions(consumption);
+        }
+
+        @Test
+        @DisplayName("a line of before cartons, with no LPN, can be confirmed by no scan: PICK_LINE_NOT_OPEN")
+        void lineWithoutCarton() {
+            PickLineJpaEntity history = new PickLineJpaEntity(UUID.randomUUID(), task.getId(), UUID.randomUUID(),
+                    UUID.randomUUID(), "SKU-H", "HCM-A-04", "LOT-1", 9, 2);
+            stored.add(history);
+
+            assertThat(refusal(() -> service.confirm(task.getId(), history.getId(), "HCM-A-04", "SKU-H", actor))
+                    .errorCode()).isEqualTo(ErrorCode.PICK_LINE_NOT_OPEN);
             verifyNoInteractions(consumption);
         }
     }
 
     @Nested
-    @DisplayName("a short pick stops the order without cancelling it (X-SHORT)")
+    @DisplayName("a short pick stops the order without cancelling it (X-SHORT, 07 section 4.4 step 9, BR-09)")
     class ReportingShort {
 
         private final UUID reservation = UUID.randomUUID();
@@ -424,16 +460,32 @@ class PickListServiceTest {
         }
 
         @Test
-        @DisplayName("the line records the shortfall, nothing is deducted, the order goes ON_HOLD for INVENTORY and the bin is recounted")
+        @DisplayName("the carton is short whole with its reason, nothing is deducted, the order goes ON_HOLD for INVENTORY and a blind count of found = 0 is asked")
         void shortStopsTheOrder() {
-            var view = service.reportShort(task.getId(), row.getId(), "HCM-A-01", 3, actor);
+            var view = service.reportShort(task.getId(), row.getId(), "HCM-A-01", ShortPickReason.NOT_FOUND, actor);
 
             assertThat(view.status()).isEqualTo("SHORT");
-            assertThat(view.shortQty()).isEqualTo(2);
+            assertThat(view.shortQty()).isEqualTo(5);
+            assertThat(view.shortReason()).isEqualTo(ShortPickReason.NOT_FOUND);
             assertThat(view.pickedQty()).isZero();
+            assertThat(row.getShortReason()).isEqualTo(ShortPickReason.NOT_FOUND);
             verify(consumption, never()).consumeForPick(any(), any(), any());
-            verify(orders).putOnHold(eq(task.getOrderId()), eq(HoldReason.INVENTORY), any(), eq(picker));
-            verify(consumption).requestRecount(reservation, row.getId(), 3);
+            ArgumentCaptor<String> note = ArgumentCaptor.forClass(String.class);
+            verify(orders).putOnHold(eq(task.getOrderId()), eq(HoldReason.INVENTORY), note.capture(), eq(picker));
+            assertThat(note.getValue()).contains("LPN-SKU-A").contains("NOT_FOUND");
+            verify(consumption).requestRecount(reservation, row.getId(), 0);
+        }
+
+        @Test
+        @DisplayName("DAMAGED is a reason like NOT_FOUND: same stop, same blind count, the reason on the line and the hold note")
+        void damagedReason() {
+            var view = service.reportShort(task.getId(), row.getId(), "HCM-A-01", ShortPickReason.DAMAGED, actor);
+
+            assertThat(view.shortReason()).isEqualTo(ShortPickReason.DAMAGED);
+            ArgumentCaptor<String> note = ArgumentCaptor.forClass(String.class);
+            verify(orders).putOnHold(eq(task.getOrderId()), eq(HoldReason.INVENTORY), note.capture(), eq(picker));
+            assertThat(note.getValue()).contains("DAMAGED");
+            verify(consumption).requestRecount(reservation, row.getId(), 0);
         }
 
         @Test
@@ -442,28 +494,50 @@ class PickListServiceTest {
             when(orders.findById(task.getOrderId())).thenReturn(Optional.of(FulfillmentFixtures.orderWith(
                     task.getOrderId(), OrderStatus.ON_HOLD, List.of(), HoldReason.INVENTORY)));
 
-            service.reportShort(task.getId(), row.getId(), "HCM-A-01", 0, actor);
+            service.reportShort(task.getId(), row.getId(), "HCM-A-01", ShortPickReason.NOT_FOUND, actor);
 
             verify(orders, never()).putOnHold(any(), any(), any(), any());
         }
 
         @Test
-        @DisplayName("finding as many as allocated is not short: VALIDATION_FAILED")
-        void notShort() {
-            assertThat(refusal(() -> service.reportShort(task.getId(), row.getId(), "HCM-A-01", 5, actor)).errorCode())
-                    .isEqualTo(ErrorCode.VALIDATION_FAILED);
+        @DisplayName("the wrong bin is PICK_LOCATION_MISMATCH and nothing is stopped or counted")
+        void wrongBin() {
+            assertThat(refusal(() -> service.reportShort(task.getId(), row.getId(), "HCM-A-09",
+                    ShortPickReason.NOT_FOUND, actor)).errorCode()).isEqualTo(ErrorCode.PICK_LOCATION_MISMATCH);
             verifyNoInteractions(consumption);
+            verify(orders, never()).putOnHold(any(), any(), any(), any());
+            assertThat(row.getStatus()).isEqualTo(PickLineStatus.OPEN);
         }
 
         @Test
-        @DisplayName("the same report again answers with the line and holds the order once")
+        @DisplayName("the same report again answers with the line and holds the order and counts once")
         void repeatedReport() {
-            service.reportShort(task.getId(), row.getId(), "HCM-A-01", 3, actor);
+            service.reportShort(task.getId(), row.getId(), "HCM-A-01", ShortPickReason.NOT_FOUND, actor);
 
-            var again = service.reportShort(task.getId(), row.getId(), "HCM-A-01", 3, actor);
+            var again = service.reportShort(task.getId(), row.getId(), "HCM-A-01", ShortPickReason.NOT_FOUND, actor);
 
             assertThat(again.status()).isEqualTo("SHORT");
             verify(orders, org.mockito.Mockito.times(1)).putOnHold(any(), any(), any(), any());
+            verify(consumption, org.mockito.Mockito.times(1)).requestRecount(any(), any(), anyInt());
+        }
+
+        @Test
+        @DisplayName("the same report with another reason is PICK_LINE_NOT_OPEN: the first reason stands")
+        void anotherReason() {
+            service.reportShort(task.getId(), row.getId(), "HCM-A-01", ShortPickReason.NOT_FOUND, actor);
+
+            assertThat(refusal(() -> service.reportShort(task.getId(), row.getId(), "HCM-A-01",
+                    ShortPickReason.DAMAGED, actor)).errorCode()).isEqualTo(ErrorCode.PICK_LINE_NOT_OPEN);
+            assertThat(row.getShortReason()).isEqualTo(ShortPickReason.NOT_FOUND);
+            verify(orders, org.mockito.Mockito.times(1)).putOnHold(any(), any(), any(), any());
+        }
+
+        @Test
+        @DisplayName("only the assignee reports a short pick")
+        void onlyTheAssignee() {
+            assertThat(refusal(() -> service.reportShort(task.getId(), row.getId(), "HCM-A-01",
+                    ShortPickReason.NOT_FOUND, FulfillmentFixtures.user())).errorCode()).isEqualTo(ErrorCode.NOT_FOUND);
+            verifyNoInteractions(consumption);
         }
     }
 
@@ -478,12 +552,15 @@ class PickListServiceTest {
         void aShortLine() {
             row = line("SKU-A", "HCM-A-01", 5, reservation);
             row.apply(0, PickLineStatus.SHORT, null, null, null, "HCM-A-01", null, 0, null, null, null);
-            row.recordShort(2);
+            row.recordShort(5, ShortPickReason.NOT_FOUND);
         }
 
         private void inventoryAllocates(String location) {
-            when(inventory.reallocate(any())).thenReturn(List.of(new StockReservation(UUID.randomUUID(),
+            UUID hold = UUID.randomUUID();
+            when(inventory.reallocate(any())).thenReturn(List.of(new StockReservation(hold,
                     UUID.randomUUID(), location, "LOT-2", 5)));
+            when(inventory.holds(any())).thenReturn(List.of(new HoldView(hold, "SKU-A", location, "LOT-2", 5,
+                    HoldView.Status.HELD, null, null, null, "LPN-NEW", true)));
             when(warehouses.findLocation(location)).thenReturn(Optional.of(new StorageLocationView(UUID.randomUUID(),
                     StorageLocationView.Kind.BIN, WAREHOUSE, location, null, null, null, true)));
         }
@@ -518,6 +595,7 @@ class PickListServiceTest {
                 assertThat(v.locationCode()).isEqualTo("HCM-B-01");
                 assertThat(v.allocatedQty()).isEqualTo(5);
                 assertThat(v.sequenceNo()).isEqualTo(2);
+                assertThat(v.lpn()).as("the new line is the new hold's carton").isEqualTo("LPN-NEW");
             });
             assertThat(row.getStatus()).isEqualTo(PickLineStatus.CANCELLED);
             verify(orderReservations).replaceHold(eq(task.getOrderId()), eq(reservation), any());
@@ -542,7 +620,7 @@ class PickListServiceTest {
             inventoryAllocates("HCM-B-01");
             PickLineJpaEntity second = line("SKU-B", "HCM-A-02", 4, UUID.randomUUID());
             second.apply(0, PickLineStatus.SHORT, null, null, null, "HCM-A-02", null, 0, null, null, null);
-            second.recordShort(4);
+            second.recordShort(4, ShortPickReason.DAMAGED);
 
             service.reallocateShort(task.getId(), row.getId(), actor);
 
@@ -563,7 +641,7 @@ class PickListServiceTest {
     }
 
     @Nested
-    @DisplayName("putting the goods of a cancelled order back (07 BR-05)")
+    @DisplayName("putting the cartons of a cancelled order back (07 BR-05, section 4.5 step 14)")
     class PuttingBack {
 
         private final UUID reservation = UUID.randomUUID();
@@ -577,7 +655,7 @@ class PickListServiceTest {
             task.cancel();
             when(picks.lockById(task.getId())).thenReturn(Optional.of(task));
             row = line("SKU-A", "HCM-A-01", 3, reservation);
-            row.apply(3, PickLineStatus.PICKED, picker, NOW, NOW, "HCM-A-01", "SKU-A", 0, null, null, null);
+            row.apply(3, PickLineStatus.PICKED, picker, NOW, NOW, "HCM-A-01", "LPN-SKU-A", 0, null, null, null);
         }
 
         private void binOf(UUID warehouse, boolean usable, StorageLocationView.Kind kind) {
@@ -586,11 +664,11 @@ class PickListServiceTest {
         }
 
         @Test
-        @DisplayName("everything the line picked goes back onto a bin of the task's warehouse, in inventory too")
+        @DisplayName("the whole carton, scanned by its LPN, goes back onto a bin of the task's warehouse, in inventory too")
         void putsBack() {
             binOf(WAREHOUSE, true, StorageLocationView.Kind.BIN);
 
-            var view = service.putBack(task.getId(), row.getId(), " HCM-A-05 ", actor);
+            var view = service.putBack(task.getId(), row.getId(), " HCM-A-05 ", " lpn-sku-a ", actor);
 
             assertThat(view.status()).isEqualTo("PUT_BACK");
             assertThat(view.putBackQty()).isEqualTo(3);
@@ -598,23 +676,51 @@ class PickListServiceTest {
             ArgumentCaptor<PutBackCommand> command = ArgumentCaptor.forClass(PutBackCommand.class);
             verify(consumption).putBack(command.capture());
             assertThat(command.getValue().reservationId()).isEqualTo(reservation);
-            assertThat(command.getValue().sku()).isEqualTo("SKU-A");
+            assertThat(command.getValue().pickLineId()).isEqualTo(row.getId());
+            assertThat(command.getValue().lpn()).as("the carton, as the line names it").isEqualTo("LPN-SKU-A");
+            assertThat(command.getValue().locationCode()).isEqualTo("HCM-A-05");
+            assertThat(command.getValue().actorId()).isEqualTo(picker);
+        }
+
+        @Test
+        @DisplayName("another carton's LPN, the SKU or nothing is PICK_ITEM_MISMATCH: inventory is not asked")
+        void wrongScan() {
+            binOf(WAREHOUSE, true, StorageLocationView.Kind.BIN);
+
+            for (String scan : new String[] {"LPN-SKU-Z", "SKU-A", "8930000000017", "", null}) {
+                assertThat(refusal(() -> service.putBack(task.getId(), row.getId(), "HCM-A-05", scan, actor))
+                        .errorCode()).as("scan %s", scan).isEqualTo(ErrorCode.PICK_ITEM_MISMATCH);
+            }
+            assertThat(row.getStatus()).isEqualTo(PickLineStatus.PICKED);
+            verifyNoInteractions(consumption);
+        }
+
+        @Test
+        @DisplayName("a carton part of which went to quarantine at packing is STOCK_PACKAGE_TAKEN_WHOLE: inventory is not asked")
+        void partlyDamagedCarton() {
+            row.recordDamageAfterPick(1);
+            binOf(WAREHOUSE, true, StorageLocationView.Kind.BIN);
+
+            assertThat(refusal(() -> service.putBack(task.getId(), row.getId(), "HCM-A-05", "LPN-SKU-A", actor))
+                    .errorCode()).isEqualTo(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE);
+            assertThat(row.getStatus()).isEqualTo(PickLineStatus.PICKED);
+            verifyNoInteractions(consumption);
         }
 
         @Test
         @DisplayName("onto an area, an unusable bin, a bin of another warehouse or an unknown code: PUT_BACK_LOCATION_INVALID")
         void targetMustBeAUsableBinOfTheWarehouse() {
             binOf(WAREHOUSE, true, StorageLocationView.Kind.AREA);
-            assertThat(refusal(() -> service.putBack(task.getId(), row.getId(), "HCM-A-05", actor)).errorCode())
+            assertThat(refusal(() -> service.putBack(task.getId(), row.getId(), "HCM-A-05", "LPN-SKU-A", actor)).errorCode())
                     .isEqualTo(ErrorCode.PUT_BACK_LOCATION_INVALID);
             binOf(WAREHOUSE, false, StorageLocationView.Kind.BIN);
-            assertThat(refusal(() -> service.putBack(task.getId(), row.getId(), "HCM-A-05", actor)).errorCode())
+            assertThat(refusal(() -> service.putBack(task.getId(), row.getId(), "HCM-A-05", "LPN-SKU-A", actor)).errorCode())
                     .isEqualTo(ErrorCode.PUT_BACK_LOCATION_INVALID);
             binOf(OTHER_WAREHOUSE, true, StorageLocationView.Kind.BIN);
-            assertThat(refusal(() -> service.putBack(task.getId(), row.getId(), "HCM-A-05", actor)).errorCode())
+            assertThat(refusal(() -> service.putBack(task.getId(), row.getId(), "HCM-A-05", "LPN-SKU-A", actor)).errorCode())
                     .isEqualTo(ErrorCode.PUT_BACK_LOCATION_INVALID);
             when(warehouses.findLocation("HCM-A-05")).thenReturn(Optional.empty());
-            assertThat(refusal(() -> service.putBack(task.getId(), row.getId(), "HCM-A-05", actor)).errorCode())
+            assertThat(refusal(() -> service.putBack(task.getId(), row.getId(), "HCM-A-05", "LPN-SKU-A", actor)).errorCode())
                     .isEqualTo(ErrorCode.PUT_BACK_LOCATION_INVALID);
             verifyNoInteractions(consumption);
         }
@@ -627,7 +733,7 @@ class PickListServiceTest {
             when(picks.lockById(task.getId())).thenReturn(Optional.of(task));
             binOf(WAREHOUSE, true, StorageLocationView.Kind.BIN);
 
-            assertThat(refusal(() -> service.putBack(task.getId(), row.getId(), "HCM-A-05", actor)).errorCode())
+            assertThat(refusal(() -> service.putBack(task.getId(), row.getId(), "HCM-A-05", "LPN-SKU-A", actor)).errorCode())
                     .isEqualTo(ErrorCode.PUT_BACK_NOT_REQUIRED);
         }
 
@@ -638,7 +744,7 @@ class PickListServiceTest {
             free.apply(1, PickLineStatus.PICKED, picker, NOW, null, "HCM-A-02", "SKU-F", 0, null, null, null);
             binOf(WAREHOUSE, true, StorageLocationView.Kind.BIN);
 
-            assertThat(refusal(() -> service.putBack(task.getId(), free.getId(), "HCM-A-05", actor)).errorCode())
+            assertThat(refusal(() -> service.putBack(task.getId(), free.getId(), "HCM-A-05", "LPN-SKU-F", actor)).errorCode())
                     .isEqualTo(ErrorCode.PUT_BACK_NOT_REQUIRED);
         }
 
@@ -646,9 +752,9 @@ class PickListServiceTest {
         @DisplayName("putting the same line back again answers with the line and moves no stock twice")
         void putBackIsIdempotent() {
             binOf(WAREHOUSE, true, StorageLocationView.Kind.BIN);
-            service.putBack(task.getId(), row.getId(), "HCM-A-05", actor);
+            service.putBack(task.getId(), row.getId(), "HCM-A-05", "LPN-SKU-A", actor);
 
-            var again = service.putBack(task.getId(), row.getId(), "HCM-A-05", actor);
+            var again = service.putBack(task.getId(), row.getId(), "HCM-A-05", "LPN-SKU-A", actor);
 
             assertThat(again.status()).isEqualTo("PUT_BACK");
             verify(consumption, org.mockito.Mockito.times(1)).putBack(any());

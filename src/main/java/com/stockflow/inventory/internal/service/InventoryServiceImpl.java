@@ -614,9 +614,9 @@ class InventoryServiceImpl implements InventoryService {
         policies.lock(view.sku().code());
         LocalDate today = BusinessCalendar.date(now);
         if (restoredImpairment(shortId, now)) {
-            // A damage report's impaired allocation whose units a manager found fine and restored onto a bin, the
-            // order's share with them: a sound allocation on pickable stock now, nothing about that bin in doubt. Kept
-            // where it is; the short line gives way to one that picks it there.
+            // A damage report's impaired allocation whose units a manager found fine and restored into a carton on a
+            // bin, the order's share with them: a sound allocation on pickable stock now, nothing about that bin in
+            // doubt. Kept where it is; the short line gives way to one that picks the carton there.
             StockItem current = repository.findByIdForUpdate(view.id()).orElseThrow();
             Reservation hold = current.findReservation(shortId).orElseThrow();
             log.info("Allocation {} of order {}: restored from damage at {}, kept for picking", shortId,
@@ -659,8 +659,11 @@ class InventoryServiceImpl implements InventoryService {
 
     /**
      * Whether the allocation is a damage report's impaired share that went back onto good stock with its units
-     * (RESTORE of everything left): AVAILABLE, unexpired, on a pickable location of a layer no count has frozen.
-     * Read under the SKU lock.
+     * (RESTORE of everything left): AVAILABLE, unexpired, on a pickable location of a layer no count has frozen - and
+     * in a carton. A pick line is one carton, confirmed by its LPN (team plan 4C-4; kltn-docs 07 BR-04, BR-10), so a
+     * share restored as loose units cannot be kept for picking: it is released like any short allocation and whole
+     * cartons are allocated in its place, or INSUFFICIENT_STOCK leaves everything as it was (4C-4 B1). Read under the
+     * SKU lock.
      */
     private boolean restoredImpairment(ReservationId holdId, Instant now) {
         if (!damageReports.isImpairedAllocation(holdId.value())) {
@@ -671,6 +674,7 @@ class InventoryServiceImpl implements InventoryService {
         boolean frozen = cycleCounts.frozen(List.of(item.sku().code()), today).stream()
                 .anyMatch(layer -> layer.stockItemId().equals(item.id().value()));
         return item.findReservation(holdId).map(r -> r.status().isActive()).orElse(false)
+                && item.stockPackageId() != null
                 && item.status() == StockStatus.AVAILABLE
                 && !com.stockflow.inventory.internal.domain.ExpiryPolicy.isExpired(item.expiryDate(), today)
                 && !frozen
