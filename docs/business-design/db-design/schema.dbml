@@ -795,6 +795,7 @@ Enum payment.installment_status {
 Enum payment.order_settlement_kind {
   ORDER_CANCELLED
   REMAINDER_CLOSED
+  GOODS_RETURNED
 }
 
 Enum payment.payment_method {
@@ -3303,6 +3304,7 @@ Table ordering.return_request [headercolor: #C0392B] {
   withdrawal_offset_amount      decimal(19,4) [not null, default: 0]
   withdrawal_credited_amount    decimal(19,4) [not null, default: 0]
   withdrawal_credit_transfer_id uuid
+  goods_receipt_id              uuid
 }
 
 Table ordering.return_request_discrepancy [headercolor: #C0392B] {
@@ -3366,6 +3368,8 @@ Table ordering.return_request_line [headercolor: #C0392B] {
   credit_quantity               int [not null, default: 0]
   credit_amount                 decimal(19,4) [not null, default: 0]
   replacement_order_line_id     uuid
+  refund_quantity               int [not null, default: 0]
+  refund_amount                 decimal(19,4) [not null, default: 0]
   indexes {
     (return_request_id, order_line_id) [unique]
   }
@@ -5593,6 +5597,7 @@ Ref: ordering.return_request.cancelled_by > identity.app_user.id
 Ref: ordering.return_request.credit_transfer_id > payment.customer_transfer.id [delete: restrict]
 Ref: ordering.return_request.customer_id > customer.customer.id [delete: restrict]
 Ref: ordering.return_request.decided_by > identity.app_user.id
+Ref: ordering.return_request.goods_receipt_id > procurement.goods_receipts.id [delete: restrict]
 Ref: ordering.return_request.inspected_by > identity.app_user.id
 Ref: ordering.return_request.order_id > ordering.customer_order.id [delete: restrict]
 Ref: ordering.return_request.proposed_by > identity.app_user.id
