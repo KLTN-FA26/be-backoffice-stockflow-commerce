@@ -139,9 +139,9 @@ order by pc.is_primary desc, pc.id limit 1
         return kinds;
     }
 
+    /** Every row is CUSTOMIZABLE since 5-9 (ck_products_kind); the column is read rather than assumed. */
     private static com.stockflow.product.api.ProductKind kind(String kind) {
-        return "CUSTOMIZABLE".equals(kind) ? com.stockflow.product.api.ProductKind.CUSTOMIZABLE
-                : com.stockflow.product.api.ProductKind.STANDARD;
+        return com.stockflow.product.api.ProductKind.valueOf(kind);
     }
 
     public List<UUID> publishedPage(UUID after, int size) {

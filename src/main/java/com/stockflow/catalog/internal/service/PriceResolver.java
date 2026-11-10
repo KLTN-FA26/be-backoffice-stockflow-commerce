@@ -19,11 +19,11 @@ import java.util.UUID;
 /**
  * Which price a customer pays for a SKU at a quantity (kltn-docs 13 §3): the customer's own tier, or,
  * with no own price, its group's price, or the base price - the last two from one unit on. Joins the
- * caller's transaction; locking is the caller's ({@link CatalogServiceImpl} locks the products first).
+ * caller's transaction and reads only: nothing is priced for a checkout any more (team plan 5-2).
  *
  * <p>Since 4B-2 a customer's own price for one of its own SKUs counts cartons (13 BR-05): what a quote starts from
- * ({@link #schedule}). Checkout counts units, so it reads a customer's own price only on a stock variant
- * ({@link #checkoutSchedule}); the customer's own SKU is quoted, not bought at checkout.</p>
+ * ({@link #schedule}). The storefront counts units, so it reads a customer's own price only on a stock variant
+ * ({@link #checkoutSchedule}); the customer's own SKU is quoted.</p>
  */
 @Component
 class PriceResolver {
@@ -51,7 +51,7 @@ class PriceResolver {
     }
 
     /**
-     * As {@link #schedule}, counted in units for checkout and the storefront: a customer's own price on one of its own
+     * As {@link #schedule}, counted in units for the storefront: a customer's own price on one of its own
      * SKUs counts cartons and is never read here. Their callers refuse or skip such a SKU first (it is quoted - 14 BR-01,
      * BR-08); this keeps a carton price from being read as a unit price should one reach here anyway.
      */
@@ -81,25 +81,6 @@ class PriceResolver {
         return listings.price(sku)
                 .map(base -> fromOneUnit(sku, PriceSchedule.PriceSource.BASE, base))
                 .orElseThrow(() -> new BusinessException(ErrorCode.PRICE_NOT_AVAILABLE));
-    }
-
-    /**
-     * The unit price at this quantity: the last tier that starts at or below it.
-     *
-     * @throws BusinessException {@code CUSTOMER_PRICE_BELOW_MOQ} below the first tier (BR-05)
-     */
-    static Money unitPrice(PriceSchedule schedule, int quantity) {
-        Money price = null;
-        for (PriceSchedule.Tier tier : schedule.tiers()) {
-            if (tier.minQuantity() > quantity) break;
-            price = tier.unitPrice();
-        }
-        if (price == null) {
-            throw new BusinessException(ErrorCode.CUSTOMER_PRICE_BELOW_MOQ,
-                    "%d units of %s are below this customer's minimum of %d"
-                            .formatted(quantity, schedule.sku(), schedule.moq()));
-        }
-        return price;
     }
 
     CustomerSummary customer(UUID customerId) {

@@ -374,8 +374,6 @@ class PermissionMatrixTest {
                 Map.entry("PUT /api/v1/customers/{customerId}/addresses/{addressId}", address),
                 Map.entry("PUT /api/v1/customers/{customerId}", "{\"fullName\":\"Mallory\",\"version\":0}"),
                 Map.entry("PUT /api/v1/customers/me", "{\"fullName\":\"Attacker renamed\",\"version\":0}"),
-                Map.entry("POST /api/v1/orders", "{\"requestId\":\"" + UUID.randomUUID() + "\",\"customerId\":\"" + victimCustomer
-                        + "\",\"lines\":[{\"sku\":\"SOFA-3S-GREY\",\"quantity\":1,\"unitPrice\":1000}]}"),
                 // Customer designs (2F-3): well-formed writes, so only the owner check can refuse the victim's design.
                 Map.entry("POST /api/v1/designs/mine", "{\"productId\":\"" + DemoData.PRODUCT_SOFA
                         + "\",\"sku\":\"SOFA-3S-GREY\",\"templateCode\":\"BODY\",\"name\":\"stolen\"}"),
@@ -399,7 +397,6 @@ class PermissionMatrixTest {
                 // SCRUM-448 / R1: valid bodies, so only the owner check can refuse the victim's quote and order.
                 Map.entry("POST /api/v1/quotes/{quoteId}/acceptance", "{\"version\":0}"),
                 Map.entry("POST /api/v1/quotes/{quoteId}/change-request", "{\"version\":0,\"feedback\":\"stolen\"}"),
-                Map.entry("POST /api/v1/orders/{orderId}/reorder", "{\"requestId\":\"" + UUID.randomUUID() + "\"}"),
                 // SCRUM-243: a well-formed claim on the victim's order, so only the owner check can refuse it.
                 Map.entry("POST /api/v1/orders/{orderId}/returns", "{\"requestId\":\"" + UUID.randomUUID()
                         + "\",\"reasonCode\":\"PRINT_DEFECT\",\"requestedResolution\":\"REFUND\",\"lines\":[{\"orderLineId\":\""
@@ -457,17 +454,17 @@ class PermissionMatrixTest {
                     VALUES (?, ?, ?, 'Victim project', 'ACTIVE', NOW())""", victimProject, victimCustomer, victimUser);
             jdbc.update("UPDATE design.design_draft SET project_id = ? WHERE id = ?", victimProject, victimDesign);
             jdbc.update("""
-                    INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, currency, placed_at, version, created_at, hold_reason, payment_term, credit_term_days)
-                    VALUES (?, ?, ?, ?, 'ON_HOLD', 1000, 'VND', NOW(), 0, NOW(), 'CREDIT', 'CREDIT', 30)""",
+                    INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, currency, placed_at, version, created_at, hold_reason)
+                    VALUES (?, ?, ?, ?, 'ON_HOLD', 1000, 'VND', NOW(), 0, NOW(), 'CREDIT')""",
                     victimOrder, "SO-20991231-%06d".formatted(ThreadLocalRandom.current().nextInt(1_000_000)), victimCustomer, UUID.randomUUID());
             jdbc.update("INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency) VALUES (?, ?, 'TABLE-OAK-160', 1, 1000, 'VND')",
                     Identifiers.newId(), victimOrder);
             // The victim's own quote, sent to them (SCRUM-448).
             int n = ThreadLocalRandom.current().nextInt(1_000_000);
             jdbc.update("""
-                    INSERT INTO ordering.quote (id, quote_number, request_id, customer_id, status, payment_term, valid_until,
+                    INSERT INTO ordering.quote (id, quote_number, request_id, customer_id, status, valid_until,
                         sent_at, sent_by, version, created_at)
-                    VALUES (?, ?, ?, ?, 'SENT', 'PREPAID', NOW() + INTERVAL '7 days', NOW(), ?, 0, NOW())""",
+                    VALUES (?, ?, ?, ?, 'SENT', NOW() + INTERVAL '7 days', NOW(), ?, 0, NOW())""",
                     victimQuote, "QT-20991231-%06d".formatted(n), UUID.randomUUID(), victimCustomer, victimUser);
             jdbc.update("""
                     INSERT INTO design.design_snapshot (id, draft_id, checksum, artifact_url, confirmed_at, created_at, artifact_manifest)
@@ -622,6 +619,26 @@ class PermissionMatrixTest {
             assertThat(http.asCustomer(victimUser, MockMvcRequestBuilders.get(path)).andReturn().getResponse().getStatus())
                     .as("the owner reading " + path).isEqualTo(200);
         }
+    }
+
+    /**
+     * Team plan 5-2 (kltn-docs 13 BR-08, 14 BR-01, BR-02): the customer does not place orders. Its role holds no
+     * right to create one, nor the cart's permission; the two handlers that did are gone, so the "own data" allow-list
+     * above cannot be hiding a customer-reachable way to order; and staff, who draw an order up from a quote, still
+     * hold the permission.
+     */
+    @Test
+    void aCustomerHoldsNoRightToPlaceAnOrder() {
+        ResolvedAuthorization customer = roles.resolve(List.of(Role.CUSTOMER.authority()));
+        assertThat(customer.permissions()).as("a customer follows its orders")
+                .contains(PermissionCode.of("sales-orders", com.stockflow.common.security.Action.READ))
+                .doesNotContain(PermissionCode.of("sales-orders", com.stockflow.common.security.Action.CREATE));
+        assertThat(customer.permissions()).extracting(PermissionCode::resource).doesNotContain("sales-carts");
+        assertThat(roles.resolve(List.of(Role.SALES_STAFF.authority())).permissions())
+                .contains(PermissionCode.of("sales-orders", com.stockflow.common.security.Action.CREATE));
+
+        Set<String> keys = handlers().stream().map(Handler::key).collect(java.util.stream.Collectors.toSet());
+        assertThat(keys).doesNotContain("POST /api/v1/orders", "POST /api/v1/orders/{orderId}/reorder");
     }
 
     @Test

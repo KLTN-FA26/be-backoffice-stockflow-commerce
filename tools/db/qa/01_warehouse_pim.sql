@@ -163,9 +163,15 @@ SELECT pg_temp.expect_ok('P15 sku renamed while still DRAFT', $q$
     INSERT INTO product.variants (id, product_id, sku, name, attribute_signature)
     VALUES (md5('qa:variant:draft')::uuid, md5('demo:product:SOFA-3S')::uuid, 'SOFA-3S-BEIGE', 'x', 'COLOR=BEIGE');
     UPDATE product.variants SET sku = 'SOFA-3S-BE' WHERE id = md5('qa:variant:draft')::uuid $q$);
-SELECT pg_temp.expect_fail('P16 print template on a STANDARD product', $q$
-    INSERT INTO product.customization_templates (id, variant_id, code, name, allowed_file_formats, max_file_size_mb)
-    VALUES (gen_random_uuid(), md5('demo:variant:SOFA-3S-GREY')::uuid, 'T1', 'x', ARRAY['image/png'], 10) $q$);
+-- 5-9: every product is CUSTOMIZABLE, so there is no STANDARD product to refuse a template on: the kind itself is refused.
+SELECT pg_temp.expect_fail('P16 a product cannot be STANDARD', $q$
+    UPDATE product.products SET kind = 'STANDARD' WHERE id = md5('demo:product:SOFA-3S')::uuid $q$);
+SELECT pg_temp.expect_fail('P16b a product inserted as STANDARD', $q$
+    INSERT INTO product.products (id, code, name, slug, status, kind, version, created_at)
+    VALUES (gen_random_uuid(), 'QASTD', 'QA standard', 'qa-std', 'DRAFT', 'STANDARD', 0, NOW()) $q$);
+SELECT pg_temp.expect_ok('P16c a product inserted without a kind is CUSTOMIZABLE', $q$
+    INSERT INTO product.products (id, code, name, slug, status, version, created_at)
+    VALUES (md5('qa:product:DEF')::uuid, 'QADEF', 'QA default', 'qa-def', 'DRAFT', 0, NOW()) $q$);
 -- A CUSTOMIZABLE cup to hang templates on (V20261108000600): rolled back with the rest.
 INSERT INTO product.products (id, code, name, slug, status, kind, version, created_at)
 VALUES (md5('qa:product:CUP')::uuid, 'QACUP', 'QA cup', 'qa-cup', 'DRAFT', 'CUSTOMIZABLE', 0, NOW());

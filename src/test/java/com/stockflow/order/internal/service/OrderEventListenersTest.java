@@ -1,7 +1,5 @@
 package com.stockflow.order.internal.service;
 
-import com.stockflow.contracts.ReleaseReason;
-import com.stockflow.contracts.StockReservationReleased;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.internal.domain.Order;
 import com.stockflow.order.internal.domain.OrderRepository;
@@ -18,7 +16,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 /**
@@ -29,35 +26,6 @@ import static org.mockito.Mockito.when;
 class OrderEventListenersTest {
 
     private final OrderServiceImpl orders = mock(OrderServiceImpl.class);
-
-    @Nested
-    @DisplayName("inventory events")
-    class InventoryEvents {
-
-        private final InventoryEventListener listener = new InventoryEventListener(orders);
-
-        @Test
-        @DisplayName("an expired reservation cancels the unpaid order (BR-07)")
-        void expiredReservation() {
-            UUID order = UUID.randomUUID();
-
-            listener.on(new StockReservationReleased(order, "CUP-12OZ", 10, ReleaseReason.RESERVATION_EXPIRED));
-
-            verify(orders).cancelAfterHoldExpired(order);
-        }
-
-        @Test
-        @DisplayName("every other release reason is a consequence of something the order did and is ignored")
-        void otherReasonsAreIgnored() {
-            for (ReleaseReason reason : ReleaseReason.values()) {
-                if (reason != ReleaseReason.RESERVATION_EXPIRED) {
-                    listener.on(new StockReservationReleased(UUID.randomUUID(), "CUP-12OZ", 10, reason));
-                }
-            }
-
-            verifyNoInteractions(orders);
-        }
-    }
 
     @Nested
     @DisplayName("what the order tells payment about the order of an installment")

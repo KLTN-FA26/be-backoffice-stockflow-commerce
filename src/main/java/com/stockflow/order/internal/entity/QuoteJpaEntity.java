@@ -38,8 +38,8 @@ public class QuoteJpaEntity extends BaseEntity {
     @Column(name = "revision", nullable = false)
     private int revision;
 
-    // 4B-10: payment_term and deposit_percent are no longer mapped (a quote has no payment terms; the contract's plan
-    // says how the customer pays). V20261108003200 gives payment_term its default; 4B-11 drops both.
+    // No payment_term or deposit_percent (4B-10 unmapped them, 4B-11 dropped them): a quote has no payment terms; the
+    // contract's plan says how the customer pays.
 
     @Column(name = "valid_until", nullable = false)
     private Instant validUntil;

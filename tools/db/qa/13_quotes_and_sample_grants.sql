@@ -43,8 +43,8 @@ SELECT md5('qa9:draft')::uuid, c.id, (SELECT p.id FROM product.products p ORDER 
        '{}'::jsonb FROM customer.customer c ORDER BY c.id LIMIT 1;
 INSERT INTO design.design_snapshot (id, draft_id, checksum, artifact_url, confirmed_at, created_at, artifact_manifest)
 VALUES (md5('qa9:snap')::uuid, md5('qa9:draft')::uuid, repeat('b', 64), 'https://example.com/b.pdf', NOW(), NOW(), '[]'::jsonb);
-INSERT INTO ordering.quote (id, quote_number, request_id, customer_id, status, payment_term, valid_until)
-SELECT md5('qa9:quote')::uuid, 'QT-QA-1', gen_random_uuid(), c.id, 'DRAFT', 'PREPAID', NOW() + interval '7 days'
+INSERT INTO ordering.quote (id, quote_number, request_id, customer_id, status, valid_until)
+SELECT md5('qa9:quote')::uuid, 'QT-QA-1', gen_random_uuid(), c.id, 'DRAFT', NOW() + interval '7 days'
   FROM customer.customer c ORDER BY c.id LIMIT 1;
 INSERT INTO ordering.quote_line (id, quote_id, line_no, blank_sku, design_snapshot_id, quantity)
 VALUES (md5('qa9:line')::uuid, md5('qa9:quote')::uuid, 1, 'SOFA-3S-GREY', md5('qa9:snap')::uuid, 500);
@@ -56,10 +56,6 @@ SELECT pg_temp.expect_fail('QT1 an unknown status', $q$
     UPDATE ordering.quote SET status = 'APPROVED' WHERE id = md5('qa9:quote')::uuid $q$);
 SELECT pg_temp.expect_fail('QT2 SENT without who sent it and when', $q$
     UPDATE ordering.quote SET status = 'SENT' WHERE id = md5('qa9:quote')::uuid $q$);
-SELECT pg_temp.expect_fail('QT3 a deposit share on a prepaid quote', $q$
-    UPDATE ordering.quote SET deposit_percent = 30 WHERE id = md5('qa9:quote')::uuid $q$);
-SELECT pg_temp.expect_fail('QT4 a deposit of 100% (Order.applyTerms needs below 100)', $q$
-    UPDATE ordering.quote SET payment_term = 'DEPOSIT', deposit_percent = 100 WHERE id = md5('qa9:quote')::uuid $q$);
 SELECT pg_temp.expect_fail('QT5 valid until before it was created', $q$
     UPDATE ordering.quote SET valid_until = created_at - interval '1 day' WHERE id = md5('qa9:quote')::uuid $q$);
 SELECT pg_temp.expect_fail('QT6 CHANGES_REQUESTED without the customer''s feedback', $q$
@@ -71,8 +67,8 @@ SELECT pg_temp.expect_fail('QT7 CONVERTED without its order', $q$
 SELECT pg_temp.expect_fail('QT8 CANCELLED without a reason', $q$
     UPDATE ordering.quote SET status = 'CANCELLED' WHERE id = md5('qa9:quote')::uuid $q$);
 SELECT pg_temp.expect_fail('QT9 two quotes for one request id', $q$
-    INSERT INTO ordering.quote (id, quote_number, request_id, customer_id, status, payment_term, valid_until)
-    SELECT gen_random_uuid(), 'QT-QA-2', request_id, customer_id, 'DRAFT', 'PREPAID', valid_until
+    INSERT INTO ordering.quote (id, quote_number, request_id, customer_id, status, valid_until)
+    SELECT gen_random_uuid(), 'QT-QA-2', request_id, customer_id, 'DRAFT', valid_until
       FROM ordering.quote WHERE id = md5('qa9:quote')::uuid $q$);
 SELECT pg_temp.expect_fail('QT10 a tier price with a fraction of a dong', $q$
     INSERT INTO ordering.quote_price_tier (quote_line_id, min_quantity, unit_price)
@@ -115,8 +111,8 @@ INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, f
                                        version, created_at, default_shipping)
 SELECT md5('qa9:c:carton')::uuid, i.id, 'CARTON', 50, FALSE, FALSE, TRUE, 0, NOW(), TRUE
   FROM inventory.inventory_items i WHERE i.sku = 'QA-QC-OWN';
-INSERT INTO ordering.quote (id, quote_number, request_id, customer_id, status, payment_term, valid_until)
-SELECT md5('qa9:c:quote')::uuid, 'QT-QA-3', gen_random_uuid(), c.id, 'DRAFT', 'PREPAID', NOW() + interval '7 days'
+INSERT INTO ordering.quote (id, quote_number, request_id, customer_id, status, valid_until)
+SELECT md5('qa9:c:quote')::uuid, 'QT-QA-3', gen_random_uuid(), c.id, 'DRAFT', NOW() + interval '7 days'
   FROM customer.customer c ORDER BY c.id LIMIT 1;
 SELECT pg_temp.expect_ok('QT16 20 cartons of the customer''s own SKU in its carton unit, 50 pieces each', $q$
     INSERT INTO ordering.quote_line (id, quote_id, line_no, sku, uom_conversion_id, cartons, units_per_carton)
@@ -153,8 +149,8 @@ SELECT pg_temp.expect_ok('QT24 an order line of 20 cartons, 1,000 pieces, with t
 SELECT pg_temp.expect_fail('QT25 a carton line of another customer''s SKU (14 BR-04)', $q$
     INSERT INTO customer.customer (id, full_name, email, status, version, created_at)
     VALUES (md5('qa9:c:other')::uuid, 'QA khach khac', 'qa9-other@example.com', 'ACTIVE', 0, NOW());
-    INSERT INTO ordering.quote (id, quote_number, request_id, customer_id, status, payment_term, valid_until)
-    VALUES (md5('qa9:c:other-quote')::uuid, 'QT-QA-4', gen_random_uuid(), md5('qa9:c:other')::uuid, 'DRAFT', 'PREPAID',
+    INSERT INTO ordering.quote (id, quote_number, request_id, customer_id, status, valid_until)
+    VALUES (md5('qa9:c:other-quote')::uuid, 'QT-QA-4', gen_random_uuid(), md5('qa9:c:other')::uuid, 'DRAFT',
             NOW() + interval '7 days');
     INSERT INTO ordering.quote_line (id, quote_id, line_no, sku, uom_conversion_id, cartons, units_per_carton)
     VALUES (gen_random_uuid(), md5('qa9:c:other-quote')::uuid, 1, 'QA-QC-OWN', md5('qa9:c:carton')::uuid, 5, 50) $q$);
@@ -170,8 +166,8 @@ SELECT pg_temp.expect_ok('QT27 the carton unit retired, then an order line copyi
             10, 50) $q$);
 SELECT pg_temp.expect_fail('QT28 a new quote line in a retired carton unit', $q$
     UPDATE ordering.quote_line SET line_no = 1 WHERE id = md5('qa9:c:line')::uuid;
-    INSERT INTO ordering.quote (id, quote_number, request_id, customer_id, status, payment_term, valid_until)
-    SELECT md5('qa9:c:quote5')::uuid, 'QT-QA-5', gen_random_uuid(), c.id, 'DRAFT', 'PREPAID', NOW() + interval '7 days'
+    INSERT INTO ordering.quote (id, quote_number, request_id, customer_id, status, valid_until)
+    SELECT md5('qa9:c:quote5')::uuid, 'QT-QA-5', gen_random_uuid(), c.id, 'DRAFT', NOW() + interval '7 days'
       FROM customer.customer c ORDER BY c.id LIMIT 1;
     INSERT INTO ordering.quote_line (id, quote_id, line_no, sku, uom_conversion_id, cartons, units_per_carton)
     VALUES (gen_random_uuid(), md5('qa9:c:quote5')::uuid, 1, 'QA-QC-OWN', md5('qa9:c:carton')::uuid, 5, 50) $q$);

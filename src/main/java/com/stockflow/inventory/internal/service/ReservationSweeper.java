@@ -72,7 +72,8 @@ class ReservationSweeper {
     public void releaseExpiredReservations() {
         Instant now = clock.instant();
         // SKU reservations first (SCRUM-152): every checkout hold made since Sprint 3 is one. Each expiry announces
-        // StockReservationReleased(RESERVATION_EXPIRED), on which order cancels the unpaid order (X-RESV).
+        // StockReservationReleased(RESERVATION_EXPIRED); the order is no longer cancelled for it (team plan 5-2: the
+        // customer does not check out, and Sales cancels an unpaid order by hand).
         int expired = 0;
         for (SkuReservation reservation : skuReservations.findExpiredForUpdate(now, BATCH_SIZE)) {
             if (reservation.release(ReleaseReason.RESERVATION_EXPIRED, now)) {

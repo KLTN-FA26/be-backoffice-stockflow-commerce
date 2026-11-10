@@ -17,7 +17,6 @@ import com.stockflow.inventory.api.UomConversionDraft;
 import com.stockflow.inventory.api.UomConversionService;
 import com.stockflow.product.api.CreateProductCommand;
 import com.stockflow.product.api.PrintConfigs;
-import com.stockflow.product.api.ProductKind;
 import com.stockflow.product.api.ProductService;
 import com.stockflow.product.api.TaxClass;
 import com.stockflow.product.internal.service.ProductVariantService;
@@ -102,7 +101,7 @@ class DesignProjectIntegrationTest {
         as(manager, Set.of());
         String code = "PRJ-" + UUID.randomUUID().toString().substring(0, 6).toUpperCase();
         productId = products.create(new CreateProductCommand(code, "Ly giấy 12oz", "Paper cup 12oz", null, null,
-                "Ly", null, null, TaxClass.STANDARD, ProductKind.CUSTOMIZABLE, List.of())).productId();
+                "Ly", null, null, TaxClass.STANDARD, List.of())).productId();
         tx.executeWithoutResult(s -> {
             jdbc.update("UPDATE product.products SET status = 'APPROVED', submitted_by = ?, submitted_at = NOW(), "
                     + "approved_by = ?, approved_at = NOW() WHERE id = ?", ReferenceRows.user(entityManager),

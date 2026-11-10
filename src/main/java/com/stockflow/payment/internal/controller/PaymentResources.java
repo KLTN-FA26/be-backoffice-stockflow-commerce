@@ -2,8 +2,9 @@ package com.stockflow.payment.internal.controller;
 
 /**
  * Permission resource codes owned by the payment module. The money ledger's ({@code payment-receivables},
- * {@code payment-customer-transfers}, {@code payment-order-payments}) went with it in 4B-10; their rows and grants are
- * 4B-11's to delete.
+ * {@code payment-customer-transfers}, {@code payment-order-payments}, {@code payment-payments},
+ * {@code payment-cod-remittances}, {@code payment-settlements}) went with it (4B-10 in the code, 4B-11 in the
+ * database).
  */
 final class PaymentResources {
 

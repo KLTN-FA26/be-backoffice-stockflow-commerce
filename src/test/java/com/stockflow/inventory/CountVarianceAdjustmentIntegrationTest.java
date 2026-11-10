@@ -180,8 +180,8 @@ class CountVarianceAdjustmentIntegrationTest {
         UUID order = Identifiers.newId();
         tx.executeWithoutResult(s -> jdbc.update("""
                 INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount,
-                    currency, placed_at, version, created_at, paid_amount, paid_in_full_at)
-                VALUES (?, ?, ?, ?, 'CONFIRMED', 1, 'VND', NOW(), 0, NOW(), 1, NOW())""", order,
+                    currency, placed_at, version, created_at, contract_signed_at)
+                VALUES (?, ?, ?, ?, 'CONFIRMED', 1, 'VND', NOW(), 0, NOW(), NOW())""", order,
                 "SO-20991226-%06d".formatted(java.util.concurrent.ThreadLocalRandom.current().nextInt(1_000_000)),
                 DemoData.CUSTOMER_ID, UUID.randomUUID()));
         return order;

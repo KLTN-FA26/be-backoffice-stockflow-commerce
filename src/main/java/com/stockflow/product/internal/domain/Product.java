@@ -94,7 +94,7 @@ public final class Product extends AggregateRoot {
         this.description = description;
         this.descriptionEn = descriptionEn;
         this.taxClass = taxClass;
-        this.kind = Objects.requireNonNullElse(kind, ProductKind.STANDARD);
+        this.kind = requireCustomizable(kind);
         this.status = Objects.requireNonNull(status, "status");
         this.version = version;
         this.submittedBy = submittedBy;
@@ -116,9 +116,10 @@ public final class Product extends AggregateRoot {
      */
     public static Product draft(String code, String name, String nameEn, UUID brandId, UUID categoryId,
                                 String shortDescription, String description, String descriptionEn,
-                                TaxClass taxClass, ProductKind kind) {
+                                TaxClass taxClass) {
         return new Product(ProductId.newId(), code, name, requireNonBlank(nameEn, "nameEn"), brandId, categoryId,
-                shortDescription, description, descriptionEn, requireTaxClass(taxClass), kind, ProductStatus.DRAFT,
+                shortDescription, description, descriptionEn, requireTaxClass(taxClass), ProductKind.CUSTOMIZABLE,
+                ProductStatus.DRAFT,
                 0L, null, null, null, null, false, null, null, null, null, null);
     }
 
@@ -133,12 +134,11 @@ public final class Product extends AggregateRoot {
      */
     public List<String> updateDetails(String name, String nameEn, UUID brandId, UUID categoryId,
                                       String shortDescription, String description, String descriptionEn,
-                                      TaxClass taxClass, ProductKind kind) {
+                                      TaxClass taxClass) {
         requireStatus(ProductStatus.DRAFT, "edited");
         String newName = requireNonBlank(name, "name");
         String newNameEn = requireNonBlank(nameEn, "nameEn");
         TaxClass newTaxClass = requireTaxClass(taxClass);
-        ProductKind newKind = Objects.requireNonNullElse(kind, ProductKind.STANDARD);
         List<String> changed = new ArrayList<>();
         if (!Objects.equals(this.name, newName)) changed.add("name");
         if (!Objects.equals(this.nameEn, newNameEn)) changed.add("nameEn");
@@ -148,7 +148,6 @@ public final class Product extends AggregateRoot {
         if (!Objects.equals(this.description, description)) changed.add("description");
         if (!Objects.equals(this.descriptionEn, descriptionEn)) changed.add("descriptionEn");
         if (this.taxClass != newTaxClass) changed.add("taxClass");
-        if (this.kind != newKind) changed.add("kind");
         this.name = newName;
         this.nameEn = newNameEn;
         this.brandId = brandId;
@@ -157,7 +156,6 @@ public final class Product extends AggregateRoot {
         this.description = description;
         this.descriptionEn = descriptionEn;
         this.taxClass = newTaxClass;
-        this.kind = newKind;
         return List.copyOf(changed);
     }
 
@@ -344,6 +342,17 @@ public final class Product extends AggregateRoot {
             throw new IllegalArgumentException(field + " must not be blank");
         }
         return value;
+    }
+
+    /**
+     * Every product is CUSTOMIZABLE (kltn-docs 01 BR-19, team plan 5-9); {@code ck_products_kind} says it too. Null is a
+     * row or a caller that never named one.
+     */
+    private static ProductKind requireCustomizable(ProductKind kind) {
+        if (kind != null && kind != ProductKind.CUSTOMIZABLE) {
+            throw new IllegalArgumentException("Every product is CUSTOMIZABLE, not " + kind);
+        }
+        return ProductKind.CUSTOMIZABLE;
     }
 
     private static TaxClass requireTaxClass(TaxClass taxClass) {

@@ -24,7 +24,6 @@ import com.stockflow.order.internal.domain.QuoteLine;
 import com.stockflow.order.internal.domain.QuoteRepository;
 import com.stockflow.order.internal.domain.QuoteStatus;
 import com.stockflow.order.internal.repository.QuoteSearch;
-import com.stockflow.product.api.CustomerSku;
 import com.stockflow.product.api.CustomerSkus;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -353,71 +352,6 @@ class QuoteServiceTest {
         assertThatThrownBy(() -> service.convert(sales, accepted.id(), new Quotes.Conversion(6, null, null)))
                 .as("a version not seen").extracting(QuoteServiceTest::code).isEqualTo(ErrorCode.OPTIMISTIC_LOCK);
         verify(quotedOrders, never()).placeQuotedOrder(any());
-    }
-
-    @Test
-    void aReorderWithoutAPriceOfTheCustomersOwnReachesSalesUnpricedNeverAtTheOldDeal() {
-        Quote source = stored(QuoteStatus.CONVERTED);
-        UUID orderId = source.convertedOrderId();
-        when(orders.findById(orderId)).thenReturn(Optional.of(new OrderSummary(orderId, "SO-1", customer,
-                OrderStatus.CONFIRMED, Money.vnd(5_400_000), List.of(), NOW)));
-        when(quotes.findByConvertedOrderId(orderId)).thenReturn(Optional.of(source));
-        when(quotes.findByRequestId(any())).thenReturn(Optional.empty());
-        when(quotes.nextNumber(any())).thenReturn("QT-2");
-
-        Quotes.QuoteView draft = service.reorder(portal, new Quotes.Reorder(UUID.randomUUID(), orderId));
-
-        assertThat(draft.status()).isEqualTo(QuoteStatus.DRAFT);
-        assertThat(draft.priced()).isFalse();
-        assertThat(draft.proposedTotal()).isNull();
-        assertThat(draft.lines()).singleElement().satisfies(line -> {
-            assertThat(line.priced()).isFalse();
-            assertThat(line.tiers()).as("not the 1,800 deal, not a zero").isEmpty();
-            assertThat(line.moq()).isNull();
-            assertThat(line.proposedUnitPrice()).isNull();
-            assertThat(line.cartons()).as("what the order bought").isEqualTo(60);
-            assertThat(line.sku()).isEqualTo(SKU);
-        });
-        verify(quotedOrders, never()).placeQuotedOrder(any());
-        ArgumentCaptor<Object> published = ArgumentCaptor.forClass(Object.class);
-        verify(events).publishEvent(published.capture());
-        assertThat(published.getValue()).isInstanceOfSatisfying(com.stockflow.contracts.CustomerActedOnQuote.class,
-                e -> {
-                    assertThat(e.action()).isEqualTo(com.stockflow.contracts.CustomerActedOnQuote.Action.REORDER_REQUESTED);
-                    assertThat(e.sourceOrderNumber()).isEqualTo("SO-1");
-                    assertThat(e.salesUserId()).as("who sent the order's quote; the address is looked up on delivery")
-                            .isEqualTo(sales.userId());
-                });
-    }
-
-    @Test
-    void aReorderOfALegacyOrderQuotesTheSkuIssuedForItsDesignInWholeCartons() {
-        UUID design = UUID.randomUUID();
-        QuoteLine legacy = QuoteLine.legacy(UUID.randomUUID(), 1, new Sku("CUP-PP-500"), design, null, 1010,
-                List.of(PriceTier.of(1000, new BigDecimal("2000"))), 1010, Money.vnd(2000));
-        Quote source = stored(QuoteStatus.CONVERTED, new Quote.Offer(NOW.plusSeconds(3600),
-                null, List.of(legacy)));
-        UUID orderId = source.convertedOrderId();
-        when(orders.findById(orderId)).thenReturn(Optional.of(new OrderSummary(orderId, "SO-1", customer,
-                OrderStatus.CONFIRMED, Money.vnd(2_020_000), List.of(), NOW)));
-        when(quotes.findByConvertedOrderId(orderId)).thenReturn(Optional.of(source));
-        when(quotes.findByRequestId(any())).thenReturn(Optional.empty());
-        when(quotes.nextNumber(any())).thenReturn("QT-2");
-        when(customerSkus.ofSnapshots(List.of(design))).thenReturn(Map.of(design, new CustomerSku(UUID.randomUUID(),
-                UUID.randomUUID(), SKU, "Ly", customer, design, "CUP-PP-500", "ACTIVE")));
-
-        Quotes.QuoteView draft = service.reorder(sales, new Quotes.Reorder(UUID.randomUUID(), orderId));
-
-        assertThat(draft.legacy()).isFalse();
-        assertThat(draft.lines()).singleElement().satisfies(line -> {
-            assertThat(line.sku()).isEqualTo(SKU);
-            assertThat(line.cartons()).as("1,010 pieces in cartons of 50, rounded up").isEqualTo(21);
-        });
-
-        when(customerSkus.ofSnapshots(List.of(design))).thenReturn(Map.of());
-        assertThatThrownBy(() -> service.reorder(sales, new Quotes.Reorder(UUID.randomUUID(), orderId)))
-                .as("a design with no SKU yet").extracting(QuoteServiceTest::code)
-                .isEqualTo(ErrorCode.CUSTOMER_SKU_REQUIRED);
     }
 
     @Test

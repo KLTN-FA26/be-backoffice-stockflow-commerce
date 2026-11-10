@@ -62,9 +62,9 @@ public final class CustomerSkuRows {
         tx.executeWithoutResult(s -> {
             jdbc.update("""
                     INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount,
-                        currency, placed_at, created_at, payment_term, credit_term_days)
+                        currency, placed_at, created_at, contract_signed_at)
                     VALUES (?, ?, ?, ?, 'CONFIRMED', 0, 'VND', NOW() - interval '30 days', NOW() - interval '30 days',
-                        'CREDIT', 30)""", order, ReferenceRows.orderNumber(order), customerId, Identifiers.newId());
+                        NOW() - interval '30 days')""", order, ReferenceRows.orderNumber(order), customerId, Identifiers.newId());
             jdbc.update("INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency) "
                     + "VALUES (?, ?, ?, 1, 0, 'VND')", Identifiers.newId(), order, sku);
         });

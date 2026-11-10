@@ -426,9 +426,9 @@ class AwaitingStockIntegrationTest {
                     snapshot, draft, "a".repeat(64));
             jdbc.update("""
                     INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount,
-                                                         currency, placed_at, version, created_at, paid_amount,
-                                                         paid_in_full_at)
-                    VALUES (?, ?, ?, ?, 'CONFIRMED', 20000, 'VND', NOW(), 0, NOW(), 20000, NOW())""",
+                                                         currency, placed_at, version, created_at,
+                                                         contract_signed_at)
+                    VALUES (?, ?, ?, ?, 'CONFIRMED', 20000, 'VND', NOW(), 0, NOW(), NOW())""",
                     order, "SO-20991230-%06d".formatted(ThreadLocalRandom.current().nextInt(1_000_000)),
                     DemoData.CUSTOMER_ID, UUID.randomUUID());
             jdbc.update("""

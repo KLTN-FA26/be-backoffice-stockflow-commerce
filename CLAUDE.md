@@ -154,32 +154,29 @@ flows, 3 `X-*` exception flows, 4 `P-*` platform flows — with the state machin
 `03-state-machines.md` and the 50 rules in `05-business-rules.md`. Two are implemented in code; here
 is where they live.
 
-### Checkout — the flow the whole architecture exists to justify
+### Holding an order's stock — the flow the whole architecture exists to justify
 
-`OrderServiceImpl.placeOrder` (`order/internal/service/`), one `@Transactional` method:
+There is no checkout any more (team plan 5-2, 4B-10): an order is drawn up from an accepted quote
+(`QuoteService.convert` → `OrderServiceImpl.placeQuotedOrder`, a DRAFT holding nothing), signed as a sales
+contract, and confirmed by its installments on signing. Its stock is held when Sales chooses the shipping
+warehouse, `ShippingWarehouseService.choose` (`order/internal/service/`), one `@Transactional` method:
 
 ```
-1. findByRequestId  → already placed? return it. (domain-level idempotency)
-2. nextOrderNumber  → from a sequence row, own short transaction
-3. build OrderLines with DETERMINISTIC ids derived from (requestId, index)
-4. Order.draft(...)
-5. for each line:
-      inventory.reserve(ReserveStockCommand(deterministicRequestId(requestId, lineId), ...))   ← a SKU reservation
-      order.attachReservations(lineId, result.reservationIds())   ← ALL ids, not the first
-6. order.submit()
-7. repository.save(order)
-8. events.publishEventsOf(order)   → OrderPlaced
+1. the order row FOR UPDATE
+2. inventory.prepareReservation(skus)   ← SKU advisory locks, sorted
+3. for each line still short (holdWhatIsAvailable):
+      inventory.holdAtWarehouse(HoldStockCommand(deterministic requestId, ...))   ← whole cartons, what is there
+      order.holdMore(lineId, result.reservationIds())   ← ALL ids, not the first
+4. repository.save(order)          (what is still short is topped up when goods arrive: topUpWaiting)
 ```
 
-Step 5 is the point. `inventory.reserve` is a **plain Java call inside this transaction**. If the
-order fails to persist, the reservation rolls back with it — no saga, no compensating action, no
-reservation timeout. ADR-0003 describes the distributed version this replaced; ADR-0005 is the
-decision itself. The deterministic ids in steps 3 and 5 are what make a retry of the whole request
-converge on the same rows instead of creating a second order.
+Step 3 is the point. `inventory.holdAtWarehouse` is a **plain Java call inside this transaction**. If the
+order fails to persist, the hold rolls back with it — no saga, no compensating action. ADR-0003 describes
+the distributed version this replaced; ADR-0005 is the decision itself. Deterministic request ids make a
+retry converge on the same holds instead of holding the stock twice.
 
-`reservationIds()` returns **every** id. Since SCRUM-152 a checkout returns one SKU reservation per line;
-the release replaces it on the line with one allocation per bin and lot, and every one of those must be
-kept — returning only the first would strand the rest.
+`reservationIds()` returns **every** id: a line held from several cartons comes back with several holds,
+and every one of them must be kept — returning only the first would strand the rest.
 
 ### Reserve and allocate — `InventoryServiceImpl.reserve` / `allocate` (SCRUM-152)
 

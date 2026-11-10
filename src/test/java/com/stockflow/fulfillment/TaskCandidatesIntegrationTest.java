@@ -131,11 +131,11 @@ class TaskCandidatesIntegrationTest {
         tx.executeWithoutResult(s -> {
             jdbc.update("""
                     INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount,
-                                                         currency, placed_at, version, created_at, payment_term,
-                                                         credit_term_days, warehouse_id, released_at, released_by)
-                    VALUES (?, ?, ?, ?, ?, 1000, 'VND', ?, 0, NOW(), 'CREDIT', 30, ?, ?, ?)""",
+                                                         currency, placed_at, version, created_at, contract_signed_at,
+                                                         warehouse_id, released_at, released_by)
+                    VALUES (?, ?, ?, ?, ?, 1000, 'VND', ?, 0, NOW(), CASE WHEN ?::text = 'CONFIRMED' THEN NOW() END, ?, ?, ?)""",
                     order, number, DemoData.CUSTOMER_ID, UUID.randomUUID(), status,
-                    java.sql.Timestamp.from(released.minus(1, ChronoUnit.DAYS)), isReleased ? warehouse : null,
+                    java.sql.Timestamp.from(released.minus(1, ChronoUnit.DAYS)), status, isReleased ? warehouse : null,
                     isReleased ? java.sql.Timestamp.from(released) : null, isReleased ? coordinator : null);
             for (int quantity : quantities) {
                 jdbc.update("""

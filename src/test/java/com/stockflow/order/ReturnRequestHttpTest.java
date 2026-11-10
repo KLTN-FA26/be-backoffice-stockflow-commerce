@@ -68,10 +68,9 @@ class ReturnRequestHttpTest {
         tx.executeWithoutResult(s -> {
             jdbc.update("""
                     INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount,
-                        currency, placed_at, payment_term, paid_amount, paid_in_full_at, warehouse_id, released_at,
+                        currency, placed_at, warehouse_id, released_at,
                         released_by, packed_at, shipped_at, delivered_at, version, created_at)
-                    VALUES (?, ?, ?, ?, 'DELIVERED', 3000000, 'VND', NOW() - interval '5 days', 'PREPAID', 3000000,
-                        NOW() - interval '5 days', ?, NOW() - interval '4 days', ?, NOW() - interval '3 days',
+                    VALUES (?, ?, ?, ?, 'DELIVERED', 3000000, 'VND', NOW() - interval '5 days', ?, NOW() - interval '4 days', ?, NOW() - interval '3 days',
                         NOW() - interval '2 days', NOW() - interval '1 day', 0, NOW())""",
                     orderOfA, "SO-20261023-%06d".formatted(ThreadLocalRandom.current().nextInt(100_000, 999_999)),
                     customerA, UUID.randomUUID(), DemoData.WAREHOUSE_HCM, staff);

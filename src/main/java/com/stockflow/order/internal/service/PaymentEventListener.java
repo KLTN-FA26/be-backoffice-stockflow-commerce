@@ -12,7 +12,7 @@ import org.springframework.stereotype.Component;
  * (kltn-docs 15 BR-01), so no gateway ever reports a failed payment. The old {@code PaymentFailed} event had no
  * publisher and went with its listeners.</p>
  *
- * <p><b>Why this one is an event when {@code placeOrder} used a direct call.</b> The two
+ * <p><b>Why this one is an event when holding an order's stock is a direct call.</b> The two
  * situations differ in a way worth being explicit about, because "always call directly" and
  * "always publish an event" are both wrong:</p>
  *

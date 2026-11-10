@@ -5,7 +5,6 @@ import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.CurrentUserProvider;
 import com.stockflow.common.security.DataScope;
 import com.stockflow.product.api.CreateProductCommand;
-import com.stockflow.product.api.ProductKind;
 import com.stockflow.product.api.ProductService;
 import com.stockflow.product.api.ProductStatus;
 import com.stockflow.product.api.TaxClass;
@@ -86,7 +85,7 @@ class ProductAttributeSetRepositoryAdapterIntegrationTest {
                 DataScope.ALL, Set.of())));
         suffix = UUID.randomUUID().toString().substring(0, 6).toUpperCase();
         productId = products.create(new CreateProductCommand("SET-" + suffix, "Ten " + suffix, "Name " + suffix, null,
-                null, null, null, null, TaxClass.STANDARD, ProductKind.CUSTOMIZABLE, List.of())).productId();
+                null, null, null, null, TaxClass.STANDARD, List.of())).productId();
     }
 
     private AttributeView attribute(String code, AttributeDataType type, String... valueCodes) {

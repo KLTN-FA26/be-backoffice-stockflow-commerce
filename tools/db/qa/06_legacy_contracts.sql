@@ -43,8 +43,8 @@ SELECT pg_temp.expect_true('the archive exists', $q$ SELECT to_regclass('platfor
 
 \echo '--- C1: SKUs and designs point at the PIM'
 INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, currency, placed_at, created_at,
-                                     paid_amount, paid_in_full_at)
-SELECT md5('qa:contract:order')::uuid, 'ORD-QA-CONTRACT', id, gen_random_uuid(), 'CONFIRMED', 1, 'VND', NOW(), NOW(), 1, NOW()
+                                     contract_signed_at)
+SELECT md5('qa:contract:order')::uuid, 'ORD-QA-CONTRACT', id, gen_random_uuid(), 'CONFIRMED', 1, 'VND', NOW(), NOW(), NOW()
   FROM customer.customer LIMIT 1;
 SELECT pg_temp.expect_fail('order line for a SKU that is no variant', $q$
     INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency)

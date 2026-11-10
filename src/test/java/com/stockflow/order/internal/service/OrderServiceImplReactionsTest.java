@@ -6,7 +6,6 @@ import com.stockflow.design.api.DesignService;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.order.api.CancelOrderCommand;
 import com.stockflow.order.api.CancellationReasonCode;
-import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.internal.domain.CancellationRequestRepository;
 import com.stockflow.order.internal.domain.Order;
 import com.stockflow.order.internal.domain.OrderRepository;
@@ -45,8 +44,7 @@ class OrderServiceImplReactionsTest {
     private final CancellationRequestRepository requests = mock(CancellationRequestRepository.class);
     private final OrderServiceImpl service = new OrderServiceImpl(repository, mock(OrderSearchRepository.class),
             inventory, events, Clock.fixed(NOW, ZoneOffset.UTC), mock(DesignService.class),
-            mock(OrderHoldJpaRepository.class), mock(CustomerService.class),
-            mock(com.stockflow.catalog.api.CatalogService.class), requests,
+            mock(OrderHoldJpaRepository.class), mock(CustomerService.class), requests,
             mock(com.stockflow.payment.api.PaymentService.class), org.mockito.Mockito.mock(com.stockflow.product.api.CustomerSkus.class), org.mockito.Mockito.mock(com.stockflow.order.internal.domain.SalesContractRepository.class));
 
     private Order found(Order order) {
@@ -66,47 +64,6 @@ class OrderServiceImplReactionsTest {
 
     private UUID id(Order order) {
         return order.id().value();
-    }
-
-    @Nested
-    @DisplayName("a stock hold expired before payment (14 BR-07)")
-    class HoldExpired {
-
-        @Test
-        @DisplayName("an order waiting for its installment is cancelled with PAYMENT_NOT_RECEIVED and its other holds are released")
-        void cancelsTheUnpaidOrder() {
-            Order order = waitingForPayment();
-            List<UUID> holds = order.reservationIds();
-
-            service.cancelAfterHoldExpired(id(order));
-
-            assertThat(order.status()).isEqualTo(OrderStatus.CANCELLED);
-            assertThat(order.cancellationReasonCode()).isEqualTo(CancellationReasonCode.PAYMENT_NOT_RECEIVED);
-            holds.forEach(hold -> verify(inventory).release(hold, "ORDER_CANCELLED"));
-            assertThat(order.reservationIds()).isEmpty();
-        }
-
-        @Test
-        @DisplayName("an order no longer waiting for payment is left alone: its holds are pinned, the event is late")
-        void aPaidOrderIsLeftAlone() {
-            Order order = found(OrderFixtures.confirmed());
-
-            service.cancelAfterHoldExpired(id(order));
-
-            assertThat(order.status()).isEqualTo(OrderStatus.CONFIRMED);
-            verify(repository, never()).save(any());
-            verify(inventory, never()).release(any(), anyString());
-        }
-
-        @Test
-        @DisplayName("an unknown order is ignored")
-        void unknownOrder() {
-            when(repository.findByIdForUpdate(any())).thenReturn(Optional.empty());
-
-            service.cancelAfterHoldExpired(UUID.randomUUID());
-
-            verify(repository, never()).save(any());
-        }
     }
 
     @Nested

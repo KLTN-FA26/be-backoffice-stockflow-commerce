@@ -19,8 +19,8 @@ public record CatalogCardResponse(
         @Schema(description = "Public URL of the primary published image, of the kind the gallery returns; absent without one")
         String primaryImageUrl,
         @Schema(description = "The product's ACTIVE variants, in display order") List<CardSku> skus,
-        @Schema(description = "STANDARD, or CUSTOMIZABLE for a product printed to the customer's design: quoted by "
-                + "Sales, not added to a basket") ProductKind kind) {
+        @Schema(description = "Always CUSTOMIZABLE (kltn-docs 01 BR-19): printed to the customer's design and "
+                + "quoted by Sales") ProductKind kind) {
 
     /** A sellable variant: its SKU code and name. */
     public record CardSku(String sku, String name) {}

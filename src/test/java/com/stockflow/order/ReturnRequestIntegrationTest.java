@@ -185,13 +185,12 @@ class ReturnRequestIntegrationTest {
                     "d".repeat(64));
             jdbc.update("""
                     INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount,
-                        currency, placed_at, payment_term, paid_amount, paid_in_full_at, warehouse_id, released_at,
+                        currency, placed_at, warehouse_id, released_at,
                         released_by, packed_at, shipped_at, delivered_at, version, created_at)
-                    VALUES (?, ?, ?, ?, 'DELIVERED', ?, 'VND', NOW() - interval '10 days', 'PREPAID', ?,
-                        NOW() - interval '9 days', ?, NOW() - interval '8 days', ?, NOW() - interval '4 days',
+                    VALUES (?, ?, ?, ?, 'DELIVERED', ?, 'VND', NOW() - interval '10 days', ?, NOW() - interval '8 days', ?, NOW() - interval '4 days',
                         NOW() - interval '3 days', NOW() - interval '2 days', 0, NOW())""",
                     order, "SO-20261020-%06d".formatted(java.util.concurrent.ThreadLocalRandom.current()
-                            .nextInt(100_000, 999_999)), customer, UUID.randomUUID(), units * 50_000L, units * 50_000L,
+                            .nextInt(100_000, 999_999)), customer, UUID.randomUUID(), units * 50_000L,
                     DemoData.WAREHOUSE_HCM, coordinator);
             jdbc.update("""
                     INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency,

@@ -52,9 +52,9 @@ SELECT md5('qa23:unchosen')::uuid, 'SO-QA-AWAIT-2', c.id, gen_random_uuid(), 'CO
        NOW()
   FROM customer.customer c ORDER BY c.id LIMIT 1;
 INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, currency,
-                                     placed_at, created_at, paid_amount, paid_in_full_at)
+                                     placed_at, created_at, contract_signed_at)
 SELECT md5('qa23:checkout')::uuid, 'SO-QA-AWAIT-3', c.id, gen_random_uuid(), 'CONFIRMED', 1000000, 'VND', NOW(), NOW(),
-       1000000, NOW()
+       NOW()
   FROM customer.customer c ORDER BY c.id LIMIT 1;
 SET CONSTRAINTS ALL IMMEDIATE;
 SET CONSTRAINTS ALL DEFERRED;

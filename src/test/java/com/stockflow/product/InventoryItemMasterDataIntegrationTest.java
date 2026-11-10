@@ -14,7 +14,6 @@ import com.stockflow.inventory.api.UomConversion;
 import com.stockflow.inventory.api.UomConversionDraft;
 import com.stockflow.inventory.internal.service.InventoryItems;
 import com.stockflow.product.api.CreateProductCommand;
-import com.stockflow.product.api.ProductKind;
 import com.stockflow.product.api.ProductService;
 import com.stockflow.product.api.ProductSummary;
 import com.stockflow.product.api.TaxClass;
@@ -83,7 +82,7 @@ class InventoryItemMasterDataIntegrationTest {
                 DataScope.ALL, Set.of())));
         suffix = UUID.randomUUID().toString().substring(0, 6).toUpperCase();
         ProductSummary created = products.create(new CreateProductCommand("CUP-" + suffix, "Ly giấy 12oz",
-                "Paper cup 12oz", null, null, "Ly", null, null, TaxClass.STANDARD, ProductKind.CUSTOMIZABLE, List.of()));
+                "Paper cup 12oz", null, null, "Ly", null, null, TaxClass.STANDARD, List.of()));
         productId = created.productId();
         variantId = variants.list(productId, 0, 1).items().getFirst().id();
         sku = "CUP-" + suffix;

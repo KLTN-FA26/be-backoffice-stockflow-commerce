@@ -149,9 +149,8 @@ class DispatchHandoverIntegrationTest {
         stock(40);
         // Credit approved by accounting, ample: a contract paying after delivery fits it (15 BR-11).
         tx.executeWithoutResult(s -> jdbc.update("""
-                INSERT INTO customer.credit_profile (id, customer_id, allow_prepaid, allow_deposit, allow_credit,
-                    default_payment_term, credit_limit, credit_term_days, approved_by, approved_at)
-                VALUES (?, ?, true, false, true, 'PREPAID', 10000000000, 30, ?, NOW())""", Identifiers.newId(),
+                INSERT INTO customer.credit_profile (id, customer_id, credit_limit, credit_term_days, approved_by, approved_at)
+                VALUES (?, ?, 10000000000, 30, ?, NOW())""", Identifiers.newId(),
                 customer, accountant));
         // Truck hirers of the test's own: the parcel carriers are retired (V20261108001300).
         ghn = tx.execute(s -> ReferenceRows.truckCarrier(entityManager, "Xe tải Nhanh"));

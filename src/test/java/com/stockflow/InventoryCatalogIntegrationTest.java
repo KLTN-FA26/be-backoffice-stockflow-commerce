@@ -2,21 +2,16 @@ package com.stockflow;
 
 import static org.assertj.core.api.Assertions.*;
 
-import com.stockflow.catalog.api.CatalogService;
 import com.stockflow.catalog.internal.domain.SellingPrice;
 import com.stockflow.catalog.internal.service.CatalogCommerceService;
 import com.stockflow.catalog.internal.service.CatalogProjectionService;
 import com.stockflow.common.domain.BusinessCalendar;
-import com.stockflow.common.domain.Money;
 import com.stockflow.common.domain.Sku;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.inventory.api.*;
 import com.stockflow.inventory.internal.service.InventoryItems;
 import com.stockflow.order.api.OrderService;
-import com.stockflow.order.api.PlaceGuestOrderCommand;
-import com.stockflow.order.api.PlaceOrderCommand;
-import com.stockflow.support.DemoData;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
 
@@ -58,7 +53,7 @@ class InventoryCatalogIntegrationTest {
     @Autowired TransactionTemplate transactions;
     @Autowired MockMvc mvc;
     @Autowired OrderService orders;
-    @Autowired CatalogService checkoutCatalog;
+    @Autowired com.stockflow.product.api.ProductService productService;
 
     @Test
     void missingPriceRollsBackTheWholeBackfillAndRetryDiscoversItLater() {
@@ -329,89 +324,6 @@ values (?,?,'HCM-A01-1-A',?,0,'AVAILABLE',?,?,?,?,now())
                 .isInstanceOf(DataIntegrityViolationException.class);
     }
 
-    /**
-     * The server price and the replayed snapshot, through account checkout. This test used guest
-     * checkout until SCRUM-450 retired it (B2B only, decision 2026-10-06); the pricing guarantees it
-     * pins belong to the checkout that remains, and the retired one must not reserve anything.
-     */
-    @Test
-    void accountCheckoutUsesServerPriceAndReplayKeepsTheAgreedSnapshot() {
-        var f = fixture("APPROVED");
-        gallery(f);
-        stock(f, 10, null, null, null);
-        var listing = catalog.edit(f.product(), 0, "checkout-" + f.sku(), null, null);
-        catalog.price(
-                f.product(),
-                f.sku(),
-                listing.revision(),
-                new SellingPrice(new BigDecimal("100"), "VND"),
-                "test");
-        catalog.publish(f.product());
-        projection.project(f.product());
-        UUID buyer = activeCustomerWithShippingAddress();
-        var tampered =
-                new PlaceOrderCommand(
-                        UUID.randomUUID(), buyer, null, null, true,
-                        List.of(new PlaceOrderCommand.Line(new Sku(f.sku()), 1, Money.vnd(1), null)));
-        assertThatThrownBy(() -> orders.placeOrder(tampered))
-                .isInstanceOfSatisfying(
-                        BusinessException.class,
-                        e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.CHECKOUT_PRICE_CHANGED));
-        assertThat(inventory.availableToPromise(new Sku(f.sku()))).isEqualTo(10);
-
-        var address =
-                new PlaceGuestOrderCommand.Address(
-                        "Minh", "0901234567", "12 Nguyen Hue", null, "26734", "Ben Nghe", "79",
-                        "Ho Chi Minh City", "VN", null);
-        assertThatThrownBy(() -> orders.placeGuestOrder(new PlaceGuestOrderCommand(
-                        UUID.randomUUID(), "minh@example.com", address, address,
-                        List.of(new PlaceGuestOrderCommand.Line(new Sku(f.sku()), 1, Money.vnd(100))))))
-                .isInstanceOfSatisfying(
-                        BusinessException.class,
-                        e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.GUEST_CHECKOUT_DISABLED));
-        assertThat(inventory.availableToPromise(new Sku(f.sku()))).isEqualTo(10);
-
-        var accepted =
-                new PlaceOrderCommand(
-                        UUID.randomUUID(), buyer, null, null, true,
-                        List.of(new PlaceOrderCommand.Line(new Sku(f.sku()), 1, Money.vnd(100), null)));
-        var order = orders.placeOrder(accepted);
-        catalog.price(
-                f.product(),
-                f.sku(),
-                catalog.get(f.product()).revision(),
-                new SellingPrice(new BigDecimal("200"), "VND"),
-                "test");
-        assertThat(orders.placeOrder(accepted).orderId()).isEqualTo(order.orderId());
-        assertThat(orders.placeOrder(accepted).total()).isEqualTo(Money.vnd(100));
-        assertThat(inventory.availableToPromise(new Sku(f.sku()))).isEqualTo(9);
-        catalog.unpublish(f.product());
-        assertThatThrownBy(() -> checkoutCatalog.checkoutPrices(Set.of(f.sku())))
-                .isInstanceOfSatisfying(
-                        BusinessException.class,
-                        e ->
-                                assertThat(e.errorCode())
-                                        .isEqualTo(ErrorCode.PRODUCT_NOT_PURCHASABLE));
-    }
-
-    /** An ACTIVE customer of its own with a default shipping address, so account checkout can run. */
-    private UUID activeCustomerWithShippingAddress() {
-        UUID customer = com.stockflow.common.id.Identifiers.newId();
-        transactions.executeWithoutResult(status -> {
-            jdbc.update("""
-                    INSERT INTO customer.customer(id, full_name, email, status, version, created_at)
-                    VALUES (?, 'Checkout Buyer', ?, 'ACTIVE', 0, now())""",
-                    customer, "buyer-" + customer + "@example.test");
-            jdbc.update("""
-                    INSERT INTO customer.address(id, customer_id, type, recipient_name, phone, line1, ward,
-                        ward_code, province, province_code, country, is_default, version, created_at)
-                    VALUES (?, ?, 'SHIPPING', 'Minh', '+84901234567', '12 Nguyen Hue', 'Ben Nghe', '26734',
-                        'Ho Chi Minh City', '79', 'VN', true, 0, now())""",
-                    com.stockflow.common.id.Identifiers.newId(), customer);
-        });
-        return customer;
-    }
-
     @Test
     void thresholdsAreNullableZeroIsMeaningfulAndHigherThanStockIsAllowed() {
         var f = fixture("DRAFT");
@@ -460,40 +372,6 @@ values (?,?,'HCM-A01-1-A',?,0,'AVAILABLE',?,?,?,?,now())
                                         policy(3, RemovalStrategy.FIFO, TrackingMode.NONE, false)))
                 .isInstanceOf(BusinessException.class);
         assertThat(items.get(f.itemId()).policy().reorderPoint()).isNull();
-    }
-
-    @Test
-    void fifoActuallyReservesTheOlderReceiptLayer() {
-        var f = fixture("APPROVED");
-        items.configure(f.itemId(),
-                0,
-                policy(2, RemovalStrategy.FIFO, TrackingMode.NONE, false));
-        var newer = stock(f, 5, Instant.parse("2026-09-02T00:00:00Z"), null, null);
-        var older = stock(f, 5, Instant.parse("2026-09-01T00:00:00Z"), null, null);
-        var placed = orders.placeOrder(
-                new PlaceOrderCommand(
-                        UUID.randomUUID(),
-                        DemoData.CUSTOMER_ID,
-                        List.of(
-                                new PlaceOrderCommand.Line(
-                                        new Sku(f.sku()), 2, Money.vnd(100), null))));
-        // SCRUM-152: checkout holds the SKU only; no layer is chosen until the order is allocated to a warehouse.
-        assertThat(jdbc.queryForObject("select coalesce(sum(reserved),0) from inventory.stock_item where id in (?,?)",
-                Integer.class, older, newer)).isZero();
-        transactions.executeWithoutResult(s -> inventory.allocate(
-                new com.stockflow.inventory.api.AllocateStockCommand(placed.orderId(), "HCM")));
-        assertThat(
-                        jdbc.queryForObject(
-                                "select reserved from inventory.stock_item where id=?",
-                                Integer.class,
-                                older))
-                .isEqualTo(2);
-        assertThat(
-                        jdbc.queryForObject(
-                                "select reserved from inventory.stock_item where id=?",
-                                Integer.class,
-                                newer))
-                .isZero();
     }
 
     @Test
@@ -1061,12 +939,8 @@ values (?,'Conflicting test rule',?,200,'VND',0,true,now())
         catalog.publish(f.product());
         projection.project(f.product());
         write("update product.variants set status='BLOCKED' where id=?", f.skuId());
-        assertThatThrownBy(() -> checkoutCatalog.checkoutPrices(Set.of(f.sku())))
-                .isInstanceOfSatisfying(
-                        BusinessException.class,
-                        e ->
-                                assertThat(e.errorCode())
-                                        .isEqualTo(ErrorCode.PRODUCT_NOT_PURCHASABLE));
+        assertThat(productService.purchasability(Set.of(f.sku())))
+                .containsEntry(f.sku().toUpperCase(), com.stockflow.product.api.Purchasability.VARIANT_NOT_ACTIVE);
     }
 
     @Test

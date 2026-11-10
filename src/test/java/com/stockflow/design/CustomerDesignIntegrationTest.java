@@ -119,7 +119,7 @@ class CustomerDesignIntegrationTest {
     private UUID approvedProduct(ProductKind kind) {
         String code = "CDS-" + UUID.randomUUID().toString().substring(0, 6).toUpperCase();
         UUID id = products.create(new CreateProductCommand(code, "Ly giấy 12oz", "Paper cup 12oz", null, null, "Ly",
-                null, null, TaxClass.STANDARD, kind, List.of())).productId();
+                null, null, TaxClass.STANDARD, List.of())).productId();
         tx.executeWithoutResult(s -> {
             jdbc.update("UPDATE product.products SET status = 'APPROVED', submitted_by = ?, submitted_at = NOW(), "
                     + "approved_by = ?, approved_at = NOW() WHERE id = ?", ReferenceRows.user(entityManager),
@@ -442,14 +442,6 @@ class CustomerDesignIntegrationTest {
         mvc.perform(post("/api/v1/designs/mine").contentType(MediaType.APPLICATION_JSON)
                         .content("{\"productId\":\"" + productId + "\",\"sku\":\"" + sku + "\",\"name\":\"x\"}"))
                 .andExpect(status().isBadRequest());
-
-        UUID standard = approvedProduct(ProductKind.STANDARD);
-        String standardSku = variants.list(standard, 0, 1).items().getFirst().sku();
-        mvc.perform(post("/api/v1/designs/mine").contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"productId\":\"" + standard + "\",\"sku\":\"" + standardSku
-                                + "\",\"templateCode\":\"CUP12-BODY\",\"name\":\"x\"}"))
-                .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.errorCode").value("PRODUCT_NOT_CUSTOMIZABLE"));
 
         tx.executeWithoutResult(s -> jdbc.update("UPDATE product.variants SET status = 'BLOCKED' WHERE sku = ?", sku));
         start("x").andExpect(status().isNotFound()).andExpect(jsonPath("$.errorCode").value("PRINT_CONFIG_NOT_FOUND"));

@@ -10,9 +10,10 @@ import java.time.Instant;
 import java.util.UUID;
 
 /**
- * {@code customer.credit_profile}: one row per customer with credit set (SCRUM-427). Since 4B-10 the payment-term
- * columns ({@code allow_*}, {@code default_payment_term}, {@code deposit_percent}, {@code deposit_balance_policy}) are
- * no longer mapped: their defaults keep their CHECKs true until 4B-11 drops them.
+ * {@code customer.credit_profile}: one row per customer with credit set (SCRUM-427): the limit and the days to pay. The
+ * payment-term columns ({@code allow_*}, {@code default_payment_term}, {@code deposit_percent},
+ * {@code deposit_balance_policy}) were unmapped by 4B-10 and dropped by 4B-11: a customer pays by the installments of
+ * its contracts (kltn-docs 15).
  */
 @Entity
 @Table(name = "credit_profile", schema = "customer")

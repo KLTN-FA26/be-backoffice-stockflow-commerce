@@ -137,10 +137,9 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
     private String cancellationReason;
 
     /*
-     * 4B-10: the money ledger's and the per-order payment terms' columns are no longer mapped - payment_term,
-     * deposit_required, deposit_received_at, balance_policy, paid_amount, paid_in_full_at, credit_term_days,
-     * billed_amount, receivable_paid_amount, remainder_refund_amount and remainder_fee_* (V20261108003200 keeps every
-     * ck_order_* true on their defaults). 4B-11 drops them.
+     * The money ledger's and the per-order payment terms' columns (payment_term, deposit_*, balance_policy, paid_*,
+     * credit_term_days, billed_amount, receivable_paid_amount, remainder_*) were unmapped by 4B-10 and dropped by 4B-11
+     * (V20261116000100): an order is paid by its sales contract's installments.
      */
 
     /** V20261022000400 (PACK-PARTIAL / PACK-EARLY): Sales allowed shipping in parts; shipped early, printing goes on. */
@@ -444,6 +443,17 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
     /** One step of a status change: the row passes through each edge, so the transition trigger sees every one. */
     public void moveTo(OrderStatus next) {
         this.status = next;
+    }
+
+    /**
+     * Sets the hold columns alone: a step of a stepwise save that is not ON_HOLD carries none, as
+     * {@code ck_order_hold_reason}, {@code ck_order_hold_note} and {@code ck_order_hold_return} require.
+     */
+    public void holdColumns(com.stockflow.order.api.HoldReason holdReason, OrderStatus statusBeforeHold,
+                            String holdNote) {
+        this.holdReason = holdReason;
+        this.statusBeforeHold = statusBeforeHold;
+        this.holdNote = holdNote;
     }
 
     public com.stockflow.order.api.HoldReason getHoldReason() { return holdReason; }

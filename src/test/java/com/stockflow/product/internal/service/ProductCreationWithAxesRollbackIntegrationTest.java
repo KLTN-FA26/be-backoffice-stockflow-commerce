@@ -6,7 +6,6 @@ import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.CurrentUserProvider;
 import com.stockflow.common.security.DataScope;
 import com.stockflow.product.api.CreateProductCommand;
-import com.stockflow.product.api.ProductKind;
 import com.stockflow.product.api.ProductService;
 import com.stockflow.product.api.TaxClass;
 import com.stockflow.product.internal.domain.AttributeDataType;
@@ -125,6 +124,6 @@ class ProductCreationWithAxesRollbackIntegrationTest {
 
     private static CreateProductCommand command(String code, List<CreateProductCommand.Axis> axes) {
         return new CreateProductCommand(code, "Ten " + code, "Name " + code, null, null, null, null, null,
-                TaxClass.STANDARD, ProductKind.STANDARD, axes);
+                TaxClass.STANDARD, axes);
     }
 }

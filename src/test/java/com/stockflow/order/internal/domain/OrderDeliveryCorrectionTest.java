@@ -5,7 +5,6 @@ import com.stockflow.common.domain.Sku;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.order.api.DeliveryFailureReason;
-import com.stockflow.order.api.OrderShipmentStatus;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.ShipmentHandover;
 import org.junit.jupiter.api.DisplayName;
@@ -15,7 +14,6 @@ import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.List;
-import java.util.Map;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -100,15 +98,5 @@ class OrderDeliveryCorrectionTest {
                 STAFF)))).isEqualTo(ErrorCode.VALIDATION_FAILED);
         assertThat(code(catchThrowable(() -> order.correctShipmentToFailed(S1, DeliveryFailureReason.LOST, null, NOW,
                 STAFF)))).isEqualTo(ErrorCode.ORDER_SHIPMENT_INVALID_TRANSITION);
-
-        Order billed = packed();
-        billed.recordHandover(everything(billed), BigDecimal.ZERO);
-        billed.recordShipmentDelivered(S1, NOW, STAFF);
-        // As its row restores a delivery that billed the customer on credit before 4B-10.
-        billed.restoreShipments(List.of(new OrderShipment(S1, Map.of(billed.lines().get(0).id(), 10,
-                billed.lines().get(1).id(), 5), new BigDecimal("1100000"), NOW, STAFF, OrderShipmentStatus.DELIVERED,
-                NOW, STAFF, null, null, new BigDecimal("1100000"))));
-        assertThat(code(catchThrowable(() -> billed.correctShipmentToFailed(S1, DeliveryFailureReason.LOST, null, NOW,
-                STAFF)))).isEqualTo(ErrorCode.ORDER_DELIVERY_NOT_CORRECTABLE);
     }
 }

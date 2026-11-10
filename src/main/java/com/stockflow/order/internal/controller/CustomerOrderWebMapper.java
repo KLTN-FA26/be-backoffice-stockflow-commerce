@@ -25,7 +25,7 @@ final class CustomerOrderWebMapper {
                 detail.timeline().stream().map(CustomerOrderWebMapper::toResponse).toList(),
                 detail.deliveryState().name(), detail.allowedActions() == null ? null
                         : new CustomerOrderDetailResponse.AllowedActions(detail.allowedActions().cancel(),
-                                detail.allowedActions().requestCancellation(), detail.allowedActions().reorder()),
+                                detail.allowedActions().requestCancellation()),
                 detail.cancellationRequest() == null ? null : new CustomerOrderDetailResponse.CancellationRequest(
                         detail.cancellationRequest().status(),
                         detail.cancellationRequest().reasonCode() == null ? null
@@ -45,7 +45,7 @@ final class CustomerOrderWebMapper {
                 line.lineTotal(), line.designSnapshotId(),
                 new CustomerOrderDetailResponse.Production(line.production().state().name(),
                         line.production().goodQuantity()),
-                line.productSlug(), line.productTitle(), line.productImageUrl(), line.cartons(), line.unitsPerCarton(),
+                line.cartons(), line.unitsPerCarton(),
                 line.taxRate(), line.taxAmount());
     }
 

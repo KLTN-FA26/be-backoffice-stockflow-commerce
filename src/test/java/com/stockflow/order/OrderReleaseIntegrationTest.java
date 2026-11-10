@@ -79,9 +79,9 @@ class OrderReleaseIntegrationTest {
         tx.executeWithoutResult(s -> {
             jdbc.update("""
                     INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount,
-                                                         currency, placed_at, version, created_at, paid_amount,
-                                                         paid_in_full_at)
-                    VALUES (?, ?, ?, ?, 'CONFIRMED', 30000, 'VND', NOW(), 0, NOW(), 30000, NOW())""",
+                                                         currency, placed_at, version, created_at,
+                                                         contract_signed_at)
+                    VALUES (?, ?, ?, ?, 'CONFIRMED', 30000, 'VND', NOW(), 0, NOW(), NOW())""",
                     order, orderNumber(), DemoData.CUSTOMER_ID, UUID.randomUUID());
             jdbc.update("""
                     INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency, design_snapshot_id,
@@ -129,9 +129,9 @@ class OrderReleaseIntegrationTest {
         tx.executeWithoutResult(s -> {
             jdbc.update("""
                     INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount,
-                                                         currency, placed_at, version, created_at, paid_amount,
-                                                         paid_in_full_at)
-                    VALUES (?, ?, ?, ?, 'CONFIRMED', 10000, 'VND', NOW(), 0, NOW(), 10000, NOW())""",
+                                                         currency, placed_at, version, created_at,
+                                                         contract_signed_at)
+                    VALUES (?, ?, ?, ?, 'CONFIRMED', 10000, 'VND', NOW(), 0, NOW(), NOW())""",
                     order, orderNumber(), DemoData.CUSTOMER_ID, UUID.randomUUID());
             jdbc.update("""
                     INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency)

@@ -6,7 +6,6 @@ import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.CurrentUserProvider;
 import com.stockflow.common.security.DataScope;
 import com.stockflow.product.api.CreateProductCommand;
-import com.stockflow.product.api.ProductKind;
 import com.stockflow.product.api.ProductService;
 import com.stockflow.product.api.TaxClass;
 import com.stockflow.product.internal.domain.AttributeValueDetails;
@@ -79,7 +78,7 @@ class ProductAttributeIntegrationTest {
                 new ProductTaxonomyService.CategoryDetails("Ly", 0, null, null, null, true)).id();
         UUID brand = taxonomy.createBrand("BR-" + suffix, "Brand " + suffix, null).id();
         return products.create(new CreateProductCommand("ATTR-" + suffix, "Ten " + suffix, "Name " + suffix, brand,
-                category, null, null, null, TaxClass.STANDARD, ProductKind.CUSTOMIZABLE, List.of())).productId();
+                category, null, null, null, TaxClass.STANDARD, List.of())).productId();
     }
 
     private static ErrorCode errorOf(Supplier<?> call) {

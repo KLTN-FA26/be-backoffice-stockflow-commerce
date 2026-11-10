@@ -154,11 +154,11 @@ class LoadEstimateIntegrationTest {
         boolean released = !Set.of("DRAFT", "PENDING_PAYMENT", "CONFIRMED", "ON_HOLD").contains(status);
         jdbc.update("""
                 INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount,
-                    currency, placed_at, payment_term, credit_term_days, released_at, released_by, warehouse_id,
+                    currency, placed_at, contract_signed_at, released_at, released_by, warehouse_id,
                     shipped_at, hold_reason, version, created_at)
-                VALUES (?, ?, ?, ?, ?, 1000, 'VND', NOW(), 'CREDIT', 30, ?, ?, ?, ?,
+                VALUES (?, ?, ?, ?, ?, 1000, 'VND', NOW(), CASE WHEN ?::text = 'CONFIRMED' THEN NOW() END, ?, ?, ?, ?,
                         CASE WHEN ? = 'ON_HOLD' THEN 'CREDIT' END, 0, NOW())""",
-                id, "SO-20261022-" + java.util.concurrent.ThreadLocalRandom.current().nextLong(100_000_000L, 999_999_999L), customer, Identifiers.newId(), status,
+                id, "SO-20261022-" + java.util.concurrent.ThreadLocalRandom.current().nextLong(100_000_000L, 999_999_999L), customer, Identifiers.newId(), status, status,
                 released ? java.sql.Timestamp.from(java.time.Instant.now()) : null, released ? coordinator : null,
                 released ? HCM : null,
                 status.equals("SHIPPED") ? java.sql.Timestamp.from(java.time.Instant.now()) : null, status);

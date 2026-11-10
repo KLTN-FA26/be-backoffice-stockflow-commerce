@@ -97,7 +97,7 @@ class ProductPimIntegrationTest {
 
     ProductSummary create(UUID brand, UUID category) {
         return products.create(new CreateProductCommand("CUP-" + suffix, "Ly giấy 12oz", "Paper cup 12oz", brand,
-                category, "Ly in logo", null, null, TaxClass.STANDARD, ProductKind.CUSTOMIZABLE, List.of()));
+                category, "Ly in logo", null, null, TaxClass.STANDARD, List.of()));
     }
 
     @Test
@@ -140,7 +140,7 @@ class ProductPimIntegrationTest {
                 e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.BRAND_NOT_FOUND));
 
         var updated = products.update(new UpdateProductCommand(created.productId(), created.version(), "Ly giấy 16oz", "Paper cup 16oz",
-                null, root.id(), null, null, null, TaxClass.REDUCED, ProductKind.CUSTOMIZABLE));
+                null, root.id(), null, null, null, TaxClass.REDUCED));
         assertThat(updated.categoryId()).isEqualTo(root.id());
         assertThat(updated.brandId()).isNull();
         assertThat(updated.slug()).isEqualTo(created.slug());

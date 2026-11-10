@@ -85,7 +85,6 @@ class CustomerOrderPortalIntegrationTest {
     @Autowired TransactionTemplate tx;
     @Autowired EntityManager entityManager;
     @Autowired ApplicationContext context;
-    @Autowired com.stockflow.catalog.api.CatalogService catalog;
 
     private ConfirmedOrders confirmedOrders;
     /** A's two SKUs (cartons of 50) and B's one. */
@@ -183,9 +182,9 @@ class CustomerOrderPortalIntegrationTest {
                     snapshot, draft, "a".repeat(64));
             jdbc.update("""
                     INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount,
-                                                         currency, placed_at, version, created_at, paid_amount,
-                                                         paid_in_full_at, warehouse_id, released_at, released_by)
-                    VALUES (?, ?, ?, ?, 'READY_TO_FULFILL', 30000, 'VND', NOW(), 0, NOW(), 30000, NOW(), ?, NOW(), ?)""",
+                                                         currency, placed_at, version, created_at,
+                                                         warehouse_id, released_at, released_by)
+                    VALUES (?, ?, ?, ?, 'READY_TO_FULFILL', 30000, 'VND', NOW(), 0, NOW(), ?, NOW(), ?)""",
                     order, orderNumber(), customerA, UUID.randomUUID(), DemoData.WAREHOUSE_HCM, staffUser);
             jdbc.update("""
                     INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency, design_snapshot_id,
@@ -336,30 +335,6 @@ class CustomerOrderPortalIntegrationTest {
                 .satisfies(e -> assertThat(codeOf(e)).isEqualTo(ErrorCode.VALIDATION_FAILED));
         assertThatThrownBy(() -> customerOrders.myOrders(customerA, query(null, List.of(), "contactPhone,asc")))
                 .satisfies(e -> assertThat(codeOf(e)).isEqualTo(ErrorCode.UNSUPPORTED_PARAMETER));
-    }
-
-    @Test
-    @DisplayName("SCRUM-190: each stock line says where its SKU is on sale today (slug, title, image), or nothing when "
-            + "it is not on sale - what the portal needs to put the order back in a basket")
-    void theDetailCarriesWhereEachSkuIsOnSale() throws Exception {
-        var body = mvc.perform(get("/api/v1/orders/me/" + twoLines.orderId()).header("Authorization", customerA()))
-                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
-        var lines = new com.fasterxml.jackson.databind.ObjectMapper().readTree(body).at("/data/lines");
-        assertThat(lines.size()).isEqualTo(2);
-        for (var line : lines) {
-            String sku = line.get("sku").asText();
-            // A customer's own SKU is listed through its product, which the catalog resolves (not a catalog entry's SKU).
-            var onSale = catalog.listings(java.util.Set.of(sku)).get(sku);
-            if (onSale == null) {
-                // The envelope leaves a null out, so the field is missing, not a JSON null.
-                assertThat(line.path("productSlug").isMissingNode() || line.path("productSlug").isNull())
-                        .as(sku + " is not on sale").isTrue();
-                assertThat(line.path("productTitle").isMissingNode() || line.path("productTitle").isNull()).isTrue();
-            } else {
-                assertThat(line.path("productSlug").asText()).as(sku).isEqualTo(onSale.slug());
-                assertThat(line.path("productTitle").asText()).isEqualTo(onSale.title());
-            }
-        }
     }
 
     @Test

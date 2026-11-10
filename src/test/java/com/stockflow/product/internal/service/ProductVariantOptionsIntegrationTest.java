@@ -7,7 +7,6 @@ import com.stockflow.common.security.CurrentUserProvider;
 import com.stockflow.common.security.DataScope;
 import com.stockflow.inventory.internal.service.InventoryItems;
 import com.stockflow.product.api.CreateProductCommand;
-import com.stockflow.product.api.ProductKind;
 import com.stockflow.product.api.ProductService;
 import com.stockflow.product.api.TaxClass;
 import com.stockflow.product.internal.domain.AttributeDataType;
@@ -112,7 +111,7 @@ class ProductVariantOptionsIntegrationTest {
     private UUID product(String code) {
         newCode = code;
         return products.create(new CreateProductCommand(code, "Ly giay", "Paper cup", brand, category, null, null,
-                null, TaxClass.STANDARD, ProductKind.CUSTOMIZABLE, List.of())).productId();
+                null, TaxClass.STANDARD, List.of())).productId();
     }
 
     private UUID productWithAxes() {
@@ -384,7 +383,7 @@ class ProductVariantOptionsIntegrationTest {
     private UUID createWithAxes(String code, List<CreateProductCommand.Axis> axes) {
         newCode = code;
         return products.create(new CreateProductCommand(code, "Ly giay", "Paper cup", null, category, null, null,
-                null, TaxClass.STANDARD, ProductKind.CUSTOMIZABLE, axes)).productId();
+                null, TaxClass.STANDARD, axes)).productId();
     }
 
     @Test

@@ -19,7 +19,6 @@ import com.stockflow.common.security.CurrentUserProvider;
 import com.stockflow.common.security.DataScope;
 import com.stockflow.procurement.internal.service.GoodsReceipts;
 import com.stockflow.product.api.CreateProductCommand;
-import com.stockflow.product.api.ProductKind;
 import com.stockflow.product.api.ProductService;
 import com.stockflow.product.api.TaxClass;
 import com.stockflow.support.ApprovalLimitFixtures;
@@ -359,7 +358,7 @@ from procurement.po_delivery_decision where purchase_order_id=?
     void missingDescriptionComesFromProductMasterAndRecoveryKeepsSnapshot() {
         String sku = "PO-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(Locale.ROOT);
         var productId = products.create(new CreateProductCommand(sku, "Original product name", "Original", null,
-                null, null, null, null, TaxClass.STANDARD, ProductKind.STANDARD, List.of())).productId();
+                null, null, null, null, TaxClass.STANDARD, List.of())).productId();
         assertThat(products.nameForSku(sku)).contains("Original product name");
         // A purchase order line takes only an active SKU (SCRUM-461): approved product, active variant.
         transactions.executeWithoutResult(

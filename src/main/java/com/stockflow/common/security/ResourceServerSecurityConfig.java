@@ -166,6 +166,9 @@ public class ResourceServerSecurityConfig {
                                 "/api/v1/orders/guest-checkout", "/api/v1/orders/guest-checkout/**",
                                 "/api/v1/public/products/availability", "/api/v1/public/products/availability/**")
                         .denyAll()
+                        // Checkout and the reorder of a quoted order (team plan 5-2: the customer does not place
+                        // orders) - POST only, the order list and lookups share the paths.
+                        .requestMatchers(HttpMethod.POST, "/api/v1/orders", "/api/v1/orders/*/reorder").denyAll()
                         // Login mints the token; JWKS supplies its public verification key.
                         // Both remain anonymous, as does the existing product-media surface.
                         .requestMatchers("/api/v1/identity/auth/login", "/oauth2/jwks",

@@ -15,7 +15,6 @@ import com.stockflow.product.api.CreateProductCommand;
 import com.stockflow.product.api.CustomerSku;
 import com.stockflow.product.api.CustomerSkus;
 import com.stockflow.product.api.IssueCustomerSkuCommand;
-import com.stockflow.product.api.ProductKind;
 import com.stockflow.product.api.ProductPublication;
 import com.stockflow.product.api.ProductService;
 import com.stockflow.product.api.TaxClass;
@@ -76,7 +75,7 @@ class CustomerSkuIntegrationTest {
                 DataScope.ALL, Set.of())));
         productCode = "CSKU-" + UUID.randomUUID().toString().substring(0, 6).toUpperCase();
         productId = products.create(new CreateProductCommand(productCode, "Ly giấy 12oz", "Paper cup 12oz", null,
-                null, "Ly", null, null, TaxClass.STANDARD, ProductKind.CUSTOMIZABLE, List.of())).productId();
+                null, "Ly", null, null, TaxClass.STANDARD, List.of())).productId();
         sourceSku = variants.list(productId, 0, 1).items().getFirst().sku();
         tx.executeWithoutResult(s -> {
             jdbc.update("UPDATE product.products SET status = 'APPROVED', submitted_by = ?, submitted_at = NOW(), "

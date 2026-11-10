@@ -29,48 +29,46 @@ EXCEPTION WHEN OTHERS THEN
     RAISE EXCEPTION 'FAIL  %: %', label, SQLERRM;
 END $$;
 
-\echo '--- commercial terms (customer.credit_profile)'
-SELECT pg_temp.expect_fail('K1 terms that allow nothing', $q$
-    INSERT INTO customer.credit_profile (id, customer_id, allow_prepaid, allow_deposit, allow_credit, approved_by, approved_at)
-    VALUES (gen_random_uuid(), 'c0000000-0000-4000-8000-000000000001', FALSE, FALSE, FALSE, md5('demo:user:approver')::uuid, NOW()) $q$);
-SELECT pg_temp.expect_fail('K2 a default term that is not allowed', $q$
-    INSERT INTO customer.credit_profile (id, customer_id, allow_prepaid, default_payment_term, approved_by, approved_at)
-    VALUES (gen_random_uuid(), 'c0000000-0000-4000-8000-000000000001', TRUE, 'CREDIT', md5('demo:user:approver')::uuid, NOW()) $q$);
-SELECT pg_temp.expect_fail('K3 credit without a limit', $q$
-    INSERT INTO customer.credit_profile (id, customer_id, allow_credit, credit_term_days, approved_by, approved_at)
-    VALUES (gen_random_uuid(), 'c0000000-0000-4000-8000-000000000001', TRUE, 30, md5('demo:user:approver')::uuid, NOW()) $q$);
-SELECT pg_temp.expect_fail('K4 a deposit of 100 percent', $q$
-    INSERT INTO customer.credit_profile (id, customer_id, allow_deposit, deposit_percent, approved_by, approved_at)
-    VALUES (gen_random_uuid(), 'c0000000-0000-4000-8000-000000000001', TRUE, 100, md5('demo:user:approver')::uuid, NOW()) $q$);
+\echo '--- credit terms (customer.credit_profile): a limit and the days to pay, or neither (4B-10, 4B-11)'
+SELECT pg_temp.expect_fail('K1 a limit without days to pay', $q$
+    INSERT INTO customer.credit_profile (id, customer_id, credit_limit, approved_by, approved_at)
+    VALUES (gen_random_uuid(), 'c0000000-0000-4000-8000-000000000001', 5000000, md5('demo:user:approver')::uuid, NOW()) $q$);
+SELECT pg_temp.expect_fail('K2 days to pay without a limit', $q$
+    INSERT INTO customer.credit_profile (id, customer_id, credit_term_days, approved_by, approved_at)
+    VALUES (gen_random_uuid(), 'c0000000-0000-4000-8000-000000000001', 30, md5('demo:user:approver')::uuid, NOW()) $q$);
+SELECT pg_temp.expect_fail('K3 a negative limit', $q$
+    INSERT INTO customer.credit_profile (id, customer_id, credit_limit, credit_term_days, approved_by, approved_at)
+    VALUES (gen_random_uuid(), 'c0000000-0000-4000-8000-000000000001', -1, 30, md5('demo:user:approver')::uuid, NOW()) $q$);
+SELECT pg_temp.expect_fail('K4 more than a year to pay', $q$
+    INSERT INTO customer.credit_profile (id, customer_id, credit_limit, credit_term_days, approved_by, approved_at)
+    VALUES (gen_random_uuid(), 'c0000000-0000-4000-8000-000000000001', 5000000, 366, md5('demo:user:approver')::uuid, NOW()) $q$);
 SELECT pg_temp.expect_fail('K5 terms nobody approved', $q$
     INSERT INTO customer.credit_profile (id, customer_id, approved_at)
     VALUES (gen_random_uuid(), 'c0000000-0000-4000-8000-000000000001', NOW()) $q$);
-SELECT pg_temp.expect_ok('K6 prepaid, deposit 30% (balance before delivery) and credit 50M over 30 days', $q$
-    INSERT INTO customer.credit_profile (id, customer_id, allow_prepaid, allow_deposit, allow_credit, default_payment_term,
-                                         deposit_percent, credit_limit, credit_term_days, approved_by, approved_at,
-                                         deposit_balance_policy)
-    VALUES (md5('qa:cp:1')::uuid, 'c0000000-0000-4000-8000-000000000001', TRUE, TRUE, TRUE, 'CREDIT', 30, 50000000, 30,
-            md5('demo:user:approver')::uuid, NOW(), 'BEFORE_DELIVERY') $q$);
+SELECT pg_temp.expect_ok('K6 credit 50M over 30 days', $q$
+    INSERT INTO customer.credit_profile (id, customer_id, credit_limit, credit_term_days, approved_by, approved_at)
+    VALUES (md5('qa:cp:1')::uuid, 'c0000000-0000-4000-8000-000000000001', 50000000, 30,
+            md5('demo:user:approver')::uuid, NOW()) $q$);
 SELECT pg_temp.expect_fail('K7 a second set of terms for the same customer', $q$
     INSERT INTO customer.credit_profile (id, customer_id, approved_by, approved_at)
     VALUES (gen_random_uuid(), 'c0000000-0000-4000-8000-000000000001', md5('demo:user:approver')::uuid, NOW()) $q$);
 
-\echo '--- credit orders and their checks (ordering.order_credit_check)'
-SELECT pg_temp.expect_fail('K8 a credit order without days to pay', $q$
+\echo '--- orders and their credit checks (ordering.order_credit_check)'
+SELECT pg_temp.expect_fail('K8 a CONFIRMED order with no contract signed (ck_order_confirmed_basis, 4B-11)', $q$
     INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, currency, placed_at,
-                                         created_at, payment_term)
+                                         created_at)
     VALUES (gen_random_uuid(), 'SO-QA-K8', 'c0000000-0000-4000-8000-000000000001', gen_random_uuid(), 'CONFIRMED',
-            1000000, 'VND', NOW(), NOW(), 'CREDIT') $q$);
-SELECT pg_temp.expect_fail('K9 days to pay on a prepaid order', $q$
+            1000000, 'VND', NOW(), NOW()) $q$);
+SELECT pg_temp.expect_ok('K9 a PENDING_PAYMENT order needs no contract yet', $q$
     INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, currency, placed_at,
-                                         created_at, credit_term_days)
+                                         created_at)
     VALUES (gen_random_uuid(), 'SO-QA-K9', 'c0000000-0000-4000-8000-000000000001', gen_random_uuid(), 'PENDING_PAYMENT',
-            1000000, 'VND', NOW(), NOW(), 30) $q$);
-SELECT pg_temp.expect_ok('K10 a credit order confirmed on credit', $q$
+            1000000, 'VND', NOW(), NOW()) $q$);
+SELECT pg_temp.expect_ok('K10 an order CONFIRMED by its signed contract', $q$
     INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, currency, placed_at,
-                                         created_at, payment_term, credit_term_days)
+                                         created_at, contract_signed_at)
     VALUES (md5('qa:order:k10')::uuid, 'SO-QA-K10', 'c0000000-0000-4000-8000-000000000001', gen_random_uuid(), 'CONFIRMED',
-            1000000, 'VND', NOW(), NOW(), 'CREDIT', 30) $q$);
+            1000000, 'VND', NOW(), NOW(), NOW()) $q$);
 SELECT pg_temp.expect_fail('K11 WITHIN_LIMIT over the limit', $q$
     INSERT INTO ordering.order_credit_check (id, order_id, checked_at, credit_limit, exposure, order_amount, outcome)
     VALUES (gen_random_uuid(), md5('qa:order:k10')::uuid, NOW(), 1000000, 500000, 1000000, 'WITHIN_LIMIT') $q$);
@@ -122,11 +120,10 @@ SELECT pg_temp.expect_ok('K19 accounting approves it', $q$
     UPDATE customer.default_payment_schedule SET approved_by = md5('demo:user:approver')::uuid, approved_at = NOW()
      WHERE id = md5('qa:dps:1')::uuid $q$);
 SELECT pg_temp.expect_fail('K20 the credit taken away while the schedule pays after delivery', $q$
-    UPDATE customer.credit_profile SET allow_credit = FALSE, credit_limit = NULL, credit_term_days = NULL,
-                                       default_payment_term = 'PREPAID'
+    UPDATE customer.credit_profile SET credit_limit = NULL, credit_term_days = NULL
      WHERE customer_id = 'c0000000-0000-4000-8000-000000000001' $q$);
 SELECT pg_temp.expect_fail('K21 the credit limit lowered to 0 under it', $q$
-    UPDATE customer.credit_profile SET credit_limit = 0, default_payment_term = 'PREPAID'
+    UPDATE customer.credit_profile SET credit_limit = 0
      WHERE customer_id = 'c0000000-0000-4000-8000-000000000001' $q$);
 SELECT pg_temp.expect_fail('K22 the commercial terms deleted under it', $q$
     DELETE FROM customer.credit_profile WHERE customer_id = 'c0000000-0000-4000-8000-000000000001' $q$);
@@ -155,8 +152,7 @@ SELECT pg_temp.expect_ok('K28 back to paying before delivery, the approval with 
     unapproved AS (
         UPDATE customer.default_payment_schedule SET approved_by = NULL, approved_at = NULL
          WHERE id IN (SELECT schedule_id FROM moved) RETURNING id)
-    UPDATE customer.credit_profile SET allow_credit = FALSE, credit_limit = NULL, credit_term_days = NULL,
-                                       default_payment_term = 'PREPAID'
+    UPDATE customer.credit_profile SET credit_limit = NULL, credit_term_days = NULL
      WHERE customer_id = 'c0000000-0000-4000-8000-000000000001' AND EXISTS (SELECT 1 FROM unapproved) $q$);
 
 ROLLBACK;

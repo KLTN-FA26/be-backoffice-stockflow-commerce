@@ -129,7 +129,7 @@ SELECT pg_temp.expect_fail('SC11 an installment before delivery with a due day',
     UPDATE ordering.contract_payment_installment SET due_days = 5 WHERE id = md5('qa17:i2')::uuid $q$);
 SELECT pg_temp.expect_true('SC12a the demo customer has no credit approved',
     NOT EXISTS (SELECT 1 FROM customer.credit_profile p WHERE p.customer_id = (SELECT id FROM customer.customer
-                ORDER BY id LIMIT 1) AND p.allow_credit AND p.credit_limit > 0));
+                ORDER BY id LIMIT 1) AND p.credit_limit > 0));
 SELECT pg_temp.expect_fail('SC12 an installment after delivery without credit accounting approved (15 BR-12)', $q$
     UPDATE ordering.contract_payment_installment SET milestone = 'AFTER_DELIVERY', due_days = 30
      WHERE id = md5('qa17:i2')::uuid $q$);

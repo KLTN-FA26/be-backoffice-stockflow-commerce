@@ -225,32 +225,29 @@ call would create a cycle, since order already listens to payment.
 
 ## The central claim, and its test
 
-Placing an order and reserving its stock are **one transaction**:
+Holding an order's stock is **one transaction** with the order (`ShippingWarehouseService.choose`, once Sales
+picks the shipping warehouse of an order drawn up from an accepted quote; there is no checkout since team plan
+5-2 and 4B-10):
 
 ```java
 @Transactional
-public OrderSummary placeOrder(PlaceOrderCommand command) {
-    Order order = Order.draft(...);
-    for (OrderLine line : order.lines()) {
-        ReserveStockResult r = inventory.reserve(...);      // joins THIS transaction
-        order.attachReservations(line.id(), r.reservationIds());
+public Coverage choose(UUID orderId, UUID warehouseId, UUID by) {
+    Order order = lockOrder(orderId);
+    inventory.prepareReservation(skus);                     // SKU advisory locks, sorted
+    for (OrderLine line : stillShort) {
+        HoldStockResult r = inventory.holdAtWarehouse(...); // joins THIS transaction
+        order.holdMore(line.id(), r.reservationIds());
     }
-    order.submit();
-    return toSummary(repository.save(order));
+    return coverage(repository.save(order));
 }
 ```
 
-(`reservationIds`, plural: a line for ten units is often drawn from two lots, and each lot is a
-separate hold. Keeping only the first would release half the stock on cancellation and leave the
-rest held until it expired.)
+(`reservationIds`, plural: a line is often held from several cartons, and each carton is a separate hold.
+Keeping only the first would release part of the stock on cancellation and leave the rest held.)
 
 Under the microservices design this same step needed an outbox row, a Kafka topic, an idempotent
 consumer, two response events, a saga state row, a timeout, and a compensating release — and still
 left a window in which an order existed with no stock behind it.
-
-`PlaceOrderIntegrationTest.stockIsRolledBackWhenTheOrderFails()` places an order, asserts the stock
-is held, throws, and asserts the stock is back. Against a real Postgres. That test is the
-architecture's argument, and it is the test that could not have been written before.
 
 ---
 
@@ -262,7 +259,7 @@ architecture's argument, and it is the test that could not have been written bef
 | `ArchitectureTest` | layering inside a module, plus the traps in the shared base: a soft-deletable entity without `@SQLRestriction`, a scoped entity behind an unscoped repository, a cache named by string literal, a random UUID used as a primary key, a `@Scheduled` job without `@SchedulerLock`, a proxied method that is not public |
 | `BaseLayerRegressionTest` | the base-layer defects found in review — entity equality under a lazy proxy, `isNew()` with an application-assigned id, `OWN` scope with no user id, a nested permission guard clearing its caller's scope |
 | `StockItemTest`, `OrderTest`, `StockAllocatorTest` | business rules, as plain unit tests with no container — milliseconds, because the domain has no framework on it |
-| `PlaceOrderIntegrationTest` | the atomicity claim, against a real Postgres |
+| `ShippingWarehouseIntegrationTest` | an order and its stock holds commit together, against a real Postgres |
 | `InventoryEventIntegrationTest` | cross-module event delivery and listener idempotency |
 | `InventoryModuleTest` | inventory boots **alone**, with the other thirteen modules absent |
 | `MessageBundleTest` | every `ErrorCode` is translated in both bundles, and they agree |

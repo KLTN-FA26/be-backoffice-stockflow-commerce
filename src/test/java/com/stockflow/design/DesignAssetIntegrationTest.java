@@ -11,7 +11,6 @@ import com.stockflow.common.storage.DownloadLink;
 import com.stockflow.common.storage.FileTransfers;
 import com.stockflow.common.storage.UploadInspection;
 import com.stockflow.product.api.CreateProductCommand;
-import com.stockflow.product.api.ProductKind;
 import com.stockflow.product.api.ProductService;
 import com.stockflow.product.api.TaxClass;
 import com.stockflow.product.internal.service.ProductVariantService;
@@ -86,7 +85,7 @@ class DesignAssetIntegrationTest {
         as(staff);
         String code = "AST-" + UUID.randomUUID().toString().substring(0, 6).toUpperCase();
         UUID productId = products.create(new CreateProductCommand(code, "Ly giấy 12oz", "Paper cup 12oz", null, null,
-                "Ly", null, null, TaxClass.STANDARD, ProductKind.CUSTOMIZABLE, List.of())).productId();
+                "Ly", null, null, TaxClass.STANDARD, List.of())).productId();
         tx.executeWithoutResult(s -> {
             jdbc.update("UPDATE product.products SET status = 'APPROVED', submitted_by = ?, submitted_at = NOW(), "
                     + "approved_by = ?, approved_at = NOW() WHERE id = ?", ReferenceRows.user(entityManager),

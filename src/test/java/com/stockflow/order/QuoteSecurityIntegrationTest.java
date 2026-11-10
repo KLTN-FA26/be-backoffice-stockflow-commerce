@@ -2,11 +2,8 @@ package com.stockflow.order;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.stockflow.common.domain.Money;
-import com.stockflow.common.domain.Sku;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.order.api.OrderService;
-import com.stockflow.order.api.PlaceOrderCommand;
 import com.stockflow.support.ConfirmedDesigns;
 import com.stockflow.support.CustomerSkuRows;
 import com.stockflow.support.IntegrationTest;
@@ -177,26 +174,25 @@ class QuoteSecurityIntegrationTest {
     }
 
     @Test
-    @DisplayName("reorder: the order verb; anonymous 401, warehouse 403, another customer 404, a price-list order 409")
-    void whoMayReorder() throws Exception {
+    @DisplayName("checkout and reorder are gone (team plan 5-2): anonymous 401, every role 403, whoever owns the order")
+    void checkoutAndReorderAreRefusedToEveryone() throws Exception {
         UUID userA = user();
-        UUID userB = user();
         UUID customerA = customerOf(userA);
-        customerOf(userB);
-        UUID orderId = orders.placeOrder(new PlaceOrderCommand(UUID.randomUUID(), customerA,
-                List.of(new PlaceOrderCommand.Line(new Sku(ConfirmedDesigns.BLANK), 1, Money.vnd(3000), null))))
-                .orderId();
+        UUID orderId = UUID.randomUUID();
         String reorder = "/api/v1/orders/" + orderId + "/reorder";
-        Map<String, Object> body = Map.of("requestId", UUID.randomUUID());
+        Map<String, Object> reorderBody = Map.of("requestId", UUID.randomUUID());
+        Map<String, Object> checkoutBody = Map.of("requestId", UUID.randomUUID(), "customerId", customerA,
+                "lines", List.of(Map.of("sku", ConfirmedDesigns.BLANK, "quantity", 1, "unitPrice", 3000)));
 
-        mvc.perform(post(reorder).contentType("application/json").content(json.writeValueAsString(body)))
+        mvc.perform(post(reorder).contentType("application/json").content(json.writeValueAsString(reorderBody)))
                 .andExpect(status().isUnauthorized());
-        send(post(reorder), token(user(), "WAREHOUSE_STAFF"), body).andExpect(status().isForbidden());
-        send(post(reorder), token(userB, "CUSTOMER"), body).andExpect(status().isNotFound());
-        send(post(reorder), token(userA, "CUSTOMER"), Map.of()).andExpect(status().isBadRequest());
-        send(post(reorder), token(userA, "CUSTOMER"), body).andExpect(status().isConflict())
-                .andExpect(jsonPath("$.errorCode").value("ORDER_NOT_QUOTED"));
-        send(post(reorder), token(user(), "SALES_STAFF"), body).andExpect(status().isConflict())
-                .andExpect(jsonPath("$.errorCode").value("ORDER_NOT_QUOTED"));
+        mvc.perform(post("/api/v1/orders").contentType("application/json")
+                .content(json.writeValueAsString(checkoutBody))).andExpect(status().isUnauthorized());
+        for (String role : List.of("CUSTOMER", "SALES_STAFF", "ORDER_COORDINATOR", "WAREHOUSE_STAFF", "SYSTEM_ADMIN")) {
+            send(post(reorder), token(userA, role), reorderBody).andExpect(status().isForbidden());
+            send(post("/api/v1/orders"), token(userA, role), checkoutBody).andExpect(status().isForbidden());
+        }
+        // The order itself is still there to read: only the verbs went.
+        send(get("/api/v1/orders/" + orderId), token(userA, "SALES_STAFF"), null).andExpect(status().isOk());
     }
 }

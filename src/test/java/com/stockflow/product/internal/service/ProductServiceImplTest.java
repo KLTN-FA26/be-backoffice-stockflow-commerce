@@ -102,7 +102,7 @@ class ProductServiceImplTest {
     private static Product productIn(ProductStatus status, long version) {
         boolean approvedOnce = status != ProductStatus.DRAFT && status != ProductStatus.PENDING_APPROVAL;
         return new Product(ProductId.newId(), "CUP-12OZ", "Ly giấy", "Paper cup", BRAND, CATEGORY, null, null, null,
-                TaxClass.STANDARD, ProductKind.STANDARD, status, version,
+                TaxClass.STANDARD, ProductKind.CUSTOMIZABLE, status, version,
                 status == ProductStatus.DRAFT ? null : PEOPLE, status == ProductStatus.DRAFT ? null : NOW,
                 approvedOnce ? UUID.randomUUID() : null, approvedOnce ? NOW : null, false, null,
                 status == ProductStatus.DISCONTINUED ? NOW : null, status == ProductStatus.DISCONTINUED ? "old" : null,
@@ -121,7 +121,7 @@ class ProductServiceImplTest {
 
     private static ProductSummary summary(Product product, ProductStatus status) {
         return new ProductSummary(product.id().value(), product.code(), product.name(), null, "cup-12oz", BRAND, "Brand",
-                CATEGORY, null, null, null, TaxClass.STANDARD, ProductKind.STANDARD, status, NOW, "u", NOW, "u", null, null,
+                CATEGORY, null, null, null, TaxClass.STANDARD, ProductKind.CUSTOMIZABLE, status, NOW, "u", NOW, "u", null, null,
                 null, null, null, null, null, product.version() + 1, null, null, null);
     }
 
@@ -402,7 +402,7 @@ class ProductServiceImplTest {
         Product product = locked(ProductStatus.DRAFT, 5, ProductStatus.DRAFT);
 
         BusinessException refused = refusal(catchThrowable(() -> service.update(new UpdateProductCommand(product.id().value(), 4,
-                "Ly mới", "New", BRAND, CATEGORY, null, null, null, TaxClass.STANDARD, ProductKind.STANDARD))));
+                "Ly mới", "New", BRAND, CATEGORY, null, null, null, TaxClass.STANDARD))));
 
         assertThat(refused.errorCode()).isEqualTo(ErrorCode.OPTIMISTIC_LOCK);
         assertThat(product.name()).isEqualTo("Ly giấy");
@@ -418,12 +418,12 @@ class ProductServiceImplTest {
         when(products.categoryStatus(CATEGORY)).thenReturn(ReferenceStatus.ACTIVE);
 
         service.update(new UpdateProductCommand(product.id().value(), 5, "Ly mới", "Paper cup", BRAND, CATEGORY, null,
-                null, null, TaxClass.STANDARD, ProductKind.STANDARD));
+                null, null, TaxClass.STANDARD));
 
         verify(history).record(product.id().value(), ProductChangeType.UPDATED, null, null, null, null, List.of("name"));
 
         service.update(new UpdateProductCommand(product.id().value(), 5, "Ly mới", "Paper cup", BRAND, CATEGORY, null,
-                null, null, TaxClass.STANDARD, ProductKind.STANDARD));
+                null, null, TaxClass.STANDARD));
 
         verify(history, org.mockito.Mockito.times(1)).record(any(), eq(ProductChangeType.UPDATED), any(), any(), any(), any(), anyList());
     }
@@ -432,7 +432,7 @@ class ProductServiceImplTest {
 
     private static CreateProductCommand create(UUID brand, UUID category) {
         return new CreateProductCommand("CUP-NEW", "Ly mới", "New cup", brand, category, null, null, null,
-                TaxClass.STANDARD, ProductKind.STANDARD, List.of());
+                TaxClass.STANDARD, List.of());
     }
 
     @Test
@@ -477,7 +477,7 @@ class ProductServiceImplTest {
         when(products.categoryStatus(CATEGORY)).thenReturn(ReferenceStatus.INACTIVE);
 
         service.update(new UpdateProductCommand(product.id().value(), 5, "Ly mới", "Paper cup", BRAND, CATEGORY, null,
-                null, null, TaxClass.STANDARD, ProductKind.STANDARD));
+                null, null, TaxClass.STANDARD));
 
         assertThat(product.name()).isEqualTo("Ly mới");
         verify(products).save(product);
@@ -492,8 +492,7 @@ class ProductServiceImplTest {
         when(products.categoryStatus(retired)).thenReturn(ReferenceStatus.INACTIVE);
 
         BusinessException refused = refusal(catchThrowable(() -> service.update(new UpdateProductCommand(
-                product.id().value(), 5, "Ly mới", "Paper cup", BRAND, retired, null, null, null, TaxClass.STANDARD,
-                ProductKind.STANDARD))));
+                product.id().value(), 5, "Ly mới", "Paper cup", BRAND, retired, null, null, null, TaxClass.STANDARD))));
 
         assertThat(refused.errorCode()).isEqualTo(ErrorCode.CATEGORY_INACTIVE);
         assertThat(product.categoryId()).isEqualTo(CATEGORY);

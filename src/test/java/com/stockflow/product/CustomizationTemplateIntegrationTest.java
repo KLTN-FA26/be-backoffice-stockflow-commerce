@@ -91,7 +91,7 @@ class CustomizationTemplateIntegrationTest {
     private ProductSummary create(ProductKind kind) {
         String suffix = UUID.randomUUID().toString().substring(0, 6).toUpperCase();
         return products.create(new CreateProductCommand("TPL-" + suffix, "Ly giấy 12oz", "Paper cup 12oz", null, null,
-                "Ly", null, null, TaxClass.STANDARD, kind, List.of()));
+                "Ly", null, null, TaxClass.STANDARD, List.of()));
     }
 
     private static String cup(String code, double bleed, Long version) {
@@ -156,13 +156,6 @@ class CustomizationTemplateIntegrationTest {
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.errorCode").value("PRINT_CONFIG_INVALID"));
 
-        ProductSummary standard = create(ProductKind.STANDARD);
-        UUID standardVariant = variants.list(standard.productId(), 0, 1).items().getFirst().id();
-        mvc.perform(post("/api/v1/products/" + standard.productId() + "/variants/" + standardVariant
-                        + "/customization-templates").contentType(MediaType.APPLICATION_JSON)
-                        .content(cup("CUP12-BODY", 2, null)))
-                .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.errorCode").value("PRODUCT_NOT_CUSTOMIZABLE"));
     }
 
     @Test
@@ -285,12 +278,6 @@ class CustomizationTemplateIntegrationTest {
         mvc.perform(get("/api/v1/catalog/products/no-such-product-" + UUID.randomUUID() + "/customization"))
                 .andExpect(status().isNotFound());
 
-        ProductSummary standard = create(ProductKind.STANDARD);
-        String standardSku = variants.list(standard.productId(), 0, 1).items().getFirst().sku();
-        String standardSlug = publish(standard.productId(), standardSku);
-        mvc.perform(get("/api/v1/catalog/products/" + standardSlug + "/customization"))
-                .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.errorCode").value("PRODUCT_NOT_CUSTOMIZABLE"));
     }
 
     /** Publishes a product straight in the source, as the catalogue search tests do, and returns its listing's slug. */

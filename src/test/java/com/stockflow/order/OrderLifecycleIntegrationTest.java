@@ -309,7 +309,7 @@ class OrderLifecycleIntegrationTest {
         assertThat(code(catchThrowable(() -> orders.cancelOwn(order.orderId(), customer,
                 CancellationReasonCode.CUSTOMER_REQUEST, null, staff)))).isEqualTo(ErrorCode.ORDER_NOT_CANCELLABLE);
         assertThat(customerOrders.myOrder(customer, order.orderId()).allowedActions())
-                .isEqualTo(new CustomerOrders.AllowedActions(false, false, false));
+                .isEqualTo(new CustomerOrders.AllowedActions(false, false));
     }
 
     @Test
