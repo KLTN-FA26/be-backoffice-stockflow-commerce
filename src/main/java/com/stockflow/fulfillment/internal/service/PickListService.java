@@ -154,12 +154,13 @@ class PickListService implements PickLists {
         PickList list = toList(pick, stored);
         Instant now = clock.instant();
         List<PickLine> moved = list.moveToDispatch();
-        for (PickLine line : moved) {
-            if (line.reservationId() != null) {
-                consumption.consumeStaged(line.reservationId(), line.id(), actorId);
-                line.recordConsumed(now);
-            }
-        }
+        // One call for the whole task (review M1): inventory takes every SKU lock sorted, then the cartons, then the
+        // rows. A line without a hold fails loudly (4C-4 requireHold): skipping it would mark it PICKED undeducted.
+        consumption.consumeStaged(moved.stream()
+                .map(line -> new com.stockflow.inventory.consumption.StagedLine(requireHold(line, "moved to dispatch"),
+                        line.id()))
+                .toList(), actorId);
+        moved.forEach(line -> line.recordConsumed(now));
         writeBack(list, stored, moved.stream().map(PickLine::id).collect(Collectors.toSet()));
         log.info("Task {} of order {} moved to dispatch: {} staged carton(s) deducted", pick.getId(),
                 pick.getOrderNumber(), moved.size());
