@@ -646,6 +646,16 @@ public final class Order extends AggregateRoot {
      * AWAITING_STOCK → READY_TO_FULFILL (4A-6, 17 §5.1 "nhận đủ hàng"; the release service checks the holds).</p>
      */
     public void release(UUID warehouse, String warehouseCode, UUID by, Instant now) {
+        release(warehouse, warehouseCode, by, now, null, null);
+    }
+
+    /**
+     * 4B-8 (17 §4.5, BR-03, BR-29): the first delivery batch released - the order goes to the warehouse as before, but
+     * only the lines that batch carries need their stock held ({@code batchLines}; null: every line, an order without a
+     * schedule). {@code OrderReleased} names the batch, so payment makes due only what that batch waits for.
+     */
+    public void release(UUID warehouse, String warehouseCode, UUID by, Instant now, UUID deliveryBatchId,
+                        java.util.Set<UUID> batchLines) {
         java.util.Objects.requireNonNull(warehouse, "warehouse");
         java.util.Objects.requireNonNull(by, "by");
         if (status != OrderStatus.CONFIRMED && !(status == OrderStatus.AWAITING_STOCK && paidByContract())) {
@@ -660,7 +670,8 @@ public final class Order extends AggregateRoot {
             throw new BusinessException(ErrorCode.ORDER_SHIPPING_WAREHOUSE_MISMATCH, ("Order %s ships from another "
                     + "warehouse").formatted(orderNumber));
         }
-        if (paidByContract() && lines.stream().anyMatch(line -> !line.isReserved())) {
+        if (paidByContract() && lines.stream().filter(line -> batchLines == null || batchLines.contains(line.id()))
+                .anyMatch(line -> !line.isReserved())) {
             // An order confirmed by its contract holds nothing until its shipping warehouse is chosen and its stock held
             // there (17 §4.2, 4B-7): released now, it would go to the warehouse with nothing to pick. (A checkout order
             // reserved its stock when it was placed.)
@@ -671,7 +682,28 @@ public final class Order extends AggregateRoot {
         this.warehouseId = warehouse;
         this.releasedAt = now;
         this.releasedBy = by;
-        registerEvent(new OrderEvent.Released(new com.stockflow.contracts.OrderReleased(id.value(), warehouseCode, now)));
+        registerEvent(new OrderEvent.Released(new com.stockflow.contracts.OrderReleased(id.value(), warehouseCode, now,
+                deliveryBatchId)));
+    }
+
+    /**
+     * 4B-8 (17 §4.5, BR-29): a later delivery batch released, once the one before it was handed over - the order is
+     * PARTIALLY_FULFILLED and stays so: its status follows the order, the batch's own state is worked out (§5.5). Only
+     * from the warehouse it was first released from (BR-22).
+     */
+    public void releaseLaterBatch(UUID warehouse, String warehouseCode, UUID deliveryBatchId, Instant now) {
+        java.util.Objects.requireNonNull(deliveryBatchId, "deliveryBatchId");
+        if (status != OrderStatus.PARTIALLY_FULFILLED) {
+            throw new InvalidOrderTransitionException(orderNumber, status, status == OrderStatus.ON_HOLD
+                    ? "resolve the hold before releasing its next delivery batch"
+                    : "a later delivery batch is released once the one before it was handed over");
+        }
+        if (!warehouse.equals(warehouseId)) {
+            throw new BusinessException(ErrorCode.ORDER_SHIPPING_WAREHOUSE_MISMATCH, ("Order %s ships from another "
+                    + "warehouse").formatted(orderNumber));
+        }
+        registerEvent(new OrderEvent.Released(new com.stockflow.contracts.OrderReleased(id.value(), warehouseCode, now,
+                deliveryBatchId)));
     }
 
     /**
@@ -1043,6 +1075,17 @@ public final class Order extends AggregateRoot {
      * @param installmentsDue as for {@link #markShipped(Instant, UUID, BigDecimal)}
      */
     public void requireHandoverAllowed(BigDecimal installmentsDue) {
+        requireHandoverAllowed(installmentsDue, null, null);
+    }
+
+    /**
+     * 4B-8: as above, for the delivery batch in flight - its installments (those tied to it, or to no batch) and, from
+     * 09 BR-04 / 17 BR-29, not before the first day of its delivery window in force.
+     *
+     * @param batch null: the order has no delivery schedule, or none released by batch
+     * @param day   the day the goods would leave, in the business calendar
+     */
+    public void requireHandoverAllowed(BigDecimal installmentsDue, BatchInFlight batch, java.time.LocalDate day) {
         requireNotCancelled("its goods are not handed over");
         if (status != OrderStatus.PICKING && status != OrderStatus.PACKED && status != OrderStatus.PARTIALLY_FULFILLED) {
             throw new InvalidOrderTransitionException(orderNumber, status,
@@ -1050,10 +1093,26 @@ public final class Order extends AggregateRoot {
                             : "only a picking, packed or partly shipped order hands goods over");
         }
         requireHandoverPaid(installmentsDue);
+        if (batch != null && batch.windowStart() != null && day != null && day.isBefore(batch.windowStart())) {
+            throw new BusinessException(ErrorCode.DELIVERY_BATCH_WINDOW_NOT_OPEN, ("Delivery batch %d of order %s is "
+                    + "delivered from %s, not on %s; move its window if the customer takes it early")
+                    .formatted(batch.seq(), orderNumber, batch.windowStart(), day));
+        }
     }
 
     /** @param installmentsDue as for {@link #markShipped(Instant, UUID, BigDecimal)} */
     public boolean recordHandover(ShipmentHandover handover, BigDecimal installmentsDue) {
+        return recordHandover(handover, installmentsDue, null, null);
+    }
+
+    /**
+     * 4B-8: a shipment of the delivery batch in flight. Units of the batches not released yet are not "left behind"
+     * (17 BR-15: a schedule needs no partial-shipment decision), and the shipment records its batch.
+     *
+     * @param day as for {@link #requireHandoverAllowed(BigDecimal, BatchInFlight, java.time.LocalDate)}
+     */
+    public boolean recordHandover(ShipmentHandover handover, BigDecimal installmentsDue, BatchInFlight batch,
+                                  java.time.LocalDate day) {
         java.util.Objects.requireNonNull(handover, "handover");
         Optional<OrderShipment> known = shipment(handover.shipmentId());
         Map<UUID, Integer> quantities = quantitiesOf(handover);
@@ -1065,7 +1124,7 @@ public final class Order extends AggregateRoot {
             }
             return false;
         }
-        requireHandoverAllowed(installmentsDue);
+        requireHandoverAllowed(installmentsDue, batch, day);
         for (Map.Entry<UUID, Integer> entry : quantities.entrySet()) {
             OrderLine line = findLine(entry.getKey()).orElseThrow(() -> new BusinessException(
                     ErrorCode.VALIDATION_FAILED, "Line %s is not on order %s".formatted(entry.getKey(), orderNumber)));
@@ -1080,21 +1139,23 @@ public final class Order extends AggregateRoot {
         }
         Money value = worthWith(quantities);
         int leaving = quantities.values().stream().mapToInt(Integer::intValue).sum();
-        boolean everythingGoes = outstandingUnits() == leaving;
+        int later = batch == null ? 0 : batch.laterUnits();
+        boolean everythingGoes = outstandingUnits() - later == leaving;
         if (status == OrderStatus.PICKING && everythingGoes) {
             throw new InvalidOrderTransitionException(orderNumber, status, "pack it before handing everything over");
         }
         // PACK-PARTIAL (lead's decision 2026-10-21): goods left behind - not in this shipment nor in the others signed
         // over with it - make this a partial shipment, which Sales decides on the order, not the warehouse.
         int leavingWith = quantitiesOf(handover.leavingWith()).values().stream().mapToInt(Integer::intValue).sum();
-        if (!allowPartialShipment && outstandingUnits() > leaving + leavingWith) {
+        if (!allowPartialShipment && outstandingUnits() - later > leaving + leavingWith) {
             throw new BusinessException(ErrorCode.ORDER_PARTIAL_SHIPMENT_NOT_ALLOWED,
                     "Order %s does not allow partial shipments: %d unit(s) would stay behind. Hand everything over "
-                            .formatted(orderNumber, outstandingUnits() - leaving - leavingWith)
+                            .formatted(orderNumber, outstandingUnits() - later - leaving - leavingWith)
                             + "together, or ask Sales to allow partial shipment on the order");
         }
         shipments.add(OrderShipment.handedOver(handover.shipmentId(), quantities, value.amount(),
-                handover.handedOverAt(), handover.handedOverBy(), handover.carriage()));
+                handover.handedOverAt(), handover.handedOverBy(), handover.carriage(),
+                batch == null ? null : batch.batchId()));
         // Goods handed over were packed: from here the order goes through a return, never a cancellation.
         recordPacked(handover.handedOverAt());
         followShipments(ShipmentChange.HANDED_OVER, handover.handedOverAt(), handover.handedOverBy());
@@ -1432,8 +1493,9 @@ public final class Order extends AggregateRoot {
     }
 
     /**
-     * Every installment of its contract before delivery and on signing (still owing {@code installmentsDue}), tied to a
-     * delivery batch or not, until the handover goes by batch (4B-8).
+     * What the installments want before the goods leave ({@code installmentsDue}): the caller reads it for the batch
+     * on its way (4B-8: those on signing, and those before delivery tied to that batch or to none), or for the whole
+     * order when it does not release by batch.
      */
     private void requireHandoverPaid(BigDecimal installmentsDue) {
         BigDecimal due = paidByContract() && installmentsDue != null ? installmentsDue : BigDecimal.ZERO;
@@ -1874,9 +1936,16 @@ public final class Order extends AggregateRoot {
      * @return whether this changed the order
      */
     public boolean recordGoodsLeft(Instant at, Map<UUID, Integer> inPlan, BigDecimal installmentsDue) {
+        return recordGoodsLeft(at, inPlan, installmentsDue, null, null);
+    }
+
+    /** 4B-8: the same for the delivery batch in flight (see {@link #recordHandover(ShipmentHandover, BigDecimal,
+     *  BatchInFlight, java.time.LocalDate)}). */
+    public boolean recordGoodsLeft(Instant at, Map<UUID, Integer> inPlan, BigDecimal installmentsDue,
+                                   BatchInFlight batch, java.time.LocalDate day) {
         java.util.Objects.requireNonNull(at, "at");
-        requireHandoverAllowed(installmentsDue);
-        requirePlanCarriesTheRest(inPlan);
+        requireHandoverAllowed(installmentsDue, batch, day);
+        requirePlanCarriesTheRest(inPlan, batch);
         if (goodsLeftAt != null) {
             return false;
         }
@@ -1891,15 +1960,21 @@ public final class Order extends AggregateRoot {
      * @param inPlan as for {@link #recordGoodsLeft}; null: not checked
      */
     public void requirePlanCarriesTheRest(Map<UUID, Integer> inPlan) {
+        requirePlanCarriesTheRest(inPlan, null);
+    }
+
+    /** 4B-8: units of the batches not released yet are not the plan's to carry. */
+    public void requirePlanCarriesTheRest(Map<UUID, Integer> inPlan, BatchInFlight batch) {
         requireNotCancelled("its goods are not loaded");
         if (inPlan == null || allowPartialShipment) {
             return;
         }
         int carried = inPlan.values().stream().mapToInt(Integer::intValue).sum();
-        if (outstandingUnits() > carried) {
+        int expected = outstandingUnits() - (batch == null ? 0 : batch.laterUnits());
+        if (expected > carried) {
             throw new BusinessException(ErrorCode.ORDER_PARTIAL_SHIPMENT_NOT_ALLOWED, ("Order %s does not allow partial "
                     + "shipments: %d unit(s) are not in this load plan. Put them in the plan, or ask Sales to allow "
-                    + "partial shipment on the order").formatted(orderNumber, outstandingUnits() - carried));
+                    + "partial shipment on the order").formatted(orderNumber, expected - carried));
         }
     }
 

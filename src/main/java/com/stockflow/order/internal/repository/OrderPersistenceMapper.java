@@ -92,7 +92,8 @@ final class OrderPersistenceMapper {
         order.restoreShipments(shipmentRows.stream()
                 .map(row -> new OrderShipment(row.getId(), row.getQuantities(), row.getAmount(), row.getHandedOverAt(),
                         row.getHandedOverBy(), row.getStatus(), row.getOutcomeAt(), row.getOutcomeBy(),
-                        row.getFailureReason(), row.getFailureNote(), row.getCarriage()))
+                        row.getFailureReason(), row.getFailureNote(), row.getCarriage())
+                        .restoreDeliveryBatch(row.getDeliveryBatchId()))
                 .toList());
         return order;
     }

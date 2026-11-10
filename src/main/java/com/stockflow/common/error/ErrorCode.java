@@ -399,6 +399,22 @@ public enum ErrorCode {
     ORDER_SHIPPING_WAREHOUSE_MISMATCH("The order ships from another warehouse", 409),
     /** 4B-5: an order confirmed by its contract holds no stock until its shipping warehouse is chosen (4B-7). */
     ORDER_STOCK_NOT_HELD("This order holds no stock yet; its shipping warehouse is chosen and its stock held first", 409),
+    /** 4B-8: no delivery batch with that id on the order's signed contract. */
+    DELIVERY_BATCH_NOT_FOUND("Delivery batch not found on this order", 404),
+    /**
+     * 4B-8 (17 BR-29): delivery batches are released one at a time, in schedule order, each once the one before it was
+     * handed over; the one named is not the next.
+     */
+    DELIVERY_BATCH_NOT_NEXT("This is not the order's next delivery batch to release", 409),
+    /** 4B-8 (09 BR-04, 17 BR-29): a batch's goods leave from the first day of its delivery window. */
+    DELIVERY_BATCH_WINDOW_NOT_OPEN("This delivery batch's window has not opened yet", 409),
+    /** 4B-8 (17 BR-28): a window moves only while no carton of the batch was handed over. */
+    DELIVERY_BATCH_WINDOW_LOCKED("Goods of this delivery batch were handed over; its window no longer moves", 409),
+    /**
+     * 4B-8 (09 BR-18): the vehicle is not handed over at all while an order on it may not let goods leave;
+     * {@code details} lists each order, why, and what it still owes.
+     */
+    LOAD_HANDOVER_BLOCKED("Some orders on this vehicle may not be handed over yet", 409),
     /** 4B-4: stockflow.order.seller.* is blank in this deployment. */
     SELLER_PROFILE_UNAVAILABLE("The seller's company details are not configured; contracts cannot be drawn up", 503),
     /**

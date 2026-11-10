@@ -11,6 +11,7 @@ import com.stockflow.inventory.api.HoldView;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.internal.domain.DeliveryBatch;
+import com.stockflow.order.internal.domain.DeliveryBatchRecords;
 import com.stockflow.order.internal.domain.Order;
 import com.stockflow.order.internal.domain.OrderId;
 import com.stockflow.order.internal.domain.OrderLine;
@@ -54,9 +55,14 @@ import java.util.UUID;
  *   <li><b>Top up</b>: when goods are put away, every order waiting for stock at a warehouse - CONFIRMED, or
  *       AWAITING_STOCK once a production order was sent for it (4A-6) - holds what it can, the earliest signed
  *       first.</li>
- *   <li><b>Release</b> needs every carton held at the shipping warehouse (until 4B-8 releases batch by batch).</li>
- *   <li><b>Next batch</b> (4A-6, BR-04): whether the batch the order delivers next is held in full - what decides,
- *       with a production order sent for it, that the order waits for stock.</li>
+ *   <li><b>By delivery batch</b> (4B-8, 17 §4.2 step 3, BR-29): an order with a delivery schedule holds batch by batch,
+ *       the earliest first - each hold is taken for one batch's cartons of one line and recorded as that batch's
+ *       ({@link DeliveryBatchRecords}), so the batch is released with exactly its own holds. Orders keep topping up
+ *       after their first release, for the batches still to come.</li>
+ *   <li><b>Release</b> needs every carton of the batch released held at the shipping warehouse; an order without a
+ *       schedule, every carton of every line.</li>
+ *   <li><b>Next batch</b> (4A-6, BR-04): whether the batch the order delivers next - the earliest not released - is
+ *       held in full: what decides, with a production order sent for it, that the order waits for stock.</li>
  * </ul>
  *
  * <p>Locks: the order row first, then the SKUs' advisory locks (sorted, {@code prepareReservation}), as checkout and
@@ -107,10 +113,13 @@ public class ShippingWarehouseService {
     private final Clock clock;
     private final TransactionTemplate eachOrder;
     private final com.stockflow.order.internal.domain.ProductionOrderRepository productionOrders;
+    private final DeliveryBatchRecords batchRecords;
 
     ShippingWarehouseService(OrderRepository orders, InventoryService inventory, WarehouseDirectory warehouses,
                              SalesContractRepository contracts, Clock clock, PlatformTransactionManager transactions,
-                             com.stockflow.order.internal.domain.ProductionOrderRepository productionOrders) {
+                             com.stockflow.order.internal.domain.ProductionOrderRepository productionOrders,
+                             DeliveryBatchRecords batchRecords) {
+        this.batchRecords = batchRecords;
         this.productionOrders = productionOrders;
         this.orders = orders;
         this.inventory = inventory;
@@ -237,11 +246,27 @@ public class ShippingWarehouseService {
         return toppedUp;
     }
 
+    /**
+     * 4B-8: the statuses in which an order still holds for batches to come - before its first release (CONFIRMED,
+     * AWAITING_STOCK), and while its released batches go out (17 §4.5: later batches are held while the order is
+     * worked). {@code OrderRepository#waitingForStockAtShippingWarehouse} lists the same.
+     */
+    static final Set<OrderStatus> TOPPED_UP = java.util.EnumSet.of(OrderStatus.CONFIRMED, OrderStatus.AWAITING_STOCK,
+            OrderStatus.READY_TO_FULFILL, OrderStatus.PICKING, OrderStatus.PACKED, OrderStatus.PARTIALLY_FULFILLED);
+
     /** Whether the order is short of {@code sku} (or of anything, for null) - read without a lock, to skip the rest. */
     private boolean shortOf(UUID orderId, String sku) {
         Order order = orders.findById(new OrderId(orderId)).orElse(null);
         if (order == null) {
             return false;
+        }
+        List<DeliveryBatch> pending = unreleasedBatches(order);
+        if (pending != null) {
+            Map<UUID, Map<UUID, Integer>> held = heldByBatch(order);
+            Map<UUID, OrderLine> lines = linesById(order);
+            return pending.stream().anyMatch(batch -> batch.lines().stream()
+                    .filter(l -> sku == null || lines.get(l.orderLineId()).sku().code().equals(sku))
+                    .anyMatch(l -> heldCartons(held, batch.id(), lines.get(l.orderLineId())) < l.cartons()));
         }
         Map<UUID, Integer> held = heldUnitsByLine(order);
         return cartonLines(order).stream().filter(line -> sku == null || line.sku().code().equals(sku))
@@ -250,8 +275,7 @@ public class ShippingWarehouseService {
 
     private boolean topUp(UUID orderId) {
         Order order = orders.findByIdForUpdate(new OrderId(orderId)).orElse(null);
-        if (order == null || order.status() != OrderStatus.CONFIRMED && order.status() != OrderStatus.AWAITING_STOCK
-                || order.shippingWarehouseId() == null) {
+        if (order == null || !TOPPED_UP.contains(order.status()) || order.shippingWarehouseId() == null) {
             return false;
         }
         String code = warehouses.codeOf(order.shippingWarehouseId()).orElse(null);
@@ -273,6 +297,15 @@ public class ShippingWarehouseService {
      * @return whether anything more was held
      */
     private boolean holdWhatIsAvailable(Order order, String warehouseCode) {
+        List<DeliveryBatch> pending = unreleasedBatches(order);
+        if (pending != null) {
+            return holdByBatch(order, warehouseCode, pending);
+        }
+        if (order.status() != OrderStatus.CONFIRMED && order.status() != OrderStatus.AWAITING_STOCK) {
+            // Without a schedule the order holds line by line, and only before its release: once released its holds are
+            // allocated and picked (no longer HELD), and holding again would take stock it already has.
+            return false;
+        }
         Map<UUID, Integer> held = heldUnitsByLine(order);
         List<OrderLine> lines = cartonLines(order).stream()
                 .filter(line -> line.cartons() > held.getOrDefault(line.id(), 0) / line.unitsPerCarton())
@@ -303,6 +336,84 @@ public class ShippingWarehouseService {
     }
 
     /**
+     * 4B-8 (17 §4.2 step 3, BR-29): the batches not released yet hold what they lack, the earliest first - one hold
+     * request per batch and line, recorded as that batch's. The request id names the batch, the line, how many holds the
+     * line had (released ones stay on it) and the warehouse: a retry holds once, a later arrival holds again.
+     */
+    private boolean holdByBatch(Order order, String warehouseCode, List<DeliveryBatch> pending) {
+        Map<UUID, Map<UUID, Integer>> held = heldByBatch(order);
+        Map<UUID, OrderLine> lines = linesById(order);
+        Set<Sku> skus = new java.util.TreeSet<>(Comparator.comparing(Sku::code));
+        pending.forEach(batch -> batch.lines().stream()
+                .filter(l -> heldCartons(held, batch.id(), lines.get(l.orderLineId())) < l.cartons())
+                .forEach(l -> skus.add(lines.get(l.orderLineId()).sku())));
+        if (skus.isEmpty()) {
+            return false;
+        }
+        inventory.prepareReservation(skus);
+        boolean more = false;
+        for (DeliveryBatch batch : pending) {
+            for (DeliveryBatch.Line batchLine : batch.lines()) {
+                OrderLine line = lines.get(batchLine.orderLineId());
+                int missing = batchLine.cartons() - heldCartons(held, batch.id(), line);
+                if (missing <= 0) {
+                    continue;
+                }
+                UUID requestId = UUID.nameUUIDFromBytes(("hold:%s:%s:%d:%s".formatted(batch.id(), line.id(),
+                        line.reservationIds().size(), warehouseCode)).getBytes(StandardCharsets.UTF_8));
+                HoldStockResult result = inventory.holdAtWarehouse(new HoldStockCommand(requestId, order.id().value(),
+                        line.sku(), warehouseCode, missing, line.unitsPerCarton()));
+                if (!result.reservationIds().isEmpty()) {
+                    order.holdMore(line.id(), result.reservationIds());
+                    batchRecords.recordHolds(order.id().value(), batch.id(), line.id(), result.reservationIds());
+                    more = true;
+                }
+            }
+        }
+        return more;
+    }
+
+    /**
+     * 4B-8 (17 BR-03): the batch released is held in full at the shipping warehouse - every carton of every line it
+     * carries, counting only the holds taken for it.
+     *
+     * @throws BusinessException {@code ORDER_STOCK_NOT_HELD} naming the lines short
+     */
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public void requireBatchHeld(Order order, DeliveryBatch batch) {
+        Map<UUID, Map<UUID, Integer>> held = heldByBatch(order);
+        Map<UUID, OrderLine> lines = linesById(order);
+        List<String> short_ = batch.lines().stream()
+                .filter(l -> heldCartons(held, batch.id(), lines.get(l.orderLineId())) < l.cartons())
+                .map(l -> "%s (%d of %d cartons)".formatted(lines.get(l.orderLineId()).sku().code(),
+                        heldCartons(held, batch.id(), lines.get(l.orderLineId())), l.cartons()))
+                .toList();
+        if (!short_.isEmpty()) {
+            throw new BusinessException(ErrorCode.ORDER_STOCK_NOT_HELD, ("Delivery batch %d of order %s is not all held "
+                    + "at its shipping warehouse: %s").formatted(batch.seq(), order.orderNumber(),
+                    String.join(", ", short_)));
+        }
+    }
+
+    /**
+     * 4B-8: the holds that stand for {@code batch} still HELD - a SKU reservation before release, its allocations after
+     * - what the release allocates.
+     */
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public Set<UUID> heldFor(Order order, DeliveryBatch batch) {
+        Set<UUID> ids = new LinkedHashSet<>();
+        batchRecords.holdsOf(order.id().value()).stream().filter(h -> h.batchId().equals(batch.id()))
+                .forEach(h -> ids.add(h.reservationId()));
+        if (ids.isEmpty()) {
+            return ids;
+        }
+        Set<UUID> live = new LinkedHashSet<>();
+        inventory.holds(ids).stream().filter(h -> h.status() == HoldView.Status.HELD)
+                .forEach(h -> live.add(h.reservationId()));
+        return live;
+    }
+
+    /**
      * 17 §4.2 step 5: released once every carton of every line is held at its shipping warehouse.
      *
      * @throws BusinessException {@code ORDER_STOCK_NOT_HELD} naming the lines short
@@ -324,17 +435,15 @@ public class ShippingWarehouseService {
     /**
      * 4A-6 (17 §4.2 step 5 "đủ hàng / thiếu hàng ở trên xét cho đợt giao kế tiếp", BR-04): the delivery batch the order
      * delivers next, and whether every carton of it is held at the shipping warehouse - held cartons counting for the
-     * earliest batch first, as {@link #coverage} counts them. An order not released has handed nothing over, so its next
-     * batch is its earliest one; telling the next batch after a first handover is 4B-8's (release batch by batch). Read
-     * under the caller's lock on the order, in its transaction.
+     * earliest batch first, as {@link #coverage} counts them. The next batch is the earliest not released yet (4B-8).
+     * Read under the caller's lock on the order, in its transaction.
      *
      * @return empty for an order with no live contract, or none with a delivery schedule
      */
     @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
     public java.util.Optional<NextBatch> nextBatch(Order order) {
-        DeliveryBatch first = contracts.findLiveByOrderId(order.id().value()).stream()
-                .flatMap(contract -> contract.schedule().stream())
-                .min(Comparator.comparingInt(DeliveryBatch::seq)).orElse(null);
+        List<DeliveryBatch> pending = unreleasedBatches(order);
+        DeliveryBatch first = pending == null || pending.isEmpty() ? null : pending.getFirst();
         if (first == null) {
             return java.util.Optional.empty();
         }
@@ -371,7 +480,22 @@ public class ShippingWarehouseService {
         lines.forEach(line -> skuOf.put(line.id(), line.sku().code()));
         List<BatchCoverage> batches = new ArrayList<>();
         SalesContract contract = contracts.findLiveByOrderId(order.id().value()).orElse(null);
-        if (contract != null) {
+        Map<UUID, Map<UUID, Integer>> byBatch = contract == null ? Map.of() : heldByBatch(order);
+        if (contract != null && !byBatch.isEmpty()) {
+            // 4B-8: each batch counts the holds taken for it - picked ones too, so a batch on its way stays covered.
+            Map<UUID, OrderLine> byId = linesById(order);
+            for (DeliveryBatch batch : contract.schedule().stream()
+                    .sorted(Comparator.comparingInt(DeliveryBatch::seq)).toList()) {
+                List<LineCoverage> batchLines = new ArrayList<>();
+                for (DeliveryBatch.Line line : batch.lines()) {
+                    int takes = Math.min(line.cartons(), heldCartons(byBatch, batch.id(), byId.get(line.orderLineId())));
+                    batchLines.add(new LineCoverage(line.orderLineId(), skuOf.get(line.orderLineId()), line.cartons(),
+                            takes, line.cartons() - takes));
+                }
+                batches.add(new BatchCoverage(batch.seq(), batch.windowStart(), batch.windowEnd(),
+                        batchLines.stream().allMatch(l -> l.shortCartons() == 0), batchLines));
+            }
+        } else if (contract != null) {
             Map<UUID, Integer> left = new HashMap<>(heldCartons);
             for (DeliveryBatch batch : contract.schedule().stream()
                     .sorted(Comparator.comparingInt(DeliveryBatch::seq)).toList()) {
@@ -405,6 +529,56 @@ public class ShippingWarehouseService {
             }
         }
         return held;
+    }
+
+    /**
+     * 4B-8: the units each batch's holds account for, by line - HELD (held, or allocated and not picked yet) or CONSUMED
+     * (picked): a batch is covered by what was taken for it, whatever became of it since.
+     */
+    private Map<UUID, Map<UUID, Integer>> heldByBatch(Order order) {
+        List<DeliveryBatchRecords.Hold> recorded = batchRecords.holdsOf(order.id().value());
+        Map<UUID, Map<UUID, Integer>> held = new HashMap<>();
+        if (recorded.isEmpty()) {
+            return held;
+        }
+        Map<UUID, DeliveryBatchRecords.Hold> byId = new HashMap<>();
+        recorded.forEach(h -> byId.put(h.reservationId(), h));
+        for (HoldView hold : inventory.holds(byId.keySet())) {
+            if (hold.status() == HoldView.Status.HELD || hold.status() == HoldView.Status.CONSUMED) {
+                DeliveryBatchRecords.Hold h = byId.get(hold.reservationId());
+                held.computeIfAbsent(h.batchId(), k -> new HashMap<>())
+                        .merge(h.orderLineId(), hold.quantity(), Integer::sum);
+            }
+        }
+        return held;
+    }
+
+    private static int heldCartons(Map<UUID, Map<UUID, Integer>> held, UUID batchId, OrderLine line) {
+        if (line == null || line.unitsPerCarton() == null || line.unitsPerCarton() <= 0) {
+            return 0;
+        }
+        return held.getOrDefault(batchId, Map.of()).getOrDefault(line.id(), 0) / line.unitsPerCarton();
+    }
+
+    private static Map<UUID, OrderLine> linesById(Order order) {
+        Map<UUID, OrderLine> lines = new HashMap<>();
+        order.lines().forEach(line -> lines.put(line.id(), line));
+        return lines;
+    }
+
+    /**
+     * 4B-8: the batches of the order's signed schedule not released yet, in order; null for an order without a live
+     * contract or one with no schedule - it is held line by line, as before.
+     */
+    private List<DeliveryBatch> unreleasedBatches(Order order) {
+        SalesContract contract = contracts.findLiveByOrderId(order.id().value()).orElse(null);
+        if (contract == null || contract.schedule().isEmpty()) {
+            return null;
+        }
+        Set<UUID> released = new java.util.HashSet<>();
+        batchRecords.releasesOf(order.id().value()).forEach(r -> released.add(r.batchId()));
+        return contract.schedule().stream().filter(batch -> !released.contains(batch.id()))
+                .sorted(Comparator.comparingInt(DeliveryBatch::seq)).toList();
     }
 
     /** The order's lines counted in cartons - every line of an order made from a quote (4B-2). */

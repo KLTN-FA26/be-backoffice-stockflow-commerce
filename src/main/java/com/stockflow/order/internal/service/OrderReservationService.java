@@ -23,9 +23,12 @@ class OrderReservationService implements OrderReservations {
     private static final Logger log = LoggerFactory.getLogger(OrderReservationService.class);
 
     private final OrderRepository orders;
+    private final com.stockflow.order.internal.domain.DeliveryBatchRecords batchRecords;
 
-    OrderReservationService(OrderRepository orders) {
+    OrderReservationService(OrderRepository orders,
+                            com.stockflow.order.internal.domain.DeliveryBatchRecords batchRecords) {
         this.orders = orders;
+        this.batchRecords = batchRecords;
     }
 
     @Override
@@ -34,6 +37,8 @@ class OrderReservationService implements OrderReservations {
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No order with id " + orderId));
         if (order.replaceReservation(reservationId, List.copyOf(replacements))) {
             orders.save(order);
+            // 4B-8: a reallocated hold still stands for its delivery batch.
+            batchRecords.carry(reservationId, replacements);
             log.info("Order {}: hold {} reallocated to {} hold(s)", order.orderNumber(), reservationId,
                     replacements.size());
         }

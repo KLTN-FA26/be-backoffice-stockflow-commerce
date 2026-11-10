@@ -587,13 +587,15 @@ class InventoryServiceImpl implements InventoryService {
     public AllocateStockResult allocate(AllocateStockCommand command) {
         Instant now = clock.instant();
         String warehouse = new LocationId(command.warehouseCode()).code();
-        List<SkuReservation> unlocked = skuReservations.findHeldForOrder(command.orderId());
+        List<SkuReservation> unlocked = skuReservations.findHeldForOrder(command.orderId()).stream()
+                .filter(r -> command.includes(r.id().value())).toList();
         if (unlocked.isEmpty()) {
             requireNoneLapsed(command.orderId());
             return new AllocateStockResult(command.orderId(), warehouse, List.of());
         }
         unlocked.stream().map(r -> r.sku().code()).distinct().sorted().forEach(policies::lock);
-        List<SkuReservation> held = skuReservations.findHeldForOrderForUpdate(command.orderId());
+        List<SkuReservation> held = skuReservations.findHeldForOrderForUpdate(command.orderId()).stream()
+                .filter(r -> command.includes(r.id().value())).toList();
         // After the lock: a reservation the sweeper expired a moment ago is seen as expired here, not skipped.
         requireNoneLapsed(command.orderId());
         LocalDate today = BusinessCalendar.date(now);

@@ -45,7 +45,8 @@ class OrderCancellationListener {
 
     @ApplicationModuleListener
     public void on(OrderCancelled event) {
-        picks.lockByOrderId(event.orderId()).ifPresent(pick -> {
+        // 4B-8: an order releasing by delivery batch has a task per batch; a task already done is left as it is.
+        picks.lockAllByOrderId(event.orderId()).forEach(pick -> {
             if (!pick.cancel()) {
                 return;
             }

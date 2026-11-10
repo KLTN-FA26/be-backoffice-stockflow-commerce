@@ -138,7 +138,7 @@ class PickListService implements PickLists {
     public List<PickLine> planLines(PickJpaEntity pick, OrderSummary order) {
         List<PickLineJpaEntity> stored = pickLines.findByPickIdOrderBySequenceNoAscIdAsc(pick.getId());
         PickList list = toList(pick, stored);
-        List<PickLine> added = list.plan(orderLinesOf(order), holdsOf(order), Identifiers::newId);
+        List<PickLine> added = list.plan(orderLinesOf(order), holdsOf(pick, order), Identifiers::newId);
         if (!added.isEmpty()) {
             pickLines.saveAll(added.stream().map(line -> PickLineMapper.toNewEntity(pick.getId(), line)).toList());
             if (pick.getStatus() == PickStatus.STAGED || pick.getStatus() == PickStatus.PICKED) {
@@ -181,7 +181,7 @@ class PickListService implements PickLists {
     public void requireAllPicked(PickJpaEntity pick, OrderSummary order) {
         List<PickLineJpaEntity> stored = pickLines.findByPickIdOrderBySequenceNoAscIdAsc(pick.getId());
         if (stored.isEmpty()) {
-            boolean somethingToPick = holdsOf(order).values().stream().anyMatch(PickList.Hold::live);
+            boolean somethingToPick = holdsOf(pick, order).values().stream().anyMatch(PickList.Hold::live);
             if (somethingToPick) {
                 throw new BusinessException(ErrorCode.PICK_LINES_INCOMPLETE,
                         "The task has no pick lines yet; start picking to load them");
@@ -812,10 +812,15 @@ class PickListService implements PickLists {
     }
 
     /** The holds of the order's lines, with the warehouse each one's location belongs to. */
-    private Map<UUID, PickList.Hold> holdsOf(OrderSummary order) {
+    private Map<UUID, PickList.Hold> holdsOf(PickJpaEntity pick, OrderSummary order) {
         Set<UUID> ids = order.lines().stream()
                 .flatMap(line -> line.reservationIds().stream())
                 .collect(Collectors.toCollection(LinkedHashSet::new));
+        if (pick.getDeliveryBatchId() != null) {
+            // 4B-8 (07 BR-07): a task picks its own delivery batch - the holds that stand for it, not the order's
+            // others (a later batch's holds wait at the warehouse for their own release).
+            ids.retainAll(orders.holdsOfBatch(order.orderId(), pick.getDeliveryBatchId()));
+        }
         if (ids.isEmpty()) {
             return Map.of();
         }

@@ -351,8 +351,10 @@ class CartonCheckService implements CartonChecks {
         Map<UUID, Integer> wanted = new LinkedHashMap<>();
         Map<UUID, String> skus = new HashMap<>();
         Map<UUID, Integer> closed = closedUnits(ctx.order());
+        Map<UUID, Integer> batch = batchUnits(ctx);
         ctx.order().lines().forEach(line -> {
-            wanted.put(line.lineId(), Math.max(0, line.quantity() - closed.getOrDefault(line.lineId(), 0)));
+            wanted.put(line.lineId(), batch != null ? batch.getOrDefault(line.lineId(), 0)
+                    : Math.max(0, line.quantity() - closed.getOrDefault(line.lineId(), 0)));
             skus.put(line.lineId(), line.sku());
         });
         CartonCheck.Completion completion = check.complete(request.partial(), request.note(),
@@ -444,6 +446,15 @@ class CartonCheckService implements CartonChecks {
         return measures.specs(cartons.stream().map(CartonCheck.Carton::sku).toList());
     }
 
+    /**
+     * 4B-8 (08 §4.4 step 8.3): a task of one delivery batch expects that batch's units of each line, not the whole
+     * order's; null for a task of an order without a schedule.
+     */
+    private Map<UUID, Integer> batchUnits(Context ctx) {
+        UUID batchId = ctx.pick().getDeliveryBatchId();
+        return batchId == null ? null : orders.batchUnits(ctx.order().orderId(), batchId);
+    }
+
     private static Map<UUID, Integer> closedUnits(OrderSummary order) {
         Map<UUID, Integer> closed = new HashMap<>();
         if (order.lifecycle() != null) {
@@ -455,11 +466,13 @@ class CartonCheckService implements CartonChecks {
     private Session view(Context ctx, CartonCheck check) {
         OrderSummary order = ctx.order();
         Map<UUID, Integer> closed = closedUnits(order);
+        Map<UUID, Integer> batch = batchUnits(ctx);
         List<CartonCheck.Carton> cartons = check.cartons();
         List<Line> lines = order.lines().stream().map(line -> {
             List<CartonCheck.Carton> mine = cartons.stream().filter(c -> c.orderLineId().equals(line.lineId()))
                     .toList();
-            int wanted = Math.max(0, line.quantity() - closed.getOrDefault(line.lineId(), 0));
+            int wanted = batch != null ? batch.getOrDefault(line.lineId(), 0)
+                    : Math.max(0, line.quantity() - closed.getOrDefault(line.lineId(), 0));
             int labeledUnits = check.labeledUnitsOf(line.lineId());
             return new Line(line.lineId(), line.sku(), wanted,
                     (int) mine.stream().filter(c -> c.status() != PackageStatus.REMOVED).count(),

@@ -33,6 +33,9 @@ public class PickJpaEntity extends BaseEntity {
     @Column(name = "order_id", nullable = false)
     private UUID orderId;
 
+    @Column(name = "delivery_batch_id", updatable = false)
+    private UUID deliveryBatchId;
+
     /** The order's number when the task was opened, so a pick list needs no call to the orders module (SCRUM-466). */
     @Column(name = "order_number", nullable = false, length = 32)
     private String orderNumber;
@@ -218,6 +221,15 @@ public class PickJpaEntity extends BaseEntity {
 
     public UUID getWaveId() { return waveId; }
     public UUID getOrderId() { return orderId; }
+
+    /** 4B-8 (07 BR-07): the released delivery batch this task picks; null for an order without a schedule. */
+    public UUID getDeliveryBatchId() { return deliveryBatchId; }
+
+    /** Set once, when the task is opened. */
+    public PickJpaEntity forDeliveryBatch(UUID batchId) {
+        this.deliveryBatchId = batchId;
+        return this;
+    }
     public String getOrderNumber() { return orderNumber; }
     public UUID getWarehouseId() { return warehouseId; }
     public PickStatus getStatus() { return status; }

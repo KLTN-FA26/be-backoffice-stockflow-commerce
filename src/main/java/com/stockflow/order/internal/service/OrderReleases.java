@@ -21,4 +21,14 @@ public interface OrderReleases {
      *         {@code CONFLICT} (not in a releasable status)
      */
     OrderSummary release(UUID orderId, UUID warehouseId, UUID releasedBy);
+
+    /**
+     * 4B-8 (17 §4.5, BR-03, BR-29): the same for an order with a signed delivery schedule - its next delivery batch.
+     *
+     * @param deliveryBatchId the batch the caller means to release; null: the next one, whichever it is
+     * @throws com.stockflow.common.error.BusinessException {@code DELIVERY_BATCH_NOT_NEXT} for another batch, or while
+     *         the batch before the next still has goods to hand over; {@code ORDER_STOCK_NOT_HELD} for a batch not held
+     *         in full
+     */
+    OrderSummary release(UUID orderId, UUID warehouseId, UUID deliveryBatchId, UUID releasedBy);
 }

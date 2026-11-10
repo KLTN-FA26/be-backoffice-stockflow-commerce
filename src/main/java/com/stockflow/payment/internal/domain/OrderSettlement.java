@@ -223,11 +223,12 @@ public final class OrderSettlement {
      * left, so the last batches are the ones closed; then after delivery, before delivery, on signing; the latest of
      * each first.
      *
-     * <p>Which batches the closure actually closed is not known here: until 4B-8 releases and hands over by batch, the
-     * order closes its rest as one, and an installment tied to a batch falls due with the whole order (4B-6). Ordering
+     * <p>Which batches the closure actually closed is not known here: the order closes its rest as one, and an
+     * installment after delivery tied to a batch still falls due with the whole order (4B-8 releases and hands over by
+     * batch, but does not hand the closed batches to the closure yet). Ordering
      * on "milestone not reached" instead would take off an after-delivery installment of a batch already delivered
-     * (it is reached only once the whole order is) before a before-delivery one of the batch closed. 4B-8 can hand the
-     * closed batches in and rank on them.</p>
+     * (it is reached only once the whole order is) before a before-delivery one of the batch closed. Handing the closed
+     * batches in and ranking on them is left open (reports/C3.md).</p>
      */
     static final Comparator<Installment> CLOSURE_ORDER = Comparator
             .comparing((Installment i) -> i.deliveryBatchSeq() == null ? Integer.MIN_VALUE : i.deliveryBatchSeq(),

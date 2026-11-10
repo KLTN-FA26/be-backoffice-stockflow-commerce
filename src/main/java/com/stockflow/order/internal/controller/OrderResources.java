@@ -13,6 +13,14 @@ public final class OrderResources {
      */
     public static final String ORDER_CANCELLATIONS = "sales-order-cancellations";
 
+    /**
+     * Releasing an order to a warehouse (kltn-docs 17 BR-03): the warehouse manager of that warehouse, so it is
+     * checked against the caller's warehouses too. Released by delivery batch since team plan 4B-8 (BR-29). Seeded by
+     * V20261116000300 - the same row and grants as team plan 5-7's V20261115000200, which splits it out of
+     * {@code sales-orders:APPROVE}; both are written ON CONFLICT DO NOTHING.
+     */
+    public static final String RELEASES = "sales-order-releases";
+
     /** Orders over their customer's credit limit, waiting for whoever approves credit (SCRUM-427). */
     public static final String CREDIT_HOLDS = "sales-order-credit-holds";
 

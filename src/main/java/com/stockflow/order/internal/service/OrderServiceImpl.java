@@ -114,6 +114,8 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
     private final com.stockflow.payment.api.PaymentService paymentService;
     private final com.stockflow.product.api.CustomerSkus customerSkus;
     private final com.stockflow.order.internal.domain.SalesContractRepository contracts;
+    private final DeliveryBatchService batches;
+    private final com.stockflow.order.internal.domain.DeliveryBatchRecords batchRecords;
 
     OrderServiceImpl(OrderRepository repository, OrderSearchRepository search,
                      InventoryService inventory, OrderEventPublisher events, Clock clock,
@@ -123,7 +125,11 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
                      CancellationRequestRepository cancellationRequests,
                      com.stockflow.payment.api.PaymentService paymentService,
                      com.stockflow.product.api.CustomerSkus customerSkus,
-                     com.stockflow.order.internal.domain.SalesContractRepository contracts) {
+                     com.stockflow.order.internal.domain.SalesContractRepository contracts,
+                     DeliveryBatchService batches,
+                     com.stockflow.order.internal.domain.DeliveryBatchRecords batchRecords) {
+        this.batches = batches;
+        this.batchRecords = batchRecords;
         this.contracts = contracts;
         this.customerSkus = customerSkus;
         this.repository = repository;
@@ -587,7 +593,9 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
     @Override
     public OrderSummary recordHandover(UUID orderId, com.stockflow.order.api.ShipmentHandover handover) {
         Order order = lockOrder(orderId);
-        if (!order.recordHandover(handover, installmentsDue(order))) {
+        var batch = inFlight(order);
+        if (!order.recordHandover(handover, installmentsDue(order, batch), batch.orElse(null),
+                businessDay(handover.handedOverAt()))) {
             return toSummary(order);
         }
         log.info("Order {}: shipment {} handed over, order {}", order.orderNumber(), handover.shipmentId(),
@@ -599,7 +607,9 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
     public void recordGoodsLeft(UUID orderId, java.time.Instant at,
                                 java.util.List<com.stockflow.order.api.ShipmentHandover.Line> inPlan) {
         Order order = lockOrder(orderId);
-        if (order.recordGoodsLeft(at, inPlan == null || inPlan.isEmpty() ? null : quantities(inPlan), installmentsDue(order))) {
+        var batch = inFlight(order);
+        if (order.recordGoodsLeft(at, inPlan == null || inPlan.isEmpty() ? null : quantities(inPlan),
+                installmentsDue(order, batch), batch.orElse(null), businessDay(at))) {
             log.info("Order {}: goods left on a load plan's vehicle; no longer cancelled", order.orderNumber());
             saved(order);
         }
@@ -610,7 +620,92 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
                                           java.util.List<com.stockflow.order.api.ShipmentHandover.Line> inPlan) {
         Order order = repository.findById(new OrderId(orderId))
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No order with id " + orderId));
-        order.requirePlanCarriesTheRest(inPlan == null || inPlan.isEmpty() ? null : quantities(inPlan));
+        order.requirePlanCarriesTheRest(inPlan == null || inPlan.isEmpty() ? null : quantities(inPlan),
+                inFlight(order).orElse(null));
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Read without locks: a decision on the whole vehicle before any order on it is changed; each order is checked
+     * again under its own lock when it is handed over.</p>
+     */
+    @Override
+    @Transactional(readOnly = true)
+    public java.util.List<com.stockflow.order.api.HandoverBlock> handoverBlocks(java.util.Collection<UUID> orderIds,
+                                                                              Instant at) {
+        java.util.List<com.stockflow.order.api.HandoverBlock> blocks = new java.util.ArrayList<>();
+        for (UUID orderId : new java.util.TreeSet<>(orderIds)) {
+            Order order = repository.findById(new OrderId(orderId)).orElse(null);
+            if (order == null) {
+                continue;
+            }
+            var batch = inFlight(order);
+            java.math.BigDecimal due = installmentsDue(order, batch);
+            try {
+                order.requireHandoverAllowed(due, batch.orElse(null), businessDay(at));
+            } catch (BusinessException refused) {
+                blocks.add(new com.stockflow.order.api.HandoverBlock(orderId, order.orderNumber().value(),
+                        refused.errorCode().name(), due == null ? java.math.BigDecimal.ZERO : due,
+                        order.total().currency().getCurrencyCode(),
+                        batch.map(com.stockflow.order.internal.domain.BatchInFlight::seq).orElse(null),
+                        batch.map(com.stockflow.order.internal.domain.BatchInFlight::windowStart).orElse(null)));
+            }
+        }
+        return blocks;
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>One batch is on its way at a time (a batch is released once the one before it was handed over), so the batch
+     * to pick is the latest released, if it has no task yet.</p>
+     */
+    @Override
+    @Transactional(readOnly = true)
+    public java.util.Optional<com.stockflow.order.api.ReleasedBatch> batchToPick(UUID orderId,
+                                                                           java.util.Collection<UUID> pickedBatches) {
+        Order order = repository.findById(new OrderId(orderId)).orElse(null);
+        if (order == null) {
+            return java.util.Optional.empty();
+        }
+        return inFlight(order).filter(batch -> pickedBatches == null || !pickedBatches.contains(batch.batchId()))
+                .map(batch -> new com.stockflow.order.api.ReleasedBatch(batch.batchId(), batch.seq(),
+                        batch.windowStart(), holdsOfBatch(orderId, batch.batchId())));
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public java.util.Set<UUID> holdsOfBatch(UUID orderId, UUID deliveryBatchId) {
+        java.util.Set<UUID> ids = new java.util.LinkedHashSet<>();
+        batchRecords.holdsOf(orderId).stream().filter(h -> h.batchId().equals(deliveryBatchId))
+                .forEach(h -> ids.add(h.reservationId()));
+        return ids;
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public java.util.Map<UUID, Integer> batchUnits(UUID orderId, UUID deliveryBatchId) {
+        Order order = repository.findById(new OrderId(orderId)).orElse(null);
+        java.util.Map<UUID, Integer> units = new java.util.LinkedHashMap<>();
+        if (order == null) {
+            return units;
+        }
+        contracts.findLiveByOrderId(orderId).stream().flatMap(c -> c.schedule().stream())
+                .filter(b -> b.id().equals(deliveryBatchId)).flatMap(b -> b.lines().stream())
+                .forEach(l -> order.lines().stream().filter(line -> line.id().equals(l.orderLineId())).findFirst()
+                        .ifPresent(line -> units.merge(line.id(), l.cartons()
+                                * (line.unitsPerCarton() == null ? 1 : line.unitsPerCarton()), Integer::sum)));
+        return units;
+    }
+
+    /** 4B-8: the delivery batch on its way out, if the order releases by batch. */
+    private java.util.Optional<com.stockflow.order.internal.domain.BatchInFlight> inFlight(Order order) {
+        return order.paidByContract() ? batches.inFlight(order) : java.util.Optional.empty();
+    }
+
+    private static java.time.LocalDate businessDay(Instant at) {
+        return at == null ? null : com.stockflow.common.domain.BusinessCalendar.date(at);
     }
 
     @Override
@@ -637,6 +732,18 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
     private java.math.BigDecimal installmentsDue(Order order) {
         return order.paidByContract() ? paymentService.installmentStanding(order.id().value()).dueBeforeHandover()
                 : null;
+    }
+
+    /**
+     * 4B-8 (15 BR-08, 09 BR-18): for the delivery batch on its way out, only what it waits for - the installments on
+     * signing, and those before delivery tied to it or to no batch.
+     */
+    private java.math.BigDecimal installmentsDue(Order order,
+                                                 java.util.Optional<com.stockflow.order.internal.domain.BatchInFlight> batch) {
+        if (batch.isEmpty()) {
+            return installmentsDue(order);
+        }
+        return paymentService.dueBeforeHandover(order.id().value(), batch.get().batchId());
     }
 
     @Override

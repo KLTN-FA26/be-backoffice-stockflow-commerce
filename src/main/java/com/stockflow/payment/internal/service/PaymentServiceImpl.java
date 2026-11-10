@@ -55,6 +55,12 @@ class PaymentServiceImpl implements PaymentService {
     }
 
     @Override
+    @Transactional(readOnly = true)
+    public java.math.BigDecimal dueBeforeHandover(UUID orderId, UUID deliveryBatchId) {
+        return installments.dueBeforeHandover(orderId, deliveryBatchId);
+    }
+
+    @Override
     public java.util.Optional<com.stockflow.payment.api.OrderSettlementResult> settleCancellation(
             com.stockflow.payment.api.SettleCancellationCommand command) {
         return settlements.settleCancellation(command);

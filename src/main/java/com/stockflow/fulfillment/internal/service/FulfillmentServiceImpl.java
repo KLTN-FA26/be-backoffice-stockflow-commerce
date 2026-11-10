@@ -95,29 +95,41 @@ class FulfillmentServiceImpl implements FulfillmentService {
     public FulfillmentTask createTask(UUID orderId, UUID assignedUserId, PickDestination destination,
                                       String stagingLocationCode, CurrentUser actor) {
         require(actor, FulfillmentPermissions.TASK_ASSIGNMENT, Action.CREATE);
-        var existing = picks.findByOrderId(orderId);
-        if (existing.isPresent()) {
-            requireWarehouseAssignee(assignedUserId, existing.get().getWarehouseId());
-            TaskAccess.requireVisible(existing.get(), actor);
-            return toTask(existing.get());
+        List<PickJpaEntity> existing = picks.findAllByOrderId(orderId);
+        Set<UUID> pickedBatches = existing.stream().map(PickJpaEntity::getDeliveryBatchId)
+                .filter(java.util.Objects::nonNull).collect(java.util.stream.Collectors.toSet());
+        // 4B-8 (07 BR-07): an order released by delivery batch gets a task per batch - the one released and not
+        // picked yet. Nothing new to pick: the latest task answers, as a repeated request always did.
+        var batch = orders.batchToPick(orderId, pickedBatches);
+        if (batch.isEmpty() && !existing.isEmpty()) {
+            PickJpaEntity latest = existing.getLast();
+            requireWarehouseAssignee(assignedUserId, latest.getWarehouseId());
+            TaskAccess.requireVisible(latest, actor);
+            return toTask(latest);
         }
         OrderSummary order = requireOrder(orderId);
-        // Released - its warehouse chosen: READY_TO_FULFILL (SCRUM-423, kltn-docs 17 BR-02). A CONFIRMED order is
-        // released by the coordinator first (G3-2).
-        if (order.status() != OrderStatus.READY_TO_FULFILL) {
+        // Released - its warehouse chosen: READY_TO_FULFILL (SCRUM-423, kltn-docs 17 BR-02). A later delivery batch is
+        // released while the order is PARTIALLY_FULFILLED and picked in that status (17 §4.5: no new order status).
+        boolean laterBatch = batch.isPresent() && order.status() == OrderStatus.PARTIALLY_FULFILLED;
+        if (order.status() != OrderStatus.READY_TO_FULFILL && !laterBatch) {
             throw new BusinessException(ErrorCode.PICK_TASK_STATE_CONFLICT,
-                    "Only a released order (READY_TO_FULFILL) can enter fulfillment; it is " + order.status());
+                    "Only a released order (READY_TO_FULFILL) or its released delivery batch can enter fulfillment; "
+                            + "it is " + order.status());
         }
         UUID warehouseId = pickingWarehouse(order);
         WarehouseScope.requireWarehouse(warehouseId);
         requireWarehouseAssignee(assignedUserId, warehouseId);
         PickDestination to = destination == null ? PickDestination.DISPATCH : destination;
         String stagingArea = stagingAreaFor(warehouseId, to, stagingLocationCode);
-        // In this transaction, under the order's row lock (A1): READY_TO_FULFILL → PICKING.
-        orders.startPicking(orderId, actor.userId());
+        // In this transaction, under the order's row lock (A1): READY_TO_FULFILL → PICKING; a later batch leaves the
+        // order PARTIALLY_FULFILLED.
+        if (!laterBatch) {
+            orders.startPicking(orderId, actor.userId());
+        }
         var now = clock.instant();
         var pick = new PickJpaEntity(Identifiers.newId(), null, orderId, order.orderNumber(), warehouseId,
-                PickStatus.PENDING, to, stagingArea);
+                PickStatus.PENDING, to, stagingArea)
+                .forDeliveryBatch(batch.map(com.stockflow.order.api.ReleasedBatch::batchId).orElse(null));
         pick.assign(assignedUserId, now);
         picks.saveAndFlush(pick);      // the pick row first: its lines' trigger and foreign key look for it
         packs.save(new PackJpaEntity(Identifiers.newId(), pick.getId(), PackStatus.PENDING, null));

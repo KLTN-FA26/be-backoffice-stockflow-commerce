@@ -22,7 +22,9 @@ import java.util.UUID;
 /**
  * Releasing an order to a warehouse (SCRUM-423, kltn-docs 17 §4.2): its SKU reservations become allocations on bins
  * of that warehouse and it is READY_TO_FULFILL - from CONFIRMED, or from AWAITING_STOCK once every carton is held at
- * the order's shipping warehouse (4A-6).
+ * the order's shipping warehouse (4A-6). Since 4B-8 an order with a signed delivery schedule is released one batch at a
+ * time (17 §4.5, BR-29): the next batch, held in full, once the one before it was handed over - only that batch's holds
+ * are allocated, and a later batch leaves the order PARTIALLY_FULFILLED.
  *
  * <p>A line of the customer's own SKU is stock like any other (team plan QD-16): its goods arrive printed from the
  * producer, are received against a production order and put away, and are held for the order like any stock - so it
@@ -47,12 +49,17 @@ class OrderReleaseService implements OrderReleases {
     private final OrderStockAllocation allocation;
     private final com.stockflow.order.internal.domain.SalesContractRepository contracts;
     private final ShippingWarehouseService shippingWarehouses;
+    private final DeliveryBatchService batches;
+    private final com.stockflow.order.internal.domain.DeliveryBatchRecords batchRecords;
 
     OrderReleaseService(OrderRepository repository, WarehouseDirectory warehouses,
                         OrderEventPublisher events, OrderService orders, Clock clock,
                         InventoryService inventory, com.stockflow.payment.api.PaymentService paymentService,
                         OrderStockAllocation allocation, com.stockflow.order.internal.domain.SalesContractRepository contracts,
-                        ShippingWarehouseService shippingWarehouses) {
+                        ShippingWarehouseService shippingWarehouses, DeliveryBatchService batches,
+                        com.stockflow.order.internal.domain.DeliveryBatchRecords batchRecords) {
+        this.batches = batches;
+        this.batchRecords = batchRecords;
         this.shippingWarehouses = shippingWarehouses;
         this.contracts = contracts;
         this.allocation = allocation;
@@ -70,6 +77,12 @@ class OrderReleaseService implements OrderReleases {
     @Override
     @Auditable(action = AuditAction.TRANSITION, resourceType = "order", resourceId = "#orderId")
     public OrderSummary release(UUID orderId, UUID warehouseId, UUID releasedBy) {
+        return release(orderId, warehouseId, null, releasedBy);
+    }
+
+    @Override
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "order", resourceId = "#orderId")
+    public OrderSummary release(UUID orderId, UUID warehouseId, UUID deliveryBatchId, UUID releasedBy) {
         Order order = repository.findByIdForUpdate(new OrderId(orderId))
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No order " + orderId));
         String warehouseCode = warehouses.codeOf(warehouseId).orElseThrow(() ->
@@ -86,10 +99,23 @@ class OrderReleaseService implements OrderReleases {
             throw new BusinessException(ErrorCode.CUSTOMER_CREDIT_OVERDUE,
                     "Order %s is on credit and its customer has an overdue installment".formatted(order.orderNumber()));
         }
+        // 4B-8 (17 §4.5, BR-03, BR-29): an order with a signed delivery schedule is released batch by batch - the next
+        // one, held in full at the shipping warehouse, once the batch before it was handed over.
+        java.util.Optional<com.stockflow.order.internal.domain.DeliveryBatch> next = order.paidByContract()
+                && batches.scheduled(order) ? batches.nextToRelease(order) : java.util.Optional.empty();
+        if (order.paidByContract() && batches.scheduled(order)) {
+            com.stockflow.order.internal.domain.DeliveryBatch batch = next.orElseThrow(() -> new BusinessException(
+                    ErrorCode.DELIVERY_BATCH_NOT_NEXT, "Every delivery batch of order %s is released already"
+                            .formatted(order.orderNumber())));
+            if (deliveryBatchId != null && !deliveryBatchId.equals(batch.id())) {
+                throw new BusinessException(ErrorCode.DELIVERY_BATCH_NOT_NEXT, ("Order %s releases delivery batch %d "
+                        + "next").formatted(order.orderNumber(), batch.seq()));
+            }
+            return releaseBatch(order, batch, warehouseId, warehouseCode, releasedBy);
+        }
         if (order.paidByContract()) {
-            // 4B-7 (17 §4.2 step 5): released when its stock is all held at its shipping warehouse - every carton of
-            // every line (until 4B-8 releases batch by batch), CONFIRMED or AWAITING_STOCK alike (4A-6). Order#release
-            // checks the warehouse itself.
+            // 4B-7 (17 §4.2 step 5): an order of a contract without a schedule is released once every carton of every
+            // line is held at its shipping warehouse. Order#release checks the warehouse itself.
             shippingWarehouses.requireFullyHeld(order);
         }
         order.release(warehouseId, warehouseCode, releasedBy, clock.instant());
@@ -104,6 +130,31 @@ class OrderReleaseService implements OrderReleases {
         events.publishEventsOf(order);
         log.info("Released order {} from {}: {}", order.orderNumber(), warehouseCode, order.status());
         return orders.findById(orderId).orElseThrow();
+    }
+
+    /**
+     * One delivery batch to the warehouse: its own holds only are allocated, the release is recorded, and payment makes
+     * due what the batch waits for ({@code OrderReleased} names it). The first batch moves the order to
+     * READY_TO_FULFILL; a later one leaves it PARTIALLY_FULFILLED (17 §4.5: no new order status).
+     */
+    private OrderSummary releaseBatch(Order order, com.stockflow.order.internal.domain.DeliveryBatch batch,
+                                      UUID warehouseId, String warehouseCode, UUID releasedBy) {
+        shippingWarehouses.requireBatchHeld(order, batch);
+        java.time.Instant now = clock.instant();
+        if (batch.seq() == 1 || order.releasedAt() == null) {
+            order.release(warehouseId, warehouseCode, releasedBy, now, batch.id(), DeliveryBatchService.linesOf(batch));
+        } else {
+            order.releaseLaterBatch(warehouseId, warehouseCode, batch.id(), now);
+        }
+        allocation.allocate(order, warehouseCode, shippingWarehouses.heldFor(order, batch));
+        inventory.pinReservations(order.id().value());
+        batchRecords.recordRelease(order.id().value(), new com.stockflow.order.internal.domain.DeliveryBatchRecords
+                .Release(batch.id(), batch.seq(), warehouseId, now, releasedBy));
+        repository.save(order);
+        events.publishEventsOf(order);
+        log.info("Released delivery batch {} of order {} from {}: {}", batch.seq(), order.orderNumber(), warehouseCode,
+                order.status());
+        return orders.findById(order.id().value()).orElseThrow();
     }
 
     /** Whether the order's signed contract pays after delivery (15 BR-09): credit given on delivery. */

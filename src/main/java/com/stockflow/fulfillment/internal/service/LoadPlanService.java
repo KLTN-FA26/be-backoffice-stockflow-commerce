@@ -378,7 +378,7 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
             return;
         }
         shipmentLocks.ordersOf(new LinkedHashSet<>(shipmentIds)).stream().sorted()
-                .forEach(orderId -> picks.lockByOrderId(orderId));
+                .forEach(orderId -> picks.lockAllByOrderId(orderId));
     }
 
     /** Whole shipments (LP-5) of this warehouse's full truckloads waiting for dispatch, with their free parcels. */

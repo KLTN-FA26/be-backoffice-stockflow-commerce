@@ -56,7 +56,9 @@ class OrderRepositoryAdapter implements OrderRepository, OrderSearchRepository {
         @SuppressWarnings("unchecked")
         java.util.List<UUID> ids = entityManager.createNativeQuery("""
                         SELECT id FROM ordering.customer_order
-                         WHERE status IN ('CONFIRMED', 'AWAITING_STOCK') AND shipping_warehouse_id IS NOT NULL
+                         WHERE status IN ('CONFIRMED', 'AWAITING_STOCK', 'READY_TO_FULFILL', 'PICKING', 'PACKED',
+                                          'PARTIALLY_FULFILLED')
+                           AND shipping_warehouse_id IS NOT NULL
                          ORDER BY contract_signed_at, id""")
                 .getResultList();
         return ids;
@@ -191,7 +193,8 @@ class OrderRepositoryAdapter implements OrderRepository, OrderSearchRepository {
         for (OrderShipment shipment : order.shipments()) {
             OrderShipmentJpaEntity row = rows.computeIfAbsent(shipment.id(), id -> new OrderShipmentJpaEntity(id,
                     order.id().value(), shipment.quantities(), shipment.amount(), shipment.handedOverAt(),
-                    shipment.handedOverBy()).withCarriage(shipment.carriage()));
+                    shipment.handedOverBy()).withCarriage(shipment.carriage())
+                    .withDeliveryBatch(shipment.deliveryBatchId()));
             row.apply(shipment.status(), shipment.outcomeAt(), shipment.outcomeBy(), shipment.failureReason(),
                     shipment.failureNote());
             shipments.save(row);

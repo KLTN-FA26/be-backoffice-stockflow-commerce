@@ -655,6 +655,15 @@ class DispatchService implements Dispatching {
                             java.util.TreeMap::new))
                     .forEach((orderId, row) -> named(row, () -> orders.requirePlanCarriesTheRest(orderId,
                             inPlan.getOrDefault(orderId, List.of()))));
+            // 4B-8 (17 §4.4 step 17, 08 BR-11): loading goes ahead, but the orders that may not leave yet are named now -
+            // the handover will refuse the vehicle until they may (09 BR-18).
+            Set<UUID> orderIds = onBoard.stream().map(rows::get).filter(Objects::nonNull)
+                    .map(ShipmentJpaEntity::getOrderId).collect(Collectors.toCollection(java.util.TreeSet::new));
+            List<com.stockflow.order.api.HandoverBlock> blocks = orderIds.isEmpty() ? List.of()
+                    : orders.handoverBlocks(orderIds, now);
+            blocks.forEach(block -> log.warn("Load {}: order {} may not be handed over yet ({}, {} {} due)",
+                    load.code(), block.orderNumber(), block.reasonCode(),
+                    block.amountDue().stripTrailingZeros().toPlainString(), block.currency()));
         }
         if (load.startLoading(actor.userId(), now)) {
             header = store.save(load, header);
@@ -884,6 +893,41 @@ class DispatchService implements Dispatching {
                 });
     }
 
+    /**
+     * 4B-8 (09 BR-18): the vehicle is signed over whole or not at all - while any order on it may not let its goods
+     * leave (an installment before delivery of its batch unpaid, its batch's window not open, a hold), the handover is
+     * refused before anything is recorded, listing every such order with why and what it owes ({@code details.orders}).
+     * Each order is checked again under its own lock as it is handed over.
+     */
+    private void requireEveryOrderMayLeave(Set<UUID> orderIds, Instant at) {
+        if (orderIds.isEmpty()) {
+            return;
+        }
+        List<com.stockflow.order.api.HandoverBlock> blocks = orders.handoverBlocks(orderIds, at);
+        if (blocks.isEmpty()) {
+            return;
+        }
+        List<Map<String, Object>> listed = blocks.stream().map(block -> {
+            Map<String, Object> row = new java.util.LinkedHashMap<>();
+            row.put("orderId", block.orderId().toString());
+            row.put("orderNumber", block.orderNumber());
+            row.put("reasonCode", block.reasonCode());
+            row.put("amountDue", block.amountDue().stripTrailingZeros().toPlainString());
+            row.put("currency", block.currency());
+            if (block.batchSeq() != null) {
+                row.put("deliveryBatchSeq", block.batchSeq());
+            }
+            if (block.windowStart() != null) {
+                row.put("windowStart", block.windowStart().toString());
+            }
+            return row;
+        }).toList();
+        throw new BusinessException(ErrorCode.LOAD_HANDOVER_BLOCKED, "The vehicle cannot be handed over: "
+                + blocks.stream().map(b -> "%s (%s, %s %s due)".formatted(b.orderNumber(), b.reasonCode(),
+                        b.amountDue().stripTrailingZeros().toPlainString(), b.currency()))
+                .collect(Collectors.joining(", ")), List.of(), Map.of("orders", listed));
+    }
+
     private LoadDetail handOverVehicle(Locked locked, Handover request, CurrentUser actor) {
         DispatchLoadJpaEntity header = locked.header();
         DispatchLoad load = locked.load();
@@ -926,6 +970,8 @@ class DispatchService implements Dispatching {
                         .formatted(row.getCode(), row.getStatus()));
             }
         }
+        requireEveryOrderMayLeave(onManifest.stream().map(rows::get).filter(Objects::nonNull)
+                .map(ShipmentJpaEntity::getOrderId).collect(Collectors.toCollection(java.util.TreeSet::new)), now);
         // The parcels the plan placed on this vehicle - only those are checked against the scans (LP-3).
         Set<UUID> placedHere = ctx.placedHere();
         List<PackageJpaEntity> here = placedHere.isEmpty() ? List.of() : packages.findAllById(placedHere).stream()
