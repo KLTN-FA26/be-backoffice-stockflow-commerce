@@ -80,7 +80,7 @@ class PickByLpnMigrationUpgradeTest {
     private static final String LOOSE_PUT_BACK_MOVEMENT = id(223);
 
     private static final String[] NEW_RULES = {"ck_pick_line_lpn", "ck_pick_line_short_reported",
-            "ck_pick_line_put_back_whole", "ck_stock_movement_put_back_carton"};
+            "ck_pick_line_put_back_whole", "ck_pick_line_packing_damaged_whole", "ck_stock_movement_put_back_carton"};
 
     @Test
     @DisplayName("each of the three stops names its rows and changes nothing; once settled, the history is archived, kept "
@@ -189,9 +189,10 @@ class PickByLpnMigrationUpgradeTest {
                 // The history breaks all four rules, so all four wait NOT VALID - and a new row is still checked.
                 assertThat(RawSql.texts(db, "SELECT conname || ':' || convalidated FROM pg_constraint WHERE conname IN "
                         + "('ck_pick_line_lpn', 'ck_pick_line_short_reported', 'ck_pick_line_put_back_whole', "
-                        + "'ck_stock_movement_put_back_carton') ORDER BY conname"))
-                        .containsExactly("ck_pick_line_lpn:false", "ck_pick_line_put_back_whole:false",
-                                "ck_pick_line_short_reported:false", "ck_stock_movement_put_back_carton:false");
+                        + "'ck_pick_line_packing_damaged_whole', 'ck_stock_movement_put_back_carton') ORDER BY conname"))
+                        .containsExactly("ck_pick_line_lpn:false", "ck_pick_line_packing_damaged_whole:false",
+                                "ck_pick_line_put_back_whole:false", "ck_pick_line_short_reported:false",
+                                "ck_stock_movement_put_back_carton:false");
                 assertThat(RawSql.text(db, "SELECT data_type || ':' || character_maximum_length FROM information_schema.columns "
                         + "WHERE table_schema = 'fulfillment' AND table_name = 'pick_line' AND column_name = 'short_reason'"))
                         .isEqualTo("character varying:16");
@@ -224,9 +225,10 @@ class PickByLpnMigrationUpgradeTest {
 
                 assertThat(RawSql.texts(db, "SELECT conname || ':' || convalidated FROM pg_constraint WHERE conname IN "
                         + "('ck_pick_line_lpn', 'ck_pick_line_short_reported', 'ck_pick_line_put_back_whole', "
-                        + "'ck_stock_movement_put_back_carton') ORDER BY conname"))
-                        .containsExactly("ck_pick_line_lpn:true", "ck_pick_line_put_back_whole:true",
-                                "ck_pick_line_short_reported:true", "ck_stock_movement_put_back_carton:true");
+                        + "'ck_pick_line_packing_damaged_whole', 'ck_stock_movement_put_back_carton') ORDER BY conname"))
+                        .containsExactly("ck_pick_line_lpn:true", "ck_pick_line_packing_damaged_whole:true",
+                                "ck_pick_line_put_back_whole:true", "ck_pick_line_short_reported:true",
+                                "ck_stock_movement_put_back_carton:true");
                 assertThat(RawSql.number(db, "SELECT count(*) FROM platform.legacy_archive WHERE source_table IN "
                         + "('fulfillment.pick', 'fulfillment.pick_line')")).as("nothing to archive").isZero();
                 assertThat(RawSql.text(db, "SELECT status FROM fulfillment.pick_line WHERE id = ?::uuid", id(401)))
@@ -256,8 +258,11 @@ class PickByLpnMigrationUpgradeTest {
             refusedBy(db, "ck_pick_line_short_reason", "a reason on a line that is not short",
                     lineInsert(id(505), "OPEN", 3, 0, 3, carton, "NOT_FOUND", null));
             // 5: a put-back returns the whole carton.
-            refusedBy(db, "ck_pick_line_put_back_whole", "a partial put-back",
+            refusedBy(db, "ck_pick_line_packing_damaged_whole", "a partial put-back (the rest damaged at packing)",
                     putBackInsert(id(506), 5, 2, 3, carton));
+            // 7: damage at packing takes the whole carton a line picked, or nothing.
+            refusedBy(db, "ck_pick_line_packing_damaged_whole", "part of a picked carton damaged at packing",
+                    packedInsert(id(508), 5, 2));
             // 6: the ledger line of a put-back names the carton.
             refusedBy(db, "ck_stock_movement_put_back_carton", "a pick line's put-back in the ledger with no carton",
                     putBackMovement(id(507), null));
@@ -274,6 +279,8 @@ class PickByLpnMigrationUpgradeTest {
             RawSql.update(db, lineInsert(id(515), "OPEN", 3, 0, 0, carton, null, null));
             RawSql.update(db, putBackInsert(id(516), 5, 0, 5, carton));
             RawSql.update(db, putBackMovement(id(517), id(518)));
+            RawSql.update(db, packedInsert(id(519), 5, 0));
+            RawSql.update(db, packedInsert(id(520), 5, 5));
         } finally {
             RawSql.update(db, "SET session_replication_role = DEFAULT");
         }
@@ -303,6 +310,14 @@ class PickByLpnMigrationUpgradeTest {
                 + "'::uuid, '" + id(901) + "'::uuid, '" + SKU + "', '" + BIN + "', " + allocated + ", " + allocated + ", "
                 + packingDamaged + ", 'PUT_BACK', '" + PICKER + "'::uuid, NOW(), NOW(), '" + lpn + "', " + putBack + ", '"
                 + PICKER + "'::uuid, NOW(), '" + OTHER_BIN + "')";
+    }
+
+    /** A PICKED line of {@code picked} units, {@code damaged} of them found damaged at packing. */
+    private static String packedInsert(String id, int picked, int damaged) {
+        return "INSERT INTO fulfillment.pick_line (id, pick_id, order_line_id, sku, location_code, allocated_qty, "
+                + "picked_qty, packing_damaged_qty, status, picked_by, picked_at, lpn) VALUES ('" + id + "'::uuid, '"
+                + id(900) + "'::uuid, '" + id(901) + "'::uuid, '" + SKU + "', '" + BIN + "', " + picked + ", " + picked
+                + ", " + damaged + ", 'PICKED', '" + PICKER + "'::uuid, NOW(), 'LPN-UPG4-NEW')";
     }
 
     private static String putBackMovement(String id, String toCarton) {

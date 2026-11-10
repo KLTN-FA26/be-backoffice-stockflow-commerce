@@ -226,11 +226,10 @@ class PickListService implements PickLists {
         }
         if (line.status() == PickLineStatus.STAGED) {
             // A STAGING task (4C-5): the carton moves to the staging area, still held - pick, then SKU, carton, row.
-            consumption.stage(new StageCommand(line.id(), requireHold(line, "staged"), line.lpn(), line.stagedLocationCode(),
-                    actor.userId()));
+            consumption.stage(new StageCommand(line.id(), requireHold(line, "staged"), line.lpn(),
+                    line.stagedLocationCode(), actor.userId()));
         } else {
-            // The pick is locked; inventory now locks the stock row (pick -> stock_item, never the reverse). A line it
-            // confirms names a carton, so it has a hold (tg_pick_line_carton: the LPN is the hold's carton).
+            // The pick is locked; inventory now locks the stock row (pick -> stock_item, never the reverse).
             consumption.consumeForPick(requireHold(line, "confirmed"), line.id(), actor.userId());
             line.recordConsumed(now);
         }
@@ -318,7 +317,8 @@ class PickListService implements PickLists {
             return view(taskId, line, barcode);
         }
         // A line put back names its carton (PickList#putBack), so it has the hold that took it (tg_pick_line_carton).
-        PutBackCommand command = new PutBackCommand(line.id(), line.reservationId(), line.lpn(),
+        // A staged line's carton was never deducted: it is moved back from the staging area instead (4C-5).
+        PutBackCommand command = new PutBackCommand(line.id(), requireHold(line, "put back"), line.lpn(),
                 line.putBackLocationCode(), actor.userId());
         if (outcome.fromStaging()) {
             consumption.unstage(command);

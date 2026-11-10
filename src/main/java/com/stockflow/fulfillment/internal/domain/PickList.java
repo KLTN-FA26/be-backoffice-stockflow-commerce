@@ -137,9 +137,9 @@ public final class PickList {
      *
      * @return the lines added; empty when every live hold has a line already, or the task takes none
      * @throws BusinessException {@code FULFILLMENT_HOLDS_OUTSIDE_WAREHOUSE} when a new hold of a stock line sits
-     *         in another warehouse than the task's; the message names the SKUs. {@code PICK_HOLD_NOT_IN_CARTON} when a live hold is
-     *         on no carton: allocation takes whole cartons only (4C-2) and V20261111000110 boxed every hold before, so
-     *         such a hold was written around both, and a line for it could be confirmed by no LPN
+     *         in another warehouse than the task's; the message names the SKUs. {@code PICK_HOLD_NOT_IN_CARTON} when a
+     *         live hold is on no carton: allocation takes whole cartons only (4C-2) and V20261111000110 boxed every hold
+     *         before, so such a hold was written around both, and a line for it could be confirmed by no LPN
      */
     public List<PickLine> plan(List<OrderLine> orderLines, Map<UUID, Hold> holds, Supplier<UUID> ids) {
         boolean opening = status == PickStatus.PENDING || status == PickStatus.PICKING;

@@ -18,8 +18,9 @@
 --      DAMAGED by a worker (08 §4.2 step 4), or ORDER_CANCELLED by the system (BR-04). ShippingCarton.
 --      Only SEALED (repack) or LABELED (carton) rows go into a shipment, and the load plan and manifest triggers take
 --      either (check_load_package, check_load_plan_package).
---   3. A pick line whose carton is live at the station is not put back: only a REMOVED carton goes to the put-back queue
---      (tg_pick_line_carton_removed). PickList.putBack.
+--   3. A pick line whose carton is live at the station is not put back - only a REMOVED carton goes to the put-back
+--      queue - nor reported damaged at packing (4C-4's whole-carton damage): the station removes a damaged carton itself
+--      (tg_pick_line_carton_removed). PickList.putBack, PackingService.damageAfterPickChecked.
 --   4. ordering.customer_order.first_labeled_at: set in the transaction that labels the order's first carton, never
 --      changed afterwards. From then the order is not cancelled (ck_order_labeled_not_cancelled) and its delivery
 --      address does not change (tg_order_label_lock) - 08 BR-04, 17 BR-12, BR-16. A LABELED carton exists only for an
@@ -239,7 +240,8 @@ CREATE FUNCTION fulfillment.check_pick_line_carton_removed()
 $$
 BEGIN
     IF EXISTS (SELECT 1 FROM fulfillment.package p WHERE p.pick_line_id = NEW.id AND p.status <> 'REMOVED') THEN
-        RAISE EXCEPTION 'tg_pick_line_carton_removed: carton % is at the check station; remove it there first', NEW.lpn
+        RAISE EXCEPTION 'tg_pick_line_carton_removed: carton % is at the check station; remove it there first (08 §4.2 '
+            'step 4)', NEW.lpn
             USING ERRCODE = 'check_violation', CONSTRAINT = 'tg_pick_line_carton_removed';
     END IF;
     RETURN NEW;
@@ -247,8 +249,9 @@ END
 $$;
 
 CREATE TRIGGER tg_pick_line_carton_removed
-    BEFORE UPDATE OF status ON fulfillment.pick_line
-    FOR EACH ROW WHEN (NEW.status = 'PUT_BACK' AND OLD.status IS DISTINCT FROM 'PUT_BACK')
+    BEFORE UPDATE OF status, packing_damaged_qty ON fulfillment.pick_line
+    FOR EACH ROW WHEN ((NEW.status = 'PUT_BACK' AND OLD.status IS DISTINCT FROM 'PUT_BACK')
+        OR NEW.packing_damaged_qty > OLD.packing_damaged_qty)
     EXECUTE FUNCTION fulfillment.check_pick_line_carton_removed();
 
 

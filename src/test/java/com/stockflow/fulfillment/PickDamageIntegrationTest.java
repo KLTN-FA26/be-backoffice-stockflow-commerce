@@ -628,19 +628,23 @@ class PickDamageIntegrationTest {
                 .content("{\"scanId\":\"" + UUID.randomUUID() + "\",\"scannedCode\":\"" + sku
                         + "\",\"lotNumber\":\"L1\",\"quantity\":2}")).andExpect(status().isOk());
 
-        packDamage(task, lineId, picker, "WAREHOUSE_STAFF", UUID.randomUUID(), 1, true)
+        packDamage(task, lineId, picker, "WAREHOUSE_STAFF", UUID.randomUUID(), 2, true)
                 .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("PACK_DAMAGED_UNITS_PACKED"));
-        packDamage(task, lineId, picker, "WAREHOUSE_STAFF", UUID.randomUUID(), 3, true)
-                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.errorCode").value("VALIDATION_FAILED"));
-        packDamage(task, lineId, otherPicker, "WAREHOUSE_STAFF", UUID.randomUUID(), 1, true)
+        packDamage(task, lineId, otherPicker, "WAREHOUSE_STAFF", UUID.randomUUID(), 2, true)
                 .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("PACKING_TAKEN"));
 
         // Out of the parcel again: reported with a photo only.
         mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete(
                         "/api/v1/fulfillment/tasks/" + task + "/packages/" + parcel)
                 .header("Authorization", token(picker, "WAREHOUSE_STAFF"))).andExpect(status().isOk());
-        packDamage(task, lineId, picker, "WAREHOUSE_STAFF", UUID.randomUUID(), 1, false)
+        packDamage(task, lineId, picker, "WAREHOUSE_STAFF", UUID.randomUUID(), 2, false)
                 .andExpect(status().isBadRequest()).andExpect(jsonPath("$.errorCode").value("DAMAGE_PHOTO_REQUIRED"));
+        // A carton is reported damaged whole: a part of it, or more than it holds, is 409 and writes nothing.
+        for (int part : new int[] {1, 3}) {
+            packDamage(task, lineId, picker, "WAREHOUSE_STAFF", UUID.randomUUID(), part, true)
+                    .andExpect(status().isConflict())
+                    .andExpect(jsonPath("$.errorCode").value("STOCK_PACKAGE_TAKEN_WHOLE"));
+        }
         assertThat(damagedInQuarantine()).isZero();
         assertThat(jdbc.queryForObject("SELECT count(*) FROM inventory.stock_damage_report WHERE sku = ?",
                 Integer.class, sku)).isZero();
@@ -771,6 +775,53 @@ class PickDamageIntegrationTest {
                  WHERE sku = ? AND location_code = 'HCM-A01-2-A'""", sku))
                 .as("the restored unit is released, and is still loose stock").containsEntry("on_hand", 1)
                 .containsEntry("reserved", 0).containsEntry("stock_package_id", null);
+    }
+
+    @Test
+    @DisplayName("damage at packing is the whole carton or nothing: a part is 409 and writes nothing; the whole carton "
+            + "is 200 and, the order cancelled, leaves nothing to put back")
+    void packingDamageIsWholeCartonOrNothing() throws Exception {
+        cartons("HCM-A01-1-A", 3, 4, "L1", today.plusDays(10));
+        OrderSummary order = releasedOrder(4);
+        UUID task = startedTask(order);
+        JsonNode line = lines(task).get(0);
+        String lineId = line.path("lineId").asText();
+        String lpn = line.path("lpn").asText();
+        pickedAndAtPacking(task);
+
+        for (int part : new int[] {1, 2, 3}) {
+            packDamage(task, lineId, picker, "WAREHOUSE_STAFF", UUID.randomUUID(), part, true)
+                    .andExpect(status().isConflict())
+                    .andExpect(jsonPath("$.errorCode").value("STOCK_PACKAGE_TAKEN_WHOLE"));
+        }
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM inventory.stock_damage_report WHERE sku = ?", Integer.class,
+                sku)).as("no report").isZero();
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM inventory.stock_movement WHERE sku = ? AND reference_type = 'DAMAGE_REPORT'""",
+                Integer.class, sku)).as("no ledger line").isZero();
+        assertThat(jdbc.queryForMap("SELECT status, packing_damaged_qty FROM fulfillment.pick_line WHERE id = ?::uuid",
+                lineId)).as("the line is as it was").containsEntry("status", "PICKED")
+                .containsEntry("packing_damaged_qty", 0);
+        assertThat(damagedInQuarantine()).isZero();
+
+        packDamage(task, lineId, picker, "WAREHOUSE_STAFF", UUID.randomUUID(), 4, true)
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.line.packingDamagedQty").value(4));
+        assertThat(damagedInQuarantine()).isEqualTo(4);
+        packDamage(task, lineId, picker, "WAREHOUSE_STAFF", UUID.randomUUID(), 4, true)
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("STOCK_PACKAGE_TAKEN_WHOLE"));
+
+        WithCurrentUser.run(TestUsers.admin(), DataScope.ALL, () -> orders.cancel(order.orderId(), "CUSTOMER_REQUEST"));
+        Await.until("task cancelled", ASYNC, () -> "CANCELLED".equals(
+                jdbc.queryForObject("SELECT status FROM fulfillment.pick WHERE id = ?", String.class, task)));
+        mvc.perform(get("/api/v1/fulfillment/put-backs").param("warehouseId", DemoData.WAREHOUSE_HCM.toString())
+                        .param("size", "200").header("Authorization", token(manager, "WAREHOUSE_MANAGER")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[*].lineId", org.hamcrest.Matchers.not(
+                        org.hamcrest.Matchers.hasItem(lineId))));
+        mvc.perform(post("/api/v1/fulfillment/tasks/" + task + "/pick-lines/" + lineId + "/put-back")
+                        .header("Authorization", token(manager, "WAREHOUSE_MANAGER")).contentType("application/json")
+                        .content("{\"locationCode\":\"HCM-A01-1-B\",\"lpn\":\"" + lpn + "\"}"))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("PUT_BACK_NOT_REQUIRED"));
     }
 
     // ---- retries, refusals, races ------------------------------------------------------------------------------

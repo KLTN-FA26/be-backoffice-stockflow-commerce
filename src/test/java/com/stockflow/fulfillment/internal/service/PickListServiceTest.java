@@ -425,13 +425,14 @@ class PickListServiceTest {
         }
 
         @Test
-        @DisplayName("a line without a hold is picked without touching inventory")
+        @DisplayName("a line with a carton but no hold fails loudly: IllegalStateException, nothing deducted or saved")
         void lineWithoutHold() {
             PickLineJpaEntity free = line("SKU-F", "HCM-A-03", 1, null);
 
-            service.confirm(task.getId(), free.getId(), "HCM-A-03", "LPN-SKU-F", actor);
+            org.assertj.core.api.Assertions.assertThatThrownBy(() ->
+                    service.confirm(task.getId(), free.getId(), "HCM-A-03", "LPN-SKU-F", actor))
+                    .isInstanceOf(IllegalStateException.class).hasMessageContaining("has no hold");
 
-            assertThat(free.getStatus()).isEqualTo(PickLineStatus.PICKED);
             verifyNoInteractions(consumption);
         }
 
@@ -533,6 +534,19 @@ class PickListServiceTest {
                     ShortPickReason.DAMAGED, actor)).errorCode()).isEqualTo(ErrorCode.PICK_LINE_NOT_OPEN);
             assertThat(row.getShortReason()).isEqualTo(ShortPickReason.NOT_FOUND);
             verify(orders, org.mockito.Mockito.times(1)).putOnHold(any(), any(), any(), any());
+        }
+
+        @Test
+        @DisplayName("a line with a carton but no hold fails loudly: no recount asked, the order is not held")
+        void lineWithoutHold() {
+            PickLineJpaEntity free = line("SKU-F", "HCM-A-03", 2, null);
+
+            org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.reportShort(task.getId(), free.getId(),
+                    "HCM-A-03", ShortPickReason.NOT_FOUND, actor))
+                    .isInstanceOf(IllegalStateException.class).hasMessageContaining("has no hold");
+
+            verifyNoInteractions(consumption);
+            // putOnHold is asked before the guard, inside the transaction: it rolls back with the exception.
         }
 
         @Test
@@ -805,14 +819,17 @@ class PickListServiceTest {
         }
 
         @Test
-        @DisplayName("a picked line that holds no reservation cannot be put back: PUT_BACK_NOT_REQUIRED")
+        @DisplayName("a picked line that holds no reservation cannot be put back: a RuntimeException, inventory not asked")
         void lineWithoutHold() {
             PickLineJpaEntity free = line("SKU-F", "HCM-A-02", 1, null);
             free.apply(1, PickLineStatus.PICKED, picker, NOW, null, "HCM-A-02", "SKU-F", 0, null, null, null);
             binOf(WAREHOUSE, true, StorageLocationView.Kind.BIN);
 
-            assertThat(refusal(() -> service.putBack(task.getId(), free.getId(), "HCM-A-05", "LPN-SKU-F", actor)).errorCode())
-                    .isEqualTo(ErrorCode.PUT_BACK_NOT_REQUIRED);
+            // PutBackCommand refuses a null hold (NullPointerException) - loud, though not as worded as requireHold.
+            org.assertj.core.api.Assertions.assertThatThrownBy(() ->
+                    service.putBack(task.getId(), free.getId(), "HCM-A-05", "LPN-SKU-F", actor))
+                    .isInstanceOf(RuntimeException.class);
+            verifyNoInteractions(consumption);
         }
 
         @Test

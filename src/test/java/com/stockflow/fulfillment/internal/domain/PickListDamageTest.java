@@ -212,41 +212,55 @@ class PickListDamageTest {
     // ---- damage found at packing (R8) ---------------------------------------------------------------------------
 
     @Test
-    @DisplayName("damage at packing: a picked task, a picked line, 1 to what it still has; never twice the same units")
+    @DisplayName("damage at packing: a picked task, a picked line, and the whole carton - never a part, never twice")
     void afterPickRefusals() {
         PickLine line = picked("CUP", "HCM-A01-1-A", 3, LPN);
         PickList packing = list(PickStatus.PICKED, line);
 
-        assertThat(refusal(() -> list(PickStatus.CANCELLED, line).requireDamageableAfterPick(line.id(), 1)))
+        assertThat(refusal(() -> list(PickStatus.CANCELLED, line).requireDamageableAfterPick(line.id(), 3)))
                 .as("a cancelled order's goods are put back, then reported on the shelf")
                 .isEqualTo(ErrorCode.PICK_TASK_STATE_CONFLICT);
-        list(PickStatus.PICKING, line).requireDamageableAfterPick(line.id(), 1);   // in the tote, still picking
-        assertThat(refusal(() -> packing.requireDamageableAfterPick(line.id(), 0)))
-                .isEqualTo(ErrorCode.VALIDATION_FAILED);
-        assertThat(refusal(() -> packing.requireDamageableAfterPick(line.id(), 4)))
-                .isEqualTo(ErrorCode.VALIDATION_FAILED);
+        list(PickStatus.PICKING, line).requireDamageableAfterPick(line.id(), 3);   // in the tote, still picking
+        packing.requireDamageableAfterPick(line.id(), 3);
+        for (int part : new int[] {-1, 0, 1, 2, 4}) {
+            assertThat(refusal(() -> packing.requireDamageableAfterPick(line.id(), part)))
+                    .as("%d of 3", part).isEqualTo(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE);
+        }
         PickLine notPicked = open("CUP", "HCM-A01-1-A", 2, OTHER_LPN);
-        assertThat(refusal(() -> list(PickStatus.PICKED, notPicked).requireDamageableAfterPick(notPicked.id(), 1)))
+        assertThat(refusal(() -> list(PickStatus.PICKED, notPicked).requireDamageableAfterPick(notPicked.id(), 2)))
                 .isEqualTo(ErrorCode.PICK_LINE_NOT_OPEN);
 
-        packing.replaceDamagedAfterPick(line.id(), 2, REPORT, List.of(hold(UUID.randomUUID(), "CUP",
-                "HCM-A02-1-A", HCM, 2, "LPN-R")), null, UUID::randomUUID);
-        assertThat(line.packingDamagedQty()).isEqualTo(2);
-        assertThat(line.goodQty()).isEqualTo(1);
-        assertThat(refusal(() -> packing.requireDamageableAfterPick(line.id(), 2)))
-                .as("two of the three are in quarantine already").isEqualTo(ErrorCode.VALIDATION_FAILED);
+        packing.replaceDamagedAfterPick(line.id(), 3, REPORT, List.of(hold(UUID.randomUUID(), "CUP",
+                "HCM-A02-1-A", HCM, 3, "LPN-R")), null, UUID::randomUUID);
+        assertThat(line.packingDamagedQty()).isEqualTo(3);
+        assertThat(line.goodQty()).as("nothing of the carton is left to put back").isZero();
+        assertThat(refusal(() -> packing.requireDamageableAfterPick(line.id(), 3)))
+                .as("a second report of a carton already damaged whole").isEqualTo(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE);
     }
 
     @Test
-    @DisplayName("damage at packing replaced: the picked line keeps them on record, new OPEN lines after the last stop")
+    @DisplayName("a partial report at packing is refused by the replacement too, before anything changes")
+    void afterPickPartialReplacementIsRefused() {
+        PickLine line = picked("CUP", "HCM-A01-1-A", 3, LPN);
+        PickList packing = list(PickStatus.PICKED, line);
+
+        assertThat(refusal(() -> packing.replaceDamagedAfterPick(line.id(), 1, REPORT, List.of(hold(UUID.randomUUID(),
+                "CUP", "HCM-A02-1-A", HCM, 1, "LPN-R")), null, UUID::randomUUID)))
+                .isEqualTo(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE);
+        assertThat(line.packingDamagedQty()).isZero();
+        assertThat(packing.lines()).hasSize(1);
+    }
+
+    @Test
+    @DisplayName("damage at packing replaced: the picked line keeps the carton on record, new OPEN lines after the last stop")
     void afterPickReplaced() {
         PickLine line = picked("CUP", "HCM-A01-1-A", 3, LPN);
         PickLine other = picked("CUP", "HCM-B01-1-A", 1, OTHER_LPN);
         PickList packing = list(PickStatus.PICKED, line, other);
         UUID replacement = UUID.randomUUID();
 
-        List<PickLine> added = packing.replaceDamagedAfterPick(line.id(), 1, REPORT, List.of(hold(replacement, "CUP",
-                "HCM-A02-1-A", HCM, 1, "LPN-R")), null, UUID::randomUUID);
+        List<PickLine> added = packing.replaceDamagedAfterPick(line.id(), 3, REPORT, List.of(hold(
+                replacement, "CUP", "HCM-A02-1-A", HCM, 3, "LPN-R")), null, UUID::randomUUID);
 
         assertThat(line.status()).isEqualTo(PickLineStatus.PICKED);
         assertThat(line.pickedQty()).isEqualTo(3);
@@ -260,10 +274,10 @@ class PickListDamageTest {
         });
         assertThat(packing.madeAfterPick(REPORT)).isTrue();
         assertThat(refusal(() -> list(PickStatus.PICKED, picked("CUP", "HCM-A01-1-A", 2, LPN)).replaceDamagedAfterPick(
-                packing.lines().get(0).id(), 1, REPORT, List.of(), null, UUID::randomUUID)))
+                packing.lines().get(0).id(), 2, REPORT, List.of(), null, UUID::randomUUID)))
                 .isEqualTo(ErrorCode.NOT_FOUND);
         assertThat(refusal(() -> list(PickStatus.PICKED, picked("CUP", "HCM-A01-1-A", 2, LPN))
-                .requireDamageableAfterPick(UUID.randomUUID(), 1))).isEqualTo(ErrorCode.NOT_FOUND);
+                .requireDamageableAfterPick(UUID.randomUUID(), 2))).isEqualTo(ErrorCode.NOT_FOUND);
     }
 
     @Test
