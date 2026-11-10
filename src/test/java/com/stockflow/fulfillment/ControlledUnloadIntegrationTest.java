@@ -6,13 +6,12 @@ import com.stockflow.common.domain.Money;
 import com.stockflow.common.domain.Sku;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.contracts.OrderCancelled;
-import com.stockflow.contracts.PaymentCaptured;
-import com.stockflow.contracts.PaymentMethod;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.OrderSummary;
-import com.stockflow.order.api.PlaceOrderCommand;
 import com.stockflow.support.Await;
+import com.stockflow.support.ConfirmedOrders;
+import com.stockflow.support.CustomerSkuRows;
 import com.stockflow.support.DemoData;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
@@ -25,6 +24,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.oauth2.jwt.Jwt;
@@ -68,11 +68,11 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @AutoConfigureMockMvc
 @TestPropertySource(properties = {"stockflow.security.enabled=true", "stockflow.catalog.projection-retry-ms=3600000",
         "stockflow.fulfillment.packing.dim-divisor=6000", "stockflow.fulfillment.load-planning.solver-budget=PT2S",
-        "stockflow.test.context=ftl-dispatch"})
+        "stockflow.test.context=ftl-dispatch",
+        "stockflow.upload-inspection.enabled=false"})
 class ControlledUnloadIntegrationTest {
 
-    private static final Sku SOFA = new Sku("SOFA-3S-GREY");
-    private static final String SOFA_BARCODE = "8930000000011";
+    private static final String SOFA = "SOFA-3S-GREY";
     private static final Duration ASYNC = Duration.ofSeconds(15);
     private static final UUID HCM = DemoData.WAREHOUSE_HCM;
     private static final String ORDERS = "/api/v1/orders";
@@ -92,6 +92,7 @@ class ControlledUnloadIntegrationTest {
     @Autowired TransactionTemplate tx;
     @Autowired EntityManager entityManager;
     @Autowired ApplicationEventPublisher publisher;
+    @Autowired ApplicationContext context;
     @Autowired ObjectMapper json;
 
     private UUID coordinator;
@@ -189,31 +190,43 @@ class ControlledUnloadIntegrationTest {
         return request.contentType("application/json").content(content);
     }
 
-    private void stock(int sofas) {
+    private void stock(String sku, int sofas) {
         tx.executeWithoutResult(s -> jdbc.update("""
                 INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, version,
                     created_at, received_at)
                 VALUES (?, ?, 'HCM-A02-1-A', ?, 0, 'AVAILABLE', 0, NOW(), NOW() - interval '400 days')""",
-                Identifiers.newId(), SOFA.code(), sofas));
+                Identifiers.newId(), sku, sofas));
     }
 
     /** A paid order of the demo customer for {@code sofas} sofas, released at HCM (every order is a full truckload). */
     private OrderSummary ftlOrder(int sofas) throws Exception {
-        stock(sofas);
-        OrderSummary order = orders.placeOrder(new PlaceOrderCommand(UUID.randomUUID(), DemoData.CUSTOMER_ID,
-                List.of(new PlaceOrderCommand.Line(SOFA, sofas, Money.vnd(12_000_000), null))));
-        BigDecimal total = order.total().amount();
-        UUID payment = Identifiers.newId();
-        tx.executeWithoutResult(s -> jdbc.update("""
-                INSERT INTO payment.payment (id, order_id, amount, currency, method, status, captured_at, created_at)
-                VALUES (?, ?, ?, 'VND', 'BANK_TRANSFER', 'CAPTURED', NOW(), NOW())""", payment, order.orderId(), total));
-        tx.executeWithoutResult(s -> publisher.publishEvent(new PaymentCaptured(order.orderId(), payment, total, "VND",
-                PaymentMethod.BANK_TRANSFER)));
-        Await.until("order confirmed", ASYNC,
-                () -> orders.findById(order.orderId()).orElseThrow().status() == OrderStatus.CONFIRMED);
-        oc(body(post(ORDERS + "/" + order.orderId() + "/release"), "{\"warehouseId\":\"" + HCM + "\"}"))
-                .andExpect(status().isOk());
-        return order;
+        return ftlOrder(sofas, DemoData.CUSTOMER_ID);
+    }
+
+    private OrderSummary ftlOrder(int sofas, UUID customer) throws Exception {
+        int pieces = Math.max(2, sofas);
+        String sku = sofaOf(customer);
+        stock(sku, pieces);
+        UUID orderId = confirmedOrders().confirmed(customer,
+                ConfirmedOrders.Line.units(sku, pieces, 12_000_000)).orderId();
+        return confirmedOrders().release(orderId, HCM, coordinator);
+    }
+
+    private ConfirmedOrders confirmedOrders;
+
+    private ConfirmedOrders confirmedOrders() {
+        if (confirmedOrders == null) {
+            confirmedOrders = new ConfirmedOrders(context);
+        }
+        return confirmedOrders;
+    }
+
+    private final Map<UUID, String> sofas = new java.util.HashMap<>();
+
+    /** The customer's own sofa, handling like the catalogue's (a contract's lines are only ever the customer's, 14 BR-04). */
+    private String sofaOf(UUID customer) {
+        return sofas.computeIfAbsent(customer,
+                c -> CustomerSkuRows.like(jdbc, tx, entityManager, c, SOFA, 50).sku());
     }
 
     /** The order picked and packed: as kits of 2 (LP2-6) or one carton per sofa. Returns the shipment and task. */
@@ -255,9 +268,13 @@ class ControlledUnloadIntegrationTest {
         return new UUID[] {UUID.fromString(shipment), task};
     }
 
+    private String pickedSku(UUID task) {
+        return jdbc.queryForObject("SELECT sku FROM fulfillment.pick_line WHERE pick_id = ? LIMIT 1", String.class, task);
+    }
+
     private void scan(UUID task, String parcel) throws Exception {
         packer(body(post(BASE + "/tasks/" + task + "/packages/" + parcel + "/scans"), "{\"scanId\":\""
-                + UUID.randomUUID() + "\",\"scannedCode\":\"" + SOFA_BARCODE + "\",\"quantity\":1}"))
+                + UUID.randomUUID() + "\",\"scannedCode\":\"" + pickedSku(task) + "\",\"quantity\":1}"))
                 .andExpect(status().isOk());
     }
 

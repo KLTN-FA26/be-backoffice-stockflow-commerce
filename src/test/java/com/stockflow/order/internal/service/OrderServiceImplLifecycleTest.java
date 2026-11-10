@@ -12,14 +12,11 @@ import com.stockflow.order.api.OrderSummary;
 import com.stockflow.order.api.ShipmentHandover;
 import com.stockflow.order.internal.domain.CancellationRequest;
 import com.stockflow.order.internal.domain.CancellationRequestRepository;
-import com.stockflow.order.internal.domain.CreditChecks;
 import com.stockflow.order.internal.domain.Order;
-import com.stockflow.order.internal.domain.OrderPayments;
 import com.stockflow.order.internal.domain.OrderRepository;
 import com.stockflow.order.internal.entity.OrderHoldJpaEntity;
 import com.stockflow.order.internal.repository.OrderHoldJpaRepository;
 import com.stockflow.order.internal.repository.OrderSearchRepository;
-import com.stockflow.payment.api.OrderLedger;
 import com.stockflow.payment.api.PaymentService;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -59,14 +56,12 @@ class OrderServiceImplLifecycleTest {
     private final OrderServiceImpl service = new OrderServiceImpl(repository, mock(OrderSearchRepository.class),
             inventory, events, Clock.fixed(NOW, ZoneOffset.UTC), mock(DesignService.class), holds,
             mock(CustomerService.class), mock(com.stockflow.catalog.api.CatalogService.class),
-            mock(OrderPayments.class), requests, mock(CreditChecks.class), paymentService, org.mockito.Mockito.mock(com.stockflow.product.api.CustomerSkus.class), org.mockito.Mockito.mock(com.stockflow.order.internal.domain.SalesContractRepository.class));
+            requests, paymentService, org.mockito.Mockito.mock(com.stockflow.product.api.CustomerSkus.class), org.mockito.Mockito.mock(com.stockflow.order.internal.domain.SalesContractRepository.class));
 
     private Order loaded(Order order) {
         when(repository.findByIdForUpdate(order.id())).thenReturn(Optional.of(order));
         when(repository.findById(order.id())).thenReturn(Optional.of(order));
         when(repository.save(any())).thenAnswer(call -> call.getArgument(0));
-        when(paymentService.ledgerOf(order.id().value())).thenReturn(new OrderLedger(order.paidAmount(),
-                BigDecimal.ZERO));
         return order;
     }
 
@@ -81,7 +76,7 @@ class OrderServiceImplLifecycleTest {
     @Test
     @DisplayName("picking starts once: the first call moves the order and saves, the second answers with it unchanged")
     void pickingIsIdempotent() {
-        Order order = loaded(OrderFixtures.releasedPrepaid());
+        Order order = loaded(OrderFixtures.released());
 
         OrderSummary first = service.startPicking(order.id().value(), STAFF);
         OrderSummary second = service.startPicking(order.id().value(), STAFF);
@@ -93,9 +88,9 @@ class OrderServiceImplLifecycleTest {
     }
 
     @Test
-    @DisplayName("the summary carries the lines, totals, payment block and lifecycle of the saved order")
+    @DisplayName("the summary carries the lines, totals and lifecycle of the saved order")
     void summaryReflectsTheOrder() {
-        Order order = loaded(OrderFixtures.releasedPrepaid());
+        Order order = loaded(OrderFixtures.released());
 
         OrderSummary summary = service.markPacked(order.id().value(), STAFF);
 
@@ -103,7 +98,6 @@ class OrderServiceImplLifecycleTest {
         assertThat(summary.orderNumber()).isEqualTo(order.orderNumber().value());
         assertThat(summary.total().amount()).isEqualByComparingTo("1100000");
         assertThat(summary.lines()).extracting(OrderSummary.LineSummary::sku).containsExactly("CUP-12OZ", "LID-90");
-        assertThat(summary.payment().paidAmount()).isEqualByComparingTo("1100000");
         assertThat(summary.warehouseId()).isEqualTo(OrderFixtures.WAREHOUSE);
         assertThat(summary.lifecycle().packedAt()).isEqualTo(NOW);
         assertThat(summary.cancellation()).as("only a cancelled order has a cancellation block").isNull();
@@ -126,7 +120,7 @@ class OrderServiceImplLifecycleTest {
     @Test
     @DisplayName("a delivery is recorded once; a second report for the same order changes nothing (09 §4.3)")
     void deliveryIsIdempotent() {
-        Order order = OrderFixtures.releasedPrepaid();
+        Order order = OrderFixtures.released();
         order.markPacked(NOW, STAFF);
         order.markShipped(NOW, STAFF);
         loaded(order);
@@ -141,7 +135,7 @@ class OrderServiceImplLifecycleTest {
     @Test
     @DisplayName("a failed delivery needs a note for OTHER (VALIDATION_FAILED) and is idempotent for the same report")
     void deliveryFailure() {
-        Order order = OrderFixtures.releasedPrepaid();
+        Order order = OrderFixtures.released();
         order.markPacked(NOW, STAFF);
         order.markShipped(NOW, STAFF);
         loaded(order);
@@ -158,7 +152,7 @@ class OrderServiceImplLifecycleTest {
     @Test
     @DisplayName("goods that came back from a failed delivery put the order in RETURNED, once")
     void returnedToOrigin() {
-        Order order = OrderFixtures.releasedPrepaid();
+        Order order = OrderFixtures.released();
         order.markPacked(NOW, STAFF);
         order.markShipped(NOW, STAFF);
         order.markDeliveryFailed(DeliveryFailureReason.CUSTOMER_ABSENT, null, NOW, STAFF);
@@ -173,7 +167,7 @@ class OrderServiceImplLifecycleTest {
     @Test
     @DisplayName("putting an order on hold saves a hold row with the reason, note and who; resolving closes that row")
     void holdAndResolve() {
-        Order order = loaded(OrderFixtures.releasedPrepaid());
+        Order order = loaded(OrderFixtures.released());
 
         service.putOnHold(order.id().value(), HoldReason.ADDRESS, "dented cartons", STAFF);
 
@@ -197,7 +191,7 @@ class OrderServiceImplLifecycleTest {
     @Test
     @DisplayName("a hold for OTHER must say why, and an order not on hold cannot be resolved (ORDER_NOT_ON_HOLD)")
     void holdGuards() {
-        Order order = loaded(OrderFixtures.releasedPrepaid());
+        Order order = loaded(OrderFixtures.released());
 
         assertThat(codeOf(() -> service.putOnHold(order.id().value(), HoldReason.OTHER, null, STAFF)))
                 .isEqualTo(ErrorCode.VALIDATION_FAILED);
@@ -209,7 +203,7 @@ class OrderServiceImplLifecycleTest {
     @Test
     @DisplayName("a locked read answers with the order's status, or empty")
     void lockedReads() {
-        Order order = loaded(OrderFixtures.releasedPrepaid());
+        Order order = loaded(OrderFixtures.released());
 
         assertThat(service.lockedStatus(order.id().value())).contains(OrderStatus.READY_TO_FULFILL);
         assertThat(service.lockedStatus(UUID.randomUUID())).isEmpty();
@@ -218,7 +212,7 @@ class OrderServiceImplLifecycleTest {
     @Test
     @DisplayName("packing started is recorded once")
     void factsAreRecordedOnce() {
-        Order order = loaded(OrderFixtures.releasedPrepaid());
+        Order order = loaded(OrderFixtures.released());
 
         service.recordPackingStarted(order.id().value());
         service.recordPackingStarted(order.id().value());
@@ -230,7 +224,7 @@ class OrderServiceImplLifecycleTest {
     @Test
     @DisplayName("a package completed closes a pending cancellation request: it can no longer be decided")
     void packedClosesThePendingRequest() {
-        Order order = loaded(OrderFixtures.releasedPrepaid());
+        Order order = loaded(OrderFixtures.released());
         CancellationRequest pending = CancellationRequest.open(order.id().value(), UUID.randomUUID(),
                 CancellationReasonCode.CUSTOMER_REQUEST, null, NOW);
         when(requests.findPending(order.id().value())).thenReturn(Optional.of(pending));
@@ -245,7 +239,7 @@ class OrderServiceImplLifecycleTest {
     @Test
     @DisplayName("a partial handover moves the order to PARTIALLY_FULFILLED and the rest can be closed, freeing its holds")
     void closingTheRestReleasesTheHoldsOfTheClosedUnits() {
-        Order order = OrderFixtures.releasedPrepaid();
+        Order order = OrderFixtures.released();
         order.decidePartialShipment(true);
         order.startPicking(STAFF, NOW);
         loaded(order);
@@ -268,7 +262,7 @@ class OrderServiceImplLifecycleTest {
     @Test
     @DisplayName("closing the rest of an order that is not partly fulfilled is refused, nothing released")
     void closingTheRestNeedsAPartlyFulfilledOrder() {
-        Order order = loaded(OrderFixtures.releasedPrepaid());
+        Order order = loaded(OrderFixtures.released());
 
         org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.closeRemainder(order.id().value(),
                 CancellationReasonCode.OUT_OF_STOCK, null, STAFF)).isInstanceOf(

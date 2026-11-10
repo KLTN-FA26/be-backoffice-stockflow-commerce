@@ -17,7 +17,6 @@ import com.stockflow.inventory.api.UomConversionService;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.OrderSummary;
-import com.stockflow.order.api.PaymentTerm;
 import com.stockflow.order.api.PlaceOrderCommand;
 import com.stockflow.order.internal.domain.PriceTier;
 import com.stockflow.order.internal.domain.Quote;
@@ -94,11 +93,9 @@ class QuoteServiceTest {
                 null, null, null, "ACTIVE", 0, NOW)));
         when(customers.findByUserId(portalUser)).thenReturn(Optional.of(new CustomerSummary(customer, portalUser, "A",
                 "a@x.vn", null, null, null, "ACTIVE", 0, NOW)));
-        when(customers.creditTerms(customer)).thenReturn(new CreditTerms(customer, true, true, true, false,
-                com.stockflow.customer.api.CommercialTerm.DEPOSIT, new BigDecimal("30"), null, null, "VND", null, null,
-                null, 1));
+        when(customers.creditTerms(customer)).thenReturn(new CreditTerms(customer, true, null, null, "VND", null, null, null, 1));
         when(search.findRow(any())).thenAnswer(call -> Optional.of(new QuoteSearch.Row(call.getArgument(0), "QT-1",
-                customer, QuoteStatus.SENT, 1, PaymentTerm.DEPOSIT, NOW.plusSeconds(3600), NOW, null, NOW, "sales", 7)));
+                customer, QuoteStatus.SENT, 1, NOW.plusSeconds(3600), NOW, null, NOW, "sales", 7)));
         when(search.history(any())).thenReturn(List.of());
         ownedByTheCustomer(SKU);
         // 4B-3: the products are STANDARD (10%) unless a test says otherwise; every SKU was produced before.
@@ -156,7 +153,7 @@ class QuoteServiceTest {
     private Quote stored(QuoteStatus status) {
         boolean accepted = status == QuoteStatus.ACCEPTED || status == QuoteStatus.CONVERTED;
         QuoteLine line = line(1, SKU, 20, accepted ? 60 : null, accepted ? Money.vnd(1800) : null);
-        return stored(status, new Quote.Offer(PaymentTerm.DEPOSIT, new BigDecimal("40"), NOW.plusSeconds(3600), null,
+        return stored(status, new Quote.Offer(NOW.plusSeconds(3600), null,
                 List.of(line)));
     }
 
@@ -175,12 +172,11 @@ class QuoteServiceTest {
     }
 
     private Quotes.Create create(String sku, int cartons, List<Quotes.Tier> tiers) {
-        return new Quotes.Create(UUID.randomUUID(), customer, new Quotes.Draft(PaymentTerm.DEPOSIT, null,
-                NOW.plusSeconds(3600), null, List.of(new Quotes.Line(sku, cartons, tiers))));
+        return new Quotes.Create(UUID.randomUUID(), customer, new Quotes.Draft(NOW.plusSeconds(3600), null, List.of(new Quotes.Line(sku, cartons, tiers))));
     }
 
     @Test
-    void aDraftIsCartonsOfTheCustomersOwnSkuInItsCartonUnitAndADepositShareTakesTheDefault() {
+    void aDraftIsCartonsOfTheCustomersOwnSkuInItsCartonUnit() {
         when(quotes.findByRequestId(any())).thenReturn(Optional.empty());
         when(quotes.nextNumber(any())).thenReturn("QT-9");
         ArgumentCaptor<Quote> saved = ArgumentCaptor.forClass(Quote.class);
@@ -197,8 +193,6 @@ class QuoteServiceTest {
             assertThat(l.units()).isEqualTo(1000);
             assertThat(l.proposedLineTotal()).isEqualByComparingTo("2000000");
         });
-        // Audit of #109: the share is the one the customer sees and accepts, not the default read again at conversion.
-        assertThat(saved.getValue().offer().depositPercent()).isEqualByComparingTo("30");
     }
 
     @Test
@@ -253,7 +247,7 @@ class QuoteServiceTest {
     }
 
     @Test
-    void conversionHandsTheOrderCoreTheAcceptedCartonsPiecesPricesAndTermsUnderADerivedRequestId() {
+    void conversionHandsTheOrderCoreTheAcceptedCartonsPiecesPricesUnderADerivedRequestId() {
         Quote quote = stored(QuoteStatus.ACCEPTED);
         UUID orderId = UUID.randomUUID();
         when(quotedOrders.placeQuotedOrder(any())).thenReturn(new OrderSummary(orderId, "SO-1", customer,
@@ -267,8 +261,6 @@ class QuoteServiceTest {
         assertThat(command.requestId()).isEqualTo(QuoteService.conversionRequestId(quote.id()));
         assertThat(command.customerId()).isEqualTo(customer);
         assertThat(command.snapshotCustomer()).isTrue();
-        assertThat(command.paymentTerm()).isEqualTo(PaymentTerm.DEPOSIT);
-        assertThat(command.depositPercent()).isEqualByComparingTo("40");
         assertThat(command.lines()).singleElement().satisfies(line -> {
             assertThat(line.sku().code()).isEqualTo(SKU);
             assertThat(line.quantity()).as("60 cartons of 50 pieces").isEqualTo(3000);
@@ -284,7 +276,7 @@ class QuoteServiceTest {
     void conversionCarriesTheRequestedDeliveryDateOntoEveryLine() {
         java.time.LocalDate asked = java.time.LocalDate.of(2026, 12, 15);
         ownedByTheCustomer("LY16-ACME-01");
-        Quote quote = stored(QuoteStatus.ACCEPTED, new Quote.Offer(PaymentTerm.PREPAID, null, NOW.plusSeconds(3600),
+        Quote quote = stored(QuoteStatus.ACCEPTED, new Quote.Offer(NOW.plusSeconds(3600),
                 null, asked, List.of(line(1, SKU, 20, 20, Money.vnd(2000)),
                         line(2, "LY16-ACME-01", 10, 10, Money.vnd(2000)))));
         when(quotedOrders.placeQuotedOrder(any())).thenReturn(new OrderSummary(UUID.randomUUID(), "SO-1", customer,
@@ -316,7 +308,7 @@ class QuoteServiceTest {
     void aLegacyQuoteIsNeverPlacedAndAnAcceptedOneMayBeCancelledForThatAlone() {
         QuoteLine legacy = QuoteLine.legacy(UUID.randomUUID(), 1, new Sku("CUP-PP-500"), UUID.randomUUID(), null, 1000,
                 List.of(PriceTier.of(1000, new BigDecimal("2000"))), 1000, Money.vnd(2000));
-        Quote quote = stored(QuoteStatus.ACCEPTED, new Quote.Offer(PaymentTerm.PREPAID, null, NOW.plusSeconds(3600),
+        Quote quote = stored(QuoteStatus.ACCEPTED, new Quote.Offer(NOW.plusSeconds(3600),
                 null, List.of(legacy)));
         assertThat(service.get(sales, quote.id()).legacy()).isTrue();
         assertThat(service.get(sales, quote.id()).lines().getFirst().measure()).isEqualTo("UNIT");
@@ -338,13 +330,12 @@ class QuoteServiceTest {
         java.time.LocalDate today = java.time.LocalDate.of(2026, 10, 14);
         Quotes.Line line = new Quotes.Line(SKU, 20, List.of(new Quotes.Tier(10, new BigDecimal("2000"))));
 
-        service.create(sales, new Quotes.Create(UUID.randomUUID(), customer, new Quotes.Draft(PaymentTerm.PREPAID, null,
-                NOW.plusSeconds(3600), null, List.of(line), today)));
+        service.create(sales, new Quotes.Create(UUID.randomUUID(), customer, new Quotes.Draft(NOW.plusSeconds(3600), null, List.of(line), today)));
         verify(quotes).save(saved.capture());
         assertThat(saved.getValue().offer().requestedDeliveryDate()).isEqualTo(today);
 
         assertThatThrownBy(() -> service.create(sales, new Quotes.Create(UUID.randomUUID(), customer,
-                new Quotes.Draft(PaymentTerm.PREPAID, null, NOW.plusSeconds(3600), null, List.of(line),
+                new Quotes.Draft(NOW.plusSeconds(3600), null, List.of(line),
                         today.minusDays(1)))))
                 .satisfies(e -> assertThat(code(e)).isEqualTo(ErrorCode.VALIDATION_FAILED));
         verify(quotes, org.mockito.Mockito.times(1)).save(any());
@@ -404,7 +395,7 @@ class QuoteServiceTest {
         UUID design = UUID.randomUUID();
         QuoteLine legacy = QuoteLine.legacy(UUID.randomUUID(), 1, new Sku("CUP-PP-500"), design, null, 1010,
                 List.of(PriceTier.of(1000, new BigDecimal("2000"))), 1010, Money.vnd(2000));
-        Quote source = stored(QuoteStatus.CONVERTED, new Quote.Offer(PaymentTerm.PREPAID, null, NOW.plusSeconds(3600),
+        Quote source = stored(QuoteStatus.CONVERTED, new Quote.Offer(NOW.plusSeconds(3600),
                 null, List.of(legacy)));
         UUID orderId = source.convertedOrderId();
         when(orders.findById(orderId)).thenReturn(Optional.of(new OrderSummary(orderId, "SO-1", customer,
@@ -430,33 +421,6 @@ class QuoteServiceTest {
     }
 
     @Test
-    void aReorderWhoseCreditWasWithdrawnReachesSalesOnTodaysTermsNeverTheOldCredit() {
-        // R1b: the deal was on credit; today the customer may only prepay.
-        Quote source = Quote.restore(UUID.randomUUID(), "QT-1", UUID.randomUUID(), customer, QuoteStatus.CONVERTED, 1,
-                new Quote.Offer(PaymentTerm.CREDIT, null, NOW.plusSeconds(3600), null,
-                        List.of(line(1, SKU, 20, 20, Money.vnd(2000)))), NOW,
-                sales.userId(), NOW, portalUser, null, null, UUID.randomUUID(), NOW);
-        UUID orderId = source.convertedOrderId();
-        when(customers.creditTerms(customer)).thenReturn(CreditTerms.prepaidOnly(customer));
-        when(orders.findById(orderId)).thenReturn(Optional.of(new OrderSummary(orderId, "SO-1", customer,
-                OrderStatus.CONFIRMED, Money.vnd(2_000_000), List.of(), NOW)));
-        when(quotes.findByConvertedOrderId(orderId)).thenReturn(Optional.of(source));
-        when(quotes.findByRequestId(any())).thenReturn(Optional.empty());
-        when(quotes.nextNumber(any())).thenReturn("QT-2");
-
-        Quotes.QuoteView draft = service.reorder(portal, new Quotes.Reorder(UUID.randomUUID(), orderId));
-
-        assertThat(draft.status()).isEqualTo(QuoteStatus.DRAFT);
-        assertThat(draft.paymentTerm()).as("only a term allowed today").isEqualTo(PaymentTerm.PREPAID);
-        assertThat(draft.depositPercent()).isNull();
-        verify(quotedOrders, never()).placeQuotedOrder(any());
-        verify(quotes).recordTransition(any(), org.mockito.ArgumentMatchers.eq(1), org.mockito.ArgumentMatchers.isNull(),
-                org.mockito.ArgumentMatchers.eq(QuoteStatus.DRAFT),
-                org.mockito.ArgumentMatchers.contains("CREDIT is no longer allowed, drafted as PREPAID"),
-                org.mockito.ArgumentMatchers.isNull(), any(), any());
-    }
-
-    @Test
     void theConversionRequestIdIsStablePerQuoteAndDistinctAcrossQuotes() {
         UUID quote = UUID.randomUUID();
         assertThat(QuoteService.conversionRequestId(quote)).isEqualTo(QuoteService.conversionRequestId(quote));
@@ -466,8 +430,7 @@ class QuoteServiceTest {
     // ------------------------------------------------------------------------------------- 4B-3: VAT and fee lines
 
     private Quotes.Create createWithFees(List<Quotes.Fee> fees) {
-        return new Quotes.Create(UUID.randomUUID(), customer, new Quotes.Draft(PaymentTerm.DEPOSIT, null,
-                NOW.plusSeconds(3600), null, List.of(new Quotes.Line(SKU, 20, List.of(new Quotes.Tier(10,
+        return new Quotes.Create(UUID.randomUUID(), customer, new Quotes.Draft(NOW.plusSeconds(3600), null, List.of(new Quotes.Line(SKU, 20, List.of(new Quotes.Tier(10,
                 new BigDecimal("2000"))))), null, fees));
     }
 
@@ -531,7 +494,7 @@ class QuoteServiceTest {
         com.stockflow.order.internal.domain.QuoteFee shipping = new com.stockflow.order.internal.domain.QuoteFee(
                 UUID.randomUUID(), com.stockflow.order.api.FeeKind.SHIPPING_FEE, null, Money.vnd(300_000), "STANDARD",
                 new BigDecimal("10"));
-        Quote quote = stored(QuoteStatus.ACCEPTED, new Quote.Offer(PaymentTerm.PREPAID, null, NOW.plusSeconds(3600),
+        Quote quote = stored(QuoteStatus.ACCEPTED, new Quote.Offer(NOW.plusSeconds(3600),
                 null, null, List.of(line(1, SKU, 20, 20, Money.vnd(2000))), List.of(plate, shipping)));
         when(quotedOrders.placeQuotedOrder(any())).thenReturn(new OrderSummary(UUID.randomUUID(), "SO-1", customer,
                 OrderStatus.PENDING_PAYMENT, Money.vnd(3_080_000), List.of(), NOW));

@@ -54,10 +54,10 @@ class BusinessFieldErrorsTest {
     @Test
     @DisplayName("SCRUM-193: a refusal's details travel in the envelope, and are absent when there are none")
     void detailsTravel() {
-        var response = handler.handleBusiness(new BusinessException(ErrorCode.BALANCE_CREDIT_LIMIT_EXCEEDED, "over",
-                List.of(), java.util.Map.of("availableCredit", new java.math.BigDecimal("1250000"), "currency", "VND")));
+        var response = handler.handleBusiness(new BusinessException(ErrorCode.RETURN_REFUND_EXCEEDS_PAID, "over",
+                List.of(), java.util.Map.of("refundable", new java.math.BigDecimal("1250000"), "currency", "VND")));
         assertThat(response.getBody().details()).containsEntry("currency", "VND")
-                .containsEntry("availableCredit", new java.math.BigDecimal("1250000"));
+                .containsEntry("refundable", new java.math.BigDecimal("1250000"));
         assertThat(handler.handleBusiness(new BusinessException(ErrorCode.CONFLICT, "busy")).getBody().details()).isNull();
     }
 }

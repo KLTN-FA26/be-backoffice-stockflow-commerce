@@ -95,7 +95,6 @@ class OrderReturnTest {
         assertThat(free.pullTransitions()).last().as("the confirmation names who settled the return")
                 .extracting(OrderTransition::actorId, OrderTransition::reason)
                 .containsExactly(settler, "REPLACEMENT_FOR_RETURN");
-        assertThat(free.paidInFullAt()).isEqualTo(NOW);
         assertThat(free.replacesReturnRequestId()).isEqualTo(returnId);
         assertThat(free.pullDomainEvents()).singleElement().satisfies(event ->
                 assertThat(((OrderEvent.Placed) event).payload()).isInstanceOf(OrderPlaced.class));

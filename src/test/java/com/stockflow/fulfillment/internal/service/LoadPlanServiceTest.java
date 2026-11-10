@@ -801,11 +801,9 @@ class LoadPlanServiceTest {
             useAsStoredPlan(planned.plan());
             planned.plan().acknowledgeUnplaced(planned.dispatcher(), NOW, null, planned.cartons());
             OrderSummary order = FulfillmentFixtures.order(UUID.randomUUID(), List.of());
-            var lifecycle = new OrderSummary.Lifecycle(null, null, null, null, null, null, null, null, null,
-                    BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, List.of(), List.of(), false);
+            var lifecycle = new OrderSummary.Lifecycle(null, null, null, null, null, null, null, null, null, BigDecimal.ZERO, BigDecimal.ZERO, List.of(), List.of(), false);
             OrderSummary strict = new OrderSummary(order.orderId(), "SO-0777", order.customerId(), OrderStatus.PACKED,
-                    order.total(), order.lines(), NOW, null, null, null, null, null, null, null, null, null, WAREHOUSE, NOW,
-                    null, null, lifecycle);
+                    order.total(), order.lines(), NOW, null, null, null, null, null, null, null, null, WAREHOUSE, NOW, null, lifecycle);
             org.mockito.Mockito.doAnswer(call -> {
                 Map<UUID, LoadPlanParcels.Parcel> described = new LinkedHashMap<>();
                 parcelsOf(call.getArgument(0)).forEach((id, p) -> described.put(id, new LoadPlanParcels.Parcel(p.row(),

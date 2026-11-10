@@ -181,8 +181,7 @@ class ShipmentServiceTest {
     class RecordingAnOutcome {
 
         private OrderSummary orderKnowing(ShipmentJpaEntity row) {
-            var known = new OrderSummary.Shipment(row.getId(), OrderShipmentStatus.HANDED_OVER, BigDecimal.ZERO,
-                    BigDecimal.ZERO, NOW, null, null, List.of(), null);
+            var known = new OrderSummary.Shipment(row.getId(), OrderShipmentStatus.HANDED_OVER, BigDecimal.ZERO, NOW, null, null, List.of(), null);
             OrderSummary order = FulfillmentFixtures.order(row.getOrderId(), List.of(known));
             when(orders.findById(row.getOrderId())).thenReturn(Optional.of(order));
             return order;

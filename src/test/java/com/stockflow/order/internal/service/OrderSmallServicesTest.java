@@ -48,7 +48,7 @@ class OrderSmallServicesTest {
         @Test
         @DisplayName("each checkout reservation is swapped on its line for the ids of the allocations that replaced it")
         void swapsReservationsForAllocations() {
-            Order order = OrderFixtures.releasedPrepaid();
+            Order order = OrderFixtures.released();
             UUID cupReservation = order.lines().get(0).reservationIds().get(0);
             UUID lidReservation = order.lines().get(1).reservationIds().get(0);
             StockReservation first = hold();
@@ -73,7 +73,7 @@ class OrderSmallServicesTest {
         @Test
         @DisplayName("an order allocated already (or placed before SCRUM-152) allocates 0 and its lines stay as they are")
         void nothingToAllocate() {
-            Order order = OrderFixtures.releasedPrepaid();
+            Order order = OrderFixtures.released();
             List<UUID> before = order.reservationIds();
             when(inventory.allocate(any())).thenReturn(new AllocateStockResult(order.id().value(), "HCM", List.of()));
 

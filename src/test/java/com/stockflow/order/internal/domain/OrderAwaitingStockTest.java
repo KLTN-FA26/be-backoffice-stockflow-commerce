@@ -70,7 +70,6 @@ class OrderAwaitingStockTest {
         assertThat(order.awaitStock(MANAGER, NOW)).as("a second production order sent keeps it").isFalse();
         assertThat(order.pullTransitions()).isEmpty();
         assertThat(order.status().holdsStock()).as("its held cartons are released if it is cancelled").isTrue();
-        assertThat(order.status().countsTowardCreditExposure()).isTrue();
     }
 
     @Test

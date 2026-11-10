@@ -1,20 +1,15 @@
 package com.stockflow.order.internal.service;
 
-import com.stockflow.contracts.PaymentCaptured;
-import com.stockflow.contracts.PaymentMethod;
-import com.stockflow.contracts.PaymentReversed;
 import com.stockflow.contracts.ReleaseReason;
 import com.stockflow.contracts.StockReservationReleased;
 import com.stockflow.order.api.OrderStatus;
-import com.stockflow.order.api.PaymentTerm;
 import com.stockflow.order.internal.domain.Order;
 import com.stockflow.order.internal.domain.OrderRepository;
-import com.stockflow.payment.api.PayableOrder;
+import com.stockflow.payment.api.InstallmentOrder;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
-import java.math.BigDecimal;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -26,68 +21,14 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
-/** The order side of the events payment and inventory publish (kltn-docs 14 BR-07, 15 BR-02, BR-06), and what it tells payment. */
+/**
+ * The order side of the events inventory publishes (kltn-docs 14 BR-07), and what it tells payment about the order of an
+ * installment. Payment no longer publishes events the order counts money from (4B-10): its receipts confirm an order
+ * through {@code InstallmentReceiptListener}, tested with the installments.
+ */
 class OrderEventListenersTest {
 
     private final OrderServiceImpl orders = mock(OrderServiceImpl.class);
-
-    @Nested
-    @DisplayName("payment events")
-    class PaymentEvents {
-
-        private final PaymentEventListener listener = new PaymentEventListener(orders);
-        private final UUID order = UUID.randomUUID();
-        private final UUID payment = UUID.randomUUID();
-
-        @Test
-        @DisplayName("a captured payment is a plain payment: not a receivable, not a fee")
-        void plainCapture() {
-            listener.on(new PaymentCaptured(order, payment, new BigDecimal("330000"), "VND", PaymentMethod.BANK_TRANSFER));
-
-            verify(orders).recordPayment(order, payment, new BigDecimal("330000"), "VND", false, false);
-        }
-
-        @Test
-        @DisplayName("an allocation to a receivable is counted as money of a receivable, not a fee")
-        void receivableAllocation() {
-            listener.on(new PaymentCaptured(order, payment, BigDecimal.TEN, "VND", PaymentMethod.BANK_TRANSFER,
-                    "RECEIVABLE_ALLOCATION"));
-
-            verify(orders).recordPayment(order, payment, BigDecimal.TEN, "VND", true, false);
-        }
-
-        @Test
-        @DisplayName("an allocation to a closure fee's receivable is both a receivable's money and a fee's")
-        void feeReceivableAllocation() {
-            listener.on(new PaymentCaptured(order, payment, BigDecimal.TEN, "VND", PaymentMethod.BANK_TRANSFER,
-                    "FEE_RECEIVABLE_ALLOCATION"));
-
-            verify(orders).recordPayment(order, payment, BigDecimal.TEN, "VND", true, true);
-        }
-
-        @Test
-        @DisplayName("an unknown source is treated as a plain payment")
-        void unknownSource() {
-            listener.on(new PaymentCaptured(order, payment, BigDecimal.TEN, "VND", PaymentMethod.BANK_TRANSFER,
-                    "SOMETHING_ELSE"));
-
-            verify(orders).recordPayment(order, payment, BigDecimal.TEN, "VND", false, false);
-        }
-
-        @Test
-        @DisplayName("a reversal carries its allocation and reversal ids in the reason, and who and when")
-        void reversal() {
-            UUID reversal = UUID.randomUUID();
-            UUID allocation = UUID.randomUUID();
-            UUID by = UUID.randomUUID();
-
-            listener.on(new PaymentReversed(order, reversal, allocation, BigDecimal.TEN, "VND",
-                    "FEE_RECEIVABLE_ALLOCATION", by, NOW));
-
-            verify(orders).reversePayment(order, reversal, BigDecimal.TEN, "VND", true, true,
-                    "allocation %s reversed (reversal %s)".formatted(allocation, reversal), by, NOW);
-        }
-    }
 
     @Nested
     @DisplayName("inventory events")
@@ -119,45 +60,51 @@ class OrderEventListenersTest {
     }
 
     @Nested
-    @DisplayName("what the order tells the money ledger")
-    class Payables {
+    @DisplayName("what the order tells payment about the order of an installment")
+    class Installments {
 
         private final OrderRepository repository = mock(OrderRepository.class);
-        private final OrderPayablesAdapter adapter = new OrderPayablesAdapter(repository);
+        private final InstallmentOrdersAdapter adapter = new InstallmentOrdersAdapter(repository);
 
         @Test
-        @DisplayName("a confirmed deposit order reports its billable amount, deposit threshold and that it may be held")
-        void depositOrder() {
-            Order order = OrderFixtures.draft(PaymentTerm.DEPOSIT, UUID.randomUUID());
-            order.submit();
-            order.recordPayment(new com.stockflow.common.domain.Money(new BigDecimal("330000"),
-                    order.total().currency()), NOW);
+        @DisplayName("a confirmed order reports whose it is, its status, its currency and that it may be held")
+        void confirmedOrder() {
+            Order order = OrderFixtures.confirmed();
             when(repository.findById(order.id())).thenReturn(Optional.of(order));
 
-            PayableOrder payable = adapter.find(order.id().value()).orElseThrow();
+            InstallmentOrder found = adapter.find(order.id().value()).orElseThrow();
 
-            assertThat(payable.status()).isEqualTo(OrderStatus.CONFIRMED.name());
-            assertThat(payable.paymentTerm()).isEqualTo("DEPOSIT");
-            assertThat(payable.balancePolicy()).isEqualTo("BEFORE_DELIVERY");
-            assertThat(payable.currency()).isEqualTo("VND");
-            assertThat(payable.billable()).isEqualByComparingTo("1100000");
-            assertThat(payable.confirmationThreshold()).isEqualByComparingTo("330000");
-            assertThat(payable.holdable()).isTrue();
+            assertThat(found.orderId()).isEqualTo(order.id().value());
+            assertThat(found.orderNumber()).isEqualTo(order.orderNumber().value());
+            assertThat(found.customerId()).isEqualTo(order.customerId());
+            assertThat(found.status()).isEqualTo(OrderStatus.CONFIRMED.name());
+            assertThat(found.currency()).isEqualTo("VND");
+            assertThat(found.holdable()).isTrue();
         }
 
         @Test
-        @DisplayName("a cancelled order has no confirmation threshold any more")
-        void cancelledOrderHasNoThreshold() {
-            Order order = OrderFixtures.draft(PaymentTerm.PREPAID, UUID.randomUUID());
-            order.submit();
+        @DisplayName("a cancelled order cannot be held")
+        void cancelledOrderIsNotHoldable() {
+            Order order = OrderFixtures.draft(UUID.randomUUID());
             order.cancel(com.stockflow.order.api.CancellationReasonCode.CUSTOMER_REQUEST, null, null, null, NOW);
             when(repository.findByIdForUpdate(order.id())).thenReturn(Optional.of(order));
 
-            PayableOrder payable = adapter.lockForPayment(order.id().value()).orElseThrow();
+            InstallmentOrder found = adapter.lockForPayment(order.id().value()).orElseThrow();
 
-            assertThat(payable.status()).isEqualTo("CANCELLED");
-            assertThat(payable.confirmationThreshold()).isNull();
-            assertThat(payable.holdable()).isFalse();
+            assertThat(found.status()).isEqualTo("CANCELLED");
+            assertThat(found.holdable()).isFalse();
+        }
+
+        @Test
+        @DisplayName("delivered in full is known only once every unit was delivered, or the rest closed after the last")
+        void deliveredInFull() {
+            Order released = OrderFixtures.released();
+            Order delivered = OrderFixtures.delivered(NOW);
+            when(repository.findById(released.id())).thenReturn(Optional.of(released));
+            when(repository.findById(delivered.id())).thenReturn(Optional.of(delivered));
+
+            assertThat(adapter.deliveredInFullAt(released.id().value())).isEmpty();
+            assertThat(adapter.deliveredInFullAt(delivered.id().value())).contains(NOW);
         }
 
         @Test

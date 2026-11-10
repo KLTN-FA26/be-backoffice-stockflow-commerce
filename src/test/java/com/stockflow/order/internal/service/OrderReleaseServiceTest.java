@@ -6,7 +6,6 @@ import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.OrderSummary;
-import com.stockflow.order.api.PaymentTerm;
 import com.stockflow.order.internal.domain.Order;
 import com.stockflow.order.internal.domain.OrderId;
 import com.stockflow.order.internal.domain.OrderRepository;
@@ -48,9 +47,11 @@ class OrderReleaseServiceTest {
     private final InventoryService inventory = mock(InventoryService.class);
     private final PaymentService paymentService = mock(PaymentService.class);
     private final OrderStockAllocation allocation = mock(OrderStockAllocation.class);
+    private final com.stockflow.order.internal.domain.SalesContractRepository contracts =
+            mock(com.stockflow.order.internal.domain.SalesContractRepository.class);
     private final OrderSummary summary = mock(OrderSummary.class);
     private final OrderReleaseService service = new OrderReleaseService(repository, warehouses, events,
-            orders, Clock.fixed(NOW, ZoneOffset.UTC), inventory, paymentService, allocation, org.mockito.Mockito.mock(com.stockflow.order.internal.domain.SalesContractRepository.class),
+            orders, Clock.fixed(NOW, ZoneOffset.UTC), inventory, paymentService, allocation, contracts,
             org.mockito.Mockito.mock(ShippingWarehouseService.class));
 
     @BeforeEach
@@ -68,7 +69,7 @@ class OrderReleaseServiceTest {
     @Test
     @DisplayName("a stock-only order goes to READY_TO_FULFILL: stock allocated, holds pinned, saved, OrderReleased published")
     void releasesAStockOrder() {
-        Order order = loaded(OrderFixtures.confirmedPrepaid());
+        Order order = loaded(OrderFixtures.confirmed());
 
         assertThat(service.release(order.id().value(), WAREHOUSE, STAFF)).isSameAs(summary);
 
@@ -98,7 +99,7 @@ class OrderReleaseServiceTest {
     @Test
     @DisplayName("a warehouse that does not exist is WAREHOUSE_NOT_FOUND")
     void unknownWarehouse() {
-        Order order = loaded(OrderFixtures.confirmedPrepaid());
+        Order order = loaded(OrderFixtures.confirmed());
 
         assertThat(codeOf(() -> service.release(order.id().value(), UUID.randomUUID(), STAFF)))
                 .isEqualTo(ErrorCode.WAREHOUSE_NOT_FOUND);
@@ -119,12 +120,25 @@ class OrderReleaseServiceTest {
         verify(repository, never()).save(any());
     }
 
+    /** The order's signed contract: {@code milestones} are what its installments fall due on. */
+    private void contractWith(Order order, com.stockflow.order.internal.domain.PaymentMilestone... milestones) {
+        com.stockflow.order.internal.domain.SalesContract contract =
+                mock(com.stockflow.order.internal.domain.SalesContract.class);
+        java.util.List<com.stockflow.order.internal.domain.PlannedInstallment> plan = new java.util.ArrayList<>();
+        for (int i = 0; i < milestones.length; i++) {
+            plan.add(new com.stockflow.order.internal.domain.PlannedInstallment(UUID.randomUUID(), i + 1, "I" + i,
+                    milestones[i], null, com.stockflow.common.domain.Money.vnd(1_000), 0, null));
+        }
+        when(contract.plan()).thenReturn(plan);
+        when(contracts.findLiveByOrderId(order.id().value())).thenReturn(Optional.of(contract));
+    }
+
     @Test
-    @DisplayName("no credit order is released for a customer with an overdue receivable (CUSTOMER_CREDIT_OVERDUE)")
+    @DisplayName("an order whose contract pays after delivery is not released for a customer with an overdue "
+            + "installment (CUSTOMER_CREDIT_OVERDUE)")
     void overdueCustomerGetsNoCreditRelease() {
-        Order order = OrderFixtures.draft(PaymentTerm.CREDIT, UUID.randomUUID());
-        order.submitOnCredit(true);
-        loaded(order);
+        Order order = loaded(OrderFixtures.confirmed());
+        contractWith(order, com.stockflow.order.internal.domain.PaymentMilestone.AFTER_DELIVERY);
         when(paymentService.creditPosition(order.customerId()))
                 .thenReturn(new CreditPosition(new BigDecimal("500000"), true));
 
@@ -135,11 +149,10 @@ class OrderReleaseServiceTest {
     }
 
     @Test
-    @DisplayName("a credit order of a customer who is not overdue is released")
+    @DisplayName("an order whose contract pays after delivery is released for a customer who is not overdue")
     void creditOrderReleasedWhenNotOverdue() {
-        Order order = OrderFixtures.draft(PaymentTerm.CREDIT, UUID.randomUUID());
-        order.submitOnCredit(true);
-        loaded(order);
+        Order order = loaded(OrderFixtures.confirmed());
+        contractWith(order, com.stockflow.order.internal.domain.PaymentMilestone.AFTER_DELIVERY);
 
         service.release(order.id().value(), WAREHOUSE, STAFF);
 
@@ -147,32 +160,13 @@ class OrderReleaseServiceTest {
     }
 
     @Test
-    @DisplayName("a prepaid order is not asked about credit at all")
+    @DisplayName("an order whose contract is paid before delivery is not asked about credit at all")
     void prepaidOrderSkipsTheCreditCheck() {
-        Order order = loaded(OrderFixtures.confirmedPrepaid());
+        Order order = loaded(OrderFixtures.confirmed());
+        contractWith(order, com.stockflow.order.internal.domain.PaymentMilestone.ON_SIGNING);
 
         service.release(order.id().value(), WAREHOUSE, STAFF);
 
         verify(paymentService, never()).creditPosition(any());
-    }
-
-    @Test
-    @DisplayName("a deposit order whose balance goes on credit is held to the same overdue rule (BALCREDIT)")
-    void depositOnCreditIsHeldToTheOverdueRule() {
-        Order order = Order.draft(com.stockflow.order.internal.domain.OrderNumber.of(java.time.LocalDate.of(2026, 10, 27), 3),
-                UUID.randomUUID(), UUID.randomUUID(), java.util.List.of(Order.line(
-                        new com.stockflow.common.domain.Sku("CUP-12OZ"), 10,
-                        com.stockflow.common.domain.Money.vnd(100_000), null)), NOW);
-        order.applyTerms(PaymentTerm.DEPOSIT, new BigDecimal("30"), 30, com.stockflow.order.api.BalancePolicy.ON_CREDIT);
-        order.lines().forEach(line -> order.attachReservations(line.id(), java.util.List.of(UUID.randomUUID())));
-        order.submit();
-        order.recordPayment(new com.stockflow.common.domain.Money(new BigDecimal("300000"), order.total().currency()),
-                NOW);
-        loaded(order);
-        when(paymentService.creditPosition(order.customerId()))
-                .thenReturn(new CreditPosition(new BigDecimal("1"), true));
-
-        assertThat(codeOf(() -> service.release(order.id().value(), WAREHOUSE, STAFF)))
-                .isEqualTo(ErrorCode.CUSTOMER_CREDIT_OVERDUE);
     }
 }

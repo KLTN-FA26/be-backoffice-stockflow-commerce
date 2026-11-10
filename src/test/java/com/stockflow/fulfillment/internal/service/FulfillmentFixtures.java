@@ -90,22 +90,20 @@ final class FulfillmentFixtures {
     /** An order as the order module reports it, with the given shipments recorded on it (null for no lifecycle). */
     static OrderSummary order(UUID id, List<OrderSummary.Shipment> shipments) {
         OrderSummary.Lifecycle lifecycle = shipments == null ? null : new OrderSummary.Lifecycle(null, null, null, NOW,
-                null, null, null, null, null, BigDecimal.ZERO, new BigDecimal("1000000"), new BigDecimal("1000000"),
+                null, null, null, null, null, new BigDecimal("1000000"),
                 BigDecimal.ZERO, List.of(), shipments);
         return new OrderSummary(id, "SO-0001", UUID.randomUUID(), OrderStatus.SHIPPED, Money.vnd(1_000_000), List.of(),
-                NOW.minusSeconds(86_400), null, null, null, null, null, null, null, null, null, WAREHOUSE, NOW,
-                null, null, lifecycle);
+                NOW.minusSeconds(86_400), null, null, null, null, null, null, null, null, WAREHOUSE, NOW, null, lifecycle);
     }
 
     /** An order in the given status with the given lines and, when {@code holdReason} is set, held for it. */
     static OrderSummary orderWith(UUID id, OrderStatus status, List<OrderSummary.LineSummary> lines,
                                   com.stockflow.order.api.HoldReason holdReason) {
         OrderSummary.Lifecycle lifecycle = new OrderSummary.Lifecycle(holdReason, null, null, null, null, null, null,
-                null, null, BigDecimal.ZERO, new BigDecimal("1000000"), new BigDecimal("1000000"), BigDecimal.ZERO,
+                null, null, new BigDecimal("1000000"), BigDecimal.ZERO,
                 List.of(), List.of());
         return new OrderSummary(id, "SO-0001", UUID.randomUUID(), status, Money.vnd(1_000_000), lines,
-                NOW.minusSeconds(86_400), null, null, null, null, null, null, null, null, null, WAREHOUSE, NOW,
-                null, null, lifecycle);
+                NOW.minusSeconds(86_400), null, null, null, null, null, null, null, null, WAREHOUSE, NOW, null, lifecycle);
     }
 
     static OrderSummary.LineSummary stockLine(String sku, UUID... reservations) {

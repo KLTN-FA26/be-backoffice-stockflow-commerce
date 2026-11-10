@@ -59,7 +59,7 @@ class OrderRowLockServicesTest {
         @Test
         @DisplayName("allowing partial shipments saves the order and writes a decision row with the status it was in")
         void allowRecordsADecision() {
-            Order order = locked(OrderFixtures.releasedPrepaid());
+            Order order = locked(OrderFixtures.released());
 
             assertThat(service.decide(order.id().value(), true, "customer agreed", STAFF)).isSameAs(summary);
 
@@ -79,7 +79,7 @@ class OrderRowLockServicesTest {
         @Test
         @DisplayName("the same decision again changes nothing: no save, no history row")
         void theSameDecisionIsIdempotent() {
-            Order order = locked(OrderFixtures.releasedPrepaid());
+            Order order = locked(OrderFixtures.released());
 
             service.decide(order.id().value(), false, null, STAFF);
 
@@ -135,7 +135,7 @@ class OrderRowLockServicesTest {
         @Test
         @DisplayName("a hold is replaced by the allocations that took its place, keeping the other holds")
         void aHoldIsReplaced() {
-            Order order = locked(OrderFixtures.releasedPrepaid());
+            Order order = locked(OrderFixtures.released());
             UUID old = order.reservationIds().get(0);
             UUID first = UUID.randomUUID();
             UUID second = UUID.randomUUID();
@@ -149,7 +149,7 @@ class OrderRowLockServicesTest {
         @Test
         @DisplayName("replacing a hold the order does not have changes and saves nothing")
         void aForeignHoldIsIgnored() {
-            Order order = locked(OrderFixtures.releasedPrepaid());
+            Order order = locked(OrderFixtures.released());
             List<UUID> before = order.reservationIds();
 
             service.replaceHold(order.id().value(), UUID.randomUUID(), List.of(UUID.randomUUID()));

@@ -161,10 +161,10 @@ class PackingServiceTest {
 
     private OrderSummary order(OrderStatus status, boolean allowPartial, boolean printReady, HoldReason hold) {
         var line = new OrderSummary.LineSummary(lineId, "SKU-A", 10, Money.vnd(10_000), Money.vnd(100_000), List.of());
-        var lifecycle = new OrderSummary.Lifecycle(hold, null, null, null, null, null, null, null, null, BigDecimal.ZERO,
-                new BigDecimal("100000"), new BigDecimal("100000"), BigDecimal.ZERO, List.of(), List.of(), allowPartial);
+        var lifecycle = new OrderSummary.Lifecycle(hold, null, null, null, null, null, null, null, null,
+                new BigDecimal("100000"), BigDecimal.ZERO, List.of(), List.of(), allowPartial);
         return new OrderSummary(orderId, "SO-0001", UUID.randomUUID(), status, Money.vnd(100_000), List.of(line), NOW,
-                null, null, null, "Ms Lan", null, "0900000001", null, null, null, WAREHOUSE, NOW, null, null, lifecycle);
+                null, null, null, "Ms Lan", null, "0900000001", null, null, WAREHOUSE, NOW, null, lifecycle);
     }
 
     private void orderIs(OrderStatus status, boolean allowPartial, HoldReason hold) {
@@ -294,11 +294,10 @@ class PackingServiceTest {
 
         private OrderSummary orderWithPaymentDue(String due) {
             var line = new OrderSummary.LineSummary(lineId, "SKU-A", 10, Money.vnd(10_000), Money.vnd(100_000), List.of());
-            var lifecycle = new OrderSummary.Lifecycle(null, null, null, null, null, null, null, null, null,
-                    BigDecimal.ZERO, new BigDecimal("100000"), new BigDecimal("100000"), new BigDecimal(due), List.of(),
+            var lifecycle = new OrderSummary.Lifecycle(null, null, null, null, null, null, null, null, null, new BigDecimal("100000"), new BigDecimal(due), List.of(),
                     List.of());
             return new OrderSummary(orderId, "SO-0001", UUID.randomUUID(), OrderStatus.PICKING, Money.vnd(100_000),
-                    List.of(line), NOW, null, null, null, null, null, null, null, null, null, WAREHOUSE, NOW, null, null,
+                    List.of(line), NOW, null, null, null, null, null, null, null, null, WAREHOUSE, NOW, null,
                     lifecycle);
         }
 
@@ -522,7 +521,7 @@ class PackingServiceTest {
                     "HCM", "VN", "700000");
             when(orders.findById(orderId)).thenReturn(Optional.of(new OrderSummary(orderId, base.orderNumber(),
                     base.customerId(), base.status(), base.total(), base.lines(), base.placedAt(), null, null, null,
-                    "Ms Lan", null, "0900000001", address, null, null, WAREHOUSE, NOW, null, null, base.lifecycle())));
+                    "Ms Lan", null, "0900000001", address, null, WAREHOUSE, NOW, null, base.lifecycle())));
 
             Packing.Address recipient = service.label(pick.getId(), sealed.id(), actor).recipient();
 
@@ -729,12 +728,10 @@ class PackingServiceTest {
             var stock = new OrderSummary.LineSummary(lineId, "SKU-A", 10, Money.vnd(10_000), Money.vnd(100_000), List.of());
             var printed = new OrderSummary.LineSummary(printLine, "CUP-PRINT", 4, Money.vnd(10_000), Money.vnd(40_000),
                     List.of(), snapshot, "sha-confirmed");
-            var lifecycle = new OrderSummary.Lifecycle(null, null, null, null, null, null, null, null, null,
-                    BigDecimal.ZERO, new BigDecimal("140000"), new BigDecimal("140000"), BigDecimal.ZERO, List.of(),
+            var lifecycle = new OrderSummary.Lifecycle(null, null, null, null, null, null, null, null, null, new BigDecimal("140000"), BigDecimal.ZERO, List.of(),
                     List.of(), false);
             return new OrderSummary(orderId, "SO-0001", UUID.randomUUID(), OrderStatus.PICKING, Money.vnd(140_000),
-                    List.of(stock, printed), NOW, null, null, null, null, null, null, null, null, null, WAREHOUSE, NOW,
-                    null, null, lifecycle);
+                    List.of(stock, printed), NOW, null, null, null, null, null, null, null, null, WAREHOUSE, NOW, null, lifecycle);
         }
 
         @BeforeEach
@@ -786,11 +783,10 @@ class PackingServiceTest {
         void stockLineFacts() {
             var line = new OrderSummary.LineSummary(lineId, "SKU-A", 10, Money.vnd(10_000), Money.vnd(100_000), List.of());
             var progress = new OrderSummary.LineProgress(lineId, 0, 0, 3);
-            var lifecycle = new OrderSummary.Lifecycle(null, null, null, null, null, null, null, null, null,
-                    BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, List.of(progress), List.of());
+            var lifecycle = new OrderSummary.Lifecycle(null, null, null, null, null, null, null, null, null, BigDecimal.ZERO, BigDecimal.ZERO, List.of(progress), List.of());
             when(orders.findById(orderId)).thenReturn(Optional.of(new OrderSummary(orderId, "SO-0001", UUID.randomUUID(),
                     OrderStatus.PARTIALLY_FULFILLED, Money.vnd(100_000), List.of(line), NOW, null, null, null, null, null,
-                    null, null, null, null, WAREHOUSE, NOW, null, null, lifecycle)));
+                    null, null, null, WAREHOUSE, NOW, null, lifecycle)));
             PickLineJpaEntity open = new PickLineJpaEntity(UUID.randomUUID(), pick.getId(), lineId, null, "SKU-A",
                     "HCM-A-02", "L9", 2, 5);
             when(pickLines.findByPickIdOrderBySequenceNoAscIdAsc(pick.getId())).thenReturn(List.of(
@@ -871,11 +867,10 @@ class PackingServiceTest {
         private void printedOrder(List<UUID> holds) {
             var printed = new OrderSummary.LineSummary(lineId, "CUP-PRINT", 4, Money.vnd(10_000), Money.vnd(40_000),
                     holds, UUID.randomUUID(), "sha");
-            var lifecycle = new OrderSummary.Lifecycle(null, null, null, null, null, null, null, null, null,
-                    BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, List.of(), List.of(), true);
+            var lifecycle = new OrderSummary.Lifecycle(null, null, null, null, null, null, null, null, null, BigDecimal.ZERO, BigDecimal.ZERO, List.of(), List.of(), true);
             when(orders.findById(orderId)).thenReturn(Optional.of(new OrderSummary(orderId, "SO-0001",
                     UUID.randomUUID(), OrderStatus.PICKING, Money.vnd(40_000), List.of(printed), NOW, null, null, null,
-                    null, null, null, null, null, null, WAREHOUSE, NOW, null, null, lifecycle)));
+                    null, null, null, null, null, WAREHOUSE, NOW, null, lifecycle)));
         }
 
         @Test

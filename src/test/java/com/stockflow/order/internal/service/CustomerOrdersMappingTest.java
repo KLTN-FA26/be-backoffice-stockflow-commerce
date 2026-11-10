@@ -44,7 +44,7 @@ class CustomerOrdersMappingTest {
 
     private static OrderSummary summary(OrderStatus status, OrderSummary.Cancellation cancellation) {
         return new OrderSummary(UUID.randomUUID(), "SO-1", UUID.randomUUID(), status, Money.vnd(1000), List.of(), T0,
-                null, null, null, null, null, null, null, null, null, null, null, null, cancellation);
+                null, null, null, null, null, null, null, null, null, null, cancellation);
     }
 
     @Test
@@ -126,13 +126,13 @@ class CustomerOrdersMappingTest {
     private static com.stockflow.order.api.OrderSummary.Lifecycle lifecycle(java.time.Instant completedAt,
             List<com.stockflow.order.api.OrderSummary.Shipment> shipments) {
         return new com.stockflow.order.api.OrderSummary.Lifecycle(null, null, null, null, null, null, null, completedAt,
-                null, null, null, null, null, List.of(), shipments);
+                null, null, null, List.of(), shipments);
     }
 
     private static com.stockflow.order.api.OrderSummary.Shipment shipment(
             com.stockflow.order.api.OrderShipmentStatus status) {
         return new com.stockflow.order.api.OrderSummary.Shipment(UUID.randomUUID(), status, java.math.BigDecimal.TEN,
-                java.math.BigDecimal.ZERO, NOW, null, null, List.of());
+                NOW, null, null, List.of());
     }
 
     @Test

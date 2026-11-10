@@ -102,21 +102,6 @@ class OrderStatusTest {
     }
 
     @Test
-    @DisplayName("credit exposure: every live status before the outcome of delivery is counted, nothing after")
-    void creditExposureComesFromTheStateMachine() {
-        assertThat(OrderStatus.creditExposureStatuses()).containsExactlyInAnyOrder(CONFIRMED, AWAITING_STOCK,
-                IN_PRODUCTION, READY_TO_FULFILL, PICKING, PARTIALLY_FULFILLED, PACKED, ON_HOLD, SHIPPED,
-                DELIVERY_FAILED);
-        // A status that can still be delivered (and so billed) must be counted. RETURN_REQUESTED → DELIVERED is an
-        // RMA refused (decision 2026-10-21): the goods were delivered and billed already.
-        for (OrderStatus status : values()) {
-            if (status != RETURN_REQUESTED && (status.canTransitionTo(DELIVERED) || status.canTransitionTo(SHIPPED))) {
-                assertThat(status.countsTowardCreditExposure()).as(status.name()).isTrue();
-            }
-        }
-    }
-
-    @Test
     @DisplayName("stock is held from submission until the goods are handed over")
     void holdsStock() {
         assertThat(EnumSet.allOf(OrderStatus.class).stream().filter(OrderStatus::holdsStock))

@@ -2,13 +2,10 @@ package com.stockflow.reporting.internal.service;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.stockflow.common.domain.Money;
-import com.stockflow.common.domain.Sku;
 import com.stockflow.common.security.DataScope;
 import com.stockflow.common.security.Role;
 import com.stockflow.contracts.OrderCancelled;
 import com.stockflow.contracts.OrderPlaced;
-import com.stockflow.customer.api.CommercialTerm;
 import com.stockflow.customer.api.CustomerService;
 import com.stockflow.customer.api.SaveCreditTermsCommand;
 import com.stockflow.order.api.CancelOrderCommand;
@@ -16,12 +13,14 @@ import com.stockflow.order.api.CancellationReasonCode;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.OrderSummary;
-import com.stockflow.order.api.PaymentTerm;
-import com.stockflow.order.api.PlaceOrderCommand;
+import com.stockflow.order.internal.service.SalesContracts;
 import com.stockflow.reporting.api.ReportingService;
 import com.stockflow.reporting.internal.domain.BusinessDay;
 import com.stockflow.reporting.internal.repository.SalesRollupQueries;
 import com.stockflow.support.Await;
+import com.stockflow.support.ConfirmedOrders;
+import com.stockflow.support.CustomerSkuRows;
+import com.stockflow.support.DemoData;
 import com.stockflow.support.ReferenceRows;
 import com.stockflow.support.SecuredIntegrationTest;
 import com.stockflow.support.TestTokens;
@@ -29,12 +28,15 @@ import com.stockflow.support.TestUsers;
 import com.stockflow.support.WithCurrentUser;
 import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.ApplicationContext;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
+import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.ResultActions;
@@ -67,9 +69,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * of the same context, which place orders of their own.</p>
  */
 @SecuredIntegrationTest
+@TestPropertySource(properties = "stockflow.upload-inspection.enabled=false")
 class SalesRollupIntegrationTest {
 
-    private static final Sku SOFA = new Sku("SOFA-3S-GREY");
     private static final Duration ASYNC = Duration.ofSeconds(15);
     private static final String REPORTS = "/api/v1/reports";
 
@@ -86,8 +88,19 @@ class SalesRollupIntegrationTest {
     @Autowired TransactionTemplate tx;
     @Autowired EntityManager entityManager;
     @Autowired Clock clock;
+    @Autowired ApplicationContext context;
+
+    private ConfirmedOrders confirmedOrders;
+    /** The demo customer's own SKU, issued per test: a contract's lines are only ever the customer's own (14 BR-04). */
+    private String sofa;
 
     private final List<UUID> placed = new ArrayList<>();
+
+    @BeforeEach
+    void ownSku() {
+        confirmedOrders = new ConfirmedOrders(context);
+        sofa = CustomerSkuRows.issue(jdbc, tx, entityManager, DemoData.CUSTOMER_ID, 50).sku();
+    }
 
     @AfterEach
     void putTheStockBack() {
@@ -101,16 +114,20 @@ class SalesRollupIntegrationTest {
 
     // ---- helpers -----------------------------------------------------------------------------------------------
 
-    private OrderSummary place(UUID customer, int quantity, long unitPrice, PaymentTerm term) {
-        OrderSummary order = WithCurrentUser.call(TestUsers.admin(), DataScope.ALL, () -> orders.placeOrder(
-                new PlaceOrderCommand(UUID.randomUUID(), customer, null, null, false,
-                        List.of(new PlaceOrderCommand.Line(SOFA, quantity, Money.vnd(unitPrice), null)), term, null)));
-        placed.add(order.orderId());
-        return order;
+    /**
+     * A CONFIRMED order of the demo customer: its contract signed and its installment on signing paid - {@code quantity}
+     * pieces, at least two (one carton of them, 14 BR-08), at {@code unitPrice} each.
+     */
+    private OrderSummary place(int quantity, long unitPrice) {
+        UUID orderId = confirmedOrders.confirmed(DemoData.CUSTOMER_ID,
+                ConfirmedOrders.Line.units(sofa, quantity, unitPrice)).orderId();
+        placed.add(orderId);
+        return orders.findById(orderId).orElseThrow();
     }
 
-    private OrderSummary place(int quantity, long unitPrice) {
-        return place(com.stockflow.support.DemoData.CUSTOMER_ID, quantity, unitPrice, null);
+    /** One carton of two pieces worth {@code total} VND in all. */
+    private OrderSummary placeTotal(long total) {
+        return place(2, total / 2);
     }
 
     private OrderSummary cancel(OrderSummary order) {
@@ -158,12 +175,12 @@ class SalesRollupIntegrationTest {
 
     private long unitsOfSofa(LocalDate day) {
         return jdbc.queryForObject("SELECT COALESCE(SUM(quantity_sold), 0) FROM reporting.product_sales_summary "
-                + "WHERE sku = ? AND period = ?", Long.class, SOFA.code(), BusinessDay.period(day));
+                + "WHERE sku = ? AND period = ?", Long.class, sofa, BusinessDay.period(day));
     }
 
     private BigDecimal revenueOfSofa(LocalDate day) {
         return jdbc.queryForObject("SELECT COALESCE(SUM(revenue), 0) FROM reporting.product_sales_summary "
-                + "WHERE sku = ? AND period = ?", BigDecimal.class, SOFA.code(), BusinessDay.period(day));
+                + "WHERE sku = ? AND period = ?", BigDecimal.class, sofa, BusinessDay.period(day));
     }
 
     /** Everything the rollups hold for one day, as comparable text. */
@@ -224,12 +241,12 @@ class SalesRollupIntegrationTest {
     void replayedEventsAreIgnored() {
         LocalDate today = BusinessDay.today(clock);
         var before = dayRow(today);
-        OrderSummary order = place(1, 5_000_000);
+        OrderSummary order = placeTotal(5_000_000);
         awaitPlaced(order);
 
         tx.executeWithoutResult(s -> publisher.publishEvent(new OrderPlaced(order.orderId(), order.customerId(),
                 "x@example.com", order.orderNumber(),
-                List.of(new OrderPlaced.OrderLine(SOFA.code(), 1, new BigDecimal("5000000"), null)),
+                List.of(new OrderPlaced.OrderLine(sofa, 1, new BigDecimal("5000000"), null)),
                 new BigDecimal("5000000"), "VND")));
         awaitRollupsIdle();
         assertThat(dayRow(today).ordersCount()).isEqualTo(before.ordersCount() + 1);
@@ -251,12 +268,18 @@ class SalesRollupIntegrationTest {
     void onHoldOrderCounts() {
         UUID customer = tx.execute(s -> ReferenceRows.customer(entityManager));
         UUID accountant = tx.execute(s -> ReferenceRows.user(entityManager));
-        customers.saveCreditTerms(new SaveCreditTermsCommand(customer, true, false, true, CommercialTerm.PREPAID, null,
-                new BigDecimal("0"), 30, "test terms", accountant, null));
+        // A limit above zero, below the order: its contract, which pays after delivery, is held for credit at signing.
+        customers.saveCreditTerms(new SaveCreditTermsCommand(customer, new BigDecimal("1000000"), 30, "test terms",
+                accountant, null));
+        CustomerSkuRows.Issued own = CustomerSkuRows.issue(jdbc, tx, entityManager, customer, 50);
         LocalDate today = BusinessDay.today(clock);
         var before = dayRow(today);
 
-        OrderSummary order = place(customer, 1, 7_000_000, PaymentTerm.CREDIT);
+        UUID orderId = confirmedOrders.signed(customer, List.of(new SalesContracts.Installment("After delivery",
+                "AFTER_DELIVERY", null, new BigDecimal("100"), 30, null)),
+                ConfirmedOrders.Line.cartons(own, 2, 3_500_000)).orderId();
+        placed.add(orderId);
+        OrderSummary order = orders.findById(orderId).orElseThrow();
         assertThat(order.status()).isEqualTo(OrderStatus.ON_HOLD);
         awaitPlaced(order);
 
@@ -278,7 +301,7 @@ class SalesRollupIntegrationTest {
         com.stockflow.contracts.ReturnResolved credited = new com.stockflow.contracts.ReturnResolved(returnId,
                 "RMA-IT-9", order.orderId(), order.orderNumber(), order.customerId(), null, null, BigDecimal.ZERO,
                 BigDecimal.ZERO, new BigDecimal("4000000"), "VND", true,
-                List.of(new com.stockflow.contracts.ReturnResolved.Line(UUID.randomUUID(), SOFA.code(), 1, 0, 1,
+                List.of(new com.stockflow.contracts.ReturnResolved.Line(UUID.randomUUID(), sofa, 1, 0, 1,
                         new BigDecimal("4000000"))), UUID.randomUUID(), Instant.now(), order.orderId());
         tx.executeWithoutResult(s -> publisher.publishEvent(credited));
         Await.until("return applied", ASYNC, () -> jdbc.queryForObject("SELECT count(*) FROM "
@@ -310,7 +333,7 @@ class SalesRollupIntegrationTest {
                 jdbc.update("UPDATE reporting.sales_daily_summary SET revenue = revenue + 4000000 WHERE day = ? "
                         + "AND currency = 'VND'", java.sql.Date.valueOf(today));
                 jdbc.update("UPDATE reporting.product_sales_summary SET quantity_sold = quantity_sold + 1, "
-                        + "revenue = revenue + 4000000 WHERE sku = ? AND period = ?", SOFA.code(),
+                        + "revenue = revenue + 4000000 WHERE sku = ? AND period = ?", sofa,
                         BusinessDay.period(today));
             });
         }
@@ -354,8 +377,8 @@ class SalesRollupIntegrationTest {
         LocalDate today = BusinessDay.today(clock);
         LocalDate d14 = LocalDate.of(2024, 3, 14);
         LocalDate d15 = LocalDate.of(2024, 3, 15);
-        OrderSummary late = place(1, 1_000_000);
-        OrderSummary early = place(1, 2_000_000);
+        OrderSummary late = placeTotal(1_000_000);
+        OrderSummary early = placeTotal(2_000_000);
         awaitPlaced(late);
         awaitPlaced(early);
         // 2024-03-14T16:59:59Z is 23:59:59 on the 14th in Ho Chi Minh; one second later it is the 15th there.
@@ -383,7 +406,7 @@ class SalesRollupIntegrationTest {
     void backfillFillsHistoryOnce() {
         LocalDate today = BusinessDay.today(clock);
         LocalDate old = LocalDate.of(2024, 3, 10);
-        OrderSummary order = place(1, 3_000_000);
+        OrderSummary order = placeTotal(3_000_000);
         awaitPlaced(order);
         movePlacement(order, "2024-03-10T05:00:00Z");
         reports.rebuild(today, today);
@@ -411,7 +434,7 @@ class SalesRollupIntegrationTest {
     @DisplayName("sales-daily answers one zero-filled entry per day, with the documented shape")
     void salesDailyOverHttp() throws Exception {
         LocalDate today = BusinessDay.today(clock);
-        OrderSummary order = place(1, 9_000_000);
+        OrderSummary order = placeTotal(9_000_000);
         awaitPlaced(order);
 
         JsonNode days = data(send(get(REPORTS + "/sales-daily").param("from", today.minusDays(6).toString())
@@ -443,10 +466,10 @@ class SalesRollupIntegrationTest {
                 .param("to", today.toString()).param("limit", "3"), Role.SALES_MANAGER).andExpect(status().isOk()));
 
         assertThat(top.size()).isBetween(1, 3);
-        JsonNode sofa = Stream.iterate(0, i -> i + 1).limit(top.size()).map(top::get)
-                .filter(row -> SOFA.code().equals(row.path("sku").asText())).findFirst().orElseThrow();
-        assertThat(sofa.path("quantitySold").asLong()).isGreaterThanOrEqualTo(2);
-        assertThat(sofa.path("revenue").decimalValue()).isGreaterThanOrEqualTo(new BigDecimal("22000000"));
+        JsonNode sofaRow = Stream.iterate(0, i -> i + 1).limit(top.size()).map(top::get)
+                .filter(row -> sofa.equals(row.path("sku").asText())).findFirst().orElseThrow();
+        assertThat(sofaRow.path("quantitySold").asLong()).isGreaterThanOrEqualTo(2);
+        assertThat(sofaRow.path("revenue").decimalValue()).isGreaterThanOrEqualTo(new BigDecimal("22000000"));
         for (int i = 1; i < top.size(); i++) {
             assertThat(top.get(i - 1).path("revenue").decimalValue())
                     .isGreaterThanOrEqualTo(top.get(i).path("revenue").decimalValue());
@@ -458,7 +481,7 @@ class SalesRollupIntegrationTest {
     @Test
     @DisplayName("order-status-counts lists every status, ON_HOLD included, live from the orders")
     void orderStatusCountsOverHttp() throws Exception {
-        OrderSummary order = place(1, 1_000_000);
+        OrderSummary order = placeTotal(1_000_000);
 
         JsonNode counts = data(send(get(REPORTS + "/order-status-counts"), Role.ORDER_COORDINATOR)
                 .andExpect(status().isOk()));
@@ -474,7 +497,7 @@ class SalesRollupIntegrationTest {
     @DisplayName("summary: totals of the range, the previous equally long period, and the percent change")
     void summaryOverHttp() throws Exception {
         LocalDate today = BusinessDay.today(clock);
-        OrderSummary order = place(1, 6_000_000);
+        OrderSummary order = placeTotal(6_000_000);
         awaitPlaced(order);
         tx.executeWithoutResult(s -> {
             // A previous period of known size: 2 orders, 10 000 000 on a day inside the previous period.
@@ -563,7 +586,7 @@ class SalesRollupIntegrationTest {
     void rebuildOverHttp() throws Exception {
         LocalDate today = BusinessDay.today(clock);
         settleToday(today);
-        OrderSummary order = place(1, 2_500_000);
+        OrderSummary order = placeTotal(2_500_000);
         awaitPlaced(order);
         List<String> before = snapshot(today);
 

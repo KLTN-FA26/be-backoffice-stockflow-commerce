@@ -144,14 +144,13 @@ class DispatchServiceTest {
     }
 
     private OrderSummary orderWithShipment(ShipmentJpaEntity row, boolean allowPartial, int quantity) {
-        var shipment = new OrderSummary.Shipment(row.getId(), OrderShipmentStatus.HANDED_OVER, BigDecimal.ZERO,
-                BigDecimal.ZERO, NOW, null, null, List.of(), null);
+        var shipment = new OrderSummary.Shipment(row.getId(), OrderShipmentStatus.HANDED_OVER, BigDecimal.ZERO, NOW, null, null, List.of(), null);
         var line = new OrderSummary.LineSummary(UUID.randomUUID(), "SKU-A", quantity, Money.vnd(10_000), Money.vnd(100_000),
                 List.of());
-        var lifecycle = new OrderSummary.Lifecycle(null, null, null, null, null, null, null, null, null, BigDecimal.ZERO,
-                BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, List.of(), List.of(shipment), allowPartial);
+        var lifecycle = new OrderSummary.Lifecycle(null, null, null, null, null, null, null, null, null,
+                BigDecimal.ZERO, BigDecimal.ZERO, List.of(), List.of(shipment), allowPartial);
         return new OrderSummary(row.getOrderId(), "SO-0001", UUID.randomUUID(), OrderStatus.SHIPPED, Money.vnd(100_000),
-                List.of(line), NOW, null, null, null, null, null, null, null, null, null, WAREHOUSE, NOW, null, null,
+                List.of(line), NOW, null, null, null, null, null, null, null, null, WAREHOUSE, NOW, null,
                 lifecycle);
     }
 
@@ -514,7 +513,7 @@ class DispatchServiceTest {
             OrderSummary base = orderWithShipment(row, true, 3);
             when(orders.findById(row.getOrderId())).thenReturn(Optional.of(new OrderSummary(row.getOrderId(), "SO-0042",
                     base.customerId(), OrderStatus.PACKED, base.total(), base.lines(), NOW, null, null, null, "Ms Lan", null,
-                    "0900", address, null, null, WAREHOUSE, NOW, null, null, base.lifecycle())));
+                    "0900", address, null, WAREHOUSE, NOW, null, base.lifecycle())));
 
             var manifest = service.manifest(load.id());
 

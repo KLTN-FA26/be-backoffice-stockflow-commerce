@@ -4,7 +4,6 @@ import com.stockflow.order.api.CancellationOutcome;
 import com.stockflow.order.api.CancellationReasonCode;
 import com.stockflow.order.internal.domain.CancellationRequestRepository;
 import com.stockflow.order.internal.domain.OrderId;
-import com.stockflow.order.internal.domain.OrderPayments;
 import com.stockflow.common.domain.Money;
 import com.stockflow.common.domain.Sku;
 import com.stockflow.common.error.BusinessException;
@@ -48,17 +47,16 @@ class CancelOwnOrderTest {
     private final OrderServiceImpl service = new OrderServiceImpl(repository, mock(OrderSearchRepository.class),
             mock(InventoryService.class), mock(OrderEventPublisher.class), Clock.systemUTC(),
             mock(DesignService.class), mock(OrderHoldJpaRepository.class), mock(CustomerService.class),
-            mock(com.stockflow.catalog.api.CatalogService.class), mock(OrderPayments.class), requests,
-            mock(com.stockflow.order.internal.domain.CreditChecks.class),
+            mock(com.stockflow.catalog.api.CatalogService.class), requests,
                 mock(com.stockflow.payment.api.PaymentService.class), org.mockito.Mockito.mock(com.stockflow.product.api.CustomerSkus.class), org.mockito.Mockito.mock(com.stockflow.order.internal.domain.SalesContractRepository.class));
 
-    /** A placed order waiting for its money - what the customer sees (a DRAFT order is not theirs, 17 §5.2). */
+    /** A placed order of a signed contract waiting for its first installment - what the customer sees (a DRAFT order is not theirs, 17 §5.2). */
     private Order orderOf(UUID customerId) {
         var order = Order.draft(OrderNumber.of(LocalDate.of(2026, 9, 20), 7), customerId, UUID.randomUUID(),
                 List.of(Order.line(new Sku("SOFA-3S-GREY"), 1, Money.vnd(100_000), null)), NOW);
-        order.applyTerms(com.stockflow.order.api.PaymentTerm.PREPAID, null);
         order.lines().forEach(line -> order.attachReservations(line.id(), List.of(UUID.randomUUID())));
-        order.submit();
+        order.sendContract(UUID.randomUUID(), NOW);
+        order.contractSigned(false, true, UUID.randomUUID(), NOW);
         when(repository.findByIdForUpdate(order.id())).thenReturn(Optional.of(order));
         when(repository.save(any())).thenAnswer(call -> call.getArgument(0));
         return order;

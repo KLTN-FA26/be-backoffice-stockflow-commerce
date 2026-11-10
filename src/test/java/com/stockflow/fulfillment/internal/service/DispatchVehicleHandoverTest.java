@@ -163,12 +163,11 @@ class DispatchVehicleHandoverTest {
     }
 
     private OrderSummary orderAllowingParts(UUID orderId, ShipmentJpaEntity row) {
-        var shipment = new OrderSummary.Shipment(row.getId(), OrderShipmentStatus.HANDED_OVER, BigDecimal.ZERO,
-                BigDecimal.ZERO, NOW, null, null, List.of(), null);
-        var lifecycle = new OrderSummary.Lifecycle(null, null, null, null, null, null, null, null, null, BigDecimal.ZERO,
-                BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, List.of(), List.of(shipment), true);
+        var shipment = new OrderSummary.Shipment(row.getId(), OrderShipmentStatus.HANDED_OVER, BigDecimal.ZERO, NOW, null, null, List.of(), null);
+        var lifecycle = new OrderSummary.Lifecycle(null, null, null, null, null, null, null, null, null,
+                BigDecimal.ZERO, BigDecimal.ZERO, List.of(), List.of(shipment), true);
         return new OrderSummary(orderId, "SO-0001", UUID.randomUUID(), OrderStatus.SHIPPED, Money.vnd(100_000), List.of(),
-                NOW, null, null, null, null, null, null, null, null, null, WAREHOUSE, NOW, null, null, lifecycle);
+                NOW, null, null, null, null, null, null, null, null, WAREHOUSE, NOW, null, lifecycle);
     }
 
     @Nested

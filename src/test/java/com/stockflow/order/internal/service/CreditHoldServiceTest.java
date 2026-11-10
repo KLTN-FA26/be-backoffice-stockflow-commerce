@@ -1,18 +1,13 @@
 package com.stockflow.order.internal.service;
 
 import com.stockflow.common.error.ErrorCode;
-import com.stockflow.customer.api.CommercialTerm;
 import com.stockflow.customer.api.CreditTerms;
 import com.stockflow.customer.api.CustomerService;
-import com.stockflow.customer.api.DepositBalancePolicy;
-import com.stockflow.inventory.api.InventoryService;
-import com.stockflow.order.api.BalancePolicy;
 import com.stockflow.order.api.CancelOrderCommand;
 import com.stockflow.order.api.CancellationReasonCode;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.OrderSummary;
-import com.stockflow.order.api.PaymentTerm;
 import com.stockflow.order.internal.domain.CreditChecks;
 import com.stockflow.order.internal.domain.Order;
 import com.stockflow.order.internal.domain.OrderRepository;
@@ -44,9 +39,10 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * kltn-docs 15 §4.3 and BR-03, 18 BR-02 (SCRUM-427): an order over its customer's credit limit waits for a person, who
- * approves it or refuses it; a refusal cancels the order or moves it to prepaid or deposit terms the customer is
- * allowed. Every decision says why and is recorded against the credit check that put the order on hold.
+ * kltn-docs 15 §4.3 and BR-03, 18 BR-02 (SCRUM-427): an order whose contract was signed by a customer over its credit
+ * limit waits for a person, who approves it or refuses it; a refusal always cancels the order (4B-10: orders have no
+ * payment terms to switch to). Every decision says why and is recorded against the credit check that put the order on
+ * hold.
  */
 class CreditHoldServiceTest {
 
@@ -57,24 +53,22 @@ class CreditHoldServiceTest {
     private final CreditChecks creditChecks = mock(CreditChecks.class);
     private final OrderHoldJpaRepository holds = mock(OrderHoldJpaRepository.class);
     private final CustomerService customers = mock(CustomerService.class);
-    private final InventoryService inventory = mock(InventoryService.class);
     private final PaymentService paymentService = mock(PaymentService.class);
     private final OrderSummary summary = mock(OrderSummary.class);
     private final CreditHoldService service = new CreditHoldService(repository, orders, orderService, events,
-            creditChecks, holds, customers, mock(CreditHoldSearch.class), inventory, paymentService,
+            creditChecks, holds, customers, mock(CreditHoldSearch.class), paymentService,
             Clock.fixed(NOW, ZoneOffset.UTC), org.mockito.Mockito.mock(com.stockflow.order.internal.domain.SalesContractRepository.class));
 
-    private static CreditTerms terms(UUID customer, boolean prepaid, boolean deposit, boolean credit,
-                                     String limit, DepositBalancePolicy balance) {
-        return new CreditTerms(customer, true, prepaid, deposit, credit, CommercialTerm.CREDIT,
-                new BigDecimal("40"), limit == null ? null : new BigDecimal(limit), 30, "VND", null, null, null, 1L,
-                balance);
+    private static CreditTerms terms(UUID customer, String limit) {
+        return new CreditTerms(customer, true, limit == null ? null : new BigDecimal(limit), 30, "VND", null, null,
+                null, 1L);
     }
 
-    /** An over-limit credit order: ON_HOLD with reason CREDIT, a credit check and an open hold row behind it. */
+    /** An order whose contract was signed over the limit: ON_HOLD with reason CREDIT, a credit check and a hold row. */
     private Order onCreditHold() {
-        Order order = OrderFixtures.draft(PaymentTerm.CREDIT, UUID.randomUUID());
-        order.submitOnCredit(false);
+        Order order = OrderFixtures.draft(UUID.randomUUID());
+        order.sendContract(STAFF, NOW);
+        order.contractSigned(true, false, STAFF, NOW);
         order.pullDomainEvents();
         when(repository.findByIdForUpdate(order.id())).thenReturn(Optional.of(order));
         when(orderService.findById(order.id().value())).thenReturn(Optional.of(summary));
@@ -96,32 +90,29 @@ class CreditHoldServiceTest {
     class Position {
 
         @Test
-        @DisplayName("exposure is undelivered credit plus open receivables; what is left of the limit is the available credit")
+        @DisplayName("exposure is what the installments owe after delivery; what is left of the limit is the available "
+                + "credit")
         void availableCredit() {
             UUID customer = UUID.randomUUID();
-            CreditTerms terms = terms(customer, true, false, true, "5000000", null);
-            when(customers.creditTerms(customer)).thenReturn(terms);
+            when(customers.creditTerms(customer)).thenReturn(terms(customer, "5000000"));
             when(paymentService.creditPosition(customer)).thenReturn(new CreditPosition(new BigDecimal("1200000"), true,
                     new BigDecimal("400000"), LocalDate.of(2026, 10, 1)));
-            when(creditChecks.undeliveredCreditExposure(customer, null)).thenReturn(new BigDecimal("2000000"));
 
             var position = service.position(customer);
 
-            assertThat(position.exposure()).isEqualByComparingTo("3200000");
-            assertThat(position.available()).isEqualByComparingTo("1800000");
+            assertThat(position.exposure()).isEqualByComparingTo("1200000");
+            assertThat(position.available()).isEqualByComparingTo("3800000");
             assertThat(position.hasOverdue()).isTrue();
             assertThat(position.overdueAmount()).isEqualByComparingTo("400000");
             assertThat(position.oldestOverdueDueDate()).isEqualTo(LocalDate.of(2026, 10, 1));
-            assertThat(position.allowedBalancePolicies()).isEmpty();
         }
 
         @Test
         @DisplayName("over the limit nothing is available, never a negative amount")
         void availableNeverNegative() {
             UUID customer = UUID.randomUUID();
-            when(customers.creditTerms(customer)).thenReturn(terms(customer, true, false, true, "1000000", null));
-            when(paymentService.creditPosition(customer)).thenReturn(new CreditPosition(new BigDecimal("700000"), false));
-            when(creditChecks.undeliveredCreditExposure(customer, null)).thenReturn(new BigDecimal("900000"));
+            when(customers.creditTerms(customer)).thenReturn(terms(customer, "1000000"));
+            when(paymentService.creditPosition(customer)).thenReturn(new CreditPosition(new BigDecimal("1700000"), false));
 
             assertThat(service.position(customer).available()).isEqualByComparingTo("0");
         }
@@ -130,28 +121,13 @@ class CreditHoldServiceTest {
         @DisplayName("a customer without credit has no available amount (null), and still reports what they owe")
         void noCreditNoAvailable() {
             UUID customer = UUID.randomUUID();
-            when(customers.creditTerms(customer)).thenReturn(CreditTerms.prepaidOnly(customer));
+            when(customers.creditTerms(customer)).thenReturn(CreditTerms.none(customer));
             when(paymentService.creditPosition(customer)).thenReturn(new CreditPosition(BigDecimal.ZERO, false));
-            when(creditChecks.undeliveredCreditExposure(customer, null)).thenReturn(BigDecimal.ZERO);
 
             var position = service.position(customer);
 
             assertThat(position.available()).isNull();
             assertThat(position.exposure()).isEqualByComparingTo("0");
-        }
-
-        @Test
-        @DisplayName("the balance policies offered follow the customer's terms: before delivery, and on credit when "
-                + "credit is allowed")
-        void balancePolicies() {
-            UUID customer = UUID.randomUUID();
-            when(customers.creditTerms(customer)).thenReturn(
-                    terms(customer, true, true, true, "5000000", DepositBalancePolicy.BEFORE_DELIVERY));
-            when(paymentService.creditPosition(customer)).thenReturn(new CreditPosition(BigDecimal.ZERO, false));
-            when(creditChecks.undeliveredCreditExposure(customer, null)).thenReturn(BigDecimal.ZERO);
-
-            assertThat(service.position(customer).allowedBalancePolicies()).containsExactly(
-                    BalancePolicy.BEFORE_DELIVERY, BalancePolicy.ON_CREDIT);
         }
     }
 
@@ -202,7 +178,7 @@ class CreditHoldServiceTest {
         @Test
         @DisplayName("an order that is not on a credit hold cannot be approved (ORDER_NOT_ON_CREDIT_HOLD)")
         void notOnHold() {
-            Order order = OrderFixtures.confirmedPrepaid();
+            Order order = OrderFixtures.confirmed();
             when(repository.findByIdForUpdate(order.id())).thenReturn(Optional.of(order));
 
             assertThat(codeOf(() -> service.approve(order.id().value(), "ok", STAFF)))
@@ -230,12 +206,12 @@ class CreditHoldServiceTest {
     class Refuse {
 
         @Test
-        @DisplayName("CANCEL records REJECTED and cancels the order with CREDIT_REJECTED and the note")
+        @DisplayName("records REJECTED and cancels the order with CREDIT_REJECTED and the note")
         void cancels() {
             Order order = onCreditHold();
             OrderHoldJpaEntity hold = openHold(order);
 
-            service.refuse(order.id().value(), CreditHoldService.RefusalAction.CANCEL, null, "over the limit", STAFF);
+            service.refuse(order.id().value(), "over the limit", STAFF);
 
             ArgumentCaptor<CreditChecks.Check> check = ArgumentCaptor.forClass(CreditChecks.Check.class);
             verify(creditChecks).record(check.capture());
@@ -246,93 +222,24 @@ class CreditHoldServiceTest {
             assertThat(command.getValue().reasonCode()).isEqualTo(CancellationReasonCode.CREDIT_REJECTED);
             assertThat(command.getValue().note()).isEqualTo("over the limit");
             assertThat(command.getValue().cancelledBy()).isEqualTo(STAFF);
-            verify(inventory, never()).rearmReservations(any());
         }
 
         @Test
-        @DisplayName("SWITCH_TO_PREPAID moves the order to PENDING_PAYMENT on prepaid terms and re-arms its holds' deadline")
-        void switchesToPrepaid() {
-            Order order = onCreditHold();
-            openHold(order);
-            when(customers.creditTerms(order.customerId())).thenReturn(
-                    terms(order.customerId(), true, false, true, "1000000", null));
+        @DisplayName("an order that is not waiting for a credit decision cannot be refused (ORDER_NOT_ON_CREDIT_HOLD)")
+        void notOnHold() {
+            Order order = OrderFixtures.confirmed();
+            when(repository.findByIdForUpdate(order.id())).thenReturn(Optional.of(order));
 
-            service.refuse(order.id().value(), CreditHoldService.RefusalAction.SWITCH_TO_PREPAID, null, "pay first",
-                    STAFF);
-
-            assertThat(order.status()).isEqualTo(OrderStatus.PENDING_PAYMENT);
-            assertThat(order.paymentTerm()).isEqualTo(PaymentTerm.PREPAID);
-            verify(inventory).rearmReservations(order.id().value());
-            verify(repository).save(order);
-            verify(events).publishEventsOf(order);
+            assertThat(codeOf(() -> service.refuse(order.id().value(), "no", STAFF)))
+                    .isEqualTo(ErrorCode.ORDER_NOT_ON_CREDIT_HOLD);
             verify(orders, never()).cancelLoaded(any(), any());
-        }
-
-        @Test
-        @DisplayName("a term the customer may not use is refused (PAYMENT_TERM_NOT_ALLOWED) and nothing changes")
-        void termNotAllowed() {
-            Order order = onCreditHold();
-            openHold(order);
-            when(customers.creditTerms(order.customerId())).thenReturn(
-                    terms(order.customerId(), false, false, true, "1000000", null));
-
-            assertThat(codeOf(() -> service.refuse(order.id().value(), CreditHoldService.RefusalAction.SWITCH_TO_PREPAID,
-                    null, "pay first", STAFF))).isEqualTo(ErrorCode.PAYMENT_TERM_NOT_ALLOWED);
-            assertThat(order.status()).isEqualTo(OrderStatus.ON_HOLD);
-            verify(creditChecks, never()).record(any());
-            verify(inventory, never()).rearmReservations(any());
-        }
-
-        @Test
-        @DisplayName("SWITCH_TO_DEPOSIT without a percentage takes the customer's default deposit")
-        void depositTakesTheCustomersPercent() {
-            Order order = onCreditHold();
-            openHold(order);
-            when(customers.creditTerms(order.customerId())).thenReturn(
-                    terms(order.customerId(), true, true, true, "1000000", DepositBalancePolicy.BEFORE_DELIVERY));
-
-            service.refuse(order.id().value(), CreditHoldService.RefusalAction.SWITCH_TO_DEPOSIT, null, "deposit",
-                    STAFF);
-
-            assertThat(order.paymentTerm()).isEqualTo(PaymentTerm.DEPOSIT);
-            assertThat(order.depositRequired()).isEqualByComparingTo("440000");
-            assertThat(order.balancePolicy()).isEqualTo(BalancePolicy.BEFORE_DELIVERY);
-            assertThat(order.status()).isEqualTo(OrderStatus.PENDING_PAYMENT);
-        }
-
-        @Test
-        @DisplayName("an explicit deposit percentage wins over the customer's default")
-        void explicitDepositPercent() {
-            Order order = onCreditHold();
-            openHold(order);
-            when(customers.creditTerms(order.customerId())).thenReturn(
-                    terms(order.customerId(), true, true, true, "1000000", DepositBalancePolicy.BEFORE_DELIVERY));
-
-            service.refuse(order.id().value(), CreditHoldService.RefusalAction.SWITCH_TO_DEPOSIT,
-                    new BigDecimal("50"), "deposit", STAFF);
-
-            assertThat(order.depositRequired()).isEqualByComparingTo("550000");
-        }
-
-        @Test
-        @DisplayName("a balance on credit is not the way out of a refusal: it becomes paid-before-delivery")
-        void balanceOnCreditBecomesBeforeDelivery() {
-            Order order = onCreditHold();
-            openHold(order);
-            when(customers.creditTerms(order.customerId())).thenReturn(
-                    terms(order.customerId(), true, true, true, "1000000", DepositBalancePolicy.ON_CREDIT));
-
-            service.refuse(order.id().value(), CreditHoldService.RefusalAction.SWITCH_TO_DEPOSIT, null, "deposit",
-                    STAFF);
-
-            assertThat(order.balancePolicy()).isEqualTo(BalancePolicy.BEFORE_DELIVERY);
         }
 
         @Test
         @DisplayName("a refusal without a reason is VALIDATION_FAILED")
         void needsAReason() {
-            assertThat(codeOf(() -> service.refuse(UUID.randomUUID(), CreditHoldService.RefusalAction.CANCEL, null, "",
-                    STAFF))).isEqualTo(ErrorCode.VALIDATION_FAILED);
+            assertThat(codeOf(() -> service.refuse(UUID.randomUUID(), "", STAFF)))
+                    .isEqualTo(ErrorCode.VALIDATION_FAILED);
             verify(repository, never()).findByIdForUpdate(any());
             verify(orders, never()).cancelLoaded(any(), any());
         }

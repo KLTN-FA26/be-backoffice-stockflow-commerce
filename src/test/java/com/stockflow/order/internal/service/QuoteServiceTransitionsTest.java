@@ -9,12 +9,10 @@ import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.DataScope;
 import com.stockflow.common.security.Role;
 import com.stockflow.contracts.CustomerActedOnQuote;
-import com.stockflow.customer.api.CommercialTerm;
 import com.stockflow.customer.api.CreditTerms;
 import com.stockflow.customer.api.CustomerService;
 import com.stockflow.customer.api.CustomerSummary;
 import com.stockflow.order.api.OrderService;
-import com.stockflow.order.api.PaymentTerm;
 import com.stockflow.order.internal.domain.PriceTier;
 import com.stockflow.order.internal.domain.Quote;
 import com.stockflow.order.internal.domain.QuoteLine;
@@ -86,10 +84,9 @@ class QuoteServiceTransitionsTest {
                 NOW);
         when(customers.findById(customer)).thenReturn(Optional.of(summary));
         when(customers.findByUserId(portalUser)).thenReturn(Optional.of(summary));
-        when(customers.creditTerms(customer)).thenReturn(new CreditTerms(customer, true, true, true, false,
-                CommercialTerm.DEPOSIT, new BigDecimal("30"), null, null, "VND", null, null, null, 1));
+        when(customers.creditTerms(customer)).thenReturn(new CreditTerms(customer, true, null, null, "VND", null, null, null, 1));
         when(search.findRow(any())).thenAnswer(call -> Optional.of(new QuoteSearch.Row(call.getArgument(0), "QT-1",
-                customer, QuoteStatus.SENT, 1, PaymentTerm.DEPOSIT, NOW.plusSeconds(3600), NOW, null, NOW, "sales",
+                customer, QuoteStatus.SENT, 1, NOW.plusSeconds(3600), NOW, null, NOW, "sales",
                 VERSION)));
         when(search.history(any())).thenReturn(List.of());
         // Every SKU here was produced before: these transitions carry no plate fee (QuoteServiceTest covers fees).
@@ -107,7 +104,7 @@ class QuoteServiceTransitionsTest {
                 status == QuoteStatus.ACCEPTED ? 20 : null, status == QuoteStatus.ACCEPTED ? Money.vnd(2000) : null,
                 "STANDARD", new BigDecimal("10"));
         Quote quote = Quote.restore(UUID.randomUUID(), "QT-1", UUID.randomUUID(), customer, status, 1,
-                new Quote.Offer(PaymentTerm.DEPOSIT, new BigDecimal("40"), validUntil, null, List.of(line)),
+                new Quote.Offer(validUntil, null, List.of(line)),
                 status == QuoteStatus.DRAFT ? null : NOW, status == QuoteStatus.DRAFT ? null : salesUser,
                 answered ? NOW : null, answered ? portalUser : null, null, null, null, null);
         when(quotes.findByIdForUpdate(quote.id())).thenReturn(Optional.of(quote));
@@ -166,15 +163,6 @@ class QuoteServiceTransitionsTest {
         assertThat(thrown.fieldErrors()).singleElement()
                 .satisfies(error -> assertThat(error.field()).isEqualTo("lines[0].sku"));
         assertThat(quote.status()).isEqualTo(QuoteStatus.DRAFT);
-    }
-
-    @Test
-    @DisplayName("a quote is offered only on a payment term the customer's commercial terms allow (15 BR-01)")
-    void termNotAllowedBlocksSending() {
-        Quote quote = stored(QuoteStatus.DRAFT);
-        when(customers.creditTerms(customer)).thenReturn(CreditTerms.prepaidOnly(customer));
-
-        assertThat(code(() -> service.send(sales, quote.id(), VERSION))).isEqualTo(ErrorCode.PAYMENT_TERM_NOT_ALLOWED);
     }
 
     @Test
@@ -351,7 +339,7 @@ class QuoteServiceTransitionsTest {
         UUID id = UUID.randomUUID();
         when(search.search(any(), any(org.springframework.data.domain.Pageable.class))).thenReturn(
                 new org.springframework.data.domain.PageImpl<>(List.of(new QuoteSearch.Row(id, "QT-2", customer,
-                        QuoteStatus.SENT, 1, PaymentTerm.DEPOSIT, NOW.minusSeconds(1), NOW.minusSeconds(100), null, NOW,
+                        QuoteStatus.SENT, 1, NOW.minusSeconds(1), NOW.minusSeconds(100), null, NOW,
                         "sales", 3))));
 
         var page = service.list(sales, new Quotes.Criteria(null, List.of(), null, 0, 20, null));

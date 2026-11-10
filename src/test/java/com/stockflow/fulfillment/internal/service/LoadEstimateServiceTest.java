@@ -94,10 +94,10 @@ class LoadEstimateServiceTest {
         var line = new OrderSummary.LineSummary(lineId, "CUP-12OZ", quantity, Money.vnd(1000), Money.vnd(1000L * quantity),
                 List.of());
         var progress = new OrderSummary.LineProgress(lineId, shipped, 0, closed);
-        var lifecycle = new OrderSummary.Lifecycle(null, null, null, null, null, null, null, null, null, BigDecimal.ZERO,
-                BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, List.of(progress), List.of());
+        var lifecycle = new OrderSummary.Lifecycle(null, null, null, null, null, null, null, null, null,
+                BigDecimal.ZERO, BigDecimal.ZERO, List.of(progress), List.of());
         return new OrderSummary(orderId, "SO-0001", UUID.randomUUID(), status, Money.vnd(1000L * quantity), List.of(line),
-                NOW, null, null, null, null, null, null, null, null, null, warehouse, warehouse == null ? null : NOW, null,
+                NOW, null, null, null, null, null, null, null, null, warehouse, warehouse == null ? null : NOW,
                 null, lifecycle);
     }
 
@@ -309,7 +309,7 @@ class LoadEstimateServiceTest {
             OrderSummary base = order(OrderStatus.READY_TO_FULFILL, WAREHOUSE, 10, 0, 0);
             when(orders.findById(orderId)).thenReturn(Optional.of(new OrderSummary(orderId, "SO-0001", base.customerId(),
                     OrderStatus.READY_TO_FULFILL, base.total(), List.of(lineA, lineB), NOW, null, null, null, null, null,
-                    null, null, null, null, WAREHOUSE, NOW, null, null, base.lifecycle())));
+                    null, null, null, WAREHOUSE, NOW, null, base.lifecycle())));
             org.mockito.Mockito.doReturn(List.of(resolved("CUP-12OZ", 10, 600, 400, 300, "2.5"),
                     unresolved("LID-90", 10, List.of("lengthCm", "weightKg")))).when(packaging).resolveAll(any());
 

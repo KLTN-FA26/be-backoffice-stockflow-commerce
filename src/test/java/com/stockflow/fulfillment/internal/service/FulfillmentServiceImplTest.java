@@ -69,9 +69,8 @@ class FulfillmentServiceImplTest {
         var pack = new PackJpaEntity(UUID.randomUUID(), pick.getId(), PackStatus.PACKED, now);
         var order = order(pick.getOrderId(), "a".repeat(64));
         var owing = new OrderSummary(order.orderId(), order.orderNumber(), order.customerId(), OrderStatus.PACKED,
-                order.total(), order.lines(), order.placedAt(), null, null, null, null, null, null, null, null, null,
-                null, null, null, null, new OrderSummary.Lifecycle(null, null, null, now, null, null, null, null, null,
-                java.math.BigDecimal.ZERO, order.total().amount(), order.total().amount(), new java.math.BigDecimal("700"),
+                order.total(), order.lines(), order.placedAt(), null, null, null, null, null, null, null, null,
+                null, null, null, new OrderSummary.Lifecycle(null, null, null, now, null, null, null, null, null, order.total().amount(), new java.math.BigDecimal("700"),
                 List.of(), List.of()));
         UUID shipment = UUID.randomUUID();
         when(picks.findById(pick.getId())).thenReturn(Optional.of(pick));
@@ -182,7 +181,7 @@ class FulfillmentServiceImplTest {
                 Money.vnd(100_000), Money.vnd(200_000), List.of());
         return new OrderSummary(UUID.randomUUID(), "SO-20261014-0001", UUID.randomUUID(), status,
                 Money.vnd(200_000), List.of(line), now.minusSeconds(600), null, null, null, null, null, null, null,
-                null, null, warehouse, warehouse == null ? null : now.minusSeconds(60));
+                null, warehouse, warehouse == null ? null : now.minusSeconds(60));
     }
 
     private void holdsAt(OrderSummary order, String... locationsAndSkus) {

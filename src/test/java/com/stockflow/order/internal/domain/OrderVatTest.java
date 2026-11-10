@@ -132,8 +132,7 @@ class OrderVatTest {
                 .isEqualByComparingTo("1760000");
         order.recordShipmentDelivered(second, NOW, STAFF);
         order.recordShipmentDelivered(again, NOW, STAFF);
-        assertThat(order.billedAmount()).as("everything delivered is billed, the fee lines once")
-                .isEqualByComparingTo(order.total().amount());
+        assertThat(order.status()).as("everything delivered").isEqualTo(com.stockflow.order.api.OrderStatus.DELIVERED);
     }
 
     @Test
