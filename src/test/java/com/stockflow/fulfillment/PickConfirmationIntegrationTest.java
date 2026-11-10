@@ -434,7 +434,7 @@ class PickConfirmationIntegrationTest {
         assertThat(added).hasSize(1);
         String newLine = added.get(0).path("lineId").asText();
         String newLocation = added.get(0).path("locationCode").asText();
-        assertThat(newLocation).as("never the short bin").isNotEqualTo(location);
+        assertThat(lpn(newLine)).as("never the short carton (07 BR-09)").isNotEqualTo(lpn(lineId));
         assertThat(lineStatus(lineId)).isEqualTo("CANCELLED");
         assertThat(holdStatus(lineId)).isEqualTo("RELEASED");
         assertThat(orders.findById(order.orderId()).orElseThrow().status()).as("back where it was held from")
@@ -964,6 +964,9 @@ class PickConfirmationIntegrationTest {
                  WHERE p.lpn = ? AND i.on_hand = 1 AND i.status = 'AVAILABLE' AND i.location_code = ?""",
                 Integer.class, lpn, location)).isEqualTo(1);
         assertThat(ledgerRows("PUT_BACK", lineId)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT p.lpn FROM inventory.stock_movement m JOIN inventory.stock_package p"
+                + " ON p.id = m.to_stock_package_id WHERE m.movement_type = 'PUT_BACK' AND m.reference_id = ?::uuid",
+                String.class, lineId)).as("the ledger names the carton").isEqualTo(lpn(lineId));
     }
 
     @Test

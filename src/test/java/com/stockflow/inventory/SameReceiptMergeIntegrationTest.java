@@ -31,6 +31,7 @@ import java.util.Map;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.catchThrowableOfType;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
@@ -173,6 +174,14 @@ class SameReceiptMergeIntegrationTest {
         inventory.allocate(new com.stockflow.inventory.api.AllocateStockCommand(order, "HCM")).allocations()
                 .forEach(allocation -> holdOf.put(allocation.reservationId(), allocation.holdIds().getFirst()));
         return reservations.stream().map(holdOf::get).toList();
+    }
+
+    /** "location:status:unopened:on_hand" of each carton of the SKU's receipt, by location. */
+    private List<String> cartonsOfTheReceipt() {
+        return jdbc.queryForList("""
+                select p.location_code || ':' || p.status || ':' || p.unopened || ':' || s.on_hand
+                  from inventory.stock_package p join inventory.stock_item s on s.stock_package_id = p.id
+                 where s.sku = ? order by p.location_code, p.lpn""", String.class, sku);
     }
 
     @Test

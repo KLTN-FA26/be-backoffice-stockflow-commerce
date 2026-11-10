@@ -279,7 +279,7 @@ class StockPackageContentsTest {
         }
 
         @Test
-        @DisplayName("a LOST carton that is found goes back IN_STOCK on its first row")
+        @DisplayName("a LOST carton that is found goes back IN_STOCK on its first row, whole and sealed")
         void lostCartonIsFound() {
             StockPackage lost = cartonWith(id, StockPackageStatus.LOST, false, 24);
             StockItem emptied = row(id, 0);
@@ -288,7 +288,23 @@ class StockPackageContentsTest {
             contents.adjust(id, 24, false, NOW);
 
             assertThat(lost.status()).isEqualTo(StockPackageStatus.IN_STOCK);
+            assertThat(lost.unopened()).isTrue();
             assertThat(emptied.onHand().value()).isEqualTo(24);
+        }
+
+        @Test
+        @DisplayName("a LOST carton is found whole or not at all: part of it is STOCK_PACKAGE_TAKEN_WHOLE, still LOST")
+        void lostCartonIsNotFoundInPart() {
+            StockPackage lost = cartonWith(id, StockPackageStatus.LOST, false, 24);
+            StockItem emptied = row(id, 0);
+            rowsOf(lost, emptied);
+
+            BusinessException refused = catchThrowableOfType(BusinessException.class,
+                    () -> contents.adjust(id, 20, false, NOW));
+
+            assertThat(refused.errorCode()).isEqualTo(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE);
+            assertThat(lost.status()).isEqualTo(StockPackageStatus.LOST);
+            assertThat(emptied.onHand().value()).isZero();
         }
 
         @Test

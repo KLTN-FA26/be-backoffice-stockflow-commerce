@@ -69,7 +69,7 @@ class PickConsumptionServiceTest {
         }
 
         @Override
-        public List<com.stockflow.inventory.internal.domain.StockPackageId> cartonsMovedBy(
+        public List<StockMovementLog.MovedCarton> cartonsMovedBy(
                 StockMovement.ReferenceType referenceType, UUID referenceId) {
             return List.of();
         }
