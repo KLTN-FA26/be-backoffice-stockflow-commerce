@@ -36,7 +36,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class RolePermissionEditingIntegrationTest {
 
     private static final String ROLE = "INVENTORY_PLANNER";
-    private static final String PO_APPROVE = "production-orders:APPROVE";
+    private static final String PO_APPROVE = "procurement-goods-receipts:UPDATE";
 
     @Autowired
     private IdentityService identity;
