@@ -32,6 +32,7 @@ import com.stockflow.order.internal.service.ShippingWarehouseService.LineCoverag
 import com.stockflow.order.internal.service.ShippingWarehouseService.Option;
 import com.stockflow.order.internal.service.ShippingWarehouseService.Options;
 import com.stockflow.support.Await;
+import com.stockflow.support.CartonRows;
 import com.stockflow.support.CustomerSkuRows;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
@@ -199,13 +200,32 @@ class ShippingWarehouseIntegrationTest {
         return new Warehouse(id, code, bin);
     }
 
-    /** {@code units} loose pieces of the test's SKU free in {@code warehouse}'s bin, received a while ago. */
+    /**
+     * {@code units} pieces of the test's SKU free in {@code warehouse}'s bin, received a while ago, as the warehouse keeps
+     * stock since team plan 4C-2: whole sealed cartons of 50, and what is short of one as a single odd carton of its own
+     * unit ({@code PK<n>}) - the pieces no carton of 50 can be made of, which a hold of cartons of 50 never takes (BR-21)
+     * but available to promise still counts.
+     */
     private void stock(Warehouse warehouse, int units) {
-        tx.executeWithoutResult(s -> jdbc.update("""
-                INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, version,
-                    created_at, received_at)
-                VALUES (?, ?, ?, ?, 0, 'AVAILABLE', 0, NOW(), clock_timestamp() - interval '2 days')""",
-                Identifiers.newId(), sku.sku(), warehouse.bin(), units));
+        Instant received = Instant.now().minus(Duration.ofDays(2));
+        tx.executeWithoutResult(s -> {
+            CartonRows.stockOfUnit(jdbc, sku.sku(), sku.uomConversionId(), warehouse.bin(), units / PER_CARTON, null,
+                    null, received, "AVAILABLE");
+            int rest = units % PER_CARTON;
+            if (rest > 0) {
+                UUID item = jdbc.queryForObject("SELECT id FROM inventory.inventory_items WHERE sku = ?", UUID.class,
+                        sku.sku());
+                jdbc.update("""
+                        INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, is_base,
+                            default_purchase, active, version, created_at, default_shipping)
+                        VALUES (?, ?, ?, ?, FALSE, FALSE, TRUE, 0, NOW(), FALSE)
+                        ON CONFLICT (inventory_item_id, unit_of_measure) DO NOTHING""", Identifiers.newId(), item,
+                        "PK" + rest, rest);
+                UUID odd = jdbc.queryForObject("SELECT id FROM inventory.uom_conversions WHERE inventory_item_id = ? "
+                        + "AND unit_of_measure = ?", UUID.class, item, "PK" + rest);
+                CartonRows.stockOfUnit(jdbc, sku.sku(), odd, warehouse.bin(), 1, null, null, received, "AVAILABLE");
+            }
+        });
     }
 
     /** A DRAFT order of 20 cartons of 50 at 2,000 a piece with 10% VAT - as a converted quote leaves it. */
@@ -485,23 +505,24 @@ class ShippingWarehouseIntegrationTest {
         assertThat(second.lines()).containsExactly(new LineCoverage(line, sku.sku(), 8, 3, 5));
         assertThat(shippingWarehouses.coverage(orderId)).isEqualTo(coverage);
 
-        assertThat(reservationsOf(orderId)).singleElement().satisfies(r -> assertThat(r)
-                .as("whole cartons only: the 30 loose pieces are not held (BR-21)")
-                .containsEntry("quantity", 15 * PER_CARTON)
+        // 4B-8: held batch by batch, the earliest first - batch 1's 12 cartons, then 3 of batch 2's 8.
+        assertThat(reservationsOf(orderId)).as("whole cartons only: the odd 30 pieces are not held (BR-21)")
+                .extracting(r -> r.get("quantity")).containsExactlyInAnyOrder(12 * PER_CARTON, 3 * PER_CARTON);
+        assertThat(reservationsOf(orderId)).allSatisfy(r -> assertThat(r)
                 .containsEntry("warehouse_code", a.code())
                 .containsEntry("status", "HELD"));
-        assertThat(atp(a)).as("the 30 loose pieces stay free").isEqualTo(30);
+        assertThat(atp(a)).as("the odd 30 pieces stay free").isEqualTo(30);
 
-        // 17 §4.2 step 5: released only with every carton held.
-        assertThatThrownBy(() -> releases.release(orderId, a.id(), coordinator))
-                .satisfies(e -> assertThat(code(e)).isEqualTo(ErrorCode.ORDER_STOCK_NOT_HELD))
-                .hasMessageContaining(sku.sku())
-                .hasMessageContaining("15 of 20");
-        assertThat(ErrorCode.ORDER_STOCK_NOT_HELD.httpStatus()).isEqualTo(409);
-        assertThat(status(orderId)).isEqualTo(OrderStatus.CONFIRMED);
-        assertThat(orderRow(orderId).get("warehouse_id")).isNull();
-        assertThat(reservationsOf(orderId)).singleElement()
-                .satisfies(r -> assertThat(r).containsEntry("status", "HELD"));
+        // 4B-8 (17 §4.5, BR-29): released batch by batch - batch 1 is held in full, so it goes while batch 2 is short;
+        // only batch 1's hold is allocated, batch 2's stays held on no bin.
+        assertThat(releases.release(orderId, a.id(), coordinator).status()).isEqualTo(OrderStatus.READY_TO_FULFILL);
+        assertThat(orderRow(orderId).get("warehouse_id")).isEqualTo(a.id());
+        assertThat(reservationsOf(orderId)).filteredOn(r -> r.get("allocated_from_id") == null
+                        && "HELD".equals(r.get("status")))
+                .extracting(r -> r.get("quantity")).as("batch 2's 3 cartons").containsExactly(3 * PER_CARTON);
+        assertThat(reservationsOf(orderId).stream().filter(r -> r.get("allocated_from_id") != null)
+                .mapToInt(r -> ((Number) r.get("quantity")).intValue()).sum()).as("batch 1's 12 cartons allocated")
+                .isEqualTo(12 * PER_CARTON);
     }
 
     @Test

@@ -130,16 +130,18 @@ class OrderReleaseIntegrationTest {
     @DisplayName("an order with nothing to print goes straight to READY_TO_FULFILL; a second release is refused")
     void stockOnly() {
         // A contract's order of the customer's own SKU, its stock held at the shipping warehouse (4B-7), as production has it.
-        String sku = CustomerSkuRows.issue(jdbc, tx, entityManager, DemoData.CUSTOMER_ID, 50).sku();
-        CustomerSkuRows.stock(jdbc, tx, sku, 10);
+        CustomerSkuRows.Issued sku = CustomerSkuRows.issue(jdbc, tx, entityManager, DemoData.CUSTOMER_ID, 2);
+        CustomerSkuRows.stock(jdbc, tx, sku.sku(), 10);
         ConfirmedOrders confirmedOrders = new ConfirmedOrders(context);
-        UUID order = confirmedOrders.confirmed(DemoData.CUSTOMER_ID, ConfirmedOrders.Line.units(sku, 2, 10_000)).orderId();
+        UUID order = confirmedOrders.confirmed(DemoData.CUSTOMER_ID, ConfirmedOrders.Line.cartons(sku, 1, 10_000))
+                .orderId();
         confirmedOrders.ship(order, hcm);
         recorded.clear();
 
         assertThat(releases.release(order, hcm, coordinator).status()).isEqualTo(OrderStatus.READY_TO_FULFILL);
         assertThat(recorded.matching(OrderReleased.class, e -> e.orderId().equals(order))).hasSize(1);
+        // 4B-8: a contract's order is released batch by batch; with its one batch released, none is left to release.
         assertThatThrownBy(() -> releases.release(order, hcm, coordinator))
-                .extracting(OrderReleaseIntegrationTest::code).isEqualTo(ErrorCode.ORDER_INVALID_TRANSITION);
+                .extracting(OrderReleaseIntegrationTest::code).isEqualTo(ErrorCode.DELIVERY_BATCH_NOT_NEXT);
     }
 }
