@@ -179,16 +179,8 @@ class InstallmentBookAdapter implements InstallmentBook, InstallmentSearch {
 
     @Override
     public boolean referenceInUse(String reference) {
-        String trimmed = reference.strip();
-        if (receipts.existsByReferenceAndStatus(trimmed, PaymentReceiptStatus.RECORDED)) {
-            return true;
-        }
-        // While the money ledger lasts (4B-10): the same statement line recorded there is the same money.
-        return !entityManager.createNativeQuery("""
-                        SELECT 1 FROM payment.customer_transfer WHERE reference = :ref
-                        UNION ALL
-                        SELECT 1 FROM payment.payment WHERE provider_ref = :ref""")
-                .setParameter("ref", trimmed).setMaxResults(1).getResultList().isEmpty();
+        // Receipts only: the money ledger's transfers and payments, which this also looked through, are gone (4B-11).
+        return receipts.existsByReferenceAndStatus(reference.strip(), PaymentReceiptStatus.RECORDED);
     }
 
     @Override

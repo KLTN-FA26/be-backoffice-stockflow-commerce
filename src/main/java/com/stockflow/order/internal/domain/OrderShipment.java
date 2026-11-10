@@ -18,9 +18,9 @@ import java.util.UUID;
  * G4-Q3, split shipments allowed). An entity inside the aggregate; fulfillment owns the shipment itself and tells the
  * order of its handover and its outcome in the same transaction (architecture decision A1).
  *
- * <p>{@code amount} is the goods' value at the order's prices, fixed at the handover. {@code billedAmount} is what its
- * delivery billed a credit order (a receivable): at most {@code amount}, less when money the customer paid ahead
- * covers part of it. Returned goods are never billed.</p>
+ * <p>{@code amount} is the goods' value at the order's prices, fixed at the handover. A delivery bills nothing: the
+ * customer pays the contract's installments (kltn-docs 15), and what a delivery billed under the money ledger went with
+ * it (4B-10, column dropped by 4B-11).</p>
  *
  * <p>Nothing is collected on delivery (kltn-docs 09 BR-08): the carrier carries the goods, the customer pays by
  * transfer.</p>
@@ -37,20 +37,19 @@ public final class OrderShipment {
     private UUID outcomeBy;
     private DeliveryFailureReason failureReason;
     private String failureNote;
-    private BigDecimal billedAmount;
     /** G4-2a: number, parcels and carrier, as the customer reads them; null on shipments recorded before. */
     private final com.stockflow.order.api.ShipmentHandover.Carriage carriage;
 
     public OrderShipment(UUID id, Map<UUID, Integer> quantities, BigDecimal amount, Instant handedOverAt,
                          UUID handedOverBy, OrderShipmentStatus status, Instant outcomeAt, UUID outcomeBy,
-                         DeliveryFailureReason failureReason, String failureNote, BigDecimal billedAmount) {
+                         DeliveryFailureReason failureReason, String failureNote) {
         this(id, quantities, amount, handedOverAt, handedOverBy, status, outcomeAt, outcomeBy, failureReason,
-                failureNote, billedAmount, null);
+                failureNote, null);
     }
 
     public OrderShipment(UUID id, Map<UUID, Integer> quantities, BigDecimal amount, Instant handedOverAt,
                          UUID handedOverBy, OrderShipmentStatus status, Instant outcomeAt, UUID outcomeBy,
-                         DeliveryFailureReason failureReason, String failureNote, BigDecimal billedAmount,
+                         DeliveryFailureReason failureReason, String failureNote,
                          com.stockflow.order.api.ShipmentHandover.Carriage carriage) {
         this.carriage = carriage;
         this.id = Objects.requireNonNull(id, "id");
@@ -63,24 +62,22 @@ public final class OrderShipment {
         this.outcomeBy = outcomeBy;
         this.failureReason = failureReason;
         this.failureNote = failureNote;
-        this.billedAmount = billedAmount == null ? BigDecimal.ZERO : billedAmount;
     }
 
     static OrderShipment handedOver(UUID id, Map<UUID, Integer> quantities, BigDecimal amount, Instant at, UUID by,
                                     com.stockflow.order.api.ShipmentHandover.Carriage carriage) {
         return new OrderShipment(id, quantities, amount, at, by, OrderShipmentStatus.HANDED_OVER, null, null, null,
-                null, BigDecimal.ZERO, carriage);
+                null, carriage);
     }
 
     /** @return false when it already was delivered */
-    boolean delivered(Instant at, UUID by, BigDecimal billed) {
+    boolean delivered(Instant at, UUID by) {
         if (status == OrderShipmentStatus.DELIVERED) {
             return false;
         }
         move(OrderShipmentStatus.DELIVERED);
         this.outcomeAt = at;
         this.outcomeBy = by;
-        this.billedAmount = billed;
         return true;
     }
 
@@ -99,7 +96,7 @@ public final class OrderShipment {
 
     /**
      * A delivery the carrier reported wrongly, corrected by the warehouse manager (09 §4.3 step 5, E17): DELIVERED →
-     * DELIVERY_FAILED. Only for a delivery that billed nothing - the caller checks.
+     * DELIVERY_FAILED.
      *
      * @return false when it already failed
      */
@@ -157,6 +154,5 @@ public final class OrderShipment {
     public UUID outcomeBy() { return outcomeBy; }
     public DeliveryFailureReason failureReason() { return failureReason; }
     public String failureNote() { return failureNote; }
-    public BigDecimal billedAmount() { return billedAmount; }
     public com.stockflow.order.api.ShipmentHandover.Carriage carriage() { return carriage; }
 }

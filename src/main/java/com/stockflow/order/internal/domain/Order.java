@@ -902,7 +902,8 @@ public final class Order extends AggregateRoot {
         clearHold();
         this.cancellationReasonCode = code;
         this.cancellationReason = reasonText;
-        // ck_order_cancellation_fee / _retained compare this with paid_amount, which stays 0 since 4B-10.
+        // Nothing is kept on the order: what a cancellation keeps of the money received is its settlement's (4B-9), and
+        // the order records no money received since 4B-10 (paid_amount dropped by 4B-11). Old orders keep their value.
         this.cancellationRetainedAmount = BigDecimal.ZERO;
         registerEvent(new OrderEvent.Cancelled(new OrderCancelled(id.value(), orderNumber.value(), customerId,
                 previous.name(), code.name(), trimmed, BigDecimal.ZERO, BigDecimal.ZERO,
@@ -1106,7 +1107,7 @@ public final class Order extends AggregateRoot {
             throw new BusinessException(ErrorCode.ORDER_SHIPMENT_INVALID_TRANSITION,
                     "Shipment %s is %s and cannot become DELIVERED".formatted(shipmentId, shipment.status()));
         }
-        shipment.delivered(at, by, BigDecimal.ZERO);
+        shipment.delivered(at, by);
         registerDelivered(shipmentId, at);
         followShipments(ShipmentChange.OUTCOME, at, by);
         return true;
@@ -1114,12 +1115,13 @@ public final class Order extends AggregateRoot {
 
     /**
      * A delivery the carrier reported wrongly, corrected to a failure by the warehouse manager (09 §4.3 step 5, E17;
-     * 17 §5.1): the shipment DELIVERY_FAILED and the order following it, while the order is not completed. A delivery
-     * that billed the customer in the money ledger (before 4B-10) is not corrected here.
+     * 17 §5.1): the shipment DELIVERY_FAILED and the order following it, while the order is not completed. Nothing is
+     * billed on delivery since 4B-10 (the money ledger went; 4B-11 dropped what a shipment billed), so no delivery is
+     * held back for that.
      *
      * @return whether this changed the order
-     * @throws BusinessException {@code ORDER_DELIVERY_NOT_CORRECTABLE} for an order past its deliveries or a billed
-     *         delivery; {@code ORDER_SHIPMENT_INVALID_TRANSITION} for a shipment not delivered
+     * @throws BusinessException {@code ORDER_DELIVERY_NOT_CORRECTABLE} for an order past its deliveries;
+     *         {@code ORDER_SHIPMENT_INVALID_TRANSITION} for a shipment not delivered
      */
     public boolean correctShipmentToFailed(UUID shipmentId, DeliveryFailureReason reason, String note, Instant at,
                                            UUID by) {
@@ -1136,11 +1138,6 @@ public final class Order extends AggregateRoot {
                 && status != OrderStatus.PARTIALLY_FULFILLED) {
             throw new BusinessException(ErrorCode.ORDER_DELIVERY_NOT_CORRECTABLE, ("Order %s is %s: its deliveries "
                     + "are no longer corrected").formatted(orderNumber, status));
-        }
-        if (shipment.billedAmount().signum() > 0) {
-            throw new BusinessException(ErrorCode.ORDER_DELIVERY_NOT_CORRECTABLE, ("Shipment %s of order %s billed the "
-                    + "customer %s on delivery: the receivable must be taken back first").formatted(shipmentId,
-                    orderNumber, shipment.billedAmount().toPlainString()));
         }
         if (!shipment.correctedToFailed(reason, trimmed, at, by)) {
             return false;

@@ -193,7 +193,7 @@ class OrderRepositoryAdapter implements OrderRepository, OrderSearchRepository {
                     order.id().value(), shipment.quantities(), shipment.amount(), shipment.handedOverAt(),
                     shipment.handedOverBy()).withCarriage(shipment.carriage()));
             row.apply(shipment.status(), shipment.outcomeAt(), shipment.outcomeBy(), shipment.failureReason(),
-                    shipment.failureNote(), shipment.billedAmount());
+                    shipment.failureNote());
             shipments.save(row);
         }
         shipments.flush();

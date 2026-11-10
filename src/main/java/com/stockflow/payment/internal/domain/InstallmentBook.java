@@ -70,8 +70,8 @@ public interface InstallmentBook {
     Optional<PaymentReceipt> lockReceipt(UUID id);
 
     /**
-     * 15 BR-03: whether a live receipt records this statement reference - or the money ledger recorded it as a transfer
-     * or a payment, while that ledger lasts (4B-10): one statement line is one sum of money, recorded once.
+     * 15 BR-03: whether a live receipt records this statement reference: one statement line is one sum of money,
+     * recorded once.
      */
     boolean referenceInUse(String reference);
 

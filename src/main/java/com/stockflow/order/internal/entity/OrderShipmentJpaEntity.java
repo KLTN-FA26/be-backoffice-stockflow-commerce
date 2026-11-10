@@ -65,9 +65,6 @@ public class OrderShipmentJpaEntity extends BaseEntity {
     @Column(name = "failure_note", length = 500)
     private String failureNote;
 
-    @Column(name = "billed_amount", nullable = false, precision = 19, scale = 4)
-    private BigDecimal billedAmount = BigDecimal.ZERO;
-
     /** G4-2a: what the customer portal shows of the shipment, written once at the handover. */
     @Column(name = "shipment_code", updatable = false, length = 48)
     private String shipmentCode;
@@ -108,13 +105,12 @@ public class OrderShipmentJpaEntity extends BaseEntity {
     }
 
     public void apply(OrderShipmentStatus status, Instant outcomeAt, UUID outcomeBy, DeliveryFailureReason failureReason,
-                      String failureNote, BigDecimal billedAmount) {
+                      String failureNote) {
         this.status = status;
         this.outcomeAt = outcomeAt;
         this.outcomeBy = outcomeBy;
         this.failureReason = failureReason;
         this.failureNote = failureNote;
-        this.billedAmount = billedAmount;
     }
 
     public UUID getOrderId() { return orderId; }
@@ -127,5 +123,4 @@ public class OrderShipmentJpaEntity extends BaseEntity {
     public UUID getOutcomeBy() { return outcomeBy; }
     public DeliveryFailureReason getFailureReason() { return failureReason; }
     public String getFailureNote() { return failureNote; }
-    public BigDecimal getBilledAmount() { return billedAmount; }
 }
