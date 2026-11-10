@@ -1,105 +1,135 @@
 -- =============================================================================
--- Orphan report: for every cross-module reference, how many rows point at nothing.
--- Read-only. Run it before applying a db/pending contract file, and after V20260928004000 warned
--- that a key stayed NOT VALID:
+-- Orphan report for the final schema: how many rows point at nothing through a reference that has NO foreign key.
+-- Read-only. Run it on any database, after the demo seed or real data:
 --
 --   docker exec -i stockflow-postgres psql -U stockflow -d stockflow < tools/db/orphan_check.sql
 --
--- "live"    keys exist since V20260928004000; orphans here mean old test rows. Fix or delete
---           them, then apply db/pending/C0__validate_foreign_keys.sql.
--- "C1".."C4" keys a contract step will add; they must be 0 before that step can run.
+-- Since ADR-0007 and the contract steps C1-C4 almost every cross-module reference is a real foreign key, and a key
+-- cannot be orphaned, so this file no longer counts those (the old "live" and "C1".."C4" rows were vacuous: they counted
+-- rows the database already refuses). What is left is the references that carry a value without a key.
+--
+--   section 1  value references (SKU, order number, LPN, carrier code) and ids whose column has no key: every row is
+--              the number of children whose target is missing, and every row must be 0.
+--   section 2  foreign keys the database holds NOT VALID (empty = nothing to clean).
+--   section 3  reference-looking columns (uuid / text named *_id, *_by, sku, lpn, ...) with neither a key nor an entry
+--              in the reviewed list. A row here is a new reference nobody decided about: give it a key, count it in
+--              section 1, or list it as reviewed with the reason. Empty = every such column is accounted for.
 -- =============================================================================
 
-WITH checks(step, reference, orphans) AS (
+WITH checks(reference, orphans) AS (
     VALUES
-    ('live', 'inventory.stock_reservation.order_id -> ordering.customer_order',
-        (SELECT count(*) FROM inventory.stock_reservation c WHERE c.order_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM ordering.customer_order p WHERE p.id = c.order_id))),
-    ('live', 'ordering.order_line_reservation.reservation_id -> inventory.stock_reservation',
-        (SELECT count(*) FROM ordering.order_line_reservation c WHERE NOT EXISTS (SELECT 1 FROM inventory.stock_reservation p WHERE p.id = c.reservation_id))),
-    ('live', 'ordering.customer_order.customer_id -> customer.customer',
-        (SELECT count(*) FROM ordering.customer_order c WHERE c.customer_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM customer.customer p WHERE p.id = c.customer_id))),
-    ('live', 'ordering.order_line.design_snapshot_id -> design.design_snapshot',
-        (SELECT count(*) FROM ordering.order_line c WHERE c.design_snapshot_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM design.design_snapshot p WHERE p.id = c.design_snapshot_id))),
-    ('live', 'ordering.order_hold.resolved_by -> identity.app_user',
-        (SELECT count(*) FROM ordering.order_hold c WHERE c.resolved_by IS NOT NULL AND NOT EXISTS (SELECT 1 FROM identity.app_user p WHERE p.id = c.resolved_by))),
-    ('live', 'payment.installment.order_id -> ordering.customer_order',
-        (SELECT count(*) FROM payment.installment c WHERE NOT EXISTS (SELECT 1 FROM ordering.customer_order p WHERE p.id = c.order_id))),
-    ('live', 'fulfillment.pick.order_id -> ordering.customer_order',
-        (SELECT count(*) FROM fulfillment.pick c WHERE NOT EXISTS (SELECT 1 FROM ordering.customer_order p WHERE p.id = c.order_id))),
-    ('live', 'fulfillment.pick.assigned_user_id -> identity.app_user',
-        (SELECT count(*) FROM fulfillment.pick c WHERE c.assigned_user_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM identity.app_user p WHERE p.id = c.assigned_user_id))),
-    ('live', 'fulfillment.shipment.order_id -> ordering.customer_order',
-        (SELECT count(*) FROM fulfillment.shipment c WHERE NOT EXISTS (SELECT 1 FROM ordering.customer_order p WHERE p.id = c.order_id))),
-    ('live', 'chat.conversation.customer_id -> customer.customer',
-        (SELECT count(*) FROM chat.conversation c WHERE NOT EXISTS (SELECT 1 FROM customer.customer p WHERE p.id = c.customer_id))),
-    ('live', 'chat.conversation.order_id -> ordering.customer_order',
-        (SELECT count(*) FROM chat.conversation c WHERE c.order_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM ordering.customer_order p WHERE p.id = c.order_id))),
-    ('live', 'chat.conversation.assigned_agent_id -> identity.app_user',
-        (SELECT count(*) FROM chat.conversation c WHERE c.assigned_agent_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM identity.app_user p WHERE p.id = c.assigned_agent_id))),
-    ('live', 'design.design_draft.customer_id -> customer.customer',
-        (SELECT count(*) FROM design.design_draft c WHERE NOT EXISTS (SELECT 1 FROM customer.customer p WHERE p.id = c.customer_id))),
-    ('live', 'design.design_draft.{owner,reviewed_by} -> identity.app_user',
-        (SELECT count(*) FROM design.design_draft c WHERE EXISTS (
-            SELECT 1 FROM unnest(ARRAY[c.owner_user_id, c.reviewed_by]) u(id)
-             WHERE u.id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM identity.app_user p WHERE p.id = u.id)))),
-    ('live', 'design.design_snapshot.{confirmed_by,reviewed_by} -> identity.app_user',
-        (SELECT count(*) FROM design.design_snapshot c WHERE EXISTS (
-            SELECT 1 FROM unnest(ARRAY[c.confirmed_by, c.reviewed_by]) u(id)
-             WHERE u.id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM identity.app_user p WHERE p.id = u.id)))),
-    ('live', 'design.design_decision.actor_id -> identity.app_user',
-        (SELECT count(*) FROM design.design_decision c WHERE NOT EXISTS (SELECT 1 FROM identity.app_user p WHERE p.id = c.actor_id))),
-    ('live', 'design.design_project.customer_id -> customer.customer',
-        (SELECT count(*) FROM design.design_project c WHERE NOT EXISTS (SELECT 1 FROM customer.customer p WHERE p.id = c.customer_id))),
-    ('live', 'design.design_project.owner_user_id -> identity.app_user',
-        (SELECT count(*) FROM design.design_project c WHERE NOT EXISTS (SELECT 1 FROM identity.app_user p WHERE p.id = c.owner_user_id))),
-    ('live', 'design.design_review_round.submitted_by -> identity.app_user',
-        (SELECT count(*) FROM design.design_review_round c WHERE NOT EXISTS (SELECT 1 FROM identity.app_user p WHERE p.id = c.submitted_by))),
-    ('live', 'design.design_project_quote_request.requested_by -> identity.app_user',
-        (SELECT count(*) FROM design.design_project_quote_request c WHERE NOT EXISTS (SELECT 1 FROM identity.app_user p WHERE p.id = c.requested_by))),
-    ('live', 'design.design_project_event.actor_id -> identity.app_user',
-        (SELECT count(*) FROM design.design_project_event c WHERE NOT EXISTS (SELECT 1 FROM identity.app_user p WHERE p.id = c.actor_id))),
-    ('live', 'design.design_quote_request.{requested_by,closed_by} -> identity.app_user',
-        (SELECT count(*) FROM design.design_quote_request c WHERE EXISTS (
-            SELECT 1 FROM unnest(ARRAY[c.requested_by, c.closed_by]) u(id)
-             WHERE u.id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM identity.app_user p WHERE p.id = u.id)))),
-    ('live', 'customer.customer.user_id -> identity.app_user',
-        (SELECT count(*) FROM customer.customer c WHERE c.user_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM identity.app_user p WHERE p.id = c.user_id))),
-    ('live', 'notification.preference.user_id -> identity.app_user',
-        (SELECT count(*) FROM notification.preference c WHERE NOT EXISTS (SELECT 1 FROM identity.app_user p WHERE p.id = c.user_id))),
-
-    ('C1', 'ordering.order_line.sku -> product.variants',
-        (SELECT count(*) FROM ordering.order_line c WHERE NOT EXISTS (SELECT 1 FROM product.variants p WHERE p.sku = c.sku))),
-    ('C1', 'catalog.catalog_entry.sku -> product.variants',
-        (SELECT count(*) FROM catalog.catalog_entry c WHERE NOT EXISTS (SELECT 1 FROM product.variants p WHERE p.sku = c.sku))),
-    ('C1', 'reporting.product_sales_summary.sku -> product.variants',
-        (SELECT count(*) FROM reporting.product_sales_summary c WHERE NOT EXISTS (SELECT 1 FROM product.variants p WHERE p.sku = c.sku))),
-    ('C1', 'design.design_draft.product_id -> product.products',
-        (SELECT count(*) FROM design.design_draft c WHERE NOT EXISTS (SELECT 1 FROM product.products p WHERE p.id = c.product_id))),
-    ('C2', 'warehouse.warehouse without prefix/address/map frame',
-        (SELECT count(*) FROM warehouse.warehouse WHERE prefix IS NULL OR address IS NULL OR map_unit IS NULL)),
-    ('C2', 'inventory.stock_item.location_code -> warehouse.storage_location',
-        (SELECT count(*) FROM inventory.stock_item c WHERE NOT EXISTS (SELECT 1 FROM warehouse.storage_location p WHERE p.location_code = c.location_code))),
-    ('live', 'catalog.customer_price.customer_id -> customer.customer',
-        (SELECT count(*) FROM catalog.customer_price c WHERE NOT EXISTS (SELECT 1 FROM customer.customer p WHERE p.id = c.customer_id))),
-    ('live', 'catalog.customer_price.sku -> product.variants',
-        (SELECT count(*) FROM catalog.customer_price c WHERE NOT EXISTS (SELECT 1 FROM product.variants p WHERE p.sku = c.sku))),
-    ('live', 'customer.customer_status_history.changed_by -> identity.app_user',
-        (SELECT count(*) FROM customer.customer_status_history c WHERE c.changed_by IS NOT NULL AND NOT EXISTS (SELECT 1 FROM identity.app_user p WHERE p.id = c.changed_by))),
-    ('C2', 'warehouse.putaway_task.target_location_id -> warehouse.storage_location',
-        (SELECT count(*) FROM warehouse.putaway_task c WHERE c.target_location_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM warehouse.storage_location p WHERE p.id = c.target_location_id))),
-    ('C3', 'inventory.stock_item.sku -> inventory.inventory_items',
-        (SELECT count(*) FROM inventory.stock_item c WHERE NOT EXISTS (SELECT 1 FROM inventory.inventory_items p WHERE p.sku = c.sku))),
-    ('C3', 'warehouse.putaway_task.sku -> inventory.inventory_items',
-        (SELECT count(*) FROM warehouse.putaway_task c WHERE NOT EXISTS (SELECT 1 FROM inventory.inventory_items p WHERE p.sku = c.sku))),
-    ('C4', 'warehouse.putaway_task.goods_receipt_id -> procurement.goods_receipts',
-        (SELECT count(*) FROM warehouse.putaway_task c WHERE c.goods_receipt_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM procurement.goods_receipts p WHERE p.id = c.goods_receipt_id))),
-    ('C4', 'warehouse.putaway_task whose source does not match its receipt line (V20261112000200)',
-        (SELECT count(*) FROM warehouse.putaway_task WHERE (source = 'RECEIPT') <> (goods_receipt_line_id IS NOT NULL)))
+    ('catalog.catalog_entry.product_id -> product.products.id',
+        (SELECT count(*) FROM catalog.catalog_entry c WHERE c.product_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM product.products p WHERE p.id = c.product_id))),
+    ('design.design_draft.sku -> product.variants.sku',
+        (SELECT count(*) FROM design.design_draft c WHERE c.sku IS NOT NULL AND NOT EXISTS (SELECT 1 FROM product.variants p WHERE p.sku = c.sku))),
+    ('fulfillment.load_estimate.warehouse_id -> warehouse.warehouse.id',
+        (SELECT count(*) FROM fulfillment.load_estimate c WHERE c.warehouse_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM warehouse.warehouse p WHERE p.id = c.warehouse_id))),
+    ('fulfillment.load_estimate.source_id -> ordering.customer_order (source_type is only ORDER)',
+        (SELECT count(*) FROM fulfillment.load_estimate c WHERE c.source_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM ordering.customer_order p WHERE p.id = c.source_id))),
+    ('ordering.production_order_line.sku -> product.variants.sku',
+        (SELECT count(*) FROM ordering.production_order_line c WHERE c.sku IS NOT NULL AND NOT EXISTS (SELECT 1 FROM product.variants p WHERE p.sku = c.sku))),
+    ('ordering.return_request_discrepancy.sku -> product.variants.sku',
+        (SELECT count(*) FROM ordering.return_request_discrepancy c WHERE c.sku IS NOT NULL AND NOT EXISTS (SELECT 1 FROM product.variants p WHERE p.sku = c.sku))),
+    ('procurement.goods_receipt_return_cartons.sku -> product.variants.sku',
+        (SELECT count(*) FROM procurement.goods_receipt_return_cartons c WHERE c.sku IS NOT NULL AND NOT EXISTS (SELECT 1 FROM product.variants p WHERE p.sku = c.sku))),
+    ('procurement.goods_receipt_return_cartons.lpn -> inventory.stock_package.lpn',
+        (SELECT count(*) FROM procurement.goods_receipt_return_cartons c WHERE c.lpn IS NOT NULL AND NOT EXISTS (SELECT 1 FROM inventory.stock_package p WHERE p.lpn = c.lpn))),
+    ('fulfillment.carrier_event.carrier_code -> fulfillment.carrier.code',
+        (SELECT count(*) FROM fulfillment.carrier_event c WHERE c.carrier_code IS NOT NULL AND NOT EXISTS (SELECT 1 FROM fulfillment.carrier p WHERE p.code = c.carrier_code))),
+    ('fulfillment.pick.order_number -> ordering.customer_order.order_number',
+        (SELECT count(*) FROM fulfillment.pick c WHERE c.order_number IS NOT NULL AND NOT EXISTS (SELECT 1 FROM ordering.customer_order p WHERE p.order_number = c.order_number))),
+    ('inventory.stock_movement.order_number -> ordering.customer_order.order_number',
+        (SELECT count(*) FROM inventory.stock_movement c WHERE c.order_number IS NOT NULL AND NOT EXISTS (SELECT 1 FROM ordering.customer_order p WHERE p.order_number = c.order_number))),
+    ('inventory.stock_reservation.order_number -> ordering.customer_order.order_number',
+        (SELECT count(*) FROM inventory.stock_reservation c WHERE c.order_number IS NOT NULL AND NOT EXISTS (SELECT 1 FROM ordering.customer_order p WHERE p.order_number = c.order_number))),
+    ('payment.installment.order_number -> ordering.customer_order.order_number',
+        (SELECT count(*) FROM payment.installment c WHERE c.order_number IS NOT NULL AND NOT EXISTS (SELECT 1 FROM ordering.customer_order p WHERE p.order_number = c.order_number))),
+    ('payment.order_settlement.order_number -> ordering.customer_order.order_number',
+        (SELECT count(*) FROM payment.order_settlement c WHERE c.order_number IS NOT NULL AND NOT EXISTS (SELECT 1 FROM ordering.customer_order p WHERE p.order_number = c.order_number))),
+    ('payment.refund_record.order_number -> ordering.customer_order.order_number',
+        (SELECT count(*) FROM payment.refund_record c WHERE c.order_number IS NOT NULL AND NOT EXISTS (SELECT 1 FROM ordering.customer_order p WHERE p.order_number = c.order_number))),
+    ('ordering.return_request.order_number -> ordering.customer_order.order_number',
+        (SELECT count(*) FROM ordering.return_request c WHERE c.order_number IS NOT NULL AND NOT EXISTS (SELECT 1 FROM ordering.customer_order p WHERE p.order_number = c.order_number))),
+    ('reporting.processed_order_events.order_id -> ordering.customer_order.id',
+        (SELECT count(*) FROM reporting.processed_order_events c WHERE c.order_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM ordering.customer_order p WHERE p.id = c.order_id))),
+    ('reporting.processed_return_events.order_id -> ordering.customer_order.id',
+        (SELECT count(*) FROM reporting.processed_return_events c WHERE c.order_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM ordering.customer_order p WHERE p.id = c.order_id))),
+    ('reporting.processed_return_events.return_request_id -> ordering.return_request.id',
+        (SELECT count(*) FROM reporting.processed_return_events c WHERE c.return_request_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM ordering.return_request p WHERE p.id = c.return_request_id))),
+    ('reporting.processed_order_closures.order_id -> ordering.customer_order.id',
+        (SELECT count(*) FROM reporting.processed_order_closures c WHERE c.order_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM ordering.customer_order p WHERE p.id = c.order_id)))
 )
-SELECT step, reference, orphans, CASE WHEN orphans = 0 THEN 'ok' ELSE 'FIX' END AS status
+SELECT 'values' AS section, reference, orphans, CASE WHEN orphans = 0 THEN 'ok' ELSE 'FIX' END AS status
 FROM checks
-ORDER BY step, orphans DESC, reference;
+ORDER BY orphans DESC, reference;
 
--- Keys V20260928004000 had to leave NOT VALID on this database (empty = nothing to clean).
+-- Section 2: foreign keys left NOT VALID on this database.
 SELECT conrelid::regclass AS table_name, conname AS not_valid_key
 FROM pg_constraint WHERE contype = 'f' AND NOT convalidated ORDER BY 1, 2;
+
+-- Section 3: reviewed means polymorphic (the target table depends on another column), an idempotency or correlation id,
+-- an external system's id, the row's own identifier, or counted in section 1.
+WITH reviewed(col, why) AS (
+    VALUES
+    ('catalog.catalog_entry.product_id', 'counted in section 1'),
+    ('design.design_draft.sku', 'counted in section 1'),
+    ('fulfillment.load_estimate.warehouse_id', 'counted in section 1'),
+    ('fulfillment.load_estimate.source_id', 'counted in section 1'),
+    ('ordering.production_order_line.sku', 'counted in section 1'),
+    ('ordering.return_request_discrepancy.sku', 'counted in section 1'),
+    ('procurement.goods_receipt_return_cartons.sku', 'counted in section 1'),
+    ('procurement.goods_receipt_return_cartons.lpn', 'counted in section 1'),
+    ('fulfillment.carrier_event.carrier_code', 'counted in section 1'),
+    ('fulfillment.pick.order_number', 'counted in section 1'),
+    ('inventory.stock_movement.order_number', 'counted in section 1'),
+    ('inventory.stock_reservation.order_number', 'counted in section 1'),
+    ('payment.installment.order_number', 'counted in section 1'),
+    ('payment.order_settlement.order_number', 'counted in section 1'),
+    ('payment.refund_record.order_number', 'counted in section 1'),
+    ('ordering.return_request.order_number', 'counted in section 1'),
+    ('reporting.processed_order_events.order_id', 'counted in section 1'),
+    ('reporting.processed_return_events.order_id', 'counted in section 1'),
+    ('reporting.processed_return_events.return_request_id', 'counted in section 1'),
+    ('reporting.processed_order_closures.order_id', 'counted in section 1'),
+    ('chat.message.sender_id', 'customer or user, by sender type'),
+    ('fulfillment.carrier_booking.carrier_order_id', 'the carrier''s own id'),
+    ('fulfillment.dispatch_load.request_id', 'idempotency key'),
+    ('fulfillment.dispatch_load_package.scan_id', 'idempotency key of the scan'),
+    ('fulfillment.load_plan.request_id', 'idempotency key'),
+    ('fulfillment.shipment.request_id', 'idempotency key'),
+    ('fulfillment.shipment_event.carrier_event_id', 'the carrier''s event id'),
+    ('inventory.stock_lot.purchase_order_id', 'purchase orders are gone; historical id only'),
+    ('inventory.stock_lot.supplier_id', 'suppliers are gone; historical id only'),
+    ('inventory.stock_movement.reference_id', 'polymorphic: reference_type names the table'),
+    ('inventory.stock_reservation.request_id', 'idempotency key'),
+    ('inventory.stock_reservation.root_request_id', 'idempotency key'),
+    ('notification.delivery_log.provider_message_id', 'the provider''s own id'),
+    ('notification.user_notification.source_id', 'polymorphic: the source type names the table'),
+    ('ordering.customer_order.order_number', 'the order''s own number'),
+    ('ordering.customer_order.request_id', 'idempotency key'),
+    ('ordering.delay_alert.subject_id', 'redundant copy of production_order_id / delivery_batch_id, kept consistent by ck_delay_alert_subject'),
+    ('ordering.quote.request_id', 'idempotency key'),
+    ('ordering.return_request.request_id', 'idempotency key'),
+    ('payment.order_settlement.source_id', 'polymorphic: kind names the table'),
+    ('product.product_change_log.subject_id', 'polymorphic: subject_type names the table'),
+    ('product.variants.sku', 'the SKU''s own definition'),
+    ('inventory.stock_package.lpn', 'the carton''s own LPN'),
+    ('warehouse.storage_location.location_code', 'the location''s own code'),
+    ('reporting.processed_order_closures.closure_id', 'the closure event''s own id')
+)
+SELECT 'unreviewed' AS section, c.table_schema || '.' || c.table_name || '.' || c.column_name AS reference
+FROM information_schema.columns c
+JOIN information_schema.tables t USING (table_schema, table_name)
+WHERE t.table_type = 'BASE TABLE'
+  AND c.table_schema NOT IN ('pg_catalog', 'information_schema', 'public', 'platform')
+  AND c.data_type IN ('uuid', 'character varying', 'text')
+  AND (c.column_name LIKE '%\_id' OR c.column_name LIKE '%\_by'
+       OR c.column_name IN ('sku', 'lpn', 'location_code', 'order_number', 'carrier_code'))
+  AND c.column_name NOT IN ('id', 'created_by', 'last_modified_by')
+  AND NOT EXISTS (SELECT 1 FROM pg_constraint k
+                    JOIN pg_attribute a ON a.attrelid = k.conrelid AND a.attnum = ANY (k.conkey)
+                   WHERE k.contype = 'f'
+                     AND k.conrelid = (quote_ident(c.table_schema) || '.' || quote_ident(c.table_name))::regclass
+                     AND a.attname = c.column_name)
+  AND NOT EXISTS (SELECT 1 FROM reviewed r WHERE r.col = c.table_schema || '.' || c.table_name || '.' || c.column_name)
+ORDER BY 2;
