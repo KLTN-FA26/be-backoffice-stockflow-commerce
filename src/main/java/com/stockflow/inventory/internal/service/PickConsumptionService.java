@@ -211,7 +211,13 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
                 throw new BusinessException(ErrorCode.LOCATION_AREA_MISMATCH,
                         "%s is not a QUARANTINE area; a damaged carton goes to one".formatted(target));
             }
-            if (!locations.warehouseOf(target).equals(locations.warehouseOf(rowView.location()))) {
+            // Both resolved: two unknown places must not pass as "the same warehouse".
+            UUID targetWarehouse = locations.warehouseOf(target).orElseThrow(() ->
+                    new BusinessException(ErrorCode.LOCATION_NOT_FOUND, "No location " + target));
+            UUID cartonWarehouse = locations.warehouseOf(rowView.location()).orElseThrow(() ->
+                    new IllegalStateException("Carton %s stands at an unknown location %s"
+                            .formatted(command.lpn(), rowView.location())));
+            if (!targetWarehouse.equals(cartonWarehouse)) {
                 throw new BusinessException(ErrorCode.MOVE_ACROSS_WAREHOUSES,
                         "%s is in another warehouse than carton %s".formatted(target, command.lpn()));
             }
