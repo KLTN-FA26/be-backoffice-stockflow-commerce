@@ -100,12 +100,15 @@ class PickListService implements PickLists {
     private final OrderReservations orderReservations;
     private final PickDamageReporting damages;
     private final TransactionOperations tx;
+    private final com.stockflow.fulfillment.internal.repository.PackJpaRepository packs;
 
 
     PickListService(PickJpaRepository picks, PickLineJpaRepository pickLines, OrderService orders,
                     InventoryService inventory, InventoryControlService itemControls, PickConsumption consumption,
                     WarehouseService warehouses, Clock clock, OrderReservations orderReservations,
-                    PickDamageReporting damages, TransactionOperations tx) {
+                    PickDamageReporting damages, TransactionOperations tx,
+                    com.stockflow.fulfillment.internal.repository.PackJpaRepository packs) {
+        this.packs = packs;
         this.damages = damages;
         this.tx = tx;
         this.orderReservations = orderReservations;
@@ -415,8 +418,25 @@ class PickListService implements PickLists {
         if (pick.getStatus() == PickStatus.CANCELLED) {
             throw new BusinessException(ErrorCode.PICK_TASK_STATE_CONFLICT, "The task was cancelled with its order");
         }
+        // Review L1: a task whose packing is complete has handed its cartons on (a shipment); reopening its picking
+        // would leave the pack finished under a task picking again. The rest of such an order is a new delivery round,
+        // which docs 07 §4.1 step 2 gives a task of its own (4C-6 / the delivery schedule) - and an order has one task
+        // here (fulfillment.pick.order_id is unique), so it is refused rather than opened as a second task.
+        packs.findByPickId(pick.getId())
+                .filter(pack -> pack.getStatus() != com.stockflow.fulfillment.internal.domain.PackStatus.PENDING
+                        && pack.getStatus() != com.stockflow.fulfillment.internal.domain.PackStatus.PACKING)
+                .ifPresent(pack -> {
+                    throw new BusinessException(ErrorCode.PICK_TASK_STATE_CONFLICT, ("Packing of task %s is %s; its "
+                            + "cartons left with a shipment, so nothing is added to it").formatted(taskId,
+                            pack.getStatus()));
+                });
         OrderSummary order = TaskAccess.orderInFulfilment(orders, pick);
         List<PickLine> added = planLines(pick, order);
+        if (!added.isEmpty() && order.status() != com.stockflow.order.api.OrderStatus.ON_HOLD) {
+            // 07 §4.3 step 7: the order is picking again with its task (READY_TO_FULFILL -> PICKING; an order already
+            // picking is left alone). An order on hold stays held: the hold resolves back to where it was.
+            orders.startPicking(pick.getOrderId(), actor.userId());
+        }
         Map<String, String> barcodes = barcodesOf(added.stream().map(PickLine::sku).toList());
         return added.stream().map(line -> view(taskId, line, barcodes.get(line.sku()))).toList();
     }

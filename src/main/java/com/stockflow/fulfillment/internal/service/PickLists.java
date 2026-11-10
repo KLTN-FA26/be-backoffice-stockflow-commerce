@@ -93,12 +93,15 @@ public interface PickLists {
     /**
      * A top-up (07 §4.3 step 7, BR-07; team plan 4C-5): the order holds cartons that no line of its task takes yet - the
      * rest of an order that waited for stock, allocated since - and they become lines of the same task, after its last
-     * stop, keeping its destination. A STAGED or PICKED task goes back to PICKING for its assignee. The warehouse
-     * manager (or the coordinator). Nothing new to plan is answered with no lines, changing nothing.
+     * stop, keeping its destination. A STAGED or PICKED task goes back to PICKING for its assignee, and the order to
+     * PICKING if it is not (unless it is on hold). Refused once the task's packing is complete: its cartons left with a
+     * shipment, and the rest is a new delivery round. The warehouse manager (or the coordinator). Nothing new to plan
+     * is answered with no lines, changing nothing.
      *
      * @return the lines added
      * @throws com.stockflow.common.error.BusinessException {@code NOT_FOUND}; {@code OUT_OF_DATA_SCOPE};
-     *         {@code PICK_TASK_STATE_CONFLICT} when the task is cancelled, or its order is no longer in fulfilment;
+     *         {@code PICK_TASK_STATE_CONFLICT} when the task is cancelled or its packing complete, or its order is no
+     *         longer in fulfilment;
      *         {@code FULFILLMENT_HOLDS_OUTSIDE_WAREHOUSE}
      */
     List<PickLineView> topUp(UUID taskId, CurrentUser actor);
