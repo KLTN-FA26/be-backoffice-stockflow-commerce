@@ -69,7 +69,7 @@ BEGIN
     END IF;
     -- Every SKU is lot-tracked (01 BR-17): live stock carries its lot.
     IF nullif(btrim(NEW.lot_number), '') IS NULL THEN
-        RAISE EXCEPTION 'Stock of % carries a lot number: every SKU is lot-tracked', NEW.sku USING ERRCODE = '23514';
+        RAISE EXCEPTION 'Stock of % needs a lot number: every SKU is lot-tracked', NEW.sku USING ERRCODE = '23514';
     END IF;
     IF NEW.received_at > clock_timestamp() + interval '1 minute' THEN
         RAISE EXCEPTION 'Invalid receipt date' USING ERRCODE = '23514';
