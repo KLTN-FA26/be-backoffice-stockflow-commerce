@@ -6,8 +6,8 @@ import com.stockflow.common.audit.Auditable;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.persistence.Pages;
-import com.stockflow.payment.api.OrderPayables;
-import com.stockflow.payment.api.PayableOrder;
+import com.stockflow.payment.api.InstallmentOrders;
+import com.stockflow.payment.api.InstallmentOrder;
 import com.stockflow.payment.internal.domain.OrderSettlement;
 import com.stockflow.payment.internal.domain.RefundRecord;
 import com.stockflow.payment.internal.domain.RefundStanding;
@@ -36,7 +36,7 @@ import java.util.UUID;
  *   <li><b>Void</b>: a record made wrong is voided with a reason and kept; its amount is to refund again.</li>
  * </ul>
  *
- * <p>Locks: the order first ({@link OrderPayables#lockForPayment}, as every money movement takes it), so two records
+ * <p>Locks: the order first ({@link InstallmentOrders#lockForPayment}, as every money movement takes it), so two records
  * for one order are decided one after the other against the same settlements; {@code tg_refund_record_total} says the
  * cap again at commit.</p>
  *
@@ -61,10 +61,10 @@ public class RefundService {
 
     private final SettlementBook book;
     private final RefundSearch search;
-    private final OrderPayables orders;
+    private final InstallmentOrders orders;
     private final Clock clock;
 
-    RefundService(SettlementBook book, RefundSearch search, OrderPayables orders, Clock clock) {
+    RefundService(SettlementBook book, RefundSearch search, InstallmentOrders orders, Clock clock) {
         this.book = book;
         this.search = search;
         this.orders = orders;
@@ -79,7 +79,7 @@ public class RefundService {
     @Auditable(action = AuditAction.CREATE, resourceType = "refund-record",
             resourceId = "#result?.records()?.getLast()?.id()")
     public OrderRefundDetail record(RecordRefundCommand command) {
-        PayableOrder order = orders.lockForPayment(command.orderId())
+        InstallmentOrder order = orders.lockForPayment(command.orderId())
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No order " + command.orderId()));
         Instant now = clock.instant();
         LocalDate today = LocalDate.ofInstant(now, InstallmentService.BUSINESS_ZONE);
@@ -135,7 +135,7 @@ public class RefundService {
      */
     @Transactional(readOnly = true)
     public OrderRefundDetail detail(UUID orderId, UUID ownCustomerId) {
-        PayableOrder order = orders.find(orderId)
+        InstallmentOrder order = orders.find(orderId)
                 .filter(o -> ownCustomerId == null || ownCustomerId.equals(o.customerId()))
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No order " + orderId));
         List<OrderSettlement> settlements = book.ofOrder(orderId);

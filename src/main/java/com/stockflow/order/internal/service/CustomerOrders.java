@@ -4,8 +4,6 @@ import com.stockflow.common.api.PageResponse;
 import com.stockflow.order.api.CancellationReasonCode;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.OrderSummary;
-import com.stockflow.order.api.PaymentStatus;
-import com.stockflow.order.api.PaymentTerm;
 
 import java.math.BigDecimal;
 import java.time.Instant;
@@ -130,11 +128,6 @@ public interface CustomerOrders {
                          CancellationReasonCode reasonCode) {
     }
 
-    /** @param depositRequired null unless the order is on DEPOSIT terms; {@code creditTermDays} only on CREDIT */
-    record Payment(PaymentStatus status, BigDecimal paidAmount, BigDecimal depositRequired,
-                   Integer creditTermDays) {
-    }
-
     /**
      * One shipment of the order as the customer reads it (G4-2a, kltn-docs 09 BR-05): from its handover to the carrier
      * on. Who handed it over or recorded its outcome, the note on a failure, the money it carries: none of it is here.
@@ -152,10 +145,13 @@ public interface CustomerOrders {
      *                         {@code UNDER_REVIEW}, never the internal reason
      * @param timeline         oldest first
      * @param shipments        handed over to a carrier, oldest first; empty before the first handover
+     *
+     * <p>No payment block since 4B-10: the order has no payment terms or money of its own - the customer reads its
+     * contract's installments ({@code GET /api/v1/installments/me/orders/{orderId}}).</p>
      */
     record Detail(UUID orderId, String orderNumber, OrderStatus status, StatusGroup statusGroup,
-                  String holdReasonPublic, PaymentTerm paymentTerm, BigDecimal total, String currency,
-                  Instant placedAt, OrderSummary.AddressSummary shippingAddress, Payment payment, List<Line> lines,
+                  String holdReasonPublic, BigDecimal total, String currency,
+                  Instant placedAt, OrderSummary.AddressSummary shippingAddress, List<Line> lines,
                   List<TimelineEntry> timeline, DeliveryState deliveryState, AllowedActions allowedActions,
                   CancellationRequestView cancellationRequest, List<Shipment> shipments, Charges charges) {
 

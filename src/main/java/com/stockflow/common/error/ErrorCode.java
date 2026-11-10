@@ -133,7 +133,6 @@ public enum ErrorCode {
     CANCELLATION_REQUEST_NOT_FOUND("Cancellation request not found", 404),
     /** SCRUM-243: no return request by that id - or not the caller's own, which is not revealed. */
     RETURN_REQUEST_NOT_FOUND("Return request not found", 404),
-    RECEIVABLE_NOT_FOUND("Receivable not found", 404),
     RESERVATION_NOT_FOUND("Stock reservation not found", 404),
     /** The SKU has no inventory item yet: its logistics data must be completed first (docs 01 BR-03). */
     INVENTORY_ITEM_NOT_FOUND("No inventory item for this SKU", 404),
@@ -400,8 +399,6 @@ public enum ErrorCode {
     ORDER_SHIPPING_WAREHOUSE_MISMATCH("The order ships from another warehouse", 409),
     /** 4B-5: an order confirmed by its contract holds no stock until its shipping warehouse is chosen (4B-7). */
     ORDER_STOCK_NOT_HELD("This order holds no stock yet; its shipping warehouse is chosen and its stock held first", 409),
-    /** 4B-5: an order of a contract is paid by the contract's installments, not by the order's own terms. */
-    ORDER_PAID_BY_CONTRACT("This order is paid by its sales contract's installments", 409),
     /** 4B-4: stockflow.order.seller.* is blank in this deployment. */
     SELLER_PROFILE_UNAVAILABLE("The seller's company details are not configured; contracts cannot be drawn up", 503),
     /**
@@ -412,8 +409,6 @@ public enum ErrorCode {
     /** 4B-2 (kltn-docs 01 BR-03, BR-11): a SKU is sold in cartons, and this one has no single carton unit. */
     CARTON_SPEC_MISSING("This SKU has no carton specification; it is sold in cartons", 409),
     ORDER_NOT_QUOTED("This order was not placed from a quote; order it again at the current price", 409),
-    /** A deposit order is released only once the deposit has arrived (kltn-docs 15 §4.2). */
-    ORDER_DEPOSIT_NOT_RECEIVED("The deposit for this order has not arrived yet", 409),
     /**
      * A legacy print line - a blank with a design snapshot, placed before lines named the customer's own SKU (4B-2) -
      * names the blank its design is printed on, whose printed goods were never received into stock: releasing would
@@ -482,7 +477,6 @@ public enum ErrorCode {
     RETURN_CUSTOMER_NOT_ACTIVE("The customer account is not active", 409),
     /** Returned goods are received into a quarantine or QC area, never straight onto a bin (OQ-12). */
     RETURN_RECEIVING_LOCATION_INVALID("Returned goods are received into a quarantine or QC area of the warehouse", 409),
-    PAYMENT_TERM_NOT_ALLOWED("This payment term is not available for this order", 409),
     /** SCRUM-427: credit approval or refusal on an order that is not waiting for one. */
     ORDER_NOT_ON_CREDIT_HOLD("This order is not waiting for a credit decision", 409),
     /** G3-2 (SCRUM-246/247): the order's lifecycle has no edge from its status to the one asked for. */
@@ -503,29 +497,8 @@ public enum ErrorCode {
     ORDER_SHIPMENT_QUANTITY_EXCEEDED("More than this order line has left to ship", 409),
     /** G3-2: a shipment outcome its status does not allow (kltn-docs 09 §5). */
     ORDER_SHIPMENT_INVALID_TRANSITION("This shipment cannot move to that status now", 409),
-    /** SCRUM-431, kltn-docs 15 BR-07: one bank statement line is recorded once. */
-    TRANSFER_REFERENCE_ALREADY_RECORDED("This transfer was already recorded", 409),
-    ALLOCATION_CUSTOMER_MISMATCH("This receivable or order belongs to another customer", 409),
     /** SCRUM-431, kltn-docs 15 §4.3 step 4: an overdue customer gets no new credit until they pay. */
     CUSTOMER_CREDIT_OVERDUE("The customer has overdue receivables", 409),
-    /** G2-3 (the money ledger): no recorded transfer by that id. */
-    TRANSFER_NOT_FOUND("Transfer not found", 404),
-    /** G2-3: no allocation by that id on this transfer. */
-    ALLOCATION_NOT_FOUND("Allocation not found", 404),
-    /** G2-3: more than the transfer still has unallocated (15 BR-05: money is never spent twice). */
-    ALLOCATION_EXCEEDS_TRANSFER("More than this transfer has left to allocate", 409),
-    /** G2-3: more than the order may still take - its value less what it holds, owes on receivables or pays the carrier. */
-    ALLOCATION_EXCEEDS_AMOUNT_DUE("More than this order still has to be paid", 409),
-    /** G2-3, 15 edge "tiền về sau khi đơn đã huỷ": the money stays the customer's credit, for another order or a refund. */
-    ALLOCATION_ORDER_CANCELLED("This order is cancelled: keep the money as the customer's credit or refund it", 409),
-    /** G2-3: a draft, settled or credit order takes no money by allocation (a credit order is paid on its receivables). */
-    ALLOCATION_ORDER_NOT_PAYABLE("This order does not take a payment now", 409),
-    /** G2-3, 15 BR-06: an allocation is reversed once, and a reversal is not reversed. */
-    ALLOCATION_ALREADY_REVERSED("This allocation was already reversed", 409),
-    /** G2-3: taking the money back would leave a confirmed order unpaid; the accountant must agree to hold it. */
-    PAYMENT_REVERSAL_NEEDS_HOLD("Taking this money back leaves a confirmed order unpaid: confirm putting it on hold", 409),
-    /** G2-3: money already refunded, or the order settled, closed or cancelled: the reversal would rewrite history. */
-    PAYMENT_REVERSAL_NOT_ALLOWED("This payment can no longer be taken back", 409),
     /** 4B-6: no installment with that id (for a customer: none of theirs). */
     INSTALLMENT_NOT_FOUND("Installment not found", 404),
     /** 4B-6, 15 BR-05: a paid or cancelled installment takes no more money. */
@@ -559,26 +532,10 @@ public enum ErrorCode {
      * the client asks the customer, then resends with {@code confirmDuplicate: true}.
      */
     DUPLICATE_ORDER_SUSPECTED("An order with the same items was placed recently; confirm to place another", 409),
-    /** G2-3 (15 §4.2 step 3): the customer's terms do not let the balance be collected that way. */
-    BALANCE_POLICY_NOT_ALLOWED("This customer may not use that way of paying the balance", 409),
-    /**
-     * BALCREDIT (lead's decision 2026-10-21): a deposit order's balance on credit would take the customer past their
-     * credit limit, or they are overdue. Refused at placement, never held: Sales changes the terms.
-     */
-    BALANCE_CREDIT_LIMIT_EXCEEDED("The balance on credit would exceed the customer's credit limit", 409),
     /** PACK-PARTIAL (lead's decision 2026-10-21): the order does not allow a partial shipment; Sales decides. */
     ORDER_PARTIAL_SHIPMENT_NOT_ALLOWED("This order does not allow partial shipments", 409),
     /** PACK-PARTIAL: whether the order may ship in parts can no longer change once everything left or it is closed. */
     ORDER_PARTIAL_SHIPMENT_LOCKED("Partial shipment can no longer be changed on this order", 409),
-    /**
-     * G2-3: a carrier remittance names a receivable the customer pays themselves. Only receivables billed before COD
-     * was removed (V20261108000400) are the carrier's.
-     */
-    RECEIVABLE_NOT_CARRIER_COLLECTED("This receivable is not collected by a carrier", 409),
-    /** G2-3: the customer paid this balance to the carrier; record the carrier's remittance instead. */
-    RECEIVABLE_CARRIER_COLLECTED("The carrier collects this amount; record the carrier's remittance instead", 409),
-    /** G2-3: nothing is outstanding on this receivable; money for it again would be collected twice. */
-    RECEIVABLE_SETTLED("This receivable is paid in full", 409),
     /** SCRUM-466: a task is picked in one warehouse; the order's stock is held in more than one, or elsewhere. */
     FULFILLMENT_HOLDS_OUTSIDE_WAREHOUSE("Stock held for this order is in another warehouse", 409),
     /** SCRUM-267 (docs 07 step 6): the bin scanned is not the one this pick line takes its goods from. */

@@ -1,7 +1,6 @@
 package com.stockflow.order.api;
 
 import java.util.Arrays;
-import java.util.EnumSet;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -168,27 +167,6 @@ public enum OrderStatus {
     }
 
     /**
-     * Whether a credit order in this status counts against its customer's credit limit on the order's side (kltn-docs
-     * 15 BR-03): the part of it not yet billed as a receivable. Written here, as one exhaustive switch, so that a status
-     * added later must be classified - a status missing from a hand-written SQL list let a credit order fall out of
-     * the exposure and the customer order past the limit (the money risk of the G3-2 audit).
-     *
-     * <p>Counted while the order may still bill something: from CONFIRMED until every shipment has an outcome. What a
-     * delivered shipment billed is the receivables' to count, and the query subtracts it, so a split order is counted
-     * once ({@code CreditChecks.undeliveredCreditExposure}). From DELIVERED on, everything delivered was billed and the
-     * receivables carry it; a cancelled order owes nothing on its own side (a fee it owes is a receivable too). The
-     * credit hold is left out by the query, not here: an order over its limit is not credit given yet.</p>
-     */
-    public boolean countsTowardCreditExposure() {
-        return switch (this) {
-            case CONFIRMED, AWAITING_STOCK, IN_PRODUCTION, READY_TO_FULFILL, PICKING, PARTIALLY_FULFILLED, PACKED,
-                 ON_HOLD, SHIPPED, DELIVERY_FAILED -> true;
-            case DRAFT, PENDING_CONTRACT, PENDING_PAYMENT, DELIVERED, RETURN_REQUESTED, RETURNED, REFUNDED,
-                 PARTIALLY_REFUNDED, COMPLETED, CANCELLED, CLOSED -> false;
-        };
-    }
-
-    /**
      * The statuses an order may be put on hold from, and resolved back to (17 §4.9 step 35, §5, 09 edge "sai địa chỉ").
      */
     public boolean mayBePutOnHold() {
@@ -269,16 +247,5 @@ public enum OrderStatus {
         return Arrays.stream(values())
                 .flatMap(from -> Arrays.stream(values()).filter(from::canTransitionTo).map(to -> from + ">" + to))
                 .collect(Collectors.toCollection(java.util.TreeSet::new));
-    }
-
-    /** The statuses {@link #countsTowardCreditExposure} names, for the exposure query. */
-    public static Set<OrderStatus> creditExposureStatuses() {
-        EnumSet<OrderStatus> counted = EnumSet.noneOf(OrderStatus.class);
-        for (OrderStatus status : values()) {
-            if (status.countsTowardCreditExposure()) {
-                counted.add(status);
-            }
-        }
-        return counted;
     }
 }

@@ -51,12 +51,6 @@ public interface PaymentService {
     java.util.Optional<OrderSettlementResult> settleRemainderClosure(SettleRemainderClosureCommand command);
 
     /**
-     * The order's money in the ledger now (G2-3). The order module reads it under the order's row lock at the handover:
-     * every allocation takes that lock first, so one committed a moment ago is counted.
-     */
-    OrderLedger ledgerOf(UUID orderId);
-
-    /**
      * The account customers transfer to (SCRUM-193), from this deployment's configuration; empty while any of its parts
      * is not set, so a customer is never shown half an account - or a demo one.
      */

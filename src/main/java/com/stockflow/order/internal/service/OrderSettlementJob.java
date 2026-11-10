@@ -39,22 +39,26 @@ class OrderSettlementJob {
     }
 
     /**
-     * Batch after batch until nothing is left (review of G3-2: one batch a night fell behind), bounded per run. A batch
-     * in which nothing moved ends the run: what is left is refused by the aggregate or failing, and would come back in
-     * the same order - it is tried again the next night. Each order is its own transaction, so a run cut short by the
-     * lock's limit leaves every order either done or untouched.
+     * Batch after batch until nothing is left (review of G3-2: one batch a night fell behind), bounded per run. What the
+     * aggregate refuses (still owing on its installments, a return open) or what fails stays a candidate, in the same
+     * place: the next batch skips as many as were left behind, so they do not hold back the orders after them (4B-10 -
+     * the query can no longer tell an owing order, which is payment's to say). They are tried again the next night. Each
+     * order is its own transaction, so a run cut short by the lock's limit leaves every order either done or
+     * untouched.
      */
     private int drain(boolean complete) {
         int done = 0;
+        int leftBehind = 0;
         for (int batch = 0; batch < MAX_BATCHES; batch++) {
-            List<UUID> ids = complete ? settlements.completionCandidates(BATCH_SIZE)
-                    : settlements.closingCandidates(BATCH_SIZE);
+            List<UUID> ids = complete ? settlements.completionCandidates(leftBehind, BATCH_SIZE)
+                    : settlements.closingCandidates(leftBehind, BATCH_SIZE);
             int moved = 0;
             for (UUID orderId : ids) {
                 moved += run(orderId, complete);
             }
             done += moved;
-            if (ids.size() < BATCH_SIZE || moved == 0) {
+            leftBehind += ids.size() - moved;
+            if (ids.size() < BATCH_SIZE) {
                 break;
             }
         }

@@ -1,45 +1,25 @@
 package com.stockflow.customer.internal.entity;
 
 import com.stockflow.common.persistence.BaseEntity;
-import com.stockflow.customer.api.CommercialTerm;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
-import jakarta.persistence.EnumType;
-import jakarta.persistence.Enumerated;
 import jakarta.persistence.Table;
 
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.UUID;
 
-/** {@code customer.credit_profile}: one row per customer with terms (SCRUM-427). */
+/**
+ * {@code customer.credit_profile}: one row per customer with credit set (SCRUM-427). Since 4B-10 the payment-term
+ * columns ({@code allow_*}, {@code default_payment_term}, {@code deposit_percent}, {@code deposit_balance_policy}) are
+ * no longer mapped: their defaults keep their CHECKs true until 4B-11 drops them.
+ */
 @Entity
 @Table(name = "credit_profile", schema = "customer")
 public class CreditProfileJpaEntity extends BaseEntity {
 
     @Column(name = "customer_id", nullable = false, updatable = false)
     private UUID customerId;
-
-    @Column(name = "allow_prepaid", nullable = false)
-    private boolean allowPrepaid;
-
-    @Column(name = "allow_deposit", nullable = false)
-    private boolean allowDeposit;
-
-    @Column(name = "allow_credit", nullable = false)
-    private boolean allowCredit;
-
-    @Enumerated(EnumType.STRING)
-    @Column(name = "default_payment_term", nullable = false, length = 16)
-    private CommercialTerm defaultPaymentTerm;
-
-    @Column(name = "deposit_percent", precision = 5, scale = 2)
-    private BigDecimal depositPercent;
-
-    /** G2-3: how a deposit order's balance is collected; set exactly when deposits are allowed. */
-    @jakarta.persistence.Enumerated(jakarta.persistence.EnumType.STRING)
-    @Column(name = "deposit_balance_policy", length = 16)
-    private com.stockflow.customer.api.DepositBalancePolicy depositBalancePolicy;
 
     @Column(name = "credit_limit", precision = 19, scale = 4)
     private BigDecimal creditLimit;
@@ -68,14 +48,8 @@ public class CreditProfileJpaEntity extends BaseEntity {
         this.currency = currency;
     }
 
-    public void apply(boolean allowPrepaid, boolean allowDeposit, boolean allowCredit, CommercialTerm defaultPaymentTerm,
-                      BigDecimal depositPercent, BigDecimal creditLimit, Integer creditTermDays, UUID approvedBy,
-                      Instant approvedAt, String note) {
-        this.allowPrepaid = allowPrepaid;
-        this.allowDeposit = allowDeposit;
-        this.allowCredit = allowCredit;
-        this.defaultPaymentTerm = defaultPaymentTerm;
-        this.depositPercent = depositPercent;
+    public void apply(BigDecimal creditLimit, Integer creditTermDays, UUID approvedBy, Instant approvedAt,
+                      String note) {
         this.creditLimit = creditLimit;
         this.creditTermDays = creditTermDays;
         this.approvedBy = approvedBy;
@@ -83,18 +57,7 @@ public class CreditProfileJpaEntity extends BaseEntity {
         this.note = note;
     }
 
-    public void applyBalancePolicy(com.stockflow.customer.api.DepositBalancePolicy policy) {
-        this.depositBalancePolicy = policy;
-    }
-
-    public com.stockflow.customer.api.DepositBalancePolicy getDepositBalancePolicy() { return depositBalancePolicy; }
-
     public UUID getCustomerId() { return customerId; }
-    public boolean isAllowPrepaid() { return allowPrepaid; }
-    public boolean isAllowDeposit() { return allowDeposit; }
-    public boolean isAllowCredit() { return allowCredit; }
-    public CommercialTerm getDefaultPaymentTerm() { return defaultPaymentTerm; }
-    public BigDecimal getDepositPercent() { return depositPercent; }
     public BigDecimal getCreditLimit() { return creditLimit; }
     public Integer getCreditTermDays() { return creditTermDays; }
     public String getCurrency() { return currency; }

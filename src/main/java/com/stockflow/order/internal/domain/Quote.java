@@ -2,7 +2,6 @@ package com.stockflow.order.internal.domain;
 
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
-import com.stockflow.order.api.PaymentTerm;
 
 import java.math.BigDecimal;
 import java.time.Instant;
@@ -38,35 +37,29 @@ public final class Quote {
     private static final BigDecimal HUNDRED = BigDecimal.valueOf(100);
 
     /**
-     * The commercial content Sales edits while the quote is a draft.
+     * The commercial content Sales edits while the quote is a draft. No payment term or deposit share since 4B-10: how
+     * the customer pays is the sales contract's installment plan (15 BR-01).
      *
      * @param requestedDeliveryDate the date the customer asks to receive the goods (SCRUM-502, PROD-DUE): copied onto
      *                              every print line of the order the quote becomes. Null when the customer asked for
      *                              none.
      */
-    public record Offer(PaymentTerm paymentTerm, BigDecimal depositPercent, Instant validUntil, String terms,
-                        java.time.LocalDate requestedDeliveryDate, List<QuoteLine> lines, List<QuoteFee> fees) {
+    public record Offer(Instant validUntil, String terms, java.time.LocalDate requestedDeliveryDate,
+                        List<QuoteLine> lines, List<QuoteFee> fees) {
 
         /** An offer without fee lines. */
-        public Offer(PaymentTerm paymentTerm, BigDecimal depositPercent, Instant validUntil, String terms,
-                     java.time.LocalDate requestedDeliveryDate, List<QuoteLine> lines) {
-            this(paymentTerm, depositPercent, validUntil, terms, requestedDeliveryDate, lines, List.of());
+        public Offer(Instant validUntil, String terms, java.time.LocalDate requestedDeliveryDate,
+                     List<QuoteLine> lines) {
+            this(validUntil, terms, requestedDeliveryDate, lines, List.of());
         }
 
         /** An offer without a requested delivery date. */
-        public Offer(PaymentTerm paymentTerm, BigDecimal depositPercent, Instant validUntil, String terms,
-                     List<QuoteLine> lines) {
-            this(paymentTerm, depositPercent, validUntil, terms, null, lines, List.of());
+        public Offer(Instant validUntil, String terms, List<QuoteLine> lines) {
+            this(validUntil, terms, null, lines, List.of());
         }
 
         public Offer {
-            Objects.requireNonNull(paymentTerm, "paymentTerm");
             Objects.requireNonNull(validUntil, "validUntil");
-            if (depositPercent != null && (paymentTerm != PaymentTerm.DEPOSIT || depositPercent.signum() <= 0
-                    || depositPercent.compareTo(HUNDRED) >= 0)) {
-                throw new BusinessException(ErrorCode.VALIDATION_FAILED,
-                        "A deposit percentage belongs to a DEPOSIT quote and lies above 0 and below 100");
-            }
             terms = terms == null || terms.isBlank() ? null : terms.strip();
             if (terms != null && terms.length() > MAX_TEXT) {
                 throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Terms are at most " + MAX_TEXT + " characters");

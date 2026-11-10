@@ -1,14 +1,12 @@
 package com.stockflow.order.internal.service;
 
-import com.stockflow.contracts.PaymentCaptured;
-import com.stockflow.contracts.PaymentReversed;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.modulith.events.ApplicationModuleListener;
 import org.springframework.stereotype.Component;
 
 /**
- * Moves an order forward when money arrives, and back when the accountant takes it back.
+ * Moves an order forward when the installments it waits for are paid, and holds it when a voided receipt leaves it
+ * short (4B-6). Since 4B-10 these are the only money events: the money ledger's {@code PaymentCaptured} and
+ * {@code PaymentReversed} went with it.
  *
  * <p>There is no "payment failed" reaction: customers pay by bank transfer against the contract's instalments
  * (kltn-docs 15 BR-01), so no gateway ever reports a failed payment. The old {@code PaymentFailed} event had no
@@ -36,30 +34,10 @@ import org.springframework.stereotype.Component;
 @Component("orderPaymentEventListener")
 class PaymentEventListener {
 
-    private static final Logger log = LoggerFactory.getLogger(PaymentEventListener.class);
-
     private final OrderServiceImpl orders;
-
-    /** A receivable's payment; the fee kind pays a fee a closure left owed (re-review of #150). */
-    private static final String FEE_RECEIVABLE_ALLOCATION = "FEE_RECEIVABLE_ALLOCATION";
-
-    private static boolean ofReceivable(String source) {
-        return "RECEIVABLE_ALLOCATION".equals(source) || FEE_RECEIVABLE_ALLOCATION.equals(source);
-    }
 
     PaymentEventListener(OrderServiceImpl orders) {
         this.orders = orders;
-    }
-
-    /** Money in: counted once per payment; confirms the order when its terms are met (SCRUM-460). */
-    @ApplicationModuleListener
-    public void on(PaymentCaptured event) {
-        // A receivable's payment pays what a delivery billed: the order keeps it apart, so what it still has to bill
-        // (credit exposure, G3-2) is not lowered twice.
-        orders.recordPayment(event.orderId(), event.paymentId(), event.amount(), event.currency(),
-                ofReceivable(event.source()), FEE_RECEIVABLE_ALLOCATION.equals(event.source()));
-        log.info("Order {}: payment {} captured {} {}",
-                event.orderId(), event.paymentId(), event.amount(), event.currency());
     }
 
     /**
@@ -84,19 +62,5 @@ class PaymentEventListener {
         event.lines().stream().map(com.stockflow.contracts.PaymentReceiptVoided.Line::orderId).distinct().sorted()
                 .forEach(orderId -> orders.installmentsShort(orderId, event.reference(), event.voidedBy(),
                         event.voidedAt()));
-    }
-
-    /**
-     * Money taken back by the accountant (G2-3, 15 BR-06): counted once per reversal; a confirmed order left short of
-     * its terms goes ON_HOLD (reason PAYMENT) rather than silently back to unpaid.
-     */
-    @ApplicationModuleListener
-    public void on(PaymentReversed event) {
-        orders.reversePayment(event.orderId(), event.reversalId(), event.amount(), event.currency(),
-                ofReceivable(event.source()), FEE_RECEIVABLE_ALLOCATION.equals(event.source()),
-                "allocation %s reversed (reversal %s)".formatted(event.allocationId(), event.reversalId()),
-                event.reversedBy(), event.reversedAt());
-        log.info("Order {}: payment {} reversed, {} {} taken back", event.orderId(), event.allocationId(),
-                event.amount(), event.currency());
     }
 }

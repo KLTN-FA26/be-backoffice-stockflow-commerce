@@ -91,8 +91,7 @@ class QuoteRepositoryAdapter implements QuoteRepository, QuoteSearch {
         QuoteJpaEntity entity = jpa.findByIdWithLines(quote.id()).orElseGet(() ->
                 new QuoteJpaEntity(quote.id(), quote.quoteNumber(), quote.requestId(), quote.customerId()));
         Quote.Offer offer = quote.offer();
-        entity.apply(quote.status(), quote.revision(), offer.paymentTerm(), offer.depositPercent(),
-                offer.validUntil(), offer.terms(), quote.sentAt(), quote.sentBy(), quote.respondedAt(),
+        entity.apply(quote.status(), quote.revision(), offer.validUntil(), offer.terms(), quote.sentAt(), quote.sentBy(), quote.respondedAt(),
                 quote.respondedBy(), quote.customerFeedback(), quote.cancellationReason(), quote.convertedOrderId(),
                 quote.convertedAt(), offer.requestedDeliveryDate());
         Map<UUID, QuoteLineJpaEntity> existing = entity.getLines().stream()
@@ -226,7 +225,7 @@ class QuoteRepositoryAdapter implements QuoteRepository, QuoteSearch {
 
     private static Row toRow(QuoteJpaEntity e) {
         return new Row(e.getId(), e.getQuoteNumber(), e.getCustomerId(), e.getStatus(), e.getRevision(),
-                e.getPaymentTerm(), e.getValidUntil(), e.getSentAt(), e.getConvertedOrderId(), e.getCreatedAt(),
+                e.getValidUntil(), e.getSentAt(), e.getConvertedOrderId(), e.getCreatedAt(),
                 e.getCreatedBy(), e.getVersion());
     }
 
@@ -240,8 +239,7 @@ class QuoteRepositoryAdapter implements QuoteRepository, QuoteSearch {
                         f.getAmount() == null ? null : vnd(f.getAmount()), f.getTaxClass(), f.getTaxRate()))
                 .toList();
         return Quote.restore(e.getId(), e.getQuoteNumber(), e.getRequestId(), e.getCustomerId(), e.getStatus(),
-                e.getRevision(), new Quote.Offer(e.getPaymentTerm(), e.getDepositPercent(), e.getValidUntil(),
-                        e.getTerms(), e.getRequestedDeliveryDate(), lines, fees),
+                e.getRevision(), new Quote.Offer(e.getValidUntil(), e.getTerms(), e.getRequestedDeliveryDate(), lines, fees),
                 e.getSentAt(), e.getSentBy(), e.getRespondedAt(), e.getRespondedBy(), e.getCustomerFeedback(),
                 e.getCancellationReason(), e.getConvertedOrderId(), e.getConvertedAt());
     }

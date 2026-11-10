@@ -8,7 +8,6 @@ import com.stockflow.customer.api.CustomerSummary;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.api.ReserveStockCommand;
 import com.stockflow.inventory.api.ReserveStockResult;
-import com.stockflow.order.api.PaymentTerm;
 import com.stockflow.order.internal.domain.Order;
 import com.stockflow.order.internal.domain.OrderLine;
 import com.stockflow.order.internal.domain.OrderRepository;
@@ -120,7 +119,6 @@ class ReplacementOrders {
         Order order = Order.customerDraft(orders.nextOrderNumber(LocalDate.ofInstant(now, ZoneOffset.UTC)),
                 original.customerId(), requestId, lines, now, original.contactName(), original.contactEmail(),
                 original.contactPhone(), original.shippingAddress(), original.billingAddress());
-        order.applyTerms(PaymentTerm.PREPAID, null);
         order.replacesReturn(request.id());
         // The same steps as a checkout (OrderServiceImpl.place): the SKU locks first, then each line held, all in this
         // transaction - so a resolution refused below leaves no hold behind.

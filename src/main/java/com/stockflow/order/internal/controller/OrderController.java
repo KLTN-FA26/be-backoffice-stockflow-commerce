@@ -14,7 +14,6 @@ import com.stockflow.order.internal.controller.dto.CancellationResultResponse;
 import com.stockflow.order.internal.controller.dto.CustomerOrderCardResponse;
 import com.stockflow.order.internal.controller.dto.CustomerOrderDetailResponse;
 import com.stockflow.order.internal.controller.dto.OrderResponse;
-import com.stockflow.order.internal.controller.dto.TransferInstructionsResponse;
 import com.stockflow.order.internal.controller.dto.PlaceOrderRequest;
 import com.stockflow.order.internal.controller.dto.QuoteRequests;
 import com.stockflow.order.internal.controller.dto.QuoteResponse;
@@ -75,7 +74,6 @@ class OrderController {
     private final CustomerService customerService;
     private final Quotes quotes;
     private final CustomerOrders customerOrders;
-    private final com.stockflow.order.internal.service.TransferInstructions transferInstructions;
     private final com.stockflow.identity.api.IdentityService identities;
 
     private final com.stockflow.order.internal.service.PartialShipments partialShipments;
@@ -83,7 +81,6 @@ class OrderController {
 
     OrderController(OrderService orderService, CustomerService customerService, Quotes quotes,
                     CustomerOrders customerOrders,
-                    com.stockflow.order.internal.service.TransferInstructions transferInstructions,
                     com.stockflow.identity.api.IdentityService identities,
                     com.stockflow.order.internal.service.PartialShipments partialShipments,
                     com.stockflow.order.internal.service.DuplicateOrders duplicateOrders) {
@@ -94,7 +91,6 @@ class OrderController {
         this.customerService = customerService;
         this.quotes = quotes;
         this.customerOrders = customerOrders;
-        this.transferInstructions = transferInstructions;
     }
 
     /**
@@ -125,15 +121,6 @@ class OrderController {
         var command = OrderWebMapper.toCommand(request);
         if (!mayPlaceForAnotherCustomer && !request.duplicateConfirmed()) {
             refuseUnconfirmedDuplicate(command);
-        }
-        if (!mayPlaceForAnotherCustomer && command.depositPercent() != null) {
-            // The deposit share is the customer's terms, or a quote's (kltn-docs 15 §3) - never the customer's own pick:
-            // their configured percentage is used. How the balance is collected is different (SCRUM-193): the customer
-            // may choose among the policies their terms allow (15 §4.2 step 3), and placeOrder refuses any other with
-            // 409 BALANCE_POLICY_NOT_ALLOWED, so it is passed through.
-            command = new com.stockflow.order.api.PlaceOrderCommand(command.requestId(), command.customerId(),
-                    command.shippingAddressId(), command.billingAddressId(), command.snapshotCustomer(),
-                    command.lines(), command.paymentTerm(), null, command.balancePolicy());
         }
         return ApiResponse.ok(OrderWebMapper.toResponse(orderService.placeOrder(command)));
     }
@@ -406,23 +393,6 @@ class OrderController {
                                                             @AuthenticatedUser CurrentUser user) {
         return ApiResponse.ok(CustomerOrderWebMapper.toResponse(
                 customerOrders.myOrder(requiredOwnCustomerId(user), orderId)));
-    }
-
-    /**
-     * SCRUM-193 (kltn-docs 15 §4.1 step 1): how to pay one of the signed-in customer's own orders by bank transfer -
-     * the company's account, the order number to write as the content, and what is still due now. The customer is
-     * resolved from the sign-in, never from the request; someone else's order, or none, is 404 either way, and an
-     * account not configured for this deployment is 503 {@code TRANSFER_INSTRUCTIONS_UNAVAILABLE}.
-     */
-    @GetMapping("/me/{orderId}/transfer-instructions")
-    @Operation(summary = "Bank transfer instructions for one of the signed-in customer's own orders: account, "
-            + "transfer content (the order number) and the amount due now")
-    @RequiresPermission(resource = OrderResources.ORDERS,
-            action = Action.READ, scope = DataScope.OWN)
-    public ApiResponse<TransferInstructionsResponse> myTransferInstructions(
-            @PathVariable UUID orderId, @AuthenticatedUser CurrentUser user) {
-        return ApiResponse.ok(CustomerOrderWebMapper.toResponse(
-                transferInstructions.of(requiredOwnCustomerId(user), orderId)));
     }
 
     /**

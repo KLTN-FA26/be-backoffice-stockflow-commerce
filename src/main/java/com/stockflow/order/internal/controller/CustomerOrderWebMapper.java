@@ -4,9 +4,7 @@ import com.stockflow.order.api.OrderSummary;
 import com.stockflow.order.internal.controller.dto.CustomerOrderCardResponse;
 import com.stockflow.order.internal.controller.dto.CustomerOrderDetailResponse;
 import com.stockflow.order.internal.controller.dto.OrderResponse;
-import com.stockflow.order.internal.controller.dto.TransferInstructionsResponse;
 import com.stockflow.order.internal.service.CustomerOrders;
-import com.stockflow.order.internal.service.TransferInstructions;
 
 /** Maps what {@link CustomerOrders} returns to the customer-facing DTOs. */
 final class CustomerOrderWebMapper {
@@ -19,18 +17,10 @@ final class CustomerOrderWebMapper {
                 card.deliveryState().name(), card.cancellationRequestStatus());
     }
 
-    static TransferInstructionsResponse toResponse(TransferInstructions.Instructions instructions) {
-        return new TransferInstructionsResponse(instructions.orderId(), instructions.orderNumber(),
-                instructions.bankName(), instructions.accountNumber(), instructions.accountName(),
-                instructions.reference(), instructions.amountDue(), instructions.currency(),
-                instructions.dueBy().name(), instructions.dueByNote());
-    }
-
     static CustomerOrderDetailResponse toResponse(CustomerOrders.Detail detail) {
         return new CustomerOrderDetailResponse(detail.orderId(), detail.orderNumber(), detail.status().name(),
                 detail.statusGroup().name(), detail.holdReasonPublic(),
-                detail.paymentTerm() == null ? null : detail.paymentTerm().name(), detail.total(), detail.currency(),
-                detail.placedAt(), toResponse(detail.shippingAddress()), toResponse(detail.payment()),
+                detail.total(), detail.currency(), detail.placedAt(), toResponse(detail.shippingAddress()),
                 detail.lines().stream().map(CustomerOrderWebMapper::toResponse).toList(),
                 detail.timeline().stream().map(CustomerOrderWebMapper::toResponse).toList(),
                 detail.deliveryState().name(), detail.allowedActions() == null ? null
@@ -48,14 +38,6 @@ final class CustomerOrderWebMapper {
                 detail.charges().netTotal(), detail.charges().taxTotal(),
                 detail.charges().fees().stream().map(fee -> new CustomerOrderDetailResponse.Fee(fee.kind(), fee.sku(),
                         fee.amount(), fee.taxRate(), fee.taxAmount())).toList());
-    }
-
-    private static CustomerOrderDetailResponse.Payment toResponse(CustomerOrders.Payment payment) {
-        if (payment == null) {
-            return null;
-        }
-        return new CustomerOrderDetailResponse.Payment(payment.status() == null ? null : payment.status().name(),
-                payment.paidAmount(), payment.depositRequired(), payment.creditTermDays());
     }
 
     private static CustomerOrderDetailResponse.Line toResponse(CustomerOrders.Line line) {

@@ -406,10 +406,9 @@ class SalesContractService implements SalesContracts {
                 buyer.representativeName(), buyer.representativeTitle());
     }
 
-    /** 15 BR-12: credit accounting approved - allowed, with a limit above 0 - is what paying after delivery needs. */
+    /** 15 BR-12: credit accounting approved - a limit above 0 - is what paying after delivery needs. */
     private static boolean creditApproved(CreditTerms credit) {
-        return credit != null && credit.allowCredit() && credit.creditLimit() != null
-                && credit.creditLimit().signum() > 0;
+        return credit != null && credit.creditLimit() != null && credit.creditLimit().signum() > 0;
     }
 
     /**
@@ -489,11 +488,11 @@ class SalesContractService implements SalesContracts {
                                BigDecimal afterDelivery) { }
 
     /**
-     * 15 BR-10, BR-11: the credit a contract asks for is what its plan pays after delivery; what the customer owes and
-     * may owe besides is the credit side of their other orders - receivables and credit orders not delivered (the money
-     * ledger's, until 4B-10) - and what the installments of their signed contracts paid after delivery still owe, not
-     * yet due included (4B-6, in {@code creditPosition}). Overdue - a receivable or an installment - or past the limit
-     * with this one: the check fails. Null when the plan asks for no credit.
+     * 15 BR-10, BR-11: the credit a contract asks for is what its plan pays after delivery; what the customer owes
+     * besides is what the installments of their signed contracts paid after delivery still owe, not yet due included,
+     * and the cancellation fee items not paid ({@code creditPosition}; since 4B-10 nothing else - the money ledger's
+     * receivables and checkout's credit orders went). An installment overdue, or past the limit with this one: the
+     * check fails. Null when the plan asks for no credit.
      */
     private CreditCheck creditCheck(Order order, SalesContract contract) {
         BigDecimal afterDelivery = contract.plan().stream()
@@ -503,10 +502,9 @@ class SalesContractService implements SalesContracts {
             return null;
         }
         CreditPosition position = payments.creditPosition(order.customerId());
-        // The exposure counts the other signed contracts' installments paid after delivery too (4B-6: in the payment
-        // position, 15 BR-10), as every credit check does; this contract's are not open yet - they open after.
-        BigDecimal exposure = creditChecks.undeliveredCreditExposure(order.customerId(), order.id().value())
-                .add(position.outstandingReceivables());
+        // The other signed contracts' installments paid after delivery (15 BR-10), as every credit check counts them;
+        // this contract's are not open yet - they open after.
+        BigDecimal exposure = position.outstandingReceivables();
         CreditTerms credit = customers.creditTerms(order.customerId());
         BigDecimal limit = credit == null || credit.creditLimit() == null ? BigDecimal.ZERO : credit.creditLimit();
         CreditChecks.Outcome outcome = position.hasOverdue() ? CreditChecks.Outcome.OVERDUE
