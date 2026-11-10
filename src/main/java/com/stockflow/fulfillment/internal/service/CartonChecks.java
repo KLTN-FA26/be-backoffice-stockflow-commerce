@@ -59,7 +59,8 @@ public interface CartonChecks {
      * Shipping labels for the cartons named, or for every CHECKED carton when none is (08 §4.3 steps 5-6): each takes
      * its SKU's carton-spec size, full weight and may-rotate flag, and the volumetric weight; it is LABELED. The first
      * label of the order locks it: no cancellation, no change of delivery address (08 BR-04, 17 BR-12, BR-16). Print the
-     * labels with {@link #labels}.
+     * labels with {@link #labels}. A retry labels nothing more and answers the session as it is
+     * ({@link com.stockflow.fulfillment.internal.domain.CartonCheck#label}).
      *
      * @throws com.stockflow.common.error.BusinessException {@code CARTON_NOT_CHECKED}; {@code CARTON_SPEC_UNMEASURED}
      *         naming each SKU whose carton spec has no size or weight (BR-07); {@code CARTON_NOT_IN_TASK};
@@ -69,12 +70,15 @@ public interface CartonChecks {
 
     /**
      * A label torn or lost is printed again (08 §4.3 step 7, BR-08): the carton's label version goes up, voiding the
-     * old one. Also once the session is completed, until the carton leaves.
+     * old one. Also once the session is completed, until the carton leaves; only by the worker who started the session
+     * or a warehouse manager (BR-06).
      *
+     * @param fromVersion the version on the label being replaced: a retry, the carton past it already, changes nothing;
+     *                    null always reprints
      * @throws com.stockflow.common.error.BusinessException {@code CARTON_NOT_CHECKED} unless the carton is LABELED;
-     *         {@code CARTON_NOT_IN_TASK}; {@code PACKING_TAKEN}
+     *         {@code CARTON_NOT_IN_TASK}; {@code PACK_STATE_CONFLICT} while PENDING or CANCELLED; {@code PACKING_TAKEN}
      */
-    Session reprint(UUID taskId, String lpn, CurrentUser actor);
+    Session reprint(UUID taskId, String lpn, Integer fromVersion, CurrentUser actor);
 
     /**
      * A carton damaged outside is removed from the order (08 §4.2 step 4): REMOVED, its label void if it had one. It

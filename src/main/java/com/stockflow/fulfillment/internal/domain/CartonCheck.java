@@ -199,6 +199,25 @@ public final class CartonCheck {
         requireOwner(actor, manager);
     }
 
+    /**
+     * A label is printed again while the session is IN_PROGRESS or once it is COMPLETED, until the carton leaves - and,
+     * either way, only by the worker who started it or a warehouse manager (08 BR-06: the starter alone carries on the
+     * session; completing it hands nobody else the right to void its labels).
+     *
+     * @throws BusinessException {@code PACK_STATE_CONFLICT} while PENDING or once CANCELLED; {@code PACKING_TAKEN}
+     */
+    public void requireReprintable(UUID actor, boolean manager) {
+        if (status == PackStatus.PENDING) {
+            throw new BusinessException(ErrorCode.PACK_STATE_CONFLICT,
+                    "Start the check of order %s first".formatted(orderNumber));
+        }
+        if (status == PackStatus.CANCELLED) {
+            throw new BusinessException(ErrorCode.PACK_STATE_CONFLICT,
+                    "The check of order %s was cancelled with its order".formatted(orderNumber));
+        }
+        requireOwner(actor, manager);
+    }
+
     // ------------------------------------------------------------------ cartons
 
     /**
@@ -227,18 +246,25 @@ public final class CartonCheck {
      * Shipping labels for the cartons named, or every CHECKED carton when none is (08 §4.3 steps 5-6): each gets its
      * SKU's carton-spec size, full weight, may-rotate flag and volumetric weight, and label version 1; it is LABELED. A
      * carton labelled already is left as it is. All or nothing: any SKU without a measured spec stops every label.
+     * Retry-safe: asking again for the cartons named labels nothing more; asking for "every CHECKED one" again, once
+     * none is CHECKED and one is labelled, is the same call repeated after it worked - it labels nothing and says so by
+     * an empty answer, not by an error that would tell the worker their labels failed.
      *
      * @param specs   the carton spec of each SKU named, by SKU; a SKU missing or not measured has no spec
      * @param divisor the volumetric divisor (08 BR-09, 6000 by default)
-     * @return the cartons labelled now
+     * @return the cartons labelled now; none on a retry
      * @throws BusinessException {@code CARTON_NOT_IN_TASK}; {@code CARTON_NOT_CHECKED} for a carton not scanned yet, or
-     *         nothing to label; {@code PACK_STATE_CONFLICT} for one removed; {@code CARTON_SPEC_UNMEASURED} naming the SKUs
+     *         nothing checked to label and nothing labelled; {@code PACK_STATE_CONFLICT} for one removed;
+     *         {@code CARTON_SPEC_UNMEASURED} naming the SKUs
      */
     public List<Carton> label(Collection<String> lpns, Map<String, Spec> specs, int divisor, UUID actor,
                               Instant now) {
         List<Carton> chosen;
         if (lpns == null || lpns.isEmpty()) {
             chosen = cartons.stream().filter(c -> c.status == PackageStatus.CHECKED).toList();
+            if (chosen.isEmpty() && cartons.stream().anyMatch(c -> c.status == PackageStatus.LABELED)) {
+                return List.of();
+            }
             if (chosen.isEmpty()) {
                 throw new BusinessException(ErrorCode.CARTON_NOT_CHECKED,
                         "No checked carton of order %s is waiting for a label".formatted(orderNumber));
@@ -288,14 +314,22 @@ public final class CartonCheck {
      * corrected after the check applies when the label is printed again); once shipped they stay what load planning
      * took.
      *
-     * @param spec its SKU's carton spec now; null or not measured keeps the measures it has
+     * <p>Retry-safe with {@code fromVersion}: the label is printed from the answer, so a call repeated after it worked
+     * must not void the sticker it just produced.</p>
+     *
+     * @param spec        its SKU's carton spec now; null or not measured keeps the measures it has
+     * @param fromVersion the version on the label being replaced; when the carton is past it already the reprint was
+     *                    done (a retry) and nothing changes. Null: always a new version
      * @throws BusinessException {@code CARTON_NOT_IN_TASK}; {@code CARTON_NOT_CHECKED} unless it is LABELED
      */
-    public Carton reprint(String lpn, Spec spec, int divisor) {
+    public Carton reprint(String lpn, Spec spec, int divisor, Integer fromVersion) {
         Carton carton = requireCarton(lpn);
         if (carton.status != PackageStatus.LABELED) {
             throw new BusinessException(ErrorCode.CARTON_NOT_CHECKED, ("Carton %s is %s: only a labelled carton's "
                     + "label is printed again").formatted(carton.lpn, carton.status));
+        }
+        if (fromVersion != null && carton.labelVersion > fromVersion) {
+            return carton;
         }
         if (carton.shipmentId == null && spec != null && spec.measured()) {
             carton.measure(spec, divisor);
