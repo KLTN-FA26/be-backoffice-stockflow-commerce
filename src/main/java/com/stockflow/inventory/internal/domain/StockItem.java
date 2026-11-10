@@ -405,6 +405,27 @@ public final class StockItem extends AggregateRoot {
     }
 
     /**
+     * A warehouse manager quarantines the carton this row is the contents of (kltn-docs 20 §4.8, BR-21; team plan
+     * 4D-1): sellable or still-to-be-put-away stock goes on hold, in place, keeping its carton. Only a free carton:
+     * units held for an order would lose their hold silently, so the caller reallocates them first; the table says it
+     * again ({@code ck_stock_item_quarantine_unheld}). Quarantined stock is not reservable
+     * ({@link StockStatus#isReservable}), so it stays out of ATP and allocation until a putaway makes it AVAILABLE.
+     */
+    public void quarantineInPackage() {
+        if (stockPackageId == null) {
+            throw new IllegalStateException("Stock item %s is loose; only a carton is quarantined".formatted(id));
+        }
+        if (status != StockStatus.AVAILABLE && status != StockStatus.INBOUND) {
+            throw new IllegalStateException("Stock item %s is %s, not AVAILABLE or INBOUND".formatted(id, status));
+        }
+        if (!reserved().isZero()) {
+            throw new IllegalStateException(
+                    "Cannot quarantine stock item %s: %s units are held for an order".formatted(id, reserved()));
+        }
+        this.status = StockStatus.QUARANTINE;
+    }
+
+    /**
      * Pin every active hold of {@code orderId} on this stock row: its order is no longer waiting for
      * payment, so the holds must not expire (kltn-docs 14 BR-07, SCRUM-465). Nothing else changes —
      * the quantities held stay exactly as they are.

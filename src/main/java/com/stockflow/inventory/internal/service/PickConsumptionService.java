@@ -166,6 +166,22 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
 
     @Override
     public void putBack(PutBackCommand command) {
+        restockPicked(command, false);
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>The same path as {@link #putBack}, locks and replay included; only the target and the status differ: a
+     * QUARANTINE area of the carton's own warehouse, and the row's units QUARANTINE once back in it.</p>
+     */
+    @Override
+    public void putBackToQuarantine(PutBackCommand command) {
+        restockPicked(command, true);
+    }
+
+    /** A picked carton back into stock whole: AVAILABLE onto a bin, or QUARANTINE into a quarantine area. */
+    private void restockPicked(PutBackCommand command, boolean quarantine) {
         LocationId target = new LocationId(command.locationCode());
         // BR-SEC-002: the bin is in a warehouse the caller is assigned to. First, so a replay cannot tell
         // anything about another warehouse.
@@ -187,6 +203,18 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
             case UNUSABLE -> throw new BusinessException(ErrorCode.LOCATION_NOT_USABLE,
                     "%s cannot take stock now: it, its shelf or its warehouse is not active".formatted(target));
             case USABLE -> { }
+        }
+        if (quarantine) {
+            // 08 §4.2 step 4: a damaged carton is kept apart from good stock, in its own warehouse (stock never changes
+            // warehouse, 11 BR-01).
+            if (!locations.isQuarantineArea(target)) {
+                throw new BusinessException(ErrorCode.LOCATION_AREA_MISMATCH,
+                        "%s is not a QUARANTINE area; a damaged carton goes to one".formatted(target));
+            }
+            if (!locations.warehouseOf(target).equals(locations.warehouseOf(rowView.location()))) {
+                throw new BusinessException(ErrorCode.MOVE_ACROSS_WAREHOUSES,
+                        "%s is in another warehouse than carton %s".formatted(target, command.lpn()));
+            }
         }
         // Only a whole carton comes back (team plan 4C-4; 07 §4.5 step 14): never loose units - a line picked loose
         // before 4C-1, or a carton some of whose units went to quarantine damaged at packing (R8). V20261113000400
@@ -215,14 +243,15 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
         // (4C-2's StockPackageContents#restock: STOCK_PACKAGE_TAKEN_WHOLE unless the hold is what was counted into the
         // carton, INVALID_STOCK_PACKAGE_TRANSITION unless CONSUMED). It saves the carton before the row, so the carton
         // stands at its new place before the ledger line names it there (check_stock_movement_package).
-        StockItem row = cartons.restock(rowView.stockPackageId(), rowView.id(), target, consumed.quantity().value());
+        StockItem row = cartons.restock(rowView.stockPackageId(), rowView.id(), target, consumed.quantity().value(),
+                quarantine);
         Instant now = clock.instant();
         ledger.append(new StockMovement(Identifiers.newId(), StockMovement.MovementType.PUT_BACK,
-                row.sku(), row.lotNumber(), null, target, consumed.quantity().value(), StockStatus.AVAILABLE,
+                row.sku(), row.lotNumber(), null, target, consumed.quantity().value(), row.status(),
                 StockMovement.ReferenceType.PICK_LINE, command.pickLineId(), null, command.actorId(), now)
                 .ofLot(row.lotId()).forOrder(consumed.orderId()).arriving(row.stockPackageId()));
-        log.info("Pick line {} put back: carton {} ({} x {}) onto {}", command.pickLineId(), cartonView.lpn(),
-                consumed.quantity(), row.sku(), target);
+        log.info("Pick line {} put back: carton {} ({} x {}) onto {} as {}", command.pickLineId(), cartonView.lpn(),
+                consumed.quantity(), row.sku(), target, row.status());
     }
 
     /**

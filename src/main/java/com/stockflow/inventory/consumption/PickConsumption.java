@@ -51,6 +51,19 @@ public interface PickConsumption {
     void putBack(PutBackCommand command);
 
     /**
+     * Books a carton the check station removed as damaged back into stock, whole, in a QUARANTINE area of its own
+     * warehouse (kltn-docs 08 §4.2 step 4: "cất nguyên thùng vào khu QUARANTINE"; 20 §4.8; team plan 4C-6). As
+     * {@link #putBack}, the carton goes CONSUMED to IN_STOCK keeping its LPN and count and its row follows it with the
+     * carton's count again - but as QUARANTINE stock: never sellable, out of ATP and allocation until the warehouse
+     * manager releases it to a bin or writes it off (20 §4.8, team plan 4D-1). One {@code PUT_BACK} ledger row names the
+     * pick line and the carton. Called again for the same pick line, it changes nothing.
+     *
+     * @throws com.stockflow.common.error.BusinessException as {@link #putBack}; {@code LOCATION_AREA_MISMATCH} when the
+     *         target is not a QUARANTINE area; {@code MOVE_ACROSS_WAREHOUSES} for one of another warehouse
+     */
+    void putBackToQuarantine(PutBackCommand command);
+
+    /**
      * Moves the carton a pick line takes from its bin to a staging area, whole (kltn-docs 07 §4.2 step 5 "STAGING", 20
      * §4.9 step 1): the carton and its stock row stand there now, the allocation still HELD on it, so the order keeps it
      * and nobody else can promise it (20 BR-20); one {@code MOVE} ledger row names the pick line and the carton. Nothing
