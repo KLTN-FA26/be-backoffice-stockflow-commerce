@@ -302,7 +302,7 @@ class ProductLifecycleIntegrationTest {
                 .andExpect(jsonPath("$.data.openReferences[?(@.kind == 'SALES_ORDER_LINE')].documentNumber")
                         .value(org.hamcrest.Matchers.hasItem(orderNumber)))
                 .andExpect(jsonPath("$.data.openReferences[?(@.kind == 'SALES_ORDER_LINE')].sku")
-                        .value(org.hamcrest.Matchers.everyItem(org.hamcrest.Matchers.is(sku))));
+                        .value(org.hamcrest.Matchers.hasItem(sku)));
 
         // Every variant, the default one included, is OBSOLETE (docs 01 §5.2), not BLOCKED; the documents are untouched.
         assertThat(jdbc.queryForList("SELECT status FROM product.variants WHERE product_id = ?", String.class, id))

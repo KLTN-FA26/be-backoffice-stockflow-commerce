@@ -35,6 +35,8 @@ class ProcurementModuleTest {
     com.stockflow.notification.api.ProductionOrderDirectory productionOrderDirectoryMock;
     @org.springframework.test.context.bean.override.mockito.MockitoBean
     com.stockflow.notification.api.ProductionOrderResends productionOrderResendsMock;
+    @org.springframework.test.context.bean.override.mockito.MockitoBean
+    com.stockflow.product.api.CustomerSkus customerSkusMock;
     /** Notification (booted here) asks customer for addresses through this; customer is not booted (SCRUM-352). */
     @org.springframework.test.context.bean.override.mockito.MockitoBean
     com.stockflow.notification.api.CustomerDirectory customerDirectory;
