@@ -515,7 +515,7 @@ class CartonCheckService implements CartonChecks {
         String startedByName = check.startedBy() == null ? null
                 : identities.displayNames(List.of(check.startedBy())).get(check.startedBy());
         boolean locked = cartons.stream().anyMatch(c -> c.labelVersion() > 0)
-                || order.lifecycle() != null && order.lifecycle().packedAt() != null;
+                || order.lifecycle() != null && order.lifecycle().packedForGood();
         return new Session(ctx.pick().getId(), order.orderId(), order.orderNumber(), ctx.pick().getWarehouseId(),
                 check.status().name(), check.startedBy(), startedByName, check.startedAt(), check.completedAt(), locked,
                 lines, cartons.stream().map(CartonCheckService::cartonView).toList(), made, paymentDue(order),
