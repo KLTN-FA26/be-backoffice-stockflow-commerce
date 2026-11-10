@@ -323,6 +323,8 @@ class PermissionMatrixTest {
             Map.entry("sales-contracts:CREATE", Set.of(Role.SALES_STAFF, Role.SYSTEM_ADMIN)),
             Map.entry("sales-contracts:UPDATE", Set.of(Role.SALES_STAFF, Role.SYSTEM_ADMIN)),
             Map.entry("sales-contracts:APPROVE", Set.of(Role.SALES_STAFF, Role.SYSTEM_ADMIN)),
+            // 4B-8 (V20261116000300, kltn-docs 17 BR-03): the warehouse manager of the warehouse released to.
+            Map.entry("sales-order-releases:UPDATE", Set.of(Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             // 4B-6, kltn-docs 15 §2: the accountant records and voids receipts; Sales, the coordinator and the customer
             // (scope OWN) read the installments.
             Map.entry("payment-installments:READ", Set.of(Role.ACCOUNTANT, Role.SALES_STAFF, Role.SALES_MANAGER,
@@ -620,6 +622,7 @@ class PermissionMatrixTest {
         // The victim's quote is a valid row its owner reads (B-6a): the 404 the attacker gets is the owner check, not a
         // broken fixture.
         for (String path : List.of("/api/v1/orders/" + victimOrder, "/api/v1/orders/me/" + victimOrder,
+                "/api/v1/orders/me/" + victimOrder + "/delivery-batches",
                 "/api/v1/designs/" + victimDesign, "/api/v1/customers/" + victimCustomer + "/addresses",
                 "/api/v1/quotes/" + victimQuote)) {
             assertThat(http.asCustomer(victimUser, MockMvcRequestBuilders.get(path)).andReturn().getResponse().getStatus())
@@ -702,6 +705,37 @@ class PermissionMatrixTest {
         ResolvedAuthorization manager = roles.resolve(List.of(Role.WAREHOUSE_MANAGER.authority()));
         assertThat(manager.permissions()).contains(PermissionCode.parse("fulfillment-task-assignment:CREATE"))
                 .doesNotContain(PermissionCode.parse("sales-orders:READ"));
+    }
+
+    /**
+     * 4B-8 (kltn-docs 17 BR-03, BR-28, BR-29): releasing a delivery batch is the warehouse manager's
+     * ({@code sales-order-releases:UPDATE}, narrowed to the warehouse released to); moving a window, and the upload of
+     * its evidence, are Sales' contract work ({@code sales-contracts:UPDATE}); the staff read the schedule as they read
+     * the contract, the customer reads only their own ({@code sales-orders:READ} OWN, the owner check in the service).
+     */
+    @Test
+    void theDeliveryBatchEndpointsNeedTheirPermissions() {
+        Map<String, Handler> byKey = new HashMap<>();
+        handlers().forEach(h -> byKey.put(h.key(), h));
+        Map<String, String> expected = Map.of(
+                "POST /api/v1/orders/{orderId}/release", "sales-order-releases:UPDATE",
+                "GET /api/v1/orders/{orderId}/delivery-batches", "sales-contracts:READ",
+                "GET /api/v1/orders/me/{orderId}/delivery-batches", "sales-orders:READ",
+                "POST /api/v1/orders/{orderId}/delivery-batches/{batchId}/window-change", "sales-contracts:UPDATE",
+                "POST /api/v1/orders/{orderId}/delivery-batches/{batchId}/window-change/evidence/uploads",
+                "sales-contracts:UPDATE");
+        expected.forEach((key, code) -> {
+            assertThat(byKey).as(key).containsKey(key);
+            RequiresPermission rp = byKey.get(key).rp();
+            assertThat(rp).as(key + " is guarded").isNotNull();
+            assertThat(PermissionCode.of(rp.resource(), rp.action())).as(key).isEqualTo(PermissionCode.parse(code));
+        });
+        assertThat(byKey.get("GET /api/v1/orders/me/{orderId}/delivery-batches").rp().scope()).isEqualTo(DataScope.OWN);
+        assertThat(roles.resolve(List.of(Role.ORDER_COORDINATOR.authority())).permissions())
+                .as("the coordinator no longer releases (17 BR-03)")
+                .doesNotContain(PermissionCode.parse("sales-order-releases:UPDATE"));
+        assertThat(roles.resolve(List.of(Role.CUSTOMER.authority())).permissions())
+                .doesNotContain(PermissionCode.parse("sales-contracts:READ"), PermissionCode.parse("sales-contracts:UPDATE"));
     }
 
     /**
