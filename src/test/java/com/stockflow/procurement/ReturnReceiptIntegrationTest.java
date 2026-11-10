@@ -251,4 +251,27 @@ class ReturnReceiptIntegrationTest {
         assertThat(carton(back.lpns().getFirst()).get("package_status")).isEqualTo("CONSUMED");
         assertThat(openForShipment(back).status()).isEqualTo(GoodsReceiptStatus.DRAFT);
     }
+
+    @Test
+    @DisplayName("L4: a carton that came back, was put back and shipped again for another order is not the first "
+            + "shipment's to take back: RETURN_CARTON_NOT_OF_SOURCE; its sibling cartons still are")
+    void aCartonShippedAgainIsNoLongerOfItsFirstShipment() {
+        UUID order = deliveredOrder();
+        ShippedCartons.Shipped first = shipped(order, 2, "LOT-AGAIN", "RETURNED");
+        UUID otherOrder = deliveredOrder();
+        UUID otherLine = jdbc.queryForObject("SELECT id FROM ordering.order_line WHERE order_id = ?", UUID.class,
+                otherOrder);
+        String again = first.lpns().getFirst();
+        // It came back, went into stock and was picked, labelled and shipped for another order (a later pick of the LPN).
+        ShippedCartons.shipAgain(jdbc, tx, again, otherOrder, otherLine, SKU, staff);
+
+        ReturnReceiptView draft = openForShipment(first);
+        assertThat(code(catchThrowable(() -> scan(draft.id(), again)))).isEqualTo(ErrorCode.RETURN_CARTON_NOT_OF_SOURCE);
+        assertThat(draft.expectedCartons()).extracting(ReturnReceiptService.ExpectedCarton::lpn)
+                .as("what the shipment carried that is still its own").containsExactly(first.lpns().get(1));
+        assertThat(scan(draft.id(), first.lpns().get(1)).cartons()).hasSize(1);
+        assertThat(asHcmStaff(() -> receipts.confirm(draft.id(), staff)).status()).isEqualTo(GoodsReceiptStatus.CLOSED);
+        assertThat(carton(again).get("package_status")).as("the other order's carton stays where it is")
+                .isEqualTo("CONSUMED");
+    }
 }

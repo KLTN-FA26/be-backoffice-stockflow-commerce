@@ -173,6 +173,23 @@ SELECT pg_temp.expect_fail('QE4 a photo of the goods as they came back kept on t
                                                   size_bytes, uploaded_by, uploaded_at)
     VALUES (gen_random_uuid(), md5('qa53:r1')::uuid, 'RECEIPT', 'return-evidence/qa53.jpg', 'a.jpg', 'image/jpeg', 10,
             md5('demo:user:editor')::uuid, NOW()) $q$);
+SELECT pg_temp.expect_fail_by('QE4b a return line that received fewer than nothing (the rule that went with received_sku, restated)',
+    'ck_return_request_line_received', $q$
+    INSERT INTO ordering.return_request (id, rma_number, order_id, order_number, customer_id, request_id, channel, requested_by,
+                                         requested_resolution, status, reason_code, requested_at)
+    VALUES (md5('qa53:r2')::uuid, 'RMA-QA53-2', md5('qa53:o1')::uuid, 'SO-QA53-O1', 'c0000000-0000-4000-8000-000000000001',
+            gen_random_uuid(), 'BACK_OFFICE', md5('demo:user:editor')::uuid, 'REFUND', 'REQUESTED', 'PRINT_DEFECT', NOW());
+    INSERT INTO ordering.return_request_line (id, return_request_id, order_line_id, sku, custom_printed, unit_price, quantity,
+                                              received_quantity)
+    VALUES (md5('qa53:r2:l')::uuid, md5('qa53:r2')::uuid, md5('qa53:o1:l')::uuid, 'SOFA-3S-GREY', FALSE, 100, 2, -1) $q$);
+SELECT pg_temp.expect_ok('QE4c ... and nothing received is fine', $q$
+    INSERT INTO ordering.return_request (id, rma_number, order_id, order_number, customer_id, request_id, channel, requested_by,
+                                         requested_resolution, status, reason_code, requested_at)
+    VALUES (md5('qa53:r3')::uuid, 'RMA-QA53-3', md5('qa53:o1')::uuid, 'SO-QA53-O1', 'c0000000-0000-4000-8000-000000000001',
+            gen_random_uuid(), 'BACK_OFFICE', md5('demo:user:editor')::uuid, 'REFUND', 'REQUESTED', 'PRINT_DEFECT', NOW());
+    INSERT INTO ordering.return_request_line (id, return_request_id, order_line_id, sku, custom_printed, unit_price, quantity,
+                                              received_quantity)
+    VALUES (md5('qa53:r3:l')::uuid, md5('qa53:r3')::uuid, md5('qa53:o1:l')::uuid, 'SOFA-3S-GREY', FALSE, 100, 2, 0) $q$);
 SELECT pg_temp.expect_true('QE5 no QC, parcel, credit, replacement or withdrawal column is left on a return',
     (SELECT count(*) FROM information_schema.columns WHERE table_schema = 'ordering' AND table_name = 'return_request'
         AND column_name IN ('inspected_by', 'inspected_at', 'inspection_note', 'receipt_note', 'parcel_count',

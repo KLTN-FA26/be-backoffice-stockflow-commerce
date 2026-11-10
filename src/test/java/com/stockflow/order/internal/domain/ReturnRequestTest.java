@@ -722,4 +722,14 @@ class ReturnRequestTest {
                 List.of(new ReturnRequest.Claim(ownLine, 10)), Map.of(), Set.of(), CUSTOMER, NOW, POLICY);
         assertThat(misprint.lines()).singleElement().satisfies(l -> assertThat(l.customPrinted()).isTrue());
     }
+
+    @Test
+    @DisplayName("L2: a return line never receives fewer than nothing (ck_return_request_line_received); none is fine")
+    void aLineReceivesNoNegativeCount() {
+        ReturnLine line = line(misprinted(5), PRINTED_LINE);
+        assertThatThrownBy(() -> line.receive(-1)).isInstanceOf(IllegalArgumentException.class);
+        assertThat(line.receivedQuantity()).as("nothing was written").isNull();
+        line.receive(0);
+        assertThat(line.receivedQuantity()).isZero();
+    }
 }

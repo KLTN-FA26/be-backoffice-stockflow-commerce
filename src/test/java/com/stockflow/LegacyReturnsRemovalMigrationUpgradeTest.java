@@ -21,7 +21,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * one is history, its credit folded into what was set off and its money mode REFUND; the open claim stays; the QC and
  * replacement columns and the replacement link are gone, ck_order_confirmed_basis is intact; QUALITY_CONTROL areas are
  * quarantine areas, inactive when empty; the permissions of the QC era are gone and the roles that held them have a
- * newer version; the withdrawn contract's unfinished publication is deleted and nothing else.</p>
+ * newer version; the withdrawn contract's unfinished publication is deleted and nothing else. Round 2: a resolved return
+ * keeps its claim (accepted units become refunded units, the settlement spread over them to the last digit), one settled
+ * at nothing with an approved withdrawal loses its VAT flag instead of being refused, a negative received count is refused.</p>
  */
 class LegacyReturnsRemovalMigrationUpgradeTest {
 
@@ -32,6 +34,8 @@ class LegacyReturnsRemovalMigrationUpgradeTest {
     private static final String RECEIVED = "00000000-0000-4000-8000-0000000d4101";
     private static final String RESOLVED = "00000000-0000-4000-8000-0000000d4102";
     private static final String REQUESTED = "00000000-0000-4000-8000-0000000d4103";
+    private static final String NOTHING_REFUNDED = "00000000-0000-4000-8000-0000000d4104";
+    private static final String EVEN_SPLIT = "00000000-0000-4000-8000-0000000d4105";
     private static final String REPLACEMENT_ORDER = "00000000-0000-4000-8000-0000000d4002";
 
     /** Rows of the schema before the upgrade, written with triggers and foreign keys off (their history is not the subject). */
@@ -81,6 +85,40 @@ class LegacyReturnsRemovalMigrationUpgradeTest {
                 replaces_return_request_id)
             VALUES ('00000000-0000-4000-8000-0000000d4002', 'SO-UPG4D4-R', 'c0000000-0000-4000-8000-000000000001', gen_random_uuid(),
                     'PENDING_PAYMENT', 0, 'VND', NOW(), NOW(), '00000000-0000-4000-8000-0000000d4102');
+            INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency)
+            VALUES ('00000000-0000-4000-8000-0000000d4013', '00000000-0000-4000-8000-0000000d4001', 'SOFA-3S-GREY', 10, 100, 'VND'),
+                   ('00000000-0000-4000-8000-0000000d4014', '00000000-0000-4000-8000-0000000d4001', 'TABLE-OAK-160', 10, 100, 'VND'),
+                   ('00000000-0000-4000-8000-0000000d4015', '00000000-0000-4000-8000-0000000d4001', 'SOFA-3S-GREY', 10, 100, 'VND');
+            -- M1: resolved at nothing; a replacement withdrawal approved with an amount raised the VAT flag.
+            INSERT INTO ordering.return_request (id, rma_number, order_id, order_number, customer_id, request_id, channel, requested_by,
+                requested_resolution, status, reason_code, requested_at, decided_by, decided_at, return_required, return_deadline,
+                received_at, received_by, receiving_location_code, parcel_count, inspected_by, inspected_at, settlement_amount,
+                proposed_by, proposed_at, settled_by, settled_at, closed_at, vat_adjustment_required, replacement_order_id,
+                withdrawal_status, withdrawal_reason, withdrawal_amount, withdrawal_proposed_by, withdrawal_proposed_at,
+                withdrawal_decided_by, withdrawal_decided_at, withdrawal_offset_amount, withdrawal_credit_transfer_id)
+            VALUES ('00000000-0000-4000-8000-0000000d4104', 'RMA-UPG4D4-4', '00000000-0000-4000-8000-0000000d4001', 'SO-UPG4D4-1',
+                    'c0000000-0000-4000-8000-000000000001', gen_random_uuid(), 'BACK_OFFICE', md5('demo:user:editor')::uuid, 'REPLACEMENT',
+                    'RESOLVED', 'PRINT_DEFECT', NOW(), md5('demo:user:approver')::uuid, NOW(), TRUE, NOW() + interval '14 days',
+                    NOW(), md5('demo:user:editor')::uuid, 'HCM-QC01', 1, md5('demo:user:editor')::uuid, NOW(), 0,
+                    md5('demo:user:editor')::uuid, NOW(), md5('demo:user:approver')::uuid, NOW(), NOW(), TRUE,
+                    '00000000-0000-4000-8000-0000000d4002', 'APPROVED', 'replacement withdrawn', 100,
+                    md5('demo:user:editor')::uuid, NOW(), md5('demo:user:approver')::uuid, NOW(), 100,
+                    '00000000-0000-4000-8000-0000000d4501');
+            -- M2: a settlement of 100 spread over three equal lines (rounding goes to the last by id).
+            INSERT INTO ordering.return_request (id, rma_number, order_id, order_number, customer_id, request_id, channel, requested_by,
+                requested_resolution, status, reason_code, requested_at, decided_by, decided_at, return_required, return_deadline,
+                received_at, received_by, receiving_location_code, parcel_count, inspected_by, inspected_at, money_mode, settlement_amount,
+                refunded_amount, proposed_by, proposed_at, settled_by, settled_at, closed_at, vat_adjustment_required)
+            VALUES ('00000000-0000-4000-8000-0000000d4105', 'RMA-UPG4D4-5', '00000000-0000-4000-8000-0000000d4001', 'SO-UPG4D4-1',
+                    'c0000000-0000-4000-8000-000000000001', gen_random_uuid(), 'BACK_OFFICE', md5('demo:user:editor')::uuid, 'REFUND',
+                    'RESOLVED', 'PRINT_DEFECT', NOW(), md5('demo:user:approver')::uuid, NOW(), TRUE, NOW() + interval '14 days',
+                    NOW(), md5('demo:user:editor')::uuid, 'HCM-QC01', 1, md5('demo:user:editor')::uuid, NOW(), 'REFUND', 100, 100,
+                    md5('demo:user:editor')::uuid, NOW(), md5('demo:user:approver')::uuid, NOW(), NOW(), TRUE);
+            INSERT INTO ordering.return_request_line (id, return_request_id, order_line_id, sku, custom_printed, unit_price, quantity,
+                approved_quantity, received_quantity, received_sku, accepted_quantity, rejected_quantity, item_condition, scrap_quantity)
+            VALUES ('00000000-0000-4000-8000-0000000d4121', '00000000-0000-4000-8000-0000000d4105', '00000000-0000-4000-8000-0000000d4013', 'SOFA-3S-GREY', FALSE, 100, 1, 1, 1, 'SOFA-3S-GREY', 1, 0, 'DEFECTIVE', 1),
+                   ('00000000-0000-4000-8000-0000000d4122', '00000000-0000-4000-8000-0000000d4105', '00000000-0000-4000-8000-0000000d4014', 'TABLE-OAK-160', FALSE, 100, 1, 1, 1, 'TABLE-OAK-160', 1, 0, 'DEFECTIVE', 1),
+                   ('00000000-0000-4000-8000-0000000d4123', '00000000-0000-4000-8000-0000000d4105', '00000000-0000-4000-8000-0000000d4015', 'SOFA-3S-GREY', FALSE, 100, 1, 1, 1, 'SOFA-3S-GREY', 1, 0, 'DEFECTIVE', 1);
             INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, storage_class, is_pickable, is_putaway_target, status)
             VALUES ('00000000-0000-4000-8000-0000000d4201', md5('demo:wh:HCM')::uuid, 'AREA', 'HCM-QC77', 'OVERSIZE', FALSE, FALSE, 'ACTIVE'),
                    ('00000000-0000-4000-8000-0000000d4202', md5('demo:wh:HCM')::uuid, 'AREA', 'HCM-QC78', 'OVERSIZE', FALSE, FALSE, 'ACTIVE');
@@ -128,8 +166,30 @@ class LegacyReturnsRemovalMigrationUpgradeTest {
                         .isEqualTo("RESOLVED:REFUND:REFUND:1000:1000:0");
                 assertThat(RawSql.text(db, "SELECT status || ':' || requested_resolution FROM ordering.return_request "
                         + "WHERE id = ?::uuid", REQUESTED)).as("an open claim stays").isEqualTo("REQUESTED:REFUND");
-                assertThat(RawSql.number(db, "SELECT refund_quantity FROM ordering.return_request_line WHERE "
-                        + "return_request_id = ?::uuid", RESOLVED)).as("history is not back-filled (QD-1)").isZero();
+                // A resolved return keeps its claim (M2): accepted units become refunded units, the settlement is spread
+                // over them by value, the last line (by id) taking the rounding, so the lines add up to it exactly.
+                assertThat(RawSql.text(db, "SELECT refund_quantity || ':' || refund_amount::int FROM "
+                        + "ordering.return_request_line WHERE return_request_id = ?::uuid", RESOLVED)).isEqualTo("2:1000");
+                assertThat(RawSql.texts(db, "SELECT refund_quantity || ':' || refund_amount FROM "
+                        + "ordering.return_request_line WHERE return_request_id = ?::uuid ORDER BY id", EVEN_SPLIT))
+                        .containsExactly("1:33.3333", "1:33.3333", "1:33.3334");
+                assertThat(RawSql.text(db, "SELECT (sum(l.refund_amount) = r.settlement_amount)::text FROM "
+                        + "ordering.return_request r JOIN ordering.return_request_line l ON l.return_request_id = r.id "
+                        + "WHERE r.id = ?::uuid GROUP BY r.id, r.settlement_amount", EVEN_SPLIT)).isEqualTo("true");
+                // ... so the same units cannot be returned and refunded twice: 2 of the line's 10 are refunded already.
+                RawSql.refused(db, "would claim", "INSERT INTO ordering.return_request_line (id, return_request_id, "
+                        + "order_line_id, sku, custom_printed, unit_price, quantity) VALUES (gen_random_uuid(), "
+                        + "?::uuid, '00000000-0000-4000-8000-0000000d4012', 'TABLE-OAK-160', FALSE, 500, 9)", REQUESTED);
+                // M1: settled at nothing, a replacement withdrawal approved with an amount had raised the VAT flag; the
+                // flag follows the settlement now, and the migration, running the triggers as they are, was not refused.
+                assertThat(RawSql.text(db, "SELECT status || ':' || settlement_amount::int || ':' || vat_adjustment_required "
+                        + "FROM ordering.return_request WHERE id = ?::uuid", NOTHING_REFUNDED))
+                        .isEqualTo("RESOLVED:0:false");
+                assertThat(RawSql.text(db, "SELECT vat_adjustment_required::text FROM ordering.return_request WHERE id = "
+                        + "?::uuid", RESOLVED)).as("a settlement above nothing keeps its flag").isEqualTo("true");
+                // L2: a return line never receives fewer than nothing (ck_return_request_line_received restated).
+                RawSql.refused(db, "ck_return_request_line_received", "UPDATE ordering.return_request_line SET "
+                        + "received_quantity = -1 WHERE return_request_id = ?::uuid", RESOLVED);
 
                 // Columns and rules of the QC era are gone; the sets they widened are narrow again.
                 assertThat(RawSql.number(db, "SELECT count(*) FROM information_schema.columns WHERE table_schema = "
@@ -180,9 +240,9 @@ class LegacyReturnsRemovalMigrationUpgradeTest {
                 }
 
                 // Only the withdrawn contract's unfinished publication went.
-                assertThat(RawSql.texts(db, "SELECT regexp_replace(event_type, '^.*[.]', '') || ':' || (completion_date IS NULL) FROM "
+                assertThat(RawSql.texts(db, "SELECT right(event_type, 17) || ':' || (completion_date IS NULL) FROM "
                         + "event_publication WHERE id::text LIKE '00000000-0000-4000-8000-0000000d44%' ORDER BY id"))
-                        .containsExactly("ReturnReplacementWithdrawn:false", "ReturnApproved:true");
+                        .containsExactly("ReplacementWithdrawn:false", "ReturnApproved:true");
             }
         }
     }
