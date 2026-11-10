@@ -2,12 +2,14 @@ package com.stockflow.inventory.internal.service;
 
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
+import com.stockflow.inventory.internal.domain.LocationDirectory;
 import com.stockflow.inventory.internal.domain.StockItem;
 import com.stockflow.inventory.internal.domain.StockItemRepository;
 import com.stockflow.inventory.internal.domain.StockPackage;
 import com.stockflow.inventory.internal.domain.StockPackageId;
 import com.stockflow.inventory.internal.domain.StockPackageRepository;
 import com.stockflow.inventory.internal.domain.StockPackageStatus;
+import com.stockflow.inventory.internal.domain.StockStatus;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
@@ -46,10 +48,13 @@ class StockPackageContents {
 
     private final StockPackageRepository stockPackages;
     private final StockItemRepository stockItems;
+    private final LocationDirectory locations;
 
-    StockPackageContents(StockPackageRepository stockPackages, StockItemRepository stockItems) {
+    StockPackageContents(StockPackageRepository stockPackages, StockItemRepository stockItems,
+                         LocationDirectory locations) {
         this.stockPackages = stockPackages;
         this.stockItems = stockItems;
+        this.locations = locations;
     }
 
     /** The cartons of these rows, locked in id order; none when every row is loose. Call under the SKU lock. */
@@ -92,7 +97,8 @@ class StockPackageContents {
      *
      * <ul>
      *   <li>Restocked: only a LOST carton, found again whole - its standard count back on the row it was emptied from
-     *       (rows are never deleted at zero, and a carton is one row, V20261113000300), its lot unchanged (BR-18).</li>
+     *       (rows are never deleted at zero, and a carton is one row, V20261113000300), its lot unchanged (BR-18), as
+     *       AVAILABLE stock unless it is in a QUARANTINE area ({@link #restockLost}).</li>
      *   <li>Written off: only a carton in stock, every unit of it, none held for an order - a customer's hold is
      *       never cancelled by a correction; it is released or reallocated first ({@code STOCK_PACKAGE_HELD}). The
      *       carton is then LOST when {@code missingWhenEmpty} (a count did not find it, or it was written off as
@@ -124,7 +130,9 @@ class StockPackageContents {
                     "%s holds %d; it is adjusted whole, not by %d".formatted(carton.lpn(), carton.nominalQty(), delta),
                     List.of(), Map.of("lpn", carton.lpn()));
         }
-        RowChange change = delta > 0 ? restockLost(carton, rows, delta) : writeOff(carton, rows, missingWhenEmpty, now);
+        RowChange change = delta > 0
+                ? restockLost(carton, rows, delta)
+                : writeOff(carton, rows, missingWhenEmpty, now);
         if (change.delta() > 0) {
             // Units back in the carton they were counted into: the same receipt, proven by the LPN, so no age is lost.
             // saveMerged tells the FIFO trigger so (V20261017000450), which would otherwise refuse raising an
@@ -169,7 +177,14 @@ class StockPackageContents {
         return row;
     }
 
-    private static RowChange restockLost(StockPackage carton, List<StockItem> rows, int units) {
+    /**
+     * A LOST carton found again, whole, on its own row. It comes back as sellable stock (AVAILABLE), whatever status the
+     * row had when the carton went missing (review 4C-3, L4): a carton found is a carton on the shelf, and kept INBOUND,
+     * BLOCKED or DAMAGED it would sit silently out of ATP with nothing to move it on. The one exception is a carton
+     * recorded in a QUARANTINE area: it comes back QUARANTINE, out of ATP until a manager releases it (20 §4.8, BR-21) -
+     * a carton is never sold out of quarantine by being found.
+     */
+    private RowChange restockLost(StockPackage carton, List<StockItem> rows, int units) {
         if (carton.status() != StockPackageStatus.LOST) {
             throw new BusinessException(ErrorCode.INVALID_STOCK_PACKAGE_TRANSITION,
                     "%s is %s; only a LOST carton is restocked".formatted(carton.lpn(), carton.status()));
@@ -179,6 +194,7 @@ class StockPackageContents {
         }
         carton.found();
         StockItem row = rows.getFirst();
+        row.comeBackAs(locations.isQuarantineArea(carton.location()) ? StockStatus.QUARANTINE : StockStatus.AVAILABLE);
         row.adjustBy(units);
         return new RowChange(row, units);
     }

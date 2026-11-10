@@ -418,6 +418,21 @@ public final class StockItem extends AggregateRoot {
     }
 
     /**
+     * The empty row of a LOST carton found again takes the status the carton comes back in (kltn-docs 20 §4.6 step 7):
+     * AVAILABLE on the shelf, QUARANTINE in a quarantine area. Only while it holds nothing and no hold names it - the
+     * units arrive right after, so no unit ever changes status here.
+     */
+    public void comeBackAs(StockStatus target) {
+        if (target != StockStatus.AVAILABLE && target != StockStatus.QUARANTINE) {
+            throw new IllegalArgumentException(target + " is not AVAILABLE or QUARANTINE");
+        }
+        if (stockPackageId == null || !onHand.isZero() || !reserved().isZero()) {
+            throw new IllegalStateException("Stock item %s is not the empty row of a carton".formatted(id));
+        }
+        this.status = target;
+    }
+
+    /**
      * Pin every active hold of {@code orderId} on this stock row: its order is no longer waiting for
      * payment, so the holds must not expire (kltn-docs 14 BR-07, SCRUM-465). Nothing else changes —
      * the quantities held stay exactly as they are.
