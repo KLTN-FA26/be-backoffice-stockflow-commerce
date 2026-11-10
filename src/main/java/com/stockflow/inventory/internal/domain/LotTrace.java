@@ -20,8 +20,11 @@ public record LotTrace(Summary lot, List<Balance> balances, List<Hold> holds, Li
     /**
      * One lot and its current balance.
      *
-     * @param origin           {@code GOODS_RECEIPT}, or {@code UNTRACED} for stock that entered without a receipt the
-     *                         system recorded (an adjustment that found goods, stock older than lot tracking)
+     * @param origin           {@code GOODS_RECEIPT}; {@code PRODUCTION_ORDER} for goods received against a production
+     *                         order, one lot per production order and SKU across its receipts (4A-5, kltn-docs 03
+     *                         BR-03), which then names the production order instead of a receipt, a purchase order and
+     *                         a supplier; or {@code UNTRACED} for stock that entered without a receipt the system
+     *                         recorded (an adjustment that found goods, stock older than lot tracking)
      * @param receivedQuantity units its receipt ledger lines brought in
      * @param onHand           units of it on hand now, in any status
      * @param available        units free to promise now: AVAILABLE, not past expiry, not held
@@ -30,7 +33,19 @@ public record LotTrace(Summary lot, List<Balance> balances, List<Hold> holds, Li
     public record Summary(UUID lotId, String sku, String lotNumber, LocalDate expiryDate, Instant receivedAt,
                           String origin, UUID goodsReceiptId, String goodsReceiptNumber, UUID purchaseOrderId,
                           String purchaseOrderNumber, UUID supplierId, String supplierName, UUID receivingWarehouseId,
-                          long receivedQuantity, long onHand, long available, long held) { }
+                          long receivedQuantity, long onHand, long available, long held, UUID productionOrderId,
+                          String productionOrderCode) {
+
+        /** A lot that is not a production order's. */
+        public Summary(UUID lotId, String sku, String lotNumber, LocalDate expiryDate, Instant receivedAt, String origin,
+                       UUID goodsReceiptId, String goodsReceiptNumber, UUID purchaseOrderId, String purchaseOrderNumber,
+                       UUID supplierId, String supplierName, UUID receivingWarehouseId, long receivedQuantity,
+                       long onHand, long available, long held) {
+            this(lotId, sku, lotNumber, expiryDate, receivedAt, origin, goodsReceiptId, goodsReceiptNumber,
+                    purchaseOrderId, purchaseOrderNumber, supplierId, supplierName, receivingWarehouseId,
+                    receivedQuantity, onHand, available, held, null, null);
+        }
+    }
 
     /**
      * Units of the lot at one location in one status, now. {@code onHand} and {@code held} are null, and

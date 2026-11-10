@@ -50,7 +50,7 @@ class PaymentListenersTest {
     @DisplayName("cancelled order: lock the order first, cancel the awaited payments, ask the refundable money back as "
             + "PENDING refunds, then record any fee owed (15 §4.4)")
     void cancelledOrder() {
-        OrderCancelledListener listener = new OrderCancelledListener(settlement, orders, receivables, installments);
+        OrderCancelledListener listener = new OrderCancelledListener(settlement, orders, receivables);
         OrderCancelled event = cancelled(new BigDecimal("700"));
         when(settlement.requestRefunds(any(), any(), anyString(), anyString())).thenReturn(BigDecimal.ZERO);
 
@@ -67,7 +67,7 @@ class PaymentListenersTest {
     @Test
     @DisplayName("cancelled order with nothing to refund (or a null amount): no refund is asked, the fee is still recorded")
     void cancelledOrderNothingToRefund() {
-        OrderCancelledListener listener = new OrderCancelledListener(settlement, orders, receivables, installments);
+        OrderCancelledListener listener = new OrderCancelledListener(settlement, orders, receivables);
         OrderCancelled zero = cancelled(BigDecimal.ZERO);
         listener.on(zero);
         OrderCancelled none = cancelled(null);
@@ -82,7 +82,7 @@ class PaymentListenersTest {
     @DisplayName("cancelled order whose refund cannot be placed on a captured payment is left for the accountant: "
             + "no exception, the event is still handled")
     void cancelledOrderUnplacedRefund() {
-        OrderCancelledListener listener = new OrderCancelledListener(settlement, orders, receivables, installments);
+        OrderCancelledListener listener = new OrderCancelledListener(settlement, orders, receivables);
         when(settlement.requestRefunds(any(), any(), anyString(), anyString())).thenReturn(new BigDecimal("50"));
         OrderCancelled event = cancelled(new BigDecimal("700"));
         listener.on(event);

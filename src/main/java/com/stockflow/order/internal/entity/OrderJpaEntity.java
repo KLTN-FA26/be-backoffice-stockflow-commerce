@@ -217,6 +217,16 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
     @Column(name = "contract_signed_at")
     private Instant contractSignedAt;
 
+    /** V20261108002500 (4B-7): the warehouse an order of a contract ships from, who chose it and when. */
+    @Column(name = "shipping_warehouse_id")
+    private UUID shippingWarehouseId;
+
+    @Column(name = "shipping_warehouse_chosen_at")
+    private Instant shippingWarehouseChosenAt;
+
+    @Column(name = "shipping_warehouse_chosen_by")
+    private UUID shippingWarehouseChosenBy;
+
     /** V20261101020000 (SCRUM-260): the return whose accepted units this free order replaces; set once, at placing. */
     @Column(name = "replaces_return_request_id", updatable = false)
     private UUID replacesReturnRequestId;
@@ -455,6 +465,16 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
     public void applyContractSigned(Instant at) {
         this.contractSignedAt = at;
     }
+
+    public void applyShippingWarehouse(UUID warehouse, Instant chosenAt, UUID chosenBy) {
+        this.shippingWarehouseId = warehouse;
+        this.shippingWarehouseChosenAt = chosenAt;
+        this.shippingWarehouseChosenBy = chosenBy;
+    }
+
+    public UUID getShippingWarehouseId() { return shippingWarehouseId; }
+    public Instant getShippingWarehouseChosenAt() { return shippingWarehouseChosenAt; }
+    public UUID getShippingWarehouseChosenBy() { return shippingWarehouseChosenBy; }
 
     public void applyPlaced(Instant at) {
         this.placedAt = at;

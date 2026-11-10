@@ -52,6 +52,12 @@ public interface WarehouseService {
     Optional<WarehouseView> findWarehouse(UUID warehouseId);
 
     /**
+     * 4B-7 (kltn-docs 17 §4.2 step 2): every ACTIVE warehouse, by code - the warehouses an order may ship from, which
+     * Sales chooses among.
+     */
+    java.util.List<WarehouseView> activeWarehouses();
+
+    /**
      * The own codes of the shelves in a zone ({@code A01}, not {@code HCM-A01}), sorted. A cycle count planned by
      * zone (SCRUM-162) counts the bins of these shelves: a zone is a group of shelves this module owns, while a
      * shelf code is part of every bin's location code ({@code <prefix>-<shelf>-<level>-<bin>}), so the count can

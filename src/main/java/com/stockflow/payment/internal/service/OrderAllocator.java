@@ -38,8 +38,13 @@ class OrderAllocator {
 
     static final String ORDER_ALLOCATION = "ORDER_ALLOCATION";
 
-    /** Statuses in which an order takes money by allocation; CANCELLED has its own answer (the refund path). */
-    private static final Set<String> PAYABLE = Set.of("PENDING_PAYMENT", "CONFIRMED",
+    /**
+     * Statuses in which an order takes money by allocation; CANCELLED has its own answer (the refund path). Names of
+     * {@code OrderStatus}, by hand: a status added there must be added here too, or it compiles and money stops being
+     * allocated to orders in it (AWAITING_STOCK, 4A-6 - an order of a contract, refused above before this list is read,
+     * listed so the list keeps every status between CONFIRMED and DELIVERED).
+     */
+    private static final Set<String> PAYABLE = Set.of("PENDING_PAYMENT", "CONFIRMED", "AWAITING_STOCK",
             "READY_TO_FULFILL", "PICKING", "PARTIALLY_FULFILLED", "PACKED", "ON_HOLD", "SHIPPED", "DELIVERY_FAILED",
             "DELIVERED");
 

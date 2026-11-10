@@ -30,4 +30,10 @@ public interface GoodsReceiptRepository {
 
     /** Units counted in (receipt posted: not a draft, not waiting for approval, not cancelled) per line of one order. */
     Map<UUID, Integer> confirmedQuantities(UUID purchaseOrderId);
+
+    /**
+     * 4A-5, kltn-docs 03 BR-02: units of these production order lines on other receipts that are not cancelled - drafts
+     * included, posted ones too - per line, the way {@code check_production_receipt_cartons} counts them.
+     */
+    Map<UUID, Integer> unitsOnOtherProductionReceipts(Iterable<UUID> productionOrderLineIds, UUID excludingReceiptId);
 }

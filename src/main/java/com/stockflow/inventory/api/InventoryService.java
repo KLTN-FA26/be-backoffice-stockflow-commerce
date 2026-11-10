@@ -87,6 +87,23 @@ public interface InventoryService {
     void prepareReservation(java.util.Set<Sku> skus);
 
     /**
+     * 4B-7 (17 §4.2 step 3, BR-21; 20 §5.6, BR-17): hold, for an order of a contract, as many whole cartons of the SKU
+     * as its shipping warehouse has available to promise, up to {@code cartons} - a SKU reservation at that warehouse,
+     * on no bin, with no deadline. What is not available is held later, when stock arrives; nothing is refused for a
+     * shortage. Joins the caller's transaction, under the SKU's advisory lock (take {@link #prepareReservation} first
+     * for several SKUs). Idempotent on the command's request id.
+     */
+    HoldStockResult holdAtWarehouse(HoldStockCommand command);
+
+    /**
+     * 4B-7 (17 §4.2 step 2, 20 BR-01): what each warehouse has available to promise of the SKU, by warehouse code -
+     * unheld sellable stock less the SKU's reservations held there, never more than is left system-wide. Every
+     * warehouse holding the SKU is listed, whatever the caller's warehouse scope: the order's choice is the business's,
+     * not a view of a warehouse.
+     */
+    Map<String, Integer> availableToPromiseByWarehouse(Sku sku);
+
+    /**
      * HELD → ALLOCATED (docs 03 §6, 04c F-FUL step 02): the order was released to a warehouse; each live SKU
      * reservation of the order becomes allocations of whole LPN cartons on pickable bins of that warehouse, one
      * allocation per carton, in the SKU's removal order - the earliest receipt first (FIFO, kltn-docs 07 BR-03) - and

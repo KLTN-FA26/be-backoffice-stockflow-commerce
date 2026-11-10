@@ -21,7 +21,7 @@ class PaymentServiceImplTest {
     private final ReceivableBook book = mock(ReceivableBook.class);
     private final InstallmentBook installments = mock(InstallmentBook.class);
     private final PaymentServiceImpl service = new PaymentServiceImpl(book, new CompanyBankProperties(null, null, null),
-            installments, mock(InstallmentService.class));
+            installments, mock(InstallmentService.class), mock(OrderSettlementService.class));
     private final UUID id = UUID.randomUUID();
 
     @org.junit.jupiter.api.BeforeEach

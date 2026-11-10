@@ -85,11 +85,12 @@ class LoadEstimateService implements LoadEstimates {
     static final BigDecimal TRIAL_WEIGHT_KG = new BigDecimal("0.001");
 
     /**
-     * Where an estimate makes sense: CONFIRMED (the release dialog estimates before releasing, design v2 §2, with the
-     * warehouse it is about to choose), released to the warehouse, and partly fulfilled (its remaining units only).
-     * DRAFT, PENDING_PAYMENT, ON_HOLD and everything from SHIPPED on are refused.
+     * Where an estimate makes sense: CONFIRMED or AWAITING_STOCK (the release dialog estimates before releasing, design
+     * v2 §2, with the warehouse it is about to choose - an order waiting for stock is released from it too, 4A-6),
+     * released to the warehouse, and partly fulfilled (its remaining units only). DRAFT, PENDING_PAYMENT, ON_HOLD and
+     * everything from SHIPPED on are refused.
      */
-    private static final Set<OrderStatus> ESTIMABLE = EnumSet.of(OrderStatus.CONFIRMED,
+    private static final Set<OrderStatus> ESTIMABLE = EnumSet.of(OrderStatus.CONFIRMED, OrderStatus.AWAITING_STOCK,
             OrderStatus.READY_TO_FULFILL, OrderStatus.PICKING, OrderStatus.PACKED, OrderStatus.PARTIALLY_FULFILLED);
 
     private static final TypeReference<List<EstimateLine>> LINES = new TypeReference<>() { };

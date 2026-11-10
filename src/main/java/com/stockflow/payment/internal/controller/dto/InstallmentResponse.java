@@ -17,11 +17,16 @@ public record InstallmentResponse(UUID installmentId, UUID contractId,
                                   @Schema(example = "HD-20261108-000007-1") String contractNumber,
                                   UUID orderId, @Schema(example = "SO-20261108-000007") String orderNumber,
                                   UUID customerId, int seq, @Schema(example = "Đặt cọc") String name,
-                                  @Schema(allowableValues = {"ON_SIGNING", "BEFORE_DELIVERY", "AFTER_DELIVERY"})
+                                  @Schema(description = "CANCELLATION_FEE: the part of a cancellation fee the "
+                                          + "money collected did not cover (15 §4.6 step 18), paid like an installment",
+                                          allowableValues = {"ON_SIGNING", "BEFORE_DELIVERY", "AFTER_DELIVERY",
+                                                  "CANCELLATION_FEE"})
                                   String milestone,
                                   @Schema(description = "The delivery batch it is tied to (17 §4.5); null when none")
                                   Integer deliveryBatchSeq,
-                                  BigDecimal amount, BigDecimal paidAmount, BigDecimal outstanding, String currency,
+                                  BigDecimal amount, BigDecimal paidAmount,
+                                  @Schema(description = "What closures of the rest took off it (15 §4.6 step 19)")
+                                  BigDecimal reducedAmount, BigDecimal outstanding, String currency,
                                   @Schema(description = "Days after the milestone it falls due; null before delivery")
                                   Integer dueDays,
                                   @Schema(description = "When its milestone came; null while NOT_DUE")

@@ -363,11 +363,50 @@ public enum ErrorCode {
     CUSTOMER_LEGAL_PROFILE_MISSING("The customer's registered address and legal representative are recorded before a contract is drawn up", 409),
     /** 4B-4 (18 §3): the legal profile read before it was recorded. */
     LEGAL_PROFILE_NOT_FOUND("The customer's legal profile is not recorded yet", 404),
-    /** 4B-4: stockflow.order.seller.* is blank in this deployment. */
+    /** 4A-2: no production order with that id (for a warehouse-bound caller: none received at their warehouses). */
+    PRODUCTION_ORDER_NOT_FOUND("Production order not found", 404),
+    /** 4A-2 (17 §5.3): the production order's status does not allow this. */
+    PRODUCTION_ORDER_STATUS_INVALID("The production order is not in a status that allows this", 409),
+    /** 4A-2 (17 BR-23): the one who drew a production order up does not approve it. */
+    PRODUCTION_ORDER_SELF_APPROVAL("A production order is approved by someone who did not draw it up", 409),
+    /** 4A-2 (17 BR-05): production orders come from a confirmed order of a contract with a shipping warehouse. */
+    PRODUCTION_ORDER_NOT_ALLOWED("A production order is drawn up for a confirmed order of a contract", 409),
+    /** 4A-2 (17 BR-05): the delivery batch lacks nothing - held, or on its way. */
+    PRODUCTION_ORDER_NOTHING_SHORT("The delivery batch lacks nothing to produce", 409),
+    /** 4A-2: a line makes no more than its delivery batch lacks. */
+    PRODUCTION_ORDER_EXCEEDS_SHORTAGE("A line makes more cartons than the delivery batch lacks", 409),
+    /**
+     * 4A-5 (kltn-docs 03 BR-01, BR-15): goods are received against a production order IN_PRODUCTION or
+     * PARTIALLY_RECEIVED - or SENT / ACCEPTED when no print sample is to be approved first - and nothing else.
+     */
+    PRODUCTION_ORDER_NOT_RECEIVABLE("Goods cannot be received against this production order now", 409),
+    /** 4A-5 (03 BR-02): the cartons on the receipts not cancelled, drafts included, never exceed what the line orders. */
+    RECEIPT_EXCEEDS_PRODUCTION_ORDER("More cartons than the production order line orders", 409),
+    /** 4A-5 (03 edge cases): a production order with a draft receipt is neither cancelled nor closed. */
+    PRODUCTION_ORDER_HAS_DRAFT_RECEIPTS("A receipt against this production order is still a draft; confirm or cancel it first", 409),
+    /** 4A-5 (03 §4.1 step 2): a receipt line counts a line of the receipt's production order. */
+    RECEIPT_LINE_NOT_ON_PRODUCTION_ORDER("This line is not a line of the receipt's production order", 409),
+    /** 4A-5 (03 BR-12, BR-13): every carton received holds exactly the SKU's standard count. */
+    RECEIPT_CARTON_NOT_STANDARD("A carton received holds exactly the standard count of its SKU", 422),
+    /** 4A-2: an INACTIVE producer takes no new production order. */
+    PRODUCER_INACTIVE("This producer takes no new production order", 409),
+    /** 4A-2 (17 BR-05): the print files changed since the design was approved. */
+    PRINT_FILE_MISMATCH("The print files no longer match the approved design", 409),
+    /** 4A-1: no producer with that id. */
+    PRODUCER_NOT_FOUND("Producer not found", 404),
+    /** 4A-1: a producer's code identifies it for good. */
+    PRODUCER_CODE_TAKEN("A producer has this code already", 409),
+    /** 4B-7 (17 §4.2 step 2): only a CONFIRMED order of a contract gets a shipping warehouse. */
+    ORDER_SHIPPING_WAREHOUSE_NOT_ALLOWED("The shipping warehouse is chosen for a confirmed order of a contract", 409),
+    /** 4B-7 (17 BR-22): the shipping warehouse changes only while nothing is held for the order. */
+    ORDER_SHIPPING_WAREHOUSE_LOCKED("Stock is held at the order's shipping warehouse; it can no longer change", 409),
+    /** 4B-7 (17 BR-22): an order of a contract is released from its shipping warehouse only. */
+    ORDER_SHIPPING_WAREHOUSE_MISMATCH("The order ships from another warehouse", 409),
     /** 4B-5: an order confirmed by its contract holds no stock until its shipping warehouse is chosen (4B-7). */
     ORDER_STOCK_NOT_HELD("This order holds no stock yet; its shipping warehouse is chosen and its stock held first", 409),
     /** 4B-5: an order of a contract is paid by the contract's installments, not by the order's own terms. */
     ORDER_PAID_BY_CONTRACT("This order is paid by its sales contract's installments", 409),
+    /** 4B-4: stockflow.order.seller.* is blank in this deployment. */
     SELLER_PROFILE_UNAVAILABLE("The seller's company details are not configured; contracts cannot be drawn up", 503),
     /**
      * 4B-2 (kltn-docs 14 BR-04, 13 BR-02): a quote line, an order line placed from one, or a customer price names one
@@ -380,9 +419,10 @@ public enum ErrorCode {
     /** A deposit order is released only once the deposit has arrived (kltn-docs 15 §4.2). */
     ORDER_DEPOSIT_NOT_RECEIVED("The deposit for this order has not arrived yet", 409),
     /**
-     * A print line names the blank its design is printed on, and printed goods enter stock only from a producer outside
-     * the system, against a Production Order (kltn-docs 17) that is not built yet: releasing would allocate, pick and
-     * ship plain blanks. Lifted when lines name the customer's own printed SKU and its goods are received.
+     * A legacy print line - a blank with a design snapshot, placed before lines named the customer's own SKU (4B-2) -
+     * names the blank its design is printed on, whose printed goods were never received into stock: releasing would
+     * allocate, pick and ship plain blanks. A line of the customer's own SKU is not refused: its goods arrive printed,
+     * received against a production order, as stock (4A-6, team plan QD-16).
      */
     ORDER_PRINT_GOODS_NOT_RECEIVED("This order has printed goods that are not in stock yet; it is released once they "
             + "are received from the producer", 409),
@@ -509,6 +549,14 @@ public enum ErrorCode {
     /** 4B-6, 15 BR-13: the void leaves a confirmed order short of its installment on signing; the accountant agrees to hold it. */
     PAYMENT_RECEIPT_VOID_NEEDS_HOLD("Voiding this receipt leaves a confirmed order unpaid: confirm putting it on hold",
             409),
+    /** 4B-9, 15 BR-14: a refund recorded is never more than what the order still has to refund. */
+    REFUND_EXCEEDS_REFUNDABLE("This refund is more than the order still has to refund", 409),
+    /** 4B-9: no refund record with that id. */
+    REFUND_RECORD_NOT_FOUND("Refund record not found", 404),
+    /** 4B-9, 15 §4.5 step 16: a refund record is voided once. */
+    REFUND_RECORD_ALREADY_VOIDED("This refund record is already voided", 409),
+    /** 4B-9: one outgoing bank statement line, one live refund record. */
+    REFUND_REFERENCE_IN_USE("This bank statement line is already recorded as a refund", 409),
     /**
      * SCRUM-190 (kltn-docs 14 edge case "trùng đơn"): the same customer placed an order with the same lines recently.
      * Nothing is created; {@code details} names that order ({@code orderId}, {@code orderNumber}, {@code placedAt}) and
@@ -604,6 +652,8 @@ public enum ErrorCode {
     /** The hold behind a pick line was released, expired or already consumed: nothing is deducted. */
     RESERVATION_NOT_ACTIVE("The stock hold is no longer active", 409),
     RESERVATION_NOT_WHOLE_CARTONS("A stock reservation is a whole number of the SKU's cartons", 422),
+    /** 4B-7 (20 BR-17): a hold at the order's shipping warehouse is allocated there only. */
+    RESERVATION_WAREHOUSE_MISMATCH("The stock is held at another warehouse", 409),
     /**
      * A hold that is not an order's goods on a shelf - one on a legacy print-shop row (IN_PRODUCTION):
      * a pick does not close it (review of #109). The code keeps its name for clients that read it.

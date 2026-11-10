@@ -82,9 +82,10 @@ public final class Order extends AggregateRoot {
     private BigDecimal cancellationFeeAmount;
     private String cancellationFeeDetail;
     /**
-     * When printing started for the order (audit of #109, decision 2026-10-17). Before it a cancellation is refunded in
-     * full; from it Sales may keep an agreed fee. Printing is done outside the system (kltn-docs 07/11), so nothing sets
-     * it today: the Production Order records it when it reaches In Production (17 BR-11).
+     * When printing started for the order (audit of #109, decision 2026-10-17; 17 BR-11). Before it a cancellation is
+     * refunded in full; from it Sales may keep an agreed fee. Printing is done by a producer outside the system
+     * (kltn-docs 07/11): it is set once, when the first production order of the order enters In Production, whatever
+     * moved it there ({@link #recordPrintingStarted}).
      */
     private Instant printingStartedAt;
     /**
@@ -100,6 +101,10 @@ public final class Order extends AggregateRoot {
     private Instant goodsLeftAt;
     /** 4B-5: when its sales contract was signed; null for an order placed at checkout. */
     private Instant contractSignedAt;
+    /** 4B-7 (17 BR-22): the one warehouse an order of a contract ships from, chosen by Sales once it is CONFIRMED. */
+    private UUID shippingWarehouseId;
+    private Instant shippingWarehouseChosenAt;
+    private UUID shippingWarehouseChosenBy;
     private PaymentTerm paymentTerm = PaymentTerm.PREPAID;
     private java.math.BigDecimal depositRequired;
     private Instant depositReceivedAt;
@@ -140,6 +145,12 @@ public final class Order extends AggregateRoot {
      */
     private BigDecimal remainderFeeRetainedAmount = BigDecimal.ZERO;
     private BigDecimal remainderFeePaidAmount = BigDecimal.ZERO;
+    /**
+     * 4B-9: the id of the closure {@link #closeRemainder} made in this unit of work, which the service hands payment
+     * with the closure's money (a contract order's installments are settled in the same transaction). Not stored: the
+     * closure's event carries it, and payment keys its settlement on it.
+     */
+    private UUID lastClosureId;
     /**
      * PACK-PARTIAL (lead's decision 2026-10-21): Sales decided the order may ship in parts - a packing completion that
      * leaves goods behind, or a handover of part of it. Off by default: the warehouse ships the order whole.
@@ -948,11 +959,14 @@ public final class Order extends AggregateRoot {
 
     /**
      * The order is released from a warehouse (SCRUM-423): CONFIRMED → READY_TO_FULFILL, every line picked from stock.
-     * Printing is done outside the system (kltn-docs 07/11), so nothing waits for a print shop here; that a print
-     * line's goods are actually in stock is the release service's to check ({@code ORDER_PRINT_GOODS_NOT_RECEIVED}).
+     * Printing is done outside the system (kltn-docs 07/11), so nothing waits for a print shop here; the goods of the
+     * customer's own SKU are stock like any other (QD-16). Only a legacy line printed to a design snapshot is the release
+     * service's to refuse ({@code ORDER_PRINT_GOODS_NOT_RECEIVED}).
      *
      * <p>Only a CONFIRMED order may be released: paid in full, or for a deposit order once the deposit
-     * is in (kltn-docs 15 §4.2); its balance is collected later, at the latest on delivery (17 §4.3).</p>
+     * is in (kltn-docs 15 §4.2); its balance is collected later, at the latest on delivery (17 §4.3). An order of a
+     * contract waiting for stock is released the same way once every carton is held at its shipping warehouse:
+     * AWAITING_STOCK → READY_TO_FULFILL (4A-6, 17 §5.1 "nhận đủ hàng"; the release service checks the holds).</p>
      */
     public void release(UUID warehouse, String warehouseCode, UUID by, Instant now) {
         java.util.Objects.requireNonNull(warehouse, "warehouse");
@@ -961,8 +975,17 @@ public final class Order extends AggregateRoot {
             throw new BusinessException(ErrorCode.ORDER_DEPOSIT_NOT_RECEIVED,
                     "Order %s cannot be released before its deposit arrives".formatted(orderNumber));
         }
-        if (status != OrderStatus.CONFIRMED) {
+        if (status != OrderStatus.CONFIRMED && !(status == OrderStatus.AWAITING_STOCK && paidByContract())) {
             throw new InvalidOrderTransitionException(orderNumber, status, "only a confirmed order can be released");
+        }
+        if (paidByContract() && shippingWarehouseId == null) {
+            throw new BusinessException(ErrorCode.ORDER_STOCK_NOT_HELD, ("Order %s has no shipping warehouse: choose it "
+                    + "and hold its stock there first (17 §4.2)").formatted(orderNumber));
+        }
+        if (paidByContract() && !shippingWarehouseId.equals(warehouse)) {
+            // 17 BR-22: one warehouse; it is released where its stock is held.
+            throw new BusinessException(ErrorCode.ORDER_SHIPPING_WAREHOUSE_MISMATCH, ("Order %s ships from another "
+                    + "warehouse").formatted(orderNumber));
         }
         if (paidByContract() && lines.stream().anyMatch(line -> !line.isReserved())) {
             // An order confirmed by its contract holds nothing until its shipping warehouse is chosen and its stock held
@@ -978,11 +1001,11 @@ public final class Order extends AggregateRoot {
         registerEvent(new OrderEvent.Released(new com.stockflow.contracts.OrderReleased(id.value(), warehouseCode, now)));
     }
 
-    /** Lines printed to order: they carry a design snapshot. */
-    public List<OrderLine> printLines() {
-        return lines.stream().filter(OrderLine::isMadeToOrder).toList();
-    }
-
+    /**
+     * Whether the order has a legacy print line - a blank with a design snapshot (QD-16) - whose printed goods were never
+     * received into stock: such an order is not released ({@code ORDER_PRINT_GOODS_NOT_RECEIVED}). A line of the
+     * customer's own SKU is not one: its goods arrive printed, through a production order, as stock.
+     */
     public boolean hasPrintLines() {
         return lines.stream().anyMatch(OrderLine::isMadeToOrder);
     }
@@ -996,8 +1019,8 @@ public final class Order extends AggregateRoot {
      */
     public boolean decidePartialShipment(boolean allowed) {
         boolean open = switch (status) {
-            case DRAFT, PENDING_CONTRACT, PENDING_PAYMENT, CONFIRMED, IN_PRODUCTION, READY_TO_FULFILL, PICKING,
-                 PARTIALLY_FULFILLED, PACKED, ON_HOLD -> true;
+            case DRAFT, PENDING_CONTRACT, PENDING_PAYMENT, CONFIRMED, AWAITING_STOCK, IN_PRODUCTION, READY_TO_FULFILL,
+                 PICKING, PARTIALLY_FULFILLED, PACKED, ON_HOLD -> true;
             case SHIPPED, DELIVERY_FAILED, DELIVERED, RETURN_REQUESTED, RETURNED, REFUNDED, PARTIALLY_REFUNDED,
                  COMPLETED, CANCELLED, CLOSED -> false;
         };
@@ -1172,6 +1195,10 @@ public final class Order extends AggregateRoot {
      * reason and detail. The money held for the order (received, less what closures asked back - review of S6) pays
      * it first: what is left of it is refunded (Q6b), and what it does not cover is owed — the cancellation announces
      * it and payment records a receivable (Q6a). Nothing is collected or marked paid.
+     *
+     * <p>4B-9: an order of a contract holds no money of its own here - it was paid on its installments - so the share
+     * and the agreed amount are settled by payment against them, in the caller's transaction
+     * ({@code PaymentService.settleCancellation}); this order announces no fee owed, and keeps nothing.</p>
      */
     public void cancel(CancellationReasonCode code, String note, BigDecimal retainedPercent,
                        com.stockflow.order.api.CancellationFee agreedFee, UUID by, Instant now) {
@@ -1184,8 +1211,12 @@ public final class Order extends AggregateRoot {
         if (code == CancellationReasonCode.OTHER && trimmed == null) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A cancellation for OTHER must say why in the note");
         }
-        if (retainedPercent != null && (retainedPercent.signum() < 0 || retainedPercent.compareTo(HUNDRED) > 0)) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "The retained share is between 0 and 100 percent");
+        // 4B-9: two decimals at most, as payment keeps the share of a contract order (order_settlement.fee_percent) -
+        // refused here, before any stock or contract is touched.
+        if (retainedPercent != null && (retainedPercent.signum() < 0 || retainedPercent.compareTo(HUNDRED) > 0
+                || retainedPercent.stripTrailingZeros().scale() > 2)) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "The retained share is between 0 and 100 percent, to two decimals");
         }
         // SCRUM-260: a replacement ships goods a resolved return promised. Cancelled any other way, the return would
         // stay "replaced" while the customer got neither the goods nor the money - so only its withdrawal through the
@@ -1236,10 +1267,13 @@ public final class Order extends AggregateRoot {
         this.cancellationReasonCode = code;
         this.cancellationReason = reasonText;
         this.cancellationRetainedAmount = retained;
+        // 4B-9: a contract order's money is on its installments, never in the ledger (OrderAllocator refuses it), so
+        // its fee is settled against them by payment in this transaction (OrderServiceImpl.cancelLoaded). Announcing
+        // the fee as owed here as well would open a ledger receivable for the same fee a second time.
+        BigDecimal owed = agreed == null || paidByContract() ? BigDecimal.ZERO : agreed.subtract(retained);
         registerEvent(new OrderEvent.Cancelled(new OrderCancelled(id.value(), orderNumber.value(), customerId,
                 previous.name(), code.name(), trimmed, paidAmount, held.subtract(retained),
-                total().currency().getCurrencyCode(), by, now,
-                agreed == null ? BigDecimal.ZERO : agreed.subtract(retained))));
+                total().currency().getCurrencyCode(), by, now, owed)));
     }
 
     private void requireAgreedFee(com.stockflow.order.api.CancellationFee fee, BigDecimal retainedPercent) {
@@ -1599,9 +1633,14 @@ public final class Order extends AggregateRoot {
         }
         reevaluatePaidInFull(at);
         followShipments(ShipmentChange.CLOSED, at, by, reason);
+        this.lastClosureId = UUID.randomUUID();
+        // 4B-9: a contract order's money is on its installments, which payment settles in this transaction
+        // (OrderServiceImpl.closeRemainder); the ledger holds none of it, so it is told of no fee owed - a ledger
+        // receivable would bill the same fee twice.
         registerEvent(new OrderEvent.RemainderClosed(new com.stockflow.contracts.OrderRemainderClosed(id.value(),
                 orderNumber.value(), customerId, code.name(), closedLines, closed.amount(), billable(), paidAmount,
-                refundable, total().currency().getCurrencyCode(), by, at, UUID.randomUUID(), fee, retained, owed)));
+                refundable, total().currency().getCurrencyCode(), by, at, lastClosureId, fee, retained,
+                paidByContract() ? BigDecimal.ZERO : owed)));
         return closed.amount();
     }
 
@@ -2196,6 +2235,95 @@ public final class Order extends AggregateRoot {
         this.contractSignedAt = at;
     }
 
+    public void restoreShippingWarehouse(UUID warehouse, Instant chosenAt, UUID chosenBy) {
+        this.shippingWarehouseId = warehouse;
+        this.shippingWarehouseChosenAt = chosenAt;
+        this.shippingWarehouseChosenBy = chosenBy;
+    }
+
+    /**
+     * 4B-7 (kltn-docs 17 §4.2 step 2, BR-22): the one warehouse this order of a contract ships from, chosen by Sales once
+     * it is CONFIRMED. Its stock is held there only (20 BR-17). It changes only while nothing is held for the order - a
+     * hold already taken ties it to its warehouse; the same warehouse again changes nothing. An order AWAITING_STOCK
+     * (4A-6) may choose its warehouse again, which holds what arrived; another one is refused by the production order
+     * it has sent (the service's check, BR-22).
+     *
+     * @param holdsStock whether any stock is held for the order now
+     * @return whether it changed
+     * @throws BusinessException {@code ORDER_SHIPPING_WAREHOUSE_NOT_ALLOWED} for an order not of a contract or neither
+     *         CONFIRMED nor AWAITING_STOCK; {@code ORDER_SHIPPING_WAREHOUSE_LOCKED} for another warehouse while stock is
+     *         held
+     */
+    public boolean chooseShippingWarehouse(UUID warehouse, boolean holdsStock, UUID by, Instant at) {
+        java.util.Objects.requireNonNull(warehouse, "warehouse");
+        if (!paidByContract() || status != OrderStatus.CONFIRMED && status != OrderStatus.AWAITING_STOCK) {
+            throw new BusinessException(ErrorCode.ORDER_SHIPPING_WAREHOUSE_NOT_ALLOWED, ("Order %s is %s: the shipping "
+                    + "warehouse is chosen for a confirmed order of a contract").formatted(orderNumber, status));
+        }
+        if (warehouse.equals(shippingWarehouseId)) {
+            return false;
+        }
+        if (shippingWarehouseId != null && holdsStock) {
+            throw new BusinessException(ErrorCode.ORDER_SHIPPING_WAREHOUSE_LOCKED, ("Order %s holds stock at its "
+                    + "shipping warehouse; release those holds before choosing another").formatted(orderNumber));
+        }
+        this.shippingWarehouseId = warehouse;
+        this.shippingWarehouseChosenAt = java.util.Objects.requireNonNull(at, "at");
+        this.shippingWarehouseChosenBy = java.util.Objects.requireNonNull(by, "by");
+        return true;
+    }
+
+    /** 4B-7: more cartons held for a line at the shipping warehouse - stock that arrived after the first holds. */
+    public void holdMore(UUID lineId, List<UUID> reservationIds) {
+        lineOf(lineId).holdMore(reservationIds);
+    }
+
+    /**
+     * 4A-6 (kltn-docs 17 §4.2 step 5, §4.3 step 7, BR-04): its next delivery batch is short at its shipping warehouse and
+     * a production order for that batch was sent to a producer - CONFIRMED → AWAITING_STOCK. The caller decides those two
+     * facts; the order checks it is one of a contract. An order already waiting, or past it, is left as it is. An order
+     * on hold from CONFIRMED goes back to AWAITING_STOCK when the hold is resolved (17 §4.9 step 36: back where it was,
+     * then on with what happened meanwhile); a credit hold has no status to go back to and is left as it is.
+     *
+     * @return whether this changed the order
+     */
+    public boolean awaitStock(UUID by, Instant at) {
+        if (!paidByContract()) {
+            return false;
+        }
+        if (status == OrderStatus.CONFIRMED) {
+            transitionTo(OrderStatus.AWAITING_STOCK, by, "PRODUCTION_ORDER_SENT", at);
+            return true;
+        }
+        if (status == OrderStatus.ON_HOLD && holdReason != HoldReason.CREDIT
+                && statusBeforeHold == OrderStatus.CONFIRMED) {
+            this.statusBeforeHold = OrderStatus.AWAITING_STOCK;
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * 17 BR-11, §4.8 step 30: the first production order of the order entered In Production - mass printing started, so
+     * from now on a cancellation is staff's to decide and may keep an agreed fee. Written once: a later production order
+     * starting changes nothing. A cancelled or closed order is left as it is - it was settled without it, and a
+     * production order still printing for it is closed by the cancellation's cascade.
+     *
+     * @return whether this changed the order
+     */
+    public boolean recordPrintingStarted(Instant at) {
+        java.util.Objects.requireNonNull(at, "at");
+        if (printingStartedAt != null || status.isTerminal()) {
+            return false;
+        }
+        this.printingStartedAt = at;
+        return true;
+    }
+
+    public UUID shippingWarehouseId() { return shippingWarehouseId; }
+    public Instant shippingWarehouseChosenAt() { return shippingWarehouseChosenAt; }
+    public UUID shippingWarehouseChosenBy() { return shippingWarehouseChosenBy; }
+
     /** 4B-5: when its sales contract was signed - what confirms it, not a payment its own terms ask for. */
     public Instant contractSignedAt() { return contractSignedAt; }
 
@@ -2204,6 +2332,9 @@ public final class Order extends AggregateRoot {
      * only as the money ledger's neutral PREPAID until the ledger goes (4B-10).
      */
     public boolean paidByContract() { return contractSignedAt != null; }
+
+    /** The closure {@link #closeRemainder} made in this unit of work; null when none was made (4B-9). */
+    public UUID lastClosureId() { return lastClosureId; }
 
     /**
      * Goods of the order leave on a load plan's vehicle (SCRUM-392, LP-3) - part of a shipment that is handed over only

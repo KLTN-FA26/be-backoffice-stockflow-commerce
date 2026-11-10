@@ -36,6 +36,10 @@ public class GoodsReceiptLineJpaEntity extends BaseEntity {
     @Column(name = "po_line_id", updatable = false)
     private UUID poLineId;
 
+    /** 4A-5: the production order line a line of a production receipt counts; null on a purchase receipt. */
+    @Column(name = "production_order_line_id", updatable = false)
+    private UUID productionOrderLineId;
+
     @Column(name = "inventory_item_id", nullable = false, updatable = false)
     private UUID inventoryItemId;
 
@@ -63,8 +67,16 @@ public class GoodsReceiptLineJpaEntity extends BaseEntity {
     public GoodsReceiptLineJpaEntity(UUID id, UUID poLineId, UUID inventoryItemId, UUID locationId,
                                      BigDecimal receivedQty, String lotNumber, LocalDate expiryDate, String note,
                                      UUID uomConversionId) {
+        this(id, poLineId, null, inventoryItemId, locationId, receivedQty, lotNumber, expiryDate, note,
+                uomConversionId);
+    }
+
+    public GoodsReceiptLineJpaEntity(UUID id, UUID poLineId, UUID productionOrderLineId, UUID inventoryItemId,
+                                     UUID locationId, BigDecimal receivedQty, String lotNumber, LocalDate expiryDate,
+                                     String note, UUID uomConversionId) {
         super(id);
         this.poLineId = poLineId;
+        this.productionOrderLineId = productionOrderLineId;
         this.inventoryItemId = inventoryItemId;
         this.locationId = locationId;
         this.receivedQty = receivedQty;
@@ -91,6 +103,7 @@ public class GoodsReceiptLineJpaEntity extends BaseEntity {
     }
 
     public UUID getPoLineId() { return poLineId; }
+    public UUID getProductionOrderLineId() { return productionOrderLineId; }
     public UUID getInventoryItemId() { return inventoryItemId; }
     public UUID getLocationId() { return locationId; }
     public BigDecimal getReceivedQty() { return receivedQty; }

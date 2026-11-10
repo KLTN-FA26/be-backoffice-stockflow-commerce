@@ -707,7 +707,8 @@ class StockOperationsServiceImpl implements StockOperations {
                 command.expiryDate(), command.receivedAt(), command.origin().goodsReceiptId(),
                 command.origin().goodsReceiptNumber(), command.origin().purchaseOrderId(),
                 command.origin().purchaseOrderNumber(), command.origin().supplierId(), command.origin().supplierName(),
-                command.origin().warehouseId()));
+                command.origin().warehouseId(), command.origin().productionOrderId(),
+                command.origin().productionOrderCode()));
         Instant now = clock.instant();
 
         StockMove first = null;

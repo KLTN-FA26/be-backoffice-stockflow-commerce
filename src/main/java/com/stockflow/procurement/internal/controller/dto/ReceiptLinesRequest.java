@@ -21,23 +21,33 @@ import java.util.UUID;
  * holding part or all of it, the whole list each time - an entry with an {@code lpn} recounts that carton, one
  * without labels a new one, a carton left out is voided - and {@code unitOfMeasure} is then the active packing unit
  * they are in. A line without cartons is loose, in the base unit.</p>
+ *
+ * <p>4A-5: on a receipt against a production order a line names its {@code productionOrderLineId} and lists at least
+ * one carton; every carton holds the line's standard count, so a carton's {@code quantity} and the line's
+ * {@code quantity} may be left out (they are counted from the cartons) and, when given, must agree. No
+ * {@code lotNumber}, {@code expiryDate}, {@code purchaseOrderLineId} or {@code sku}: the lot is the production order's
+ * code. A purchase receipt's line still needs its {@code quantity}.</p>
  */
 public record ReceiptLinesRequest(@NotEmpty @Size(max = 200) List<@Valid @NotNull Line> lines) {
 
     public record Line(
             UUID purchaseOrderLineId,
-            @Positive int quantity,
+            @Positive Integer quantity,
             @Size(max = 64) String lotNumber,
             LocalDate expiryDate,
             @NotBlank @Size(max = 64) String locationCode,
             @Size(max = 255) String note,
             @Size(max = 16) String unitOfMeasure,
             @Size(max = 500) List<@Valid @NotNull Package> packages,
-            @Size(max = 64) String sku
+            @Size(max = 64) String sku,
+            UUID productionOrderLineId
     ) {
     }
 
-    /** One carton: {@code lpn} to recount one labelled before, absent to label a new one. */
-    public record Package(@Size(max = 30) String lpn, @Positive int quantity) {
+    /**
+     * One carton: {@code lpn} to recount one labelled before, absent to label a new one. {@code quantity} may be left
+     * out on a production receipt, where it is the line's standard count.
+     */
+    public record Package(@Size(max = 30) String lpn, @Positive Integer quantity) {
     }
 }

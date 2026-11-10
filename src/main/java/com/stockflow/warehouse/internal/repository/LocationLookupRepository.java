@@ -33,6 +33,9 @@ public interface LocationLookupRepository {
     /** The warehouse itself, for other modules naming it on a document (a purchase order's receiving warehouse). */
     Optional<WarehouseHeader> findWarehouseHeader(UUID warehouseId);
 
+    /** Every ACTIVE warehouse, by code (4B-7: those an order may ship from). */
+    java.util.List<WarehouseHeader> findActiveWarehouseHeaders();
+
     /**
      * The bins of a warehouse a putaway may choose from: BIN locations of {@code storageClass} flagged {@code is_putaway_target} whose warehouse, shelf
      * and own status are all ACTIVE (the {@code EffectiveStatus.ofBin} rule, in the WHERE clause so the database does
