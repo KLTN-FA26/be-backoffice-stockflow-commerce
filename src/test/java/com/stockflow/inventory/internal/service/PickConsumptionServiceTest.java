@@ -372,6 +372,7 @@ class PickConsumptionServiceTest {
             when(stockItems.findById(row.id())).thenReturn(Optional.of(row));
             when(stockItems.findByIdForUpdate(row.id())).thenReturn(Optional.of(row));
             when(stockPackages.findAllByIdForUpdate(any())).thenReturn(List.of(carton));
+            when(stockPackages.findById(id)).thenReturn(Optional.of(carton));
             when(stockPackages.save(any())).thenAnswer(call -> call.getArgument(0));
             return new Picked(row, carton);
         }
@@ -444,6 +445,10 @@ class PickConsumptionServiceTest {
             order.verify(policies).lock("SOFA-3S-GREY");
             order.verify(stockPackages).findAllByIdForUpdate(any());
             order.verify(stockItems).findByIdForUpdate(picked.row().id());
+            // The carton is saved before the row, so it stands at its new bin when the ledger line names it there
+            // (check_stock_movement_package): a put-back onto another bin failed 409 when the order was the reverse.
+            order.verify(stockPackages).save(picked.carton());
+            order.verify(stockItems).saveMerged(picked.row());
         }
 
         @Test

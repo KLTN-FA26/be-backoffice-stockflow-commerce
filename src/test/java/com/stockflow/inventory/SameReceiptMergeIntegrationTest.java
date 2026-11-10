@@ -284,7 +284,6 @@ class SameReceiptMergeIntegrationTest {
     }
 
     @Test
-    @org.junit.jupiter.api.Disabled("Production bug 4C-4-B2: a put-back onto ANOTHER bin fails 409 - the PUT_BACK ledger insert is flushed before the carton UPDATE, so tg check_stock_movement_package sees the carton at its old bin")
     @DisplayName("put back onto ANOTHER bin: the carton and its row follow it there whole")
     void putBackOntoAnotherBin() {
         cartons(1, 3);
