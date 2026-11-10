@@ -28,6 +28,7 @@ class PlannerAdjustmentAccessIntegrationTest {
 
     @Autowired MockMvc mockMvc;
     @MockitoBean JwtDecoder decoder;
+    @org.springframework.beans.factory.annotation.Autowired org.springframework.jdbc.core.JdbcTemplate jdbc;
 
     private SecuredMvc mvc;
     private final UUID planner = UUID.randomUUID();
@@ -65,8 +66,10 @@ class PlannerAdjustmentAccessIntegrationTest {
     @Test
     @DisplayName("4A-8: an adjustment for SUBCONTRACT_LOSS is refused, 400 VALIDATION_FAILED: subcontracting is gone")
     void subcontractLossIsRefused() throws Exception {
-        String body = "{\"locationCode\":\"HCM-A01-1-A\",\"sku\":\"SOFA-3S-GREY\",\"quantityDelta\":-1,"
-                + "\"reason\":\"SUBCONTRACT_LOSS\"}";
+        var stock = jdbc.queryForMap("SELECT sku, location_code FROM inventory.stock_item WHERE on_hand > 0 "
+                + "AND status = 'AVAILABLE' ORDER BY sku LIMIT 1");
+        String body = "{\"locationCode\":\"%s\",\"sku\":\"%s\",\"quantityDelta\":-1,"
+                .formatted(stock.get("location_code"), stock.get("sku")) + "\"reason\":\"SUBCONTRACT_LOSS\"}";
 
         mvc.asRole(Role.INVENTORY_PLANNER, planner, post("/api/v1/inventory/adjustments")
                         .contentType(MediaType.APPLICATION_JSON).content(body))
