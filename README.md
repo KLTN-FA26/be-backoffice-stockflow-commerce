@@ -11,6 +11,8 @@ enforces**. It is not a monolith with hopeful package names — a boundary viola
 
 The previous architecture was fourteen microservices. Why it changed, what that bought and what it
 cost, is [ADR-0005](docs/adr/0005-modular-monolith.md) — read that first if you only read one file.
+The November 2026 change of scope (B2B only, printed goods from outside producers, whole cartons, full truckloads) is
+[ADR-0010](docs/adr/0010-rescope-b2b-printed-goods.md); the current business analysis is the kltn-docs repository.
 
 ---
 
@@ -58,7 +60,7 @@ callable from the browser.
 The `local` profile adds `db/demo`, which seeds stock so the endpoints return something:
 
 ```bash
-curl "localhost:8080/api/v1/inventory/stock-items/atp?sku=SOFA-3S-GREY"
+curl "localhost:8080/api/v1/inventory/stock-items/atp?sku=<a sku from db/demo>"
 ```
 
 ---
@@ -77,14 +79,14 @@ com.stockflow
 │
 ├── identity/        Users, roles, permissions, sessions              → schema identity
 ├── customer/        Profiles, addresses, segments                    → schema customer
-├── product/         Product master, variants, attributes, BOM        → schema product
-├── catalog/         Storefront catalog, pricing, promotions, search  → schema catalog
-├── inventory/       Stock, ATP, reservations, counts, cartons        → schema inventory
+├── product/         Product master, customer SKUs, print configuration → schema product
+├── catalog/         Storefront catalog and search (no prices)        → schema catalog
+├── inventory/       Whole-carton stock, ATP, holds, counts, quarantine → schema inventory
 ├── warehouse/       Warehouses, zones, bins, capacity                → schema warehouse
-├── order/           Cart, orders, amendments, RMA                    → schema ordering
-├── payment/         Payments, deposits, refunds, reconciliation      → schema payment
-├── fulfillment/     Picking, packing, load plans, truckload dispatch → schema fulfillment
-├── procurement/     Suppliers, POs, goods receipt                    → schema procurement
+├── order/           Quotes, contracts, orders, production orders, returns → schema ordering
+├── payment/         Contract installments, receipts, settlements, refunds → schema payment
+├── fulfillment/     Picking, staging, carton check, load plans, carriers → schema fulfillment
+├── procurement/     Goods receipts (production orders, returns)      → schema procurement
 ├── design/          Design studio, templates, snapshots, print jobs  → schema design
 ├── chat/            Conversations, messages, agent assignment        → schema chat
 ├── notification/    Templates, preferences, delivery log             → schema notification
@@ -215,9 +217,9 @@ The compiler allows both — it is all one jar. The build does not.
 |---|---|---|
 | **When** | you need the result inside your transaction | you are announcing a fact |
 | **Coupling** | caller declares the dependency | publisher knows nobody |
-| **Example** | `order → inventory.reserve()` | `payment` publishes `PaymentReceiptRecorded` |
+| **Example** | `order → inventory.holdAtWarehouse()` | `payment` publishes `PaymentReceiptRecorded` |
 
-`order → inventory` is a call: an order without its stock is a bug, so the two must commit
+`order → inventory` is a call: a hold without its order, or an order whose hold was lost, is a bug, so the two must commit
 together. `payment → order` is an event: payment succeeded whatever order does next, and a direct
 call would create a cycle, since order already listens to payment.
 
@@ -260,7 +262,7 @@ left a window in which an order existed with no stock behind it.
 | `BaseLayerRegressionTest` | the base-layer defects found in review — entity equality under a lazy proxy, `isNew()` with an application-assigned id, `OWN` scope with no user id, a nested permission guard clearing its caller's scope |
 | `StockItemTest`, `OrderTest`, `StockAllocatorTest` | business rules, as plain unit tests with no container — milliseconds, because the domain has no framework on it |
 | `ShippingWarehouseIntegrationTest` | an order and its stock holds commit together, against a real Postgres |
-| `InventoryEventIntegrationTest` | cross-module event delivery and listener idempotency |
+| `*MigrationUpgradeTest` | each removal or CHECK change run over demo-like data: schema and remaining rows afterwards |
 | `InventoryModuleTest` | inventory boots **alone**, with the other thirteen modules absent |
 | `MessageBundleTest` | every `ErrorCode` is translated in both bundles, and they agree |
 | `ApiEnvelopeTest` | the response shape every client depends on |
@@ -364,7 +366,7 @@ places.
 
 1. [`docs/adr/0005-modular-monolith.md`](docs/adr/0005-modular-monolith.md) — the decision and its price
 2. `inventory/` — the reference module, fully implemented through all four layers
-3. `order/internal/service/OrderServiceImpl.java` — the saga collapse, with the distributed version described in the javadoc
+3. `order/internal/service/ShippingWarehouseService.java` — the saga collapse, with the distributed version described in ADR-0005 and why it still holds in [ADR-0010](docs/adr/0010-rescope-b2b-printed-goods.md)
 4. [`docs/adding-a-module.md`](docs/adding-a-module.md) — the recipe for the next module, and what not to rebuild
-5. `docs/business-design/` — data flows, state machines, 50 business rules, per-step storage
+5. The kltn-docs repository (`docs/`) — the current business analysis; `docs/business-design/` is the pre-rescope version, marked superseded
 6. `ModularityTest` — the twenty lines that keep all of the above true
