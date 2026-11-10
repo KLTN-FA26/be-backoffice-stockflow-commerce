@@ -117,10 +117,10 @@ class InventoryServiceImplAvailabilityTest {
     @DisplayName("a reservation TTL that is not positive is refused at construction")
     void ttlMustBePositive() {
         assertThatThrownBy(() -> new InventoryServiceImpl(repository, null, operations, null, Clock.systemUTC(),
-                controls, policies, skuReservations, null, cycleCounts, stockPackages, null, Duration.ZERO))
+                controls, policies, skuReservations, null, cycleCounts, stockPackages, Duration.ZERO))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> new InventoryServiceImpl(repository, null, operations, null, Clock.systemUTC(),
-                controls, policies, skuReservations, null, cycleCounts, stockPackages, null, Duration.ofMinutes(-1)))
+                controls, policies, skuReservations, null, cycleCounts, stockPackages, Duration.ofMinutes(-1)))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
