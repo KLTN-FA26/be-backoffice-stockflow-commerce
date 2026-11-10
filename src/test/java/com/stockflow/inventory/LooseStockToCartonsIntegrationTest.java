@@ -212,7 +212,8 @@ class LooseStockToCartonsIntegrationTest {
                        || (row_data ->> 'on_hand') || ' ' || (row_data ->> 'reserved') || ' '
                        || COALESCE(row_data ->> 'stock_package_id', 'loose')
                   FROM platform.legacy_archive
-                 WHERE source_table = 'inventory.stock_item' AND row_id IN (?, ?, ?, ?)""", String.class,
+                 WHERE source_table = 'inventory.stock_item' AND row_id IN (?, ?, ?, ?)
+                   AND row_data ->> 'on_hand' <> '0'""", String.class,
                 DEMO_ROWS.toArray()))
                 .containsExactlyInAnyOrder(
                         SOFA + " " + SOFA_BIN + " - AVAILABLE 25 0 loose",

@@ -104,7 +104,7 @@ class GoodsReceiptIntegrationTest {
         return jdbc.query("""
                 SELECT string_agg(status || ':' || total, ',' ORDER BY status) FROM (
                     SELECT status, SUM(on_hand) AS total FROM inventory.stock_item
-                     WHERE sku = ? AND location_code = ? AND COALESCE(lot_number, '') = COALESCE(?, '')
+                     WHERE sku = ? AND location_code = ? AND lot_number = COALESCE(?, 'UNTRACED')
                      GROUP BY status) layers""",
                 (rs, n) -> rs.getString(1), sku, location, lotNumber).stream().filter(java.util.Objects::nonNull)
                 .findFirst().orElse("none");

@@ -168,7 +168,7 @@ class StockPackageMoveIntegrationTest {
 
         assertThatThrownBy(() -> inventory.moveStockPackages(move("HN-RCV01")))
                 .extracting(StockPackageMoveIntegrationTest::code).isEqualTo(ErrorCode.MOVE_ACROSS_WAREHOUSES);
-        assertThat(cartonState()).isEqualTo(RECEIVING + ":IN_STOCK:true");
+        assertThat(cartonState()).isEqualTo(RECEIVING + ":IN_STOCK");
     }
 
     @Test

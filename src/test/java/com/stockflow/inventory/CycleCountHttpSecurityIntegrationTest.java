@@ -270,8 +270,8 @@ class CycleCountHttpSecurityIntegrationTest {
     @Test
     @DisplayName("a carton the plan missed is added by {locationCode, lpn}; the old sku/lot/countedQty shape is 400")
     void addLineTakesLocationAndLpn() throws Exception {
-        UUID second = CartonRows.stock(jdbc, sku, "HCM-A01-2-A", 1, 10, "L1", LocalDate.now().plusYears(1),
-                Instant.parse("2026-01-02T00:00:00Z"), "AVAILABLE").getFirst().id();
+        UUID second = tx.execute(s -> CartonRows.stock(jdbc, sku, "HCM-A01-2-A", 1, 10, "L1",
+                LocalDate.now().plusYears(1), Instant.parse("2026-01-02T00:00:00Z"), "AVAILABLE")).getFirst().id();
         CycleCountView count = planned();
         assertThat(second).isNotNull();
 

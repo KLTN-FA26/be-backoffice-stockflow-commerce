@@ -61,16 +61,11 @@ class StockPackageTest {
     }
 
     @Test
-    @DisplayName("a draft counted at another figure before 4C-2 does not go into stock as it is: recounted first")
-    void aNonStandardDraftIsNotPutInStock() {
-        StockPackage old = new StockPackage(new StockPackageId(UUID.randomUUID()), "LPN-20261021-000002",
+    @DisplayName("a draft counted at another figure is never rehydrated (ck_stock_package_standard_count says so too)")
+    void aNonStandardDraftIsNotRehydrated() {
+        assertThatThrownBy(() -> new StockPackage(new StockPackageId(UUID.randomUUID()), "LPN-20261021-000002",
                 UUID.randomUUID(), UUID.randomUUID(), 1000, 980, RECEIVING, StockPackageStatus.RECEIVING,
-                UUID.randomUUID(), null, 3);
-        assertThatThrownBy(old::putInStock).isInstanceOfSatisfying(BusinessException.class,
-                e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.RECEIPT_PACKAGE_NOT_STANDARD));
-        old.count();
-        old.putInStock();
-        assertThat(old.receivedQty()).isEqualTo(1000);
+                UUID.randomUUID(), null, 3)).isInstanceOf(IllegalStateException.class);
     }
 
     @Test
@@ -177,8 +172,8 @@ class StockPackageTest {
         assertThatThrownBy(() -> new StockPackage(id, "LPN-1", item, unit, 5, 5, RECEIVING,
                 StockPackageStatus.CONSUMED, null, null, 0)).as("closed without closed_at")
                 .isInstanceOf(IllegalStateException.class);
-        assertThatThrownBy(() -> new StockPackage(id, "LPN-1", item, unit, 5, 5, RECEIVING,
-                StockPackageStatus.LOST, null, NOW, 0)).as("lost, counted at another figure than a restock allows")
+        assertThatThrownBy(() -> new StockPackage(id, "LPN-1", item, unit, 5, 4, RECEIVING,
+                StockPackageStatus.IN_STOCK, null, null, 0)).as("in stock off its standard count")
                 .isInstanceOf(IllegalStateException.class);
     }
 }

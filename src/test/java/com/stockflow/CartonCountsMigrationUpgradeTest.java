@@ -154,6 +154,42 @@ class CartonCountsMigrationUpgradeTest {
         }
     }
 
+    /**
+     * A draft receipt's carton counted at another figure than its standard before V20261111000200 is set back to not
+     * counted by the migration (archived), so the draft counts it again at the standard.
+     */
+    @Test
+    void aDraftCartonCountedOffItsStandardIsSetBackToNotCounted() throws Exception {
+        try (var postgres = new PostgreSQLContainer<>("postgres:16-alpine")) {
+            postgres.start();
+            flyway(postgres, BEFORE).migrate();
+            try (Connection db = DriverManager.getConnection(postgres.getJdbcUrl(), postgres.getUsername(),
+                    postgres.getPassword())) {
+                seed(db);
+                RawSql.update(db, "SET session_replication_role = replica");
+                carton(db, DRAFT, "LPN-UPG3-D", DOCK, "RECEIVING", true, 3);
+                RawSql.update(db, "SET session_replication_role = DEFAULT");
+
+                var result = flyway(postgres, MIGRATION).migrate();
+                assertThat(result.migrations).extracting(m -> m.version).containsExactly(MIGRATION);
+
+                assertThat(RawSql.texts(db, "SELECT row_id::text FROM platform.legacy_archive WHERE source_table = "
+                        + "'inventory.stock_package' ORDER BY 1")).as("only the draft carton counted off its standard")
+                        .containsExactly(DRAFT);
+                assertThat(RawSql.text(db, "SELECT row_data->>'received_qty' FROM platform.legacy_archive WHERE "
+                        + "source_table = 'inventory.stock_package' AND row_id = ?::uuid", DRAFT)).isEqualTo("3");
+                assertThat(RawSql.text(db, "SELECT COALESCE(received_qty::text, 'not counted') FROM "
+                        + "inventory.stock_package WHERE id = ?::uuid", DRAFT)).isEqualTo("not counted");
+                assertThat(RawSql.text(db, "SELECT COALESCE(stock_item_id::text, 'no row') || ':' || on_hand FROM "
+                        + "inventory.stock_package_balance WHERE stock_package_id = ?::uuid", DRAFT))
+                        .as("a carton being received has no row yet").isEqualTo("no row:0");
+                RawSql.update(db, "UPDATE inventory.stock_package SET received_qty = 4 WHERE id = ?::uuid", DRAFT);
+                assertThat(RawSql.number(db, "SELECT received_qty FROM inventory.stock_package WHERE id = ?::uuid",
+                        DRAFT)).as("counted again, at its standard").isEqualTo(4);
+            }
+        }
+    }
+
     // ------------------------------------------------------------------ what the run did
 
     private static void archived(Connection db, long cartonsBefore) throws SQLException {
@@ -163,9 +199,6 @@ class CartonCountsMigrationUpgradeTest {
                 + "platform.legacy_archive WHERE source_table = 'inventory.stock_package.unopened' AND row_data->>'lpn'"
                 + " IN ('LPN-UPG3-X', 'LPN-UPG3-C', 'LPN-UPG3-O') ORDER BY 1"))
                 .containsExactly("LPN-UPG3-C:false", "LPN-UPG3-O:false", "LPN-UPG3-X:true");
-        assertThat(RawSql.texts(db, "SELECT row_id::text FROM platform.legacy_archive WHERE source_table = "
-                + "'inventory.stock_package' ORDER BY 1")).as("only the draft carton counted off its standard")
-                .containsExactly(DRAFT);
         assertThat(RawSql.texts(db, "SELECT row_id::text FROM platform.legacy_archive WHERE source_table = "
                 + "'inventory.stock_item' ORDER BY 1")).as("the rows relabelled and the row detached")
                 .containsExactlyInAnyOrder(NO_LOT_ROW_1, NO_LOT_ROW_2, Z_ROW_2);
@@ -202,8 +235,6 @@ class CartonCountsMigrationUpgradeTest {
                 + "= ?::uuid", Z_ROW_1)).as("the row holding the units stays").isEqualTo(Z + ":4");
         assertThat(RawSql.number(db, "SELECT count(*) FROM inventory.stock_item WHERE stock_package_id IS NOT NULL "
                 + "GROUP BY stock_package_id ORDER BY count(*) DESC LIMIT 1")).as("one row per carton").isOne();
-        assertThat(RawSql.text(db, "SELECT COALESCE(received_qty::text, 'not counted') FROM inventory.stock_package "
-                + "WHERE id = ?::uuid", DRAFT)).as("the draft is counted again").isEqualTo("not counted");
         assertThat(RawSql.text(db, "SELECT COALESCE(counted_qty::text, 'not counted') || ':' || expected_qty || ':' || "
                 + "(counted_by IS NULL) FROM inventory.cycle_count_line WHERE id = ?::uuid", PARTIAL_LINE))
                 .as("the partial line is scanned again, booked whole").isEqualTo("not counted:4:true");
@@ -234,9 +265,6 @@ class CartonCountsMigrationUpgradeTest {
         assertThat(RawSql.text(db, "SELECT lpn || ':' || lot_number || ':' || stock_status || ':' || on_hand || ':' "
                 + "|| status FROM inventory.stock_package_balance WHERE stock_package_id = ?::uuid", X))
                 .isEqualTo("LPN-UPG3-X:L-1:AVAILABLE:4:IN_STOCK");
-        assertThat(RawSql.text(db, "SELECT COALESCE(stock_item_id::text, 'no row') || ':' || on_hand FROM "
-                + "inventory.stock_package_balance WHERE stock_package_id = ?::uuid", DRAFT))
-                .as("a carton being received has no row yet").isEqualTo("no row:0");
         assertThat(RawSql.text(db, "SELECT status FROM inventory.stock_adjustment WHERE id = ?::uuid", ADJUSTMENT_1))
                 .as("a pending adjustment of the history, partial as asked, is decided as it was asked")
                 .isEqualTo("PENDING_APPROVAL");
@@ -279,9 +307,6 @@ class CartonCountsMigrationUpgradeTest {
         refusedBy(db, "a closed carton off its standard coming back into stock", "23514",
                 "ck_stock_package_standard_count", "UPDATE inventory.stock_package SET status = 'IN_STOCK', "
                         + "closed_at = NULL WHERE id = ?::uuid", LOST_OLD);
-        RawSql.update(db, "UPDATE inventory.stock_package SET received_qty = 4 WHERE id = ?::uuid", DRAFT);
-        assertThat(RawSql.number(db, "SELECT received_qty FROM inventory.stock_package WHERE id = ?::uuid", DRAFT))
-                .as("the draft is counted again, at its standard").isEqualTo(4);
 
         // A count line is a carton, whole.
         refusedBy(db, "a loose count line", "23514", "names no carton", "INSERT INTO inventory.cycle_count_line (id, "
@@ -368,7 +393,6 @@ class CartonCountsMigrationUpgradeTest {
         row(db, Z_ROW_2, BIN, 0, Z, 8);
         carton(db, W, "LPN-UPG3-W", BIN, "IN_STOCK", true, 4);
         row(db, W_ROW, BIN, 4, W, 9);
-        carton(db, DRAFT, "LPN-UPG3-D", DOCK, "RECEIVING", true, 3);
         carton(db, CONSUMED, "LPN-UPG3-C", BIN, "CONSUMED", false, 4);
         row(db, CONSUMED_ROW, BIN, 0, CONSUMED, 9);
         carton(db, LOST_OLD, "LPN-UPG3-O", BIN2, "LOST", false, 3);

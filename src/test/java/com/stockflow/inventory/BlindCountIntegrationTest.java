@@ -100,9 +100,9 @@ class BlindCountIntegrationTest {
                     Identifiers.newId(), product, sku, "Blind count fixture");
         });
         Instant received = Instant.parse("2026-01-02T00:00:00Z");
-        cartonA = CartonRows.stock(jdbc, sku, BIN, 1, CARTON, "L1", received).getFirst();
-        cartonB = CartonRows.stock(jdbc, sku, BIN, 1, CARTON, "L1", received).getFirst();
-        cartonC = CartonRows.stock(jdbc, sku, BIN3, 1, CARTON, "L1", received).getFirst();
+        cartonA = tx.execute(s -> CartonRows.stock(jdbc, sku, BIN, 1, CARTON, "L1", received)).getFirst();
+        cartonB = tx.execute(s -> CartonRows.stock(jdbc, sku, BIN, 1, CARTON, "L1", received)).getFirst();
+        cartonC = tx.execute(s -> CartonRows.stock(jdbc, sku, BIN3, 1, CARTON, "L1", received)).getFirst();
         lot = jdbc.queryForObject("select lot_id from inventory.stock_item where id = ?", UUID.class,
                 cartonA.stockItemId());
         tx.executeWithoutResult(s -> {

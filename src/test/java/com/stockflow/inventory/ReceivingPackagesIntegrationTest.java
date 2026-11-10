@@ -265,17 +265,14 @@ class ReceivingPackagesIntegrationTest {
     }
 
     @Test
-    @DisplayName("a draft carton counted at another figure before 4C-2 is refused at receipt until counted again")
-    void aNonStandardDraftCartonIsRecountedFirst() {
+    @DisplayName("a draft carton cannot be counted at another figure than its standard, not even with the row triggers "
+            + "off: ck_stock_package_standard_count (V20261113000300); counted again it stays at the standard")
+    void aNonStandardDraftCartonCannotBeWritten() {
         String lpn = count(PackageCount.fresh(), PackageCount.fresh()).getFirst().lpn();
-        // As a draft counted under the old rules stands: the row triggers are off only for this transaction's write.
-        tx.executeWithoutResult(s -> {
+        assertThatThrownBy(() -> tx.executeWithoutResult(s -> {
             jdbc.execute("SET LOCAL session_replication_role = replica");
             jdbc.update("update inventory.stock_package set received_qty = 980 where lpn = ?", lpn);
-        });
-
-        assertThatThrownBy(() -> receive(2000))
-                .extracting(ReceivingPackagesIntegrationTest::code).isEqualTo(ErrorCode.RECEIPT_PACKAGE_NOT_STANDARD);
+        })).hasMessageContaining("ck_stock_package_standard_count");
         assertThat(stockRows()).isZero();
 
         count(new PackageCount(lpn), PackageCount.fresh());

@@ -139,7 +139,7 @@ class GoodsReceiptOverToleranceApprovalIntegrationTest {
     private int inbound(String sku, String lot) {
         return jdbc.queryForObject("""
                 SELECT COALESCE(SUM(on_hand), 0)::int FROM inventory.stock_item
-                 WHERE sku = ? AND location_code = ? AND status = 'INBOUND' AND COALESCE(lot_number, '') = COALESCE(?, '')""",
+                 WHERE sku = ? AND location_code = ? AND status = 'INBOUND' AND lot_number = COALESCE(?, 'UNTRACED')""",
                 Integer.class, sku, RECEIVING, lot);
     }
 

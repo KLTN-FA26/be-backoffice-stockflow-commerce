@@ -113,7 +113,7 @@ public final class AlertFixtures {
         UUID id = Identifiers.newId();
         tx.executeWithoutResult(s -> jdbc.update("INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, expiry_date,"
                 + " on_hand, reserved, status, version, created_at) VALUES (?, ?, ?, ?, ?, ?, 0, ?, 0, NOW())",
-                id, sku, location, lot, expiry, onHand, status));
+                id, sku, location, lot == null ? "UNTRACED" : lot, expiry, onHand, status));
         return id;
     }
 

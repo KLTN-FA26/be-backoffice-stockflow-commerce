@@ -138,7 +138,7 @@ class StockDamageIntegrationTest {
         tx.executeWithoutResult(s -> jdbc.update("""
                 INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, expiry_date, on_hand, reserved,
                                                   status, received_at, serial_number, version, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, 0, NOW())""", id, sku, location, lot, expiry, onHand, status,
+                VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, 0, NOW())""", id, sku, location, lot == null ? "UNTRACED" : lot, expiry, onHand, status,
                 Timestamp.from(Instant.parse("2026-10-01T03:00:00Z")), serial));
         return id;
     }
