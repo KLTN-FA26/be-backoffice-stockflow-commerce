@@ -339,6 +339,16 @@ SELECT pg_temp.expect_ok('P3 checked', $q$
 SELECT pg_temp.expect_fail_by('P4 its line put back while CHECKED', 'tg_pick_line_carton_removed', $q$
     UPDATE fulfillment.pick_line SET status = 'PUT_BACK', put_back_qty = 1, put_back_by = md5('demo:user:editor')::uuid,
            put_back_at = NOW(), put_back_location_code = 'HCM-A01-1-A' WHERE id = md5('qa65:pl:5')::uuid $q$);
+SELECT pg_temp.expect_fail_by('P4b damage found after the pick on a line whose carton is CHECKED (5)', 'tg_pick_line_carton_removed', $q$
+    UPDATE fulfillment.pick_line SET packing_damaged_qty = 1 WHERE id = md5('qa65:pl:5')::uuid $q$);
+SELECT pg_temp.expect_fail_by('P4c ... or LABELED (1)', 'tg_pick_line_carton_removed', $q$
+    UPDATE fulfillment.pick_line SET packing_damaged_qty = 1 WHERE id = md5('qa65:pl:1')::uuid $q$);
+SELECT pg_temp.expect_ok('P4d ... but on a line whose carton is REMOVED (2) the damage is recorded', $q$
+    UPDATE fulfillment.pick_line SET packing_damaged_qty = 1 WHERE id = md5('qa65:pl:2')::uuid;
+    UPDATE fulfillment.pick_line SET packing_damaged_qty = 0 WHERE id = md5('qa65:pl:2')::uuid $q$);
+SELECT pg_temp.expect_ok('P4e ... and on a line with no carton row at all (6)', $q$
+    UPDATE fulfillment.pick_line SET packing_damaged_qty = 1 WHERE id = md5('qa65:pl:6')::uuid;
+    UPDATE fulfillment.pick_line SET packing_damaged_qty = 0 WHERE id = md5('qa65:pl:6')::uuid $q$);
 SELECT pg_temp.expect_fail_by('P5 the line of the LABELED carton (1) put back', 'tg_pick_line_carton_removed', $q$
     UPDATE fulfillment.pick_line SET status = 'PUT_BACK', put_back_qty = 1, put_back_by = md5('demo:user:editor')::uuid,
            put_back_at = NOW(), put_back_location_code = 'HCM-A01-1-A' WHERE id = md5('qa65:pl:1')::uuid $q$);
