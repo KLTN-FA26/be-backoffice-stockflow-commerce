@@ -71,16 +71,20 @@ class OrderCancellationIntegrationTest {
     private ConfirmedOrders confirmedOrders;
     /** The demo customer's own sofa (14 BR-04), stocked at HCM for the test alone. */
     private Sku sofa;
+    /** Its carton unit of two: what orders and stock both count (whole cartons, 4C-2). */
+    private CustomerSkuRows.Issued sofaCarton;
 
     @BeforeEach
     void setUp() {
         confirmedOrders = new ConfirmedOrders(context);
-        sofa = new Sku(CustomerSkuRows.like(jdbc, tx, entityManager, DemoData.CUSTOMER_ID, "SOFA-3S-GREY", 50).sku());
+        sofaCarton = CustomerSkuRows.like(jdbc, tx, entityManager, DemoData.CUSTOMER_ID, "SOFA-3S-GREY", 2);
+        sofa = new Sku(sofaCarton.sku());
         CustomerSkuRows.stock(jdbc, tx, sofa.code(), 10);
     }
 
     private UUID confirmed(int units) {
-        return confirmedOrders.confirmed(DemoData.CUSTOMER_ID, ConfirmedOrders.Line.units(sofa.code(), units, PRICE))
+        return confirmedOrders.confirmed(DemoData.CUSTOMER_ID, ConfirmedOrders.Line.cartons(sofaCarton, units / 2,
+                PRICE))
                 .orderId();
     }
 

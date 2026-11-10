@@ -25,7 +25,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class SelfOrderingRemovalMigrationUpgradeTest {
 
-    private static final String BEFORE = "20261108003200";
+    // The migration just before it on this branch (the carton line, 4C-1/4C-2, sits between 4B-10 and it).
+    private static final String BEFORE = "20261111000200";
     private static final String MIGRATION = "20261113000100";
 
     @Test

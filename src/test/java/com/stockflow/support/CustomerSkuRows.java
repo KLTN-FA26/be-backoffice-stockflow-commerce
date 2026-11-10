@@ -130,6 +130,20 @@ public final class CustomerSkuRows {
         // Shipped as the catalogue SKU ships (its own packages), not in the issued carton's box.
         tx.executeWithoutResult(s -> jdbc.update(
                 "UPDATE inventory.uom_conversions SET default_shipping = FALSE WHERE id = ?", issued.uomConversionId()));
+        // Since 4C-6 a parcel is a checked LPN carton, sized by its carton unit (08 BR-07): the issued carton takes the
+        // catalogue SKU's carton size and weight as they are now (a test sets them first, CartonStationSupport), so a
+        // load plan counts the customer's sofas as it counted the catalogue's. Kept as issued where the catalogue
+        // declares none.
+        tx.executeWithoutResult(s -> jdbc.update("""
+                UPDATE inventory.uom_conversions u
+                   SET length_cm = COALESCE(c.length_cm, u.length_cm), width_cm = COALESCE(c.width_cm, u.width_cm),
+                       height_cm = COALESCE(c.height_cm, u.height_cm), weight_kg = COALESCE(c.weight_kg, u.weight_kg)
+                  FROM (SELECT cu.length_cm, cu.width_cm, cu.height_cm, cu.weight_kg
+                          FROM inventory.uom_conversions cu
+                          JOIN inventory.inventory_items ci ON ci.id = cu.inventory_item_id
+                         WHERE ci.sku = ? AND NOT cu.is_base AND cu.active
+                         ORDER BY cu.default_shipping DESC, cu.created_at, cu.id LIMIT 1) c
+                 WHERE u.id = ?""", like, issued.uomConversionId()));
         return issued;
     }
 

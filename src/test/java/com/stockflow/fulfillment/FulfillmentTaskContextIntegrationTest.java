@@ -2,7 +2,6 @@ package com.stockflow.fulfillment;
 
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
-import com.stockflow.common.domain.Money;
 import com.stockflow.common.domain.Sku;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.security.DataScope;
@@ -89,13 +88,16 @@ class FulfillmentTaskContextIntegrationTest {
     private ConfirmedOrders confirmedOrders;
     /** The demo customer's own sofa (a contract's lines are only ever that, 14 BR-04), with stock at HCM. */
     private Sku sofa;
+    /** Its carton unit: two sofas, the size the orders and the stock both come in (whole cartons, 4C-2). */
+    private CustomerSkuRows.Issued sofaCarton;
     /** Orders inserted as rows by {@link #taskRow}: removed again with their picks. */
     private final List<UUID> rowOrders = new ArrayList<>();
 
     @BeforeEach
     void setUp() {
         confirmedOrders = new ConfirmedOrders(context);
-        sofa = new Sku(CustomerSkuRows.like(jdbc, tx, entityManager, DemoData.CUSTOMER_ID, "SOFA-3S-GREY", 50).sku());
+        sofaCarton = CustomerSkuRows.like(jdbc, tx, entityManager, DemoData.CUSTOMER_ID, "SOFA-3S-GREY", 2);
+        sofa = new Sku(sofaCarton.sku());
         CustomerSkuRows.stock(jdbc, tx, sofa.code(), 10);
         hn = Identifiers.newId();
         tx.executeWithoutResult(s -> jdbc.update("""
@@ -164,7 +166,7 @@ class FulfillmentTaskContextIntegrationTest {
     /** Signed and its installment on signing paid: CONFIRMED, no shipping warehouse chosen yet, nothing held. */
     private OrderSummary paidOrder() {
         UUID order = confirmedOrders.confirmed(DemoData.CUSTOMER_ID,
-                ConfirmedOrders.Line.units(sofa, 2, Money.vnd(12_000_000))).orderId();
+                ConfirmedOrders.Line.cartons(sofaCarton, 1, 12_000_000)).orderId();
         placed.add(order);
         return orders.findById(order).orElseThrow();
     }

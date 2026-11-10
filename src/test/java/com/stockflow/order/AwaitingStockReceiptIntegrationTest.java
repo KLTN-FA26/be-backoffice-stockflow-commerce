@@ -474,7 +474,11 @@ class AwaitingStockReceiptIntegrationTest {
         assertThat(jdbc.queryForObject("""
                 SELECT COALESCE(sum(quantity), 0) FROM inventory.stock_reservation
                  WHERE order_id = ? AND allocated_from_id IS NOT NULL AND status = 'HELD'""", Long.class, orderId))
-                .as("every carton allocated").isEqualTo((long) CARTONS * PER_CARTON);
+                .as("4B-8 (17 BR-29): the release is batch 1's - its 12 cartons allocated").isEqualTo(12L * PER_CARTON);
+        assertThat(jdbc.queryForObject("""
+                SELECT COALESCE(sum(quantity), 0) FROM inventory.stock_reservation
+                 WHERE order_id = ? AND allocated_from_id IS NULL AND status = 'HELD'""", Long.class, orderId))
+                .as("batch 2's 8 cartons stay held for it, on no bin yet").isEqualTo(8L * PER_CARTON);
         assertThat(counted.lines()).isNotEmpty();
         assertThat(countedRest.lines()).isNotEmpty();
     }

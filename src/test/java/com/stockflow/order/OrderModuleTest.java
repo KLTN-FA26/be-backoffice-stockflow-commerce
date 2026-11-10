@@ -36,6 +36,8 @@ class OrderModuleTest {
     // customer (bootstrapped) invites portal accounts and mails the invitation (SCRUM-429): its ports, not the modules.
     @MockitoBean com.stockflow.identity.api.PortalAccountService portalAccountServiceMock;
     @MockitoBean com.stockflow.notification.api.NotificationService notificationServiceMock;
+    // R4 (4B-8): order's own port for the customer's chat consent, implemented by chat, which is not booted here.
+    @MockitoBean com.stockflow.order.api.ConsentMessages consentMessagesMock;
 
     @Test
     @DisplayName("order starts and answers through its api with the other modules absent")
