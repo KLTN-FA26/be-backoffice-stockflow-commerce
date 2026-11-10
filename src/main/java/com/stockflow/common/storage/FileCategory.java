@@ -95,6 +95,15 @@ public enum FileCategory {
             Set.of("image/jpeg", "image/png", "image/webp")),
 
     /**
+     * Photos and videos of a production order's print samples (4A-4, kltn-docs 17 §4.3 step 9): what the producer printed
+     * to the approved file, uploaded by the Production Coordinator for the customer to approve or send back. Private,
+     * shown to the coordinator, Sales and the customer who owns the order through a short link; a phone video, so the
+     * size limit is a video's - uploaded straight to the store, the multipart limit being lower.
+     */
+    PRINT_SAMPLE("print-samples", 100 * 1024 * 1024,
+            Set.of("image/jpeg", "image/png", "image/webp", "video/mp4", "video/quicktime", "video/webm")),
+
+    /**
      * Display copies of evidence photos (return and goods-receipt photos): re-encoded without metadata at
      * {@link StorageKeys#evidenceCopyOf}, written next to the original by the platform, never uploaded. Private like the
      * originals; what a reviewer is shown.

@@ -67,6 +67,9 @@ import java.util.stream.Collectors;
  *       ({@link ProductionOrderDispatch}, 4A-3) - or <b>return</b> it with a reason.</li>
  *   <li><b>Cancel</b> before mass printing, <b>close</b> after it started (BR-06), with a reason - never while a goods
  *       receipt against it is a draft (4A-5, kltn-docs 03 edge cases); its producer is told to stop (4A-3).</li>
+ *   <li><b>Accept</b> with the producer's expected completion day, move that day, and <b>start production</b> when no
+ *       print sample is to be approved (4A-4, 17 §4.3 steps 8 and 10); the print sample rounds are
+ *       {@code ProductionSampleService}'s.</li>
  * </ul>
  *
  * <p>Every write locks the sales order first and the production order after it - the order {@code drawUp} locks in,
@@ -83,6 +86,17 @@ public class ProductionOrderService {
     private static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Ho_Chi_Minh");
     private static final SortWhitelist SORT = SortWhitelist.of("createdAt", "needByDate", "code", "status")
             .withDefault("createdAt", Sort.Direction.DESC);
+
+    /**
+     * The orders a production order may be drawn up for (17 §4.3 step 6, §4.2 step 5): confirmed, and - for an order of
+     * several batches - on after it was released for its first batch, while later batches are still short ("lập dần
+     * theo từng đợt"), and AWAITING_STOCK (4A-6): an order waiting for stock has one production order sent and may need
+     * more - another batch, or what a production order closed short no longer brings (17 §4.4 step 16). Not an order
+     * on hold: what it is made for waits until the hold is resolved.
+     */
+    static final Set<OrderStatus> PRODUCIBLE = java.util.Collections.unmodifiableSet(java.util.EnumSet.of(
+            OrderStatus.CONFIRMED, OrderStatus.AWAITING_STOCK, OrderStatus.READY_TO_FULFILL, OrderStatus.PICKING,
+            OrderStatus.PACKED, OrderStatus.PARTIALLY_FULFILLED));
 
     /** A production order and its history of status, for display. */
     public record Detail(ProductionOrder order, List<ProductionOrderRepository.HistoryEntry> history) {
@@ -299,7 +313,7 @@ public class ProductionOrderService {
 
     /**
      * Closed after mass printing started, short or before anything came, with a reason (BR-06), while no goods receipt
-     * against it is a draft (03 edge cases); its producer is told.
+     * against it is a draft (03 edge cases). Its producer is told to stop (4A-3).
      *
      * @throws BusinessException {@code PRODUCTION_ORDER_HAS_DRAFT_RECEIPTS}; {@code PRODUCTION_ORDER_STATUS_INVALID};
      *         {@code VALIDATION_FAILED}; {@code OPTIMISTIC_LOCK}
@@ -313,6 +327,70 @@ public class ProductionOrderService {
         ProductionOrder saved = productionOrders.save(production);
         dispatch.stopped(saved);
         return saved;
+    }
+
+    /**
+     * The producer accepted it and gave its expected completion day (17 §4.3 step 8): SENT → ACCEPTED, recorded by the
+     * coordinator by hand - there is no producer system to hear it from.
+     *
+     * @throws BusinessException {@code PRODUCTION_ORDER_STATUS_INVALID}; {@code VALIDATION_FAILED} with no day;
+     *         {@code OPTIMISTIC_LOCK}
+     */
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "production-order", resourceId = "#id")
+    public ProductionOrder accept(UUID id, long version, LocalDate expectedCompletion, UUID by) {
+        requireNotPast(expectedCompletion);
+        ProductionOrder production = lockedAfterItsOrder(id, version);
+        production.accept(expectedCompletion, by, clock.instant());
+        log.info("Production order {} accepted by its producer, expected done on {}", production.code(),
+                expectedCompletion);
+        return productionOrders.save(production);
+    }
+
+    /**
+     * The producer moved its expected completion day (17 §4.3 steps 8, 10), from acceptance until the goods are in.
+     *
+     * @throws BusinessException {@code PRODUCTION_ORDER_STATUS_INVALID}; {@code VALIDATION_FAILED};
+     *         {@code OPTIMISTIC_LOCK}
+     */
+    @Auditable(action = AuditAction.UPDATE, resourceType = "production-order", resourceId = "#id")
+    public ProductionOrder expectCompletion(UUID id, long version, LocalDate expectedCompletion) {
+        requireNotPast(expectedCompletion);
+        ProductionOrder production = lockedAfterItsOrder(id, version);
+        if (!production.expectCompletion(expectedCompletion)) {
+            return production;
+        }
+        log.info("Production order {}: its producer now expects it done on {}", production.code(), expectedCompletion);
+        return productionOrders.save(production);
+    }
+
+    /**
+     * The producer started mass printing, with no print sample to approve (17 §4.3 step 10): ACCEPTED →
+     * IN_PRODUCTION, its expected completion day updated if the producer gave a new one. The sales order records that
+     * printing started (BR-11) in the same transaction ({@code ProductionOrderProgressListener}).
+     *
+     * @throws BusinessException {@code PRODUCTION_ORDER_SAMPLE_REQUIRED}; {@code PRODUCTION_ORDER_STATUS_INVALID};
+     *         {@code OPTIMISTIC_LOCK}
+     */
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "production-order", resourceId = "#id")
+    public ProductionOrder startProduction(UUID id, long version, LocalDate expectedCompletion, UUID by) {
+        requireNotPast(expectedCompletion);
+        ProductionOrder production = lockedAfterItsOrder(id, version);
+        production.startProduction(expectedCompletion, by, clock.instant());
+        log.info("Production order {} in mass production", production.code());
+        return productionOrders.save(production);
+    }
+
+    /**
+     * A producer says when the goods will be done, never when they would have been: a day already gone is a slip of
+     * the keyboard, and it would raise or hide the AT_RISK alert that reads it (17 §4.12). Checked here, against the
+     * business day, not in the aggregate or the database, which have no clock.
+     */
+    private void requireNotPast(LocalDate expectedCompletion) {
+        if (expectedCompletion != null && expectedCompletion.isBefore(LocalDate.ofInstant(clock.instant(),
+                BUSINESS_ZONE))) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, ("The expected completion day %s is in the past")
+                    .formatted(expectedCompletion));
+        }
     }
 
     /**
@@ -367,6 +445,16 @@ public class ProductionOrderService {
      * what remains without it).
      */
     private Map<UUID, Integer> lacking(Order order, List<DeliveryBatch> schedule, DeliveryBatch batch, UUID excluding) {
+        return lackingPerBatch(order, schedule, excluding).getOrDefault(batch.seq(), new LinkedHashMap<>());
+    }
+
+    /**
+     * {@link #lacking(Order, List, DeliveryBatch, UUID)} for every batch at once, by batch number: one read of the
+     * production orders and one of the coverage for the whole order, where asking batch by batch read both again for
+     * each batch.
+     */
+    private Map<Integer, Map<UUID, Integer>> lackingPerBatch(Order order, List<DeliveryBatch> schedule,
+                                                             UUID excluding) {
         Map<UUID, Integer> seqOf = new HashMap<>();
         schedule.forEach(b -> seqOf.put(b.id(), b.seq()));
         Map<Integer, Map<UUID, Integer>> coming = new HashMap<>();
@@ -381,19 +469,15 @@ public class ProductionOrderService {
         }
         ShippingWarehouseService.Coverage coverage = shippingWarehouses.coverage(order.id().value());
         Map<UUID, Integer> carried = new HashMap<>();
-        Map<UUID, Integer> lacking = new LinkedHashMap<>();
+        Map<Integer, Map<UUID, Integer>> lacking = new LinkedHashMap<>();
         for (ShippingWarehouseService.BatchCoverage covered : coverage.batches().stream()
                 .sorted(Comparator.comparingInt(ShippingWarehouseService.BatchCoverage::seq)).toList()) {
-            if (covered.seq() > batch.seq()) {
-                break;
-            }
             Map<UUID, Integer> here = coming.getOrDefault(covered.seq(), Map.of());
+            Map<UUID, Integer> lines = lacking.computeIfAbsent(covered.seq(), seq -> new LinkedHashMap<>());
             for (ShippingWarehouseService.LineCoverage line : covered.lines()) {
                 int arriving = carried.getOrDefault(line.lineId(), 0) + here.getOrDefault(line.lineId(), 0);
                 carried.put(line.lineId(), Math.max(0, arriving - line.shortCartons()));
-                if (covered.seq() == batch.seq()) {
-                    lacking.merge(line.lineId(), Math.max(0, line.shortCartons() - arriving), Integer::sum);
-                }
+                lines.merge(line.lineId(), Math.max(0, line.shortCartons() - arriving), Integer::sum);
             }
         }
         return lacking;
@@ -416,15 +500,12 @@ public class ProductionOrderService {
                         + "its delivery batch is gone").formatted(production.code())));
     }
 
-    /**
-     * CONFIRMED, or AWAITING_STOCK (4A-6): an order waiting for stock has one production order sent and may need more -
-     * another batch, or what a production order closed short no longer brings (17 §4.4 step 16).
-     */
+    /** {@link #PRODUCIBLE}, of a contract, with its shipping warehouse chosen. */
     private static void requireProducible(Order order) {
-        if (!order.paidByContract()
-                || order.status() != OrderStatus.CONFIRMED && order.status() != OrderStatus.AWAITING_STOCK) {
+        if (!order.paidByContract() || !PRODUCIBLE.contains(order.status())) {
             throw new BusinessException(ErrorCode.PRODUCTION_ORDER_NOT_ALLOWED, ("Order %s is %s: production orders are "
-                    + "drawn up for a confirmed order of a contract").formatted(order.orderNumber(), order.status()));
+                    + "drawn up for a confirmed order of a contract still owing batches").formatted(order.orderNumber(),
+                    order.status()));
         }
         if (order.shippingWarehouseId() == null) {
             throw new BusinessException(ErrorCode.PRODUCTION_ORDER_NOT_ALLOWED, ("Order %s has no shipping warehouse: "
@@ -495,5 +576,41 @@ public class ProductionOrderService {
     public List<ProductionOrder> ofSalesOrder(UUID salesOrderId) {
         return productionOrders.ofSalesOrder(salesOrderId).stream().filter(this::visible)
                 .collect(Collectors.toList());
+    }
+
+    /**
+     * Per delivery batch of the order's contract (by batch id), the cartons each line still lacks once held stock and
+     * every open production order are counted - what a production order would be drawn up for (4A-7: the batches the
+     * production schedule lists as short, and PO_NEEDED). Empty for an order with no contract. Not scoped: the caller
+     * decides who sees which order.
+     */
+    @Transactional(readOnly = true)
+    public Map<UUID, Map<UUID, Integer>> lackingByBatch(UUID salesOrderId) {
+        Shortage shortage = shortage(salesOrderId);
+        return shortage == null ? new LinkedHashMap<>() : shortage.lackingByBatch();
+    }
+
+    /** An order of a contract, its live schedule, and per batch (by id) the cartons each line still lacks. */
+    public record Shortage(Order order, List<DeliveryBatch> schedule, Map<UUID, Map<UUID, Integer>> lackingByBatch) {
+    }
+
+    /**
+     * {@link #lackingByBatch} with the order and schedule it was counted from, so a caller listing many orders (the
+     * production schedule) reads each once. Null for an order that is gone or has no live contract.
+     */
+    @Transactional(readOnly = true)
+    public Shortage shortage(UUID salesOrderId) {
+        Order order = orders.findById(new OrderId(salesOrderId)).orElse(null);
+        SalesContract contract = contracts.findLiveByOrderId(salesOrderId).orElse(null);
+        if (order == null || contract == null || !order.paidByContract()) {
+            return null;
+        }
+        Map<Integer, Map<UUID, Integer>> perSeq = lackingPerBatch(order, contract.schedule(), null);
+        Map<UUID, Map<UUID, Integer>> lacking = new LinkedHashMap<>();
+        for (DeliveryBatch batch : contract.schedule().stream().sorted(Comparator.comparingInt(DeliveryBatch::seq))
+                .toList()) {
+            lacking.put(batch.id(), perSeq.getOrDefault(batch.seq(), new LinkedHashMap<>()));
+        }
+        return new Shortage(order, contract.schedule(), lacking);
     }
 }

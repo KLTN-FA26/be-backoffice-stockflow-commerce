@@ -164,8 +164,8 @@ class CartonQuarantineIntegrationTest {
         tx.executeWithoutResult(s -> {
             jdbc.update("""
                     INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status,
-                        total_amount, currency, placed_at, version, created_at, paid_amount, paid_in_full_at)
-                    VALUES (?, ?, ?, ?, 'CONFIRMED', 1, 'VND', NOW(), 0, NOW(), 1, NOW())""", order,
+                        total_amount, currency, placed_at, version, created_at, contract_signed_at)
+                    VALUES (?, ?, ?, ?, 'CONFIRMED', 1, 'VND', NOW(), 0, NOW(), NOW())""", order,
                     "SO-20991227-%06d".formatted(ORDER_NUMBERS.incrementAndGet()), DemoData.CUSTOMER_ID,
                     UUID.randomUUID());
             inventory.reserve(new ReserveStockCommand(UUID.randomUUID(), new Sku(sku), quantity, order));

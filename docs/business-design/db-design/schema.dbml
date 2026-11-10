@@ -2562,6 +2562,17 @@ Table ordering.customer_order [headercolor: #C0392B] {
   first_labeled_at             timestamptz
 }
 
+Table ordering.delay_alert [headercolor: #C0392B] {
+  id                  uuid [pk]
+  type                ordering.delay_alert_type [not null]
+  production_order_id uuid
+  delivery_batch_id   uuid
+  subject_id          uuid [note: 'generated: COALESCE(production_order_id, delivery_batch_id)']
+  sales_order_id      uuid [not null]
+  opened_at           timestamptz [not null]
+  closed_at           timestamptz
+}
+
 Table ordering.delivery_batch [headercolor: #C0392B] {
   id           uuid [pk]
   contract_id  uuid [not null]
@@ -2837,6 +2848,7 @@ Table ordering.production_order [headercolor: #C0392B] {
   created_by                 varchar(100)
   last_modified_at           timestamptz
   last_modified_by           varchar(100)
+  expected_completion_date   date
 }
 
 Table ordering.production_order_line [headercolor: #C0392B] {
@@ -5021,6 +5033,9 @@ Ref: ordering.customer_order.released_by > identity.app_user.id
 Ref: ordering.customer_order.shipping_warehouse_chosen_by > identity.app_user.id
 Ref: ordering.customer_order.shipping_warehouse_id > warehouse.warehouse.id [delete: restrict]
 Ref: ordering.customer_order.warehouse_id > warehouse.warehouse.id [delete: restrict]
+Ref: ordering.delay_alert.delivery_batch_id > ordering.delivery_batch.id [delete: cascade]
+Ref: ordering.delay_alert.production_order_id > ordering.production_order.id
+Ref: ordering.delay_alert.sales_order_id > ordering.customer_order.id
 Ref: ordering.delivery_batch.contract_id > ordering.sales_contract.id [delete: cascade]
 Ref: ordering.delivery_batch_hold.delivery_batch_id > ordering.delivery_batch.id [delete: restrict]
 Ref: ordering.delivery_batch_hold.order_id > ordering.customer_order.id [delete: restrict]
@@ -5379,6 +5394,7 @@ TableGroup procurement_group [color: #7D5BA6] {
 TableGroup ordering_group [color: #C0392B] {
   ordering.contract_payment_installment
   ordering.customer_order
+  ordering.delay_alert
   ordering.delivery_batch
   ordering.delivery_batch_hold
   ordering.delivery_batch_line

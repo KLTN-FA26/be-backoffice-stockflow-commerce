@@ -45,7 +45,10 @@ import java.util.UUID;
 /**
  * Production orders (4A-2, kltn-docs 17 §4.3, §5.3): the Production Coordinator draws them up, edits, submits, cancels
  * and closes them (00 §2.1, 2026-11-07); the Sales Manager approves - never their own - or returns them (BR-23); Sales
- * and the warehouse manager read them, the warehouse manager those coming to their warehouses.
+ * and the warehouse manager read them, the warehouse manager those coming to their warehouses. The coordinator also
+ * records the producer's acceptance with its expected completion day, and the start of mass printing when no print
+ * sample is to be approved (4A-4, 17 §4.3 steps 8 and 10); the print sample rounds are
+ * {@link ProductionSampleRoundController}'s.
  *
  * <p>Handler methods are public, as on {@link OrderController}: the permission aspect needs a proxied public method.</p>
  */
@@ -101,6 +104,26 @@ class ProductionOrderController {
                          @Size(max = 500, message = "reason is at most 500 characters") String reason) {
     }
 
+    /** The producer accepted, and when it expects the goods done (17 §4.3 step 8). */
+    @Schema(name = "AcceptProductionOrderRequest")
+    record AcceptRequest(@NotNull(message = "version is required") Long version,
+                         @NotNull(message = "expectedCompletionDate is required") LocalDate expectedCompletionDate) {
+    }
+
+    /** The producer started mass printing; its new expected completion day, if it gave one (17 §4.3 step 10). */
+    @Schema(name = "StartProductionRequest")
+    record StartProductionRequest(@NotNull(message = "version is required") Long version,
+                                  @Schema(description = "Null keeps the day given on acceptance")
+                                  LocalDate expectedCompletionDate) {
+    }
+
+    /** The producer's new expected completion day. */
+    @Schema(name = "ExpectedCompletionRequest")
+    record ExpectedCompletionRequest(@NotNull(message = "version is required") Long version,
+                                     @NotNull(message = "expectedCompletionDate is required")
+                                     LocalDate expectedCompletionDate) {
+    }
+
     /** One line of a production order. */
     @Schema(name = "ProductionOrderLine")
     record LineResponse(UUID id, UUID orderLineId, String sku, int cartons, int unitsPerCarton, int totalUnits,
@@ -121,7 +144,9 @@ class ProductionOrderController {
                                    boolean sampleRequiredByDefault, String sampleWaiverReason, BigDecimal unitPrice,
                                    String currency, String note, UUID drawnUpBy, Instant submittedAt, UUID approvedBy,
                                    Instant approvedAt, String returnedReason, Instant sentAt,
-                                   Instant productionStartedAt, Instant cancelledAt, String cancellationReason,
+                                   Instant productionStartedAt,
+                                   @Schema(description = "4A-4: the producer's expected completion day, from ACCEPTED on")
+                                   LocalDate expectedCompletionDate, Instant cancelledAt, String cancellationReason,
                                    Instant closedAt, String closingReason,
                                    @Schema(description = "BR-25: the warehouse capacity check is not computed yet")
                                    boolean capacityComputed,
@@ -132,8 +157,8 @@ class ProductionOrderController {
                     p.customerId(), p.producerId(), p.receivingWarehouseId(), p.needByDate(), p.status(),
                     p.sampleApprovalRequired(), p.sampleRequiredByDefault(), p.sampleWaiverReason(), p.unitPrice(),
                     p.currency(), p.note(), p.drawnUpBy(), p.submittedAt(), p.approvedBy(), p.approvedAt(),
-                    p.returnedReason(), p.sentAt(), p.productionStartedAt(), p.cancelledAt(),
-                    p.cancellationReason(), p.closedAt(), p.closingReason(), false,
+                    p.returnedReason(), p.sentAt(), p.productionStartedAt(), p.expectedCompletionDate(),
+                    p.cancelledAt(), p.cancellationReason(), p.closedAt(), p.closingReason(), false,
                     p.lines().stream().map(l -> new LineResponse(l.id(), l.orderLineId(), l.sku(), l.cartons(),
                             l.unitsPerCarton(), l.totalUnits(), l.designSnapshotId(), l.printFileChecksum(),
                             l.packingRequirements(), l.receivedCartons())).toList(),
@@ -235,6 +260,40 @@ class ProductionOrderController {
         ScopeGuards.requireBackOffice(user);
         return ApiResponse.ok(ProductionOrderResponse.of(productionOrders.returnToDraft(id, request.version(),
                 request.reason(), user.userId()), null));
+    }
+
+    @PostMapping("/{id}/acceptance")
+    @Operation(summary = "Record that the producer accepted a SENT production order, and its expected completion day "
+            + "(Production Coordinator)")
+    @RequiresPermission(resource = OrderResources.PRODUCTION_ORDERS, action = Action.UPDATE, scope = DataScope.ALL)
+    public ApiResponse<ProductionOrderResponse> accept(@PathVariable UUID id, @Valid @RequestBody AcceptRequest request,
+                                                       @AuthenticatedUser CurrentUser user) {
+        ScopeGuards.requireBackOffice(user);
+        return ApiResponse.ok(ProductionOrderResponse.of(productionOrders.accept(id, request.version(),
+                request.expectedCompletionDate(), user.userId()), null));
+    }
+
+    @PutMapping("/{id}/expected-completion-date")
+    @Operation(summary = "Record the producer's new expected completion day, from acceptance until the goods are in")
+    @RequiresPermission(resource = OrderResources.PRODUCTION_ORDERS, action = Action.UPDATE, scope = DataScope.ALL)
+    public ApiResponse<ProductionOrderResponse> expectCompletion(@PathVariable UUID id,
+                                                                 @Valid @RequestBody ExpectedCompletionRequest request,
+                                                                 @AuthenticatedUser CurrentUser user) {
+        ScopeGuards.requireBackOffice(user);
+        return ApiResponse.ok(ProductionOrderResponse.of(productionOrders.expectCompletion(id, request.version(),
+                request.expectedCompletionDate()), null));
+    }
+
+    @PostMapping("/{id}/production-start")
+    @Operation(summary = "Record that the producer started mass printing an ACCEPTED production order with no print "
+            + "sample to approve. 409 PRODUCTION_ORDER_SAMPLE_REQUIRED: the customer's approval starts it")
+    @RequiresPermission(resource = OrderResources.PRODUCTION_ORDERS, action = Action.UPDATE, scope = DataScope.ALL)
+    public ApiResponse<ProductionOrderResponse> startProduction(@PathVariable UUID id,
+                                                                @Valid @RequestBody StartProductionRequest request,
+                                                                @AuthenticatedUser CurrentUser user) {
+        ScopeGuards.requireBackOffice(user);
+        return ApiResponse.ok(ProductionOrderResponse.of(productionOrders.startProduction(id, request.version(),
+                request.expectedCompletionDate(), user.userId()), null));
     }
 
     @PostMapping("/{id}/cancellation")

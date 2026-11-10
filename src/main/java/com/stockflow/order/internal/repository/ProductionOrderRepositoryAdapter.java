@@ -6,6 +6,7 @@ import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.persistence.Specs;
 import com.stockflow.order.internal.domain.ProductionOrder;
 import com.stockflow.order.internal.domain.ProductionOrderRepository;
+import com.stockflow.order.internal.domain.ProductionOrderSaved;
 import com.stockflow.order.internal.domain.ProductionOrderStatus;
 import com.stockflow.order.internal.domain.ProductionOrderStatusChanged;
 import com.stockflow.order.internal.entity.ProductionOrderJpaEntity;
@@ -39,6 +40,9 @@ import java.util.stream.Collectors;
  * {@link ProductionOrderStatusChanged} (4A-6): here, where every save passes, so a path added later (sample rounds,
  * progress, receiving) moves the sales order with it without anyone remembering to - the argument the order's own
  * repository makes for its history rows. The listener runs in the caller's transaction.</p>
+ *
+ * <p>Every save also publishes a {@link ProductionOrderSaved} (4A-7), status changed or not (an expected completion
+ * day moved, 4A-4), so its sales order's delay alerts are recomputed whichever operation changed it.</p>
  */
 @Repository
 class ProductionOrderRepositoryAdapter implements ProductionOrderRepository, ProductionOrderSearch {
@@ -141,6 +145,7 @@ class ProductionOrderRepositoryAdapter implements ProductionOrderRepository, Pro
                 order.submittedAt(), order.approvedBy(), order.approvedAt(), order.returnedReason(), order.sentAt(),
                 order.productionStartedAt(), order.cancelledBy(), order.cancelledAt(), order.cancellationReason(),
                 order.closedBy(), order.closedAt(), order.closingReason());
+        entity.expectCompletion(order.expectedCompletionDate());
         long readAt = entity.getVersion();
         ProductionOrderJpaEntity saved = jpa.saveAndFlush(entity);
         if (!created && saved.getVersion() == readAt) {
@@ -172,6 +177,7 @@ class ProductionOrderRepositoryAdapter implements ProductionOrderRepository, Pro
             events.publishEvent(new ProductionOrderStatusChanged(order.id(), order.code(), order.salesOrderId(),
                     order.deliveryBatchId(), change.from(), change.to(), change.by(), change.at()));
         }
+        events.publishEvent(new ProductionOrderSaved(order.id(), order.salesOrderId()));
         return toDomain(saved, linesOf(List.of(order.id())).getOrDefault(order.id(), List.of()));
     }
 
@@ -299,7 +305,8 @@ class ProductionOrderRepositoryAdapter implements ProductionOrderRepository, Pro
                 e.isSampleApprovalRequired(), e.isSampleRequiredByDefault(), e.getSampleWaiverReason(),
                 e.getUnitPrice(), e.getCurrency(), e.getNote(), e.getDrawnUpBy(), e.getSubmittedAt(),
                 e.getApprovedBy(), e.getApprovedAt(), e.getReturnedReason(), e.getSentAt(),
-                e.getProductionStartedAt(), e.getCancelledBy(), e.getCancelledAt(), e.getCancellationReason(),
+                e.getProductionStartedAt(), e.getExpectedCompletionDate(), e.getCancelledBy(), e.getCancelledAt(),
+                e.getCancellationReason(),
                 e.getClosedBy(), e.getClosedAt(), e.getClosingReason(), lines, e.getVersion());
     }
 

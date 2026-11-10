@@ -23,11 +23,11 @@ import com.stockflow.order.internal.domain.OrderRepository;
 import com.stockflow.order.internal.domain.Producer;
 import com.stockflow.order.internal.domain.ProductionOrder;
 import com.stockflow.order.internal.domain.ProductionOrderStatus;
-import com.stockflow.order.internal.domain.ProductionOrderStatusChanged;
 import com.stockflow.order.internal.service.DeliveryBatchService;
 import com.stockflow.order.internal.service.OrderReleases;
 import com.stockflow.order.internal.service.ProducerService;
 import com.stockflow.order.internal.service.ProductionOrderService;
+import com.stockflow.order.internal.service.ProductionSampleService;
 import com.stockflow.order.internal.service.SalesContracts;
 import com.stockflow.order.internal.service.ShippingWarehouseService;
 import com.stockflow.order.internal.service.ShippingWarehouseService.BatchCoverage;
@@ -37,6 +37,7 @@ import com.stockflow.support.ConfirmedDesigns;
 import com.stockflow.support.DemoData;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
+import com.stockflow.support.PrintSamples;
 import com.stockflow.support.ReferenceRows;
 import com.stockflow.support.TestPdfs;
 import com.stockflow.support.WithCurrentUser;
@@ -46,7 +47,6 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.ApplicationContext;
-import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.mail.javamail.JavaMailSenderImpl;
@@ -62,7 +62,6 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
-import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -109,6 +108,7 @@ class AwaitingStockIntegrationTest {
 
     @Autowired ProductionOrderService productionOrders;
     @Autowired DeliveryBatchService deliveryBatches;
+    @Autowired ProductionSampleService samples;
     @Autowired ProducerService producers;
     @Autowired SalesContracts contracts;
     @Autowired OrderService orders;
@@ -119,7 +119,6 @@ class AwaitingStockIntegrationTest {
     @Autowired JdbcTemplate jdbc;
     @Autowired EntityManager entityManager;
     @Autowired TransactionTemplate tx;
-    @Autowired ApplicationEventPublisher events;
     @Autowired ApplicationContext context;
     @MockitoBean JavaMailSenderImpl mail;
 
@@ -127,6 +126,7 @@ class AwaitingStockIntegrationTest {
     private UUID coordinator;
     private UUID manager;
     private UUID customerId;
+    private UUID customerUser;
     private IssuedSku sku;
     private Producer producer;
     private LocalDate today;
@@ -155,6 +155,7 @@ class AwaitingStockIntegrationTest {
                     VALUES (?, ?, '12 Nguyen Hue, TP HCM', 'Le Van D', 'Director', 0, NOW())""",
                     Identifiers.newId(), customerId);
         });
+        customerUser = PrintSamples.portalUser(jdbc, tx, entityManager, customerId);
         sku = issueSku();
         producer = producers.register("PO-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(Locale.ROOT),
                 new Producer.Details("Awaiting stock workshop", null, null, null, Producer.Channel.PDF, 14, null));
@@ -292,30 +293,16 @@ class AwaitingStockIntegrationTest {
     }
 
     /**
-     * Mass printing started: SENT → ACCEPTED → IN_PRODUCTION, written as 4A-4 / 4A-5 will write it - the sales order
-     * locked first, the production order's row, and its saved change announced in the same transaction.
+     * Mass printing started, as 4A-4 records it: SENT → ACCEPTED, then round 1 of its print sample approved by the
+     * customer - or the coordinator's start when no sample is to be approved. The production order's saved change
+     * moves the sales order in the same transaction.
      *
      * @return when it started, as stored
      */
     private Instant startMassPrinting(ProductionOrder production) {
-        Instant at = Instant.now().truncatedTo(ChronoUnit.MICROS);
-        tx.executeWithoutResult(s -> {
-            jdbc.queryForObject("SELECT id FROM ordering.customer_order WHERE id = ? FOR UPDATE", UUID.class,
-                    production.salesOrderId());
-            jdbc.update("UPDATE ordering.production_order SET status = 'ACCEPTED', version = version + 1 WHERE id = ?",
-                    production.id());
-            events.publishEvent(new ProductionOrderStatusChanged(production.id(), production.code(),
-                    production.salesOrderId(), production.deliveryBatchId(), ProductionOrderStatus.SENT,
-                    ProductionOrderStatus.ACCEPTED, coordinator, at));
-            jdbc.update("""
-                    UPDATE ordering.production_order SET status = 'IN_PRODUCTION', production_started_at = ?,
-                           version = version + 1
-                     WHERE id = ?""", java.sql.Timestamp.from(at), production.id());
-            events.publishEvent(new ProductionOrderStatusChanged(production.id(), production.code(),
-                    production.salesOrderId(), production.deliveryBatchId(), ProductionOrderStatus.ACCEPTED,
-                    ProductionOrderStatus.IN_PRODUCTION, coordinator, at));
-        });
-        return at;
+        PrintSamples.massPrinting(productionOrders, samples, productionOrders.detail(production.id()).order(),
+                coordinator, customerUser);
+        return productionOrders.detail(production.id()).order().productionStartedAt();
     }
 
     private Instant printingStartedAt(UUID orderId) {
