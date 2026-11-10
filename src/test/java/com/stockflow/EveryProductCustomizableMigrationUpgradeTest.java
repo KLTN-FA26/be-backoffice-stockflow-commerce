@@ -36,7 +36,7 @@ class EveryProductCustomizableMigrationUpgradeTest {
                 RawSql.update(db, "INSERT INTO product.products (id, code, name, name_en, slug, kind, version) VALUES "
                         + "('" + CUSTOMIZABLE + "', 'UPG-CUS', 'Custom', 'Custom', 'upg-cus', 'CUSTOMIZABLE', 4)");
                 assertThat(RawSql.number(db, "SELECT count(*) FROM product.products WHERE kind = 'STANDARD'"))
-                        .as("the two demo products and the seeded one").isGreaterThanOrEqualTo(3);
+                        .as("the seeded one (this build has no demo data)").isGreaterThanOrEqualTo(1);
 
                 var result = flyway(postgres, MIGRATION).migrate();
                 assertThat(result.migrations).extracting(m -> m.version).containsExactly(MIGRATION);
@@ -47,8 +47,6 @@ class EveryProductCustomizableMigrationUpgradeTest {
                         .as("a converted product's version moves").isEqualTo(5);
                 assertThat(RawSql.number(db, "SELECT version FROM product.products WHERE id = '" + CUSTOMIZABLE + "'"))
                         .as("one that already was is left alone").isEqualTo(4);
-                assertThat(RawSql.number(db, "SELECT count(*) FROM product.products WHERE code IN ('SOFA-3S', "
-                        + "'TABLE-OAK') AND kind = 'CUSTOMIZABLE' AND version = 1")).as("the demo products").isEqualTo(2);
 
                 assertThat(RawSql.update(db, "INSERT INTO product.products (id, code, name, name_en, slug) VALUES "
                         + "(gen_random_uuid(), 'UPG-NEW', 'New', 'New', 'upg-new')")).isEqualTo(1);

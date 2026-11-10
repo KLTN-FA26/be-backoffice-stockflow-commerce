@@ -25,7 +25,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class SelfOrderingRemovalMigrationUpgradeTest {
 
-    private static final String BEFORE = "20261108002900";
+    private static final String BEFORE = "20261108003200";
     private static final String MIGRATION = "20261113000100";
 
     @Test

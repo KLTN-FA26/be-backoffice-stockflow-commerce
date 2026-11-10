@@ -6,6 +6,8 @@ import com.stockflow.common.id.Identifiers;
 import com.stockflow.contracts.OrderReleased;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.internal.service.OrderReleases;
+import com.stockflow.support.ConfirmedOrders;
+import com.stockflow.support.CustomerSkuRows;
 import com.stockflow.support.DemoData;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
@@ -35,6 +37,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  */
 @IntegrationTest
 @Import({PostgresContainer.class, RecordedEvents.class})
+@org.springframework.test.context.TestPropertySource(properties = "stockflow.upload-inspection.enabled=false")
 class OrderReleaseIntegrationTest {
 
     private static final String CUP = "SOFA-3S-GREY";   // any demo SKU with an inventory item
@@ -44,6 +47,7 @@ class OrderReleaseIntegrationTest {
     @Autowired EntityManager entityManager;
     @Autowired TransactionTemplate tx;
     @Autowired RecordedEvents.Recorder recorded;
+    @Autowired org.springframework.context.ApplicationContext context;
 
     private UUID hcm;
     private UUID coordinator;
@@ -125,18 +129,13 @@ class OrderReleaseIntegrationTest {
     @Test
     @DisplayName("an order with nothing to print goes straight to READY_TO_FULFILL; a second release is refused")
     void stockOnly() {
-        UUID order = Identifiers.newId();
-        tx.executeWithoutResult(s -> {
-            jdbc.update("""
-                    INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount,
-                                                         currency, placed_at, version, created_at,
-                                                         contract_signed_at)
-                    VALUES (?, ?, ?, ?, 'CONFIRMED', 10000, 'VND', NOW(), 0, NOW(), NOW())""",
-                    order, orderNumber(), DemoData.CUSTOMER_ID, UUID.randomUUID());
-            jdbc.update("""
-                    INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency)
-                    VALUES (?, ?, 'TABLE-OAK-160', 1, 10000, 'VND')""", Identifiers.newId(), order);
-        });
+        // A contract's order of the customer's own SKU, its stock held at the shipping warehouse (4B-7), as production has it.
+        String sku = CustomerSkuRows.issue(jdbc, tx, entityManager, DemoData.CUSTOMER_ID, 50).sku();
+        CustomerSkuRows.stock(jdbc, tx, sku, 10);
+        ConfirmedOrders confirmedOrders = new ConfirmedOrders(context);
+        UUID order = confirmedOrders.confirmed(DemoData.CUSTOMER_ID, ConfirmedOrders.Line.units(sku, 2, 10_000)).orderId();
+        confirmedOrders.ship(order, hcm);
+        recorded.clear();
 
         assertThat(releases.release(order, hcm, coordinator).status()).isEqualTo(OrderStatus.READY_TO_FULFILL);
         assertThat(recorded.matching(OrderReleased.class, e -> e.orderId().equals(order))).hasSize(1);

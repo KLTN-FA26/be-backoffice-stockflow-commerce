@@ -223,8 +223,7 @@ class CustomizationTemplateIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT count(*) FROM product.customization_templates WHERE variant_id = ? "
                 + "AND is_active", Long.class, variantId)).isEqualTo(1);
 
-        // A product whose kind was changed afterwards can still retire its template.
-        jdbc.update("UPDATE product.products SET kind = 'STANDARD' WHERE id = ?", productId);
+        // A template can be retired whatever the product is doing.
         JsonNode active = data(mvc.perform(get(base + "/" + second.get("templateId").asText())));
         mvc.perform(post(base + "/" + second.get("templateId").asText() + "/deactivation")
                         .contentType(MediaType.APPLICATION_JSON).content("{\"version\":" + active.get("version") + "}"))

@@ -191,11 +191,11 @@ class CatalogSearchIntegrationTest {
         assertThat(items.size()).isEqualTo(2);
         for (JsonNode card : items) {
             boolean isPrinted = card.get("productId").asText().equals(printed.toString());
-            assertThat(card.get("kind").asText()).isEqualTo(isPrinted ? "CUSTOMIZABLE" : "STANDARD");
+            assertThat(card.get("kind").asText()).isEqualTo("CUSTOMIZABLE");
             JsonNode detail = body(asCustomer(LIST + "/" + card.get("slug").asText()).andExpect(status().isOk()))
                     .at("/data");
             assertThat(detail.get("productId").asText()).isEqualTo(card.get("productId").asText());
-            assertThat(detail.get("kind").asText()).isEqualTo(isPrinted ? "CUSTOMIZABLE" : "STANDARD");
+            assertThat(detail.get("kind").asText()).isEqualTo("CUSTOMIZABLE");
         }
         assertThat(standard).isNotEqualTo(printed);
     }

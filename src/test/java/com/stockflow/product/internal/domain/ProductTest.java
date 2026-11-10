@@ -353,7 +353,7 @@ class ProductTest {
             assertThat(product.updateDetails("Ly mới", "Paper cup 12oz", BRAND, CATEGORY, "mô tả", null, null,
                     TaxClass.REDUCED)).isEmpty();
             assertThat(product.updateDetails("Ly mới", "Paper cup 12oz", null, null, "mô tả", null, null,
-                    TaxClass.REDUCED)).containsExactly("brandId", "categoryId", "kind");
+                    TaxClass.REDUCED)).containsExactly("brandId", "categoryId");
         }
 
         @Test

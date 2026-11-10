@@ -37,7 +37,6 @@ import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.ApplicationContext;
@@ -355,9 +354,6 @@ class ReturnRequestIntegrationTest {
     }
 
     @Test
-    @Disabled("Production bug found by the 4B-10 tests: a credit note is no longer booked as a transfer, but "
-            + "ck_return_request_credit_transfer still wants credit_transfer_id whenever credited + offset > 0, so the "
-            + "settlement cannot be saved. See reports/C3-tests.md. Enable once the check is relaxed.")
     @DisplayName("a credit note approved by a second person is reported as credited, booking nothing; the order "
             + "PARTIALLY_REFUNDED then CLOSED")
     void creditNoteSettlement() {
@@ -769,9 +765,6 @@ class ReturnRequestIntegrationTest {
     }
 
     @Test
-    @Disabled("Production bug found by the 4B-10 tests: the withdrawn replacement's credit books no transfer, but "
-            + "ck_return_request_credit_transfer (and its withdrawal twin) still want credit_transfer_id; see "
-            + "reports/C3-tests.md. Enable once the check is relaxed.")
     @DisplayName("a replacement order is cancelled only through its return: neither the customer nor staff cancel it; "
             + "withdrawn by two people, it is cancelled and its units credited (RMA-...-W)")
     void replacementWithdrawal() {

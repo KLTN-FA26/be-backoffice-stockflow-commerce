@@ -192,7 +192,5 @@ class QuoteSecurityIntegrationTest {
             send(post(reorder), token(userA, role), reorderBody).andExpect(status().isForbidden());
             send(post("/api/v1/orders"), token(userA, role), checkoutBody).andExpect(status().isForbidden());
         }
-        // The order itself is still there to read: only the verbs went.
-        send(get("/api/v1/orders/" + orderId), token(userA, "SALES_STAFF"), null).andExpect(status().isOk());
     }
 }

@@ -77,8 +77,8 @@ class PickLineCartonMigrationTest {
                     + " values (?, ?, 'CARTON', 10)", unit, item);
             jdbc.update("""
                     INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount,
-                        currency, placed_at, version, created_at, paid_amount, paid_in_full_at)
-                    VALUES (?, ?, ?, ?, 'CONFIRMED', 1, 'VND', NOW(), 0, NOW(), 1, NOW())""", order, number,
+                        currency, placed_at, version, created_at, contract_signed_at)
+                    VALUES (?, ?, ?, ?, 'CONFIRMED', 1, 'VND', NOW(), 0, NOW(), NOW())""", order, number,
                     DemoData.CUSTOMER_ID, UUID.randomUUID());
             jdbc.update("INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency) "
                     + "VALUES (?, ?, ?, 20, 1000, 'VND')", orderLine, order, sku);
