@@ -104,8 +104,9 @@ public interface CycleCounts {
      * the count open and asks for nothing. Submitting a completed count again returns it unchanged.
      *
      * @throws com.stockflow.common.error.BusinessException {@code CYCLE_COUNT_LINE_NOT_COUNTED};
-     *         {@code CYCLE_COUNT_STALE} (BR-09: a carton moved, emptied, lost or found after its line was counted:
-     *         count it again); {@code CYCLE_COUNT_NOT_OPEN} once cancelled; and as {@link #count}
+     *         {@code CYCLE_COUNT_STALE} (BR-09: the carton of any counted line moved, emptied, written off, lost or
+     *         found after the line was counted: count it again); {@code CYCLE_COUNT_NOT_OPEN} once cancelled; and as
+     *         {@link #count}
      */
     CycleCountView submit(UUID id, UUID actor, boolean mayDecide);
 

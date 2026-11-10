@@ -160,12 +160,12 @@ class CycleCountCountingService {
      * becomes one pending {@code COUNT_VARIANCE} adjustment of that whole carton (20 §4.2 c8), all in this transaction:
      * a refused line rolls back the whole submission, so the count stays open and no half of it waits for approval.
      *
-     * <p>BR-09: the books are read again under the carton locks. A line whose carton is no longer as it was judged -
-     * moved out of the line's bin, emptied, lost or found since it was counted - is {@code CYCLE_COUNT_STALE},
-     * named, and counted again. Only differing lines are checked: a line that raises nothing cannot correct anything
-     * twice.</p>
+     * <p>BR-09: the books are read again under the carton locks, for every counted line - the rule speaks of any line,
+     * and a line that raises nothing still records what the shelf held. A line whose carton is no longer as it was
+     * judged - moved out of the line's bin, emptied, written off, lost or found since it was counted - is
+     * {@code CYCLE_COUNT_STALE}, named, and counted again. The 500-line cap (BR-12) bounds the locked reads.</p>
      *
-     * <p>Locks first, in the order of every stock writer: the SKUs of the differing lines in sorted order, then their
+     * <p>Locks first, in the order of every stock writer: the SKUs of the counted lines in sorted order, then their
      * cartons in id order. Each request then takes its SKU lock again (an advisory lock is re-entrant), so SKUs are
      * never taken out of order and two submissions over the same SKUs cannot deadlock.</p>
      */
@@ -178,20 +178,17 @@ class CycleCountCountingService {
         // A cancelled count is answered as closed before any stock lock, as count and addLine answer it - not with
         // whatever a carton check would say about a line nobody will count again.
         requireOpen(count);
-        List<CycleCountLine> differing = count.lines().stream()
-                .filter(line -> line.isCounted() && line.delta() != 0)
+        List<CycleCountLine> counted = count.lines().stream()
+                .filter(line -> line.isCounted() && line.slot().isCarton())
                 .toList();
-        differing.stream().map(line -> line.slot().sku().code()).distinct().sorted().forEach(policies::lock);
-        Map<UUID, CycleCountLine> byCarton = differing.stream()
+        counted.stream().map(line -> line.slot().sku().code()).distinct().sorted().forEach(policies::lock);
+        Map<UUID, CycleCountLine> byCarton = counted.stream()
                 .collect(Collectors.toMap(line -> line.slot().stockPackageId().value(), line -> line));
         if (!byCarton.isEmpty()) {
             for (StockPackage carton : stockPackages.findAllByIdForUpdate(byCarton.values().stream()
                     .map(line -> line.slot().stockPackageId()).toList())) {
                 CycleCountLine line = byCarton.get(carton.id().value());
-                boolean asJudged = line.booked()
-                        ? booked(carton, line.slot().location())
-                        : carton.status() == StockPackageStatus.LOST;
-                if (!asJudged) {
+                if (!asJudged(line, carton)) {
                     throw new BusinessException(ErrorCode.CYCLE_COUNT_STALE,
                             "Line %s: carton %s is %s at %s since it was counted; count the line again".formatted(
                                     line.id(), carton.lpn(), carton.status(), carton.location()));
@@ -200,7 +197,7 @@ class CycleCountCountingService {
         }
         count.submit(clock.instant());
         String note = "Count " + count.number();
-        List<CycleCountLine> ordered = differing.stream()
+        List<CycleCountLine> ordered = counted.stream().filter(line -> line.delta() != 0)
                 .sorted(Comparator.comparing((CycleCountLine line) -> line.slot().sku().code())
                         .thenComparing(line -> line.slot().lockKey()))
                 .toList();
@@ -223,6 +220,19 @@ class CycleCountCountingService {
                     "Line %s: carton %s is %s since it was counted; count the line again"
                             .formatted(line.id(), carton.lpn(), carton.status()));
         }
+    }
+
+    /**
+     * The carton is still as the line judged it (BR-09): booked - in stock at the line's bin; a LOST carton found - still
+     * LOST; neither booked nor found - still not in stock at that bin.
+     */
+    private static boolean asJudged(CycleCountLine line, StockPackage carton) {
+        if (line.booked()) {
+            return booked(carton, line.slot().location());
+        }
+        return Boolean.TRUE.equals(line.found())
+                ? carton.status() == StockPackageStatus.LOST
+                : !booked(carton, line.slot().location());
     }
 
     /** The books have the carton at {@code bin}: in stock there. A LOST, emptied or voided carton is not booked. */
