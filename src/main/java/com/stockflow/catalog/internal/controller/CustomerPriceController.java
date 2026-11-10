@@ -1,9 +1,7 @@
 package com.stockflow.catalog.internal.controller;
 
-import com.stockflow.catalog.api.PriceSchedule;
 import com.stockflow.catalog.internal.controller.dto.CustomerPriceRequest;
 import com.stockflow.catalog.internal.controller.dto.CustomerPriceResponse;
-import com.stockflow.catalog.internal.controller.dto.PriceScheduleResponse;
 import com.stockflow.catalog.internal.service.CustomerPriceService;
 import com.stockflow.common.api.ApiResponse;
 import com.stockflow.common.error.BusinessException;
@@ -28,10 +26,10 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * Back office: customers' own prices by SKU and quantity tier (SCRUM-428). Sales Manager edits
- * (kltn-docs 13 §2); Sales reads - to start a quote from the customer's
- * price (14 step 2). Only staff hold this resource, so there is no portal path through here; customers
- * read their own prices through {@code GET /api/v1/catalog/products/prices}.
+ * Back office: customers' own prices by SKU and quantity tier (SCRUM-428) - the internal price, the one source of a
+ * price (kltn-docs 13 BR-04, BR-10). Sales Manager edits (13 §2); Sales reads - to start
+ * a quote from the customer's price (14 step 2). Only staff hold this resource, and there is no portal path to a price
+ * at all: a customer sees one only on a quote, order or contract.
  */
 @RestController
 @RequestMapping("/api/v1/catalog/customer-prices")
@@ -60,13 +58,6 @@ class CustomerPriceController {
     @RequiresPermission(resource = RESOURCE, action = Action.READ)
     public ApiResponse<CustomerPriceResponse> get(@PathVariable UUID customerId, @PathVariable String sku) {
         return ApiResponse.ok(toResponse(prices.get(customerId, sku)));
-    }
-
-    /** What the customer pays now - own tiers, else group or base price. The default of a quote line. */
-    @GetMapping("/{customerId}/{sku}/schedule")
-    @RequiresPermission(resource = RESOURCE, action = Action.READ)
-    public ApiResponse<PriceScheduleResponse> schedule(@PathVariable UUID customerId, @PathVariable String sku) {
-        return ApiResponse.ok(toResponse(prices.schedule(customerId, sku)));
     }
 
     @PostMapping("/{customerId}/{sku}")
@@ -105,11 +96,5 @@ class CustomerPriceController {
         return new CustomerPriceResponse(price.customerId(), price.sku(), price.measure(), price.moq(),
                 price.tiers().stream().map(t -> new CustomerPriceResponse.Tier(t.minQuantity(), t.unitPrice())).toList(),
                 price.note(), price.version());
-    }
-
-    static PriceScheduleResponse toResponse(PriceSchedule schedule) {
-        return new PriceScheduleResponse(schedule.sku(), schedule.source().name(), schedule.moq(), "VND",
-                schedule.tiers().stream()
-                        .map(t -> new PriceScheduleResponse.Tier(t.minQuantity(), t.unitPrice().amount())).toList());
     }
 }

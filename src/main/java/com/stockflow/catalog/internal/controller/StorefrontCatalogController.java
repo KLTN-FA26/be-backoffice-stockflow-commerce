@@ -35,7 +35,8 @@ class StorefrontCatalogController {
     /**
      * The published catalogue, searched when {@code q} is given (SCRUM-170/181/182). {@code sort} is
      * {@code relevance} (default with {@code q}), {@code newest} (default without) or {@code title};
-     * anything else, price included until SCRUM-428, is {@code UNSUPPORTED_PARAMETER}. No-store: the
+     * anything else, price included (the storefront shows no price, kltn-docs 13 BR-04), is
+     * {@code UNSUPPORTED_PARAMETER}. No-store: the
      * answer sits behind a token and the in-stock order follows live stock. {@code category} (a slug from
      * {@code /api/v1/catalog/categories}) narrows the listing to that category and every category under it
      * (SCRUM-171); an unknown or hidden one is {@code CATEGORY_NOT_FOUND}.

@@ -26,12 +26,8 @@ class CatalogServiceImpl implements CatalogService {
     }
 
     @Override
-    public PriceSchedule priceSchedule(UUID customerId, String sku) {
-        return resolver.schedule(customerId, sku);
-    }
-
-    @Override
-    public Optional<PriceSchedule> customerPrice(UUID customerId, String sku) {
+    @Transactional(readOnly = true)
+    public java.util.Optional<PriceSchedule> customerPrice(UUID customerId, String sku) {
         return resolver.own(resolver.customer(customerId), sku);
     }
 }

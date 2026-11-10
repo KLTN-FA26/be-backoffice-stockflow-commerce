@@ -399,8 +399,12 @@ class ProductLifecycleIntegrationTest {
                 reasonAndVersion("recall", draft.version())), 409, "INVALID_PRODUCT_STATUS_TRANSITION");
     }
 
-    /** A PUBLISHED product with a price and a published image, made by SQL the way the catalog tests make one. */
-    private record Published(UUID id, String sku, String slug) {
+    /**
+     * A PUBLISHED product with a published image, made by SQL the way the catalog tests make one, and a customer
+     * ({@code buyer}) with a price of its own on the product's variant, kept from before 4B-2: the one price checkout
+     * still reads since 5-3 (no base price, kltn-docs 13 BR-04).
+     */
+    private record Published(UUID id, String sku, String slug, UUID buyer) {
     }
 
     private Published publishedProduct(String tag) {
@@ -422,11 +426,10 @@ class ProductLifecycleIntegrationTest {
                     INSERT INTO product.media (id, variant_id, url, is_published, published_at, published_by, created_by)
                     VALUES (?, ?, 'https://example.test/pub.jpg', true, NOW(), md5('demo:user:approver')::uuid,
                             md5('demo:user:editor')::uuid::text)""", Identifiers.newId(), variant);
-            jdbc.update("INSERT INTO catalog.pricing_rule (id, name, sku, price, currency, active, created_at) "
-                    + "VALUES (?, ?, ?, 12500000, 'VND', true, NOW())", Identifiers.newId(), "BASE:" + sku, sku);
         });
+        UUID buyer = tx.execute(s -> ReferenceRows.customer(entityManager));
         projection.project(id);
-        return new Published(id, sku, slug);
+        return new Published(id, sku, slug, buyer);
     }
 
     private void awaitCatalogHides(Published product) {

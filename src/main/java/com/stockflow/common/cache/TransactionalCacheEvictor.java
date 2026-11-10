@@ -61,9 +61,9 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
  *
  * <pre>
  * &#64;Transactional
- * public void changePrice(Sku sku, Money newPrice) {
+ * public void rename(UUID productId, String name) {
  *     repository.save(...);
- *     evictor.evictAfterCommit(CacheNames.PRICES, sku.code());
+ *     evictor.evictAfterCommit(CacheNames.PRODUCTS, productId);
  * }
  * </pre>
  *

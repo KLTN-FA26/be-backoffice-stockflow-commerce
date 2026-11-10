@@ -292,9 +292,6 @@ class CustomizationTemplateIntegrationTest {
                            md5('demo:user:editor')::uuid::text
                     FROM product.variants v WHERE v.sku = ?""", UUID.randomUUID(), variantSku);
             jdbc.update("""
-                    INSERT INTO catalog.pricing_rule (id, name, sku, price, currency, active, created_at)
-                    VALUES (?, ?, ?, 2500, 'VND', TRUE, NOW())""", UUID.randomUUID(), "BASE:" + variantSku, variantSku);
-            jdbc.update("""
                     UPDATE product.products SET status = 'PUBLISHED', submitted_by = md5('demo:user:editor')::uuid,
                            submitted_at = NOW(), approved_by = md5('demo:user:approver')::uuid, approved_at = NOW(),
                            published_at = NOW(), seo_title = 'SEO', seo_description = 'SEO description'

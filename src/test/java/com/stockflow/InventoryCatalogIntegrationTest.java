@@ -2,7 +2,6 @@ package com.stockflow;
 
 import static org.assertj.core.api.Assertions.*;
 
-import com.stockflow.catalog.internal.domain.SellingPrice;
 import com.stockflow.catalog.internal.service.CatalogCommerceService;
 import com.stockflow.catalog.internal.service.CatalogProjectionService;
 import com.stockflow.common.error.BusinessException;
@@ -24,7 +23,6 @@ import org.springframework.test.web.servlet.request.MockMvcRequestBuilders;
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers;
 import org.springframework.transaction.support.TransactionTemplate;
 
-import java.math.BigDecimal;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.List;
@@ -52,26 +50,19 @@ class InventoryCatalogIntegrationTest {
     @Autowired OrderService orders;
     @Autowired com.stockflow.product.api.ProductService productService;
 
+    /** 5-3 (kltn-docs 13 BR-04, §4.1 step 2): a variant has no price, so nothing about one keeps a product unlisted. */
     @Test
-    void missingPriceRollsBackTheWholeBackfillAndRetryDiscoversItLater() {
+    void everyVariantIsProjectedWithoutAPrice() {
         var f = fixture("APPROVED");
         gallery(f);
         String second = f.sku() + "-2";
         write("insert into product.variants(id,product_id,sku,name,status,attribute_signature)"
                 + " values (?,?,?,'Second','ACTIVE','SECOND')", UUID.randomUUID(), f.product(), second);
         write("update product.products set status='PUBLISHED',published_at=now() where id=?", f.product());
-        testPrice(f.sku());
         var source = jdbc.queryForMap("select * from product.products where id=?", f.product());
-        assertThatThrownBy(() -> projection.project(f.product()))
-                .isInstanceOfSatisfying(BusinessException.class,
-                        e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.PRICE_NOT_AVAILABLE));
-        assertThat(jdbc.queryForObject("select count(*) from catalog.product_listing where product_id=?",
-                Long.class, f.product())).isZero();
-        assertThat(jdbc.queryForObject("select count(*) from catalog.catalog_entry where product_id=?",
-                Long.class, f.product())).isZero();
-        testPrice(second);
-        projectionListener.retry();
-        assertThat(catalog.detail(catalog.get(f.product()).slug()).variants()).hasSize(2);
+        projection.project(f.product());
+        assertThat(catalog.detail(catalog.get(f.product()).slug()).variants())
+                .extracting(CatalogCommerceService.Variant::sku).containsExactlyInAnyOrder(f.sku(), second);
         assertThat(jdbc.queryForMap("select * from product.products where id=?", f.product())).isEqualTo(source);
     }
 
@@ -80,14 +71,12 @@ class InventoryCatalogIntegrationTest {
         for (String status : List.of("DRAFT", "APPROVED")) {
             var f = fixture(status);
             gallery(f);
-            testPrice(f.sku());
             projection.project(f.product());
             assertThat(jdbc.queryForObject("select count(*) from catalog.product_listing where product_id=?",
                     Long.class, f.product())).isZero();
         }
         var f = fixture("APPROVED");
         gallery(f);
-        testPrice(f.sku());
         write("update product.products set status='PUBLISHED',published_at=now() where id=?", f.product());
         write("update product.media set is_published=false where variant_id=?", f.skuId());
         assertThatThrownBy(() -> projection.project(f.product()))
@@ -101,20 +90,14 @@ class InventoryCatalogIntegrationTest {
     void rebuildCannotOverwriteANewerEntryAndRollsBackPartialWrites() {
         var f = fixture("APPROVED");
         gallery(f);
-        testPrice(f.sku());
         write("update product.products set status='PUBLISHED',published_at=now() where id=?", f.product());
         projection.project(f.product());
-        write("update catalog.catalog_entry set source_revision=100,price=777,title='Newer snapshot' where sku=?", f.sku());
+        write("update catalog.catalog_entry set source_revision=100,title='Newer snapshot' where sku=?", f.sku());
         var entry = jdbc.queryForMap("select * from catalog.catalog_entry where sku=?", f.sku());
         assertThatThrownBy(() -> projection.project(f.product()))
                 .isInstanceOfSatisfying(BusinessException.class,
                         e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.CONFLICT));
         assertThat(jdbc.queryForMap("select * from catalog.catalog_entry where sku=?", f.sku())).isEqualTo(entry);
-    }
-
-    private void testPrice(String sku) {
-        write("insert into catalog.pricing_rule(id,name,sku,price,currency,active,created_at)"
-                + " values (?,?,?,12500000,'VND',true,now())", UUID.randomUUID(), "BASE:" + sku, sku);
     }
 
     record Fixture(UUID product, UUID skuId, String sku, UUID itemId) {}
@@ -228,31 +211,6 @@ values (?,?,'HCM-A01-1-A','UNTRACED',?,0,'AVAILABLE',?,now())
     }
 
     @Test
-    void basePriceDatabaseRejectsForeignCurrencyAndFractionalVnd() {
-        var f = fixture("DRAFT");
-        var listing = catalog.edit(f.product(), 0, "money-" + f.sku(), null, null);
-        catalog.price(
-                f.product(),
-                f.sku(),
-                listing.revision(),
-                new SellingPrice(new BigDecimal("100"), "VND"),
-                "test");
-        assertThatThrownBy(
-                        () ->
-                                write(
-                                        "update catalog.pricing_rule set currency='USD' where"
-                                                + " name=?",
-                                        "BASE:" + f.sku()))
-                .isInstanceOf(DataIntegrityViolationException.class);
-        assertThatThrownBy(
-                        () ->
-                                write(
-                                        "update catalog.pricing_rule set price=100.49 where name=?",
-                                        "BASE:" + f.sku()))
-                .isInstanceOf(DataIntegrityViolationException.class);
-    }
-
-    @Test
     void staleVersionCannotOverwrite() {
         var a = fixture("DRAFT");
         // "the SKU must belong to the product" is gone: the item is addressed by its own id (spec D1)
@@ -260,8 +218,9 @@ values (?,?,'HCM-A01-1-A','UNTRACED',?,0,'AVAILABLE',?,now())
         assertThatThrownBy(() -> touch(a, 0)).isInstanceOf(BusinessException.class);
     }
 
+    /** 5-3 (kltn-docs 13 §4.1 step 2): publishing needs an approved product and gallery, never a price. */
     @Test
-    void draftSeoIsPrivateAndPublicationRequiresPriceAndApprovedGallery() {
+    void draftSeoIsPrivateAndPublicationRequiresAnApprovedGalleryButNoPrice() {
         var f = fixture("DRAFT");
         catalog.edit(f.product(), 0, "draft-" + f.sku(), "Private SEO", null);
         projection.project(f.product());
@@ -272,30 +231,18 @@ values (?,?,'HCM-A01-1-A','UNTRACED',?,0,'AVAILABLE',?,now())
         write("update product.products set status='APPROVED' where id=?", f.product());
         assertThatThrownBy(() -> catalog.publish(f.product()))
                 .isInstanceOf(BusinessException.class);
-        var listing = catalog.get(f.product());
-        catalog.price(
-                f.product(),
-                f.sku(),
-                listing.revision(),
-                new SellingPrice(new BigDecimal("100.00"), "VND"),
-                "test");
-        assertThat(catalog.price(f.product(), f.sku()).basePrice().amount())
-                .isEqualByComparingTo("100");
-        assertThatThrownBy(() -> catalog.publish(f.product()))
-                .isInstanceOf(BusinessException.class);
+        gallery(f);
+        catalog.publish(f.product());
+        projection.project(f.product());
+        assertThat(catalog.detail("draft-" + f.sku().toLowerCase()).variants())
+                .extracting(CatalogCommerceService.Variant::sku).containsExactly(f.sku());
     }
 
     @Test
     void publishProjectsAllSkusAndUnpublishHidesImmediatelyEvenBeforeProjection() {
         var f = fixture("APPROVED");
         gallery(f);
-        var listing = catalog.edit(f.product(), 0, "public-" + f.sku(), "SEO", null);
-        catalog.price(
-                f.product(),
-                f.sku(),
-                listing.revision(),
-                new SellingPrice(new BigDecimal("100.00"), "VND"),
-                "test");
+        catalog.edit(f.product(), 0, "public-" + f.sku(), "SEO", null);
         catalog.publish(f.product());
         projection.project(f.product());
         String slug = catalog.get(f.product()).slug();
@@ -346,13 +293,7 @@ values (?,?,'HCM-A01-1-A','UNTRACED',?,0,'AVAILABLE',?,now())
     void duplicatePublicationDoesNotIncrementRevisionAndOlderEventUsesLatestSeo() {
         var f = fixture("APPROVED");
         gallery(f);
-        var listing = catalog.edit(f.product(), 0, "repeat-" + f.sku(), "Old SEO", null);
-        catalog.price(
-                f.product(),
-                f.sku(),
-                listing.revision(),
-                new SellingPrice(new BigDecimal("100"), "VND"),
-                "test");
+        catalog.edit(f.product(), 0, "repeat-" + f.sku(), "Old SEO", null);
         catalog.publish(f.product());
         long revision = catalog.get(f.product()).revision();
         catalog.publish(f.product());
@@ -367,38 +308,6 @@ values (?,?,'HCM-A01-1-A','UNTRACED',?,0,'AVAILABLE',?,now())
                                 Integer.class,
                                 f.product()))
                 .isEqualTo(1);
-    }
-
-    @Test
-    void equalPriorityPricesConflictAndASecondPublishCannotBypassIt() {
-        var f = fixture("APPROVED");
-        gallery(f);
-        var listing = catalog.edit(f.product(), 0, "price-" + f.sku(), null, null);
-        catalog.price(
-                f.product(),
-                f.sku(),
-                listing.revision(),
-                new SellingPrice(new BigDecimal("100"), "VND"),
-                "test");
-        write(
-                """
-insert into catalog.pricing_rule(id,name,sku,price,currency,priority,active,created_at)
-values (?,'Conflicting test rule',?,200,'VND',0,true,now())
-""",
-                UUID.randomUUID(),
-                f.sku());
-        assertThatThrownBy(() -> catalog.publish(f.product()))
-                .isInstanceOfSatisfying(
-                        BusinessException.class,
-                        e ->
-                                assertThat(e.errorCode())
-                                        .isEqualTo(ErrorCode.CATALOG_PRICE_AMBIGUOUS));
-        assertThat(
-                        jdbc.queryForObject(
-                                "select status from product.products where id=?",
-                                String.class,
-                                f.product()))
-                .isEqualTo("APPROVED");
     }
 
     @Test
@@ -495,12 +404,6 @@ values (?,'Conflicting test rule',?,200,'VND',0,true,now())
                                 String.class,
                                 f.product()))
                 .isEqualTo("First");
-        catalog.price(
-                f.product(),
-                f.sku(),
-                listing.revision(),
-                new SellingPrice(new BigDecimal("100"), "VND"),
-                "test");
         catalog.publish(f.product());
         projection.project(f.product());
         long staleRevision = catalog.get(f.product()).revision();
@@ -549,13 +452,7 @@ values (?,'Conflicting test rule',?,200,'VND',0,true,now())
         write(
                 "update product.media set created_by=published_by::text where variant_id=?",
                 f.skuId());
-        var listing = catalog.edit(f.product(), 0, "media-" + f.sku(), null, null);
-        catalog.price(
-                f.product(),
-                f.sku(),
-                listing.revision(),
-                new SellingPrice(new BigDecimal("100"), "VND"),
-                "test");
+        catalog.edit(f.product(), 0, "media-" + f.sku(), null, null);
         assertThatThrownBy(() -> catalog.publish(f.product()))
                 .isInstanceOfSatisfying(
                         BusinessException.class,
@@ -590,12 +487,6 @@ values (?,'Conflicting test rule',?,200,'VND',0,true,now())
                 UUID.randomUUID(),
                 f.skuId());
         var listing = catalog.edit(f.product(), 0, "gallery-" + f.sku(), null, null);
-        catalog.price(
-                f.product(),
-                f.sku(),
-                listing.revision(),
-                new SellingPrice(new BigDecimal("100"), "VND"),
-                "test");
         catalog.publish(f.product());
         projection.project(f.product());
         String path = "/api/v1/catalog/products/" + listing.slug();

@@ -64,8 +64,6 @@ WITH checks(step, reference, orphans) AS (
              WHERE u.id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM identity.app_user p WHERE p.id = u.id)))),
     ('live', 'customer.customer.user_id -> identity.app_user',
         (SELECT count(*) FROM customer.customer c WHERE c.user_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM identity.app_user p WHERE p.id = c.user_id))),
-    ('live', 'catalog.pricing_rule.segment_id -> customer.segment',
-        (SELECT count(*) FROM catalog.pricing_rule c WHERE c.segment_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM customer.segment p WHERE p.id = c.segment_id))),
     ('live', 'notification.preference.user_id -> identity.app_user',
         (SELECT count(*) FROM notification.preference c WHERE NOT EXISTS (SELECT 1 FROM identity.app_user p WHERE p.id = c.user_id))),
 
@@ -73,8 +71,6 @@ WITH checks(step, reference, orphans) AS (
         (SELECT count(*) FROM ordering.order_line c WHERE NOT EXISTS (SELECT 1 FROM product.variants p WHERE p.sku = c.sku))),
     ('C1', 'catalog.catalog_entry.sku -> product.variants',
         (SELECT count(*) FROM catalog.catalog_entry c WHERE NOT EXISTS (SELECT 1 FROM product.variants p WHERE p.sku = c.sku))),
-    ('C1', 'catalog.pricing_rule.sku -> product.variants',
-        (SELECT count(*) FROM catalog.pricing_rule c WHERE c.sku IS NOT NULL AND NOT EXISTS (SELECT 1 FROM product.variants p WHERE p.sku = c.sku))),
     ('C1', 'reporting.product_sales_summary.sku -> product.variants',
         (SELECT count(*) FROM reporting.product_sales_summary c WHERE NOT EXISTS (SELECT 1 FROM product.variants p WHERE p.sku = c.sku))),
     ('C1', 'design.design_draft.product_id -> product.products',

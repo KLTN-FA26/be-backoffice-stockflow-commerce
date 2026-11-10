@@ -464,8 +464,8 @@ class QuoteService implements Quotes {
     }
 
     /**
-     * The customer's own price for one of its SKUs (13 BR-05: tiers by cartons, a price per piece), if it has one. A
-     * group or base price is a stock variant's price by the unit (13 §3) and is not offered for a SKU of the customer.
+     * The customer's own price for one of its SKUs (13 BR-05: tiers by cartons, a price per piece), if it has one - the
+     * only price there is (13 BR-04: no base or group price).
      */
     private Optional<PriceSchedule> ownPrice(UUID customerId, String sku) {
         return catalog.customerPrice(customerId, sku);
@@ -649,16 +649,8 @@ class QuoteService implements Quotes {
         Map<String, UomConversion> cartons = new java.util.HashMap<>();
         List<String> missing = new ArrayList<>();
         for (String sku : skus.stream().distinct().toList()) {
-            List<UomConversion> candidates = declared.getOrDefault(sku, List.of()).stream()
-                    .filter(unit -> unit.active() && !unit.base() && unit.factor() > 1).toList();
-            if (candidates.size() > 1) {
-                candidates = candidates.stream().filter(UomConversion::defaultShipping).toList();
-            }
-            if (candidates.size() == 1) {
-                cartons.put(sku, candidates.getFirst());
-            } else {
-                missing.add(sku);
-            }
+            UomConversion.cartonOf(declared.getOrDefault(sku, List.of()))
+                    .ifPresentOrElse(carton -> cartons.put(sku, carton), () -> missing.add(sku));
         }
         if (!missing.isEmpty()) {
             throw new BusinessException(ErrorCode.CARTON_SPEC_MISSING, ("%s has no single carton unit (01 BR-03): set "

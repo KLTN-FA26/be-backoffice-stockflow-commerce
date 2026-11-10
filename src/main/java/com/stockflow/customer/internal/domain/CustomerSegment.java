@@ -9,11 +9,10 @@ import java.util.UUID;
 import java.util.regex.Pattern;
 
 /**
- * A customer group (kltn-docs 18 §4.3 step 10: "Quản trị bán hàng gán nhóm"), the key of a group price
- * (13 §3: a customer without its own price list pays its group's price). Managed by the Sales Manager
- * (user decision P7).
+ * A customer group (kltn-docs 18 §4.3 step 10: "Quản trị bán hàng gán nhóm"): it classifies customers and prices
+ * nothing (13 BR-04: no group price, team plan 5-3). Managed by the Sales Manager (user decision P7).
  *
- * <p>The code is the group's identity in price rules and reports, so it is fixed once created: upper-case
+ * <p>The code is the group's identity in reports, so it is fixed once created: upper-case
  * letters, digits, {@code _} and {@code -}, at most 64. Name and description may change.
  * {@code ck_segment_code} and {@code ck_segment_name} say the same in the database (V20261017000600).</p>
  */

@@ -5,7 +5,6 @@ import com.stockflow.catalog.internal.service.CatalogCommerceService;
 import com.stockflow.common.api.ApiResponse;
 import com.stockflow.common.security.*;
 
-import io.swagger.v3.oas.annotations.Operation;
 import jakarta.validation.Valid;
 
 import org.springframework.web.bind.annotation.*;
@@ -13,9 +12,9 @@ import org.springframework.web.bind.annotation.*;
 import java.util.UUID;
 
 /**
- * Existing publication URLs are preserved; orchestration belongs to catalog, which owns prices. A base price is set
- * per variant: {@code /variants/{variantId}/base-price} is the canonical route, like a variant's logistics and stock
- * policy; {@code /skus/{sku}/base-price} (a SKU code, normalised) still works and is marked deprecated.
+ * A product's storefront listing in the back office: its SEO content and its publication. Existing publication URLs are
+ * preserved. There is no base price to set any more (kltn-docs 13 BR-04, team plan 5-3): a variant has no price, and a
+ * customer's own SKU is priced by the customer's internal price list ({@code /api/v1/catalog/customer-prices}).
  */
 @RestController
 @RequestMapping("/api/v1/products/{productId}")
@@ -46,57 +45,6 @@ class CatalogManagementController {
                                 r.slug(),
                                 r.seoTitle(),
                                 r.seoDescription())));
-    }
-
-    @PutMapping("/variants/{variantId}/base-price")
-    @Operation(summary = "Set the base price of a variant on sale; quote the listing revision")
-    @RequiresPermission(resource = "product-products", action = Action.UPDATE)
-    public ApiResponse<ListingResponse> priceOfVariant(
-            @PathVariable UUID productId,
-            @PathVariable UUID variantId,
-            @Valid @RequestBody SetBasePriceRequest r,
-            @AuthenticatedUser CurrentUser user) {
-        return price(productId, service.skuOfVariant(productId, variantId), r, user);
-    }
-
-    @GetMapping("/variants/{variantId}/base-price")
-    @Operation(summary = "The base and effective price of a variant on sale")
-    @RequiresPermission(resource = "product-products", action = Action.READ)
-    public ApiResponse<SkuPriceResponse> priceOfVariant(
-            @PathVariable UUID productId, @PathVariable UUID variantId) {
-        return price(productId, service.skuOfVariant(productId, variantId));
-    }
-
-    /** Takes the SKU code, in any case ({@code cup-12oz} is {@code CUP-12OZ}). */
-    @PutMapping("/skus/{sku}/base-price")
-    @Operation(summary = "Deprecated: use /variants/{variantId}/base-price (sku is the SKU code, any case)",
-            deprecated = true)
-    @RequiresPermission(resource = "product-products", action = Action.UPDATE)
-    public ApiResponse<ListingResponse> price(
-            @PathVariable UUID productId,
-            @PathVariable String sku,
-            @Valid @RequestBody SetBasePriceRequest r,
-            @AuthenticatedUser CurrentUser user) {
-        return ApiResponse.ok(
-                mapper.toResponse(
-                        service.price(
-                                productId,
-                                sku,
-                                r.revision(),
-                                mapper.toPrice(r),
-                                user == null || user.userId() == null
-                                        ? "system"
-                                        : user.userId().toString())));
-    }
-
-    /** Takes the SKU code, in any case ({@code cup-12oz} is {@code CUP-12OZ}). */
-    @GetMapping("/skus/{sku}/base-price")
-    @Operation(summary = "Deprecated: use /variants/{variantId}/base-price (sku is the SKU code, any case)",
-            deprecated = true)
-    @RequiresPermission(resource = "product-products", action = Action.READ)
-    public ApiResponse<SkuPriceResponse> price(
-            @PathVariable UUID productId, @PathVariable String sku) {
-        return ApiResponse.ok(mapper.toResponse(service.price(productId, sku)));
     }
 
     @PostMapping("/publication")

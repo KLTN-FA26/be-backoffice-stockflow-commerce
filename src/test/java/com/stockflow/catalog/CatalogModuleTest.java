@@ -40,8 +40,6 @@ class CatalogModuleTest {
     @DisplayName("catalog starts and answers through its api with the other modules absent")
     void bootsInIsolation() {
         // Reads the customer and pricing tables: a customer nobody knows is refused, not priced at zero.
-        assertThatThrownBy(() -> catalog.priceSchedule(java.util.UUID.randomUUID(), "NO-SUCH-SKU"))
-                .isInstanceOf(BusinessException.class);
         assertThatThrownBy(() -> catalog.customerPrice(java.util.UUID.randomUUID(), "NO-SUCH-SKU"))
                 .isInstanceOf(BusinessException.class);
     }

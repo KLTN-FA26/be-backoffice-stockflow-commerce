@@ -59,6 +59,13 @@ public interface CustomerSkus {
     /** {@link #ownerOf} of each of {@code skus} in one read, by SKU as stored; ordinary and unknown SKUs are absent. */
     java.util.Map<String, UUID> ownersOf(java.util.Collection<String> skus);
 
+    /**
+     * Of {@code skus}, those that are {@code customerId}'s own and ACTIVE, in one read bounded by the SKUs asked: what a
+     * customer may be told about (kltn-docs 13 BR-01, BR-02). Codes as stored; unknown, other customers' and retired
+     * SKUs are absent.
+     */
+    java.util.Set<String> activeOwnedBy(UUID customerId, java.util.Collection<String> skus);
+
     /** The customer's own SKUs, of one product when {@code productId} is not null. */
     List<CustomerSku> ownedBy(UUID customerId, UUID productId);
 }

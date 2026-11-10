@@ -46,8 +46,6 @@ public enum ErrorCode {
     CUSTOMER_PRICE_NOT_FOUND("This customer has no own price for the SKU", 404),
     /** P7: a customer group (customer.segment) that does not exist. */
     SEGMENT_NOT_FOUND("Customer group not found", 404),
-    SEGMENT_PRICE_NOT_FOUND("This customer group has no price for the SKU", 404),
-    CATALOG_PRICE_AMBIGUOUS("More than one selling price has the same priority", 409),
     MALFORMED_REQUEST("The request body could not be read", 400),
     /** SCRUM-243: the units of a return do not add up (received, accepted and rejected, where they went, how made good). */
     RETURN_QUANTITIES_INVALID("The quantities of this return do not add up", 400),

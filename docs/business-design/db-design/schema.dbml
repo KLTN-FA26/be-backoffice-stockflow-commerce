@@ -972,11 +972,6 @@ Enum fulfillment.waybill_import_row_outcome {
   ERROR
 }
 
-Enum catalog.promotion_type {
-  PERCENTAGE
-  FIXED_AMOUNT
-}
-
 Enum chat.conversation_status {
   OPEN
   ASSIGNED
@@ -1405,7 +1400,6 @@ Table product.variant_sales_units [headercolor: #2E86AB] {
   id                uuid [pk]
   variant_id        uuid [not null]
   uom_conversion_id uuid [not null]
-  price             decimal(18,2)
   version           bigint [not null, default: 0]
   created_at        timestamptz [not null, default: `now()`]
   created_by        varchar(100)
@@ -4324,8 +4318,6 @@ Table catalog.catalog_entry [headercolor: #1B998B] {
   title            varchar(300) [not null]
   slug             varchar(200) [not null, unique]
   description      text
-  price            decimal(18,2)
-  currency         varchar(3) [not null, default: 'VND']
   atp              int
   published        boolean [not null, default: false]
   seo_title        varchar(300)
@@ -4370,22 +4362,6 @@ Table catalog.customer_price_tier [headercolor: #1B998B] {
   }
 }
 
-Table catalog.pricing_rule [headercolor: #1B998B] {
-  id               uuid [pk]
-  name             varchar(200) [not null]
-  sku              varchar(64)
-  segment_id       uuid
-  price            decimal(18,2) [not null]
-  currency         varchar(3) [not null, default: 'VND']
-  priority         int [not null, default: 0]
-  active           boolean [not null, default: true]
-  version          bigint [not null, default: 0]
-  created_at       timestamptz [not null]
-  created_by       varchar(100)
-  last_modified_at timestamptz
-  last_modified_by varchar(100)
-}
-
 Table catalog.product_listing [headercolor: #1B998B] {
   product_id                uuid [pk]
   slug                      varchar(255) [not null, unique]
@@ -4401,22 +4377,6 @@ Table catalog.product_listing [headercolor: #1B998B] {
   published_seo_description text
   last_attempt_at           timestamptz
   search_document           tsvector [note: 'generated: (setweight(to_tsvector(\'simple\'::regconfig, catalog.immutable_unaccent((COALESCE(published_title, \'\'::character varying))::text)), \'A\'::"char") || setweight(to_tsvector(\'simple\'::regconfig, catalog.immutable_unaccent(COALESCE(published_description, \'\'::text))), \'C\'::"char"))']
-}
-
-Table catalog.promotion [headercolor: #1B998B] {
-  id               uuid [pk]
-  code             varchar(64) [not null, unique]
-  name             varchar(200) [not null]
-  type             catalog.promotion_type [not null]
-  value            decimal(18,2) [not null]
-  starts_at        timestamptz
-  ends_at          timestamptz
-  active           boolean [not null, default: true]
-  version          bigint [not null, default: 0]
-  created_at       timestamptz [not null]
-  created_by       varchar(100)
-  last_modified_at timestamptz
-  last_modified_by varchar(100)
 }
 
 // =============================================================================
@@ -5285,8 +5245,6 @@ Ref: catalog.catalog_entry.sku > product.variants.sku [delete: restrict]
 Ref: catalog.customer_price.customer_id > customer.customer.id [delete: cascade]
 Ref: catalog.customer_price.sku > product.variants.sku [delete: restrict]
 Ref: catalog.customer_price_tier.customer_price_id > catalog.customer_price.id [delete: cascade]
-Ref: catalog.pricing_rule.segment_id > customer.segment.id [delete: restrict]
-Ref: catalog.pricing_rule.sku > product.variants.sku [delete: restrict]
 Ref: catalog.product_listing.product_id > product.products.id
 Ref: chat.conversation.assigned_agent_id > identity.app_user.id
 Ref: chat.conversation.customer_id > customer.customer.id [delete: restrict]
@@ -5482,9 +5440,7 @@ TableGroup catalog_group [color: #1B998B] {
   catalog.catalog_entry
   catalog.customer_price
   catalog.customer_price_tier
-  catalog.pricing_rule
   catalog.product_listing
-  catalog.promotion
 }
 
 TableGroup chat_group [color: #4C93A8] {

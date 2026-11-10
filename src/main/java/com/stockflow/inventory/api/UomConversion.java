@@ -31,6 +31,21 @@ public record UomConversion(
         long version,
         boolean defaultShipping
 ) {
+    /**
+     * The carton of a SKU among its units (kltn-docs 01 BR-03, BR-11): its one active packing unit of more than one
+     * piece - the default shipping one should an older SKU have several. Empty for none, or for several none of which
+     * is the default shipping unit: a SKU is sold by the carton and nothing is guessed. The one rule a quote and the
+     * storefront's stock indicator both count cartons by.
+     */
+    public static java.util.Optional<UomConversion> cartonOf(java.util.Collection<UomConversion> units) {
+        java.util.List<UomConversion> candidates = units.stream()
+                .filter(unit -> unit.active() && !unit.base() && unit.factor() > 1).toList();
+        if (candidates.size() > 1) {
+            candidates = candidates.stream().filter(UomConversion::defaultShipping).toList();
+        }
+        return candidates.size() == 1 ? java.util.Optional.of(candidates.getFirst()) : java.util.Optional.empty();
+    }
+
     /** A unit that is not the default shipping unit. */
     public UomConversion(UUID id, String sku, String unitOfMeasure, int factor, boolean base, BigDecimal weightKg,
                          BigDecimal lengthCm, BigDecimal widthCm, BigDecimal heightCm, boolean defaultPurchase,
