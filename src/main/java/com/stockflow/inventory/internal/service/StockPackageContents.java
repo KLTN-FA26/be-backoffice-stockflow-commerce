@@ -124,7 +124,7 @@ class StockPackageContents {
                     "%s holds %d; it is adjusted whole, not by %d".formatted(carton.lpn(), carton.nominalQty(), delta),
                     List.of(), Map.of("lpn", carton.lpn()));
         }
-        RowChange change = delta > 0 ? restock(carton, rows, delta) : writeOff(carton, rows, missingWhenEmpty, now);
+        RowChange change = delta > 0 ? restockLost(carton, rows, delta) : writeOff(carton, rows, missingWhenEmpty, now);
         if (change.delta() > 0) {
             // Units back in the carton they were counted into: the same receipt, proven by the LPN, so no age is lost.
             // saveMerged tells the FIFO trigger so (V20261017000450), which would otherwise refuse raising an
@@ -137,7 +137,39 @@ class StockPackageContents {
         return List.of(change);
     }
 
-    private static RowChange restock(StockPackage carton, List<StockItem> rows, int units) {
+    /**
+     * A picked carton back into stock whole, at {@code to} (kltn-docs 07 BR-05, 20 §4.6 steps 5-6): its order was
+     * cancelled after the pick. The carton goes CONSUMED → IN_STOCK whole ({@link StockPackage#restock}); its row
+     * follows it and gets its units back, so it is the same carton, LPN and receipt layer it was. Call under the SKU
+     * lock; the carton and then its row are locked here (the global order: carton before stock row).
+     *
+     * @throws BusinessException {@code STOCK_PACKAGE_TAKEN_WHOLE} when {@code units} is not what was counted into
+     *         it; {@code INVALID_STOCK_PACKAGE_TRANSITION} when it is not CONSUMED
+     */
+    public StockItem restock(StockPackageId id, com.stockflow.inventory.internal.domain.StockItemId rowId,
+                             com.stockflow.inventory.internal.domain.LocationId to, int units) {
+        StockPackage carton = stockPackages.findAllByIdForUpdate(List.of(id)).stream().findFirst()
+                .orElseThrow(() -> new IllegalStateException("No stock package " + id.value()));
+        StockItem row = stockItems.findByIdForUpdate(rowId).orElseThrow(() ->
+                new IllegalStateException("Stock row %s of %s vanished".formatted(rowId.value(), carton.lpn())));
+        if (carton.receivedQty() == null || units != carton.receivedQty() || !row.onHand().isZero()) {
+            throw new BusinessException(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE, ("%s comes back into stock whole, %s "
+                    + "unit(s); not %d").formatted(carton.lpn(), carton.receivedQty(), units), List.of(),
+                    Map.of("lpn", carton.lpn()));
+        }
+        carton.restock(to);
+        row.followPackageTo(to);
+        row.putBack(com.stockflow.inventory.internal.domain.Quantity.of(units));
+        // The carton first: saveMerged flushes before its own statement, so the carton stands at its new place before
+        // the caller's ledger line names it there (check_stock_movement_package reads it on insert).
+        stockPackages.save(carton);
+        // Units back in the carton they were counted into: the same receipt layer, so the FIFO trigger is told it is
+        // a merge (V20261017000450), as for any write-up of a carton.
+        stockItems.saveMerged(row);
+        return row;
+    }
+
+    private static RowChange restockLost(StockPackage carton, List<StockItem> rows, int units) {
         if (carton.status() != StockPackageStatus.LOST) {
             throw new BusinessException(ErrorCode.INVALID_STOCK_PACKAGE_TRANSITION,
                     "%s is %s; only a LOST carton is restocked".formatted(carton.lpn(), carton.status()));
