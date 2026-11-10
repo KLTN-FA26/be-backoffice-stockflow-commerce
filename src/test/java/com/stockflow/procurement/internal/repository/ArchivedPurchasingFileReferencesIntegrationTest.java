@@ -12,6 +12,8 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.io.ByteArrayInputStream;
 import java.time.Clock;
@@ -36,10 +38,12 @@ class ArchivedPurchasingFileReferencesIntegrationTest {
     @Autowired ArchivedPurchasingFileReferences references;
     @Autowired FileStorage storage;
     @Autowired JdbcTemplate jdbc;
+    @Autowired PlatformTransactionManager transactions;
 
     @AfterEach
     void removeTheArchiveRowsWritten() {
-        jdbc.update("DELETE FROM platform.legacy_archive WHERE row_data ->> 'archive_test' = 'true'");
+        new TransactionTemplate(transactions).executeWithoutResult(status ->
+                jdbc.update("DELETE FROM platform.legacy_archive WHERE row_data ->> 'archive_test' = 'true'"));
     }
 
     @Test
@@ -103,8 +107,10 @@ class ArchivedPurchasingFileReferencesIntegrationTest {
     /** Writes a row as V20261113000200 archives them; {@code archive_test} marks it for cleanup. */
     private void archive(String sourceTable, String keyField, String key) {
         String json = "{\"" + keyField + "\": \"" + key + "\", \"archive_test\": \"true\"}";
-        jdbc.update("INSERT INTO platform.legacy_archive (source_table, row_id, row_data) VALUES (?, gen_random_uuid(), "
-                + "?::jsonb)", sourceTable, json);
+        // Hikari runs with auto-commit off: without a transaction nothing is ever committed.
+        new TransactionTemplate(transactions).executeWithoutResult(status ->
+                jdbc.update("INSERT INTO platform.legacy_archive (source_table, row_id, row_data) VALUES (?, "
+                        + "gen_random_uuid(), ?::jsonb)", sourceTable, json));
         assertThat(jdbc.queryForObject("SELECT count(*) FROM platform.legacy_archive WHERE source_table = ? AND "
                 + "row_data ->> ? = ?", Integer.class, sourceTable, keyField, key)).as("the row is there").isEqualTo(1);
     }

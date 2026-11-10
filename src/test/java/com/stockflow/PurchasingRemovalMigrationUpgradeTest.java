@@ -430,7 +430,7 @@ class PurchasingRemovalMigrationUpgradeTest {
                 RawSql.update(db, "SET session_replication_role = replica");
                 RawSql.update(db, "INSERT INTO ordering.production_order_line (id, production_order_id, order_line_id, "
                         + "sku, cartons, units_per_carton, design_snapshot_id, print_file_checksum) VALUES "
-                        + "(gen_random_uuid(), md5('prod')::uuid, md5('ol')::uuid, 'PMG-D', 1, 50, md5('snap')::uuid, "
+                        + "(gen_random_uuid(), md5('prod')::uuid, md5('ol2')::uuid, 'PMG-D', 1, 50, md5('snap')::uuid, "
                         + "repeat('d', 64))");
                 RawSql.update(db, "SET session_replication_role = DEFAULT");
                 assertThat(RawSql.text(db, "SELECT inventory.item_in_use(id, sku)::text FROM inventory.inventory_items "
