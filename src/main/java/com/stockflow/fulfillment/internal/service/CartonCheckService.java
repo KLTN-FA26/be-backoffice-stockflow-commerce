@@ -2,7 +2,6 @@ package com.stockflow.fulfillment.internal.service;
 
 import com.stockflow.common.api.FieldError;
 import com.stockflow.common.api.PageResponse;
-import com.stockflow.common.domain.Sku;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
@@ -28,8 +27,6 @@ import com.stockflow.fulfillment.internal.repository.PackageJpaRepository;
 import com.stockflow.fulfillment.internal.repository.PickJpaRepository;
 import com.stockflow.fulfillment.internal.repository.ShipmentJpaRepository;
 import com.stockflow.identity.api.IdentityService;
-import com.stockflow.inventory.api.CartonSpec;
-import com.stockflow.inventory.api.InventoryControlService;
 import com.stockflow.order.api.OrderHoldState;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
@@ -39,7 +36,6 @@ import com.stockflow.payment.api.PaymentService;
 import com.stockflow.warehouse.api.WarehouseService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
@@ -99,36 +95,31 @@ class CartonCheckService implements CartonChecks {
     private final ShipmentJpaRepository shipments;
     private final CartonCheckStore store;
     private final OrderService orders;
-    private final InventoryControlService itemControls;
     private final PaymentService payments;
     private final IdentityService identities;
     private final WarehouseService warehouses;
     private final ShipmentTimeline timeline;
     private final Clock clock;
-    private final int dimDivisor;
+    /** The carton spec, the volumetric divisor, and whether a load plan holds a carton. */
+    private final CartonMeasures measures;
 
     @SuppressWarnings("java:S107")
     CartonCheckService(PickJpaRepository picks, PackJpaRepository packs, PackageJpaRepository packages,
                        ShipmentJpaRepository shipments, CartonCheckStore store, OrderService orders,
-                       InventoryControlService itemControls, PaymentService payments, IdentityService identities,
-                       WarehouseService warehouses, ShipmentTimeline timeline, Clock clock,
-                       @Value("${stockflow.fulfillment.packing.dim-divisor:6000}") int dimDivisor) {
-        if (dimDivisor <= 0) {
-            throw new IllegalArgumentException("stockflow.fulfillment.packing.dim-divisor must be positive");
-        }
+                       CartonMeasures measures, PaymentService payments, IdentityService identities,
+                       WarehouseService warehouses, ShipmentTimeline timeline, Clock clock) {
         this.picks = picks;
         this.packs = packs;
         this.packages = packages;
         this.shipments = shipments;
         this.store = store;
         this.orders = orders;
-        this.itemControls = itemControls;
+        this.measures = measures;
         this.payments = payments;
         this.identities = identities;
         this.warehouses = warehouses;
         this.timeline = timeline;
         this.clock = clock;
-        this.dimDivisor = dimDivisor;
     }
 
     // ------------------------------------------------------------------ the queue
@@ -239,8 +230,8 @@ class CartonCheckService implements CartonChecks {
         requireWorkable(ctx.order());
         CartonCheck check = load(ctx);
         check.requireWorkable(actor.userId(), isManager(actor));
-        List<CartonCheck.Carton> labeled = check.label(lpns, specs(check.cartons()), dimDivisor, actor.userId(),
-                clock.instant());
+        List<CartonCheck.Carton> labeled = check.label(lpns, specs(check.cartons()), measures.divisor(),
+                actor.userId(), clock.instant());
         if (!labeled.isEmpty()) {
             // 08 BR-04, 17 BR-12, BR-16: the first label locks the order, under its row lock, after the pick's. A
             // cancellation that got the order's lock first is refused here (ORDER_CANCELLED) and nothing is labelled.
@@ -258,7 +249,8 @@ class CartonCheckService implements CartonChecks {
         check.requireReprintable(actor.userId(), isManager(actor));
         CartonCheck.Carton carton = check.carton(lpn).orElse(null);
         CartonCheck.Spec spec = carton == null ? null : specs(List.of(carton)).get(carton.sku());
-        CartonCheck.Carton reprinted = check.reprint(lpn, spec, dimDivisor, fromVersion);
+        boolean planned = carton != null && carton.stored() && measures.planned(carton.id());
+        CartonCheck.Carton reprinted = check.reprint(lpn, spec, measures.divisor(), planned, fromVersion);
         store.save(check, ctx.pack());
         log.info("Order {}: label of carton {} printed again, version {}", ctx.pick().getOrderNumber(),
                 reprinted.lpn(), reprinted.labelVersion());
@@ -447,20 +439,9 @@ class CartonCheckService implements CartonChecks {
         }
     }
 
-    /**
-     * The carton spec of each SKU of these cartons, as the label wants it (08 §4.3 step 5, 01 BR-03). A SKU with no
-     * carton unit is missing; one whose unit declares no size or weight is there, not measured.
-     */
+    /** The carton spec of each SKU of these cartons ({@link CartonMeasures#specs}). */
     private Map<String, CartonCheck.Spec> specs(Collection<CartonCheck.Carton> cartons) {
-        Map<String, CartonCheck.Spec> specs = new HashMap<>();
-        cartons.stream().map(CartonCheck.Carton::sku).distinct().forEach(sku -> itemControls.cartonSpec(new Sku(sku))
-                .ifPresent(spec -> specs.put(sku, toSpec(spec))));
-        return specs;
-    }
-
-    private static CartonCheck.Spec toSpec(CartonSpec spec) {
-        return new CartonCheck.Spec(spec.lengthCm(), spec.widthCm(), spec.heightCm(), spec.weightKg(),
-                spec.rotatable());
+        return measures.specs(cartons.stream().map(CartonCheck.Carton::sku).toList());
     }
 
     private static Map<UUID, Integer> closedUnits(OrderSummary order) {

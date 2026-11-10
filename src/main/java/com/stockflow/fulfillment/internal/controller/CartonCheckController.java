@@ -123,10 +123,11 @@ class CartonCheckController {
     }
 
     /**
-     * A torn or lost label printed again (08 BR-08): its version goes up and the old label is void. Only the worker who
-     * started the session or a warehouse manager (BR-06), also once it is completed. Send {@code fromVersion}, the version on the label being
-     * replaced: a retry once the carton is past it answers 200 with nothing changed (an {@code Idempotency-Key} does the
-     * same). Without it every call is a new version.
+     * A torn or lost label printed again (08 BR-08): its version goes up and the old label is void; its size and weight
+     * follow the carton spec as it is now unless a load plan or a vehicle holds the carton. Only the worker who started
+     * the session or a warehouse manager (BR-06), also once it is completed. Send {@code fromVersion}, the version on
+     * the label being replaced: a retry once the carton is past it answers 200 with nothing changed (an
+     * {@code Idempotency-Key} does the same). Without it every call is a new version.
      */
     @PostMapping("/tasks/{taskId}/cartons/{lpn}/label-reprint")
     @RequiresPermission(resource = FulfillmentResources.PACKING, action = Action.UPDATE)

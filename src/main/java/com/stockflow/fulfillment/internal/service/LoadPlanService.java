@@ -126,6 +126,8 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
     /** What a parcel holds: a carton's pick line or a repack parcel's lines (4C-6). */
     private final com.stockflow.fulfillment.internal.repository.ParcelContents packageLines;
     private final com.stockflow.fulfillment.internal.repository.DispatchLoadShipmentJpaRepository loadMembers;
+    /** A labelled carton takes its SKU's corrected carton spec as it joins a plan (4C-6, 08 edge case). */
+    private final CartonMeasures cartonMeasures;
     private final Clock clock;
     private final Duration budget;
     private final Duration wallLimit;
@@ -148,7 +150,7 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
                     com.stockflow.fulfillment.internal.repository.PickJpaRepository picks,
                     com.stockflow.fulfillment.internal.repository.ParcelContents packageLines,
                     com.stockflow.fulfillment.internal.repository.DispatchLoadShipmentJpaRepository loadMembers,
-                    Clock clock,
+                    CartonMeasures cartonMeasures, Clock clock,
                     @Value("${stockflow.fulfillment.load-planning.solver-budget:PT5S}") Duration budget,
                     @Value("${stockflow.fulfillment.load-planning.solver-wall-limit:PT12S}") Duration wallLimit,
                     PlatformTransactionManager transactionManager) {
@@ -173,6 +175,7 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
         this.picks = picks;
         this.packageLines = packageLines;
         this.loadMembers = loadMembers;
+        this.cartonMeasures = cartonMeasures;
         this.clock = clock;
         this.budget = budget;
         this.wallLimit = wallLimit == null ? LoadPlanRequest.DEFAULT_WALL_LIMIT : wallLimit;
@@ -422,6 +425,9 @@ class LoadPlanService implements LoadPlans, LoadPlanReleases {
             free.forEach(p -> chosen.put(p.getId(), id));
             taken.addAll(free);
         }
+        // 08 edge case: a carton spec corrected after the check applies when the vehicle is planned. Under the tasks'
+        // and shipments' locks, before the plan holds the cartons (from then tg_package_in_load_plan freezes them).
+        cartonMeasures.refreshForPlanning(taken);
         LoadPlanParcels.requireMeasured(parcels.describe(taken).values());
         List<UUID> types = typeIds == null ? plan.vehicleTypeIds() : typeIds;
         requireUsableTypes(types);
