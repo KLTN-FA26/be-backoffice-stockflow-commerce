@@ -10,7 +10,6 @@ import com.stockflow.order.api.CancellationFee;
 import com.stockflow.order.api.CancellationReasonCode;
 import com.stockflow.order.api.HoldReason;
 import com.stockflow.order.api.OrderStatus;
-import com.stockflow.order.api.PaymentTerm;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -39,7 +38,6 @@ class OrderAwaitingStockTest {
     private static Order confirmed() {
         Order order = Order.draft(OrderNumber.of(LocalDate.of(2026, 11, 9), 46), UUID.randomUUID(), UUID.randomUUID(),
                 List.of(Order.line(new Sku("CUP-12OZ-ACME"), 1_000, Money.vnd(2_000), null)), NOW);
-        order.applyTerms(PaymentTerm.PREPAID, null);
         order.sendContract(SALES, NOW);
         order.contractSigned(false, false, SALES, NOW);
         order.chooseShippingWarehouse(HCM, false, SALES, NOW);
@@ -91,7 +89,6 @@ class OrderAwaitingStockTest {
 
         Order pending = Order.draft(OrderNumber.of(LocalDate.of(2026, 11, 9), 48), UUID.randomUUID(),
                 UUID.randomUUID(), List.of(Order.line(new Sku("CUP-12OZ-ACME"), 1_000, Money.vnd(2_000), null)), NOW);
-        pending.applyTerms(PaymentTerm.PREPAID, null);
         pending.sendContract(SALES, NOW);
         pending.contractSigned(false, true, SALES, NOW);
         assertThat(pending.awaitStock(MANAGER, NOW)).as("PENDING_PAYMENT: not confirmed yet").isFalse();

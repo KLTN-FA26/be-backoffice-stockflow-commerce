@@ -11,7 +11,6 @@ import com.stockflow.common.security.Role;
 import com.stockflow.common.storage.FileUpload;
 import com.stockflow.common.storage.IncomingFiles;
 import com.stockflow.order.api.FeeKind;
-import com.stockflow.order.api.PaymentTerm;
 import com.stockflow.order.internal.domain.Order;
 import com.stockflow.order.internal.domain.OrderFee;
 import com.stockflow.order.internal.domain.OrderLine;
@@ -109,7 +108,6 @@ class SalesContractIntegrationTest {
                     List.of(line), Instant.now());
             order.attachFees(List.of(OrderFee.of(Identifiers.newId(), FeeKind.SHIPPING_FEE, null,
                     Money.vnd(300_000), BigDecimal.TEN)));
-            order.applyTerms(PaymentTerm.PREPAID, null, null, null);
             return orders.save(order).id().value();
         });
     }

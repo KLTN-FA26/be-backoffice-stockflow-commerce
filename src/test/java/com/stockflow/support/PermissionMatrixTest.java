@@ -60,7 +60,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       The handler is invoked through its Spring proxy with the role's real authorities, so a request body that
  *       would fail validation (400) cannot hide a missing guard.</li>
  *   <li><b>Can a CUSTOMER reach another customer's data?</b> ({@link #aCustomerCannotReachAnotherCustomersData})
- *       The CUSTOMER role holds a handful of staff-looking permissions (orders, designs, customers, receivables) and
+ *       The CUSTOMER role holds a handful of staff-looking permissions (orders, designs, customers, installments) and
  *       its data scope is ALL, so the permission aspect filters nothing: each handler must do its own owner check.
  *       Every such handler is called with a CUSTOMER token and the ids of a <em>different</em> customer's real rows and
  *       must answer 403 or 404 - or be on {@link #OWN_DATA_ONLY} with a reason, in which case its answer must not
@@ -91,8 +91,8 @@ class PermissionMatrixTest {
                     + "the token; no customer id is taken from the request)"),
             Map.entry("GET /api/v1/orders/me", "the caller's own orders, selected by the customer profile of the token"),
             Map.entry("GET /api/v1/returns/me", "the caller's own returns, selected by the customer profile of the token"),
-            Map.entry("GET /api/v1/orders/payment-terms", "payment terms offered to the caller's own customer profile"),
-            Map.entry("GET /api/v1/receivables/me", "the caller's own receivables, selected by the customer profile of the token"),
+            Map.entry("GET /api/v1/orders/credit-position/me", "the caller's own credit, selected by the customer profile of "
+                    + "the token (4B-10: replaces GET /orders/payment-terms)"),
             Map.entry("GET /api/v1/installments/me", "the caller's own installments, selected by the customer profile of the "
                     + "token (4B-6)"),
             Map.entry("GET /api/v1/notifications/me", "the caller's own inbox: every query is recipient_id = the token's subject"),
@@ -424,7 +424,7 @@ class PermissionMatrixTest {
     @Autowired TransactionTemplate tx;
     @Autowired EntityManager entityManager;
 
-    UUID attackerUser, victimUser, victimCustomer, victimAddress, victimOrder, victimDesign, victimReceivable, victimQuote,
+    UUID attackerUser, victimUser, victimCustomer, victimAddress, victimOrder, victimDesign, victimQuote,
             victimProject;
 
     @BeforeEach
@@ -436,7 +436,6 @@ class PermissionMatrixTest {
         victimAddress = Identifiers.newId();
         victimOrder = Identifiers.newId();
         victimDesign = Identifiers.newId();
-        victimReceivable = Identifiers.newId();
         victimQuote = Identifiers.newId();
         victimProject = Identifiers.newId();
         UUID snapshot = Identifiers.newId();
@@ -463,9 +462,6 @@ class PermissionMatrixTest {
                     victimOrder, "SO-20991231-%06d".formatted(ThreadLocalRandom.current().nextInt(1_000_000)), victimCustomer, UUID.randomUUID());
             jdbc.update("INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency) VALUES (?, ?, 'TABLE-OAK-160', 1, 1000, 'VND')",
                     Identifiers.newId(), victimOrder);
-            jdbc.update("""
-                    INSERT INTO payment.receivable (id, order_id, customer_id, amount, currency, issued_at, due_date, status)
-                    VALUES (?, ?, ?, 1000, 'VND', NOW(), CURRENT_DATE + 30, 'OPEN')""", victimReceivable, victimOrder, victimCustomer);
             // The victim's own quote, sent to them (SCRUM-448).
             int n = ThreadLocalRandom.current().nextInt(1_000_000);
             jdbc.update("""
@@ -516,7 +512,6 @@ class PermissionMatrixTest {
                 case "addressId" -> victimAddress;
                 case "orderId" -> victimOrder;
                 case "designId" -> victimDesign;
-                case "receivableId" -> victimReceivable;
                 case "quoteId" -> victimQuote;
                 case "id" -> h.template().startsWith("/api/v1/designs") ? victimDesign
                         : h.template().startsWith("/api/v1/design-projects") ? victimProject
@@ -594,7 +589,7 @@ class PermissionMatrixTest {
             int status = Integer.parseInt(answer.substring(0, 3));
             if (OWN_DATA_ONLY.containsKey(h.key())) {
                 if (status >= 500) problems.add(h.key() + " answered " + status);
-                for (UUID other : List.of(victimCustomer, victimAddress, victimOrder, victimDesign, victimReceivable,
+                for (UUID other : List.of(victimCustomer, victimAddress, victimOrder, victimDesign,
                         victimQuote, victimProject)) {
                     if (answer.contains(other.toString())) problems.add(h.key() + " (own-data-only) exposed another customer's id " + other);
                 }

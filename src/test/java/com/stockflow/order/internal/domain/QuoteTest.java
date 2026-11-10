@@ -4,7 +4,6 @@ import com.stockflow.common.domain.Money;
 import com.stockflow.common.domain.Sku;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
-import com.stockflow.order.api.PaymentTerm;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
@@ -53,17 +52,17 @@ class QuoteTest {
     }
 
     private static Quote.Offer offer(QuoteLine... lines) {
-        return new Quote.Offer(PaymentTerm.DEPOSIT, new BigDecimal("30"), VALID_UNTIL, "Net of VAT", List.of(lines));
+        return new Quote.Offer(VALID_UNTIL, "Net of VAT", List.of(lines));
     }
 
     @Test
     void theRequestedDeliveryDateIsPartOfTheOfferAndOnlyADraftChangesIt() {
         java.time.LocalDate asked = java.time.LocalDate.of(2026, 12, 15);
         Quote quote = Quote.draft(UUID.randomUUID(), "QT-20261014-0002", UUID.randomUUID(), UUID.randomUUID(),
-                new Quote.Offer(PaymentTerm.DEPOSIT, new BigDecimal("30"), VALID_UNTIL, "Net of VAT", asked,
+                new Quote.Offer(VALID_UNTIL, "Net of VAT", asked,
                         List.of(line(1, 20))));
         assertThat(quote.offer().requestedDeliveryDate()).isEqualTo(asked);
-        // The old five-argument offer is one without a date.
+        // The three-argument offer is one without a date.
         assertThat(offer(line(1, 20)).requestedDeliveryDate()).isNull();
 
         quote.send(sales, NOW);
@@ -74,7 +73,7 @@ class QuoteTest {
         // Changes requested, reopened: the next revision is a draft again, Sales may move the date.
         quote.requestChanges("Need it earlier", customerUser, NOW);
         quote.reopen();
-        quote.revise(new Quote.Offer(PaymentTerm.DEPOSIT, new BigDecimal("30"), VALID_UNTIL, "Net of VAT",
+        quote.revise(new Quote.Offer(VALID_UNTIL, "Net of VAT",
                 asked.minusDays(7), List.of(line(1, 20))));
         assertThat(quote.offer().requestedDeliveryDate()).isEqualTo(asked.minusDays(7));
     }
@@ -150,10 +149,6 @@ class QuoteTest {
                 .isEqualTo(ErrorCode.VALIDATION_FAILED);
         assertThatThrownBy(() -> offer(line(1, 20), line(2, 30))).as("one line per SKU (14 BR-22)")
                 .extracting(QuoteTest::code).isEqualTo(ErrorCode.VALIDATION_FAILED);
-        assertThatThrownBy(() -> new Quote.Offer(PaymentTerm.PREPAID, new BigDecimal("30"), VALID_UNTIL, null,
-                List.of(line(1, 20)))).as("a deposit share on a prepaid quote").isInstanceOf(BusinessException.class);
-        assertThatThrownBy(() -> new Quote.Offer(PaymentTerm.DEPOSIT, new BigDecimal("100"), VALID_UNTIL, null,
-                List.of(line(1, 20)))).isInstanceOf(BusinessException.class);
     }
 
     @Test
@@ -357,10 +352,10 @@ class QuoteTest {
         QuoteFee plate = new QuoteFee(UUID.randomUUID(), com.stockflow.order.api.FeeKind.PLATE_FEE,
                 new Sku("LY12-ACME-01"), null, "STANDARD", new BigDecimal("10"));
         Quote unpricedFee = Quote.draft(UUID.randomUUID(), "QT-9", UUID.randomUUID(), UUID.randomUUID(),
-                new Quote.Offer(PaymentTerm.PREPAID, null, VALID_UNTIL, null, null, List.of(taxed), List.of(plate)));
+                new Quote.Offer(VALID_UNTIL, null, null, List.of(taxed), List.of(plate)));
         assertThatThrownBy(() -> unpricedFee.send(sales, NOW)).extracting(QuoteTest::code)
                 .isEqualTo(ErrorCode.QUOTE_NOT_PRICED);
-        unpricedFee.revise(new Quote.Offer(PaymentTerm.PREPAID, null, VALID_UNTIL, null, null, List.of(taxed),
+        unpricedFee.revise(new Quote.Offer(VALID_UNTIL, null, null, List.of(taxed),
                 List.of(new QuoteFee(plate.id(), plate.kind(), plate.sku(), Money.vnd(0), "STANDARD",
                         new BigDecimal("10")))));
         unpricedFee.send(sales, NOW);
@@ -371,11 +366,11 @@ class QuoteTest {
     void feeLinesAreOneShippingFeeAndOnePlateFeePerSkuOnTheQuote() {
         QuoteFee shipping = new QuoteFee(UUID.randomUUID(), com.stockflow.order.api.FeeKind.SHIPPING_FEE, null,
                 Money.vnd(300_000), "STANDARD", new BigDecimal("10"));
-        assertThatThrownBy(() -> new Quote.Offer(PaymentTerm.PREPAID, null, VALID_UNTIL, null, null,
+        assertThatThrownBy(() -> new Quote.Offer(VALID_UNTIL, null, null,
                 List.of(line(1, 20)), List.of(shipping, new QuoteFee(UUID.randomUUID(), shipping.kind(), null,
                         Money.vnd(1), "STANDARD", new BigDecimal("10"))))).extracting(QuoteTest::code)
                 .isEqualTo(ErrorCode.VALIDATION_FAILED);
-        assertThatThrownBy(() -> new Quote.Offer(PaymentTerm.PREPAID, null, VALID_UNTIL, null, null,
+        assertThatThrownBy(() -> new Quote.Offer(VALID_UNTIL, null, null,
                 List.of(line(1, 20)), List.of(new QuoteFee(UUID.randomUUID(), com.stockflow.order.api.FeeKind.PLATE_FEE,
                         new Sku("LY16-ACME-01"), null, null, null)))).as("a SKU not on the quote")
                 .extracting(QuoteTest::code).isEqualTo(ErrorCode.VALIDATION_FAILED);

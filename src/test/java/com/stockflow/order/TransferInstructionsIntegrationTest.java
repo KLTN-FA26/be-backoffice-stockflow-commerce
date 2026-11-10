@@ -1,233 +1,200 @@
 package com.stockflow.order;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.security.DataScope;
 import com.stockflow.common.security.Role;
-import com.stockflow.customer.api.CommercialTerm;
 import com.stockflow.customer.api.CustomerService;
-import com.stockflow.customer.api.DepositBalancePolicy;
 import com.stockflow.customer.api.SaveCreditTermsCommand;
 import com.stockflow.order.api.OrderService;
-import com.stockflow.order.api.OrderStatus;
-import com.stockflow.payment.internal.service.ReceivableService;
-import com.stockflow.support.Await;
+import com.stockflow.order.internal.service.SalesContracts;
+import com.stockflow.support.ConfirmedOrders;
+import com.stockflow.support.CustomerSkuRows;
+import com.stockflow.support.IntegrationTest;
+import com.stockflow.support.PostgresContainer;
+import com.stockflow.support.RedisContainer;
 import com.stockflow.support.ReferenceRows;
-import com.stockflow.support.SecuredIntegrationTest;
 import com.stockflow.support.SecuredMvc;
 import com.stockflow.support.TestUsers;
 import com.stockflow.support.WithCurrentUser;
 import jakarta.persistence.EntityManager;
-import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.http.MediaType;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.context.ApplicationContext;
+import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
+import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.ResultActions;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
-import java.time.Duration;
-import java.time.LocalDate;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * SCRUM-193 over HTTP, through the real filter chain: {@code GET /orders/me/{id}/transfer-instructions} tells a customer
- * which account to pay, what to write as the content (the order number, 15 §3) and what is still due now - the
- * prepayment or deposit while unpaid, the balance before delivery, nothing on credit - from what payment's ledger holds.
- * A customer reaches their own orders only (OWN scope).
+ * SCRUM-193 / 4B-6 over HTTP, through the real filter chain: {@code GET /installments/me/{id}/transfer-instructions}
+ * tells a customer which account to pay, what to write as the content (the contract number and the installment, 15 §2)
+ * and what is still due on it; a customer reaches their own installments only (OWN scope).
+ *
+ * <p>Before 4B-10 the instructions were the order's ({@code GET /orders/me/{id}/transfer-instructions}): the
+ * prepayment or deposit while unpaid, the balance before delivery, nothing on credit, read from the money ledger. An
+ * order is now paid by its contract's installments, so each installment carries its own instructions, and what the old
+ * "what is due now" said is now which installment is due: the one on signing to confirm the order, the one before
+ * delivery before the goods leave, nothing for the installment after delivery until the customer chooses to pay it
+ * early. A paid or cancelled installment takes no more money (409 {@code INSTALLMENT_NOT_PAYABLE}) - the old "NONE".</p>
+ *
+ * <p>Runs in the context the secured fulfillment tests share (the scan of a signed contract is not inspected).</p>
  */
-@SecuredIntegrationTest
+@IntegrationTest
+@Import({PostgresContainer.class, RedisContainer.class})
+@AutoConfigureMockMvc
+@TestPropertySource(properties = {"stockflow.security.enabled=true", "stockflow.upload-inspection.enabled=false",
+        "stockflow.catalog.projection-retry-ms=3600000"})
 class TransferInstructionsIntegrationTest {
 
-    private static final String ORDERS = "/api/v1/orders";
-    private static final LocalDate TODAY = LocalDate.now(java.time.ZoneId.of("Asia/Ho_Chi_Minh"));
+    private static final String INSTALLMENTS = "/api/v1/installments";
 
     @Autowired MockMvc mvc;
     @MockitoBean JwtDecoder decoder;
     @Autowired OrderService orders;
     @Autowired CustomerService customers;
-    @Autowired ReceivableService receivables;
+    @Autowired ApplicationContext context;
     @Autowired JdbcTemplate jdbc;
     @Autowired TransactionTemplate tx;
     @Autowired EntityManager entityManager;
-    @Autowired ObjectMapper json;
 
+    private ConfirmedOrders confirmedOrders;
     private UUID user;
     private UUID customer;
-    private UUID accountant;
-    private final List<UUID> placed = new ArrayList<>();
+    private CustomerSkuRows.Issued sku;
 
     @BeforeEach
     void aCustomerWithASignIn() {
+        confirmedOrders = new ConfirmedOrders(context);
         user = tx.execute(s -> ReferenceRows.user(entityManager));
-        accountant = tx.execute(s -> ReferenceRows.user(entityManager));
         customer = Identifiers.newId();
         tx.executeWithoutResult(s -> jdbc.update("""
                 INSERT INTO customer.customer (id, user_id, full_name, email, status, version, created_at)
                 VALUES (?, ?, 'Transfer customer', ?, 'ACTIVE', 0, NOW())""", customer, user,
                 "transfer-" + customer + "@example.com"));
-        customers.addAddress(customer, null, true, new com.stockflow.customer.api.SaveAddressCommand("SHIPPING",
-                "Nguyen Van A", "0901234567", "1 Le Loi", null, "26734", "Ben Nghe", "79", "Ho Chi Minh", "VN", null,
-                true, null));
-        terms(DepositBalancePolicy.BEFORE_DELIVERY);
-    }
-
-    @AfterEach
-    void putTheStockBack() {
-        WithCurrentUser.run(TestUsers.admin(), DataScope.ALL, () -> placed.forEach(id -> {
-            if (orders.findById(id).orElseThrow().status() != OrderStatus.CANCELLED) {
-                orders.cancel(id, "TEST_CLEANUP");
-            }
-        }));
+        sku = CustomerSkuRows.issue(jdbc, tx, entityManager, customer, 50);
     }
 
     private SecuredMvc http() {
         return new SecuredMvc(mvc, decoder);
     }
 
-    private void terms(DepositBalancePolicy policy) {
-        Long version = jdbc.queryForObject("SELECT COALESCE(MAX(version), -1) FROM customer.credit_profile "
-                + "WHERE customer_id = ?", Long.class, customer);
-        customers.saveCreditTerms(new SaveCreditTermsCommand(customer, true, true, true, CommercialTerm.PREPAID,
-                new BigDecimal("30"), new BigDecimal("50000000"), 30, "test terms", accountant,
-                version == null || version < 0 ? null : version, policy));
+    private static SalesContracts.Installment share(String name, String milestone, String percent, Integer dueDays) {
+        return new SalesContracts.Installment(name, milestone, null, new BigDecimal(percent), dueDays, null);
     }
 
-    /** One sofa (12 500 000) on {@code term}; the order's id and number. */
-    private JsonNode place(String term) throws Exception {
-        ResultActions result = http().asCustomer(user, post(ORDERS).contentType(MediaType.APPLICATION_JSON).content("""
-                {"requestId":"%s","customerId":"%s","lines":[{"sku":"SOFA-3S-GREY","quantity":1,"unitPrice":12500000}],
-                 "paymentTerm":"%s"}""".formatted(UUID.randomUUID(), customer, term)));
-        JsonNode body = json.readTree(result.andExpect(status().isCreated()).andReturn().getResponse()
-                .getContentAsString()).get("data");
-        placed.add(UUID.fromString(body.get("orderId").asText()));
-        return body;
+    /** 5 cartons of 50 at 50,000 a piece, no VAT: 12,500,000, with {@code plan}, signed today. */
+    private ConfirmedOrders.Signed signed(SalesContracts.Installment... plan) {
+        return confirmedOrders.signed(customer, List.of(plan), ConfirmedOrders.Line.cartons(sku, 5, 50_000));
     }
 
-    private ResultActions instructions(JsonNode order) throws Exception {
-        return http().asCustomer(user, get(ORDERS + "/me/" + order.get("orderId").asText() + "/transfer-instructions"));
+    private ResultActions instructions(UUID installmentId) throws Exception {
+        return http().asCustomer(user, get(INSTALLMENTS + "/me/" + installmentId + "/transfer-instructions"));
     }
 
-    private void transfer(JsonNode order, long amount) {
-        receivables.recordTransfer(new ReceivableService.RecordTransferCommand(customer, "FT" + UUID.randomUUID()
-                .toString().replace("-", "").substring(0, 12), BigDecimal.valueOf(amount), "VND", TODAY, null, "payment",
-                accountant, List.of(new ReceivableService.OrderPayment(UUID.fromString(order.get("orderId").asText()),
-                BigDecimal.valueOf(amount)))));
-    }
-
-    private OrderStatus statusOf(JsonNode order) {
-        return orders.findById(UUID.fromString(order.get("orderId").asText())).orElseThrow().status();
+    private void transfer(ConfirmedOrders.Signed signed, int seq, long amount) {
+        confirmedOrders.pay(customer, signed.seq(seq), BigDecimal.valueOf(amount));
     }
 
     @Test
-    @DisplayName("a prepaid order: the account, the order number as the content, the whole total due to confirm it")
-    void prepaid() throws Exception {
-        JsonNode order = place("PREPAID");
-        instructions(order).andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.orderId").value(order.get("orderId").asText()))
-                .andExpect(jsonPath("$.data.orderNumber").value(order.get("orderNumber").asText()))
-                .andExpect(jsonPath("$.data.transferReference").value(order.get("orderNumber").asText()))
+    @DisplayName("paid on signing: the account, the contract and installment as the content, the whole total due")
+    void paidOnSigning() throws Exception {
+        ConfirmedOrders.Signed signed = signed(share("On signing", "ON_SIGNING", "100", 0));
+        instructions(signed.seq(1)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.installmentId").value(signed.seq(1).toString()))
+                .andExpect(jsonPath("$.data.contractNumber").value(signed.contractNumber()))
+                .andExpect(jsonPath("$.data.orderNumber").value(signed.orderNumber()))
+                .andExpect(jsonPath("$.data.seq").value(1))
+                .andExpect(jsonPath("$.data.reference").value(signed.contractNumber() + " DOT1"))
                 .andExpect(jsonPath("$.data.bankName").value("DEMO BANK (not a real bank)"))
                 .andExpect(jsonPath("$.data.accountNumber").value("0000000000"))
                 .andExpect(jsonPath("$.data.accountName").value("DEMO STOCKFLOW CO LTD"))
                 .andExpect(jsonPath("$.data.amountDue").value(12500000))
-                .andExpect(jsonPath("$.data.currency").value("VND"))
-                .andExpect(jsonPath("$.data.dueBy").value("TO_CONFIRM"))
-                .andExpect(jsonPath("$.data.dueByNote").isNotEmpty());
+                .andExpect(jsonPath("$.data.currency").value("VND"));
     }
 
     @Test
-    @DisplayName("a partial transfer lowers what is due; once paid in full nothing is due (NONE)")
-    void prepaidPartlyThenFullyPaid() throws Exception {
-        JsonNode order = place("PREPAID");
-        transfer(order, 5_000_000);
-        instructions(order).andExpect(status().isOk()).andExpect(jsonPath("$.data.amountDue").value(7500000))
-                .andExpect(jsonPath("$.data.dueBy").value("TO_CONFIRM"));
-        transfer(order, 7_500_000);
-        instructions(order).andExpect(status().isOk()).andExpect(jsonPath("$.data.amountDue").value(0))
-                .andExpect(jsonPath("$.data.dueBy").value("NONE"));
+    @DisplayName("a partial transfer lowers what is due; once paid in full nothing more is taken (409)")
+    void partlyThenFullyPaid() throws Exception {
+        ConfirmedOrders.Signed signed = signed(share("On signing", "ON_SIGNING", "100", 0));
+        transfer(signed, 1, 5_000_000);
+        instructions(signed.seq(1)).andExpect(status().isOk()).andExpect(jsonPath("$.data.amountDue").value(7500000));
+        transfer(signed, 1, 7_500_000);
+        instructions(signed.seq(1)).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("INSTALLMENT_NOT_PAYABLE"));
     }
 
     @Test
-    @DisplayName("a deposit order paid before delivery: the deposit first, then the balance before the goods leave")
-    void depositThenBalance() throws Exception {
-        JsonNode order = place("DEPOSIT");                                    // 12.5M, deposit 3.75M
-        instructions(order).andExpect(status().isOk()).andExpect(jsonPath("$.data.amountDue").value(3750000))
-                .andExpect(jsonPath("$.data.dueBy").value("TO_CONFIRM"));
-        transfer(order, 3_750_000);
-        Await.until("the deposit confirms the order", Duration.ofSeconds(15), () -> statusOf(order) == OrderStatus.CONFIRMED);
-        instructions(order).andExpect(status().isOk()).andExpect(jsonPath("$.data.amountDue").value(8750000))
-                .andExpect(jsonPath("$.data.dueBy").value("BEFORE_DELIVERY"));
-        transfer(order, 8_750_000);
-        instructions(order).andExpect(status().isOk()).andExpect(jsonPath("$.data.amountDue").value(0))
-                .andExpect(jsonPath("$.data.dueBy").value("NONE"));
+    @DisplayName("a deposit on signing, the rest before delivery: each installment its own content and amount")
+    void depositThenBeforeDelivery() throws Exception {
+        ConfirmedOrders.Signed signed = signed(share("Deposit", "ON_SIGNING", "30", 0),
+                share("Before delivery", "BEFORE_DELIVERY", "70", null));
+        instructions(signed.seq(1)).andExpect(status().isOk()).andExpect(jsonPath("$.data.amountDue").value(3750000));
+        instructions(signed.seq(2)).andExpect(status().isOk()).andExpect(jsonPath("$.data.amountDue").value(8750000))
+                .andExpect(jsonPath("$.data.reference").value(signed.contractNumber() + " DOT2"))
+                .andExpect(jsonPath("$.data.dueDate").doesNotExist());
+        transfer(signed, 1, 3_750_000);
+        instructions(signed.seq(1)).andExpect(status().isConflict());
+        transfer(signed, 2, 8_750_000);
+        instructions(signed.seq(2)).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("INSTALLMENT_NOT_PAYABLE"));
     }
 
     @Test
-    @DisplayName("a deposit order whose balance goes on credit owes only the deposit; nothing after it")
-    void depositWithBalanceOnCredit() throws Exception {
-        terms(DepositBalancePolicy.ON_CREDIT);
-        JsonNode order = place("DEPOSIT");
-        instructions(order).andExpect(status().isOk()).andExpect(jsonPath("$.data.amountDue").value(3750000));
-        transfer(order, 3_750_000);
-        Await.until("the deposit confirms the order", Duration.ofSeconds(15), () -> statusOf(order) == OrderStatus.CONFIRMED);
-        instructions(order).andExpect(status().isOk()).andExpect(jsonPath("$.data.amountDue").value(0))
-                .andExpect(jsonPath("$.data.dueBy").value("NONE"));
+    @DisplayName("paid after delivery: not due yet - no due day - but the customer may pay it early")
+    void afterDelivery() throws Exception {
+        customers.saveCreditTerms(new SaveCreditTermsCommand(customer, new BigDecimal("50000000"), 30, "test terms",
+                confirmedOrders.accountant(), null));
+        ConfirmedOrders.Signed signed = signed(share("After delivery", "AFTER_DELIVERY", "100", 30));
+        instructions(signed.seq(1)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.amountDue").value(12500000))
+                .andExpect(jsonPath("$.data.dueDate").doesNotExist());
     }
 
     @Test
-    @DisplayName("a credit order owes nothing to transfer now")
-    void credit() throws Exception {
-        JsonNode order = place("CREDIT");
-        instructions(order).andExpect(status().isOk()).andExpect(jsonPath("$.data.amountDue").value(0))
-                .andExpect(jsonPath("$.data.dueBy").value("NONE"))
-                .andExpect(jsonPath("$.data.transferReference").value(order.get("orderNumber").asText()));
-    }
-
-    @Test
-    @DisplayName("a cancelled order owes nothing")
+    @DisplayName("a cancelled order's unpaid installments take nothing")
     void cancelled() throws Exception {
-        JsonNode order = place("PREPAID");
-        WithCurrentUser.run(TestUsers.admin(), DataScope.ALL,
-                () -> orders.cancel(UUID.fromString(order.get("orderId").asText()), "TEST"));
-        instructions(order).andExpect(status().isOk()).andExpect(jsonPath("$.data.amountDue").value(0))
-                .andExpect(jsonPath("$.data.dueBy").value("NONE"));
+        ConfirmedOrders.Signed signed = signed(share("On signing", "ON_SIGNING", "100", 0));
+        WithCurrentUser.run(TestUsers.admin(), DataScope.ALL, () -> orders.cancel(signed.orderId(), "TEST"));
+        instructions(signed.seq(1)).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("INSTALLMENT_NOT_PAYABLE"));
     }
 
     @Test
-    @DisplayName("OWN scope: another customer's order, or none, is 404; staff without a profile 404 CUSTOMER_NOT_FOUND; "
-            + "anonymous 401; a role without sales-orders:READ 403")
+    @DisplayName("OWN scope: another customer's installment, or none, is 404; staff without a profile 404 "
+            + "CUSTOMER_NOT_FOUND; anonymous 401; a role without payment-installments:READ 403; Sales reads any")
     void whoMayRead() throws Exception {
         UUID other = tx.execute(s -> ReferenceRows.customer(entityManager));
-        var theirs = orders.placeOrder(new com.stockflow.order.api.PlaceOrderCommand(UUID.randomUUID(), other, null, null,
-                false, List.of(new com.stockflow.order.api.PlaceOrderCommand.Line(
-                        new com.stockflow.common.domain.Sku("SOFA-3S-GREY"), 1,
-                        com.stockflow.common.domain.Money.vnd(12_500_000), null))));
-        placed.add(theirs.orderId());
+        CustomerSkuRows.Issued theirSku = CustomerSkuRows.issue(jdbc, tx, entityManager, other, 50);
+        ConfirmedOrders.Signed theirs = confirmedOrders.signed(other, ConfirmedOrders.Line.cartons(theirSku, 5,
+                50_000));
+        String url = INSTALLMENTS + "/me/" + theirs.seq(1) + "/transfer-instructions";
 
-        http().asCustomer(user, get(ORDERS + "/me/" + theirs.orderId() + "/transfer-instructions"))
-                .andExpect(status().isNotFound()).andExpect(jsonPath("$.errorCode").value("NOT_FOUND"));
-        http().asCustomer(user, get(ORDERS + "/me/" + UUID.randomUUID() + "/transfer-instructions"))
+        http().asCustomer(user, get(url)).andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.errorCode").value("INSTALLMENT_NOT_FOUND"));
+        http().asCustomer(user, get(INSTALLMENTS + "/me/" + UUID.randomUUID() + "/transfer-instructions"))
                 .andExpect(status().isNotFound());
-        http().asRole(Role.SALES_STAFF, UUID.randomUUID(), get(ORDERS + "/me/" + theirs.orderId() + "/transfer-instructions"))
+        http().asRole(Role.SALES_STAFF, UUID.randomUUID(), get(url))
                 .andExpect(status().isNotFound()).andExpect(jsonPath("$.errorCode").value("CUSTOMER_NOT_FOUND"));
-        http().anonymous(get(ORDERS + "/me/" + theirs.orderId() + "/transfer-instructions"))
-                .andExpect(status().isUnauthorized());
-        http().asRole(Role.INVENTORY_PLANNER, UUID.randomUUID(), get(ORDERS + "/me/" + theirs.orderId() + "/transfer-instructions"))
-                .andExpect(status().isForbidden());
+        http().anonymous(get(url)).andExpect(status().isUnauthorized());
+        http().asRole(Role.INVENTORY_PLANNER, UUID.randomUUID(), get(url)).andExpect(status().isForbidden());
+        // 15 §2, 16: Sales sends any customer the details from the back office.
+        http().asRole(Role.SALES_STAFF, UUID.randomUUID(), get(INSTALLMENTS + "/" + theirs.seq(1)
+                + "/transfer-instructions")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.amountDue").value(12500000));
     }
 }

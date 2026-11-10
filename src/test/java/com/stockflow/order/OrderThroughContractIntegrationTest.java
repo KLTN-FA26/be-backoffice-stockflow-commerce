@@ -16,7 +16,6 @@ import com.stockflow.order.api.CancellationReasonCode;
 import com.stockflow.order.api.HoldReason;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
-import com.stockflow.order.api.PaymentTerm;
 import com.stockflow.order.internal.domain.Order;
 import com.stockflow.order.internal.domain.OrderLine;
 import com.stockflow.order.internal.domain.OrderNumber;
@@ -79,7 +78,6 @@ class OrderThroughContractIntegrationTest {
     @Autowired CustomerOrders customerOrders;
     @Autowired CreditHoldService creditHolds;
     @Autowired com.stockflow.order.internal.service.OrderReleases releases;
-    @Autowired com.stockflow.order.internal.service.TransferInstructions transfers;
     @Autowired JdbcTemplate jdbc;
     @Autowired EntityManager entityManager;
     @Autowired TransactionTemplate tx;
@@ -114,13 +112,13 @@ class OrderThroughContractIntegrationTest {
         today = LocalDate.now(VIETNAM);
     }
 
-    /** Credit approved by accounting: allowed, with {@code limit}, 30 days. */
+    /** Credit approved by accounting: {@code limit} and 30 days to pay (4B-10: credit is these two alone). */
     private void credit(long limit) {
         tx.executeWithoutResult(s -> jdbc.update("""
-                INSERT INTO customer.credit_profile (id, customer_id, allow_prepaid, allow_deposit, allow_credit,
-                    default_payment_term, credit_limit, credit_term_days, approved_by, approved_at)
-                VALUES (?, ?, true, false, true, 'PREPAID', ?, 30, ?, NOW())""", Identifiers.newId(), customerId,
-                BigDecimal.valueOf(limit), accountant));
+                INSERT INTO customer.credit_profile (id, customer_id, credit_limit, credit_term_days, approved_by,
+                    approved_at)
+                VALUES (?, ?, ?, 30, ?, NOW())""", Identifiers.newId(), customerId, BigDecimal.valueOf(limit),
+                accountant));
     }
 
     /** A DRAFT order of 20 cartons of 50 at 2,000 a piece with 10% VAT: 2,200,000 with tax - as a converted quote. */
@@ -130,7 +128,6 @@ class OrderThroughContractIntegrationTest {
                     .withCartons(sku.uomConversionId(), 20, 50).withTax(BigDecimal.TEN);
             Order order = Order.draft(OrderNumber.of(today, 700_000 + ThreadLocalRandom.current().nextInt(99_999)),
                     customerId, Identifiers.newId(), List.of(line), Instant.now());
-            order.applyTerms(PaymentTerm.PREPAID, null, null, null);
             return orderRepository.save(order).id().value();
         });
     }
@@ -184,13 +181,8 @@ class OrderThroughContractIntegrationTest {
         assertThatThrownBy(() -> orders.cancelOwn(orderId, customerId, CancellationReasonCode.CUSTOMER_REQUEST, null,
                 null)).as("nothing of a DRAFT order to ask about").extracting(OrderThroughContractIntegrationTest::code)
                 .isEqualTo(ErrorCode.NOT_FOUND);
-        assertThatThrownBy(() -> transfers.of(customerId, orderId))
-                .extracting(OrderThroughContractIntegrationTest::code).isEqualTo(ErrorCode.NOT_FOUND);
 
         SalesContracts.ContractView sent = sent(orderId, List.of(share("All", "ON_SIGNING", "100")));
-        assertThatThrownBy(() -> transfers.of(customerId, orderId))
-                .as("paid by its contract's installments (4B-6)").extracting(OrderThroughContractIntegrationTest::code)
-                .isEqualTo(ErrorCode.ORDER_PAID_BY_CONTRACT);
         assertThat(status(orderId)).isEqualTo(OrderStatus.PENDING_CONTRACT);
         CustomerOrders.Detail mine = customerOrders.myOrder(customerId, orderId);
         assertThat(mine.statusGroup()).isEqualTo(CustomerOrders.StatusGroup.AWAITING_CONTRACT);
@@ -247,10 +239,6 @@ class OrderThroughContractIntegrationTest {
         assertThat(orders.findById(approved).orElseThrow().lifecycle().holdReason()).isEqualTo(HoldReason.CREDIT);
         assertThat(jdbc.queryForObject("SELECT outcome FROM ordering.order_credit_check WHERE order_id = ? ORDER BY "
                 + "checked_at DESC LIMIT 1", String.class, approved)).isEqualTo("OVER_LIMIT");
-        // Its terms are its contract's: refusing credit cancels it, it is not re-termed.
-        assertThatThrownBy(() -> creditHolds.refuse(approved, CreditHoldService.RefusalAction.SWITCH_TO_PREPAID, null,
-                "pay first", accountant)).extracting(OrderThroughContractIntegrationTest::code)
-                .isEqualTo(ErrorCode.VALIDATION_FAILED);
         creditHolds.approve(approved, "Known customer", accountant);
         assertThat(status(approved)).as("approved, it still waits for the deposit on signing")
                 .isEqualTo(OrderStatus.PENDING_PAYMENT);
@@ -258,7 +246,8 @@ class OrderThroughContractIntegrationTest {
         UUID refused = draftOrder();
         signed(refused, sent(refused, List.of(share("After delivery", "AFTER_DELIVERY", "100"))));
         assertThat(status(refused)).isEqualTo(OrderStatus.ON_HOLD);
-        creditHolds.refuse(refused, CreditHoldService.RefusalAction.CANCEL, null, "Too much owed", accountant);
+        // Its terms are its contract's: refusing credit cancels it - there is no other way to re-term it (4B-10).
+        creditHolds.refuse(refused, "Too much owed", accountant);
         assertThat(status(refused)).isEqualTo(OrderStatus.CANCELLED);
         assertThat(orders.findById(refused).orElseThrow().cancellation().reasonCode())
                 .isEqualTo(CancellationReasonCode.CREDIT_REJECTED);

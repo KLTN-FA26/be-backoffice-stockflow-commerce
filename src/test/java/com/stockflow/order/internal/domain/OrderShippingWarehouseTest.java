@@ -5,7 +5,6 @@ import com.stockflow.common.domain.Sku;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.order.api.OrderStatus;
-import com.stockflow.order.api.PaymentTerm;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -32,7 +31,6 @@ class OrderShippingWarehouseTest {
     private static Order confirmed() {
         Order order = Order.draft(OrderNumber.of(LocalDate.of(2026, 11, 9), 9), UUID.randomUUID(), UUID.randomUUID(),
                 List.of(Order.line(new Sku("CUP-12OZ-ACME"), 1_000, Money.vnd(2_000), null)), NOW);
-        order.applyTerms(PaymentTerm.PREPAID, null);
         order.sendContract(SALES, NOW);
         order.contractSigned(false, false, SALES, NOW);
         return order;
@@ -70,7 +68,6 @@ class OrderShippingWarehouseTest {
     void onlyAConfirmedOrderOfAContract() {
         Order waiting = Order.draft(OrderNumber.of(LocalDate.of(2026, 11, 9), 10), UUID.randomUUID(),
                 UUID.randomUUID(), List.of(Order.line(new Sku("CUP-12OZ-ACME"), 1_000, Money.vnd(2_000), null)), NOW);
-        waiting.applyTerms(PaymentTerm.PREPAID, null);
         waiting.sendContract(SALES, NOW);
         waiting.contractSigned(false, true, SALES, NOW);
         assertThatThrownBy(() -> waiting.chooseShippingWarehouse(HCM, false, SALES, NOW))

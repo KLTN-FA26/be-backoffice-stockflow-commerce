@@ -1,8 +1,6 @@
 package com.stockflow.order;
 
 import com.stockflow.common.api.PageResponse;
-import com.stockflow.common.domain.Money;
-import com.stockflow.common.domain.Sku;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
@@ -12,12 +10,15 @@ import com.stockflow.order.api.CancellationReasonCode;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.OrderSummary;
-import com.stockflow.order.api.PlaceOrderCommand;
 import com.stockflow.order.internal.domain.CreditChecks;
 import com.stockflow.order.internal.service.CustomerOrders;
+import com.stockflow.support.ConfirmedOrders;
+import com.stockflow.support.CustomerSkuRows;
 import com.stockflow.support.DemoData;
+import com.stockflow.support.IntegrationTest;
+import com.stockflow.support.PostgresContainer;
+import com.stockflow.support.RedisContainer;
 import com.stockflow.support.ReferenceRows;
-import com.stockflow.support.SecuredIntegrationTest;
 import com.stockflow.support.TestTokens;
 import com.stockflow.support.TestUsers;
 import com.stockflow.support.WithCurrentUser;
@@ -27,8 +28,12 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.context.ApplicationContext;
+import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
+import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -52,13 +57,22 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * scope (a CUSTOMER role, so {@code sales-orders:READ} with scope OWN) against Postgres. Two customers
  * each have a sign-in account and a customer profile of their own; orders belong to the profile, not
  * to the account, which is what the old {@code /orders/me} and the OWN scope had to be reconciled with.
+ *
+ * <p>Since 4B-10 every order here is a contract's, signed and waiting for its installment on signing
+ * ({@link ConfirmedOrders#signed}), of the customer's own SKUs (14 BR-04): a checkout order never leaves
+ * PENDING_PAYMENT any more, and checkout goes with 5-2. The detail has no payment block (the order has no money of its
+ * own; the customer reads its installments), and what a customer owes is their installments
+ * ({@code /installments/me}, 4B-6) - the money ledger's {@code /receivables/me} is gone.</p>
  */
-// Same annotation and mock as InventoryCatalogSecurityIntegrationTest, so the application context is shared.
-@SecuredIntegrationTest
+// The same properties and mock as the secured fulfillment tests, so the application context is shared: signing a
+// contract stores its scan, and no virus scanner runs in tests.
+@IntegrationTest
+@Import({PostgresContainer.class, RedisContainer.class})
+@AutoConfigureMockMvc
+@TestPropertySource(properties = {"stockflow.security.enabled=true", "stockflow.upload-inspection.enabled=false",
+        "stockflow.catalog.projection-retry-ms=3600000"})
 class CustomerOrderPortalIntegrationTest {
 
-    private static final Sku SOFA = new Sku("SOFA-3S-GREY");
-    private static final Sku TABLE = new Sku("TABLE-OAK-160");
     private static final String PRIVATE_NOTE = "private-note-for-staff-eyes-only";
     private static final LocalDate TODAY = LocalDate.now(ZoneId.of("Asia/Ho_Chi_Minh"));
 
@@ -70,6 +84,13 @@ class CustomerOrderPortalIntegrationTest {
     @Autowired JdbcTemplate jdbc;
     @Autowired TransactionTemplate tx;
     @Autowired EntityManager entityManager;
+    @Autowired ApplicationContext context;
+
+    private ConfirmedOrders confirmedOrders;
+    /** A's two SKUs (cartons of 50) and B's one. */
+    private CustomerSkuRows.Issued skuA1;
+    private CustomerSkuRows.Issued skuA2;
+    private CustomerSkuRows.Issued skuB;
 
     private UUID userA;
     private UUID customerA;
@@ -92,16 +113,21 @@ class CustomerOrderPortalIntegrationTest {
         staffUser = tx.execute(s -> ReferenceRows.user(entityManager));
         customerA = customerOf(userA);
         customerB = customerOf(userB);
+        confirmedOrders = new ConfirmedOrders(context);
+        skuA1 = CustomerSkuRows.issue(jdbc, tx, entityManager, customerA, 50);
+        skuA2 = CustomerSkuRows.issue(jdbc, tx, entityManager, customerA, 50);
+        skuB = CustomerSkuRows.issue(jdbc, tx, entityManager, customerB, 50);
 
-        twoLines = place(customerA, new PlaceOrderCommand.Line(SOFA, 1, Money.vnd(12_000_000), null),
-                new PlaceOrderCommand.Line(TABLE, 2, Money.vnd(9_000_000), null));
-        oneLine = place(customerA, new PlaceOrderCommand.Line(SOFA, 1, Money.vnd(12_000_000), null));
-        cancelled = place(customerA, new PlaceOrderCommand.Line(TABLE, 1, Money.vnd(9_000_000), null));
+        // 12M + 18M; 12M; 9M.
+        twoLines = place(customerA, ConfirmedOrders.Line.cartons(skuA1, 1, 240_000),
+                ConfirmedOrders.Line.cartons(skuA2, 2, 180_000));
+        oneLine = place(customerA, ConfirmedOrders.Line.cartons(skuA1, 1, 240_000));
+        cancelled = place(customerA, ConfirmedOrders.Line.cartons(skuA2, 1, 180_000));
         // Cancelled for the customer who asked (4B-5, 17 §4.8: a customer never cancels at once - Sales does).
         WithCurrentUser.run(TestUsers.admin(), DataScope.ALL, () -> orders.cancel(cancelled.orderId(),
                 new com.stockflow.order.api.CancelOrderCommand(CancellationReasonCode.CUSTOMER_REQUEST, PRIVATE_NOTE,
                         null, staffUser)));
-        ofB = place(customerB, new PlaceOrderCommand.Line(SOFA, 1, Money.vnd(12_000_000), null));
+        ofB = place(customerB, ConfirmedOrders.Line.cartons(skuB, 1, 240_000));
     }
 
     @AfterEach
@@ -121,10 +147,11 @@ class CustomerOrderPortalIntegrationTest {
         return id;
     }
 
-    private OrderSummary place(UUID customer, PlaceOrderCommand.Line... lines) {
-        OrderSummary order = orders.placeOrder(new PlaceOrderCommand(UUID.randomUUID(), customer, List.of(lines)));
-        placed.add(order.orderId());
-        return order;
+    /** A contract's order, signed, waiting for its installment on signing: PENDING_PAYMENT. */
+    private OrderSummary place(UUID customer, ConfirmedOrders.Line... lines) {
+        UUID orderId = confirmedOrders.signed(customer, lines).orderId();
+        placed.add(orderId);
+        return orders.findById(orderId).orElseThrow();
     }
 
     /** Signs in as this account with these roles; the permissions and the scope come from the role matrix. */
@@ -174,9 +201,8 @@ class CustomerOrderPortalIntegrationTest {
         tx.executeWithoutResult(s -> {
             jdbc.update("""
                     INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount,
-                                                         currency, placed_at, version, created_at, hold_reason,
-                                                         payment_term, credit_term_days)
-                    VALUES (?, ?, ?, ?, 'ON_HOLD', 1000, 'VND', NOW(), 0, NOW(), 'CREDIT', 'CREDIT', 30)""",
+                                                         currency, placed_at, version, created_at, hold_reason)
+                    VALUES (?, ?, ?, ?, 'ON_HOLD', 1000, 'VND', NOW(), 0, NOW(), 'CREDIT')""",
                     order, orderNumber(), customerA, UUID.randomUUID());
             jdbc.update("""
                     INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency)
@@ -344,21 +370,23 @@ class CustomerOrderPortalIntegrationTest {
                 .andExpect(jsonPath("$.data.status").value("PENDING_PAYMENT"))
                 .andExpect(jsonPath("$.data.statusGroup").value("AWAITING_PAYMENT"))
                 .andExpect(jsonPath("$.data.holdReasonPublic").doesNotExist())
-                .andExpect(jsonPath("$.data.paymentTerm").value("PREPAID"))
+                .andExpect(jsonPath("$.data.paymentTerm").doesNotExist())
                 .andExpect(jsonPath("$.data.total").value(30_000_000))
                 .andExpect(jsonPath("$.data.currency").value("VND"))
                 .andExpect(jsonPath("$.data.deliveryState").value("NOT_SHIPPED"))
-                .andExpect(jsonPath("$.data.payment.status").value("UNPAID"))
-                .andExpect(jsonPath("$.data.payment.paidAmount").value(0))
+                .andExpect(jsonPath("$.data.payment").doesNotExist())
                 .andExpect(jsonPath("$.data.lines.length()").value(2))
-                .andExpect(jsonPath("$.data.lines[?(@.sku == 'TABLE-OAK-160')].quantity").value(2))
-                .andExpect(jsonPath("$.data.lines[?(@.sku == 'TABLE-OAK-160')].lineTotal").value(18_000_000))
+                .andExpect(jsonPath("$.data.lines[?(@.sku == '" + skuA2.sku() + "')].quantity").value(100))
+                .andExpect(jsonPath("$.data.lines[?(@.sku == '" + skuA2.sku() + "')].lineTotal").value(18_000_000))
                 .andExpect(jsonPath("$.data.lines[0].production.state").value("NOT_REQUIRED"))
                 .andExpect(jsonPath("$.data.lines[0].production.goodQuantity").value(0))
                 .andExpect(jsonPath("$.data.lines[1].production.state").value("NOT_REQUIRED"))
-                .andExpect(jsonPath("$.data.timeline.length()").value(1))
-                .andExpect(jsonPath("$.data.timeline[0].status").value("PENDING_PAYMENT"))
-                .andExpect(jsonPath("$.data.timeline[0].statusGroup").value("AWAITING_PAYMENT"))
+                // Sent, then signed (14 §4.3 steps 13-15); the draft before them is Sales' and not shown (17 §5.2).
+                .andExpect(jsonPath("$.data.timeline.length()").value(2))
+                .andExpect(jsonPath("$.data.timeline[0].status").value("PENDING_CONTRACT"))
+                .andExpect(jsonPath("$.data.timeline[0].statusGroup").value("AWAITING_CONTRACT"))
+                .andExpect(jsonPath("$.data.timeline[1].status").value("PENDING_PAYMENT"))
+                .andExpect(jsonPath("$.data.timeline[1].statusGroup").value("AWAITING_PAYMENT"))
                 .andReturn().getResponse().getContentAsString();
 
         // Nothing internal to the shop.
@@ -367,32 +395,20 @@ class CustomerOrderPortalIntegrationTest {
                 .doesNotContain("contactPhone").doesNotContain("customerId");
     }
 
-    private void receivable(UUID customer, UUID order, String orderNumber, int amount) {
-        tx.executeWithoutResult(t -> jdbc.update("""
-                INSERT INTO payment.receivable (id, order_id, customer_id, kind, amount, paid_amount, currency,
-                                                issued_at, due_date, status, order_number)
-                VALUES (?, ?, ?, 'CREDIT_ORDER', ?, 0, 'VND', NOW(), CURRENT_DATE + 30, 'OPEN', ?)""",
-                Identifiers.newId(), order, customer, amount, orderNumber));
-    }
-
     @Test
-    @DisplayName("SCRUM-193: my receivables show the order number (null for a row older than the column), own rows only")
-    void myReceivablesCarryOrderNumber() throws Exception {
-        receivable(customerA, twoLines.orderId(), twoLines.orderNumber(), 1_000_000);
-        receivable(customerA, oneLine.orderId(), null, 2_000_000);
-        receivable(customerB, ofB.orderId(), ofB.orderNumber(), 3_000_000);
-
-        var body = mvc.perform(get("/api/v1/receivables/me").header("Authorization", customerA()))
+    @DisplayName("SCRUM-193 / 4B-6: what a customer owes is their installments, with the order number; own rows only")
+    void myInstallmentsCarryOrderNumber() throws Exception {
+        var body = mvc.perform(get("/api/v1/installments/me").param("size", "100").header("Authorization", customerA()))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.items.length()").value(2))
+                .andExpect(jsonPath("$.data.items.length()").value(3))
                 .andExpect(jsonPath("$.data.items[?(@.orderId == '" + twoLines.orderId() + "')].orderNumber")
                         .value(org.hamcrest.Matchers.contains(twoLines.orderNumber())))
                 .andExpect(jsonPath("$.data.items[?(@.orderId == '" + oneLine.orderId() + "')].orderNumber")
-                        .isEmpty())   // null is omitted from the JSON
+                        .value(org.hamcrest.Matchers.contains(oneLine.orderNumber())))
                 .andReturn().getResponse().getContentAsString();
-        assertThat(body).doesNotContain(ofB.orderNumber());
+        assertThat(body).doesNotContain(ofB.orderNumber()).doesNotContain(ofB.orderId().toString());
 
-        mvc.perform(get("/api/v1/receivables/me").header("Authorization", token(userB, "CUSTOMER")))
+        mvc.perform(get("/api/v1/installments/me").header("Authorization", token(userB, "CUSTOMER")))
                 .andExpect(jsonPath("$.data.items.length()").value(1))
                 .andExpect(jsonPath("$.data.items[0].orderNumber").value(ofB.orderNumber()));
     }
@@ -405,18 +421,19 @@ class CustomerOrderPortalIntegrationTest {
                 .andExpect(jsonPath("$.data.status").value("CANCELLED"))
                 .andExpect(jsonPath("$.data.statusGroup").value("CANCELLED"))
                 .andExpect(jsonPath("$.data.deliveryState").value("NOT_SHIPPED"))
-                .andExpect(jsonPath("$.data.timeline.length()").value(2))
-                .andExpect(jsonPath("$.data.timeline[0].status").value("PENDING_PAYMENT"))
-                .andExpect(jsonPath("$.data.timeline[0].reasonCode").doesNotExist())
-                .andExpect(jsonPath("$.data.timeline[1].status").value("CANCELLED"))
-                .andExpect(jsonPath("$.data.timeline[1].statusGroup").value("CANCELLED"))
-                .andExpect(jsonPath("$.data.timeline[1].reasonCode").value("CUSTOMER_REQUEST"))
-                .andExpect(jsonPath("$.data.timeline[1].reason").doesNotExist())
+                .andExpect(jsonPath("$.data.timeline.length()").value(3))
+                .andExpect(jsonPath("$.data.timeline[0].status").value("PENDING_CONTRACT"))
+                .andExpect(jsonPath("$.data.timeline[1].status").value("PENDING_PAYMENT"))
+                .andExpect(jsonPath("$.data.timeline[1].reasonCode").doesNotExist())
+                .andExpect(jsonPath("$.data.timeline[2].status").value("CANCELLED"))
+                .andExpect(jsonPath("$.data.timeline[2].statusGroup").value("CANCELLED"))
+                .andExpect(jsonPath("$.data.timeline[2].reasonCode").value("CUSTOMER_REQUEST"))
+                .andExpect(jsonPath("$.data.timeline[2].reason").doesNotExist())
                 .andReturn().getResponse().getContentAsString();
 
         assertThat(body).doesNotContain(PRIVATE_NOTE).doesNotContain("cancellation");
         // The history behind it does hold the text; that is why the timeline does not copy from it.
-        assertThat(orders.history(cancelled.orderId()).get(1).reason()).contains(PRIVATE_NOTE);
+        assertThat(orders.history(cancelled.orderId()).getLast().reason()).contains(PRIVATE_NOTE);
         var timeline = customerOrders.myOrder(customerA, cancelled.orderId()).timeline();
         assertThat(timeline).extracting(CustomerOrders.TimelineEntry::occurredAt).isSorted();
     }
@@ -505,7 +522,7 @@ class CustomerOrderPortalIntegrationTest {
 
         mvc.perform(get("/api/v1/orders/" + cancelled.orderId() + "/history").header("Authorization", authorization))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.length()").value(2));
+                .andExpect(jsonPath("$.data.length()").value(orders.history(cancelled.orderId()).size()));
         mvc.perform(get("/api/v1/orders/" + twoLines.orderId()).header("Authorization", authorization))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.orderId").value(twoLines.orderId().toString()));

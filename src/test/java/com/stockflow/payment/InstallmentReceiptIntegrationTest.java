@@ -14,7 +14,6 @@ import com.stockflow.order.api.CancelOrderCommand;
 import com.stockflow.order.api.CancellationReasonCode;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
-import com.stockflow.order.api.PaymentTerm;
 import com.stockflow.order.internal.domain.Order;
 import com.stockflow.order.internal.domain.OrderLine;
 import com.stockflow.order.internal.domain.OrderNumber;
@@ -141,12 +140,12 @@ class InstallmentReceiptIntegrationTest {
 
     // ---- fixtures ---------------------------------------------------------------------------------------------------
 
-    /** Credit approved by accounting: allowed, with {@code limit}, 30 days - what a plan paying after delivery needs. */
+    /** Credit approved by accounting: {@code limit} and 30 days to pay - what a plan paying after delivery needs. */
     private void credit(long limit) {
         tx.executeWithoutResult(s -> jdbc.update("""
-                INSERT INTO customer.credit_profile (id, customer_id, allow_prepaid, allow_deposit, allow_credit,
-                    default_payment_term, credit_limit, credit_term_days, approved_by, approved_at)
-                VALUES (?, ?, true, false, true, 'PREPAID', ?, 30, ?, NOW())""", Identifiers.newId(), customerId,
+                INSERT INTO customer.credit_profile (id, customer_id, credit_limit, credit_term_days, approved_by,
+                    approved_at)
+                VALUES (?, ?, ?, 30, ?, NOW())""", Identifiers.newId(), customerId,
                 BigDecimal.valueOf(limit), accountant));
     }
 
@@ -157,7 +156,6 @@ class InstallmentReceiptIntegrationTest {
                     .withCartons(sku.uomConversionId(), 20, 50).withTax(BigDecimal.TEN);
             Order order = Order.draft(OrderNumber.of(today, 600_000 + ThreadLocalRandom.current().nextInt(99_999)),
                     customerId, Identifiers.newId(), List.of(line), Instant.now());
-            order.applyTerms(PaymentTerm.PREPAID, null, null, null);
             return orderRepository.save(order).id().value();
         });
     }
@@ -227,7 +225,7 @@ class InstallmentReceiptIntegrationTest {
                 Long.class, naming) == 0);
     }
 
-    /** A statement reference nobody else used: BR-03 is global, across customers and the money ledger. */
+    /** A statement reference nobody else used: BR-03 is global, across customers. */
     private static String reference() {
         return "FT" + UUID.randomUUID().toString().replace("-", "").substring(0, 16).toUpperCase();
     }

@@ -16,7 +16,6 @@ import com.stockflow.order.api.CancelOrderCommand;
 import com.stockflow.order.api.CancellationReasonCode;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
-import com.stockflow.order.api.PaymentTerm;
 import com.stockflow.order.internal.domain.Order;
 import com.stockflow.order.internal.domain.OrderLine;
 import com.stockflow.order.internal.domain.OrderNumber;
@@ -244,7 +243,6 @@ class AwaitingStockIntegrationTest {
                     .withTax(BigDecimal.TEN);
             Order order = Order.draft(OrderNumber.of(today, ORDER_NUMBERS.incrementAndGet()),
                     customerId, Identifiers.newId(), List.of(line), Instant.now());
-            order.applyTerms(PaymentTerm.PREPAID, null, null, null);
             return orderRepository.save(order).id().value();
         });
         UUID line = jdbc.queryForObject("SELECT id FROM ordering.order_line WHERE order_id = ?", UUID.class, orderId);

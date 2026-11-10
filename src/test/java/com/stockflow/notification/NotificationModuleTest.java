@@ -34,7 +34,7 @@ class NotificationModuleTest {
     /**
      * Notification's own interface, implemented by the customer module (dependency inversion: customer depends on
      * notification). Customer is not in this context, so its implementation is stood in for, as payment's module
-     * test does for OrderPayables. Not a widening: no other module is booted.
+     * test does for InstallmentOrders. Not a widening: no other module is booted.
      */
     @MockitoBean CustomerDirectory customerDirectory;
 

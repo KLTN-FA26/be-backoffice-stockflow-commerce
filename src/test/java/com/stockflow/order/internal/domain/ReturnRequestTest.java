@@ -64,8 +64,7 @@ class ReturnRequestTest {
                 new OrderLine(STOCK_LINE, new Sku("LID-90"), 50, Money.vnd(500), null, List.of(), 10)),
                 status, deliveredAt.minus(Duration.ofDays(10)), status == OrderStatus.CANCELLED ? "x" : null, 3L);
         order.restoreLifecycle(null, null, null, deliveredAt.minus(Duration.ofDays(1)), deliveredAt, null,
-                status == OrderStatus.COMPLETED ? deliveredAt.plus(Duration.ofDays(8)) : null, null, null,
-                BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO);
+                status == OrderStatus.COMPLETED ? deliveredAt.plus(Duration.ofDays(8)) : null, null, null);
         return order;
     }
 
@@ -983,8 +982,7 @@ class ReturnRequestTest {
                 UUID.randomUUID(), List.of(new OrderLine(ownLine, new Sku("LY12-ACME-01"), 100, Money.vnd(2_000), null,
                         List.of()).withCartons(UUID.randomUUID(), 2, 50)),
                 OrderStatus.DELIVERED, DELIVERED.minus(Duration.ofDays(10)), null, 3L);
-        order.restoreLifecycle(null, null, null, DELIVERED.minus(Duration.ofDays(1)), DELIVERED, null, null, null, null,
-                BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO);
+        order.restoreLifecycle(null, null, null, DELIVERED.minus(Duration.ofDays(1)), DELIVERED, null, null, null, null);
         assertThat(order.lines().getFirst().isMadeToOrder()).as("not a print line: released from stock").isFalse();
         assertThat(order.lines().getFirst().printedToCustomerDesign()).isTrue();
 

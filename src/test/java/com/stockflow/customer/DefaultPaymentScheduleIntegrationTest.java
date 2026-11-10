@@ -5,7 +5,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
-import com.stockflow.customer.api.CommercialTerm;
 import com.stockflow.customer.api.CustomerPaymentSchedules;
 import com.stockflow.customer.api.CustomerService;
 import com.stockflow.customer.api.PaymentMilestone;
@@ -46,7 +45,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * 4B-1 (kltn-docs 18 §3, §4 steps 2 and 5, BR-03, BR-04; 14 BR-13; 15 BR-12): a customer's default payment schedule over
  * HTTP - Sales sets it, the shares adding up to 100; an installment after delivery only on credit accounting approved,
  * proposed by Sales and approved by accounting (or set by accounting, approved as saved), audited; that credit is not
- * taken away while the schedule uses it; nothing set reads as the customer's commercial terms.
+ * taken away while the schedule uses it; nothing set reads as everything on signing (4B-10: customers have no payment
+ * terms of their own).
  */
 @IntegrationTest
 @Import({PostgresContainer.class, RedisContainer.class})
@@ -125,10 +125,10 @@ class DefaultPaymentScheduleIntegrationTest {
                 + (days == null ? "" : ",\"dueDays\":" + days) + "}";
     }
 
+    /** The credit as accounting sets it: {@code limit} with 30 days to pay when {@code credit}, else neither. */
     private com.stockflow.customer.api.CreditTerms terms(UUID customer, boolean credit, String limit, Long version) {
-        return customers.saveCreditTerms(new SaveCreditTermsCommand(customer, true, false, credit,
-                CommercialTerm.PREPAID, null, limit == null ? null : new BigDecimal(limit), credit ? 30 : null, null,
-                user(), version));
+        return customers.saveCreditTerms(new SaveCreditTermsCommand(customer,
+                limit == null ? null : new BigDecimal(limit), credit ? 30 : null, null, user(), version));
     }
 
     private static ErrorCode refusal(Runnable action) {
@@ -138,7 +138,7 @@ class DefaultPaymentScheduleIntegrationTest {
     }
 
     @Test
-    @DisplayName("Sales sets a schedule at signing and before delivery; nothing set reads as the commercial terms; the "
+    @DisplayName("Sales sets a schedule at signing and before delivery; nothing set is everything on signing; the "
             + "shares add up to 100 with two decimals at most; a change needs the version read")
     void salesSetsTheSchedule() throws Exception {
         UUID customer = customer();
@@ -173,14 +173,14 @@ class DefaultPaymentScheduleIntegrationTest {
         save(customer, "WAREHOUSE_STAFF", schedule(set.path("version").asLong(), line("Ký", "100", "ON_SIGNING", 0)))
                 .andExpect(status().isForbidden());
 
-        // A deposit customer nobody set a schedule for: their deposit on signing, the rest before delivery.
-        UUID deposit = customer();
-        customers.saveCreditTerms(new SaveCreditTermsCommand(deposit, true, true, false, CommercialTerm.DEPOSIT,
-                new BigDecimal("30"), null, null, null, user(), null,
-                com.stockflow.customer.api.DepositBalancePolicy.BEFORE_DELIVERY));
-        assertThat(schedules.defaultPaymentSchedule(deposit).installments())
-                .extracting(i -> i.milestone() + " " + i.percent().toPlainString())
-                .containsExactly("ON_SIGNING 30.00", "BEFORE_DELIVERY 70.00");
+        // A customer with credit but nobody set a schedule for: still everything on signing - never credit unless
+        // accounting approves a schedule (15 BR-12). Until 4B-10 a deposit customer's terms read as their deposit on
+        // signing and the rest before delivery; customers have no payment terms of their own any more.
+        UUID withCredit = customer();
+        terms(withCredit, true, "50000000", null);
+        assertThat(schedules.defaultPaymentSchedule(withCredit).installments())
+                .extracting(i -> i.milestone() + " " + i.percent().stripTrailingZeros().toPlainString())
+                .containsExactly("ON_SIGNING 100");
     }
 
     @Test
@@ -263,7 +263,7 @@ class DefaultPaymentScheduleIntegrationTest {
         approve(customer, user(), "ACCOUNTANT", back.path("version").asLong()).andExpect(status().isBadRequest());
         approve(customer(), user(), "ACCOUNTANT", 0).andExpect(status().isNotFound());
         terms(customer, false, null, terms.version());
-        assertThat(customers.creditTerms(customer).allowCredit()).isFalse();
+        assertThat(customers.creditTerms(customer).creditLimit()).as("credit withdrawn").isNull();
         assertThat(schedules.defaultPaymentSchedule(customer).installments()).singleElement()
                 .satisfies(i -> assertThat(i.milestone()).isEqualTo(PaymentMilestone.ON_SIGNING));
     }

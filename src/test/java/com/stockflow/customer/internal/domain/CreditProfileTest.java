@@ -2,8 +2,6 @@ package com.stockflow.customer.internal.domain;
 
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
-import com.stockflow.customer.api.CommercialTerm;
-import com.stockflow.customer.api.DepositBalancePolicy;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -14,7 +12,12 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/** SCRUM-427, kltn-docs 18 §3: commercial terms that agree with themselves, no Spring. */
+/**
+ * SCRUM-427, kltn-docs 18 §3, 15 BR-12: a customer's credit that agrees with itself, no Spring. Since 4B-10 the credit
+ * is a limit and the days to pay after delivery, both or neither: the allowed payment terms, the default term, the
+ * deposit share and the deposit balance policy went with the money ledger - how a customer pays is the signed
+ * contract's installment plan.
+ */
 class CreditProfileTest {
 
     private static final UUID CUSTOMER = UUID.randomUUID();
@@ -27,81 +30,62 @@ class CreditProfileTest {
     }
 
     @Test
-    @DisplayName("credit terms carry a limit and days to pay; a deposit share is between 0 and 100")
-    void consistentTerms() {
-        CreditProfile profile = CreditProfile.create(CUSTOMER, true, true, true, CommercialTerm.CREDIT,
-                new BigDecimal("30"), new BigDecimal("50000000"), 30, ACCOUNTANT, NOW, "approved by finance");
+    @DisplayName("credit carries a limit and days to pay, with who approved it and why")
+    void consistentCredit() {
+        CreditProfile profile = CreditProfile.create(CUSTOMER, new BigDecimal("50000000"), 30, ACCOUNTANT, NOW,
+                " approved by finance ");
 
-        assertThat(profile.allowCredit()).isTrue();
+        assertThat(profile.hasCredit()).isTrue();
         assertThat(profile.creditLimit()).isEqualByComparingTo("50000000");
+        assertThat(profile.creditTermDays()).isEqualTo(30);
+        assertThat(profile.currency()).isEqualTo("VND");
         assertThat(profile.approvedBy()).isEqualTo(ACCOUNTANT);
+        assertThat(profile.approvedAt()).isEqualTo(NOW);
         assertThat(profile.note()).isEqualTo("approved by finance");
+
+        CreditProfile none = CreditProfile.create(CUSTOMER, null, null, ACCOUNTANT, NOW, " ");
+        assertThat(none.hasCredit()).as("neither: no credit").isFalse();
+        assertThat(none.note()).isNull();
+        assertThat(CreditProfile.create(CUSTOMER, BigDecimal.ZERO, 0, ACCOUNTANT, NOW, null).hasCredit())
+                .as("a limit of zero is still a limit, of nothing").isTrue();
     }
 
     @Test
     @DisplayName("contradictions are CREDIT_PROFILE_INVALID")
     void contradictions() {
-        assertThat(refused(() -> CreditProfile.create(CUSTOMER, false, false, false, CommercialTerm.PREPAID, null,
-                null, null, ACCOUNTANT, NOW, null))).isEqualTo(ErrorCode.CREDIT_PROFILE_INVALID);
-        assertThat(refused(() -> CreditProfile.create(CUSTOMER, true, false, false, CommercialTerm.CREDIT, null,
-                null, null, ACCOUNTANT, NOW, null))).isEqualTo(ErrorCode.CREDIT_PROFILE_INVALID);
-        assertThat(refused(() -> CreditProfile.create(CUSTOMER, true, false, true, CommercialTerm.PREPAID, null,
-                new BigDecimal("1000"), null, ACCOUNTANT, NOW, null))).isEqualTo(ErrorCode.CREDIT_PROFILE_INVALID);
-        assertThat(refused(() -> CreditProfile.create(CUSTOMER, true, true, false, CommercialTerm.PREPAID,
-                new BigDecimal("100"), null, null, ACCOUNTANT, NOW, null))).isEqualTo(ErrorCode.CREDIT_PROFILE_INVALID);
-        assertThat(refused(() -> CreditProfile.create(CUSTOMER, true, false, false, CommercialTerm.PREPAID,
-                new BigDecimal("30"), null, null, ACCOUNTANT, NOW, null))).isEqualTo(ErrorCode.CREDIT_PROFILE_INVALID);
-        assertThat(refused(() -> CreditProfile.create(CUSTOMER, true, false, true, CommercialTerm.PREPAID, null,
-                new BigDecimal("-1"), 30, ACCOUNTANT, NOW, null))).isEqualTo(ErrorCode.CREDIT_PROFILE_INVALID);
-        assertThat(refused(() -> CreditProfile.create(CUSTOMER, true, false, true, CommercialTerm.PREPAID, null,
-                new BigDecimal("1000"), 400, ACCOUNTANT, NOW, null))).isEqualTo(ErrorCode.CREDIT_PROFILE_INVALID);
+        assertThat(refused(() -> CreditProfile.create(CUSTOMER, new BigDecimal("1000"), null, ACCOUNTANT, NOW, null)))
+                .as("a limit without days to pay").isEqualTo(ErrorCode.CREDIT_PROFILE_INVALID);
+        assertThat(refused(() -> CreditProfile.create(CUSTOMER, null, 30, ACCOUNTANT, NOW, null)))
+                .as("days to pay without a limit").isEqualTo(ErrorCode.CREDIT_PROFILE_INVALID);
+        assertThat(refused(() -> CreditProfile.create(CUSTOMER, new BigDecimal("-1"), 30, ACCOUNTANT, NOW, null)))
+                .isEqualTo(ErrorCode.CREDIT_PROFILE_INVALID);
+        assertThat(refused(() -> CreditProfile.create(CUSTOMER, new BigDecimal("1000"), 400, ACCOUNTANT, NOW, null)))
+                .isEqualTo(ErrorCode.CREDIT_PROFILE_INVALID);
+        assertThat(refused(() -> CreditProfile.create(CUSTOMER, new BigDecimal("1000"), -1, ACCOUNTANT, NOW, null)))
+                .isEqualTo(ErrorCode.CREDIT_PROFILE_INVALID);
+        assertThatThrownBy(() -> CreditProfile.create(CUSTOMER, null, null, null, NOW, null))
+                .as("always someone who approved it").isInstanceOf(NullPointerException.class);
     }
 
     @Test
-    @DisplayName("a refused change leaves the terms as they were")
-    void refusedChangeKeepsTheTerms() {
-        CreditProfile profile = CreditProfile.create(CUSTOMER, true, false, true, CommercialTerm.PREPAID, null,
-                new BigDecimal("1000"), 30, ACCOUNTANT, NOW, null);
+    @DisplayName("a refused change leaves the credit as it was; an accepted one replaces it, withdrawal included")
+    void changes() {
+        CreditProfile profile = CreditProfile.create(CUSTOMER, new BigDecimal("1000"), 30, ACCOUNTANT, NOW, null);
 
-        assertThatThrownBy(() -> profile.change(true, false, true, CommercialTerm.PREPAID, null, null, 30, ACCOUNTANT,
-                NOW, null)).isInstanceOf(BusinessException.class);
+        assertThatThrownBy(() -> profile.change(null, 30, ACCOUNTANT, NOW, null)).isInstanceOf(BusinessException.class);
         assertThat(profile.creditLimit()).isEqualByComparingTo("1000");
-    }
+        assertThat(profile.creditTermDays()).isEqualTo(30);
 
-    @Test
-    @DisplayName("G2-3: deposits come with a balance policy, BEFORE_DELIVERY unless told; none without deposits")
-    void balancePolicy() {
-        CreditProfile deposit = CreditProfile.create(CUSTOMER, true, true, true, CommercialTerm.DEPOSIT,
-                new BigDecimal("30"), new BigDecimal("50000000"), 30, ACCOUNTANT, NOW, null);
-        assertThat(deposit.depositBalancePolicy()).isEqualTo(DepositBalancePolicy.BEFORE_DELIVERY);
-        deposit.change(true, true, true, CommercialTerm.DEPOSIT, new BigDecimal("30"), new BigDecimal("50000000"), 30,
-                DepositBalancePolicy.ON_CREDIT, ACCOUNTANT, NOW, null);
-        assertThat(deposit.depositBalancePolicy()).isEqualTo(DepositBalancePolicy.ON_CREDIT);
-        deposit.change(true, true, true, CommercialTerm.DEPOSIT, new BigDecimal("40"), new BigDecimal("50000000"), 30,
-                ACCOUNTANT, NOW, "share changed, policy not sent");
-        assertThat(deposit.depositBalancePolicy()).as("kept when not sent").isEqualTo(DepositBalancePolicy.ON_CREDIT);
-        deposit.change(true, false, false, CommercialTerm.PREPAID, null, null, null, ACCOUNTANT, NOW, null);
-        assertThat(deposit.depositBalancePolicy()).as("no deposits, no balance").isNull();
-        assertThat(refused(() -> CreditProfile.create(CUSTOMER, true, false, false, CommercialTerm.PREPAID, null, null,
-                null, DepositBalancePolicy.BEFORE_DELIVERY, ACCOUNTANT, NOW, null)))
-                .isEqualTo(ErrorCode.CREDIT_PROFILE_INVALID);
-    }
+        UUID approver = UUID.randomUUID();
+        Instant later = NOW.plusSeconds(3600);
+        profile.change(new BigDecimal("2000"), 45, approver, later, "raised");
+        assertThat(profile.creditLimit()).isEqualByComparingTo("2000");
+        assertThat(profile.creditTermDays()).isEqualTo(45);
+        assertThat(profile.approvedBy()).isEqualTo(approver);
+        assertThat(profile.approvedAt()).isEqualTo(later);
 
-    @org.junit.jupiter.api.Test
-    @org.junit.jupiter.api.DisplayName("BALCREDIT: the balance on credit needs credit allowed; losing credit falls back to "
-            + "BEFORE_DELIVERY when no policy is sent, and is refused when ON_CREDIT is sent again")
-    void balanceOnCredit() {
-        assertThat(refused(() -> CreditProfile.create(CUSTOMER, true, true, false, CommercialTerm.DEPOSIT,
-                new BigDecimal("30"), null, null, DepositBalancePolicy.ON_CREDIT, ACCOUNTANT, NOW, null)))
-                .isEqualTo(ErrorCode.CREDIT_PROFILE_INVALID);
-        CreditProfile both = CreditProfile.create(CUSTOMER, true, true, true, CommercialTerm.DEPOSIT,
-                new BigDecimal("30"), new BigDecimal("50000000"), 30, DepositBalancePolicy.ON_CREDIT, ACCOUNTANT, NOW,
-                null);
-        assertThat(both.depositBalancePolicy()).isEqualTo(DepositBalancePolicy.ON_CREDIT);
-        assertThat(refused(() -> both.change(true, true, false, CommercialTerm.DEPOSIT, new BigDecimal("30"), null,
-                null, DepositBalancePolicy.ON_CREDIT, ACCOUNTANT, NOW, null))).isEqualTo(ErrorCode.CREDIT_PROFILE_INVALID);
-        both.change(true, true, false, CommercialTerm.DEPOSIT, new BigDecimal("30"), null, null, ACCOUNTANT, NOW,
-                "credit withdrawn");
-        assertThat(both.depositBalancePolicy()).isEqualTo(DepositBalancePolicy.BEFORE_DELIVERY);
+        profile.change(null, null, approver, later, "withdrawn");
+        assertThat(profile.hasCredit()).isFalse();
+        assertThat(profile.creditTermDays()).isNull();
     }
 }

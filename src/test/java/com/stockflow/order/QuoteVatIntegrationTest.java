@@ -12,7 +12,6 @@ import com.stockflow.order.api.FeeKind;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderSummary;
 import com.stockflow.order.api.OrderStatus;
-import com.stockflow.order.api.PaymentTerm;
 import com.stockflow.order.internal.domain.QuoteStatus;
 import com.stockflow.order.internal.service.Quotes;
 import com.stockflow.support.Await;
@@ -90,7 +89,7 @@ class QuoteVatIntegrationTest {
 
     /** 3 cartons of 10 at 3,000 VND a piece from 2 cartons. */
     private Quotes.Draft draft(String sku, List<Quotes.Fee> fees) {
-        return new Quotes.Draft(PaymentTerm.PREPAID, null, Instant.now().plus(Duration.ofDays(7)), null,
+        return new Quotes.Draft(Instant.now().plus(Duration.ofDays(7)), null,
                 List.of(new Quotes.Line(sku, 3, List.of(new Quotes.Tier(2, new BigDecimal("3000"))))), null, fees);
     }
 

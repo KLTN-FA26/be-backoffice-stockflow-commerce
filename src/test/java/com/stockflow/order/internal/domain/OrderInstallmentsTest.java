@@ -6,7 +6,6 @@ import com.stockflow.common.domain.Money;
 import com.stockflow.common.domain.Sku;
 import com.stockflow.order.api.HoldReason;
 import com.stockflow.order.api.OrderStatus;
-import com.stockflow.order.api.PaymentTerm;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -21,8 +20,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * 4B-6: an order of a signed contract is paid by its installments (kltn-docs 15 BR-07, BR-08, BR-13) - confirmed when
- * those on signing are paid, its goods held until those before delivery are, and its own (placeholder) terms never
- * asked.
+ * those on signing are paid, its goods held until those before delivery are. Since 4B-10 the order keeps no money of its
+ * own: what its installments still owe is handed to it by the caller (read under the order's lock), and an order
+ * without a contract - one placed at checkout - has nothing in the system that holds its goods back.
  */
 class OrderInstallmentsTest {
 
@@ -33,7 +33,6 @@ class OrderInstallmentsTest {
     private static Order signedWaitingOnSigning() {
         Order order = Order.draft(OrderNumber.of(LocalDate.of(2026, 11, 9), 7), UUID.randomUUID(), UUID.randomUUID(),
                 List.of(Order.line(new Sku("CUP-12OZ-ACME"), 1_000, Money.vnd(2_000), null)), NOW);
-        order.applyTerms(PaymentTerm.PREPAID, null);
         order.sendContract(SALES, NOW);
         order.contractSigned(false, true, SALES, NOW);
         return order;
@@ -76,12 +75,59 @@ class OrderInstallmentsTest {
         order.release(warehouse, "HCM", SALES, NOW);
         order.startPicking(SALES, NOW);
 
-        assertThatThrownBy(() -> order.requireHandoverAllowed(new Order.LedgerMoney(BigDecimal.ZERO, BigDecimal.ZERO,
-                new BigDecimal("600000")))).extracting(OrderInstallmentsTest::code)
-                .isEqualTo(ErrorCode.ORDER_BALANCE_NOT_PAID);
-        // Nothing of the money ledger is asked: PREPAID is the column's neutral value for an order of a contract.
-        order.requireHandoverAllowed(new Order.LedgerMoney(BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO));
-        assertThat(order.amountDueBeforeHandover()).isEqualByComparingTo("0");
+        assertThatThrownBy(() -> order.requireHandoverAllowed(new BigDecimal("600000")))
+                .extracting(OrderInstallmentsTest::code).isEqualTo(ErrorCode.ORDER_BALANCE_NOT_PAID);
+        assertThatThrownBy(() -> order.recordGoodsLeft(NOW, null, new BigDecimal("1")))
+                .as("SCRUM-392 LP-3: goods leaving on a load plan's vehicle go through the same gate")
+                .extracting(OrderInstallmentsTest::code).isEqualTo(ErrorCode.ORDER_BALANCE_NOT_PAID);
+        assertThat(order.goodsLeftAt()).isNull();
+        order.requireHandoverAllowed(BigDecimal.ZERO);
+        order.requireHandoverAllowed(null);
+        assertThat(order.amountDueBeforeHandover()).as("the order itself knows of no money").isEqualByComparingTo("0");
+    }
+
+    @Test
+    @DisplayName("an order without a contract has no money in the system: nothing it is told holds its goods back")
+    void orderWithoutAContractIsNeverHeldForMoney() {
+        // A free replacement of a return (SCRUM-260): the one order confirmed without a contract.
+        Order order = Order.draft(OrderNumber.of(LocalDate.of(2026, 11, 9), 9), UUID.randomUUID(), UUID.randomUUID(),
+                List.of(Order.line(new Sku("SOFA-3S-GREY"), 1, Money.vnd(0), null)), NOW);
+        order.lines().forEach(line -> order.attachReservations(line.id(), List.of(UUID.randomUUID())));
+        order.replacesReturn(UUID.randomUUID());
+        order.submitReplacement(SALES, NOW);
+        order.release(UUID.randomUUID(), "HCM", SALES, NOW);
+        order.startPicking(SALES, NOW);
+
+        order.requireHandoverAllowed(new BigDecimal("600000"));
+        assertThat(order.markPacked(NOW, SALES)).isTrue();
+        assertThat(order.markShipped(NOW, SALES, new BigDecimal("600000"))).isTrue();
+        assertThat(order.status()).isEqualTo(OrderStatus.SHIPPED);
+    }
+
+    @Test
+    @DisplayName("17 §4.6 step 21: delivered, it completes and closes only once its installments owe nothing")
+    void completesAndClosesOnlyWhenNothingIsOwed() {
+        Order order = signedWaitingOnSigning();
+        order.confirmByInstallments(NOW);
+        order.lines().forEach(line -> order.attachReservations(line.id(), List.of(UUID.randomUUID())));
+        UUID warehouse = UUID.randomUUID();
+        order.chooseShippingWarehouse(warehouse, true, SALES, NOW);
+        order.release(warehouse, "HCM", SALES, NOW);
+        order.markPacked(NOW, SALES);
+        order.markShipped(NOW, SALES, BigDecimal.ZERO);
+        order.markDelivered(NOW, SALES);
+        Instant later = NOW.plus(java.time.Duration.ofDays(40));
+
+        assertThat(order.complete(later, java.time.Duration.ofDays(7), false, true)).as("still owing").isFalse();
+        assertThat(order.status()).isEqualTo(OrderStatus.DELIVERED);
+        assertThat(order.complete(later, java.time.Duration.ofDays(7), false, false)).isTrue();
+        assertThat(order.status()).isEqualTo(OrderStatus.COMPLETED);
+
+        Instant muchLater = later.plus(java.time.Duration.ofDays(31));
+        assertThat(order.close(muchLater, java.time.Duration.ofDays(30), true))
+                .as("a debt is never put out of the order's sight").isFalse();
+        assertThat(order.close(muchLater, java.time.Duration.ofDays(30), false)).isTrue();
+        assertThat(order.status()).isEqualTo(OrderStatus.CLOSED);
     }
 
     @Test

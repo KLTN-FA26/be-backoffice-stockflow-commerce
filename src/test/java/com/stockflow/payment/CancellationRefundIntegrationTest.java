@@ -16,7 +16,6 @@ import com.stockflow.order.api.CancellationOutcome;
 import com.stockflow.order.api.CancellationReasonCode;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
-import com.stockflow.order.api.PaymentTerm;
 import com.stockflow.order.internal.domain.Order;
 import com.stockflow.order.internal.domain.OrderLine;
 import com.stockflow.order.internal.domain.OrderNumber;
@@ -142,9 +141,9 @@ class CancellationRefundIntegrationTest {
                     VALUES (?, ?, '34 Le Loi, TP HCM', 'Tran Thi E', 'Director', 0, NOW())""",
                     Identifiers.newId(), customerId);
             jdbc.update("""
-                    INSERT INTO customer.credit_profile (id, customer_id, allow_prepaid, allow_deposit, allow_credit,
-                        default_payment_term, credit_limit, credit_term_days, approved_by, approved_at)
-                    VALUES (?, ?, true, false, true, 'PREPAID', ?, 30, ?, NOW())""", Identifiers.newId(), customerId,
+                    INSERT INTO customer.credit_profile (id, customer_id, credit_limit, credit_term_days, approved_by,
+                        approved_at)
+                    VALUES (?, ?, ?, 30, ?, NOW())""", Identifiers.newId(), customerId,
                     BigDecimal.valueOf(AMPLE_CREDIT), accountant);
         });
         sku = CustomerSkuRows.issue(jdbc, tx, entityManager, customerId, 50, "STANDARD", true);
@@ -159,7 +158,6 @@ class CancellationRefundIntegrationTest {
                     .withCartons(sku.uomConversionId(), 20, 50).withTax(BigDecimal.TEN);
             Order order = Order.draft(OrderNumber.of(today, ORDER_NUMBERS.incrementAndGet()), customerId,
                     Identifiers.newId(), List.of(line), Instant.now());
-            order.applyTerms(PaymentTerm.PREPAID, null, null, null);
             return orderRepository.save(order).id().value();
         });
     }
@@ -239,10 +237,6 @@ class CancellationRefundIntegrationTest {
                 + "'CANCELLATION_FEE'", UUID.class, orderId).stream().findFirst();
     }
 
-    private long ledgerReceivables(UUID orderId) {
-        return jdbc.queryForObject("SELECT count(*) FROM payment.receivable WHERE order_id = ?", Long.class, orderId);
-    }
-
     private static ErrorCode code(Throwable e) {
         assertThat(e).isInstanceOf(BusinessException.class);
         return ((BusinessException) e).errorCode();
@@ -289,7 +283,6 @@ class CancellationRefundIntegrationTest {
         assertThat(refund.standing().status()).isEqualTo(RefundStanding.Status.PENDING);
         assertThat(refund.standing().remaining()).isEqualByComparingTo(dong(760_000));
         assertThat(feeItemOf(signed.orderId())).isEmpty();
-        assertThat(ledgerReceivables(signed.orderId())).as("the money ledger is not told of anything").isZero();
     }
 
     @Test
@@ -319,8 +312,6 @@ class CancellationRefundIntegrationTest {
         assertThat(fee.status()).isEqualTo(InstallmentStatus.DUE);
         assertThat(fee.dueDate()).isEqualTo(today);
         assertThat(fee.seq()).isEqualTo(Installment.FIRST_FEE_SEQ);
-        assertThat(ledgerReceivables(signed.orderId())).as("the fee is owed once: on the fee item, not in the ledger")
-                .isZero();
         assertThat(payments.creditPosition(customerId).outstandingReceivables())
                 .as("BR-10: the unpaid fee counts; the cancelled after-delivery installment no longer does")
                 .isEqualByComparingTo(exposureBefore.subtract(dong(660_000)).add(dong(340_000)));

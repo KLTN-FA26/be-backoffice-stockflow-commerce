@@ -1,27 +1,21 @@
 package com.stockflow.order;
 
-import com.stockflow.common.domain.Money;
-import com.stockflow.common.domain.Sku;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.security.DataScope;
-import com.stockflow.customer.api.CommercialTerm;
 import com.stockflow.customer.api.CustomerService;
-import com.stockflow.customer.api.DepositBalancePolicy;
 import com.stockflow.customer.api.SaveCreditTermsCommand;
-import com.stockflow.order.api.BalancePolicy;
 import com.stockflow.order.api.CancelOrderCommand;
 import com.stockflow.order.api.CancellationReasonCode;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.OrderSummary;
-import com.stockflow.order.api.PaymentTerm;
-import com.stockflow.order.api.PlaceOrderCommand;
 import com.stockflow.order.api.ShipmentHandover;
 import com.stockflow.order.internal.service.CreditHoldService;
-import com.stockflow.order.internal.service.OrderReleases;
-import com.stockflow.payment.internal.service.ReceivableService;
-import com.stockflow.support.Await;
+import com.stockflow.order.internal.service.SalesContracts;
+import com.stockflow.payment.api.PaymentService;
+import com.stockflow.support.ConfirmedOrders;
+import com.stockflow.support.CustomerSkuRows;
 import com.stockflow.support.DemoData;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
@@ -35,15 +29,14 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.context.TestPropertySource;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
-import java.time.Duration;
 import java.time.Instant;
-import java.time.LocalDate;
-import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -53,41 +46,50 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.catchThrowable;
 
 /**
- * FTL-CREDIT (owner decision, SCRUM-193): every order ships as a full truckload (kltn-docs 09 BR-08), and a customer on
- * credit terms is exempt from "fully paid before the handover" as long as the order is within their limit - an order
- * on CREDIT is checked against the limit and held like any other credit order, and its goods leave unpaid; an order on
- * prepaid or deposit terms still does not leave with its balance unpaid (15 §4.1-4.2, G3-Q4). Against a real database.
+ * FTL-CREDIT (owner decision, SCRUM-193): every order ships as a full truckload (kltn-docs 09 BR-08), and what a
+ * customer pays after delivery does not hold the goods back - checked against the credit limit when the contract is
+ * signed and held like any other over it - while what the contract wants paid before delivery still does (15 BR-08,
+ * G3-Q4). Against a real database.
+ *
+ * <p>Since 4B-10 the terms are the contract's installment plan, not the order's payment term: "on CREDIT" is a plan
+ * paying after delivery, "DEPOSIT paid before delivery" one paying on signing and before delivery
+ * ({@link ConfirmedOrders}). The handover reads the installments under the order's lock; what is due before it is
+ * {@link PaymentService#installmentStanding}'s {@code dueBeforeHandover}, no longer the order's own figure.</p>
  */
 @IntegrationTest
 @Import(PostgresContainer.class)
+@TestPropertySource(properties = {"stockflow.upload-inspection.enabled=false",
+        "stockflow.notification.email.customer.enabled=false"})
 class FullTruckloadOnCreditIntegrationTest {
 
-    private static final Sku SOFA = new Sku("SOFA-3S-GREY");
-    private static final long PRICE = 5_000_000;
-    private static final Duration ASYNC = Duration.ofSeconds(15);
-    private static final LocalDate TODAY = LocalDate.now(ZoneId.of("Asia/Ho_Chi_Minh"));
+    /** A piece of the customer's SKU; a carton is 50 of them: 5,000,000. */
+    private static final long PRICE = 100_000;
 
     @Autowired OrderService orders;
-    @Autowired OrderReleases releases;
     @Autowired CreditHoldService creditHolds;
     @Autowired CustomerService customers;
-    @Autowired ReceivableService receivables;
+    @Autowired PaymentService payments;
     @Autowired com.stockflow.inventory.api.InventoryService inventory;
+    @Autowired ApplicationContext context;
     @Autowired TransactionTemplate tx;
     @Autowired JdbcTemplate jdbc;
     @Autowired EntityManager entityManager;
 
+    private ConfirmedOrders confirmedOrders;
     private UUID customer;
     private UUID staff;
+    private CustomerSkuRows.Issued sku;
     private final List<UUID> placed = Collections.synchronizedList(new ArrayList<>());
 
     @BeforeEach
-    void aCustomerWithCreditAndDeposits() {
+    void aCustomerWithCredit() {
+        confirmedOrders = new ConfirmedOrders(context);
         customer = tx.execute(s -> ReferenceRows.customer(entityManager));
         staff = tx.execute(s -> ReferenceRows.user(entityManager));
-        customers.saveCreditTerms(new SaveCreditTermsCommand(customer, true, true, true, CommercialTerm.CREDIT,
-                new BigDecimal("30"), new BigDecimal("20000000"), 30, "test terms", staff, null,
-                DepositBalancePolicy.BEFORE_DELIVERY));
+        sku = CustomerSkuRows.issue(jdbc, tx, entityManager, customer, 50);
+        CustomerSkuRows.stock(jdbc, tx, sku.sku(), 500);
+        customers.saveCreditTerms(new SaveCreditTermsCommand(customer, new BigDecimal("20000000"), 30, "test terms",
+                staff, null));
     }
 
     @AfterEach
@@ -105,77 +107,77 @@ class FullTruckloadOnCreditIntegrationTest {
         }));
     }
 
-    private OrderSummary place(PaymentTerm term, int units) {
-        OrderSummary order = orders.placeOrder(new PlaceOrderCommand(UUID.randomUUID(), customer, null, null, false,
-                List.of(new PlaceOrderCommand.Line(SOFA, units, Money.vnd(PRICE), null)), term, null));
-        placed.add(order.orderId());
-        return order;
+    private static SalesContracts.Installment share(String name, String milestone, String percent, Integer dueDays) {
+        return new SalesContracts.Installment(name, milestone, null, new BigDecimal(percent), dueDays, null);
+    }
+
+    /** {@code cartons} cartons whose contract pays as {@code plan}, signed. */
+    private ConfirmedOrders.Signed signed(int cartons, SalesContracts.Installment... plan) {
+        ConfirmedOrders.Signed signed = confirmedOrders.signed(customer, List.of(plan),
+                ConfirmedOrders.Line.cartons(sku, cartons, PRICE));
+        placed.add(signed.orderId());
+        return signed;
     }
 
     private OrderSummary reload(UUID orderId) {
         return orders.findById(orderId).orElseThrow();
     }
 
-    /** Released to HCM, picked and packed. */
+    /** Shipping from HCM, released there, picked and packed. */
     private void packed(UUID orderId) {
-        releases.release(orderId, DemoData.WAREHOUSE_HCM, staff);
+        confirmedOrders.release(orderId, DemoData.WAREHOUSE_HCM, staff);
         orders.startPicking(orderId, staff);
         orders.markPacked(orderId, staff);
     }
 
-    private OrderSummary handOver(OrderSummary order, int units) {
+    private OrderSummary handOver(OrderSummary order) {
         UUID shipment = ShipmentRows.ready(jdbc, tx, order.orderId(), UUID.randomUUID());
+        var line = order.lines().getFirst();
         return orders.recordHandover(order.orderId(), new ShipmentHandover(shipment,
-                List.of(new ShipmentHandover.Line(order.lines().getFirst().lineId(), units)), Instant.now(), staff));
-    }
-
-    private void payDeposit(OrderSummary order, long amount) {
-        receivables.recordTransfer(new ReceivableService.RecordTransferCommand(customer, "FT" + UUID.randomUUID()
-                .toString().replace("-", "").substring(0, 12), BigDecimal.valueOf(amount), "VND", TODAY, null, "payment",
-                staff, List.of(new ReceivableService.OrderPayment(order.orderId(), BigDecimal.valueOf(amount)))));
+                List.of(new ShipmentHandover.Line(line.lineId(), line.quantity())), Instant.now(), staff));
     }
 
     @Test
-    @DisplayName("FTL-CREDIT: an order on CREDIT within the limit is CONFIRMED by the credit check, and its goods leave "
-            + "with nothing paid")
+    @DisplayName("FTL-CREDIT: paid after delivery within the limit, the order is CONFIRMED at signing and its goods "
+            + "leave with nothing paid")
     void creditFullTruckloadLeavesUnpaid() {
-        OrderSummary order = place(PaymentTerm.CREDIT, 2);                  // 10M of the 20M limit
-        assertThat(order.status()).isEqualTo(OrderStatus.CONFIRMED);
+        ConfirmedOrders.Signed signed = signed(2, share("After delivery", "AFTER_DELIVERY", "100", 30));  // 10M of 20M
+        assertThat(reload(signed.orderId()).status()).isEqualTo(OrderStatus.CONFIRMED);
 
-        packed(order.orderId());
-        assertThat(reload(order.orderId()).lifecycle().amountDueBeforeHandover()).as("credit owes on its due date").isZero();
-        OrderSummary shipped = handOver(order, 2);
+        packed(signed.orderId());
+        assertThat(payments.installmentStanding(signed.orderId()).dueBeforeHandover())
+                .as("credit owes on its due date").isZero();
+        OrderSummary shipped = handOver(reload(signed.orderId()));
         assertThat(shipped.status()).isEqualTo(OrderStatus.SHIPPED);
     }
 
     @Test
-    @DisplayName("FTL-CREDIT: over the limit the credit order is held like any other, and approval confirms it")
+    @DisplayName("FTL-CREDIT: over the limit the order is held at signing like any other, and approval confirms it")
     void creditFullTruckloadOverTheLimitIsHeld() {
-        OrderSummary order = place(PaymentTerm.CREDIT, 5);                  // 25M > 20M
-        assertThat(order.status()).isEqualTo(OrderStatus.ON_HOLD);
+        ConfirmedOrders.Signed signed = signed(5, share("After delivery", "AFTER_DELIVERY", "100", 30));  // 25M > 20M
+        assertThat(reload(signed.orderId()).status()).isEqualTo(OrderStatus.ON_HOLD);
 
-        OrderSummary approved = creditHolds.approve(order.orderId(), "approved over the limit", staff);
+        OrderSummary approved = creditHolds.approve(signed.orderId(), "approved over the limit", staff);
         assertThat(approved.status()).isEqualTo(OrderStatus.CONFIRMED);
     }
 
     @Test
-    @DisplayName("FTL-CREDIT: a DEPOSIT order paid before delivery still does not leave with its balance unpaid (409 "
-            + "ORDER_BALANCE_NOT_PAID); once the balance is in it does")
+    @DisplayName("FTL-CREDIT: a deposit on signing with the rest before delivery still does not leave with the rest "
+            + "unpaid (409 ORDER_BALANCE_NOT_PAID); once it is in, it does")
     void depositFullTruckloadStillLeavesPaid() {
-        OrderSummary order = place(PaymentTerm.DEPOSIT, 2);                 // 10M, deposit 3M, balance 7M before delivery
-        assertThat(order.payment().balancePolicy()).isEqualTo(BalancePolicy.BEFORE_DELIVERY);
-        payDeposit(order, 3_000_000);
-        Await.until("deposit confirms it", ASYNC, () -> reload(order.orderId()).status() == OrderStatus.CONFIRMED);
-        packed(order.orderId());
+        ConfirmedOrders.Signed signed = signed(2, share("Deposit", "ON_SIGNING", "30", 0),
+                share("Before delivery", "BEFORE_DELIVERY", "70", null));                 // 10M: 3M, then 7M
+        confirmedOrders.pay(signed);
+        packed(signed.orderId());
 
-        assertThat(reload(order.orderId()).lifecycle().amountDueBeforeHandover()).isEqualByComparingTo("7000000");
-        Throwable refused = catchThrowable(() -> handOver(reload(order.orderId()), 2));
+        assertThat(payments.installmentStanding(signed.orderId()).dueBeforeHandover())
+                .isEqualByComparingTo("7000000");
+        Throwable refused = catchThrowable(() -> handOver(reload(signed.orderId())));
         assertThat(refused).isInstanceOf(BusinessException.class);
         assertThat(((BusinessException) refused).errorCode()).isEqualTo(ErrorCode.ORDER_BALANCE_NOT_PAID);
 
-        payDeposit(order, 7_000_000);
-        Await.until("the balance is counted", ASYNC,
-                () -> reload(order.orderId()).lifecycle().amountDueBeforeHandover().signum() == 0);
-        assertThat(handOver(reload(order.orderId()), 2).status()).isEqualTo(OrderStatus.SHIPPED);
+        confirmedOrders.pay(customer, signed.seq(2), new BigDecimal("7000000"));
+        assertThat(payments.installmentStanding(signed.orderId()).dueBeforeHandover()).isZero();
+        assertThat(handOver(reload(signed.orderId())).status()).isEqualTo(OrderStatus.SHIPPED);
     }
 }

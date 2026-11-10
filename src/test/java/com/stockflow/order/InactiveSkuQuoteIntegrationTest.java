@@ -8,7 +8,6 @@ import com.stockflow.common.security.DataScope;
 import com.stockflow.common.security.Role;
 import com.stockflow.customer.api.CustomerService;
 import com.stockflow.customer.api.SaveAddressCommand;
-import com.stockflow.order.api.PaymentTerm;
 import com.stockflow.order.internal.domain.QuoteStatus;
 import com.stockflow.order.internal.service.Quotes;
 import com.stockflow.product.api.ProductService;
@@ -123,7 +122,7 @@ class InactiveSkuQuoteIntegrationTest {
     }
 
     private Quotes.Draft draft() {
-        return new Quotes.Draft(PaymentTerm.PREPAID, null, Instant.now().plus(Duration.ofDays(7)), "Prices exclude VAT",
+        return new Quotes.Draft(Instant.now().plus(Duration.ofDays(7)), "Prices exclude VAT",
                 List.of(new Quotes.Line(sku, 3, List.of(new Quotes.Tier(2, new BigDecimal("3000"))))));
     }
 

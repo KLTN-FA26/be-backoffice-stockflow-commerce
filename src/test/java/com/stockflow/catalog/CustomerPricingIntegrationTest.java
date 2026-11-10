@@ -16,7 +16,6 @@ import com.stockflow.customer.api.CustomerService;
 import com.stockflow.customer.api.SaveAddressCommand;
 import com.stockflow.identity.api.IdentityService;
 import com.stockflow.identity.api.LoginCommand;
-import com.stockflow.order.api.PaymentTerm;
 import com.stockflow.order.internal.service.Quotes;
 import com.stockflow.support.ConfirmedDesigns;
 import com.stockflow.support.CustomerSkuRows;
@@ -266,7 +265,7 @@ class CustomerPricingIntegrationTest {
 
         CurrentUser salesUser = salesUser();
         Quotes.QuoteView quote = quotes.create(salesUser, new Quotes.Create(UUID.randomUUID(), buyer.customerId(),
-                new Quotes.Draft(PaymentTerm.PREPAID, null, Instant.now().plus(Duration.ofDays(7)), null,
+                new Quotes.Draft(Instant.now().plus(Duration.ofDays(7)), null,
                         List.of(new Quotes.Line(sku, 5, null)))));
         assertThat(quote.lines().getFirst().moq()).as("2 cartons").isEqualTo(2);
         assertThat(quote.lines().getFirst().tiers()).extracting(t -> t.minQuantity()).containsExactly(2, 5);
@@ -279,7 +278,7 @@ class CustomerPricingIntegrationTest {
 
         // Tiers Sales types in win over the customer's price.
         Quotes.QuoteView typed = quotes.create(salesUser, new Quotes.Create(UUID.randomUUID(), buyer.customerId(),
-                new Quotes.Draft(PaymentTerm.PREPAID, null, Instant.now().plus(Duration.ofDays(7)), null,
+                new Quotes.Draft(Instant.now().plus(Duration.ofDays(7)), null,
                         List.of(new Quotes.Line(sku, 3, List.of(new Quotes.Tier(1, new BigDecimal("12000"))))))));
         assertThat(typed.lines().getFirst().tiers()).extracting(t -> t.unitPrice().longValue()).containsExactly(12_000L);
     }
@@ -289,7 +288,7 @@ class CustomerPricingIntegrationTest {
         Buyer buyer = buyer("ACTIVE");
         String sku = ownSku(buyer);
         Quotes.Create create = new Quotes.Create(UUID.randomUUID(), buyer.customerId(),
-                new Quotes.Draft(PaymentTerm.PREPAID, null, Instant.now().plus(Duration.ofDays(7)), null,
+                new Quotes.Draft(Instant.now().plus(Duration.ofDays(7)), null,
                         List.of(new Quotes.Line(sku, 5, null))));
         org.assertj.core.api.Assertions.assertThatThrownBy(() -> quotes.create(salesUser(), create))
                 .isInstanceOfSatisfying(BusinessException.class, e -> {
@@ -357,7 +356,7 @@ class CustomerPricingIntegrationTest {
 
     private static Quotes.Create quote(Buyer buyer, String sku, String unitPrice) {
         return new Quotes.Create(UUID.randomUUID(), buyer.customerId(),
-                new Quotes.Draft(PaymentTerm.PREPAID, null, Instant.now().plus(Duration.ofDays(7)), null,
+                new Quotes.Draft(Instant.now().plus(Duration.ofDays(7)), null,
                         List.of(new Quotes.Line(sku, 1, List.of(new Quotes.Tier(1, new BigDecimal(unitPrice)))))));
     }
 

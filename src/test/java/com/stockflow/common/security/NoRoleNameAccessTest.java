@@ -100,10 +100,6 @@ class NoRoleNameAccessTest {
             new Allowed("identity/internal/service/PortalAccountServiceImpl.java", "\"The CUSTOMER role is seeded by migration",
                     "error message: a portal account is created with the CUSTOMER role"),
             // ---- not a role at all: the same word used for something else
-            new Allowed("payment/internal/controller/dto/ReceivableResponse.java", "allowableValues = {\"CUSTOMER\", \"CARRIER\"}",
-                    "the receivable's party type, not a role"),
-            new Allowed("payment/internal/repository/ReceivableBookAdapter.java", "collector = 'CUSTOMER'",
-                    "who collects a receivable (customer or carrier), not a role"),
             new Allowed("order/", "CUSTOMER, FRAUD", "the hold reason CUSTOMER (HoldReason), not a role"));
 
     private static final String CODES = Arrays.stream(Role.values()).map(Role::name).collect(Collectors.joining("|"));

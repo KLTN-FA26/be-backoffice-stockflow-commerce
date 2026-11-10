@@ -2,8 +2,6 @@ package com.stockflow.order.internal.domain;
 
 import com.stockflow.order.api.CancellationReasonCode;
 import com.stockflow.order.api.OrderStatus;
-import com.stockflow.order.api.PaymentStatus;
-import com.stockflow.order.api.PaymentTerm;
 import com.stockflow.common.domain.Money;
 import com.stockflow.common.domain.Sku;
 import com.stockflow.common.error.BusinessException;
@@ -33,8 +31,14 @@ class OrderTest {
 
     private static final UUID STAFF = UUID.randomUUID();
 
-    private static void paidInFull(Order order) {
-        order.recordPayment(order.total(), NOW);
+    /**
+     * Its contract sent and signed with nothing due on signing - CONFIRMED - shipping from {@link #HCM}: since 4B-10 the
+     * one way an order is confirmed (a free replacement of a return aside), its money on the contract's installments.
+     */
+    private static void confirmedByItsContract(Order order) {
+        order.sendContract(STAFF, NOW);
+        order.contractSigned(false, false, STAFF, NOW);
+        order.chooseShippingWarehouse(HCM, true, STAFF, NOW);
     }
 
     private static void cancel(Order order, String note) {
@@ -122,8 +126,9 @@ class OrderTest {
     @Test
     @DisplayName("cancellation is refused once the goods have shipped")
     void cannotCancelAfterShipment() {
-        Order order = submittedOrder();
-        paidInFull(order);
+        Order order = draftWithTwoLines();
+        order.lines().forEach(line -> order.attachReservations(line.id(), List.of(UUID.randomUUID())));
+        confirmedByItsContract(order);
         order.release(HCM, "HCM", COORDINATOR, NOW);
         order.startPicking(COORDINATOR, NOW);
         order.pullDomainEvents();
@@ -145,17 +150,6 @@ class OrderTest {
                 .hasMessageContaining("is CANCELLED and can no longer be cancelled")
                 .extracting(e -> ((BusinessException) e).errorCode())
                 .isEqualTo(ErrorCode.ORDER_NOT_CANCELLABLE);
-    }
-
-    @Test
-    @DisplayName("money arriving for a cancelled order is counted, and the order stays cancelled")
-    void payingACancelledOrderChangesNoStatus() {
-        Order order = submittedOrder();
-        cancel(order, "changed mind");
-
-        assertThat(order.recordPayment(order.total(), NOW)).isFalse();
-        assertThat(order.status()).isEqualTo(OrderStatus.CANCELLED);
-        assertThat(order.paidAmount()).isEqualByComparingTo("32000000");
     }
 
     @Test
@@ -184,10 +178,11 @@ class OrderTest {
     // ------------------------------------------------------------------ SCRUM-460
 
     @Test
-    @DisplayName("cancelling announces OrderCancelled with the money received and what is refundable")
+    @DisplayName("cancelling announces OrderCancelled; the money is the installments' to settle, never the order's")
     void cancellationAnnouncesItself() {
-        Order order = submittedOrder();
-        paidInFull(order);
+        Order order = draftWithTwoLines();
+        order.lines().forEach(line -> order.attachReservations(line.id(), List.of(UUID.randomUUID())));
+        confirmedByItsContract(order);
         order.pullDomainEvents();
         // Decision 2026-10-17: nothing is kept before printing; once printing started a share may be.
         assertThatThrownBy(() -> order.cancel(CancellationReasonCode.CUSTOMER_REQUEST, "changed supplier",
@@ -197,25 +192,31 @@ class OrderTest {
 
         order.cancel(CancellationReasonCode.CUSTOMER_REQUEST, "changed supplier", new BigDecimal("25"), STAFF, NOW);
 
-        assertThat(order.cancellationRetainedAmount()).isEqualByComparingTo("8000000");
+        // 4B-9, 4B-10: the share is settled by payment against the installments in the caller's transaction; the
+        // order keeps nothing and announces no money.
+        assertThat(order.cancellationRetainedAmount()).isEqualByComparingTo("0");
         assertThat(order.pullDomainEvents()).singleElement().isInstanceOfSatisfying(OrderEvent.Cancelled.class, e -> {
             assertThat(e.payload().orderId()).isEqualTo(order.id().value());
             assertThat(e.payload().previousStatus()).isEqualTo("CONFIRMED");
             assertThat(e.payload().reasonCode()).isEqualTo("CUSTOMER_REQUEST");
             assertThat(e.payload().note()).isEqualTo("changed supplier");
-            assertThat(e.payload().paidAmount()).isEqualByComparingTo("32000000");
-            assertThat(e.payload().refundableAmount()).isEqualByComparingTo("24000000");
+            assertThat(e.payload().paidAmount()).isEqualByComparingTo("0");
+            assertThat(e.payload().refundableAmount()).isEqualByComparingTo("0");
+            assertThat(e.payload().owedAmount()).isEqualByComparingTo("0");
             assertThat(e.payload().currency()).isEqualTo("VND");
             assertThat(e.payload().cancelledBy()).isEqualTo(STAFF);
         });
     }
 
     @Test
-    @DisplayName("an unpaid order refunds nothing; a retained share outside 0-100 is refused")
+    @DisplayName("a retained share outside 0-100, or past two decimals, is refused; the system cancels in no one's name")
     void unpaidCancellationAndRetainedBounds() {
         Order order = submittedOrder();
         assertThatThrownBy(() -> order.cancel(CancellationReasonCode.CUSTOMER_REQUEST, null, new BigDecimal("101"),
                 STAFF, NOW)).extracting(e -> ((BusinessException) e).errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThatThrownBy(() -> order.cancel(CancellationReasonCode.CUSTOMER_REQUEST, null, new BigDecimal("12.345"),
+                STAFF, NOW)).extracting(e -> ((BusinessException) e).errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThat(order.status()).as("a refused cancellation leaves it as it was").isEqualTo(OrderStatus.PENDING_PAYMENT);
 
         order.cancel(CancellationReasonCode.PAYMENT_NOT_RECEIVED, null, null, null, NOW);
         assertThat(order.pullDomainEvents()).singleElement().isInstanceOfSatisfying(OrderEvent.Cancelled.class, e -> {
@@ -225,136 +226,68 @@ class OrderTest {
         });
     }
 
+    // ------------------------------------------------------------------ confirmation (4B-5, 4B-6; 4B-10)
+
     @Test
-    @DisplayName("kltn-docs 15 BR-02: prepaid is CONFIRMED only when paid in full; part payments add up")
-    void prepaidConfirmsWhenPaidInFull() {
+    @DisplayName("an order placed at checkout waits in PENDING_PAYMENT: no money in the system confirms it any more")
+    void checkoutOrderIsNeverConfirmedByMoney() {
         Order order = submittedOrder();
-        assertThat(order.paymentStatus()).isEqualTo(PaymentStatus.UNPAID);
-
-        assertThat(order.recordPayment(Money.vnd(12_000_000), NOW)).isFalse();
+        assertThat(order.confirmByInstallments(NOW)).as("not an order of a contract").isFalse();
         assertThat(order.status()).isEqualTo(OrderStatus.PENDING_PAYMENT);
-        assertThat(order.paymentStatus()).isEqualTo(PaymentStatus.PARTIALLY_PAID);
-
-        assertThat(order.recordPayment(Money.vnd(20_000_000), NOW)).isTrue();
-        assertThat(order.status()).isEqualTo(OrderStatus.CONFIRMED);
-        assertThat(order.paidInFullAt()).isEqualTo(NOW);
-        assertThat(order.paymentStatus()).isEqualTo(PaymentStatus.PAID);
+        assertThat(order.paidByContract()).isFalse();
     }
 
     @Test
-    @DisplayName("a deposit order: terms at placement, CONFIRMED on the deposit, the balance never moves it")
-    void depositConfirmsOnTheDeposit() {
-        UUID snapshot = UUID.randomUUID();
-        Order order = Order.draft(NUMBER, UUID.randomUUID(), UUID.randomUUID(), List.of(
-                Order.line(new Sku("CUP-12OZ-WHITE"), 500, Money.vnd(2_000), snapshot)), NOW);
-        order.applyTerms(PaymentTerm.DEPOSIT, new BigDecimal("30"));
-        assertThat(order.depositRequired()).isEqualByComparingTo("300000");
-        order.lines().forEach(line -> order.attachReservations(line.id(), List.of(UUID.randomUUID())));
-        order.submit();
+    @DisplayName("15 BR-07: signed with an installment on signing it waits for it; without one it is CONFIRMED at once")
+    void signedOrderIsConfirmedByItsInstallments() {
+        Order waits = draftWithTwoLines();
+        waits.sendContract(STAFF, NOW);
+        waits.contractSigned(false, true, STAFF, NOW);
+        assertThat(waits.status()).isEqualTo(OrderStatus.PENDING_PAYMENT);
+        assertThat(waits.paidByContract()).isTrue();
+        assertThat(waits.placedAt()).as("placed when signed (17 §4.11)").isEqualTo(NOW);
+        assertThat(waits.pullDomainEvents()).singleElement().isInstanceOf(OrderEvent.Placed.class);
+        assertThat(waits.confirmByInstallments(NOW)).isTrue();
+        assertThat(waits.status()).isEqualTo(OrderStatus.CONFIRMED);
 
-        assertThat(order.recordPayment(Money.vnd(100_000), NOW)).isFalse();
-        assertThat(order.recordPayment(Money.vnd(200_000), NOW)).isTrue();
-        assertThat(order.status()).isEqualTo(OrderStatus.CONFIRMED);
-        assertThat(order.depositReceivedAt()).isEqualTo(NOW);
-        assertThat(order.paymentStatus()).isEqualTo(PaymentStatus.PARTIALLY_PAID);
-
-        order.release(HCM, "HCM", COORDINATOR, NOW);
-        assertThat(order.recordPayment(Money.vnd(700_000), NOW)).isFalse();
-        assertThat(order.status()).isEqualTo(OrderStatus.READY_TO_FULFILL);
-        assertThat(order.paymentStatus()).isEqualTo(PaymentStatus.PAID);
+        Order atOnce = draftWithTwoLines();
+        atOnce.sendContract(STAFF, NOW);
+        atOnce.contractSigned(false, false, STAFF, NOW);
+        assertThat(atOnce.status()).isEqualTo(OrderStatus.CONFIRMED);
     }
 
     @Test
-    @DisplayName("terms: CREDIT needs its days to pay, a deposit a percentage in (0, 100), prepaid takes none")
-    void termsAreChecked() {
-        assertThatThrownBy(() -> draftWithTwoLines().applyTerms(PaymentTerm.CREDIT, null))
-                .extracting(e -> ((BusinessException) e).errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
-        assertThatThrownBy(() -> draftWithTwoLines().applyTerms(PaymentTerm.DEPOSIT, new BigDecimal("100")))
-                .extracting(e -> ((BusinessException) e).errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
-        assertThatThrownBy(() -> draftWithTwoLines().applyTerms(PaymentTerm.PREPAID, new BigDecimal("30")))
-                .extracting(e -> ((BusinessException) e).errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
-        Order prepaid = draftWithTwoLines();
-        prepaid.applyTerms(null, null);
-        assertThat(prepaid.paymentTerm()).isEqualTo(PaymentTerm.PREPAID);
-        assertThat(prepaid.depositRequired()).isNull();
-    }
-
-    // ------------------------------------------------------------------ credit (SCRUM-427)
-
-    private static Order creditDraft() {
-        Order order = draftWithTwoLines();
-        order.applyTerms(PaymentTerm.CREDIT, null, 30);
-        order.lines().forEach(line -> order.attachReservations(line.id(), List.of(UUID.randomUUID())));
-        return order;
-    }
-
-    @Test
-    @DisplayName("kltn-docs 17 §5: a credit order skips PENDING_PAYMENT — CONFIRMED within the limit, ON_HOLD over it")
-    void creditOrderSkipsPendingPayment() {
-        Order within = creditDraft();
-        within.submitOnCredit(true);
-        assertThat(within.status()).isEqualTo(OrderStatus.CONFIRMED);
-        assertThat(within.creditTermDays()).isEqualTo(30);
-        assertThat(within.paymentStatus()).isEqualTo(PaymentStatus.ON_CREDIT);
-        assertThat(within.pullDomainEvents()).singleElement().isInstanceOf(OrderEvent.Placed.class);
-
-        Order over = creditDraft();
-        over.submitOnCredit(false);
+    @DisplayName("15 BR-11: signed while what it pays after delivery does not fit - held for credit until accounting decides")
+    void creditHoldAtSigning() {
+        Order over = draftWithTwoLines();
+        over.sendContract(STAFF, NOW);
+        over.contractSigned(true, true, STAFF, NOW);
         assertThat(over.status()).isEqualTo(OrderStatus.ON_HOLD);
-        over.approveCredit();
-        assertThat(over.status()).isEqualTo(OrderStatus.CONFIRMED);
-        assertThatThrownBy(over::approveCredit)
+        assertThat(over.holdReason()).isEqualTo(com.stockflow.order.api.HoldReason.CREDIT);
+        over.approveCredit(STAFF, NOW, true);
+        assertThat(over.status()).as("approved, it still waits for its installment on signing")
+                .isEqualTo(OrderStatus.PENDING_PAYMENT);
+        assertThatThrownBy(() -> over.approveCredit(STAFF, NOW, false))
                 .extracting(e -> ((BusinessException) e).errorCode()).isEqualTo(ErrorCode.ORDER_NOT_ON_CREDIT_HOLD);
     }
 
     @Test
-    @DisplayName("SCRUM-431: delivered from SHIPPED, announced with what the credit order still owes")
+    @DisplayName("delivered from SHIPPED, announced with its total - and none of the money ledger's fields (4B-10)")
     void delivery() {
         Order order = new Order(OrderId.newId(), NUMBER, UUID.randomUUID(), UUID.randomUUID(), List.of(
                 Order.line(new Sku("SOFA-3S-GREY"), 1, Money.vnd(12_000_000), null)), OrderStatus.SHIPPED, NOW, null, 0L);
-        order.restoreTermsAndRelease(PaymentTerm.CREDIT, null, null, null, null, null);
-        order.restorePaymentAndCancellation(new BigDecimal("2000000"), null, null, null, 30);
 
         order.markDelivered(NOW);
 
         assertThat(order.status()).isEqualTo(OrderStatus.DELIVERED);
         assertThat(order.pullDomainEvents()).singleElement().isInstanceOfSatisfying(OrderEvent.Delivered.class, e -> {
-            assertThat(e.payload().paymentTerm()).isEqualTo("CREDIT");
             assertThat(e.payload().orderTotal()).isEqualByComparingTo("12000000");
-            assertThat(e.payload().paidAmount()).isEqualByComparingTo("2000000");
-            assertThat(e.payload().creditTermDays()).isEqualTo(30);
+            assertThat(e.payload().paymentTerm()).isNull();
+            assertThat(e.payload().paidAmount()).isNull();
+            assertThat(e.payload().creditTermDays()).isNull();
             assertThat(e.payload().deliveredAt()).isEqualTo(NOW);
         });
         assertThatThrownBy(() -> order.markDelivered(NOW)).isInstanceOf(InvalidOrderTransitionException.class);
-    }
-
-    @Test
-    @DisplayName("refused credit, paid another way: the hold ends in PENDING_PAYMENT on the new terms")
-    void refusedCreditSwitchesTerms() {
-        Order over = creditDraft();
-        over.submitOnCredit(false);
-
-        assertThatThrownBy(() -> over.switchTermsAfterCreditRefusal(PaymentTerm.DEPOSIT, new BigDecimal("100")))
-                .extracting(e -> ((BusinessException) e).errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
-        assertThat(over.paymentTerm()).isEqualTo(PaymentTerm.CREDIT);
-        assertThat(over.creditTermDays()).isEqualTo(30);
-
-        over.switchTermsAfterCreditRefusal(PaymentTerm.DEPOSIT, new BigDecimal("40"));
-        assertThat(over.status()).isEqualTo(OrderStatus.PENDING_PAYMENT);
-        assertThat(over.paymentTerm()).isEqualTo(PaymentTerm.DEPOSIT);
-        assertThat(over.depositRequired()).isEqualByComparingTo("12800000");
-        assertThat(over.creditTermDays()).isNull();
-    }
-
-    @Test
-    @DisplayName("only a credit order has days to pay, and only a credit order is submitted on credit")
-    void creditDaysBelongToCredit() {
-        assertThatThrownBy(() -> draftWithTwoLines().applyTerms(PaymentTerm.CREDIT, null, null))
-                .extracting(e -> ((BusinessException) e).errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
-        assertThatThrownBy(() -> draftWithTwoLines().applyTerms(PaymentTerm.PREPAID, null, 30))
-                .extracting(e -> ((BusinessException) e).errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
-        Order prepaid = draftWithTwoLines();
-        assertThatThrownBy(() -> prepaid.submitOnCredit(true)).isInstanceOf(IllegalStateException.class);
     }
 
     @Test
@@ -414,8 +347,7 @@ class OrderTest {
                 Order.line(new Sku("CUP-12OZ-WHITE"), 500, Money.vnd(2_000), withPrintLine ? snapshot : null),
                 Order.line(new Sku("LID-90MM"), 500, Money.vnd(300), null)), NOW);
         order.lines().forEach(line -> order.attachReservations(line.id(), List.of(UUID.randomUUID())));
-        order.submit();
-        paidInFull(order);
+        confirmedByItsContract(order);
         order.pullDomainEvents();
         return order;
     }
@@ -450,8 +382,7 @@ class OrderTest {
                 Order.line(new Sku("CUP-12OZ-BLACK"), 300, Money.vnd(2_000), UUID.randomUUID()),
                 Order.line(new Sku("LID-90MM"), 500, Money.vnd(300), null)), NOW);
         order.lines().forEach(line -> order.attachReservations(line.id(), List.of(UUID.randomUUID())));
-        order.submit();
-        paidInFull(order);
+        confirmedByItsContract(order);
         order.pullDomainEvents();
 
         order.release(HCM, "HCM", COORDINATOR, NOW);
@@ -485,7 +416,7 @@ class OrderTest {
     }
 
     @Test
-    @DisplayName("an unpaid order is not released; a paid order with print lines does not skip production")
+    @DisplayName("an order waiting for its money is not released; a confirmed one is not picked before; released once")
     void releaseRefusals() {
         Order unpaid = draftWithTwoLines();
         unpaid.lines().forEach(line -> unpaid.attachReservations(line.id(), List.of(UUID.randomUUID())));
@@ -501,23 +432,5 @@ class OrderTest {
         released.release(HCM, "HCM", COORDINATOR, NOW);
         assertThatThrownBy(() -> released.release(HCM, "HCM", COORDINATOR, NOW))
                 .isInstanceOf(InvalidOrderTransitionException.class);
-    }
-
-    @Test
-    @DisplayName("BR-PRD-09: a deposit order is not released before its deposit is in")
-    void depositOrder() {
-        Order deposit = Order.draft(NUMBER, UUID.randomUUID(), UUID.randomUUID(), List.of(
-                Order.line(new Sku("CUP-12OZ-WHITE"), 500, Money.vnd(2_000), UUID.randomUUID())), NOW);
-        deposit.applyTerms(PaymentTerm.DEPOSIT, new BigDecimal("30"));
-        deposit.lines().forEach(line -> deposit.attachReservations(line.id(), List.of(UUID.randomUUID())));
-        deposit.submit();
-
-        assertThatThrownBy(() -> deposit.release(HCM, "HCM", COORDINATOR, NOW))
-                .isInstanceOfSatisfying(BusinessException.class,
-                        e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.ORDER_DEPOSIT_NOT_RECEIVED));
-
-        deposit.recordPayment(Money.vnd(300_000), NOW);
-        deposit.release(HCM, "HCM", COORDINATOR, NOW);
-        assertThat(deposit.status()).isEqualTo(OrderStatus.READY_TO_FULFILL);
     }
 }

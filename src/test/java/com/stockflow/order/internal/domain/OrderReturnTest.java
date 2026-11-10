@@ -4,11 +4,9 @@ import com.stockflow.common.domain.Money;
 import com.stockflow.common.domain.Sku;
 import com.stockflow.contracts.OrderPlaced;
 import com.stockflow.order.api.OrderStatus;
-import com.stockflow.order.api.PaymentTerm;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
-import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
@@ -32,8 +30,7 @@ class OrderReturnTest {
                 UUID.randomUUID(), UUID.randomUUID(), List.of(Order.line(new Sku("CUP-12OZ"), 10, Money.vnd(1_000), null)),
                 OrderStatus.DELIVERED, NOW.minus(Duration.ofDays(10)), null, 2L);
         order.restoreLifecycle(null, null, null, NOW.minus(Duration.ofDays(3)), NOW.minus(Duration.ofDays(2)), null, null,
-                null, null, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO);
-        order.restorePaymentAndCancellation(BigDecimal.valueOf(10_000), NOW.minus(Duration.ofDays(9)), null, null, null);
+                null, null);
         return order;
     }
 
@@ -44,7 +41,7 @@ class OrderReturnTest {
         assertThat(order.requestReturn(STAFF, NOW, "RETURN_REQUESTED RMA-1")).isTrue();
         assertThat(order.requestReturn(STAFF, NOW, "RETURN_REQUESTED RMA-2")).isFalse();
         assertThat(order.status()).isEqualTo(OrderStatus.RETURN_REQUESTED);
-        assertThat(order.complete(NOW.plus(Duration.ofDays(30)), Duration.ofDays(7), false)).isFalse();
+        assertThat(order.complete(NOW.plus(Duration.ofDays(30)), Duration.ofDays(7), false, false)).isFalse();
         assertThat(order.pullTransitions()).singleElement().satisfies(t -> {
             assertThat(t.to()).isEqualTo(OrderStatus.RETURN_REQUESTED);
             assertThat(t.reason()).isEqualTo("RETURN_REQUESTED RMA-1");
@@ -59,7 +56,7 @@ class OrderReturnTest {
         assertThat(order.withdrawReturn(STAFF, NOW, "RETURN_REJECTED RMA-1")).isTrue();
         assertThat(order.withdrawReturn(STAFF, NOW, "again")).isFalse();
         assertThat(order.status()).isEqualTo(OrderStatus.DELIVERED);
-        assertThat(order.complete(NOW.plus(Duration.ofDays(6)), Duration.ofDays(7), false)).isTrue();
+        assertThat(order.complete(NOW.plus(Duration.ofDays(6)), Duration.ofDays(7), false, false)).isTrue();
     }
 
     @Test
@@ -73,7 +70,7 @@ class OrderReturnTest {
         assertThat(partly.refundedAt()).isEqualTo(NOW);
         assertThat(partly.pullTransitions()).extracting(OrderTransition::to)
                 .containsExactly(OrderStatus.RETURNED, OrderStatus.PARTIALLY_REFUNDED);
-        assertThat(partly.close(NOW.plus(Duration.ofDays(31)), Duration.ofDays(30))).isTrue();
+        assertThat(partly.close(NOW.plus(Duration.ofDays(31)), Duration.ofDays(30), false)).isTrue();
 
         Order whole = delivered();
         whole.requestReturn(STAFF, NOW, null);
@@ -83,11 +80,10 @@ class OrderReturnTest {
     }
 
     @Test
-    @DisplayName("a replacement order costs nothing, is paid in full at once and CONFIRMED, announced as placed")
+    @DisplayName("a replacement order costs nothing, is CONFIRMED at once as a replacement, announced as placed")
     void replacement() {
         Order free = Order.draft(OrderNumber.of(LocalDate.of(2026, 10, 22), 9), UUID.randomUUID(), UUID.randomUUID(),
                 List.of(Order.line(new Sku("CUP-12OZ"), 3, Money.vnd(0), null)), NOW);
-        free.applyTerms(PaymentTerm.PREPAID, null);
         UUID returnId = UUID.randomUUID();
         free.replacesReturn(returnId);
         UUID settler = UUID.randomUUID();

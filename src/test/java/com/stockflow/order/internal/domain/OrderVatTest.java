@@ -4,7 +4,6 @@ import com.stockflow.common.domain.Money;
 import com.stockflow.common.domain.Sku;
 import com.stockflow.order.api.DeliveryFailureReason;
 import com.stockflow.order.api.FeeKind;
-import com.stockflow.order.api.PaymentTerm;
 import com.stockflow.order.api.ShipmentHandover;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -87,13 +86,18 @@ class OrderVatTest {
     private static final Instant NOW = Instant.parse("2026-11-09T03:00:00Z");
     private static final UUID STAFF = UUID.randomUUID();
 
-    /** Placed on credit, split shipments allowed, released and packed: ready to hand over a few units at a time. */
+    /**
+     * Its contract signed (confirmed, nothing due on signing), split shipments allowed, released from its shipping
+     * warehouse and packed: ready to hand over a few units at a time.
+     */
     private static Order packed(Order order) {
-        order.applyTerms(PaymentTerm.CREDIT, null, 30, null);
         order.lines().forEach(line -> order.attachReservations(line.id(), List.of(UUID.randomUUID())));
         order.decidePartialShipment(true);
-        order.submitOnCredit(true);
-        order.release(UUID.randomUUID(), "HCM", STAFF, NOW);
+        order.sendContract(STAFF, NOW);
+        order.contractSigned(false, false, STAFF, NOW);
+        UUID warehouse = UUID.randomUUID();
+        order.chooseShippingWarehouse(warehouse, true, STAFF, NOW);
+        order.release(warehouse, "HCM", STAFF, NOW);
         order.startPicking(STAFF, NOW);
         order.markPacked(NOW, STAFF);
         return order;

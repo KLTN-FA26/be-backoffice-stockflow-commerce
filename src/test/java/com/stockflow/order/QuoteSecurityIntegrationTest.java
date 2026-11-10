@@ -95,7 +95,7 @@ class QuoteSecurityIntegrationTest {
 
     /** 3 cartons of the customer's own SKU (4B-2), 3,000 VND a piece from 2 cartons. */
     private Map<String, Object> createBody(UUID customer, String sku) {
-        return Map.of("requestId", UUID.randomUUID(), "customerId", customer, "paymentTerm", "PREPAID",
+        return Map.of("requestId", UUID.randomUUID(), "customerId", customer,
                 "validUntil", Instant.now().plus(Duration.ofDays(7)).toString(),
                 "lines", List.of(Map.of("sku", sku, "cartons", 3,
                         "tiers", List.of(Map.of("minQuantity", 2, "unitPrice", 3000)))));
@@ -135,7 +135,7 @@ class QuoteSecurityIntegrationTest {
                     + "version, created_at) VALUES (?, ?, 1, 2800, 0, NOW())", UUID.randomUUID(), price);
         });
         send(post(QUOTES), sales, Map.of("requestId", UUID.randomUUID(), "customerId", customerA,
-                "paymentTerm", "PREPAID", "validUntil", Instant.now().plus(Duration.ofDays(7)).toString(),
+                "validUntil", Instant.now().plus(Duration.ofDays(7)).toString(),
                 "lines", List.of(Map.of("sku", sku, "cartons", 3))))
                 .andExpect(status().isCreated()).andExpect(jsonPath("$.data.lines[0].tiers.length()").value(1));
 

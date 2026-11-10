@@ -4,7 +4,6 @@ import com.stockflow.common.domain.Money;
 import com.stockflow.common.domain.Sku;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
-import com.stockflow.order.api.PaymentTerm;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -53,7 +52,6 @@ class SalesContractTest {
         assertThatThrownBy(() -> SalesContract.requireContractable(order(false)))
                 .extracting(SalesContractTest::code).isEqualTo(ErrorCode.SALES_CONTRACT_ORDER_NOT_CARTONS);
         Order placed = order(true);
-        placed.applyTerms(PaymentTerm.PREPAID, null, null, null);
         placed.lines().forEach(line -> placed.attachReservations(line.id(), List.of(UUID.randomUUID())));
         placed.submit();
         assertThatThrownBy(() -> SalesContract.requireContractable(placed))

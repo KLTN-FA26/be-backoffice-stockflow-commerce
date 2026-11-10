@@ -15,7 +15,6 @@ import com.stockflow.common.storage.IncomingFiles;
 import com.stockflow.inventory.internal.service.PutawayService;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
-import com.stockflow.order.api.PaymentTerm;
 import com.stockflow.order.api.ProductionOrderReceiving;
 import com.stockflow.order.api.ReceivableProductionOrder;
 import com.stockflow.order.internal.domain.Order;
@@ -274,7 +273,6 @@ class ProductionReceiptIntegrationTest {
                     .withTax(BigDecimal.TEN);
             Order order = Order.draft(OrderNumber.of(today, ORDER_NUMBERS.incrementAndGet()),
                     customerId, Identifiers.newId(), List.of(line), Instant.now());
-            order.applyTerms(PaymentTerm.PREPAID, null, null, null);
             return orderRepository.save(order).id().value();
         });
     }
