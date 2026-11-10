@@ -52,7 +52,10 @@ public class ShippedCartonQueries {
 
     /**
      * The cartons of the order {@code orderId} that left on these shipments, by LPN: the shipping cartons labelled on
-     * them, each with what its pick line took.
+     * them, each with what its pick line took - and only while that pick is the carton's last (review L4 of cluster 1).
+     * A carton that came back on an earlier return receipt, went back into stock and was picked again (for another
+     * order, or another shipment of this one) is that later pick's: counting it here would let a return receipt of the
+     * first shipment take it back a second time.
      */
     @SuppressWarnings("unchecked")
     public List<Row> cartonsOn(UUID orderId, Collection<UUID> shipmentIds) {
@@ -66,6 +69,8 @@ public class ShippedCartonQueries {
                           JOIN fulfillment.pick k ON k.id = l.pick_id
                          WHERE k.order_id = :order AND p.shipment_id IN (:shipments) AND p.status = 'LABELED'
                            AND l.picked_qty > 0
+                           AND NOT EXISTS (SELECT 1 FROM fulfillment.pick_line n
+                                            WHERE n.lpn = l.lpn AND n.id <> l.id AND n.consumed_at > l.consumed_at)
                          ORDER BY l.lpn, l.id""")
                 .setParameter("order", orderId).setParameter("shipments", shipmentIds).getResultList();
         return rows.stream()
