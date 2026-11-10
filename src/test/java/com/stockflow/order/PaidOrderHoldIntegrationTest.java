@@ -141,15 +141,16 @@ class PaidOrderHoldIntegrationTest {
 
         Await.until("the holds expired", ASYNC, () -> holdStates(orderId).stream()
                 .allMatch(state -> state.startsWith("EXPIRED")));
-        // The expiry event is no longer the order's to answer, however long the asynchronous listeners are given.
-        Thread.sleep(1_500);
+        // The expiry event is no longer the order's to answer. The registry writes one row per listener in the
+        // sweep's own transaction, so which listeners exist is known now, with no waiting: none is the order's.
+        assertThat(jdbc.queryForList("""
+                SELECT listener_id FROM event_publication WHERE event_type LIKE '%StockReservationReleased'
+                  AND serialized_event LIKE ?""", String.class, "%" + orderId + "%"))
+                .noneMatch(listener -> listener.contains("com.stockflow.order."));
+        assertThat(context.containsBean("inventoryEventListener")).isFalse();
         assertThat(statusOf(orderId)).as("nothing cancels it on its own any more").isEqualTo(OrderStatus.PENDING_PAYMENT);
         assertThat(jdbc.queryForObject("SELECT cancellation_reason FROM ordering.customer_order WHERE id = ?",
                 String.class, orderId)).isNull();
-        assertThat(jdbc.queryForObject("""
-                SELECT count(*) FROM event_publication WHERE completion_date IS NULL
-                  AND (listener_id LIKE '%InventoryEventListener%' OR event_type LIKE '%OrderCancellationReferred')""",
-                Integer.class)).isZero();
         assertThat(inventory.availableToPromise(SOFA)).as("the stock is back on sale").isEqualTo(before);
 
         cleanUp(orderId);
@@ -168,13 +169,12 @@ class PaidOrderHoldIntegrationTest {
         assertThat(statusOf(orderId)).isEqualTo(OrderStatus.CANCELLED);
 
         paymentCaptured(orderId);
-        // The listener runs asynchronously; give it the same window, then check nothing moved.
-        Thread.sleep(1_500);
+        // The listener runs asynchronously: wait until the registry says it handled the event, then check nothing moved.
+        Await.until("the payment event was handled", ASYNC, () -> jdbc.queryForObject("""
+                SELECT count(*) FROM event_publication WHERE event_type LIKE '%PaymentCaptured'
+                  AND serialized_event LIKE ? AND completion_date IS NOT NULL""", Integer.class,
+                "%" + orderId + "%") > 0);
         assertThat(statusOf(orderId)).isEqualTo(OrderStatus.CANCELLED);
-        assertThat(jdbc.queryForObject("""
-                SELECT count(*) FROM event_publication
-                WHERE event_type LIKE '%PaymentCaptured' AND completion_date IS NULL
-                  AND serialized_event LIKE ?""", Integer.class, "%" + orderId + "%")).isZero();
         assertThat(inventory.availableToPromise(SOFA)).isEqualTo(before);
     }
 }
