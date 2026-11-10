@@ -317,4 +317,65 @@ class PickListStagingTest {
                 null, null, 0, null, null, null, 0, null, LPN, true, 0, null, 0, NOW, null))
                 .isInstanceOf(IllegalArgumentException.class);
     }
+
+    @Nested
+    @DisplayName("a staged carton found missing or damaged at the staging area (review M2)")
+    class ShortAtStaging {
+
+        @Test
+        @DisplayName("in a STAGED task and in a PICKING task the line turns SHORT, nothing picked, scanned at the staging area")
+        void staged_line_turns_short() {
+            for (PickStatus status : List.of(PickStatus.STAGED, PickStatus.PICKING)) {
+                PickLine line = staged("SOFA", "HCM-A01-2-B", 4, LPN);
+                var list = stagingList(status, line);
+
+                var outcome = list.reportShort(line.id(), STAGING.toLowerCase(), ShortPickReason.NOT_FOUND);
+
+                assertThat(outcome.repeated()).as(status.name()).isFalse();
+                assertThat(line.status()).isEqualTo(PickLineStatus.SHORT);
+                assertThat(line.shortQty()).isEqualTo(4);
+                assertThat(line.shortReason()).isEqualTo(ShortPickReason.NOT_FOUND);
+                assertThat(line.pickedQty()).isZero();
+                assertThat(line.consumedAt()).isNull();
+            }
+        }
+
+        @Test
+        @DisplayName("scanning the bin instead of the staging area is PICK_LOCATION_MISMATCH and changes nothing")
+        void bin_is_the_wrong_place() {
+            PickLine line = staged("SOFA", "HCM-A01-2-B", 4, LPN);
+            var list = stagingList(PickStatus.STAGED, line);
+
+            assertThat(refusal(() -> list.reportShort(line.id(), "HCM-A01-2-B", ShortPickReason.NOT_FOUND)))
+                    .isEqualTo(ErrorCode.PICK_LOCATION_MISMATCH);
+            assertThat(line.status()).isEqualTo(PickLineStatus.STAGED);
+        }
+
+        @Test
+        @DisplayName("the same report again is answered as it is; another status of the task refuses")
+        void repeat_and_states() {
+            PickLine line = staged("SOFA", "HCM-A01-2-B", 4, LPN);
+            var list = stagingList(PickStatus.STAGED, line);
+            list.reportShort(line.id(), STAGING, ShortPickReason.DAMAGED);
+
+            assertThat(list.reportShort(line.id(), STAGING, ShortPickReason.DAMAGED).repeated()).isTrue();
+
+            PickLine other = staged("CUP", "HCM-A02-1-A", 4, OTHER_LPN);
+            assertThat(refusal(() -> stagingList(PickStatus.PICKED, other)
+                    .reportShort(other.id(), STAGING, ShortPickReason.NOT_FOUND)))
+                    .isEqualTo(ErrorCode.PICK_TASK_STATE_CONFLICT);
+        }
+
+        @Test
+        @DisplayName("a STAGED task with a SHORT line does not move to dispatch: PICK_LINES_INCOMPLETE")
+        void dispatch_refused_while_short() {
+            PickLine good = staged("SOFA", "HCM-A01-2-B", 4, LPN);
+            PickLine missing = staged("CUP", "HCM-A02-1-A", 4, OTHER_LPN);
+            var list = stagingList(PickStatus.STAGED, good, missing);
+            list.reportShort(missing.id(), STAGING, ShortPickReason.NOT_FOUND);
+
+            assertThat(refusal(list::moveToDispatch)).isEqualTo(ErrorCode.PICK_LINES_INCOMPLETE);
+            assertThat(good.status()).isEqualTo(PickLineStatus.STAGED);
+        }
+    }
 }

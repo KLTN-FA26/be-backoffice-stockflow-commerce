@@ -69,11 +69,13 @@ class PickListServiceTest {
     private final PickConsumption consumption = mock(PickConsumption.class);
     private final WarehouseService warehouses = mock(WarehouseService.class);
     private final OrderReservations orderReservations = mock(OrderReservations.class);
+    private final com.stockflow.fulfillment.internal.repository.PackJpaRepository packs =
+            mock(com.stockflow.fulfillment.internal.repository.PackJpaRepository.class);
     private final PickListService service = new PickListService(picks, pickLines, orders, inventory, itemControls,
             consumption, warehouses, Clock.fixed(NOW, ZoneOffset.UTC), orderReservations,
             mock(com.stockflow.inventory.consumption.PickDamageReporting.class),
             org.springframework.transaction.support.TransactionOperations.withoutTransaction(),
-            mock(com.stockflow.fulfillment.internal.repository.PackJpaRepository.class));
+            packs);
 
     private final UUID picker = UUID.randomUUID();
     private final CurrentUser actor = new CurrentUser(picker, "picker",
@@ -1054,6 +1056,47 @@ class PickListServiceTest {
 
             assertThat(rows).extracting(row -> row.lpn() + "@" + row.fromLocationCode())
                     .containsExactly("LPN-SKU-A@" + AREA, "LPN-SKU-B@HCM-A-02");
+        }
+
+        private void aTopUpIsPossibleWith(OrderStatus orderStatus) {
+            stagingTaskIs(PickStatus.STAGED);
+            stagedLine("SKU-A", "HCM-A-01", 3, reservation);
+            UUID later = UUID.randomUUID();
+            holdsInHcm(later, "HCM-A-05", "LPN-NEW");
+            when(orders.findById(task.getOrderId())).thenReturn(Optional.of(FulfillmentFixtures.orderWith(
+                    task.getOrderId(), orderStatus, List.of(FulfillmentFixtures.stockLine("SKU-A", reservation, later)),
+                    orderStatus == OrderStatus.ON_HOLD ? com.stockflow.order.api.HoldReason.OTHER : null)));
+        }
+
+        @Test
+        @DisplayName("review L1: a top-up of a task whose pack is PACKED or CANCELLED is PICK_TASK_STATE_CONFLICT, nothing planned")
+        void topUpRefusedAfterPacking() {
+            for (com.stockflow.fulfillment.internal.domain.PackStatus status : List.of(
+                    com.stockflow.fulfillment.internal.domain.PackStatus.PACKED,
+                    com.stockflow.fulfillment.internal.domain.PackStatus.CANCELLED)) {
+                aTopUpIsPossibleWith(OrderStatus.PICKING);
+                when(packs.findByPickId(task.getId())).thenReturn(Optional.of(
+                        new com.stockflow.fulfillment.internal.entity.PackJpaEntity(UUID.randomUUID(), task.getId(),
+                                status, NOW)));
+
+                assertThat(refusal(() -> service.topUp(task.getId(), actor)).errorCode()).as(status.name())
+                        .isEqualTo(ErrorCode.PICK_TASK_STATE_CONFLICT);
+            }
+            verify(pickLines, never()).saveAll(any());
+            verify(orders, never()).startPicking(any(), any());
+        }
+
+        @Test
+        @DisplayName("review L1: a top-up that adds lines moves a READY_TO_FULFILL order to PICKING; an ON_HOLD order stays held")
+        void topUpMovesTheOrderToPicking() {
+            aTopUpIsPossibleWith(OrderStatus.READY_TO_FULFILL);
+            assertThat(service.topUp(task.getId(), actor)).hasSize(1);
+            verify(orders).startPicking(task.getOrderId(), picker);
+
+            org.mockito.Mockito.clearInvocations(orders);
+            aTopUpIsPossibleWith(OrderStatus.ON_HOLD);
+            assertThat(service.topUp(task.getId(), actor)).hasSize(1);
+            verify(orders, never()).startPicking(any(), any());
         }
     }
 }
