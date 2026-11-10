@@ -71,9 +71,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 /**
  * G4-5 (SCRUM-278/281/282) through the real filter chain, permission aspect, warehouse scope and database: the packing
  * queue, scan-to-verify (wrong item, over-scan, lot), packages with weight and size, the label, completing into a
- * shipment READY_TO_DISPATCH and the order PACKED; two packers on one order; undoing a package; the warning that a
- * contract's installment before delivery is still unpaid (kltn-docs 08, 09 §5, 15 BR-08). Nothing is collected on
- * delivery (09 BR-08), so a label carries no amount.
+ * shipment READY_TO_DISPATCH and the order PACKED; two packers on one order; undoing a package; an order still owing
+ * its installment before delivery packed all the same (kltn-docs 08, 09 §5, 15 BR-08). Nothing is collected on delivery
+ * (09 BR-08), so a label carries no amount.
  *
  * <p>Every order is a contract's, confirmed by its installment on signing ({@link ConfirmedOrders}), so its lines are
  * the demo customer's own SKUs (14 BR-04) in cartons of at least two: a sofa (two packages, packed as a kit) and a
@@ -519,22 +519,20 @@ class PackingStationIntegrationTest {
     // ---- money ---------------------------------------------------------------------------------------
 
     @Test
-    @DisplayName("G3-Q4, 15 BR-08: an order whose installment before delivery is unpaid shows what is still due at "
-            + "packing (session and completion) - packing is not blocked, the handover will be")
-    void aDepositOrderShowsPaymentDueAtPacking() throws Exception {
+    @DisplayName("15 BR-08: an order whose installment before delivery is unpaid is packed as any other - only the "
+            + "handover waits for the money (DispatchHandoverIntegrationTest)")
+    void anOrderOwingBeforeDeliveryIsPacked() throws Exception {
         OrderSummary order = depositOrder(2);       // 10M: 3M on signing (paid), 7M before delivery
+        assertThat(jdbc.queryForObject("SELECT status FROM payment.installment WHERE order_id = ? "
+                + "AND milestone = 'BEFORE_DELIVERY'", String.class, order.orderId()))
+                .as("released: what it pays before delivery is due (15 §4.1 step 2)").isEqualTo("DUE");
         UUID task = pickedTask(order);
-        JsonNode session = data(packer(post(BASE + "/tasks/" + task + "/packing-start")).andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.paymentDue.currency").value("VND")));
-        assertThat(session.path("paymentDue").path("amountDueBeforeHandover").decimalValue())
-                .isEqualByComparingTo("7000000");
+        packer(post(BASE + "/tasks/" + task + "/packing-start")).andExpect(status().isOk());
         UUID parcel = openPackage(task);
         scanAs(packerHcm, task, parcel, scan(UUID.randomUUID(), sofaSku.code(), null, 2)).andExpect(status().isOk());
         seal(task, parcel, MEASURES).andExpect(status().isOk());
         JsonNode packed = data(packer(post(BASE + "/tasks/" + task + "/packing-completion")).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.packStatus").value("PACKED")));
-        assertThat(packed.path("paymentDue").path("amountDueBeforeHandover").decimalValue())
-                .isEqualByComparingTo("7000000");
         assertThat(packed.path("shipmentId").asText()).isNotBlank();
         assertThat(orders.findById(order.orderId()).orElseThrow().status()).isEqualTo(OrderStatus.PACKED);
     }
