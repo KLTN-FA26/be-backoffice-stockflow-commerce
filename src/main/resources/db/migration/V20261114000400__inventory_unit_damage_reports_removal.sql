@@ -14,7 +14,9 @@
 --      row in quarantine, or on the loose row a restore put them on), behind a SHORT pick line that names no carton.
 --      A pick line is a carton (07 BR-04, BR-10), so that line cannot stay a line to reallocate: the hold is released
 --      (reason DAMAGED; the units stay where they are, unheld) and the line is CANCELLED, short of its units for reason
---      DAMAGED. Its order keeps its INVENTORY hold, for the coordinator to decide.
+--      DAMAGED. Its order keeps its INVENTORY hold, with nothing left to reallocate: the coordinator resumes it, and it
+--      goes on without those units, or cancels it. QD-1 rebuilds the database on deploy, so no live order is expected
+--      in this state; the cleanup only keeps the upgrade from stopping.
 --   2. A picked line whose carton was found damaged at packing (packing_damaged_qty, the whole carton since 4C-4): its
 --      units went back into quarantine and what replaced them has lines of its own. It is CANCELLED, so the check
 --      station never receives it and no put-back waits for it - which is what packing_damaged_qty told both until now.
@@ -81,8 +83,11 @@ UPDATE fulfillment.pick_line l
 -- ---------------------------------------------------------------------------------------------
 -- 2. Picked lines whose carton went to quarantine from the packing bench
 -- ---------------------------------------------------------------------------------------------
+-- packing_damaged_qty goes to 0 in the same statement: ck_pick_line_packing_damaged, still in force here, allows units
+-- damaged at packing only on a PICKED or PUT_BACK line, and the column is dropped in 3 anyway.
 UPDATE fulfillment.pick_line
-   SET status = 'CANCELLED', version = version + 1, last_modified_at = NOW(), last_modified_by = 'V20261114000400'
+   SET status = 'CANCELLED', packing_damaged_qty = 0, version = version + 1, last_modified_at = NOW(),
+       last_modified_by = 'V20261114000400'
  WHERE status = 'PICKED' AND packing_damaged_qty > 0;
 
 
