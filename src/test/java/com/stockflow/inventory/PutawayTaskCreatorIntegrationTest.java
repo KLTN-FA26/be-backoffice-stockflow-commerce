@@ -8,7 +8,6 @@ import com.stockflow.inventory.api.MoveStockPackagesCommand;
 import com.stockflow.inventory.api.ReclassifyStockPackagesCommand;
 import com.stockflow.inventory.api.StockDisposition;
 import com.stockflow.inventory.internal.service.PutawayTaskCreator;
-import com.stockflow.procurement.internal.service.GoodsReceipts;
 import com.stockflow.support.Await;
 import com.stockflow.support.ProductionReceiptTest;
 import com.stockflow.support.ProductionReceivables;

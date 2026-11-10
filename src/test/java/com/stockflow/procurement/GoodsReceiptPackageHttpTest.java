@@ -1,8 +1,6 @@
 package com.stockflow.procurement;
 
-import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.security.Role;
-import com.stockflow.procurement.internal.service.GoodsReceipts;
 import com.stockflow.support.ReferenceRows;
 import com.stockflow.support.ProductionReceivables;
 import com.stockflow.support.SecuredProductionReceiptTest;
@@ -19,7 +17,6 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.transaction.support.TransactionTemplate;
 
-import java.util.Locale;
 import java.util.UUID;
 
 import static com.stockflow.support.DemoData.WAREHOUSE_HCM;

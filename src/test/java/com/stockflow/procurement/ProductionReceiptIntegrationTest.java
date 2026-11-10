@@ -765,10 +765,45 @@ class ProductionReceiptIntegrationTest {
 
         receipts.confirm(receipt.id(), clerk);
 
-        assertThat(reread(production.id()).status().open()).as("the last draft settled: stopped").isFalse();
+        assertThat(reread(production.id()).status()).as("the last draft settled: received from, so closed, not cancelled")
+                .isEqualTo(ProductionOrderStatus.CLOSED);
         Await.until("the producer is told to stop", Duration.ofSeconds(20),
                 () -> stoppedNotices(production.id()) >= 1);
         assertThat(stoppedNotices(production.id())).as("exactly once").isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("17 BR-07: the last draft receipt cancelled (nothing received) stops the production order of a "
+            + "cancelled sales order: CANCELLED, the producer told once")
+    void cancelledOrderStopsItsProductionOrderWhenTheLastDraftIsCancelled() {
+        UUID orderId = confirmedOrderAtA();
+        ProductionOrder production = sentWithoutSample(orderId, 1);
+        ReceiptView receipt = start(production);
+        asSales(() -> orders.cancel(orderId, new CancelOrderCommand(CancellationReasonCode.CUSTOMER_REQUEST,
+                "Customer changed supplier", null, sales.userId())));
+        assertThat(reread(production.id()).status().open()).as("a draft receipt keeps it open").isTrue();
+
+        com.stockflow.support.WithCurrentUser.run(sales, DataScope.ALL, () -> receipts.cancel(receipt.id()));
+
+        assertThat(reread(production.id()).status()).isEqualTo(ProductionOrderStatus.CANCELLED);
+        Await.until("the producer is told to stop", Duration.ofSeconds(20),
+                () -> stoppedNotices(production.id()) >= 1);
+        assertThat(stoppedNotices(production.id())).as("exactly once").isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("17 BR-07: a production order never sent, its sales order cancelled: stopped, and no producer is told")
+    void neverSentIsStoppedWithoutTellingTheProducer() {
+        UUID orderId = confirmedOrderAtA();
+        ProductionOrder draft = productionOrders.drawUp(orderId, 1, producer.id(), coordinator);
+
+        asSales(() -> orders.cancel(orderId, new CancelOrderCommand(CancellationReasonCode.CUSTOMER_REQUEST,
+                "Customer changed supplier", null, sales.userId())));
+
+        Await.until("the unsent production order is stopped", Duration.ofSeconds(20),
+                () -> !reread(draft.id()).status().open());
+        assertThat(reread(draft.id()).status()).isEqualTo(ProductionOrderStatus.CANCELLED);
+        assertThat(stoppedNotices(draft.id())).as("it was never sent: nothing to stop at the producer").isZero();
     }
 
     private long stoppedNotices(UUID productionOrderId) {

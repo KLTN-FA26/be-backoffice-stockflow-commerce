@@ -12,7 +12,6 @@ import com.stockflow.inventory.api.MoveStockPackagesCommand;
 import com.stockflow.inventory.internal.repository.BinOccupancyQuery;
 import com.stockflow.inventory.internal.service.PutawayService;
 import com.stockflow.inventory.internal.service.PutawayService.TaskView;
-import com.stockflow.procurement.internal.service.GoodsReceipts;
 import com.stockflow.support.Await;
 import com.stockflow.support.ProductionReceiptTest;
 import com.stockflow.support.ProductionReceivables;
