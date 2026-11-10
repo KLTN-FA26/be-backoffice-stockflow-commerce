@@ -2,8 +2,6 @@ package com.stockflow.inventory.internal.controller;
 
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.security.Role;
-import com.stockflow.procurement.internal.service.GoodsReceipts;
-import com.stockflow.procurement.internal.service.GoodsReceipts.NewPackage;
 import com.jayway.jsonpath.JsonPath;
 import com.stockflow.support.Await;
 import com.stockflow.support.ReferenceRows;

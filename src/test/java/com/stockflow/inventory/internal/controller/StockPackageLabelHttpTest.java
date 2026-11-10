@@ -2,7 +2,6 @@ package com.stockflow.inventory.internal.controller;
 
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.security.Role;
-import com.stockflow.procurement.internal.service.GoodsReceipts;
 import com.stockflow.support.ReferenceRows;
 import com.stockflow.support.ProductionReceivables;
 import com.stockflow.support.SecuredProductionReceiptTest;

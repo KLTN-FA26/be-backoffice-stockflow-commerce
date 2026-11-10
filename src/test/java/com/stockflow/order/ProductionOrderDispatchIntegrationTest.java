@@ -9,7 +9,9 @@ import com.stockflow.order.internal.domain.Producer;
 import com.stockflow.order.internal.domain.ProductionOrder;
 import com.stockflow.order.internal.domain.ProductionOrderStatus;
 import com.stockflow.order.internal.service.ProductionOrderDispatch;
+import com.stockflow.common.id.Identifiers;
 import com.stockflow.support.Await;
+import com.stockflow.support.ReferenceRows;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
 import org.apache.pdfbox.Loader;
@@ -164,6 +166,46 @@ class ProductionOrderDispatchIntegrationTest extends ProductionOrderDispatchFixt
         assertThatThrownBy(() -> dispatch.slipLink(sent.id())).as("staff are refused the changed slip too")
                 .extracting(ProductionOrderDispatchIntegrationTest::code)
                 .isEqualTo(ErrorCode.PRODUCTION_ORDER_SLIP_MISMATCH);
+    }
+
+    /** An ACTIVE user assigned to warehouse A whose only role holds just the given permissions (none: a bare role). */
+    private UUID holderOf(String... permissions) {
+        UUID user = tx.execute(s -> ReferenceRows.user(entityManager));
+        UUID role = Identifiers.newId();
+        tx.executeWithoutResult(s -> {
+            jdbc.update("INSERT INTO identity.app_role (id, code, name, version, created_at) VALUES (?, ?, 'Arrival test', 0, NOW())",
+                    role, "ARR_" + role.toString().replace("-", "").substring(12).toUpperCase());
+            for (String code : permissions) {
+                jdbc.update("""
+                        INSERT INTO identity.role_permission (id, role_id, permission_id, version, created_at)
+                        SELECT ?, ?, p.id, 0, NOW() FROM identity.permission p WHERE p.code = ?""",
+                        Identifiers.newId(), role, code);
+            }
+            jdbc.update("INSERT INTO identity.user_role (id, user_id, role_id, version, created_at) VALUES (?, ?, ?, 0, NOW())",
+                    Identifiers.newId(), user, role);
+            jdbc.update("INSERT INTO identity.user_warehouse (id, user_id, warehouse_id, version, created_at) VALUES (?, ?, ?, 0, NOW())",
+                    Identifiers.newId(), user, a.id());
+        });
+        return user;
+    }
+
+    @Test
+    @DisplayName("F1: the arrival notice goes to whoever holds procurement-goods-receipts:APPROVE at the warehouse, "
+            + "not to a user of the same warehouse without it")
+    void arrivalNoticeFollowsThePermission() {
+        UUID holder = holderOf("procurement-goods-receipts:APPROVE");
+        UUID bystander = holderOf("procurement-goods-receipts:READ");
+
+        ProductionOrder sent = approved(producer);
+
+        String key = "production-order-sent:" + sent.id();
+        Await.until("the permission holder is told", ASYNC, () -> jdbc.queryForObject(
+                "SELECT count(*) FROM notification.user_notification WHERE recipient_id = ? AND dedupe_key = ?",
+                Long.class, holder, key) == 1);
+        Await.until("the deliveries complete", ASYNC, () -> pendingPublications(sent.id()) == 0);
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM notification.user_notification WHERE recipient_id = ? AND dedupe_key = ?",
+                Long.class, bystander, key)).as("a warehouse user without the permission").isZero();
     }
 
     @Test
