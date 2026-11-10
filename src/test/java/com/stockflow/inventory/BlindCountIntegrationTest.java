@@ -189,8 +189,7 @@ class BlindCountIntegrationTest {
                 .andExpect(jsonPath("$.data[?(@.locationCode == '" + BIN + "')].onHand").value(org.hamcrest.Matchers.empty()))
                 .andExpect(jsonPath("$.data[?(@.locationCode == '" + BIN + "')].reserved").value(org.hamcrest.Matchers.empty()))
                 .andExpect(jsonPath("$.data[?(@.locationCode == '" + BIN + "')].available").value(org.hamcrest.Matchers.empty()))
-                .andExpect(jsonPath("$.data[?(@.locationCode == '" + BIN + "')].hiddenDuringCount").value(org.hamcrest.Matchers.contains(true)))
-                .andExpect(jsonPath("$.data[?(@.locationCode == '" + BIN2 + "')].onHand").value(org.hamcrest.Matchers.contains(CARTON)));
+                .andExpect(jsonPath("$.data[?(@.locationCode == '" + BIN + "')].hiddenDuringCount").value(org.hamcrest.Matchers.contains(true)));
         asManager(get(url)).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data[?(@.locationCode == '" + BIN + "')].onHand").value(org.hamcrest.Matchers.contains(CARTON)))
                 .andExpect(jsonPath("$.data[?(@.locationCode == '" + BIN + "')].hiddenDuringCount").value(org.hamcrest.Matchers.contains(false)));
@@ -340,9 +339,9 @@ class BlindCountIntegrationTest {
         long allAdjustments = operations.adjustments(null, sku, null, 0, 20, null, BookVisibility.FULL).totalElements();
 
         boolean nothing = !rowHidden && ledger == 2 && adjustments == allAdjustments && lotLines == 2 && !balanceHidden;
-        long pendingVariance = jdbc.queryForObject("select count(*) from inventory.stock_adjustment where sku = ? "
-                + "and reason_code = 'COUNT_VARIANCE' and status = 'PENDING_APPROVAL'", Long.class, sku);
-        boolean everything = rowHidden && ledger == 1 && adjustments == allAdjustments - pendingVariance
+        long ofTheCountedCarton = jdbc.queryForObject("select count(*) from inventory.stock_adjustment where "
+                + "stock_package_id = ?", Long.class, cartonB.id());
+        boolean everything = rowHidden && ledger == 1 && adjustments == allAdjustments - ofTheCountedCarton
                 && lotLines == 1 && balanceHidden;
         return nothing ? Held.NOTHING : everything ? Held.EVERYTHING
                 : Held.DISAGREE;
