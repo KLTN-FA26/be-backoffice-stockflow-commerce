@@ -159,7 +159,7 @@ class ProductServiceImplTest {
                 "Hết dòng", List.of());
         assertThat(result.product().status()).isEqualTo(ProductStatus.DISCONTINUED);
         assertThat(result.warnings()).containsExactly(ProductDiscontinuation.OPEN_PRODUCTION_ORDER_LINES);
-        assertThat(result.references().references()).extracting(SkuReference::documentNumber).containsExactly("PO-1");
+        assertThat(result.references().references()).extracting(SkuReference::documentNumber).containsExactly("PRD-1");
     }
 
     @Test
@@ -237,7 +237,7 @@ class ProductServiceImplTest {
         // The order lines are not crowded out by the purchase order lines: both kinds are listed and warned about.
         assertThat(shown).filteredOn(r -> r.kind() == SkuReference.Kind.SALES_ORDER_LINE).hasSize(2);
         assertThat(shown).filteredOn(r -> r.kind() == SkuReference.Kind.PRODUCTION_ORDER_LINE).hasSize(18);
-        assertThat(shown.get(0).documentNumber()).isEqualTo("PO-1");
+        assertThat(shown.get(0).documentNumber()).isEqualTo("PRD-1");
         assertThat(shown.get(1).documentNumber()).isEqualTo("SO-1");
         assertThat(result.warnings()).containsExactly("OPEN_PRODUCTION_ORDER_LINES", "UNSHIPPED_ORDER_LINES");
     }

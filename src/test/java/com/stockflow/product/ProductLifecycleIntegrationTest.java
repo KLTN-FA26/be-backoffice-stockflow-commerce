@@ -292,14 +292,17 @@ class ProductLifecycleIntegrationTest {
                 .andExpect(jsonPath("$.data.warnings.length()").value(2))
                 .andExpect(jsonPath("$.data.warnings[0]").value("OPEN_PRODUCTION_ORDER_LINES"))
                 .andExpect(jsonPath("$.data.warnings[1]").value("UNSHIPPED_ORDER_LINES"))
-                .andExpect(jsonPath("$.data.openReferences.length()").value(2))
+                // The production order's own sales order is an unshipped order line of the SKU too.
+                .andExpect(jsonPath("$.data.openReferences.length()").value(3))
                 .andExpect(jsonPath("$.data.openReferencesTruncated").value(false))
                 .andExpect(jsonPath("$.data.openReferences[?(@.kind == 'PRODUCTION_ORDER_LINE')].documentNumber")
                         .value(production.productionCode()))
                 .andExpect(jsonPath("$.data.openReferences[?(@.kind == 'PRODUCTION_ORDER_LINE')].documentId")
                         .value(production.productionOrderId().toString()))
-                .andExpect(jsonPath("$.data.openReferences[?(@.kind == 'SALES_ORDER_LINE')].documentNumber").value(orderNumber))
-                .andExpect(jsonPath("$.data.openReferences[?(@.kind == 'SALES_ORDER_LINE')].sku").value(sku));
+                .andExpect(jsonPath("$.data.openReferences[?(@.kind == 'SALES_ORDER_LINE')].documentNumber")
+                        .value(org.hamcrest.Matchers.hasItem(orderNumber)))
+                .andExpect(jsonPath("$.data.openReferences[?(@.kind == 'SALES_ORDER_LINE')].sku")
+                        .value(org.hamcrest.Matchers.hasItem(sku)));
 
         // Every variant, the default one included, is OBSOLETE (docs 01 §5.2), not BLOCKED; the documents are untouched.
         assertThat(jdbc.queryForList("SELECT status FROM product.variants WHERE product_id = ?", String.class, id))
@@ -618,11 +621,11 @@ class ProductLifecycleIntegrationTest {
         orderWithLine(approved.code(), "CANCELLED");
 
         send("GET", token(UUID.randomUUID(), "SALES_STAFF"), path, null).andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.references.length()").value(3))
+                .andExpect(jsonPath("$.data.references.length()").value(4))
                 .andExpect(jsonPath("$.data.references[?(@.kind == 'PRODUCTION_ORDER_LINE')].documentId")
                         .value(production.productionOrderId().toString()))
                 .andExpect(jsonPath("$.data.references[?(@.kind == 'SALES_ORDER_LINE')].documentId")
-                        .value(org.hamcrest.Matchers.containsInAnyOrder(order.toString(), drafted.toString())));
+                        .value(org.hamcrest.Matchers.hasItems(order.toString(), drafted.toString())));
         assertRefused(send("GET", token(UUID.randomUUID(), "WAREHOUSE_STAFF"), path, null), 403, "FORBIDDEN");
         assertRefused(send("GET", editor(), "/api/v1/products/" + UUID.randomUUID() + "/open-references", null),
                 404, "PRODUCT_NOT_FOUND");

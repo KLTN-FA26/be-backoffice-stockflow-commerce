@@ -52,15 +52,17 @@ public class ProductionOrderReceivingService implements ProductionOrderReceiving
     private final ProductionOrderReceiptRepository receipts;
     private final OrderRepository orders;
     private final ProducerRepository producers;
+    private final ProductionOrderDispatch dispatch;
     private final Clock clock;
 
     ProductionOrderReceivingService(ProductionOrderRepository productionOrders,
                                     ProductionOrderReceiptRepository receipts, OrderRepository orders,
-                                    ProducerRepository producers, Clock clock) {
+                                    ProducerRepository producers, ProductionOrderDispatch dispatch, Clock clock) {
         this.productionOrders = productionOrders;
         this.receipts = receipts;
         this.orders = orders;
         this.producers = producers;
+        this.dispatch = dispatch;
         this.clock = clock;
     }
 
@@ -146,6 +148,10 @@ public class ProductionOrderReceivingService implements ProductionOrderReceiving
      * receipt's transaction and under the locks already taken (sales order, then production order): cancelled if mass
      * printing had not started, closed otherwise - what was just received stays as the customer's surplus (17 BR-07,
      * BR-09). Without someone to name, it is left to the coordinator, as the listener leaves it.
+     *
+     * <p>A production order already sent then tells its producer to stop ({@link ProductionOrderDispatch#stopped}, 17
+     * §4.3 steps 12-13), in this transaction, as {@code ProductionOrderService.cancel} and {@code close} do on the
+     * listener's path: stopped here without it, the producer would go on making goods for a cancelled order.</p>
      */
     private ProductionOrder stopIfItsOrderWasCancelled(ProductionOrder production, UUID actorId, Instant at) {
         if (!production.status().open() || !receipts.drafts(production.id()).isEmpty()) {
@@ -170,6 +176,7 @@ public class ProductionOrderReceivingService implements ProductionOrderReceiving
             return production;
         }
         ProductionOrder stopped = productionOrders.save(production);
+        dispatch.stopped(stopped);
         log.info("Production order {} stopped with its cancelled order {}: its last draft receipt is settled",
                 stopped.code(), order.orderNumber());
         return stopped;
