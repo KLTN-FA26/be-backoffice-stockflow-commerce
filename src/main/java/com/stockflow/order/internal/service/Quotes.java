@@ -3,7 +3,6 @@ package com.stockflow.order.internal.service;
 import com.stockflow.common.api.PageResponse;
 import com.stockflow.common.security.CurrentUser;
 import com.stockflow.order.api.OrderStatus;
-import com.stockflow.order.api.PaymentTerm;
 import com.stockflow.order.internal.domain.QuoteStatus;
 
 import java.math.BigDecimal;
@@ -53,19 +52,17 @@ public interface Quotes {
      * @param requestedDeliveryDate the date the customer asks to receive the goods (SCRUM-502); Sales sets it while
      *                              the quote is a draft, it must not be in the past, and null means none was asked
      */
-    record Draft(PaymentTerm paymentTerm, BigDecimal depositPercent, Instant validUntil, String terms,
-                 List<Line> lines, java.time.LocalDate requestedDeliveryDate, List<Fee> fees) {
+    record Draft(Instant validUntil, String terms, List<Line> lines, java.time.LocalDate requestedDeliveryDate,
+                 List<Fee> fees) {
 
         /** A draft without fee lines Sales entered (a plate fee the system adds still comes, unpriced). */
-        public Draft(PaymentTerm paymentTerm, BigDecimal depositPercent, Instant validUntil, String terms,
-                     List<Line> lines, java.time.LocalDate requestedDeliveryDate) {
-            this(paymentTerm, depositPercent, validUntil, terms, lines, requestedDeliveryDate, List.of());
+        public Draft(Instant validUntil, String terms, List<Line> lines, java.time.LocalDate requestedDeliveryDate) {
+            this(validUntil, terms, lines, requestedDeliveryDate, List.of());
         }
 
         /** A draft without a requested delivery date. */
-        public Draft(PaymentTerm paymentTerm, BigDecimal depositPercent, Instant validUntil, String terms,
-                     List<Line> lines) {
-            this(paymentTerm, depositPercent, validUntil, terms, lines, null, List.of());
+        public Draft(Instant validUntil, String terms, List<Line> lines) {
+            this(validUntil, terms, lines, null, List.of());
         }
 
         public Draft {
@@ -146,7 +143,7 @@ public interface Quotes {
      * @param acceptedTotal the total with tax accepted; null until accepted
      */
     record QuoteView(UUID id, String quoteNumber, UUID customerId, QuoteStatus status, int revision,
-                     PaymentTerm paymentTerm, BigDecimal depositPercent, Instant validUntil, String terms,
+                     Instant validUntil, String terms,
                      java.time.LocalDate requestedDeliveryDate, boolean legacy, List<LineView> lines,
                      List<FeeView> fees, boolean priced, Totals proposed, Totals accepted,
                      BigDecimal proposedTotal, BigDecimal acceptedTotal,
@@ -157,8 +154,7 @@ public interface Quotes {
     }
 
     record Row(UUID id, String quoteNumber, UUID customerId, QuoteStatus status, int revision,
-               PaymentTerm paymentTerm, Instant validUntil, Instant sentAt, UUID convertedOrderId, Instant createdAt,
-               long version) {
+               Instant validUntil, Instant sentAt, UUID convertedOrderId, Instant createdAt, long version) {
     }
 
     record Criteria(UUID customerId, List<QuoteStatus> statuses, String search, int page, int size, String sort) {

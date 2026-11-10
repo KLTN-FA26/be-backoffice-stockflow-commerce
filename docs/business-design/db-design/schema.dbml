@@ -3136,7 +3136,7 @@ Table ordering.quote [headercolor: #C0392B] {
   customer_id             uuid [not null]
   status                  ordering.quote_status [not null]
   revision                int [not null, default: 1]
-  payment_term            ordering.quote_payment_term [not null]
+  payment_term            ordering.quote_payment_term [not null, default: 'PREPAID']
   deposit_percent         decimal(5,2)
   valid_until             timestamptz [not null]
   terms                   varchar(2000)

@@ -113,13 +113,10 @@ class CustomerServiceImpl implements CustomerService {
         }
         var now = clock.instant();
         CreditProfile profile = existing.map(found -> {
-            found.change(command.allowPrepaid(), command.allowDeposit(), command.allowCredit(), command.defaultTerm(),
-                    command.depositPercent(), command.creditLimit(), command.creditTermDays(),
-                    command.depositBalancePolicy(), command.approvedBy(), now, command.note());
+            found.change(command.creditLimit(), command.creditTermDays(), command.approvedBy(), now, command.note());
             return found;
-        }).orElseGet(() -> CreditProfile.create(command.customerId(), command.allowPrepaid(), command.allowDeposit(),
-                command.allowCredit(), command.defaultTerm(), command.depositPercent(), command.creditLimit(),
-                command.creditTermDays(), command.depositBalancePolicy(), command.approvedBy(), now, command.note()));
+        }).orElseGet(() -> CreditProfile.create(command.customerId(), command.creditLimit(), command.creditTermDays(),
+                command.approvedBy(), now, command.note()));
         // 18 BR-03 / 4B-1: credit lowered to nothing while the default schedule still pays after delivery would leave a
         // new contract with credit nobody approved. The schedule is changed first. Asked of the terms as validated,
         // under the customer row lock taken above - the lock the schedule is saved under.
@@ -134,13 +131,12 @@ class CustomerServiceImpl implements CustomerService {
 
     private CreditTerms termsOf(UUID customerId) {
         return creditProfiles.findByCustomerId(customerId).map(CustomerServiceImpl::toTerms)
-                .orElseGet(() -> CreditTerms.prepaidOnly(customerId));
+                .orElseGet(() -> CreditTerms.none(customerId));
     }
 
     private static CreditTerms toTerms(CreditProfile p) {
-        return new CreditTerms(p.customerId(), true, p.allowPrepaid(), p.allowDeposit(), p.allowCredit(), p.defaultTerm(),
-                p.depositPercent(), p.creditLimit(), p.creditTermDays(), p.currency(), p.approvedBy(), p.approvedAt(),
-                p.note(), p.version(), p.depositBalancePolicy());
+        return new CreditTerms(p.customerId(), true, p.creditLimit(), p.creditTermDays(), p.currency(), p.approvedBy(),
+                p.approvedAt(), p.note(), p.version());
     }
 
     @Override

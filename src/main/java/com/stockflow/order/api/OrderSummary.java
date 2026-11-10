@@ -30,10 +30,8 @@ public record OrderSummary(
         String contactPhone,
         AddressSummary shippingAddress,
         AddressSummary billingAddress,
-        PaymentTerm paymentTerm,
         UUID warehouseId,
         Instant releasedAt,
-        Payment payment,
         Cancellation cancellation,
         Lifecycle lifecycle,
         Charges charges
@@ -43,12 +41,11 @@ public record OrderSummary(
     public OrderSummary(UUID orderId, String orderNumber, UUID customerId, OrderStatus status, Money total,
                         List<LineSummary> lines, Instant placedAt, String createdBy, Instant lastModifiedAt,
                         String lastModifiedBy, String contactName, String contactEmail, String contactPhone,
-                        AddressSummary shippingAddress, AddressSummary billingAddress, PaymentTerm paymentTerm,
-                        UUID warehouseId, Instant releasedAt, Payment payment, Cancellation cancellation,
-                        Lifecycle lifecycle) {
+                        AddressSummary shippingAddress, AddressSummary billingAddress, UUID warehouseId,
+                        Instant releasedAt, Cancellation cancellation, Lifecycle lifecycle) {
         this(orderId, orderNumber, customerId, status, total, lines, placedAt, createdBy, lastModifiedAt,
-                lastModifiedBy, contactName, contactEmail, contactPhone, shippingAddress, billingAddress,
-                paymentTerm, warehouseId, releasedAt, payment, cancellation, lifecycle, null);
+                lastModifiedBy, contactName, contactEmail, contactPhone, shippingAddress, billingAddress, warehouseId,
+                releasedAt, cancellation, lifecycle, null);
     }
 
     /**
@@ -76,27 +73,26 @@ public record OrderSummary(
     public OrderSummary(UUID orderId, String orderNumber, UUID customerId, OrderStatus status, Money total,
                         List<LineSummary> lines, Instant placedAt, String createdBy, Instant lastModifiedAt,
                         String lastModifiedBy, String contactName, String contactEmail, String contactPhone,
-                        AddressSummary shippingAddress, AddressSummary billingAddress, PaymentTerm paymentTerm,
-                        UUID warehouseId, Instant releasedAt, Payment payment, Cancellation cancellation) {
+                        AddressSummary shippingAddress, AddressSummary billingAddress, UUID warehouseId,
+                        Instant releasedAt, Cancellation cancellation) {
         this(orderId, orderNumber, customerId, status, total, lines, placedAt, createdBy, lastModifiedAt,
-                lastModifiedBy, contactName, contactEmail, contactPhone, shippingAddress, billingAddress,
-                paymentTerm, warehouseId, releasedAt, payment, cancellation, null);
+                lastModifiedBy, contactName, contactEmail, contactPhone, shippingAddress, billingAddress, warehouseId,
+                releasedAt, cancellation, (Lifecycle) null);
     }
 
     /**
-     * Hold, milestones, shipments and the money of a partly fulfilled order (G3-2; split shipments, G4-Q3). Null on
-     * rows that do not carry it.
+     * Hold, milestones, shipments and what a partly fulfilled order is worth (G3-2; split shipments, G4-Q3). Null on
+     * rows that do not carry it. Since 4B-10 no money of the order's own: what it has been paid and still owes is its
+     * contract's installments' ({@code GET /api/v1/installments/orders/{orderId}}).
      *
      * @param holdReason             set while ON_HOLD
      * @param statusBeforeHold       where resolving the hold goes back to; null for a credit hold
      * @param holdNote               what the coordinator wrote; staff only
      * @param packedAt               when a package of the order was first completed: from then on it is not cancelled
      * @param deliveryFailureReason  set while DELIVERY_FAILED
-     * @param billedAmount           what deliveries billed as receivables (a credit order)
      * @param effectiveTotal         the total less the units closed out of a partly fulfilled order
-     * @param amountDue              what the customer still owes on it, never below zero
-     * @param amountDueBeforeHandover what must be paid before the goods may leave (G3-Q4): fulfillment warns at
-     *                               packing and the handover is refused while it is above zero
+     * @param amountDueBeforeHandover what the order knows must be paid before the goods may leave: zero since 4B-10 -
+     *                               the handover reads the installments under the order's lock (15 BR-08)
      * @param allowPartialShipment   Sales allowed the order to ship in parts (PACK-PARTIAL, lead's decision
      *                               2026-10-21): packing may complete part of it and part of it may be handed over
      * @param goodsLeftAt            SCRUM-392: when goods of the order first left on a load plan's vehicle, before a
@@ -106,8 +102,8 @@ public record OrderSummary(
      */
     public record Lifecycle(HoldReason holdReason, OrderStatus statusBeforeHold, String holdNote, Instant packedAt,
                             Instant shippedAt, Instant deliveredAt, DeliveryFailureReason deliveryFailureReason, Instant completedAt,
-                            Instant closedAt, BigDecimal billedAmount, BigDecimal effectiveTotal, BigDecimal amountDue,
-                            BigDecimal amountDueBeforeHandover, List<LineProgress> lines, List<Shipment> shipments,
+                            Instant closedAt, BigDecimal effectiveTotal, BigDecimal amountDueBeforeHandover,
+                            List<LineProgress> lines, List<Shipment> shipments,
                             boolean allowPartialShipment, Instant goodsLeftAt, UUID replacesReturnRequestId) {
 
         public Lifecycle {
@@ -121,33 +117,33 @@ public record OrderSummary(
          */
         public Lifecycle(HoldReason holdReason, OrderStatus statusBeforeHold, String holdNote, Instant packedAt,
                          Instant shippedAt, Instant deliveredAt, DeliveryFailureReason deliveryFailureReason,
-                         Instant completedAt, Instant closedAt, BigDecimal billedAmount, BigDecimal effectiveTotal,
-                         BigDecimal amountDue, BigDecimal amountDueBeforeHandover, List<LineProgress> lines,
+                         Instant completedAt, Instant closedAt, BigDecimal effectiveTotal,
+                         BigDecimal amountDueBeforeHandover, List<LineProgress> lines,
                          List<Shipment> shipments, boolean allowPartialShipment, Instant goodsLeftAt) {
             this(holdReason, statusBeforeHold, holdNote, packedAt, shippedAt, deliveredAt, deliveryFailureReason,
-                    completedAt, closedAt, billedAmount, effectiveTotal, amountDue, amountDueBeforeHandover, lines,
+                    completedAt, closedAt, effectiveTotal, amountDueBeforeHandover, lines,
                     shipments, allowPartialShipment, goodsLeftAt, null);
         }
 
         /** Without goodsLeftAt (callers written before SCRUM-392): no goods left on a vehicle yet. */
         public Lifecycle(HoldReason holdReason, OrderStatus statusBeforeHold, String holdNote, Instant packedAt,
                          Instant shippedAt, Instant deliveredAt, DeliveryFailureReason deliveryFailureReason,
-                         Instant completedAt, Instant closedAt, BigDecimal billedAmount, BigDecimal effectiveTotal,
-                         BigDecimal amountDue, BigDecimal amountDueBeforeHandover, List<LineProgress> lines,
+                         Instant completedAt, Instant closedAt, BigDecimal effectiveTotal,
+                         BigDecimal amountDueBeforeHandover, List<LineProgress> lines,
                          List<Shipment> shipments, boolean allowPartialShipment) {
             this(holdReason, statusBeforeHold, holdNote, packedAt, shippedAt, deliveredAt, deliveryFailureReason,
-                    completedAt, closedAt, billedAmount, effectiveTotal, amountDue, amountDueBeforeHandover, lines,
+                    completedAt, closedAt, effectiveTotal, amountDueBeforeHandover, lines,
                     shipments, allowPartialShipment, null);
         }
 
         /** Without the partial-shipment block (callers written before PACK-PARTIAL): not allowed. */
         public Lifecycle(HoldReason holdReason, OrderStatus statusBeforeHold, String holdNote, Instant packedAt,
                          Instant shippedAt, Instant deliveredAt, DeliveryFailureReason deliveryFailureReason,
-                         Instant completedAt, Instant closedAt, BigDecimal billedAmount, BigDecimal effectiveTotal,
-                         BigDecimal amountDue, BigDecimal amountDueBeforeHandover, List<LineProgress> lines,
+                         Instant completedAt, Instant closedAt, BigDecimal effectiveTotal,
+                         BigDecimal amountDueBeforeHandover, List<LineProgress> lines,
                          List<Shipment> shipments) {
             this(holdReason, statusBeforeHold, holdNote, packedAt, shippedAt, deliveredAt, deliveryFailureReason,
-                    completedAt, closedAt, billedAmount, effectiveTotal, amountDue, amountDueBeforeHandover, lines,
+                    completedAt, closedAt, effectiveTotal, amountDueBeforeHandover, lines,
                     shipments, false);
         }
     }
@@ -166,58 +162,37 @@ public record OrderSummary(
      *
      * @param carriage number, parcels and carrier as fulfillment handed it over (G4-2a); null before that
      */
-    public record Shipment(UUID shipmentId, OrderShipmentStatus status, BigDecimal amount, BigDecimal billedAmount,
-                           Instant handedOverAt, Instant outcomeAt, DeliveryFailureReason failureReason,
-                           List<ShipmentLine> lines, ShipmentHandover.Carriage carriage) {
+    public record Shipment(UUID shipmentId, OrderShipmentStatus status, BigDecimal amount, Instant handedOverAt,
+                           Instant outcomeAt, DeliveryFailureReason failureReason, List<ShipmentLine> lines,
+                           ShipmentHandover.Carriage carriage) {
 
         public Shipment {
             lines = lines == null ? List.of() : List.copyOf(lines);
         }
 
         /** Without the carriage (G4-2a): callers written before it. */
-        public Shipment(UUID shipmentId, OrderShipmentStatus status, BigDecimal amount, BigDecimal billedAmount,
-                        Instant handedOverAt, Instant outcomeAt, DeliveryFailureReason failureReason,
-                        List<ShipmentLine> lines) {
-            this(shipmentId, status, amount, billedAmount, handedOverAt, outcomeAt, failureReason, lines, null);
+        public Shipment(UUID shipmentId, OrderShipmentStatus status, BigDecimal amount, Instant handedOverAt,
+                        Instant outcomeAt, DeliveryFailureReason failureReason, List<ShipmentLine> lines) {
+            this(shipmentId, status, amount, handedOverAt, outcomeAt, failureReason, lines, null);
         }
     }
 
-    /** With the release block but without money and cancellation: list rows of other modules. */
+    /** With the release block but without the cancellation: list rows of other modules. */
     public OrderSummary(UUID orderId, String orderNumber, UUID customerId, OrderStatus status, Money total,
                         List<LineSummary> lines, Instant placedAt, String createdBy, Instant lastModifiedAt,
                         String lastModifiedBy, String contactName, String contactEmail, String contactPhone,
-                        AddressSummary shippingAddress, AddressSummary billingAddress, PaymentTerm paymentTerm,
-                        UUID warehouseId, Instant releasedAt) {
+                        AddressSummary shippingAddress, AddressSummary billingAddress, UUID warehouseId,
+                        Instant releasedAt) {
         this(orderId, orderNumber, customerId, status, total, lines, placedAt, createdBy, lastModifiedAt,
-                lastModifiedBy, contactName, contactEmail, contactPhone, shippingAddress, billingAddress,
-                paymentTerm, warehouseId, releasedAt, null, null);
-    }
-
-    /**
-     * The money side of the order (SCRUM-460, kltn-docs 15 §5.2).
-     *
-     * @param depositRequired null unless the order is on DEPOSIT terms
-     * @param balancePolicy   null unless the order is on DEPOSIT terms: how its balance is collected (G2-3)
-     */
-    public record Payment(BigDecimal paidAmount, BigDecimal depositRequired, Instant depositReceivedAt,
-                          Instant paidInFullAt, PaymentStatus status, Integer creditTermDays,
-                          BalancePolicy balancePolicy) {
-
-        public Payment(BigDecimal paidAmount, BigDecimal depositRequired, Instant depositReceivedAt,
-                       Instant paidInFullAt, PaymentStatus status, Integer creditTermDays) {
-            this(paidAmount, depositRequired, depositReceivedAt, paidInFullAt, status, creditTermDays, null);
-        }
-
-        public Payment(BigDecimal paidAmount, BigDecimal depositRequired, Instant depositReceivedAt,
-                       Instant paidInFullAt, PaymentStatus status) {
-            this(paidAmount, depositRequired, depositReceivedAt, paidInFullAt, status, null, null);
-        }
+                lastModifiedBy, contactName, contactEmail, contactPhone, shippingAddress, billingAddress, warehouseId,
+                releasedAt, (Cancellation) null);
     }
 
     /** Why and on what terms a cancelled order was cancelled; null while it is not. */
     /**
-     * @param retainedAmount what was kept of the money received
-     * @param feeAmount      the amount agreed with the customer (Q2); above {@code retainedAmount} the rest is owed
+     * @param retainedAmount what the order kept of money it received; 0 since 4B-10 - the fee is settled on the
+     *                       installments (4B-9, {@code GET /api/v1/refunds/orders/{orderId}})
+     * @param feeAmount      the amount agreed with the customer (Q2)
      */
     public record Cancellation(CancellationReasonCode reasonCode, String reason, BigDecimal retainedAmount,
                                String feeReason, String feeDetail, BigDecimal feeAmount) {
@@ -240,7 +215,7 @@ public record OrderSummary(
                         AddressSummary shippingAddress, AddressSummary billingAddress) {
         this(orderId, orderNumber, customerId, status, total, lines, placedAt, createdBy, lastModifiedAt,
                 lastModifiedBy, contactName, contactEmail, contactPhone, shippingAddress, billingAddress,
-                null, null, null);
+                null, null);
     }
 
     public record AddressSummary(String recipientName, String phone, String line1, String line2,

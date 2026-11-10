@@ -207,13 +207,16 @@ copy would make the pessimistic lock decorative.
 
 ### Payment → order (an event, not a call)
 
-`PaymentEventListener.on(PaymentCaptured)` / `on(PaymentReversed)` in `order/internal/service/`,
+`PaymentEventListener.on(PaymentReceiptRecorded)` / `on(PaymentReceiptVoided)` in `order/internal/service/`,
 annotated `@ApplicationModuleListener` (= `@TransactionalEventListener(AFTER_COMMIT)` + `@Async` +
-`@Transactional(REQUIRES_NEW)`). Asynchronous on purpose: money recorded by the accountant must not
-wait for, or be rolled back by, what the order does next. Counted once per payment, so a redelivery
-changes nothing. There is no "payment failed" event any more: customers pay by bank transfer against
-the contract's instalments (kltn-docs 15), so no gateway reports a failure; the old `PaymentFailed`
-had no publisher and went with its listeners.
+`@Transactional(REQUIRES_NEW)`). Asynchronous on purpose: a receipt recorded by the accountant must not
+wait for, or be rolled back by, what the order does next. A receipt that pays every installment on
+signing confirms the order; a void the accountant agreed to holds it (kltn-docs 15 BR-07, BR-13), and
+a redelivery changes nothing. There is no "payment failed" event, and since 4B-10 no money ledger:
+`PaymentCaptured` / `PaymentReversed`, customer transfers, allocations and the per-order payment terms
+are gone - an order has no money of its own, only its contract's installments in `payment`. Money that
+has to be in the same transaction (a cancellation's settlement, the handover's check) is a direct call
+through `payment :: api`.
 
 Spring Modulith's **event publication registry** replaces the transactional outbox: an event that a
 listener failed to process stays in `event_publication` and is retried. That table is migration

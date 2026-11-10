@@ -19,7 +19,7 @@ import java.util.UUID;
  * @param acceptedTotal VND, once accepted
  */
 public record QuoteResponse(UUID id, String quoteNumber, UUID customerId, String status, int revision,
-                            String paymentTerm, BigDecimal depositPercent, Instant validUntil, String terms,
+                            Instant validUntil, String terms,
                             java.time.LocalDate requestedDeliveryDate, boolean legacy, List<Line> lines, List<Fee> fees,
                             boolean priced, Totals proposed, Totals accepted, BigDecimal proposedTotal,
                             BigDecimal acceptedTotal,

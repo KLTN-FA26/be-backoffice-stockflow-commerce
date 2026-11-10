@@ -31,23 +31,24 @@ class SettlementCandidatesAdapter implements SettlementCandidates {
 
     @Override
     @SuppressWarnings("unchecked")
-    public List<UUID> deliveredBy(Instant deliveredBy, int limit) {
+    public List<UUID> deliveredBy(Instant deliveredBy, int skip, int limit) {
         return entityManager.createNativeQuery("""
                         SELECT o.id FROM ordering.customer_order o
                          WHERE o.status = 'DELIVERED' AND o.delivered_at <= :cutoff
-                           -- Still owing, or a return open: the aggregate would refuse; leave room in the batch.
-                           AND o.paid_amount >= o.total_amount - o.closed_amount
+                           -- A return open: the aggregate would refuse; leave room in the batch. Whether the order still
+                           -- owes is its installments' (payment's schema): the service asks, and the run skips it.
                            AND NOT EXISTS (SELECT 1 FROM ordering.return_request r WHERE r.order_id = o.id
                                               AND r.status IN (%s))
                          ORDER BY o.delivered_at, o.id""".formatted(OPEN_RETURN))
                 .setParameter("cutoff", deliveredBy)
+                .setFirstResult(skip)
                 .setMaxResults(limit)
                 .getResultList();
     }
 
     @Override
     @SuppressWarnings("unchecked")
-    public List<UUID> settledBy(Instant settledBy, int limit) {
+    public List<UUID> settledBy(Instant settledBy, int skip, int limit) {
         return entityManager.createNativeQuery("""
                         SELECT o.id FROM ordering.customer_order o
                          WHERE ((o.status = 'COMPLETED' AND o.completed_at <= :cutoff)
@@ -58,6 +59,7 @@ class SettlementCandidatesAdapter implements SettlementCandidates {
                                               AND r.status IN (%s))
                          ORDER BY COALESCE(o.completed_at, o.refunded_at), o.id""".formatted(OPEN_RETURN))
                 .setParameter("cutoff", settledBy)
+                .setFirstResult(skip)
                 .setMaxResults(limit)
                 .getResultList();
     }

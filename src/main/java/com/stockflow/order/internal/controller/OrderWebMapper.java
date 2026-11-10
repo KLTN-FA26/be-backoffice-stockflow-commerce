@@ -46,10 +46,7 @@ final class OrderWebMapper {
                 request.shippingAddressId(),
                 request.billingAddressId(),
                 true,
-                lines,
-                request.paymentTerm(),
-                request.depositPercent(),
-                request.balancePolicy());
+                lines);
     }
 
     static PlaceGuestOrderCommand toCommand(PlaceGuestOrderRequest request) {
@@ -125,16 +122,7 @@ final class OrderWebMapper {
                 summary.placedAt(), summary.createdBy(), summary.lastModifiedAt(), summary.lastModifiedBy(),
                 summary.contactName(), summary.contactEmail(), summary.contactPhone(),
                 toResponse(summary.shippingAddress()), toResponse(summary.billingAddress()),
-                summary.paymentTerm() == null ? null : summary.paymentTerm().name(),
                 summary.warehouseId(), summary.releasedAt(),
-                summary.payment() == null ? null : summary.payment().paidAmount(),
-                summary.payment() == null ? null : summary.payment().depositRequired(),
-                summary.payment() == null ? null : summary.payment().depositReceivedAt(),
-                summary.payment() == null ? null : summary.payment().paidInFullAt(),
-                summary.payment() == null ? null : summary.payment().status().name(),
-                summary.payment() == null ? null : summary.payment().creditTermDays(),
-                summary.payment() == null || summary.payment().balancePolicy() == null ? null
-                        : summary.payment().balancePolicy().name(),
                 summary.cancellation() == null ? null : new OrderResponse.Cancellation(
                         summary.cancellation().reasonCode() == null ? null : summary.cancellation().reasonCode().name(),
                         summary.cancellation().reason(), summary.cancellation().retainedAmount(),
@@ -156,13 +144,11 @@ final class OrderWebMapper {
                         : lifecycle.deliveryFailureReason().name(),
                 lifecycle == null ? null : lifecycle.completedAt(),
                 lifecycle == null ? null : lifecycle.closedAt(),
-                lifecycle == null ? null : lifecycle.billedAmount(),
                 lifecycle == null ? null : lifecycle.effectiveTotal(),
-                lifecycle == null ? null : lifecycle.amountDue(),
                 lifecycle == null ? null : lifecycle.amountDueBeforeHandover(),
                 lifecycle == null ? List.of() : lifecycle.shipments().stream()
                         .map(shipment -> new OrderResponse.Shipment(shipment.shipmentId(), shipment.status().name(),
-                                shipment.amount(), shipment.billedAmount(), shipment.handedOverAt(),
+                                shipment.amount(), shipment.handedOverAt(),
                                 shipment.outcomeAt(),
                                 shipment.failureReason() == null ? null : shipment.failureReason().name(),
                                 shipment.lines().stream()

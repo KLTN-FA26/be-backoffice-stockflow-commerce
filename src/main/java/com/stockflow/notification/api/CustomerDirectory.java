@@ -15,7 +15,7 @@ import java.util.UUID;
  * cannot call {@code customer :: api} to look it up, because customer already depends on {@code notification :: api}
  * for the portal invitation: the two modules would form a cycle, which {@code ModularityTest} refuses.</p>
  *
- * <p>So the dependency is inverted, as payment's {@code OrderPayables} and product's {@code SkuReferenceProbe} already
+ * <p>So the dependency is inverted, as payment's {@code InstallmentOrders} and product's {@code SkuReferenceProbe} already
  * are. Notification declares what it needs, customer - which may depend on {@code notification :: api} - provides it,
  * and at runtime Spring hands notification customer's bean. Neither module gains a dependency it does not already
  * have, and the address is read when the message is sent, never stored on the way. A module test that boots

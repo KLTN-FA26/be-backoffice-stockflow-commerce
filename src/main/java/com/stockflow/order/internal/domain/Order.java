@@ -2,15 +2,12 @@ package com.stockflow.order.internal.domain;
 
 import com.stockflow.contracts.OrderCancelled;
 import com.stockflow.contracts.OrderPlaced;
-import com.stockflow.order.api.BalancePolicy;
 import com.stockflow.order.api.CancellationReasonCode;
 import com.stockflow.order.api.DeliveryFailureReason;
 import com.stockflow.order.api.HoldReason;
 import com.stockflow.order.api.OrderShipmentStatus;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.ShipmentHandover;
-import com.stockflow.order.api.PaymentStatus;
-import com.stockflow.order.api.PaymentTerm;
 import com.stockflow.common.domain.AggregateRoot;
 import com.stockflow.common.domain.Money;
 import com.stockflow.common.domain.Sku;
@@ -18,7 +15,6 @@ import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 
 import java.math.BigDecimal;
-import java.math.RoundingMode;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -37,14 +33,13 @@ import java.util.UUID;
  *   <li>status only ever moves along the edges {@link OrderStatus#canTransitionTo} allows;</li>
  *   <li>an order cannot be submitted until every line holds a reservation — the rule that stops a
  *       customer paying for stock nobody set aside;</li>
- *   <li>it is CONFIRMED only once the prepayment, or the deposit, is in (kltn-docs 15 BR-02). The money received
- *       grows with every payment and falls only by a reversal the accountant made (G2-3, 15 BR-06): a confirmed order
- *       left short of its terms by one goes ON_HOLD (reason PAYMENT), never silently back to unpaid;</li>
- *   <li>its goods leave only once the money its terms want before the handover is in (G3-Q4, G2-3): everything for a
- *       prepaid order, the balance for a deposit order paid before delivery, the deposit for one the carrier
- *       collects; nothing for a credit order, a full truckload included (FTL-CREDIT, SCRUM-193: credit customers owe on
- *       their due date, within their limit);</li>
- *   <li>a cancellation names a reason code and keeps no more than was paid (15 BR-05).</li>
+ *   <li>it is CONFIRMED through its sales contract (14 BR-15, 15 BR-07): signed, and every installment on signing
+ *       paid; a voided receipt that leaves it short holds it (reason PAYMENT), never silently back to unpaid (15
+ *       BR-13). Its money lives on the contract's installments in payment; since 4B-10 the order has no payment terms
+ *       and counts no money of its own;</li>
+ *   <li>its goods leave only once the installments before delivery and on signing are paid (15 BR-07, BR-08), which
+ *       the caller reads under the order's lock;</li>
+ *   <li>a cancellation names a reason code; what it costs the customer is settled on the installments (4B-9).</li>
  * </ul>
  *
  * <p>The last one is worth dwelling on, because it is the invariant a distributed system cannot
@@ -78,7 +73,7 @@ public final class Order extends AggregateRoot {
     private BigDecimal cancellationRetainedAmount;
     /** Decision Q2: why and on what terms an agreed amount was kept; null when a percentage (or nothing) was. */
     private String cancellationFeeReason;
-    /** Decision Q6a: the whole agreed amount; above {@code paidAmount} the rest is owed (a receivable). */
+    /** Decision Q6a: the whole agreed amount; settled on the installments (4B-9): covered, or owed on a fee item. */
     private BigDecimal cancellationFeeAmount;
     private String cancellationFeeDetail;
     /**
@@ -105,14 +100,6 @@ public final class Order extends AggregateRoot {
     private UUID shippingWarehouseId;
     private Instant shippingWarehouseChosenAt;
     private UUID shippingWarehouseChosenBy;
-    private PaymentTerm paymentTerm = PaymentTerm.PREPAID;
-    private java.math.BigDecimal depositRequired;
-    private Instant depositReceivedAt;
-    private BigDecimal paidAmount = BigDecimal.ZERO;
-    private Instant paidInFullAt;
-    private Integer creditTermDays;
-    /** G2-3: how a deposit order's balance is collected (by transfer before delivery, or on credit); null else. */
-    private BalancePolicy balancePolicy;
     private UUID warehouseId;
     private Instant releasedAt;
     private UUID releasedBy;
@@ -128,23 +115,6 @@ public final class Order extends AggregateRoot {
     private Instant closedAt;
     /** Set while DELIVERY_FAILED: the reason of the (first) failed delivery. */
     private DeliveryFailureReason deliveryFailureReason;
-    /**
-     * What deliveries of this order billed as receivables (a credit order), and how much of {@code paidAmount} came as
-     * payments of those receivables - together they say how much of the order is still to bill (credit exposure).
-     */
-    private BigDecimal billedAmount = BigDecimal.ZERO;
-    private BigDecimal receivablePaidAmount = BigDecimal.ZERO;
-    /** Refunds asked for when a remainder was closed, so a second closure asks only for the difference. */
-    private BigDecimal remainderRefundAmount = BigDecimal.ZERO;
-    /** Fees agreed when print lines were closed after printing started (review of #150): kept, or owed. */
-    private BigDecimal remainderFeeAmount = BigDecimal.ZERO;
-    /**
-     * Re-review of #150: what of those fees the order's own money paid at their closure, and what the customer paid
-     * since on the fee receivables ({@code FEE_RECEIVABLE_ALLOCATION}). A later closure counts only this money as the
-     * fees' - a fee still owed is the receivable's to collect, never taken from a refund a second time.
-     */
-    private BigDecimal remainderFeeRetainedAmount = BigDecimal.ZERO;
-    private BigDecimal remainderFeePaidAmount = BigDecimal.ZERO;
     /**
      * 4B-9: the id of the closure {@link #closeRemainder} made in this unit of work, which the service hands payment
      * with the closure's money (a contract order's installments are settled in the same transaction). Not stored: the
@@ -315,8 +285,7 @@ public final class Order extends AggregateRoot {
     }
 
     /**
-     * The fee lines of the order, from its accepted quote (4B-3). Set once, before the terms are applied - a deposit is
-     * a share of the total with them.
+     * The fee lines of the order, from its accepted quote (4B-3). Set once, when the order is drafted.
      */
     public void attachFees(List<OrderFee> placed) {
         if (placed == null || placed.isEmpty()) {
@@ -403,251 +372,6 @@ public final class Order extends AggregateRoot {
                 total().currency().getCurrencyCode(),
                 netTotal().amount(),
                 taxTotal().amount())));
-    }
-
-    /** {@link #applyTerms(PaymentTerm, BigDecimal, Integer)} for prepaid and deposit orders. */
-    public void applyTerms(PaymentTerm term, BigDecimal depositPercent) {
-        applyTerms(term, depositPercent, null);
-    }
-
-    /** A deposit order pays its balance before delivery (G2-3), unless {@link #applyTerms(PaymentTerm, BigDecimal,
-     *  Integer, BalancePolicy)} says otherwise. */
-    public void applyTerms(PaymentTerm term, BigDecimal depositPercent, Integer creditTermDays) {
-        applyTerms(term, depositPercent, creditTermDays, null);
-    }
-
-    /**
-     * The payment terms the order is sold on, fixed before it is submitted (kltn-docs 15 §3: the
-     * term of the order, and the deposit percentage of the customer's terms or the quote). Whether
-     * the customer may use the term (15 BR-01) is the caller's to check — it needs their terms.
-     *
-     * <p>A deposit is {@code depositPercent} of the total, rounded to the currency's whole unit. A
-     * credit order keeps {@code creditTermDays}, the days it has to be paid after delivery (SCRUM-427). A deposit order
-     * keeps {@code balancePolicy}, how its balance is collected (G2-3; null: before delivery). Whether the customer may
-     * use the policy is the caller's to check, as for the term.</p>
-     */
-    public void applyTerms(PaymentTerm term, BigDecimal depositPercent, Integer creditTermDays,
-                           BalancePolicy balancePolicy) {
-        if (status != OrderStatus.DRAFT) {
-            throw new IllegalStateException("Terms are fixed when the order is placed");
-        }
-        assignTerms(term, depositPercent, creditTermDays, balancePolicy);
-    }
-
-    /** Validates everything first, then assigns: a refused change leaves the order as it was. */
-    private void assignTerms(PaymentTerm term, BigDecimal depositPercent, Integer creditTermDays,
-                             BalancePolicy policy) {
-        PaymentTerm chosen = term == null ? PaymentTerm.PREPAID : term;
-        if (chosen != PaymentTerm.DEPOSIT && policy != null) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Only a deposit order has a balance policy");
-        }
-        // BALCREDIT: a deposit order whose balance goes on credit keeps the days to pay it, as a credit order does.
-        boolean onCredit = chosen == PaymentTerm.CREDIT
-                || chosen == PaymentTerm.DEPOSIT && policy == BalancePolicy.ON_CREDIT;
-        if (onCredit != (creditTermDays != null)) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
-                    "Only a credit order, or a deposit order with its balance on credit, has days to pay");
-        }
-        BigDecimal deposit = null;
-        if (chosen == PaymentTerm.DEPOSIT) {
-            if (depositPercent == null || depositPercent.signum() <= 0 || depositPercent.compareTo(HUNDRED) >= 0) {
-                throw new BusinessException(ErrorCode.VALIDATION_FAILED,
-                        "A deposit order needs a deposit percentage above 0 and below 100");
-            }
-            Money total = total();
-            deposit = total.amount().multiply(depositPercent)
-                    .divide(HUNDRED, total.currency().getDefaultFractionDigits(), RoundingMode.HALF_UP);
-        } else if (depositPercent != null) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Only a deposit order takes a deposit percentage");
-        }
-        BalancePolicy resolved = chosen == PaymentTerm.DEPOSIT
-                ? (policy == null ? BalancePolicy.BEFORE_DELIVERY : policy) : null;
-        this.paymentTerm = chosen;
-        this.depositRequired = deposit;
-        this.creditTermDays = creditTermDays;
-        this.balancePolicy = resolved;
-    }
-
-
-    /**
-     * Money received for the order, as payment reports it (one call per captured payment; the
-     * caller makes a redelivered payment arrive once).
-     *
-     * <p>kltn-docs 15 BR-02: a prepaid order is CONFIRMED once paid in full, a deposit order once its
-     * deposit is in. Later money — the balance of a deposit order arriving after it was released —
-     * only adds up: it never moves the order, so a payment can never fail on an order that has moved
-     * on. Money for a cancelled order is recorded and left for Sales to settle with the customer
-     * (15, "tiền về sau khi đơn đã huỷ").</p>
-     *
-     * @return whether this payment confirmed the order
-     */
-    public boolean recordPayment(Money amount, Instant now) {
-        return recordPayment(amount, now, false);
-    }
-
-    /**
-     * @param ofReceivable the money paid a receivable of this order (payment's allocation): it pays what a delivery
-     *                     billed, so it does not lower what the order still has to bill (credit exposure)
-     */
-    public boolean recordPayment(Money amount, Instant now, boolean ofReceivable) {
-        return recordPayment(amount, now, ofReceivable, false);
-    }
-
-    /**
-     * @param ofFeeReceivable the money paid the receivable of a fee a closure left owed (re-review of #150): it pays
-     *                        that fee, so a later closure does not refund it
-     */
-    public boolean recordPayment(Money amount, Instant now, boolean ofReceivable, boolean ofFeeReceivable) {
-        java.util.Objects.requireNonNull(amount, "amount");
-        if (!amount.currency().equals(total().currency())) {
-            throw new IllegalArgumentException("Order %s is in %s, not %s"
-                    .formatted(orderNumber, total().currency(), amount.currency()));
-        }
-        if (amount.amount().signum() <= 0) {
-            throw new IllegalArgumentException("A payment adds money");
-        }
-        this.paidAmount = paidAmount.add(amount.amount());
-        if (ofReceivable) {
-            this.receivablePaidAmount = receivablePaidAmount.add(amount.amount());
-        }
-        if (ofFeeReceivable && status != OrderStatus.CANCELLED) {
-            this.remainderFeePaidAmount = remainderFeePaidAmount.add(amount.amount());
-        }
-        if (status == OrderStatus.CANCELLED && cancellationFeeAmount != null) {
-            // Q6a: money arriving after a cancellation with an agreed fee pays that fee first - the receivable its
-            // shortfall became, or a late transfer - so what is kept stays LEAST(fee, money held), as
-            // ck_order_cancellation_fee says. Anything above the fee is the customer's, settled as before.
-            this.cancellationRetainedAmount = cancellationFeeAmount.min(moneyHeld());
-        }
-        if (paidInFullAt == null && paidAmount.compareTo(payableInFull()) >= 0) {
-            this.paidInFullAt = now;
-        }
-        if (paymentTerm == PaymentTerm.DEPOSIT && depositReceivedAt == null
-                && paidAmount.compareTo(depositRequired) >= 0) {
-            this.depositReceivedAt = now;
-        }
-        if (status != OrderStatus.PENDING_PAYMENT) {
-            return false;
-        }
-        boolean cleared = switch (paymentTerm) {
-            case PREPAID -> paidInFullAt != null;
-            case DEPOSIT -> depositReceivedAt != null;
-            case CREDIT -> false;
-        };
-        if (cleared) {
-            transitionTo(OrderStatus.CONFIRMED);
-        }
-        return cleared;
-    }
-
-    /**
-     * The accountant took back money an allocation had brought (G2-3, 15 BR-06: a reversal row in payment's ledger),
-     * as payment reports it once per reversal. What was paid falls; "paid in full" and "deposit received" are no
-     * longer true when the money no longer says so.
-     *
-     * <p>A confirmed order whose terms are no longer met - a prepaid order not paid in full, a deposit order without
-     * its deposit - goes ON_HOLD with reason PAYMENT and the accountant's reason, so the coordinator sees it: it is never
-     * moved back to PENDING_PAYMENT, and never left looking paid. An order already on hold stays on hold; resolving it
-     * then waits for the money ({@link #resolveHold}). An order still waiting for payment simply waits for more; one
-     * whose goods left owes it again ({@link #amountDue()}).</p>
-     *
-     * @param ofReceivable the money had paid a receivable of the order
-     * @return whether the order was put on hold
-     */
-    public boolean reversePayment(Money amount, boolean ofReceivable, String reason, UUID by, Instant now) {
-        return reversePayment(amount, ofReceivable, false, reason, by, now);
-    }
-
-    /** @param ofFeeReceivable the money had paid a closure fee's receivable (re-review of #150) */
-    public boolean reversePayment(Money amount, boolean ofReceivable, boolean ofFeeReceivable, String reason, UUID by,
-                                  Instant now) {
-        java.util.Objects.requireNonNull(amount, "amount");
-        if (!amount.currency().equals(total().currency()) || amount.amount().signum() <= 0) {
-            throw new IllegalArgumentException("A reversal takes back money in the order's currency");
-        }
-        BigDecimal back = amount.amount().min(paidAmount);
-        this.paidAmount = paidAmount.subtract(back);
-        if (ofReceivable) {
-            this.receivablePaidAmount = receivablePaidAmount.subtract(back).max(BigDecimal.ZERO);
-        }
-        if (ofFeeReceivable) {
-            this.remainderFeePaidAmount = remainderFeePaidAmount.subtract(back).max(BigDecimal.ZERO);
-        }
-        if (paidInFullAt != null && paidAmount.compareTo(payableInFull()) < 0) {
-            this.paidInFullAt = null;
-        }
-        if (paymentTerm == PaymentTerm.DEPOSIT && depositReceivedAt != null
-                && paidAmount.compareTo(depositRequired) < 0) {
-            this.depositReceivedAt = null;
-        }
-        // A reversal that raced a cancellation or a closure (the accountant reversed, the order was cancelled before it
-        // heard of it): what was kept, and what was asked back, never exceed what is left of the money (BR-05,
-        // ck_order_cancellation_retained, ck_order_billing). The rest is the accountant's to settle by hand; the
-        // event is consumed, not retried forever.
-        if (remainderRefundAmount.compareTo(paidAmount) > 0) {
-            this.remainderRefundAmount = paidAmount;
-        }
-        if (cancellationRetainedAmount != null && cancellationRetainedAmount.compareTo(moneyHeld()) > 0) {
-            this.cancellationRetainedAmount = moneyHeld();
-        }
-        if (termsMet() || !status.mayBePutOnHold()) {
-            return false;
-        }
-        putOnHold(HoldReason.PAYMENT, "Payment reversed: " + (reason == null || reason.isBlank() ? "no reason given"
-                : reason.trim()), by, now);
-        return true;
-    }
-
-    /**
-     * Whether the money its terms want before the order may go on is in (15 BR-02), measured on what the order is worth
-     * now (units closed out of it are not paid for); a credit order needs none.
-     */
-    public boolean termsMet() {
-        BigDecimal threshold = threshold();
-        return threshold == null || paidAmount.compareTo(threshold) >= 0;
-    }
-
-    /** Everything for a prepaid order, the deposit for a deposit order - both of what it is worth now. */
-    private BigDecimal threshold() {
-        return switch (paymentTerm) {
-            case PREPAID -> billable();
-            case DEPOSIT -> depositRequired.min(billable());
-            case CREDIT -> null;
-        };
-    }
-
-    /**
-     * What a confirmed order must keep received to stay confirmed - its total if prepaid, its deposit if a deposit
-     * order - while it is between confirmation and the handover; null when taking money back cannot un-confirm it
-     * (G2-3: payment asks the accountant to agree to a hold first).
-     */
-    public BigDecimal confirmationThreshold() {
-        boolean confirmedStage = status.mayBePutOnHold()
-                || status == OrderStatus.ON_HOLD && holdReason != HoldReason.CREDIT;
-        if (!confirmedStage) {
-            return null;
-        }
-        return threshold();
-    }
-
-    /**
-     * Submit a credit order (kltn-docs 15 §4.3, 17 §5; SCRUM-427): it skips PENDING_PAYMENT and is
-     * CONFIRMED within the customer's limit, or ON_HOLD until whoever approves credit decides.
-     * Whether it is within the limit is the caller's to decide — it needs the exposure.
-     */
-    public void submitOnCredit(boolean withinLimit) {
-        if (paymentTerm != PaymentTerm.CREDIT) {
-            throw new IllegalStateException("Order %s is not a credit order".formatted(orderNumber));
-        }
-        requireEveryLineReserved();
-        transitionTo(withinLimit ? OrderStatus.CONFIRMED : OrderStatus.ON_HOLD, null,
-                withinLimit ? null : HoldReason.CREDIT.name(), null);
-        if (!withinLimit) {
-            // A credit hold goes nowhere back: credit approval confirms it, a refusal cancels or re-terms it.
-            this.holdReason = HoldReason.CREDIT;
-            this.statusBeforeHold = null;
-        }
-        registerPlaced();
     }
 
     /**
@@ -737,42 +461,20 @@ public final class Order extends AggregateRoot {
     }
 
     /**
-     * Over the limit and refused, but the customer pays another way (15 §4.3): the order leaves the
-     * hold for PENDING_PAYMENT on its new terms, like any prepaid or deposit order.
-     */
-    public void switchTermsAfterCreditRefusal(PaymentTerm term, BigDecimal depositPercent) {
-        switchTermsAfterCreditRefusal(term, depositPercent, null);
-    }
-
-    /** @param balancePolicy for DEPOSIT, the customer's (G2-3); null means before delivery */
-    public void switchTermsAfterCreditRefusal(PaymentTerm term, BigDecimal depositPercent,
-                                              BalancePolicy balancePolicy) {
-        requireCreditHold();
-        if (term == null || term == PaymentTerm.CREDIT) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Switch to PREPAID or DEPOSIT");
-        }
-        assignTerms(term, depositPercent, null, term == PaymentTerm.DEPOSIT ? balancePolicy : null);
-        clearHold();
-        transitionTo(OrderStatus.PENDING_PAYMENT, null, "CREDIT_REJECTED", null);
-    }
-
-    /**
-     * Waiting for a credit decision: on hold for credit - a credit order placed over its limit at checkout, or an order
-     * whose contract pays after delivery and was signed by a customer overdue or over the limit (4B-5), whatever the
-     * order's own payment term.
+     * Waiting for a credit decision: on hold for credit - an order whose contract pays after delivery and was signed by a
+     * customer overdue or over the limit (4B-5), or, before 4B-10, a credit order placed over its limit at checkout.
      */
     private void requireCreditHold() {
         if (status != OrderStatus.ON_HOLD || holdReason != HoldReason.CREDIT) {
             throw new BusinessException(ErrorCode.ORDER_NOT_ON_CREDIT_HOLD,
-                    "Order %s is %s on %s terms, not waiting for a credit decision"
-                            .formatted(orderNumber, status, paymentTerm));
+                    "Order %s is %s, not waiting for a credit decision".formatted(orderNumber, status));
         }
     }
 
     /**
      * The carrier delivered it, as the Order Coordinator records when the carrier reports back
-     * (kltn-docs 09 §4.3, 17 §4.3): SHIPPED or DELIVERY_FAILED (a retry) → DELIVERED. Payment opens the receivable of
-     * a credit order from the event (15 §4.3 step 2), for what is still unbilled.
+     * (kltn-docs 09 §4.3, 17 §4.3): SHIPPED or DELIVERY_FAILED (a retry) → DELIVERED. Payment makes the contract's
+     * installments paid after delivery due from the event (15 §4.1 step 2).
      *
      * <p>The whole order at once: only for an order whose goods went out without shipments recorded on it (G4-Q5). An
      * order with shipments is delivered shipment by shipment ({@link #recordShipmentDelivered}).</p>
@@ -786,8 +488,7 @@ public final class Order extends AggregateRoot {
         transitionTo(OrderStatus.DELIVERED, by, null, now);
         this.deliveryFailureReason = null;
         this.deliveredAt = now;
-        BigDecimal billed = billNow(billable());
-        registerDelivered(null, billed, now);
+        registerDelivered(null, now);
     }
 
     /**
@@ -843,18 +544,18 @@ public final class Order extends AggregateRoot {
     }
 
     /**
-     * @param ledger the money payment's ledger holds for the order, read under the order's lock in this transaction
-     *               (G2-3): it counts an allocation committed a moment ago that the order has not heard of yet, so
-     *               money just paid lets the goods leave. Null: the order's own count.
+     * @param installmentsDue for an order of a contract, what its installments before delivery and on signing still
+     *                        owe, read by the caller under the order's lock in this transaction (4B-6, 15 BR-07,
+     *                        BR-08): a receipt recorded or voided a moment ago is counted. Null: nothing is wanted.
      */
-    public boolean markShipped(Instant handedOverAt, UUID by, LedgerMoney ledger) {
+    public boolean markShipped(Instant handedOverAt, UUID by, BigDecimal installmentsDue) {
         java.util.Objects.requireNonNull(handedOverAt, "handedOverAt");
         requireNoShipments();
         if (status == OrderStatus.SHIPPED) {
             return false;
         }
         requireNotCancelled("its goods are not handed over");
-        requireHandoverPaid(ledger);
+        requireHandoverPaid(installmentsDue);
         transitionTo(OrderStatus.SHIPPED, by, null, handedOverAt);
         this.shippedAt = handedOverAt;
         return true;
@@ -867,43 +568,17 @@ public final class Order extends AggregateRoot {
         }
     }
 
-    private void registerDelivered(UUID shipmentId, BigDecimal billed, Instant now) {
+    /** The money ledger's fields of the event (term, money paid, days, bill, policy) are null since 4B-10. */
+    private void registerDelivered(UUID shipmentId, Instant now) {
         Money total = total();
         registerEvent(new OrderEvent.Delivered(new com.stockflow.contracts.OrderDelivered(id.value(),
-                orderNumber.value(), customerId, paymentTerm.name(), total.amount(), paidAmount,
-                total.currency().getCurrencyCode(), creditTermDays, now, shipmentId, billed,
-                balancePolicy == null ? null : balancePolicy.name())));
-    }
-
-    /** kltn-docs 15 §5.2, derived from the term and the money received. */
-    public PaymentStatus paymentStatus() {
-        return PaymentStatus.of(paymentTerm, paidAmount, paidInFullAt);
+                orderNumber.value(), customerId, null, total.amount(), null, total.currency().getCurrencyCode(), null,
+                now, shipmentId, null, null)));
     }
 
     /**
-     * What "paid in full" is measured against: what the order is worth now ({@link #billable}, its total less the units
-     * closed out of it) plus the fees closures agreed - exactly the point where {@link #amountDue} reaches 0. For an
-     * order nothing was closed out of, its total.
-     */
-    private BigDecimal payableInFull() {
-        return billable().add(remainderFeeAmount);
-    }
-
-    /**
-     * A closure lowered what the order is worth (closing the rest): money that was short of the
-     * old total may now cover the new worth, and the order is paid in full from now - not left PARTIALLY_PAID with
-     * nothing due. Nothing received, nothing to say; an order already paid in full stays so.
-     */
-    private void reevaluatePaidInFull(Instant at) {
-        if (paidInFullAt == null && paidAmount.signum() > 0 && paidAmount.compareTo(payableInFull()) >= 0) {
-            this.paidInFullAt = at;
-        }
-    }
-
-    /**
-     * The value of the units closed out of the order (closed remainders): its total less what it
-     * is worth now. Stored as {@code closed_amount} so that {@code ck_order_paid_in_full} can compare the money with
-     * the worth, not with the total.
+     * The value of the units closed out of the order (closed remainders): its total less what it is worth now. Stored as
+     * {@code closed_amount}.
      */
     public BigDecimal closedAmount() {
         return total().amount().subtract(billable());
@@ -963,18 +638,13 @@ public final class Order extends AggregateRoot {
      * customer's own SKU are stock like any other (QD-16). Only a legacy line printed to a design snapshot is the release
      * service's to refuse ({@code ORDER_PRINT_GOODS_NOT_RECEIVED}).
      *
-     * <p>Only a CONFIRMED order may be released: paid in full, or for a deposit order once the deposit
-     * is in (kltn-docs 15 §4.2); its balance is collected later, at the latest on delivery (17 §4.3). An order of a
-     * contract waiting for stock is released the same way once every carton is held at its shipping warehouse:
+     * <p>Only a CONFIRMED order may be released - confirmed by its contract (15 BR-07). An order of a contract waiting
+     * for stock is released the same way once every carton is held at its shipping warehouse:
      * AWAITING_STOCK → READY_TO_FULFILL (4A-6, 17 §5.1 "nhận đủ hàng"; the release service checks the holds).</p>
      */
     public void release(UUID warehouse, String warehouseCode, UUID by, Instant now) {
         java.util.Objects.requireNonNull(warehouse, "warehouse");
         java.util.Objects.requireNonNull(by, "by");
-        if (status == OrderStatus.PENDING_PAYMENT && paymentTerm == PaymentTerm.DEPOSIT) {
-            throw new BusinessException(ErrorCode.ORDER_DEPOSIT_NOT_RECEIVED,
-                    "Order %s cannot be released before its deposit arrives".formatted(orderNumber));
-        }
         if (status != OrderStatus.CONFIRMED && !(status == OrderStatus.AWAITING_STOCK && paidByContract())) {
             throw new InvalidOrderTransitionException(orderNumber, status, "only a confirmed order can be released");
         }
@@ -1079,28 +749,15 @@ public final class Order extends AggregateRoot {
         this.allowPartialShipment = allowed;
     }
 
-    /** Rehydration of the payment terms and the release, from the row. */
-    public void restoreTermsAndRelease(PaymentTerm term, java.math.BigDecimal deposit, Instant depositReceived,
-                                       UUID warehouse, Instant released, UUID releasedByUser) {
-        this.paymentTerm = term == null ? PaymentTerm.PREPAID : term;
-        this.depositRequired = deposit;
-        this.depositReceivedAt = depositReceived;
+    /** Rehydration of the release, from the row. */
+    public void restoreRelease(UUID warehouse, Instant released, UUID releasedByUser) {
         this.warehouseId = warehouse;
         this.releasedAt = released;
         this.releasedBy = releasedByUser;
     }
 
-    /** Rehydration of the money received and how the order was cancelled, from the row. */
-    public void restorePaymentAndCancellation(BigDecimal paid, Instant paidInFull, CancellationReasonCode code,
-                                              BigDecimal retained) {
-        restorePaymentAndCancellation(paid, paidInFull, code, retained, null);
-    }
-
-    public void restorePaymentAndCancellation(BigDecimal paid, Instant paidInFull, CancellationReasonCode code,
-                                              BigDecimal retained, Integer creditDays) {
-        this.creditTermDays = creditDays;
-        this.paidAmount = paid == null ? BigDecimal.ZERO : paid;
-        this.paidInFullAt = paidInFull;
+    /** Rehydration of how the order was cancelled, from the row. */
+    public void restoreCancellation(CancellationReasonCode code, BigDecimal retained) {
         this.cancellationReasonCode = code;
         this.cancellationRetainedAmount = retained;
     }
@@ -1153,13 +810,8 @@ public final class Order extends AggregateRoot {
         }
         OrderStatus back = statusBeforeHold;
         HoldReason was = holdReason;
-        // G2-3: a hold the payment reversal raised is resolved by money, not by a note. An order of a contract is paid by
-        // its installments, which the caller checks (4B-6): its own terms are a placeholder.
-        if (was == HoldReason.PAYMENT && !paidByContract() && !termsMet()) {
-            throw new BusinessException(ErrorCode.ORDER_BALANCE_NOT_PAID,
-                    "Order %s is short of what its %s terms want; record the payment before resolving the hold"
-                            .formatted(orderNumber, paymentTerm));
-        }
+        // A hold for payment is resolved by money, not by a note: an order of a contract by its installments on signing,
+        // which the caller checks (4B-6, 15 BR-13). An order without a contract has no money in the system (4B-10).
         clearHold();
         transitionTo(back, by, withNote("HOLD_RESOLVED_" + was.name(), trimmed), at);
         followShipments(ShipmentChange.RESUMED, at, by);
@@ -1179,9 +831,9 @@ public final class Order extends AggregateRoot {
      * process is a return — {@code ORDER_NOT_CANCELLABLE}, naming the current status so the caller
      * can tell the user why.</p>
      *
-     * <p>{@code retainedPercent} is the share of the money held for the order (received, less what closures asked
-     * back) kept for work already done — a print run under way (17 §4.4, 15 §4.4); the rest is refundable. 0 or null
-     * keeps nothing.</p>
+     * <p>{@code retainedPercent} is the share of the money collected kept for work already done - a print run under way
+     * (17 §4.8 step 30); the rest is refundable. 0 or null keeps nothing. Payment applies it to the installments in the
+     * caller's transaction (4B-9).</p>
      *
      * @param by who cancelled; null when the system did (payment failed, hold expired)
      */
@@ -1192,13 +844,13 @@ public final class Order extends AggregateRoot {
     /**
      * The same, keeping either a percentage or an amount agreed with the customer (decision Q2: Sales enters it,
      * nothing computes it), whole units of the currency, more than zero, at most what the order is now worth, with its
-     * reason and detail. The money held for the order (received, less what closures asked back - review of S6) pays
-     * it first: what is left of it is refunded (Q6b), and what it does not cover is owed — the cancellation announces
-     * it and payment records a receivable (Q6a). Nothing is collected or marked paid.
+     * reason and detail.
      *
-     * <p>4B-9: an order of a contract holds no money of its own here - it was paid on its installments - so the share
-     * and the agreed amount are settled by payment against them, in the caller's transaction
-     * ({@code PaymentService.settleCancellation}); this order announces no fee owed, and keeps nothing.</p>
+     * <p>4B-9, 4B-10: the order holds no money of its own - it is paid on its contract's installments - so the share and
+     * the agreed amount are settled by payment against them, in the caller's transaction
+     * ({@code PaymentService.settleCancellation}): the money collected pays the fee first, the rest is refunded, a
+     * shortfall is owed on a fee item. The order keeps nothing ({@code cancellationRetainedAmount} 0) and announces no
+     * money in {@code OrderCancelled}.</p>
      */
     public void cancel(CancellationReasonCode code, String note, BigDecimal retainedPercent,
                        com.stockflow.order.api.CancellationFee agreedFee, UUID by, Instant now) {
@@ -1250,13 +902,6 @@ public final class Order extends AggregateRoot {
         OrderStatus previous = status;
         int scale = total().currency().getDefaultFractionDigits();
         BigDecimal agreed = agreedFee == null ? null : agreedFee.amount().setScale(scale);
-        // Q6a/Q6b: what was received pays the agreed amount first; the rest is refunded, a shortfall is owed. Only the
-        // money still the order's (review 2026-10-25 of S6): a refund a closure already asked for is not refunded a
-        // second time, nor kept.
-        BigDecimal held = moneyHeld();
-        BigDecimal retained = agreed != null ? agreed.min(held)
-                : retainedPercent == null ? BigDecimal.ZERO
-                : held.multiply(retainedPercent).divide(HUNDRED, scale, RoundingMode.HALF_UP);
         this.cancellationFeeAmount = agreed;
         this.cancellationFeeReason = agreedFee == null ? null : agreedFee.reason();
         this.cancellationFeeDetail = agreedFee == null ? null : agreedFee.detail();
@@ -1266,14 +911,11 @@ public final class Order extends AggregateRoot {
         clearHold();
         this.cancellationReasonCode = code;
         this.cancellationReason = reasonText;
-        this.cancellationRetainedAmount = retained;
-        // 4B-9: a contract order's money is on its installments, never in the ledger (OrderAllocator refuses it), so
-        // its fee is settled against them by payment in this transaction (OrderServiceImpl.cancelLoaded). Announcing
-        // the fee as owed here as well would open a ledger receivable for the same fee a second time.
-        BigDecimal owed = agreed == null || paidByContract() ? BigDecimal.ZERO : agreed.subtract(retained);
+        // ck_order_cancellation_fee / _retained compare this with paid_amount, which stays 0 since 4B-10.
+        this.cancellationRetainedAmount = BigDecimal.ZERO;
         registerEvent(new OrderEvent.Cancelled(new OrderCancelled(id.value(), orderNumber.value(), customerId,
-                previous.name(), code.name(), trimmed, paidAmount, held.subtract(retained),
-                total().currency().getCurrencyCode(), by, now, owed)));
+                previous.name(), code.name(), trimmed, BigDecimal.ZERO, BigDecimal.ZERO,
+                total().currency().getCurrencyCode(), by, now, BigDecimal.ZERO)));
     }
 
     private void requireAgreedFee(com.stockflow.order.api.CancellationFee fee, BigDecimal retainedPercent) {
@@ -1352,20 +994,20 @@ public final class Order extends AggregateRoot {
      * its last vehicle). Refused while the order is cancelled, on hold or not yet picking, and when its terms want money
      * before the goods leave that has not all arrived ({@code ORDER_BALANCE_NOT_PAID}, G3-Q4).
      *
-     * @param ledger as for {@link #markShipped(Instant, UUID, LedgerMoney)}
+     * @param installmentsDue as for {@link #markShipped(Instant, UUID, BigDecimal)}
      */
-    public void requireHandoverAllowed(LedgerMoney ledger) {
+    public void requireHandoverAllowed(BigDecimal installmentsDue) {
         requireNotCancelled("its goods are not handed over");
         if (status != OrderStatus.PICKING && status != OrderStatus.PACKED && status != OrderStatus.PARTIALLY_FULFILLED) {
             throw new InvalidOrderTransitionException(orderNumber, status,
                     status == OrderStatus.ON_HOLD ? "resolve the hold before handing goods over"
                             : "only a picking, packed or partly shipped order hands goods over");
         }
-        requireHandoverPaid(ledger);
+        requireHandoverPaid(installmentsDue);
     }
 
-    /** @param ledger as for {@link #markShipped(Instant, UUID, LedgerMoney)} */
-    public boolean recordHandover(ShipmentHandover handover, LedgerMoney ledger) {
+    /** @param installmentsDue as for {@link #markShipped(Instant, UUID, BigDecimal)} */
+    public boolean recordHandover(ShipmentHandover handover, BigDecimal installmentsDue) {
         java.util.Objects.requireNonNull(handover, "handover");
         Optional<OrderShipment> known = shipment(handover.shipmentId());
         Map<UUID, Integer> quantities = quantitiesOf(handover);
@@ -1377,7 +1019,7 @@ public final class Order extends AggregateRoot {
             }
             return false;
         }
-        requireHandoverAllowed(ledger);
+        requireHandoverAllowed(installmentsDue);
         for (Map.Entry<UUID, Integer> entry : quantities.entrySet()) {
             OrderLine line = findLine(entry.getKey()).orElseThrow(() -> new BusinessException(
                     ErrorCode.VALIDATION_FAILED, "Line %s is not on order %s".formatted(entry.getKey(), orderNumber)));
@@ -1458,9 +1100,9 @@ public final class Order extends AggregateRoot {
     }
 
     /**
-     * The carrier delivered one shipment (09 §4.3 step 1; the Order Coordinator records it, BR-02). A credit order
-     * bills what the shipment carried, less what the customer paid ahead and has not been billed against
-     * ({@code OrderDelivered}, one receivable per shipment). The order is DELIVERED once every shipment arrived.
+     * The carrier delivered one shipment (09 §4.3 step 1; the Order Coordinator records it, BR-02). The order is
+     * DELIVERED once every shipment arrived; {@code OrderDelivered} names the shipment. Nothing is billed on delivery
+     * since 4B-10: what is paid after delivery is the contract's installments.
      *
      * @return whether this changed the order
      */
@@ -1473,9 +1115,8 @@ public final class Order extends AggregateRoot {
             throw new BusinessException(ErrorCode.ORDER_SHIPMENT_INVALID_TRANSITION,
                     "Shipment %s is %s and cannot become DELIVERED".formatted(shipmentId, shipment.status()));
         }
-        BigDecimal billed = billNow(shipment.amount());
-        shipment.delivered(at, by, billed);
-        registerDelivered(shipmentId, billed, at);
+        shipment.delivered(at, by, BigDecimal.ZERO);
+        registerDelivered(shipmentId, at);
         followShipments(ShipmentChange.OUTCOME, at, by);
         return true;
     }
@@ -1483,8 +1124,7 @@ public final class Order extends AggregateRoot {
     /**
      * A delivery the carrier reported wrongly, corrected to a failure by the warehouse manager (09 §4.3 step 5, E17;
      * 17 §5.1): the shipment DELIVERY_FAILED and the order following it, while the order is not completed. A delivery
-     * that billed the customer (a receivable was opened for it) is not corrected here: taking the bill back is the
-     * instalments' work, not this order's.
+     * that billed the customer in the money ledger (before 4B-10) is not corrected here.
      *
      * @return whether this changed the order
      * @throws BusinessException {@code ORDER_DELIVERY_NOT_CORRECTABLE} for an order past its deliveries or a billed
@@ -1554,8 +1194,8 @@ public final class Order extends AggregateRoot {
      * Staff close what is left of a partly fulfilled order (17 edge "short pick: phần còn lại huỷ + hoàn tiền phần
      * thiếu"; 17 §5 "Partially Fulfilled → chốt"): the units not shipped - never picked, or come back - will not be
      * delivered. The order then shows its shipments (SHIPPED, DELIVERY_FAILED, DELIVERED or RETURNED);
-     * {@code OrderRemainderClosed} tells payment what to refund of the money received above what the order is now
-     * worth, and fulfillment to stop the rest. Only from PARTIALLY_FULFILLED: an order on hold is resolved first.
+     * {@code OrderRemainderClosed} tells fulfillment to stop the rest; the money is settled on the contract's installments
+     * by payment in the caller's transaction (4B-9). Only from PARTIALLY_FULFILLED: an order on hold is resolved first.
      *
      * @return the value of the units closed
      */
@@ -1566,10 +1206,9 @@ public final class Order extends AggregateRoot {
     /**
      * The same, keeping an amount agreed with the customer for print lines closed after printing started (review of
      * #150; decisions 2026-10-17 / 2026-10-19: cancelling after printing is allowed with a printing fee; 17 edge "khách
-     * huỷ khi đang In Production (đã in)"). The fee is at most the value of the print
-     * units closed. The money received above what the order is now worth pays it first - for a deposit order the
-     * deposit - and only the rest is refunded; what it does not cover is owed ({@code OrderRemainderClosed.owedAmount},
-     * a receivable). Before printing nothing is kept ({@code CANCELLATION_FEE_BEFORE_PRINTING}).
+     * huỷ khi đang In Production (đã in)"). The fee is at most the value of the print units closed. Payment settles it
+     * on the installments (4B-9): what was paid above the order's new worth pays it first, the rest is refunded, a
+     * shortfall is owed on a fee item. Before printing nothing is kept ({@code CANCELLATION_FEE_BEFORE_PRINTING}).
      */
     public BigDecimal closeRemainder(CancellationReasonCode code, String note,
                                      com.stockflow.order.api.CancellationFee agreedFee, UUID by, Instant at) {
@@ -1613,45 +1252,21 @@ public final class Order extends AggregateRoot {
                 closedLines.add(new com.stockflow.contracts.OrderRemainderClosed.Line(line.id(), line.sku().code(), left));
             }
         }
-        // Money received above what the order is now worth, less refunds and fees of earlier closures: it pays the fee
-        // first (a deposit order's deposit included), the rest is refunded; a fee it does not cover is owed.
-        // Fees of earlier closures count only for the money that paid them (kept, or paid on their receivable): one
-        // still owed is the receivable's, so it is not taken from this refund as well (re-review of #150).
-        BigDecimal excess = paidAmount.subtract(billable()).subtract(remainderRefundAmount)
-                .subtract(remainderFeeRetainedAmount).subtract(remainderFeePaidAmount);
-        BigDecimal retained = fee.min(excess.max(BigDecimal.ZERO));
-        BigDecimal refundable = excess.subtract(fee).max(BigDecimal.ZERO);
-        BigDecimal owed = fee.subtract(retained);
-        this.remainderRefundAmount = remainderRefundAmount.add(refundable);
-        this.remainderFeeAmount = remainderFeeAmount.add(fee);
-        this.remainderFeeRetainedAmount = remainderFeeRetainedAmount.add(retained);
         String reason = withNote("REMAINDER_CLOSED_" + code.name(), trimmed);
         if (fee.signum() > 0) {
             // The fee and why, in the order's history (the event carries amounts only); the column holds 500.
             reason = reason + " (fee " + fee.stripTrailingZeros().toPlainString() + ": " + agreedFee.reason() + ")";
             reason = reason.length() > 500 ? reason.substring(0, 500) : reason;
         }
-        reevaluatePaidInFull(at);
         followShipments(ShipmentChange.CLOSED, at, by, reason);
         this.lastClosureId = UUID.randomUUID();
-        // 4B-9: a contract order's money is on its installments, which payment settles in this transaction
-        // (OrderServiceImpl.closeRemainder); the ledger holds none of it, so it is told of no fee owed - a ledger
-        // receivable would bill the same fee twice.
+        // The money is the installments', settled by payment in this transaction (OrderServiceImpl.closeRemainder): the
+        // event carries no money of the order's own since 4B-10 (paid, refundable, retained and owed are 0).
         registerEvent(new OrderEvent.RemainderClosed(new com.stockflow.contracts.OrderRemainderClosed(id.value(),
-                orderNumber.value(), customerId, code.name(), closedLines, closed.amount(), billable(), paidAmount,
-                refundable, total().currency().getCurrencyCode(), by, at, lastClosureId, fee, retained,
-                paidByContract() ? BigDecimal.ZERO : owed)));
+                orderNumber.value(), customerId, code.name(), closedLines, closed.amount(), billable(), BigDecimal.ZERO,
+                BigDecimal.ZERO, total().currency().getCurrencyCode(), by, at, lastClosureId, fee, BigDecimal.ZERO,
+                BigDecimal.ZERO)));
         return closed.amount();
-    }
-
-    /**
-     * The money received that is still the order's (review 2026-10-25 of S6): what was paid, less the refunds closures
-     * asked for and the closures' fees it paid. A cancellation keeps and refunds out of this, so a refund a closure
-     * already asked for is paid out once; ck_order_cancellation_fee says it again.
-     */
-    private BigDecimal moneyHeld() {
-        return paidAmount.subtract(remainderRefundAmount).subtract(remainderFeeRetainedAmount)
-                .subtract(remainderFeePaidAmount).max(BigDecimal.ZERO);
     }
 
     private void followShipments(ShipmentChange change, Instant at, UUID by) {
@@ -1754,7 +1369,8 @@ public final class Order extends AggregateRoot {
 
     /**
      * What the order is worth to the customer now: its total, less the units staff closed. Units that came back are
-     * still owed a delivery until they are closed - shipped again, or closed and so refunded - so they stay in it.
+     * still owed a delivery until they are closed - shipped again, or closed and so refunded - so they stay in it. What
+     * a closure takes off the installments is the difference (4B-9).
      */
     public BigDecimal billable() {
         // Each line's units not closed with their VAT (4B-3), and the fee lines: closing units never closes a fee.
@@ -1762,102 +1378,23 @@ public final class Order extends AggregateRoot {
                 .reduce(feesGross().amount(), BigDecimal::add);
     }
 
-    /** What the customer still owes on the order (never below zero; above, a refund is the payment module's). */
-    public BigDecimal amountDue() {
-        return billable().add(remainderFeeAmount).subtract(paidAmount).max(BigDecimal.ZERO);
-    }
-
-    public BigDecimal remainderFeeAmount() { return remainderFeeAmount; }
-    public BigDecimal remainderFeeRetainedAmount() { return remainderFeeRetainedAmount; }
-    public BigDecimal remainderFeePaidAmount() { return remainderFeePaidAmount; }
-
-    /** What of the closures' fees is still owed on their receivables, as the order counts it. */
-    public BigDecimal remainderFeeOwed() {
-        return remainderFeeAmount.subtract(remainderFeeRetainedAmount).subtract(remainderFeePaidAmount)
-                .max(BigDecimal.ZERO);
-    }
-
-    /** Rehydration of the fees agreed on closures. */
-    public void restoreRemainderFee(BigDecimal fee) {
-        restoreRemainderFee(fee, BigDecimal.ZERO, BigDecimal.ZERO);
-    }
-
-    public void restoreRemainderFee(BigDecimal fee, BigDecimal retained, BigDecimal paid) {
-        this.remainderFeeAmount = fee == null ? BigDecimal.ZERO : fee;
-        this.remainderFeeRetainedAmount = retained == null ? BigDecimal.ZERO : retained;
-        this.remainderFeePaidAmount = paid == null ? BigDecimal.ZERO : paid;
-    }
-
     /**
-     * What must be paid before the goods may leave (G3-Q4: blocked at the handover, warned at packing; G2-3). A prepaid
-     * order owes everything before (15 §4.1); a credit order owes on its due date (15 §4.3). A deposit order paid
-     * before delivery owes its balance before (15 §4.2 step 3); one whose balance goes on credit owes only the deposit
-     * (normally in long before: it was confirmed by it). Nothing is collected on delivery (09 BR-08).
+     * What must be paid before the goods may leave (G3-Q4: blocked at the handover, warned at packing), as far as the
+     * order knows without its installments: nothing. An order of a contract is gated by what its installments before
+     * delivery and on signing still owe (15 BR-07, BR-08), which the caller reads under the order's lock and hands to
+     * {@link #recordHandover(ShipmentHandover, BigDecimal)}; an order without a contract has no money in the system since
+     * the money ledger went (4B-10), so nothing holds its goods back.
      */
     public BigDecimal amountDueBeforeHandover() {
-        return amountDueBeforeHandover(null);
-    }
-
-    private BigDecimal amountDueBeforeHandover(LedgerMoney ledger) {
-        if (paidByContract()) {
-            // Its contract's installments say what is paid before the goods leave (15 BR-07, BR-08), not its own terms:
-            // what the installments before delivery and on signing still owe, as payment read it under the order's lock
-            // (4B-6). Every such installment, tied to a delivery batch or not, until the handover goes by batch (4B-8).
-            return ledger == null || ledger.installmentsDue() == null ? BigDecimal.ZERO : ledger.installmentsDue();
-        }
-        BigDecimal paid = paid(ledger);
-        BigDecimal due = billable().subtract(paid).max(BigDecimal.ZERO);
-        return switch (paymentTerm) {
-            case PREPAID -> due;
-            // The balance becomes a receivable on delivery (ON_CREDIT): only the deposit is wanted before the goods
-            // leave.
-            case DEPOSIT -> balanceOnCredit() ? depositRequired.subtract(paid).max(BigDecimal.ZERO).min(due) : due;
-            case CREDIT -> BigDecimal.ZERO;
-        };
+        return BigDecimal.ZERO;
     }
 
     /**
-     * The money payment's ledger holds for the order (G2-3), read synchronously by the caller under the order's lock.
-     *
-     * @param collected       net allocations and earlier payments, less refunds asked for
-     * @param paidAhead       the part of it not paid against a receivable
-     * @param installmentsDue 4B-6: for an order of a contract, what its installments before delivery and on signing
-     *                        still owe (15 BR-07, BR-08); zero otherwise
+     * Every installment of its contract before delivery and on signing (still owing {@code installmentsDue}), tied to a
+     * delivery batch or not, until the handover goes by batch (4B-8).
      */
-    public record LedgerMoney(BigDecimal collected, BigDecimal paidAhead, BigDecimal installmentsDue) {
-
-        public LedgerMoney(BigDecimal collected, BigDecimal paidAhead) {
-            this(collected, paidAhead, BigDecimal.ZERO);
-        }
-    }
-
-    /**
-     * What was paid, as the order counted it or as the ledger has it, whichever is more: the ledger is ahead of the
-     * order by the events not yet delivered; the order is ahead of the ledger only for money recorded outside it.
-     */
-    private BigDecimal paid(LedgerMoney ledger) {
-        return ledger == null || ledger.collected() == null ? paidAmount : paidAmount.max(ledger.collected());
-    }
-
-    /** BALCREDIT: a deposit order whose balance becomes the customer's receivable on delivery. */
-    public boolean balanceOnCredit() {
-        return paymentTerm == PaymentTerm.DEPOSIT && balancePolicy == BalancePolicy.ON_CREDIT;
-    }
-
-    /**
-     * BALCREDIT: the part of the order its customer is given credit for - the whole order on credit terms, the
-     * balance after the deposit for a deposit order whose balance goes on credit - as checked against the credit limit
-     * when it is placed; 0 for any other order.
-     */
-    public BigDecimal creditAmount() {
-        if (paymentTerm == PaymentTerm.CREDIT) {
-            return total().amount();
-        }
-        return balanceOnCredit() ? total().amount().subtract(depositRequired).max(BigDecimal.ZERO) : BigDecimal.ZERO;
-    }
-
-    private void requireHandoverPaid(LedgerMoney ledger) {
-        BigDecimal due = amountDueBeforeHandover(ledger);
+    private void requireHandoverPaid(BigDecimal installmentsDue) {
+        BigDecimal due = paidByContract() && installmentsDue != null ? installmentsDue : BigDecimal.ZERO;
         if (due.signum() > 0) {
             throw new BusinessException(ErrorCode.ORDER_BALANCE_NOT_PAID,
                     "Order %s still owes %s %s before its goods may leave".formatted(orderNumber,
@@ -1865,59 +1402,21 @@ public final class Order extends AggregateRoot {
         }
     }
 
-    /**
-     * Bills a delivery of goods worth {@code worth} (a credit order, or the balance of an ON_CREDIT deposit order;
-     * kltn-docs 15 §4.3 step 2, §4.2 step 3): at most what the
-     * order has left to bill, which money paid ahead - not against a receivable - already covers.
-     */
-    private BigDecimal billNow(BigDecimal worth) {
-        // BALCREDIT: a deposit order whose balance goes on credit bills its deliveries as a credit order does - the
-        // deposit, paid ahead, pays the earliest of them first.
-        if (paymentTerm != PaymentTerm.CREDIT && !balanceOnCredit()) {
-            return BigDecimal.ZERO;
-        }
-        // Money paid ahead pays the earliest deliveries first: a later shipment that comes back, and is then closed,
-        // must not leave an earlier one billed for money the customer already paid (review of G3-2).
-        BigDecimal billed = worth.subtract(unusedPaidAhead()).max(BigDecimal.ZERO);
-        this.billedAmount = billedAmount.add(billed);
-        return billed;
-    }
-
-    /** Money paid outside receivables (ahead of delivery) that no delivered shipment has used yet. */
-    private BigDecimal unusedPaidAhead() {
-        BigDecimal paidAhead = paidAmount.subtract(receivablePaidAmount).max(BigDecimal.ZERO);
-        BigDecimal usedByDeliveries = deliveredValue().subtract(billedAmount).max(BigDecimal.ZERO);
-        return paidAhead.subtract(usedByDeliveries).max(BigDecimal.ZERO);
-    }
-
-    /** The value of the goods in delivered shipments. */
-    private BigDecimal deliveredValue() {
-        return shipments.stream().filter(s -> s.status() == OrderShipmentStatus.DELIVERED).map(OrderShipment::amount)
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
-    }
-
-    /**
-     * What is still to bill: the goods not delivered yet (closed units excluded, units that came back included - they
-     * may ship again), less the money paid ahead that no delivery has used. The credit exposure query computes the
-     * same from the row ({@code total - closed - billed - paid ahead}).
-     */
-    public BigDecimal unbilled() {
-        return billable().subtract(deliveredValue()).subtract(unusedPaidAhead()).max(BigDecimal.ZERO);
-    }
-
     // ---- after delivery ------------------------------------------------------------------------------------------
 
     /**
-     * Delivered, settled and past the return window (kltn-docs 17 §4.3 step 10; BR-ORD-005): DELIVERED → COMPLETED.
-     * A credit order still owing stays DELIVERED (17 edge), so does one with a return request open. The window is
-     * counted in calendar days of Asia/Ho_Chi_Minh, exactly as a return is ({@link ReturnPolicy#endOfDays}): the order
-     * never completes while its customer may still claim.
+     * Delivered, settled and past the return window (kltn-docs 17 §4.6 step 21; BR-ORD-005): DELIVERED → COMPLETED. An
+     * order whose installments still owe stays DELIVERED (every installment of the contract PAID, 17 step 21), so does
+     * one with a return request open. The window is counted in calendar days of Asia/Ho_Chi_Minh, exactly as a return
+     * is ({@link ReturnPolicy#endOfDays}): the order never completes while its customer may still claim.
      *
+     * @param owing whether the order's installments still owe something, as payment reads them (4B-10: the order keeps
+     *              no money of its own); false for an order without installments
      * @return whether this changed the order
      */
-    public boolean complete(Instant now, java.time.Duration returnWindow, boolean hasOpenReturn) {
+    public boolean complete(Instant now, java.time.Duration returnWindow, boolean hasOpenReturn, boolean owing) {
         if (status != OrderStatus.DELIVERED || deliveredAt == null || hasOpenReturn
-                || ReturnPolicy.endOfDays(deliveredAt, returnWindow).isAfter(now) || amountDue().signum() > 0) {
+                || ReturnPolicy.endOfDays(deliveredAt, returnWindow).isAfter(now) || owing) {
             return false;
         }
         transitionTo(OrderStatus.COMPLETED, null, "RETURN_WINDOW_CLOSED", now);
@@ -1927,19 +1426,20 @@ public final class Order extends AggregateRoot {
 
     /**
      * Closed for good a while after it was completed or refunded (G3-Q1, default 30 days): BR-05, nothing changes it
-     * any more. Never while the customer still owes on it: a credit order a return credited only in part still has its
-     * receivable open, and closing it would put the debt out of the order's sight for good - COMPLETED already waits
-     * for the money ({@link #complete}), so REFUNDED and PARTIALLY_REFUNDED wait too.
+     * any more. Never while the customer still owes on it: its installments still owe, and closing it would put the debt
+     * out of the order's sight for good - COMPLETED already waits for the money ({@link #complete}), so REFUNDED and
+     * PARTIALLY_REFUNDED wait too.
      *
+     * @param owing as for {@link #complete}
      * @return whether this changed the order
      */
-    public boolean close(Instant now, java.time.Duration after) {
+    public boolean close(Instant now, java.time.Duration after, boolean owing) {
         Instant since = switch (status) {
             case COMPLETED -> completedAt;
             case REFUNDED, PARTIALLY_REFUNDED -> refundedAt;
             default -> null;
         };
-        if (since == null || since.plus(after).isAfter(now) || amountDue().signum() > 0) {
+        if (since == null || since.plus(after).isAfter(now) || owing) {
             return false;
         }
         transitionTo(OrderStatus.CLOSED, null, "CLOSED_AFTER_SETTLEMENT", now);
@@ -2034,9 +1534,9 @@ public final class Order extends AggregateRoot {
     }
 
     /**
-     * A replacement order is placed (SCRUM-260): every line holds its stock, there is nothing to pay - so it is paid in
-     * full at once and CONFIRMED, ready for the coordinator to release it to a warehouse, as any
-     * order. Announced as {@code OrderPlaced}. The confirmation names {@code by}, who settled the return: nobody
+     * A replacement order is placed (SCRUM-260): every line holds its stock, there is nothing to pay - so it is
+     * CONFIRMED at once ({@code ck_order_confirmed_basis} names the replacement), ready for the coordinator to release it
+     * to a warehouse, as any order. Announced as {@code OrderPlaced}. The confirmation names {@code by}, who settled the return: nobody
      * checked out this order, so the history says who caused it.
      */
     public void submitReplacement(UUID by, Instant now) {
@@ -2044,10 +1544,6 @@ public final class Order extends AggregateRoot {
             throw new IllegalStateException("Order %s replaces no return".formatted(orderNumber));
         }
         requireEveryLineReserved();
-        if (paymentTerm != PaymentTerm.PREPAID) {
-            throw new IllegalStateException("A replacement order is prepaid: there is nothing to pay");
-        }
-        this.paidInFullAt = now;
         transitionTo(OrderStatus.CONFIRMED, by, "REPLACEMENT_FOR_RETURN", now);
         registerPlaced();
     }
@@ -2077,10 +1573,9 @@ public final class Order extends AggregateRoot {
 
     // ---- rehydration and reading of the lifecycle ------------------------------------------------------------------
 
-    /** Rehydration of the hold, the milestones and the money billed, from the row. */
+    /** Rehydration of the hold and the milestones, from the row. */
     public void restoreLifecycle(HoldReason hold, OrderStatus before, String note, Instant shipped, Instant delivered,
-                                 DeliveryFailureReason failure, Instant completed, Instant refunded, Instant closed,
-                                 BigDecimal billed, BigDecimal paidOnReceivables, BigDecimal remainderRefund) {
+                                 DeliveryFailureReason failure, Instant completed, Instant refunded, Instant closed) {
         this.holdReason = hold;
         this.statusBeforeHold = before;
         this.holdNote = note;
@@ -2090,9 +1585,6 @@ public final class Order extends AggregateRoot {
         this.completedAt = completed;
         this.refundedAt = refunded;
         this.closedAt = closed;
-        this.billedAmount = billed == null ? BigDecimal.ZERO : billed;
-        this.receivablePaidAmount = paidOnReceivables == null ? BigDecimal.ZERO : paidOnReceivables;
-        this.remainderRefundAmount = remainderRefund == null ? BigDecimal.ZERO : remainderRefund;
     }
 
     /** Rehydration of the shipments, from their rows. */
@@ -2110,9 +1602,6 @@ public final class Order extends AggregateRoot {
     public Instant completedAt() { return completedAt; }
     public Instant refundedAt() { return refundedAt; }
     public Instant closedAt() { return closedAt; }
-    public BigDecimal billedAmount() { return billedAmount; }
-    public BigDecimal receivablePaidAmount() { return receivablePaidAmount; }
-    public BigDecimal remainderRefundAmount() { return remainderRefundAmount; }
     public List<OrderShipment> shipments() { return java.util.Collections.unmodifiableList(shipments); }
 
     /** Every live hold this order is carrying, across all of its lines. */
@@ -2328,8 +1817,8 @@ public final class Order extends AggregateRoot {
     public Instant contractSignedAt() { return contractSignedAt; }
 
     /**
-     * 4B-5: paid by its contract's installments, not by its own payment term - which an order of a contract carries
-     * only as the money ledger's neutral PREPAID until the ledger goes (4B-10).
+     * 4B-5: paid by its contract's installments. Since 4B-10 every order placed is: an order without a signed contract
+     * (drafted, or one of checkout's before) has no money in the system at all.
      */
     public boolean paidByContract() { return contractSignedAt != null; }
 
@@ -2347,9 +1836,9 @@ public final class Order extends AggregateRoot {
      *               parcels record no contents (not checked, as everywhere)
      * @return whether this changed the order
      */
-    public boolean recordGoodsLeft(Instant at, Map<UUID, Integer> inPlan, LedgerMoney ledger) {
+    public boolean recordGoodsLeft(Instant at, Map<UUID, Integer> inPlan, BigDecimal installmentsDue) {
         java.util.Objects.requireNonNull(at, "at");
-        requireHandoverAllowed(ledger);
+        requireHandoverAllowed(installmentsDue);
         requirePlanCarriesTheRest(inPlan);
         if (goodsLeftAt != null) {
             return false;
@@ -2388,18 +1877,6 @@ public final class Order extends AggregateRoot {
         this.cancellationFeeReason = reason;
         this.cancellationFeeDetail = detail;
     }
-    /** Rehydration of the balance policy (G2-3). */
-    public void restoreBalance(BalancePolicy policy) {
-        this.balancePolicy = policy;
-    }
-
-    public BalancePolicy balancePolicy() { return balancePolicy; }
-    public BigDecimal paidAmount() { return paidAmount; }
-    public Instant paidInFullAt() { return paidInFullAt; }
-    public Integer creditTermDays() { return creditTermDays; }
-    public PaymentTerm paymentTerm() { return paymentTerm; }
-    public java.math.BigDecimal depositRequired() { return depositRequired; }
-    public Instant depositReceivedAt() { return depositReceivedAt; }
     public UUID warehouseId() { return warehouseId; }
     public Instant releasedAt() { return releasedAt; }
     public UUID releasedBy() { return releasedBy; }

@@ -8,7 +8,6 @@ import com.stockflow.order.internal.entity.OrderAddressJpaEmbeddable;
 
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.OrderSummary;
-import com.stockflow.order.api.PaymentStatus;
 import com.stockflow.order.internal.domain.Order;
 import com.stockflow.order.internal.domain.OrderId;
 import com.stockflow.order.internal.domain.OrderLine;
@@ -67,11 +66,8 @@ final class OrderPersistenceMapper {
                 entity.getCreatedBy(), entity.getLastModifiedAt(), entity.getLastModifiedBy(),
                 entity.getContactName(), entity.getContactEmail(), entity.getContactPhone(),
                 toDomain(entity.getShippingAddress()), toDomain(entity.getBillingAddress()));
-        order.restoreTermsAndRelease(entity.getPaymentTerm(), entity.getDepositRequired(),
-                entity.getDepositReceivedAt(), entity.getWarehouseId(), entity.getReleasedAt(),
-                entity.getReleasedBy());
-        order.restorePaymentAndCancellation(entity.getPaidAmount(), entity.getPaidInFullAt(),
-                entity.getCancellationReasonCode(), entity.getCancellationRetainedAmount(), entity.getCreditTermDays());
+        order.restoreRelease(entity.getWarehouseId(), entity.getReleasedAt(), entity.getReleasedBy());
+        order.restoreCancellation(entity.getCancellationReasonCode(), entity.getCancellationRetainedAmount());
         order.restoreCancellationFee(entity.getCancellationFeeAmount(), entity.getCancellationFeeReason(),
                 entity.getCancellationFeeDetail());
         order.restoreFulfilmentFacts(entity.getPrintingStartedAt(), entity.getPackedAt());
@@ -80,16 +76,12 @@ final class OrderPersistenceMapper {
         order.restoreShippingWarehouse(entity.getShippingWarehouseId(), entity.getShippingWarehouseChosenAt(),
                 entity.getShippingWarehouseChosenBy());
         order.restoreReplacement(entity.getReplacesReturnRequestId());
-        order.restoreBalance(entity.getBalancePolicy());
         order.restorePartialShipment(entity.isAllowPartialShipment());
-        order.restoreRemainderFee(entity.getRemainderFeeAmount(), entity.getRemainderFeeRetainedAmount(),
-                entity.getRemainderFeePaidAmount());
         order.restoreFulfilmentStarted(entity.getFulfilmentStartedAt());
         order.restorePackingStarted(entity.getPackingStartedAt());
         order.restoreLifecycle(entity.getHoldReason(), entity.getStatusBeforeHold(), entity.getHoldNote(),
                 entity.getShippedAt(), entity.getDeliveredAt(), entity.getDeliveryFailureReason(),
-                entity.getCompletedAt(), entity.getRefundedAt(), entity.getClosedAt(), entity.getBilledAmount(),
-                entity.getReceivablePaidAmount(), entity.getRemainderRefundAmount());
+                entity.getCompletedAt(), entity.getRefundedAt(), entity.getClosedAt());
         order.attachFees(entity.getFees().stream()
                 .map(fee -> new com.stockflow.order.internal.domain.OrderFee(fee.getId(), fee.getKind(),
                         fee.getSku() == null ? null : new Sku(fee.getSku()),
@@ -122,16 +114,14 @@ final class OrderPersistenceMapper {
         entity.replaceLines(toLineEntities(order));
         entity.addMissingFees(toFeeEntities(order));
         entity.applyTax(order.taxTotal().amount());
-        applyTermsAndRelease(order, entity);
+        applyState(order, entity);
         entity.applyReplacement(order.replacesReturnRequestId());
         return entity;
     }
 
-    private static void applyTermsAndRelease(Order order, OrderJpaEntity entity) {
-        entity.applyTermsAndRelease(order.paymentTerm(), order.depositRequired(), order.depositReceivedAt(),
-                order.warehouseId(), order.releasedAt(), order.releasedBy());
-        entity.applyPaymentAndCancellation(order.paidAmount(), order.paidInFullAt(), order.cancellationReasonCode(),
-                order.cancellationRetainedAmount(), order.creditTermDays());
+    private static void applyState(Order order, OrderJpaEntity entity) {
+        entity.applyRelease(order.warehouseId(), order.releasedAt(), order.releasedBy());
+        entity.applyCancellation(order.cancellationReasonCode(), order.cancellationRetainedAmount());
         entity.applyCancellationFee(order.cancellationFeeAmount(), order.cancellationFeeReason(),
                 order.cancellationFeeDetail());
         entity.applyFulfilmentFacts(order.printingStartedAt(), order.packedAt());
@@ -140,16 +130,13 @@ final class OrderPersistenceMapper {
         entity.applyShippingWarehouse(order.shippingWarehouseId(), order.shippingWarehouseChosenAt(),
                 order.shippingWarehouseChosenBy());
         entity.applyPlaced(order.placedAt());
-        entity.applyBalance(order.balancePolicy());
         entity.applyPartialShipment(order.allowPartialShipment());
-        entity.applyRemainderFee(order.remainderFeeAmount(), order.remainderFeeRetainedAmount(),
-                order.remainderFeePaidAmount());
         entity.applyClosedAmount(order.closedAmount());
         entity.applyFulfilmentStarted(order.fulfilmentStartedAt());
         entity.applyPackingStarted(order.packingStartedAt());
         entity.applyLifecycle(order.holdReason(), order.statusBeforeHold(), order.holdNote(), order.shippedAt(),
                 order.deliveredAt(), order.deliveryFailureReason(), order.completedAt(), order.refundedAt(),
-                order.closedAt(), order.billedAmount(), order.receivablePaidAmount(), order.remainderRefundAmount());
+                order.closedAt());
     }
 
     /** For the paginated order-history query only. Deliberately never touches {@code
@@ -184,24 +171,18 @@ final class OrderPersistenceMapper {
                 entity.getLastModifiedAt(),
                 entity.getLastModifiedBy(),
                 entity.getContactName(), entity.getContactEmail(), entity.getContactPhone(),
-                toSummary(entity.getShippingAddress()), null,
-                entity.getPaymentTerm(), entity.getWarehouseId(), entity.getReleasedAt(),
-                new OrderSummary.Payment(entity.getPaidAmount(), entity.getDepositRequired(),
-                        entity.getDepositReceivedAt(), entity.getPaidInFullAt(),
-                        PaymentStatus.of(entity.getPaymentTerm(), entity.getPaidAmount(), entity.getPaidInFullAt()),
-                        entity.getCreditTermDays(), entity.getBalancePolicy()),
+                toSummary(entity.getShippingAddress()), null, entity.getWarehouseId(), entity.getReleasedAt(),
                 entity.getStatus() == OrderStatus.CANCELLED
                         ? new OrderSummary.Cancellation(entity.getCancellationReasonCode(),
                                 entity.getCancellationReason(), entity.getCancellationRetainedAmount(),
                                 entity.getCancellationFeeReason(), entity.getCancellationFeeDetail(),
                                 entity.getCancellationFeeAmount())
                         : null,
-                // A list row: the hold and the milestones; no lines, no shipments, no derived money.
+                // A list row: the hold and the milestones; no lines, no shipments, no derived amounts.
                 new OrderSummary.Lifecycle(entity.getHoldReason(), entity.getStatusBeforeHold(), entity.getHoldNote(),
                         entity.getPackedAt(), entity.getShippedAt(), entity.getDeliveredAt(),
-                        entity.getDeliveryFailureReason(), entity.getCompletedAt(), entity.getClosedAt(),
-                        entity.getBilledAmount(), null, null, null, List.of(), List.of(),
-                        entity.isAllowPartialShipment()),
+                        entity.getDeliveryFailureReason(), entity.getCompletedAt(), entity.getClosedAt(), null, null,
+                        List.of(), List.of(), entity.isAllowPartialShipment()),
                 rowCharges(entity));
     }
 
@@ -231,7 +212,7 @@ final class OrderPersistenceMapper {
         entity.replaceLines(toLineEntities(order));
         entity.addMissingFees(toFeeEntities(order));
         entity.applyTax(order.taxTotal().amount());
-        applyTermsAndRelease(order, entity);
+        applyState(order, entity);
     }
 
     private static List<com.stockflow.order.internal.entity.OrderFeeLineJpaEntity> toFeeEntities(Order order) {

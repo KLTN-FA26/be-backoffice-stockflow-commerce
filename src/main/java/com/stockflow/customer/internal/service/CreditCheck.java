@@ -16,7 +16,7 @@ final class CreditCheck {
     }
 
     static boolean approvedCredit(CreditProfile terms) {
-        return terms.allowCredit() && terms.creditLimit() != null
+        return terms.creditLimit() != null
                 && terms.creditLimit().setScale(4, RoundingMode.HALF_UP).signum() > 0;
     }
 }

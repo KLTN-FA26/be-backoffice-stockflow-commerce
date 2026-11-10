@@ -25,8 +25,8 @@ import org.springframework.web.bind.annotation.RestController;
 import java.util.UUID;
 
 /**
- * A customer's commercial terms (SCRUM-427, kltn-docs 18 §2-3). Sales reads them; only whoever
- * approves credit changes them ({@code APPROVE}, 18 BR-02) and every change is audited.
+ * A customer's credit (SCRUM-427, kltn-docs 18 §2-3, 15 BR-12): the limit and the days to pay after delivery. Sales
+ * reads it; only whoever approves credit changes it ({@code APPROVE}, 18 BR-02) and every change is audited.
  */
 @RestController
 @RequestMapping("/api/v1/customers/{customerId}/credit-profile")
@@ -43,28 +43,25 @@ class CreditProfileController {
     }
 
     @GetMapping
-    @Operation(summary = "The customer's payment terms, deposit share, credit limit and days to pay")
+    @Operation(summary = "The customer's credit limit and days to pay")
     @RequiresPermission(resource = CustomerResources.CREDIT_PROFILES, action = Action.READ, scope = DataScope.ALL)
     public ApiResponse<CreditProfileResponse> get(@PathVariable UUID customerId) {
         return ApiResponse.ok(toResponse(customers.creditTerms(customerId)));
     }
 
     @PutMapping
-    @Operation(summary = "Set the customer's commercial terms (credit approver only)")
+    @Operation(summary = "Set the customer's credit limit and days to pay (credit approver only)")
     @RequiresPermission(resource = CustomerResources.CREDIT_PROFILES, action = Action.APPROVE, scope = DataScope.ALL)
     public ApiResponse<CreditProfileResponse> save(@PathVariable UUID customerId,
                                                    @Valid @RequestBody SaveCreditProfileRequest request,
                                                    @AuthenticatedUser CurrentUser user) {
         return ApiResponse.ok(toResponse(customers.saveCreditTerms(new SaveCreditTermsCommand(customerId,
-                request.allowPrepaid(), request.allowDeposit(), request.allowCredit(), request.defaultPaymentTerm(),
-                request.depositPercent(), request.creditLimit(), request.creditTermDays(), request.note(),
-                user.userId(), request.expectedVersion(), request.depositBalancePolicy()))));
+                request.creditLimit(), request.creditTermDays(), request.note(), user.userId(),
+                request.expectedVersion()))));
     }
 
     static CreditProfileResponse toResponse(CreditTerms t) {
-        return new CreditProfileResponse(t.customerId(), t.configured(), t.allowPrepaid(), t.allowDeposit(),
-                t.allowCredit(), t.defaultTerm().name(), t.depositPercent(), t.creditLimit(), t.creditTermDays(),
-                t.currency(), t.approvedBy(), t.approvedAt(), t.note(), t.configured() ? t.version() : -1L,
-                t.depositBalancePolicy() == null ? null : t.depositBalancePolicy().name());
+        return new CreditProfileResponse(t.customerId(), t.configured(), t.creditLimit(), t.creditTermDays(),
+                t.currency(), t.approvedBy(), t.approvedAt(), t.note(), t.configured() ? t.version() : -1L);
     }
 }

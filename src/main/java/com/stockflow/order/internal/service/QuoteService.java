@@ -16,7 +16,6 @@ import com.stockflow.common.persistence.Pages;
 import com.stockflow.common.persistence.SortWhitelist;
 import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.ScopeGuards;
-import com.stockflow.customer.api.CommercialTerm;
 import com.stockflow.customer.api.CustomerService;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderSummary;
@@ -153,7 +152,6 @@ class QuoteService implements Quotes {
         }
         requireNewWorkFor(customerId);
         Quote.Offer offer = offer(customerId, command.draft());
-        requireTermAllowed(customerId, offer);
         requireActiveSkus(null, offer);
         Quote quote = Quote.draft(Identifiers.newId(), quotes.nextNumber(today()), command.requestId(), customerId, offer);
         quotes.save(quote);
@@ -172,7 +170,7 @@ class QuoteService implements Quotes {
         Instant now = clock.instant();
         return Pages.toResponse(page.map(r -> new Row(r.id(), r.quoteNumber(), r.customerId(),
                 r.status() == QuoteStatus.SENT && !now.isBefore(r.validUntil()) ? QuoteStatus.EXPIRED : r.status(),
-                r.revision(), r.paymentTerm(), r.validUntil(), r.sentAt(), r.convertedOrderId(), r.createdAt(),
+                r.revision(), r.validUntil(), r.sentAt(), r.convertedOrderId(), r.createdAt(),
                 r.version())));
     }
 
@@ -189,7 +187,6 @@ class QuoteService implements Quotes {
     public QuoteView edit(CurrentUser user, UUID quoteId, long version, Draft draft) {
         return backOffice(user, quoteId, version, quote -> {
             Quote.Offer offer = offer(quote.customerId(), draft);
-            requireTermAllowed(quote.customerId(), offer);
             requireActiveSkus(quote.quoteNumber(), offer);
             quote.revise(offer);
         }, null);
@@ -202,7 +199,6 @@ class QuoteService implements Quotes {
         Quote quote = lock(user, quoteId, version);
         requireCustomerSkus(quote, "sent");
         requireNewWorkFor(quote.customerId());
-        requireTermAllowed(quote.customerId(), quote.offer());
         requireActiveSkus(quote.quoteNumber(), quote.offer());
         requirePlateFees(quote);
         QuoteStatus from = quote.status();
@@ -221,7 +217,6 @@ class QuoteService implements Quotes {
         Quote quote = lockToAnswer(user, quoteId, acceptance.version());
         Instant now = clock.instant();
         requireNewWorkFor(quote.customerId());
-        requireTermAllowed(quote.customerId(), quote.offer());
         if (quote.statusAt(now) == QuoteStatus.EXPIRED) {
             throw new BusinessException(ErrorCode.QUOTE_EXPIRED, "Quote " + quote.quoteNumber() + " has expired");
         }
@@ -320,8 +315,7 @@ class QuoteService implements Quotes {
                 .map(fee -> new PlaceOrderCommand.Fee(fee.kind(), fee.sku(), fee.amount(), fee.taxRate()))
                 .toList();
         OrderSummary order = quotedOrders.placeQuotedOrder(new PlaceOrderCommand(conversionRequestId(quote.id()),
-                quote.customerId(), conversion.shippingAddressId(), conversion.billingAddressId(), true, lines,
-                quote.offer().paymentTerm(), quote.offer().depositPercent(), null, fees));
+                quote.customerId(), conversion.shippingAddressId(), conversion.billingAddressId(), true, lines, fees));
         Instant now = clock.instant();
         quote.convert(order.orderId(), now);
         quotes.save(quote);
@@ -364,21 +358,10 @@ class QuoteService implements Quotes {
                 .toList();
         // The source quote's validity window, counted from now; Sales sets the real one before sending.
         Instant validUntil = now.plus(java.time.Duration.between(source.sentAt(), old.validUntil()));
-        // R1b: a term the customer may use today. The old one is kept only while still allowed - never restored
-        // (a lost credit stays lost); otherwise the draft starts from the customer's default term, with no deposit
-        // share carried over. Send, acceptance and conversion check the term again.
-        com.stockflow.customer.api.CreditTerms current = customers.creditTerms(customerId);
-        boolean keepTerm = current.allows(CommercialTerm.valueOf(old.paymentTerm().name()));
-        com.stockflow.order.api.PaymentTerm term = keepTerm ? old.paymentTerm()
-                : com.stockflow.order.api.PaymentTerm.valueOf(current.defaultTerm().name());
-        Quote.Offer offer = offer(customerId, new Draft(term, keepTerm ? old.depositPercent() : null, validUntil,
-                old.terms(), lines), true);
-        requireTermAllowed(customerId, offer);
+        Quote.Offer offer = offer(customerId, new Draft(validUntil, old.terms(), lines), true);
         Quote quote = Quote.draft(Identifiers.newId(), quotes.nextNumber(today()), requestId, customerId, offer);
         quotes.save(quote);
-        String reason = keepTerm ? "Reorder of order " + order.orderNumber()
-                : "Reorder of order %s; its payment term %s is no longer allowed, drafted as %s"
-                        .formatted(order.orderNumber(), old.paymentTerm(), term);
+        String reason = "Reorder of order " + order.orderNumber();
         quotes.recordTransition(quote.id(), 1, null, QuoteStatus.DRAFT, reason, null, now, user.userId());
         if (own.isPresent()) {
             // The customer asked: the draft waits for the Sales user who negotiated the order's quote.
@@ -528,14 +511,6 @@ class QuoteService implements Quotes {
         }
     }
 
-    /** kltn-docs 15 BR-01: a quote offers only a payment term the customer's commercial terms allow. */
-    private void requireTermAllowed(UUID customerId, Quote.Offer offer) {
-        if (!customers.creditTerms(customerId).allows(CommercialTerm.valueOf(offer.paymentTerm().name()))) {
-            throw new BusinessException(ErrorCode.PAYMENT_TERM_NOT_ALLOWED,
-                    "Customer %s may not be offered %s terms".formatted(customerId, offer.paymentTerm()));
-        }
-    }
-
     /**
      * The cartons a reorder asks of each SKU: what the source quote accepted (or proposed), a legacy quote's designs as
      * the SKUs issued for them, its units rounded up to whole cartons. In the source's order, one line per SKU.
@@ -626,19 +601,11 @@ class QuoteService implements Quotes {
                     tiers, null, null, taxClass, taxClass == null ? null : rates.get(taxClass)));
         }
         List<com.stockflow.order.internal.domain.QuoteFee> fees = fees(draft.fees(), lines, classes, rates);
-        BigDecimal deposit = draft.depositPercent();
-        if (draft.paymentTerm() == com.stockflow.order.api.PaymentTerm.DEPOSIT && deposit == null) {
-            // Audit of #109: the share the customer is shown and accepts is the share its order asks for. The customer's
-            // default is copied in now, not read again at conversion, when it may have changed since.
-            com.stockflow.customer.api.CreditTerms terms = customers.creditTerms(customerId);
-            deposit = terms == null ? null : terms.depositPercent();
-        }
         if (draft.requestedDeliveryDate() != null && draft.requestedDeliveryDate().isBefore(today())) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED,
                     "The requested delivery date cannot be in the past");
         }
-        return new Quote.Offer(draft.paymentTerm(), deposit,
-                draft.validUntil().truncatedTo(java.time.temporal.ChronoUnit.MICROS), draft.terms(),
+        return new Quote.Offer(draft.validUntil().truncatedTo(java.time.temporal.ChronoUnit.MICROS), draft.terms(),
                 draft.requestedDeliveryDate(), lines, fees);
     }
 
@@ -840,8 +807,6 @@ class QuoteService implements Quotes {
         Quote.Offer offer = quote.offer();
         Map<String, Object> document = new LinkedHashMap<>();
         document.put("revision", quote.revision());
-        document.put("paymentTerm", offer.paymentTerm().name());
-        document.put("depositPercent", offer.depositPercent());
         document.put("validUntil", offer.validUntil().toString());
         document.put("terms", offer.terms());
         document.put("requestedDeliveryDate",
@@ -956,7 +921,7 @@ class QuoteService implements Quotes {
                 .map(o -> new ConvertedOrder(o.orderId(), o.orderNumber(), o.status(), o.total().amount()))
                 .orElse(null);
         return new QuoteView(quote.id(), quote.quoteNumber(), quote.customerId(), quote.statusAt(now), revision,
-                offer.paymentTerm(), offer.depositPercent(), offer.validUntil(), offer.terms(),
+                offer.validUntil(), offer.terms(),
                 offer.requestedDeliveryDate(), offer.legacy(), lines, fees, priced, proposedView, acceptedView,
                 proposedView.total(),
                 acceptedView == null ? null : acceptedView.total(),
@@ -1004,9 +969,8 @@ class QuoteService implements Quotes {
                         textOrNull(fee.path("taxClass")),
                         fee.path("taxRate").isNumber() ? fee.path("taxRate").decimalValue() : null));
             }
-            JsonNode deposit = sent.path("depositPercent");
-            return new Quote.Offer(com.stockflow.order.api.PaymentTerm.valueOf(sent.path("paymentTerm").asText()),
-                    deposit.isNumber() ? deposit.decimalValue() : null, Instant.parse(sent.path("validUntil").asText()),
+            // An offer sent before 4B-10 also kept its paymentTerm and depositPercent: no longer read.
+            return new Quote.Offer(Instant.parse(sent.path("validUntil").asText()),
                     textOrNull(sent.path("terms")),
                     sent.path("requestedDeliveryDate").isTextual()
                             ? LocalDate.parse(sent.path("requestedDeliveryDate").asText()) : null,
