@@ -111,13 +111,16 @@ class CycleCountIntegrationTest {
 
     // ------------------------------------------------------------------ fixtures
 
-    /** A row of loose units in no carton: the history's shape, which no count plans any more. */
-    private UUID loose(String location, int onHand) {
+    /**
+     * A row in no carton: the history's shape, which no count plans any more - emptied, the only kind the table keeps
+     * since V20261117000100 (ck_stock_item_whole_cartons).
+     */
+    private UUID loose(String location) {
         UUID id = Identifiers.newId();
         tx.executeWithoutResult(s -> jdbc.update("""
                 insert into inventory.stock_item (id, sku, location_code, lot_number, received_at, on_hand,
-                    reserved, status, version, created_at) values (?, ?, ?, ?, ?, ?, 0, 'AVAILABLE', 0, now())""",
-                id, sku, location, lot, Timestamp.from(EARLY), onHand));
+                    reserved, status, version, created_at) values (?, ?, ?, ?, ?, 0, 0, 'AVAILABLE', 0, now())""",
+                id, sku, location, lot, Timestamp.from(EARLY)));
         return id;
     }
 
@@ -167,13 +170,21 @@ class CycleCountIntegrationTest {
         });
     }
 
-    /** A LOST carton found again, whole, on the row it was emptied from. */
+    /**
+     * A LOST carton found again, whole, on the row it was emptied from. The row is raised in place, as the application
+     * restocks a carton's own row (StockPackageContents via StockItemRepository.saveMerged): naming the row in
+     * {@code stockflow.same_receipt_merge} for that statement, or the FIFO trigger refuses the raise.
+     */
     private void findWhole(UUID carton) {
         tx.executeWithoutResult(s -> {
             jdbc.update("update inventory.stock_package set status = 'IN_STOCK', closed_at = null where id = ?",
                     carton);
-            jdbc.update("update inventory.stock_item set on_hand = ? where stock_package_id = ?", CARTON_FACTOR,
-                    carton);
+            UUID row = jdbc.queryForObject("select id from inventory.stock_item where stock_package_id = ?",
+                    UUID.class, carton);
+            jdbc.queryForObject("select set_config('stockflow.same_receipt_merge', ?, true)", String.class,
+                    row.toString());
+            jdbc.update("update inventory.stock_item set on_hand = ? where id = ?", CARTON_FACTOR, row);
+            jdbc.queryForObject("select set_config('stockflow.same_receipt_merge', '', true)", String.class);
         });
     }
 
@@ -279,9 +290,9 @@ class CycleCountIntegrationTest {
     // ------------------------------------------------------------------ planning (SCRUM-162)
 
     @Test
-    @DisplayName("a shelf plan has one line per carton in stock under that shelf, MANUAL; loose rows are not counted")
+    @DisplayName("a shelf plan has one line per carton in stock under that shelf, MANUAL; a loose row is not counted")
     void planByShelfGeneratesOneLinePerCarton() {
-        loose(BIN, 5);
+        loose(BIN);
         UUID inBin = carton(BIN, "A");
         UUID inBin2 = carton(BIN2, "B");
         carton(A02_BIN, "C");
@@ -368,8 +379,8 @@ class CycleCountIntegrationTest {
     @Test
     @DisplayName("a scope with no carton is CYCLE_COUNT_EMPTY_SCOPE, one above the cap CYCLE_COUNT_TOO_LARGE (BR-12)")
     void planRefusesEmptyAndTooLarge() {
-        loose(BIN, 5);
-        assertThat(code(catchThrowable(this::planShelfA01))).as("loose stock alone is no scope")
+        loose(BIN);
+        assertThat(code(catchThrowable(this::planShelfA01))).as("a loose row alone is no scope")
                 .isEqualTo(ErrorCode.CYCLE_COUNT_EMPTY_SCOPE);
         assertThat(code(catchThrowable(() -> plan(List.of(), List.of(), List.of(), List.of()))))
                 .as("no criterion at all").isEqualTo(ErrorCode.VALIDATION_FAILED);

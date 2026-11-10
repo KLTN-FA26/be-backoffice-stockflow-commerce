@@ -72,8 +72,10 @@ class StockBrowsingIntegrationTest {
                     java.time.Instant.parse("2026-01-01T00:00:00Z"));
             com.stockflow.support.CartonRows.stock(jdbc, sku, "HCM-A01-1-A", 1, 3, null,
                     java.time.Instant.parse("2026-02-01T00:00:00Z"));
-            stock("HCM-A02-2-A", 4, "QUARANTINE");
-            stock("HCM-A01-2-B", 0, "AVAILABLE");
+            // A quarantined carton of 4, and an emptied loose row of the history (stock is whole cartons only).
+            com.stockflow.support.CartonRows.carton(jdbc, sku, "HCM-A02-2-A", 4, null,
+                    java.time.Instant.parse("2026-01-15T00:00:00Z"), "QUARANTINE");
+            emptied("HCM-A01-2-B");
             jdbc.update("""
                     INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount,
                                                          currency, placed_at, version, created_at)
@@ -90,10 +92,11 @@ class StockBrowsingIntegrationTest {
 
     private UUID softReservation;
 
-    private void stock(String location, int onHand, String status) {
+    /** A loose row emptied long ago: the only kind a row in no carton may be (ck_stock_item_whole_cartons). */
+    private void emptied(String location) {
         jdbc.update("""
                 INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, version, created_at)
-                VALUES (?, ?, ?, 'UNTRACED', ?, 0, ?, 0, NOW())""", Identifiers.newId(), sku, location, onHand, status);
+                VALUES (?, ?, ?, 'UNTRACED', 0, 0, 'AVAILABLE', 0, NOW())""", Identifiers.newId(), sku, location);
     }
 
     private static ErrorCode codeOf(Throwable thrown) {

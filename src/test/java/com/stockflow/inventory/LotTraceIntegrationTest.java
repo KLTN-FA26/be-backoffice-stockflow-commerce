@@ -232,15 +232,12 @@ class LotTraceIntegrationTest {
                     sku.toLowerCase(java.util.Locale.ROOT));
             jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature)"
                     + " values (?,?,?,'Lot fixture','')", Identifiers.newId(), product, sku);
-            // Two rows of one lot received together: the stock-row trigger puts both in the same UNTRACED lot.
+            // Two cartons of one lot received together: the stock-row trigger puts both rows in the same UNTRACED lot.
             java.time.Instant received = java.time.Instant.now().minusSeconds(30L * 24 * 3600);
-            for (Object[] row : List.of(new Object[] {"HCM-A01-1-A", 4, 0}, new Object[] {"HCM-A01-1-B", 5, 2})) {
-                jdbc.update("""
-                        INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved,
-                                                          status, received_at, version, created_at)
-                        VALUES (?, ?, ?, 'X1', ?, ?, 'AVAILABLE', ?, 0, NOW())""",
-                        Identifiers.newId(), sku, row[0], row[1], row[2], java.sql.Timestamp.from(received));
-            }
+            com.stockflow.support.CartonRows.carton(jdbc, sku, "HCM-A01-1-A", 4, "X1", received, "AVAILABLE");
+            UUID heldRow = com.stockflow.support.CartonRows.carton(jdbc, sku, "HCM-A01-1-B", 5, "X1", received,
+                    "AVAILABLE").stockItemId();
+            jdbc.update("UPDATE inventory.stock_item SET reserved = 2 WHERE id = ?", heldRow);
         });
 
         var lots = traces.lots(new LotTraces.Query(sku, "X1", null, null, null, 0, 20)).items();

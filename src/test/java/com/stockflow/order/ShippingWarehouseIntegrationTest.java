@@ -482,7 +482,7 @@ class ShippingWarehouseIntegrationTest {
     @Test
     @DisplayName("17 §4.2 step 3: k of N cartons available - k held, the earliest batch covered first; release refused")
     void partialHoldCoversTheEarliestBatchFirst() {
-        stock(a, 750);
+        stock(a, 780);   // 15 cartons of 50 and one odd carton of 30 (stock() makes the remainder its own carton)
         stock(b, 1_000);
         UUID orderId = confirmedOrder(this::twoBatches);
         UUID line = lineOf(orderId);

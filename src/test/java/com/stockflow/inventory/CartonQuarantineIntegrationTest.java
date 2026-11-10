@@ -98,8 +98,7 @@ class CartonQuarantineIntegrationTest {
                     "Quarantine fixture", sku.toLowerCase(Locale.ROOT));
             jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature) values (?,?,?,?,'')",
                     Identifiers.newId(), product, sku, "Quarantine fixture");
-            jdbc.update("update inventory.inventory_items set removal_strategy='FIFO', policy_configured=true"
-                    + " where sku=?", sku);
+            // Every SKU is FIFO and lot-tracked since team plan 5-5: nothing to configure on the item.
             jdbc.update("INSERT INTO warehouse.warehouse (id, name, status, prefix, address, map_unit, map_width,"
                     + " map_height, version, created_at) VALUES (?, 'Quarantine', 'ACTIVE', ?, 'Test address',"
                     + " 'M', 50, 50, 0, NOW())", warehouse, prefix);
@@ -246,13 +245,14 @@ class CartonQuarantineIntegrationTest {
         String newer = carton(5);
         quarantine(older, quarantineArea);
 
-        List<HoldView> holds = release(heldOrder(10));
+        UUID first = heldOrder(10);
+        List<HoldView> holds = release(first);
 
         assertThat(holds).extracting(HoldView::lpn).containsExactly(newer);
         assertThat(cartonRow(older)).containsEntry("reserved", 0);
         assertThat(atp()).isZero();
-        // ...and a second order finds no ATP for it at all.
-        assertThat(refusal(() -> heldOrder(10)).errorCode()).isEqualTo(ErrorCode.INSUFFICIENT_STOCK);
+        // ...and a further hold finds no ATP for it at all: a shortage holds nothing (4B-7), it is not refused.
+        assertThat(tx.execute(s -> Holds.attempt(inventory, first, sku, prefix, 10)).cartonsHeld()).isZero();
     }
 
     @Test

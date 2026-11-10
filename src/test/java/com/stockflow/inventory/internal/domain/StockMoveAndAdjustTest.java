@@ -52,18 +52,15 @@ class StockMoveAndAdjustTest {
         }
 
         @Test
-        @DisplayName("the arriving stock keeps SKU, lot and status")
-        void arrivalCopiesIdentity() {
+        @DisplayName("units never arrive loose at another place: stock moves in whole cartons (review C4 M-5)")
+        void looseArrivalIsRefused() {
             StockItem source = StockItem.receive(SKU, BIN, "LOT-9", Quantity.of(5));
-            StockItem arrived = StockItem.arrivedFrom(source, PRODUCTION, Quantity.of(2));
 
-            assertThat(arrived.location()).isEqualTo(PRODUCTION);
-            assertThat(arrived.lotNumber()).isEqualTo("LOT-9");
-            // Quarantined goods stay quarantined wherever they go: only QC makes stock sellable.
-            assertThat(arrived.status()).isEqualTo(StockStatus.QUARANTINE);
-            assertThat(arrived.onHand()).isEqualTo(Quantity.of(2));
-            assertThat(arrived.canReceiveFrom(source)).isTrue();
-            assertThat(available(1).canReceiveFrom(source)).isFalse();
+            // A loose row arriving with units would be a row in no carton holding stock (ck_stock_item_whole_cartons).
+            assertThatThrownBy(() -> StockItem.arrivedFrom(source, PRODUCTION, Quantity.of(2)))
+                    .isInstanceOf(IllegalStateException.class).hasMessageContaining("in no carton");
+            assertThat(available(1).canReceiveFrom(source)).as("a carton row is other goods than a quarantined row")
+                    .isFalse();
         }
 
         @Test

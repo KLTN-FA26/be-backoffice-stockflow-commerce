@@ -35,7 +35,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * SCRUM-473 (#140) against a real PostgreSQL: a bin holding a loose layer and cartons of the very same receipt
  * (V20261020000200 keys a carton's row by the carton, so all three share SKU, bin, lot and receipt time). An
  * adjustment named by those takes the loose layer and never a carton - it used to pick one by chance, or refuse with
- * INVENTORY_POLICY_STOCK_CONFLICT. (A person's move named by SKU, bin and lot is gone with team plan 4C-2: cartons are
+ * INVENTORY_POLICY_STOCK_CONFLICT. The loose layer is an emptied one: since V20261117000100 a row in no carton holds
+ * nothing (ck_stock_item_whole_cartons), so a write-down of it is refused rather than taken from a carton. (A person's move named by SKU, bin and lot is gone with team plan 4C-2: cartons are
  * moved by LPN, {@code StockPackageMoveIntegrationTest}.)
  */
 @IntegrationTest
@@ -76,17 +77,18 @@ class StockPackageLayerIntegrationTest {
             carton = Identifiers.newId();
             jdbc.update("insert into inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)"
                     + " values (?, ?, 'CARTON', 5)", carton, item);
-            loose(SHELF, 10);
+            emptiedLayer(SHELF);
             inCarton(SHELF, "A");
             inCarton(SHELF, "B");
         });
     }
 
-    private void loose(String location, int onHand) {
+    /** The receipt's loose layer as 4C-1 left it: emptied, its units boxed into cartons. */
+    private void emptiedLayer(String location) {
         jdbc.update("""
                 insert into inventory.stock_item (id, sku, location_code, lot_number, received_at, on_hand, reserved,
-                    status, version, created_at) values (?, ?, ?, ?, ?, ?, 0, 'AVAILABLE', 0, now())""",
-                Identifiers.newId(), sku, location, lot, java.sql.Timestamp.from(RECEIVED), onHand);
+                    status, version, created_at) values (?, ?, ?, ?, ?, 0, 0, 'AVAILABLE', 0, now())""",
+                Identifiers.newId(), sku, location, lot, java.sql.Timestamp.from(RECEIVED));
     }
 
     /** An unopened carton of 5 of the same receipt, counted in at 5. */
@@ -114,13 +116,16 @@ class StockPackageLayerIntegrationTest {
     }
 
     @Test
-    @DisplayName("an adjustment named by SKU, bin and lot is the loose layer's, requested and posted")
+    @DisplayName("an adjustment named by SKU, bin and lot is the loose layer's: emptied, it has nothing to write down, "
+            + "and no carton is opened for it")
     void adjustmentTakesTheLooseLayer() {
         var requested = tx.execute(s -> operations.requestAdjustment(new RequestAdjustmentCommand(SHELF,
                 new Sku(sku), lot, -2, StockAdjustmentReason.DAMAGED, "torn", clerk)));
-        tx.executeWithoutResult(s -> operations.approve(requested.adjustmentId(), approver));
+        Throwable refused = org.assertj.core.api.Assertions.catchThrowable(() ->
+                tx.executeWithoutResult(s -> operations.approve(requested.adjustmentId(), approver)));
 
-        assertThat(rows()).containsExactly(SHELF + ":5:carton", SHELF + ":5:carton", SHELF + ":8:loose");
+        assertThat(refused).isInstanceOf(com.stockflow.inventory.internal.domain.InsufficientStockException.class);
+        assertThat(rows()).containsExactly(SHELF + ":0:loose", SHELF + ":5:carton", SHELF + ":5:carton");
     }
 
     @Test

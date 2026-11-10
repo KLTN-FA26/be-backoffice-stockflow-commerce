@@ -650,7 +650,7 @@ class ProductionReceiptIntegrationTest {
         assertThat(lot).containsEntry("origin_type", "PRODUCTION_ORDER").containsEntry("lot_number", production.code())
                 .containsEntry("production_order_id", production.id())
                 .containsEntry("production_order_code", production.code()).containsEntry("goods_receipt_id", null)
-                .containsEntry("purchase_order_id", null)
+                .doesNotContainKey("purchase_order_id")   // dropped with purchasing (V20261117000200)
                 .containsEntry("warehouse_id", a.id());
         assertThat(jdbc.queryForList("SELECT DISTINCT lot_id FROM inventory.stock_item WHERE sku = ?", UUID.class,
                 sku.sku())).containsExactly((UUID) lot.get("id"));

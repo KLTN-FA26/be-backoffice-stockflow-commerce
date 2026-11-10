@@ -251,8 +251,20 @@ class SeedTestDataLoadTest {
         ExecResult orphans = pg.execInContainer("psql", "-U", pg.getUsername(), "-d", database, "-X", "-A", "-t", "-f",
                 "/tmp/orphans.sql");
         assertThat(orphans.getExitCode()).withFailMessage(orphans.getStderr()).isZero();
-        assertThat(orphans.getStdout().lines().filter(line -> !line.isBlank()).toList())
+        assertOrphanReportClean(orphans.getStdout());
+    }
+
+    /**
+     * {@code tools/db/orphan_check.sql}'s three sections (5-11): every value reference counts 0 orphans, no foreign key
+     * is NOT VALID, and no reference-looking column is unreviewed. The NOT VALID CHECKs of section 2 are the schema's
+     * own (a CHECK added over history it may not hold for), the same on every database, and not the seed's business.
+     */
+    static void assertOrphanReportClean(String report) {
+        java.util.List<String> lines = report.lines().filter(line -> !line.isBlank()).toList();
+        assertThat(lines.stream().filter(line -> line.startsWith("values|")).toList()).as("section 1")
                 .isNotEmpty().allMatch(line -> line.endsWith("|0|ok"));
+        assertThat(lines).as("a foreign key left NOT VALID").noneMatch(line -> line.endsWith("|f"));
+        assertThat(lines).as("section 3: unreviewed references").noneMatch(line -> line.startsWith("unreviewed|"));
     }
 
     private static ExecResult psql(PostgreSQLContainer<?> pg, String database, List<String> variables) throws Exception {

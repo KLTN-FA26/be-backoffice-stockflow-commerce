@@ -76,8 +76,11 @@ public final class ShippedCartons {
                                                       handed_over_at, outcome_at, whole_order_handover)
                     VALUES (?, ?, ?, ?, ?, ?, NOW(), NOW(), NOW(), NOW(), TRUE)""", shipment, pack, orderId,
                     shipmentStatus, shipmentCode, DemoData.WAREHOUSE_HCM);
+            // The cartons go in with the triggers on: tg_stock_item_lot gives each row its lot_id (NOT NULL since 4C-3).
+            jdbc.execute("SET LOCAL session_replication_role = origin");
             var stocked = CartonRows.stock(jdbc, sku, "HCM-A01-1-A", count, perCarton, lot,
                     Instant.now().minusSeconds(30L * 86_400), "AVAILABLE");
+            jdbc.execute("SET LOCAL session_replication_role = replica");
             int no = Math.max(jdbc.queryForObject("SELECT COALESCE(MAX(package_no), 0) FROM fulfillment.package WHERE "
                     + "pack_id = ?", Integer.class, pack), jdbc.queryForObject("SELECT COALESCE(MAX(sequence_no), 0) FROM "
                     + "fulfillment.pick_line WHERE pick_id = ?", Integer.class, pick));
@@ -86,7 +89,7 @@ public final class ShippedCartons {
                 // The SKU's carton unit says what a carton holds (a demo sofa: one piece), whatever the caller hoped.
                 int held = jdbc.queryForObject("SELECT on_hand FROM inventory.stock_item WHERE id = ?", Integer.class,
                         carton.stockItemId());
-                jdbc.update("UPDATE inventory.stock_package SET status = 'CONSUMED', unopened = FALSE, closed_at = NOW() "
+                jdbc.update("UPDATE inventory.stock_package SET status = 'CONSUMED', closed_at = NOW() "
                         + "WHERE id = ?", carton.id());
                 jdbc.update("UPDATE inventory.stock_item SET on_hand = 0 WHERE id = ?", carton.stockItemId());
                 UUID line = Identifiers.newId();
@@ -149,7 +152,7 @@ public final class ShippedCartons {
                     VALUES (?, ?, ?, 1, ?, 'LABELED', ?, ?, NOW(), ?, NOW(), ?, 1, 12, 60, 40, 40, 16)""",
                     Identifiers.newId(), pack, shipment, "AGAIN-" + line.toString().substring(0, 8), line, lpn, staff,
                     staff);
-            jdbc.update("UPDATE inventory.stock_package SET status = 'CONSUMED', unopened = FALSE, closed_at = NOW() "
+            jdbc.update("UPDATE inventory.stock_package SET status = 'CONSUMED', closed_at = NOW() "
                     + "WHERE lpn = ?", lpn);
             jdbc.update("UPDATE inventory.stock_item SET on_hand = 0 WHERE stock_package_id = (SELECT id FROM "
                     + "inventory.stock_package WHERE lpn = ?)", lpn);

@@ -101,7 +101,7 @@ class ReturnReceiptIntegrationTest {
 
     private Map<String, Object> carton(String lpn) {
         return jdbc.queryForMap("""
-                SELECT p.status AS package_status, p.unopened, p.location_code AS package_location, s.status AS row_status,
+                SELECT p.status AS package_status, p.location_code AS package_location, s.status AS row_status,
                        s.location_code, s.lot_number, s.on_hand
                   FROM inventory.stock_package p JOIN inventory.stock_item s ON s.stock_package_id = p.id
                  WHERE p.lpn = ?""", lpn);
@@ -154,7 +154,6 @@ class ReturnReceiptIntegrationTest {
         for (String lpn : shipped.lpns().subList(0, 2)) {
             Map<String, Object> back = carton(lpn);
             assertThat(back.get("package_status")).isEqualTo("IN_STOCK");
-            assertThat(back.get("unopened")).as("sealed: it came back whole").isEqualTo(true);
             assertThat(back.get("package_location")).isEqualTo(QUARANTINE);
             assertThat(back.get("row_status")).as("quarantine, not available").isEqualTo("QUARANTINE");
             assertThat(back.get("location_code")).isEqualTo(QUARANTINE);
@@ -204,10 +203,17 @@ class ReturnReceiptIntegrationTest {
         // A carton of the shipment that is back in the warehouse already (by hand, outside any receipt).
         String home = mine.lpns().getFirst();
         tx.executeWithoutResult(s -> {
-            jdbc.update("UPDATE inventory.stock_package SET status = 'IN_STOCK', unopened = TRUE, closed_at = NULL, "
+            jdbc.update("UPDATE inventory.stock_package SET status = 'IN_STOCK', closed_at = NULL, "
                     + "location_code = 'HCM-A01-1-A' WHERE lpn = ?", home);
-            jdbc.update("UPDATE inventory.stock_item SET on_hand = ? WHERE stock_package_id = (SELECT id FROM "
-                    + "inventory.stock_package WHERE lpn = ?)", mine.cartons().getFirst().quantity(), home);
+            // The carton's own row filled again, as the application restocks a carton of its very receipt: the FIFO
+            // trigger lets a row grow in place only when it is named for the statement (stockflow.same_receipt_merge).
+            UUID row = jdbc.queryForObject("SELECT id FROM inventory.stock_item WHERE stock_package_id = (SELECT id FROM "
+                    + "inventory.stock_package WHERE lpn = ?)", UUID.class, home);
+            jdbc.queryForObject("SELECT set_config('stockflow.same_receipt_merge', ?, true)", String.class,
+                    row.toString());
+            jdbc.update("UPDATE inventory.stock_item SET on_hand = ? WHERE id = ?", mine.cartons().getFirst().quantity(),
+                    row);
+            jdbc.queryForObject("SELECT set_config('stockflow.same_receipt_merge', '', true)", String.class);
         });
         assertThat(code(catchThrowable(() -> scan(draft.id(), home)))).isEqualTo(ErrorCode.RETURN_CARTON_IN_WAREHOUSE);
 

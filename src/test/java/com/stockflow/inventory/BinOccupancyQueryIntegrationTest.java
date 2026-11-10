@@ -26,7 +26,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * SCRUM-92, team plan 5-4: what a bin holds, summed over every SKU on it, and what a carton takes of it, as the putaway
  * ranker reads them. A carton takes its carton unit's length x width x height and weighs the unit's full weight
- * (kltn-docs 05 BR-03); loose units, history since V20261111000110, take no volume and weigh their unit weight.
+ * (kltn-docs 05 BR-03), or - its unit not weighed - the item's unit weight times its units. Loose units, history since
+ * V20261111000110, no longer exist at all (V20261117000100), so every row here is a carton's.
  */
 @IntegrationTest
 @Import(PostgresContainer.class)
@@ -63,17 +64,15 @@ class BinOccupancyQueryIntegrationTest {
         jdbc.update("update inventory.inventory_items set weight_kg = ?::numeric where sku = ?", weight, sku);
     }
 
+    /** One carton of exactly {@code onHand} units, its unit neither measured nor weighed. */
     private void stock(String sku, String bin, int onHand, String lot) {
-        tx.executeWithoutResult(s -> jdbc.update("""
-                insert into inventory.stock_item (id, sku, location_code, lot_number, received_at, on_hand, reserved,
-                    status, version, created_at)
-                values (?, ?, ?, ?, now() - interval '1 day', ?, 0, 'AVAILABLE', 0, now())""",
-                Identifiers.newId(), sku, bin, lot == null ? "UNTRACED" : lot, onHand));
+        tx.executeWithoutResult(s -> CartonRows.carton(jdbc, sku, bin, onHand, lot,
+                Instant.now().minus(java.time.Duration.ofDays(1)), "AVAILABLE"));
     }
 
     @Test
-    @DisplayName("two SKUs in one bin: units add up, weight is on_hand x weight_kg with an unknown weight as 0, "
-            + "and the asked SKU and lot are recognised; an empty bin is absent")
+    @DisplayName("two SKUs in one bin: units add up, an unweighed carton weighs on_hand x weight_kg with an unknown "
+            + "weight as 0, and the asked SKU and lot are recognised; an empty bin is absent")
     void sumsEverySkuOnTheBin() {
         // Other data may share the bin, so the test measures what its own rows add.
         Occupancy before = query.occupancyOf(List.of(BIN), skuA, "LOT-1").getOrDefault(BIN, Occupancy.EMPTY);

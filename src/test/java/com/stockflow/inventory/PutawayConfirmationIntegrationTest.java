@@ -46,7 +46,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * put away whole by scanning its LPN (kltn-docs 05 BR-08; team plan 4C-2): there are no loose tasks to confirm.
  *
  * <p>Team plan 5-4: the carton unit measures 50 x 40 x 30 cm (0.06 m³) and records no weight, so a carton weighs its
- * 10 units of 0.5 kg. A bin takes it when the carton fits it dimension by dimension - turned on the horizontal if the
+ * 10 units of 0.5 kg - set so here, over the unit {@link ProductionReceivables} makes (60 x 40 x 35 cm, 1.2 kg), so the
+ * bins below are cut to this carton. A bin takes it when the carton fits it dimension by dimension - turned on the horizontal if the
  * item allows (06 BR-01) - and its computed volume and weight limit have room (05 BR-03); when no bin takes it, the
  * warehouse's OVERFLOW area does (05 BR-13).</p>
  */
@@ -93,6 +94,9 @@ class PutawayConfirmationIntegrationTest {
         lpn2 = dock.lpns().get(1);
         Await.until("three putaway tasks", Duration.ofSeconds(20), () -> tasks().size() >= 3);
         cartonTask = taskOf(lpn1);
+        tx.executeWithoutResult(s -> jdbc.update("""
+                UPDATE inventory.uom_conversions SET length_cm = 50, width_cm = 40, height_cm = 30, weight_kg = NULL
+                 WHERE id = (SELECT uom_conversion_id FROM inventory.stock_package WHERE lpn = ?)""", lpn1));
         recorded.clear();
     }
 
@@ -167,10 +171,16 @@ class PutawayConfirmationIntegrationTest {
         return bin(warehouse, name, "0.4", "0.5", "0.3", 500, "ACTIVE");
     }
 
-    /** The warehouse's OVERFLOW area. */
+    /**
+     * The warehouse's OVERFLOW area, pickable like every real one (V20261112000110): its cartons are Available stock
+     * an order may be given at once (05 BR-13), so they count in ATP.
+     */
     private String overflowArea() {
         String code = prefix + "-OVF01";
-        tx.executeWithoutResult(s -> area(warehouse, "OVF01", code, "OVERFLOW", 10));
+        tx.executeWithoutResult(s -> {
+            area(warehouse, "OVF01", code, "OVERFLOW", 10);
+            jdbc.update("UPDATE warehouse.storage_location SET is_pickable = TRUE WHERE location_code = ?", code);
+        });
         return code;
     }
 

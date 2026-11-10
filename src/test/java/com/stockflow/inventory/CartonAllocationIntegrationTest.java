@@ -168,35 +168,17 @@ class CartonAllocationIntegrationTest {
     }
 
     @Test
-    @DisplayName("a reservation counts cartons (20 §5.6): units that are no whole number of cartons are refused at"
-            + " checkout, so no carton is ever broken for a remainder")
-    void reservationCountsCartons() {
-        carton(2);
-        carton(3);
-
-        BusinessException refused = catchThrowableOfType(BusinessException.class, () -> reserved(15));
-
-        assertThat(refused.errorCode()).isEqualTo(ErrorCode.RESERVATION_NOT_WHOLE_CARTONS);
-        assertThat(jdbc.queryForObject("select count(*) from inventory.stock_reservation where sku = ?",
-                Integer.class, sku)).isZero();
-    }
-
-    @Test
     @DisplayName("available to promise counts only cartons a release could allocate: not a carton off a pickable"
-            + " bin, nor loose units on one")
+            + " bin (loose units no longer exist: ck_stock_item_whole_cartons)")
     void onlyAllocatableStockIsPromised() {
         carton(2);
-        tx.executeWithoutResult(s -> {
-            CartonRows.stock(jdbc, sku, "HCM-RCV01", 1, FACTOR, null, Instant.parse("2026-01-03T00:00:00Z"));
-            jdbc.update("""
-                    insert into inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, version,
-                        created_at, received_at) values (?, ?, ?, 'UNTRACED', 7, 0, 'AVAILABLE', 0, now(), now())""",
-                    Identifiers.newId(), sku, SHELF);
-        });
+        tx.executeWithoutResult(s ->
+                CartonRows.stock(jdbc, sku, "HCM-RCV01", 1, FACTOR, null, Instant.parse("2026-01-03T00:00:00Z")));
 
         assertThat(inventory.availableToPromise(new Sku(sku))).isEqualTo(10);
-        assertThat(catchThrowableOfType(BusinessException.class, () -> reserved(20)).errorCode())
-                .isEqualTo(ErrorCode.INSUFFICIENT_STOCK);
+        UUID order = confirmedOrder();
+        assertThat(tx.execute(s -> Holds.attempt(inventory, order, sku, "HCM", 20)).cartonsHeld())
+                .as("20 asked, 10 promised: nothing held").isZero();
     }
 
     @Test

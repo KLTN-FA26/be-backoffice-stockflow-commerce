@@ -27,7 +27,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * V20261028003000 (SCRUM-473 picking by carton): a pick line names the carton of the hold it consumes - that carton's
- * LPN exactly, and none for a hold on loose units - and lines planned before the migration are given theirs.
+ * LPN exactly - and lines planned before the migration are given theirs. A hold on loose units (which named no carton)
+ * cannot exist since review C4 M-5 ({@code ck_stock_item_whole_cartons}): its case went with it.
  */
 @IntegrationTest
 @Import(PostgresContainer.class)
@@ -101,25 +102,6 @@ class PickLineCartonMigrationTest {
         return lpn;
     }
 
-    /**
-     * A hold of {@code quantity} on a row of {@code onHand} loose units, written as rows. Allocation no longer draws on
-     * loose stock (team plan 4C-2), but loose holds still exist - a put-back, a return, a hold made before - and a pick
-     * line on one must still name no carton.
-     */
-    private UUID looseHold(int onHand, int quantity) {
-        return tx.execute(s -> {
-            UUID row = stockRow(onHand, null);
-            UUID reservation = Identifiers.newId();
-            jdbc.update("""
-                    INSERT INTO inventory.stock_reservation (id, stock_item_id, order_id, root_request_id, request_id,
-                                                             quantity, reserved_at, expires_at, status)
-                    VALUES (?, ?, ?, ?, ?, ?, NOW(), NOW() + INTERVAL '1 day', 'HELD')""",
-                    reservation, row, order, UUID.randomUUID(), UUID.randomUUID(), quantity);
-            jdbc.update("UPDATE inventory.stock_item SET reserved = reserved + ? WHERE id = ?", quantity, row);
-            return reservation;
-        });
-    }
-
     private UUID stockRow(int onHand, UUID carton) {
         UUID id = Identifiers.newId();
         jdbc.update("""
@@ -176,15 +158,6 @@ class PickLineCartonMigrationTest {
     }
 
     @Test
-    @DisplayName("a hold on loose units names no carton")
-    void lpnOnALooseHoldIsRefused() {
-        String lpn = carton("A");
-        UUID reservation = looseHold(5, 3);
-
-        assertThatThrownBy(() -> line(reservation, lpn, false)).isInstanceOf(DataAccessException.class);
-    }
-
-    @Test
     @DisplayName("a line on a carton hold must name the carton")
     void lineOnACartonHoldWithoutLpnIsRefused() {
         carton("A");
@@ -196,7 +169,10 @@ class PickLineCartonMigrationTest {
     @Test
     @DisplayName("a whole-carton line names its carton")
     void wholeCartonNeedsAnLpn() {
-        UUID reservation = looseHold(5, 5);
+        carton("A");
+        // The order's SKU reservation, not yet allocated: it names no stock row, so the carton trigger expects no LPN
+        // and leaves the whole-carton rule to answer.
+        UUID reservation = tx.execute(s -> Holds.units(inventory, order, sku, "HCM", 10));
 
         // Since V20261113000400 any line without an LPN is refused first, by ck_pick_line_lpn (rule 3 of 4C-4).
         assertThatThrownBy(() -> line(reservation, null, true)).isInstanceOf(DataAccessException.class)

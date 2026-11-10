@@ -14,6 +14,7 @@ import com.stockflow.product.internal.service.ProductTaxonomyService;
 import com.stockflow.product.internal.service.ProductVariantService;
 import com.stockflow.product.internal.service.ProductVariantService.NewVariant;
 import com.stockflow.support.Await;
+import com.stockflow.support.CartonRows;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
 import com.stockflow.support.ProductFixtures;
@@ -21,6 +22,7 @@ import com.stockflow.support.ReferenceRows;
 import jakarta.persistence.EntityManager;
 import java.math.BigDecimal;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.Locale;
 import java.util.Optional;
 import java.util.Set;
@@ -147,16 +149,18 @@ class InventoryItemsIntegrationTest {
     @Test
     void unitChangeWhileStockIsHeldIs409() {
         var f = fixture();
-        tx.executeWithoutResult(s -> jdbc.update("""
-                insert into inventory.stock_item(id,sku,location_code,lot_number,on_hand,reserved,status,received_at,
-                    created_at)
-                values (?,?,'HCM-A01-1-A','UNTRACED',5,0,'AVAILABLE',now(),now())""", UUID.randomUUID(), f.sku()));
+        // A carton of five in stock (stock is whole cartons only, ck_stock_item_whole_cartons).
+        tx.executeWithoutResult(s -> CartonRows.carton(jdbc, f.sku(), "HCM-A01-1-A", 5, null, Instant.now(),
+                "AVAILABLE"));
         var before = items.get(f.itemId());
         try {
             assertThat(codeOf(() -> items.describe(f.itemId(), before.version(), logistics("BOX", null, "0.120"))))
                     .isEqualTo(ErrorCode.INVENTORY_POLICY_STOCK_CONFLICT);
         } finally {
-            tx.executeWithoutResult(s -> jdbc.update("delete from inventory.stock_item where sku = ?", f.sku()));
+            tx.executeWithoutResult(s -> {
+                jdbc.update("delete from inventory.stock_item where sku = ?", f.sku());
+                jdbc.update("delete from inventory.stock_package where inventory_item_id = ?", f.itemId());
+            });
         }
     }
 

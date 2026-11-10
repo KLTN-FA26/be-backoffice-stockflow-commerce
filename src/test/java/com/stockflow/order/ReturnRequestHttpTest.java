@@ -70,11 +70,13 @@ class ReturnRequestHttpTest {
             jdbc.update("""
                     INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount,
                         currency, placed_at, warehouse_id, released_at,
-                        released_by, packed_at, shipped_at, delivered_at, version, created_at)
+                        released_by, packed_at, shipped_at, delivered_at, version, created_at, contract_signed_at,
+                        shipping_warehouse_id, shipping_warehouse_chosen_at, shipping_warehouse_chosen_by)
                     VALUES (?, ?, ?, ?, 'DELIVERED', 3000000, 'VND', NOW() - interval '5 days', ?, NOW() - interval '4 days', ?, NOW() - interval '3 days',
-                        NOW() - interval '2 days', NOW() - interval '1 day', 0, NOW())""",
+                        NOW() - interval '2 days', NOW() - interval '1 day', 0, NOW(), NOW() - interval '6 days', ?,
+                        NOW() - interval '6 days', ?)""",
                     orderOfA, "SO-20261023-%06d".formatted(ThreadLocalRandom.current().nextInt(100_000, 999_999)),
-                    customerA, UUID.randomUUID(), DemoData.WAREHOUSE_HCM, staff);
+                    customerA, UUID.randomUUID(), DemoData.WAREHOUSE_HCM, staff, DemoData.WAREHOUSE_HCM, staff);
             jdbc.update("""
                     INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency)
                     VALUES (?, ?, 'SOFA-3S-GREY', 3, 1000000, 'VND')""", lineOfA, orderOfA);
@@ -183,7 +185,8 @@ class ReturnRequestHttpTest {
         http.asRole(Role.SALES_STAFF, staff, post("/api/v1/returns/" + returnId + "/settlement-rejection")
                         .contentType(MediaType.APPLICATION_JSON).content("{\"reason\":\"x\"}"))
                 .andExpect(status().isForbidden());
-        // Held but too early: nothing has come back, so there is nothing to refund.
+        // Held but too early: nothing has come back, so there is nothing to refund. (The order is a signed contract's -
+        // contract_signed_at - or the proposal would be refused before that, RETURN_REFUND_NO_INSTALLMENTS, review M-4.)
         http.asRole(Role.SALES_STAFF, staff, post("/api/v1/returns/" + returnId + "/resolution")
                         .contentType(MediaType.APPLICATION_JSON).content("{\"note\":\"x\"}"))
                 .andExpect(status().isConflict())

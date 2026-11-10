@@ -160,6 +160,7 @@ values (?,?,'https://example.test/cover.jpg',true,now(),md5('demo:user:approver'
                 f.skuId());
     }
 
+    /** A row in no carton: only ever an emptied one ({@code quantity} 0) since V20261117000100. */
     UUID stock(Fixture f, int quantity, Instant receipt) {
         UUID id = UUID.randomUUID();
         write(
@@ -192,7 +193,8 @@ values (?,?,'HCM-A01-1-A','UNTRACED',?,0,'AVAILABLE',?,now())
         var b = fixture("DRAFT");
         Instant received = Instant.parse("2026-01-02T00:00:00Z");
         // Since team plan 4C-2 only whole sealed cartons nothing holds are promised: two free cartons of 2 count; a
-        // held one, cartons not AVAILABLE and loose units do not.
+        // held one and cartons not AVAILABLE do not, nor an emptied loose row (no row in no carton holds units since
+        // V20261117000100, ck_stock_item_whole_cartons).
         transactions.executeWithoutResult(s -> {
             com.stockflow.support.CartonRows.stock(jdbc, a.sku(), "HCM-A01-1-A", 2, 2, null, received);
             UUID held = com.stockflow.support.CartonRows.stock(jdbc, a.sku(), "HCM-A01-1-A", 1, 2, null, received)
@@ -203,7 +205,7 @@ values (?,?,'HCM-A01-1-A','UNTRACED',?,0,'AVAILABLE',?,now())
             }
             com.stockflow.support.CartonRows.stock(jdbc, b.sku(), "HCM-A01-1-A", 1, 10, null, received, "QUARANTINE");
         });
-        stock(a, 7, Instant.parse("2026-01-01T00:00:00Z"));
+        stock(a, 0, Instant.parse("2026-01-01T00:00:00Z"));
         var available = inventory.availableQuantities(Set.of(a.sku(), b.sku(), "MISSING-SKU"));
         assertThat(available.get(a.sku())).isEqualTo(4L);
         assertThat(available.getOrDefault(b.sku(), 0L)).isZero();

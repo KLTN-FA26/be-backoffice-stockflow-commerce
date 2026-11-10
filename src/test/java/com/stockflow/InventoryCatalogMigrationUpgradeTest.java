@@ -122,8 +122,7 @@ class InventoryCatalogMigrationUpgradeTest {
             var orphans = pg.execInContainer("psql", "-U", pg.getUsername(), "-d", pg.getDatabaseName(),
                     "-X", "-A", "-t", "-f", "/tmp/orphan.sql");
             assertThat(orphans.getExitCode()).withFailMessage(orphans.getStderr()).isZero();
-            assertThat(orphans.getStdout().lines().filter(line -> !line.isBlank()).toList())
-                    .isNotEmpty().allMatch(line -> line.endsWith("|0|ok"));
+            SeedTestDataLoadTest.assertOrphanReportClean(orphans.getStdout());
         }
     }
 
