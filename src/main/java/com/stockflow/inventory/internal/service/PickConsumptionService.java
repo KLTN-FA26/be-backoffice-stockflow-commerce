@@ -10,6 +10,7 @@ import com.stockflow.inventory.consumption.ConsumedPick;
 import com.stockflow.inventory.consumption.PickConsumption;
 import com.stockflow.inventory.consumption.PutBackCommand;
 import com.stockflow.inventory.consumption.StageCommand;
+import com.stockflow.inventory.consumption.StagedLine;
 import com.stockflow.inventory.consumption.StagedPick;
 import com.stockflow.inventory.internal.domain.LocationDirectory;
 import com.stockflow.inventory.internal.domain.LocationId;
@@ -340,26 +341,67 @@ class PickConsumptionService implements PickConsumption, StockConsumption {
      */
     @Override
     public ConsumedPick consumeStaged(UUID reservationId, UUID pickLineId, UUID actorId) {
-        Objects.requireNonNull(pickLineId, "pickLineId");
-        StockPackageContents.LockedCartons locked = lockSkusAndCartons(List.of(reservationId));
-        StockItem item = holderOf(reservationId);
-        Reservation hold = item.findReservation(ReservationId.of(reservationId)).orElseThrow();
-        if (ledger.findByReference(StockMovement.MovementType.PICK, StockMovement.ReferenceType.PICK_LINE,
-                pickLineId).isPresent()) {
-            return toConsumed(item, hold, true);
+        return consumeStaged(List.of(new StagedLine(reservationId, pickLineId)), actorId).getFirst();
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Locks once for every line (review M1): the SKUs of all the rows, sorted, then all their cartons in id order
+     * ({@link #lockSkusAndCartons}), then the rows one by one in row id order - never per line, which would take the SKU
+     * locks in pick-line order (bin, then SKU) and could deadlock with a checkout holding one of them and asking for
+     * another. The cartons are settled once, after every row is saved.</p>
+     */
+    @Override
+    public List<ConsumedPick> consumeStaged(List<StagedLine> lines, UUID actorId) {
+        StockPackageContents.LockedCartons locked = lockSkusAndCartons(
+                lines.stream().map(StagedLine::reservationId).toList());
+        java.util.Map<UUID, String> rowOf = new java.util.HashMap<>();
+        for (StagedLine line : lines) {
+            rowOf.put(line.reservationId(), stockItems.findIdByReservationId(ReservationId.of(line.reservationId()))
+                    .map(id -> id.value().toString()).orElse(""));
         }
-        Optional<StockMovement> staged = ledger.findByReference(StockMovement.MovementType.MOVE,
-                StockMovement.ReferenceType.PICK_LINE, pickLineId);
-        if (staged.isEmpty() || !staged.get().to().equals(item.location()) || !locations.isStagingArea(item.location())) {
-            throw new IllegalStateException("Pick line %s did not stage hold %s at %s".formatted(pickLineId,
-                    reservationId, item.location()));
+        java.util.Map<UUID, ConsumedPick> done = new java.util.HashMap<>();
+        boolean deducted = false;
+        for (StagedLine line : lines.stream()
+                .sorted(java.util.Comparator.comparing((StagedLine l) -> rowOf.get(l.reservationId()))).toList()) {
+            StockItem item = holderOf(line.reservationId());
+            Reservation hold = item.findReservation(ReservationId.of(line.reservationId())).orElseThrow();
+            if (ledger.findByReference(StockMovement.MovementType.PICK, StockMovement.ReferenceType.PICK_LINE,
+                    line.pickLineId()).isPresent()) {
+                done.put(line.pickLineId(), toConsumed(item, hold, true));
+                continue;
+            }
+            Optional<StockMovement> staged = ledger.findByReference(StockMovement.MovementType.MOVE,
+                    StockMovement.ReferenceType.PICK_LINE, line.pickLineId());
+            if (staged.isEmpty() || !staged.get().to().equals(item.location())
+                    || !locations.isStagingArea(item.location())) {
+                throw new IllegalStateException("Pick line %s did not stage hold %s at %s".formatted(line.pickLineId(),
+                        line.reservationId(), item.location()));
+            }
+            // Review M2: the carton must still be in stock where the line put it. One a count found missing (LOST) or that
+            // left otherwise is a shortage of the order's goods (20 §4.9 step 4), reported on the line - never deducted
+            // here as if it had shipped.
+            StockPackage carton = locked.carton(item.stockPackageId()).orElse(null);
+            if (carton == null || carton.status() != com.stockflow.inventory.internal.domain.StockPackageStatus.IN_STOCK
+                    || !carton.location().equals(item.location())) {
+                throw new BusinessException(ErrorCode.CONFLICT, ("Pick line %s staged carton %s at %s, which is %s there "
+                        + "now; report the line short instead of moving it to dispatch").formatted(line.pickLineId(),
+                        carton == null ? "(none)" : carton.lpn(), item.location(),
+                        carton == null ? "not" : carton.status() + " at " + carton.location()));
+            }
+            requireOrderStock(item, hold);
+            deduct(item, line.reservationId(), StockMovement.ReferenceType.PICK_LINE, line.pickLineId(), actorId,
+                    locked);
+            deducted = true;
+            log.info("Pick line {} consumed staged hold {}: {} x {} off {}", line.pickLineId(), line.reservationId(),
+                    hold.quantity(), item.sku(), item.location());
+            done.put(line.pickLineId(), toConsumed(item, hold, false));
         }
-        requireOrderStock(item, hold);
-        deduct(item, reservationId, StockMovement.ReferenceType.PICK_LINE, pickLineId, actorId, locked);
-        cartons.settle(locked, clock.instant());
-        log.info("Pick line {} consumed staged hold {}: {} x {} off {}", pickLineId, reservationId, hold.quantity(),
-                item.sku(), item.location());
-        return toConsumed(item, hold, false);
+        if (deducted) {
+            cartons.settle(locked, clock.instant());
+        }
+        return lines.stream().map(line -> done.get(line.pickLineId())).toList();
     }
 
     /**

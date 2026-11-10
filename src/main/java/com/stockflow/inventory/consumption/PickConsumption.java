@@ -89,6 +89,19 @@ public interface PickConsumption {
     ConsumedPick consumeStaged(UUID reservationId, UUID pickLineId, UUID actorId);
 
     /**
+     * {@link #consumeStaged(UUID, UUID, UUID)} for every staged line of a task at once, as the move to dispatch needs it
+     * (07 §4.3 step 8: the whole task, once). One set of locks for all of them, in the order every multi-SKU writer
+     * keeps - the SKU advisory locks sorted, then the cartons, then the rows by id - so the move cannot deadlock with a
+     * checkout or a release reserving the same SKUs in the other order. Each carton must still be in stock where its
+     * line staged it: a carton gone from the staging area is a shortage to report on the line, never a shipment.
+     *
+     * @return what each line deducted, in the order given
+     * @throws com.stockflow.common.error.BusinessException as {@link #consumeForPick}; {@code CONFLICT} for a carton no
+     *         longer in stock in the staging area its line moved it to
+     */
+    java.util.List<ConsumedPick> consumeStaged(java.util.List<StagedLine> lines, UUID actorId);
+
+    /**
      * Moves a carton {@link #stage} put in a staging area back onto a bin, whole, after its order was cancelled (kltn-docs
      * 07 §4.5 steps 13-14, 20 §4.9 step 3): nothing was deducted, so this is a {@code MOVE} from the staging area naming
      * the pick line and the carton, and the carton is IN_STOCK at the bin as it was - available to promise again, its

@@ -100,6 +100,7 @@ class PickListService implements PickLists {
     private final OrderReservations orderReservations;
     private final PickDamageReporting damages;
     private final TransactionOperations tx;
+    private final com.stockflow.fulfillment.internal.repository.PackJpaRepository packs;
     /** 4C-6: the check station's shipping cartons, to know a line whose carton was removed as damaged. */
     private final com.stockflow.fulfillment.internal.repository.PackageJpaRepository packages;
 
@@ -108,7 +109,9 @@ class PickListService implements PickLists {
                     InventoryService inventory, InventoryControlService itemControls, PickConsumption consumption,
                     WarehouseService warehouses, Clock clock, OrderReservations orderReservations,
                     PickDamageReporting damages, TransactionOperations tx,
+                    com.stockflow.fulfillment.internal.repository.PackJpaRepository packs,
                     com.stockflow.fulfillment.internal.repository.PackageJpaRepository packages) {
+        this.packs = packs;
         this.packages = packages;
         this.damages = damages;
         this.tx = tx;
@@ -158,12 +161,13 @@ class PickListService implements PickLists {
         PickList list = toList(pick, stored);
         Instant now = clock.instant();
         List<PickLine> moved = list.moveToDispatch();
-        for (PickLine line : moved) {
-            if (line.reservationId() != null) {
-                consumption.consumeStaged(line.reservationId(), line.id(), actorId);
-                line.recordConsumed(now);
-            }
-        }
+        // One call for the whole task (review M1): inventory takes every SKU lock sorted, then the cartons, then the
+        // rows. A line without a hold fails loudly (4C-4 requireHold): skipping it would mark it PICKED undeducted.
+        consumption.consumeStaged(moved.stream()
+                .map(line -> new com.stockflow.inventory.consumption.StagedLine(requireHold(line, "moved to dispatch"),
+                        line.id()))
+                .toList(), actorId);
+        moved.forEach(line -> line.recordConsumed(now));
         writeBack(list, stored, moved.stream().map(PickLine::id).collect(Collectors.toSet()));
         log.info("Task {} of order {} moved to dispatch: {} staged carton(s) deducted", pick.getId(),
                 pick.getOrderNumber(), moved.size());
@@ -364,10 +368,16 @@ class PickListService implements PickLists {
                                     CurrentUser actor) {
         PickJpaEntity pick = lockPick(taskId);
         WarehouseScope.requireWarehouse(pick.getWarehouseId());
-        pick.requireAssigned(actor.userId());
-        TaskAccess.orderInFulfilment(orders, pick);
         List<PickLineJpaEntity> stored = pickLines.findByPickIdOrderBySequenceNoAscIdAsc(pick.getId());
         PickList list = toList(pick, stored);
+        // A carton missing from the staging area (review M2, 20 §4.9 step 4) is found by whoever counts or checks it,
+        // often not the picker: the assignee or whoever assigns the work may report it. A shelf short is the picker's.
+        boolean stagedCarton = list.line(lineId).map(PickList::stagedCarton).orElse(false);
+        if (!stagedCarton || !actor.can(FulfillmentPermissions.TASK_ASSIGNMENT,
+                com.stockflow.common.security.Action.UPDATE)) {
+            pick.requireAssigned(actor.userId());
+        }
+        TaskAccess.orderInFulfilment(orders, pick);
         PickList.Confirmation outcome = list.reportShort(lineId, locationCode, reason);
         PickLine line = outcome.line();
         String barcode = barcodesOf(List.of(line.sku())).get(line.sku());
@@ -377,13 +387,13 @@ class PickListService implements PickLists {
         writeBack(list, stored, Set.of(line.id()));
         // 07 §4.4 step 9, BR-09: the order stops (INVENTORY); it does not cancel, and no stock is deducted.
         holdForInventory(pick.getOrderId(), actor.userId(), "Short pick: carton %s (%d x %s) at %s, %s".formatted(
-                line.lpn(), line.allocatedQty(), line.sku(), line.locationCode(), reason));
+                line.lpn(), line.allocatedQty(), line.sku(), PickList.expectedAt(line), reason));
         // BR-09: the books and the shelf disagree, so the carton is counted blind (or the count holding it answers),
         // which also keeps it out of allocation until the variance is decided (20 BR-11). The picker took none of it.
         var recount = consumption.requestRecount(requireHold(line, "reported short"), line.id(), 0);
         log.info("Short pick line {}: recount {} of carton {}", line.id(), recount.countNumber(), line.lpn());
         log.info("Pick line {} of task {} short: carton {} ({} x {}) at {}, {}", line.id(), taskId, line.lpn(),
-                line.allocatedQty(), line.sku(), line.locationCode(), reason);
+                line.allocatedQty(), line.sku(), PickList.expectedAt(line), reason);
         return view(taskId, line, barcode);
     }
 
@@ -429,6 +439,11 @@ class PickListService implements PickLists {
         writeBack(list, stored, Set.of(lineId));
         pickLines.flush();
         pickLines.saveAll(added.stream().map(line -> PickLineMapper.toNewEntity(pick.getId(), line)).toList());
+        if (pick.getStatus() == PickStatus.STAGED) {
+            // A carton short in the staging area (review M2): its replacements are picked, to the staging area again.
+            pick.reopen();
+            picks.save(pick);
+        }
         if (!list.hasShortLines()) {
             resumeAfterInventory(pick.getOrderId(), actor.userId(), "Short pick reallocated: line %s".formatted(lineId));
         }
@@ -450,8 +465,25 @@ class PickListService implements PickLists {
         if (pick.getStatus() == PickStatus.CANCELLED) {
             throw new BusinessException(ErrorCode.PICK_TASK_STATE_CONFLICT, "The task was cancelled with its order");
         }
+        // Review L1: a task whose packing is complete has handed its cartons on (a shipment); reopening its picking
+        // would leave the pack finished under a task picking again. The rest of such an order is a new delivery round,
+        // which docs 07 §4.1 step 2 gives a task of its own (4C-6 / the delivery schedule) - and an order has one task
+        // here (fulfillment.pick.order_id is unique), so it is refused rather than opened as a second task.
+        packs.findByPickId(pick.getId())
+                .filter(pack -> pack.getStatus() != com.stockflow.fulfillment.internal.domain.PackStatus.PENDING
+                        && pack.getStatus() != com.stockflow.fulfillment.internal.domain.PackStatus.PACKING)
+                .ifPresent(pack -> {
+                    throw new BusinessException(ErrorCode.PICK_TASK_STATE_CONFLICT, ("Packing of task %s is %s; its "
+                            + "cartons left with a shipment, so nothing is added to it").formatted(taskId,
+                            pack.getStatus()));
+                });
         OrderSummary order = TaskAccess.orderInFulfilment(orders, pick);
         List<PickLine> added = planLines(pick, order);
+        if (!added.isEmpty() && order.status() != com.stockflow.order.api.OrderStatus.ON_HOLD) {
+            // 07 §4.3 step 7: the order is picking again with its task (READY_TO_FULFILL -> PICKING; an order already
+            // picking is left alone). An order on hold stays held: the hold resolves back to where it was.
+            orders.startPicking(pick.getOrderId(), actor.userId());
+        }
         Map<String, String> barcodes = barcodesOf(added.stream().map(PickLine::sku).toList());
         return added.stream().map(line -> view(taskId, line, barcodes.get(line.sku()))).toList();
     }

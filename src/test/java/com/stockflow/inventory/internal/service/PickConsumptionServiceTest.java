@@ -7,6 +7,7 @@ import com.stockflow.contracts.StockDeducted;
 import com.stockflow.inventory.consumption.ConsumedPick;
 import com.stockflow.inventory.consumption.PutBackCommand;
 import com.stockflow.inventory.consumption.StageCommand;
+import com.stockflow.inventory.consumption.StagedLine;
 import com.stockflow.inventory.consumption.StagedPick;
 import com.stockflow.inventory.internal.domain.LocationDirectory;
 import com.stockflow.inventory.internal.domain.LocationId;
@@ -1008,6 +1009,117 @@ class PickConsumptionServiceTest {
                     .isInstanceOf(IllegalStateException.class);
             assertThat(held.carton().location()).isEqualTo(staging);
             assertThat(ledgerRows).hasSize(1);
+        }
+    }
+
+    @Nested
+    @DisplayName("the whole task moves to dispatch in one call (review M1)")
+    class BulkMoveToDispatch {
+
+        private final LocationId staging = new LocationId("HCM-STG01");
+        private final java.util.Map<StockPackageId, StockPackage> cartonsById = new java.util.HashMap<>();
+
+        private record Line(StockItem row, StockPackage carton, UUID hold, UUID line, StagedLine staged) { }
+
+        @BeforeEach
+        void stubs() {
+            when(locations.isStagingArea(staging)).thenReturn(true);
+            when(locations.stateOf(staging)).thenReturn(LocationDirectory.LocationState.USABLE);
+            when(stockPackages.findAllByIdForUpdate(any())).thenAnswer(call ->
+                    ((java.util.Collection<StockPackageId>) call.getArgument(0)).stream()
+                            .map(cartonsById::get).filter(java.util.Objects::nonNull).toList());
+            when(stockPackages.save(any())).thenAnswer(call -> call.getArgument(0));
+        }
+
+        /** A sealed carton of {@code sku} held whole for an order and staged by its own pick line. */
+        private Line stagedLine(String sku, String lpn, LocationId bin) {
+            UUID hold = UUID.randomUUID();
+            UUID line = UUID.randomUUID();
+            Reservation reservation = new Reservation(ReservationId.of(hold), UUID.randomUUID(), UUID.randomUUID(),
+                    UUID.randomUUID(), Quantity.of(2), NOW.minusSeconds(3600), null, ReservationStatus.HELD, null, null);
+            StockPackageId id = new StockPackageId(UUID.randomUUID());
+            StockPackage carton = new StockPackage(id, lpn, UUID.randomUUID(), UUID.randomUUID(), 2, 2, bin,
+                    StockPackageStatus.IN_STOCK, true, null, null, 0L);
+            cartonsById.put(id, carton);
+            StockItem row = new StockItem(StockItemId.newId(), new Sku(sku), bin, "LOT-1", LocalDate.of(2030, 1, 1),
+                    Quantity.of(2), StockStatus.AVAILABLE, List.of(reservation), 0L, NOW.minusSeconds(86_400), null,
+                    null, id);
+            when(stockItems.findIdByReservationId(ReservationId.of(hold))).thenReturn(Optional.of(row.id()));
+            when(stockItems.findById(row.id())).thenReturn(Optional.of(row));
+            when(stockItems.findByIdForUpdate(row.id())).thenReturn(Optional.of(row));
+            when(stockItems.findByReservationIdForUpdate(ReservationId.of(hold))).thenReturn(Optional.of(row));
+            when(stockItems.findIdsInStockPackage(id)).thenReturn(List.of(row.id()));
+            service.stage(new StageCommand(line, hold, lpn, staging.code(), PICKER));
+            saved.clear();
+            return new Line(row, carton, hold, line, new StagedLine(hold, line));
+        }
+
+        @Test
+        @DisplayName("lines of two SKUs given in reverse order: SKU locks sorted, cartons locked once, rows by id, cartons settled once")
+        void locksInOneOrderForTheWholeTask() {
+            Line b = stagedLine("SKU-B", "LPN-B", BIN);
+            Line a = stagedLine("SKU-A", "LPN-A", OTHER_BIN);
+            org.mockito.Mockito.clearInvocations(policies, stockPackages, stockItems);
+
+            var consumed = service.consumeStaged(List.of(b.staged(), a.staged()), PICKER);
+
+            assertThat(consumed).extracting(ConsumedPick::sku).containsExactly("SKU-B", "SKU-A");
+            assertThat(consumed).allMatch(c -> !c.alreadyConsumed());
+            var order = org.mockito.Mockito.inOrder(policies, stockPackages, stockItems);
+            order.verify(policies).lock("SKU-A");
+            order.verify(policies).lock("SKU-B");
+            order.verify(stockPackages).findAllByIdForUpdate(any());
+            // each row is locked, through its hold, in row id order - not in the order the lines were given
+            List<UUID> holdsByRowId = java.util.stream.Stream.of(a, b)
+                    .sorted(java.util.Comparator.comparing(l -> l.row().id().value().toString()))
+                    .map(Line::hold).toList();
+            for (UUID hold : holdsByRowId) {
+                order.verify(stockItems).findByReservationIdForUpdate(ReservationId.of(hold));
+            }
+            verify(stockPackages, org.mockito.Mockito.times(1)).findAllByIdForUpdate(any());
+            assertThat(a.carton().status()).isEqualTo(StockPackageStatus.CONSUMED);
+            assertThat(b.carton().status()).isEqualTo(StockPackageStatus.CONSUMED);
+            verify(stockPackages, org.mockito.Mockito.times(2)).save(any());
+            assertThat(ledgerRows.stream().filter(r -> r.type() == StockMovement.MovementType.PICK)).hasSize(2)
+                    .allMatch(r -> r.from().equals(staging));
+        }
+
+        @Test
+        @DisplayName("the same call again changes nothing: every line answers 'already'")
+        void replayChangesNothing() {
+            Line b = stagedLine("SKU-B", "LPN-B", BIN);
+            Line a = stagedLine("SKU-A", "LPN-A", OTHER_BIN);
+            service.consumeStaged(List.of(b.staged(), a.staged()), PICKER);
+            int ledger = ledgerRows.size();
+            org.mockito.Mockito.clearInvocations(stockPackages);
+
+            var again = service.consumeStaged(List.of(b.staged(), a.staged()), PICKER);
+
+            assertThat(again).allMatch(ConsumedPick::alreadyConsumed);
+            assertThat(ledgerRows).hasSize(ledger);
+            verify(stockPackages, never()).save(any());
+        }
+
+        @Test
+        @DisplayName("a carton a count found LOST, or one that is elsewhere, is CONFLICT and nothing of the task is deducted")
+        void aCartonNotWhereItWasStagedRefusesTheWholeTask() {
+            Line good = stagedLine("SKU-A", "LPN-A", OTHER_BIN);
+            Line lost = stagedLine("SKU-B", "LPN-B", BIN);
+            lost.carton().lose(NOW);
+            org.mockito.Mockito.clearInvocations(stockPackages);
+
+            assertThat(refusal(() -> service.consumeStaged(List.of(good.staged(), lost.staged()), PICKER)))
+                    .isEqualTo(ErrorCode.CONFLICT);
+            // the refusal rolls the transaction back; no carton was settled (settling comes after every row)
+            verify(stockPackages, never()).save(any());
+            assertThat(good.carton().status()).isEqualTo(StockPackageStatus.IN_STOCK);
+
+            Line moved = stagedLine("SKU-C", "LPN-C", BIN);
+            moved.carton().moveTo(OTHER_BIN);
+            assertThat(refusal(() -> service.consumeStaged(List.of(moved.staged()), PICKER)))
+                    .isEqualTo(ErrorCode.CONFLICT);
+            assertThat(moved.row().onHand()).isEqualTo(Quantity.of(2));
+            assertThat(ledgerRows.stream().filter(r -> r.type() == StockMovement.MovementType.PICK)).isEmpty();
         }
     }
 }

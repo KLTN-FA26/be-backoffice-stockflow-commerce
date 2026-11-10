@@ -290,6 +290,8 @@ public final class PickLine {
      */
     void reportShort(ShortPickReason reason, String scannedLocation) {
         this.status = PickLineStatus.SHORT;
+        // A staged line had taken its carton (pickedQty); short now, it holds none of it (ck_pick_line_within_allocation).
+        this.pickedQty = 0;
         this.shortQty = allocatedQty;
         this.shortReason = Objects.requireNonNull(reason, "reason");
         this.scannedLocationCode = scannedLocation;
