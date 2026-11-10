@@ -2,12 +2,9 @@ package com.stockflow.fulfillment;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.stockflow.common.domain.Money;
-import com.stockflow.common.domain.Sku;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.contracts.OrderCancelled;
 import com.stockflow.order.api.OrderService;
-import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.OrderSummary;
 import com.stockflow.support.Await;
 import com.stockflow.support.ConfirmedOrders;
@@ -209,6 +206,7 @@ class ControlledUnloadIntegrationTest {
         stock(sku, pieces);
         UUID orderId = confirmedOrders().confirmed(customer,
                 ConfirmedOrders.Line.units(sku, pieces, 12_000_000)).orderId();
+        sofasOrdered.put(orderId, sofas);
         return confirmedOrders().release(orderId, HCM, coordinator);
     }
 
@@ -222,6 +220,8 @@ class ControlledUnloadIntegrationTest {
     }
 
     private final Map<UUID, String> sofas = new java.util.HashMap<>();
+    /** Sofas a test asked for, per order: a carton holds two pieces at least (ck_order_line_cartons), so one is two. */
+    private final Map<UUID, Integer> sofasOrdered = new java.util.HashMap<>();
 
     /** The customer's own sofa, handling like the catalogue's (a contract's lines are only ever the customer's, 14 BR-04). */
     private String sofaOf(UUID customer) {
@@ -242,8 +242,22 @@ class ControlledUnloadIntegrationTest {
         }
         packer(post(BASE + "/tasks/" + task + "/picking-completion")).andExpect(status().isOk());
         packer(post(BASE + "/tasks/" + task + "/packing-start")).andExpect(status().isOk());
-        int sofas = order.lines().getFirst().quantity();
+        int pieces = order.lines().getFirst().quantity();
+        int sofas = sofasOrdered.getOrDefault(order.orderId(), pieces);
         UUID line = order.lines().getFirst().lineId();
+        if (sofas < pieces && !kits) {
+            // One sofa asked for, one carton of two pieces ordered: both go in the one package, as the one sofa was.
+            String parcel = data(packer(body(post(BASE + "/tasks/" + task + "/packages"), ONE_CARTON))
+                    .andExpect(status().isCreated())).path("packageId").asText();
+            scan(task, parcel, pieces);
+            packer(body(post(BASE + "/tasks/" + task + "/packages/" + parcel + "/seal"), SOFA_MEASURES))
+                    .andExpect(status().isOk());
+            sofas = 0;
+        } else if (sofas < pieces) {
+            // A kit is one sofa: the other piece stays behind, the order shipping in parts (PACK-PARTIAL).
+            tx.executeWithoutResult(s -> jdbc.update(
+                    "UPDATE ordering.customer_order SET allow_partial_shipment = TRUE WHERE id = ?", order.orderId()));
+        }
         for (int i = 0; i < sofas; i++) {
             if (kits) {
                 JsonNode kit = data(packer(body(post(BASE + "/tasks/" + task + "/package-kits"), "{\"orderLineId\":\""
@@ -263,7 +277,9 @@ class ControlledUnloadIntegrationTest {
                         .andExpect(status().isOk());
             }
         }
-        String shipment = data(packer(post(BASE + "/tasks/" + task + "/packing-completion")).andExpect(status().isOk()))
+        boolean leftBehind = kits && sofasOrdered.getOrDefault(order.orderId(), pieces) < pieces;
+        String shipment = data(packer(body(post(BASE + "/tasks/" + task + "/packing-completion"),
+                leftBehind ? "{\"partial\":true,\"note\":\"one sofa now\"}" : "{}")).andExpect(status().isOk()))
                 .path("shipmentId").asText();
         return new UUID[] {UUID.fromString(shipment), task};
     }
@@ -273,8 +289,12 @@ class ControlledUnloadIntegrationTest {
     }
 
     private void scan(UUID task, String parcel) throws Exception {
+        scan(task, parcel, 1);
+    }
+
+    private void scan(UUID task, String parcel, int quantity) throws Exception {
         packer(body(post(BASE + "/tasks/" + task + "/packages/" + parcel + "/scans"), "{\"scanId\":\""
-                + UUID.randomUUID() + "\",\"scannedCode\":\"" + pickedSku(task) + "\",\"quantity\":1}"))
+                + UUID.randomUUID() + "\",\"scannedCode\":\"" + pickedSku(task) + "\",\"quantity\":" + quantity + "}"))
                 .andExpect(status().isOk());
     }
 

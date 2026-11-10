@@ -22,7 +22,6 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
-import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.ZoneOffset;
 import java.util.List;
@@ -57,6 +56,12 @@ class OrderServiceImplLifecycleTest {
             inventory, events, Clock.fixed(NOW, ZoneOffset.UTC), mock(DesignService.class), holds,
             mock(CustomerService.class), mock(com.stockflow.catalog.api.CatalogService.class),
             requests, paymentService, org.mockito.Mockito.mock(com.stockflow.product.api.CustomerSkus.class), org.mockito.Mockito.mock(com.stockflow.order.internal.domain.SalesContractRepository.class));
+
+    {
+        // Without installments an order owes nothing in the system (4B-10).
+        when(paymentService.installmentStanding(any())).thenAnswer(call -> com.stockflow.payment.api.InstallmentStanding
+                .none(call.getArgument(0)));
+    }
 
     private Order loaded(Order order) {
         when(repository.findByIdForUpdate(order.id())).thenReturn(Optional.of(order));

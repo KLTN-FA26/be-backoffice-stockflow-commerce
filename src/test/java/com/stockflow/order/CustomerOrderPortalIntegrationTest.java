@@ -85,6 +85,7 @@ class CustomerOrderPortalIntegrationTest {
     @Autowired TransactionTemplate tx;
     @Autowired EntityManager entityManager;
     @Autowired ApplicationContext context;
+    @Autowired com.stockflow.catalog.api.CatalogService catalog;
 
     private ConfirmedOrders confirmedOrders;
     /** A's two SKUs (cartons of 50) and B's one. */
@@ -114,9 +115,10 @@ class CustomerOrderPortalIntegrationTest {
         customerA = customerOf(userA);
         customerB = customerOf(userB);
         confirmedOrders = new ConfirmedOrders(context);
-        skuA1 = CustomerSkuRows.issue(jdbc, tx, entityManager, customerA, 50);
-        skuA2 = CustomerSkuRows.issue(jdbc, tx, entityManager, customerA, 50);
-        skuB = CustomerSkuRows.issue(jdbc, tx, entityManager, customerB, 50);
+        skuA1 = CustomerSkuRows.issue(jdbc, tx, entityManager, customerA, 50, "EXEMPT", false);
+        skuA2 = CustomerSkuRows.issue(jdbc, tx, entityManager, customerA, 50, "EXEMPT", false);
+        // Never produced: a produced SKU leaves an order of its own behind (CustomerSkuRows.produced), which this list would show.
+        skuB = CustomerSkuRows.issue(jdbc, tx, entityManager, customerB, 50, "EXEMPT", false);
 
         // 12M + 18M; 12M; 9M.
         twoLines = place(customerA, ConfirmedOrders.Line.cartons(skuA1, 1, 240_000),
@@ -346,16 +348,16 @@ class CustomerOrderPortalIntegrationTest {
         assertThat(lines.size()).isEqualTo(2);
         for (var line : lines) {
             String sku = line.get("sku").asText();
-            var onSale = jdbc.queryForList("""
-                    SELECT l.slug, l.published_title FROM catalog.catalog_entry e
-                    JOIN catalog.product_listing l ON l.product_id = e.product_id
-                    WHERE e.sku = ? AND e.published AND l.enabled AND l.published_title IS NOT NULL""", sku);
-            if (onSale.isEmpty()) {
-                assertThat(line.path("productSlug").isNull()).as(sku + " is not on sale").isTrue();
-                assertThat(line.path("productTitle").isNull()).isTrue();
+            // A customer's own SKU is listed through its product, which the catalog resolves (not a catalog entry's SKU).
+            var onSale = catalog.listings(java.util.Set.of(sku)).get(sku);
+            if (onSale == null) {
+                // The envelope leaves a null out, so the field is missing, not a JSON null.
+                assertThat(line.path("productSlug").isMissingNode() || line.path("productSlug").isNull())
+                        .as(sku + " is not on sale").isTrue();
+                assertThat(line.path("productTitle").isMissingNode() || line.path("productTitle").isNull()).isTrue();
             } else {
-                assertThat(line.path("productSlug").asText()).as(sku).isEqualTo(onSale.get(0).get("slug"));
-                assertThat(line.path("productTitle").asText()).isEqualTo(onSale.get(0).get("published_title"));
+                assertThat(line.path("productSlug").asText()).as(sku).isEqualTo(onSale.slug());
+                assertThat(line.path("productTitle").asText()).isEqualTo(onSale.title());
             }
         }
     }
@@ -522,7 +524,9 @@ class CustomerOrderPortalIntegrationTest {
 
         mvc.perform(get("/api/v1/orders/" + cancelled.orderId() + "/history").header("Authorization", authorization))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.length()").value(orders.history(cancelled.orderId()).size()));
+                // A DRAFT, the contract still being drawn up, is not the customer's to see (17 §5.2).
+                .andExpect(jsonPath("$.data.length()").value(orders.history(cancelled.orderId()).stream()
+                        .filter(change -> change.to() != OrderStatus.DRAFT).count()));
         mvc.perform(get("/api/v1/orders/" + twoLines.orderId()).header("Authorization", authorization))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.orderId").value(twoLines.orderId().toString()));

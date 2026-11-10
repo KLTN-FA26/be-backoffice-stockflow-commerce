@@ -277,7 +277,7 @@ class SalesRollupIntegrationTest {
 
         UUID orderId = confirmedOrders.signed(customer, List.of(new SalesContracts.Installment("After delivery",
                 "AFTER_DELIVERY", null, new BigDecimal("100"), 30, null)),
-                ConfirmedOrders.Line.cartons(own, 2, 3_500_000)).orderId();
+                ConfirmedOrders.Line.cartons(own, 2, 70_000)).orderId();
         placed.add(orderId);
         OrderSummary order = orders.findById(orderId).orElseThrow();
         assertThat(order.status()).isEqualTo(OrderStatus.ON_HOLD);
@@ -392,8 +392,8 @@ class SalesRollupIntegrationTest {
         assertThat(dayRow(d14).revenue()).isEqualByComparingTo("1000000");
         assertThat(dayRow(d15).ordersCount()).isEqualTo(1);
         assertThat(dayRow(d15).revenue()).isEqualByComparingTo("2000000");
-        assertThat(unitsOfSofa(d14)).isEqualTo(1);
-        assertThat(unitsOfSofa(d15)).isEqualTo(1);
+        assertThat(unitsOfSofa(d14)).as("one carton of two").isEqualTo(2);
+        assertThat(unitsOfSofa(d15)).isEqualTo(2);
     }
 
     private void movePlacement(OrderSummary order, String instant) {

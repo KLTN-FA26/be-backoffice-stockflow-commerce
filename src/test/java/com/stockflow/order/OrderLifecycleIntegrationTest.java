@@ -37,10 +37,7 @@ import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.support.TransactionTemplate;
 
-import java.math.BigDecimal;
 import java.time.Duration;
-import java.time.LocalDate;
-import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -71,6 +68,7 @@ class OrderLifecycleIntegrationTest {
 
     @Autowired OrderService orders;
     @Autowired OrderReleases releases;
+    @Autowired com.stockflow.customer.api.CustomerService customers;
     @Autowired CancellationRequestService cancellationRequests;
     @Autowired CustomerOrders customerOrders;
     @Autowired OrderSettlementService settlements;
@@ -122,6 +120,10 @@ class OrderLifecycleIntegrationTest {
                 "UPDATE ordering.customer_order SET allow_partial_shipment = TRUE WHERE id = ?", orderId));
         placed.add(orderId);
         return orders.findById(orderId).orElseThrow();
+    }
+
+    private OrderStatus statusOf(UUID orderId) {
+        return orders.findById(orderId).orElseThrow().status();
     }
 
     private OrderStatus statusOf(OrderSummary order) {
@@ -200,18 +202,58 @@ class OrderLifecycleIntegrationTest {
         assertThat(statusOf(order)).isEqualTo(OrderStatus.CLOSED);
 
         List<OrderStatusChange> history = orders.history(order.orderId());
-        assertThat(history).extracting(OrderStatusChange::to).containsExactly(OrderStatus.PENDING_PAYMENT,
-                OrderStatus.CONFIRMED, OrderStatus.READY_TO_FULFILL, OrderStatus.PICKING, OrderStatus.ON_HOLD,
+        assertThat(history).extracting(OrderStatusChange::to).containsExactly(OrderStatus.DRAFT,
+                OrderStatus.PENDING_CONTRACT, OrderStatus.PENDING_PAYMENT, OrderStatus.CONFIRMED, OrderStatus.READY_TO_FULFILL, OrderStatus.PICKING, OrderStatus.ON_HOLD,
                 OrderStatus.PICKING, OrderStatus.PARTIALLY_FULFILLED, OrderStatus.PACKED, OrderStatus.SHIPPED,
                 OrderStatus.DELIVERY_FAILED, OrderStatus.DELIVERED, OrderStatus.COMPLETED, OrderStatus.CLOSED);
-        assertThat(history.get(4).reason()).isEqualTo("ADDRESS: sai phường");
-        assertThat(history.get(4).actorId()).isEqualTo(staff);
-        assertThat(history.get(5).reason()).isEqualTo("HOLD_RESOLVED_ADDRESS: khách đã xác nhận");
-        assertThat(history.get(9).reason()).isEqualTo("CUSTOMER_ABSENT");
-        assertThat(history.get(12).actorId()).as("closed by the system").isNull();
+        // The first two entries are the contract's: the order drafted, then waiting for its contract.
+        assertThat(history.get(6).reason()).isEqualTo("ADDRESS: sai phường");
+        assertThat(history.get(6).actorId()).isEqualTo(staff);
+        assertThat(history.get(7).reason()).isEqualTo("HOLD_RESOLVED_ADDRESS: khách đã xác nhận");
+        assertThat(history.get(11).reason()).isEqualTo("CUSTOMER_ABSENT");
+        assertThat(history.get(14).actorId()).as("closed by the system").isNull();
         assertThat(jdbc.queryForObject("SELECT count(*) FROM ordering.order_hold WHERE order_id = ? AND reason = 'ADDRESS' "
                 + "AND note = 'sai phường' AND raised_by = ? AND resolved_at IS NOT NULL", Long.class, order.orderId(), staff))
                 .isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("4B-10 (17 §4.6 step 21): a contract order completes only once its installments are paid - the settlement "
+            + "leaves it DELIVERED while one owes, the receipt lets it complete (it never completed before: its paid "
+            + "amount stayed 0)")
+    void completesOnlyOncePaid() {
+        // Everything after delivery, on the customer's credit: a limit above zero (15 BR-12).
+        customers.saveCreditTerms(new com.stockflow.customer.api.SaveCreditTermsCommand(customer,
+                new java.math.BigDecimal("50000000"), 30, "test terms", staff, null));
+        CustomerSkuRows.stock(jdbc, tx, sku, 2);
+        UUID orderId = confirmedOrders.signed(customer, List.of(new com.stockflow.order.internal.service.SalesContracts
+                .Installment("After delivery", "AFTER_DELIVERY", null, new java.math.BigDecimal("100"), 30, null)),
+                ConfirmedOrders.Line.units(sku, 2, PRICE)).orderId();
+        placed.add(orderId);
+        assertThat(statusOf(orderId)).isEqualTo(OrderStatus.CONFIRMED);
+        confirmedOrders.release(orderId, DemoData.WAREHOUSE_HCM, staff);
+        orders.startPicking(orderId, staff);
+        orders.markPacked(orderId, staff);
+        orders.markShipped(orderId, null, staff);
+        assertThat(orders.recordDelivery(orderId, staff).status()).isEqualTo(OrderStatus.DELIVERED);
+        tx.executeWithoutResult(s -> jdbc.update(
+                "UPDATE ordering.customer_order SET delivered_at = NOW() - interval '8 days' WHERE id = ?", orderId));
+
+        assertThat(settlements.completionCandidates(0, 1000)).as("the query cannot tell who owes (payment's to say)")
+                .contains(orderId);
+        assertThat(settlements.complete(orderId)).as("the installment after delivery is unpaid").isFalse();
+        assertThat(statusOf(orderId)).isEqualTo(OrderStatus.DELIVERED);
+
+        // Reached by the delivery (payment reads OrderDelivered after commit); the customer pays it.
+        UUID installment = jdbc.queryForObject("SELECT id FROM payment.installment WHERE order_id = ?", UUID.class,
+                orderId);
+        com.stockflow.support.Await.until("the installment reached", Duration.ofSeconds(15), () -> "DUE".equals(
+                jdbc.queryForObject("SELECT status FROM payment.installment WHERE id = ?", String.class, installment)));
+        confirmedOrders.pay(customer, installment, jdbc.queryForObject(
+                "SELECT amount FROM payment.installment WHERE id = ?", java.math.BigDecimal.class, installment));
+
+        assertThat(settlements.complete(orderId)).as("paid in full").isTrue();
+        assertThat(statusOf(orderId)).isEqualTo(OrderStatus.COMPLETED);
     }
 
     @Test
@@ -360,7 +402,7 @@ class OrderLifecycleIntegrationTest {
         assertThat(orders.closeRemainder(order.orderId(), CancellationReasonCode.OTHER, "hàng thất lạc", staff)
                 .status()).isEqualTo(OrderStatus.DELIVERED);
         assertThat(jdbc.queryForObject("SELECT cancelled_quantity FROM ordering.order_line WHERE order_id = ?",
-                Integer.class, order.orderId())).as("two pieces closed, one by each closure").isEqualTo(2);
+                Integer.class, order.orderId())).as("two pieces closed by the first closure, the one that came back by the second").isEqualTo(3);
     }
 
     /** Both calls released at once, each in its own transaction; what each returned or threw. */

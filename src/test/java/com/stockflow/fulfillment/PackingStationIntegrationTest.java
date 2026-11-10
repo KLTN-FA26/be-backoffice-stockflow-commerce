@@ -523,9 +523,10 @@ class PackingStationIntegrationTest {
             + "handover waits for the money (DispatchHandoverIntegrationTest)")
     void anOrderOwingBeforeDeliveryIsPacked() throws Exception {
         OrderSummary order = depositOrder(2);       // 10M: 3M on signing (paid), 7M before delivery
-        assertThat(jdbc.queryForObject("SELECT status FROM payment.installment WHERE order_id = ? "
-                + "AND milestone = 'BEFORE_DELIVERY'", String.class, order.orderId()))
-                .as("released: what it pays before delivery is due (15 §4.1 step 2)").isEqualTo("DUE");
+        // Due once the order is released (15 §4.1 step 2): payment reads OrderReleased after commit.
+        Await.until("the installment before delivery is due", java.time.Duration.ofSeconds(15),
+                () -> "DUE".equals(jdbc.queryForObject("SELECT status FROM payment.installment WHERE order_id = ? "
+                        + "AND milestone = 'BEFORE_DELIVERY'", String.class, order.orderId())));
         UUID task = pickedTask(order);
         packer(post(BASE + "/tasks/" + task + "/packing-start")).andExpect(status().isOk());
         UUID parcel = openPackage(task);

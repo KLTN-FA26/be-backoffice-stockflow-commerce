@@ -2,14 +2,13 @@ package com.stockflow.fulfillment;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.stockflow.common.domain.Money;
-import com.stockflow.common.domain.Sku;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.contracts.OrderCancelled;
 import com.stockflow.order.api.HoldReason;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.OrderSummary;
+import com.stockflow.order.internal.service.SalesContracts;
 import com.stockflow.support.Await;
 import com.stockflow.support.ConfirmedOrders;
 import com.stockflow.support.CustomerSkuRows;
@@ -202,11 +201,18 @@ class FtlDispatchIntegrationTest {
     }
 
     private OrderSummary ftlOrder(int sofas, UUID customer) throws Exception {
+        return ftlOrder(sofas, customer, ConfirmedOrders.paidOnSigning());
+    }
+
+    /** The same, its contract paying as {@code plan} says; the installments on signing are paid. */
+    private OrderSummary ftlOrder(int sofas, UUID customer, List<SalesContracts.Installment> plan) throws Exception {
         int pieces = Math.max(2, sofas);
         String sku = sofaOf(customer);
         stock(sku, pieces);
-        UUID orderId = confirmedOrders().confirmed(customer,
-                ConfirmedOrders.Line.units(sku, pieces, 12_000_000)).orderId();
+        ConfirmedOrders.Signed signed = confirmedOrders().signed(customer, plan,
+                ConfirmedOrders.Line.units(sku, pieces, 12_000_000));
+        UUID orderId = confirmedOrders().pay(signed).orderId();
+        sofasOrdered.put(orderId, sofas);
         return confirmedOrders().release(orderId, HCM, coordinator);
     }
 
@@ -220,6 +226,8 @@ class FtlDispatchIntegrationTest {
     }
 
     private final Map<UUID, String> sofas = new java.util.HashMap<>();
+    /** Sofas a test asked for, per order: a carton holds two pieces at least (ck_order_line_cartons), so one is two. */
+    private final Map<UUID, Integer> sofasOrdered = new java.util.HashMap<>();
 
     /** The customer's own sofa, handling like the catalogue's (a contract's lines are only ever the customer's, 14 BR-04). */
     private String sofaOf(UUID customer) {
@@ -240,8 +248,22 @@ class FtlDispatchIntegrationTest {
         }
         packer(post(BASE + "/tasks/" + task + "/picking-completion")).andExpect(status().isOk());
         packer(post(BASE + "/tasks/" + task + "/packing-start")).andExpect(status().isOk());
-        int sofas = order.lines().getFirst().quantity();
+        int pieces = order.lines().getFirst().quantity();
+        int sofas = sofasOrdered.getOrDefault(order.orderId(), pieces);
         UUID line = order.lines().getFirst().lineId();
+        if (sofas < pieces && !kits) {
+            // One sofa asked for, one carton of two pieces ordered: both go in the one package, as the one sofa was.
+            String parcel = data(packer(body(post(BASE + "/tasks/" + task + "/packages"), ONE_CARTON))
+                    .andExpect(status().isCreated())).path("packageId").asText();
+            scan(task, parcel, pieces);
+            packer(body(post(BASE + "/tasks/" + task + "/packages/" + parcel + "/seal"), SOFA_MEASURES))
+                    .andExpect(status().isOk());
+            sofas = 0;
+        } else if (sofas < pieces) {
+            // A kit is one sofa: the other piece stays behind, the order shipping in parts (PACK-PARTIAL).
+            tx.executeWithoutResult(s -> jdbc.update(
+                    "UPDATE ordering.customer_order SET allow_partial_shipment = TRUE WHERE id = ?", order.orderId()));
+        }
         for (int i = 0; i < sofas; i++) {
             if (kits) {
                 JsonNode kit = data(packer(body(post(BASE + "/tasks/" + task + "/package-kits"), "{\"orderLineId\":\""
@@ -261,7 +283,9 @@ class FtlDispatchIntegrationTest {
                         .andExpect(status().isOk());
             }
         }
-        String shipment = data(packer(post(BASE + "/tasks/" + task + "/packing-completion")).andExpect(status().isOk()))
+        boolean leftBehind = kits && sofasOrdered.getOrDefault(order.orderId(), pieces) < pieces;
+        String shipment = data(packer(body(post(BASE + "/tasks/" + task + "/packing-completion"),
+                leftBehind ? "{\"partial\":true,\"note\":\"one sofa now\"}" : "{}")).andExpect(status().isOk()))
                 .path("shipmentId").asText();
         return new UUID[] {UUID.fromString(shipment), task};
     }
@@ -271,8 +295,12 @@ class FtlDispatchIntegrationTest {
     }
 
     private void scan(UUID task, String parcel) throws Exception {
+        scan(task, parcel, 1);
+    }
+
+    private void scan(UUID task, String parcel, int quantity) throws Exception {
         packer(body(post(BASE + "/tasks/" + task + "/packages/" + parcel + "/scans"), "{\"scanId\":\""
-                + UUID.randomUUID() + "\",\"scannedCode\":\"" + pickedSku(task) + "\",\"quantity\":1}"))
+                + UUID.randomUUID() + "\",\"scannedCode\":\"" + pickedSku(task) + "\",\"quantity\":" + quantity + "}"))
                 .andExpect(status().isOk());
     }
 
@@ -1827,30 +1855,24 @@ class FtlDispatchIntegrationTest {
     @DisplayName("review of #162: an unpaid BEFORE_DELIVERY deposit order is refused at a vehicle that completes no "
             + "shipment (409 ORDER_BALANCE_NOT_PAID); paid, it leaves")
     void unpaidAtANonLastTruck() throws Exception {
-        OrderSummary order = ftlOrder(2);
+        // 30% on signing (paid, so the order is confirmed), the rest before delivery (15 BR-07, BR-08).
+        OrderSummary order = ftlOrder(2, DemoData.CUSTOMER_ID, List.of(
+                new SalesContracts.Installment("Deposit", "ON_SIGNING", null, new BigDecimal("30"), 0, null),
+                new SalesContracts.Installment("Before delivery", "BEFORE_DELIVERY", null, new BigDecimal("70"), null,
+                        null)));
         UUID shipment = packed(order, true)[0];
         JsonNode plan = confirmed(List.of(shipment), truck1t25);
         assertThat(plan.path("vehicles")).hasSize(2);
         String truck1 = loadOf(plan, 1);
-        BigDecimal total = order.total().amount();
-        BigDecimal deposit = total.multiply(new BigDecimal("0.3"));
-        tx.executeWithoutResult(s -> {
-            jdbc.update("""
-                    UPDATE ordering.customer_order SET payment_term = 'DEPOSIT', deposit_required = ?,
-                           balance_policy = 'BEFORE_DELIVERY', paid_amount = ?, paid_in_full_at = NULL WHERE id = ?""",
-                    deposit, deposit, order.orderId());
-            jdbc.update("UPDATE payment.payment SET amount = ? WHERE order_id = ?", deposit, order.orderId());
-        });
         loadAll(truck1, ghn);
         handOver(truck1).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("ORDER_BALANCE_NOT_PAID"));
         assertThat(load(truck1).path("status").asText()).isEqualTo("LOADING");
         assertThat(jdbc.queryForObject("SELECT goods_left_at FROM ordering.customer_order WHERE id = ?",
                 java.sql.Timestamp.class, order.orderId())).isNull();
-        tx.executeWithoutResult(s -> {
-            jdbc.update("UPDATE ordering.customer_order SET paid_amount = total_amount WHERE id = ?", order.orderId());
-            jdbc.update("UPDATE payment.payment SET amount = ? WHERE order_id = ?", total, order.orderId());
-        });
+        Map<String, Object> balance = jdbc.queryForMap("SELECT id, amount FROM payment.installment WHERE order_id = ? "
+                + "AND milestone = 'BEFORE_DELIVERY'", order.orderId());
+        confirmedOrders().pay(DemoData.CUSTOMER_ID, (UUID) balance.get("id"), (BigDecimal) balance.get("amount"));
         handOver(truck1).andExpect(status().isOk());
         assertThat(shipmentStatus(shipment)).isEqualTo("READY_TO_DISPATCH");
     }
