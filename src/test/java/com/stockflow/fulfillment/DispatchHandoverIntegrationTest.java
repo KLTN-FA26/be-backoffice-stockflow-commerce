@@ -279,7 +279,7 @@ class DispatchHandoverIntegrationTest {
             UUID parcel = UUID.fromString(data(as(picker, "WAREHOUSE_STAFF", body(post(BASE + "/tasks/" + task
                     + "/packages"), ONE_CARTON)).andExpect(status().isCreated())).path("packageId").asText());
             as(picker, "WAREHOUSE_STAFF", body(post(BASE + "/tasks/" + task + "/packages/" + parcel + "/scans"),
-                    "{\"scanId\":\"" + UUID.randomUUID() + "\",\"scannedCode\":\"" + SOFA.code() + "\",\"lotNumber\":\"FX-LOT\",\"quantity\":"
+                    "{\"scanId\":\"" + UUID.randomUUID() + "\",\"scannedCode\":\"" + SOFA.code() + "\",\"lotNumber\":\"UNTRACED\",\"quantity\":"
                             + units + "}")).andExpect(status().isOk());
             as(picker, "WAREHOUSE_STAFF", body(post(BASE + "/tasks/" + task + "/packages/" + parcel + "/seal"),
                     MEASURES)).andExpect(status().isOk());
@@ -609,7 +609,7 @@ class DispatchHandoverIntegrationTest {
 
         // A parcel of a shipment waiting for dispatch but in no load plan.
         as(picker, "WAREHOUSE_STAFF", body(post(BASE + "/tasks/" + task + "/packages/" + open + "/scans"),
-                "{\"scanId\":\"" + UUID.randomUUID() + "\",\"scannedCode\":\"" + SOFA.code() + "\",\"lotNumber\":\"FX-LOT\",\"quantity\":1}"))
+                "{\"scanId\":\"" + UUID.randomUUID() + "\",\"scannedCode\":\"" + SOFA.code() + "\",\"lotNumber\":\"UNTRACED\",\"quantity\":1}"))
                 .andExpect(status().isOk());
         as(picker, "WAREHOUSE_STAFF", body(post(BASE + "/tasks/" + task + "/packages/" + open + "/seal"), MEASURES))
                 .andExpect(status().isOk());
@@ -950,7 +950,7 @@ class DispatchHandoverIntegrationTest {
         tx.executeWithoutResult(s -> jdbc.update("""
                 INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, version,
                     created_at, received_at)
-                VALUES (?, ?, 'HCM-A02-1-A', 'FX-LOT', ?, 0, 'AVAILABLE', 0, NOW(), NOW() - interval '400 days')""",
+                VALUES (?, ?, 'HCM-A02-1-A', 'UNTRACED', ?, 0, 'AVAILABLE', 0, NOW(), NOW() - interval '400 days')""",
                 Identifiers.newId(), SOFA.code(), sofas));
     }
 
@@ -1162,7 +1162,7 @@ class DispatchHandoverIntegrationTest {
         kit.path("packages").forEach(p -> parts.add(p.path("packageId").asText()));
         assertThat(parts).hasSize(2);
         as(picker, "WAREHOUSE_STAFF", body(post(BASE + "/tasks/" + task + "/packages/" + parts.get(0) + "/scans"),
-                "{\"scanId\":\"" + UUID.randomUUID() + "\",\"scannedCode\":\"" + SOFA.code() + "\",\"lotNumber\":\"FX-LOT\",\"quantity\":1}"))
+                "{\"scanId\":\"" + UUID.randomUUID() + "\",\"scannedCode\":\"" + SOFA.code() + "\",\"lotNumber\":\"UNTRACED\",\"quantity\":1}"))
                 .andExpect(status().isOk());
         for (String part : parts) {
             as(picker, "WAREHOUSE_STAFF", body(post(BASE + "/tasks/" + task + "/packages/" + part + "/seal"),
@@ -1204,7 +1204,7 @@ class DispatchHandoverIntegrationTest {
         List<String> parts = new ArrayList<>();
         kit.path("packages").forEach(p -> parts.add(p.path("packageId").asText()));
         as(picker, "WAREHOUSE_STAFF", body(post(BASE + "/tasks/" + task + "/packages/" + parts.get(0) + "/scans"),
-                "{\"scanId\":\"" + UUID.randomUUID() + "\",\"scannedCode\":\"" + SOFA.code() + "\",\"lotNumber\":\"FX-LOT\",\"quantity\":1}"))
+                "{\"scanId\":\"" + UUID.randomUUID() + "\",\"scannedCode\":\"" + SOFA.code() + "\",\"lotNumber\":\"UNTRACED\",\"quantity\":1}"))
                 .andExpect(status().isOk());
         for (String part : parts) {
             as(picker, "WAREHOUSE_STAFF", body(post(BASE + "/tasks/" + task + "/packages/" + part + "/seal"),

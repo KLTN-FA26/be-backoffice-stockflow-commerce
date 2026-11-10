@@ -626,8 +626,8 @@ class ShippingWarehouseIntegrationTest {
         assertThat(orderRow(other)).containsEntry("shipping_warehouse_id", b.id());
         assertThat(reservationsOf(other)).singleElement().satisfies(r -> assertThat(r)
                 .containsEntry("warehouse_code", b.code()).containsEntry("quantity", 19 * PER_CARTON));
-        assertThat(atpByWarehouse()).containsEntry(a.code(), 0).containsEntry(b.code(), 40);
-        assertThat(systemAtp()).isEqualTo(40);
+        assertThat(atpByWarehouse()).containsEntry(a.code(), 0).containsEntry(b.code(), 0);
+        assertThat(systemAtp()).isZero();
     }
 
     @Test

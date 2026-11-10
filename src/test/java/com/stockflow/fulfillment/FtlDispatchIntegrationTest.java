@@ -104,6 +104,7 @@ class FtlDispatchIntegrationTest {
     @Autowired ObjectMapper json;
 
     private UUID coordinator;
+    private UUID sales;
     private UUID picker;
     private UUID dispatcher;
     private UUID dispatcherElsewhere;
@@ -115,6 +116,7 @@ class FtlDispatchIntegrationTest {
     @BeforeEach
     void setUp() {
         coordinator = staff("WAREHOUSE_MANAGER", HCM);
+        sales = staff("SALES_STAFF");
         picker = staff("WAREHOUSE_STAFF", HCM);
         dispatcher = staff("WAREHOUSE_STAFF", HCM);
         UUID elsewhere = tx.execute(s -> otherWarehouse());
@@ -171,6 +173,11 @@ class FtlDispatchIntegrationTest {
 
     private ResultActions oc(MockHttpServletRequestBuilder request) throws Exception {
         return as(coordinator, "WAREHOUSE_MANAGER", request);
+    }
+
+    /** What the retired order coordinator did for the customer - cancelling an order, say - Sales does now. */
+    private ResultActions sales(MockHttpServletRequestBuilder request) throws Exception {
+        return as(sales, "SALES_STAFF", request);
     }
 
     private ResultActions packer(MockHttpServletRequestBuilder request) throws Exception {
@@ -264,7 +271,7 @@ class FtlDispatchIntegrationTest {
 
     private void scan(UUID task, String parcel) throws Exception {
         packer(body(post(BASE + "/tasks/" + task + "/packages/" + parcel + "/scans"), "{\"scanId\":\""
-                + UUID.randomUUID() + "\",\"scannedCode\":\"" + SOFA_BARCODE + "\",\"lotNumber\":\"FX-LOT\",\"quantity\":1}"))
+                + UUID.randomUUID() + "\",\"scannedCode\":\"" + SOFA_BARCODE + "\",\"lotNumber\":\"UNTRACED\",\"quantity\":1}"))
                 .andExpect(status().isOk());
     }
 
@@ -1780,7 +1787,7 @@ class FtlDispatchIntegrationTest {
         assertThat(shipmentStatus(shipments[0])).isEqualTo("READY_TO_DISPATCH");
         assertThat(jdbc.queryForObject("SELECT goods_left_at IS NOT NULL FROM ordering.customer_order WHERE id = ?",
                 Boolean.class, order.orderId())).isTrue();
-        oc(body(post(ORDERS + "/" + order.orderId() + "/admin-cancellation"),
+        sales(body(post(ORDERS + "/" + order.orderId() + "/admin-cancellation"),
                 "{\"reasonCode\":\"CUSTOMER_REQUEST\",\"note\":\"customer changed its mind\"}"))
                 .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("ORDER_NOT_CANCELLABLE"));
 
@@ -1928,19 +1935,19 @@ class FtlDispatchIntegrationTest {
     // ---- who may -----------------------------------------------------------------------------
 
     @Test
-    @DisplayName("permissions and scope: the coordinator reads a vehicle's load but does not book, load or unload "
+    @DisplayName("permissions and scope: Sales has no part in a vehicle's load: it neither reads, books, loads nor unloads it "
             + "(403); warehouse staff of another warehouse get OUT_OF_DATA_SCOPE")
     void whoMay() throws Exception {
         UUID shipment = packed(ftlOrder(1), false)[0];
         JsonNode plan = confirmed(List.of(shipment), truck5t);
         String loadId = loadOf(plan, 1);
-        oc(get(LOADS + "/" + loadId)).andExpect(status().isOk());
-        oc(body(post(LOADS + "/" + loadId + "/booking"), "{\"carrierId\":\"" + ghn + "\"}"))
+        sales(get(LOADS + "/" + loadId)).andExpect(status().isForbidden());
+        sales(body(post(LOADS + "/" + loadId + "/booking"), "{\"carrierId\":\"" + ghn + "\"}"))
                 .andExpect(status().isForbidden());
-        oc(post(LOADS + "/" + loadId + "/loading-start")).andExpect(status().isForbidden());
-        oc(body(post(LOADS + "/" + loadId + "/booking-cancellation"), "{\"reason\":\"x\"}"))
+        sales(post(LOADS + "/" + loadId + "/loading-start")).andExpect(status().isForbidden());
+        sales(body(post(LOADS + "/" + loadId + "/booking-cancellation"), "{\"reason\":\"x\"}"))
                 .andExpect(status().isForbidden());
-        oc(body(post(LOADS + "/" + loadId + "/unloads"), "{\"packageCode\":\"PKG-X\"}"))
+        sales(body(post(LOADS + "/" + loadId + "/unloads"), "{\"packageCode\":\"PKG-X\"}"))
                 .andExpect(status().isForbidden());
         as(dispatcherElsewhere, "WAREHOUSE_STAFF", body(post(LOADS + "/" + loadId + "/booking"),
                 "{\"carrierId\":\"" + ghn + "\"}")).andExpect(status().isForbidden())

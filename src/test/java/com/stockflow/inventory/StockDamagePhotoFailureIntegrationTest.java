@@ -133,7 +133,7 @@ class StockDamagePhotoFailureIntegrationTest {
             jdbc.update("""
                     INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status,
                                                       received_at, version, created_at)
-                    VALUES (?, ?, 'HCM-A01-2-B', 'FX-LOT', 5, 0, 'AVAILABLE', ?, 0, NOW())""", row, sku,
+                    VALUES (?, ?, 'HCM-A01-2-B', 'UNTRACED', 5, 0, 'AVAILABLE', ?, 0, NOW())""", row, sku,
                     Timestamp.from(Instant.parse("2026-10-01T03:00:00Z")));
         });
         return row;

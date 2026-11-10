@@ -85,7 +85,7 @@ class MoveUnderCountIntegrationTest {
         jdbc.update("""
                 insert into inventory.stock_item (id, sku, location_code, lot_number, received_at, on_hand,
                     reserved, status, version, created_at)
-                values (?, ?, ?, 'FX-LOT', ?, ?, 0, 'AVAILABLE', 0, now())""",
+                values (?, ?, ?, 'UNTRACED', ?, ?, 0, 'AVAILABLE', 0, now())""",
                 Identifiers.newId(), sku, bin, Timestamp.from(Instant.parse("2026-01-02T00:00:00Z")), onHand);
     }
 

@@ -57,6 +57,8 @@ class FixedStockPolicyMigrationUpgradeTest {
                         + "map_width, map_height, version, created_at) VALUES (?, 'Policy fixture', 'ACTIVE', 'FSP', 'Test "
                         + "address', 'M', 50, 50, 0, NOW())", warehouse);
                 int x = 1;
+                // A location is owned by its area when the transaction commits: the pair is written in one.
+                db.setAutoCommit(false);
                 for (String area : new String[] {"RCV01", "RCV02"}) {
                     UUID location = UUID.randomUUID();
                     RawSql.update(db, "INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, "
@@ -67,6 +69,8 @@ class FixedStockPolicyMigrationUpgradeTest {
                             + "'RECEIVING', 'x', ?, 1, 5, 5, 0, FALSE, 'ACTIVE')", warehouse, location, area, x);
                     x += 20;
                 }
+                db.commit();
+                db.setAutoCommit(true);
 
                 // The old state is written with the row triggers off: what the old policy accepted is not what this
                 // test is about.

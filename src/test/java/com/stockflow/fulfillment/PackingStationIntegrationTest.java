@@ -684,7 +684,7 @@ class PackingStationIntegrationTest {
         tx.executeWithoutResult(s -> jdbc.update("""
                 INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, version,
                     created_at, received_at)
-                VALUES (?, ?, 'HCM-A02-1-A', 'FX-LOT', ?, 0, 'AVAILABLE', 0, NOW(), NOW() - interval '400 days')""",
+                VALUES (?, ?, 'HCM-A02-1-A', 'UNTRACED', ?, 0, 'AVAILABLE', 0, NOW(), NOW() - interval '400 days')""",
                 Identifiers.newId(), SOFA.code(), sofas));
     }
 
@@ -983,7 +983,7 @@ class PackingStationIntegrationTest {
         assertThat(sum("SELECT count(*) FROM fulfillment.package_scan WHERE package_id = ? AND quantity > 0 "
                 + "AND scanned_code = ?", box, SOFA.code())).isZero();
         String withReason = "{\"scanId\":\"" + UUID.randomUUID() + "\",\"scannedCode\":\"" + SOFA.code()
-                + "\",\"lotNumber\":\"FX-LOT\",\"quantity\":1,\"kitOverrideReason\":\"Khách lấy tại kho, không cần tách kiện\"}";
+                + "\",\"lotNumber\":\"UNTRACED\",\"quantity\":1,\"kitOverrideReason\":\"Khách lấy tại kho, không cần tách kiện\"}";
         scanAs(packerHcm, task, box, withReason).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.packages[0].kitOverrideReason")
                         .value("Khách lấy tại kho, không cần tách kiện"));

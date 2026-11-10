@@ -54,7 +54,7 @@ public final class ConfirmedDesigns {
                 jdbc.update("""
                         INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, version,
                             created_at, received_at)
-                        VALUES (?, ?, 'HCM-A02-1-A', 'FX-LOT', ?, 0, 'AVAILABLE', 0, NOW(),
+                        VALUES (?, ?, 'HCM-A02-1-A', 'UNTRACED', ?, 0, 'AVAILABLE', 0, NOW(),
                             clock_timestamp() - interval '2 days' - random() * interval '300 days')""",
                         Identifiers.newId(), BLANK, units - free);
             }

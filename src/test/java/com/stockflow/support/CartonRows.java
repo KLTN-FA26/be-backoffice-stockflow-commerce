@@ -22,9 +22,10 @@ public final class CartonRows {
 
     /**
      * The lot of a carton a test gives none: every unit has one since team plan 5-5 (kltn-docs 01 BR-17), and the
-     * database refuses live stock without it ({@code inventory.enforce_sku_policy}).
+     * database refuses live stock without it ({@code inventory.enforce_sku_policy}). It is the lot 4C-1 gave the demo
+     * stock that had none, so a test's cartons and the demo's are one lot, as the lot-less stock of both once was.
      */
-    public static final String DEFAULT_LOT = "FX-LOT";
+    public static final String DEFAULT_LOT = "UNTRACED";
 
     private CartonRows() {
     }
