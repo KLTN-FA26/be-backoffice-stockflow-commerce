@@ -608,8 +608,8 @@ class PickDamageIntegrationTest {
     }
 
     @Test
-    @org.junit.jupiter.api.Disabled("4C-6: a repack parcel cannot be opened in a started check session - PackingService numbers parcels without the session's carton rows (uk_package_no DUPLICATE_KEY); the parcel-first rule goes with the repack station (4C-7 / 5-6)")
-    @DisplayName("damage at packing: units in a parcel come out first; never more than the line brought; packer only")
+    @DisplayName("damage at packing: a photo is needed; a carton is reported whole or not at all; once the check station "
+            + "holds the carton it is removed there, never reported (PACK_STATE_CONFLICT)")
     void damageAtPackingRefusals() throws Exception {
         cartons("HCM-A01-1-A", 3, 2, "L1", today.plusDays(10));
         OrderSummary order = releasedOrder(2);
@@ -620,23 +620,7 @@ class PickDamageIntegrationTest {
         packDamage(task, lineId, picker, "WAREHOUSE_STAFF", UUID.randomUUID(), 1, true)
                 .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("PICK_LINE_NOT_OPEN"));
         pickedAndAtPacking(task);
-        UUID parcel = UUID.fromString(body(mvc.perform(post("/api/v1/fulfillment/tasks/" + task + "/packages")
-                        .header("Authorization", token(picker, "WAREHOUSE_STAFF")).contentType("application/json")
-                        .content("{}")).andExpect(status().isCreated()).andReturn()).path("packageId").asText());
-        mvc.perform(post("/api/v1/fulfillment/tasks/" + task + "/packages/" + parcel + "/scans")
-                .header("Authorization", token(picker, "WAREHOUSE_STAFF")).contentType("application/json")
-                .content("{\"scanId\":\"" + UUID.randomUUID() + "\",\"scannedCode\":\"" + sku
-                        + "\",\"lotNumber\":\"L1\",\"quantity\":2}")).andExpect(status().isOk());
 
-        packDamage(task, lineId, picker, "WAREHOUSE_STAFF", UUID.randomUUID(), 2, true)
-                .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("PACK_DAMAGED_UNITS_PACKED"));
-        packDamage(task, lineId, otherPicker, "WAREHOUSE_STAFF", UUID.randomUUID(), 2, true)
-                .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("PACKING_TAKEN"));
-
-        // Out of the parcel again: reported with a photo only.
-        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete(
-                        "/api/v1/fulfillment/tasks/" + task + "/packages/" + parcel)
-                .header("Authorization", token(picker, "WAREHOUSE_STAFF"))).andExpect(status().isOk());
         packDamage(task, lineId, picker, "WAREHOUSE_STAFF", UUID.randomUUID(), 2, false)
                 .andExpect(status().isBadRequest()).andExpect(jsonPath("$.errorCode").value("DAMAGE_PHOTO_REQUIRED"));
         // A carton is reported damaged whole: a part of it, or more than it holds, is 409 and writes nothing.
@@ -645,6 +629,12 @@ class PickDamageIntegrationTest {
                     .andExpect(status().isConflict())
                     .andExpect(jsonPath("$.errorCode").value("STOCK_PACKAGE_TAKEN_WHOLE"));
         }
+
+        // The check starts and receives the carton: the whole-carton report is now the station's removal, not this.
+        mvc.perform(post("/api/v1/fulfillment/tasks/" + task + "/packing-start")
+                .header("Authorization", token(picker, "WAREHOUSE_STAFF"))).andExpect(status().isOk());
+        packDamage(task, lineId, picker, "WAREHOUSE_STAFF", UUID.randomUUID(), 2, true)
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("PACK_STATE_CONFLICT"));
         assertThat(damagedInQuarantine()).isZero();
         assertThat(jdbc.queryForObject("SELECT count(*) FROM inventory.stock_damage_report WHERE sku = ?",
                 Integer.class, sku)).isZero();

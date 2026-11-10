@@ -501,6 +501,40 @@ class PickConsumptionServiceTest {
         }
 
         @Test
+        @DisplayName("a quarantine area whose warehouse cannot be resolved is LOCATION_NOT_FOUND; two unknown places never pass "
+                + "as 'the same warehouse'")
+        void unknownTargetWarehouse() {
+            UUID hold = UUID.randomUUID();
+            Picked picked = pickedCarton(BIN, 3, hold);
+            when(locations.isQuarantineArea(quarantine)).thenReturn(true);
+            when(locations.warehouseOf(BIN)).thenReturn(Optional.empty());
+            when(locations.warehouseOf(quarantine)).thenReturn(Optional.empty());
+
+            assertThat(refusal(() -> service.putBackToQuarantine(command(UUID.randomUUID(), hold, quarantine))))
+                    .isEqualTo(ErrorCode.LOCATION_NOT_FOUND);
+
+            assertThat(picked.carton().status()).isEqualTo(StockPackageStatus.CONSUMED);
+            assertThat(ledgerRows).isEmpty();
+        }
+
+        @Test
+        @DisplayName("a carton standing at a location with no warehouse is a data fault: IllegalStateException, nothing changes")
+        void cartonAtAnUnknownLocation() {
+            UUID hold = UUID.randomUUID();
+            Picked picked = pickedCarton(BIN, 3, hold);
+            when(locations.isQuarantineArea(quarantine)).thenReturn(true);
+            when(locations.warehouseOf(quarantine)).thenReturn(Optional.of(UUID.randomUUID()));
+            when(locations.warehouseOf(BIN)).thenReturn(Optional.empty());
+
+            org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.putBackToQuarantine(
+                    command(UUID.randomUUID(), hold, quarantine))).isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining(LPN);
+
+            assertThat(picked.carton().status()).isEqualTo(StockPackageStatus.CONSUMED);
+            assertThat(ledgerRows).isEmpty();
+        }
+
+        @Test
         @DisplayName("an unknown or unusable quarantine area is refused before the area rule; the same line again changes nothing")
         void damagedCartonReplayAndUsability() {
             UUID hold = UUID.randomUUID();

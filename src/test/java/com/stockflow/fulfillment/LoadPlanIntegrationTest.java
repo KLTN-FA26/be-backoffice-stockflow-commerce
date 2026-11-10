@@ -606,7 +606,7 @@ class LoadPlanIntegrationTest {
     @Test
     @DisplayName("a parcel in a plan is frozen (409 PACKAGE_IN_LOAD_PLAN; the trigger refuses it too); its order "
             + "cancelled out of a confirmed plan: the parcel leaves the plan, the plan goes back to PLANNED and its "
-            + "PLANNED load is cancelled, the parcel is voided and the shipment cancelled")
+            + "PLANNED load is cancelled, the carton is REMOVED (ORDER_CANCELLED) and the shipment cancelled")
     void anOrderCancelledOutOfAConfirmedPlan() throws Exception {
         OrderSummary cancelled = ftlOrder(1);
         UUID[] doomed = packed(cancelled, false);
@@ -621,10 +621,11 @@ class LoadPlanIntegrationTest {
         UUID loadId = jdbc.queryForObject("SELECT l.id FROM fulfillment.dispatch_load l JOIN fulfillment.load_plan_vehicle v "
                 + "ON v.id = l.load_plan_vehicle_id WHERE v.load_plan_id = ?::uuid", UUID.class, id);
 
-        packer(delete(BASE + "/tasks/" + doomed[1] + "/packages/" + parcel)).andExpect(status().isConflict())
-                .andExpect(jsonPath("$.errorCode").value("PACKAGE_IN_LOAD_PLAN"));
-        packer(post(BASE + "/tasks/" + doomed[1] + "/packages/" + parcel + "/reopening")).andExpect(status().isConflict())
-                .andExpect(jsonPath("$.errorCode").value("PACKAGE_IN_LOAD_PLAN"));
+        // The repack station's taking apart and reopening are retired (410); the freeze is the trigger's now.
+        packer(delete(BASE + "/tasks/" + doomed[1] + "/packages/" + parcel)).andExpect(status().isGone())
+                .andExpect(jsonPath("$.errorCode").value("REPACK_RETIRED"));
+        packer(post(BASE + "/tasks/" + doomed[1] + "/packages/" + parcel + "/reopening")).andExpect(status().isGone())
+                .andExpect(jsonPath("$.errorCode").value("REPACK_RETIRED"));
         Throwable byHand = catchThrowable(() -> jdbc.update(
                 "UPDATE fulfillment.package SET height_cm = 10 WHERE id = ?", parcel));
         assertThat(byHand).hasMessageContaining("tg_package_in_load_plan");
@@ -642,8 +643,10 @@ class LoadPlanIntegrationTest {
         assertThat(after.path("placedCount").asInt()).isEqualTo(1);
         assertThat(jdbc.queryForMap("SELECT status, cancel_reason FROM fulfillment.dispatch_load WHERE id = ?", loadId))
                 .containsEntry("status", "CANCELLED");
-        assertThat(jdbc.queryForObject("SELECT status FROM fulfillment.package WHERE id = ?", String.class, parcel))
-                .as("a labelled carton stays labelled; its shipment is cancelled").isEqualTo("LABELED");
+        assertThat(jdbc.queryForMap("SELECT status, removal_reason, shipment_id FROM fulfillment.package WHERE id = ?",
+                parcel)).as("the carton of a cancelled shipment is removed with it, in no shipment")
+                .containsEntry("status", "REMOVED").containsEntry("removal_reason", "ORDER_CANCELLED")
+                .containsEntry("shipment_id", null);
         assertThat(jdbc.queryForObject("SELECT status FROM fulfillment.shipment WHERE id = ?", String.class, doomed[0]))
                 .isEqualTo("CANCELLED");
         // Review of #161 ("bỏ kiện & tính lại"): the vehicle that lost the parcel is flagged; the plan is confirmed only

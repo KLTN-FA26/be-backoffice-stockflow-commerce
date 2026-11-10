@@ -64,6 +64,7 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -621,7 +622,9 @@ class CartonCheckStationIntegrationTest {
         String lineId = jdbc.queryForObject("SELECT id::text FROM fulfillment.pick_line WHERE lpn = ?", String.class, damaged);
         asPacker(get(BASE + "/put-backs?warehouseId=" + HCM + "&size=200")).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.items[?(@.lineId=='" + lineId + "')].lpn")
-                        .value(org.hamcrest.Matchers.contains(damaged)));
+                        .value(org.hamcrest.Matchers.contains(damaged)))
+                .andExpect(jsonPath("$.data.items[?(@.lineId=='" + lineId + "')].quarantine")
+                        .value(org.hamcrest.Matchers.contains(true)));
         String putBack = url(task, "/pick-lines/" + lineId + "/put-back");
         String bin = jdbc.queryForObject("SELECT location_code FROM fulfillment.pick_line WHERE id = ?::uuid", String.class,
                 lineId);
@@ -707,7 +710,9 @@ class CartonCheckStationIntegrationTest {
                 mine.get(0));
         asPacker(get(BASE + "/put-backs?warehouseId=" + HCM + "&size=200")).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.items[?(@.lineId=='" + lineId + "')].lpn")
-                        .value(org.hamcrest.Matchers.contains(mine.get(0))));
+                        .value(org.hamcrest.Matchers.contains(mine.get(0))))
+                .andExpect(jsonPath("$.data.items[?(@.lineId=='" + lineId + "')].quarantine")
+                        .value(org.hamcrest.Matchers.contains(false)));
         String bin = jdbc.queryForObject("SELECT location_code FROM fulfillment.pick_line WHERE id = ?::uuid", String.class,
                 lineId);
         // A cancelled order's carton goes back onto a bin, not into quarantine.
@@ -797,6 +802,38 @@ class CartonCheckStationIntegrationTest {
     }
 
     // ---- the carton spec ---------------------------------------------------------------------------
+
+    @Test
+    @DisplayName("the repack station's seven parcel writes answer 410 REPACK_RETIRED and write nothing (until 4C-7)")
+    void repackParcelWritesAreRetired() throws Exception {
+        OrderSummary order = order(1);
+        UUID task = pickedTask(order);
+        start(packer, "WAREHOUSE_STAFF", task).andExpect(status().isOk());
+        long rows = jdbc.queryForObject("SELECT count(*) FROM fulfillment.package p JOIN fulfillment.pack k ON k.id = "
+                + "p.pack_id WHERE k.pick_id = ?", Long.class, task);
+        UUID parcel = jdbc.queryForObject("SELECT p.id FROM fulfillment.package p JOIN fulfillment.pack k ON k.id = "
+                + "p.pack_id WHERE k.pick_id = ?", UUID.class, task);
+        String scan = "{\"scanId\":\"" + UUID.randomUUID() + "\",\"scannedCode\":\"" + SOFA.code() + "\",\"quantity\":1}";
+        String seal = "{\"weightKg\":5,\"lengthCm\":40,\"widthCm\":30,\"heightCm\":20}";
+        String line = order.lines().getFirst().lineId().toString();
+        List<MockHttpServletRequestBuilder> writes = List.of(
+                body(post(url(task, "/packages")), "{}"),
+                body(post(url(task, "/package-kits")), "{\"orderLineId\":\"" + line + "\"}"),
+                body(post(url(task, "/packages/" + parcel + "/scans")), scan),
+                delete(url(task, "/packages/" + parcel + "/lines/" + line)),
+                body(post(url(task, "/packages/" + parcel + "/seal")), seal),
+                post(url(task, "/packages/" + parcel + "/reopening")),
+                delete(url(task, "/packages/" + parcel)));
+        for (MockHttpServletRequestBuilder write : writes) {
+            asPacker(write).andExpect(status().isGone()).andExpect(jsonPath("$.errorCode").value("REPACK_RETIRED"));
+        }
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM fulfillment.package p JOIN fulfillment.pack k ON k.id = "
+                + "p.pack_id WHERE k.pick_id = ?", Long.class, task)).as("no parcel row, no renumbering").isEqualTo(rows);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM fulfillment.package_scan WHERE package_id = ?", Long.class,
+                parcel)).isZero();
+        // the station itself is unaffected
+        scan(packer, "WAREHOUSE_STAFF", task, lpns(task).getFirst()).andExpect(status().isOk());
+    }
 
     private void write(String sql, Object... args) {
         tx.executeWithoutResult(s -> jdbc.update(sql, args));

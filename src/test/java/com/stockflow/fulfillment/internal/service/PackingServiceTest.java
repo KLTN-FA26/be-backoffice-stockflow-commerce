@@ -310,7 +310,7 @@ class PackingServiceTest {
     }
 
     @Nested
-    @DisplayName("working the parcels")
+    @DisplayName("working the parcels: retired with the check station (team plan 4C-6, until 4C-7 removes the station)")
     class Parcels {
 
         @BeforeEach
@@ -318,154 +318,42 @@ class PackingServiceTest {
             packing(packer);
         }
 
-        @Test
-        @DisplayName("opening a parcel tells the order packing started and saves the session")
-        void openingRecordsPackingStarted() {
-            Packing.Parcel parcel = service.openPackage(pick.getId(), "bag", actor);
-
-            assertThat(parcel.packageType()).isEqualTo("BAG");
-            assertThat(parcel.labelCode()).isEqualTo("PKG-SO-0001-1");
-            verify(orders).recordPackingStarted(orderId);
-            verify(store).save(session, pack);
+        /** The seven writes of a repack parcel, each as a call that must answer REPACK_RETIRED. */
+        private java.util.Map<String, Runnable> writes() {
+            UUID parcel = UUID.randomUUID();
+            return java.util.Map.of(
+                    "openPackage", () -> service.openPackage(pick.getId(), "bag", actor),
+                    "openKit", () -> service.openKit(pick.getId(), new Packing.OpenKit(lineId, null, null), actor),
+                    "scan", () -> service.scan(pick.getId(), parcel,
+                            new Packing.Scan(UUID.randomUUID(), "SKU-A", null, null, 6, null), actor),
+                    "removeUnits", () -> service.removeUnits(pick.getId(), parcel, lineId, null, null, 2, null, actor),
+                    "seal", () -> service.seal(pick.getId(), parcel, new Packing.Seal(new BigDecimal("8"),
+                            new BigDecimal("40"), new BigDecimal("30"), new BigDecimal("25"), null, null, null), actor),
+                    "reopen", () -> service.reopen(pick.getId(), parcel, actor),
+                    "voidPackage", () -> service.voidPackage(pick.getId(), parcel, actor));
         }
 
         @Test
-        @DisplayName("an unknown package type is VALIDATION_FAILED on 'packageType'")
-        void unknownType() {
-            var thrown = refusal(() -> service.openPackage(pick.getId(), "TRUNK", actor));
+        @DisplayName("opening, kitting, scanning, taking out, sealing, reopening and voiding a parcel are REPACK_RETIRED (410) "
+                + "and write nothing: the check's cartons share the session's package numbers")
+        void everyParcelWriteIsRetired() {
+            writes().forEach((name, call) -> assertThat(refusal(call::run).errorCode()).as(name)
+                    .isEqualTo(ErrorCode.REPACK_RETIRED));
 
-            assertThat(thrown.errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
-            assertThat(thrown.fieldErrors()).extracting(f -> f.field()).containsExactly("packageType");
-        }
-
-        @Test
-        @DisplayName("a session not in progress cannot change its parcels")
-        void sessionMustBeInProgress() {
-            session = sessionOf(PackStatus.PENDING, null, 10, 10);
-
-            assertThat(refusal(() -> service.openPackage(pick.getId(), null, actor)).errorCode())
-                    .isEqualTo(ErrorCode.PACK_STATE_CONFLICT);
+            verify(store, never()).save(any(), any());
             verify(orders, never()).recordPackingStarted(any());
+            verifyNoInteractions(audit);
         }
 
         @Test
-        @DisplayName("another packer's session is PACKING_TAKEN")
-        void anotherPackersSession() {
-            packing(UUID.randomUUID());
-
-            assertThat(refusal(() -> service.openPackage(pick.getId(), null, actor)).errorCode())
-                    .isEqualTo(ErrorCode.PACKING_TAKEN);
-        }
-
-        @Test
-        @DisplayName("scanning, sealing and removing units go through the session; an over-scan is refused")
-        void scanSealRemove() {
-            UUID parcelId = service.openPackage(pick.getId(), null, actor).packageId();
-
-            Packing.Session scanned = service.scan(pick.getId(), parcelId,
-                    new Packing.Scan(UUID.randomUUID(), "SKU-A", null, null, 6, null), actor);
-            assertThat(scanned.lines().getFirst().packed()).isEqualTo(6);
-            assertThat(refusal(() -> service.scan(pick.getId(), parcelId,
-                    new Packing.Scan(UUID.randomUUID(), "SKU-A", null, null, 5, null), actor)).errorCode())
-                    .isEqualTo(ErrorCode.PACK_QUANTITY_EXCEEDS_ORDER);
-
-            Packing.Session removed = service.removeUnits(pick.getId(), parcelId, lineId, null, null, 2, null, actor);
-            assertThat(removed.lines().getFirst().packed()).isEqualTo(4);
-
-            Packing.Parcel sealed = service.seal(pick.getId(), parcelId, new Packing.Seal(new BigDecimal("8"),
-                    new BigDecimal("40"), new BigDecimal("30"), new BigDecimal("25"), null, null, null), actor);
-            assertThat(sealed.status()).isEqualTo("SEALED");
-            assertThat(sealed.dimWeightKg()).isEqualByComparingTo("5.000");
-        }
-
-        @Test
-        @DisplayName("a scan id already recorded for another package is PACK_SCAN_ID_CONFLICT, before anything else is checked")
-        void scanIdOfAnotherPackage() {
-            UUID parcelId = service.openPackage(pick.getId(), null, actor).packageId();
-            UUID scanId = UUID.randomUUID();
-            var recorded = mock(com.stockflow.fulfillment.internal.entity.PackageScanJpaEntity.class);
-            when(recorded.getPackageId()).thenReturn(UUID.randomUUID());
-            when(scans.findById(scanId)).thenReturn(Optional.of(recorded));
-
-            assertThat(refusal(() -> service.scan(pick.getId(), parcelId,
-                    new Packing.Scan(scanId, "SKU-A", null, null, 1, null), actor)).errorCode())
-                    .isEqualTo(ErrorCode.PACK_SCAN_ID_CONFLICT);
-        }
-
-        @Test
-        @DisplayName("the same scan id on the same package is a replay: the session is answered as it is, nothing scanned again")
-        void scanReplay() {
-            UUID parcelId = service.openPackage(pick.getId(), null, actor).packageId();
-            UUID scanId = UUID.randomUUID();
-            var recorded = mock(com.stockflow.fulfillment.internal.entity.PackageScanJpaEntity.class);
-            when(recorded.getPackageId()).thenReturn(parcelId);
-            when(scans.findById(scanId)).thenReturn(Optional.of(recorded));
-            when(packages.findById(parcelId)).thenReturn(Optional.of(new PackageJpaEntity(parcelId, pack.getId(), 1, "PKG-1")));
-
-            Packing.Session replay = service.scan(pick.getId(), parcelId,
-                    new Packing.Scan(scanId, "SKU-A", null, null, 3, null), actor);
-
-            assertThat(replay.lines().getFirst().packed()).isZero();
-        }
-
-        @Test
-        @DisplayName("a parcel a load plan holds is neither re-opened nor voided: the plan's refusal reaches the packer")
-        void plannedParcelsAreKept() {
-            PackingSession.Parcel parcel = sealedParcel(4);
-            org.mockito.Mockito.doThrow(new BusinessException(ErrorCode.PACKAGE_IN_LOAD_PLAN)).when(loadPlans)
-                    .requireNotPlanned(any());
-            when(packages.findById(parcel.id())).thenReturn(Optional.of(new PackageJpaEntity(parcel.id(), pack.getId(),
-                    1, parcel.labelCode())));
-
-            assertThat(refusal(() -> service.reopen(pick.getId(), parcel.id(), actor)).errorCode())
-                    .isEqualTo(ErrorCode.PACKAGE_IN_LOAD_PLAN);
-            assertThat(refusal(() -> service.voidPackage(pick.getId(), parcel.id(), actor)).errorCode())
-                    .isEqualTo(ErrorCode.PACKAGE_IN_LOAD_PLAN);
-        }
-
-        @Test
-        @DisplayName("a sealed parcel not in any plan is re-opened and its units can change; voiding takes it apart")
-        void reopenAndVoid() {
-            PackingSession.Parcel parcel = sealedParcel(4);
-            when(packages.findById(parcel.id())).thenReturn(Optional.empty());
-
-            assertThat(service.reopen(pick.getId(), parcel.id(), actor).status()).isEqualTo("OPEN");
-            Packing.Session afterVoid = service.voidPackage(pick.getId(), parcel.id(), actor);
-
-            assertThat(afterVoid.lines().getFirst().packed()).isZero();
-            assertThat(afterVoid.packages()).singleElement().satisfies(p -> assertThat(p.status()).isEqualTo("VOIDED"));
-        }
-
-        @Test
-        @DisplayName("a kit of an item that ships as several boxes opens one part per box")
-        void kitParts() {
-            session = new PackingSession(pack.getId(), "SO-0001", PackStatus.IN_PROGRESS, NOW, packer, null, null,
-                    List.of(new PackingSession.Line(lineId, "SKU-A", null, 4, 4, false, null, Map.of(), Set.of(), true,
-                            false, 3)), List.of(), List.of());
-
-            Packing.Kit kit = service.openKit(pick.getId(), new Packing.OpenKit(lineId, null, null), actor);
-
-            assertThat(kit.packages()).hasSize(3);
-            assertThat(kit.partCount()).isEqualTo(3);
-            verify(orders).recordPackingStarted(orderId);
-        }
-
-        @Test
-        @DisplayName("KIT-FORCE: the packer's reason is audited after the commit, escaped, with the parcel's label")
-        void kitOverrideReasonIsAudited() {
-            TransactionSynchronizationManager.initSynchronization();
-
-            Packing.Parcel parcel = service.openPackage(pick.getId(), "carton", "customer said \"no kit\"\nthanks", actor);
-
-            assertThat(parcel.kitOverrideReason()).isEqualTo("customer said \"no kit\"\nthanks");
-            verify(audit, never()).record(any());
-            TransactionSynchronizationManager.getSynchronizations().forEach(TransactionSynchronization::afterCommit);
-            ArgumentCaptor<AuditEntry> entry = ArgumentCaptor.forClass(AuditEntry.class);
-            verify(audit).record(entry.capture());
-            assertThat(entry.getValue().resourceType()).isEqualTo("fulfillment-package");
-            assertThat(entry.getValue().resourceId()).isEqualTo(parcel.packageId().toString());
-            assertThat(entry.getValue().details()).isEqualTo(
-                    "{\"kitOverrideReason\":\"customer said \\\"no kit\\\"\\nthanks\",\"labelCode\":\"PKG-SO-0001-1\"}");
+        @DisplayName("the refusal comes first: even a session that is not in progress, another packer's, or an unknown "
+                + "package type answers REPACK_RETIRED, not their own error")
+        void retiredBeforeAnyOtherCheck() {
+            pack.apply(PackStatus.PENDING, null, null, null, null);
+            assertThat(refusal(() -> service.openPackage(pick.getId(), "not-a-type", actor)).errorCode())
+                    .isEqualTo(ErrorCode.REPACK_RETIRED);
+            assertThat(refusal(() -> service.openPackage(pick.getId(), "bag", manager)).errorCode())
+                    .isEqualTo(ErrorCode.REPACK_RETIRED);
         }
     }
 

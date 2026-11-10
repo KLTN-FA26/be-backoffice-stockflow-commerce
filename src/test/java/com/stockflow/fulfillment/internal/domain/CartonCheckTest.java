@@ -619,7 +619,7 @@ class CartonCheckTest {
         void cancel() {
             CartonCheck check = started();
             check.check("LPN-A1", WORKER, NOW);
-            List<Carton> removed = check.cancel(NOW.plusSeconds(1));
+            List<Carton> removed = check.cancel(NOW.plusSeconds(1), java.util.Set.of());
             assertThat(removed).hasSize(3);
             assertThat(check.cartons()).allSatisfy(c -> {
                 assertThat(c.status()).isEqualTo(PackageStatus.REMOVED);
@@ -641,18 +641,60 @@ class CartonCheckTest {
             Completion completion = check.complete(true, "b1 damaged", true, wanted(20, 5), skus());
             UUID shipment = UUID.randomUUID();
             check.ship(completion, shipment, WORKER, NOW);
-            assertThat(check.cancel(NOW)).isEmpty();
+            assertThat(check.cancel(NOW, java.util.Set.of())).isEmpty();
             assertThat(check.carton("LPN-A1").orElseThrow().status()).isEqualTo(PackageStatus.LABELED);
             assertThat(check.carton("LPN-B1").orElseThrow().removalReason()).isEqualTo(RemovalReason.DAMAGED);
+        }
+
+        @Test
+        @DisplayName("a carton of a shipment the cancellation cancelled is removed too and leaves that shipment; a carton of "
+                + "a shipment that did not cancel (part of it left on a vehicle) keeps it")
+        void cartonsOfCancelledShipments() {
+            CartonCheck check = started();
+            labelAll(check);
+            Completion all = check.complete(false, null, false, wanted(20, 5), skus());
+            UUID cancelled = UUID.randomUUID();
+            UUID kept = UUID.randomUUID();
+            // Two cartons ship in a shipment that cancels, the third in one that stays (shipments are per completion;
+            // the split is the store's rows, here set by shipping twice through a second session view).
+            check.ship(all, cancelled, WORKER, NOW);
+            Carton stays = check.carton("LPN-B1").orElseThrow();
+            // B1 was moved to another shipment, as a delivery batch would
+            moveToShipment(check, stays, kept);
+
+            List<Carton> removed = check.cancel(NOW, java.util.Set.of(cancelled));
+
+            assertThat(removed).extracting(Carton::lpn).containsExactlyInAnyOrder("LPN-A1", "LPN-A2");
+            assertThat(removed).allSatisfy(c -> {
+                assertThat(c.status()).isEqualTo(PackageStatus.REMOVED);
+                assertThat(c.removalReason()).isEqualTo(RemovalReason.ORDER_CANCELLED);
+                assertThat(c.shipmentId()).as("a removed carton is in no shipment (ck_package_shipped)").isNull();
+            });
+            assertThat(stays.status()).isEqualTo(PackageStatus.LABELED);
+            assertThat(stays.shipmentId()).isEqualTo(kept);
+            assertThat(check.status()).isEqualTo(PackStatus.CANCELLED);
+        }
+
+        private void moveToShipment(CartonCheck check, Carton carton, UUID shipment) {
+            // The domain ships whole completions; a carton in another shipment is a stored fact the store rehydrates.
+            CartonCheck.Completion one = new CartonCheck.Completion(List.of(carton), true, List.of());
+            check.ship(one, shipment, WORKER, NOW);
+        }
+
+        @Test
+        @DisplayName("a cancelled shipment's id that matches no carton changes nothing for the cartons not in a shipment")
+        void unknownCancelledShipment() {
+            CartonCheck check = started();
+            assertThat(check.cancel(NOW, java.util.Set.of(UUID.randomUUID()))).hasSize(3);
         }
 
         @Test
         @DisplayName("cancelling twice is harmless")
         void twice() {
             CartonCheck check = started();
-            assertThat(check.cancel(NOW)).hasSize(3);
+            assertThat(check.cancel(NOW, java.util.Set.of())).hasSize(3);
             check.saved();
-            assertThat(check.cancel(NOW)).isEmpty();
+            assertThat(check.cancel(NOW, java.util.Set.of())).isEmpty();
             assertThat(check.sessionChanged()).isFalse();
         }
     }

@@ -378,7 +378,7 @@ class CartonCheckServiceTest {
         void notStartedOrCancelled() {
             assertThat(refusal(() -> service.reprint(pick.getId(), "LPN-1", actor)).errorCode())
                     .isEqualTo(ErrorCode.PACK_STATE_CONFLICT);
-            check.cancel(NOW);
+            check.cancel(NOW, java.util.Set.of());
             assertThat(refusal(() -> service.reprint(pick.getId(), "LPN-1", actor)).errorCode())
                     .isEqualTo(ErrorCode.PACK_STATE_CONFLICT);
         }
@@ -428,6 +428,59 @@ class CartonCheckServiceTest {
             var session = service.start(pick.getId(), actor);
 
             assertThat(session.skusWithoutCartonSpec()).containsExactly("SKU-A");
+        }
+    }
+
+    @Nested
+    @DisplayName("the order was cancelled (08 BR-04): cancelForOrder")
+    class Cancelling {
+
+        private ShipmentJpaEntity shipment(UUID id, com.stockflow.fulfillment.internal.domain.ShipmentStatus status) {
+            ShipmentJpaEntity row = mock(ShipmentJpaEntity.class);
+            when(row.getId()).thenReturn(id);
+            when(row.getStatus()).thenReturn(status);
+            return row;
+        }
+
+        @Test
+        @DisplayName("it reads the session's CANCELLED shipments and removes their cartons with the unshipped ones; a carton of "
+                + "a shipment that did not cancel stays")
+        void removesCartonsOfCancelledShipments() {
+            started();
+            service.check(pick.getId(), "LPN-1", actor);
+            service.check(pick.getId(), "LPN-2", actor);
+            service.label(pick.getId(), null, actor);
+            var done = service.complete(pick.getId(), PackingCompletion.whole(), actor);
+            UUID kept = UUID.randomUUID();
+            // LPN-2 sits in another shipment, which did not cancel (it left on a vehicle)
+            var keptCarton = check.carton("LPN-2").orElseThrow();
+            check.ship(new CartonCheck.Completion(List.of(keptCarton), true, List.of()), kept, worker, NOW);
+            when(shipments.findByPackIdOrderByReadyAtAscIdAsc(pack.getId())).thenReturn(List.of(
+                    shipment(done.shipmentId(), com.stockflow.fulfillment.internal.domain.ShipmentStatus.CANCELLED),
+                    shipment(kept, com.stockflow.fulfillment.internal.domain.ShipmentStatus.HANDED_OVER)));
+
+            service.cancelForOrder(pick, pack);
+
+            var one = check.carton("LPN-1").orElseThrow();
+            assertThat(one.status()).isEqualTo(com.stockflow.fulfillment.internal.domain.PackageStatus.REMOVED);
+            assertThat(one.shipmentId()).isNull();
+            assertThat(keptCarton.status()).isEqualTo(com.stockflow.fulfillment.internal.domain.PackageStatus.LABELED);
+            assertThat(keptCarton.shipmentId()).isEqualTo(kept);
+            assertThat(check.status()).isEqualTo(PackStatus.CANCELLED);
+            verify(store, org.mockito.Mockito.atLeastOnce()).save(check, pack);
+        }
+
+        @Test
+        @DisplayName("with no shipment at all, every carton is removed and the session cancelled")
+        void noShipments() {
+            started();
+            service.check(pick.getId(), "LPN-1", actor);
+
+            service.cancelForOrder(pick, pack);
+
+            assertThat(check.cartons()).allSatisfy(c -> assertThat(c.status())
+                    .isEqualTo(com.stockflow.fulfillment.internal.domain.PackageStatus.REMOVED));
+            assertThat(check.status()).isEqualTo(PackStatus.CANCELLED);
         }
     }
 }
