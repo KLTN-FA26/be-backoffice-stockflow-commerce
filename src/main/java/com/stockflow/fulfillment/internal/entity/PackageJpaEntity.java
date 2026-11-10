@@ -121,6 +121,20 @@ public class PackageJpaEntity extends BaseEntity {
         this.removalNote = removalNote;
     }
 
+    /**
+     * A labelled carton takes its SKU's corrected carton spec as its shipment is planned (4C-6, 08 edge case "the real
+     * carton differs from the declared spec"); nothing else about it changes.
+     */
+    public void remeasure(BigDecimal weightKg, BigDecimal lengthCm, BigDecimal widthCm, BigDecimal heightCm,
+                          BigDecimal dimWeightKg, boolean rotatable) {
+        this.weightKg = weightKg;
+        this.lengthCm = lengthCm;
+        this.widthCm = widthCm;
+        this.heightCm = heightCm;
+        this.dimWeightKg = dimWeightKg;
+        this.rotatable = rotatable;
+    }
+
     public UUID getPickLineId() { return pickLineId; }
     public String getLpn() { return lpn; }
     public Instant getCheckedAt() { return checkedAt; }
