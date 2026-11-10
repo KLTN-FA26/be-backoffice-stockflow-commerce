@@ -27,9 +27,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@code tools/db/seed/seed_test_data.sql} (team plan 5-10) loaded the way its header says - {@code psql -v
  * ON_ERROR_STOP=1 -f} on a freshly migrated database - and what it claims to describe checked on the result.
  *
- * <p>Two databases on one server, the two places the seed is loaded: one migrated with {@code db/migration} only (a
- * deployed environment), loaded without the Ahamove key, and one with {@code db/demo} as well (the {@code local}
- * profile), loaded with the key sealed the way {@code seal_ahamove_key.py} seals it. Nothing turns a trigger off in
+ * <p>A fresh container per test, for the two places the seed is loaded: a database migrated with {@code db/migration}
+ * only (a deployed environment), loaded without the Ahamove key, and one with {@code db/demo} as well (the
+ * {@code local} profile), loaded with the key sealed the way {@code seal_ahamove_key.py} seals it. Nothing turns a trigger off in
  * the seed, so loading at all already proves every row passes the deferred constraint triggers; the checks below are
  * the facts the demo walks through: every state of the documents, stock only in whole LPN cartons whose ledger adds
  * up, lots that are production orders, returned cartons in quarantine, and no reference to nothing.</p>
@@ -210,7 +210,8 @@ class SeedTestDataLoadTest {
     /** The values of the table's {@code status IN (...)} CHECK, as the schema states them. */
     private static List<String> allowedStatuses(Connection db, String table) throws Exception {
         String check = RawSql.text(db, "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid = ?::regclass "
-                + "AND contype = 'c' AND pg_get_constraintdef(oid) LIKE 'CHECK (((status)::text = ANY%'", table);
+                + "AND contype = 'c' AND pg_get_constraintdef(oid) LIKE 'CHECK (((status)::text = ANY%' ORDER BY conname LIMIT 1",
+                table);
         List<String> values = new ArrayList<>();
         var matcher = java.util.regex.Pattern.compile("'([A-Z_]+)'").matcher(check);
         while (matcher.find()) {

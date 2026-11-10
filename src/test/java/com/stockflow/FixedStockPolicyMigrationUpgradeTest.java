@@ -164,11 +164,12 @@ class FixedStockPolicyMigrationUpgradeTest {
                         + "indexname = 'uk_stock_item_package'")).contains("(stock_package_id)").doesNotContain("serial");
                 assertThat(RawSql.number(db, "SELECT count(*) FROM pg_indexes WHERE indexname = "
                         + "'uk_stock_item_package_layer'")).isZero();
-                RawSql.refused(db, "a second row in the carton", "INSERT INTO inventory.stock_item (id, sku, location_code, "
+                RawSql.refusedBy(db, "uk_stock_item_package", "a second row in the carton", "INSERT INTO inventory.stock_item (id, sku, location_code, "
                         + "lot_number, on_hand, reserved, status, received_at, stock_package_id, version, created_at) "
                         + "VALUES (gen_random_uuid(), ?, 'FSP-RCV01', 'LOT-C', 0, 0, 'AVAILABLE', '2026-10-03T00:00:00Z', ?, "
                         + "0, NOW())", SOFA, carton);
-                RawSql.refused(db, "two loose layers of one SKU, place, lot and receipt time", "INSERT INTO "
+                RawSql.refusedBy(db, "uk_stock_item_sku_location_lot", "two loose layers of one SKU, place, lot and receipt time",
+                        "INSERT INTO "
                         + "inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, "
                         + "received_at, version, created_at) SELECT gen_random_uuid(), sku, location_code, lot_number, "
                         + "1, 0, 'AVAILABLE', received_at, 0, NOW() FROM inventory.stock_item WHERE id = ?", serialUnit);
@@ -181,23 +182,23 @@ class FixedStockPolicyMigrationUpgradeTest {
                         org.assertj.core.api.Assertions.assertThatThrownBy(() -> RawSql.update(db, insert(sku, lot, "5")))
                                 .as("live stock of %s with lot %s", sku, lot).hasMessageContaining("every SKU is lot-tracked");
                     }
-                    assertThat(RawSql.update(db, insert(sku, "'LOT-NEW-" + sku.charAt(0) + "'", "5"))).isOne();
-                    assertThat(RawSql.update(db, insert(sku, "'LOT-EMPTY-" + sku.charAt(0) + "'", "0")))
+                    assertThat(RawSql.update(db, insert(sku, "'LOT-NEW-" + sku + "'", "5"))).isOne();
+                    assertThat(RawSql.update(db, insert(sku, "'LOT-EMPTY-" + sku + "'", "0")))
                             .as("an emptied row is not live stock").isOne();
                 }
-                RawSql.refused(db, "a receipt time in the future", "INSERT INTO inventory.stock_item (id, sku, "
+                RawSql.refusedBy(db, "Invalid receipt date", "a receipt time in the future", "INSERT INTO inventory.stock_item (id, sku, "
                         + "location_code, lot_number, on_hand, reserved, status, received_at, version, created_at) "
                         + "VALUES (gen_random_uuid(), '" + TABLE + "', 'FSP-RCV02', 'LOT-FUTURE', 1, 0, 'AVAILABLE', "
                         + "NOW() + interval '1 day', 0, NOW())");
 
                 // A row's identity never changes in place; a layer is raised only by the application naming the row.
-                RawSql.refused(db, "the lot of a row changed", "UPDATE inventory.stock_item SET lot_number = 'LOT-X' "
+                RawSql.refusedBy(db, "Receipt identity is immutable", "the lot of a row changed", "UPDATE inventory.stock_item SET lot_number = 'LOT-X' "
                         + "WHERE id = ?", serialUnit);
-                RawSql.refused(db, "the receipt time of a row changed", "UPDATE inventory.stock_item SET received_at = "
+                RawSql.refusedBy(db, "Receipt identity is immutable", "the receipt time of a row changed", "UPDATE inventory.stock_item SET received_at = "
                         + "NOW() - interval '3 days' WHERE id = ?", serialUnit);
-                RawSql.refused(db, "the SKU of a row changed", "UPDATE inventory.stock_item SET sku = '" + SOFA
+                RawSql.refusedBy(db, "Receipt identity is immutable", "the SKU of a row changed", "UPDATE inventory.stock_item SET sku = '" + SOFA
                         + "' WHERE id = ?", serialUnit);
-                RawSql.refused(db, "a layer raised in place", "UPDATE inventory.stock_item SET on_hand = on_hand + 1 "
+                RawSql.refusedBy(db, "FIFO replenishment requires a new receipt layer", "a layer raised in place", "UPDATE inventory.stock_item SET on_hand = on_hand + 1 "
                         + "WHERE id = ?", serialUnit);
                 assertThat(RawSql.update(db, "UPDATE inventory.stock_item SET on_hand = 0 WHERE id = ?", serialUnit))
                         .as("a layer that only shrinks is free").isOne();
@@ -224,7 +225,7 @@ class FixedStockPolicyMigrationUpgradeTest {
     }
 
     private static String insert(String sku, String lot, String quantity) {
-        String where = sku.startsWith("T") ? BIN_A : BIN_B;
+        String where = sku.equals(TABLE) ? BIN_A : BIN_B;
         return "INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, "
                 + "received_at, version, created_at) VALUES (gen_random_uuid(), '" + sku + "', '" + where + "', " + lot
                 + ", " + quantity + ", 0, 'AVAILABLE', NOW() - interval '1 hour', 0, NOW())";
