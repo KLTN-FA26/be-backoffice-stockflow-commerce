@@ -19,8 +19,12 @@
 --      and policy_configured.
 --   4. inventory.stock_item loses serial_number, with ck_stock_serial_quantity and uk_stock_item_live_serial; the two
 --      unique layer keys are made again without it (uk_stock_item_sku_location_lot for loose rows,
---      uk_stock_item_package_layer for a carton's rows). No stock row has a serial number: no item was ever
---      serial-tracked in the demo data or the seed, so no two rows collapse into one key.
+--      uk_stock_item_package_layer for a carton's rows). Rows that differed only by their serial number would collapse
+--      into one key; units of one receipt, they are kept apart instead: each but the first of such a group (by id)
+--      takes its receipt time - or, undated, its creation time - plus as many microseconds as its rank, with the
+--      policy trigger off for that one statement (the receipt identity is otherwise immutable). Merging them
+--      instead would repoint holds, damage reports and statuses that may differ; a microsecond keeps FIFO order as it
+--      was. Counted in a NOTICE. The demo data and the seed have no serial numbers, so nothing moves there.
 --
 -- Kept, for their own packages: fulfillment.package_scan.serial_number (the packing station, team plan 4C-7) and
 -- inventory.stock_damage_report.serial_number (damage reports, team plan 5-6). Both only ever held what stock_item did.
@@ -127,6 +131,34 @@ ALTER TABLE inventory.stock_item DROP CONSTRAINT ck_stock_serial_quantity;
 DROP INDEX inventory.uk_stock_item_live_serial;
 DROP INDEX inventory.uk_stock_item_sku_location_lot;
 DROP INDEX inventory.uk_stock_item_package_layer;
+
+-- Units told apart by serial number alone: a microsecond apart instead (see the header).
+ALTER TABLE inventory.stock_item DISABLE TRIGGER trg_stock_sku_policy;
+DO $$
+DECLARE
+    moved INTEGER;
+BEGIN
+    WITH ranked AS (
+        SELECT id,
+               row_number() OVER (PARTITION BY stock_package_id, sku,
+                                      CASE WHEN stock_package_id IS NULL THEN location_code END,
+                                      COALESCE(lot_number, ''), received_at
+                                  ORDER BY id) AS rank
+          FROM inventory.stock_item)
+    UPDATE inventory.stock_item s
+       SET received_at      = COALESCE(s.received_at, s.created_at) + (r.rank - 1) * interval '1 microsecond',
+           version          = s.version + 1,
+           last_modified_at = NOW(),
+           last_modified_by = 'flyway'
+      FROM ranked r
+     WHERE r.id = s.id AND r.rank > 1;
+    GET DIAGNOSTICS moved = ROW_COUNT;
+    IF moved > 0 THEN
+        RAISE NOTICE 'V20261115000100: % stock row(s) told apart by serial number alone now differ in receipt time', moved;
+    END IF;
+END
+$$;
+ALTER TABLE inventory.stock_item ENABLE TRIGGER trg_stock_sku_policy;
 
 ALTER TABLE inventory.stock_item DROP COLUMN serial_number;
 
