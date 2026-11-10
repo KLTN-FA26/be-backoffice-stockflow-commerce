@@ -804,6 +804,11 @@ class StockOperationsServiceImpl implements StockOperations {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED,
                     "Stock does not expire; write it off as DAMAGED, LOST or OTHER");
         }
+        // Scope before anything about the stock named (BR-SEC-002): a request at another warehouse's location hears
+        // OUT_OF_DATA_SCOPE, never what is or is not there.
+        if (command.locationCode() != null && !command.locationCode().isBlank()) {
+            WarehouseScope.requireLocation(command.locationCode());
+        }
         if (command.lpn() == null || command.lpn().isBlank()) {
             throw new BusinessException(ErrorCode.STOCK_NOT_IN_CARTON, ("%s at %s: name the carton by its LPN; stock is "
                     + "kept in whole cartons").formatted(command.sku(), command.locationCode()));
