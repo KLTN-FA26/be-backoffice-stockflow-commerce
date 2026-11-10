@@ -9,7 +9,8 @@ import java.util.Optional;
  *
  * <p>ORDER_COORDINATOR and INVENTORY_PLANNER were retired by V20261115000200 (00 §2, decision 2026-11-05; team plan
  * 5-7): Sales took the customer's side of their work, the warehouse manager the warehouse's, and their holders were
- * given those roles.</p>
+ * given those roles. PROCUREMENT_STAFF was retired by V20261115000300 (00 §2, decision 2026-11-04; team plan 5-8):
+ * purchasing is gone, and its holders with no other role were disabled.</p>
  *
  * <p>Use this enum everywhere in ordinary code: it cannot be misspelled, it can be switched over
  * exhaustively, and adding a role makes the compiler point at every place that must be updated.</p>
@@ -28,7 +29,6 @@ public enum Role {
             + "cancellations, partial delivery and returns of a confirmed order; chat"),
     /** Was ECOMMERCE_ADMIN; renamed by V20261107000100 (kltn-docs 00 §2, 2026-11-05) with its id and grants. */
     SALES_MANAGER(Roles.SALES_MANAGER, "Product data and approval, internal prices, print setup, design review, staff accounts"),
-    PROCUREMENT_STAFF(Roles.PROCUREMENT_STAFF, "Purchase orders and supplier coordination"),
     /** Added by V20261108002600 (kltn-docs 00 §2.1, decision 2026-11-07): production orders and the producers. */
     PRODUCTION_COORDINATOR(Roles.PRODUCTION_COORDINATOR,
             "Production orders for what a confirmed order lacks: producers, lead times, print samples, progress"),
