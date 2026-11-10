@@ -1,7 +1,6 @@
 package com.stockflow.notification.internal.service;
 
 import com.stockflow.common.logging.LogSafe;
-import com.stockflow.common.security.Role;
 import com.stockflow.contracts.ProductionOrderSent;
 import com.stockflow.identity.api.StaffContact;
 import com.stockflow.notification.api.Inbox;
@@ -27,8 +26,10 @@ import java.util.UUID;
  * Tells the warehouse manager(s) of the receiving warehouse that a production order was sent, so goods are coming
  * (4A-3; kltn-docs 00 §6 "Đơn sản xuất được gửi về kho", 17 §4.3 step 7, BR-25): INFO, with the cartons, their volume
  * and the need-by date, in the in-app inbox only - 00 §6 sends no e-mail for it. Who is told is decided when it is
- * delivered: the ACTIVE warehouse managers who can see that warehouse (assigned to it, or of every warehouse). A
- * redelivered event tells nobody twice ({@code production-order-sent:<id>}).
+ * delivered: the ACTIVE staff who can see that warehouse (assigned to it, or of every warehouse) and hold
+ * {@link #AUDIENCE} - those who confirm what arrives, the warehouse manager in today's role matrix. A permission, not a
+ * role name (house rule P8): who is told follows the matrix as it is edited. A redelivered event tells nobody twice
+ * ({@code production-order-sent:<id>}).
  *
  * <p>The WARN when the warehouse's expected free space turns negative (C42) waits for the capacity table, as the
  * capacity warnings of 4A-2 do.</p>
@@ -40,6 +41,8 @@ class ProductionOrderArrivalNotificationListener {
 
     static final String CATEGORY = "PRODUCTION_ORDER";
     static final String SOURCE_TYPE = "PRODUCTION_ORDER";
+    /** Who confirms the goods a warehouse receives: told what is coming. */
+    static final String AUDIENCE = "procurement-goods-receipts:APPROVE";
     private static final DateTimeFormatter DAY = DateTimeFormatter.ofPattern("dd/MM/yyyy");
 
     private final StaffDirectory staff;
@@ -54,10 +57,10 @@ class ProductionOrderArrivalNotificationListener {
 
     @ApplicationModuleListener
     public void on(ProductionOrderSent event) {
-        List<UUID> managers = staff.activeStaff(Role.WAREHOUSE_MANAGER, event.receivingWarehouseId()).stream()
+        List<UUID> managers = staff.activeHolders(AUDIENCE, event.receivingWarehouseId()).stream()
                 .map(StaffContact::userId).filter(Objects::nonNull).distinct().toList();
         if (managers.isEmpty()) {
-            log.info("Production order {} sent: its receiving warehouse has no active warehouse manager to tell",
+            log.info("Production order {} sent: nobody at its receiving warehouse to tell",
                     LogSafe.text(event.code()));
             return;
         }
