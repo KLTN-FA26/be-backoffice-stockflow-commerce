@@ -6,6 +6,8 @@ import com.stockflow.common.error.ErrorCode;
 import com.stockflow.contracts.StockDeducted;
 import com.stockflow.inventory.consumption.ConsumedPick;
 import com.stockflow.inventory.consumption.PutBackCommand;
+import com.stockflow.inventory.consumption.StageCommand;
+import com.stockflow.inventory.consumption.StagedPick;
 import com.stockflow.inventory.internal.domain.LocationDirectory;
 import com.stockflow.inventory.internal.domain.LocationId;
 import com.stockflow.inventory.internal.domain.Quantity;
@@ -79,6 +81,13 @@ class PickConsumptionServiceTest {
                                                        StockMovement.ReferenceType referenceType, UUID referenceId) {
             return ledgerRows.stream().filter(row -> row.type() == type && row.referenceType() == referenceType
                     && row.referenceId().equals(referenceId)).findFirst();
+        }
+
+        @Override
+        public List<StockMovement> findAllByReference(StockMovement.MovementType type,
+                                                      StockMovement.ReferenceType referenceType, UUID referenceId) {
+            return ledgerRows.stream().filter(row -> row.type() == type && row.referenceType() == referenceType
+                    && row.referenceId().equals(referenceId)).toList();
         }
 
         @Override
@@ -584,6 +593,331 @@ class PickConsumptionServiceTest {
 
             assertThat(refusal(() -> service.putBack(command(UUID.randomUUID(), hold, BIN))))
                     .isEqualTo(ErrorCode.RESERVATION_NOT_FOUND);
+        }
+    }
+
+    @Nested
+    @DisplayName("staging a carton, deducting it from the staging area, putting it back (team plan 4C-5)")
+    class Staging {
+
+        private static final String LPN = "LPN-20261113-000001";
+        private final LocationId staging = new LocationId("HCM-STG01");
+
+        private record Held(StockItem row, StockPackage carton, UUID hold) { }
+
+        @BeforeEach
+        void stagingIsAnArea() {
+            when(locations.isStagingArea(staging)).thenReturn(true);
+            when(locations.stateOf(staging)).thenReturn(LocationDirectory.LocationState.USABLE);
+        }
+
+        private StageCommand stageCommand(UUID line, UUID hold) {
+            return new StageCommand(line, hold, LPN, staging.code(), PICKER);
+        }
+
+        /** A carton of {@code count} units sealed in {@code bin}, its one row all held for an order. */
+        private Held heldCarton(LocationId bin, int count, int held, ReservationStatus status, StockStatus rowStatus) {
+            UUID hold = UUID.randomUUID();
+            Reservation reservation = new Reservation(ReservationId.of(hold), UUID.randomUUID(), UUID.randomUUID(),
+                    UUID.randomUUID(), Quantity.of(held), NOW.minusSeconds(3600), null, status, null,
+                    status == ReservationStatus.HELD ? null : NOW.minusSeconds(60));
+            StockPackageId id = new StockPackageId(UUID.randomUUID());
+            StockPackage carton = new StockPackage(id, LPN, UUID.randomUUID(), UUID.randomUUID(), count, count, bin,
+                    StockPackageStatus.IN_STOCK, true, null, null, 0L);
+            StockItem row = new StockItem(StockItemId.newId(), SOFA, bin, "LOT-1", LocalDate.of(2030, 1, 1),
+                    Quantity.of(count), rowStatus, List.of(reservation), 0L, NOW.minusSeconds(86_400), null, null, id);
+            when(stockItems.findIdByReservationId(ReservationId.of(hold))).thenReturn(Optional.of(row.id()));
+            when(stockItems.findById(row.id())).thenReturn(Optional.of(row));
+            when(stockItems.findByIdForUpdate(row.id())).thenReturn(Optional.of(row));
+            when(stockItems.findByReservationIdForUpdate(ReservationId.of(hold))).thenReturn(Optional.of(row));
+            when(stockItems.findIdsInStockPackage(id)).thenReturn(List.of(row.id()));
+            when(stockPackages.findAllByIdForUpdate(any())).thenReturn(List.of(carton));
+            when(stockPackages.save(any())).thenAnswer(call -> call.getArgument(0));
+            return new Held(row, carton, hold);
+        }
+
+        private Held heldCarton(LocationId bin) {
+            return heldCarton(bin, 6, 6, ReservationStatus.HELD, StockStatus.AVAILABLE);
+        }
+
+        @Test
+        @DisplayName("stage: the carton and its row move whole to the staging area, the hold stays HELD, one MOVE row names the line")
+        void stagesWhole() {
+            Held held = heldCarton(BIN);
+            UUID line = UUID.randomUUID();
+
+            StagedPick staged = service.stage(stageCommand(line, held.hold()));
+
+            assertThat(staged).isEqualTo(new StagedPick(held.hold(), LPN, "SOFA-3S-GREY", 6, BIN.code(),
+                    staging.code(), false));
+            assertThat(held.carton().location()).isEqualTo(staging);
+            assertThat(held.carton().status()).isEqualTo(StockPackageStatus.IN_STOCK);
+            assertThat(held.row().location()).isEqualTo(staging);
+            assertThat(held.row().onHand()).as("nothing is deducted").isEqualTo(Quantity.of(6));
+            assertThat(held.row().findReservation(ReservationId.of(held.hold())).orElseThrow().status())
+                    .isEqualTo(ReservationStatus.HELD);
+            assertThat(ledgerRows).singleElement().satisfies(row -> {
+                assertThat(row.type()).isEqualTo(StockMovement.MovementType.MOVE);
+                assertThat(row.referenceType()).isEqualTo(StockMovement.ReferenceType.PICK_LINE);
+                assertThat(row.referenceId()).isEqualTo(line);
+                assertThat(row.from()).isEqualTo(BIN);
+                assertThat(row.to()).isEqualTo(staging);
+                assertThat(row.quantity()).isEqualTo(6);
+                assertThat(row.fromStockPackage()).isEqualTo(held.carton().id());
+                assertThat(row.toStockPackage()).isEqualTo(held.carton().id());
+            });
+            verify(publisher, never()).publishEvent(any(Object.class));
+        }
+
+        @Test
+        @DisplayName("stage: SKU lock, then the carton, then its row - in that order")
+        void stageLockOrder() {
+            Held held = heldCarton(BIN);
+
+            service.stage(stageCommand(UUID.randomUUID(), held.hold()));
+
+            var order = org.mockito.Mockito.inOrder(policies, stockPackages, stockItems);
+            order.verify(policies).lock("SOFA-3S-GREY");
+            order.verify(stockPackages).findAllByIdForUpdate(any());
+            order.verify(stockItems).findByIdForUpdate(held.row().id());
+        }
+
+        @Test
+        @DisplayName("stage: the same line again changes nothing and says it was staged already")
+        void stageReplay() {
+            Held held = heldCarton(BIN);
+            UUID line = UUID.randomUUID();
+            service.stage(stageCommand(line, held.hold()));
+            saved.clear();
+
+            StagedPick again = service.stage(stageCommand(line, held.hold()));
+
+            assertThat(again.alreadyStaged()).isTrue();
+            assertThat(again.stagingLocationCode()).isEqualTo(staging.code());
+            assertThat(again.fromLocationCode()).isEqualTo(BIN.code());
+            assertThat(ledgerRows).hasSize(1);
+            assertThat(saved).isEmpty();
+            verify(stockPackages, org.mockito.Mockito.times(1)).save(any());
+        }
+
+        @Test
+        @DisplayName("stage: loose stock is STOCK_PACKAGE_TAKEN_WHOLE, nothing moves")
+        void stageLooseRow() {
+            UUID hold = UUID.randomUUID();
+            StockItem item = stockWithHold(BIN, 6, 6, ReservationStatus.HELD, hold);
+            when(stockItems.findIdByReservationId(ReservationId.of(hold))).thenReturn(Optional.of(item.id()));
+            when(stockItems.findById(item.id())).thenReturn(Optional.of(item));
+
+            assertThat(refusal(() -> service.stage(stageCommand(UUID.randomUUID(), hold))))
+                    .isEqualTo(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE);
+            assertThat(item.location()).isEqualTo(BIN);
+            assertThat(ledgerRows).isEmpty();
+        }
+
+        @Test
+        @DisplayName("stage: a carton with two rows, or a hold of part of it, is STOCK_PACKAGE_TAKEN_WHOLE")
+        void stageNotTheWholeCarton() {
+            Held twoRows = heldCarton(BIN);
+            when(stockItems.findIdsInStockPackage(twoRows.carton().id()))
+                    .thenReturn(List.of(twoRows.row().id(), StockItemId.newId()));
+            assertThat(refusal(() -> service.stage(stageCommand(UUID.randomUUID(), twoRows.hold()))))
+                    .as("two rows").isEqualTo(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE);
+            assertThat(twoRows.carton().location()).isEqualTo(BIN);
+
+            Held partHeld = heldCarton(BIN, 6, 4, ReservationStatus.HELD, StockStatus.AVAILABLE);
+            assertThat(refusal(() -> service.stage(stageCommand(UUID.randomUUID(), partHeld.hold()))))
+                    .as("part held").isEqualTo(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE);
+            assertThat(partHeld.carton().location()).isEqualTo(BIN);
+            assertThat(ledgerRows).isEmpty();
+            verify(stockPackages, never()).save(any());
+        }
+
+        @Test
+        @DisplayName("stage: a hold that is not HELD is RESERVATION_NOT_ACTIVE; a row that is not AVAILABLE is STOCK_STATUS_MISMATCH")
+        void stageHoldAndRowState() {
+            for (ReservationStatus status : List.of(ReservationStatus.CONSUMED, ReservationStatus.RELEASED)) {
+                Held notHeld = heldCarton(BIN, 6, 6, status, StockStatus.AVAILABLE);
+                assertThat(refusal(() -> service.stage(stageCommand(UUID.randomUUID(), notHeld.hold()))))
+                        .as(status.name()).isEqualTo(ErrorCode.RESERVATION_NOT_ACTIVE);
+            }
+            Held quarantined = heldCarton(BIN, 6, 6, ReservationStatus.HELD, StockStatus.QUARANTINE);
+            assertThat(refusal(() -> service.stage(stageCommand(UUID.randomUUID(), quarantined.hold()))))
+                    .isEqualTo(ErrorCode.STOCK_STATUS_MISMATCH);
+            assertThat(ledgerRows).isEmpty();
+            verify(stockPackages, never()).save(any());
+        }
+
+        @Test
+        @DisplayName("stage: a target that is a bin, unusable, unknown or in another warehouse is refused before anything moves")
+        void stageTargets() {
+            Held held = heldCarton(BIN);
+            when(locations.stateOf(OTHER_BIN)).thenReturn(LocationDirectory.LocationState.USABLE);
+            when(locations.isStagingArea(OTHER_BIN)).thenReturn(false);
+            assertThat(refusal(() -> service.stage(new StageCommand(UUID.randomUUID(), held.hold(), LPN,
+                    OTHER_BIN.code(), PICKER)))).as("a bin").isEqualTo(ErrorCode.STAGING_AREA_INVALID);
+
+            LocationId closed = new LocationId("HCM-STG02");
+            when(locations.stateOf(closed)).thenReturn(LocationDirectory.LocationState.UNUSABLE);
+            assertThat(refusal(() -> service.stage(new StageCommand(UUID.randomUUID(), held.hold(), LPN,
+                    closed.code(), PICKER)))).as("unusable").isEqualTo(ErrorCode.LOCATION_NOT_USABLE);
+
+            LocationId nowhere = new LocationId("HCM-STG09");
+            when(locations.stateOf(nowhere)).thenReturn(LocationDirectory.LocationState.UNKNOWN);
+            assertThat(refusal(() -> service.stage(new StageCommand(UUID.randomUUID(), held.hold(), LPN,
+                    nowhere.code(), PICKER)))).as("unknown").isEqualTo(ErrorCode.LOCATION_NOT_FOUND);
+
+            LocationId hanoi = new LocationId("HN-STG01");
+            when(locations.stateOf(hanoi)).thenReturn(LocationDirectory.LocationState.USABLE);
+            when(locations.isStagingArea(hanoi)).thenReturn(true);
+            assertThat(refusal(() -> service.stage(new StageCommand(UUID.randomUUID(), held.hold(), LPN,
+                    hanoi.code(), PICKER)))).as("another warehouse").isEqualTo(ErrorCode.MOVE_ACROSS_WAREHOUSES);
+
+            assertThat(held.carton().location()).isEqualTo(BIN);
+            assertThat(ledgerRows).isEmpty();
+        }
+
+        @Test
+        @DisplayName("stage: a command naming another LPN than the hold carton is a bug of the caller")
+        void stageAnotherLpn() {
+            Held held = heldCarton(BIN);
+
+            org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.stage(new StageCommand(
+                    UUID.randomUUID(), held.hold(), "LPN-SOMEONE-ELSE", staging.code(), PICKER)))
+                    .isInstanceOf(IllegalStateException.class);
+            assertThat(held.carton().location()).isEqualTo(BIN);
+        }
+
+        /** A carton staged by {@code line}: moved, MOVE row written. */
+        private Held staged(UUID line) {
+            Held held = heldCarton(BIN);
+            service.stage(stageCommand(line, held.hold()));
+            saved.clear();
+            return held;
+        }
+
+        @Test
+        @DisplayName("consumeStaged: deducts from the staging area - hold CONSUMED, on_hand 0, carton CONSUMED, one PICK row from staging")
+        void consumeStagedDeducts() {
+            UUID line = UUID.randomUUID();
+            Held held = staged(line);
+
+            ConsumedPick consumed = service.consumeStaged(held.hold(), line, PICKER);
+
+            assertThat(consumed).isEqualTo(new ConsumedPick(held.hold(), "SOFA-3S-GREY", staging.code(), "LOT-1", 6,
+                    false));
+            assertThat(held.row().onHand()).isEqualTo(Quantity.ZERO);
+            assertThat(held.row().findReservation(ReservationId.of(held.hold())).orElseThrow().status())
+                    .isEqualTo(ReservationStatus.CONSUMED);
+            assertThat(held.carton().status()).isEqualTo(StockPackageStatus.CONSUMED);
+            assertThat(ledgerRows).hasSize(2);
+            assertThat(ledgerRows.get(1)).satisfies(row -> {
+                assertThat(row.type()).isEqualTo(StockMovement.MovementType.PICK);
+                assertThat(row.referenceType()).isEqualTo(StockMovement.ReferenceType.PICK_LINE);
+                assertThat(row.referenceId()).isEqualTo(line);
+                assertThat(row.from()).isEqualTo(staging);
+                assertThat(row.to()).isNull();
+                assertThat(row.quantity()).isEqualTo(6);
+            });
+        }
+
+        @Test
+        @DisplayName("consumeStaged: the same line again changes nothing and says it was consumed")
+        void consumeStagedReplay() {
+            UUID line = UUID.randomUUID();
+            Held held = staged(line);
+            service.consumeStaged(held.hold(), line, PICKER);
+
+            ConsumedPick again = service.consumeStaged(held.hold(), line, PICKER);
+
+            assertThat(again.alreadyConsumed()).isTrue();
+            assertThat(ledgerRows).hasSize(2);
+        }
+
+        @Test
+        @DisplayName("consumeStaged: a line that never staged the carton is a bug of the caller, nothing is deducted")
+        void consumeNotStaged() {
+            Held held = heldCarton(BIN);
+
+            org.assertj.core.api.Assertions.assertThatThrownBy(() ->
+                            service.consumeStaged(held.hold(), UUID.randomUUID(), PICKER))
+                    .isInstanceOf(IllegalStateException.class);
+            assertThat(held.row().onHand()).isEqualTo(Quantity.of(6));
+            assertThat(ledgerRows).isEmpty();
+        }
+
+        /** The order was cancelled: its hold is released, the carton is still in the staging area. */
+        private void cancelled(Held held) {
+            held.row().releaseReservation(ReservationId.of(held.hold()), ReleaseReason.ORDER_CANCELLED, NOW);
+        }
+
+        @Test
+        @DisplayName("unstage: back onto a bin - carton and row move whole, one second MOVE row")
+        void unstageMovesBack() {
+            UUID line = UUID.randomUUID();
+            Held held = staged(line);
+            cancelled(held);
+
+            service.unstage(new PutBackCommand(line, held.hold(), LPN, OTHER_BIN.code(), PICKER));
+
+            assertThat(held.carton().location()).isEqualTo(OTHER_BIN);
+            assertThat(held.carton().status()).isEqualTo(StockPackageStatus.IN_STOCK);
+            assertThat(held.row().location()).isEqualTo(OTHER_BIN);
+            assertThat(held.row().onHand()).isEqualTo(Quantity.of(6));
+            assertThat(ledgerRows).hasSize(2);
+            assertThat(ledgerRows.get(1)).satisfies(row -> {
+                assertThat(row.type()).isEqualTo(StockMovement.MovementType.MOVE);
+                assertThat(row.referenceId()).isEqualTo(line);
+                assertThat(row.from()).isEqualTo(staging);
+                assertThat(row.to()).isEqualTo(OTHER_BIN);
+                assertThat(row.toStockPackage()).isEqualTo(held.carton().id());
+            });
+        }
+
+        @Test
+        @DisplayName("unstage: the line again changes nothing (its second MOVE is the replay)")
+        void unstageReplay() {
+            UUID line = UUID.randomUUID();
+            Held held = staged(line);
+            cancelled(held);
+            service.unstage(new PutBackCommand(line, held.hold(), LPN, OTHER_BIN.code(), PICKER));
+
+            service.unstage(new PutBackCommand(line, held.hold(), LPN, BIN.code(), PICKER));
+
+            assertThat(held.carton().location()).isEqualTo(OTHER_BIN);
+            assertThat(ledgerRows).hasSize(2);
+        }
+
+        @Test
+        @DisplayName("unstage: a hold still HELD is CONFLICT - the order owns the carton until it is released")
+        void unstageWhileHeld() {
+            UUID line = UUID.randomUUID();
+            Held held = staged(line);
+
+            assertThat(refusal(() -> service.unstage(new PutBackCommand(line, held.hold(), LPN, OTHER_BIN.code(),
+                    PICKER)))).isEqualTo(ErrorCode.CONFLICT);
+            assertThat(held.carton().location()).isEqualTo(staging);
+            assertThat(ledgerRows).hasSize(1);
+        }
+
+        @Test
+        @DisplayName("unstage: onto a staging area is STAGING_MOVE_NOT_ALLOWED; a line that never staged is a bug of the caller")
+        void unstageTargets() {
+            UUID line = UUID.randomUUID();
+            Held held = staged(line);
+            cancelled(held);
+            LocationId otherStaging = new LocationId("HCM-STG02");
+            when(locations.stateOf(otherStaging)).thenReturn(LocationDirectory.LocationState.USABLE);
+            when(locations.isStagingArea(otherStaging)).thenReturn(true);
+
+            assertThat(refusal(() -> service.unstage(new PutBackCommand(line, held.hold(), LPN,
+                    otherStaging.code(), PICKER)))).isEqualTo(ErrorCode.STAGING_MOVE_NOT_ALLOWED);
+            assertThat(refusal(() -> service.unstage(new PutBackCommand(line, held.hold(), LPN, staging.code(),
+                    PICKER)))).as("the staging area itself").isEqualTo(ErrorCode.STAGING_MOVE_NOT_ALLOWED);
+            org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.unstage(new PutBackCommand(
+                    UUID.randomUUID(), held.hold(), LPN, OTHER_BIN.code(), PICKER)))
+                    .isInstanceOf(IllegalStateException.class);
+            assertThat(held.carton().location()).isEqualTo(staging);
+            assertThat(ledgerRows).hasSize(1);
         }
     }
 }

@@ -648,8 +648,9 @@ class PickDamageIntegrationTest {
     }
 
     @Test
-    @DisplayName("damage at packing, picker gone home: the coordinator hands the reopened task to someone who is here")
-    void reopenedTaskIsReassigned() throws Exception {
+    @DisplayName("damage at packing reopens the task for its own picker: handing it to someone else is refused once picking "
+            + "started (07 BR-08, team plan 4C-5), so the assignee picks the replacement")
+    void reopenedTaskStaysWithItsAssignee() throws Exception {
         cartons("HCM-A01-1-A", 5, 1, "L1", today.plusDays(10));
         OrderSummary order = releasedOrder(2);
         UUID task = startedTask(order);
@@ -662,15 +663,22 @@ class PickDamageIntegrationTest {
                                 "/api/v1/fulfillment/tasks/" + task + "/assignment")
                         .header("Authorization", token(coordinator, "ORDER_COORDINATOR")).contentType("application/json")
                         .content("{\"assignedUserId\":\"" + otherPicker + "\"}"))
-                .andExpect(status().isOk());
-        mvc.perform(post("/api/v1/fulfillment/tasks/" + task + "/pick-lines/" + replacement.path("lineId").asText()
-                        + "/confirmation").header("Authorization", token(otherPicker, "WAREHOUSE_STAFF"))
-                        .contentType("application/json")
-                        .content("{\"locationCode\":\"" + replacement.path("locationCode").asText()
-                                + "\",\"lpn\":\"" + replacement.path("lpn").asText() + "\"}"))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("PICK_TASK_STATE_CONFLICT"));
+        assertThat(jdbc.queryForObject("SELECT assigned_user_id FROM fulfillment.pick WHERE id = ?", UUID.class, task))
+                .as("the task stays with the person who picked it").isEqualTo(picker);
+
+        String confirmation = "{\"locationCode\":\"" + replacement.path("locationCode").asText()
+                + "\",\"lpn\":\"" + replacement.path("lpn").asText() + "\"}";
+        String url = "/api/v1/fulfillment/tasks/" + task + "/pick-lines/" + replacement.path("lineId").asText()
+                + "/confirmation";
+        mvc.perform(post(url).header("Authorization", token(otherPicker, "WAREHOUSE_STAFF"))
+                        .contentType("application/json").content(confirmation))
+                .andExpect(status().isNotFound());
+        mvc.perform(post(url).header("Authorization", token(picker, "WAREHOUSE_STAFF"))
+                        .contentType("application/json").content(confirmation))
                 .andExpect(status().isOk());
         mvc.perform(post("/api/v1/fulfillment/tasks/" + task + "/picking-completion")
-                        .header("Authorization", token(otherPicker, "WAREHOUSE_STAFF")))
+                        .header("Authorization", token(picker, "WAREHOUSE_STAFF")))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.pickStatus").value("PICKED"));
     }
 
