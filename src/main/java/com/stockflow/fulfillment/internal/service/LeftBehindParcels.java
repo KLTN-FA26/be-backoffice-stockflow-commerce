@@ -3,7 +3,6 @@ package com.stockflow.fulfillment.internal.service;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.fulfillment.internal.domain.LoadPlan;
 import com.stockflow.fulfillment.internal.domain.LoadPlanReleaseReason;
-import com.stockflow.fulfillment.internal.domain.PackageStatus;
 import com.stockflow.fulfillment.internal.domain.Shipment;
 import com.stockflow.fulfillment.internal.entity.PackageJpaEntity;
 import com.stockflow.fulfillment.internal.entity.ShipmentJpaEntity;
@@ -77,7 +76,7 @@ class LeftBehindParcels {
         leftBehind.forEach((shipmentId, ids) -> {
             ShipmentJpaEntity row = rows.get(shipmentId);
             List<PackageJpaEntity> ofShipment = packages.findByShipmentIdOrderByPackageNoAsc(shipmentId).stream()
-                    .filter(p -> p.getStatus() == PackageStatus.SEALED).toList();
+                    .filter(p -> p.getStatus().ships()).toList();
             List<PackageJpaEntity> moving = ofShipment.stream().filter(p -> ids.contains(p.getId())).toList();
             int staying = ofShipment.size() - moving.size();
             if (moving.isEmpty() || staying < 1) {
@@ -100,11 +99,14 @@ class LeftBehindParcels {
                         parcel.isRotatable(), parcel.isRotatableOverridden(), parcel.isFragile(),
                         parcel.isFragileOverridden(), parcel.getSealedAt(), parcel.getSealedBy(), parcel.getVoidedAt(),
                         parcel.getVoidedBy());
-                parcel.markLabelOutdated(at);
+                // A shipping carton's label (4C-6) names neither the shipment nor n/N: it stays valid.
+                if (!parcel.isCarton()) {
+                    parcel.markLabelOutdated(at);
+                }
                 packages.save(parcel);
             }
             // The parcels that stay are now n of a smaller N: their labels are reprinted too (review of #162).
-            ofShipment.stream().filter(p -> !ids.contains(p.getId())).forEach(parcel -> {
+            ofShipment.stream().filter(p -> !ids.contains(p.getId()) && !p.isCarton()).forEach(parcel -> {
                 parcel.markLabelOutdated(at);
                 packages.save(parcel);
             });

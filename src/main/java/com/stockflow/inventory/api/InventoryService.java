@@ -121,8 +121,9 @@ public interface InventoryService {
     /**
      * X-SHORT reallocation: the allocation came up short - its carton was not found whole. It is released, and the
      * same quantity is allocated again in the same warehouse, as whole cartons in the SKU's removal order, from any
-     * pickable carton but that one, its bin's other cartons included (07 BR-03, BR-09). Joins the caller's
-     * transaction. Idempotent on the command's request id.
+     * pickable carton but that one, its bin's other cartons included (07 BR-03, BR-09). A damage report's impaired
+     * share restored onto a bin is reallocated like any other: it is restored as loose units, and a pick line takes a
+     * carton (team plan 4C-4). Joins the caller's transaction. Idempotent on the command's request id.
      *
      * @return the new allocations, in pick order
      * @throws com.stockflow.common.error.BusinessException {@code RESERVATION_NOT_FOUND} (unknown, or another

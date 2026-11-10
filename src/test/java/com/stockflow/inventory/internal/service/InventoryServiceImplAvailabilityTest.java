@@ -78,8 +78,7 @@ class InventoryServiceImplAvailabilityTest {
     private final InventoryServiceImpl service = new InventoryServiceImpl(repository,
             new InventoryEventPublisher(mock(ApplicationEventPublisher.class)), operations,
             mock(InventoryItemDirectory.class), Clock.fixed(NOW, ZoneOffset.UTC), controls, policies, skuReservations,
-            locations, cycleCounts, stockPackages,
-            mock(com.stockflow.inventory.internal.domain.StockDamageReportRepository.class), Duration.ofMinutes(30));
+            locations, cycleCounts, stockPackages, Duration.ofMinutes(30));
 
     private final Map<StockItemId, StockItem> rows = new HashMap<>();
 
@@ -118,10 +117,10 @@ class InventoryServiceImplAvailabilityTest {
     @DisplayName("a reservation TTL that is not positive is refused at construction")
     void ttlMustBePositive() {
         assertThatThrownBy(() -> new InventoryServiceImpl(repository, null, operations, null, Clock.systemUTC(),
-                controls, policies, skuReservations, null, cycleCounts, stockPackages, null, Duration.ZERO))
+                controls, policies, skuReservations, null, cycleCounts, stockPackages, Duration.ZERO))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> new InventoryServiceImpl(repository, null, operations, null, Clock.systemUTC(),
-                controls, policies, skuReservations, null, cycleCounts, stockPackages, null, Duration.ofMinutes(-1)))
+                controls, policies, skuReservations, null, cycleCounts, stockPackages, Duration.ofMinutes(-1)))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
@@ -270,6 +269,21 @@ class InventoryServiceImplAvailabilityTest {
         }
 
         @Test
+        @DisplayName("team plan 4C-5: stock in a staging area counts on hand and available but promises nothing (20 BR-20)")
+        void stagingPromisesNothing() {
+            when(locations.stagingAreas()).thenReturn(Set.of("HCM-STG01"));
+            when(repository.findLevelLinesBySku(CUP)).thenReturn(List.of(
+                    new StockLevelLine(new LocationId("HCM-A01-1-A"), StockStatus.AVAILABLE, 10, 0, null),
+                    new StockLevelLine(new LocationId("HCM-STG01"), StockStatus.AVAILABLE, 40, 0, null)));
+
+            StockLevel level = service.levelsOf(CUP).get(0);
+
+            assertThat(level.onHand()).isEqualTo(50);
+            assertThat(level.available()).as("it is sellable stock, held for an order or waiting to go back").isEqualTo(50);
+            assertThat(level.atp()).as("but nobody can be promised it").isEqualTo(10);
+        }
+
+        @Test
         @DisplayName("BR-SEC-002: a warehouse-bound caller sees only their own warehouses' levels")
         void scoped() {
             when(repository.findLevelLinesBySku(CUP)).thenReturn(List.of(
@@ -320,6 +334,18 @@ class InventoryServiceImplAvailabilityTest {
                     new CycleCountRepository.Frozen(doubtful.id().value(), "CUP-12OZ", "HCM-A02-1-A", 10)));
 
             assertThat(service.availabilityOf(CUP)).extracting(StockAvailability::lotNumber).containsExactly("L2");
+        }
+
+        @Test
+        @DisplayName("team plan 4C-5: a staging area's stock is not offered by bin: nobody takes stock from there")
+        void stagingAreaIsLeftOut() {
+            when(locations.stagingAreas()).thenReturn(Set.of("HCM-STG01"));
+            StockItem staged = stock("HCM-STG01", "L1", null, 10);
+            StockItem bin = stock("HCM-A01-1-A", "L2", null, 10);
+            when(repository.findAvailableBySku(CUP)).thenReturn(List.of(staged, bin));
+
+            assertThat(service.availabilityOf(CUP)).extracting(StockAvailability::locationCode)
+                    .containsExactly("HCM-A01-1-A");
         }
 
         @Test

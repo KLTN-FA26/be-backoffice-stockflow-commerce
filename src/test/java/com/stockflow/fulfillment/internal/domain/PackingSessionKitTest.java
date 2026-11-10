@@ -229,7 +229,7 @@ class PackingSessionKitTest {
         assertThat(completion.parcels()).hasSize(8);
         assertThat(completion.lines()).isEqualTo(Map.of(TABLES, 2, DESKS, 1, CUPS, 5));
         session.ship(completion, UUID.randomUUID(), PACKER, NOW);
-        assertThat(session.status()).isEqualTo(PackStatus.PACKED);
+        assertThat(session.status()).isEqualTo(PackStatus.COMPLETED);
         assertThat(session.shippedOf(TABLES)).isEqualTo(2);
     }
 
@@ -294,7 +294,7 @@ class PackingSessionKitTest {
                 3);
         var printed = new PackingSession.Line(PRINTED_DESKS, "DESK-3P", null, 1, 1, true, UUID.randomUUID(), Map.of(),
                 Set.of(), true, false, 3);
-        var session = new PackingSession(UUID.randomUUID(), "SO-KIT2", PackStatus.PACKING, NOW, PACKER, null, null,
+        var session = new PackingSession(UUID.randomUUID(), "SO-KIT2", PackStatus.IN_PROGRESS, NOW, PACKER, null, null,
                 List.of(plain, printed), List.of(), List.of());
         var parts = kit(session, PRINTED_DESKS, 3);
         put(session, parts.get(0), "DESK-3P");
@@ -342,7 +342,7 @@ class PackingSessionKitTest {
                 Map.of(new PackingSession.ContentKey(TABLES, null, null), 1), NOW);
         var tables = new PackingSession.Line(TABLES, "TABLE-OAK-160", null, 2, 2, false, null, Map.of(), Set.of(),
                 false, false, 2);
-        var session = new PackingSession(UUID.randomUUID(), "SO-KIT", PackStatus.PACKING, NOW, PACKER, null, null,
+        var session = new PackingSession(UUID.randomUUID(), "SO-KIT", PackStatus.IN_PROGRESS, NOW, PACKER, null, null,
                 List.of(tables), List.of(old), List.of());
         assertThat(code(catchThrowable(() -> seal(session, old)))).isEqualTo(ErrorCode.KIT_OVERRIDE_REASON_REQUIRED);
         session.seal(old.id(), box(), null, null, null, "packed before kits existed", 6000, PACKER, NOW);

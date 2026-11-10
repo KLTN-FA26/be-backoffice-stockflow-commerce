@@ -147,7 +147,26 @@ class StockOperationsServiceImpl implements StockOperations {
      * that ships), and a destination that can take stock. Only the destination is checked (issue
      * #67): taking stock out of a blocked bin or a shelf in maintenance is how it gets emptied, and an adjustment
      * at a bin blocked for counting must still post.
+     *
+     * <p>Neither end is a staging area (kltn-docs 11 BR-09, 20 BR-20, team plan 4C-5): a carton there was picked for an
+     * order and leaves only when its task moves to dispatch or, the order cancelled, by the put-back - both picking's
+     * own moves ({@code PickConsumptionService}), never this one. {@code tg_stock_movement_staging} says the same of the
+     * ledger.</p>
      */
+    /**
+     * Review L5 (team plan 4C-5; kltn-docs 20 BR-20): stock enters a staging area only by picking, always carrying an
+     * order's allocation. A count or an adjustment may write stock there down - a carton missing is a shortage - but
+     * never add to it: found units would be nobody's, out of available to promise, unpickable and unmovable, stranded
+     * until written down again. {@code tg_stock_movement_staging} refuses the same ledger line.
+     */
+    private void requireNoSurplusInStaging(LocationId location, int delta) {
+        if (delta > 0 && locations.isStagingArea(location)) {
+            throw new BusinessException(ErrorCode.STAGING_MOVE_NOT_ALLOWED, ("%s is a staging area: a count or an "
+                    + "adjustment writes stock there down, never up; stock enters it only by picking").formatted(location),
+                    List.of(), Map.of("locationCode", location.code()));
+        }
+    }
+
     private void requireMovableBetween(LocationId from, LocationId to) {
         if (from.equals(to)) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A move needs two different locations");
@@ -155,6 +174,13 @@ class StockOperationsServiceImpl implements StockOperations {
         if (!from.warehouseCode().equals(to.warehouseCode())) {
             throw new BusinessException(ErrorCode.MOVE_ACROSS_WAREHOUSES,
                     "%s and %s are in different warehouses; stock moves only inside one".formatted(from, to));
+        }
+        for (LocationId end : List.of(from, to)) {
+            if (locations.isStagingArea(end)) {
+                throw new BusinessException(ErrorCode.STAGING_MOVE_NOT_ALLOWED, ("%s is a staging area: stock enters it "
+                        + "only by picking for an order, and leaves it by dispatch or put-back").formatted(end),
+                        List.of(), Map.of("locationCode", end.code()));
+            }
         }
         requireUsable(to);
     }
@@ -774,6 +800,7 @@ class StockOperationsServiceImpl implements StockOperations {
         }
         WarehouseScope.requireLocation(command.locationCode());
         LocationId location = new LocationId(command.locationCode());
+        requireNoSurplusInStaging(location, command.quantityDelta());
         // The stock item must exist now; FOUND stock adds to a lot already recorded at the location.
         findLayer(command.sku(), location, command.lotNumber(), command.receivedAt())
                 .orElseThrow(() -> new BusinessException(ErrorCode.STOCK_ITEM_NOT_FOUND,
@@ -870,6 +897,7 @@ class StockOperationsServiceImpl implements StockOperations {
             return List.of();
         }
         WarehouseScope.requireLocation(slot.location().code());
+        requireNoSurplusInStaging(slot.location(), delta);
         policies.lock(slot.sku().code());
         Instant now = clock.instant();
         LocalDate day = LocalDate.ofInstant(now, BUSINESS_ZONE);

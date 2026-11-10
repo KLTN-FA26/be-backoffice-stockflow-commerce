@@ -297,6 +297,28 @@ where sku=? and version=?
                 .stream().findFirst();
     }
 
+    /**
+     * The SKU's carton spec: its one active packing unit, or the default shipping one among several - the rule
+     * {@code StockPackageRepository.cartonFactorOf} and V20261111000110 use - with the item's rotatable flag. Empty for
+     * an unknown SKU, or one with no such unit.
+     */
+    public Optional<com.stockflow.inventory.api.CartonSpec> findCartonSpec(String sku) {
+        record Unit(com.stockflow.inventory.api.CartonSpec spec, boolean defaultShipping) { }
+        List<Unit> units = jdbc.query("""
+                select u.unit_of_measure, u.factor, u.length_cm, u.width_cm, u.height_cm, u.weight_kg,
+                       u.default_shipping, i.rotatable
+                  from inventory.uom_conversions u
+                  join inventory.inventory_items i on i.id = u.inventory_item_id
+                 where i.sku = ? and u.active and not u.is_base
+                """, (rs, n) -> new Unit(new com.stockflow.inventory.api.CartonSpec(sku,
+                        rs.getString("unit_of_measure"), rs.getInt("factor"), rs.getBigDecimal("length_cm"),
+                        rs.getBigDecimal("width_cm"), rs.getBigDecimal("height_cm"), rs.getBigDecimal("weight_kg"),
+                        rs.getBoolean("rotatable")),
+                        rs.getBoolean("default_shipping")), sku);
+        List<Unit> chosen = units.size() == 1 ? units : units.stream().filter(Unit::defaultShipping).toList();
+        return chosen.size() == 1 ? Optional.of(chosen.getFirst().spec()) : Optional.empty();
+    }
+
     /** Whether any stock of the SKU is held anywhere, in any status. */
     public boolean holdsStock(String sku) {
         return Boolean.TRUE.equals(jdbc.queryForObject(

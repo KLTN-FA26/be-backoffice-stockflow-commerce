@@ -101,7 +101,6 @@ class InventoryServiceImpl implements InventoryService {
     private final LocationDirectory locations;
     private final com.stockflow.inventory.internal.domain.CycleCountRepository cycleCounts;
     private final com.stockflow.inventory.internal.domain.StockPackageRepository stockPackages;
-    private final com.stockflow.inventory.internal.domain.StockDamageReportRepository damageReports;
 
     /** How long a hold lasts while its order waits for payment (kltn-docs 14: set by the business). */
     private final java.time.Duration reservationTtl;
@@ -112,14 +111,12 @@ class InventoryServiceImpl implements InventoryService {
                          SkuReservationRepository skuReservations, LocationDirectory locations,
                          com.stockflow.inventory.internal.domain.CycleCountRepository cycleCounts,
                          com.stockflow.inventory.internal.domain.StockPackageRepository stockPackages,
-                         com.stockflow.inventory.internal.domain.StockDamageReportRepository damageReports,
                          @org.springframework.beans.factory.annotation.Value(
                                  "${stockflow.inventory.reservation-ttl:PT30M}") java.time.Duration reservationTtl) {
         if (reservationTtl == null || reservationTtl.isZero() || reservationTtl.isNegative()) {
             throw new IllegalArgumentException("stockflow.inventory.reservation-ttl must be positive");
         }
         this.stockPackages = stockPackages;
-        this.damageReports = damageReports;
         this.reservationTtl = reservationTtl;
         this.repository = repository;
         this.events = events;
@@ -346,10 +343,13 @@ class InventoryServiceImpl implements InventoryService {
     public List<StockAvailability> availabilityOf(Sku sku) {
         var today = BusinessCalendar.date(clock.instant());
         Set<StockItemId> frozen = frozenLayers(sku, today);
+        // A staging area's cartons are an order's, or wait to be put back: nobody takes stock from there (20 BR-20).
+        Set<String> staging = locations.stagingAreas();
         // Use the configured picking order and one business date for the entire result.
         return repository.findAvailableBySku(sku).stream()
                 .filter(item -> notExpired(item, today))
                 .filter(item -> !frozen.contains(item.id()))
+                .filter(item -> !staging.contains(item.location().code()))
                 .sorted(Comparator.comparing(item ->
                                         new StockAllocator.Candidate(
                                                 item.id(),
@@ -427,13 +427,14 @@ class InventoryServiceImpl implements InventoryService {
      */
     private List<StockLevel> levels(Sku sku, boolean scoped) {
         record Totals(int onHand, int available, int reserved, int atp) {
-            static Totals of(StockLevelLine line, LocalDate today) {
+            /** A staging area's stock is AVAILABLE, but promised to nobody else (kltn-docs 20 §5.1, BR-20). */
+            static Totals of(StockLevelLine line, LocalDate today, boolean staged) {
                 boolean usable = line.status() == StockStatus.AVAILABLE
                                 && (line.expiryDate() == null
                                         || !line.expiryDate().isBefore(today));
                 int sellable = usable ? line.onHand() : 0;
                 return new Totals(line.onHand(), sellable, line.reserved(),
-                        usable ? line.onHand() - line.reserved() : 0);
+                        usable && !staged ? line.onHand() - line.reserved() : 0);
             }
 
             Totals plus(Totals other) {
@@ -444,8 +445,10 @@ class InventoryServiceImpl implements InventoryService {
         }
         Map<String, Totals> byWarehouse = new TreeMap<>();
         var today = BusinessCalendar.date(clock.instant());
+        Set<String> staging = locations.stagingAreas();
         for (StockLevelLine line : repository.findLevelLinesBySku(sku)) {
-            byWarehouse.merge(line.location().warehouseCode(), Totals.of(line, today), Totals::plus);
+            byWarehouse.merge(line.location().warehouseCode(),
+                    Totals.of(line, today, staging.contains(line.location().code())), Totals::plus);
         }
         // Allocations are holds on these same rows: counted in reserved above, shown apart below (glossary: a
         // reservation is a soft hold on the SKU, an allocation a hard hold on a bin), so the two never add up twice.
@@ -668,16 +671,10 @@ class InventoryServiceImpl implements InventoryService {
         }
         policies.lock(view.sku().code());
         LocalDate today = BusinessCalendar.date(now);
-        if (restoredImpairment(shortId, now)) {
-            // A damage report's impaired allocation whose units a manager found fine and restored onto a bin, the
-            // order's share with them: a sound allocation on pickable stock now, nothing about that bin in doubt. Kept
-            // where it is; the short line gives way to one that picks it there.
-            StockItem current = repository.findByIdForUpdate(view.id()).orElseThrow();
-            Reservation hold = current.findReservation(shortId).orElseThrow();
-            log.info("Allocation {} of order {}: restored from damage at {}, kept for picking", shortId,
-                    command.orderId(), current.location());
-            return List.of(toApiReservation(current, hold));
-        }
+        // A damage report's impaired share restored onto a bin is restored as loose units (StockDamageService#restore),
+        // which no pick line can take (team plan 4C-4; kltn-docs 07 BR-04, BR-10): it is released and reallocated like
+        // any short allocation, to whole cartons, or INSUFFICIENT_STOCK leaves everything as it was (4C-4 B1). Keeping
+        // it where it is comes back when a restore puts units back into a carton (4C-3).
         String warehouse = view.location().warehouseCode();
         // 4B-7: the new bins come out of what other orders do not hold at this warehouse by SKU (20 BR-17). One pool
         // for both: every pickable carton but the short one's (4C-2 excludes a stock row, no longer a whole bin).
@@ -713,26 +710,6 @@ class InventoryServiceImpl implements InventoryService {
         log.info("Allocation {} of order {} came up short at {}; reallocated {} unit(s) to {} hold(s)", shortId,
                 command.orderId(), view.location(), shortHold.quantity(), made.size());
         return lines.stream().map(line -> made.get(line.stockItemId())).toList();
-    }
-
-    /**
-     * Whether the allocation is a damage report's impaired share that went back onto good stock with its units
-     * (RESTORE of everything left): AVAILABLE, unexpired, on a pickable location of a layer no count has frozen.
-     * Read under the SKU lock.
-     */
-    private boolean restoredImpairment(ReservationId holdId, Instant now) {
-        if (!damageReports.isImpairedAllocation(holdId.value())) {
-            return false;
-        }
-        StockItem item = repository.findIdByReservationId(holdId).flatMap(repository::findById).orElseThrow();
-        LocalDate today = BusinessCalendar.date(now);
-        boolean frozen = cycleCounts.frozen(List.of(item.sku().code()), today).stream()
-                .anyMatch(layer -> layer.stockItemId().equals(item.id().value()));
-        return item.findReservation(holdId).map(r -> r.status().isActive()).orElse(false)
-                && item.status() == StockStatus.AVAILABLE
-                && !com.stockflow.inventory.internal.domain.ExpiryPolicy.isExpired(item.expiryDate(), today)
-                && !frozen
-                && locations.pickable(List.of(item.location().code())).containsKey(item.location().code());
     }
 
     /**

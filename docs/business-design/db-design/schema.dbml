@@ -237,8 +237,8 @@ Enum warehouse.area_type {
   RECEIVING
   QUALITY_CONTROL
   QUARANTINE
-  PACKING
   DISPATCH
+  STAGING
   OVERFLOW
   PRODUCTION
   NON_STORAGE
@@ -1020,8 +1020,8 @@ Enum fulfillment.load_plan_vehicle_vehicle_kind {
 
 Enum fulfillment.pack_status {
   PENDING
-  PACKING
-  PACKED
+  IN_PROGRESS
+  COMPLETED
   CANCELLED
 }
 
@@ -1037,18 +1037,28 @@ Enum fulfillment.package_status {
   OPEN
   SEALED
   VOIDED
+  TO_CHECK
+  CHECKED
+  LABELED
+  REMOVED
+}
+
+Enum fulfillment.pick_destination {
+  DISPATCH
+  STAGING
 }
 
 Enum fulfillment.pick_status {
   PENDING
   PICKING
+  STAGED
   PICKED
-  SHORT
   CANCELLED
 }
 
 Enum fulfillment.pick_line_status {
   OPEN
+  STAGED
   PICKED
   SHORT
   CANCELLED
@@ -2860,6 +2870,7 @@ Table ordering.customer_order [headercolor: #C0392B] {
   shipping_warehouse_id         uuid
   shipping_warehouse_chosen_at  timestamptz
   shipping_warehouse_chosen_by  uuid
+  first_labeled_at              timestamptz
 }
 
 Table ordering.delivery_batch [headercolor: #C0392B] {
@@ -4526,6 +4537,17 @@ Table fulfillment.package [headercolor: #2C7873] {
   kit_order_line_id    uuid
   kit_override_reason  varchar(500)
   label_outdated_at    timestamptz
+  pick_line_id         uuid [unique]
+  lpn                  varchar(30)
+  checked_at           timestamptz
+  checked_by           uuid
+  labeled_at           timestamptz
+  labeled_by           uuid
+  label_version        int [not null, default: 0]
+  removed_at           timestamptz
+  removed_by           uuid
+  removal_reason       varchar(16)
+  removal_note         varchar(500)
   indexes {
     (pack_id, package_no) [unique]
     (kit_group_id, kit_part_no) [unique]
@@ -4565,22 +4587,27 @@ Table fulfillment.package_scan [headercolor: #2C7873] {
 }
 
 Table fulfillment.pick [headercolor: #2C7873] {
-  id               uuid [pk]
-  wave_id          uuid
-  order_id         uuid [not null, unique]
-  status           fulfillment.pick_status [not null]
-  version          bigint [not null, default: 0]
-  created_at       timestamptz [not null]
-  created_by       varchar(100)
-  last_modified_at timestamptz
-  last_modified_by varchar(100)
-  assigned_user_id uuid
-  assigned_at      timestamptz
-  started_at       timestamptz
-  picked_at        timestamptz
-  needs_put_back   boolean [not null, default: false]
-  order_number     varchar(32) [not null]
-  warehouse_id     uuid [not null]
+  id                    uuid [pk]
+  wave_id               uuid
+  order_id              uuid [not null, unique]
+  status                fulfillment.pick_status [not null]
+  version               bigint [not null, default: 0]
+  created_at            timestamptz [not null]
+  created_by            varchar(100)
+  last_modified_at      timestamptz
+  last_modified_by      varchar(100)
+  assigned_user_id      uuid
+  assigned_at           timestamptz
+  started_at            timestamptz
+  picked_at             timestamptz
+  needs_put_back        boolean [not null, default: false]
+  order_number          varchar(32) [not null]
+  warehouse_id          uuid [not null]
+  destination           fulfillment.pick_destination [not null, default: 'DISPATCH']
+  staging_location_code varchar(64)
+  staged_at             timestamptz
+  moved_to_dispatch_at  timestamptz
+  moved_to_dispatch_by  uuid
 }
 
 Table fulfillment.pick_line [headercolor: #2C7873] {
@@ -4615,6 +4642,9 @@ Table fulfillment.pick_line [headercolor: #2C7873] {
   damaged_qty            int [not null, default: 0]
   damage_report_id       uuid
   packing_damaged_qty    int [not null, default: 0]
+  short_reason           varchar(16)
+  staged_at              timestamptz
+  staged_location_code   varchar(64)
 }
 
 Table fulfillment.shipment [headercolor: #2C7873] {
@@ -5776,8 +5806,13 @@ Ref: fulfillment.load_waybill_file.waybill_import_id > fulfillment.waybill_impor
 Ref: fulfillment.pack.packed_by > identity.app_user.id
 Ref: fulfillment.pack.pick_id > fulfillment.pick.id
 Ref: fulfillment.pack.started_by > identity.app_user.id
+Ref: fulfillment.package.checked_by > identity.app_user.id
 Ref: fulfillment.package.kit_order_line_id > ordering.order_line.id [delete: restrict]
+Ref: fulfillment.package.labeled_by > identity.app_user.id
+Ref: fulfillment.package.lpn > inventory.stock_package.lpn
 Ref: fulfillment.package.pack_id > fulfillment.pack.id [delete: restrict]
+Ref: fulfillment.package.pick_line_id > fulfillment.pick_line.id [delete: restrict]
+Ref: fulfillment.package.removed_by > identity.app_user.id
 Ref: fulfillment.package.sealed_by > identity.app_user.id
 Ref: fulfillment.package.shipment_id > fulfillment.shipment.id [delete: restrict]
 Ref: fulfillment.package.voided_by > identity.app_user.id
@@ -5787,7 +5822,9 @@ Ref: fulfillment.package_scan.order_line_id > ordering.order_line.id [delete: re
 Ref: fulfillment.package_scan.package_id > fulfillment.package.id [delete: restrict]
 Ref: fulfillment.package_scan.scanned_by > identity.app_user.id
 Ref: fulfillment.pick.assigned_user_id > identity.app_user.id
+Ref: fulfillment.pick.moved_to_dispatch_by > identity.app_user.id
 Ref: fulfillment.pick.order_id > ordering.customer_order.id [delete: restrict]
+Ref: fulfillment.pick.staging_location_code > warehouse.storage_location.location_code [delete: restrict]
 Ref: fulfillment.pick.warehouse_id > warehouse.warehouse.id
 Ref: fulfillment.pick.wave_id > fulfillment.wave.id
 Ref: fulfillment.pick_line.damage_report_id > inventory.stock_damage_report.id [delete: restrict]
@@ -5800,6 +5837,7 @@ Ref: fulfillment.pick_line.put_back_by > identity.app_user.id
 Ref: fulfillment.pick_line.put_back_location_code > warehouse.storage_location.location_code [delete: restrict]
 Ref: fulfillment.pick_line.reservation_id > inventory.stock_reservation.id [delete: restrict]
 Ref: fulfillment.pick_line.sku > inventory.inventory_items.sku [delete: restrict]
+Ref: fulfillment.pick_line.staged_location_code > warehouse.storage_location.location_code [delete: restrict]
 Ref: fulfillment.shipment.carrier_id > fulfillment.carrier.id
 Ref: fulfillment.shipment.handed_over_by > identity.app_user.id
 Ref: fulfillment.shipment.load_id > fulfillment.dispatch_load.id

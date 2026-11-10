@@ -21,8 +21,17 @@ public interface LocationDirectory {
 
     LocationState stateOf(LocationId location);
 
-    /** Whether the location is a PACKING area: where finished custom goods wait for their package. */
-    boolean isPackingArea(LocationId location);
+    /**
+     * Whether the location is a STAGING area (kltn-docs 07 §1, 20 §4.9): where cartons picked for an order that may not
+     * leave yet wait, still held for it. Stock enters and leaves it only by picking (11 BR-09, 20 BR-20).
+     */
+    boolean isStagingArea(LocationId location);
+
+    /**
+     * The location codes of every STAGING area, whatever their status: the stock standing there is not available to
+     * promise, held or not - a cancelled order's cartons stay out until they are put back (20 BR-20).
+     */
+    java.util.Set<String> stagingAreas();
 
     /**
      * The locations among {@code locations} a picker may take stock from now (pickable and usable), each with its

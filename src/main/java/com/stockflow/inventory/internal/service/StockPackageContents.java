@@ -154,6 +154,16 @@ class StockPackageContents {
      */
     public StockItem restock(StockPackageId id, com.stockflow.inventory.internal.domain.StockItemId rowId,
                              com.stockflow.inventory.internal.domain.LocationId to, int units) {
+        return restock(id, rowId, to, units, false);
+    }
+
+    /**
+     * As {@link #restock(StockPackageId, com.stockflow.inventory.internal.domain.StockItemId,
+     * com.stockflow.inventory.internal.domain.LocationId, int)}; with {@code quarantine}, the units come back QUARANTINE
+     * instead of AVAILABLE: a carton the check station removed as damaged (team plan 4C-6, kltn-docs 08 §4.2 step 4).
+     */
+    public StockItem restock(StockPackageId id, com.stockflow.inventory.internal.domain.StockItemId rowId,
+                             com.stockflow.inventory.internal.domain.LocationId to, int units, boolean quarantine) {
         StockPackage carton = stockPackages.findAllByIdForUpdate(List.of(id)).stream().findFirst()
                 .orElseThrow(() -> new IllegalStateException("No stock package " + id.value()));
         StockItem row = stockItems.findByIdForUpdate(rowId).orElseThrow(() ->
@@ -166,6 +176,9 @@ class StockPackageContents {
         carton.restock(to);
         row.followPackageTo(to);
         row.putBack(com.stockflow.inventory.internal.domain.Quantity.of(units));
+        if (quarantine) {
+            row.quarantineInPackage();
+        }
         // The carton first: saveMerged flushes before its own statement, so the carton stands at its new place before
         // the caller's ledger line names it there (check_stock_movement_package reads it on insert).
         stockPackages.save(carton);
@@ -299,6 +312,11 @@ class StockPackageContents {
 
         private LockedCartons(Map<StockPackageId, StockPackage> locked) {
             this.locked = locked;
+        }
+
+        /** The locked carton {@code id}; empty when it was not among those locked. */
+        java.util.Optional<StockPackage> carton(StockPackageId id) {
+            return java.util.Optional.ofNullable(id == null ? null : locked.get(id));
         }
 
         /** {@code row} gave up units; nothing to do for loose stock. */

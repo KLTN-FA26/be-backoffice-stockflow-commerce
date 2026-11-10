@@ -573,7 +573,7 @@ public final class DispatchLoad {
             return false;
         }
         ShipmentFacts shipment = parcel.shipment();
-        if (parcel.status() != PackageStatus.SEALED || shipment == null) {
+        if (!parcel.status().ships() || shipment == null) {
             throw new BusinessException(ErrorCode.PACKAGE_NOT_READY, "Package %s is %s%s; it is not ready to hand over"
                     .formatted(parcel.labelCode(), parcel.status(), shipment == null ? " and in no shipment" : ""));
         }

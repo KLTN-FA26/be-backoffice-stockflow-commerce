@@ -531,6 +531,18 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
     }
 
     @Override
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public void recordFirstLabel(UUID orderId) {
+        Order order = lockOrder(orderId);
+        if (order.recordFirstLabel(clock.instant())) {
+            repository.save(order);
+            // 17 §4.6 step 28: a cancellation request still waiting can no longer be granted.
+            closeUndecidableCancellationRequest(order);
+            log.info("Order {}: first carton labelled, the order is locked", order.orderNumber());
+        }
+    }
+
+    @Override
     public void recordPacked(UUID orderId) {
         Order order = lockOrder(orderId);
         if (order.recordPacked(clock.instant())) {
@@ -1168,7 +1180,7 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
 
     /**
      * E2E QA 2026-10-21: a customer's cancellation request still waiting when the order passes the point where
-     * cancelling can be decided - its first package completed (decision 2026-10-17), handed over, delivered - or is
+     * cancelling can be decided - its first carton labelled (4C-6, 08 BR-04), handed over, delivered - or is
      * cancelled another way, could only ever be refused ({@code ORDER_NOT_CANCELLABLE}), and the customer saw it pending
      * for good. It closes here, in the transaction that moved the order, as {@code EXPIRED} with a note the customer
      * reads on the order. Called after every save that may move the order; nothing to do in the common case.
@@ -1178,10 +1190,11 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
         String why;
         if (status == OrderStatus.CANCELLED) {
             why = "Closed: the order was cancelled.";
-        } else if (order.packedForGood() || !status.canTransitionTo(OrderStatus.CANCELLED)) {
-            why = "Closed: the order is %s and can no longer be cancelled; ask for a return instead."
-                    .formatted(order.packedForGood() && status.canTransitionTo(OrderStatus.CANCELLED)
-                            ? OrderStatus.PACKED : status);
+        } else if (!status.canTransitionTo(OrderStatus.CANCELLED)) {
+            why = "Closed: the order is %s and can no longer be cancelled; ask for a return instead.".formatted(status);
+        } else if (order.packedForGood()) {
+            why = "Closed: a carton of the order is labelled for shipping, so it can no longer be cancelled; ask for a "
+                    + "return instead.";
         } else {
             return;
         }
@@ -1274,7 +1287,8 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
         return new OrderSummary.Lifecycle(order.holdReason(), order.statusBeforeHold(), order.holdNote(),
                 order.packedAt(), order.shippedAt(), order.deliveredAt(), order.deliveryFailureReason(), order.completedAt(),
                 order.closedAt(), order.billedAmount(), order.billable(), order.amountDue(),
-                order.amountDueBeforeHandover(), progress, shipments, order.allowPartialShipment(), order.goodsLeftAt());
+                order.amountDueBeforeHandover(), progress, shipments, order.allowPartialShipment(), order.goodsLeftAt(),
+                order.firstLabeledAt());
     }
 
     private static OrderAddressSnapshot toSnapshot(CheckoutCustomer.CheckoutAddress address) {

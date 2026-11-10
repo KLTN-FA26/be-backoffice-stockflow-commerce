@@ -30,6 +30,14 @@ public interface StockMovementLog {
                                             StockMovement.ReferenceType referenceType, UUID referenceId);
 
     /**
+     * Every line of {@code type} a document caused, oldest first; empty when none. A pick line of a staging task writes
+     * two MOVE lines - staged out of its bin, then, its order cancelled, put back out of the staging area (team plan
+     * 4C-5) - and the put-back is recognised by the second.
+     */
+    java.util.List<StockMovement> findAllByReference(StockMovement.MovementType type,
+                                                     StockMovement.ReferenceType referenceType, UUID referenceId);
+
+    /**
      * {@link #findByReference}, among the lines that name no carton on either side: how a retried loose move is
      * recognised. A document can move a carton whole and loose units under one reference (SCRUM-473: a receipt line's
      * cartons and its loose remainder); a lookup that also saw the carton's lines would take them for the loose
