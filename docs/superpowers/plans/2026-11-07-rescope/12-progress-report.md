@@ -1,4 +1,4 @@
-# Báo cáo tiến độ rescope BE — 09/11/2026
+# Báo cáo tiến độ rescope BE — 11/11/2026
 
 Rescope theo tài liệu nghiệp vụ 04–05/11: kho thành phẩm + bán B2B. In do nhà sản xuất bên ngoài làm, hàng về đã in sẵn và đóng thùng. Mọi đơn giao nguyên chuyến xe. Khách trả bằng chuyển khoản theo các đợt của hợp đồng.
 
@@ -7,6 +7,7 @@ Báo cáo này nói về những gì **đã làm xong**:
 - **Design Studio 2F-1 → 2F-10**: khách tự thiết kế, Sales Manager duyệt;
 - **nhóm 3 (3-1 → 3-6)**: giao nguyên chuyến qua nhà xe;
 - **nhóm 4B, gói 4B-1 → 4B-4**: lịch thanh toán mặc định, báo giá theo SKU riêng và thùng, VAT và dòng phí, hợp đồng mua bán.
+- **mọi gói còn lại của 4A, 4B, 4C, 4D và nhóm 5 (#285 → #311)**, và **PR ghép cuối #312** (seed mới, QA, tài liệu, full suite chung): §3d.
 
 Phần còn lại nằm trong kế hoạch nhóm: [11-team-plan.md](11-team-plan.md).
 
@@ -310,11 +311,52 @@ Xếp chồng tiếp sau #278:
 - dời cửa sổ giao sau khi ký, và hợp đồng `Completed` (4B-8);
 - tiền hoàn có thuế (4B-9).
 
+## 3d. Các gói còn lại và bước ghép cuối (#285 → #312)
+
+Các PR này không còn xếp thành một chuỗi: hai luồng (thùng LPN 4C/4D/5-1/5-4 và sản xuất 4A/4B) tách nhau từ 4B-6 và mỗi PR lấy gói nó cần làm base. **#312 (`integration/rescope-final`) ghép tất cả** (mọi PR #283–#311 là tổ tiên của nó), cộng 5-10, 5-11, 5-12 và các bản sửa do review cụm 4 và full suite tìm ra. Mỗi commit merge trong #312 ghi lại từng xung đột và cách giải.
+
+| Gói | PR | Nội dung |
+|---|---|---|
+| 4B-5 | [#285](https://github.com/KLTN-FA26/be-backoffice-stockflow-commerce/pull/285) | Đơn đi theo hợp đồng mua bán |
+| 4B-6 | [#286](https://github.com/KLTN-FA26/be-backoffice-stockflow-commerce/pull/286) | Đợt thanh toán, phiếu thu, công nợ |
+| 4B-7 | [#287](https://github.com/KLTN-FA26/be-backoffice-stockflow-commerce/pull/287) | Chọn kho xuất và giữ hàng tại kho đó |
+| 4A-1 | [#288](https://github.com/KLTN-FA26/be-backoffice-stockflow-commerce/pull/288) | Danh mục nhà sản xuất, role điều phối sản xuất |
+| 4A-2 | [#289](https://github.com/KLTN-FA26/be-backoffice-stockflow-commerce/pull/289) | Đơn sản xuất: lập, duyệt, gửi |
+| 4C-1 | [#290](https://github.com/KLTN-FA26/be-backoffice-stockflow-commerce/pull/290) | Chuyển tồn lẻ / thùng đã mở vào thùng LPN nguyên |
+| 5-3 | [#291](https://github.com/KLTN-FA26/be-backoffice-stockflow-commerce/pull/291) | Bỏ giá trên storefront; bảng giá của khách là giá duy nhất |
+| 4A-5 | [#292](https://github.com/KLTN-FA26/be-backoffice-stockflow-commerce/pull/292) | Nhập thành phẩm theo đơn sản xuất |
+| 4A-6 | [#293](https://github.com/KLTN-FA26/be-backoffice-stockflow-commerce/pull/293) | Đơn chờ hàng, ghi nhận in, dừng sản xuất |
+| 4A-3 | [#294](https://github.com/KLTN-FA26/be-backoffice-stockflow-commerce/pull/294) | Gửi đơn sản xuất cho nhà sản xuất (phiếu + link ký) |
+| 4A-7 | [#295](https://github.com/KLTN-FA26/be-backoffice-stockflow-commerce/pull/295) | Lịch sản xuất, 4 cảnh báo trễ tự đóng |
+| 4A-4 | [#296](https://github.com/KLTN-FA26/be-backoffice-stockflow-commerce/pull/296) | Vòng in mẫu, khách duyệt |
+| 4B-9 | [#297](https://github.com/KLTN-FA26/be-backoffice-stockflow-commerce/pull/297) | Phí huỷ, số tiền được hoàn, ghi nhận hoàn tiền |
+| 4C-2 | [#298](https://github.com/KLTN-FA26/be-backoffice-stockflow-commerce/pull/298) | Giữ, chuyển, nhập, cấp phát chỉ theo thùng nguyên |
+| 4D-1 | [#299](https://github.com/KLTN-FA26/be-backoffice-stockflow-commerce/pull/299) | Cách ly và giải phóng thùng |
+| 5-4 | [#300](https://github.com/KLTN-FA26/be-backoffice-stockflow-commerce/pull/300) | Sức chứa ô theo thể tích, thùng vừa ô, khu OVERFLOW |
+| 5-1 | [#301](https://github.com/KLTN-FA26/be-backoffice-stockflow-commerce/pull/301) | Bỏ cảnh báo tồn, hạn dùng, FEFO |
+| 4A-8 | [#302](https://github.com/KLTN-FA26/be-backoffice-stockflow-commerce/pull/302) | Bỏ mua hàng khỏi code; hàng chỉ về theo đơn sản xuất |
+| 4A-9 | [#303](https://github.com/KLTN-FA26/be-backoffice-stockflow-commerce/pull/303) | Drop bảng mua hàng, siết phiếu nhập còn lại |
+| 4C-4 | [#304](https://github.com/KLTN-FA26/be-backoffice-stockflow-commerce/pull/304) | Lấy / trả hàng theo LPN; lấy thiếu phải có lý do |
+| 4C-3 | [#305](https://github.com/KLTN-FA26/be-backoffice-stockflow-commerce/pull/305) | Kiểm kê, điều chỉnh theo thùng LPN |
+| 4C-5 | [#306](https://github.com/KLTN-FA26/be-backoffice-stockflow-commerce/pull/306) | Khu chờ xuất (staging), đích lấy hàng |
+| 5-2 | [#307](https://github.com/KLTN-FA26/be-backoffice-stockflow-commerce/pull/307) | Khách không tự đặt đơn nữa |
+| 4C-6 | [#308](https://github.com/KLTN-FA26/be-backoffice-stockflow-commerce/pull/308) | Trạm kiểm thùng và dán nhãn |
+| 4D-2, 4D-3, 4D-4, 4C-7, 5-6 | [#309](https://github.com/KLTN-FA26/be-backoffice-stockflow-commerce/pull/309) | Hàng hoàn qua phiếu nhập hàng hoàn; bỏ đổi trả kiểu QC cũ, trạm đóng gói lại, báo hỏng từng cái |
+| 5-5, 5-7, 5-8 | [#310](https://github.com/KLTN-FA26/be-backoffice-stockflow-commerce/pull/310) | Một chính sách tồn cho mọi SKU; bỏ 3 role điều phối đơn, hoạch định tồn, mua hàng |
+| 4B-10, 4B-11, 4B-8, 5-9 | [#311](https://github.com/KLTN-FA26/be-backoffice-stockflow-commerce/pull/311) | Bỏ sổ cái tiền và điều khoản thanh toán; xuất kho và giao theo đợt giao |
+| Ghép cuối, 5-10, 5-11, 5-12 | [#312](https://github.com/KLTN-FA26/be-backoffice-stockflow-commerce/pull/312) | Ghép mọi nhánh; seed mới; QA + kiểm mồ côi; CLAUDE.md, README, ADR-0010 |
+
+**Kiểm tra:** mỗi gói chạy test có mục tiêu (mọi lớp liên quan + 4 fitness test + QA trên DB dựng mới); **full suite chạy một lần trên bản ghép cuối** (`90b8e54f`): khoảng **4.570 test, 77 lỗi ở 29 lớp**, đã xử lý hết trong #312 (fixture viết cho tồn lẻ hoặc cột đã bị luồng khác drop, test của tính năng đã bỏ, và 4 lỗi code thật). Chạy lại 37 lớp liên quan: 318 test, 1 lỗi (thứ tự kiểm phạm vi kho) đã sửa và chạy lại xanh. DB dựng mới: 280 migration, `run.sh` qua cả khi có và không có seed, kiểm mồ côi sạch.
+
+**Quyết định do phiên điều phối chốt ở cụm 4 (chủ repo có thể đổi):** bỏ hẳn API giữ hàng thủ công `POST /inventory/reservations` và `ReservationSweeper` (checkout đã bỏ; giữ hàng chỉ còn cho đơn của hợp đồng đã ký). FE: lot-trace mất 4 trường nhà cung cấp / PO.
+
+**Còn mở:** 68 test bị tắt ở 5 lớp của cụm 3 (cần viết lại trên dữ liệu đơn theo hợp đồng); 4A-10 hoãn.
+
 ---
 
 ## 4. Sau khi merge — việc trên server
 
-**Khuyến nghị: reset dữ liệu test rồi nạp seed mới.** Seed `tools/db/seed` đã hỏng từ trước trên develop (`ck_supplier_invoices_status`) và chưa theo kịp các đợt xoá. Sinh lại seed là gói 5-x trong kế hoạch.
+**Đã chốt (QD-1, 10/11): không giữ dữ liệu VPS.** Dựng lại DB từ đầu (migration) rồi nạp `tools/db/seed/seed_test_data.sql` mới (5-10, #312) bằng `psql -v ON_ERROR_STOP=1 -f`. Khoá staging Ahamove truyền qua biến môi trường lúc nạp (`seal_ahamove_key.py`), không nằm trong repo; không có khoá thì Ahamove nạp ở chế độ MANUAL. Phần dưới chỉ còn giá trị nếu ai đó vẫn giữ dữ liệu cũ.
 
 Nếu giữ dữ liệu cũ, các migration tự chuyển dữ liệu như ở mục 2. Còn phải làm tay:
 - Tài khoản Sales Manager và QC (nay là Nhân viên kho) **đăng nhập lại**.
