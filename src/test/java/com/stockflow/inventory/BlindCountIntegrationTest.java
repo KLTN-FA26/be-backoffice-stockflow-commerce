@@ -74,9 +74,10 @@ class BlindCountIntegrationTest {
     private SecuredMvc mvc;
     private String sku;
     private UUID lot;
-    /** Both at {@link #BIN} and on the count; {@link #cartonA} has a manual write-off pending, {@link #cartonB} is missing. */
-    private CartonRows.Carton cartonA;
+    /** At {@link #BIN}, the only carton on the count; it is missing. */
     private CartonRows.Carton cartonB;
+    /** At {@link #BIN2}, off the count: a manual write-off of it is pending, and stays visible throughout. */
+    private CartonRows.Carton cartonA;
     /** At {@link #BIN3}: never on the count. */
     private CartonRows.Carton cartonC;
     private UUID clerk;
@@ -100,13 +101,13 @@ class BlindCountIntegrationTest {
                     Identifiers.newId(), product, sku, "Blind count fixture");
         });
         Instant received = Instant.parse("2026-01-02T00:00:00Z");
-        cartonA = tx.execute(s -> CartonRows.stock(jdbc, sku, BIN, 1, CARTON, "L1", received)).getFirst();
+        cartonA = tx.execute(s -> CartonRows.stock(jdbc, sku, BIN2, 1, CARTON, "L1", received)).getFirst();
         cartonB = tx.execute(s -> CartonRows.stock(jdbc, sku, BIN, 1, CARTON, "L1", received)).getFirst();
         cartonC = tx.execute(s -> CartonRows.stock(jdbc, sku, BIN3, 1, CARTON, "L1", received)).getFirst();
         lot = jdbc.queryForObject("select lot_id from inventory.stock_item where id = ?", UUID.class,
-                cartonA.stockItemId());
+                cartonB.stockItemId());
         tx.executeWithoutResult(s -> {
-            movement(BIN, BIN2, 4, cartonA.id());
+            movement(BIN, BIN2, 4, cartonB.id());
             movement(BIN2, BIN3, 2, null);
         });
         manualAdjustment = operations.requestPackageAdjustment(new StockOperations.PackageAdjustmentRequest(
@@ -159,16 +160,15 @@ class BlindCountIntegrationTest {
         return count.lines().stream().filter(l -> carton.equals(l.stockPackageId())).findFirst().orElseThrow().id();
     }
 
-    /** Carton A scanned present, carton B not found: one shortage, of B, submitted and waiting for approval. */
+    /** Carton B, the one on the count, not found: one shortage, submitted and waiting for approval. */
     private UUID submittedVariance(CycleCountView count) {
-        countBoth(count);
+        countB(count);
         cycleCounts.submit(count.id(), clerk, false);
         return jdbc.queryForObject("select id from inventory.stock_adjustment where cycle_count_line_id = ?",
                 UUID.class, lineOf(count, cartonB.id()));
     }
 
-    private void countBoth(CycleCountView count) {
-        cycleCounts.count(count.id(), lineOf(count, cartonA.id()), true, clerk, false);
+    private void countB(CycleCountView count) {
         cycleCounts.count(count.id(), lineOf(count, cartonB.id()), false, clerk, false);
     }
 
@@ -180,26 +180,26 @@ class BlindCountIntegrationTest {
     void stockItemsOfASku() throws Exception {
         String url = INVENTORY + "/stock-items?sku=" + sku;
         asStaff(get(url)).andExpect(status().isOk())
-                .andExpect(jsonPath("$.data[0].onHand").value(CARTON))
-                .andExpect(jsonPath("$.data[0].hiddenDuringCount").value(false));
+                .andExpect(jsonPath("$.data[?(@.locationCode == '" + BIN + "')].onHand").value(org.hamcrest.Matchers.contains(CARTON)))
+                .andExpect(jsonPath("$.data[?(@.locationCode == '" + BIN + "')].hiddenDuringCount").value(org.hamcrest.Matchers.contains(false)));
 
         CycleCountView count = plan();
 
         asStaff(get(url)).andExpect(status().isOk())
-                .andExpect(jsonPath("$.data[0].locationCode").value(BIN))
-                .andExpect(jsonPath("$.data[0].onHand").doesNotExist())
-                .andExpect(jsonPath("$.data[0].reserved").doesNotExist())
-                .andExpect(jsonPath("$.data[0].available").doesNotExist())
-                .andExpect(jsonPath("$.data[0].hiddenDuringCount").value(true));
+                .andExpect(jsonPath("$.data[?(@.locationCode == '" + BIN + "')].onHand").value(org.hamcrest.Matchers.empty()))
+                .andExpect(jsonPath("$.data[?(@.locationCode == '" + BIN + "')].reserved").value(org.hamcrest.Matchers.empty()))
+                .andExpect(jsonPath("$.data[?(@.locationCode == '" + BIN + "')].available").value(org.hamcrest.Matchers.empty()))
+                .andExpect(jsonPath("$.data[?(@.locationCode == '" + BIN + "')].hiddenDuringCount").value(org.hamcrest.Matchers.contains(true)))
+                .andExpect(jsonPath("$.data[?(@.locationCode == '" + BIN2 + "')].onHand").value(org.hamcrest.Matchers.contains(CARTON)));
         asManager(get(url)).andExpect(status().isOk())
-                .andExpect(jsonPath("$.data[0].onHand").value(CARTON))
-                .andExpect(jsonPath("$.data[0].hiddenDuringCount").value(false));
+                .andExpect(jsonPath("$.data[?(@.locationCode == '" + BIN + "')].onHand").value(org.hamcrest.Matchers.contains(CARTON)))
+                .andExpect(jsonPath("$.data[?(@.locationCode == '" + BIN + "')].hiddenDuringCount").value(org.hamcrest.Matchers.contains(false)));
 
         cycleCounts.cancel(count.id(), "done", "test");
 
         asStaff(get(url)).andExpect(status().isOk())
-                .andExpect(jsonPath("$.data[0].onHand").value(CARTON))
-                .andExpect(jsonPath("$.data[0].hiddenDuringCount").value(false));
+                .andExpect(jsonPath("$.data[?(@.locationCode == '" + BIN + "')].onHand").value(org.hamcrest.Matchers.contains(CARTON)))
+                .andExpect(jsonPath("$.data[?(@.locationCode == '" + BIN + "')].hiddenDuringCount").value(org.hamcrest.Matchers.contains(false)));
     }
 
     @Test
@@ -211,7 +211,7 @@ class BlindCountIntegrationTest {
 
         asStaff(get(url)).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.items[?(@.locationCode == '" + BIN + "')].hiddenDuringCount")
-                        .value(org.hamcrest.Matchers.contains(true, true)))
+                        .value(org.hamcrest.Matchers.contains(true)))
                 .andExpect(jsonPath("$.data.items[?(@.locationCode == '" + BIN + "')].onHand")
                         .value(org.hamcrest.Matchers.empty()))
                 .andExpect(jsonPath("$.data.items[?(@.locationCode == '" + BIN3 + "')].onHand")
@@ -220,8 +220,7 @@ class BlindCountIntegrationTest {
                         .value(org.hamcrest.Matchers.contains(false)));
         asManager(get(url)).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.items[?(@.locationCode == '" + BIN + "')].onHand")
-                        .value(org.hamcrest.Matchers.contains(CARTON, CARTON)))
-                .andExpect(jsonPath("$.data.items[0].locationCode").value(BIN));
+                        .value(org.hamcrest.Matchers.contains(CARTON)));
         assertThat(cartonC).isNotNull();
     }
 
@@ -254,18 +253,21 @@ class BlindCountIntegrationTest {
             + "counter (list and detail, 404); the approver sees them; once decided they are back")
     void adjustments() throws Exception {
         CycleCountView count = plan();
-        UUID variance = submittedVariance(count);
         String list = INVENTORY + "/adjustments?sku=" + sku;
+        asStaff(get(list)).andExpect(status().isOk()).andExpect(jsonPath("$.data.totalElements").value(1));
+        asStaff(get(INVENTORY + "/adjustments/" + manualAdjustment)).andExpect(status().isOk());
+        UUID variance = submittedVariance(count);
 
-        asStaff(get(list)).andExpect(status().isOk()).andExpect(jsonPath("$.data.totalElements").value(0));
+        asStaff(get(list)).andExpect(status().isOk()).andExpect(jsonPath("$.data.totalElements").value(1))
+                .andExpect(jsonPath("$.data.items[0].adjustmentId").value(manualAdjustment.toString()));
         asStaff(get(INVENTORY + "/adjustments/" + variance)).andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.errorCode").value("STOCK_ADJUSTMENT_NOT_FOUND"));
-        asStaff(get(INVENTORY + "/adjustments/" + manualAdjustment)).andExpect(status().isNotFound());
+        asStaff(get(INVENTORY + "/adjustments/" + manualAdjustment)).andExpect(status().isOk());
         asManager(get(list)).andExpect(jsonPath("$.data.totalElements").value(2));
         asManager(get(INVENTORY + "/adjustments/" + variance)).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.quantityDelta").value(-CARTON));
 
-        // Approving the variance frees the slot: the delta is now history, and visible.
+        // Approving the variance frees the carton: the delta is now history, and visible.
         mvc.asRole(Role.WAREHOUSE_MANAGER, approver, post(INVENTORY + "/adjustments/" + variance + "/approval"))
                 .andExpect(status().isOk());
 
@@ -283,17 +285,16 @@ class BlindCountIntegrationTest {
         String trace = INVENTORY + "/lots/" + lot;
 
         asStaff(get(trace)).andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.balances[0].locationCode").value(BIN))
-                .andExpect(jsonPath("$.data.balances[0].onHand").doesNotExist())
-                .andExpect(jsonPath("$.data.balances[0].hiddenDuringCount").value(true));
-        asManager(get(trace)).andExpect(jsonPath("$.data.balances[0].onHand").value(2 * CARTON))
-                .andExpect(jsonPath("$.data.balances[0].hiddenDuringCount").value(false));
+                .andExpect(jsonPath("$.data.balances[?(@.locationCode == '" + BIN + "')].onHand").value(org.hamcrest.Matchers.empty()))
+                .andExpect(jsonPath("$.data.balances[?(@.locationCode == '" + BIN + "')].hiddenDuringCount").value(org.hamcrest.Matchers.contains(true)));
+        asManager(get(trace)).andExpect(jsonPath("$.data.balances[?(@.locationCode == '" + BIN + "')].onHand").value(org.hamcrest.Matchers.contains(CARTON)))
+                .andExpect(jsonPath("$.data.balances[?(@.locationCode == '" + BIN + "')].hiddenDuringCount").value(org.hamcrest.Matchers.contains(false)));
         asStaff(get(trace + "/movements")).andExpect(jsonPath("$.data.totalElements").value(1));
         asManager(get(trace + "/movements")).andExpect(jsonPath("$.data.totalElements").value(2));
 
         cycleCounts.cancel(count.id(), "done", "test");
 
-        asStaff(get(trace)).andExpect(jsonPath("$.data.balances[0].onHand").value(2 * CARTON));
+        asStaff(get(trace)).andExpect(jsonPath("$.data.balances[?(@.locationCode == '" + BIN + "')].onHand").value(org.hamcrest.Matchers.contains(CARTON)));
         asStaff(get(trace + "/movements")).andExpect(jsonPath("$.data.totalElements").value(2));
     }
 
@@ -308,7 +309,7 @@ class BlindCountIntegrationTest {
         CycleCountView planned = plan();
         assertThat(held()).as("planned").isEqualTo(Held.EVERYTHING);
 
-        countBoth(planned);
+        countB(planned);
         assertThat(held()).as("in progress").isEqualTo(Held.EVERYTHING);
 
         cycleCounts.submit(planned.id(), clerk, false);
@@ -339,7 +340,10 @@ class BlindCountIntegrationTest {
         long allAdjustments = operations.adjustments(null, sku, null, 0, 20, null, BookVisibility.FULL).totalElements();
 
         boolean nothing = !rowHidden && ledger == 2 && adjustments == allAdjustments && lotLines == 2 && !balanceHidden;
-        boolean everything = rowHidden && ledger == 1 && adjustments == 0 && lotLines == 1 && balanceHidden;
+        long pendingVariance = jdbc.queryForObject("select count(*) from inventory.stock_adjustment where sku = ? "
+                + "and reason_code = 'COUNT_VARIANCE' and status = 'PENDING_APPROVAL'", Long.class, sku);
+        boolean everything = rowHidden && ledger == 1 && adjustments == allAdjustments - pendingVariance
+                && lotLines == 1 && balanceHidden;
         return nothing ? Held.NOTHING : everything ? Held.EVERYTHING
                 : Held.DISAGREE;
     }

@@ -133,16 +133,16 @@ class CartonAdjustmentIntegrationTest {
     /** One carton reserved and allocated to a customer's order; the row ids the hold sits on. */
     private List<UUID> holdOneCarton() {
         UUID order = confirmedOrder();
-        return tx.execute(s -> {
+        UUID hold = tx.execute(s -> {
             UUID id = inventory.reserve(new ReserveStockCommand(UUID.randomUUID(), new Sku(sku), CARTON, order))
                     .reservationIds().getFirst();
             inventory.pinReservations(order);
-            UUID hold = inventory.allocate(new AllocateStockCommand(order, "HCM")).allocations().stream()
+            return inventory.allocate(new AllocateStockCommand(order, "HCM")).allocations().stream()
                     .filter(allocation -> allocation.reservationId().equals(id)).findFirst().orElseThrow()
                     .holdIds().getFirst();
-            return List.of(jdbc.queryForObject("select stock_item_id from inventory.stock_reservation where id = ?",
-                    UUID.class, hold));
         });
+        return List.of(jdbc.queryForObject("select stock_item_id from inventory.stock_reservation where id = ?",
+                UUID.class, hold));
     }
 
     // ------------------------------------------------------------------ BR-04: the reasons
