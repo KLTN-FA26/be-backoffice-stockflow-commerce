@@ -224,13 +224,13 @@ class PickListService implements PickLists {
         if (outcome.repeated()) {
             return view(taskId, line, barcode);
         }
-        if (line.reservationId() != null && line.status() == PickLineStatus.STAGED) {
+        if (line.status() == PickLineStatus.STAGED) {
             // A STAGING task (4C-5): the carton moves to the staging area, still held - pick, then SKU, carton, row.
-            consumption.stage(new StageCommand(line.id(), line.reservationId(), line.lpn(), line.stagedLocationCode(),
-                    actor.userId()));
-        } else if (line.reservationId() != null) {
+            consumption.stage(new StageCommand(line.id(), requireHold(line, "staged"), line.lpn(),
+                    line.stagedLocationCode(), actor.userId()));
+        } else {
             // The pick is locked; inventory now locks the stock row (pick -> stock_item, never the reverse).
-            consumption.consumeForPick(line.reservationId(), line.id(), actor.userId());
+            consumption.consumeForPick(requireHold(line, "confirmed"), line.id(), actor.userId());
             line.recordConsumed(now);
         }
         writeBack(list, stored, Set.of(line.id()));
@@ -316,11 +316,9 @@ class PickListService implements PickLists {
         if (outcome.repeated()) {
             return view(taskId, line, barcode);
         }
-        if (line.reservationId() == null) {
-            // Every line is planned from a hold; one without is not a carton anybody took off a shelf.
-            throw new BusinessException(ErrorCode.PUT_BACK_NOT_REQUIRED, "The line consumed no hold");
-        }
-        PutBackCommand command = new PutBackCommand(line.id(), line.reservationId(), line.lpn(),
+        // A line put back names its carton (PickList#putBack), so it has the hold that took it (tg_pick_line_carton).
+        // A staged line's carton was never deducted: it is moved back from the staging area instead (4C-5).
+        PutBackCommand command = new PutBackCommand(line.id(), requireHold(line, "put back"), line.lpn(),
                 line.putBackLocationCode(), actor.userId());
         if (outcome.fromStaging()) {
             consumption.unstage(command);
@@ -382,10 +380,8 @@ class PickListService implements PickLists {
                 line.lpn(), line.allocatedQty(), line.sku(), line.locationCode(), reason));
         // BR-09: the books and the shelf disagree, so the carton is counted blind (or the count holding it answers),
         // which also keeps it out of allocation until the variance is decided (20 BR-11). The picker took none of it.
-        if (line.reservationId() != null) {
-            var recount = consumption.requestRecount(line.reservationId(), line.id(), 0);
-            log.info("Short pick line {}: recount {} of carton {}", line.id(), recount.countNumber(), line.lpn());
-        }
+        var recount = consumption.requestRecount(requireHold(line, "reported short"), line.id(), 0);
+        log.info("Short pick line {}: recount {} of carton {}", line.id(), recount.countNumber(), line.lpn());
         log.info("Pick line {} of task {} short: carton {} ({} x {}) at {}, {}", line.id(), taskId, line.lpn(),
                 line.allocatedQty(), line.sku(), line.locationCode(), reason);
         return view(taskId, line, barcode);
@@ -400,9 +396,11 @@ class PickListService implements PickLists {
         PickList list = toList(pick, stored);
         PickLine shortLine = list.line(lineId).orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND,
                 "Task %s has no pick line %s".formatted(taskId, lineId)));
-        if (shortLine.status() != PickLineStatus.SHORT || shortLine.reservationId() == null) {
+        // Every SHORT line has an allocation: one reported short names its carton, and one a damage report made holds
+        // the impaired share (PickLine#fromDamage).
+        if (shortLine.status() != PickLineStatus.SHORT) {
             throw new BusinessException(ErrorCode.PICK_LINE_NOT_OPEN,
-                    "Only a SHORT line with an allocation is reallocated; it is " + shortLine.status());
+                    "Only a SHORT line is reallocated; it is " + shortLine.status());
         }
         // Pick, then order, then stock rows. A cancellation locks the order before the stock rows it releases; taking
         // the order only at the end (replaceHold) would wait on it while holding those rows.
@@ -714,6 +712,20 @@ class PickListService implements PickLists {
                 && order.lifecycle().holdReason() == com.stockflow.order.api.HoldReason.INVENTORY) {
             orders.resolveHold(orderId, note, by);
         }
+    }
+
+    /**
+     * The hold behind a line that is being confirmed or reported short. Always there today - the line names a carton
+     * (ck_pick_line_lpn) and tg_pick_line_carton makes it its hold's - but should either rule ever be relaxed, a line
+     * without one must fail loudly: skipping would mark it PICKED with nothing deducted, or SHORT with no blind count
+     * (07 BR-09). Thrown inside the transaction, so nothing of the request is kept.
+     */
+    private static UUID requireHold(PickLine line, String what) {
+        if (line.reservationId() == null) {
+            throw new IllegalStateException(("Pick line %s (carton %s) has no hold and cannot be %s: a line is planned "
+                    + "from the hold on its carton").formatted(line.id(), line.lpn(), what));
+        }
+        return line.reservationId();
     }
 
     private PickJpaEntity lockPick(UUID taskId) {
