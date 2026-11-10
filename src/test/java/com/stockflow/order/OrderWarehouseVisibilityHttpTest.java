@@ -72,14 +72,15 @@ class OrderWarehouseVisibilityHttpTest {
         releasedHere = place();
         tx.executeWithoutResult(s -> {
             // The columns the rules of 4B-7 and release write, set directly: the test is about who reads, not how it got there.
+            // A signed contract's order is past DRAFT (ck_order_contract_signed): CONFIRMED, and released READY_TO_FULFILL.
             jdbc.update("SET LOCAL session_replication_role = replica");
             for (Object[] row : new Object[][] {{shipsHere, here}, {shipsThere, there}, {releasedHere, here}}) {
-                jdbc.update("UPDATE ordering.customer_order SET contract_signed_at = NOW(), shipping_warehouse_id = ?, "
-                        + "shipping_warehouse_chosen_at = NOW(), shipping_warehouse_chosen_by = ? WHERE id = ?",
-                        row[1], sales, row[0]);
+                jdbc.update("UPDATE ordering.customer_order SET status = 'CONFIRMED', contract_signed_at = NOW(), "
+                        + "shipping_warehouse_id = ?, shipping_warehouse_chosen_at = NOW(), shipping_warehouse_chosen_by = ? "
+                        + "WHERE id = ?", row[1], sales, row[0]);
             }
-            jdbc.update("UPDATE ordering.customer_order SET warehouse_id = ?, released_at = NOW(), released_by = ? WHERE id = ?",
-                    here, sales, releasedHere);
+            jdbc.update("UPDATE ordering.customer_order SET status = 'READY_TO_FULFILL', warehouse_id = ?, released_at = NOW(), "
+                    + "released_by = ? WHERE id = ?", here, sales, releasedHere);
         });
     }
 

@@ -51,6 +51,38 @@ public final class CartonRows {
     }
 
     /**
+     * The SKU's carton unit of exactly {@code factor} units (code {@code CTN<factor>}), made the first time: for a test
+     * that needs cartons of several sizes of one SKU - stock that was loose rows of any size before
+     * {@code ck_stock_item_whole_cartons} (V20261117000100). Make these before calling {@link #unit}, which takes
+     * whichever carton unit the SKU has first.
+     */
+    public static UUID unitOf(JdbcTemplate jdbc, String sku, int factor) {
+        List<UUID> found = jdbc.queryForList("""
+                SELECT u.id FROM inventory.uom_conversions u JOIN inventory.inventory_items i ON i.id = u.inventory_item_id
+                 WHERE i.sku = ? AND NOT u.is_base AND u.active AND u.factor = ? ORDER BY u.created_at, u.id""",
+                UUID.class, sku, factor);
+        if (!found.isEmpty()) {
+            return found.getFirst();
+        }
+        UUID id = Identifiers.newId();
+        jdbc.update("""
+                INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)
+                SELECT ?, id, ?, ? FROM inventory.inventory_items WHERE sku = ?""", id, "CTN" + factor, factor, sku);
+        return id;
+    }
+
+    /**
+     * One carton of exactly {@code units} units of the SKU at {@code location} (its {@link #unitOf} unit), in
+     * {@code status}; a null {@code lotNumber} is {@link #DEFAULT_LOT}. Call inside a transaction: the carton and its
+     * row are checked together at commit.
+     */
+    public static Carton carton(JdbcTemplate jdbc, String sku, String location, int units, String lotNumber,
+                                Instant receivedAt, String status) {
+        return stockOfUnit(jdbc, sku, unitOf(jdbc, sku, units), location, 1, lotNumber, receivedAt, status)
+                .getFirst();
+    }
+
+    /**
      * {@code count} AVAILABLE cartons of {@code factor} units at {@code location}, received at {@code receivedAt}; a
      * null {@code lotNumber} is {@link #DEFAULT_LOT}.
      */

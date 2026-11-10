@@ -72,10 +72,11 @@ class InventoryServiceImplAvailabilityTest {
     void defaults() {
         when(repository.findByIdForUpdate(any())).thenAnswer(c -> Optional.ofNullable(rows.get(c.<StockItemId>getArgument(0))));
         when(repository.findById(any())).thenAnswer(c -> Optional.ofNullable(rows.get(c.<StockItemId>getArgument(0))));
-        // Every location is a pickable bin but a QC area.
+        // Every location is a pickable bin but a QC or staging area.
         when(locations.pickable(org.mockito.ArgumentMatchers.anyCollection())).thenAnswer(c -> {
             Map<String, UUID> pickable = new HashMap<>();
-            c.<java.util.Collection<String>>getArgument(0).stream().filter(code -> !code.contains("-QC"))
+            c.<java.util.Collection<String>>getArgument(0).stream()
+                    .filter(code -> !code.contains("-QC") && !code.contains("-STG"))
                     .forEach(code -> pickable.put(code, UUID.randomUUID()));
             return pickable;
         });
@@ -179,11 +180,13 @@ class InventoryServiceImplAvailabilityTest {
         }
 
         @Test
-        @DisplayName("per warehouse, the figure of one warehouse's own levels")
+        @DisplayName("per warehouse, the allocatable cartons of that warehouse (review C4 P-1)")
         void perWarehouse() {
             when(repository.findLevelLinesBySku(CUP)).thenReturn(List.of(
                     new StockLevelLine(new LocationId("HCM-A01"), StockStatus.AVAILABLE, 40, 10),
                     new StockLevelLine(new LocationId("HN-A01"), StockStatus.AVAILABLE, 25, 0)));
+            when(repository.findAllocatable(anyCollection())).thenReturn(List.of(
+                    carton("CUP-12OZ", "HCM-A01", 30), carton("CUP-12OZ", "HN-A01", 25)));
 
             assertThat(service.availableToPromise(CUP, "hcm")).isEqualTo(30);
             assertThat(service.availableToPromise(CUP, "HN")).isEqualTo(25);
@@ -201,6 +204,8 @@ class InventoryServiceImplAvailabilityTest {
             when(repository.findLevelLinesBySku(CUP)).thenReturn(List.of(
                     new StockLevelLine(new LocationId("HCM-A01"), StockStatus.AVAILABLE, 40, 0),
                     new StockLevelLine(new LocationId("HN-A01"), StockStatus.AVAILABLE, 30, 0)));
+            when(repository.findAllocatable(anyCollection())).thenReturn(List.of(
+                    carton("CUP-12OZ", "HCM-A01", 40), carton("CUP-12OZ", "HN-A01", 30)));
             when(skuReservations.heldBySku(anyCollection())).thenReturn(Map.of("CUP-12OZ", 50L));
 
             List<StockLevel> levels = service.levelsOf(CUP);
@@ -217,8 +222,11 @@ class InventoryServiceImplAvailabilityTest {
             when(repository.findLevelLinesBySku(CUP)).thenReturn(List.of(
                     new StockLevelLine(new LocationId("HCM-A01"), StockStatus.AVAILABLE, 40, 0),
                     new StockLevelLine(new LocationId("HN-A01"), StockStatus.AVAILABLE, 30, 0)));
+            StockItemRepository.Allocatable doubtful = carton("CUP-12OZ", "HCM-A01", 15);
+            when(repository.findAllocatable(anyCollection())).thenReturn(List.of(
+                    carton("CUP-12OZ", "HCM-A01", 25), doubtful, carton("CUP-12OZ", "HN-A01", 30)));
             when(cycleCounts.frozen(anyCollection())).thenReturn(List.of(
-                    new CycleCountRepository.Frozen(UUID.randomUUID(), "CUP-12OZ", "HCM-A01", 15)));
+                    new CycleCountRepository.Frozen(doubtful.id().value(), "CUP-12OZ", "HCM-A01", 15)));
 
             List<StockLevel> levels = service.levelsOf(CUP);
 
@@ -233,6 +241,8 @@ class InventoryServiceImplAvailabilityTest {
             when(repository.findLevelLinesBySku(CUP)).thenReturn(List.of(
                     new StockLevelLine(new LocationId("HCM-A01"), StockStatus.QUARANTINE, 40, 0),
                     new StockLevelLine(new LocationId("HCM-A03"), StockStatus.AVAILABLE, 10, 0)));
+            // The repository offers AVAILABLE whole cartons only: the quarantined 40 are not among them.
+            when(repository.findAllocatable(anyCollection())).thenReturn(List.of(carton("CUP-12OZ", "HCM-A03", 10)));
 
             StockLevel level = service.levelsOf(CUP).get(0);
 
@@ -247,6 +257,9 @@ class InventoryServiceImplAvailabilityTest {
             when(repository.findLevelLinesBySku(CUP)).thenReturn(List.of(
                     new StockLevelLine(new LocationId("HCM-A01-1-A"), StockStatus.AVAILABLE, 10, 0),
                     new StockLevelLine(new LocationId("HCM-STG01"), StockStatus.AVAILABLE, 40, 0)));
+            // The staging area's cartons are offered as whole and free, but the area is not pickable.
+            when(repository.findAllocatable(anyCollection())).thenReturn(List.of(
+                    carton("CUP-12OZ", "HCM-A01-1-A", 10), carton("CUP-12OZ", "HCM-STG01", 40)));
 
             StockLevel level = service.levelsOf(CUP).get(0);
 

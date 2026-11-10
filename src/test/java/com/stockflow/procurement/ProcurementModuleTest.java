@@ -64,6 +64,9 @@ class ProcurementModuleTest {
     com.stockflow.design.api.DesignService designServiceMock;
     @org.springframework.test.context.bean.override.mockito.MockitoBean
     com.stockflow.payment.api.PaymentService paymentServiceMock;
+    /** Order's port for the customer's word in their conversation (a delivery window moved on it), chat's to answer. */
+    @org.springframework.test.context.bean.override.mockito.MockitoBean
+    com.stockflow.order.api.ConsentMessages consentMessagesMock;
 
     @Test
     @DisplayName("procurement starts and answers through its goods receipts with the other modules absent")

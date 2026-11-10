@@ -18,7 +18,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <ul>
  *   <li>V20261117000100 (M-5): a live stock row in no carton, with a hold on it, is released and written off on the
- *       ledger; an emptied loose row stays; then {@code ck_stock_item_whole_cartons} refuses a live loose row.</li>
+ *       ledger; an emptied loose row stays; then {@code ck_stock_item_whole_cartons} refuses a live loose row. Review
+ *       P-4: a warehouse SKU hold the write-off leaves uncovered is released, newest first, until the rest is covered;
+ *       a hold the cartons still cover stays.</li>
  *   <li>V20261117000200 (Q-1, Q-2): a load estimate whose order or warehouse is missing is deleted, a good one stays,
  *       and both are keys now; the purchasing columns of {@code stock_lot} are gone, its CHECKs restated.</li>
  *   <li>V20261117000300 (D-1): a checkout reservation (HELD with a deadline) ends EXPIRED when the deadline passed and
@@ -32,6 +34,8 @@ class ClusterFourReviewMigrationUpgradeTest {
     private static final String BEFORE = "20261116000300";
     private static final String AFTER = "20261117000300";
     private static final String SKU = "C4R-CUP";
+    /** A SKU whose loose units covered part of its warehouse holds (review P-4). */
+    private static final String LID = "C4R-LID";
     private static final UUID CUSTOMER = UUID.fromString("c0000000-0000-4000-8000-000000000001");
     private static final String HCM = "md5('demo:wh:HCM')::uuid";
 
@@ -51,12 +55,19 @@ class ClusterFourReviewMigrationUpgradeTest {
                 UUID goodEstimate = UUID.randomUUID();
                 UUID noOrder = UUID.randomUUID();
                 UUID noWarehouse = UUID.randomUUID();
+                UUID olderLidHold = UUID.randomUUID();
+                UUID newerLidHold = UUID.randomUUID();
 
-                UUID product = UUID.randomUUID();
-                RawSql.update(db, "INSERT INTO product.products (id, code, name, slug) VALUES (?, ?, 'Review fixture', "
-                        + "'c4r-cup')", product, SKU);
-                RawSql.update(db, "INSERT INTO product.variants (id, product_id, sku, name, attribute_signature) VALUES "
-                        + "(gen_random_uuid(), ?, ?, 'Review fixture', '')", product, SKU);
+                for (String sku : new String[] {SKU, LID}) {
+                    UUID product = UUID.randomUUID();
+                    RawSql.update(db, "INSERT INTO product.products (id, code, name, slug) VALUES (?, ?, 'Review "
+                            + "fixture', ?)", product, sku, sku.toLowerCase(java.util.Locale.ROOT));
+                    RawSql.update(db, "INSERT INTO product.variants (id, product_id, sku, name, attribute_signature) "
+                            + "VALUES (gen_random_uuid(), ?, ?, 'Review fixture', '')", product, sku);
+                }
+                // A carton of each beside the loose units: what stays in stock after the write-off.
+                carton(db, SKU, "HCM-A01-2-A", 6);
+                carton(db, LID, "HCM-A02-1-A", 4);
                 RawSql.update(db, "INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, "
                         + "total_amount, currency, placed_at, version, created_at) VALUES (?, 'SO-20991230-000001', ?, "
                         + "gen_random_uuid(), 'PENDING_PAYMENT', 1000, 'VND', NOW(), 0, NOW())", order, CUSTOMER);
@@ -72,7 +83,18 @@ class ClusterFourReviewMigrationUpgradeTest {
                 RawSql.update(db, "INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, "
                         + "status, version, created_at) VALUES (?, ?, 'HCM-A01-1-B', 'UNTRACED', 0, 0, 'AVAILABLE', 0, NOW())",
                         emptied, SKU);
-                // Checkout reservations (a deadline: one passed, one not) and a Sales hold at HCM (no deadline).
+                // P-4: five loose lids and a carton of 4 cover two Sales holds at HCM, 4 (older) and 3 (newer); the
+                // write-off leaves 4, which covers the older hold only.
+                RawSql.update(db, "INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, "
+                        + "status, received_at, version, created_at) VALUES (gen_random_uuid(), ?, 'HCM-A01-1-B', 'LOT-L', 5, "
+                        + "0, 'AVAILABLE', '2026-10-01T00:00:00Z', 0, NOW())", LID);
+                RawSql.update(db, "INSERT INTO inventory.stock_reservation (id, sku, order_id, root_request_id, request_id, "
+                        + "quantity, reserved_at, status, warehouse_code) VALUES (?, ?, ?, gen_random_uuid(), "
+                        + "gen_random_uuid(), 4, NOW() - interval '2 hours', 'HELD', 'HCM'), (?, ?, ?, gen_random_uuid(), "
+                        + "gen_random_uuid(), 3, NOW() - interval '1 hour', 'HELD', 'HCM')",
+                        olderLidHold, LID, order, newerLidHold, LID, order);
+                // Checkout reservations (a deadline: one passed, one not) and a Sales hold at HCM (no deadline); the cup
+                // carton of 6 still covers all three after the write-off, so P-4 leaves them to V20261117000300.
                 RawSql.update(db, "INSERT INTO inventory.stock_reservation (id, sku, order_id, root_request_id, request_id, "
                         + "quantity, reserved_at, expires_at, status) VALUES (?, ?, ?, gen_random_uuid(), gen_random_uuid(), "
                         + "1, NOW() - interval '1 hour', NOW() - interval '30 minutes', 'HELD'), (?, ?, ?, gen_random_uuid(), "
@@ -102,7 +124,12 @@ class ClusterFourReviewMigrationUpgradeTest {
                         .isEqualTo("ADJUSTMENT|STOCK_ADJUSTMENT|10|HCM-A01-1-A");
                 assertThat(RawSql.number(db, "SELECT count(*) FROM inventory.stock_movement WHERE reason LIKE "
                         + "'V20261117000100%'")).as("the demo had no loose units: only the fixture's are written off")
-                        .isOne();
+                        .isEqualTo(2);
+                // P-4: the newer lid hold released, the older one, still covered by the carton of 4, kept.
+                assertThat(RawSql.text(db, "SELECT status || '|' || release_reason FROM inventory.stock_reservation "
+                        + "WHERE id = ?", newerLidHold)).isEqualTo("RELEASED|MANUAL_OVERRIDE");
+                assertThat(RawSql.text(db, "SELECT status FROM inventory.stock_reservation WHERE id = ?", olderLidHold))
+                        .isEqualTo("HELD");
                 assertThat(RawSql.number(db, "SELECT count(*) FROM inventory.stock_item WHERE id = ? AND on_hand = 0",
                         emptied)).isOne();
                 assertThat(RawSql.number(db, "SELECT COALESCE(sum(on_hand), 0) FROM inventory.stock_item WHERE "
@@ -150,6 +177,30 @@ class ClusterFourReviewMigrationUpgradeTest {
                             .isEqualTo(role.getValue() + bump);
                 }
             }
+        }
+    }
+
+    /** One IN_STOCK carton of {@code units}, whole in its one row; a carton's contents are checked at commit. */
+    private static void carton(Connection db, String sku, String location, int units) throws Exception {
+        UUID unit = UUID.randomUUID();
+        UUID carton = UUID.randomUUID();
+        db.setAutoCommit(false);
+        try {
+            RawSql.update(db, "INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, "
+                    + "is_base) SELECT ?, id, ?, ?, FALSE FROM inventory.inventory_items WHERE sku = ?", unit,
+                    "CTN" + units, units, sku);
+            RawSql.update(db, "INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, "
+                    + "nominal_qty, received_qty, location_code, status) SELECT ?, ?, id, ?, ?, ?, ?, 'IN_STOCK' FROM "
+                    + "inventory.inventory_items WHERE sku = ?", carton, sku + "-1", unit, units, units, location, sku);
+            RawSql.update(db, "INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, "
+                    + "status, received_at, stock_package_id, version, created_at) VALUES (gen_random_uuid(), ?, ?, "
+                    + "'LOT-C', ?, 0, 'AVAILABLE', '2026-10-02T00:00:00Z', ?, 0, NOW())", sku, location, units, carton);
+            db.commit();
+        } catch (Exception e) {
+            db.rollback();
+            throw e;
+        } finally {
+            db.setAutoCommit(true);
         }
     }
 

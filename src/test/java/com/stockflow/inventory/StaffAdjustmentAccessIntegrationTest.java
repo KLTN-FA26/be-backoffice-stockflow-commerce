@@ -1,6 +1,12 @@
 package com.stockflow.inventory;
 
+import com.stockflow.common.domain.Sku;
+import com.stockflow.common.error.BusinessException;
+import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.security.Role;
+import com.stockflow.inventory.api.InventoryService;
+import com.stockflow.inventory.api.RequestAdjustmentCommand;
+import com.stockflow.inventory.api.StockAdjustmentReason;
 import com.stockflow.support.SecuredIntegrationTest;
 import com.stockflow.support.SecuredMvc;
 import org.junit.jupiter.api.BeforeEach;
@@ -27,6 +33,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 class StaffAdjustmentAccessIntegrationTest {
 
     @Autowired MockMvc mockMvc;
+    @Autowired InventoryService inventory;
     @MockitoBean JwtDecoder decoder;
     @org.springframework.beans.factory.annotation.Autowired org.springframework.jdbc.core.JdbcTemplate jdbc;
     @org.springframework.beans.factory.annotation.Autowired org.springframework.transaction.support.TransactionTemplate tx;
@@ -67,15 +74,8 @@ class StaffAdjustmentAccessIntegrationTest {
     @Test
     @DisplayName("4A-8: an adjustment for SUBCONTRACT_LOSS is refused, 400 VALIDATION_FAILED: subcontracting is gone")
     void subcontractLossIsRefused() throws Exception {
-        // An adjustment names a loose layer (a carton is only ever changed by a count), and every layer has a lot.
-        tx.executeWithoutResult(s -> jdbc.update("INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, "
-                + "received_at, on_hand, reserved, status, version, created_at) VALUES (gen_random_uuid(), "
-                + "'SOFA-3S-GREY', 'HCM-A01-1-B', 'L-ADJ-' || substr(gen_random_uuid()::text, 1, 8), now() - interval "
-                + "'1 hour', 3, 0, 'AVAILABLE', 0, now())"));
-        var stock = jdbc.queryForMap("SELECT sku, location_code, lot_number FROM inventory.stock_item WHERE lot_number "
-                + "LIKE 'L-ADJ-%' ORDER BY created_at DESC LIMIT 1");
-        String body = "{\"locationCode\":\"%s\",\"sku\":\"%s\",\"lotNumber\":\"%s\",\"quantityDelta\":-1,"
-                .formatted(stock.get("location_code"), stock.get("sku"), stock.get("lot_number"))
+        // A carton is adjusted by its LPN (team plan 4C-3); the reason is judged before the carton is looked up.
+        String body = "{\"lpn\":\"LPN-20991231-000001\",\"direction\":\"WRITE_OFF\","
                 + "\"reason\":\"SUBCONTRACT_LOSS\"}";
 
         mvc.asRole(Role.SYSTEM_ADMIN, clerk, post("/api/v1/inventory/adjustments")
@@ -85,16 +85,17 @@ class StaffAdjustmentAccessIntegrationTest {
     }
 
     @Test
-    @DisplayName("an adjustment without a lot is 400 STOCK_ADJUSTMENT_LOT_REQUIRED on lotNumber, not a 404 (5-5 review)")
-    void adjustmentWithoutALotIsRefused() throws Exception {
-        for (String lot : new String[] {"", ",\"lotNumber\":\"  \""}) {
-            String body = "{\"locationCode\":\"HCM-A01-1-B\",\"sku\":\"SOFA-3S-GREY\"" + lot
-                    + ",\"quantityDelta\":-1,\"reason\":\"DAMAGED\"}";
-            mvc.asRole(Role.SYSTEM_ADMIN, clerk, post("/api/v1/inventory/adjustments")
-                            .contentType(MediaType.APPLICATION_JSON).content(body))
-                    .andExpect(status().isBadRequest())
-                    .andExpect(jsonPath("$.errorCode").value("STOCK_ADJUSTMENT_LOT_REQUIRED"))
-                    .andExpect(jsonPath("$.fieldErrors[0].field").value("lotNumber"));
+    @DisplayName("an adjustment named by bin and lot, with or without a lot, is STOCK_NOT_IN_CARTON: stock is adjusted by "
+            + "carton only (review C4 P-3; was STOCK_ADJUSTMENT_LOT_REQUIRED for the loose layer, 5-5 review)")
+    void adjustmentWithoutALotIsRefused() {
+        // Since 4C-3 the HTTP request names a carton by LPN and carries no lot; since P-3 the inventory API's loose
+        // path (InventoryService.requestAdjustment without an LPN) is refused before its lot is looked at.
+        for (String lot : new String[] {null, "  ", "L-ANY"}) {
+            BusinessException refused = org.assertj.core.api.Assertions.catchThrowableOfType(BusinessException.class,
+                    () -> inventory.requestAdjustment(new RequestAdjustmentCommand("HCM-A01-1-B", new Sku("SOFA-3S-GREY"),
+                            lot, -1, StockAdjustmentReason.DAMAGED, null, clerk)));
+            org.assertj.core.api.Assertions.assertThat(refused).as("lot %s", lot).isNotNull();
+            org.assertj.core.api.Assertions.assertThat(refused.errorCode()).isEqualTo(ErrorCode.STOCK_NOT_IN_CARTON);
         }
     }
 }

@@ -129,14 +129,6 @@ interface StockItemJpaRepository extends JpaRepository<StockItemJpaEntity, UUID>
             """)
     List<AllocatedRow> findAllocatedRowsBySku(@Param("sku") String sku);
 
-    @Query("""
-            select distinct s from StockItemJpaEntity s
-            left join fetch s.reservations
-            where s.sku = :sku and s.locationCode = :locationCode and s.stockPackageId is null
-            """)
-    List<StockItemJpaEntity> findLooseBySkuAndLocation(@Param("sku") String sku,
-                                                       @Param("locationCode") String locationCode);
-
     /** JPQL on purpose: Hibernate flushes this session's pending stock rows before running it (FlushMode.AUTO). */
     @Query("select s.id from StockItemJpaEntity s where s.stockPackageId = :stockPackageId order by s.id")
     List<UUID> findIdsInStockPackage(@Param("stockPackageId") UUID stockPackageId);

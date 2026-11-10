@@ -101,8 +101,8 @@ class StockPackageConsumptionIntegrationTest {
     private UUID hold(UUID order, int quantity) {
         return tx.execute(s -> {
             UUID id = Holds.units(inventory, order, sku, "HCM", quantity);
-            // SCRUM-152: the checkout reservation holds the SKU on no bin; the release allocates it, here to the one
-            // stock row (a carton's, or loose) that can serve it.
+            // 4B-7: the hold takes the SKU at HCM on no bin; the release allocates it, here to the one carton that can
+            // serve it.
             return inventory.allocate(new com.stockflow.inventory.api.AllocateStockCommand(order, "HCM")).allocations()
                     .stream().filter(allocation -> allocation.reservationId().equals(id)).findFirst().orElseThrow()
                     .holdIds().getFirst();
@@ -122,9 +122,12 @@ class StockPackageConsumptionIntegrationTest {
         UUID box = cartonOnShelf("A");
         UUID order = confirmedOrder();
 
+        // The checkout reservation's own refusal (RESERVATION_NOT_WHOLE_CARTONS) went with it (review C4 D-1); a hold
+        // of part of a carton still never reaches a carton: the release finds no whole carton for it, and nothing
+        // is held (the hold and its allocation are one transaction here).
         assertThat(((BusinessException) catchThrowable(() -> hold(order, 3))).errorCode())
-                .as("3 of a carton of 5: a reservation counts cartons")
-                .isEqualTo(ErrorCode.RESERVATION_NOT_WHOLE_CARTONS);
+                .as("3 of a carton of 5: allocated whole cartons only")
+                .isEqualTo(ErrorCode.INSUFFICIENT_STOCK);
         assertThat(carton(box)).containsEntry("status", "IN_STOCK").containsEntry("held", 5L);
 
         UUID whole = hold(order, 5);

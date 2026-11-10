@@ -6,6 +6,7 @@ import com.stockflow.common.id.Identifiers;
 import com.stockflow.identity.api.IdentityService;
 import com.stockflow.identity.api.LoginCommand;
 import com.stockflow.support.Await;
+import com.stockflow.support.CartonRows;
 import com.stockflow.support.CustomerSkuRows;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.KeptCheckoutPrices;
@@ -459,13 +460,13 @@ class StorefrontWithoutPricesIntegrationTest {
         return sku;
     }
 
-    /** {@code pieces} of {@code sku}, sellable, at {@code location}, received a while ago. */
+    /**
+     * {@code pieces} of {@code sku}, sellable, at {@code location}, received a while ago: whole cartons of the SKU's
+     * carton unit ({@link #CARTON}), since stock is kept in cartons only (ck_stock_item_whole_cartons).
+     */
     private void stock(String location, String sku, int pieces) {
-        tx.executeWithoutResult(s -> jdbc.update("""
-                INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, version,
-                    created_at, received_at)
-                VALUES (?, ?, ?, ?, 0, 'AVAILABLE', 0, NOW(), clock_timestamp() - interval '2 days')""",
-                Identifiers.newId(), sku, location, pieces));
+        tx.executeWithoutResult(s -> CartonRows.stock(jdbc, sku, location, pieces / CARTON, CARTON, null,
+                java.time.Instant.now().minus(java.time.Duration.ofDays(2))));
     }
 
     /** A second ACTIVE warehouse with one overflow storage area; returns the area's location code. */
@@ -473,6 +474,7 @@ class StorefrontWithoutPricesIntegrationTest {
         UUID warehouse = Identifiers.newId();
         UUID location = Identifiers.newId();
         String prefix = "S" + warehouse.toString().substring(30).toUpperCase(Locale.ROOT);
+        // An OVERFLOW area is pickable (5-4, kltn-docs 05 BR-13): its cartons are promised like a bin's.
         String area = prefix + "-OVF01";
         tx.executeWithoutResult(s -> {
             jdbc.update("""
@@ -480,9 +482,9 @@ class StorefrontWithoutPricesIntegrationTest {
                                                      version, created_at)
                     VALUES (?, 'Kho thu hai', 'ACTIVE', ?, 'Da Nang', 'M', 50, 50, 0, NOW())""", warehouse, prefix);
             jdbc.update("""
-                    INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, storage_class,
+                    INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code,
                                                             is_pickable, is_putaway_target, status)
-                    VALUES (?, ?, 'AREA', ?, 'NORMAL', FALSE, FALSE, 'ACTIVE')""", location, warehouse, area);
+                    VALUES (?, ?, 'AREA', ?, TRUE, FALSE, 'ACTIVE')""", location, warehouse, area);
             jdbc.update("""
                     INSERT INTO warehouse.area (id, warehouse_id, location_id, code, type, name, x, y, width, length,
                                                 rotation, is_obstacle, status)

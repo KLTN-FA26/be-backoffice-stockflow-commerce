@@ -28,6 +28,8 @@ class InventoryLevelTest {
     private static final Sku SKU = new Sku("SOFA-3S-GREY");
 
     private final StockItemRepository repository = mock(StockItemRepository.class);
+    private final com.stockflow.inventory.internal.domain.LocationDirectory locations =
+            mock(com.stockflow.inventory.internal.domain.LocationDirectory.class);
     private final InventoryServiceImpl service =
             new InventoryServiceImpl(
                     repository,
@@ -37,9 +39,23 @@ class InventoryLevelTest {
                     Clock.systemUTC(),
                     mock(InventoryPolicyRepository.class),
                         mock(com.stockflow.inventory.internal.domain.SkuReservationRepository.class),
-                        mock(com.stockflow.inventory.internal.domain.LocationDirectory.class),
+                        locations,
                         mock(com.stockflow.inventory.internal.domain.CycleCountRepository.class),
                     mock(com.stockflow.inventory.internal.domain.StockPackageRepository.class));
+
+    /**
+     * Review C4 P-1: a warehouse promises what a release there could allocate - the free units of whole cartons on
+     * pickable bins, which the repository offers as {@code Allocatable} rows. Every location here is a pickable bin.
+     */
+    private void allocatable(java.util.Map<String, Integer> freeUnits) {
+        when(repository.findAllocatable(org.mockito.ArgumentMatchers.anyCollection())).thenReturn(freeUnits.entrySet()
+                .stream().map(e -> new StockItemRepository.Allocatable(
+                        new com.stockflow.inventory.internal.domain.StockItemId(java.util.UUID.randomUUID()), SKU.code(),
+                        e.getKey(), e.getValue())).toList());
+        when(locations.pickable(org.mockito.ArgumentMatchers.anyCollection())).thenAnswer(c ->
+                c.<java.util.Collection<String>>getArgument(0).stream().collect(java.util.stream.Collectors.toMap(
+                        code -> code, code -> java.util.UUID.randomUUID())));
+    }
 
     private static StockLevelLine line(
             String location, StockStatus status, int onHand, int reserved) {
@@ -57,6 +73,7 @@ class InventoryLevelTest {
                                 line("HN-A01-2-04", StockStatus.AVAILABLE, 5, 0),
                                 line("HN-QC01", StockStatus.QUARANTINE, 7, 0),
                                 line("HCM-A01-1-01", StockStatus.AVAILABLE, 3, 1)));
+        allocatable(java.util.Map.of("HN-A01-2-03", 6, "HN-A01-2-04", 5, "HCM-A01-1-01", 2));
 
         List<StockLevel> levels = service.levelsOf(SKU);
 
@@ -76,6 +93,7 @@ class InventoryLevelTest {
                                 line("HCM-A01-1-01", StockStatus.AVAILABLE, 3, 1)));
         when(repository.findAllocatedBySku(SKU))
                 .thenReturn(java.util.Map.of("HN-A01-2-03", 3, "HN-A01-2-04", 2));
+        allocatable(java.util.Map.of("HN-A01-2-03", 6, "HN-A01-2-04", 3, "HCM-A01-1-01", 2));
 
         List<StockLevel> levels = service.levelsOf(SKU);
 
@@ -91,6 +109,7 @@ class InventoryLevelTest {
                         List.of(
                                 line("HN-A01-2-03", StockStatus.AVAILABLE, 10, 4),
                                 line("HCM-A01-1-01", StockStatus.AVAILABLE, 3, 1)));
+        allocatable(java.util.Map.of("HN-A01-2-03", 6, "HCM-A01-1-01", 2));
 
         assertThat(service.availableToPromise(SKU, "hn")).isEqualTo(6);
         assertThat(service.availableToPromise(SKU, "HCM")).isEqualTo(2);

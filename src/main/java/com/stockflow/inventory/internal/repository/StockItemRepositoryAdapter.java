@@ -2,7 +2,6 @@ package com.stockflow.inventory.internal.repository;
 
 import com.stockflow.inventory.internal.entity.StockItemJpaEntity;
 
-import com.stockflow.inventory.internal.domain.LocationId;
 import com.stockflow.inventory.internal.domain.StockAllocator;
 import com.stockflow.inventory.internal.domain.ReservationId;
 import com.stockflow.inventory.internal.domain.StockItem;
@@ -175,13 +174,6 @@ class StockItemRepositoryAdapter implements StockItemRepository {
         return jpa.findIdsInStockPackages(stockPackageIds.stream()
                         .map(com.stockflow.inventory.internal.domain.StockPackageId::value).distinct().toList())
                 .stream().map(StockItemId::new).toList();
-    }
-
-    @Override
-    public List<StockItem> findLooseBySkuAndLocation(Sku sku, LocationId location) {
-        return jpa.findLooseBySkuAndLocation(sku.code(), location.code()).stream()
-                .map(StockItemPersistenceMapper::toDomain)
-                .toList();
     }
 
     @Override

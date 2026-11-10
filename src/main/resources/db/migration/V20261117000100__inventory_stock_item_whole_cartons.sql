@@ -16,7 +16,10 @@
 --   2. any unit still on a row in no carton is written off: one ADJUSTMENT ledger line per row (reference the row
 --      itself, the reason naming this migration), then on_hand 0. A database built from db/migration and db/demo has
 --      none: 4C-1 put the demo stock into cartons.
---   3. the CHECK, validated.
+--   3. a hold at a warehouse (a SKU reservation, on no row) that the write-off left with too little stock behind it
+--      is released, newest first, until what is held of the SKU is covered again - at its warehouse and system-wide,
+--      the rule tg_stock_reservation_soft_atp keeps on every hold it sees written (review P-4);
+--   4. the CHECK, validated.
 -- =============================================================================
 
 -- 1. holds on loose rows
@@ -37,6 +40,9 @@ UPDATE inventory.stock_item
  WHERE stock_package_id IS NULL AND reserved > 0;
 
 -- 2. units on loose rows, written off on the ledger
+CREATE TEMP TABLE written_off_sku ON COMMIT DROP AS
+SELECT DISTINCT sku FROM inventory.stock_item WHERE stock_package_id IS NULL AND on_hand > 0;
+
 INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, from_location_code, to_location_code, quantity,
                                       from_status, to_status, reference_type, reference_id, reason, occurred_at, lot_id,
                                       created_at, created_by)
@@ -50,7 +56,38 @@ UPDATE inventory.stock_item
    SET on_hand = 0, version = version + 1, last_modified_at = now()
  WHERE stock_package_id IS NULL AND on_hand > 0;
 
--- 3. the rule
+-- 3. holds left uncovered by the write-off, newest first
+DO $$
+DECLARE
+    r    RECORD;
+    free BIGINT;
+    held BIGINT;
+BEGIN
+    FOR r IN SELECT h.id, h.sku, h.warehouse_code
+               FROM inventory.stock_reservation h
+              WHERE h.stock_item_id IS NULL AND h.status = 'HELD'
+                AND h.sku IN (SELECT sku FROM written_off_sku)
+              ORDER BY h.reserved_at DESC, h.id DESC
+    LOOP
+        SELECT COALESCE(sum(on_hand - reserved), 0) INTO free FROM inventory.stock_item
+         WHERE sku = r.sku AND status = 'AVAILABLE';
+        SELECT COALESCE(sum(quantity), 0) INTO held FROM inventory.stock_reservation
+         WHERE sku = r.sku AND stock_item_id IS NULL AND status = 'HELD';
+        IF held <= free AND r.warehouse_code IS NOT NULL THEN
+            SELECT COALESCE(sum(on_hand - reserved), 0) INTO free FROM inventory.stock_item
+             WHERE sku = r.sku AND status = 'AVAILABLE' AND split_part(location_code, '-', 1) = r.warehouse_code;
+            SELECT COALESCE(sum(quantity), 0) INTO held FROM inventory.stock_reservation
+             WHERE sku = r.sku AND stock_item_id IS NULL AND status = 'HELD' AND warehouse_code = r.warehouse_code;
+        END IF;
+        IF held > free THEN
+            UPDATE inventory.stock_reservation
+               SET status = 'RELEASED', release_reason = 'MANUAL_OVERRIDE', closed_at = now()
+             WHERE id = r.id;
+        END IF;
+    END LOOP;
+END $$;
+
+-- 4. the rule
 ALTER TABLE inventory.stock_item
     ADD CONSTRAINT ck_stock_item_whole_cartons
         CHECK (stock_package_id IS NOT NULL OR (on_hand = 0 AND reserved = 0));

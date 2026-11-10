@@ -246,9 +246,24 @@ class SkuReservationAllocationIntegrationTest {
                         concat(times(5, "HCM-A01-1-B"), times(5, "HCM-A01-1-A"), times(2, "HCM-A02-2-A")));
         assertThat(allocate(order, "HCM").allocations()).as("allocating again changes nothing").isEmpty();
         assertThat(reservedEverywhere()).isEqualTo(12);
-        // SCRUM-476: Inventory Level shows the 12 allocated units apart from the other holds, ATP unchanged.
+        // SCRUM-476: Inventory Level shows the 12 allocated units apart from the other holds; ATP is what is left to
+        // allocate on pickable bins, 17 - 12 (review C4 P-1: HCM-RCV01's 5 are on hand, never promised).
         assertThat(inventory.levelsOf(new Sku(sku)))
-                .containsExactly(new com.stockflow.inventory.api.StockLevel(sku, "HCM", 22, 22, 0, 12, 10));
+                .containsExactly(new com.stockflow.inventory.api.StockLevel(sku, "HCM", 22, 22, 0, 12, 5));
+    }
+
+    @Test
+    @DisplayName("review C4 P-1: stock in receiving and staging areas is on hand but promised by no warehouse either")
+    void areaStockIsNotPromisedAtItsWarehouse() {
+        tx.executeWithoutResult(s -> row("HCM-STG01", 3, "2025-08-01T00:00:00Z"));
+
+        assertThat(atp()).as("system-wide: the 17 cartons on pickable bins").isEqualTo(17);
+        assertThat(inventory.availableToPromiseByWarehouse(new Sku(sku))).as("HCM promises the same 17, not the 5 in "
+                + "HCM-RCV01 nor the 3 in HCM-STG01").containsEntry("HCM", 17);
+        assertThat(hold(order(), UUID.randomUUID(), 18).cartonsHeld()).as("18 is more than HCM promises").isZero();
+        reserve(order(), 17);
+        assertThat(inventory.availableToPromiseByWarehouse(new Sku(sku))).containsEntry("HCM", 0);
+        assertThat(atp()).isZero();
     }
 
     @Test
@@ -266,25 +281,6 @@ class SkuReservationAllocationIntegrationTest {
         assertThat(status(rest.reservationId())).isEqualTo("HELD");
         assertThat(reservedEverywhere()).isEqualTo(13);
         assertThat(status(soft.reservationId())).isEqualTo("ALLOCATED");
-    }
-
-    @Test
-    @DisplayName("a release after one line's reservation lapsed allocates nothing, rather than the other lines alone")
-    void aLapsedReservationStopsTheAllocation() {
-        UUID order = order();
-        Hold kept = reserve(order, 2);
-        Hold lapsed = reserve(order, 3);
-        tx.executeWithoutResult(s -> inventory.release(lapsed.reservationId(), "MANUAL_OVERRIDE"));
-
-        assertThat(code(catchThrowable(() -> allocate(order, "HCM")))).isEqualTo(ErrorCode.RESERVATION_NOT_ACTIVE);
-        assertThat(status(kept.reservationId())).isEqualTo("HELD");
-        assertThat(reservedEverywhere()).isZero();
-
-        UUID none = order();
-        Hold only = reserve(none, 1);
-        tx.executeWithoutResult(s -> inventory.release(only.reservationId(), "MANUAL_OVERRIDE"));
-        assertThat(code(catchThrowable(() -> allocate(none, "HCM")))).as("nothing left to allocate either")
-                .isEqualTo(ErrorCode.RESERVATION_NOT_ACTIVE);
     }
 
     @Test

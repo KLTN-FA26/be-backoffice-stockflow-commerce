@@ -367,18 +367,18 @@ class InventoryServiceImpl implements InventoryService {
     }
 
     /**
-     * Each warehouse's levels of the SKU. ATP per warehouse (20 BR-01): its unheld sellable stock, less the SKU
-     * reservations held at it (4B-7, BR-17), never more than is left system-wide once every SKU reservation - held at
-     * a warehouse or not - is counted. {@code scoped}: only the warehouses a warehouse-bound caller may see.
+     * Each warehouse's levels of the SKU. ATP per warehouse (20 BR-01): what a release there could allocate - whole
+     * free cartons on pickable, usable locations, none frozen, the very set the release plans over
+     * ({@link PickableStock}; review P-1: a carton in a receiving area is on hand, never allocated, so never promised) -
+     * less the SKU reservations held at it (4B-7, BR-17), never more than is left system-wide once every SKU
+     * reservation - held at a warehouse or not - is counted. On hand, available and reserved are the rows' figures, as
+     * Inventory Level shows them. {@code scoped}: only the warehouses a warehouse-bound caller may see.
      */
     private List<StockLevel> levels(Sku sku, boolean scoped) {
         record Totals(int onHand, int available, int reserved, int atp) {
-            /** A staging area's stock is AVAILABLE, but promised to nobody else (kltn-docs 20 §5.1, BR-20). */
-            static Totals of(StockLevelLine line, boolean staged) {
-                boolean usable = line.status() == StockStatus.AVAILABLE;
-                int sellable = usable ? line.onHand() : 0;
-                return new Totals(line.onHand(), sellable, line.reserved(),
-                        usable && !staged ? line.onHand() - line.reserved() : 0);
+            static Totals of(StockLevelLine line) {
+                int sellable = line.status() == StockStatus.AVAILABLE ? line.onHand() : 0;
+                return new Totals(line.onHand(), sellable, line.reserved(), 0);
             }
 
             Totals plus(Totals other) {
@@ -388,21 +388,17 @@ class InventoryServiceImpl implements InventoryService {
             }
         }
         Map<String, Totals> byWarehouse = new TreeMap<>();
-        Set<String> staging = locations.stagingAreas();
         for (StockLevelLine line : repository.findLevelLinesBySku(sku)) {
-            byWarehouse.merge(line.location().warehouseCode(),
-                    Totals.of(line, staging.contains(line.location().code())), Totals::plus);
+            byWarehouse.merge(line.location().warehouseCode(), Totals.of(line), Totals::plus);
         }
+        Map<String, Long> allocatable = new PickableStock(repository, locations, cycleCounts).allocatableByWarehouse(sku);
+        byWarehouse.replaceAll((code, totals) -> new Totals(totals.onHand(), totals.available(), totals.reserved(),
+                Math.toIntExact(allocatable.getOrDefault(code, 0L))));
         // Allocations are holds on these same rows: counted in reserved above, shown apart below (glossary: a
         // reservation is a soft hold on the SKU, an allocation a hard hold on a bin), so the two never add up twice.
         Map<String, Integer> allocatedByWarehouse = new TreeMap<>();
         repository.findAllocatedBySku(sku).forEach((locationCode, units) ->
                 allocatedByWarehouse.merge(new LocationId(locationCode).warehouseCode(), units, Integer::sum));
-        for (var frozen : cycleCounts.frozen(List.of(sku.code()))) {
-            byWarehouse.computeIfPresent(new LocationId(frozen.locationCode()).warehouseCode(), (code, totals) ->
-                    new Totals(totals.onHand(), totals.available(), totals.reserved(),
-                            (int) Math.max(0, totals.atp() - frozen.free())));
-        }
         // A SKU reservation of before 4B-7 named no warehouse and was promised against the whole system (SCRUM-152):
         // no warehouse can promise more than is left system-wide once every SKU reservation is counted - from these
         // same lines and this same day.
