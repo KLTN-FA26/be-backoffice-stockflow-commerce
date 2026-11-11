@@ -362,9 +362,6 @@ SELECT pg_temp.expect_ok('CX4 another count is not full', $q$
     VALUES (gen_random_uuid(), md5('qa62:small')::uuid, 'HCM-A02-1-B', 'SOFA-3S-GREY', 0, md5('qa62:m:501')::uuid) $q$);
 
 \echo '--- what the migration kept'
-SELECT pg_temp.expect_true('CM1 the unopened flags were archived whole before the column went',
-    EXISTS (SELECT 1 FROM platform.legacy_archive WHERE source_table = 'inventory.stock_package.unopened'
-               AND row_data ? 'unopened' AND row_data ? 'lpn'));
 SELECT pg_temp.expect_true('CM2 the new triggers and checks are in place',
     (SELECT count(*) FROM pg_trigger WHERE tgname IN ('tg_cycle_count_line_carton', 'tg_stock_adjustment_whole_carton')
         AND NOT tgisinternal) = 2

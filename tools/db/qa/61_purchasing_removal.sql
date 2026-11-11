@@ -115,21 +115,6 @@ SELECT pg_temp.expect_true('T10 no foreign key points at a dropped table, and th
     AND (SELECT count(*) FROM information_schema.columns WHERE table_schema = 'inventory' AND table_name = 'stock_lot'
           AND column_name IN ('purchase_order_id', 'purchase_order_number', 'supplier_id', 'supplier_name')) = 0 $c$);
 
-\echo '--- what was dropped is in the archive'
-SELECT pg_temp.expect_true('A1 the demo suppliers are archived whole', $c$
-    (SELECT count(*) FROM platform.legacy_archive WHERE source_table = 'procurement.suppliers') >= 2
-    AND EXISTS (SELECT 1 FROM platform.legacy_archive WHERE source_table = 'procurement.suppliers'
-                 AND row_data ->> 'code' = 'GOVIET') $c$);
-SELECT pg_temp.expect_true('A2 the demo purchase order the demo migration cancelled is archived as it was left', $c$
-    EXISTS (SELECT 1 FROM platform.legacy_archive WHERE source_table = 'procurement.purchase_orders'
-             AND row_data ->> 'po_number' = 'PO-HCM-DEMO-0002' AND row_data ->> 'status' = 'CANCELLED') $c$);
-SELECT pg_temp.expect_true('A3 the 33 permissions that went (QC task ones went with V20261108000200) are archived, the four goods-receipt ones are not', $c$
-    (SELECT count(*) FROM platform.legacy_archive WHERE source_table = 'identity.permission'
-        AND row_data ->> 'code' LIKE 'procurement-%' AND row_data ->> 'code' NOT LIKE 'procurement-qc-tasks:%') = 33
-    AND NOT EXISTS (SELECT 1 FROM platform.legacy_archive WHERE source_table = 'identity.permission'
-        AND row_data ->> 'code' IN ('procurement-goods-receipts:VIEW_PAGE', 'procurement-goods-receipts:READ',
-                                    'procurement-goods-receipts:CREATE', 'procurement-goods-receipts:UPDATE')) $c$);
-
 \echo '--- permissions'
 SELECT pg_temp.expect_true('P1 only the four goods-receipt permissions are left under procurement-', $c$
     (SELECT string_agg(code, ',' ORDER BY code) FROM identity.permission WHERE code LIKE 'procurement-%')

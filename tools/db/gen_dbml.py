@@ -7,8 +7,8 @@ hand it drifted from the database within a week (QA notes, 27/9). Regenerate it 
 
     tools/db/gen_dbml.py <database> docs/business-design/db-design/schema.dbml
 
-Use a database with every migration AND every db/pending contract applied, so the diagram shows
-the target model rather than the expand-period mix of old and new tables. Tables, columns,
+Use a freshly migrated database (db/migration only, no demo seed needed: the diagram is schema).
+Tables, columns,
 primary/unique keys, defaults, foreign keys (with ON DELETE) and one colour per module schema.
 A "col IN ('A','B')" CHECK is drawn as a DBML Enum for readability; the database itself keeps
 VARCHAR + CHECK because every entity maps enums @Enumerated(STRING). No notes, by request: the
