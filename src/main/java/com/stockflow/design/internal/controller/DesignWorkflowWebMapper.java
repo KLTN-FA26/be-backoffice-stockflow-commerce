@@ -9,10 +9,10 @@ import org.springframework.stereotype.Component;
 @Component
 class DesignWorkflowWebMapper {
     DesignDraftResponse toResponse(DesignWorkflowService.DraftView d) {
-        return new DesignDraftResponse(d.id(), d.customerId(), d.productId(), d.ownerUserId(),
-                d.assignedUserId(), d.reviewerUserId(), d.name(), d.spec(), d.status(),
-                d.currentArtifactId(), d.technicalReviewPassed(), d.reviewNotes(), d.version(),
-                d.parentSnapshotId());
+        return new DesignDraftResponse(d.id(), d.customerId(), d.productId(), d.ownerUserId(), d.name(), d.spec(),
+                d.status(), d.currentArtifactId(), d.reviewedBy(), d.reviewNotes(), d.version(), d.parentSnapshotId(),
+                d.productSlug(), d.sku(), d.templateCode(), d.reviewRequestedAt(), d.reviewedAt(), d.updatedAt(),
+                d.currentArtifactId(), d.projectId());
     }
 
     DesignSnapshotResponse toResponse(DesignWorkflowService.SnapshotView s) {
@@ -20,7 +20,10 @@ class DesignWorkflowWebMapper {
                 s.confirmedBy(), s.confirmedAt(), s.artifacts().stream()
                 .map(a -> new DesignSnapshotResponse.Artifact(a.artifactId(), a.role(), a.originalName(),
                         a.contentType(), a.sizeBytes(), a.checksum()))
-                .toList());
+                .toList(), s.document(), s.documentChecksum(), s.assets() == null ? null : s.assets().stream()
+                .map(a -> new DesignSnapshotResponse.Asset(a.assetId(), a.originalName(), a.contentType(),
+                        a.sizeBytes(), a.checksum(), a.widthPx(), a.heightPx()))
+                .toList(), s.customerSku());
     }
 
     DesignDecisionResponse toResponse(DesignWorkflowService.DecisionView d) {

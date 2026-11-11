@@ -1,6 +1,5 @@
 package com.stockflow.inventory.internal.domain;
 
-import java.time.Instant;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
@@ -20,7 +19,7 @@ public interface SkuReservationRepository {
 
     Optional<SkuReservation> findByIdForUpdate(ReservationId reservationId);
 
-    /** The live (HELD) reservations a checkout request made, for its replay check. Not locked. */
+    /** The live (HELD) reservations a hold request made, for its replay check. Not locked. */
     List<SkuReservation> findHeldForRequest(UUID rootRequestId);
 
     /** The live reservations of an order, locked, in (SKU, id) order. */
@@ -32,11 +31,11 @@ public interface SkuReservationRepository {
     /** Whether a reservation of the order closed without being allocated (expired or released). */
     boolean anyLapsedForOrder(UUID orderId);
 
-    /** Live reservations past {@code cutoff}, locked, skipping rows another transaction holds. */
-    List<SkuReservation> findExpiredForUpdate(Instant cutoff, int limit);
-
     /** Units under live SKU reservations, per SKU code; a SKU with none is absent. */
     Map<String, Long> heldBySku(Collection<String> skus);
+
+    /** 4B-7: the live SKU reservations of {@code sku} held at a warehouse, by warehouse code (20 BR-17). */
+    Map<String, Long> heldBySkuAt(String sku);
 
     /** These reservations, in any status; an unknown id is absent. */
     List<SkuReservation> findAll(Collection<UUID> reservationIds);

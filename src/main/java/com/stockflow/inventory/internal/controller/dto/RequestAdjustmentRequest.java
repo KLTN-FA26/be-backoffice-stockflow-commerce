@@ -1,37 +1,30 @@
 package com.stockflow.inventory.internal.controller.dto;
 
-import com.stockflow.common.validation.ValidSku;
 import com.stockflow.inventory.api.StockAdjustmentReason;
+import com.stockflow.inventory.internal.domain.AdjustmentDirection;
 import io.swagger.v3.oas.annotations.media.Schema;
-import jakarta.validation.constraints.Max;
-import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 
-@Schema(description = "Ask for one stock item to be corrected; a different person approves it")
+/**
+ * Ask for one LPN carton to be written off whole or restocked whole (kltn-docs 20 §4.3, BR-04, BR-14; team plan 4C-3).
+ * No quantity: a carton is adjusted whole, so the system takes its standard count.
+ */
+@Schema(description = "Ask for one carton to be written off or restocked whole; a different person approves it")
 public record RequestAdjustmentRequest(
 
-        @Schema(example = "HCM-A01-1-A")
-        @NotBlank(message = "locationCode is required")
-        @Size(max = 64, message = "locationCode is at most 64 characters")
-        String locationCode,
+        @Schema(example = "LPN-20261110-000001")
+        @NotBlank(message = "lpn is required")
+        @Size(max = 30, message = "lpn is at most 30 characters")
+        String lpn,
 
-        @Schema(example = "CUP-PP-500")
-        @NotBlank(message = "sku is required")
-        @ValidSku
-        String sku,
+        @Schema(description = "WRITE_OFF a carton in stock, or RESTOCK a LOST carton found again")
+        @NotNull(message = "direction is required")
+        AdjustmentDirection direction,
 
-        @Size(max = 64, message = "lotNumber is at most 64 characters")
-        String lotNumber,
-
-        @Schema(description = "Negative to write off, positive to write up; never zero", example = "-3")
-        @Min(value = -1_000_000, message = "quantityDelta is at least -1,000,000")
-        @Max(value = 1_000_000, message = "quantityDelta is at most 1,000,000")
-        int quantityDelta,
-
-        @Schema(description = "Why the stock changed. COUNT_VARIANCE is refused here (400 VALIDATION_FAILED): it is "
-                + "posted only by a cycle count's submission, which names the count line it comes from")
+        @Schema(description = "DAMAGED, LOST, FOUND, DATA_CORRECTION or OTHER. COUNT_VARIANCE is refused here (400 "
+                + "VALIDATION_FAILED): only a cycle count's submission asks for it")
         @NotNull(message = "reason is required")
         StockAdjustmentReason reason,
 

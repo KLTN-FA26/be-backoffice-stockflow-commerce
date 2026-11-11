@@ -10,6 +10,6 @@ public enum RecordRetention {
     /** Every file of a design bundle the customer confirmed: what was approved is what is printed. */
     CONFIRMED_DESIGN,
 
-    /** A supplier's invoice as received: an accounting record. */
-    SUPPLIER_INVOICE
+    /** A sales contract as sent to the customer, and as signed (4B-4, kltn-docs 14 BR-14): what binds both parties. */
+    SALES_CONTRACT
 }

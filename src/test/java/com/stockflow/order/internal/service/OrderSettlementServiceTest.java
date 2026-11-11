@@ -4,9 +4,12 @@ import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.internal.domain.Order;
 import com.stockflow.order.internal.domain.OrderRepository;
 import com.stockflow.order.internal.domain.SettlementCandidates;
+import com.stockflow.payment.api.InstallmentStanding;
+import com.stockflow.payment.api.PaymentService;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -35,27 +38,33 @@ class OrderSettlementServiceTest {
     private final OrderRepository repository = mock(OrderRepository.class);
     private final SettlementCandidates candidates = mock(SettlementCandidates.class);
     private final OrderEventPublisher events = mock(OrderEventPublisher.class);
+    private final PaymentService payments = mock(PaymentService.class);
+
+    {
+        // Without installments an order owes nothing in the system (4B-10).
+        when(payments.installmentStanding(any())).thenAnswer(call -> InstallmentStanding.none(call.getArgument(0)));
+    }
 
     private OrderSettlementService at(Instant now) {
-        return new OrderSettlementService(repository, candidates, events, Clock.fixed(now, ZoneOffset.UTC), 7, 30);
+        return new OrderSettlementService(repository, candidates, events, payments, org.mockito.Mockito.mock(com.stockflow.order.internal.domain.SalesContractRepository.class), Clock.fixed(now, ZoneOffset.UTC), 7, 30);
     }
 
     @Test
-    @DisplayName("completion candidates are the orders delivered at or before now minus the return window")
+    @DisplayName("completion candidates are the orders delivered at or before now minus the return window, after the ones skipped")
     void completionCandidatesUseTheReturnWindow() {
         List<UUID> found = List.of(UUID.randomUUID());
-        when(candidates.deliveredBy(NOW.minus(Duration.ofDays(7)), 50)).thenReturn(found);
+        when(candidates.deliveredBy(NOW.minus(Duration.ofDays(7)), 5, 50)).thenReturn(found);
 
-        assertThat(at(NOW).completionCandidates(50)).isEqualTo(found);
+        assertThat(at(NOW).completionCandidates(5, 50)).isEqualTo(found);
     }
 
     @Test
     @DisplayName("closing candidates are the orders settled at or before now minus the closing delay (default 30 days)")
     void closingCandidatesUseTheClosingDelay() {
         List<UUID> found = List.of(UUID.randomUUID());
-        when(candidates.settledBy(NOW.minus(Duration.ofDays(30)), 10)).thenReturn(found);
+        when(candidates.settledBy(NOW.minus(Duration.ofDays(30)), 0, 10)).thenReturn(found);
 
-        assertThat(at(NOW).closingCandidates(10)).isEqualTo(found);
+        assertThat(at(NOW).closingCandidates(0, 10)).isEqualTo(found);
     }
 
     @Test
@@ -113,7 +122,7 @@ class OrderSettlementServiceTest {
     @DisplayName("a completed order is closed after the closing delay and not before (BR-05, G3-Q1)")
     void closesAfterTheClosingDelay() {
         Order order = OrderFixtures.delivered(NOW);
-        order.complete(LATER, Duration.ofDays(7), false);
+        order.complete(LATER, Duration.ofDays(7), false, false);
         order.pullDomainEvents();
         when(repository.findByIdForUpdate(order.id())).thenReturn(Optional.of(order));
 
@@ -135,5 +144,31 @@ class OrderSettlementServiceTest {
         assertThat(at(NOW.plus(Duration.ofDays(400))).close(order.id().value())).isFalse();
         verify(repository, never()).save(any());
         verify(events, never()).publishEventsOf(any());
+    }
+
+    private static InstallmentStanding standing(UUID order, long total, long paid) {
+        return new InstallmentStanding(order, true, true, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.valueOf(total),
+                BigDecimal.valueOf(paid), null);
+    }
+
+    @Test
+    @DisplayName("4B-10 (17 §4.6 step 21): an order whose installments still owe is not completed, nor closed; paid "
+            + "in full it is")
+    void anOrderStillOwingIsNeitherCompletedNorClosed() {
+        Order order = OrderFixtures.delivered(NOW);
+        when(repository.findByIdForUpdate(order.id())).thenReturn(Optional.of(order));
+        when(payments.installmentStanding(order.id().value())).thenReturn(standing(order.id().value(), 1_000, 400));
+
+        assertThat(at(LATER).complete(order.id().value())).isFalse();
+        assertThat(order.status()).isEqualTo(OrderStatus.DELIVERED);
+        verify(repository, never()).save(any());
+
+        when(payments.installmentStanding(order.id().value())).thenReturn(standing(order.id().value(), 1_000, 1_000));
+        assertThat(at(LATER).complete(order.id().value())).isTrue();
+        assertThat(order.status()).isEqualTo(OrderStatus.COMPLETED);
+
+        when(payments.installmentStanding(order.id().value())).thenReturn(standing(order.id().value(), 1_000, 400));
+        assertThat(at(LATER.plus(Duration.ofDays(31))).close(order.id().value())).isFalse();
+        assertThat(order.status()).isEqualTo(OrderStatus.COMPLETED);
     }
 }

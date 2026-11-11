@@ -32,29 +32,39 @@ final class FulfillmentWorkResourceDeclarations {
             actions = {Action.READ, Action.UPDATE, Action.APPROVE})
     static final class Packing { private Packing() { } }
 
-    @PermissionResource(code = FulfillmentResources.DESIGN_REVERIFICATION, group = "Fulfillment",
-            label = "Design-integrity holds: see and re-verify", route = "/fulfillment/packages",
-            apiPath = "/api/v1/fulfillment/tasks", actions = {Action.READ, Action.UPDATE})
-    static final class DesignReverification { private DesignReverification() { } }
-
     @PermissionResource(code = FulfillmentResources.CARRIERS, group = "Fulfillment", label = "Carrier catalogue",
             route = "/fulfillment/carriers", apiPath = "/api/v1/fulfillment/carriers", actions = {Action.UPDATE})
     static final class Carriers { private Carriers() { } }
 
     @PermissionResource(code = FulfillmentResources.DISPATCH, group = "Fulfillment",
-            label = "Dispatch: loads, loading and handover", route = "/fulfillment/loads",
-            apiPath = "/api/v1/fulfillment/loads", actions = {Action.CREATE, Action.UPDATE})
+            label = "Dispatch: booking, loading and handover", route = "/fulfillment/loads",
+            apiPath = "/api/v1/fulfillment/loads", actions = {Action.UPDATE})
     static final class Dispatch { private Dispatch() { } }
-
-    @PermissionResource(code = FulfillmentResources.LOAD_CANCELLATIONS, group = "Fulfillment",
-            label = "Load cancellation", route = "/fulfillment/loads", apiPath = "/api/v1/fulfillment/loads",
-            actions = {Action.UPDATE})
-    static final class LoadCancellations { private LoadCancellations() { } }
 
     @PermissionResource(code = FulfillmentResources.CONTROLLED_CANCELLATIONS, group = "Fulfillment",
             label = "Controlled cancel after loading started", route = "/fulfillment/loads",
             apiPath = "/api/v1/fulfillment", actions = {Action.UPDATE})
     static final class ControlledCancellations { private ControlledCancellations() { } }
+
+    @PermissionResource(code = FulfillmentResources.WAYBILL_CORRECTIONS, group = "Fulfillment",
+            label = "Waybill correction after the vehicle left", route = "/fulfillment/loads",
+            apiPath = "/api/v1/fulfillment/loads", actions = {Action.UPDATE})
+    static final class WaybillCorrections { private WaybillCorrections() { } }
+
+    @PermissionResource(code = FulfillmentResources.WAYBILL_IMPORTS, group = "Fulfillment",
+            label = "Waybill numbers imported from a file", route = "/fulfillment/waybill-imports",
+            apiPath = "/api/v1/fulfillment/waybill-imports", actions = {Action.READ, Action.CREATE})
+    static final class WaybillImports { private WaybillImports() { } }
+
+    @PermissionResource(code = FulfillmentResources.CARRIER_EVENTS, group = "Fulfillment",
+            label = "Carrier webhook events and their error list", route = "/fulfillment/carrier-events",
+            apiPath = "/api/v1/fulfillment/carrier-events", actions = {Action.READ, Action.UPDATE})
+    static final class CarrierEvents { private CarrierEvents() { } }
+
+    @PermissionResource(code = FulfillmentResources.DELIVERY_CORRECTIONS, group = "Fulfillment",
+            label = "Delivery outcome corrected when the carrier reported it wrongly", route = "/fulfillment/shipments",
+            apiPath = "/api/v1/fulfillment/shipments", actions = {Action.UPDATE})
+    static final class DeliveryCorrections { private DeliveryCorrections() { } }
 
     @PermissionResource(code = FulfillmentResources.DELIVERY_OUTCOMES, group = "Fulfillment",
             label = "Delivery outcomes", route = "/fulfillment/shipments", apiPath = "/api/v1/fulfillment/shipments",

@@ -53,32 +53,32 @@ INSERT INTO warehouse.zone (id, warehouse_id, name) VALUES (md5('qa:zone:HN')::u
 
 \echo '--- warehouse map'
 SELECT pg_temp.expect_ok('W0 a correct new bin (location first, owned by commit)', $q$
-    INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, storage_class, is_pickable, is_putaway_target, status)
-    VALUES (md5('qa:loc:C')::uuid, md5('demo:wh:HCM')::uuid, 'BIN', 'HCM-A01-1-C', 'OVERSIZE', TRUE, TRUE, 'ACTIVE');
+    INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, is_pickable, is_putaway_target, status)
+    VALUES (md5('qa:loc:C')::uuid, md5('demo:wh:HCM')::uuid, 'BIN', 'HCM-A01-1-C', TRUE, TRUE, 'ACTIVE');
     INSERT INTO warehouse.bin (id, level_id, location_id, code, x, y, width, length, rotation, type)
     VALUES (md5('qa:bin:C')::uuid, md5('demo:level:HCM-A01-1')::uuid, md5('qa:loc:C')::uuid, 'C', 0, 0, 1, 1, 0, 'STANDARD') $q$);
 SELECT pg_temp.expect_fail('W1 bin location code in area format', $q$
-    INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, storage_class, is_pickable, is_putaway_target, status)
-    VALUES (gen_random_uuid(), md5('demo:wh:HCM')::uuid, 'BIN', 'HCM-A01', 'NORMAL', TRUE, TRUE, 'ACTIVE') $q$);
+    INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, is_pickable, is_putaway_target, status)
+    VALUES (gen_random_uuid(), md5('demo:wh:HCM')::uuid, 'BIN', 'HCM-A01', TRUE, TRUE, 'ACTIVE') $q$);
 SELECT pg_temp.expect_fail('W2 old-style code HCM-A-01-02-B', $q$
-    INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, storage_class, is_pickable, is_putaway_target, status)
-    VALUES (gen_random_uuid(), md5('demo:wh:HCM')::uuid, 'BIN', 'HCM-A-01-02-B', 'NORMAL', TRUE, TRUE, 'ACTIVE') $q$);
+    INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, is_pickable, is_putaway_target, status)
+    VALUES (gen_random_uuid(), md5('demo:wh:HCM')::uuid, 'BIN', 'HCM-A-01-02-B', TRUE, TRUE, 'ACTIVE') $q$);
 SELECT pg_temp.expect_fail('W3 bin pointing at an AREA location', $q$
     INSERT INTO warehouse.bin (id, level_id, location_id, code, x, y, width, length, rotation, type)
     VALUES (gen_random_uuid(), md5('demo:level:HCM-A01-1')::uuid, md5('demo:loc:HCM-QC01')::uuid, 'Z', 0, 0, 1, 1, 0, 'STANDARD') $q$);
 SELECT pg_temp.expect_fail('W4 bin whose location is in another warehouse', $q$
-    INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, storage_class, is_pickable, is_putaway_target, status)
-    VALUES (md5('qa:loc:hn')::uuid, md5('qa:wh:HN')::uuid, 'BIN', 'HCM-A01-1-D', 'NORMAL', TRUE, TRUE, 'ACTIVE');
+    INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, is_pickable, is_putaway_target, status)
+    VALUES (md5('qa:loc:hn')::uuid, md5('qa:wh:HN')::uuid, 'BIN', 'HCM-A01-1-D', TRUE, TRUE, 'ACTIVE');
     INSERT INTO warehouse.bin (id, level_id, location_id, code, x, y, width, length, rotation, type)
     VALUES (gen_random_uuid(), md5('demo:level:HCM-A01-1')::uuid, md5('qa:loc:hn')::uuid, 'D', 0, 0, 1, 1, 0, 'STANDARD') $q$);
 SELECT pg_temp.expect_fail('W5 bin code that does not assemble into its location code', $q$
-    INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, storage_class, is_pickable, is_putaway_target, status)
-    VALUES (md5('qa:loc:e')::uuid, md5('demo:wh:HCM')::uuid, 'BIN', 'HCM-A01-1-E', 'NORMAL', TRUE, TRUE, 'ACTIVE');
+    INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, is_pickable, is_putaway_target, status)
+    VALUES (md5('qa:loc:e')::uuid, md5('demo:wh:HCM')::uuid, 'BIN', 'HCM-A01-1-E', TRUE, TRUE, 'ACTIVE');
     INSERT INTO warehouse.bin (id, level_id, location_id, code, x, y, width, length, rotation, type)
     VALUES (gen_random_uuid(), md5('demo:level:HCM-A01-1')::uuid, md5('qa:loc:e')::uuid, 'F', 0, 0, 1, 1, 0, 'STANDARD') $q$);
 SELECT pg_temp.expect_fail('W6 storage location owned by nobody at commit', $q$
-    INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, storage_class, is_pickable, is_putaway_target, status)
-    VALUES (gen_random_uuid(), md5('demo:wh:HCM')::uuid, 'AREA', 'HCM-LOST01', 'NORMAL', FALSE, FALSE, 'ACTIVE') $q$);
+    INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, is_pickable, is_putaway_target, status)
+    VALUES (gen_random_uuid(), md5('demo:wh:HCM')::uuid, 'AREA', 'HCM-LOST01', FALSE, FALSE, 'ACTIVE') $q$);
 SELECT pg_temp.expect_fail('W7 warehouse prefix changed (BR-13)',
     $q$ UPDATE warehouse.warehouse SET prefix = 'SGN' WHERE id = md5('demo:wh:HCM')::uuid $q$);
 SELECT pg_temp.expect_fail('W8 location code changed (BR-13)',
@@ -89,12 +89,12 @@ SELECT pg_temp.expect_fail('W10 NON_STORAGE area with a location', $q$
     UPDATE warehouse.area SET location_id = md5('demo:loc:HCM-QC01')::uuid WHERE code = 'OFFICE' $q$);
 SELECT pg_temp.expect_fail('W11 storage area without a location', $q$
     INSERT INTO warehouse.area (id, warehouse_id, code, type, name, x, y, width, length, rotation, is_obstacle, status)
-    VALUES (gen_random_uuid(), md5('demo:wh:HCM')::uuid, 'OVF01', 'OVERFLOW', 'x', 1, 1, 1, 1, 0, FALSE, 'ACTIVE') $q$);
+    VALUES (gen_random_uuid(), md5('demo:wh:HCM')::uuid, 'OVF99', 'OVERFLOW', 'x', 1, 1, 1, 1, 0, FALSE, 'ACTIVE') $q$);
 SELECT pg_temp.expect_fail('W12 shelf in a zone of another warehouse', $q$
     INSERT INTO warehouse.shelf (id, warehouse_id, zone_id, code, name, x, y, width, length, rotation, is_obstacle,
-        pick_north, pick_east, pick_south, pick_west, default_storage_class, status)
+        pick_north, pick_east, pick_south, pick_west, status)
     VALUES (gen_random_uuid(), md5('demo:wh:HCM')::uuid, md5('qa:zone:HN')::uuid, 'Z99', 'x', 1, 1, 1, 1, 0, TRUE,
-        TRUE, FALSE, FALSE, FALSE, 'NORMAL', 'ACTIVE') $q$);
+        TRUE, FALSE, FALSE, FALSE, 'ACTIVE') $q$);
 SELECT pg_temp.expect_fail('W13 door without open/closed state', $q$
     INSERT INTO warehouse.boundary (id, warehouse_id, type, start_x, start_y, end_x, end_y, is_passable)
     VALUES (gen_random_uuid(), md5('demo:wh:HCM')::uuid, 'DOOR', 0, 0, 0, 5, TRUE) $q$);
@@ -105,12 +105,12 @@ SELECT pg_temp.expect_fail('W15 half-defined map frame', $q$
 
 SELECT pg_temp.expect_fail('W16 shelf in a warehouse that does not exist (D-W1)', $q$
     INSERT INTO warehouse.shelf (id, warehouse_id, code, name, x, y, width, length, rotation, is_obstacle,
-        pick_north, pick_east, pick_south, pick_west, default_storage_class, status)
+        pick_north, pick_east, pick_south, pick_west, status)
     VALUES (gen_random_uuid(), gen_random_uuid(), 'Z98', 'x', 1, 1, 1, 1, 0, TRUE,
-        TRUE, FALSE, FALSE, FALSE, 'NORMAL', 'ACTIVE') $q$);
+        TRUE, FALSE, FALSE, FALSE, 'ACTIVE') $q$);
 SELECT pg_temp.expect_fail('W17 storage location in a warehouse that does not exist (D-W1)', $q$
-    INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, storage_class, is_pickable, is_putaway_target, status)
-    VALUES (gen_random_uuid(), gen_random_uuid(), 'AREA', 'XX-GHOST01', 'NORMAL', FALSE, FALSE, 'ACTIVE') $q$);
+    INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, is_pickable, is_putaway_target, status)
+    VALUES (gen_random_uuid(), gen_random_uuid(), 'AREA', 'XX-GHOST01', FALSE, FALSE, 'ACTIVE') $q$);
 
 \echo '--- product information management'
 INSERT INTO product.attributes (id, code, name, data_type) VALUES (md5('qa:attr:NOTE')::uuid, 'NOTE', 'Ghi chú', 'TEXT');
@@ -163,9 +163,175 @@ SELECT pg_temp.expect_ok('P15 sku renamed while still DRAFT', $q$
     INSERT INTO product.variants (id, product_id, sku, name, attribute_signature)
     VALUES (md5('qa:variant:draft')::uuid, md5('demo:product:SOFA-3S')::uuid, 'SOFA-3S-BEIGE', 'x', 'COLOR=BEIGE');
     UPDATE product.variants SET sku = 'SOFA-3S-BE' WHERE id = md5('qa:variant:draft')::uuid $q$);
-SELECT pg_temp.expect_fail('P16 print template on a STANDARD product', $q$
-    INSERT INTO product.customization_templates (id, variant_id, code, name, template_2d_url, allowed_file_formats, max_file_size_mb)
-    VALUES (gen_random_uuid(), md5('demo:variant:SOFA-3S-GREY')::uuid, 'T1', 'x', 'https://x', ARRAY['PNG'], 10) $q$);
+-- 5-9: every product is CUSTOMIZABLE, so there is no STANDARD product to refuse a template on: the kind itself is refused.
+SELECT pg_temp.expect_fail('P16 a product cannot be STANDARD', $q$
+    UPDATE product.products SET kind = 'STANDARD' WHERE id = md5('demo:product:SOFA-3S')::uuid $q$);
+SELECT pg_temp.expect_fail('P16b a product inserted as STANDARD', $q$
+    INSERT INTO product.products (id, code, name, slug, status, kind, version, created_at)
+    VALUES (gen_random_uuid(), 'QASTD', 'QA standard', 'qa-std', 'DRAFT', 'STANDARD', 0, NOW()) $q$);
+SELECT pg_temp.expect_ok('P16c a product inserted without a kind is CUSTOMIZABLE', $q$
+    INSERT INTO product.products (id, code, name, slug, status, version, created_at)
+    VALUES (md5('qa:product:DEF')::uuid, 'QADEF', 'QA default', 'qa-def', 'DRAFT', 0, NOW()) $q$);
+-- A CUSTOMIZABLE cup to hang templates on (V20261108000600): rolled back with the rest.
+INSERT INTO product.products (id, code, name, slug, status, kind, version, created_at)
+VALUES (md5('qa:product:CUP')::uuid, 'QACUP', 'QA cup', 'qa-cup', 'DRAFT', 'CUSTOMIZABLE', 0, NOW());
+INSERT INTO product.variants (id, product_id, sku, name, status, is_default, attribute_signature, position, version,
+                              created_at)
+VALUES (md5('qa:variant:CUP')::uuid, md5('qa:product:CUP')::uuid, 'QACUP-8OZ', 'QA cup 8oz', 'ACTIVE', TRUE,
+        'DEFAULT', 0, 0, NOW());
+SELECT pg_temp.expect_ok('P16a an active template with a model on a CUSTOMIZABLE variant', $q$
+    INSERT INTO product.customization_templates (id, variant_id, code, name, allowed_file_formats, max_file_size_mb,
+                                                 model_params_json, is_active)
+    VALUES (md5('qa:template:CUP')::uuid, md5('qa:variant:CUP')::uuid, 'CUP-BODY', 'x', ARRAY['image/png'], 20,
+            '{"kind": "parametric-cup"}', TRUE);
+    INSERT INTO product.print_areas (id, template_id, code, name, x_mm, y_mm, width_mm, height_mm, safe_margin_mm,
+                                     bleed_mm, shape_json, uv_mapping_json)
+    VALUES (gen_random_uuid(), md5('qa:template:CUP')::uuid, 'BODY', 'x', 0, 0, 250, 100, 3, 2,
+            '{"type": "annular-sector"}', '{"meshPart": "body"}') $q$);
+SELECT pg_temp.expect_fail('P16b an active template without a model', $q$
+    UPDATE product.customization_templates SET model_params_json = NULL WHERE id = md5('qa:template:CUP')::uuid $q$);
+SELECT pg_temp.expect_fail('P16c an upload type that is not a design asset MIME type', $q$
+    UPDATE product.customization_templates SET allowed_file_formats = ARRAY['PNG']
+     WHERE id = md5('qa:template:CUP')::uuid $q$);
+SELECT pg_temp.expect_fail('P16d a model of a kind the studio cannot draw', $q$
+    UPDATE product.customization_templates SET model_params_json = '{"kind": "gltf"}'
+     WHERE id = md5('qa:template:CUP')::uuid $q$);
+SELECT pg_temp.expect_fail('P16e a second active template on one variant', $q$
+    INSERT INTO product.customization_templates (id, variant_id, code, name, allowed_file_formats, max_file_size_mb,
+                                                 model_params_json, is_active)
+    VALUES (gen_random_uuid(), md5('qa:variant:CUP')::uuid, 'CUP-BODY-2', 'x', ARRAY['image/png'], 20,
+            '{"kind": "parametric-cup"}', TRUE) $q$);
+SELECT pg_temp.expect_fail('P16f an upload limit over a design asset''s 50 MB', $q$
+    UPDATE product.customization_templates SET max_file_size_mb = 51 WHERE id = md5('qa:template:CUP')::uuid $q$);
+SELECT pg_temp.expect_fail('P16g a reference die-line outside print-templates/', $q$
+    UPDATE product.customization_templates SET reference_file_key = 'documents/2026/11/a.pdf',
+           reference_file_name = 'a.pdf', reference_content_type = 'application/pdf'
+     WHERE id = md5('qa:template:CUP')::uuid $q$);
+SELECT pg_temp.expect_fail('P16h a print area code the studio does not draw', $q$
+    INSERT INTO product.print_areas (id, template_id, code, name, x_mm, y_mm, width_mm, height_mm, shape_json,
+                                     uv_mapping_json)
+    VALUES (gen_random_uuid(), md5('qa:template:CUP')::uuid, 'WRAP', 'x', 0, 0, 250, 100, '{"type": "rect"}',
+            '{"meshPart": "body"}') $q$);
+SELECT pg_temp.expect_fail('P16i a print area without a computed shape', $q$
+    INSERT INTO product.print_areas (id, template_id, code, name, x_mm, y_mm, width_mm, height_mm, uv_mapping_json)
+    VALUES (gen_random_uuid(), md5('qa:template:CUP')::uuid, 'FRONT', 'x', 0, 0, 250, 100, '{"meshPart": "front"}') $q$);
+SELECT pg_temp.expect_fail('P16j a customer SKU without its design snapshot and source variant', $q$
+    INSERT INTO product.variants (id, product_id, sku, name, status, is_default, attribute_signature, position, version,
+                                  created_at, owner_customer_id)
+    VALUES (gen_random_uuid(), md5('qa:product:CUP')::uuid, 'QACUP-KH-01', 'x', 'ACTIVE', FALSE, 'CUSTOMER:QACUP-KH-01',
+            1, 0, NOW(), gen_random_uuid()) $q$);
+-- A customer's draft on the cup's template, with one uploaded image (V20261108000800): rolled back with the rest.
+INSERT INTO design.design_draft (id, customer_id, product_id, status, created_at, current_artifacts, variant_id, sku,
+                                 template_id, template_code)
+SELECT md5('qa:design:CUP')::uuid, c.id, md5('qa:product:CUP')::uuid, 'DRAFT', NOW(), '{}'::jsonb,
+       md5('qa:variant:CUP')::uuid, 'QACUP-8OZ', md5('qa:template:CUP')::uuid, 'CUP-BODY'
+FROM customer.customer c ORDER BY c.id LIMIT 1;
+INSERT INTO design.design_asset (draft_id, id, storage_key, original_name, content_type, size_bytes, checksum, width_px,
+                                 height_px, created_at)
+VALUES (md5('qa:design:CUP')::uuid, md5('qa:asset:CUP')::uuid, 'design-assets/2026/11/qa.png', 'qa.png', 'image/png',
+        10, repeat('a', 64), 10, 10, NOW());
+SELECT pg_temp.expect_fail('P16k a design status the business does not name (the old SUBMITTED)', $q$
+    UPDATE design.design_draft SET status = 'SUBMITTED' WHERE id = md5('qa:design:CUP')::uuid $q$);
+SELECT pg_temp.expect_fail('P16l a design on a SKU but on no template', $q$
+    UPDATE design.design_draft SET template_id = NULL WHERE id = md5('qa:design:CUP')::uuid $q$);
+SELECT pg_temp.expect_fail('P16m an archived design without when it was archived', $q$
+    UPDATE design.design_draft SET status = 'ARCHIVED' WHERE id = md5('qa:design:CUP')::uuid $q$);
+SELECT pg_temp.expect_fail('P16n a layout whose checksum is not its text''s', $q$
+    INSERT INTO design.design_document (draft_id, document, checksum, updated_at)
+    VALUES (md5('qa:design:CUP')::uuid, '{}', repeat('a', 64), NOW()) $q$);
+SELECT pg_temp.expect_fail('P16o a layout over 1,000,000 bytes', $q$
+    INSERT INTO design.design_document (draft_id, document, checksum, updated_at)
+    VALUES (md5('qa:design:CUP')::uuid, repeat('x', 1000001),
+            encode(sha256(convert_to(repeat('x', 1000001), 'UTF8')), 'hex'), NOW()) $q$);
+SELECT pg_temp.expect_fail('P16p a design image changed after it was uploaded', $q$
+    UPDATE design.design_asset SET original_name = 'other.png' WHERE draft_id = md5('qa:design:CUP')::uuid $q$);
+SELECT pg_temp.expect_fail('P16q a design image taken away', $q$
+    DELETE FROM design.design_asset WHERE draft_id = md5('qa:design:CUP')::uuid $q$);
+SELECT pg_temp.expect_fail('P16r a design image stored outside design-assets/', $q$
+    INSERT INTO design.design_asset (draft_id, id, storage_key, original_name, content_type, size_bytes, checksum,
+                                     width_px, height_px, created_at)
+    VALUES (md5('qa:design:CUP')::uuid, gen_random_uuid(), 'documents/2026/11/qa.png', 'qa.png', 'image/png', 10,
+            repeat('a', 64), 10, 10, NOW()) $q$);
+SELECT pg_temp.expect_fail('P16s a design image over 40 megapixels', $q$
+    INSERT INTO design.design_asset (draft_id, id, storage_key, original_name, content_type, size_bytes, checksum,
+                                     width_px, height_px, created_at)
+    VALUES (md5('qa:design:CUP')::uuid, gen_random_uuid(), 'design-assets/2026/11/big.png', 'big.png', 'image/png',
+            10, repeat('a', 64), 8000, 5001, NOW()) $q$);
+SELECT pg_temp.expect_fail('P16t a customer design pending review without when it was submitted', $q$
+    UPDATE design.design_draft SET status = 'PENDING_REVIEW' WHERE id = md5('qa:design:CUP')::uuid $q$);
+SELECT pg_temp.expect_fail('P16u a design file naming a layout checksum that is not a SHA-256', $q$
+    INSERT INTO design.design_artifact (id, draft_id, storage_key, original_name, content_type, size_bytes, stored_at,
+                                        checksum, created_at, artifact_role, document_checksum)
+    VALUES (gen_random_uuid(), md5('qa:design:CUP')::uuid, 'design-renders/qa.png', 'qa.png', 'image/png', 1, NOW(),
+            repeat('a', 64), NOW(), 'PRINT_READY', 'not-a-checksum') $q$);
+SELECT pg_temp.expect_fail('P16v a design file naming its layout but not the template version it was drawn on', $q$
+    INSERT INTO design.design_artifact (id, draft_id, storage_key, original_name, content_type, size_bytes, stored_at,
+                                        checksum, created_at, artifact_role, document_checksum)
+    VALUES (gen_random_uuid(), md5('qa:design:CUP')::uuid, 'design-renders/qa2.png', 'qa.png', 'image/png', 1, NOW(),
+            repeat('a', 64), NOW(), 'PRINT_READY', repeat('b', 64)) $q$);
+SELECT pg_temp.expect_fail('P16w a design decision in a word the business no longer uses', $q$
+    INSERT INTO design.design_decision (id, draft_id, actor_id, decision, notes, draft_version, created_at)
+    SELECT gen_random_uuid(), md5('qa:design:CUP')::uuid, u.id, 'SENT_TO_CUSTOMER', 'x', 0, NOW()
+    FROM identity.app_user u ORDER BY u.id LIMIT 1 $q$);
+SELECT pg_temp.expect_fail('P16x an approved layout without its checksum', $q$
+    INSERT INTO design.design_snapshot (id, draft_id, checksum, artifact_url, confirmed_at, created_at,
+                                        artifact_manifest, document, assets, template)
+    VALUES (gen_random_uuid(), md5('qa:design:CUP')::uuid, repeat('a', 64), 'design-renders/qa.pdf', NOW(), NOW(),
+            '[]'::jsonb, '{}', '[]'::jsonb, '{}'::jsonb) $q$);
+SELECT pg_temp.expect_fail('P16y a quote request for no carton', $q$
+    INSERT INTO design.design_quote_request (id, draft_id, requested_by, cartons, status, created_at)
+    SELECT gen_random_uuid(), md5('qa:design:CUP')::uuid, u.id, 0, 'OPEN', NOW()
+    FROM identity.app_user u ORDER BY u.id LIMIT 1 $q$);
+-- 18:00 UTC on 8 November is 01:00 on 9 November in Vietnam: the day it was asked is the 9th.
+SELECT pg_temp.expect_fail('P16z a quote request wanting delivery before the day it was asked, in Vietnam', $q$
+    INSERT INTO design.design_quote_request (id, draft_id, requested_by, cartons, desired_delivery_date, status,
+                                             created_at)
+    SELECT gen_random_uuid(), md5('qa:design:CUP')::uuid, u.id, 1, DATE '2026-11-08', 'OPEN',
+           TIMESTAMPTZ '2026-11-08 18:00Z'
+    FROM identity.app_user u ORDER BY u.id LIMIT 1 $q$);
+SELECT pg_temp.expect_ok('P16z a quote request wanting delivery the day it was asked', $q$
+    INSERT INTO design.design_quote_request (id, draft_id, requested_by, cartons, desired_delivery_date, status,
+                                             created_at)
+    SELECT md5('qa:quote-request:CUP')::uuid, md5('qa:design:CUP')::uuid, u.id, 1, DATE '2026-11-09', 'OPEN',
+           TIMESTAMPTZ '2026-11-08 18:00Z'
+    FROM identity.app_user u ORDER BY u.id LIMIT 1 $q$);
+SELECT pg_temp.expect_fail('P16aa a second open quote request on one design', $q$
+    INSERT INTO design.design_quote_request (id, draft_id, requested_by, cartons, status, created_at)
+    SELECT gen_random_uuid(), md5('qa:design:CUP')::uuid, u.id, 3, 'OPEN', NOW()
+    FROM identity.app_user u ORDER BY u.id LIMIT 1 $q$);
+SELECT pg_temp.expect_fail('P16ab a closed quote request without when it closed', $q$
+    UPDATE design.design_quote_request SET status = 'CLOSED' WHERE id = md5('qa:quote-request:CUP')::uuid $q$);
+SELECT pg_temp.expect_fail('P16ac an open quote request naming who closed it', $q$
+    UPDATE design.design_quote_request SET closed_by = requested_by WHERE id = md5('qa:quote-request:CUP')::uuid $q$);
+SELECT pg_temp.expect_fail('P16ad a quote request for more cartons than anyone orders', $q$
+    UPDATE design.design_quote_request SET cartons = 1000001 WHERE id = md5('qa:quote-request:CUP')::uuid $q$);
+SELECT pg_temp.expect_ok('P16ae a design project of the design''s customer', $q$
+    INSERT INTO design.design_project (id, customer_id, owner_user_id, name, status, created_at)
+    SELECT md5('qa:project:CUP')::uuid, d.customer_id, u.id, 'QA', 'ACTIVE', NOW()
+    FROM design.design_draft d CROSS JOIN (SELECT id FROM identity.app_user ORDER BY id LIMIT 1) u
+    WHERE d.id = md5('qa:design:CUP')::uuid $q$);
+SELECT pg_temp.expect_fail('P16af a design project without a name', $q$
+    UPDATE design.design_project SET name = '  ' WHERE id = md5('qa:project:CUP')::uuid $q$);
+SELECT pg_temp.expect_fail('P16ag a design project closed without when', $q$
+    UPDATE design.design_project SET status = 'ARCHIVED' WHERE id = md5('qa:project:CUP')::uuid $q$);
+SELECT pg_temp.expect_fail('P16ah a design in another customer''s project', $q$
+    INSERT INTO design.design_project (id, customer_id, owner_user_id, name, status, created_at)
+    SELECT md5('qa:project:OTHER')::uuid, c.id, u.id, 'QA', 'ACTIVE', NOW()
+    FROM customer.customer c CROSS JOIN (SELECT id FROM identity.app_user ORDER BY id LIMIT 1) u
+    WHERE c.id <> (SELECT customer_id FROM design.design_draft WHERE id = md5('qa:design:CUP')::uuid)
+    ORDER BY c.id LIMIT 1;
+    UPDATE design.design_draft SET project_id = md5('qa:project:OTHER')::uuid WHERE id = md5('qa:design:CUP')::uuid $q$);
+SELECT pg_temp.expect_fail('P16ai a library file a design could never take', $q$
+    INSERT INTO design.design_project_asset (id, project_id, storage_key, original_name, content_type, size_bytes,
+                                             checksum, width_px, height_px, created_at)
+    VALUES (gen_random_uuid(), md5('qa:project:CUP')::uuid, 'design-assets/qa.svg', 'qa.svg', 'image/svg+xml', 10,
+            repeat('a', 64), 10, 10, NOW()) $q$);
+SELECT pg_temp.expect_fail('P16aj a project quote request line for no carton', $q$
+    INSERT INTO design.design_project_quote_request (id, project_id, requested_by, created_at)
+    SELECT md5('qa:project-quote:CUP')::uuid, md5('qa:project:CUP')::uuid, u.id, NOW()
+    FROM identity.app_user u ORDER BY u.id LIMIT 1;
+    INSERT INTO design.design_project_quote_request_line (request_id, draft_id, cartons)
+    VALUES (md5('qa:project-quote:CUP')::uuid, md5('qa:design:CUP')::uuid, 0) $q$);
 SELECT pg_temp.expect_fail('P17 category path not under its parent', $q$
     INSERT INTO product.categories (id, parent_id, code, name, slug, path, depth)
     VALUES (gen_random_uuid(), md5('demo:cat:LIVING')::uuid, 'CHAIR', 'Ghế', 'ghe', '/DINING/CHAIR', 1) $q$);
@@ -176,8 +342,7 @@ SELECT pg_temp.expect_fail('P19 stored media without its file metadata', $q$
     INSERT INTO product.media (id, variant_id, storage_key) VALUES (gen_random_uuid(), md5('demo:variant:SOFA-3S-GREY')::uuid, 'k/1.png') $q$);
 SELECT pg_temp.expect_fail('P20 inventory item for a sku that is no variant', $q$
     INSERT INTO inventory.inventory_items (id, sku) VALUES (gen_random_uuid(), 'NO-SUCH-SKU') $q$);
-SELECT pg_temp.expect_fail('P21 expiry tracked without lots', $q$
-    UPDATE inventory.inventory_items SET lot_tracked = FALSE WHERE sku = 'TABLE-OAK-160' $q$);
+-- P21 (expiry tracked without lots) went with expiry tracking (team plan 5-1, V20261111000300).
 SELECT pg_temp.expect_fail('P22 inventory item sku changed',
     $q$ UPDATE inventory.inventory_items SET sku = 'SOFA-3S-BE' WHERE sku = 'SOFA-3S-GREY' $q$);
 SELECT pg_temp.expect_fail('P23 variant deleted while it has an inventory item',
@@ -239,18 +404,6 @@ BEGIN
     FOR r IN SELECT p.code, p.status FROM product.products p
               WHERE p.status IN ('APPROVED', 'PUBLISHED') AND p.brand_id IS NULL ORDER BY p.code LOOP
         RAISE NOTICE 'P29 report: product % (%) has no brand', r.code, r.status;
-    END LOOP;
-    FOR r IN SELECT a.row_data ->> 'code' AS code, i.sku, i.storage_class,
-                    (a.row_data ->> 'hazmat')::boolean AS hazmat, (a.row_data ->> 'oversized')::boolean AS oversized
-               FROM platform.legacy_archive a
-               JOIN product.variants v ON v.product_id = a.row_id
-               JOIN inventory.inventory_items i ON i.sku = v.sku
-              WHERE a.source_table = 'product.product'
-                AND ((a.row_data ->> 'hazmat')::boolean AND i.storage_class <> 'HAZMAT'
-                     OR (a.row_data ->> 'oversized')::boolean AND i.storage_class NOT IN ('HAZMAT', 'OVERSIZE'))
-              ORDER BY 1, 2 LOOP
-        RAISE NOTICE 'P29 report: legacy product % was hazmat=% oversized=% but SKU % is stored as %',
-            r.code, r.hazmat, r.oversized, r.sku, r.storage_class;
     END LOOP;
 END $$;
 

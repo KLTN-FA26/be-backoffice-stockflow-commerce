@@ -100,12 +100,12 @@ class PutawayTaskRepositoryAdapter implements PutawayTaskRepository {
                 })
                 .orElseGet(() -> new PutawayTaskJpaEntity(task.id(), task.goodsReceiptId(),
                         task.goodsReceiptLineId(), task.sku(), task.quantity(), task.stockPackageId(),
-                        task.targetLocationId(), task.status()));
+                        task.targetLocationId(), task.status(), task.source()));
         return toDomain(jpa.saveAndFlush(entity));
     }
 
     private static PutawayTask toDomain(PutawayTaskJpaEntity e) {
         return new PutawayTask(e.getId(), e.getGoodsReceiptId(), e.getGoodsReceiptLineId(), e.getSku(),
-                e.getQuantity(), e.getStockPackageId(), e.getTargetLocationId(), e.getStatus());
+                e.getQuantity(), e.getStockPackageId(), e.getTargetLocationId(), e.getStatus(), e.getSource());
     }
 }

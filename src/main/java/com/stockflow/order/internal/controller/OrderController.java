@@ -4,7 +4,6 @@ import com.stockflow.order.api.ListOrdersQuery;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.internal.controller.dto.OrderStatusChangeResponse;
-import com.stockflow.order.internal.controller.dto.AgreeProductionShortfallRequest;
 import com.stockflow.order.internal.controller.dto.CloseRemainderRequest;
 import com.stockflow.order.api.CancelOrderCommand;
 import com.stockflow.order.api.CancellationOutcome;
@@ -15,11 +14,6 @@ import com.stockflow.order.internal.controller.dto.CancellationResultResponse;
 import com.stockflow.order.internal.controller.dto.CustomerOrderCardResponse;
 import com.stockflow.order.internal.controller.dto.CustomerOrderDetailResponse;
 import com.stockflow.order.internal.controller.dto.OrderResponse;
-import com.stockflow.order.internal.controller.dto.TransferInstructionsResponse;
-import com.stockflow.order.internal.controller.dto.PlaceOrderRequest;
-import com.stockflow.order.internal.controller.dto.QuoteRequests;
-import com.stockflow.order.internal.controller.dto.QuoteResponse;
-import com.stockflow.order.internal.service.Quotes;
 import com.stockflow.common.api.ApiResponse;
 import com.stockflow.common.api.PageResponse;
 import com.stockflow.common.audit.AuditAction;
@@ -46,14 +40,19 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
-import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.time.LocalDate;
 import java.util.List;
 import java.util.UUID;
 
-/** HTTP entry point for orders. Thin: request in, command out, response back. *
+/**
+ * HTTP entry point for orders. Thin: request in, command out, response back.
+ *
+ * <p><b>No order is placed here.</b> The customer does not order on the portal, and "order again" opens a chat with
+ * Sales (kltn-docs 14 BR-01, BR-02; 13 BR-08): an order is drawn up by Sales from an accepted quote
+ * ({@code POST /api/v1/quotes/{id}/conversion}). Checkout and the reorder of a quoted order went with team plan 5-2.</p>
+ *
  * <p><b>Handler methods are public.</b> {@code @RequiresPermission} and {@code @Auditable} are
  * applied by Spring AOP proxies, which advise a package-private method only when the generated
  * proxy happens to land in the same package and classloader. When that does not hold the advice is
@@ -62,122 +61,35 @@ import java.util.UUID;
  */
 @RestController
 @RequestMapping("/api/v1/orders")
-@Tag(name = "Orders", description = "Checkout, order lookup and cancellation")
+@Tag(name = "Orders", description = "Order lookup, history and cancellation")
 @PermissionResource(
         code = OrderResources.ORDERS,
         group = "Sales",
         label = "Orders",
         route = "/sales/orders",
         apiPath = "/api/v1/orders",
-        actions = {Action.VIEW_PAGE, Action.READ, Action.CREATE, Action.UPDATE, Action.APPROVE, Action.EXPORT})
+        actions = {Action.VIEW_PAGE, Action.READ, Action.CREATE, Action.UPDATE, Action.EXPORT})
 class OrderController {
 
     private final OrderService orderService;
     private final CustomerService customerService;
-    private final Quotes quotes;
     private final CustomerOrders customerOrders;
-    private final com.stockflow.order.internal.service.TransferInstructions transferInstructions;
     private final com.stockflow.identity.api.IdentityService identities;
 
     private final com.stockflow.order.internal.service.PartialShipments partialShipments;
-    private final com.stockflow.order.internal.service.DeliveryModes deliveryModes;
-    private final com.stockflow.order.internal.service.DuplicateOrders duplicateOrders;
+    private final com.stockflow.order.internal.service.OrderWarehouseVisibility warehouseVisibility;
 
-    OrderController(OrderService orderService, CustomerService customerService, Quotes quotes,
+    OrderController(OrderService orderService, CustomerService customerService,
                     CustomerOrders customerOrders,
-                    com.stockflow.order.internal.service.TransferInstructions transferInstructions,
                     com.stockflow.identity.api.IdentityService identities,
                     com.stockflow.order.internal.service.PartialShipments partialShipments,
-                    com.stockflow.order.internal.service.DeliveryModes deliveryModes,
-                    com.stockflow.order.internal.service.DuplicateOrders duplicateOrders) {
-        this.duplicateOrders = duplicateOrders;
+                    com.stockflow.order.internal.service.OrderWarehouseVisibility warehouseVisibility) {
+        this.warehouseVisibility = warehouseVisibility;
         this.partialShipments = partialShipments;
-        this.deliveryModes = deliveryModes;
         this.identities = identities;
         this.orderService = orderService;
         this.customerService = customerService;
-        this.quotes = quotes;
         this.customerOrders = customerOrders;
-        this.transferInstructions = transferInstructions;
-    }
-
-    /**
-     * Place an order.
-     *
-     * <p>201 on success, 409 when stock ran out. The 409 comes from
-     * {@code InsufficientStockException} propagating out of inventory, through the shared
-     * exception handler, without this controller writing a single catch block — and, because the
-     * whole call was one transaction, nothing partial is left behind when it happens.</p>
-     */
-    @PostMapping
-    @ResponseStatus(HttpStatus.CREATED)
-    @Operation(summary = "Place an order: create it and reserve its stock in one transaction")
-    @RequiresPermission(resource = OrderResources.ORDERS,
-            action = Action.CREATE, scope = DataScope.OWN)
-    public ApiResponse<OrderResponse> place(@Valid @RequestBody PlaceOrderRequest request,
-                                            @AuthenticatedUser CurrentUser user) {
-        // Who may place at all is sales-orders:CREATE; for whom is data scope: the back office for any customer (an
-        // assisted order), a portal account for its own customer only.
-        boolean mayPlaceForAnotherCustomer = ScopeGuards.isBackOffice(user);
-        if (!mayPlaceForAnotherCustomer) {
-            UUID ownCustomerId = requiredOwnCustomerId(user);
-            if (!ownCustomerId.equals(request.customerId())) {
-                // Hide whether another customer's id exists.
-                throw new BusinessException(ErrorCode.NOT_FOUND);
-            }
-        }
-        var command = OrderWebMapper.toCommand(request);
-        if (!mayPlaceForAnotherCustomer && !request.duplicateConfirmed()) {
-            refuseUnconfirmedDuplicate(command);
-        }
-        if (!mayPlaceForAnotherCustomer && command.depositPercent() != null) {
-            // The deposit share is the customer's terms, or a quote's (kltn-docs 15 §3) - never the customer's own pick:
-            // their configured percentage is used. How the balance is collected is different (SCRUM-193): the customer
-            // may choose among the policies their terms allow (15 §4.2 step 3), and placeOrder refuses any other with
-            // 409 BALANCE_POLICY_NOT_ALLOWED, so it is passed through.
-            command = new com.stockflow.order.api.PlaceOrderCommand(command.requestId(), command.customerId(),
-                    command.shippingAddressId(), command.billingAddressId(), command.snapshotCustomer(),
-                    command.lines(), command.paymentTerm(), null, command.balancePolicy());
-        }
-        return ApiResponse.ok(OrderWebMapper.toResponse(orderService.placeOrder(command)));
-    }
-
-    /**
-     * SCRUM-190 (kltn-docs 14 edge case "trùng đơn"): a customer who places what they placed a moment ago - ordering
-     * again from their history, or a second click from another device - is asked first. 409 with the earlier order
-     * in {@code details}; the portal shows it and resends with {@code confirmDuplicate: true} if the customer insists.
-     */
-    private void refuseUnconfirmedDuplicate(com.stockflow.order.api.PlaceOrderCommand command) {
-        var lines = command.lines().stream()
-                .map(line -> new com.stockflow.order.internal.service.DuplicateOrders.Line(line.sku().code(),
-                        line.quantity(), line.designSnapshotId()))
-                .toList();
-        duplicateOrders.findSuspected(command.customerId(), command.requestId(), lines).ifPresent(earlier -> {
-            throw new BusinessException(ErrorCode.DUPLICATE_ORDER_SUSPECTED,
-                    "Order " + earlier.orderNumber() + " with the same items was placed at " + earlier.placedAt(),
-                    java.util.List.of(), java.util.Map.of("orderId", earlier.orderId().toString(),
-                            "orderNumber", earlier.orderNumber(), "placedAt", earlier.placedAt().toString()));
-        });
-    }
-
-    /**
-     * Order again what a negotiated order bought (user decision 2026-10-12): a new DRAFT quote with the same
-     * blanks, designs, print specifications and quantities, priced from today's price list - the old deal is
-     * not reused and nothing is payable until Sales sends the quote and the customer accepts it. An order
-     * bought at the price list is not re-quoted ({@code ORDER_NOT_QUOTED}): it is placed again directly.
-     * The same verb as placing an order, so the customer and Sales may both start it.
-     */
-    @PostMapping("/{orderId}/reorder")
-    @ResponseStatus(HttpStatus.CREATED)
-    @Operation(summary = "Reorder a quoted order: a new draft quote for Sales at today's price list, never the old deal")
-    @RequiresPermission(resource = OrderResources.ORDERS, action = Action.CREATE, scope = DataScope.OWN)
-    // Each new request id drafts a quote and notifies Sales (audit of #109): a bound, as on customer creation.
-    @com.stockflow.common.ratelimit.RateLimit(limit = 10, perSeconds = 60)
-    public ApiResponse<QuoteResponse> reorder(@PathVariable UUID orderId,
-                                              @Valid @RequestBody QuoteRequests.Reorder request,
-                                              @AuthenticatedUser CurrentUser user) {
-        return ApiResponse.ok(QuoteWebMapper.toResponse(quotes.reorder(user,
-                new Quotes.Reorder(request.requestId(), orderId))));
     }
 
     @GetMapping("/{orderId}")
@@ -191,6 +103,10 @@ class OrderController {
                 // A customer sees only their own orders. The order carries the shipping address and
                 // phone of whoever placed it, so answering 200 to anyone would leak both.
                 .filter(order -> ownCustomerId == null || ownCustomerId.equals(order.customerId()))
+                // 17 §5.2: a DRAFT order is Sales' work, not yet the customer's to see.
+                .filter(order -> ownCustomerId == null || order.status() != OrderStatus.DRAFT)
+                // A warehouse manager reads the orders of their warehouses only (5-7 review M1); 404 like any other.
+                .filter(order -> ownCustomerId != null || warehouseVisibility.visible(orderId, user))
                 .map(order -> OrderWebMapper.toResponse(order, ownCustomerId == null))
                 .map(ApiResponse::ok)
                 .orElseThrow(() -> new BusinessException(
@@ -251,8 +167,8 @@ class OrderController {
      *
      * <p>SCRUM-242/WBS 3.17.4. Same underlying {@link OrderService#cancel}, but {@code scope =
      * ALL} and its own resource, {@code sales-order-cancellations:UPDATE}: kltn-docs 17 §2 has Sales
-     * handle cancellations, while releasing an order to production ({@code sales-orders:APPROVE})
-     * stays with the coordinator. A customer's role is never granted it, so this endpoint is
+     * handle cancellations, while releasing an order ({@code sales-order-releases:UPDATE}) is the
+     * warehouse manager's. A customer's role is never granted it, so this endpoint is
      * unreachable for them even though it accepts the same path shape as {@link #cancel}.</p>
      */
     @PostMapping("/{orderId}/admin-cancellation")
@@ -297,27 +213,10 @@ class OrderController {
     }
 
     /**
-     * Review 2026-10-25 of S6: production cannot finish a print line - the blanks ran out, a reprint would come too
-     * late - and the customer agreed to go without some of it. Sales or the coordinator record it, as they close a
-     * remainder ({@code sales-order-cancellations:UPDATE}): the warehouse manager then completes the line's job short
-     * within it, and the order refunds what was paid for the units not made.
-     */
-    @PostMapping("/{orderId}/lines/{lineId}/production-shortfall-agreement")
-    @Operation(summary = "Record that the customer goes without at most N units of a print line production cannot "
-            + "finish (S6); production completes it short within that")
-    @RequiresPermission(resource = OrderResources.ORDER_CANCELLATIONS,
-            action = Action.UPDATE, scope = DataScope.ALL)
-    public ApiResponse<OrderResponse> agreeProductionShortfall(@PathVariable UUID orderId, @PathVariable UUID lineId,
-                                                               @Valid @RequestBody AgreeProductionShortfallRequest request,
-                                                               @AuthenticatedUser CurrentUser user) {
-        ScopeGuards.requireBackOffice(user);
-        return ApiResponse.ok(OrderWebMapper.toResponse(orderService.agreeProductionShortfall(orderId, lineId,
-                request.quantity(), request.note(), user.userId())));
-    }
-
-    /**
      * The back-office order list (SCRUM-443, FE 440). Staff only: a customer holds
-     * {@code sales-orders:READ} too, for their own orders, and gets a 403 here rather than everyone's.
+     * {@code sales-orders:READ} too, for their own orders, and gets a 403 here rather than everyone's. A caller limited
+     * to warehouses - the warehouse manager, since team plan 5-7 - lists only the orders shipping from or released to
+     * their warehouses ({@code OrderWarehouseVisibility}), none when assigned none.
      * Parameters follow FE #12: {@code search}, {@code status} repeated, {@code sort=field,dir}.
      */
     @GetMapping
@@ -338,7 +237,8 @@ class OrderController {
         return ApiResponse.ok(orderService.list(new ListOrdersQuery(page,
                         size == null ? Pages.DEFAULT_PAGE_SIZE : size, search, OrderStatusFilter.parse(statuses),
                         customerId,
-                        placedFrom, placedTo, sort))
+                        placedFrom, placedTo, sort,
+                        com.stockflow.order.internal.service.OrderWarehouseVisibility.limitOf(user)))
                 .map(OrderWebMapper::toResponse));
     }
 
@@ -350,11 +250,14 @@ class OrderController {
         UUID ownCustomerId = ownCustomerIdOrNull(user);
         orderService.findById(orderId)
                 .filter(order -> ownCustomerId == null || ownCustomerId.equals(order.customerId()))
+                .filter(order -> ownCustomerId == null || order.status() != OrderStatus.DRAFT)
+                .filter(order -> ownCustomerId != null || warehouseVisibility.visible(orderId, user))
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No order with id " + orderId));
         List<com.stockflow.order.api.OrderStatusChange> changes = orderService.history(orderId);
         if (ownCustomerId != null) {
             // A customer reads why their order was cancelled; a hold's note and who did what are the shop's (G3-2).
-            return ApiResponse.ok(changes.stream()
+            // Its drafting is not theirs either (17 §5.2): the steps into DRAFT are left out.
+            return ApiResponse.ok(changes.stream().filter(change -> change.to() != OrderStatus.DRAFT)
                     .map(change -> new OrderStatusChangeResponse(change.from(), change.to(),
                             change.to() == OrderStatus.CANCELLED ? change.reason() : null, change.occurredAt(),
                             null, null))
@@ -362,13 +265,10 @@ class OrderController {
         }
         // PACK-PARTIAL: Sales' decisions on shipping in parts are part of the order's history for staff - entries of
         // their own type (PARTIAL_SHIPMENT_DECISION), not status changes.
-        // LP-1: so are the coordinator's changes of the delivery mode (DELIVERY_MODE_CHANGE).
         List<com.stockflow.order.api.PartialShipmentDecision> decisions = partialShipments.decisions(orderId);
-        List<com.stockflow.order.api.DeliveryModeChange> modeChanges = deliveryModes.changes(orderId);
         java.util.Map<UUID, String> names = identities.displayNames(java.util.stream.Stream.of(
                         changes.stream().map(com.stockflow.order.api.OrderStatusChange::actorId),
-                        decisions.stream().map(com.stockflow.order.api.PartialShipmentDecision::decidedBy),
-                        modeChanges.stream().map(com.stockflow.order.api.DeliveryModeChange::changedBy))
+                        decisions.stream().map(com.stockflow.order.api.PartialShipmentDecision::decidedBy))
                 .flatMap(stream -> stream)
                 .filter(java.util.Objects::nonNull).distinct().toList());
         return ApiResponse.ok(java.util.stream.Stream.of(changes.stream()
@@ -377,11 +277,7 @@ class OrderController {
                                 change.actorId() == null ? null : names.get(change.actorId()))),
                 decisions.stream().map(decision -> OrderStatusChangeResponse.partialShipmentDecision(
                         decision.allowed(), decision.note(), decision.decidedAt(), decision.decidedBy(),
-                        decision.decidedBy() == null ? null : names.get(decision.decidedBy()))),
-                modeChanges.stream().map(change -> OrderStatusChangeResponse.deliveryModeChange(
-                        change.deliveryMode().name(), change.previousMode().name(), change.note(),
-                        change.changedAt(), change.changedBy(),
-                        change.changedBy() == null ? null : names.get(change.changedBy()))))
+                        decision.decidedBy() == null ? null : names.get(decision.decidedBy()))))
                 .flatMap(stream -> stream)
                 .sorted(java.util.Comparator.comparing(OrderStatusChangeResponse::occurredAt))
                 .toList());
@@ -432,23 +328,6 @@ class OrderController {
                                                             @AuthenticatedUser CurrentUser user) {
         return ApiResponse.ok(CustomerOrderWebMapper.toResponse(
                 customerOrders.myOrder(requiredOwnCustomerId(user), orderId)));
-    }
-
-    /**
-     * SCRUM-193 (kltn-docs 15 §4.1 step 1): how to pay one of the signed-in customer's own orders by bank transfer -
-     * the company's account, the order number to write as the content, and what is still due now. The customer is
-     * resolved from the sign-in, never from the request; someone else's order, or none, is 404 either way, and an
-     * account not configured for this deployment is 503 {@code TRANSFER_INSTRUCTIONS_UNAVAILABLE}.
-     */
-    @GetMapping("/me/{orderId}/transfer-instructions")
-    @Operation(summary = "Bank transfer instructions for one of the signed-in customer's own orders: account, "
-            + "transfer content (the order number) and the amount due now")
-    @RequiresPermission(resource = OrderResources.ORDERS,
-            action = Action.READ, scope = DataScope.OWN)
-    public ApiResponse<TransferInstructionsResponse> myTransferInstructions(
-            @PathVariable UUID orderId, @AuthenticatedUser CurrentUser user) {
-        return ApiResponse.ok(CustomerOrderWebMapper.toResponse(
-                transferInstructions.of(requiredOwnCustomerId(user), orderId)));
     }
 
     /**

@@ -37,8 +37,8 @@ import org.springframework.transaction.annotation.Transactional;
  *       file of the bundle here - as this class once did, up to 50 MB a file, inside the checkout
  *       transaction - bought no rule anything and blocked the order on the object store.</li>
  *   <li><b>Metadata</b> ({@link #verifyForFulfillment}, {@link #fulfillmentDownload}): wherever a file is
- *       used - confirming, previewing, handing it to the warehouse or the print shop, packing
- *       (BR-DSG-003). {@link FileStorage#stat} returns the SHA-256 the store computed when the object
+ *       used - confirming and previewing it in the design workflow. The warehouse no longer checks or
+ *       downloads designs (kltn-docs 08 §1, V20261108000500). {@link FileStorage#stat} returns the SHA-256 the store computed when the object
  *       was written; any later write recomputes it, so a match proves the object unchanged without a
  *       download.</li>
  *   <li><b>Bytes</b> ({@link #verifyForPrinting}): prepress, the last gate before ink (BR-PRD-02). Every
@@ -156,9 +156,17 @@ class DesignServiceImpl implements DesignService {
         var actualEntries = manifest.stream().map(value -> new DesignSnapshotArtifact(
                 value.artifactId(), value.role(), value.storageKey(), value.originalName(), value.contentType(), value.sizeBytes(),
                 storedDigest(value.storageKey(), rehash))).toList();
-        String actual = DesignSnapshotJpaEntity.manifestChecksum(actualEntries);
+        // A customer's design: the images it places are part of what was approved, and are checked as its files are.
+        var assets = snapshot.getAssets() == null ? List.<com.stockflow.design.internal.domain.DesignSnapshotAsset>of()
+                : snapshot.getAssets();
+        var actualAssets = assets.stream().map(asset -> new com.stockflow.design.internal.domain.DesignSnapshotAsset(
+                asset.assetId(), asset.storageKey(), asset.originalName(), asset.contentType(), asset.sizeBytes(),
+                storedDigest(asset.storageKey(), rehash), asset.widthPx(), asset.heightPx())).toList();
+        String actual = DesignSnapshotJpaEntity.checksumOf(actualEntries, snapshot.getDocumentChecksum(), actualAssets);
         boolean eachMatches = IntStream.range(0, manifest.size())
-                .allMatch(index -> manifest.get(index).checksum().equals(actualEntries.get(index).checksum()));
+                .allMatch(index -> manifest.get(index).checksum().equals(actualEntries.get(index).checksum()))
+                && IntStream.range(0, assets.size())
+                .allMatch(index -> assets.get(index).checksum().equals(actualAssets.get(index).checksum()));
         return new DesignVerification(snapshot.getId(), expectedChecksum, actual,
                 eachMatches && expectedChecksum.equals(snapshot.getChecksum()) && actual.equals(snapshot.getChecksum()));
     }
@@ -167,7 +175,8 @@ class DesignServiceImpl implements DesignService {
     private static boolean recordedManifestAddsUp(DesignSnapshotJpaEntity snapshot) {
         List<DesignSnapshotArtifact> manifest = snapshot.getArtifactManifest();
         return manifest.isEmpty()
-                || DesignSnapshotJpaEntity.manifestChecksum(manifest).equals(snapshot.getChecksum());
+                || DesignSnapshotJpaEntity.checksumOf(manifest, snapshot.getDocumentChecksum(),
+                        snapshot.getAssets() == null ? List.of() : snapshot.getAssets()).equals(snapshot.getChecksum());
     }
 
     private static void requireSha256(String checksum) {

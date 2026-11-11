@@ -149,7 +149,7 @@ class MinioChecksumAndLockIntegrationTest {
     void aSignedLinkServesTheDispositionItWasSignedWith() throws Exception {
         var storage = storage("checksums", ObjectLockProperties.disabled());
         byte[] bytes = pdf("an invoice");
-        var file = storage.store(FileCategory.SUPPLIER_INVOICE, "x.pdf", "application/pdf", bytes.length,
+        var file = storage.store(FileCategory.DOCUMENT, "x.pdf", "application/pdf", bytes.length,
                 new ByteArrayInputStream(bytes));
 
         try (var browser = java.net.http.HttpClient.newHttpClient()) {

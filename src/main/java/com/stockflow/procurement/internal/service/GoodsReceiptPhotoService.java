@@ -33,9 +33,11 @@ import java.util.UUID;
 
 /**
  * Photos taken while goods are received (04b F-RCV step 05: the warehouse, of what arrived, while the receipt is
- * counted) and inspected (step 07: QC, of a line it inspects). Evidence for a dispute with the supplier: kept
+ * counted). Photos QC took while receiving QC existed stay, as stage {@code QC}; no step takes one any more (kltn-docs
+ * 03 BR-07). Evidence for a dispute with the producer: kept
  * append-only ({@code procurement.goods_receipt_photos}), private, shown through display copies without the phone's
- * metadata ({@link FileCategory#QC_EVIDENCE}).
+ * metadata ({@link FileCategory#QC_EVIDENCE}). A return receipt (team plan 4D-2) keeps its photos here too, of the
+ * cartons' condition as they came back (09-removal E: receipt photos are kept), while it is a draft.
  *
  * <p>A photo is checked, scanned and stored the way every upload is - sent through the backend or straight to the
  * object store ({@link IncomingFiles}) - with no transaction held while that happens; a short transaction then locks
@@ -46,7 +48,7 @@ import java.util.UUID;
 public class GoodsReceiptPhotoService {
 
     /**
-     * Photos one subject may hold: the delivery as a whole, one line at receiving, one line at QC. Enough to show every
+     * Photos one subject may hold: the delivery as a whole, or one line. Enough to show every
      * side of a damaged pallet; a bound so a phone left uploading cannot fill a receipt with hundreds.
      */
     public static final int MAX_PHOTOS_PER_SUBJECT = 10;
@@ -129,7 +131,7 @@ public class GoodsReceiptPhotoService {
         }
     }
 
-    /** Every photo of the receipt, oldest first: the delivery's, then each line's at receiving and at QC. */
+    /** Every photo of the receipt, oldest first: the delivery's and each line's, legacy QC photos included. */
     @Transactional(readOnly = true)
     public List<PhotoView> list(UUID receiptId) {
         requireReceipt(receiptId, false);
@@ -161,26 +163,20 @@ public class GoodsReceiptPhotoService {
     }
 
     /**
-     * The receipt is in the caller's warehouses, the step takes photos now, the line is a line of this receipt (a QC
-     * photo always names one, and one that goes through QC), and the subject has room for one more. With {@code lock}, the receipt row is held until
-     * commit, so neither a status change nor a parallel photo can slip between this check and the insert.
+     * The receipt is in the caller's warehouses, the step takes photos now, the line is a line of this receipt, and the
+     * subject has room for one more. With {@code lock}, the receipt row is held until commit, so neither a status
+     * change nor a parallel photo can slip between this check and the insert.
      */
     private void requireOpen(UUID receiptId, UUID receiptLineId, GoodsReceiptPhotoStage stage, boolean lock) {
         Objects.requireNonNull(stage, "stage");
         GoodsReceiptStatus status = requireReceipt(receiptId, lock);
-        if (stage == GoodsReceiptPhotoStage.QC && receiptLineId == null) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A QC photo is of the line inspected");
+        if (receiptLineId != null && !photos.isLineOf(receiptLineId, receiptId)) {
+            throw new BusinessException(ErrorCode.RECEIPT_LINE_NOT_FOUND, "No line " + receiptLineId);
         }
-        boolean qcLine = receiptLineId != null && photos.qcRequiredOf(receiptLineId, receiptId)
-                .orElseThrow(() -> new BusinessException(ErrorCode.RECEIPT_LINE_NOT_FOUND, "No line " + receiptLineId));
         if (!stage.openAt(status)) {
             throw new BusinessException(ErrorCode.INVALID_RECEIPT_TRANSITION, stage == GoodsReceiptPhotoStage.QC
-                    ? "QC photos are taken while the receipt is in QC"
+                    ? "QC photos are no longer taken: there is no quality check at the warehouse"
                     : "Receiving photos are taken while the receipt is being counted or awaits approval");
-        }
-        if (stage == GoodsReceiptPhotoStage.QC && !qcLine) {
-            throw new BusinessException(ErrorCode.INVALID_RECEIPT_TRANSITION,
-                    "This line needs no QC; it goes straight to putaway");
         }
         long kept = receiptLineId == null
                 ? photos.countByReceiptIdAndStageAndReceiptLineIdIsNull(receiptId, stage)

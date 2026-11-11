@@ -15,7 +15,6 @@ import org.junit.jupiter.api.Test;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -34,8 +33,8 @@ class CustomerOrdersMappingTest {
                 List.of(), design, design == null ? null : "a".repeat(64));
     }
 
-    private static CustomerOrders.Production production(OrderSummary.LineSummary line, OrderStatus status, int produced) {
-        return CustomerOrdersService.production(line, status, Map.of(line.lineId(), produced));
+    private static CustomerOrders.Production production(OrderSummary.LineSummary line, OrderStatus status) {
+        return CustomerOrdersService.production(line, status);
     }
 
     private static CreditChecks.Check check(CreditChecks.Outcome outcome, Instant decidedAt) {
@@ -45,7 +44,7 @@ class CustomerOrdersMappingTest {
 
     private static OrderSummary summary(OrderStatus status, OrderSummary.Cancellation cancellation) {
         return new OrderSummary(UUID.randomUUID(), "SO-1", UUID.randomUUID(), status, Money.vnd(1000), List.of(), T0,
-                null, null, null, null, null, null, null, null, null, null, null, null, cancellation);
+                null, null, null, null, null, null, null, null, null, null, cancellation);
     }
 
     @Test
@@ -58,6 +57,9 @@ class CustomerOrdersMappingTest {
         assertThat(CustomerOrdersService.statusGroup(OrderStatus.PENDING_PAYMENT)).isEqualTo(StatusGroup.AWAITING_PAYMENT);
         assertThat(CustomerOrdersService.statusGroup(OrderStatus.ON_HOLD)).isEqualTo(StatusGroup.UNDER_REVIEW);
         assertThat(CustomerOrdersService.statusGroup(OrderStatus.CONFIRMED)).isEqualTo(StatusGroup.CONFIRMED);
+        assertThat(CustomerOrdersService.statusGroup(OrderStatus.AWAITING_STOCK)).as("17 §5.2: Đang chờ hàng")
+                .isEqualTo(StatusGroup.AWAITING_STOCK);
+        assertThat(CustomerOrdersService.deliveryState(OrderStatus.AWAITING_STOCK)).isEqualTo(DeliveryState.NOT_SHIPPED);
         assertThat(CustomerOrdersService.statusGroup(OrderStatus.IN_PRODUCTION)).isEqualTo(StatusGroup.IN_PRODUCTION);
         assertThat(CustomerOrdersService.statusGroup(OrderStatus.READY_TO_FULFILL)).isEqualTo(StatusGroup.PREPARING);
         assertThat(CustomerOrdersService.statusGroup(OrderStatus.PICKING)).isEqualTo(StatusGroup.PREPARING);
@@ -124,13 +126,13 @@ class CustomerOrdersMappingTest {
     private static com.stockflow.order.api.OrderSummary.Lifecycle lifecycle(java.time.Instant completedAt,
             List<com.stockflow.order.api.OrderSummary.Shipment> shipments) {
         return new com.stockflow.order.api.OrderSummary.Lifecycle(null, null, null, null, null, null, null, completedAt,
-                null, null, null, null, null, List.of(), shipments);
+                null, null, null, List.of(), shipments);
     }
 
     private static com.stockflow.order.api.OrderSummary.Shipment shipment(
             com.stockflow.order.api.OrderShipmentStatus status) {
         return new com.stockflow.order.api.OrderSummary.Shipment(UUID.randomUUID(), status, java.math.BigDecimal.TEN,
-                java.math.BigDecimal.ZERO, NOW, null, null, List.of());
+                NOW, null, null, List.of());
     }
 
     @Test
@@ -138,32 +140,23 @@ class CustomerOrdersMappingTest {
     void stockLineNeedsNoProduction() {
         var stock = line(UUID.randomUUID(), 5, null);
         for (OrderStatus status : OrderStatus.values()) {
-            assertThat(production(stock, status, 0).state()).as(status.name()).isEqualTo(ProductionState.NOT_REQUIRED);
+            assertThat(production(stock, status).state()).as(status.name()).isEqualTo(ProductionState.NOT_REQUIRED);
         }
     }
 
     @Test
-    @DisplayName("a print line: not started, in progress, done, cancelled")
+    @DisplayName("a print line: not started before release, done once released - printed outside the system - cancelled")
     void printLineStates() {
         var print = line(UUID.randomUUID(), 10, DESIGN);
 
-        assertThat(production(print, OrderStatus.CONFIRMED, 0)).isEqualTo(
+        assertThat(production(print, OrderStatus.CONFIRMED)).isEqualTo(
                 new CustomerOrders.Production(ProductionState.NOT_STARTED, 0));
-        assertThat(production(print, OrderStatus.IN_PRODUCTION, 0)).isEqualTo(
-                new CustomerOrders.Production(ProductionState.IN_PROGRESS, 0));
-        assertThat(production(print, OrderStatus.IN_PRODUCTION, 4)).isEqualTo(
-                new CustomerOrders.Production(ProductionState.IN_PROGRESS, 4));
-        // The good units cover the line before the order has moved on.
-        assertThat(production(print, OrderStatus.IN_PRODUCTION, 10)).isEqualTo(
+        assertThat(production(print, OrderStatus.READY_TO_FULFILL)).isEqualTo(
                 new CustomerOrders.Production(ProductionState.DONE, 10));
-        // Past production the line is done even if no completion was recorded.
-        assertThat(production(print, OrderStatus.READY_TO_FULFILL, 0).state()).isEqualTo(ProductionState.DONE);
-        assertThat(production(print, OrderStatus.SHIPPED, 0).state()).isEqualTo(ProductionState.DONE);
-        assertThat(production(print, OrderStatus.COMPLETED, 0).state()).isEqualTo(ProductionState.DONE);
-        assertThat(production(print, OrderStatus.CANCELLED, 4)).isEqualTo(
-                new CustomerOrders.Production(ProductionState.CANCELLED, 4));
-        // A line the production module reported nothing about.
-        assertThat(CustomerOrdersService.production(print, OrderStatus.IN_PRODUCTION, Map.of()).goodQuantity()).isZero();
+        assertThat(production(print, OrderStatus.SHIPPED).state()).isEqualTo(ProductionState.DONE);
+        assertThat(production(print, OrderStatus.COMPLETED).state()).isEqualTo(ProductionState.DONE);
+        assertThat(production(print, OrderStatus.CANCELLED)).isEqualTo(
+                new CustomerOrders.Production(ProductionState.CANCELLED, 0));
     }
 
     @Test

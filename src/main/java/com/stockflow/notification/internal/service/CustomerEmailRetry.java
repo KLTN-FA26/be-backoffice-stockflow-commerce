@@ -10,7 +10,6 @@ import com.stockflow.contracts.ReturnApproved;
 import com.stockflow.contracts.ReturnClosed;
 import com.stockflow.contracts.ReturnReceived;
 import com.stockflow.contracts.ReturnRejected;
-import com.stockflow.contracts.ReturnReplacementWithdrawn;
 import com.stockflow.contracts.ReturnRequested;
 import com.stockflow.contracts.ReturnResolved;
 import com.stockflow.contracts.ShipmentStatusChanged;
@@ -39,8 +38,8 @@ import java.util.function.Function;
 /**
  * Sends again the customer messages whose last attempt failed in a way worth retrying, once their back-off has passed.
  *
- * <p>The same shape as {@link PurchaseOrderNotificationRetry}: the incomplete publications of
- * {@link OrderNotificationListener}'s and {@link ReturnNotificationListener}'s handlers are read a bounded page at a time ({@link PendingPublicationReader}) and
+ * <p>The same shape as {@link ProductionOrderMailRetry} (and the purchase order retry before it, 4A-8): the
+ * incomplete publications of {@link OrderNotificationListener}'s and {@link ReturnNotificationListener}'s handlers are read a bounded page at a time ({@link PendingPublicationReader}) and
  * handed to the listener's proxy, which delivers them on its own threads and, on success, lets Spring Modulith mark
  * them complete. No second queue, no republishing to other listeners.</p>
  *
@@ -92,8 +91,7 @@ class CustomerEmailRetry {
                 route(rma, ReturnRejected.class, composer::returnRejected, returns::on),
                 route(rma, ReturnReceived.class, composer::returnReceived, returns::on),
                 route(rma, ReturnResolved.class, composer::returnResolved, returns::on),
-                route(rma, ReturnClosed.class, composer::returnClosed, returns::on),
-                route(rma, ReturnReplacementWithdrawn.class, composer::returnReplacementWithdrawn, returns::on));
+                route(rma, ReturnClosed.class, composer::returnClosed, returns::on));
     }
 
     /**

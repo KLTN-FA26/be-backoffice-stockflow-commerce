@@ -4,9 +4,8 @@ import com.stockflow.fulfillment.internal.domain.LoadPlan;
 import com.stockflow.fulfillment.internal.domain.loadplanning.CargoPackage;
 import com.stockflow.fulfillment.internal.domain.loadplanning.Layout;
 import com.stockflow.fulfillment.internal.entity.LoadEstimateJpaEntity;
-import com.stockflow.fulfillment.internal.entity.PackageLineJpaEntity;
 import com.stockflow.fulfillment.internal.repository.LoadEstimateJpaRepository;
-import com.stockflow.fulfillment.internal.repository.PackageLineJpaRepository;
+import com.stockflow.fulfillment.internal.repository.ParcelContents;
 import com.stockflow.order.api.OrderSummary;
 import org.springframework.stereotype.Component;
 
@@ -39,13 +38,13 @@ class LoadPlanEstimateComparison {
 
     private final LoadEstimates estimates;
     private final LoadEstimateJpaRepository estimateRows;
-    private final PackageLineJpaRepository packageLines;
+    private final ParcelContents contents;
 
     LoadPlanEstimateComparison(LoadEstimates estimates, LoadEstimateJpaRepository estimateRows,
-                               PackageLineJpaRepository packageLines) {
+                               ParcelContents contents) {
         this.estimates = estimates;
         this.estimateRows = estimateRows;
-        this.packageLines = packageLines;
+        this.contents = contents;
     }
 
     /**
@@ -143,18 +142,15 @@ class LoadPlanEstimateComparison {
         List<LoadPlanParcels.Parcel> compared = parcels.stream()
                 .filter(p -> p.order() != null && estimatedOrders.contains(p.order().orderId())).toList();
         Map<UUID, Set<UUID>> linesOfParcel = new HashMap<>();
-        for (PackageLineJpaEntity l : packageLines.findByPackageIdIn(compared.stream()
+        for (ParcelContents.Line l : contents.of(compared.stream()
                 .map(LoadPlanParcels.Parcel::packageId).toList())) {
-            linesOfParcel.computeIfAbsent(l.getPackageId(), k -> new LinkedHashSet<>()).add(l.getOrderLineId());
+            linesOfParcel.computeIfAbsent(l.packageId(), k -> new LinkedHashSet<>()).add(l.orderLineId());
         }
         Map<UUID, Integer> actualByLine = new HashMap<>();
         BigDecimal actualVolume = BigDecimal.ZERO;
         BigDecimal actualWeight = BigDecimal.ZERO;
         for (LoadPlanParcels.Parcel p : compared) {
             Set<UUID> lines = new LinkedHashSet<>(linesOfParcel.getOrDefault(p.packageId(), Set.of()));
-            if (p.row().getKit() != null) {
-                lines.add(p.row().getKit().orderLineId());
-            }
             lines.forEach(line -> actualByLine.merge(line, 1, Integer::sum));
             CargoPackage c = p.carton();
             if (c != null) {

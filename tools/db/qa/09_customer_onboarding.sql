@@ -103,7 +103,7 @@ SELECT pg_temp.expect_ok('B18 customer-customers:CREATE for Sales, e-commerce ad
     DO $d$ BEGIN
         IF (SELECT array_agg(r.code ORDER BY r.code) FROM identity.role_permission rp
             JOIN identity.app_role r ON r.id = rp.role_id JOIN identity.permission p ON p.id = rp.permission_id
-            WHERE p.code = 'customer-customers:CREATE') <> ARRAY['ECOMMERCE_ADMIN', 'SALES_STAFF', 'SYSTEM_ADMIN']::varchar[]
+            WHERE p.code = 'customer-customers:CREATE') <> ARRAY['SALES_MANAGER', 'SALES_STAFF', 'SYSTEM_ADMIN']::varchar[]
         THEN RAISE EXCEPTION 'unexpected holders'; END IF;
     END $d$ $q$);
 

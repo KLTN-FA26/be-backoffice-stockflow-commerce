@@ -426,7 +426,8 @@ public class ProductMediaService {
         VariantJpaEntity variant = wanted.isEmpty() ? defaultVariant
                 : variantRows.findBySku(wanted).filter(v -> v.getProductId().equals(productId))
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
-        if (variant == null || variant.getStatus() != VariantStatus.ACTIVE) {
+        // A customer's own SKU is nobody else's to see (kltn-docs 13 BR-02), and this gallery is anonymous.
+        if (variant == null || variant.getStatus() != VariantStatus.ACTIVE || variant.getOwnerCustomerId() != null) {
             throw new BusinessException(ErrorCode.NOT_FOUND);
         }
         List<PublicImage> images = publishedImages(variant.getId());

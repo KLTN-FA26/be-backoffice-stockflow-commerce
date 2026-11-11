@@ -10,7 +10,6 @@ import jakarta.persistence.EntityManager;
 import jakarta.persistence.LockModeType;
 import org.springframework.stereotype.Repository;
 
-import java.time.Instant;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
@@ -77,22 +76,10 @@ class SkuReservationRepositoryAdapter implements SkuReservationRepository {
         return !entityManager.createNativeQuery("""
                         select 1 from inventory.stock_reservation
                          where order_id = :orderId and stock_item_id is null and status in ('EXPIRED', 'RELEASED')
+                           and warehouse_code is null
                          limit 1
                         """)
                 .setParameter("orderId", orderId).getResultList().isEmpty();
-    }
-
-    /** {@code SKIP LOCKED}: a reservation a checkout or a release is busy with is swept on the next run. */
-    @Override
-    public List<SkuReservation> findExpiredForUpdate(Instant cutoff, int limit) {
-        @SuppressWarnings("unchecked")
-        List<UUID> ids = entityManager.createNativeQuery("""
-                        select id from inventory.stock_reservation
-                         where stock_item_id is null and status = 'HELD' and expires_at < :cutoff
-                         order by expires_at, id limit :limit for update skip locked
-                        """)
-                .setParameter("cutoff", cutoff).setParameter("limit", limit).getResultList();
-        return refreshed(ids);
     }
 
     @Override
@@ -102,6 +89,20 @@ class SkuReservationRepositoryAdapter implements SkuReservationRepository {
         }
         Map<String, Long> held = new HashMap<>();
         jpa.heldBySku(skus).forEach(row -> held.put(row.getSku(), row.getQuantity()));
+        return held;
+    }
+
+    @Override
+    public Map<String, Long> heldBySkuAt(String sku) {
+        @SuppressWarnings("unchecked")
+        List<Object[]> rows = entityManager.createNativeQuery("""
+                        select warehouse_code, coalesce(sum(quantity), 0) from inventory.stock_reservation
+                         where sku = :sku and stock_item_id is null and status = 'HELD' and warehouse_code is not null
+                         group by warehouse_code
+                        """)
+                .setParameter("sku", sku).getResultList();
+        Map<String, Long> held = new HashMap<>();
+        rows.forEach(row -> held.put((String) row[0], ((Number) row[1]).longValue()));
         return held;
     }
 
@@ -124,9 +125,10 @@ class SkuReservationRepositoryAdapter implements SkuReservationRepository {
             return toDomain(jpa.save(managed));
         }
         return toDomain(jpa.save(new ReservationJpaEntity(reservation.id().value(), reservation.sku().code(),
-                reservation.orderId(), null, reservation.rootRequestId(), reservation.requestId(),
+                reservation.orderId(), reservation.rootRequestId(), reservation.requestId(),
                 reservation.quantity().value(), reservation.reservedAt(), reservation.expiresAt(),
-                reservation.status(), reservation.releaseReason(), reservation.closedAt(), null)));
+                reservation.status(), reservation.releaseReason(), reservation.closedAt(), null)
+                .heldAt(reservation.warehouseCode())));
     }
 
     private List<SkuReservation> lock(String sql, UUID key) {
@@ -148,6 +150,6 @@ class SkuReservationRepositoryAdapter implements SkuReservationRepository {
     static SkuReservation toDomain(ReservationJpaEntity e) {
         return new SkuReservation(new ReservationId(e.getId()), new Sku(e.getSku()), e.getOrderId(),
                 e.getRootRequestId(), e.getRequestId(), Quantity.of(e.getQuantity()), e.getReservedAt(),
-                e.getExpiresAt(), e.getStatus(), e.getReleaseReason(), e.getClosedAt());
+                e.getExpiresAt(), e.getStatus(), e.getReleaseReason(), e.getClosedAt(), e.getWarehouseCode());
     }
 }

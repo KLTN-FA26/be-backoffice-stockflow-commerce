@@ -133,7 +133,10 @@ class WarehouseLayoutServiceIntegrationTest {
             jdbc.update("update warehouse.area set status = 'INACTIVE' where code = 'OFFICE'");
             WarehouseSummary hcm = layout.get(WAREHOUSE_HCM);
 
-            assertThat(resize(hcm, "60", "34").mapHeight()).isEqualByComparingTo("34");
+            // Without the office (to 38) the lowest active thing is the demo's overflow area OVF01 (5-4), down to 36.
+            assertThat(resize(hcm, "60", "36").mapHeight()).isEqualByComparingTo("36");
+            assertThat(errorOf(() -> resize(layout.get(WAREHOUSE_HCM), "60", "35.999")))
+                    .isEqualTo(ErrorCode.LAYOUT_OUT_OF_BOUNDS);
         }
 
         @Test

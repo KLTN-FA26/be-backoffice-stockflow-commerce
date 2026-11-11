@@ -13,7 +13,8 @@ import java.time.Duration;
  * off nothing is locked and the records are protected by versioning alone.</p>
  *
  * <p>The periods are placeholders until the business confirms them against the law that applies -
- * the accounting retention period for supplier invoices in particular. Raising one later is
+ * the retention period for sales contracts in particular. (Supplier invoices had one until purchasing went, 4A-8.)
+ * Raising one later is
  * possible; shortening a lock already applied is not, in either mode.</p>
  *
  * @param mode GOVERNANCE lets a principal holding {@code s3:BypassGovernanceRetention} (an
@@ -25,14 +26,14 @@ public record ObjectLockProperties(
         @DefaultValue("false") boolean enabled,
         @DefaultValue("GOVERNANCE") Mode mode,
         @DefaultValue("P1095D") Duration confirmedDesign,
-        @DefaultValue("P3650D") Duration supplierInvoice
+        @DefaultValue("P3650D") Duration salesContract
 ) {
 
     public enum Mode { GOVERNANCE, COMPLIANCE }
 
     public ObjectLockProperties {
         requirePositive(confirmedDesign, "confirmed-design");
-        requirePositive(supplierInvoice, "supplier-invoice");
+        requirePositive(salesContract, "sales-contract");
         if (mode == null) {
             throw new IllegalArgumentException("stockflow.storage.object-lock.mode must be set");
         }
@@ -46,7 +47,7 @@ public record ObjectLockProperties(
     public Duration periodOf(RecordRetention record) {
         return switch (record) {
             case CONFIRMED_DESIGN -> confirmedDesign;
-            case SUPPLIER_INVOICE -> supplierInvoice;
+            case SALES_CONTRACT -> salesContract;
         };
     }
 

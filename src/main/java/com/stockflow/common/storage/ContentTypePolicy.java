@@ -56,7 +56,7 @@ public final class ContentTypePolicy {
     }
 
     /** Strips any {@code ; charset=...} and lowercases, so {@code IMAGE/PNG} matches. */
-    static String normalise(String declaredType) {
+    public static String normalise(String declaredType) {
         if (declaredType == null || declaredType.isBlank()) {
             throw new BusinessException(ErrorCode.UNSUPPORTED_MEDIA_TYPE,
                     "The upload declared no content type");
@@ -86,6 +86,11 @@ public final class ContentTypePolicy {
                     && head.length >= 12
                     && head[8] == 'W' && head[9] == 'E' && head[10] == 'B' && head[11] == 'P';
             case "application/pdf" -> startsWith(head, 0x25, 0x50, 0x44, 0x46); // "%PDF"
+            // ISO base media files (MP4, QuickTime) open with a box whose type, at bytes 4-7, is "ftyp".
+            case "video/mp4", "video/quicktime" -> head.length >= 8
+                    && head[4] == 'f' && head[5] == 't' && head[6] == 'y' && head[7] == 'p';
+            // WebM is Matroska: the EBML header's id.
+            case "video/webm" -> startsWith(head, 0x1A, 0x45, 0xDF, 0xA3);
             // Both modern Office formats are ZIP containers.
             case "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" ->

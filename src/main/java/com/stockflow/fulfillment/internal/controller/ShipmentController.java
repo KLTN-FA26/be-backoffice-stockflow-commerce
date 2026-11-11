@@ -9,7 +9,7 @@ import com.stockflow.common.security.Action;
 import com.stockflow.common.security.AuthenticatedUser;
 import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.RequiresPermission;
-import com.stockflow.fulfillment.internal.controller.dto.AssignCarrierRequest;
+import com.stockflow.fulfillment.internal.controller.dto.DeliveryOutcomeCorrectionRequest;
 import com.stockflow.fulfillment.internal.controller.dto.DeliveryOutcomeRequest;
 import com.stockflow.fulfillment.internal.controller.dto.ShipmentResponse;
 import com.stockflow.fulfillment.internal.controller.dto.ShipmentRowResponse;
@@ -20,7 +20,6 @@ import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -29,13 +28,14 @@ import org.springframework.web.bind.annotation.RestController;
 import java.util.UUID;
 
 /**
- * Shipments in the back office (G4-2a; kltn-docs 09 §5): the list dispatch builds loads from, a shipment's parcels and
- * timeline, the carrier chosen for it, and the outcome recorded when the carrier reports back (§4.3).
+ * Shipments in the back office (G4-2a; kltn-docs 09 §5): the list load plans are built from, a shipment's parcels and
+ * timeline, and the outcome recorded when the carrier reports back (§4.3).
  *
  * <p>Outcomes have a resource of their own, {@code fulfillment-delivery-outcomes}: UPDATE records one, and on its own
  * only RETURNED (09 §5 "Warehouse": the warehouse manager may record a shipment back at the warehouse until the
- * returns receipt, SCRUM-295, records it itself); DELIVERED and DELIVERY_FAILED also need APPROVE, the Order
- * Coordinator's (09 BR-02), as they move the order and bill it.</p>
+ * returns receipt, SCRUM-295, records it itself); DELIVERED and DELIVERY_FAILED also need APPROVE (09 BR-02), the
+ * warehouse manager's since the order coordinator role was retired (17 BR-27, team plan 5-7), as they move the order
+ * and bill it.</p>
  */
 @RestController
 @RequestMapping("/api/v1/fulfillment/shipments")
@@ -70,16 +70,6 @@ class ShipmentController {
         return ApiResponse.ok(mapper.toResponse(shipments.get(shipmentId)));
     }
 
-    @PutMapping("/{shipmentId}/carrier")
-    @Operation(summary = "Choose the carrier of a shipment waiting for dispatch (null clears it); 409 "
-            + "SHIPMENT_ON_ANOTHER_LOAD, SHIPMENT_STATE_CONFLICT, CARRIER_INACTIVE")
-    @RequiresPermission(resource = FulfillmentResources.DISPATCH, action = Action.UPDATE)
-    @Auditable(action = AuditAction.UPDATE, resourceType = "shipment", resourceId = "#shipmentId")
-    public ApiResponse<ShipmentResponse> assignCarrier(@PathVariable UUID shipmentId,
-            @RequestBody AssignCarrierRequest request, @AuthenticatedUser CurrentUser actor) {
-        return ApiResponse.ok(mapper.toResponse(shipments.assignCarrier(shipmentId, request.carrierId(), actor)));
-    }
-
     @PostMapping("/{shipmentId}/delivery-outcome")
     @Operation(summary = "Record what the carrier reported: DELIVERED, DELIVERY_FAILED (with failureReason; OTHER needs "
             + "a note) or RETURNED; the order follows and bills a delivered shipment. fulfillment-delivery-outcomes:UPDATE; "
@@ -88,11 +78,23 @@ class ShipmentController {
     @Auditable(action = AuditAction.TRANSITION, resourceType = "shipment", resourceId = "#shipmentId")
     public ApiResponse<ShipmentResponse> recordOutcome(@PathVariable UUID shipmentId,
             @Valid @RequestBody DeliveryOutcomeRequest request, @AuthenticatedUser CurrentUser actor) {
-        // 09 BR-02: delivered / not delivered are the Order Coordinator's; the grant says who that is.
+        // 09 BR-02: delivered / not delivered take APPROVE (the warehouse manager's, 17 BR-27); the grant says who.
         if (!"RETURNED".equals(request.outcome())) {
             actor.require(FulfillmentResources.DELIVERY_OUTCOMES, Action.APPROVE);
         }
         return ApiResponse.ok(mapper.toResponse(shipments.recordOutcome(shipmentId, new Shipments.Outcome(
                 request.outcome(), request.failureReason(), request.note()), actor)));
+    }
+
+    @PostMapping("/{shipmentId}/delivery-outcome-correction")
+    @Operation(summary = "Correct an outcome the carrier reported wrongly: DELIVERED <-> DELIVERY_FAILED, with a reason, "
+            + "while the order is not completed; the shipment takes no carrier report for its outcome afterwards (E17). "
+            + "409 ORDER_DELIVERY_NOT_CORRECTABLE for a completed order or a delivery that billed the customer")
+    @RequiresPermission(resource = FulfillmentResources.DELIVERY_CORRECTIONS, action = Action.UPDATE)
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "shipment", resourceId = "#shipmentId")
+    public ApiResponse<ShipmentResponse> correctOutcome(@PathVariable UUID shipmentId,
+            @Valid @RequestBody DeliveryOutcomeCorrectionRequest request, @AuthenticatedUser CurrentUser actor) {
+        return ApiResponse.ok(mapper.toResponse(shipments.correctOutcome(shipmentId, new Shipments.Correction(
+                request.outcome(), request.failureReason(), request.note(), request.reason()), actor)));
     }
 }

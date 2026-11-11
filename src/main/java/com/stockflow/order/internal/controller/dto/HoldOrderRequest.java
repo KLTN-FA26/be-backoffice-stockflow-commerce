@@ -6,7 +6,7 @@ import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 
 /**
- * Put an order on hold (G3-2, kltn-docs 17 §5). CREDIT and DESIGN_MISMATCH are the system's: refused here.
+ * Put an order on hold (G3-2, kltn-docs 17 §5). CREDIT is the system's: refused here.
  *
  * @param note required for OTHER
  */

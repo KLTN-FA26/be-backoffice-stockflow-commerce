@@ -2,46 +2,32 @@ package com.stockflow.product;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.stockflow.catalog.api.CatalogService;
 import com.stockflow.catalog.internal.service.CatalogProjectionService;
-import com.stockflow.common.error.BusinessException;
-import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.product.api.ProductService;
+import com.stockflow.product.api.Purchasability;
 import com.stockflow.product.api.ProductSummary;
 import com.stockflow.product.internal.service.ProductTaxonomyService;
-import com.stockflow.procurement.api.CreatePOLineCommand;
-import com.stockflow.procurement.api.CreatePurchaseOrderCommand;
-import com.stockflow.procurement.api.ProcurementService;
-import com.stockflow.procurement.api.SupplierItemService;
-import com.stockflow.support.ApprovalLimitFixtures;
 import com.stockflow.support.Await;
 import com.stockflow.support.DemoData;
-import com.stockflow.support.IntegrationTest;
-import com.stockflow.support.PostgresContainer;
+import com.stockflow.support.ProductionReceivables;
+import com.stockflow.support.SecuredProductionReceiptTest;
 import com.stockflow.support.ProductFixtures;
-import com.stockflow.support.RedisContainer;
 import com.stockflow.support.ReferenceRows;
-import com.stockflow.support.SupplierItemFixtures;
 import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
-import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
-import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.ResultActions;
 import org.springframework.transaction.support.TransactionTemplate;
 
-import java.math.BigDecimal;
 import java.time.Duration;
-import java.time.LocalDate;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
@@ -59,7 +45,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 /**
  * SCRUM-461 over HTTP, through the real filter chain, the permission aspect and the seeded role grants
- * (ECOMMERCE_ADMIN, SYSTEM_ADMIN, SALES_STAFF, WAREHOUSE_STAFF, PROCUREMENT_STAFF), against Postgres: the brand a
+ * (SALES_MANAGER, SYSTEM_ADMIN, SALES_STAFF, WAREHOUSE_STAFF, ACCOUNTANT), against Postgres: the brand a
  * submission needs, the version a PUT quotes, discontinuing with a reason (warnings, never a refusal; variants
  * OBSOLETE), suspending and resuming, the storefront's view of an INACTIVE product, deleting a draft, and the
  * history. Every refusal is asserted by its exact {@code errorCode} and, where the rule names one, its
@@ -68,11 +54,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * <p>People are real {@code identity.app_user} rows, because the history and the approval evidence are foreign
  * keys to them; only the token decoding is stubbed.</p>
  */
-@IntegrationTest
-@Import({PostgresContainer.class, RedisContainer.class})
-@AutoConfigureMockMvc
-// The same properties and mock as the other security tests, so the application context is shared.
-@TestPropertySource(properties = {"stockflow.security.enabled=true", "stockflow.catalog.projection-retry-ms=3600000"})
+@SecuredProductionReceiptTest
 class ProductLifecycleIntegrationTest {
 
     private static final String JSON = "application/json";
@@ -84,10 +66,8 @@ class ProductLifecycleIntegrationTest {
     @Autowired TransactionTemplate tx;
     @Autowired EntityManager entityManager;
     @Autowired ProductService products;
+    @Autowired ProductionReceivables receivables;
     @Autowired ProductTaxonomyService taxonomy;
-    @Autowired ProcurementService procurement;
-    @Autowired SupplierItemService supplierCatalog;
-    @Autowired CatalogService catalog;
     @Autowired CatalogProjectionService projection;
 
     private UUID editorUser;
@@ -98,7 +78,7 @@ class ProductLifecycleIntegrationTest {
     @BeforeEach
     void setUp() {
         editorUser = tx.execute(s -> ReferenceRows.user(entityManager));
-        approverUser = tx.execute(s -> ApprovalLimitFixtures.approver(entityManager));
+        approverUser = tx.execute(s -> ReferenceRows.user(entityManager));
         suffix = UUID.randomUUID().toString().substring(0, 8).toUpperCase(Locale.ROOT);
         tax = ProductFixtures.taxonomy(taxonomy, suffix);
     }
@@ -112,9 +92,9 @@ class ProductLifecycleIntegrationTest {
         return "Bearer " + token;
     }
 
-    /** Product people: ECOMMERCE_ADMIN has every product-products permission (create, update, approve, delete). */
+    /** Product people: SALES_MANAGER has every product-products permission (create, update, approve, delete). */
     private String editor() {
-        return token(editorUser, "ECOMMERCE_ADMIN");
+        return token(editorUser, "SALES_MANAGER");
     }
 
     /** SYSTEM_ADMIN: approves, and alone suspends, resumes and discontinues (product-lifecycle:APPROVE). */
@@ -182,28 +162,12 @@ class ProductLifecycleIntegrationTest {
         return ProductFixtures.draft(products, tax, UUID.randomUUID().toString().substring(0, 8).toUpperCase(Locale.ROOT));
     }
 
-    private UUID supplier() {
-        UUID supplier = Identifiers.newId();
-        tx.executeWithoutResult(s -> jdbc.update("""
-                INSERT INTO procurement.suppliers (id, code, name, status, version, created_at)
-                VALUES (?, ?, 'Lifecycle supplier', 'ACTIVE', 0, NOW())""",
-                supplier, "LC-" + supplier.toString().substring(24).toUpperCase(Locale.ROOT)));
-        return supplier;
-    }
-
-    /** A supplier that lists each of {@code skus} (BR-PO-001), while they are still purchasable. */
-    private UUID supplierListing(String... skus) {
-        UUID supplier = supplier();
-        for (String sku : skus) {
-            SupplierItemFixtures.list(supplierCatalog, supplier, sku);
-        }
-        return supplier;
-    }
-
-    private UUID draftPurchaseOrder(String sku) {
-        return procurement.createPurchaseOrder(new CreatePurchaseOrderCommand(supplierListing(sku), DemoData.WAREHOUSE_HCM, "VND",
-                LocalDate.now().plusDays(10), null, List.of(new CreatePOLineCommand(sku, null, 5, new BigDecimal("1000")))))
-                .purchaseOrderId();
+    /** A production order sent for 2 cartons of 10 of a SKU of the product, not received at all yet. */
+    private ProductionReceivables.Receivable openProductionOrder(ProductSummary product) {
+        UUID variant = jdbc.queryForObject("SELECT id FROM product.variants WHERE product_id = ? AND is_default",
+                UUID.class, product.productId());
+        return receivables.sentFor(new ReferenceRows.ProductRow(product.productId(), variant, product.code()),
+                DemoData.WAREHOUSE_HCM, 2, 10);
     }
 
     /** A placed order with one line of {@code sku}, in the given status. */
@@ -290,17 +254,16 @@ class ProductLifecycleIntegrationTest {
     // ------------------------------------------------------------------ discontinue
 
     @Test
-    @DisplayName("discontinue with an open PO line and an unshipped order: 200 with both warnings and the documents")
+    @DisplayName("discontinue with an open production order line and an unshipped order: 200 with both warnings and the documents")
     void discontinueWarnsAndNeverRefuses() throws Exception {
         ProductSummary approved = approvedProduct();
         UUID id = approved.productId();
         String sku = approved.code();
-        UUID po = draftPurchaseOrder(sku);
+        ProductionReceivables.Receivable production = openProductionOrder(approved);
         UUID order = orderWithLine(sku, "CONFIRMED");
-        String poNumber = jdbc.queryForObject("SELECT po_number FROM procurement.purchase_orders WHERE id = ?", String.class, po);
         String orderNumber = jdbc.queryForObject("SELECT order_number FROM ordering.customer_order WHERE id = ?", String.class, order);
 
-        // Who may discontinue: product-lifecycle:APPROVE, the System Admin only (kltn-docs 01 §5.1). ECOMMERCE_ADMIN
+        // Who may discontinue: product-lifecycle:APPROVE, the System Admin only (kltn-docs 01 §5.1). SALES_MANAGER
         // approves and publishes but does not end a product's life; WAREHOUSE_STAFF and SALES_STAFF have neither.
         String path = "/api/v1/products/" + id + "/discontinuation";
         String body = reasonAndVersion("Het dong san pham", approved.version());
@@ -316,20 +279,23 @@ class ProductLifecycleIntegrationTest {
                 .andExpect(jsonPath("$.data.discontinueReason").value("Het dong san pham"))
                 .andExpect(jsonPath("$.data.discontinuedAt").isNotEmpty())
                 .andExpect(jsonPath("$.data.warnings.length()").value(2))
-                .andExpect(jsonPath("$.data.warnings[0]").value("OPEN_PURCHASE_ORDER_LINES"))
+                .andExpect(jsonPath("$.data.warnings[0]").value("OPEN_PRODUCTION_ORDER_LINES"))
                 .andExpect(jsonPath("$.data.warnings[1]").value("UNSHIPPED_ORDER_LINES"))
-                .andExpect(jsonPath("$.data.openReferences.length()").value(2))
+                // The production order's own sales order is an unshipped order line of the SKU too.
+                .andExpect(jsonPath("$.data.openReferences.length()").value(3))
                 .andExpect(jsonPath("$.data.openReferencesTruncated").value(false))
-                .andExpect(jsonPath("$.data.openReferences[?(@.kind == 'PURCHASE_ORDER_LINE')].documentNumber").value(poNumber))
-                .andExpect(jsonPath("$.data.openReferences[?(@.kind == 'PURCHASE_ORDER_LINE')].documentId").value(po.toString()))
-                .andExpect(jsonPath("$.data.openReferences[?(@.kind == 'SALES_ORDER_LINE')].documentNumber").value(orderNumber))
-                .andExpect(jsonPath("$.data.openReferences[?(@.kind == 'SALES_ORDER_LINE')].sku").value(sku));
+                .andExpect(jsonPath("$.data.openReferences[?(@.kind == 'PRODUCTION_ORDER_LINE')].documentNumber")
+                        .value(production.productionCode()))
+                .andExpect(jsonPath("$.data.openReferences[?(@.kind == 'PRODUCTION_ORDER_LINE')].documentId")
+                        .value(production.productionOrderId().toString()))
+                .andExpect(jsonPath("$.data.openReferences[?(@.kind == 'SALES_ORDER_LINE')].documentNumber")
+                        .value(org.hamcrest.Matchers.hasItem(orderNumber)))
+                .andExpect(jsonPath("$.data.openReferences[?(@.kind == 'SALES_ORDER_LINE')].sku")
+                        .value(org.hamcrest.Matchers.hasItem(sku)));
 
         // Every variant, the default one included, is OBSOLETE (docs 01 §5.2), not BLOCKED; the documents are untouched.
         assertThat(jdbc.queryForList("SELECT status FROM product.variants WHERE product_id = ?", String.class, id))
                 .containsOnly("OBSOLETE");
-        assertThat(jdbc.queryForObject("SELECT status FROM procurement.purchase_orders WHERE id = ?", String.class, po))
-                .isEqualTo("DRAFT");
         assertThat(jdbc.queryForObject("SELECT status FROM ordering.customer_order WHERE id = ?", String.class, order))
                 .isEqualTo("CONFIRMED");
         assertThat(jdbc.queryForObject("SELECT discontinue_reason FROM product.products WHERE id = ?", String.class, id))
@@ -399,7 +365,7 @@ class ProductLifecycleIntegrationTest {
 
         assertRefused(send("POST", token(UUID.randomUUID(), "SALES_STAFF"), suspension,
                 reasonAndVersion("recall", approved.version())), 403, "FORBIDDEN");
-        // product-lifecycle:APPROVE is the System Admin's alone (kltn-docs 01 §5.1): not the E-commerce Admin's.
+        // product-lifecycle:APPROVE is the System Admin's alone (kltn-docs 01 §5.1): not the Sales Manager's.
         assertRefused(send("POST", editor(), suspension, reasonAndVersion("recall", approved.version())), 403, "FORBIDDEN");
         assertRefused(send("POST", editor(), resumption, "{\"version\":%d}".formatted(approved.version())), 403, "FORBIDDEN");
         assertRefused(send("POST", approver(), suspension, "{\"version\":%d}".formatted(approved.version())), 400, "VALIDATION_FAILED");
@@ -433,8 +399,12 @@ class ProductLifecycleIntegrationTest {
                 reasonAndVersion("recall", draft.version())), 409, "INVALID_PRODUCT_STATUS_TRANSITION");
     }
 
-    /** A PUBLISHED product with a price and a published image, made by SQL the way the catalog tests make one. */
-    private record Published(UUID id, String sku, String slug) {
+    /**
+     * A PUBLISHED product with a published image, made by SQL the way the catalog tests make one, and a customer
+     * ({@code buyer}) with a price of its own on the product's variant, kept from before 4B-2: the one price checkout
+     * still reads since 5-3 (no base price, kltn-docs 13 BR-04).
+     */
+    private record Published(UUID id, String sku, String slug, UUID buyer) {
     }
 
     private Published publishedProduct(String tag) {
@@ -456,11 +426,10 @@ class ProductLifecycleIntegrationTest {
                     INSERT INTO product.media (id, variant_id, url, is_published, published_at, published_by, created_by)
                     VALUES (?, ?, 'https://example.test/pub.jpg', true, NOW(), md5('demo:user:approver')::uuid,
                             md5('demo:user:editor')::uuid::text)""", Identifiers.newId(), variant);
-            jdbc.update("INSERT INTO catalog.pricing_rule (id, name, sku, price, currency, active, created_at) "
-                    + "VALUES (?, ?, ?, 12500000, 'VND', true, NOW())", Identifiers.newId(), "BASE:" + sku, sku);
         });
+        UUID buyer = tx.execute(s -> ReferenceRows.customer(entityManager));
         projection.project(id);
-        return new Published(id, sku, slug);
+        return new Published(id, sku, slug, buyer);
     }
 
     private void awaitCatalogHides(Published product) {
@@ -471,7 +440,7 @@ class ProductLifecycleIntegrationTest {
     }
 
     @Test
-    @DisplayName("a discontinued PUBLISHED product leaves the storefront and checkout, and its catalog rows are hidden")
+    @DisplayName("a discontinued PUBLISHED product leaves the storefront and new purchases, and its catalog rows are hidden")
     void discontinuedProductIsHiddenFromTheCatalog() throws Exception {
         Published product = publishedProduct("DISC");
         String shopper = token(UUID.randomUUID(), "SALES_STAFF");
@@ -484,15 +453,15 @@ class ProductLifecycleIntegrationTest {
         assertRefused(send("GET", shopper, "/api/v1/catalog/products/" + product.slug(), null), 404, "NOT_FOUND");
         send("GET", shopper, "/api/v1/catalog/products?size=100", null)
                 .andExpect(jsonPath("$.data.items[?(@.slug == '" + product.slug() + "')]").isEmpty());
-        assertThatThrownBy(() -> catalog.checkoutPrices(Set.of(product.sku()))).isInstanceOfSatisfying(BusinessException.class,
-                e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.PRODUCT_NOT_PURCHASABLE));
+        assertThat(products.purchasability(Set.of(product.sku())).get(product.sku().toUpperCase()))
+                .isEqualTo(Purchasability.PRODUCT_DISCONTINUED);
         awaitCatalogHides(product);
         // Terminal: it cannot come back through the catalog either.
         assertRefused(send("POST", editor(), "/api/v1/products/" + product.id() + "/publication", null), 409, "PRODUCT_NOT_APPROVED");
     }
 
     @Test
-    @DisplayName("a suspended PUBLISHED product leaves the storefront and checkout; resuming gives APPROVED, publishing shows it again")
+    @DisplayName("a suspended PUBLISHED product leaves the storefront and new purchases; resuming gives APPROVED, publishing shows it again")
     void suspendedProductIsHiddenFromTheCatalog() throws Exception {
         Published product = publishedProduct("SUSP");
         UUID id = product.id();
@@ -502,7 +471,7 @@ class ProductLifecycleIntegrationTest {
         send("GET", shopper, "/api/v1/catalog/products/" + slug, null).andExpect(status().isOk());
         send("GET", shopper, "/api/v1/catalog/products?size=100", null)
                 .andExpect(jsonPath("$.data.items[?(@.slug == '" + slug + "')]").isNotEmpty());
-        assertThat(catalog.checkoutPrices(Set.of(sku))).containsKey(sku);
+        assertThat(products.purchasability(Set.of(sku)).get(sku.toUpperCase())).isEqualTo(Purchasability.PURCHASABLE);
 
         long version = versionOf(id);
         send("POST", approver(), "/api/v1/products/" + id + "/suspension", reasonAndVersion("recall", version))
@@ -513,8 +482,7 @@ class ProductLifecycleIntegrationTest {
         assertRefused(send("GET", shopper, "/api/v1/catalog/products/" + slug, null), 404, "NOT_FOUND");
         send("GET", shopper, "/api/v1/catalog/products?size=100", null)
                 .andExpect(jsonPath("$.data.items[?(@.slug == '" + slug + "')]").isEmpty());
-        assertThatThrownBy(() -> catalog.checkoutPrices(Set.of(sku))).isInstanceOfSatisfying(BusinessException.class,
-                e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.PRODUCT_NOT_PURCHASABLE));
+        assertThat(products.purchasability(Set.of(sku)).get(sku.toUpperCase())).isEqualTo(Purchasability.PRODUCT_INACTIVE);
         // And the catalog's own rows follow, once it has been told (CatalogListingChanged).
         awaitCatalogHides(product);
 
@@ -555,7 +523,7 @@ class ProductLifecycleIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT count(*) FROM inventory.inventory_items WHERE sku = ?", Long.class, sku)).isOne();
         String path = "/api/v1/products/" + id + "?version=" + draft.version();
 
-        // product-products:DELETE: ECOMMERCE_ADMIN and SYSTEM_ADMIN have it; SALES_STAFF (create/update) and WAREHOUSE_STAFF do not.
+        // product-products:DELETE: SALES_MANAGER and SYSTEM_ADMIN have it; SALES_STAFF (create/update) and WAREHOUSE_STAFF do not.
         assertRefused(send("DELETE", token(UUID.randomUUID(), "WAREHOUSE_STAFF"), path, null), 403, "FORBIDDEN");
         assertRefused(send("DELETE", token(UUID.randomUUID(), "SALES_STAFF"), path, null), 403, "FORBIDDEN");
         mvc.perform(delete(path)).andExpect(status().isUnauthorized());
@@ -625,36 +593,6 @@ class ProductLifecycleIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT count(*) FROM product.variants WHERE product_id = ?", Long.class, inUse.productId())).isOne();
     }
 
-    @Test
-    @DisplayName("a draft whose SKU has an open purchase order line, stock history or an order is 409 PRODUCT_IN_USE")
-    void deleteRefusedWhenPurchasingOrOrdersReferToTheSku() throws Exception {
-        // A PO line on a draft's SKU cannot be made through the service (a draft is not purchasable): by SQL.
-        ProductSummary draft = draftProduct();
-        UUID po = Identifiers.newId();
-        UUID supplier = supplier();
-        tx.executeWithoutResult(s -> {
-            jdbc.update("""
-                    INSERT INTO procurement.purchase_orders (id, po_number, status, supplier_id, warehouse_id, currency, order_date,
-                                                             version, created_at)
-                    VALUES (?, ?, 'DRAFT', ?, ?, 'VND', CURRENT_DATE, 0, NOW())""",
-                    po, "PO-LC-" + po.toString().substring(24), supplier, DemoData.WAREHOUSE_HCM);
-            jdbc.update("""
-                    INSERT INTO procurement.purchase_order_lines (id, po_id, line_no, inventory_item_id, ordered_qty, unit_price,
-                                                                  version, created_at)
-                    SELECT ?, ?, 1, id, 3, 1000, 0, NOW() FROM inventory.inventory_items WHERE sku = ?""",
-                    Identifiers.newId(), po, draft.code());
-        });
-        assertRefused(send("DELETE", editor(), "/api/v1/products/" + draft.productId() + "?version=" + draft.version(), null),
-                409, "PRODUCT_IN_USE");
-
-        // A cancelled line no longer counts as open, but it still holds the item: the foreign key answers the same.
-        tx.executeWithoutResult(s -> jdbc.update("UPDATE procurement.purchase_order_lines SET status = 'CANCELLED' WHERE po_id = ?", po));
-        assertThat(products.openReferences(draft.productId()).references()).isEmpty();
-        assertRefused(send("DELETE", editor(), "/api/v1/products/" + draft.productId() + "?version=" + draft.version(), null),
-                409, "PRODUCT_IN_USE");
-        assertThat(product(draft.productId()).path("status").asText()).isEqualTo("DRAFT");
-    }
-
     // ------------------------------------------------------------------ open references
 
     @Test
@@ -666,16 +604,19 @@ class ProductLifecycleIntegrationTest {
                 .andExpect(jsonPath("$.data.references.length()").value(0))
                 .andExpect(jsonPath("$.data.truncated").value(false));
 
-        UUID po = draftPurchaseOrder(approved.code());
+        ProductionReceivables.Receivable production = openProductionOrder(approved);
         UUID order = orderWithLine(approved.code(), "IN_PRODUCTION");
         orderWithLine(approved.code(), "SHIPPED");   // shipped: nothing left to fulfil, not listed
-        orderWithLine(approved.code(), "DRAFT");     // a cart is not an order
+        // 4B-5: a DRAFT order is made from an accepted quote, its contract being drawn up - it will ship the SKU.
+        UUID drafted = orderWithLine(approved.code(), "DRAFT");
         orderWithLine(approved.code(), "CANCELLED");
 
         send("GET", token(UUID.randomUUID(), "SALES_STAFF"), path, null).andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.references.length()").value(2))
-                .andExpect(jsonPath("$.data.references[?(@.kind == 'PURCHASE_ORDER_LINE')].documentId").value(po.toString()))
-                .andExpect(jsonPath("$.data.references[?(@.kind == 'SALES_ORDER_LINE')].documentId").value(order.toString()));
+                .andExpect(jsonPath("$.data.references.length()").value(4))
+                .andExpect(jsonPath("$.data.references[?(@.kind == 'PRODUCTION_ORDER_LINE')].documentId")
+                        .value(production.productionOrderId().toString()))
+                .andExpect(jsonPath("$.data.references[?(@.kind == 'SALES_ORDER_LINE')].documentId")
+                        .value(org.hamcrest.Matchers.hasItems(order.toString(), drafted.toString())));
         assertRefused(send("GET", token(UUID.randomUUID(), "WAREHOUSE_STAFF"), path, null), 403, "FORBIDDEN");
         assertRefused(send("GET", editor(), "/api/v1/products/" + UUID.randomUUID() + "/open-references", null),
                 404, "PRODUCT_NOT_FOUND");
@@ -738,94 +679,16 @@ class ProductLifecycleIntegrationTest {
                 .andExpect(jsonPath("$.data.items[0].changeType").value("SUSPENDED"));
     }
 
-    // ------------------------------------------------------------------ purchase order endpoints
-
-    private String poBody(UUID supplierId, String... skus) {
-        StringBuilder lines = new StringBuilder();
-        for (String sku : skus) {
-            lines.append(lines.length() == 0 ? "" : ",")
-                    .append("{\"sku\":\"%s\",\"quantityOrdered\":1,\"unitPrice\":1000}".formatted(sku));
-        }
-        return "{\"supplierId\":\"%s\",\"warehouseId\":\"%s\",\"currency\":\"VND\",\"lines\":[%s]}"
-                .formatted(supplierId, DemoData.WAREHOUSE_HCM, lines);
-    }
-
-    @Test
-    @DisplayName("purchase order endpoints: an active SKU is 201; a discontinued or suspended one is 409 SKU_NOT_PURCHASABLE on lines[i].sku "
-            + "at create, edit, submission and approval")
-    void purchaseOrderEndpointsRefuseSkusThatAreNotActive() throws Exception {
-        ProductSummary alive = approvedProduct();
-        ProductSummary dying = approvedProduct();
-        UUID listed = supplierListing(alive.code(), dying.code());
-        // The buyer is a real user: the purchase order's history points at who acted.
-        String buyer = token(tx.execute(s -> ReferenceRows.user(entityManager)), "PROCUREMENT_STAFF");
-
-        // No permission, no purchase order.
-        assertRefused(send("POST", token(UUID.randomUUID(), "WAREHOUSE_STAFF"), "/api/v1/purchase-orders", poBody(listed, alive.code())),
-                403, "FORBIDDEN");
-        JsonNode created = data(expectStatus(send("POST", buyer, "/api/v1/purchase-orders", poBody(listed, alive.code(), dying.code())), 201));
-        String po = created.path("purchaseOrderId").asText();
-        long version = created.path("version").asLong();
-        assertThat(created.path("lines").size()).isEqualTo(2);
-
-        send("POST", approver(), "/api/v1/products/" + dying.productId() + "/discontinuation",
-                reasonAndVersion("end of line", dying.version())).andExpect(status().isOk());
-
-        // Create: the line at fault is named, with why, translated (Vietnamese by default, English on request).
-        assertRefused(send("POST", buyer, "/api/v1/purchase-orders", poBody(listed, alive.code(), dying.code())), 409, "SKU_NOT_PURCHASABLE");
-        send("POST", buyer, "/api/v1/purchase-orders", poBody(listed, alive.code(), dying.code()))
-                .andExpect(jsonPath("$.fieldErrors.length()").value(1))
-                .andExpect(jsonPath("$.fieldErrors[0].field").value("lines[1].sku"))
-                .andExpect(jsonPath("$.fieldErrors[0].code").value("PRODUCT_DISCONTINUED"))
-                .andExpect(jsonPath("$.fieldErrors[0].message").value("Sản phẩm đã ngừng kinh doanh"));
-        mvc.perform(post("/api/v1/purchase-orders").header("Authorization", buyer).header("Accept-Language", "en")
-                        .contentType(JSON).content(poBody(listed, alive.code(), dying.code())))
-                .andExpect(jsonPath("$.errorCode").value("SKU_NOT_PURCHASABLE"))
-                .andExpect(jsonPath("$.fieldErrors[0].message").value("The product is discontinued"));
-        assertRefused(send("POST", buyer, "/api/v1/purchase-orders", poBody(listed, dying.code(), dying.code())), 400, "VALIDATION_FAILED");
-
-        // Submission of the draft that holds the SKU: refused at the line, still a draft.
-        assertRefused(send("POST", buyer, "/api/v1/purchase-orders/" + po + "/submission", null), 409, "SKU_NOT_PURCHASABLE");
-        send("POST", buyer, "/api/v1/purchase-orders/" + po + "/submission", null)
-                .andExpect(jsonPath("$.fieldErrors[0].field").value("lines[1].sku"));
-        // Edit: keep the line of the active SKU, drop the other; the dead SKU cannot be added back.
-        String keptLine = created.path("lines").get(0).path("lineId").asText();
-        String edit = """
-                {"version":%d,"warehouseId":"%s","expectedAt":"%s","lines":[%s]}""";
-        String expectedAt = LocalDate.now().plusDays(10).toString();
-        assertRefused(send("PUT", buyer, "/api/v1/purchase-orders/" + po, edit.formatted(version, DemoData.WAREHOUSE_HCM, expectedAt,
-                "{\"lineId\":\"%s\",\"sku\":\"%s\",\"quantityOrdered\":1,\"unitPrice\":1000},{\"sku\":\"%s\",\"quantityOrdered\":1,\"unitPrice\":1000}"
-                        .formatted(keptLine, alive.code(), dying.code()))), 409, "SKU_NOT_PURCHASABLE");
-        JsonNode edited = data(send("PUT", buyer, "/api/v1/purchase-orders/" + po, edit.formatted(version, DemoData.WAREHOUSE_HCM, expectedAt,
-                "{\"lineId\":\"%s\",\"sku\":\"%s\",\"quantityOrdered\":1,\"unitPrice\":1000}".formatted(keptLine, alive.code())))
-                .andExpect(status().isOk()));
-        assertThat(edited.path("lines").size()).isEqualTo(1);
-        send("POST", buyer, "/api/v1/purchase-orders/" + po + "/submission", null).andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.status").value("PENDING_APPROVAL"));
-
-        // Approval: the active SKU is suspended while the order waits.
-        JsonNode suspended = data(send("POST", approver(), "/api/v1/products/" + alive.productId() + "/suspension",
-                reasonAndVersion("recall", alive.version())).andExpect(status().isOk()));
-        assertRefused(send("POST", approver(), "/api/v1/purchase-orders/" + po + "/approval", null), 409, "SKU_NOT_PURCHASABLE");
-        send("POST", approver(), "/api/v1/purchase-orders/" + po + "/approval", null)
-                .andExpect(jsonPath("$.fieldErrors[0].field").value("lines[0].sku"))
-                .andExpect(jsonPath("$.fieldErrors[0].code").value("PRODUCT_INACTIVE"));
-        send("POST", approver(), "/api/v1/products/" + alive.productId() + "/resumption",
-                "{\"version\":%d}".formatted(suspended.path("version").asLong())).andExpect(status().isOk());
-        send("POST", approver(), "/api/v1/purchase-orders/" + po + "/approval", null).andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.status").value("APPROVED"));
-    }
-
     // ------------------------------------------------------------------ permissions
 
     @Test
-    @DisplayName("the seeded grants: ECOMMERCE_ADMIN and SYSTEM_ADMIN hold product-products:DELETE, nobody else does")
+    @DisplayName("the seeded grants: SALES_MANAGER and SYSTEM_ADMIN hold product-products:DELETE, nobody else does")
     void deletePermissionIsSeededForTwoRoles() {
         List<String> holders = jdbc.queryForList("""
                 SELECT r.code FROM identity.role_permission rp
                   JOIN identity.app_role r ON r.id = rp.role_id
                   JOIN identity.permission p ON p.id = rp.permission_id
                  WHERE p.code = 'product-products:DELETE' ORDER BY r.code""", String.class);
-        assertThat(holders).containsExactly("ECOMMERCE_ADMIN", "SYSTEM_ADMIN");
+        assertThat(holders).containsExactly("SALES_MANAGER", "SYSTEM_ADMIN");
     }
 }

@@ -1,16 +1,16 @@
 package com.stockflow.inventory.api;
 
 /**
- * The status a QC decision or a putaway gives the units it moves (docs 03 §5.2, 05).
+ * The status a putaway or a reclassification gives the units it moves (docs 05, 20).
  *
  * <p>Deliberately not the whole stock status set: DAMAGED and EXPIRED come from handling and from
  * the calendar, not from a decision another module makes about received goods.</p>
  */
 public enum StockDisposition {
-    /** Put away after QC accepted it, or for an item that needs no QC. */
+    /** Put away: on sale at a bin. */
     AVAILABLE,
-    /** QC put it on hold, waiting for a second decision. */
+    /** On hold apart from good stock, waiting for a decision (docs 20 §4.4). */
     QUARANTINE,
-    /** QC rejected it; waiting to go back to the supplier. */
+    /** Condemned; waiting to leave stock. */
     BLOCKED
 }

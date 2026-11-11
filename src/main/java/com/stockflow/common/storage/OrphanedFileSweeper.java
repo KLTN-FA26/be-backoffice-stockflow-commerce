@@ -23,9 +23,10 @@ import java.util.Set;
  * <h2>What it never touches</h2>
  *
  * <ul>
- *   <li>A category no module claims ({@link StoredFileReferences}): supplier invoice scans (a replaced scan is kept as
- *       a financial record), published product images (a CDN may still serve them), generated exports and the
- *       quarantine prefix (their lifecycle rules expire them), derived copies (they go with their original).</li>
+ *   <li>A category no module claims ({@link StoredFileReferences}): published product images (a CDN may still serve
+ *       them), generated exports and the quarantine prefix (their lifecycle rules expire them), derived copies (they
+ *       go with their original). The supplier invoice scans of the purchasing there was ({@code supplier-invoices/},
+ *       4A-8) have no category any more, so they are not touched either.</li>
  *   <li>Anything younger than {@link OrphanSweepProperties#grace()}: a file whose transaction is still running.</li>
  * </ul>
  *

@@ -8,7 +8,6 @@ import com.stockflow.common.security.DataScope;
 import com.stockflow.common.storage.FileUpload;
 import com.stockflow.common.storage.UploadInspection;
 import com.stockflow.inventory.api.ItemLogistics;
-import com.stockflow.inventory.api.StorageClass;
 import com.stockflow.product.api.CreateProductCommand;
 import com.stockflow.product.api.ListProductsQuery;
 import com.stockflow.product.api.ProductKind;
@@ -97,7 +96,7 @@ class ProductPimIntegrationTest {
 
     ProductSummary create(UUID brand, UUID category) {
         return products.create(new CreateProductCommand("CUP-" + suffix, "Ly giấy 12oz", "Paper cup 12oz", brand,
-                category, "Ly in logo", null, null, TaxClass.STANDARD, ProductKind.CUSTOMIZABLE, List.of()));
+                category, "Ly in logo", null, null, TaxClass.STANDARD, List.of()));
     }
 
     @Test
@@ -140,7 +139,7 @@ class ProductPimIntegrationTest {
                 e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.BRAND_NOT_FOUND));
 
         var updated = products.update(new UpdateProductCommand(created.productId(), created.version(), "Ly giấy 16oz", "Paper cup 16oz",
-                null, root.id(), null, null, null, TaxClass.REDUCED, ProductKind.CUSTOMIZABLE));
+                null, root.id(), null, null, null, TaxClass.REDUCED));
         assertThat(updated.categoryId()).isEqualTo(root.id());
         assertThat(updated.brandId()).isNull();
         assertThat(updated.slug()).isEqualTo(created.slug());
@@ -159,15 +158,12 @@ class ProductPimIntegrationTest {
 
         var logistics = new ItemLogistics("EACH", "893" + suffix.replaceAll("[^0-9]", "1"),
                 new BigDecimal("0.012"), new BigDecimal("8"), new BigDecimal("8"), new BigDecimal("10"),
-                new BigDecimal("6.2"), new BigDecimal("40"), new BigDecimal("30"), new BigDecimal("50"), 1, 50,
-                StorageClass.FRAGILE, false, null, true);
+                new BigDecimal("6.2"), new BigDecimal("40"), new BigDecimal("30"), new BigDecimal("50"), 1, 50);
         var after = items.describe(itemId, before.version(), logistics);
 
         assertThat(after.version()).isGreaterThan(before.version());
-        assertThat(after.logistics().storageClass()).isEqualTo(StorageClass.FRAGILE);
+        assertThat(after.logistics().packageHeightCm()).isEqualByComparingTo("50");
         assertThat(after.logistics().packSize()).isEqualTo(50);
-        assertThat(jdbc.queryForObject("select qc_required from inventory.inventory_items where sku = ?",
-                Boolean.class, "CUP-" + suffix)).isTrue();
         assertThatThrownBy(() -> items.describe(itemId, before.version(), logistics))
                 .isInstanceOfSatisfying(BusinessException.class,
                         e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.OPTIMISTIC_LOCK));

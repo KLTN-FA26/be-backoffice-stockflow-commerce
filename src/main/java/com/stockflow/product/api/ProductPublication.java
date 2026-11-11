@@ -28,8 +28,6 @@ public interface ProductPublication {
 
     void editEcommerce(UUID productId, String slug, String seoTitle, String seoDescription);
 
-    void advanceCommerceRevision(UUID productId);
-
     void publish(UUID productId);
 
     void unpublish(UUID productId);

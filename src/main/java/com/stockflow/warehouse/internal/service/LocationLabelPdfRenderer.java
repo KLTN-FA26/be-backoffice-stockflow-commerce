@@ -45,9 +45,9 @@ public class LocationLabelPdfRenderer {
 
     private static String context(LocationLabel label, LabelWords words) {
         if (label.kind() == StorageLocationKind.AREA) {
-            return "%s · %s".formatted(label.areaName(), label.storageClass());
+            return label.areaName();
         }
-        return "%s %s · %s %d · %s %s · %s".formatted(words.shelf(), label.shelfCode(), words.level(),
-                label.levelIndex(), words.bin(), label.binCode(), label.storageClass());
+        return "%s %s · %s %d · %s %s".formatted(words.shelf(), label.shelfCode(), words.level(),
+                label.levelIndex(), words.bin(), label.binCode());
     }
 }

@@ -23,16 +23,29 @@ class OrderStockAllocation {
     private static final Logger log = LoggerFactory.getLogger(OrderStockAllocation.class);
 
     private final InventoryService inventory;
+    private final com.stockflow.order.internal.domain.DeliveryBatchRecords batchRecords;
 
-    OrderStockAllocation(InventoryService inventory) {
+    OrderStockAllocation(InventoryService inventory,
+                         com.stockflow.order.internal.domain.DeliveryBatchRecords batchRecords) {
         this.inventory = inventory;
+        this.batchRecords = batchRecords;
     }
 
     /** @return how many reservations were allocated; 0 for an order allocated already or placed before SCRUM-152 */
     int allocate(Order order, String warehouseCode) {
-        AllocateStockResult result = inventory.allocate(new AllocateStockCommand(order.id().value(), warehouseCode));
+        return allocate(order, warehouseCode, null);
+    }
+
+    /**
+     * 4B-8 (17 BR-29): only {@code reservationIds} - one delivery batch's holds; null: every hold of the order. The
+     * allocations replacing a hold stand for its batch from then on.
+     */
+    int allocate(Order order, String warehouseCode, java.util.Set<java.util.UUID> reservationIds) {
+        AllocateStockResult result = inventory.allocate(new AllocateStockCommand(order.id().value(), warehouseCode,
+                reservationIds));
         for (AllocateStockResult.Allocation allocation : result.allocations()) {
             order.replaceReservation(allocation.reservationId(), allocation.holdIds());
+            batchRecords.carry(allocation.reservationId(), allocation.holdIds());
         }
         if (!result.allocations().isEmpty()) {
             log.info("Order {}: {} reservation(s) allocated in {}", order.orderNumber(), result.allocations().size(),

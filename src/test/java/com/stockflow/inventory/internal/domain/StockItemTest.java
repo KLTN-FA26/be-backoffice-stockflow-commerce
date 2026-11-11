@@ -27,12 +27,78 @@ class StockItemTest {
     private static final LocationId LOCATION = new LocationId("HCM-A-01-02-B");
     private static final Instant NOW = Instant.parse("2026-09-07T10:00:00Z");
 
+    /**
+     * A carton's row, sellable: stock is kept in whole cartons (kltn-docs 20 BR-14), so only a carton's row takes units
+     * or holds ({@code requireInCartonWhenStocked}).
+     */
     private static StockItem availableWith(int onHand) {
-        StockItem item = new StockItem(StockItemId.newId(), SKU, LOCATION, null, null,
-                Quantity.of(onHand), StockStatus.QUARANTINE, List.of(), 0L);
+        StockItem item = new StockItem(StockItemId.newId(), SKU, LOCATION, "LOT-1", Quantity.of(onHand),
+                StockStatus.QUARANTINE, List.of(), 0L, NOW, UUID.randomUUID(), new StockPackageId(UUID.randomUUID()));
         item.releaseFromQuarantine();
         item.pullDomainEvents();
         return item;
+    }
+
+    /** A loose row emptied before 4C-1 put stock into cartons: it holds nothing and nobody's hold. */
+    private static StockItem emptiedLooseRow() {
+        return new StockItem(StockItemId.newId(), SKU, LOCATION, "UNTRACED", Quantity.ZERO, StockStatus.AVAILABLE,
+                List.of(), 0L, null, UUID.randomUUID(), (StockPackageId) null);
+    }
+
+    /** An allocation of {@code quantity} here for {@code orderId}, made from a SKU reservation (F-FUL step 02). */
+    private static Reservation allocate(StockItem item, UUID orderId, UUID rootRequestId, UUID requestId,
+                                        int quantity) {
+        return item.allocate(orderId, UUID.randomUUID(), rootRequestId, requestId, Quantity.of(quantity), NOW);
+    }
+
+    private static Reservation allocate(StockItem item, int quantity) {
+        return allocate(item, UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), quantity);
+    }
+
+    @Nested
+    @DisplayName("the row of a carton found again (4C-3, L4)")
+    class ComingBack {
+
+        private StockItem emptyCartonRow(StockStatus status) {
+            return new StockItem(StockItemId.newId(), SKU, LOCATION, "L1", Quantity.ZERO, status, List.of(), 0L,
+                    NOW, null, new StockPackageId(UUID.randomUUID()));
+        }
+
+        @Test
+        @DisplayName("an empty carton row comes back AVAILABLE or QUARANTINE, whatever it was")
+        void comesBackAsAvailableOrQuarantine() {
+            for (StockStatus before : StockStatus.values()) {
+                StockItem row = emptyCartonRow(before);
+                row.comeBackAs(StockStatus.AVAILABLE);
+                assertThat(row.status()).as("from " + before).isEqualTo(StockStatus.AVAILABLE);
+                row.comeBackAs(StockStatus.QUARANTINE);
+                assertThat(row.status()).isEqualTo(StockStatus.QUARANTINE);
+            }
+        }
+
+        @Test
+        @DisplayName("no other status: a carton found is not found DAMAGED, BLOCKED, INBOUND, EXPIRED or in production")
+        void onlyAvailableOrQuarantine() {
+            for (StockStatus target : List.of(StockStatus.INBOUND, StockStatus.BLOCKED, StockStatus.DAMAGED,
+                    StockStatus.EXPIRED, StockStatus.IN_PRODUCTION)) {
+                assertThatThrownBy(() -> emptyCartonRow(StockStatus.AVAILABLE).comeBackAs(target))
+                        .as(target.name()).isInstanceOf(IllegalArgumentException.class);
+            }
+        }
+
+        @Test
+        @DisplayName("only the empty row of a carton: not one holding units, not a loose row")
+        void onlyAnEmptyCartonRow() {
+            StockItem holding = new StockItem(StockItemId.newId(), SKU, LOCATION, "L1", Quantity.of(3),
+                    StockStatus.AVAILABLE, List.of(), 0L, NOW, null, new StockPackageId(UUID.randomUUID()));
+            StockItem loose = new StockItem(StockItemId.newId(), SKU, LOCATION, "L1", Quantity.ZERO,
+                    StockStatus.AVAILABLE, List.of(), 0L, NOW, null, (StockPackageId) null);
+
+            assertThatThrownBy(() -> holding.comeBackAs(StockStatus.AVAILABLE))
+                    .isInstanceOf(IllegalStateException.class);
+            assertThatThrownBy(() -> loose.comeBackAs(StockStatus.AVAILABLE))
+                    .isInstanceOf(IllegalStateException.class);
+        }
     }
 
     @Nested
@@ -42,7 +108,7 @@ class StockItemTest {
         @Test
         @DisplayName("arrives in quarantine, not on sale")
         void receivedStockIsQuarantined() {
-            StockItem item = StockItem.receive(SKU, LOCATION, "LOT-1", null, Quantity.of(10));
+            StockItem item = StockItem.receive(SKU, LOCATION, "LOT-1", Quantity.of(10));
 
             assertThat(item.status()).isEqualTo(StockStatus.QUARANTINE);
             // The units are physically present but must not be sellable before QC.
@@ -53,7 +119,7 @@ class StockItemTest {
         @Test
         @DisplayName("becomes sellable only after QC passes")
         void quarantineReleaseMakesStockAvailable() {
-            StockItem item = StockItem.receive(SKU, LOCATION, "LOT-1", null, Quantity.of(10));
+            StockItem item = StockItem.receive(SKU, LOCATION, "LOT-1", Quantity.of(10));
 
             item.releaseFromQuarantine();
 
@@ -62,15 +128,15 @@ class StockItemTest {
     }
 
     @Nested
-    @DisplayName("reserving")
-    class Reserving {
+    @DisplayName("allocating")
+    class Allocating {
 
         @Test
         @DisplayName("lowers available but not on hand - nothing has physically moved")
-        void reservationHoldsWithoutDeducting() {
+        void allocationHoldsWithoutDeducting() {
             StockItem item = availableWith(10);
 
-            item.reserve(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), Quantity.of(3), NOW);
+            allocate(item, 3);
 
             assertThat(item.onHand()).isEqualTo(Quantity.of(10));
             assertThat(item.reserved()).isEqualTo(Quantity.of(3));
@@ -79,11 +145,10 @@ class StockItemTest {
 
         @Test
         @DisplayName("refuses to oversell")
-        void reservingMoreThanAvailableIsRejected() {
+        void allocatingMoreThanAvailableIsRejected() {
             StockItem item = availableWith(5);
 
-            assertThatThrownBy(() ->
-                    item.reserve(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), Quantity.of(6), NOW))
+            assertThatThrownBy(() -> allocate(item, 6))
                     .isInstanceOf(InsufficientStockException.class)
                     .hasMessageContaining("requested 6")
                     .hasMessageContaining("available 5");
@@ -91,26 +156,26 @@ class StockItemTest {
 
         @Test
         @DisplayName("quarantined stock cannot be sold")
-        void reservingQuarantinedStockIsRejected() {
-            StockItem item = StockItem.receive(SKU, LOCATION, "LOT-1", null, Quantity.of(10));
+        void allocatingQuarantinedStockIsRejected() {
+            StockItem item = new StockItem(StockItemId.newId(), SKU, LOCATION, "LOT-1", Quantity.of(10),
+                    StockStatus.QUARANTINE, List.of(), 0L, NOW, UUID.randomUUID(), new StockPackageId(UUID.randomUUID()));
 
-            assertThatThrownBy(() ->
-                    item.reserve(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), Quantity.of(1), NOW))
+            assertThatThrownBy(() -> allocate(item, 1))
                     .isInstanceOf(IllegalStateException.class)
                     .hasMessageContaining("QUARANTINE");
         }
 
         @Test
-        @DisplayName("the same request id reserves once, however many times it arrives")
-        void reservationIsIdempotent() {
+        @DisplayName("the same request id allocates once, however many times it arrives")
+        void allocationIsIdempotent() {
             StockItem item = availableWith(10);
             UUID requestId = UUID.randomUUID();
             UUID orderId = UUID.randomUUID();
 
-            Reservation first = item.reserve(orderId, requestId, requestId, Quantity.of(3), NOW);
-            Reservation second = item.reserve(orderId, requestId, requestId, Quantity.of(3), NOW);
+            Reservation first = allocate(item, orderId, requestId, requestId, 3);
+            Reservation second = allocate(item, orderId, requestId, requestId, 3);
 
-            // A double-clicked checkout button must not hold six units.
+            // A release retried after a timeout must not hold six units.
             assertThat(second.id()).isEqualTo(first.id());
             assertThat(item.reserved()).isEqualTo(Quantity.of(3));
         }
@@ -120,7 +185,7 @@ class StockItemTest {
         void activeReservationsForFindsTheCallersHolds() {
             StockItem item = availableWith(10);
             UUID root = UUID.randomUUID();
-            item.reserve(UUID.randomUUID(), root, UUID.randomUUID(), Quantity.of(3), NOW);
+            allocate(item, UUID.randomUUID(), root, UUID.randomUUID(), 3);
 
             // The replay check reads this, and it must run before availability is recomputed:
             // the hold above has already changed what the planner would see.
@@ -129,15 +194,28 @@ class StockItemTest {
         }
 
         @Test
-        @DisplayName("announces StockReserved so other modules can react")
-        void reservationRegistersAnEvent() {
+        @DisplayName("an allocation has no deadline and names its SKU reservation")
+        void anAllocationIsPinnedToItsSkuReservation() {
+            StockItem item = availableWith(10);
+            UUID from = UUID.randomUUID();
+
+            Reservation allocation = item.allocate(UUID.randomUUID(), from, from, UUID.randomUUID(), Quantity.of(2), NOW);
+
+            assertThat(allocation.isAllocation()).isTrue();
+            assertThat(allocation.allocatedFrom()).isEqualTo(from);
+            assertThat(allocation.expiresAt()).isNull();
+        }
+
+        @Test
+        @DisplayName("announces StockAllocated so other modules can react")
+        void allocationRegistersAnEvent() {
             StockItem item = availableWith(10);
 
-            item.reserve(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), Quantity.of(2), NOW);
+            allocate(item, 2);
 
             assertThat(item.pullDomainEvents())
                     .singleElement()
-                    .isInstanceOf(StockEvent.Reserved.class);
+                    .isInstanceOf(StockEvent.Allocated.class);
         }
     }
 
@@ -149,8 +227,7 @@ class StockItemTest {
         @DisplayName("puts the units back on sale")
         void releaseRestoresAvailability() {
             StockItem item = availableWith(10);
-            Reservation reservation =
-                    item.reserve(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), Quantity.of(4), NOW);
+            Reservation reservation = allocate(item, 4);
 
             item.releaseReservation(reservation.id(), ReleaseReason.ORDER_CANCELLED, NOW);
 
@@ -162,13 +239,12 @@ class StockItemTest {
         @DisplayName("releasing twice is harmless")
         void releaseIsIdempotent() {
             StockItem item = availableWith(10);
-            Reservation reservation =
-                    item.reserve(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), Quantity.of(4), NOW);
+            Reservation reservation = allocate(item, 4);
 
             item.releaseReservation(reservation.id(), ReleaseReason.ORDER_CANCELLED, NOW);
-            // The cancel path and the expiry sweeper genuinely race here; neither may fail because
+            // The cancel path and a release by hand genuinely race here; neither may fail because
             // the other won.
-            item.releaseReservation(reservation.id(), ReleaseReason.RESERVATION_EXPIRED, NOW);
+            item.releaseReservation(reservation.id(), ReleaseReason.MANUAL_OVERRIDE, NOW);
 
             assertThat(item.available()).isEqualTo(Quantity.of(10));
             assertThat(reservation.releaseReason()).isEqualTo(ReleaseReason.ORDER_CANCELLED);
@@ -179,33 +255,16 @@ class StockItemTest {
         void releasedHoldsDoNotCountAsIdempotencyHits() {
             StockItem item = availableWith(10);
             UUID requestId = UUID.randomUUID();
-            Reservation first = item.reserve(UUID.randomUUID(), requestId, requestId,
-                    Quantity.of(3), NOW);
+            Reservation first = allocate(item, UUID.randomUUID(), requestId, requestId, 3);
             item.releaseReservation(first.id(), ReleaseReason.ORDER_CANCELLED, NOW);
 
             // The row survives as an audit trail. Matching on the id alone would hand the caller
             // back a reservation that holds nothing and releases nothing.
             assertThat(item.findByRequestId(requestId)).isEmpty();
 
-            Reservation second = item.reserve(UUID.randomUUID(), requestId, requestId,
-                    Quantity.of(3), NOW);
+            Reservation second = allocate(item, UUID.randomUUID(), requestId, requestId, 3);
             assertThat(second.id()).isNotEqualTo(first.id());
             assertThat(item.reserved()).isEqualTo(Quantity.of(3));
-        }
-
-        @Test
-        @DisplayName("expired holds are swept, live ones are not")
-        void sweepReleasesOnlyExpiredHolds() {
-            StockItem item = availableWith(10);
-            item.reserve(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(),
-                    Quantity.of(3), NOW, Duration.ofMinutes(30));
-            item.reserve(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(),
-                    Quantity.of(2), NOW, Duration.ofHours(4));
-
-            int released = item.releaseExpired(NOW.plus(Duration.ofMinutes(31)));
-
-            assertThat(released).isEqualTo(1);
-            assertThat(item.reserved()).isEqualTo(Quantity.of(2));
         }
     }
 
@@ -217,8 +276,7 @@ class StockItemTest {
         @DisplayName("only a live hold can become a real deduction")
         void consumingAReservationLowersOnHand() {
             StockItem item = availableWith(10);
-            Reservation reservation =
-                    item.reserve(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), Quantity.of(4), NOW);
+            Reservation reservation = allocate(item, 4);
 
             item.consumeReservation(reservation.id(), NOW);
 
@@ -231,8 +289,7 @@ class StockItemTest {
         @DisplayName("a released hold cannot then be shipped")
         void consumingAReleasedReservationIsRejected() {
             StockItem item = availableWith(10);
-            Reservation reservation =
-                    item.reserve(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), Quantity.of(4), NOW);
+            Reservation reservation = allocate(item, 4);
             item.releaseReservation(reservation.id(), ReleaseReason.ORDER_CANCELLED, NOW);
 
             // SCRUM-267: a business refusal (409 RESERVATION_NOT_ACTIVE), no longer an IllegalStateException
@@ -249,8 +306,7 @@ class StockItemTest {
         @DisplayName("a hold consumed once cannot be consumed again")
         void consumingTwiceIsRejected() {
             StockItem item = availableWith(10);
-            Reservation reservation =
-                    item.reserve(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), Quantity.of(4), NOW);
+            Reservation reservation = allocate(item, 4);
             item.consumeReservation(reservation.id(), NOW);
 
             assertThatThrownBy(() -> item.consumeReservation(reservation.id(), NOW))
@@ -261,11 +317,14 @@ class StockItemTest {
         }
 
         @Test
-        @DisplayName("a hold past its payment deadline is not consumed, even before the sweeper closes it")
+        @DisplayName("a HELD hold of before V20261117000300 past its payment deadline is not consumed")
         void consumingAHoldPastItsDeadlineIsRejected() {
-            StockItem item = availableWith(10);
-            Reservation reservation = item.reserve(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(),
-                    Quantity.of(4), NOW, Duration.ofMinutes(30));
+            Reservation reservation = new Reservation(ReservationId.newId(), UUID.randomUUID(), UUID.randomUUID(),
+                    UUID.randomUUID(), Quantity.of(4), NOW, NOW.plus(Duration.ofMinutes(30)), ReservationStatus.HELD,
+                    null, null);
+            StockItem item = new StockItem(StockItemId.newId(), SKU, LOCATION, "LOT-1", Quantity.of(10),
+                    StockStatus.AVAILABLE, List.of(reservation), 0L, NOW, UUID.randomUUID(),
+                    new StockPackageId(UUID.randomUUID()));
 
             assertThatThrownBy(() -> item.consumeReservation(reservation.id(), NOW.plus(Duration.ofMinutes(31))))
                     .isInstanceOfSatisfying(com.stockflow.common.error.BusinessException.class, refusal ->
@@ -292,8 +351,8 @@ class StockItemTest {
             item.putBack(Quantity.of(3));
             assertThat(item.onHand()).isEqualTo(Quantity.of(13));
 
-            StockItem quarantined = new StockItem(StockItemId.newId(), SKU, LOCATION, null, null,
-                    Quantity.of(5), StockStatus.QUARANTINE, List.of(), 0L);
+            StockItem quarantined = new StockItem(StockItemId.newId(), SKU, LOCATION, "LOT-1", Quantity.of(5),
+                    StockStatus.QUARANTINE, List.of(), 0L, NOW, UUID.randomUUID(), new StockPackageId(UUID.randomUUID()));
             assertThatThrownBy(() -> quarantined.putBack(Quantity.of(1)))
                     .isInstanceOfSatisfying(com.stockflow.common.error.BusinessException.class, refusal ->
                             assertThat(refusal.errorCode())
@@ -310,7 +369,7 @@ class StockItemTest {
         @DisplayName("a stock count below what is reserved is refused, not silently applied")
         void adjustingBelowReservedIsRejected() {
             StockItem item = availableWith(10);
-            item.reserve(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), Quantity.of(6), NOW);
+            allocate(item, 6);
 
             // Shrinkage found by a physical count. Quietly dropping customers' holds to make the
             // numbers add up would be far worse than failing loudly.
@@ -320,149 +379,45 @@ class StockItemTest {
         }
 
         @Test
-        @DisplayName("stock with live holds cannot be blocked out from under them")
-        void blockingReservedStockIsRejected() {
-            StockItem item = availableWith(10);
-            item.reserve(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), Quantity.of(2), NOW);
-
-            assertThatThrownBy(() -> item.block(StockStatus.DAMAGED))
-                    .isInstanceOf(IllegalStateException.class)
-                    .hasMessageContaining("still reserved");
-        }
-
-        @Test
         @DisplayName("a corrupted row cannot be rehydrated into a valid aggregate")
         void constructingWithReservedAboveOnHandIsRejected() {
             Reservation tooBig = new Reservation(ReservationId.newId(), UUID.randomUUID(),
                     UUID.randomUUID(), UUID.randomUUID(), Quantity.of(20), NOW,
                     NOW.plusSeconds(600), ReservationStatus.HELD, null, null);
 
-            assertThatThrownBy(() -> new StockItem(StockItemId.newId(), SKU, LOCATION, null, null,
-                    Quantity.of(5), StockStatus.AVAILABLE, List.of(tooBig), 0L))
+            assertThatThrownBy(() -> new StockItem(StockItemId.newId(), SKU, LOCATION, null, Quantity.of(5), StockStatus.AVAILABLE, List.of(tooBig), 0L))
                     .isInstanceOf(IllegalStateException.class)
                     .hasMessageContaining("Invariant violated");
         }
     }
 
-    // ---- SCRUM-465: a hold expires only while its order waits for payment (kltn-docs 14 BR-07) ----
-
-    @Test
-    @DisplayName("pinning an order's holds stops them expiring; other orders' holds still expire")
-    void pinnedHoldsDoNotExpire() {
-        StockItem item = availableWith(10);
-        UUID paid = UUID.randomUUID();
-        UUID unpaid = UUID.randomUUID();
-        Reservation kept = item.reserve(paid, UUID.randomUUID(), UUID.randomUUID(), Quantity.of(3), NOW);
-        item.reserve(unpaid, UUID.randomUUID(), UUID.randomUUID(), Quantity.of(2), NOW);
-
-        assertThat(item.pinReservationsOf(paid)).isEqualTo(1);
-        assertThat(item.pinReservationsOf(paid)).isZero();   // idempotent
-        assertThat(kept.isPinned()).isTrue();
-        assertThat(kept.expiresAt()).isNull();
-
-        int released = item.releaseExpired(NOW.plus(java.time.Duration.ofDays(30)));
-
-        assertThat(released).isEqualTo(1);
-        assertThat(kept.status()).isEqualTo(ReservationStatus.HELD);
-        assertThat(item.reserved()).isEqualTo(Quantity.of(3));
-    }
-
-    @Test
-    @DisplayName("SCRUM-427: an order waiting for payment again gets a deadline on its pinned holds")
-    void rearmedHoldsExpireAgain() {
-        StockItem item = availableWith(10);
-        UUID orderId = UUID.randomUUID();
-        Reservation hold = item.reserve(orderId, UUID.randomUUID(), UUID.randomUUID(), Quantity.of(3), NOW);
-        item.pinReservationsOf(orderId);
-        java.time.Instant deadline = NOW.plus(java.time.Duration.ofMinutes(30));
-
-        assertThat(item.rearmReservationsOf(orderId, deadline)).isEqualTo(1);
-        assertThat(item.rearmReservationsOf(orderId, deadline.plusSeconds(60))).isZero();   // idempotent
-        assertThat(hold.expiresAt()).isEqualTo(deadline);
-        assertThat(item.releaseExpired(deadline)).isEqualTo(1);
-        assertThat(hold.status()).isEqualTo(ReservationStatus.EXPIRED);
-    }
-
-    @Test
-    @DisplayName("a closed hold is not pinned, and a pinned hold can still be released or consumed")
-    void pinOnlyTouchesActiveHolds() {
-        StockItem item = availableWith(10);
-        UUID orderId = UUID.randomUUID();
-        Reservation cancelled = item.reserve(orderId, UUID.randomUUID(), UUID.randomUUID(), Quantity.of(2), NOW);
-        item.releaseReservation(cancelled.id(), ReleaseReason.ORDER_CANCELLED, NOW);
-        Reservation live = item.reserve(orderId, UUID.randomUUID(), UUID.randomUUID(), Quantity.of(3), NOW);
-
-        assertThat(item.pinReservationsOf(orderId)).isEqualTo(1);
-        assertThat(cancelled.expiresAt()).isNotNull();
-
-        item.releaseReservation(live.id(), ReleaseReason.ORDER_CANCELLED, NOW);
-        assertThat(live.status()).isEqualTo(ReservationStatus.RELEASED);
-        assertThat(item.reserved()).isEqualTo(Quantity.ZERO);
-    }
-
     @Nested
-    @DisplayName("G4-Q2: printed goods consumed at completion, booked back for their scrap (BR-10)")
-    class BookingBackForScrap {
+    @DisplayName("whole cartons only (kltn-docs 20 BR-14, review M-5)")
+    class WholeCartonsOnly {
 
-        private final UUID order = UUID.randomUUID();
-
-        /** 5 on hand, a hold of 3 for the order consumed (on hand 2 left): the goods left stock at completion. */
-        private StockItem consumed(Reservation[] hold) {
-            StockItem item = availableWith(5);
-            hold[0] = item.reserve(order, UUID.randomUUID(), UUID.randomUUID(), Quantity.of(3), NOW);
-            item.pinReservationsOf(order);
-            item.consumeReservation(hold[0].id(), NOW);
-            item.pullDomainEvents();
-            return item;
+        @Test
+        @DisplayName("a row in no carton takes neither units nor holds")
+        void aLooseRowGainsNothing() {
+            assertThatThrownBy(() -> emptiedLooseRow().moveIn(Quantity.of(1)))
+                    .isInstanceOf(IllegalStateException.class).hasMessageContaining("in no carton");
+            assertThatThrownBy(() -> emptiedLooseRow().adjustBy(1))
+                    .isInstanceOf(IllegalStateException.class).hasMessageContaining("in no carton");
+            assertThatThrownBy(() -> emptiedLooseRow().adjustTo(Quantity.of(2)))
+                    .isInstanceOf(IllegalStateException.class).hasMessageContaining("in no carton");
+            StockItem loose = new StockItem(StockItemId.newId(), SKU, LOCATION, "UNTRACED", Quantity.of(5),
+                    StockStatus.AVAILABLE, List.of(), 0L, null, UUID.randomUUID(), (StockPackageId) null);
+            assertThatThrownBy(() -> allocate(loose, 1))
+                    .isInstanceOf(IllegalStateException.class).hasMessageContaining("in no carton");
         }
 
         @Test
-        @DisplayName("brings the units back under a new pinned hold of the order - out of ATP - never more than consumed")
-        void backUnderAHoldNeverMoreThanConsumed() {
-            Reservation[] source = new Reservation[1];
-            StockItem item = consumed(source);
+        @DisplayName("an emptied loose row may stay empty: a count of nothing changes nothing")
+        void anEmptiedLooseRowMayStayEmpty() {
+            StockItem loose = emptiedLooseRow();
 
-            Reservation first = item.bookBackForScrap(source[0].id(), order, UUID.randomUUID(), Quantity.of(2), NOW)
-                    .orElseThrow();
+            loose.adjustTo(Quantity.ZERO);
 
-            assertThat(item.onHand()).isEqualTo(Quantity.of(4));
-            assertThat(item.available()).as("held for its scrap, never on sale").isEqualTo(Quantity.of(2));
-            assertThat(first.status()).isEqualTo(ReservationStatus.HELD);
-            assertThat(first.isPinned()).isTrue();
-            assertThat(first.orderId()).isEqualTo(order);
-            assertThat(first.rootRequestId()).isEqualTo(source[0].id().value());
-            // A second closure asks for 5: only the 1 unit the hold consumed and is not back yet comes.
-            Reservation second = item.bookBackForScrap(source[0].id(), order, UUID.randomUUID(), Quantity.of(5), NOW)
-                    .orElseThrow();
-            assertThat(second.quantity()).isEqualTo(Quantity.of(1));
-            assertThat(item.bookBackForScrap(source[0].id(), order, UUID.randomUUID(), Quantity.of(1), NOW)).isEmpty();
-            assertThat(item.onHand()).isEqualTo(Quantity.of(5));
-        }
-
-        @Test
-        @DisplayName("idempotent on the request id, also once the hold was closed by its write-off")
-        void idempotentOnTheRequestId() {
-            Reservation[] source = new Reservation[1];
-            StockItem item = consumed(source);
-            UUID request = UUID.randomUUID();
-            Reservation back = item.bookBackForScrap(source[0].id(), order, request, Quantity.of(3), NOW).orElseThrow();
-            item.releaseReservation(back.id(), ReleaseReason.SCRAPPED, NOW);
-
-            assertThat(item.bookBackForScrap(source[0].id(), order, request, Quantity.of(3), NOW)).containsSame(back);
-            assertThat(item.onHand()).isEqualTo(Quantity.of(5));
-        }
-
-        @Test
-        @DisplayName("only another order's, or a live hold, is refused")
-        void onlyTheOrdersConsumedGoods() {
-            Reservation[] source = new Reservation[1];
-            StockItem item = consumed(source);
-            Reservation live = item.reserve(order, UUID.randomUUID(), UUID.randomUUID(), Quantity.of(1), NOW);
-
-            assertThatThrownBy(() -> item.bookBackForScrap(source[0].id(), UUID.randomUUID(), UUID.randomUUID(),
-                    Quantity.of(1), NOW)).isInstanceOf(IllegalArgumentException.class);
-            assertThatThrownBy(() -> item.bookBackForScrap(live.id(), order, UUID.randomUUID(), Quantity.of(1), NOW))
-                    .isInstanceOf(IllegalArgumentException.class);
+            assertThat(loose.onHand()).isEqualTo(Quantity.ZERO);
         }
     }
 
@@ -474,8 +429,8 @@ class StockItemTest {
         private final LocationId destination = new LocationId("HCM-QC01");
 
         private StockItem cartonRow(StockStatus status, List<Reservation> holds) {
-            return new StockItem(StockItemId.newId(), SKU, LOCATION, "LOT-1", null, Quantity.of(10), status, holds, 0L,
-                    NOW, null, UUID.randomUUID(), carton);
+            return new StockItem(StockItemId.newId(), SKU, LOCATION, "LOT-1", Quantity.of(10), status, holds, 0L,
+                    NOW, UUID.randomUUID(), carton);
         }
 
         @Test
@@ -483,7 +438,7 @@ class StockItemTest {
         void receiveInboundIntoKeepsTheCarton() {
             UUID lot = UUID.randomUUID();
 
-            StockItem item = StockItem.receiveInboundInto(carton, SKU, LOCATION, "LOT-1", null, Quantity.of(980),
+            StockItem item = StockItem.receiveInboundInto(carton, SKU, LOCATION, "LOT-1", Quantity.of(980),
                     NOW, lot);
 
             assertThat(item.stockPackageId()).isEqualTo(carton);
@@ -506,7 +461,7 @@ class StockItemTest {
             assertThat(row.id()).isEqualTo(id);
             assertThat(row.status()).isEqualTo(StockStatus.INBOUND);
             assertThat(row.stockPackageId()).isEqualTo(carton);
-            assertThatThrownBy(() -> availableWith(5).followPackageTo(destination))
+            assertThatThrownBy(() -> emptiedLooseRow().followPackageTo(destination))
                     .isInstanceOf(IllegalStateException.class);
         }
 
@@ -527,6 +482,41 @@ class StockItemTest {
         }
 
         @Test
+        @DisplayName("quarantineInPackage (4C-6, a damaged carton back from the check station): AVAILABLE or INBOUND goes on "
+                + "hold in place, keeping its carton and its units, and stops being reservable")
+        void quarantineInPackageHoldsTheCartonInPlace() {
+            for (StockStatus before : List.of(StockStatus.AVAILABLE, StockStatus.INBOUND)) {
+                StockItem row = cartonRow(before, List.of());
+                StockItemId id = row.id();
+
+                row.quarantineInPackage();
+
+                assertThat(row.status()).isEqualTo(StockStatus.QUARANTINE);
+                assertThat(row.id()).isEqualTo(id);
+                assertThat(row.stockPackageId()).isEqualTo(carton);
+                assertThat(row.onHand()).isEqualTo(Quantity.of(10));
+                assertThat(row.status().isReservable()).isFalse();
+            }
+        }
+
+        @Test
+        @DisplayName("quarantineInPackage refuses a loose row, a row not AVAILABLE or INBOUND, and units held for an order")
+        void quarantineInPackageRefusals() {
+            assertThatThrownBy(() -> emptiedLooseRow().quarantineInPackage()).isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("loose");
+            for (StockStatus status : List.of(StockStatus.QUARANTINE, StockStatus.BLOCKED, StockStatus.DAMAGED)) {
+                StockItem row = cartonRow(status, List.of());
+                assertThatThrownBy(row::quarantineInPackage).as("%s", status).isInstanceOf(IllegalStateException.class);
+                assertThat(row.status()).isEqualTo(status);
+            }
+            StockItem held = cartonRow(StockStatus.AVAILABLE, List.of());
+            allocate(held, 2);
+            assertThatThrownBy(held::quarantineInPackage).isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("held for an order");
+            assertThat(held.status()).isEqualTo(StockStatus.AVAILABLE);
+        }
+
+        @Test
         @DisplayName("putaway: an INBOUND carton row becomes AVAILABLE in place")
         void inboundRowInCartonBecomesAvailable() {
             StockItem row = cartonRow(StockStatus.INBOUND, List.of());
@@ -540,13 +530,64 @@ class StockItemTest {
         }
 
         @Test
-        @DisplayName("quarantined stock reaches AVAILABLE through re-inspection, not putaway")
-        void quarantinedRowInCartonCannotBeMadeAvailable() {
+        @DisplayName("a released quarantined carton row becomes AVAILABLE when put away (05 §4.4, team plan 4D-1)")
+        void quarantinedRowInCartonIsPutAwayAsAvailable() {
             StockItem row = cartonRow(StockStatus.QUARANTINE, List.of());
 
-            assertThatThrownBy(() -> row.reclassifyInPackage(StockStatus.AVAILABLE))
+            row.reclassifyInPackage(StockStatus.AVAILABLE);
+
+            assertThat(row.status()).isEqualTo(StockStatus.AVAILABLE);
+        }
+
+        @Test
+        @DisplayName("a putaway takes only the status its task puts away: INBOUND for a receipt, QUARANTINE for a release")
+        void putAwayInPackageTakesItsOwnSource() {
+            StockItem inbound = cartonRow(StockStatus.INBOUND, List.of());
+            assertThatThrownBy(() -> inbound.putAwayInPackage(StockStatus.QUARANTINE))
                     .isInstanceOf(IllegalStateException.class);
-            assertThat(row.status()).isEqualTo(StockStatus.QUARANTINE);
+            inbound.putAwayInPackage(StockStatus.INBOUND);
+            assertThat(inbound.status()).isEqualTo(StockStatus.AVAILABLE);
+
+            StockItem quarantined = cartonRow(StockStatus.QUARANTINE, List.of());
+            assertThatThrownBy(() -> quarantined.putAwayInPackage(StockStatus.INBOUND))
+                    .isInstanceOf(IllegalStateException.class);
+            quarantined.putAwayInPackage(StockStatus.QUARANTINE);
+            assertThat(quarantined.status()).isEqualTo(StockStatus.AVAILABLE);
+            assertThatThrownBy(() -> cartonRow(StockStatus.AVAILABLE, List.of()).putAwayInPackage(StockStatus.AVAILABLE))
+                    .isInstanceOf(IllegalArgumentException.class);
+        }
+
+        @Test
+        @DisplayName("a free AVAILABLE or INBOUND carton row is quarantined in place; nothing else is")
+        void quarantineInPackage() {
+            StockItem available = cartonRow(StockStatus.AVAILABLE, List.of());
+            StockItemId id = available.id();
+            available.quarantineInPackage();
+            assertThat(available.status()).isEqualTo(StockStatus.QUARANTINE);
+            assertThat(available.id()).isEqualTo(id);
+            assertThat(available.stockPackageId()).isEqualTo(carton);
+
+            StockItem inbound = cartonRow(StockStatus.INBOUND, List.of());
+            inbound.quarantineInPackage();
+            assertThat(inbound.status()).isEqualTo(StockStatus.QUARANTINE);
+
+            assertThatThrownBy(available::quarantineInPackage).isInstanceOf(IllegalStateException.class);
+            assertThatThrownBy(() -> cartonRow(StockStatus.BLOCKED, List.of()).quarantineInPackage())
+                    .isInstanceOf(IllegalStateException.class);
+            assertThatThrownBy(() -> emptiedLooseRow().quarantineInPackage())
+                    .isInstanceOf(IllegalStateException.class);
+        }
+
+        @Test
+        @DisplayName("a carton row held for an order is not quarantined under its hold (20 BR-21)")
+        void quarantineRefusesAHeldRow() {
+            Reservation hold = new Reservation(new ReservationId(UUID.randomUUID()), UUID.randomUUID(),
+                    UUID.randomUUID(), UUID.randomUUID(), Quantity.of(3), NOW, NOW.plus(Duration.ofMinutes(30)),
+                    ReservationStatus.HELD, null, null);
+            StockItem row = cartonRow(StockStatus.AVAILABLE, List.of(hold));
+
+            assertThatThrownBy(row::quarantineInPackage).isInstanceOf(IllegalStateException.class);
+            assertThat(row.status()).isEqualTo(StockStatus.AVAILABLE);
         }
 
         @Test

@@ -16,7 +16,7 @@ public interface InventoryItemDirectory {
 
     Optional<InventoryItemPolicy> policyOf(String sku);
 
-    /** The receiving policy of each item that exists; one query for a whole list of lines (SCRUM-464). */
+    /** Each item that exists; one query for a whole list of lines (SCRUM-464). */
     java.util.Map<UUID, InventoryItemPolicy> policiesOf(java.util.Collection<UUID> inventoryItemIds);
 
     /** The SKU of each item that exists; one query for a whole list of lines. */

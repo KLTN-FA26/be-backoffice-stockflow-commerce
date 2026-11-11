@@ -2,7 +2,6 @@ package com.stockflow.warehouse.internal.repository;
 
 import com.stockflow.warehouse.internal.domain.LabelSelection;
 import com.stockflow.warehouse.internal.domain.LocationStatus;
-import com.stockflow.warehouse.internal.domain.StorageClass;
 import com.stockflow.warehouse.internal.domain.StorageLocationKind;
 
 import java.util.List;
@@ -35,8 +34,8 @@ public interface LocationLabelRepository {
      *                    {@code levelIndex} and {@code binCode}
      * @param areaName    an area's name; null for a bin
      */
-    record LabelRow(String locationCode, StorageLocationKind kind, StorageClass storageClass,
-                    LocationStatus status, LocationStatus shelfStatus, String shelfCode, Integer levelIndex,
+    record LabelRow(String locationCode, StorageLocationKind kind, LocationStatus status,
+                    LocationStatus shelfStatus, String shelfCode, Integer levelIndex,
                     String binCode, String areaName) {
     }
 }

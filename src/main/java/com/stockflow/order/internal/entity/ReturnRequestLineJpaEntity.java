@@ -1,10 +1,7 @@
 package com.stockflow.order.internal.entity;
 
-import com.stockflow.order.internal.domain.ReturnItemCondition;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
-import jakarta.persistence.EnumType;
-import jakarta.persistence.Enumerated;
 import jakarta.persistence.FetchType;
 import jakarta.persistence.ForeignKey;
 import jakarta.persistence.Id;
@@ -18,7 +15,8 @@ import java.util.UUID;
 /**
  * {@code ordering.return_request_line}: a child of {@link ReturnRequestJpaEntity}, written only through it - no
  * version of its own (the request's guards the whole return), as {@code OrderLineJpaEntity}. Every write passes
- * {@code tg_return_request_line_check}, which holds the line to what was delivered.
+ * {@code tg_return_request_line_check}, which holds the line to what was delivered. Since team plan 4D-3 a line counts
+ * what was approved, what came back on the return receipt and what was refunded (V20261114000100).
  */
 @Entity
 @Table(name = "return_request_line", schema = "ordering")
@@ -51,63 +49,14 @@ public class ReturnRequestLineJpaEntity {
     @Column(name = "approved_quantity")
     private Integer approvedQuantity;
 
-    @Column(name = "received_sku", length = 64)
-    private String receivedSku;
-
     @Column(name = "received_quantity")
     private Integer receivedQuantity;
 
-    @Column(name = "lot_number", length = 64)
-    private String lotNumber;
+    @Column(name = "refund_quantity", nullable = false)
+    private int refundQuantity;
 
-    @Column(name = "accepted_quantity")
-    private Integer acceptedQuantity;
-
-    @Column(name = "rejected_quantity")
-    private Integer rejectedQuantity;
-
-    @Enumerated(EnumType.STRING)
-    @Column(name = "item_condition", length = 16)
-    private ReturnItemCondition itemCondition;
-
-    @Column(name = "inspection_note", length = 1000)
-    private String inspectionNote;
-
-    @Column(name = "restock_quantity", nullable = false)
-    private int restockQuantity;
-
-    @Column(name = "scrap_quantity", nullable = false)
-    private int scrapQuantity;
-
-    @Column(name = "customer_return_quantity", nullable = false)
-    private int customerReturnQuantity;
-
-    @Column(name = "restock_location_code", length = 64)
-    private String restockLocationCode;
-
-    @Column(name = "received_plain")
-    private Boolean receivedPlain;
-
-    @Column(name = "disposal_consent_note", length = 500)
-    private String disposalConsentNote;
-
-    @Column(name = "scrap_adjustment_id")
-    private UUID scrapAdjustmentId;
-
-    @Column(name = "customer_return_adjustment_id")
-    private UUID customerReturnAdjustmentId;
-
-    @Column(name = "replacement_quantity", nullable = false)
-    private int replacementQuantity;
-
-    @Column(name = "credit_quantity", nullable = false)
-    private int creditQuantity;
-
-    @Column(name = "credit_amount", nullable = false, precision = 19, scale = 4)
-    private BigDecimal creditAmount = BigDecimal.ZERO;
-
-    @Column(name = "replacement_order_line_id")
-    private UUID replacementOrderLineId;
+    @Column(name = "refund_amount", nullable = false, precision = 19, scale = 4)
+    private BigDecimal refundAmount = BigDecimal.ZERO;
 
     protected ReturnRequestLineJpaEntity() {
     }
@@ -126,31 +75,11 @@ public class ReturnRequestLineJpaEntity {
         this.request = owner;
     }
 
-    public void apply(Integer approved, String receivedSku, Integer received, String lot, Integer accepted,
-                      Integer rejected, ReturnItemCondition condition, String inspectionNote, int restock, int scrap,
-                      int customerReturn, String restockLocation, UUID scrapAdjustment, UUID customerReturnAdjustment,
-                      int replacement, int credit, BigDecimal creditAmount, UUID replacementOrderLine,
-                      Boolean receivedPlain, String disposalConsent) {
+    public void apply(Integer approved, Integer received, int refund, BigDecimal refundAmount) {
         this.approvedQuantity = approved;
-        this.receivedSku = receivedSku;
         this.receivedQuantity = received;
-        this.lotNumber = lot;
-        this.acceptedQuantity = accepted;
-        this.rejectedQuantity = rejected;
-        this.itemCondition = condition;
-        this.inspectionNote = inspectionNote;
-        this.restockQuantity = restock;
-        this.scrapQuantity = scrap;
-        this.customerReturnQuantity = customerReturn;
-        this.restockLocationCode = restockLocation;
-        this.scrapAdjustmentId = scrapAdjustment;
-        this.customerReturnAdjustmentId = customerReturnAdjustment;
-        this.replacementQuantity = replacement;
-        this.creditQuantity = credit;
-        this.creditAmount = creditAmount;
-        this.replacementOrderLineId = replacementOrderLine;
-        this.receivedPlain = receivedPlain;
-        this.disposalConsentNote = disposalConsent;
+        this.refundQuantity = refund;
+        this.refundAmount = refundAmount;
     }
 
     public UUID getId() { return id; }
@@ -160,23 +89,7 @@ public class ReturnRequestLineJpaEntity {
     public BigDecimal getUnitPrice() { return unitPrice; }
     public int getQuantity() { return quantity; }
     public Integer getApprovedQuantity() { return approvedQuantity; }
-    public String getReceivedSku() { return receivedSku; }
     public Integer getReceivedQuantity() { return receivedQuantity; }
-    public String getLotNumber() { return lotNumber; }
-    public Integer getAcceptedQuantity() { return acceptedQuantity; }
-    public Integer getRejectedQuantity() { return rejectedQuantity; }
-    public ReturnItemCondition getItemCondition() { return itemCondition; }
-    public String getInspectionNote() { return inspectionNote; }
-    public int getRestockQuantity() { return restockQuantity; }
-    public int getScrapQuantity() { return scrapQuantity; }
-    public int getCustomerReturnQuantity() { return customerReturnQuantity; }
-    public String getRestockLocationCode() { return restockLocationCode; }
-    public UUID getScrapAdjustmentId() { return scrapAdjustmentId; }
-    public UUID getCustomerReturnAdjustmentId() { return customerReturnAdjustmentId; }
-    public int getReplacementQuantity() { return replacementQuantity; }
-    public int getCreditQuantity() { return creditQuantity; }
-    public BigDecimal getCreditAmount() { return creditAmount; }
-    public UUID getReplacementOrderLineId() { return replacementOrderLineId; }
-    public Boolean getReceivedPlain() { return receivedPlain; }
-    public String getDisposalConsentNote() { return disposalConsentNote; }
+    public int getRefundQuantity() { return refundQuantity; }
+    public BigDecimal getRefundAmount() { return refundAmount; }
 }

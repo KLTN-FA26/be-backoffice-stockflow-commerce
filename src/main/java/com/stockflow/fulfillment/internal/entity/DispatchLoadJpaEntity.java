@@ -1,7 +1,6 @@
 package com.stockflow.fulfillment.internal.entity;
 
 import com.stockflow.common.persistence.BaseEntity;
-import com.stockflow.fulfillment.internal.domain.DeliveryMode;
 import com.stockflow.fulfillment.internal.domain.DispatchLoad;
 import com.stockflow.fulfillment.internal.domain.LoadStatus;
 import com.stockflow.fulfillment.internal.domain.UnloadReasonCode;
@@ -11,7 +10,6 @@ import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
 import jakarta.persistence.Table;
 
-import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.UUID;
 
@@ -28,8 +26,6 @@ public class DispatchLoadJpaEntity extends BaseEntity {
     @Column(name = "code", nullable = false, updatable = false, length = 30) private String code;
     @Column(name = "request_id", nullable = false, updatable = false) private UUID requestId;
     @Column(name = "warehouse_id", nullable = false, updatable = false) private UUID warehouseId;
-    @Enumerated(EnumType.STRING)
-    @Column(name = "mode", nullable = false, updatable = false, length = 16) private DeliveryMode mode;
     @Column(name = "carrier_id") private UUID carrierId;
     @Column(name = "load_plan_vehicle_id") private UUID loadPlanVehicleId;
     @Column(name = "vehicle_plate", length = 20) private String vehiclePlate;
@@ -51,13 +47,13 @@ public class DispatchLoadJpaEntity extends BaseEntity {
     @Column(name = "handover_note", length = 500) private String handoverNote;
     @Column(name = "shipment_count", nullable = false) private int shipmentCount;
     @Column(name = "package_count", nullable = false) private int packageCount;
-    @Column(name = "cod_total", nullable = false, precision = 19, scale = 4) private BigDecimal codTotal;
     @Column(name = "cancelled_at") private Instant cancelledAt;
     @Column(name = "cancelled_by") private UUID cancelledBy;
     @Column(name = "cancel_reason", length = 500) private String cancelReason;
     /** SCRUM-474 UNLOAD-DESIGN point 7: set only by a controlled cancel (V20261102020000). */
     @Enumerated(EnumType.STRING)
     @Column(name = "cancel_reason_code", length = 20) private UnloadReasonCode cancelReasonCode;
+    @Column(name = "waybill_no", length = 64) private String waybillNo;
 
     protected DispatchLoadJpaEntity() {
     }
@@ -67,7 +63,6 @@ public class DispatchLoadJpaEntity extends BaseEntity {
         this.code = s.code();
         this.requestId = s.requestId();
         this.warehouseId = s.warehouseId();
-        this.mode = s.mode();
     }
 
     /** Everything that may change after the load was opened. */
@@ -92,17 +87,16 @@ public class DispatchLoadJpaEntity extends BaseEntity {
         this.handoverNote = s.handoverNote();
         this.shipmentCount = (int) s.members().stream().filter(DispatchLoad.Member::active).count();
         this.packageCount = (int) s.loaded().stream().filter(DispatchLoad.Loaded::active).count();
-        this.codTotal = s.codTotal();
         this.cancelledAt = s.cancelledAt();
         this.cancelledBy = s.cancelledBy();
         this.cancelReason = s.cancelReason();
         this.cancelReasonCode = s.cancelReasonCode();
+        this.waybillNo = s.waybillNo();
     }
 
     public String getCode() { return code; }
     public UUID getRequestId() { return requestId; }
     public UUID getWarehouseId() { return warehouseId; }
-    public DeliveryMode getMode() { return mode; }
     public UUID getCarrierId() { return carrierId; }
     public UUID getLoadPlanVehicleId() { return loadPlanVehicleId; }
     public String getVehiclePlate() { return vehiclePlate; }
@@ -123,9 +117,9 @@ public class DispatchLoadJpaEntity extends BaseEntity {
     public String getHandoverNote() { return handoverNote; }
     public int getShipmentCount() { return shipmentCount; }
     public int getPackageCount() { return packageCount; }
-    public BigDecimal getCodTotal() { return codTotal; }
     public Instant getCancelledAt() { return cancelledAt; }
     public UUID getCancelledBy() { return cancelledBy; }
     public String getCancelReason() { return cancelReason; }
     public UnloadReasonCode getCancelReasonCode() { return cancelReasonCode; }
+    public String getWaybillNo() { return waybillNo; }
 }

@@ -4,7 +4,13 @@ import java.util.Arrays;
 import java.util.Optional;
 
 /**
- * The roles from the BRD (section 6.1), plus {@link #SYSTEM_ADMIN}, as a real type.
+ * The roles of kltn-docs 00 §2.1 and the customer's, as a real type: the system roles, which the database seeds and
+ * nobody deletes or renames (00 §2.5.3).
+ *
+ * <p>ORDER_COORDINATOR and INVENTORY_PLANNER were retired by V20261115000200 (00 §2, decision 2026-11-05; team plan
+ * 5-7): Sales took the customer's side of their work, the warehouse manager the warehouse's, and their holders were
+ * given those roles. PROCUREMENT_STAFF was retired by V20261115000300 (00 §2, decision 2026-11-04; team plan 5-8):
+ * purchasing is gone, and its holders with no other role were disabled.</p>
  *
  * <p>Use this enum everywhere in ordinary code: it cannot be misspelled, it can be switched over
  * exhaustively, and adding a role makes the compiler point at every place that must be updated.</p>
@@ -16,17 +22,19 @@ import java.util.Optional;
 public enum Role {
 
     WAREHOUSE_STAFF(Roles.WAREHOUSE_STAFF, "Receive, put away, pick, pack and hand over to carriers"),
-    WAREHOUSE_MANAGER(Roles.WAREHOUSE_MANAGER, "Approve adjustments and transfers, override slotting"),
-    INVENTORY_PLANNER(Roles.INVENTORY_PLANNER, "Monitor stock levels and raise transfer orders"),
-    QC_STAFF(Roles.QC_STAFF, "Inspect inbound goods and printed output"),
-    CUSTOMER(Roles.CUSTOMER, "Browse, design, order and track"),
-    SALES_STAFF(Roles.SALES_STAFF, "Advise customers, edit designs, create assisted orders"),
-    ORDER_COORDINATOR(Roles.ORDER_COORDINATOR, "Release orders to the warehouse and handle holds"),
-    ECOMMERCE_ADMIN(Roles.ECOMMERCE_ADMIN, "Catalog, pricing, promotions, design templates"),
-    PROCUREMENT_STAFF(Roles.PROCUREMENT_STAFF, "Purchase orders and supplier coordination"),
-    ACCOUNTANT(Roles.ACCOUNTANT, "Supplier invoices, three-way matching, reconciliation"),
-    /** Runs the in-house print stations (docs 19, V20261010000500). */
-    PRODUCTION_STAFF(Roles.PRODUCTION_STAFF, "Run the print stations: check files, print, record good and scrapped units"),
+    WAREHOUSE_MANAGER(Roles.WAREHOUSE_MANAGER, "Assigned warehouses: set-up, receiving decisions, order release, "
+            + "pick tasks and staging, delivery outcomes, counts and adjustment approval"),
+    /** Orders nothing itself (team plan 5-2, kltn-docs 14 BR-01): Sales draws an order up from a quote it accepted. */
+    CUSTOMER(Roles.CUSTOMER, "Browse, design, request and accept quotes, track orders"),
+    SALES_STAFF(Roles.SALES_STAFF, "Customers, quotes, orders and contracts; shipping warehouse, holds, "
+            + "cancellations, partial delivery and returns of a confirmed order; chat"),
+    /** Was ECOMMERCE_ADMIN; renamed by V20261107000100 (kltn-docs 00 §2, 2026-11-05) with its id and grants. */
+    SALES_MANAGER(Roles.SALES_MANAGER, "Product data and approval, internal prices, print setup, design review, staff accounts"),
+    /** Added by V20261108002600 (kltn-docs 00 §2.1, decision 2026-11-07): production orders and the producers. */
+    PRODUCTION_COORDINATOR(Roles.PRODUCTION_COORDINATOR,
+            "Production orders for what a confirmed order lacks: producers, lead times, print samples, progress"),
+    ACCOUNTANT(Roles.ACCOUNTANT,
+            "Receipts against contract instalments, receivables and refunds, credit approval, e-invoices"),
     /** Holds every permission, and its grants cannot be edited at runtime (V20260929000200). */
     SYSTEM_ADMIN(Roles.SYSTEM_ADMIN, "Every permission: users, roles, permissions and all modules");
 

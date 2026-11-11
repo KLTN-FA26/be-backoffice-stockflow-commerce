@@ -1,6 +1,5 @@
 package com.stockflow.inventory.internal.controller.dto;
 
-import com.stockflow.inventory.api.StorageClass;
 import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotNull;
@@ -43,19 +42,8 @@ public record UpdateItemLogisticsRequest(
         @Schema(description = "Units per inner pack; 1 when absent")
         @Min(value = 1, message = "packSize must be at least 1") Integer packSize,
 
-        @NotNull(message = "storageClass is required")
-        StorageClass storageClass,
-
-        boolean requiresAdultSignature,
-
-        @Size(max = 500, message = "shippingRestrictionNote must be at most 500 characters")
-        String shippingRestrictionNote,
-
-        @Schema(description = "Receiving sends this SKU through the QC area (3-step flow)")
-        boolean qcRequired,
-
-        @Schema(description = "Packages of this SKU may be turned 6 ways when a truck is loaded (docs 01, 08, 09); "
-                + "true when absent")
+        @Schema(description = "Packages of this SKU may be turned 6 ways when a truck is loaded (docs 01, 08, 09), "
+                + "and its cartons turned on the horizontal to fit a bin (06 BR-01); true when absent")
         Boolean rotatable
 ) {
 }

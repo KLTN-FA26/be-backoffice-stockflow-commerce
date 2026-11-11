@@ -353,26 +353,12 @@ stockflow:
     connect-timeout: PT3S
     read-timeout: PT10S
 
-  procurement:
-    buyer:
-      company-name: ${PO_BUYER_COMPANY_NAME:}
-      company-address: ${PO_BUYER_COMPANY_ADDRESS:}
-      contact-name: ${PO_BUYER_CONTACT_NAME:}
-      phone: ${PO_BUYER_PHONE:}
-      email: ${PO_BUYER_EMAIL:}
-      receiving-address: ${PO_RECEIVING_ADDRESS:}
-    # Three-way match of supplier invoices (SCRUM-309, BR-INV-002): an invoice's unit price may stray this far, in
-    # percent either way, from the purchase order's net price before the match calls it a variance. Quantities have no
-    # tolerance: an invoice bills no more than was received and passed QC (kltn-docs 04 BR-02).
-    invoice-match:
-      price-tolerance-percent: ${INVOICE_PRICE_TOLERANCE_PERCENT:2}
-
   notification:
-    # Exact HTTPS hosts owned by trusted suppliers; blank disables API delivery (email still works).
-    supplier-api-allowed-hosts: ${SUPPLIER_API_ALLOWED_HOSTS:}
-    po-retry-interval: PT1M
+    # How often messages to producers about their production orders that failed are tried again (4A-3).
+    production-order-retry-interval: PT1M
     # -------------------------------------------------------------------------
-    # E-mail (SCRUM-352). Every message - supplier POs, staff notices, the portal invitation, customer order mail -
+    # E-mail (SCRUM-352). Every message - producers' production orders, staff notices, the portal invitation,
+    # customer order mail -
     # goes through one transport. resend: Resend's HTTP API (the dev and prod profiles' default); smtp: spring.mail
     # above (Mailpit locally); recording: kept in memory, never sent (the test profile). See EmailProperties.
     # -------------------------------------------------------------------------
@@ -385,8 +371,11 @@ stockflow:
       locale: vi
       sender-name: ${EMAIL_SENDER_NAME:StockFlow}
       customer:
-        # Off sends no customer order mail (recorded as skipped) and leaves staff and supplier mail alone.
-        enabled: ${CUSTOMER_EMAIL_ENABLED:true}
+        # Off sends no customer order mail (recorded as skipped) and leaves staff and producer mail alone. Off by
+        # default: the business documents put e-mail to customers in a later phase (kltn-docs 00 §6, A10) and keep
+        # only the in-app inbox for now, while the order and return mail here still describes flows they dropped
+        # (guest orders, free replacement orders). The portal invitation is not customer order mail and still goes.
+        enabled: ${CUSTOMER_EMAIL_ENABLED:false}
         max-attempts: 10
         first-retry-delay: PT1M
         max-retry-delay: PT6H
@@ -408,14 +397,6 @@ stockflow:
     inbox-purge-cron: "0 45 3 * * *"
     # Language of system-generated inbox messages (the bundle i18n/messages_<locale>.properties).
     inbox-locale: vi
-    # Stock alerts: who is told, by staff role. The scope (all warehouses, or the ones a person is assigned to) and the
-    # exclusion of customers are applied by IdentityService.notificationRecipients.
-    inventory-alert:
-      stock-level-roles: INVENTORY_PLANNER,SYSTEM_ADMIN
-      expiry-roles: WAREHOUSE_MANAGER,INVENTORY_PLANNER,SYSTEM_ADMIN
-    # Open question Q3: also e-mail the same text to the people newly told in-app. Off until an SMTP server is configured.
-    inventory-alert-email:
-      enabled: false
 
   # ---------------------------------------------------------------------------
   # File storage. 's3' talks to MinIO locally and to S3 in a deployment - the same code path.
@@ -436,22 +417,22 @@ stockflow:
     access-key: ${MINIO_ACCESS_KEY:stockflow}
     secret-key: ${MINIO_SECRET_KEY:stockflow123}
     presigned-url-ttl: PT10M        # a signed URL is a credential with no revocation; keep it short
-    # S3 Object Lock on business records (ObjectLockProperties): a confirmed design's files and supplier
-    # invoice scans cannot be deleted or overwritten for these periods. Needs a bucket with Object Lock
+    # S3 Object Lock on business records (ObjectLockProperties): a confirmed design's files and a sales
+    # contract cannot be deleted or overwritten for these periods. Needs a bucket with Object Lock
     # (infra/aws); MinIO in development has none, so it is off unless the deployment turns it on.
     # The periods are placeholders until the business confirms them against the law that applies.
     object-lock:
       enabled: false
       mode: GOVERNANCE
       confirmed-design: P1095D
-      supplier-invoice: P3650D
+      sales-contract: P3650D    # a sales contract as sent and as signed (4B-4)
     # Browser uploads straight to the object store (StagedUploads, docs/direct-uploads-fe-contract.md).
     staged-upload:
       url-ttl: PT15M            # the signed PUT; S3 checks it when the upload starts, not when it ends
       session-ttl: PT1H         # how long an upload may wait to be attached; incoming/ expires after a day
       per-user-per-hour: 120    # slots one user may take in an hour
     # Files no record names any more (OrphanedFileSweeper): nightly, report-only until delete is turned on.
-    # Supplier invoices, published product images, exports and the quarantine prefix are never swept.
+    # Published product images, exports and the quarantine prefix are never swept.
     orphan-sweep:
       cron: "0 30 3 * * *"
       delete: false
@@ -467,8 +448,8 @@ stockflow:
 
   catalog:
     availability:
-      # At or under this many units the catalog shows "low stock" (docs 13 §4.2, an assumption
-      # the docs leave open). 0 never warns.
+      # At or under this many cartons a customer's own SKU shows "low stock" (kltn-docs 13 §4.4 step 4,
+      # open-questions D28: 5 cartons). 0 never warns.
       low-stock-threshold: ${CATALOG_LOW_STOCK_THRESHOLD:5}
       # SKUs one availability call may ask about: a page's worth, not the whole catalogue.
       max-skus-per-request: 50
@@ -491,23 +472,18 @@ stockflow:
   web:
     request-log:
       enabled: true
+    # Per-route caps on a request body (RequestBodyLimitFilter), enforced before the idempotency filter or Jackson
+    # reads it. A customer's design document is at most 1,000,000 bytes once canonical (kltn-docs 12; the service and
+    # design.design_document check that exactly); the body also carries the version and the envelope around it, and
+    # whitespace a client may send, so the cap leaves 64 KiB over.
+    body-limits:
+      - method: PUT
+        pattern: /api/v1/designs/{id}/document
+        max-bytes: 1065536
 
   inventory:
-    # How often the sweeper looks for holds that outlived their expiry. ISO-8601 duration.
-    reservation-sweep-interval: PT1M
-    # A lot that expires within this many days of the day it is received, or of today, is "near expiry"
-    # (docs 03 BR-06; plan G5a-3 §6 #11): goods receipts warn, the expiry alerts use the same window.
-    expiry-warning-days: 30
     # Most lines one planned cycle count may hold (SCRUM-146); a wider scope is refused so the count stays countable.
     cycle-count-max-lines: 500
-    # Stock alerts (SCRUM-147). The drain evaluates the SKUs whose stock changed (a trigger on stock_item queues them).
-    alert-drain-interval: PT30S
-    alert-drain-initial-delay: PT30S
-    # A condition that clears and returns inside this window reopens its alert row but is not announced again.
-    alert-reopen-cooldown: PT6H
-    # Nightly net under the drain (01:30) and the expiry sweep that moves expired stock to EXPIRED (02:00), business time.
-    alert-reconcile-cron: "0 30 1 * * *"
-    expiry-sweep-cron: "0 0 2 * * *"
 
   payment:
     # The company's bank account a customer transfers to (SCRUM-193, kltn-docs 15 §4.1 step 1). Blank here on purpose and
@@ -517,6 +493,25 @@ stockflow:
       bank-name: ${COMPANY_BANK_NAME:}
       account-number: ${COMPANY_BANK_ACCOUNT_NUMBER:}
       account-name: ${COMPANY_BANK_ACCOUNT_NAME:}
+
+  order:
+    # The seller a sales contract names (4B-4, kltn-docs 14 §4.3 step 11). Blank here on purpose and in prod: drawing up
+    # a contract answers 503 SELLER_PROFILE_UNAVAILABLE until every field is set per deployment, so no contract ever
+    # names a made-up company. local, dev and test carry a demo one.
+    seller:
+      name: ${SELLER_NAME:}
+      tax-code: ${SELLER_TAX_CODE:}
+      address: ${SELLER_ADDRESS:}
+      representative: ${SELLER_REPRESENTATIVE:}
+      representative-title: ${SELLER_REPRESENTATIVE_TITLE:}
+    contract:
+      # Print-sample rounds a new contract offers without charge (14 BR-18, decided 2026-11-05); Sales may change it.
+      free-sample-rounds: ${CONTRACT_FREE_SAMPLE_ROUNDS:2}
+    production-order:
+      # How long the links e-mailed to a producer - its production order slip and print files - work (4A-3). Every use
+      # is checked again (the production order still open, the file still the approved one) and gets a presigned URL
+      # of minutes, so this may cover a production run; a later message (the approved sample) carries fresh links.
+      file-links-valid-for: ${PRODUCTION_ORDER_FILE_LINKS_VALID_FOR:P30D}
 
   customer:
     # Where the portal invitation e-mail sends the customer's contact (SCRUM-450); the token is
@@ -543,6 +538,13 @@ stockflow:
       # machine cannot hang a request; when it passes, the planner returns the best plan found so far, flagged
       # budgetExhausted (LoadPlanRequest.wallLimit).
       solver-wall-limit: PT12S
+    ahamove:
+      # Ahamove's partner API v3 (3-4). Which one a carrier calls is its own setting (STAGING / PRODUCTION), as are its
+      # account and key (sealed on the carrier).
+      staging-url: ${AHAMOVE_STAGING_URL:https://partner-apistg.ahamove.com}
+      production-url: ${AHAMOVE_PRODUCTION_URL:https://partner-api.ahamove.com}
+      # The reason sent when an order is cancelled. Ahamove accepts only reasons from its own list of user reasons.
+      cancel-comment: ${AHAMOVE_CANCEL_COMMENT:Khách hàng muốn hủy đơn}
 
   security:
     # Turns on the resource-server filter chain AND RequiresPermissionAspect. Both are behind the
@@ -563,6 +565,20 @@ stockflow:
       # cannot be read or parsed stops the application at startup.
       key-path: ${JWT_PRIVATE_KEY_PATH:}
       private-key: ${JWT_PRIVATE_KEY:}
+    links:
+      # Links a partner opens without signing in, for a limited time (SignedLinks; 4A-3: a producer's links to its
+      # production order slip and print files). key: the HMAC key, base64 of at least 32 bytes (openssl rand -base64 32);
+      # required once base-url is set (the application refuses to start without it, unless process-key-allowed, which
+      # only the local profile sets). base-url: where the application is reached from outside, every link starts with
+      # it; blank makes no link and the mail says the coordinator sends the files.
+      key: ${STOCKFLOW_LINKS_KEY:}
+      base-url: ${STOCKFLOW_PUBLIC_BASE_URL:}
+    secrets:
+      # The AES-256 key stored secrets are sealed with (SecretCipher): a carrier's API key, webhook secret and webhook
+      # header credential (kltn-docs 09 §4.1). Base64 of exactly 32 bytes: openssl rand -base64 32. Blank: the
+      # application starts, and saving such a secret answers 503 SECRETS_UNAVAILABLE. A malformed key stops the
+      # application at startup. Changing it makes every secret sealed with the old key unreadable - enter them again.
+      key: ${STOCKFLOW_SECRETS_KEY:}
     cors:
       # Browser origins that may call the API (CorsProperties). Patterns: a port or a subdomain may
       # be '*', the host itself may not. A deployment overrides this with

@@ -23,6 +23,11 @@ public interface ProductJpaRepository extends BaseJpaRepository<ProductJpaEntity
             + "where v.productId = p.id and upper(v.sku) = upper(:sku)")
     List<String> namesForSku(@Param("sku") String sku);
 
+    /** The SKU (as stored) and its product's tax class, for each of {@code skus} whose product has one. */
+    @Query("select v.sku, p.taxClass from ProductJpaEntity p, VariantJpaEntity v "
+            + "where v.productId = p.id and v.sku in :skus and p.taxClass is not null")
+    List<Object[]> taxClassesOf(@Param("skus") java.util.Collection<String> skus);
+
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select p from ProductJpaEntity p where p.id = :id")
     Optional<ProductJpaEntity> lockById(@Param("id") UUID id);

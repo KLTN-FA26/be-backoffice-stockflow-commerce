@@ -6,7 +6,6 @@ import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
 import com.stockflow.warehouse.internal.domain.Footprint;
 import com.stockflow.warehouse.internal.domain.PickFaces;
-import com.stockflow.warehouse.internal.domain.StorageClass;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -69,7 +68,7 @@ class ShelfPlacementConcurrencyIntegrationTest {
                                 "Kệ " + code, null,
                                 new Footprint(new BigDecimal("20"), new BigDecimal("20"), new BigDecimal("5"),
                                         BigDecimal.ONE, 0),
-                                true, PickFaces.NONE, StorageClass.NORMAL));
+                                true, PickFaces.NONE));
                         return null;
                     } catch (BusinessException e) {
                         return e.errorCode();

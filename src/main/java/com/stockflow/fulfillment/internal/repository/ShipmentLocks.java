@@ -13,7 +13,8 @@ import java.util.UUID;
  *
  * <p>A native {@code SELECT … ORDER BY id FOR UPDATE} rather than a locking JPQL query: Hibernate may lock a JPQL
  * result row by row after reading it ("follow-on locking"), which hands back what it read before waiting - a
- * dispatcher who waited for another's signature would then compute the COD from the shipments as they were before it.
+ * dispatcher who waited for another's signature would then decide which shipments complete from the shipments as they
+ * were before it.
  * Each row is refreshed after the lock for the same reason (the persistence context may hold an older copy).</p>
  */
 @Component
@@ -36,7 +37,8 @@ public class ShipmentLocks {
 
     /**
      * Every shipment of these orders, locked in id order: a handover reads the order's other shipments (which wait,
-     * which left) to fix a COD, so two signatures touching one order must not read them side by side.
+     * which left) to decide what leaves with the order, so two signatures touching one order must not read them side
+     * by side.
      */
     public List<ShipmentJpaEntity> lockOfOrders(Collection<UUID> orderIds) {
         if (orderIds.isEmpty()) {

@@ -9,6 +9,7 @@ import com.stockflow.order.internal.domain.QuoteLine;
 import com.stockflow.order.internal.domain.QuoteRepository;
 import com.stockflow.order.internal.domain.QuoteStatus;
 import com.stockflow.order.internal.entity.QuoteJpaEntity;
+import com.stockflow.order.internal.entity.QuoteFeeLineJpaEntity;
 import com.stockflow.order.internal.entity.QuoteLineJpaEntity;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.LockModeType;
@@ -74,11 +75,6 @@ class QuoteRepositoryAdapter implements QuoteRepository, QuoteSearch {
     }
 
     @Override
-    public Optional<Quote> findByConvertedOrderId(UUID orderId) {
-        return jpa.findIdByConvertedOrderId(orderId).flatMap(this::findById);
-    }
-
-    @Override
     public void lockRequest(UUID requestId) {
         entityManager.createNativeQuery("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))")
                 .setParameter("key", "quote-request:" + requestId)
@@ -90,8 +86,7 @@ class QuoteRepositoryAdapter implements QuoteRepository, QuoteSearch {
         QuoteJpaEntity entity = jpa.findByIdWithLines(quote.id()).orElseGet(() ->
                 new QuoteJpaEntity(quote.id(), quote.quoteNumber(), quote.requestId(), quote.customerId()));
         Quote.Offer offer = quote.offer();
-        entity.apply(quote.status(), quote.revision(), offer.paymentTerm(), offer.depositPercent(),
-                offer.validUntil(), offer.terms(), quote.sentAt(), quote.sentBy(), quote.respondedAt(),
+        entity.apply(quote.status(), quote.revision(), offer.validUntil(), offer.terms(), quote.sentAt(), quote.sentBy(), quote.respondedAt(),
                 quote.respondedBy(), quote.customerFeedback(), quote.cancellationReason(), quote.convertedOrderId(),
                 quote.convertedAt(), offer.requestedDeliveryDate());
         Map<UUID, QuoteLineJpaEntity> existing = entity.getLines().stream()
@@ -110,12 +105,34 @@ class QuoteRepositoryAdapter implements QuoteRepository, QuoteSearch {
                 row = new QuoteLineJpaEntity(line.id());
                 entity.addLine(row);
             }
-            row.apply(line.lineNo(), line.blankSku().code(), line.designSnapshotId(), line.printSpec(),
-                    line.quantity(),
-                    line.tiers().stream().map(t -> new QuoteLineJpaEntity.Tier(t.minQuantity(), t.unitPrice().amount()))
-                            .toList(),
-                    line.acceptedQuantity(),
-                    line.acceptedUnitPrice() == null ? null : line.acceptedUnitPrice().amount());
+            List<QuoteLineJpaEntity.Tier> tiers = line.tiers().stream()
+                    .map(t -> new QuoteLineJpaEntity.Tier(t.minQuantity(), t.unitPrice().amount())).toList();
+            java.math.BigDecimal price = line.acceptedUnitPrice() == null ? null : line.acceptedUnitPrice().amount();
+            if (line.legacy()) {
+                row.applyLegacy(line.lineNo(), line.sku().code(), line.designSnapshotId(), line.printSpec(),
+                        line.quantity(), tiers, line.acceptedQuantity(), price);
+            } else {
+                row.applyCartons(line.lineNo(), line.sku().code(), line.uomConversionId(), line.unitsPerCarton(),
+                        line.quantity(), tiers, line.acceptedQuantity(), price, line.taxClass(), line.taxRate());
+            }
+        }
+        // 4B-3: the fee lines, written in place; a fee no longer on the draft goes (orphan removal).
+        Map<UUID, QuoteFeeLineJpaEntity> existingFees = entity.getFees().stream()
+                .collect(Collectors.toMap(QuoteFeeLineJpaEntity::getId, Function.identity()));
+        boolean feesDropped = entity.getFees()
+                .removeIf(row -> offer.fees().stream().noneMatch(fee -> fee.id().equals(row.getId())));
+        if (feesDropped && !entity.isNew()) {
+            // As for lines: a new plate fee of the same SKU would hit uk_quote_fee_line_plate before the old row goes.
+            entityManager.flush();
+        }
+        for (com.stockflow.order.internal.domain.QuoteFee fee : offer.fees()) {
+            QuoteFeeLineJpaEntity row = existingFees.get(fee.id());
+            if (row == null) {
+                row = new QuoteFeeLineJpaEntity(fee.id());
+                entity.addFee(row);
+            }
+            row.apply(fee.kind(), fee.sku() == null ? null : fee.sku().code(),
+                    fee.amount() == null ? null : fee.amount().amount(), fee.taxClass(), fee.taxRate());
         }
         return toDomain(jpa.saveAndFlush(entity));
     }
@@ -203,21 +220,35 @@ class QuoteRepositoryAdapter implements QuoteRepository, QuoteSearch {
 
     private static Row toRow(QuoteJpaEntity e) {
         return new Row(e.getId(), e.getQuoteNumber(), e.getCustomerId(), e.getStatus(), e.getRevision(),
-                e.getPaymentTerm(), e.getValidUntil(), e.getSentAt(), e.getConvertedOrderId(), e.getCreatedAt(),
+                e.getValidUntil(), e.getSentAt(), e.getConvertedOrderId(), e.getCreatedAt(),
                 e.getCreatedBy(), e.getVersion());
     }
 
     static Quote toDomain(QuoteJpaEntity e) {
-        List<QuoteLine> lines = e.getLines().stream().map(l -> new QuoteLine(l.getId(), l.getLineNo(),
-                new Sku(l.getBlankSku()), l.getDesignSnapshotId(), l.getPrintSpec(), l.getQuantity(),
-                l.getTiers().stream().map(t -> new PriceTier(t.getMinQuantity(), vnd(t.getUnitPrice()))).toList(),
-                l.getAcceptedQuantity(), l.getAcceptedUnitPrice() == null ? null : vnd(l.getAcceptedUnitPrice())))
+        List<QuoteLine> lines = e.getLines().stream().map(QuoteRepositoryAdapter::toDomain).toList();
+        List<com.stockflow.order.internal.domain.QuoteFee> fees = e.getFees().stream()
+                .sorted(java.util.Comparator.comparing(QuoteFeeLineJpaEntity::getKind)
+                        .thenComparing(f -> f.getSku() == null ? "" : f.getSku()))
+                .map(f -> new com.stockflow.order.internal.domain.QuoteFee(f.getId(), f.getKind(),
+                        f.getSku() == null ? null : new Sku(f.getSku()),
+                        f.getAmount() == null ? null : vnd(f.getAmount()), f.getTaxClass(), f.getTaxRate()))
                 .toList();
         return Quote.restore(e.getId(), e.getQuoteNumber(), e.getRequestId(), e.getCustomerId(), e.getStatus(),
-                e.getRevision(), new Quote.Offer(e.getPaymentTerm(), e.getDepositPercent(), e.getValidUntil(),
-                        e.getTerms(), e.getRequestedDeliveryDate(), lines),
+                e.getRevision(), new Quote.Offer(e.getValidUntil(), e.getTerms(), e.getRequestedDeliveryDate(), lines, fees),
                 e.getSentAt(), e.getSentBy(), e.getRespondedAt(), e.getRespondedBy(), e.getCustomerFeedback(),
                 e.getCancellationReason(), e.getConvertedOrderId(), e.getConvertedAt());
+    }
+
+    private static QuoteLine toDomain(QuoteLineJpaEntity l) {
+        List<PriceTier> tiers = l.getTiers().stream()
+                .map(t -> new PriceTier(t.getMinQuantity(), vnd(t.getUnitPrice()))).toList();
+        Money price = l.getAcceptedUnitPrice() == null ? null : vnd(l.getAcceptedUnitPrice());
+        return l.getSku() == null
+                ? QuoteLine.legacy(l.getId(), l.getLineNo(), new Sku(l.getBlankSku()), l.getDesignSnapshotId(),
+                        l.getPrintSpec(), l.getQuantity(), tiers, l.getAcceptedQuantity(), price)
+                : QuoteLine.carton(l.getId(), l.getLineNo(), new Sku(l.getSku()), l.getUomConversionId(),
+                        l.getUnitsPerCarton(), l.getCartons(), tiers, l.getAcceptedCartons(), price, l.getTaxClass(),
+                        l.getTaxRate());
     }
 
     /** Whole dong, as stored with four decimal places: compare and display without trailing zeros. */

@@ -15,8 +15,9 @@ import java.util.UUID;
 public interface PutawayTasks {
 
     /**
-     * Opens a task for a receipt line, or for one carton of it. Idempotent: the open task of the same carton, or the
-     * loose task (any status) of the same receipt line, is returned instead of a second one, so receiving a line twice
+     * Opens a task for one carton: of a receipt line, or released from quarantine. Idempotent: the open task of the
+     * same carton (at most one, {@code uk_putaway_task_open_package}), or the loose task (any status) of the same
+     * receipt line, is returned instead of a second one, so receiving a line twice - or releasing a carton twice -
      * cannot make the warehouse put it away twice.
      */
     PutawayTaskView open(NewPutawayTask task);
@@ -42,6 +43,9 @@ public interface PutawayTasks {
      *         {@code PUTAWAY_QUANTITY_EXCEEDED} (more than is left, or part of a carton)
      */
     PutawayTaskView recordPutaway(UUID taskId, int units, int leftBefore, UUID targetLocationId);
+
+    /** The PENDING or IN_PROGRESS task of a carton, whatever its source; empty when it has none. */
+    Optional<PutawayTaskView> openTaskOf(UUID stockPackageId);
 
     /** Every task of the receipt, whatever its status, oldest first. */
     List<PutawayTaskView> tasksOfReceipt(UUID goodsReceiptId);

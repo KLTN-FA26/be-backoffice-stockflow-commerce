@@ -105,26 +105,47 @@ public record StockMovement(
         CONSUMPTION,
         /** Goods a customer sent back under a return request, into quarantine (SCRUM-260, OQ-12). */
         RETURN_IN,
-        /** Damaged goods handed back to their supplier, out of quarantine and off the books (V20261101030000). */
+        /**
+         * Legacy: damaged goods a damage report handed back to their supplier (V20261101030000). Damage reports went with
+         * team plan 5-6 (V20261114000400); the value stays for the lines written before.
+         */
         SUPPLIER_RETURN
     }
 
     /** The subset of {@code ck_stock_movement_reference} this module writes so far. */
     public enum ReferenceType {
-        MOVE_TASK, PUTAWAY_TASK, TRANSFER_ORDER_LINE, ORDER, STOCK_ADJUSTMENT, GOODS_RECEIPT_LINE, QC_INSPECTION, PICK_LINE,
-        PRODUCTION_ORDER, EXPIRY_SWEEP,
+        MOVE_TASK, PUTAWAY_TASK,
+        /** Legacy: lines transfers between warehouses wrote (dispatch); nothing writes one any more. */
+        TRANSFER_ORDER_LINE,
+        ORDER, STOCK_ADJUSTMENT, GOODS_RECEIPT_LINE, QC_INSPECTION, PICK_LINE,
+        /** Legacy: lines in-house production wrote (issue, hand-over, completion); nothing writes one any more. */
+        PRODUCTION_ORDER,
+        EXPIRY_SWEEP,
         /**
          * A completed package whose custom-printed goods left stock with it (decision 2026-10-16). Historical only:
-         * since G4-Q2 (2026-10-21) printed goods leave when their production order completes and no line names a
-         * package any more; the value stays for the lines written before.
+         * from G4-Q2 (2026-10-21) printed goods left when their production order completed, and since in-house
+         * production was removed they are picked like any stock; the value stays for the lines written before.
          */
         PACKAGE,
         /**
-         * A damage report (V20261101030000): units found damaged moved to quarantine as DAMAGED, or a manager's
-         * decision restored them to a bin. A write-off references its posted {@code STOCK_ADJUSTMENT} instead.
+         * Legacy: a damage report (V20261101030000) moved units found damaged to quarantine as DAMAGED, or restored them
+         * to a bin. Damage reports went with team plan 5-6 (V20261114000400); the value stays for the lines written
+         * before.
          */
         DAMAGE_REPORT,
         /** A return line (SCRUM-260): goods counted in from the customer, and out of quarantine again. */
-        RETURN_REQUEST_LINE
+        RETURN_REQUEST_LINE,
+        /**
+         * The carton loose or opened stock was boxed into when every unit went into a whole carton (V20261111000110,
+         * team plan 4C-1): a MOVE that stays in place, into the carton this names, or that relabels a carton's units
+         * of no lot as lot {@code UNTRACED}. Historical only: the application never repacks, it moves whole cartons.
+         */
+        STOCK_PACKAGE,
+        /**
+         * A return receipt (team plan 4D-2; kltn-docs 03 §4.2, BR-14): a carton that came back, received whole into
+         * quarantine, one RECEIPT line per carton naming it ({@code ck_stock_movement_return_receipt}). The receipt
+         * itself, not a line of it: a return receipt has cartons, not lines.
+         */
+        GOODS_RECEIPT
     }
 }

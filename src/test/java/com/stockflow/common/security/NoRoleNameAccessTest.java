@@ -70,27 +70,9 @@ class NoRoleNameAccessTest {
             new Allowed("identity/internal/controller/dto/RoleResponse.java", "example = \"ACCOUNTANT\"",
                     "OpenAPI example of a role code"),
             // ---- who is told: the audience of a notification, not access
-            new Allowed("notification/internal/service/OrderReferralNotificationListener.java",
-                    "List.of(Role.SALES_STAFF, Role.ORDER_COORDINATOR)", "who is told of a referred order"),
             new Allowed("notification/internal/service/QuoteNotificationListener.java", "staff.activeStaff(Role.SALES_STAFF)",
                     "who is told of a quote with no handler"),
-            new Allowed("notification/internal/service/ProductionNotificationListener.java", "-> Role.",
-                    "who is told of a production event, by kind"),
-            new Allowed("notification/internal/service/ProductionNotificationListener.java",
-                    "audience == Role.WAREHOUSE_MANAGER", "managers are told about their own warehouse only"),
-            new Allowed("notification/internal/service/InventoryAlertNotificationListener.java",
-                    "inventory-alert.stock-level-roles:", "stock-alert audience, configurable"),
-            new Allowed("notification/internal/service/InventoryAlertNotificationListener.java",
-                    "inventory-alert.expiry-roles:", "expiry-alert audience, configurable"),
-            new Allowed("application.yml", "stock-level-roles:", "stock-alert audience (who is told), not access"),
-            new Allowed("application.yml", "expiry-roles:", "expiry-alert audience (who is told), not access"),
             // ---- checks on the user an action is about, not on the caller
-            new Allowed("design/internal/service/DesignWorkflowService.java", "Role.CUSTOMER.authority()",
-                    "the design's owner must be a customer account"),
-            new Allowed("design/internal/service/DesignWorkflowService.java", "Role.SALES_STAFF.authority()",
-                    "the designer a design is handed to must be Sales or the E-commerce Admin"),
-            new Allowed("design/internal/service/DesignWorkflowService.java", "Role.QC_STAFF.authority()",
-                    "the reviewer a design is handed to must be QC"),
             new Allowed("fulfillment/internal/service/FulfillmentServiceImpl.java",
                     "Role.WAREHOUSE_STAFF.authority(), Role.WAREHOUSE_MANAGER.authority()",
                     "who a pick task can be assigned to (the assignee's eligibility), not the caller"),
@@ -110,10 +92,6 @@ class NoRoleNameAccessTest {
             new Allowed("identity/internal/service/PortalAccountServiceImpl.java", "\"The CUSTOMER role is seeded by migration",
                     "error message: a portal account is created with the CUSTOMER role"),
             // ---- not a role at all: the same word used for something else
-            new Allowed("payment/internal/controller/dto/ReceivableResponse.java", "allowableValues = {\"CUSTOMER\", \"CARRIER\"}",
-                    "the receivable's party type, not a role"),
-            new Allowed("payment/internal/repository/ReceivableBookAdapter.java", "collector = 'CUSTOMER'",
-                    "who collects a receivable (customer or carrier), not a role"),
             new Allowed("order/", "CUSTOMER, FRAUD", "the hold reason CUSTOMER (HoldReason), not a role"));
 
     private static final String CODES = Arrays.stream(Role.values()).map(Role::name).collect(Collectors.joining("|"));
@@ -262,7 +240,7 @@ class NoRoleNameAccessTest {
                         + ".PreAuthorize(\"x\")", "http.hasAnyAuthority(\"A\")", "roles.stream().map(Role::name)")) {
             check("x/X.java", 1, bad, true, problems, used);
         }
-        check("application.yml", 1, "      roles: ECOMMERCE_ADMIN", false, problems, used);
+        check("application.yml", 1, "      roles: SALES_MANAGER", false, problems, used);
         assertThat(problems).hasSize(10);
     }
 }

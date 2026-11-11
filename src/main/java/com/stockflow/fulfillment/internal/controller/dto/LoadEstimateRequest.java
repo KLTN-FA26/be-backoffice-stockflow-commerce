@@ -12,8 +12,7 @@ import java.util.UUID;
 /**
  * Estimate how a source loads before it is packed (SCRUM-287 PR EST; advisory, LP2-1).
  *
- * @param sources        exactly one for now: {@code {type: ORDER, id}} or {@code {type: TRANSFER, id}} (a transfer order's lines; orderLineId of an estimate
- *                       line is then the transfer line's id)
+ * @param sources        exactly one for now: {@code {type: ORDER, id}}
  * @param warehouseId    required for a CONFIRMED order (estimated in the release dialog, before it has a warehouse):
  *                       the warehouse it is about to be released to; for a released order leave it out (or send its
  *                       own)
@@ -25,5 +24,5 @@ public record LoadEstimateRequest(@NotEmpty @Size(max = 1) List<@Valid @NotNull 
                                   @Size(max = 20) List<@NotNull UUID> vehicleTypeIds,
                                   @Pattern(regexp = "SINGLE_TYPE|FEWEST_VEHICLES") String selectionMode) {
 
-    public record SourceRef(@NotNull @Pattern(regexp = "ORDER|TRANSFER") String type, @NotNull UUID id) { }
+    public record SourceRef(@NotNull @Pattern(regexp = "ORDER") String type, @NotNull UUID id) { }
 }

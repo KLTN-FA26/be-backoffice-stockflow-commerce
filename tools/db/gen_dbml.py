@@ -26,16 +26,16 @@ def q(sql):
                         "-At", "-c", sql], capture_output=True, text=True, check=True)
     return r.stdout.strip()
 
-SCHEMAS = ["product", "inventory", "warehouse", "procurement", "production", "ordering", "customer", "payment",
+SCHEMAS = ["product", "inventory", "warehouse", "procurement", "ordering", "customer", "payment",
            "design", "fulfillment", "catalog", "chat", "notification", "reporting", "identity", "platform", "public"]
-COLORS = {"product": "#2E86AB", "inventory": "#3E7C4A", "warehouse": "#8E6C3A", "procurement": "#7D5BA6", "production": "#E67E22",
+COLORS = {"product": "#2E86AB", "inventory": "#3E7C4A", "warehouse": "#8E6C3A", "procurement": "#7D5BA6",
           "ordering": "#C0392B", "customer": "#D68910", "payment": "#B8860B", "design": "#AA4A9E",
           "fulfillment": "#2C7873", "catalog": "#1B998B", "chat": "#4C93A8", "notification": "#A6763F",
           "reporting": "#607D8B", "identity": "#5A6ACF", "platform": "#616161", "public": "#9E9E9E"}
 
 cols = json.loads(q("""
 select json_agg(json_build_object('s',c.table_schema,'t',c.table_name,'c',c.column_name,'pos',c.ordinal_position,
-  'type', format_type(a.atttypid, a.atttypmod), 'nn', c.is_nullable='NO', 'def', c.column_default) order by c.table_schema, c.table_name, c.ordinal_position)
+  'type', format_type(a.atttypid, a.atttypmod), 'nn', c.is_nullable='NO', 'def', c.column_default, 'gen', c.generation_expression) order by c.table_schema, c.table_name, c.ordinal_position)
 from information_schema.columns c
 join pg_attribute a on a.attrelid = (quote_ident(c.table_schema)||'.'||quote_ident(c.table_name))::regclass and a.attname = c.column_name
 join information_schema.tables t on t.table_schema=c.table_schema and t.table_name=c.table_name and t.table_type='BASE TABLE'
@@ -83,7 +83,9 @@ for c in cons:
         m = re.match(r"^CHECK \(\(\((\w+)\)::text = ANY \(\(ARRAY\[(.*)\]\)::text\[\]\)\)\)$", c["def"])
         if not m:
             m = re.match(r"^CHECK \(\(\((\w+) IS NULL\) OR \(\((\w+)\)::text = ANY \(\(ARRAY\[(.*)\]\)::text\[\]\)\)\)\)$", c["def"])
-            if m:
+            # "col IS NULL OR col IN (...)" only: "other IS NULL OR col IN (...)" is a rule about some rows, not the
+            # column's values - read as an enum, it would replace the real list with a subset of it.
+            if m and m.group(1) == m.group(2):
                 col, vals = m.group(2), m.group(3)
             else:
                 continue
@@ -91,7 +93,10 @@ for c in cons:
             col, vals = m.group(1), m.group(2)
         values = re.findall(r"'([^']*)'::character varying", vals)
         if values and all(re.match(r"^[A-Z][A-Z0-9_]*$", v) for v in values):
-            enums_by_col[(c["s"], c["t"], col)] = values
+            # Two lists for one column: keep the longer, whatever order the catalogue returned them in.
+            known = enums_by_col.get((c["s"], c["t"], col))
+            if known is None or len(values) > len(known):
+                enums_by_col[(c["s"], c["t"], col)] = values
 
 for i in idx:
     key = (i["s"], i["t"])
@@ -159,6 +164,9 @@ for s in SCHEMAS:
             d = default(c["def"])
             if d is not None:
                 attrs.append("default: %s" % d)
+            if c.get("gen"):
+                # A generated column (GENERATED ALWAYS AS ... STORED): no default, nothing writes it.
+                attrs.append("note: 'generated: %s'" % c["gen"].replace("'", "\\'"))
             out.append("  %s %s%s" % (c["c"].ljust(width), typ, (" [%s]" % ", ".join(attrs)) if attrs else ""))
         ind = []
         if len(pkcols) > 1:

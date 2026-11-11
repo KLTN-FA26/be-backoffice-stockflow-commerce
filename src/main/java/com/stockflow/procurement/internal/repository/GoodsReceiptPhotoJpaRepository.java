@@ -44,10 +44,10 @@ public interface GoodsReceiptPhotoJpaRepository extends BaseJpaRepository<GoodsR
             nativeQuery = true)
     Optional<ReceiptFacts> lockReceipt(@Param("id") UUID receiptId);
 
-    /** Whether a line of this receipt goes through QC; empty when it is not a line of this receipt. */
-    @Query(value = "SELECT qc_required FROM procurement.goods_receipt_lines WHERE id = :line AND receipt_id = :receipt",
+    /** Whether the line is a line of this receipt. */
+    @Query(value = "SELECT EXISTS (SELECT 1 FROM procurement.goods_receipt_lines WHERE id = :line AND receipt_id = :receipt)",
             nativeQuery = true)
-    Optional<Boolean> qcRequiredOf(@Param("line") UUID receiptLineId, @Param("receipt") UUID receiptId);
+    boolean isLineOf(@Param("line") UUID receiptLineId, @Param("receipt") UUID receiptId);
 
     @Query("SELECT p.storageKey FROM GoodsReceiptPhotoJpaEntity p WHERE p.storageKey IN :keys")
     List<String> storageKeysIn(@Param("keys") Collection<String> keys);

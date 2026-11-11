@@ -1,6 +1,7 @@
 package com.stockflow.design.internal.controller;
 
 import com.stockflow.common.api.ApiResponse;
+import com.stockflow.common.ratelimit.RateLimit;
 import com.stockflow.common.security.Action;
 import com.stockflow.common.security.AuthenticatedUser;
 import com.stockflow.common.security.CurrentUser;
@@ -41,7 +42,8 @@ import com.stockflow.design.api.DesignArtifactRole;
 @RestController
 @RequestMapping("/api/v1/designs/{designId}/artifacts")
 @PermissionResource(code = DesignResources.DESIGNS, group = "Design", label = "Designs", route = "/designs",
-        apiPath = "/api/v1/designs", actions = {Action.VIEW_PAGE, Action.READ, Action.UPDATE, Action.APPROVE})
+        apiPath = "/api/v1/designs", actions = {Action.VIEW_PAGE, Action.READ, Action.CREATE, Action.UPDATE,
+        Action.APPROVE})
 class DesignController {
     private final DesignArtifactService artifacts;
     private final DesignArtifactWebMapper mapper;
@@ -51,17 +53,21 @@ class DesignController {
         this.mapper = mapper;
     }
 
+    /** Spooled, scanned and stored, and never deleted: a budget per user an hour, shared with the images. */
     @PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     @ResponseStatus(HttpStatus.CREATED)
     @RequiresPermission(resource = DesignResources.DESIGNS, action = Action.UPDATE)
+    @RateLimit(limit = 120, perSeconds = 3600, key = RateLimit.Key.USER, bucket = "design-uploads")
     public ApiResponse<DesignArtifactResponse> upload(@PathVariable UUID designId,
             @AuthenticatedUser CurrentUser user, @RequestPart("file") MultipartFile file,
             @RequestParam(defaultValue = "CUSTOMER_PREVIEW") DesignArtifactRole role,
+            @RequestParam(required = false) String documentChecksum,
             @org.springframework.web.bind.annotation.RequestHeader(name = "Idempotency-Key", required = false) String requestKey) {
         try (var content = file.getInputStream()) {
             var upload = new FileUpload(file.getOriginalFilename(), file.getContentType(), file.getSize(), content);
             UUID actor = user == null ? null : user.userId();
-            return ApiResponse.ok(mapper.toResponse(artifacts.upload(designId, actor, role, upload, requestKey)));
+            return ApiResponse.ok(mapper.toResponse(artifacts.upload(designId, actor, role, upload, requestKey,
+                    documentChecksum)));
         } catch (IOException ex) {
             throw new StorageException("Could not read the multipart upload", ex);
         }
@@ -86,22 +92,23 @@ class DesignController {
     public ApiResponse<DesignArtifactResponse> attachUpload(@PathVariable UUID designId,
             @AuthenticatedUser CurrentUser user, @Valid @RequestBody AttachArtifactUploadRequest request) {
         return ApiResponse.ok(mapper.toResponse(artifacts.attachUpload(designId, user == null ? null : user.userId(),
-                request.roleOrDefault(), request.uploadId())));
+                request.roleOrDefault(), request.uploadId(), request.documentChecksum())));
     }
 
     @GetMapping
     @RequiresPermission(resource = DesignResources.DESIGNS, action = Action.READ)
     public ApiResponse<List<DesignArtifactResponse>> list(@PathVariable UUID designId,
                                                          @AuthenticatedUser CurrentUser user) {
-        return ApiResponse.ok(artifacts.list(designId, user == null ? null : user.userId()).stream()
-                .map(mapper::toResponse).toList());
+        return ApiResponse.ok(artifacts.list(designId, user == null ? null : user.userId(),
+                DesignWorkflowController.readRights(user)).stream().map(mapper::toResponse).toList());
     }
 
     @GetMapping("/{artifactId}/preflight")
     @RequiresPermission(resource = DesignResources.DESIGNS, action = Action.READ)
     public ApiResponse<DesignPreflightResponse> preflight(@PathVariable UUID designId, @PathVariable UUID artifactId,
                                                          @AuthenticatedUser CurrentUser user) {
-        var report = artifacts.preflight(designId, artifactId, user == null ? null : user.userId());
+        var report = artifacts.preflight(designId, artifactId, user == null ? null : user.userId(),
+                DesignWorkflowController.readRights(user));
         return ApiResponse.ok(new DesignPreflightResponse(report.passed(), report.findings().stream()
                 .map(f -> new DesignPreflightResponse.Finding(f.code(), f.detail(), f.blocking())).toList()));
     }
@@ -111,6 +118,7 @@ class DesignController {
     public ResponseEntity<ApiResponse<ArtifactDownloadResponse>> downloadLink(@PathVariable UUID designId,
             @PathVariable UUID artifactId, @AuthenticatedUser CurrentUser user) {
         return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(ApiResponse.ok(mapper.toResponse(
-                artifacts.downloadLink(designId, artifactId, user == null ? null : user.userId()))));
+                artifacts.downloadLink(designId, artifactId, user == null ? null : user.userId(),
+                        DesignWorkflowController.readRights(user)))));
     }
 }

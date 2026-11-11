@@ -3,54 +3,55 @@ package com.stockflow.inventory.internal.domain;
 /**
  * Condition of a stock record — a business rule expressed as a type rather than a label.
  *
- * <p>Only {@link #AVAILABLE} stock may be reserved or sold, which is what keeps goods still
- * awaiting QC (BRD 3.3.4) out of customer orders.</p>
+ * <p>Only {@link #AVAILABLE} stock may be reserved or sold, which is what keeps goods not yet put away out of customer
+ * orders.</p>
  *
- * <p>State machine, from the receiving docs (KLTN-FA26/docs 03 Receipt, 05 Putaway):</p>
+ * <p>State machine, from the receiving docs (KLTN-FA26/docs 03 Receipt, 05 Putaway, 20 Inventory control). There is no
+ * quality check at the warehouse (03 BR-07); QUARANTINE and BLOCKED rows written by receiving QC before it was removed
+ * stay as they are:</p>
  * <pre>
- *   INBOUND ──putaway (no QC, or QC accepted)──▶ AVAILABLE ──damageFound──▶ DAMAGED
- *      │                                             │
- *      ├──QC: quarantine──▶ QUARANTINE ──accepted──▶ (putaway) AVAILABLE
- *      │                        └──rejected──▶ BLOCKED   └──expiryReached──▶ EXPIRED
- *      └──QC: rejected──▶ BLOCKED ──returned to supplier──▶ (leaves stock)
- *
- *   AVAILABLE ──issued to the print shop, held──▶ IN_PRODUCTION ──finished──▶ AVAILABLE (PACKING, held)
- *                                                      ├──unprinted, returned──▶ AVAILABLE
- *                                                      └──spoilt, out of the hold──approved write-off──▶ (leaves)
+ *   INBOUND ──putaway──▶ AVAILABLE ──damageFound──▶ DAMAGED
+ *                            │
+ *   returned goods: QUARANTINE ──passed──▶ (putaway) AVAILABLE
+ *                     └──condemned──▶ BLOCKED
  * </pre>
+ *
+ * <p>{@link #EXPIRED} is no longer reached: cups and packaging have no expiry date and the expiry sweep is gone
+ * (kltn-docs 01 BR-17, 20 BR-13; team plan 5-1).</p>
  *
  * <p>{@link StockItem#receive} still creates {@link #QUARANTINE} stock; the receipt flow that
  * starts goods as {@link #INBOUND} arrives with SCRUM-435.</p>
  */
 public enum StockStatus {
 
-    /** Received, not yet put away: in a RECEIVING or QUALITY_CONTROL area (docs 03). Not sellable. */
+    /** Received, not yet put away: in a RECEIVING area (docs 03). Not sellable. */
     INBOUND,
 
-    /** Passed QC, in a pickable location, counted towards available-to-promise. */
+    /** Put away, in a pickable location, counted towards available-to-promise. */
     AVAILABLE,
 
-    /** Put on hold by QC, waiting for a second decision. Physically present, commercially invisible. */
+    /** On hold apart from good stock (a return, or legacy receiving QC), waiting for a decision. Physically present,
+     *  commercially invisible. */
     QUARANTINE,
 
-    /** Rejected by QC, waiting to go back to the supplier. Never sold, never put away. */
+    /** Condemned (a return, or legacy receiving QC), waiting to leave stock. Never sold, never put away. */
     BLOCKED,
 
     /** Damaged in handling; awaiting a write-off decision. */
     DAMAGED,
 
-    /** Past its expiry date. Kept as a row so the loss stays traceable, never sold. */
+    /**
+     * Legacy: past its expiry date, set by the nightly expiry sweep removed in team plan 5-1. Nothing enters it any more
+     * ({@code tg_stock_item_no_new_expired}); kept because rows and ledger lines recorded before carry it. Never
+     * sellable; an approved adjustment writes what is left off.
+     */
     EXPIRED,
 
     /**
-     * Issued to the print shop (SCRUM-397): in a PRODUCTION area, held for its order or production order. Also
-     * blanks at a subcontractor's location (SCRUM-441) and a subcontractor's finished goods waiting for production
-     * QC in a QUALITY_CONTROL area: production's goods, wherever they are.
-     * Never sellable, whatever happens to the hold, and the hold itself is closed only by production: an order
-     * cancelled after its blanks were issued does not release it, so printed cups never come back as blanks
-     * another order can buy and production can still tell printed from unprinted. The goods leave this status
-     * only by an explicit step: finished goods to PACKING, unprinted blanks back to storage, spoilt units
-     * written off by an approved adjustment.
+     * Legacy: blanks issued to the in-house print shop or a subcontractor (SCRUM-397/441). Nothing enters it since
+     * in-house production was removed (kltn-docs 07/11; V20261108000100 released the holds still on such rows). Kept
+     * because stock rows and ledger lines recorded before carry it ({@code ck_stock_item_status}). Never sellable; an
+     * approved adjustment writes what is left off.
      */
     IN_PRODUCTION;
 

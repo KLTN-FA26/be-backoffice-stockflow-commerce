@@ -11,7 +11,6 @@ import org.springframework.context.annotation.Import;
 import org.springframework.modulith.test.ApplicationModuleTest;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
-import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -34,14 +33,15 @@ class NotificationModuleTest {
     /**
      * Notification's own interface, implemented by the customer module (dependency inversion: customer depends on
      * notification). Customer is not in this context, so its implementation is stood in for, as payment's module
-     * test does for OrderPayables. Not a widening: no other module is booted.
+     * test does for InstallmentOrders. Not a widening: no other module is booted.
      */
     @MockitoBean CustomerDirectory customerDirectory;
+    @MockitoBean com.stockflow.notification.api.ProductionOrderDirectory productionOrderDirectory;
 
     @Test
     @DisplayName("notification starts and answers through its api with the other modules absent")
     void bootsInIsolation() {
-        assertThat(notification.purchaseOrderDeliveryStatuses(Set.of(UUID.randomUUID()))).isEmpty();
+        assertThat(notification.productionOrderDeliveries(UUID.randomUUID(), 0, 10).items()).isEmpty();
     }
 
     /** The negative half: a module notification has no business with is genuinely not in this context. */

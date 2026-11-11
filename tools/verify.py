@@ -167,8 +167,13 @@ for f in files:
             problems.append(f"NON-ENGLISH CODE {f}:{i}: {line.strip()[:80]}")
 
 # 6. module boundary: no import of another module's .internal.
-MODULES = {"identity","customer","product","catalog","inventory","warehouse","order","payment",
-           "fulfillment","procurement","design","chat","notification","reporting"}
+# Every top-level package under com.stockflow is a business module, except the shared base layer
+# (common) and the event records (contracts). Read from the tree rather than listed by hand: the
+# hand-written list had silently fallen behind (production was never in it), so checks 8 and 15
+# skipped a whole module without anyone noticing.
+SHARED_PACKAGES = {"common", "contracts"}
+MODULES = {os.path.basename(os.path.normpath(d))
+           for d in glob.glob(SRC + "/main/java/com/stockflow/*/")} - SHARED_PACKAGES
 for f in files:
     if "/src/test/" in f: continue
     p = pkg_of(f)
@@ -204,7 +209,7 @@ for f in files:
             problems.append(f"UNDECLARED DEP {f}: {own} -> {target} ({imp})")
 
 # 8. every module has package-info with @ApplicationModule
-for mod in sorted(MODULES | {"common", "contracts"}):
+for mod in sorted(MODULES | SHARED_PACKAGES):
     pi = os.path.join(SRC, "main/java/com/stockflow", mod, "package-info.java")
     if not os.path.exists(pi):
         problems.append(f"MISSING package-info for module {mod}")
@@ -314,7 +319,7 @@ for mod in sorted(MODULES):
 #     camelCase name: cancelNote, failureMessage, cancellationReason) is free text by convention, so
 #     it is refused here. Send an enum code (reasonCode) and let the owning module keep the text
 #     behind its own permission check. Only String-like components count: an enum named reason is
-#     a code. The three existing ones are listed below so the build stays
+#     a code. The existing ones are listed below so the build stays
 #     green; the list only ever shrinks. An entry that no longer matches a component is reported
 #     too, so removing the field means removing its line.
 FREE_TEXT_WORDS = {"note", "body", "comment", "message", "reason"}
@@ -322,12 +327,6 @@ FREE_TEXT_ALLOWED = {
     # Record.component: why it exists today.
     "OrderCancelled.note":                # what the customer or Sales typed when cancelling an order.
         "cancellation note shown to payment and fulfillment staff",
-    "PaymentFailed.failureMessage":       # the payment provider's own failure text.
-        "provider failure text, shown to staff only",
-    "PurchaseOrderSent.cancellationReason":  # what purchasing typed when cancelling a purchase order.
-        "reason printed in the supplier cancellation mail and sent to the supplier API",
-    "PurchaseOrderSent.amendmentReason":  # what purchasing typed when amending an approved purchase order (SCRUM-117).
-        "reason printed in the supplier amendment mail and sent to the supplier API, as the cancellation reason is",
 }
 
 def camel_words(name):
@@ -380,16 +379,6 @@ PII_ALLOWED = {
     # Record.component: why it exists today. The list only ever shrinks.
     "OrderPlaced.contactEmail":           # develop: the order confirmation mail goes to the customer's contact.
         "customer contact e-mail for the order confirmation mail (follow-up: resolve it in the listener)",
-    "Buyer.companyAddress":               # PurchaseOrderSent.Buyer: our own company, printed on the PO mail.
-        "our company's address on the purchase order sent to the supplier",
-    "Buyer.receivingAddress":
-        "our warehouse's receiving address on the purchase order sent to the supplier",
-    "Buyer.contactName":
-        "our purchasing contact named on the purchase order sent to the supplier",
-    "Buyer.phone":
-        "our purchasing contact's phone on the purchase order sent to the supplier",
-    "Buyer.email":
-        "our purchasing contact's e-mail on the purchase order sent to the supplier",
 }
 seen_pii = set()
 for f in files:

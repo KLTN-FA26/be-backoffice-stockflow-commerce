@@ -11,8 +11,9 @@ import java.util.UUID;
  * Which order lines are placed and not yet shipped, for some SKUs (SCRUM-461, BR-PRD-005): what a person is
  * told when a product is discontinued or deleted. Native SQL on this module's own tables.
  *
- * <p>An order counts from the moment it is placed ({@code PENDING_PAYMENT}) until it ships; a cart
- * ({@code DRAFT}) is not an order, and an order that has shipped or ended has nothing left to fulfil.</p>
+ * <p>An order counts from the moment it exists until it ships: an order made from a quote is a {@code DRAFT} whose
+ * contract is being drawn up (4B-5), and it will ship the SKU as surely as a placed one; an order that has shipped or
+ * ended has nothing left to fulfil.</p>
  */
 @Repository
 public class OrderLineReferences {
@@ -42,9 +43,12 @@ public class OrderLineReferences {
                          ORDER BY o.placed_at DESC, o.id, l.sku""")
                 .setParameter("skus", skus)
                 // From the state machine (G3-2): every status that still holds stock for the order, so a status
-                // added later is not forgotten here.
+                // added later is not forgotten here - and an order whose contract is drawn up or waits to be signed
+                // (4B-5), which holds none yet but will ship the SKU.
                 .setParameter("unshipped", java.util.Arrays.stream(com.stockflow.order.api.OrderStatus.values())
-                        .filter(com.stockflow.order.api.OrderStatus::holdsStock).map(Enum::name).toList())
+                        .filter(status -> status.holdsStock() || status == com.stockflow.order.api.OrderStatus.DRAFT
+                                || status == com.stockflow.order.api.OrderStatus.PENDING_CONTRACT)
+                        .map(Enum::name).toList())
                 .setMaxResults(limit)
                 .getResultList();
         return rows.stream()

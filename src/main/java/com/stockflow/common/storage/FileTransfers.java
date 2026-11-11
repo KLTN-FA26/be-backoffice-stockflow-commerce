@@ -115,13 +115,15 @@ public class FileTransfers {
                 inspection.requireClean(content);
             }
             PdfContentPolicy.check(category, upload.contentType(), buffered.path());
+            ImageDimensions.Size dimensions = ImageDimensions.measures(category)
+                    ? ImageDimensions.of(buffered.path()) : null;
             StoredFile file;
             try (InputStream content = new BufferedInputStream(buffered.open())) {
                 file = storage.store(category, upload.originalName(), upload.contentType(),
                         upload.sizeBytes(), content, buffered.checksum());
             }
             if (!StorageKeys.hasDisplayCopies(category)) {
-                return new PreparedFiles.PreparedFile(file, buffered.checksum());
+                return new PreparedFiles.PreparedFile(file, buffered.checksum(), List.of(), dimensions);
             }
             try {
                 // From the spooled file, read once a decoder is free: a photo waiting for one holds no heap.
@@ -157,6 +159,35 @@ public class FileTransfers {
             }
         });
         return file;
+    }
+
+    /**
+     * Copies a stored file to a new key of {@code category}, inside the caller's transaction, and returns that key: if
+     * the transaction rolls back, the copy is deleted again. Server-side where the store supports it. For a file one
+     * record hands to another that must own its own copy - a design project's library file placed on a design, which
+     * keeps its copy when the file leaves the library (kltn-docs 12 BR-18).
+     */
+    public String copy(String sourceKey, FileCategory category, String contentType) {
+        if (!TransactionSynchronizationManager.isActualTransactionActive()
+                || !TransactionSynchronizationManager.isSynchronizationActive()) {
+            throw new IllegalStateException("Copying a file requires an active database transaction");
+        }
+        String target = StorageKeys.generate(category, contentType, clock.instant());
+        storage.copy(sourceKey, target);
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCompletion(int status) {
+                // An unknown commit outcome may already reference this object: preserve it.
+                if (status == STATUS_ROLLED_BACK) {
+                    try {
+                        storage.delete(target);
+                    } catch (RuntimeException cleanupFailure) {
+                        log.error("Orphaned copy requires cleanup: {}", target, cleanupFailure);
+                    }
+                }
+            }
+        });
+        return target;
     }
 
     /**

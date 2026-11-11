@@ -15,21 +15,23 @@ public enum ReleaseReason {
     PAYMENT_FAILED,
     RESERVATION_EXPIRED,
     MANUAL_OVERRIDE,
-    /** A production order no longer needs the blanks it held (cancelled before using them). */
+    /**
+     * Legacy, with the next three: in-house production no longer needed the blanks it held. V20261108000100 closed the
+     * holds still on print-shop rows with it. Kept because stored holds carry these reasons.
+     */
     PRODUCTION_CANCELLED,
-    /** Spoilt in the print shop: the units are written off by an approved SCRAP adjustment (SCRUM-398). */
+    /** Legacy: written off by an approved SCRAP adjustment (SCRUM-398; still how a pending legacy write-off closes). */
     SCRAPPED,
-    /** Issued to the print shop and not printed: back to storage, free (SCRUM-400/401). */
+    /** Legacy: issued to the print shop and not printed, back to storage (SCRUM-400/401). */
     RETURNED_FROM_PRODUCTION,
-    /** Part of a production order went to a subcontractor who sources its own blanks (SCRUM-441, G3). */
+    /** Legacy: part of a production order went to a subcontractor who sourced its own blanks (SCRUM-441, G3). */
     SUBCONTRACTED,
     /** A picker found fewer units at the bin than were allocated there; the units were allocated elsewhere (X-SHORT). */
     SHORT_PICKED,
-    /** Picking of a transfer order was cancelled before its goods left: its hold is free again (SCRUM-287 PR T). */
-    TRANSFER_CANCELLED,
     /**
-     * A picker found the held units damaged (SCRUM-277): they went to quarantine, and the order holds the same
-     * quantity again elsewhere, or as an impaired allocation on the damaged units until it is reallocated.
+     * Legacy: a picker reported the held units damaged (SCRUM-277) and they went to quarantine; V20261114000400 released
+     * the holds still left on them when unit-level damage reports were removed (team plan 5-6). Kept because stored
+     * holds carry it; a damaged carton is reported short now (07 §4.4 step 9).
      */
     DAMAGED;
 
@@ -39,13 +41,11 @@ public enum ReleaseReason {
             case PAYMENT_FAILED -> com.stockflow.contracts.ReleaseReason.PAYMENT_FAILED;
             case RESERVATION_EXPIRED -> com.stockflow.contracts.ReleaseReason.RESERVATION_EXPIRED;
             case MANUAL_OVERRIDE -> com.stockflow.contracts.ReleaseReason.MANUAL_OVERRIDE;
-            // A production hold announces nothing to order (StockItem#releaseReservation). SCRAPPED reaches it only
-            // for a cancelled order's printed goods (BR-PRD-10), which the order no longer acts on.
-            // SHORT_PICKED: the order keeps its stock, on another bin; nothing for it to act on. TRANSFER_CANCELLED: a
-            // transfer's hold, no order's. DAMAGED: the order keeps its units elsewhere or impaired, and learns of it
-            // in the picker's own transaction (or from StockDamageReported); nothing to act on here either.
-            case PRODUCTION_CANCELLED, SCRAPPED, RETURNED_FROM_PRODUCTION, SUBCONTRACTED, SHORT_PICKED,
-                 TRANSFER_CANCELLED, DAMAGED ->
+            // The legacy production reasons announce nothing an order acts on (a production hold was no order's;
+            // SCRAPPED closed a cancelled order's printed goods, BR-PRD-10).
+            // SHORT_PICKED: the order keeps its stock, on another bin; nothing for it to act on. DAMAGED is legacy:
+            // nothing releases a hold with it any more.
+            case PRODUCTION_CANCELLED, SCRAPPED, RETURNED_FROM_PRODUCTION, SUBCONTRACTED, SHORT_PICKED, DAMAGED ->
                     com.stockflow.contracts.ReleaseReason.MANUAL_OVERRIDE;
         };
     }

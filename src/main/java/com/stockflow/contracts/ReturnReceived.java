@@ -5,13 +5,16 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * Published by the <b>order</b> module when the warehouse counts a returned parcel in (03 §12). The goods are in
- * QUARANTINE at {@code locationCode} (OQ-12), never sellable until QC decides. A return may come back in several parcels:
- * one event per parcel, {@code parcel} its number, the line counts the total so far. {@code discrepancy} is true when the
- * parcel held more units than approved, another SKU than the line's, or something unexpected: Sales follow it up with
- * the customer. A shortfall is recorded at inspection, once no more parcels are coming.
+ * Published by the <b>order</b> module when the goods of a return came back (team plan 4D-3; kltn-docs 17 §4.10 step
+ * 39): the warehouse confirmed the return receipt that scanned them ({@code ReturnedGoodsReceived}), and they are in
+ * QUARANTINE at {@code locationCode}, out of sale until a warehouse manager releases or writes off each carton
+ * (20 §4.8). A return comes back on one receipt, so {@code parcel} is 1. Each line counts the units of its SKU in the
+ * cartons received; {@code receivedSku} is the line's own. {@code discrepancy} is true when the cartons held fewer or
+ * more units of a line than approved, or a SKU the return did not claim: Sales follow it up with the customer outside
+ * the system (03 edge cases).
  *
- * See {@code package-info.java} for the rules on changing this contract.
+ * <p>Before 4D-3 it was published per parcel the warehouse counted in loose, QC deciding afterwards; the shape is kept
+ * (see {@code package-info.java} for the rules on changing this contract).</p>
  */
 public record ReturnReceived(
         UUID returnRequestId,

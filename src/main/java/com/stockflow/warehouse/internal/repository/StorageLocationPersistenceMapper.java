@@ -15,19 +15,18 @@ final class StorageLocationPersistenceMapper {
 
     static StorageLocation toDomain(StorageLocationJpaEntity location) {
         return new StorageLocation(location.getId(), location.getWarehouseId(), location.getKind(),
-                location.getLocationCode(), location.getStorageClass(),
-                new LocationSettings(location.getCapacityUnits(), location.getMaxWeight(), location.isPickable(),
-                        location.isPutawayTarget()),
+                location.getLocationCode(),
+                new LocationSettings(location.getMaxWeight(), location.isPickable(), location.isPutawayTarget()),
                 location.getStatus());
     }
 
     static StorageLocationJpaEntity toNewEntity(StorageLocation l) {
-        return new StorageLocationJpaEntity(l.id(), l.warehouseId(), l.kind(), l.locationCode(), l.storageClass(),
-                l.capacityUnits(), l.maxWeight(), l.pickable(), l.putawayTarget(), l.status());
+        return new StorageLocationJpaEntity(l.id(), l.warehouseId(), l.kind(), l.locationCode(),
+                l.maxWeight(), l.pickable(), l.putawayTarget(), l.status());
     }
 
     /** Warehouse, kind and code are never written again (BR-13). */
     static void apply(StorageLocation l, StorageLocationJpaEntity row) {
-        row.apply(l.storageClass(), l.capacityUnits(), l.maxWeight(), l.pickable(), l.putawayTarget(), l.status());
+        row.apply(l.maxWeight(), l.pickable(), l.putawayTarget(), l.status());
     }
 }

@@ -37,11 +37,10 @@ import java.util.Optional;
  * stays in {@code event_publication}, {@link CustomerEmailRetry} dispatches it again once its back-off has passed, and a
  * restart republishes it too. A redelivery of a message already sent changes nothing.</p>
  *
- * <p><b>No e-mail for {@code PaymentFailed}.</b> There was one, saying "your payment failed, the items were released".
- * Nothing publishes {@code PaymentFailed} since the B2B decision (2026-10-06): customers pay by transfer, there is no
- * payment gateway to fail, and an order not paid in time is cancelled - which {@link #on(OrderCancelled)} tells the
- * customer, with the reason. Inventory still listens to {@code PaymentFailed} to release stock; a message nobody can
- * trigger was dead code that looked like a feature.</p>
+ * <p><b>No e-mail for a failed payment.</b> There was one, saying "your payment failed, the items were released".
+ * Customers pay by bank transfer against the contract's instalments (kltn-docs 15 BR-01), so there is no payment
+ * gateway to fail, and an order not paid in time is cancelled - which {@link #on(OrderCancelled)} tells the customer,
+ * with the reason. The {@code PaymentFailed} event itself had no publisher and was removed with its listeners.</p>
  */
 @Component
 class OrderNotificationListener {

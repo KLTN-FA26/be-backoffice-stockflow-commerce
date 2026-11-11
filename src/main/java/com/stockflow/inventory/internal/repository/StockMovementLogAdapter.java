@@ -38,10 +38,26 @@ class StockMovementLogAdapter implements StockMovementLog, StockLedgerSearch {
     }
 
     @Override
+    public java.util.List<MovedCarton> cartonsMovedBy(StockMovement.ReferenceType referenceType, UUID referenceId) {
+        return jpa.cartonsMovedBy(referenceType, referenceId).stream()
+                .map(row -> new MovedCarton(new com.stockflow.inventory.internal.domain.StockPackageId((UUID) row[0]),
+                        new com.stockflow.inventory.internal.domain.LocationId((String) row[1])))
+                .toList();
+    }
+
+    @Override
     public Optional<StockMovement> findByReference(StockMovement.MovementType type,
                                                    StockMovement.ReferenceType referenceType, UUID referenceId) {
         return jpa.findFirstByMovementTypeAndReferenceTypeAndReferenceIdOrderByIdAsc(type, referenceType, referenceId)
                 .map(StockMovementLogAdapter::toDomain);
+    }
+
+    @Override
+    public java.util.List<StockMovement> findAllByReference(StockMovement.MovementType type,
+                                                            StockMovement.ReferenceType referenceType,
+                                                            UUID referenceId) {
+        return jpa.findByMovementTypeAndReferenceTypeAndReferenceIdOrderByIdAsc(type, referenceType, referenceId)
+                .stream().map(StockMovementLogAdapter::toDomain).toList();
     }
 
     @Override
@@ -109,30 +125,5 @@ class StockMovementLogAdapter implements StockMovementLog, StockLedgerSearch {
                         : new com.stockflow.inventory.internal.domain.StockPackageId(e.getFromStockPackageId()),
                 e.getToStockPackageId() == null ? null
                         : new com.stockflow.inventory.internal.domain.StockPackageId(e.getToStockPackageId()));
-    }
-
-    @Override
-    public boolean handedOverFromProduction(com.stockflow.inventory.internal.domain.ReservationId hold,
-                                            com.stockflow.inventory.internal.domain.LocationId location) {
-        return jpa.existsByMovementTypeAndReferenceTypeAndReasonAndToLocationCodeAndFromStatusAndToStatus(
-                StockMovement.MovementType.MOVE, StockMovement.ReferenceType.PRODUCTION_ORDER, "Hold " + hold.value(),
-                location.code(), com.stockflow.inventory.internal.domain.StockStatus.IN_PRODUCTION,
-                com.stockflow.inventory.internal.domain.StockStatus.AVAILABLE);
-    }
-
-    @Override
-    public boolean consumedAtCompletion(com.stockflow.inventory.internal.domain.ReservationId hold,
-                                        com.stockflow.inventory.internal.domain.LocationId location) {
-        return jpa.existsByMovementTypeAndReferenceTypeAndReasonAndFromLocationCode(
-                StockMovement.MovementType.CONSUMPTION, StockMovement.ReferenceType.PRODUCTION_ORDER,
-                "Hold " + hold.value(), location.code());
-    }
-
-    @Override
-    public boolean bookedBackForScrap(com.stockflow.inventory.internal.domain.ReservationId hold,
-                                      com.stockflow.inventory.internal.domain.LocationId location) {
-        return jpa.existsByMovementTypeAndReferenceTypeAndReasonAndToLocationCode(
-                StockMovement.MovementType.PUT_BACK, StockMovement.ReferenceType.ORDER, "Hold " + hold.value(),
-                location.code());
     }
 }

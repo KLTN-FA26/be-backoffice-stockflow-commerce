@@ -21,7 +21,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Boots <b>only</b> the fulfillment module and the modules it declares in {@code package-info.java} (order, inventory, warehouse, design and identity).
+ * Boots <b>only</b> the fulfillment module and the modules it declares in {@code package-info.java} (order, inventory, warehouse and identity).
  *
  * <p>The point is the boundary: if fulfillment gains a dependency its {@code package-info.java} does not declare, this
  * context cannot start and the build says so, instead of an import nobody noticed in review. Fix the declaration
@@ -34,14 +34,25 @@ class FulfillmentModuleTest {
 
     @Autowired FulfillmentService fulfillment;
     @Autowired ApplicationContext context;
+    // notification (booted here) asks the order module for production orders; order is not booted.
+    @org.springframework.test.context.bean.override.mockito.MockitoBean
+    com.stockflow.notification.api.ProductionOrderDirectory productionOrderDirectoryMock;
+    @org.springframework.test.context.bean.override.mockito.MockitoBean
+    com.stockflow.notification.api.ProductionOrderResends productionOrderResendsMock;
     // A dependency of a bootstrapped dependency, not of this module: explicit ports only, the slice must not boot more.
     @MockitoBean com.stockflow.payment.api.PaymentService paymentServiceMock;
-    @MockitoBean com.stockflow.payment.api.ReturnSettlement returnSettlementMock;
     @MockitoBean com.stockflow.catalog.api.CatalogService catalogServiceMock;
     @MockitoBean com.stockflow.customer.api.CustomerService customerServiceMock;
+    // 3-6: fulfillment reads customer :: api (the portal's tracking), so customer is bootstrapped with it.
+    @MockitoBean com.stockflow.notification.api.NotificationService notificationServiceMock;
     @MockitoBean com.stockflow.warehouse.api.WarehouseService warehouseServiceMock;
     @MockitoBean com.stockflow.warehouse.api.PutawayTasks putawayTasksMock;
     @MockitoBean com.stockflow.product.api.ProductService productServiceMock;
+    @MockitoBean com.stockflow.product.api.CustomerSkus customerSkusMock;
+    // Order's, not fulfillment's, since packing no longer checks designs (V20261108000500).
+    @MockitoBean com.stockflow.design.api.DesignService designServiceMock;
+    // R4 (4B-8): order's own port for the customer's chat consent, implemented by chat, which is not booted here.
+    @MockitoBean com.stockflow.order.api.ConsentMessages consentMessagesMock;
 
     @Test
     @DisplayName("fulfillment starts and answers through its api with the other modules absent")
@@ -63,7 +74,7 @@ class FulfillmentModuleTest {
     @Test
     @DisplayName("a module outside fulfillment's declared dependencies is not in this context")
     void unrelatedModulesAreAbsent() {
-        assertThatThrownBy(() -> context.getBean(com.stockflow.procurement.api.ProcurementService.class))
+        assertThatThrownBy(() -> context.getBean(com.stockflow.reporting.api.ReportingService.class))
                 .isInstanceOf(org.springframework.beans.factory.NoSuchBeanDefinitionException.class);
     }
 }

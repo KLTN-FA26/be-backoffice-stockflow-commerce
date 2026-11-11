@@ -144,12 +144,12 @@ class UserAndRoleManagementIntegrationTest {
 
     @Test
     void listsStaffWithFiltersAndLeavesCustomersOutUnlessAsked() {
-        StaffUser staff = create("QC_STAFF").user();
+        StaffUser staff = create("ACCOUNTANT").user();
         String customerEmail = unique("c") + "@example.com";
         UUID customerId = identity.registerCustomer(
                 new com.stockflow.identity.api.RegisterAccountCommand(customerEmail, STRONG, "Customer")).userId();
 
-        var byRole = identity.listUsers(new ListUsersQuery(staff.username(), null, "QC_STAFF", false, 0, 20, null));
+        var byRole = identity.listUsers(new ListUsersQuery(staff.username(), null, "ACCOUNTANT", false, 0, 20, null));
         assertThat(byRole.items()).extracting(StaffUser::userId).containsExactly(staff.userId());
 
         var staffOnly = identity.listUsers(new ListUsersQuery(customerEmail, null, null, false, 0, 20, null));
@@ -179,7 +179,7 @@ class UserAndRoleManagementIntegrationTest {
 
     @Test
     void lockingAndDisablingEndSessionsAndBlockSignIn() {
-        CreatedStaffUser created = create("INVENTORY_PLANNER");
+        CreatedStaffUser created = create("SALES_MANAGER");
         UUID id = created.user().userId();
         identity.login(new LoginCommand(created.user().username(), created.temporaryPassword(), "127.0.0.1", "t"));
 
@@ -227,7 +227,7 @@ class UserAndRoleManagementIntegrationTest {
 
     @Test
     void theHistoryKeepsEveryActionNewestFirstAndTheLatestShowsOnDetailAndList() {
-        CreatedStaffUser created = create("INVENTORY_PLANNER");
+        CreatedStaffUser created = create("SALES_MANAGER");
         UUID id = created.user().userId();
         UUID actorId = create("SALES_STAFF").user().userId();
         CurrentUser admin = new CurrentUser(actorId, "an.admin", Set.of(Role.SYSTEM_ADMIN),
@@ -266,7 +266,7 @@ class UserAndRoleManagementIntegrationTest {
 
     @Test
     void theAuditEntryTellsLockFromDisableAndCarriesTheReason() {
-        UUID id = create("QC_STAFF").user().userId();
+        UUID id = create("ACCOUNTANT").user().userId();
 
         identity.changeUserStatus(id, UserStatusChange.LOCK, "Đăng nhập bất thường");
         identity.changeUserStatus(id, UserStatusChange.UNLOCK, "Đã kiểm tra, an toàn");
@@ -282,7 +282,7 @@ class UserAndRoleManagementIntegrationTest {
 
     @Test
     void aRefusedTransitionLeavesNoHistoryRowAndAFailureAuditEntryWithTheReason() {
-        UUID id = create("QC_STAFF").user().userId();
+        UUID id = create("ACCOUNTANT").user().userId();
 
         identity.changeUserStatus(id, UserStatusChange.DISABLE, "Tạm dừng");
         refused(ErrorCode.INVALID_USER_STATUS_TRANSITION,
@@ -298,7 +298,7 @@ class UserAndRoleManagementIntegrationTest {
 
     @Test
     void anActionThatChangesNothingIsRefusedAndWritesNoHistoryRow() {
-        UUID id = create("QC_STAFF").user().userId();
+        UUID id = create("ACCOUNTANT").user().userId();
 
         // an active account: enabling it, or unlocking it with no lockout running, changes nothing
         refused(ErrorCode.USER_STATUS_UNCHANGED, () -> identity.changeUserStatus(id, UserStatusChange.ENABLE, REASON));
@@ -323,7 +323,7 @@ class UserAndRoleManagementIntegrationTest {
 
     @Test
     void unlockingAnActiveAccountStillEndsARunningWrongPasswordLockout() {
-        CreatedStaffUser created = create("ORDER_COORDINATOR");
+        CreatedStaffUser created = create("SALES_STAFF");
         UUID id = created.user().userId();
         for (int i = 0; i < 5; i++) {
             refused(ErrorCode.UNAUTHORIZED,
@@ -341,7 +341,7 @@ class UserAndRoleManagementIntegrationTest {
 
     @Test
     void theAutomaticLockAfterWrongPasswordsTakesNoReasonAndWritesNoHistory() {
-        CreatedStaffUser created = create("ORDER_COORDINATOR");
+        CreatedStaffUser created = create("SALES_STAFF");
         for (int i = 0; i < 5; i++) {
             refused(ErrorCode.UNAUTHORIZED,
                     () -> identity.login(new LoginCommand(created.user().username(), "Wrong0Password", "2.2.2.2", "t")));
@@ -354,7 +354,7 @@ class UserAndRoleManagementIntegrationTest {
 
     @Test
     void historyRowsCanNeitherBeChangedNorDeleted() {
-        UUID id = create("QC_STAFF").user().userId();
+        UUID id = create("ACCOUNTANT").user().userId();
         identity.changeUserStatus(id, UserStatusChange.LOCK, "Đăng nhập bất thường");
 
         assertThatThrownBy(() -> tx.executeWithoutResult(status -> jdbc.update(
@@ -384,7 +384,7 @@ class UserAndRoleManagementIntegrationTest {
 
     @Test
     void aResetPasswordIsTemporaryAndSignsTheAccountOut() {
-        CreatedStaffUser created = create("PROCUREMENT_STAFF");
+        CreatedStaffUser created = create("ACCOUNTANT");
         UUID id = created.user().userId();
         identity.login(new LoginCommand(created.user().username(), created.temporaryPassword(), "127.0.0.1", "t"));
 
@@ -401,7 +401,7 @@ class UserAndRoleManagementIntegrationTest {
 
     @Test
     void aTemporaryPasswordStopsWorkingAfter72HoursAndAnAdministratorResetRestartsTheClock() {
-        CreatedStaffUser created = create("PROCUREMENT_STAFF");
+        CreatedStaffUser created = create("ACCOUNTANT");
         UUID id = created.user().userId();
         String username = created.user().username();
         assertThat(jdbc.queryForObject("SELECT temporary_password_set_at FROM identity.app_user WHERE id = ?",
@@ -425,7 +425,7 @@ class UserAndRoleManagementIntegrationTest {
 
     @Test
     void anAccountFlaggedBeforeTheTimestampExistedDoesNotExpire() {
-        CreatedStaffUser created = create("PROCUREMENT_STAFF");
+        CreatedStaffUser created = create("ACCOUNTANT");
         setTemporaryPasswordSetAt(created.user().userId(), "NULL");
 
         assertThat(identity.login(new LoginCommand(created.user().username(), created.temporaryPassword(),
@@ -434,7 +434,7 @@ class UserAndRoleManagementIntegrationTest {
 
     @Test
     void theForcedChangeKeepsTheCurrentSessionAndEndsEveryOtherOneWithoutBeingAsked() {
-        CreatedStaffUser created = create("PROCUREMENT_STAFF");
+        CreatedStaffUser created = create("ACCOUNTANT");
         UUID id = created.user().userId();
         for (int i = 0; i < 3; i++) {
             identity.login(new LoginCommand(created.user().username(), created.temporaryPassword(), "127.0.0.1", "d" + i));
@@ -464,7 +464,7 @@ class UserAndRoleManagementIntegrationTest {
 
     @Test
     void fiveWrongPasswordsLockTheAccountUntilUnlocked() {
-        CreatedStaffUser created = create("ORDER_COORDINATOR");
+        CreatedStaffUser created = create("SALES_STAFF");
         String username = created.user().username();
         for (int i = 0; i < 5; i++) {
             refused(ErrorCode.UNAUTHORIZED, () -> identity.login(new LoginCommand(username, "Wrong0Password", "1.1.1.1", "t")));
@@ -485,13 +485,13 @@ class UserAndRoleManagementIntegrationTest {
 
     @Test
     void anEcommerceAdminCannotPromoteAnyoneToSystemAdminNorTakeOverAnAdmin() {
-        StaffUser shopAdmin = create("ECOMMERCE_ADMIN").user();
+        StaffUser shopAdmin = create("SALES_MANAGER").user();
         StaffUser clerk = create("SALES_STAFF").user();
         StaffUser admin = create("SYSTEM_ADMIN").user();
         String empty = unique("EMPTY_").toUpperCase(Locale.ROOT);
         identity.createRole(new CreateRoleCommand(empty, "Nothing", null, null, null));
         StaffUser newcomer = create(empty).user();
-        CurrentUser caller = actor(shopAdmin.userId(), Role.ECOMMERCE_ADMIN);
+        CurrentUser caller = actor(shopAdmin.userId(), Role.SALES_MANAGER);
 
         // The newcomer holds nothing, so the shop admin may manage them — but not hand them more
         // than the shop admin holds.
@@ -517,18 +517,18 @@ class UserAndRoleManagementIntegrationTest {
         refused(ErrorCode.PRIVILEGE_ESCALATION, () -> as(caller, () -> identity.createStaffUser(
                 new CreateStaffUserCommand(unique("x."), unique("x") + "@example.com", null, null, List.of("SYSTEM_ADMIN"), null))));
 
-        assertThat(roleCodes(shopAdmin.userId())).containsExactly("ECOMMERCE_ADMIN");
+        assertThat(roleCodes(shopAdmin.userId())).containsExactly("SALES_MANAGER");
     }
 
     @Test
     void anEcommerceAdminCannotTickAPermissionItDoesNotHoldOntoItsOwnRole() {
-        StaffUser shopAdmin = create("ECOMMERCE_ADMIN").user();
-        CurrentUser caller = actor(shopAdmin.userId(), Role.ECOMMERCE_ADMIN);
+        StaffUser shopAdmin = create("SALES_MANAGER").user();
+        CurrentUser caller = actor(shopAdmin.userId(), Role.SALES_MANAGER);
         String custom = unique("R_").toUpperCase(Locale.ROOT);
         identity.createRole(new CreateRoleCommand(custom, "Custom", null, null, null));
 
         refused(ErrorCode.PRIVILEGE_ESCALATION,
-                () -> as(caller, () -> identity.grantPermission(custom, "procurement-purchase-orders:APPROVE")));
+                () -> as(caller, () -> identity.grantPermission(custom, "procurement-goods-receipts:UPDATE")));
         RoleMatrixView ok = as(caller, () -> identity.grantPermission(custom, "product-products:READ"));
         assertThat(granted(ok)).contains("product-products:READ");
         identity.deleteRole(custom);
@@ -598,7 +598,8 @@ class UserAndRoleManagementIntegrationTest {
         refused(ErrorCode.ROLE_CODE_ALREADY_EXISTS,
                 () -> identity.createRole(new CreateRoleCommand("ACCOUNTANT", "Dup", null, null, null)));
         assertThat(identity.listRoles()).filteredOn(RoleSummary::system)
-                .extracting(RoleSummary::code).contains("SYSTEM_ADMIN", "CUSTOMER", "PRODUCTION_STAFF");
+                .extracting(RoleSummary::code).contains("SYSTEM_ADMIN", "CUSTOMER", "WAREHOUSE_STAFF")
+                .doesNotContain("PRODUCTION_STAFF", "ORDER_COORDINATOR", "INVENTORY_PLANNER", "PROCUREMENT_STAFF");
     }
 
     // ---- warehouse data scope (SCRUM-457) -----------------------------------------------------
@@ -606,9 +607,9 @@ class UserAndRoleManagementIntegrationTest {
     @Test
     void warehouseRolesAreLimitedToTheirAssignedWarehousesResolvedPerRequest() {
         assertThat(lookup.resolve(List.of("WAREHOUSE_STAFF")).scope()).isEqualTo(DataScope.WAREHOUSE);
-        assertThat(lookup.resolve(List.of("QC_STAFF", "PRODUCTION_STAFF")).scope()).isEqualTo(DataScope.WAREHOUSE);
-        // The broadest of a user's roles: a clerk who also plans plans across warehouses.
-        assertThat(lookup.resolve(List.of("WAREHOUSE_STAFF", "INVENTORY_PLANNER")).scope()).isEqualTo(DataScope.ALL);
+        assertThat(lookup.resolve(List.of("WAREHOUSE_STAFF", "WAREHOUSE_MANAGER")).scope()).isEqualTo(DataScope.WAREHOUSE);
+        // The broadest of a user's roles: a clerk who also holds a company-wide role is not narrowed to a warehouse.
+        assertThat(lookup.resolve(List.of("WAREHOUSE_STAFF", "SALES_MANAGER")).scope()).isEqualTo(DataScope.ALL);
 
         StaffUser clerk = create("WAREHOUSE_STAFF").user();
         assertThat(clerk.warehouseIds()).isEmpty();
@@ -625,7 +626,7 @@ class UserAndRoleManagementIntegrationTest {
         assertThat(warehouseLookup.warehousesOf(clerk.userId()).prefixes()).isEmpty();
 
         CreatedStaffUser withWarehouse = identity.createStaffUser(new CreateStaffUserCommand(unique("w."),
-                unique("w") + "@example.com", null, null, List.of("QC_STAFF"),
+                unique("w") + "@example.com", null, null, List.of("WAREHOUSE_STAFF"),
                 List.of(com.stockflow.support.DemoData.WAREHOUSE_HCM)));
         assertThat(withWarehouse.user().warehouseIds()).containsExactly(com.stockflow.support.DemoData.WAREHOUSE_HCM);
     }
@@ -646,7 +647,7 @@ class UserAndRoleManagementIntegrationTest {
         StaffUser picker = identity.createStaffUser(new CreateStaffUserCommand(unique("a."), unique("a") + "@example.com",
                 "An Picker", null, List.of("WAREHOUSE_STAFF"), inHcm)).user();
         StaffUser manager = identity.createStaffUser(new CreateStaffUserCommand(unique("a."), unique("a") + "@example.com",
-                null, null, List.of("WAREHOUSE_MANAGER", "QC_STAFF"), inHcm)).user();
+                null, null, List.of("WAREHOUSE_MANAGER", "SALES_STAFF"), inHcm)).user();
         StaffUser sales = identity.createStaffUser(new CreateStaffUserCommand(unique("a."), unique("a") + "@example.com",
                 "Sales Person", null, List.of("SALES_STAFF"), inHcm)).user();
         StaffUser elsewhere = identity.createStaffUser(new CreateStaffUserCommand(unique("a."),
@@ -666,7 +667,7 @@ class UserAndRoleManagementIntegrationTest {
         assertThat(pickerRow.displayName()).isEqualTo("An Picker");
         assertThat(pickerRow.roles()).containsExactly("WAREHOUSE_STAFF");
         var managerRow = found.stream().filter(u -> u.userId().equals(manager.userId())).findFirst().orElseThrow();
-        // No full name given: the username is shown. Only the roles asked for are listed, not QC_STAFF.
+        // No full name given: the username is shown. Only the roles asked for are listed, not SALES_STAFF.
         assertThat(managerRow.displayName()).isEqualTo(manager.username());
         assertThat(managerRow.roles()).containsExactly("WAREHOUSE_MANAGER");
 

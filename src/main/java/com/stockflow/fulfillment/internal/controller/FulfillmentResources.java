@@ -12,15 +12,22 @@ final class FulfillmentResources {
     static final String TASK_OVERSIGHT = FulfillmentPermissions.TASK_OVERSIGHT;
     static final String PICKING = FulfillmentPermissions.PICKING;
     static final String PACKING = FulfillmentPermissions.PACKING;
-    static final String DESIGN_REVERIFICATION = FulfillmentPermissions.DESIGN_REVERIFICATION;
     static final String CARRIERS = FulfillmentPermissions.CARRIERS;
     static final String VEHICLE_TYPES = FulfillmentPermissions.VEHICLE_TYPES;
     /** SCRUM-287 PR D (V20261022001300): READ plans and candidates; CREATE a plan; UPDATE everything else. */
     static final String LOAD_PLANS = "fulfillment-load-plans";
     static final String LOAD_ESTIMATES = FulfillmentPermissions.LOAD_ESTIMATES;
     static final String DISPATCH = FulfillmentPermissions.DISPATCH;
-    static final String LOAD_CANCELLATIONS = FulfillmentPermissions.LOAD_CANCELLATIONS;
     static final String CONTROLLED_CANCELLATIONS = FulfillmentPermissions.CONTROLLED_CANCELLATIONS;
+    static final String WAYBILL_CORRECTIONS = FulfillmentPermissions.WAYBILL_CORRECTIONS;
+    static final String WAYBILL_IMPORTS = FulfillmentPermissions.WAYBILL_IMPORTS;
+    static final String CARRIER_EVENTS = FulfillmentPermissions.CARRIER_EVENTS;
+    static final String DELIVERY_CORRECTIONS = FulfillmentPermissions.DELIVERY_CORRECTIONS;
+    /**
+     * The order module's resource, declared there ({@code OrderResources.ORDERS}): a customer reads their own order's
+     * vehicles with what reads the order (3-6).
+     */
+    static final String ORDERS = "sales-orders";
     static final String DELIVERY_OUTCOMES = FulfillmentPermissions.DELIVERY_OUTCOMES;
 
     private FulfillmentResources() { }

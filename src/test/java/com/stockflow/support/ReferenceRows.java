@@ -32,6 +32,22 @@ public final class ReferenceRows {
         return id;
     }
 
+    /**
+     * An ACTIVE truck carrier of the catalogue, connected MANUAL, with a code of its own; returns its id. Loads are booked
+     * with truck hirers: the parcel carriers seeded by V20261021000400 are INACTIVE since V20261108001300.
+     */
+    public static UUID truckCarrier(EntityManager em, String name) {
+        UUID id = Identifiers.newId();
+        em.createNativeQuery("""
+                        INSERT INTO fulfillment.carrier (id, code, name, status, version, created_at)
+                        VALUES (?1, ?2, ?3, 'ACTIVE', 0, NOW())""")
+                .setParameter(1, id)
+                .setParameter(2, "TR" + id.toString().replace("-", "").substring(20).toUpperCase())
+                .setParameter(3, name)
+                .executeUpdate();
+        return id;
+    }
+
     /** A {@code customer.customer} row with no account; returns its id. */
     public static UUID customer(EntityManager em) {
         UUID id = Identifiers.newId();
@@ -120,10 +136,10 @@ public final class ReferenceRows {
         boolean cancelled = status.equals("CANCELLED");
         em.createNativeQuery("""
                         INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount,
-                            currency, placed_at, payment_term, credit_term_days, released_at, released_by, warehouse_id,
+                            currency, placed_at, contract_signed_at, released_at, released_by, warehouse_id,
                             cancellation_reason, cancellation_reason_code, hold_reason, shipped_at, delivered_at,
                             completed_at, version, created_at)
-                        VALUES (?1, ?2, ?3, ?4, ?5, 1000, 'VND', NOW(), 'CREDIT', 30, ?6, ?7, ?8, ?9, ?10,
+                        VALUES (?1, ?2, ?3, ?4, ?5, 1000, 'VND', NOW(), CASE WHEN ?5 = 'CONFIRMED' THEN NOW() END, ?6, ?7, ?8, ?9, ?10,
                                 CASE WHEN ?5 = 'ON_HOLD' THEN 'CREDIT' END,
                                 CASE WHEN ?5 IN ('SHIPPED', 'DELIVERY_FAILED', 'DELIVERED', 'COMPLETED') THEN NOW() END,
                                 CASE WHEN ?5 IN ('DELIVERED', 'COMPLETED') THEN NOW() END,

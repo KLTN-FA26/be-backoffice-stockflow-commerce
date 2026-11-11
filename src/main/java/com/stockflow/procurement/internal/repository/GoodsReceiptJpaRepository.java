@@ -13,22 +13,16 @@ import java.util.UUID;
 
 interface GoodsReceiptJpaRepository extends BaseJpaRepository<GoodsReceiptJpaEntity> {
 
-    /** Lines fetched with the header; inspections follow per line in batches ({@code @BatchSize}). */
+    /** Lines fetched with the header. */
     @Query("select distinct r from GoodsReceiptJpaEntity r left join fetch r.lines where r.id = :id")
     Optional<GoodsReceiptJpaEntity> findByIdWithLines(@Param("id") UUID id);
 
+    /** 4A-5 (03 BR-02): units of production order lines on the other receipts that are not cancelled. */
     @Query("""
-            select l.poLineId, sum(l.receivedQty) from GoodsReceiptLineJpaEntity l join l.receipt r
-             where l.poLineId in :poLineIds and r.status not in :notCounted and r.id <> :excluding
-             group by l.poLineId""")
-    List<Object[]> sumByPoLineExcluding(@Param("poLineIds") Collection<UUID> poLineIds,
-                                        @Param("excluding") UUID excluding,
-                                        @Param("notCounted") Collection<GoodsReceiptStatus> notCounted);
-
-    @Query("""
-            select l.poLineId, sum(l.receivedQty) from GoodsReceiptLineJpaEntity l join l.receipt r
-             where r.purchaseOrderId = :po and r.status not in :notCounted
-             group by l.poLineId""")
-    List<Object[]> sumByPoLineOfOrder(@Param("po") UUID purchaseOrderId,
-                                      @Param("notCounted") Collection<GoodsReceiptStatus> notCounted);
+            select l.productionOrderLineId, sum(l.receivedQty) from GoodsReceiptLineJpaEntity l join l.receipt r
+             where l.productionOrderLineId in :lineIds and r.status <> :cancelled and r.id <> :excluding
+             group by l.productionOrderLineId""")
+    List<Object[]> sumByProductionOrderLineExcluding(@Param("lineIds") Collection<UUID> productionOrderLineIds,
+                                                     @Param("excluding") UUID excluding,
+                                                     @Param("cancelled") GoodsReceiptStatus cancelled);
 }

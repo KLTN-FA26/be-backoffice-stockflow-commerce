@@ -12,20 +12,17 @@ import java.time.Instant;
 import java.util.UUID;
 
 /**
- * JPA mapping of a pack - the packing session of a task (table {@code fulfillment.pack}). Not the domain model: the
- * rules are on {@code PackingSession}, which {@link #apply} copies back.
+ * JPA mapping of a task's check session (table {@code fulfillment.pack}; team plan 4C-6, kltn-docs 08 §5.1). Not the
+ * domain model: the rules are on {@code CartonCheck} (and on {@code PackingSession}, the repack station kept until 4C-7),
+ * which {@link #apply} copies back. {@code packed_at} / {@code packed_by} are when and by whom it was COMPLETED.
  */
 @Entity
 @Table(name = "pack", schema = "fulfillment")
 public class PackJpaEntity extends BaseEntity {
 
-    /** The pick of an order's packing session; null for a transfer's (SCRUM-287 PR T). */
-    @Column(name = "pick_id")
+    /** The pick (fulfilment task) whose packing session this is. */
+    @Column(name = "pick_id", nullable = false)
     private UUID pickId;
-
-    /** The transfer order of a transfer's packing session (SCRUM-287 PR T); null for an order's. */
-    @Column(name = "transfer_order_id", updatable = false)
-    private UUID transferOrderId;
 
     @Enumerated(EnumType.STRING)
     @Column(name = "status", nullable = false, length = 32)
@@ -39,9 +36,6 @@ public class PackJpaEntity extends BaseEntity {
     private UUID startedBy;
     @Column(name = "packed_by")
     private UUID packedBy;
-    /** The request id of a completion a design check put on hold: the same request again gets the same answer. */
-    @Column(name = "held_request_id")
-    private UUID heldRequestId;
 
     protected PackJpaEntity() {
     }
@@ -53,24 +47,14 @@ public class PackJpaEntity extends BaseEntity {
         this.packedAt = packedAt;
     }
 
-    /** The packing session of a transfer order (10 step 5), PACKING from the start. */
-    public static PackJpaEntity forTransfer(UUID id, UUID transferOrderId) {
-        PackJpaEntity pack = new PackJpaEntity(id, null, PackStatus.PENDING, null);
-        pack.transferOrderId = transferOrderId;
-        return pack;
-    }
-
     public UUID getPickId() { return pickId; }
-    public UUID getTransferOrderId() { return transferOrderId; }
     public PackStatus getStatus() { return status; }
     public Instant getPackedAt() { return packedAt; }
     public Instant getStartedAt() { return startedAt; }
     public UUID getStartedBy() { return startedBy; }
     public UUID getPackedBy() { return packedBy; }
-    public UUID getHeldRequestId() { return heldRequestId; }
-    public void holdFor(UUID requestId) { this.heldRequestId = requestId; }
 
-    /** The order was cancelled (SCRUM-460): any label made for the parcel is void with it. */
+    /** The order was cancelled (SCRUM-460, 08 BR-04): any label made for its cartons is void with it. */
     public void cancel() { status = PackStatus.CANCELLED; }
 
     /** What the packing session decided. */

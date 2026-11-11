@@ -361,4 +361,44 @@ class StagedUploadsIntegrationTest {
         assertThatThrownBy(() -> StorageKeys.requireValid("incoming/../etc/passwd")).isInstanceOf(StorageException.class);
         assertThatThrownBy(() -> StorageKeys.requireValid("incoming/nowhere/x")).isInstanceOf(StorageException.class);
     }
+
+    /**
+     * 2F-4: a customer's design image is measured upright before it is moved into place - an image over 40 megapixels
+     * never reaches design-assets/ - and an image of any other category is not measured.
+     */
+    @Test
+    void aDesignImageIsMeasuredBeforeItIsMovedIntoPlace() throws Exception {
+        byte[] png = png(120, 80);
+        UploadSlot slot = staged.begin(FileCategory.DESIGN_ASSET, owner,
+                new UploadSlotRequest("logo.png", "image/png", png.length, Checksums.sha256Hex(png)));
+        assertThat(put(slot, png)).isEqualTo(200);
+        try (PreparedFiles prepared = staged.accept(FileCategory.DESIGN_ASSET, owner, List.of(slot.uploadId()))) {
+            assertThat(prepared.single().dimensions()).isEqualTo(new ImageDimensions.Size(120, 80));
+            assertThat(prepared.single().file().key()).startsWith("design-assets/");
+        }
+
+        byte[] huge = png(1, 1);
+        java.nio.ByteBuffer.wrap(huge, 16, 8).putInt(8000).putInt(5001);
+        UploadSlot big = staged.begin(FileCategory.DESIGN_ASSET, owner,
+                new UploadSlotRequest("huge.png", "image/png", huge.length, Checksums.sha256Hex(huge)));
+        put(big, huge);
+        assertThatThrownBy(() -> staged.accept(FileCategory.DESIGN_ASSET, owner, List.of(big.uploadId())))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        ex -> assertThat(ex.errorCode()).isEqualTo(ErrorCode.PAYLOAD_TOO_LARGE));
+        assertThat(client.listObjectsV2(b -> b.bucket("staged").prefix("design-assets/")).contents())
+                .noneMatch(object -> object.key().contains(big.uploadId().toString()));
+
+        UploadSlot evidence = slot("crack.png", "image/png", PNG);
+        put(evidence, PNG);
+        try (PreparedFiles prepared = staged.accept(FileCategory.QC_EVIDENCE, owner, List.of(evidence.uploadId()))) {
+            assertThat(prepared.single().dimensions()).isNull();
+        }
+    }
+
+    private static byte[] png(int width, int height) throws Exception {
+        var out = new java.io.ByteArrayOutputStream();
+        javax.imageio.ImageIO.write(new java.awt.image.BufferedImage(width, height,
+                java.awt.image.BufferedImage.TYPE_INT_RGB), "png", out);
+        return out.toByteArray();
+    }
 }

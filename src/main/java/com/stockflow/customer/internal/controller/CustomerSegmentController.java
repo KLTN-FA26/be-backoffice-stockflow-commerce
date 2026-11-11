@@ -25,9 +25,9 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * Customer groups and who is in them (user decision P7): E-commerce Admin and System Admin manage, Sales and the
- * Order Coordinator read; customers hold no grant. A group's prices are {@code /api/v1/catalog/segment-prices};
- * the customers of a group are {@code GET /api/v1/customers?segmentId=}.
+ * Customer groups and who is in them (user decision P7): Sales Manager and System Admin manage, Sales and the
+ * nobody else reads; customers hold no grant. A group has no price (kltn-docs 13 BR-04, team plan 5-3); the
+ * customers of a group are {@code GET /api/v1/customers?segmentId=}.
  */
 @RestController
 @RequestMapping("/api/v1")

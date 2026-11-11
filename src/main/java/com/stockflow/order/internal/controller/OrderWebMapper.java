@@ -1,83 +1,20 @@
 package com.stockflow.order.internal.controller;
 
-import com.stockflow.common.domain.Money;
-import com.stockflow.common.domain.Sku;
-import com.stockflow.common.error.BusinessException;
-import com.stockflow.common.error.ErrorCode;
 import com.stockflow.order.api.OrderSummary;
-import com.stockflow.order.api.PlaceGuestOrderCommand;
-import com.stockflow.order.api.PlaceOrderCommand;
 import com.stockflow.order.internal.controller.dto.OrderResponse;
-import com.stockflow.order.internal.controller.dto.PlaceGuestOrderRequest;
-import com.stockflow.order.internal.controller.dto.PlaceOrderRequest;
 
-import java.util.Currency;
 import java.util.List;
 
 /**
- * Maps between the web DTOs and the order module's public command and summary types.
+ * Maps the order module's summary types to the web DTOs, and a cancellation fee request in.
  *
- * <p>Hand-written rather than MapStruct, unlike inventory's web mapper: the shapes do not line up.
- * {@code Money} has to be split into an amount and a currency on the way out and reassembled on the
- * way in, and the order currency is a policy decision (OQ-09: VND only for now) that belongs in
- * readable code rather than in a MapStruct expression string.
+ * <p>Hand-written rather than MapStruct, unlike inventory's web mapper: the shapes do not line up. {@code Money} has
+ * to be split into an amount and a currency on the way out, which reads better as code than as a MapStruct expression
+ * string. Nothing maps an order in: no order is placed over HTTP since team plan 5-2 (kltn-docs 14 BR-01, BR-02).</p>
  */
 final class OrderWebMapper {
 
-    /** OQ-09: the platform is single-currency until the export plan is settled. */
-    private static final Currency ORDER_CURRENCY = Money.VND;
-
     private OrderWebMapper() {}
-
-    static PlaceOrderCommand toCommand(PlaceOrderRequest request) {
-        List<PlaceOrderCommand.Line> lines =
-                request.lines().stream()
-                        .map(
-                                line ->
-                                        new PlaceOrderCommand.Line(
-                                                new Sku(line.sku()),
-                                                line.quantity(),
-                                                wholeVnd(line.unitPrice()),
-                                                line.designSnapshotId()))
-                        .toList();
-        return new PlaceOrderCommand(
-                request.requestId(),
-                request.customerId(),
-                request.shippingAddressId(),
-                request.billingAddressId(),
-                true,
-                lines,
-                request.paymentTerm(),
-                request.depositPercent(),
-                request.balancePolicy());
-    }
-
-    static PlaceGuestOrderCommand toCommand(PlaceGuestOrderRequest request) {
-        var shipping = toCommand(request.shippingAddress());
-        var billing =
-                request.billingSameAsShipping() || request.billingAddress() == null
-                        ? shipping
-                        : toCommand(request.billingAddress());
-        return new PlaceGuestOrderCommand(
-                request.requestId(),
-                request.email(),
-                shipping,
-                billing,
-                request.lines().stream()
-                        .map(
-                                line ->
-                                        new PlaceGuestOrderCommand.Line(
-                                                new Sku(line.sku()),
-                                                line.quantity(),
-                                                wholeVnd(line.unitPrice())))
-                        .toList());
-    }
-
-    private static Money wholeVnd(java.math.BigDecimal amount) {
-        if (amount == null || amount.stripTrailingZeros().scale() > 0)
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED);
-        return new Money(amount, ORDER_CURRENCY);
-    }
 
     static OrderResponse toResponse(OrderSummary summary) {
         return toResponse(summary, true);
@@ -118,25 +55,14 @@ final class OrderWebMapper {
                                                         ? progress.get(line.lineId()).deliveredQuantity() : null,
                                                 progress.containsKey(line.lineId())
                                                         ? progress.get(line.lineId()).cancelledQuantity() : null,
-                                                // Staff's record (note, who): the customer sees the closed units.
-                                                internal && progress.containsKey(line.lineId())
-                                                        ? toShortfall(progress.get(line.lineId()).productionShortfall())
-                                                        : null,
-                                                line.requestedDeliveryDate()))
+                                                line.requestedDeliveryDate(), line.cartons(), line.unitsPerCarton(),
+                                                line.taxRate(),
+                                                line.taxAmount() == null ? null : line.taxAmount().amount()))
                         .toList(),
                 summary.placedAt(), summary.createdBy(), summary.lastModifiedAt(), summary.lastModifiedBy(),
                 summary.contactName(), summary.contactEmail(), summary.contactPhone(),
                 toResponse(summary.shippingAddress()), toResponse(summary.billingAddress()),
-                summary.paymentTerm() == null ? null : summary.paymentTerm().name(),
                 summary.warehouseId(), summary.releasedAt(),
-                summary.payment() == null ? null : summary.payment().paidAmount(),
-                summary.payment() == null ? null : summary.payment().depositRequired(),
-                summary.payment() == null ? null : summary.payment().depositReceivedAt(),
-                summary.payment() == null ? null : summary.payment().paidInFullAt(),
-                summary.payment() == null ? null : summary.payment().status().name(),
-                summary.payment() == null ? null : summary.payment().creditTermDays(),
-                summary.payment() == null || summary.payment().balancePolicy() == null ? null
-                        : summary.payment().balancePolicy().name(),
                 summary.cancellation() == null ? null : new OrderResponse.Cancellation(
                         summary.cancellation().reasonCode() == null ? null : summary.cancellation().reasonCode().name(),
                         summary.cancellation().reason(), summary.cancellation().retainedAmount(),
@@ -158,44 +84,25 @@ final class OrderWebMapper {
                         : lifecycle.deliveryFailureReason().name(),
                 lifecycle == null ? null : lifecycle.completedAt(),
                 lifecycle == null ? null : lifecycle.closedAt(),
-                lifecycle == null ? null : lifecycle.billedAmount(),
                 lifecycle == null ? null : lifecycle.effectiveTotal(),
-                lifecycle == null ? null : lifecycle.amountDue(),
                 lifecycle == null ? null : lifecycle.amountDueBeforeHandover(),
                 lifecycle == null ? List.of() : lifecycle.shipments().stream()
                         .map(shipment -> new OrderResponse.Shipment(shipment.shipmentId(), shipment.status().name(),
-                                shipment.amount(), shipment.billedAmount(), shipment.handedOverAt(),
+                                shipment.amount(), shipment.handedOverAt(),
                                 shipment.outcomeAt(),
                                 shipment.failureReason() == null ? null : shipment.failureReason().name(),
                                 shipment.lines().stream()
                                         .map(line -> new OrderResponse.ShipmentLine(line.lineId(), line.quantity()))
-                                        .toList(), shipment.codAmount()))
+                                        .toList()))
                         .toList(),
-                lifecycle == null ? null : lifecycle.amountDueOnDelivery(),
                 lifecycle == null ? null : lifecycle.allowPartialShipment(),
-                lifecycle == null ? null : lifecycle.printLinesReady(),
-                lifecycle == null ? null : lifecycle.deliveryMode().name(),
-                lifecycle == null ? null : lifecycle.deliveryModeLocked());
-    }
-
-    private static PlaceGuestOrderCommand.Address toCommand(
-            PlaceGuestOrderRequest.Address address) {
-        return new PlaceGuestOrderCommand.Address(
-                address.recipientName(),
-                address.phone(),
-                address.line1(),
-                address.line2(),
-                address.wardCode(),
-                address.wardName(),
-                address.provinceCode(),
-                address.provinceName(),
-                address.countryCode(),
-                address.postalCode());
-    }
-
-    private static OrderResponse.ProductionShortfall toShortfall(OrderSummary.ProductionShortfall shortfall) {
-        return shortfall == null ? null : new OrderResponse.ProductionShortfall(shortfall.agreedQuantity(),
-                shortfall.note(), shortfall.agreedBy(), shortfall.agreedAt(), shortfall.closedQuantity());
+                // Printing is outside the system: whatever an order holds is in stock, so the goods are ready.
+                lifecycle == null ? null : Boolean.TRUE,
+                summary.charges() == null ? null : summary.charges().netTotal().amount(),
+                summary.charges() == null ? null : summary.charges().taxTotal().amount(),
+                summary.charges() == null || summary.charges().fees() == null ? null : summary.charges().fees().stream()
+                        .map(fee -> new OrderResponse.Fee(fee.kind().name(), fee.sku(), fee.amount().amount(),
+                                fee.taxRate(), fee.taxAmount().amount())).toList());
     }
 
     private static OrderResponse.Address toResponse(OrderSummary.AddressSummary address) {

@@ -9,6 +9,6 @@ import java.time.LocalDate;
 public record SalesDayResponse(
         @Schema(example = "2026-10-24") LocalDate day,
         @Schema(description = "Orders placed that day, less those cancelled since", example = "7") int ordersCount,
-        @Schema(description = "Their total, whole dong", example = "84000000") BigDecimal revenue,
+        @Schema(description = "Their total before tax, fee lines included (4B-3), whole dong", example = "84000000") BigDecimal revenue,
         @Schema(example = "VND") String currency) {
 }

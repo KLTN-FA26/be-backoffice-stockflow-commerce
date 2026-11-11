@@ -8,8 +8,11 @@ those — or a fresh one — they stop at the first missing table. That is expec
 | Script | Run when | Does |
 |---|---|---|
 | `supplier-upgrade-preflight.sql` | before deploying a release that contains `V20260930000100` | read-only: classifies migration history and duplicate / invalid supplier rows; `V20260930000100` refuses to run and names this script while duplicates exist |
-| `validate-supplier-constraints.sql` | after the preflight findings are reconciled, with a backup | validates the supplier / PO checks added `NOT VALID`; atomic |
 | `inventory-commerce-upgrade-preflight.sql` | before deploying the combined #36/#38 release | read-only: migration history and SKU rows that release rejects |
+
+`validate-supplier-constraints.sql`, which validated the supplier / PO checks added `NOT VALID`, was deleted with
+purchasing: `V20261113000200` drops those tables (QD-1: no database still needs the check validated).
+`supplier-upgrade-preflight.sql` stays only because `V20260930000100` names it in its refusal.
 
 Recovery steps: `docs/SCRUM-115-118-backend.md` (suppliers) and `docs/SCRUM-70-71-backend.md`
 (inventory / commerce). Once every environment is past C1–C4 these scripts can be deleted, together with

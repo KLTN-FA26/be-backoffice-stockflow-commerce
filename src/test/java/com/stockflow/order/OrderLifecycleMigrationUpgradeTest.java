@@ -92,10 +92,18 @@ class OrderLifecycleMigrationUpgradeTest {
                 // The transition table holds exactly the edges of the enum.
                 assertThat(RawSql.texts(db, "SELECT from_status || '>' || to_status FROM ordering.order_status_transition"))
                         .containsExactlyInAnyOrderElementsOf(OrderStatus.edges().stream()
-                                // V20261022000400 (PACK-EARLY) adds two later, V20261101020000 (returns) three more.
+                                // V20261022000400 (PACK-EARLY) adds two later, V20261101020000 (returns) three more,
+                                // V20261108001800 (3-6, a delivery corrected to a failure) one more,
+                                // V20261108002300 (4B-5, PENDING_CONTRACT) six, V20261108002900 (4A-6, AWAITING_STOCK) six.
                                 .filter(edge -> !java.util.Set.of("IN_PRODUCTION>PARTIALLY_FULFILLED",
                                         "READY_TO_FULFILL>PARTIALLY_FULFILLED", "COMPLETED>RETURN_REQUESTED",
-                                        "REFUNDED>RETURN_REQUESTED", "PARTIALLY_REFUNDED>RETURN_REQUESTED")
+                                        "REFUNDED>RETURN_REQUESTED", "PARTIALLY_REFUNDED>RETURN_REQUESTED",
+                                        "DELIVERED>DELIVERY_FAILED", "DRAFT>PENDING_CONTRACT", "PENDING_CONTRACT>DRAFT",
+                                        "PENDING_CONTRACT>PENDING_PAYMENT", "PENDING_CONTRACT>CONFIRMED",
+                                        "PENDING_CONTRACT>ON_HOLD", "PENDING_CONTRACT>CANCELLED",
+                                        "CONFIRMED>AWAITING_STOCK", "AWAITING_STOCK>READY_TO_FULFILL",
+                                        "AWAITING_STOCK>PARTIALLY_FULFILLED", "AWAITING_STOCK>ON_HOLD",
+                                        "AWAITING_STOCK>CANCELLED", "ON_HOLD>AWAITING_STOCK")
                                         .contains(edge))
                                 .toList());
 

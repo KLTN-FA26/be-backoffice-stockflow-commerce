@@ -2,6 +2,7 @@ package com.stockflow.fulfillment.internal.entity;
 
 import com.stockflow.common.persistence.BaseEntity;
 import com.stockflow.fulfillment.internal.domain.PickLineStatus;
+import com.stockflow.fulfillment.internal.domain.ShortPickReason;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
@@ -42,6 +43,10 @@ public class PickLineJpaEntity extends BaseEntity {
     private int pickedQty;
     @Column(name = "short_qty", nullable = false)
     private int shortQty;
+    /** 4C-4: why the carton could not be taken; {@code ck_pick_line_short_reason}. */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "short_reason", length = 16)
+    private ShortPickReason shortReason;
     @Enumerated(EnumType.STRING)
     @Column(name = "status", nullable = false, length = 16)
     private PickLineStatus status;
@@ -67,15 +72,12 @@ public class PickLineJpaEntity extends BaseEntity {
     private String lpn;
     @Column(name = "whole_carton", nullable = false, updatable = false)
     private boolean wholeCarton;
-    /** SCRUM-277: units found damaged at the bin, on the line a damage report superseded. */
-    @Column(name = "damaged_qty", nullable = false)
-    private int damagedQty;
-    /** SCRUM-277: the damage report that superseded or made the line. */
-    @Column(name = "damage_report_id")
-    private UUID damageReportId;
-    /** R8: units of a picked line found damaged at the packing bench. */
-    @Column(name = "packing_damaged_qty", nullable = false)
-    private int packingDamagedQty;
+    /** 4C-5: when the carton was moved to the staging area; {@code ck_pick_line_staged}. */
+    @Column(name = "staged_at")
+    private Instant stagedAt;
+    /** 4C-5: the staging area it was moved to. */
+    @Column(name = "staged_location_code", length = 64)
+    private String stagedLocationCode;
 
     protected PickLineJpaEntity() {
     }
@@ -120,27 +122,23 @@ public class PickLineJpaEntity extends BaseEntity {
         this.putBackAt = putBackAt;
     }
 
-    /** The units a picker did not find at the bin (X-SHORT); {@code ck_pick_line_within_allocation} bounds it. */
-    public void recordShort(int shortQty) {
+    /**
+     * What a picker could not take (X-SHORT) and why; {@code ck_pick_line_within_allocation} bounds the units and
+     * {@code ck_pick_line_short_reason} ties a reason to the whole line.
+     */
+    public void recordShort(int shortQty, ShortPickReason shortReason) {
         this.shortQty = shortQty;
+        this.shortReason = shortReason;
     }
 
-    /** What a damage report recorded on the line (SCRUM-277); {@code ck_pick_line_damaged} bounds it. */
-    public void recordDamage(int damagedQty, UUID damageReportId) {
-        this.damagedQty = damagedQty;
-        this.damageReportId = damageReportId;
+    /** When and where the carton was staged (4C-5); {@code ck_pick_line_staged} keeps the two together. */
+    public void recordStaged(Instant stagedAt, String stagedLocationCode) {
+        this.stagedAt = stagedAt;
+        this.stagedLocationCode = stagedLocationCode;
     }
 
-    /** Units of the picked line found damaged at packing (R8); {@code ck_pick_line_packing_damaged} bounds it. */
-    public void recordDamageAfterPick(int packingDamagedQty) {
-        this.packingDamagedQty = packingDamagedQty;
-    }
-
-    public int getPackingDamagedQty() { return packingDamagedQty; }
-    /** What the line picked less what was found damaged at packing: what reached packing and is still there. */
-    public int getGoodQty() { return pickedQty - packingDamagedQty; }
-    public int getDamagedQty() { return damagedQty; }
-    public UUID getDamageReportId() { return damageReportId; }
+    public Instant getStagedAt() { return stagedAt; }
+    public String getStagedLocationCode() { return stagedLocationCode; }
 
     public UUID getPickId() { return pickId; }
     public UUID getOrderLineId() { return orderLineId; }
@@ -152,6 +150,7 @@ public class PickLineJpaEntity extends BaseEntity {
     public int getAllocatedQty() { return allocatedQty; }
     public int getPickedQty() { return pickedQty; }
     public int getShortQty() { return shortQty; }
+    public ShortPickReason getShortReason() { return shortReason; }
     public String getLpn() { return lpn; }
     public boolean isWholeCarton() { return wholeCarton; }
     public PickLineStatus getStatus() { return status; }

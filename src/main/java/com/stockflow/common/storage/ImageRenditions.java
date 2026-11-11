@@ -204,15 +204,7 @@ public class ImageRenditions {
     }
 
     private static int orientation(InputStream content) throws IOException {
-        try {
-            var metadata = com.drew.imaging.ImageMetadataReader.readMetadata(content);
-            var exif = metadata.getFirstDirectoryOfType(com.drew.metadata.exif.ExifIFD0Directory.class);
-            Integer orientation = exif == null ? null
-                    : exif.getInteger(com.drew.metadata.exif.ExifIFD0Directory.TAG_ORIENTATION);
-            return orientation == null ? 1 : orientation;
-        } catch (com.drew.imaging.ImageProcessingException ex) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Image metadata cannot be decoded");
-        }
+        return ImageDimensions.orientation(content);
     }
 
     /** {@code source} turned upright from an EXIF orientation (1 to 8). */

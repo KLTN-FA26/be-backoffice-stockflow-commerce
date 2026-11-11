@@ -101,13 +101,13 @@ class StockPackageRepositoryAdapter implements StockPackageRepository {
         StockPackageJpaEntity entity = jpa.findById(stockPackage.id().value())
                 .map(existing -> {
                     existing.apply(stockPackage.receivedQty(), stockPackage.location().code(), stockPackage.status(),
-                            stockPackage.unopened(), stockPackage.closedAt());
+                            stockPackage.closedAt());
                     return existing;
                 })
                 .orElseGet(() -> new StockPackageJpaEntity(stockPackage.id().value(), stockPackage.lpn(),
                         stockPackage.inventoryItemId(), stockPackage.uomConversionId(), stockPackage.nominalQty(),
                         stockPackage.receivedQty(), stockPackage.location().code(), stockPackage.status(),
-                        stockPackage.unopened(), stockPackage.goodsReceiptLineId(), stockPackage.closedAt()));
+                        stockPackage.goodsReceiptLineId(), stockPackage.closedAt()));
         return toDomain(jpa.save(entity));
     }
 
@@ -131,6 +131,20 @@ class StockPackageRepositoryAdapter implements StockPackageRepository {
             onHand.put(new StockPackageId((UUID) row[0]), Math.toIntExact(((Number) row[1]).longValue()));
         }
         return onHand;
+    }
+
+    @Override
+    public java.util.OptionalInt cartonFactorOf(String sku) {
+        @SuppressWarnings("unchecked")
+        List<Object[]> units = entityManager.createNativeQuery("""
+                        select u.factor, u.default_shipping from inventory.uom_conversions u
+                          join inventory.inventory_items i on i.id = u.inventory_item_id
+                         where i.sku = :sku and u.active and not u.is_base""")
+                .setParameter("sku", sku).getResultList();
+        List<Object[]> chosen = units.size() == 1 ? units
+                : units.stream().filter(unit -> Boolean.TRUE.equals(unit[1])).toList();
+        return chosen.size() == 1 ? java.util.OptionalInt.of(((Number) chosen.getFirst()[0]).intValue())
+                : java.util.OptionalInt.empty();
     }
 
     /**
@@ -173,7 +187,7 @@ class StockPackageRepositoryAdapter implements StockPackageRepository {
     private static StockPackage toDomain(StockPackageJpaEntity entity) {
         return new StockPackage(new StockPackageId(entity.getId()), entity.getLpn(), entity.getInventoryItemId(),
                 entity.getUomConversionId(), entity.getNominalQty(), entity.getReceivedQty(),
-                new LocationId(entity.getLocationCode()), entity.getStatus(), entity.isUnopened(),
+                new LocationId(entity.getLocationCode()), entity.getStatus(),
                 entity.getGoodsReceiptLineId(), entity.getClosedAt(), entity.getVersion());
     }
 }

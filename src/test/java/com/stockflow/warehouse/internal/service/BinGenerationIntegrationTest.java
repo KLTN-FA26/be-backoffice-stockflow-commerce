@@ -11,7 +11,6 @@ import com.stockflow.warehouse.internal.domain.Footprint;
 import com.stockflow.warehouse.internal.domain.LevelMeasures;
 import com.stockflow.warehouse.internal.domain.LocationSettings;
 import com.stockflow.warehouse.internal.domain.PickFaces;
-import com.stockflow.warehouse.internal.domain.StorageClass;
 import com.stockflow.warehouse.internal.entity.BinJpaEntity;
 import com.stockflow.warehouse.internal.entity.StorageLocationJpaEntity;
 import jakarta.persistence.EntityManagerFactory;
@@ -50,8 +49,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 @Import(PostgresContainer.class)
 class BinGenerationIntegrationTest {
 
-    private static final BinDefaults DEFAULTS = new BinDefaults(BinType.SMALL_PARTS, null,
-            new LocationSettings(10, new BigDecimal("20"), true, true));
+    private static final BinDefaults DEFAULTS = new BinDefaults(BinType.SMALL_PARTS,
+            new LocationSettings(new BigDecimal("20"), true, true));
 
     @Autowired ShelfLayoutService shelves;
     @Autowired EntityManagerFactory entityManagerFactory;
@@ -65,8 +64,8 @@ class BinGenerationIntegrationTest {
     void placeAnEmptyShelf() {
         shelfId = shelves.createShelf(new ShelfCommands.CreateShelf(WAREHOUSE_HCM, null, "G1", "Kệ G1", null,
                 new Footprint(new BigDecimal("15"), new BigDecimal("36"), new BigDecimal("20"), BigDecimal.ONE, 0),
-                true, new PickFaces(true, false, false, false), StorageClass.NORMAL)).id();
-        levelId = shelves.addLevel(new ShelfCommands.AddLevel(shelfId, 1, LevelMeasures.NONE)).id();
+                true, new PickFaces(true, false, false, false))).id();
+        levelId = shelves.addLevel(new ShelfCommands.AddLevel(shelfId, 1, new LevelMeasures(null, new BigDecimal("1.4"), null))).id();
     }
 
     @AfterEach
@@ -130,7 +129,7 @@ class BinGenerationIntegrationTest {
         assertThat(binRows()).isEqualTo(200);
         assertThat(ownedLocationRows()).isEqualTo(200);
         assertThat(jdbc.queryForObject("select count(distinct location_code) from warehouse.storage_location "
-                + "where location_code like 'HCM-G1-1-%' and status = 'ACTIVE' and storage_class = 'NORMAL'",
+                + "where location_code like 'HCM-G1-1-%' and status = 'ACTIVE'",
                 Integer.class)).isEqualTo(200);
     }
 

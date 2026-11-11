@@ -35,16 +35,22 @@ public final class PreparedFiles implements AutoCloseable {
     private static final Logger log = LoggerFactory.getLogger(PreparedFiles.class);
 
     /**
-     * One stored upload, the SHA-256 of its bytes (lower-case hex), and the keys of the copies derived from it (an
-     * evidence photo's display copies), which go wherever the file goes.
+     * One stored upload, the SHA-256 of its bytes (lower-case hex), the keys of the copies derived from it (an
+     * evidence photo's display copies), which go wherever the file goes, and - for a category whose images are measured
+     * ({@link ImageDimensions#measures}) - its upright size in pixels, otherwise null.
      */
-    public record PreparedFile(StoredFile file, String sha256, List<String> derivedKeys) {
+    public record PreparedFile(StoredFile file, String sha256, List<String> derivedKeys,
+                               ImageDimensions.Size dimensions) {
         public PreparedFile {
             derivedKeys = derivedKeys == null ? List.of() : List.copyOf(derivedKeys);
         }
 
+        public PreparedFile(StoredFile file, String sha256, List<String> derivedKeys) {
+            this(file, sha256, derivedKeys, null);
+        }
+
         public PreparedFile(StoredFile file, String sha256) {
-            this(file, sha256, List.of());
+            this(file, sha256, List.of(), null);
         }
     }
 

@@ -22,6 +22,9 @@ public interface ProductRepository extends AggregateRepository<Product, ProductI
     /** The name of the product whose variant {@code sku} is. */
     Optional<String> nameForSku(String sku);
 
+    /** See {@link com.stockflow.product.api.ProductService#taxClassesOf}. */
+    java.util.Map<String, com.stockflow.product.api.TaxClass> taxClassesOf(java.util.Collection<String> skus);
+
     boolean existsByCode(String code);
 
     /** Whether a variant anywhere already carries {@code sku}: the default variant of a product created

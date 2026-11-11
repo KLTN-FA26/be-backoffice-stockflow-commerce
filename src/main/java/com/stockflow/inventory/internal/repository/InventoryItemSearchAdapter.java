@@ -1,6 +1,5 @@
 package com.stockflow.inventory.internal.repository;
 
-import com.stockflow.inventory.api.StorageClass;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.support.PageableExecutionUtils;
@@ -12,7 +11,7 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * Plain SQL over {@code inventory.inventory_items}: a list needs eight columns and one ordering, and the optional
+ * Plain SQL over {@code inventory.inventory_items}: a list needs five columns and one ordering, and the optional
  * filters are appended only when asked for, so no condition is bound that was not requested.
  */
 @Repository
@@ -38,26 +37,15 @@ class InventoryItemSearchAdapter implements InventoryItemSearch {
             args.add(pattern);
             args.add(pattern);
         }
-        if (criteria.storageClass() != null) {
-            where.append(" AND storage_class = ?");
-            args.add(criteria.storageClass().name());
-        }
-        if (criteria.policyConfigured() != null) {
-            where.append(" AND policy_configured = ?");
-            args.add(criteria.policyConfigured());
-        }
 
         List<Object> pageArgs = new ArrayList<>(args);
         pageArgs.add(pageable.getPageSize());
         pageArgs.add(pageable.getOffset());
         List<Row> content = jdbc.query(
-                "SELECT id, sku, unit_of_measure, barcode, storage_class, lot_tracked, serial_tracked,"
-                        + " policy_configured FROM inventory.inventory_items" + where
+                "SELECT id, sku, unit_of_measure, barcode FROM inventory.inventory_items" + where
                         + " ORDER BY sku LIMIT ? OFFSET ?",
                 (rs, n) -> new Row(rs.getObject("id", UUID.class), rs.getString("sku"),
-                        rs.getString("unit_of_measure"), rs.getString("barcode"),
-                        StorageClass.valueOf(rs.getString("storage_class")), rs.getBoolean("lot_tracked"),
-                        rs.getBoolean("serial_tracked"), rs.getBoolean("policy_configured")),
+                        rs.getString("unit_of_measure"), rs.getString("barcode")),
                 pageArgs.toArray());
         // A partial page already gives the total (its offset plus its length), so the count, a second scan with the
         // same ILIKE filters, runs only for a full page or an empty page past the first.

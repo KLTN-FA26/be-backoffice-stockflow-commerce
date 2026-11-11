@@ -7,7 +7,6 @@ import com.stockflow.common.security.CurrentUserProvider;
 import com.stockflow.common.security.DataScope;
 import com.stockflow.inventory.internal.service.InventoryItems;
 import com.stockflow.product.api.CreateProductCommand;
-import com.stockflow.product.api.ProductKind;
 import com.stockflow.product.api.ProductService;
 import com.stockflow.product.api.TaxClass;
 import com.stockflow.product.internal.domain.AttributeDataType;
@@ -112,7 +111,7 @@ class ProductVariantOptionsIntegrationTest {
     private UUID product(String code) {
         newCode = code;
         return products.create(new CreateProductCommand(code, "Ly giay", "Paper cup", brand, category, null, null,
-                null, TaxClass.STANDARD, ProductKind.CUSTOMIZABLE, List.of())).productId();
+                null, TaxClass.STANDARD, List.of())).productId();
     }
 
     private UUID productWithAxes() {
@@ -233,8 +232,10 @@ class ProductVariantOptionsIntegrationTest {
     @Test
     void aRenameOfAReferencedSkuIsARefusedTransition() {
         UUID product = productWithAxes();
-        jdbc.update("insert into catalog.pricing_rule(id, name, sku, price, currency, active, version, created_at) "
-                + "values (?, 'rule', ?, 1, 'VND', true, 0, now())", UUID.randomUUID(), newCode);
+        // A lot of the SKU is a document that names it (inventory.item_in_use); the price rules that served here are
+        // not read by the guard any more, so a document the guard does read stands in for them.
+        jdbc.update("insert into inventory.stock_lot(id, sku, lot_number, received_at, origin_type, created_at) "
+                + "values (?, ?, 'L-REF', now(), 'UNTRACED', now())", UUID.randomUUID(), newCode);
 
         assertThat(errorOf(() -> variants.add(product, new NewVariant("CUP-RENAMED", null, List.of(cap12, clear), null))))
                 .isEqualTo(ErrorCode.INVALID_VARIANT_TRANSITION);
@@ -384,7 +385,7 @@ class ProductVariantOptionsIntegrationTest {
     private UUID createWithAxes(String code, List<CreateProductCommand.Axis> axes) {
         newCode = code;
         return products.create(new CreateProductCommand(code, "Ly giay", "Paper cup", null, category, null, null,
-                null, TaxClass.STANDARD, ProductKind.CUSTOMIZABLE, axes)).productId();
+                null, TaxClass.STANDARD, axes)).productId();
     }
 
     @Test

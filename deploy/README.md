@@ -77,16 +77,15 @@ records in DNS), and `MAIL_HEALTH_ENABLED=false`. With `EMAIL_PROVIDER=resend` a
 refuses to start and deploy.sh rolls back, so set all of them before the deploy that switches. Optional:
 `RESEND_REPLY_TO` (Sales' mailbox), `RESEND_WEBHOOK_SECRET` with a webhook in Resend pointing at
 `https://api.<domain>/api/v1/notifications/webhooks/resend` (events `email.delivered`, `email.bounced`,
-`email.complained`, `email.delivery_delayed`, `email.failed`) for delivery reports. A server holding copies of real
-customers should set `CUSTOMER_EMAIL_ENABLED=false`. Check after switching: place a test order for a customer whose
-e-mail you own; the mail arrives and `notification.delivery_log` has a `SENT` row with a `provider_message_id`.
+`email.complained`, `email.delivery_delayed`, `email.failed`) for delivery reports. Customer order mail is off by
+default (`CUSTOMER_EMAIL_ENABLED=false`): the business documents leave it to a later phase. Check after switching with
+the portal invitation instead: invite a customer contact whose e-mail you own; the mail arrives and
+`notification.delivery_log` has a `SENT` row with a `provider_message_id`.
 
-Before deploying this feature, set all six `PO_BUYER_*` / `PO_RECEIVING_ADDRESS` values from
-`.env.example` in `/opt/stockflow/.env`. Compose refuses missing or empty values. Use the actual
-buyer identity and receiving address, including a valid reply-to email. Set
-`SUPPLIER_API_ALLOWED_HOSTS` only for approved supplier HTTPS hosts; leave it empty for email-only
-delivery. Validate with `docker compose config --quiet` before deploying. With `EMAIL_PROVIDER=smtp`, Mailpit
-captures messages for testing; it does not deliver them to external supplier inboxes.
+Purchasing is gone (4A-8): the six `PO_BUYER_*` / `PO_RECEIVING_ADDRESS` values and
+`SUPPLIER_API_ALLOWED_HOSTS` are no longer read and may be removed from `/opt/stockflow/.env`. Validate with
+`docker compose config --quiet` before deploying. With `EMAIL_PROVIDER=smtp`, Mailpit captures messages for testing;
+it does not deliver them to external producer inboxes.
 
 Back-office login rate limit: the Next.js back-office calls the API from its own server, so without
 help every admin shares one login rate-limit bucket. Set `BFF_ORIGIN_SECRET` (`openssl rand -hex 32`,
@@ -236,7 +235,7 @@ cores. `deploy.sh` waits up to 300 s.
 4. **Create the first accounts.** The database starts with no user who can sign in (security is on
    here, unlike the local profile), so nobody can obtain a token until you do this:
    ```bash
-   bash scripts/create-user.sh admin admin@<domain> ECOMMERCE_ADMIN
+   bash scripts/create-user.sh admin admin@<domain> SYSTEM_ADMIN
    bash scripts/create-user.sh kho1  kho1@<domain>  WAREHOUSE_STAFF
    ```
    It asks for the password (12+ characters). Running it again for an existing username resets the

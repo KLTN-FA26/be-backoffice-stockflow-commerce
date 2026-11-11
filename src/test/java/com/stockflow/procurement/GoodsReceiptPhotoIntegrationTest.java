@@ -15,8 +15,9 @@ import com.stockflow.procurement.internal.domain.GoodsReceiptStatus;
 import com.stockflow.procurement.internal.service.GoodsReceiptPhotoService;
 import com.stockflow.procurement.internal.service.GoodsReceiptPhotoService.PhotoView;
 import com.stockflow.procurement.internal.service.GoodsReceipts;
-import com.stockflow.support.IntegrationTest;
-import com.stockflow.support.PostgresContainer;
+import com.stockflow.support.DemoData;
+import com.stockflow.support.ProductionReceiptTest;
+import com.stockflow.support.ProductionReceivables;
 import com.stockflow.support.ReferenceRows;
 import com.stockflow.support.TestUsers;
 import com.stockflow.support.WithCurrentUser;
@@ -25,10 +26,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.context.annotation.Import;
 import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.transaction.support.TransactionTemplate;
 
@@ -39,7 +38,6 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.UncheckedIOException;
-import java.time.LocalDate;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
@@ -59,22 +57,18 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 
 /**
- * Photos of a goods receipt (04b F-RCV steps 05 and 07) through the real storage path and schema: the warehouse's while
- * the receipt is counted, QC's of a line it inspects while the receipt is in QC.
+ * Photos of a goods receipt (04b F-RCV step 05) through the real storage path and schema: the warehouse's while the
+ * receipt is counted. Receiving QC was removed (kltn-docs 03 BR-07): no QC photo is taken any more.
  *
- * <p>The fixture is the demo supplier's order of {@value #SOFA} (no QC) and {@value #TABLE} (QC, lot and expiry) into
- * HCM. Confirming the count sends the receipt to IN_QC, because the table goes through QC.</p>
+ * <p>The fixture is a production order of two lines (a SKU each) sent to HCM; the receipt counts a carton of each.
+ * Confirming the count sends the receipt to putaway.</p>
  */
-@IntegrationTest
-@Import(PostgresContainer.class)
-@TestPropertySource(properties = "stockflow.upload-inspection.enabled=false")
+@ProductionReceiptTest
 class GoodsReceiptPhotoIntegrationTest {
-
-    private static final String SOFA = "SOFA-3S-GREY";
-    private static final String TABLE = "TABLE-OAK-160";
 
     @Autowired GoodsReceiptPhotoService photos;
     @Autowired GoodsReceipts receipts;
+    @Autowired ProductionReceivables receivables;
     @Autowired List<StoredFileReferences> owners;
     // The test profile stores files locally, which signs no browser link; the link only has to look like S3's here.
     @MockitoSpyBean FileStorage storage;
@@ -85,7 +79,7 @@ class GoodsReceiptPhotoIntegrationTest {
 
     private UUID clerk;
     private UUID inspector;
-    private UUID po;
+    private ProductionReceivables.Receivable goods;
     private UUID receipt;
     private UUID sofaLine;
     private UUID tableLine;
@@ -96,55 +90,17 @@ class GoodsReceiptPhotoIntegrationTest {
                 .presignedDownloadUrl(anyString(), any(), any());
         clerk = tx.execute(s -> ReferenceRows.user(entityManager));
         inspector = tx.execute(s -> ReferenceRows.user(entityManager));
-        po = order();
-        receipt = receipts.create(new GoodsReceipts.Create(po, "DN-PHOTO", null), clerk).id();
-        String lot = "PH-" + UUID.randomUUID().toString().substring(0, 8);
-        var counted = receipts.replaceLines(receipt, List.of(
-                new GoodsReceipts.NewLine(poLine(po, SOFA), 4, null, null, "HCM-RCV01", null),
-                new GoodsReceipts.NewLine(poLine(po, TABLE), 6, lot, LocalDate.now().plusYears(1), "HCM-RCV01", null)));
-        sofaLine = lineOf(counted, po, SOFA);
-        tableLine = lineOf(counted, po, TABLE);
+        // 2 cartons of 10 of one SKU and 2 of another on one production order, delivering to HCM.
+        goods = receivables.sentLines(DemoData.WAREHOUSE_HCM, new int[] {2, 10}, new int[] {2, 10});
+        receipt = receivables.draftReceipt(goods, clerk).id();
+        var counted = receipts.replaceLines(receipt, List.of(goods.goods().get(0).line("HCM-RCV01", 1),
+                goods.goods().get(1).line("HCM-RCV01", 1)));
+        sofaLine = lineOf(counted, goods.goods().get(0).sku());
+        tableLine = lineOf(counted, goods.goods().get(1).sku());
     }
 
-    /** A CONFIRMED order of the demo supplier into HCM: 10 sofas and 10 tables. */
-    private UUID order() {
-        UUID po = Identifiers.newId();
-        UUID revision = Identifiers.newId();
-        tx.executeWithoutResult(s -> {
-            UUID submitter = ReferenceRows.user(entityManager);
-            UUID approver = ReferenceRows.user(entityManager);
-            jdbc.update("""
-                    INSERT INTO procurement.purchase_orders (id, po_number, status, supplier_id, warehouse_id, currency,
-                        order_date, submitted_at, submitted_by, approved_at, approved_by, confirmed_at, confirmed_by,
-                        active_revision_id, version, created_at)
-                    SELECT ?, ?, 'CONFIRMED', s.id, w.id, 'VND', CURRENT_DATE, NOW(), ?, NOW(), ?, NOW(), ?, ?, 0, NOW()
-                      FROM procurement.suppliers s, warehouse.warehouse w WHERE s.code = 'GOVIET' AND w.prefix = 'HCM'""",
-                    po, "PO-PH-" + po.toString().substring(24), submitter, approver, approver, revision);
-            jdbc.update("""
-                    INSERT INTO procurement.purchase_order_revisions (id, po_id, revision_no, kind, snapshot_header,
-                        changed_by, version, created_at) VALUES (?, ?, 0, 'INITIAL', '{}'::jsonb, ?, 0, NOW())""",
-                    revision, po, submitter);
-            int lineNo = 1;
-            for (String sku : List.of(SOFA, TABLE)) {
-                jdbc.update("""
-                        INSERT INTO procurement.purchase_order_lines (id, po_id, po_revision_id, line_no,
-                            inventory_item_id, ordered_qty, unit_price, version, created_at)
-                        SELECT ?, ?, ?, ?, id, 10, 1000, 0, NOW() FROM inventory.inventory_items WHERE sku = ?""",
-                        Identifiers.newId(), po, revision, lineNo++, sku);
-            }
-        });
-        return po;
-    }
-
-    private UUID poLine(UUID po, String sku) {
-        return jdbc.queryForObject("""
-                SELECT l.id FROM procurement.purchase_order_lines l JOIN inventory.inventory_items i
-                  ON i.id = l.inventory_item_id WHERE l.po_id = ? AND i.sku = ?""", UUID.class, po, sku);
-    }
-
-    private UUID lineOf(GoodsReceipts.ReceiptView view, UUID po, String sku) {
-        UUID poLine = poLine(po, sku);
-        return view.lines().stream().filter(line -> line.purchaseOrderLineId().equals(poLine)).findFirst().orElseThrow().id();
+    private UUID lineOf(GoodsReceipts.ReceiptView view, String sku) {
+        return view.lines().stream().filter(line -> line.sku().equals(sku)).findFirst().orElseThrow().id();
     }
 
     private static byte[] jpeg(int width, int height) {
@@ -179,29 +135,29 @@ class GoodsReceiptPhotoIntegrationTest {
     }
 
     @Test
-    @DisplayName("receiving photos while counting, QC photos of the QC line while in QC: kept, listed, shown, audited")
+    @DisplayName("receiving photos while counting: kept, listed, shown, audited; no QC photo is taken any more")
     void photosOfEachStepAreKeptListedAndLinked() {
         PhotoView pallet = photos.add(receipt, null, GoodsReceiptPhotoStage.RECEIPT, photo("pallet.jpg"), clerk);
         PhotoView crate = photos.add(receipt, sofaLine, GoodsReceiptPhotoStage.RECEIPT, photo("thung-sofa.jpg"), clerk);
-        assertThat(code(() -> photos.add(receipt, tableLine, GoodsReceiptPhotoStage.QC, photo("early.jpg"), inspector)))
-                .as("QC photos wait for QC").isEqualTo(ErrorCode.INVALID_RECEIPT_TRANSITION);
+        assertThat(code(() -> photos.add(receipt, tableLine, GoodsReceiptPhotoStage.QC, photo("qc.jpg"), inspector)))
+                .as("receiving QC was removed").isEqualTo(ErrorCode.INVALID_RECEIPT_TRANSITION);
 
-        assertThat(receipts.confirm(receipt, clerk).status()).isEqualTo(GoodsReceiptStatus.IN_QC);
+        // Counted again before it is posted (a second carton of each, team plan 4C-2); the lines keep their ids.
+        receipts.replaceLines(receipt, List.of(goods.goods().get(0).line("HCM-RCV01", 2),
+                goods.goods().get(1).line("HCM-RCV01", 2)));
+        assertThat(receipts.confirm(receipt, clerk).status()).isEqualTo(GoodsReceiptStatus.IN_PUTAWAY);
         assertThat(code(() -> photos.add(receipt, null, GoodsReceiptPhotoStage.RECEIPT, photo("late.jpg"), clerk)))
                 .as("the count is closed").isEqualTo(ErrorCode.INVALID_RECEIPT_TRANSITION);
-        assertThat(code(() -> photos.add(receipt, sofaLine, GoodsReceiptPhotoStage.QC, photo("sofa.jpg"), inspector)))
-                .as("the sofa goes through no QC").isEqualTo(ErrorCode.INVALID_RECEIPT_TRANSITION);
-        assertThat(code(() -> photos.add(receipt, null, GoodsReceiptPhotoStage.QC, photo("none.jpg"), inspector)))
-                .as("a QC photo is of a line").isEqualTo(ErrorCode.VALIDATION_FAILED);
-        PhotoView scratch = photos.add(receipt, tableLine, GoodsReceiptPhotoStage.QC, photo("vet-xuoc.jpg"), inspector);
+        assertThat(code(() -> photos.add(receipt, tableLine, GoodsReceiptPhotoStage.QC, photo("vet-xuoc.jpg"), inspector)))
+                .as("nor once it is confirmed").isEqualTo(ErrorCode.INVALID_RECEIPT_TRANSITION);
 
         assertThat(photos.list(receipt)).extracting(PhotoView::id, PhotoView::stage, PhotoView::receiptLineId)
                 .containsExactly(
                         org.assertj.core.groups.Tuple.tuple(pallet.id(), GoodsReceiptPhotoStage.RECEIPT, null),
-                        org.assertj.core.groups.Tuple.tuple(crate.id(), GoodsReceiptPhotoStage.RECEIPT, sofaLine),
-                        org.assertj.core.groups.Tuple.tuple(scratch.id(), GoodsReceiptPhotoStage.QC, tableLine));
-        assertThat(scratch.fileName()).isEqualTo("vet-xuoc.jpg");
-        assertThat(scratch.takenBy()).isEqualTo(inspector);
+                        org.assertj.core.groups.Tuple.tuple(crate.id(), GoodsReceiptPhotoStage.RECEIPT, sofaLine));
+        PhotoView scratch = crate;
+        assertThat(scratch.fileName()).isEqualTo("thung-sofa.jpg");
+        assertThat(scratch.takenBy()).isEqualTo(clerk);
         assertThat(scratch.takenAt()).isNotNull();
 
         String key = keyOf(scratch.id());
@@ -277,27 +233,25 @@ class GoodsReceiptPhotoIntegrationTest {
     }
 
     @Test
-    @DisplayName("a photographed line can still be recounted: the photo stays with the receipt, as one of the delivery")
+    @DisplayName("a photographed line can still be recounted: its id and its photo stay")
     void aPhotographedLineDoesNotBlockTheRecount() {
         PhotoView ofTheLine = photos.add(receipt, tableLine, GoodsReceiptPhotoStage.RECEIPT, photo("lo.jpg"), clerk);
 
-        // Correcting the lot makes the line a new one: the old line is dropped from the count.
-        var recounted = receipts.replaceLines(receipt, List.of(
-                new GoodsReceipts.NewLine(poLine(po, SOFA), 4, null, null, "HCM-RCV01", null),
-                new GoodsReceipts.NewLine(poLine(po, TABLE), 6, "PH-FIXED-" + UUID.randomUUID().toString().substring(0, 6),
-                        LocalDate.now().plusYears(1), "HCM-RCV01", null)));
+        // Counting the same lines again keeps their ids (a line that has had cartons is never dropped), photo and all.
+        var recounted = receipts.replaceLines(receipt, List.of(goods.goods().get(0).line("HCM-RCV01", 1),
+                goods.goods().get(1).line("HCM-RCV01", 1)));
 
-        assertThat(lineOf(recounted, po, TABLE)).isNotEqualTo(tableLine);
+        assertThat(lineOf(recounted, goods.goods().get(1).sku())).isEqualTo(tableLine);
         assertThat(photos.list(receipt)).singleElement().satisfies(photo -> {
             assertThat(photo.id()).isEqualTo(ofTheLine.id());
-            assertThat(photo.receiptLineId()).as("its line is gone, the photo is not").isNull();
+            assertThat(photo.receiptLineId()).as("the photo stays with its line").isEqualTo(tableLine);
             assertThat(photo.stage()).isEqualTo(GoodsReceiptPhotoStage.RECEIPT);
         });
         assertThat(storage.exists(keyOf(ofTheLine.id()))).isTrue();
     }
 
     @Test
-    @DisplayName("the database keeps photos append-only, a QC photo on a QC line, and the sweep sees them as kept")
+    @DisplayName("the database keeps photos append-only, takes no new QC photo, and the sweep sees them as kept")
     void theSchemaStatesTheRulesAgain() {
         UUID kept = photos.add(receipt, null, GoodsReceiptPhotoStage.RECEIPT, photo("kept.jpg"), clerk).id();
         String key = keyOf(kept);
@@ -314,9 +268,9 @@ class GoodsReceiptPhotoIntegrationTest {
         assertThatThrownBy(() -> jdbc.update("""
                 INSERT INTO procurement.goods_receipt_photos (id, receipt_id, receipt_line_id, stage, storage_key,
                     original_name, content_type, size_bytes, checksum, taken_by)
-                VALUES (?, ?, ?, 'QC', ?, 'x.jpg', 'image/jpeg', 1, ?, ?)""", Identifiers.newId(), receipt, sofaLine,
+                VALUES (?, ?, ?, 'QC', ?, 'x.jpg', 'image/jpeg', 1, ?, ?)""", Identifiers.newId(), receipt, tableLine,
                 "qc-evidence/2026/11/06/" + Identifiers.newId() + ".jpg", "0".repeat(64), inspector))
-                .as("the sofa goes through no QC").isInstanceOf(DataAccessException.class);
+                .as("receiving QC was removed").isInstanceOf(DataAccessException.class);
 
         Set<String> referenced = new HashSet<>();
         owners.forEach(owner -> {

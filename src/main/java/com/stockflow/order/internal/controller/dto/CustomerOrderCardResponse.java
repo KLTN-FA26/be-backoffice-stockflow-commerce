@@ -20,8 +20,9 @@ public record CustomerOrderCardResponse(
         @Schema(example = "CONFIRMED", description = "The order's own status, for staff-facing wording")
         String status,
 
-        @Schema(example = "PREPARING", description = "What the customer reads: AWAITING_PAYMENT, UNDER_REVIEW, CONFIRMED, "
-                + "IN_PRODUCTION, PREPARING, SHIPPING, DELIVERED, CANCELLED or RETURNED")
+        @Schema(example = "PREPARING", description = "What the customer reads: AWAITING_CONTRACT, AWAITING_PAYMENT, "
+                + "UNDER_REVIEW, CONFIRMED, AWAITING_STOCK, IN_PRODUCTION (legacy), PREPARING, SHIPPING, DELIVERED, "
+                + "CANCELLED or RETURNED")
         String statusGroup,
 
         BigDecimal total,

@@ -69,15 +69,6 @@ public final class WarehouseScope {
         });
     }
 
-    /** Refuses a document between two warehouses unless the caller is assigned to at least one. */
-    public static void requireEither(UUID first, UUID second) {
-        restriction().ifPresent(allowed -> {
-            if (!allowed.ids().contains(first) && !allowed.ids().contains(second)) {
-                throw outOfScope(first + "/" + second);
-            }
-        });
-    }
-
     /**
      * Rows whose location code (any of {@code attributes}) lies in an assigned warehouse; null —
      * no filter — for a caller who is not limited. A limited caller with no warehouse matches nothing.

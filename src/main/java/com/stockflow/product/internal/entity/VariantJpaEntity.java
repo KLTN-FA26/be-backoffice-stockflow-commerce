@@ -50,6 +50,16 @@ public class VariantJpaEntity extends BaseEntity {
     @Column(name = "obsoleted_at")
     private Instant obsoletedAt;
 
+    /** A customer's own SKU (kltn-docs 12 §4.5): the customer, the approved design and the variant it was drawn on. */
+    @Column(name = "owner_customer_id", updatable = false)
+    private UUID ownerCustomerId;
+
+    @Column(name = "design_snapshot_id", updatable = false)
+    private UUID designSnapshotId;
+
+    @Column(name = "source_variant_id", updatable = false)
+    private UUID sourceVariantId;
+
     protected VariantJpaEntity() {
     }
 
@@ -72,6 +82,17 @@ public class VariantJpaEntity extends BaseEntity {
         this.position = position;
     }
 
+    /**
+     * Makes this new variant a customer's own SKU, ACTIVE at once (kltn-docs 12 §4.5: the design's approval stands in for
+     * a variant's activation). Never changed afterwards ({@code tg_variants_customer_sku}).
+     */
+    public void ownBy(UUID ownerCustomerId, UUID designSnapshotId, UUID sourceVariantId) {
+        this.ownerCustomerId = ownerCustomerId;
+        this.designSnapshotId = designSnapshotId;
+        this.sourceVariantId = sourceVariantId;
+        this.status = VariantStatus.ACTIVE;
+    }
+
     public void moveTo(VariantStatus target, Instant now) {
         this.status = target;
         this.obsoletedAt = target == VariantStatus.OBSOLETE ? now : null;
@@ -85,4 +106,7 @@ public class VariantJpaEntity extends BaseEntity {
     public String getAttributeSignature() { return attributeSignature; }
     public int getPosition() { return position; }
     public Instant getObsoletedAt() { return obsoletedAt; }
+    public UUID getOwnerCustomerId() { return ownerCustomerId; }
+    public UUID getDesignSnapshotId() { return designSnapshotId; }
+    public UUID getSourceVariantId() { return sourceVariantId; }
 }

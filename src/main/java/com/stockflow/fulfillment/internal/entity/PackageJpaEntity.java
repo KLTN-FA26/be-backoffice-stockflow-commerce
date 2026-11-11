@@ -1,9 +1,8 @@
 package com.stockflow.fulfillment.internal.entity;
 
 import com.stockflow.common.persistence.BaseEntity;
-import com.stockflow.fulfillment.internal.domain.KitPart;
+import com.stockflow.fulfillment.internal.domain.CartonCheck;
 import com.stockflow.fulfillment.internal.domain.PackageStatus;
-import com.stockflow.fulfillment.internal.domain.PackageType;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
@@ -15,8 +14,10 @@ import java.time.Instant;
 import java.util.UUID;
 
 /**
- * JPA mapping of a parcel (table {@code fulfillment.package}). Not the domain model: {@code PackingSession.Parcel}
- * holds the rules; the repository adapter copies between the two. {@code tracking_number} and {@code label_url} are
+ * JPA mapping of table {@code fulfillment.package}: a shipping carton of the check station (team plan 4C-6; rules on
+ * {@code CartonCheck.Carton}, a row with {@code pickLineId}) or a parcel of the repack station kept until 4C-7 (rules on
+ * {@code PackingSession.Parcel}). Not the domain model: the repository adapters copy between the two. Shipments, load
+ * plans and manifests take either kind ({@code PackageStatus#ships}). {@code tracking_number} and {@code label_url} are
  * not mapped: the system calls no carrier (kltn-docs 09 §1), the label is the internal one ({@code label_code}).
  */
 @Entity
@@ -28,8 +29,6 @@ public class PackageJpaEntity extends BaseEntity {
     @Column(name = "package_no", nullable = false, updatable = false) private int packageNo;
     @Column(name = "label_code", nullable = false, updatable = false, length = 48) private String labelCode;
     @Enumerated(EnumType.STRING)
-    @Column(name = "package_type", nullable = false, length = 16) private PackageType packageType;
-    @Enumerated(EnumType.STRING)
     @Column(name = "status", nullable = false, length = 16) private PackageStatus status;
     @Column(name = "weight_kg", precision = 10, scale = 3) private BigDecimal weightKg;
     @Column(name = "length_cm", precision = 10, scale = 2) private BigDecimal lengthCm;
@@ -38,27 +37,25 @@ public class PackageJpaEntity extends BaseEntity {
     @Column(name = "dim_weight_kg", precision = 10, scale = 3) private BigDecimal dimWeightKg;
     @Column(name = "rotatable", nullable = false) private boolean rotatable;
     @Column(name = "rotatable_overridden", nullable = false) private boolean rotatableOverridden;
-    @Column(name = "fragile", nullable = false) private boolean fragile;
-    @Column(name = "fragile_overridden", nullable = false) private boolean fragileOverridden;
     @Column(name = "sealed_at") private Instant sealedAt;
     @Column(name = "sealed_by") private UUID sealedBy;
     @Column(name = "voided_at") private Instant voidedAt;
     @Column(name = "voided_by") private UUID voidedBy;
-    /** SCRUM-287 LP2-6: the kit ("bộ") it is a part of; all three null for an ordinary parcel. Fixed at opening. */
-    @Column(name = "kit_group_id", updatable = false) private UUID kitGroupId;
-    @Column(name = "kit_part_no", updatable = false) private Short kitPartNo;
-    @Column(name = "kit_part_count", updatable = false) private Short kitPartCount;
-    @Column(name = "kit_order_line_id", updatable = false) private UUID kitOrderLineId;
-    /** SCRUM-287 PR T: the transfer line a transfer's kit holds a unit of (kit_order_line_id for an order's). */
-    @Column(name = "kit_transfer_line_id", updatable = false) private UUID kitTransferLineId;
-    /** SCRUM-287 PR T: the transfer order this parcel carries (its pack's); never with a shipment. */
-    @Column(name = "transfer_order_id", updatable = false) private UUID transferOrderId;
-    /** LP2-8: the unopened stock carton shipped as it is in this parcel (a transfer's only). */
-    @Column(name = "stock_package_id") private UUID stockPackageId;
-    /** KIT-FORCE: why this ordinary parcel holds units of an item that ships as several boxes. */
-    @Column(name = "kit_override_reason", length = 500) private String kitOverrideReason;
-    /** SCRUM-392: moved to another shipment since its label was printed; reprint before loading. */
-    @Column(name = "label_outdated_at") private Instant labelOutdatedAt;
+    /** 4C-6: the pick line that took this shipping carton; null for a repack parcel. Fixed. */
+    @Column(name = "pick_line_id", updatable = false) private UUID pickLineId;
+    /** 4C-6: the carton's LPN - the shipping carton itself (kltn-docs 08 BR-02). Fixed. */
+    @Column(name = "lpn", updatable = false, length = 30) private String lpn;
+    @Column(name = "checked_at") private Instant checkedAt;
+    @Column(name = "checked_by") private UUID checkedBy;
+    @Column(name = "labeled_at") private Instant labeledAt;
+    @Column(name = "labeled_by") private UUID labeledBy;
+    /** 4C-6: 0 before the first shipping label, then up by one per reprint; only the latest is valid (08 BR-08). */
+    @Column(name = "label_version", nullable = false) private int labelVersion;
+    @Column(name = "removed_at") private Instant removedAt;
+    @Column(name = "removed_by") private UUID removedBy;
+    @Enumerated(EnumType.STRING)
+    @Column(name = "removal_reason", length = 16) private CartonCheck.RemovalReason removalReason;
+    @Column(name = "removal_note", length = 500) private String removalNote;
 
     protected PackageJpaEntity() {
     }
@@ -68,74 +65,87 @@ public class PackageJpaEntity extends BaseEntity {
         this.packId = packId;
         this.packageNo = packageNo;
         this.labelCode = labelCode;
-        this.packageType = PackageType.CARTON;
         this.status = PackageStatus.OPEN;
         this.rotatable = true;
     }
 
-    /** A part of a kit (LP2-6): its group, part number and the kit's size are fixed when the kit is opened. */
-    public PackageJpaEntity(UUID id, UUID packId, int packageNo, String labelCode, KitPart kit) {
-        this(id, packId, packageNo, labelCode, kit, null);
+    /** A shipping carton the check station received from a picked pick line (4C-6): TO_CHECK, one CARTON. */
+    public static PackageJpaEntity carton(UUID id, UUID packId, int packageNo, String labelCode, UUID pickLineId,
+                                          String lpn) {
+        PackageJpaEntity row = new PackageJpaEntity(id, packId, packageNo, labelCode);
+        row.pickLineId = pickLineId;
+        row.lpn = lpn;
+        row.status = PackageStatus.TO_CHECK;
+        return row;
     }
 
-    /**
-     * A parcel of a transfer's packing session when {@code transferOrderId} is given (SCRUM-287 PR T): its kit, if any,
-     * holds a unit of a transfer line ({@link KitPart#orderLineId} is then that line's id).
-     */
-    public PackageJpaEntity(UUID id, UUID packId, int packageNo, String labelCode, KitPart kit, UUID transferOrderId) {
-        this(id, packId, packageNo, labelCode);
-        this.transferOrderId = transferOrderId;
-        if (kit != null) {
-            this.kitGroupId = kit.groupId();
-            this.kitPartNo = (short) kit.partNo();
-            this.kitPartCount = (short) kit.partCount();
-            if (transferOrderId == null) {
-                this.kitOrderLineId = kit.orderLineId();
-            } else {
-                this.kitTransferLineId = kit.orderLineId();
-            }
-        }
-    }
-
+    /** What the check station decided about a shipping carton (4C-6). */
     @SuppressWarnings("java:S107")
-    public void apply(UUID shipmentId, PackageType type, PackageStatus status, BigDecimal weightKg,
-                      BigDecimal lengthCm, BigDecimal widthCm, BigDecimal heightCm, BigDecimal dimWeightKg,
-                      boolean rotatable, boolean rotatableOverridden, boolean fragile, boolean fragileOverridden,
-                      Instant sealedAt, UUID sealedBy, Instant voidedAt, UUID voidedBy) {
-        this.shipmentId = shipmentId;
-        this.packageType = type;
+    public void applyCarton(PackageStatus status, Instant checkedAt, UUID checkedBy, Instant labeledAt,
+                            UUID labeledBy, int labelVersion, BigDecimal weightKg, BigDecimal lengthCm,
+                            BigDecimal widthCm, BigDecimal heightCm, BigDecimal dimWeightKg, boolean rotatable,
+                            UUID shipmentId, Instant removedAt, UUID removedBy,
+                            CartonCheck.RemovalReason removalReason, String removalNote) {
         this.status = status;
+        this.checkedAt = checkedAt;
+        this.checkedBy = checkedBy;
+        this.labeledAt = labeledAt;
+        this.labeledBy = labeledBy;
+        this.labelVersion = labelVersion;
         this.weightKg = weightKg;
         this.lengthCm = lengthCm;
         this.widthCm = widthCm;
         this.heightCm = heightCm;
         this.dimWeightKg = dimWeightKg;
         this.rotatable = rotatable;
-        this.rotatableOverridden = rotatableOverridden;
-        this.fragile = fragile;
-        this.fragileOverridden = fragileOverridden;
-        this.sealedAt = sealedAt;
-        this.sealedBy = sealedBy;
-        this.voidedAt = voidedAt;
-        this.voidedBy = voidedBy;
+        this.shipmentId = shipmentId;
+        this.removedAt = removedAt;
+        this.removedBy = removedBy;
+        this.removalReason = removalReason;
+        this.removalNote = removalNote;
+    }
+
+    /**
+     * A labelled carton takes its SKU's corrected carton spec as its shipment is planned (4C-6, 08 edge case "the real
+     * carton differs from the declared spec"); nothing else about it changes.
+     */
+    public void remeasure(BigDecimal weightKg, BigDecimal lengthCm, BigDecimal widthCm, BigDecimal heightCm,
+                          BigDecimal dimWeightKg, boolean rotatable) {
+        this.weightKg = weightKg;
+        this.lengthCm = lengthCm;
+        this.widthCm = widthCm;
+        this.heightCm = heightCm;
+        this.dimWeightKg = dimWeightKg;
+        this.rotatable = rotatable;
+    }
+
+    public UUID getPickLineId() { return pickLineId; }
+    public String getLpn() { return lpn; }
+    public Instant getCheckedAt() { return checkedAt; }
+    public UUID getCheckedBy() { return checkedBy; }
+    public Instant getLabeledAt() { return labeledAt; }
+    public UUID getLabeledBy() { return labeledBy; }
+    public int getLabelVersion() { return labelVersion; }
+    public Instant getRemovedAt() { return removedAt; }
+    public UUID getRemovedBy() { return removedBy; }
+    public CartonCheck.RemovalReason getRemovalReason() { return removalReason; }
+    public String getRemovalNote() { return removalNote; }
+
+    /** Whether this row is a shipping carton of the check station rather than a repack parcel. */
+    public boolean isCarton() { return pickLineId != null; }
+
+    /**
+     * The parcel moves to another shipment: a load plan left it behind and its shipment was split (SCRUM-392). A
+     * shipping carton's label names neither the shipment nor n/N (4C-6), so nothing is to be reprinted.
+     */
+    public void moveToShipment(UUID shipmentId) {
+        this.shipmentId = shipmentId;
     }
 
     public UUID getPackId() { return packId; }
-    public UUID getTransferOrderId() { return transferOrderId; }
-    public UUID getStockPackageId() { return stockPackageId; }
-
-    /** LP2-8: the unopened stock carton this parcel ships as it is. */
-    public void shipsCarton(UUID stockPackageId) { this.stockPackageId = stockPackageId; }
     public UUID getShipmentId() { return shipmentId; }
     public int getPackageNo() { return packageNo; }
     public String getLabelCode() { return labelCode; }
-    public Instant getLabelOutdatedAt() { return labelOutdatedAt; }
-
-    /** SCRUM-392: the label names another shipment than the parcel's now (set), or was reprinted (null). */
-    public void markLabelOutdated(Instant at) {
-        this.labelOutdatedAt = at;
-    }
-    public PackageType getPackageType() { return packageType; }
     public PackageStatus getStatus() { return status; }
     public BigDecimal getWeightKg() { return weightKg; }
     public BigDecimal getLengthCm() { return lengthCm; }
@@ -144,20 +154,8 @@ public class PackageJpaEntity extends BaseEntity {
     public BigDecimal getDimWeightKg() { return dimWeightKg; }
     public boolean isRotatable() { return rotatable; }
     public boolean isRotatableOverridden() { return rotatableOverridden; }
-    public boolean isFragile() { return fragile; }
-    public boolean isFragileOverridden() { return fragileOverridden; }
     public Instant getSealedAt() { return sealedAt; }
     public UUID getSealedBy() { return sealedBy; }
     public Instant getVoidedAt() { return voidedAt; }
     public UUID getVoidedBy() { return voidedBy; }
-
-    public String getKitOverrideReason() { return kitOverrideReason; }
-
-    public void setKitOverrideReason(String kitOverrideReason) { this.kitOverrideReason = kitOverrideReason; }
-
-    /** The kit part it is, or null for an ordinary parcel. */
-    public KitPart getKit() {
-        return kitGroupId == null ? null : new KitPart(kitGroupId, kitPartNo, kitPartCount,
-                kitOrderLineId != null ? kitOrderLineId : kitTransferLineId);
-    }
 }

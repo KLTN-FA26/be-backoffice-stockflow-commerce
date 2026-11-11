@@ -11,8 +11,9 @@ import java.util.Objects;
 import java.util.UUID;
 
 /**
- * A request to change the quantity of one stock item by hand, and its four-eyes decision
- * (SCRUM-145, docs 06 adjustment rules).
+ * A request to write one LPN carton off whole or restock it whole, and its four-eyes decision (SCRUM-145; kltn-docs
+ * 20 §4.3, BR-04, BR-05; team plan 4C-3) - {@link #requestCarton}. A row in no carton, which only the paths not yet in
+ * cartons still write, is adjusted in units ({@link #request}).
  *
  * <p>Nobody writes stock up or down on their own say-so: the person who asks is never the person
  * who approves ({@code ck_stock_adjustment_four_eyes} says it again in the table). Approving posts
@@ -45,14 +46,15 @@ public final class StockAdjustment extends AggregateRoot {
     /** The receipt layer, when the location holds several layers of the lot; null picks the only one. */
     private Instant receivedAt;
     /**
-     * The hold whose units this write-off takes (BR-PRD-10: printed goods of a cancelled order, still held so nobody
-     * can take them); approving it closes the hold as it deducts the units. Null for every other write-off.
+     * Legacy: the hold whose units this write-off takes (BR-PRD-10, while in-house production existed: printed goods of
+     * a cancelled order, still held so nobody could take them); approving it closes the hold as it deducts the units.
+     * Nothing asks for one any more; null for every write-off since.
      */
     private UUID reservationId;
     /**
-     * The carton whose contents this adjustment changes (#125, SCRUM-164); null for loose stock. A carton is adjusted
-     * as one: approval spreads the units over its rows and changes the carton's state once, because the database
-     * refuses a carton whose state disagrees with what its rows hold.
+     * The carton this adjustment writes off or restocks whole (#125, SCRUM-164, team plan 4C-3); null for loose stock.
+     * Approval changes the carton's row and its state once, because the database refuses a carton whose state
+     * disagrees with what its row holds.
      */
     private StockPackageId stockPackageId;
     /** The cycle count line whose variance this is (SCRUM-164); null for an adjustment a person typed in. */
@@ -109,8 +111,16 @@ public final class StockAdjustment extends AggregateRoot {
 
     public UUID reservationId() { return reservationId; }
 
-    /** The adjustment changes the contents of this carton (set once, when asked for). */
+    /**
+     * The adjustment changes the contents of this carton (set once, when asked for). A carton is adjusted for the
+     * reasons a person gives by hand, or as a count's variance (kltn-docs 20 BR-04; review P-2): SCRAP, SAMPLE and the
+     * rest wrote down loose units. {@code tg_stock_adjustment_whole_carton} states it again.
+     */
     public StockAdjustment inPackage(StockPackageId stockPackageId) {
+        if (reason != AdjustmentReason.COUNT_VARIANCE && !reason.askableByHand()) {
+            throw new BusinessException(ErrorCode.STOCK_ADJUSTMENT_REASON_NOT_FOR_CARTON,
+                    "A carton is adjusted for DAMAGED, LOST, FOUND, DATA_CORRECTION or OTHER, not " + reason);
+        }
         this.stockPackageId = stockPackageId;
         return this;
     }
@@ -128,32 +138,50 @@ public final class StockAdjustment extends AggregateRoot {
 
     public UUID cycleCountLineId() { return cycleCountLineId; }
 
-    public static StockAdjustment request(String number, LocationId location, Sku sku, String lotNumber,
-                                          int quantityDelta, AdjustmentReason reason, String note,
-                                          UUID requestedBy, Instant now) {
-        return new StockAdjustment(Identifiers.newId(), number, location, sku, lotNumber, quantityDelta,
-                reason, note, requestedBy, now, AdjustmentStatus.PENDING_APPROVAL, null, null, null, null, null, 0L);
+    /**
+     * A carton written off whole, or a LOST carton restocked whole (kltn-docs 20 §4.3; team plan 4C-3): the delta is
+     * its standard count either way, the reason one of BR-04's, the location the carton's.
+     * {@code tg_stock_adjustment_whole_carton} says it again.
+     *
+     * @param units    the carton's standard count
+     * @throws BusinessException {@code VALIDATION_FAILED} for a reason of the history, or {@code COUNT_VARIANCE}
+     *         asked by hand ({@code countLineId} null)
+     */
+    public static StockAdjustment requestCarton(String number, StockPackageId carton, LocationId location, Sku sku,
+                                                String lotNumber, AdjustmentDirection direction, int units,
+                                                AdjustmentReason reason, String note, UUID countLineId,
+                                                UUID requestedBy, Instant now) {
+        Objects.requireNonNull(carton, "carton");
+        if (units <= 0) {
+            throw new IllegalArgumentException("A carton holds at least one unit");
+        }
+        if (reason == AdjustmentReason.COUNT_VARIANCE ? countLineId == null : !reason.askableByHand()) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, reason == AdjustmentReason.COUNT_VARIANCE
+                    ? "A count variance comes from a cycle count"
+                    : "A carton is adjusted for DAMAGED, LOST, FOUND, DATA_CORRECTION or OTHER, not " + reason);
+        }
+        int delta = direction == AdjustmentDirection.WRITE_OFF ? -units : units;
+        return request(number, location, sku, lotNumber, delta, reason, note, requestedBy, now)
+                .inPackage(carton).forCountLine(countLineId);
     }
 
     /**
-     * Approve and post onto {@code stockItem}, which the caller has locked. Loose stock only: a carton's adjustment
-     * is approved with {@link #approveForCarton}.
+     * A new adjustment, pending approval: loose stock (a row in no carton), or with {@link #inPackage} a carton written
+     * off whole through {@code RequestAdjustmentCommand.lpn} (team plan 4D-1). A carton is otherwise asked for with
+     * {@link #requestCarton} (4C-3).
      *
-     * @throws BusinessException {@code ADJUSTMENT_SELF_APPROVAL} when the approver asked for it;
-     *         {@code INVALID_ADJUSTMENT_TRANSITION} when it was already decided
+     * @throws BusinessException {@code VALIDATION_FAILED} for a {@link AdjustmentReason#legacy() legacy} reason: a
+     *         print subcontractor's loss belongs to subcontracting, which went with purchasing (4A-8)
      */
-    public void approveAndPost(UUID approverId, StockItem stockItem, Instant now) {
-        requireApprovableBy(approverId);
-        if (stockPackageId != null) {
-            throw new IllegalStateException("Adjustment %s is about carton %s; it is approved for the carton"
-                    .formatted(number, stockPackageId.value()));
+    public static StockAdjustment request(String number, LocationId location, Sku sku, String lotNumber,
+                                          int quantityDelta, AdjustmentReason reason, String note,
+                                          UUID requestedBy, Instant now) {
+        if (reason != null && reason.legacy()) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, ("%s is a reason of past adjustments only: "
+                    + "subcontracting is gone").formatted(reason));
         }
-        if (!stockItem.sku().equals(sku) || !stockItem.location().equals(location)
-                || !Objects.equals(stockItem.lotNumber(), lotNumber)) {
-            throw new IllegalArgumentException("Adjustment %s is for another stock item".formatted(number));
-        }
-        stockItem.adjustBy(quantityDelta);
-        posted(approverId, now);
+        return new StockAdjustment(Identifiers.newId(), number, location, sku, lotNumber, quantityDelta,
+                reason, note, requestedBy, now, AdjustmentStatus.PENDING_APPROVAL, null, null, null, null, null, 0L);
     }
 
     /**

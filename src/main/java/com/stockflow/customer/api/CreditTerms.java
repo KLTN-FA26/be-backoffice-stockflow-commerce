@@ -5,51 +5,29 @@ import java.time.Instant;
 import java.util.UUID;
 
 /**
- * A customer's commercial terms (kltn-docs 18 §3, 15 §3): the payment terms allowed, the default
- * deposit percentage, the credit limit and the days to pay a credit order.
+ * A customer's credit (kltn-docs 18 §3, 15 BR-12): the credit limit and the days to pay after delivery, as accounting
+ * approved them. Since 4B-10 nothing more: how a customer pays is the sales contract's installment plan (15 BR-01), not
+ * payment terms chosen per order, so the allowed terms, the default term, the deposit share and the deposit balance
+ * policy went with the money ledger.
  *
- * @param configured           false for a customer nobody has set terms for: prepaid only (SCRUM-427)
- * @param depositBalancePolicy how a deposit order's balance is collected (G2-3); set exactly when deposits are allowed
+ * @param configured     false for a customer nobody has set credit for: no credit (a limit of zero)
+ * @param creditLimit    null without credit
+ * @param creditTermDays the days to pay after delivery; null exactly when the limit is
  */
 public record CreditTerms(
         UUID customerId,
         boolean configured,
-        boolean allowPrepaid,
-        boolean allowDeposit,
-        boolean allowCredit,
-        CommercialTerm defaultTerm,
-        BigDecimal depositPercent,
         BigDecimal creditLimit,
         Integer creditTermDays,
         String currency,
         UUID approvedBy,
         Instant approvedAt,
         String note,
-        long version,
-        DepositBalancePolicy depositBalancePolicy
+        long version
 ) {
 
-    /** Before G2-3: a deposit customer pays the balance before delivery. */
-    public CreditTerms(UUID customerId, boolean configured, boolean allowPrepaid, boolean allowDeposit,
-                       boolean allowCredit, CommercialTerm defaultTerm, BigDecimal depositPercent,
-                       BigDecimal creditLimit, Integer creditTermDays, String currency, UUID approvedBy,
-                       Instant approvedAt, String note, long version) {
-        this(customerId, configured, allowPrepaid, allowDeposit, allowCredit, defaultTerm, depositPercent, creditLimit,
-                creditTermDays, currency, approvedBy, approvedAt, note, version,
-                allowDeposit ? DepositBalancePolicy.BEFORE_DELIVERY : null);
-    }
-
-    /** No terms set: the customer prepays. */
-    public static CreditTerms prepaidOnly(UUID customerId) {
-        return new CreditTerms(customerId, false, true, false, false, CommercialTerm.PREPAID, null, null, null, "VND",
-                null, null, null, 0L, null);
-    }
-
-    public boolean allows(CommercialTerm term) {
-        return switch (term) {
-            case PREPAID -> allowPrepaid;
-            case DEPOSIT -> allowDeposit;
-            case CREDIT -> allowCredit;
-        };
+    /** No credit set: nothing may be owed after delivery. */
+    public static CreditTerms none(UUID customerId) {
+        return new CreditTerms(customerId, false, null, null, "VND", null, null, null, -1L);
     }
 }

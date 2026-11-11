@@ -36,6 +36,14 @@ stockflow:
       bank-name: ${COMPANY_BANK_NAME:DEMO BANK (not a real bank)}
       account-number: ${COMPANY_BANK_ACCOUNT_NUMBER:0000000000}
       account-name: ${COMPANY_BANK_ACCOUNT_NAME:DEMO STOCKFLOW CO LTD}
+  order:
+    # Obviously not a real company (4B-4): demo values so a sales contract can be drawn up here.
+    seller:
+      name: ${SELLER_NAME:DEMO STOCKFLOW CO LTD}
+      tax-code: ${SELLER_TAX_CODE:0000000000}
+      address: ${SELLER_ADDRESS:1 Demo Street, Ho Chi Minh City}
+      representative: ${SELLER_REPRESENTATIVE:Demo Director}
+      representative-title: ${SELLER_REPRESENTATIVE_TITLE:Director}
   customer:
     # The Next.js customer portal on its default dev port (SCRUM-451); mail goes to Mailpit.
     portal-activation-url: ${PORTAL_ACTIVATION_URL:http://localhost:3000/portal/activate}
@@ -57,5 +65,7 @@ stockflow:
     # Note what this costs: @RequiresPermission is NOT enforced under this profile, so a permission
     # mistake will not show up here. Run with the default profile before believing the matrix works.
     enabled: false
-  inventory:
-    reservation-sweep-interval: PT15S   # faster than production, so expiry is testable by hand
+    links:
+      base-url: ${STOCKFLOW_PUBLIC_BASE_URL:http://localhost:8080}
+      # A laptop may sign with a key made per process: its links die at a restart, which nobody minds here.
+      process-key-allowed: true

@@ -121,6 +121,21 @@ public class ResourceServerSecurityConfig {
         return new StockflowJwtAuthenticationConverter(lookup, warehouses.getIfAvailable());
     }
 
+    /** Carriers' webhooks (3-5): anonymous, their credential checked by the endpoint. */
+    static final String CARRIER_WEBHOOKS = "/api/v1/fulfillment/carrier-webhooks/";
+
+    /**
+     * The request's bearer token - except on carriers' webhooks. A carrier configured with {@code Authorization: Bearer
+     * <value>} (one of Ahamove's options, 09 §4.5 step 3) sends its own credential there, which is not this
+     * application's JWT: read as one, the call would be refused with 401 before the endpoint could check it, and never
+     * logged.
+     */
+    static org.springframework.security.oauth2.server.resource.web.BearerTokenResolver carrierWebhooksCarryNoToken() {
+        var standard = new org.springframework.security.oauth2.server.resource.web.DefaultBearerTokenResolver();
+        return request -> request.getRequestURI() != null && request.getRequestURI().startsWith(CARRIER_WEBHOOKS)
+                ? null : standard.resolve(request);
+    }
+
     /** Everything else: the API itself, plus the rest of actuator. CORS policy: {@link CorsConfig}. */
     @Bean
     @Order(2)
@@ -151,6 +166,9 @@ public class ResourceServerSecurityConfig {
                                 "/api/v1/orders/guest-checkout", "/api/v1/orders/guest-checkout/**",
                                 "/api/v1/public/products/availability", "/api/v1/public/products/availability/**")
                         .denyAll()
+                        // Checkout and the reorder of a quoted order (team plan 5-2: the customer does not place
+                        // orders) - POST only, the order list and lookups share the paths.
+                        .requestMatchers(HttpMethod.POST, "/api/v1/orders", "/api/v1/orders/*/reorder").denyAll()
                         // Login mints the token; JWKS supplies its public verification key.
                         // Both remain anonymous, as does the existing product-media surface.
                         .requestMatchers("/api/v1/identity/auth/login", "/oauth2/jwks",
@@ -161,8 +179,21 @@ public class ResourceServerSecurityConfig {
                         // The mail provider's delivery reports (SCRUM-352): it cannot hold a token, so its Svix
                         // signature is the credential, checked by the endpoint. POST only.
                         .requestMatchers(HttpMethod.POST, "/api/v1/notifications/webhooks/resend").permitAll()
+                        // Carriers' webhooks (3-5, kltn-docs 09 §4.5): a carrier holds no token; the header credential
+                        // or the HMAC signature it was configured with is the credential, checked by the service. POST
+                        // only.
+                        .requestMatchers(HttpMethod.POST, "/api/v1/fulfillment/carrier-webhooks/*").permitAll()
+                        // A producer's links to its production order's slip and print files (4A-3, kltn-docs 17 §4.3
+                        // step 7): a producer holds no account; the HMAC-signed, time-limited link is the credential,
+                        // checked by the service with everything else on each use. GET, and HEAD, which mail link
+                        // checkers send first (Spring MVC answers it from the GET handler, with the same checks).
+                        .requestMatchers(HttpMethod.GET, "/api/v1/production-order-files/*/slip",
+                                "/api/v1/production-order-files/*/print-files/*").permitAll()
+                        .requestMatchers(HttpMethod.HEAD, "/api/v1/production-order-files/*/slip",
+                                "/api/v1/production-order-files/*/print-files/*").permitAll()
                         .anyRequest().authenticated())
                 .oauth2ResourceServer(oauth -> oauth
+                        .bearerTokenResolver(carrierWebhooksCarryNoToken())
                         .jwt(jwt -> jwt.jwtAuthenticationConverter(converter))
                         .authenticationEntryPoint(authenticationEntryPoint)
                         .accessDeniedHandler(accessDeniedHandler)

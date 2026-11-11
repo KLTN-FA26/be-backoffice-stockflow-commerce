@@ -17,6 +17,12 @@ public interface StockAdjustmentRepository {
     /** The latest write-off ever asked for {@code reservationId}'s units, whatever became of it. */
     Optional<StockAdjustment> findLatestForHold(UUID reservationId);
 
+    /**
+     * The adjustment of this carton still waiting for approval, if any: one at a time
+     * ({@code uk_stock_adjustment_pending_package}), so a carton is never decided twice.
+     */
+    Optional<StockAdjustment> findPendingForPackage(StockPackageId stockPackageId);
+
     /** The write-off of {@code reservationId}'s units that still stands: pending or posted. */
     Optional<StockAdjustment> findLiveForHold(UUID reservationId);
 }

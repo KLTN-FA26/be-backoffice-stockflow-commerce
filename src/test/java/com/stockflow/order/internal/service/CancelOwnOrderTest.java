@@ -4,7 +4,6 @@ import com.stockflow.order.api.CancellationOutcome;
 import com.stockflow.order.api.CancellationReasonCode;
 import com.stockflow.order.internal.domain.CancellationRequestRepository;
 import com.stockflow.order.internal.domain.OrderId;
-import com.stockflow.order.internal.domain.OrderPayments;
 import com.stockflow.common.domain.Money;
 import com.stockflow.common.domain.Sku;
 import com.stockflow.common.error.BusinessException;
@@ -47,31 +46,33 @@ class CancelOwnOrderTest {
     private final CancellationRequestRepository requests = mock(CancellationRequestRepository.class);
     private final OrderServiceImpl service = new OrderServiceImpl(repository, mock(OrderSearchRepository.class),
             mock(InventoryService.class), mock(OrderEventPublisher.class), Clock.systemUTC(),
-            mock(DesignService.class), mock(OrderHoldJpaRepository.class), mock(CustomerService.class),
-            mock(com.stockflow.catalog.api.CatalogService.class), mock(OrderPayments.class), requests,
-            mock(com.stockflow.order.internal.domain.CreditChecks.class),
-                mock(com.stockflow.payment.api.PaymentService.class));
+            mock(DesignService.class), mock(OrderHoldJpaRepository.class), mock(CustomerService.class), requests,
+                mock(com.stockflow.payment.api.PaymentService.class), org.mockito.Mockito.mock(com.stockflow.product.api.CustomerSkus.class), org.mockito.Mockito.mock(com.stockflow.order.internal.domain.SalesContractRepository.class), org.mockito.Mockito.mock(com.stockflow.order.internal.service.DeliveryBatchService.class), org.mockito.Mockito.mock(com.stockflow.order.internal.domain.DeliveryBatchRecords.class));
 
+    /** A placed order of a signed contract waiting for its first installment - what the customer sees (a DRAFT order is not theirs, 17 §5.2). */
     private Order orderOf(UUID customerId) {
         var order = Order.draft(OrderNumber.of(LocalDate.of(2026, 9, 20), 7), customerId, UUID.randomUUID(),
                 List.of(Order.line(new Sku("SOFA-3S-GREY"), 1, Money.vnd(100_000), null)), NOW);
+        order.lines().forEach(line -> order.attachReservations(line.id(), List.of(UUID.randomUUID())));
+        order.sendContract(UUID.randomUUID(), NOW);
+        order.contractSigned(false, true, UUID.randomUUID(), NOW);
         when(repository.findByIdForUpdate(order.id())).thenReturn(Optional.of(order));
         when(repository.save(any())).thenAnswer(call -> call.getArgument(0));
         return order;
     }
 
     @Test
-    void theOwnerCancelsTheirOrder() {
+    void theOwnerAsksEvenBeforeRelease() {
+        // 4B-5 (17 §4.8): the customer never cancels on their own - not even before release; Sales decides.
         UUID customer = UUID.randomUUID();
         var order = orderOf(customer);
+        when(requests.save(any())).thenAnswer(call -> call.getArgument(0));
 
         var outcome = service.cancelOwn(order.id().value(), customer, null, null, UUID.randomUUID());
 
-        assertThat(outcome.result()).isEqualTo(CancellationOutcome.Result.CANCELLED);
-        assertThat(order.status()).isEqualTo(OrderStatus.CANCELLED);
-        assertThat(order.cancellationReasonCode()).isEqualTo(CancellationReasonCode.CUSTOMER_REQUEST);
-        verify(repository).save(order);
-        verify(requests, never()).save(any());
+        assertThat(outcome.result()).isEqualTo(CancellationOutcome.Result.REQUESTED);
+        assertThat(order.status()).as("unchanged until Sales decides").isNotEqualTo(OrderStatus.CANCELLED);
+        verify(repository, never()).save(any());
     }
 
     @Test
@@ -99,23 +100,6 @@ class CancelOwnOrderTest {
                 .isInstanceOfSatisfying(BusinessException.class,
                         ex -> assertThat(ex.errorCode()).isEqualTo(ErrorCode.ORDER_CANCELLATION_REQUEST_PENDING));
         verify(requests, never()).save(any());
-    }
-
-    @Test
-    void aPaymentFailureCancellationClosesThePendingRequest() {
-        var order = released(UUID.randomUUID());
-        when(repository.save(any())).thenAnswer(call -> call.getArgument(0));
-        var pending = com.stockflow.order.internal.domain.CancellationRequest.open(order.id().value(),
-                UUID.randomUUID(), CancellationReasonCode.CUSTOMER_REQUEST, null, NOW);
-        when(requests.findPending(order.id().value())).thenReturn(Optional.of(pending));
-
-        service.cancelAfterPaymentFailure(order.id().value(), "BANK_REJECTED");
-
-        assertThat(order.status()).isEqualTo(OrderStatus.CANCELLED);
-        verify(requests).save(pending);
-        assertThat(pending.status()).isEqualTo(com.stockflow.order.internal.domain.CancellationRequestStatus.EXPIRED);
-        assertThat(pending.decidedBy()).isNull();
-        assertThat(pending.decisionNote()).isEqualTo("Closed: the order was cancelled.");
     }
 
     private Order released(UUID customerId) {
@@ -160,7 +144,7 @@ class CancelOwnOrderTest {
         assertThatThrownBy(() -> service.cancelOwn(order.id().value(), UUID.randomUUID(), null, "x", null))
                 .isInstanceOfSatisfying(BusinessException.class,
                         ex -> assertThat(ex.errorCode()).isEqualTo(ErrorCode.NOT_FOUND));
-        assertThat(order.status()).isEqualTo(OrderStatus.DRAFT);
+        assertThat(order.status()).isEqualTo(OrderStatus.PENDING_PAYMENT);
         verify(repository, never()).save(any());
     }
 

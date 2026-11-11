@@ -59,7 +59,7 @@ class AreaController {
 
     @PutMapping("/areas/{areaId}")
     @Operation(summary = "Move, resize or retype an area",
-            description = "A full replacement: location.storageClass left out goes back to NORMAL. "
+            description = "A full replacement. "
                 + "NON_STORAGE to a storage type creates the location; a storage type to "
                 + "NON_STORAGE is 409 AREA_TYPE_CHANGE_NOT_ALLOWED. Off the map: 409 "
                 + "LAYOUT_OUT_OF_BOUNDS (BR-06). Overlapping a shelf or area that is not INACTIVE: "

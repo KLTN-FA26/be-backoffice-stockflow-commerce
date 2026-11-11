@@ -28,7 +28,8 @@ class CustomerServiceImplTest {
         var service = new CustomerServiceImpl(customers, search, identities,
                 mock(com.stockflow.customer.internal.domain.CreditProfileRepository.class),
                 mock(com.stockflow.customer.internal.domain.CustomerStatusHistory.class), java.time.Clock.systemUTC(),
-                mock(com.stockflow.customer.internal.domain.CustomerChangeLog.class));
+                mock(com.stockflow.customer.internal.domain.CustomerChangeLog.class),
+                mock(com.stockflow.customer.internal.domain.PaymentScheduleRepository.class));
 
         assertThatThrownBy(() -> service.register(new RegisterCustomerCommand("Customer",
                 "Customer@Example.com", "0901234567", "StrongPass1")))
@@ -50,7 +51,8 @@ class CustomerServiceImplTest {
         return new CustomerServiceImpl(customers, mock(CustomerSearchRepository.class), mock(PortalAccountService.class),
                 mock(com.stockflow.customer.internal.domain.CreditProfileRepository.class),
                 mock(com.stockflow.customer.internal.domain.CustomerStatusHistory.class), java.time.Clock.systemUTC(),
-                mock(com.stockflow.customer.internal.domain.CustomerChangeLog.class));
+                mock(com.stockflow.customer.internal.domain.CustomerChangeLog.class),
+                mock(com.stockflow.customer.internal.domain.PaymentScheduleRepository.class));
     }
 
     @Test

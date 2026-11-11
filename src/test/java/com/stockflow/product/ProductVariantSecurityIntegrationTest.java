@@ -40,7 +40,7 @@ import java.util.UUID;
 @AutoConfigureMockMvc
 @TestPropertySource(properties = "stockflow.security.enabled=true")
 class ProductVariantSecurityIntegrationTest {
-    private static final String TEST_ROLE = "INVENTORY_PLANNER";
+    private static final String TEST_ROLE = "ACCOUNTANT";
 
     @Autowired MockMvc mvc;
     @MockitoBean JwtDecoder decoder;

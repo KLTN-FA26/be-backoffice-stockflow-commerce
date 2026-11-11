@@ -42,8 +42,8 @@ END $$;
 
 -- Packing units: a carton of 10 sofas, a carton of 5 tables, and a case of 4 sofas nobody uses.
 INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, length_cm, width_cm, height_cm, weight_kg)
-VALUES (md5('qa:unit:SOFA-CARTON')::uuid, md5('demo:item:SOFA-3S-GREY')::uuid, 'CARTON', 10, 60, 40, 50, 12),
-       (md5('qa:unit:TABLE-CARTON')::uuid, md5('demo:item:TABLE-OAK-160')::uuid, 'CARTON', 5, 80, 60, 40, 30),
+VALUES (md5('qa:unit:SOFA-CARTON')::uuid, md5('demo:item:SOFA-3S-GREY')::uuid, 'QA_CARTON', 10, 60, 40, 50, 12),
+       (md5('qa:unit:TABLE-CARTON')::uuid, md5('demo:item:TABLE-OAK-160')::uuid, 'QA_CARTON', 5, 80, 60, 40, 30),
        (md5('qa:unit:SOFA-CASE')::uuid, md5('demo:item:SOFA-3S-GREY')::uuid, 'CASE', 4, NULL, NULL, NULL, NULL);
 -- The supplier's old carton of 10 sofas, retired during the run (docs 01 edge case "NCC đổi quy cách thùng").
 INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)
@@ -55,8 +55,8 @@ SELECT pg_temp.expect_ok('K1 received into stock: RECEIVING, counted, then IN_ST
     INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, received_qty, location_code)
     VALUES (md5('qa:pk:1')::uuid, 'QA-LPN-1', md5('demo:item:SOFA-3S-GREY')::uuid, md5('qa:unit:SOFA-CARTON')::uuid, 10, 10, 'HCM-A01-1-A');
     UPDATE inventory.stock_package SET status = 'IN_STOCK' WHERE id = md5('qa:pk:1')::uuid;
-    INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, created_at, received_at, stock_package_id)
-    VALUES (md5('qa:pk:1:row')::uuid, 'SOFA-3S-GREY', 'HCM-A01-1-A', 10, 0, 'AVAILABLE', NOW(), NOW() - interval '1 hour', md5('qa:pk:1')::uuid) $q$);
+    INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at, received_at, stock_package_id)
+    VALUES (md5('qa:pk:1:row')::uuid, 'SOFA-3S-GREY', 'HCM-A01-1-A', 'UNTRACED', 10, 0, 'AVAILABLE', NOW(), NOW() - interval '1 hour', md5('qa:pk:1')::uuid) $q$);
 SELECT pg_temp.expect_fail('K2 the stock package moved without its rows', $q$
     UPDATE inventory.stock_package SET location_code = 'HCM-A01-1-B' WHERE id = md5('qa:pk:1')::uuid $q$);
 SELECT pg_temp.expect_fail('K3 a row moved out from under its stock package', $q$
@@ -64,15 +64,15 @@ SELECT pg_temp.expect_fail('K3 a row moved out from under its stock package', $q
 SELECT pg_temp.expect_ok('K4 the stock package moved with its rows, one transaction', $q$
     UPDATE inventory.stock_package SET location_code = 'HCM-A01-1-B' WHERE id = md5('qa:pk:1')::uuid;
     UPDATE inventory.stock_item SET location_code = 'HCM-A01-1-B' WHERE stock_package_id = md5('qa:pk:1')::uuid $q$);
-SELECT pg_temp.expect_fail('K5 an unopened stock package loses stock', $q$
+SELECT pg_temp.expect_fail('K5 a whole stock package in stock loses stock', $q$
     UPDATE inventory.stock_item SET on_hand = 9 WHERE id = md5('qa:pk:1:row')::uuid $q$);
-SELECT pg_temp.expect_fail('K6 part of an unopened stock package leaves for QC', $q$
+SELECT pg_temp.expect_fail('K6 part of a stock package in stock leaves for QC', $q$
     UPDATE inventory.stock_item SET on_hand = 6 WHERE id = md5('qa:pk:1:row')::uuid;
-    INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, created_at, received_at)
-    VALUES (gen_random_uuid(), 'SOFA-3S-GREY', 'HCM-QC01', 4, 0, 'QUARANTINE', NOW(), NOW() - interval '1 hour') $q$);
+    INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at, received_at)
+    VALUES (gen_random_uuid(), 'SOFA-3S-GREY', 'HCM-QC01', 'UNTRACED', 4, 0, 'QUARANTINE', NOW(), NOW() - interval '1 hour') $q$);
 SELECT pg_temp.expect_fail('K7 a row of another SKU put into it', $q$
-    INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, expiry_date, on_hand, reserved, status, created_at, received_at, stock_package_id)
-    VALUES (gen_random_uuid(), 'TABLE-OAK-160', 'HCM-A01-1-B', 'L1', CURRENT_DATE + 30, 1, 0, 'AVAILABLE', NOW(), NOW() - interval '1 hour', md5('qa:pk:1')::uuid) $q$);
+    INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at, received_at, stock_package_id)
+    VALUES (gen_random_uuid(), 'TABLE-OAK-160', 'HCM-A01-1-B', 'L1', 1, 0, 'AVAILABLE', NOW(), NOW() - interval '1 hour', md5('qa:pk:1')::uuid) $q$);
 SELECT pg_temp.expect_fail('K8 counted again once in stock', $q$
     UPDATE inventory.stock_package SET received_qty = 9 WHERE id = md5('qa:pk:1')::uuid $q$);
 SELECT pg_temp.expect_fail('K9 its LPN changed', $q$
@@ -81,39 +81,40 @@ SELECT pg_temp.expect_fail('K10 a second stock package with the same LPN', $q$
     INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, location_code)
     VALUES (gen_random_uuid(), 'QA-LPN-1', md5('demo:item:SOFA-3S-GREY')::uuid, md5('qa:unit:SOFA-CARTON')::uuid, 10, 'HCM-A01-1-A') $q$);
 SELECT pg_temp.expect_fail('K11 emptied but left IN_STOCK', $q$
-    UPDATE inventory.stock_package SET unopened = FALSE WHERE id = md5('qa:pk:1')::uuid;
     UPDATE inventory.stock_item SET on_hand = 0 WHERE id = md5('qa:pk:1:row')::uuid $q$);
 SELECT pg_temp.expect_fail('K12 CONSUMED while still holding stock', $q$
-    UPDATE inventory.stock_package SET unopened = FALSE, status = 'CONSUMED', closed_at = NOW() WHERE id = md5('qa:pk:1')::uuid $q$);
-SELECT pg_temp.expect_ok('K13 opened, and part of it leaves for QC as loose stock', $q$
-    UPDATE inventory.stock_package SET unopened = FALSE WHERE id = md5('qa:pk:1')::uuid;
+    UPDATE inventory.stock_package SET status = 'CONSUMED', closed_at = NOW() WHERE id = md5('qa:pk:1')::uuid $q$);
+-- V20261111000200 (team plan 4C-2): a carton is taken whole; one in stock is never opened (QA 41).
+SELECT pg_temp.expect_fail('K13 part of it leaves for QC as loose stock, the rest staying in an IN_STOCK carton', $q$
     UPDATE inventory.stock_item SET on_hand = 6 WHERE id = md5('qa:pk:1:row')::uuid;
-    INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, created_at, received_at)
-    VALUES (gen_random_uuid(), 'SOFA-3S-GREY', 'HCM-QC01', 4, 0, 'QUARANTINE', NOW(), NOW() - interval '1 hour') $q$);
-SELECT pg_temp.expect_fail('K14 an opened stock package marked unopened again', $q$
-    UPDATE inventory.stock_package SET unopened = TRUE WHERE id = md5('qa:pk:1')::uuid $q$);
+    INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at, received_at)
+    VALUES (gen_random_uuid(), 'SOFA-3S-GREY', 'HCM-QC01', 'UNTRACED', 4, 0, 'QUARANTINE', NOW(), NOW() - interval '1 hour') $q$);
+SELECT pg_temp.expect_true('K14 no stock package is ever opened: the flag is gone (V20261113000300, team plan 4C-3)',
+    'NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = ''inventory'' AND table_name = ''stock_package'' AND column_name = ''unopened'')');
 SELECT pg_temp.expect_ok('K15 emptied and CONSUMED in one transaction', $q$
     UPDATE inventory.stock_item SET on_hand = 0 WHERE id = md5('qa:pk:1:row')::uuid;
-    UPDATE inventory.stock_package SET status = 'CONSUMED', closed_at = NOW() WHERE id = md5('qa:pk:1')::uuid $q$);
-SELECT pg_temp.expect_fail('K16 CONSUMED back to IN_STOCK', $q$
+    UPDATE inventory.stock_package SET status = 'CONSUMED', closed_at = NOW()
+     WHERE id = md5('qa:pk:1')::uuid $q$);
+SELECT pg_temp.expect_fail('K16 CONSUMED back to IN_STOCK with only part of its count on its row', $q$
     UPDATE inventory.stock_package SET status = 'IN_STOCK', closed_at = NULL WHERE id = md5('qa:pk:1')::uuid;
     UPDATE inventory.stock_item SET on_hand = 6 WHERE id = md5('qa:pk:1:row')::uuid $q$);
 
 \echo '--- creation and lifecycle'
 SELECT pg_temp.expect_ok('K17 made in the warehouse (repacked): created IN_STOCK with its row', $q$
     INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, received_qty, location_code, status)
-    VALUES (md5('qa:pk:2')::uuid, 'QA-LPN-2', md5('demo:item:SOFA-3S-GREY')::uuid, md5('qa:unit:SOFA-CARTON')::uuid, 10, 4, 'HCM-A01-1-A', 'IN_STOCK');
-    INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, created_at, received_at, stock_package_id)
-    VALUES (md5('qa:pk:2:row')::uuid, 'SOFA-3S-GREY', 'HCM-A01-1-A', 4, 0, 'AVAILABLE', NOW(), NOW() - interval '2 hour', md5('qa:pk:2')::uuid) $q$);
+    VALUES (md5('qa:pk:2')::uuid, 'QA-LPN-2', md5('demo:item:SOFA-3S-GREY')::uuid, md5('qa:unit:SOFA-CARTON')::uuid, 10, 10, 'HCM-A01-1-A', 'IN_STOCK');
+    INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at, received_at, stock_package_id)
+    VALUES (md5('qa:pk:2:row')::uuid, 'SOFA-3S-GREY', 'HCM-A01-1-A', 'UNTRACED', 10, 0, 'AVAILABLE', NOW(), NOW() - interval '2 hour', md5('qa:pk:2')::uuid) $q$);
 SELECT pg_temp.expect_ok('K18 not found by a count (LOST, emptied), then found again', $q$
-    UPDATE inventory.stock_package SET unopened = FALSE WHERE id = md5('qa:pk:2')::uuid;
+    SET LOCAL stockflow.same_receipt_merge = '6bdfe88b-6a35-8c0c-3bca-a765468fd79e';
     UPDATE inventory.stock_item SET on_hand = 0 WHERE id = md5('qa:pk:2:row')::uuid;
-    UPDATE inventory.stock_package SET status = 'LOST', closed_at = NOW() WHERE id = md5('qa:pk:2')::uuid;
+    UPDATE inventory.stock_package SET status = 'LOST', closed_at = NOW()
+     WHERE id = md5('qa:pk:2')::uuid;
     UPDATE inventory.stock_package SET status = 'IN_STOCK', closed_at = NULL WHERE id = md5('qa:pk:2')::uuid;
-    UPDATE inventory.stock_item SET on_hand = 4 WHERE id = md5('qa:pk:2:row')::uuid $q$);
+    UPDATE inventory.stock_item SET on_hand = 10 WHERE id = md5('qa:pk:2:row')::uuid $q$);
 SELECT pg_temp.expect_fail('K19 created already CONSUMED (skipping the lifecycle)', $q$
-    INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, received_qty, location_code, status, unopened, closed_at)
-    VALUES (gen_random_uuid(), 'QA-LPN-19', md5('demo:item:SOFA-3S-GREY')::uuid, md5('qa:unit:SOFA-CARTON')::uuid, 10, 10, 'HCM-A01-1-A', 'CONSUMED', FALSE, NOW()) $q$);
+    INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, received_qty, location_code, status, closed_at)
+    VALUES (gen_random_uuid(), 'QA-LPN-19', md5('demo:item:SOFA-3S-GREY')::uuid, md5('qa:unit:SOFA-CARTON')::uuid, 10, 10, 'HCM-A01-1-A', 'CONSUMED', NOW()) $q$);
 SELECT pg_temp.expect_fail('K20 made in the base unit', $q$
     INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, location_code)
     SELECT gen_random_uuid(), 'QA-LPN-20', inventory_item_id, id, 1, 'HCM-A01-1-A' FROM inventory.uom_conversions
@@ -130,20 +131,20 @@ SELECT pg_temp.expect_fail('K23 in stock without having been counted', $q$
 SELECT pg_temp.expect_fail('K24 still RECEIVING but holding stock', $q$
     INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, location_code)
     VALUES (md5('qa:pk:24')::uuid, 'QA-LPN-24', md5('demo:item:SOFA-3S-GREY')::uuid, md5('qa:unit:SOFA-CARTON')::uuid, 10, 'HCM-A01-1-A');
-    INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, created_at, received_at, stock_package_id)
-    VALUES (gen_random_uuid(), 'SOFA-3S-GREY', 'HCM-A01-1-A', 3, 0, 'AVAILABLE', NOW(), NOW() - interval '3 hour', md5('qa:pk:24')::uuid) $q$);
+    INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at, received_at, stock_package_id)
+    VALUES (gen_random_uuid(), 'SOFA-3S-GREY', 'HCM-A01-1-A', 'UNTRACED', 3, 0, 'AVAILABLE', NOW(), NOW() - interval '3 hour', md5('qa:pk:24')::uuid) $q$);
 SELECT pg_temp.expect_fail('K25 two lots in one stock package', $q$
-    INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, received_qty, location_code, status, unopened)
-    VALUES (md5('qa:pk:25')::uuid, 'QA-LPN-25', md5('demo:item:TABLE-OAK-160')::uuid, md5('qa:unit:TABLE-CARTON')::uuid, 5, 5, 'HCM-A01-1-A', 'IN_STOCK', FALSE);
-    INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, expiry_date, on_hand, reserved, status, created_at, received_at, stock_package_id)
-    VALUES (gen_random_uuid(), 'TABLE-OAK-160', 'HCM-A01-1-A', 'L1', CURRENT_DATE + 30, 2, 0, 'AVAILABLE', NOW(), NOW() - interval '1 hour', md5('qa:pk:25')::uuid),
-           (gen_random_uuid(), 'TABLE-OAK-160', 'HCM-A01-1-A', 'L2', CURRENT_DATE + 30, 3, 0, 'AVAILABLE', NOW(), NOW() - interval '1 hour', md5('qa:pk:25')::uuid) $q$);
-SELECT pg_temp.expect_ok('K26 one lot received at two times in one stock package', $q$
-    INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, received_qty, location_code, status, unopened)
-    VALUES (md5('qa:pk:26')::uuid, 'QA-LPN-26', md5('demo:item:TABLE-OAK-160')::uuid, md5('qa:unit:TABLE-CARTON')::uuid, 5, 5, 'HCM-A01-1-A', 'IN_STOCK', FALSE);
-    INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, expiry_date, on_hand, reserved, status, created_at, received_at, stock_package_id)
-    VALUES (gen_random_uuid(), 'TABLE-OAK-160', 'HCM-A01-1-A', 'L1', CURRENT_DATE + 30, 2, 0, 'AVAILABLE', NOW(), NOW() - interval '1 hour', md5('qa:pk:26')::uuid),
-           (gen_random_uuid(), 'TABLE-OAK-160', 'HCM-A01-1-A', 'L1', CURRENT_DATE + 30, 3, 0, 'AVAILABLE', NOW(), NOW() - interval '3 hour', md5('qa:pk:26')::uuid) $q$);
+    INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, received_qty, location_code, status)
+    VALUES (md5('qa:pk:25')::uuid, 'QA-LPN-25', md5('demo:item:TABLE-OAK-160')::uuid, md5('qa:unit:TABLE-CARTON')::uuid, 5, 5, 'HCM-A01-1-A', 'IN_STOCK');
+    INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at, received_at, stock_package_id)
+    VALUES (gen_random_uuid(), 'TABLE-OAK-160', 'HCM-A01-1-A', 'L1', 2, 0, 'AVAILABLE', NOW(), NOW() - interval '1 hour', md5('qa:pk:25')::uuid),
+           (gen_random_uuid(), 'TABLE-OAK-160', 'HCM-A01-1-A', 'L2', 3, 0, 'AVAILABLE', NOW(), NOW() - interval '1 hour', md5('qa:pk:25')::uuid) $q$);
+SELECT pg_temp.expect_fail('K26 one lot received at two times in one stock package: a carton is one row (uk_stock_item_package, V20261113000300)', $q$
+    INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, received_qty, location_code, status)
+    VALUES (md5('qa:pk:26')::uuid, 'QA-LPN-26', md5('demo:item:TABLE-OAK-160')::uuid, md5('qa:unit:TABLE-CARTON')::uuid, 5, 5, 'HCM-A01-1-A', 'IN_STOCK');
+    INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at, received_at, stock_package_id)
+    VALUES (gen_random_uuid(), 'TABLE-OAK-160', 'HCM-A01-1-A', 'L1', 2, 0, 'AVAILABLE', NOW(), NOW() - interval '1 hour', md5('qa:pk:26')::uuid),
+           (gen_random_uuid(), 'TABLE-OAK-160', 'HCM-A01-1-A', 'L1', 3, 0, 'AVAILABLE', NOW(), NOW() - interval '3 hour', md5('qa:pk:26')::uuid) $q$);
 
 \echo '--- ledger (V20261020000300)'
 SELECT pg_temp.expect_fail('K27 a source stock package with no source location', $q$
@@ -159,104 +160,61 @@ SELECT pg_temp.expect_fail('K28b a movement naming a stock package at a bin it n
     INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, to_location_code, quantity, reference_type, reference_id, occurred_at, from_stock_package_id)
     VALUES (gen_random_uuid(), 'MOVE', 'SOFA-3S-GREY', 'HCM-A01-1-B', 'HCM-RCV01', 1, 'MOVE_TASK', gen_random_uuid(), NOW(), md5('qa:pk:2')::uuid) $q$);
 
-\echo '--- emptied rows stay in their stock package (V20261020000200)'
-SELECT pg_temp.expect_ok('K28c an emptied row left behind when the stock package moves', $q$
-    INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, created_at, received_at, stock_package_id)
-    VALUES (md5('qa:pk:2:empty')::uuid, 'SOFA-3S-GREY', 'HCM-A01-1-A', 0, 0, 'AVAILABLE', NOW(), NOW() - interval '5 hour', md5('qa:pk:2')::uuid);
+\echo '--- a carton is one stock row, wherever it is (V20261020000200; one row since V20261113000300, 20 BR-18)'
+SELECT pg_temp.expect_fail('K28c a second row, an emptied one, in the stock package (uk_stock_item_package)', $q$
+    INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at, received_at, stock_package_id)
+    VALUES (md5('qa:pk:2:empty')::uuid, 'SOFA-3S-GREY', 'HCM-A01-1-A', 'UNTRACED', 0, 0, 'AVAILABLE', NOW(), NOW() - interval '5 hour', md5('qa:pk:2')::uuid) $q$);
+SELECT pg_temp.expect_ok('K28d the stock package and its one row move together', $q$
     UPDATE inventory.stock_package SET location_code = 'HCM-A01-1-B' WHERE id = md5('qa:pk:2')::uuid;
     UPDATE inventory.stock_item SET location_code = 'HCM-A01-1-B' WHERE id = md5('qa:pk:2:row')::uuid $q$);
-SELECT pg_temp.expect_fail('K28d the emptied row filled again away from its stock package', $q$
-    UPDATE inventory.stock_item SET on_hand = 1 WHERE id = md5('qa:pk:2:empty')::uuid $q$);
-SELECT pg_temp.expect_ok('K28e one lot picked out, another put back into the stock package', $q$
-    UPDATE inventory.stock_item SET on_hand = 0 WHERE stock_package_id = md5('qa:pk:26')::uuid;
-    INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, expiry_date, on_hand, reserved, status, created_at, received_at, stock_package_id)
-    VALUES (gen_random_uuid(), 'TABLE-OAK-160', 'HCM-A01-1-A', 'L2', CURRENT_DATE + 30, 1, 0, 'AVAILABLE', NOW(), NOW() - interval '1 hour', md5('qa:pk:26')::uuid) $q$);
-SELECT pg_temp.expect_fail('K28f a second row of the emptied layer in the stock package, on its new bin', $q$
-    INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, created_at, received_at, stock_package_id)
-    SELECT gen_random_uuid(), sku, 'HCM-A01-1-B', 1, 0, 'AVAILABLE', NOW(), received_at, stock_package_id
-      FROM inventory.stock_item WHERE id = md5('qa:pk:2:empty')::uuid $q$);
-SELECT pg_temp.expect_ok('K28g the stock package back on the bin its emptied row never left', $q$
+SELECT pg_temp.expect_fail('K28e another lot put back into the stock package as a second row', $q$
+    INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at, received_at, stock_package_id)
+    VALUES (gen_random_uuid(), 'SOFA-3S-GREY', 'HCM-A01-1-B', 'L2', 1, 0, 'AVAILABLE', NOW(), NOW() - interval '1 hour', md5('qa:pk:2')::uuid) $q$);
+SELECT pg_temp.expect_fail('K28f a second row of the layer in the stock package, on its new bin', $q$
+    INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at, received_at, stock_package_id)
+    SELECT gen_random_uuid(), sku, 'HCM-A01-1-B', lot_number, 1, 0, 'AVAILABLE', NOW(), received_at, stock_package_id
+      FROM inventory.stock_item WHERE id = md5('qa:pk:2:row')::uuid $q$);
+SELECT pg_temp.expect_ok('K28g the stock package back on the bin it came from', $q$
     UPDATE inventory.stock_package SET location_code = 'HCM-A01-1-A' WHERE id = md5('qa:pk:2')::uuid;
     UPDATE inventory.stock_item SET location_code = 'HCM-A01-1-A' WHERE id = md5('qa:pk:2:row')::uuid $q$);
 
-\echo '--- purchase order lines record their unit (V20261020000400)'
-INSERT INTO procurement.purchase_orders (id, po_number, supplier_id, warehouse_id, currency, order_date)
-VALUES (md5('qa:pk:po:draft')::uuid, 'PO-QA-PK', md5('demo:supplier:GOVIET')::uuid, md5('demo:wh:HCM')::uuid, 'VND', CURRENT_DATE);
-SELECT pg_temp.expect_ok('U1 5 CARTON of 10 = 50 sofas', $q$
-    INSERT INTO procurement.purchase_order_lines (id, po_id, line_no, inventory_item_id, ordered_qty, unit_price, line_subtotal, line_net, line_total, uom_conversion_id, unit_qty)
-    VALUES (md5('qa:pk:po:line:1')::uuid, md5('qa:pk:po:draft')::uuid, 1, md5('demo:item:SOFA-3S-GREY')::uuid, 50, 1, 50, 50, 50, md5('qa:unit:SOFA-CARTON')::uuid, 5) $q$);
-SELECT pg_temp.expect_fail('U2 5 CARTON of 10 booked as 40', $q$
-    UPDATE procurement.purchase_order_lines SET ordered_qty = 40, line_subtotal = 40, line_net = 40, line_total = 40
-     WHERE id = md5('qa:pk:po:line:1')::uuid $q$);
-SELECT pg_temp.expect_ok('U3 a draft line changed to 3 CARTON = 30', $q$
-    UPDATE procurement.purchase_order_lines SET unit_qty = 3, ordered_qty = 30, line_subtotal = 30, line_net = 30, line_total = 30
-     WHERE id = md5('qa:pk:po:line:1')::uuid $q$);
-SELECT pg_temp.expect_fail('U4 a unit of another item', $q$
-    INSERT INTO procurement.purchase_order_lines (id, po_id, line_no, inventory_item_id, ordered_qty, unit_price, line_subtotal, line_net, line_total, uom_conversion_id, unit_qty)
-    VALUES (gen_random_uuid(), md5('qa:pk:po:draft')::uuid, 2, md5('demo:item:SOFA-3S-GREY')::uuid, 10, 1, 10, 10, 10, md5('qa:unit:TABLE-CARTON')::uuid, 2) $q$);
-SELECT pg_temp.expect_fail('U5 a unit without a unit quantity', $q$
-    INSERT INTO procurement.purchase_order_lines (id, po_id, line_no, inventory_item_id, ordered_qty, unit_price, line_subtotal, line_net, line_total, uom_conversion_id)
-    VALUES (gen_random_uuid(), md5('qa:pk:po:draft')::uuid, 2, md5('demo:item:SOFA-3S-GREY')::uuid, 10, 1, 10, 10, 10, md5('qa:unit:SOFA-CARTON')::uuid) $q$);
-SELECT pg_temp.expect_ok('U6 a line without a unit is still a base-unit line', $q$
-    INSERT INTO procurement.purchase_order_lines (id, po_id, line_no, inventory_item_id, ordered_qty, unit_price, line_subtotal, line_net, line_total)
-    VALUES (gen_random_uuid(), md5('qa:pk:po:draft')::uuid, 2, md5('demo:item:TABLE-OAK-160')::uuid, 7, 1, 7, 7, 7) $q$);
-SELECT pg_temp.expect_ok('U7 the revision freezes the unit with the line', $q$
-    INSERT INTO procurement.purchase_order_revisions (id, po_id, revision_no, snapshot_header, changed_by)
-    VALUES (md5('qa:pk:po:rev0')::uuid, md5('qa:pk:po:draft')::uuid, 0, '{}', md5('demo:user:editor')::uuid);
-    UPDATE procurement.purchase_order_lines SET po_revision_id = md5('qa:pk:po:rev0')::uuid WHERE po_id = md5('qa:pk:po:draft')::uuid;
-    INSERT INTO procurement.purchase_order_line_revisions (id, po_line_id, po_revision_id, inventory_item_id, uom, ordered_qty,
-        unit_price, tax_rate, discount_rate, line_subtotal, line_net, line_tax, line_total, uom_conversion_id, unit_qty)
-    SELECT gen_random_uuid(), l.id, l.po_revision_id, l.inventory_item_id, l.uom, l.ordered_qty, l.unit_price, l.tax_rate,
-           l.discount_rate, l.line_subtotal, l.line_net, l.line_tax, l.line_total, l.uom_conversion_id, l.unit_qty
-      FROM procurement.purchase_order_lines l WHERE l.po_id = md5('qa:pk:po:draft')::uuid $q$);
-SELECT pg_temp.expect_fail('U8 a revision whose unit quantity does not convert', $q$
-    INSERT INTO procurement.purchase_order_line_revisions (id, po_line_id, po_revision_id, inventory_item_id, uom, ordered_qty,
-        unit_price, tax_rate, discount_rate, line_subtotal, line_net, line_tax, line_total, uom_conversion_id, unit_qty)
-    VALUES (gen_random_uuid(), md5('qa:pk:po:line:1')::uuid, md5('qa:pk:po:rev0')::uuid, md5('demo:item:SOFA-3S-GREY')::uuid, 'EACH', 30,
-        1, 0, 0, 30, 30, 0, 30, md5('qa:unit:SOFA-CARTON')::uuid, 4) $q$);
-SELECT pg_temp.expect_ok('U8a a draft line in the old carton, before it is retired', $q$
-    INSERT INTO procurement.purchase_order_lines (id, po_id, line_no, inventory_item_id, ordered_qty, unit_price, line_subtotal, line_net, line_total, uom_conversion_id, unit_qty)
-    VALUES (md5('qa:pk:po:line:old')::uuid, md5('qa:pk:po:draft')::uuid, 3, md5('demo:item:SOFA-3S-GREY')::uuid, 20, 1, 20, 20, 20, md5('qa:unit:SOFA-OLD')::uuid, 2);
-    UPDATE inventory.uom_conversions SET active = FALSE WHERE id = md5('qa:unit:SOFA-OLD')::uuid $q$);
-SELECT pg_temp.expect_fail('U8b a new line in a retired unit', $q$
-    INSERT INTO procurement.purchase_order_lines (id, po_id, line_no, inventory_item_id, ordered_qty, unit_price, line_subtotal, line_net, line_total, uom_conversion_id, unit_qty)
-    VALUES (gen_random_uuid(), md5('qa:pk:po:draft')::uuid, 4, md5('demo:item:SOFA-3S-GREY')::uuid, 10, 1, 10, 10, 10, md5('qa:unit:SOFA-OLD')::uuid, 1) $q$);
-SELECT pg_temp.expect_fail('U8c a line moved onto a retired unit', $q$
-    UPDATE procurement.purchase_order_lines SET uom_conversion_id = md5('qa:unit:SOFA-OLD')::uuid, unit_qty = 3
-     WHERE id = md5('qa:pk:po:line:1')::uuid $q$);
-SELECT pg_temp.expect_ok('U8d a line already in the retired unit keeps it and is recounted', $q$
-    UPDATE procurement.purchase_order_lines SET unit_qty = 3, ordered_qty = 30, line_subtotal = 30, line_net = 30, line_total = 30
-     WHERE id = md5('qa:pk:po:line:old')::uuid $q$);
-
-\echo '--- receiving by the carton, putaway by the stock package (V20261020000400, 0500)'
--- demo:po:1 (10 sofas) submitted, approved and confirmed, as 02_procurement.sql does.
-INSERT INTO procurement.purchase_order_revisions (id, po_id, revision_no, kind, snapshot_header, changed_by)
-VALUES (md5('qa:pk:po1:rev0')::uuid, md5('demo:po:1')::uuid, 0, 'INITIAL', '{}', md5('demo:user:editor')::uuid);
-UPDATE procurement.purchase_order_lines SET po_revision_id = md5('qa:pk:po1:rev0')::uuid WHERE po_id = md5('demo:po:1')::uuid;
-INSERT INTO procurement.purchase_order_line_revisions (id, po_line_id, po_revision_id, inventory_item_id, uom, ordered_qty,
-    unit_price, tax_rate, discount_rate, line_subtotal, line_net, line_tax, line_total)
-SELECT gen_random_uuid(), l.id, l.po_revision_id, l.inventory_item_id, l.uom, l.ordered_qty, l.unit_price, l.tax_rate,
-       l.discount_rate, l.line_subtotal, l.line_net, l.line_tax, l.line_total
-  FROM procurement.purchase_order_lines l WHERE l.po_id = md5('demo:po:1')::uuid;
-UPDATE procurement.purchase_orders SET status = 'PENDING_APPROVAL', pending_revision_id = md5('qa:pk:po1:rev0')::uuid,
-    submitted_by = md5('demo:user:editor')::uuid, submitted_at = NOW() WHERE id = md5('demo:po:1')::uuid;
-INSERT INTO procurement.purchase_order_approvals (id, po_revision_id, approver_id, decision)
-VALUES (gen_random_uuid(), md5('qa:pk:po1:rev0')::uuid, md5('demo:user:approver')::uuid, 'APPROVED');
-UPDATE procurement.purchase_orders SET status = 'APPROVED', approved_by = md5('demo:user:approver')::uuid, approved_at = NOW(),
-    active_revision_id = pending_revision_id, pending_revision_id = NULL WHERE id = md5('demo:po:1')::uuid;
-UPDATE procurement.purchase_orders SET status = 'CONFIRMED', confirmed_by = md5('demo:user:approver')::uuid, confirmed_at = NOW()
- WHERE id = md5('demo:po:1')::uuid;
-INSERT INTO procurement.goods_receipts (id, receipt_number, po_id, po_revision_id, warehouse_id, received_at, received_by)
-VALUES (md5('qa:pk:gr')::uuid, 'GR-QA-PK', md5('demo:po:1')::uuid, md5('qa:pk:po1:rev0')::uuid, md5('demo:wh:HCM')::uuid, NOW(), md5('demo:user:editor')::uuid);
+\echo '--- receiving by the carton, putaway by the stock package (V20261020000400, 0500; purchase orders went with V20261113000200)'
+-- A production order of 5 cartons of 10 sofas at HCM, SENT with no sample to approve first, so goods may be received
+-- against it (procurement.check_goods_receipt). Its own rows are written with the row triggers off - the production
+-- order's rules are 21_production_orders.sql's - and its receipt is registered with it as 22_production_receipts.sql does.
+SET LOCAL session_replication_role = replica;
+INSERT INTO ordering.production_order (id, code, sales_order_id, delivery_batch_id, customer_id, producer_id,
+                                       receiving_warehouse_id, need_by_date, status, sample_approval_required,
+                                       sample_required_by_default, drawn_up_by, submitted_at, approved_by, approved_at, sent_at)
+VALUES (md5('qa:pk:prod')::uuid, 'PRD-20261109-9015', md5('qa:pk:so')::uuid, md5('qa:pk:batch')::uuid,
+        md5('qa:pk:cust')::uuid, md5('qa:pk:producer')::uuid, md5('demo:wh:HCM')::uuid, CURRENT_DATE + 30, 'SENT', FALSE,
+        FALSE, md5('demo:user:editor')::uuid, NOW(), md5('demo:user:approver')::uuid, NOW(), NOW());
+INSERT INTO ordering.production_order_line (id, production_order_id, order_line_id, sku, cartons, units_per_carton,
+                                            design_snapshot_id, print_file_checksum)
+VALUES (md5('qa:pk:prod:line')::uuid, md5('qa:pk:prod')::uuid, md5('qa:pk:ol')::uuid, 'SOFA-3S-GREY', 5, 10,
+        md5('qa:pk:snap')::uuid, repeat('d', 64));
+SET LOCAL session_replication_role = origin;
+INSERT INTO procurement.goods_receipts (id, receipt_number, receipt_type, production_order_id, warehouse_id, status,
+                                        received_at, received_by)
+VALUES (md5('qa:pk:gr')::uuid, 'GR-QA-PK', 'PRODUCTION', md5('qa:pk:prod')::uuid, md5('demo:wh:HCM')::uuid, 'DRAFT', NOW(),
+        md5('demo:user:editor')::uuid);
+INSERT INTO ordering.production_order_receipt (production_order_id, goods_receipt_id, receipt_number, status, opened_at)
+VALUES (md5('qa:pk:prod')::uuid, md5('qa:pk:gr')::uuid, 'GR-QA-PK', 'DRAFT', NOW());
+-- The old carton of 10 sofas is retired before anything was received in it.
+UPDATE inventory.uom_conversions SET active = FALSE WHERE id = md5('qa:unit:SOFA-OLD')::uuid;
 
 SELECT pg_temp.expect_fail('U9 received in a unit of another item', $q$
-    INSERT INTO procurement.goods_receipt_lines (id, receipt_id, po_line_id, inventory_item_id, location_id, received_qty, uom_conversion_id)
-    VALUES (gen_random_uuid(), md5('qa:pk:gr')::uuid, md5('demo:po:1:line:1')::uuid, md5('demo:item:SOFA-3S-GREY')::uuid,
-            md5('demo:loc:HCM-RCV01')::uuid, 10, md5('qa:unit:TABLE-CARTON')::uuid) $q$);
+    INSERT INTO procurement.goods_receipt_lines (id, receipt_id, production_order_line_id, inventory_item_id, location_id, received_qty, lot_number, uom_conversion_id)
+    VALUES (gen_random_uuid(), md5('qa:pk:gr')::uuid, md5('qa:pk:prod:line')::uuid, md5('demo:item:SOFA-3S-GREY')::uuid,
+            md5('demo:loc:HCM-RCV01')::uuid, 10, 'PRD-20261109-9015', md5('qa:unit:TABLE-CARTON')::uuid) $q$);
+SELECT pg_temp.expect_fail('U8b a new receipt line in a retired unit', $q$
+    INSERT INTO procurement.goods_receipt_lines (id, receipt_id, production_order_line_id, inventory_item_id, location_id, received_qty, lot_number, uom_conversion_id)
+    VALUES (gen_random_uuid(), md5('qa:pk:gr')::uuid, md5('qa:pk:prod:line')::uuid, md5('demo:item:SOFA-3S-GREY')::uuid,
+            md5('demo:loc:HCM-RCV01')::uuid, 10, 'PRD-20261109-9015', md5('qa:unit:SOFA-OLD')::uuid) $q$);
 SELECT pg_temp.expect_ok('U10 received in CARTON', $q$
-    INSERT INTO procurement.goods_receipt_lines (id, receipt_id, po_line_id, inventory_item_id, location_id, received_qty, uom_conversion_id)
-    VALUES (md5('qa:pk:grl')::uuid, md5('qa:pk:gr')::uuid, md5('demo:po:1:line:1')::uuid, md5('demo:item:SOFA-3S-GREY')::uuid,
-            md5('demo:loc:HCM-RCV01')::uuid, 10, md5('qa:unit:SOFA-CARTON')::uuid) $q$);
+    INSERT INTO procurement.goods_receipt_lines (id, receipt_id, production_order_line_id, inventory_item_id, location_id, received_qty, lot_number, uom_conversion_id)
+    VALUES (md5('qa:pk:grl')::uuid, md5('qa:pk:gr')::uuid, md5('qa:pk:prod:line')::uuid, md5('demo:item:SOFA-3S-GREY')::uuid,
+            md5('demo:loc:HCM-RCV01')::uuid, 10, 'PRD-20261109-9015', md5('qa:unit:SOFA-CARTON')::uuid) $q$);
 SELECT pg_temp.expect_fail('K29 a stock package naming a receipt line of another item', $q$
     INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, location_code, goods_receipt_line_id)
     VALUES (gen_random_uuid(), 'QA-LPN-29', md5('demo:item:TABLE-OAK-160')::uuid, md5('qa:unit:TABLE-CARTON')::uuid, 5, 'HCM-RCV01', md5('qa:pk:grl')::uuid) $q$);
@@ -280,7 +238,7 @@ SELECT pg_temp.expect_fail('K33a a putaway task naming a VOID stock package', $q
     VALUES (gen_random_uuid(), md5('qa:pk:gr')::uuid, md5('qa:pk:grl')::uuid, 'SOFA-3S-GREY', 10, 'PENDING', NOW(), md5('qa:pk:33a')::uuid) $q$);
 
 \echo '--- a retired unit stays for the documents already in it (V20261020000100, 0400)'
-SELECT pg_temp.expect_fail('U11 a receipt line newly put in a retired unit its PO line was not ordered in', $q$
+SELECT pg_temp.expect_fail('U11 a receipt line newly put in a retired unit (no purchase order line to excuse it any more)', $q$
     UPDATE procurement.goods_receipt_lines SET uom_conversion_id = md5('qa:unit:SOFA-OLD')::uuid WHERE id = md5('qa:pk:grl')::uuid $q$);
 SELECT pg_temp.expect_fail('K34 a stock package in a retired unit, made in the warehouse', $q$
     INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, location_code)
@@ -315,38 +273,37 @@ SELECT pg_temp.expect_true('F6 an item with stock packages is in use', $c$
     inventory.item_in_use(md5('demo:item:SOFA-3S-GREY')::uuid, 'SOFA-3S-GREY') $c$);
 
 \echo '--- documents name their carton; a carton holds no more than was counted; one row per carton (V20261022000100)'
-SELECT pg_temp.expect_ok('D1 an opened carton counted in at 6, holding 6, on HCM-A01-1-A', $q$
-    INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, received_qty, location_code, status, unopened)
-    VALUES (md5('qa:pk:doc')::uuid, 'QA-LPN-D1', md5('demo:item:SOFA-3S-GREY')::uuid, md5('qa:unit:SOFA-CARTON')::uuid, 10, 6, 'HCM-A01-1-A', 'IN_STOCK', FALSE);
-    INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, created_at, received_at, stock_package_id)
-    VALUES (md5('qa:pk:doc:row')::uuid, 'SOFA-3S-GREY', 'HCM-A01-1-A', 6, 0, 'AVAILABLE', NOW(), NOW() - interval '3 day', md5('qa:pk:doc')::uuid) $q$);
+SELECT pg_temp.expect_ok('D1 a whole carton counted in at 10, holding 10, on HCM-A01-1-A', $q$
+    INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, received_qty, location_code, status)
+    VALUES (md5('qa:pk:doc')::uuid, 'QA-LPN-D1', md5('demo:item:SOFA-3S-GREY')::uuid, md5('qa:unit:SOFA-CARTON')::uuid, 10, 10, 'HCM-A01-1-A', 'IN_STOCK');
+    INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at, received_at, stock_package_id)
+    VALUES (md5('qa:pk:doc:row')::uuid, 'SOFA-3S-GREY', 'HCM-A01-1-A', 'UNTRACED', 10, 0, 'AVAILABLE', NOW(), NOW() - interval '3 day', md5('qa:pk:doc')::uuid) $q$);
 SELECT pg_temp.expect_fail('D2 an adjustment naming a carton of another SKU', $q$
     INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, quantity_delta, reason_code, requested_by, stock_package_id)
-    VALUES (gen_random_uuid(), 'QA-ADJ-D2', 'HCM-A01-1-A', 'TABLE-OAK-160', -1, 'DAMAGED',
+    VALUES (gen_random_uuid(), 'QA-ADJ-D2', 'HCM-A01-1-A', 'TABLE-OAK-160', -10, 'DAMAGED',
             (SELECT id FROM identity.app_user ORDER BY id LIMIT 1), md5('qa:pk:doc')::uuid) $q$);
 SELECT pg_temp.expect_fail('D3 an adjustment naming a carton at another bin', $q$
     INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, quantity_delta, reason_code, requested_by, stock_package_id)
-    VALUES (gen_random_uuid(), 'QA-ADJ-D3', 'HCM-A01-1-B', 'SOFA-3S-GREY', -1, 'DAMAGED',
+    VALUES (gen_random_uuid(), 'QA-ADJ-D3', 'HCM-A01-1-B', 'SOFA-3S-GREY', -10, 'DAMAGED',
             (SELECT id FROM identity.app_user ORDER BY id LIMIT 1), md5('qa:pk:doc')::uuid) $q$);
-SELECT pg_temp.expect_ok('D4 an adjustment of that carton', $q$
+SELECT pg_temp.expect_ok('D4 an adjustment of that carton: the whole carton', $q$
     INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, quantity_delta, reason_code, requested_by, stock_package_id)
-    VALUES (gen_random_uuid(), 'QA-ADJ-D4', 'HCM-A01-1-A', 'SOFA-3S-GREY', -1, 'DAMAGED',
+    VALUES (gen_random_uuid(), 'QA-ADJ-D4', 'HCM-A01-1-A', 'SOFA-3S-GREY', -10, 'DAMAGED',
             (SELECT id FROM identity.app_user ORDER BY id LIMIT 1), md5('qa:pk:doc')::uuid) $q$);
-SELECT pg_temp.expect_ok('D5 a count with a line for the carton and one for the loose slot of the same bin', $q$
+SELECT pg_temp.expect_ok('D5 a count with a line for the carton', $q$
     INSERT INTO inventory.cycle_count (id, count_number, warehouse_id, trigger_type)
     SELECT md5('qa:cc:doc')::uuid, 'QA-CC-D5', id, 'MANUAL' FROM warehouse.warehouse WHERE prefix = 'HCM';
     INSERT INTO inventory.cycle_count_line (id, cycle_count_id, location_code, sku, expected_qty, stock_package_id)
-    VALUES (gen_random_uuid(), md5('qa:cc:doc')::uuid, 'HCM-A01-1-A', 'SOFA-3S-GREY', 6, md5('qa:pk:doc')::uuid),
-           (gen_random_uuid(), md5('qa:cc:doc')::uuid, 'HCM-A01-1-A', 'SOFA-3S-GREY', 0, NULL) $q$);
+    VALUES (gen_random_uuid(), md5('qa:cc:doc')::uuid, 'HCM-A01-1-A', 'SOFA-3S-GREY', 10, md5('qa:pk:doc')::uuid) $q$);
 SELECT pg_temp.expect_fail('D6 the same carton counted twice in one count', $q$
     INSERT INTO inventory.cycle_count_line (id, cycle_count_id, location_code, sku, expected_qty, stock_package_id)
-    VALUES (gen_random_uuid(), md5('qa:cc:doc')::uuid, 'HCM-A01-1-A', 'SOFA-3S-GREY', 6, md5('qa:pk:doc')::uuid) $q$);
-SELECT pg_temp.expect_fail('D7 an opened carton filled past what was counted into it', $q$
-    INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, created_at, received_at, stock_package_id)
-    VALUES (gen_random_uuid(), 'SOFA-3S-GREY', 'HCM-A01-1-A', 1, 0, 'AVAILABLE', NOW(), NOW() - interval '2 day', md5('qa:pk:doc')::uuid) $q$);
+    VALUES (gen_random_uuid(), md5('qa:cc:doc')::uuid, 'HCM-A01-1-A', 'SOFA-3S-GREY', 10, md5('qa:pk:doc')::uuid) $q$);
+SELECT pg_temp.expect_fail('D7 a carton in stock filled past what was counted into it', $q$
+    INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at, received_at, stock_package_id)
+    VALUES (gen_random_uuid(), 'SOFA-3S-GREY', 'HCM-A01-1-A', 'UNTRACED', 1, 0, 'AVAILABLE', NOW(), NOW() - interval '2 day', md5('qa:pk:doc')::uuid) $q$);
 SELECT pg_temp.expect_true('D8 the balance view reads the carton as one row', $c$
     (SELECT lpn || ':' || on_hand || ':' || reserved || ':' || available || ':' || unit_of_measure
-       FROM inventory.stock_package_balance WHERE stock_package_id = md5('qa:pk:doc')::uuid) = 'QA-LPN-D1:6:0:6:CARTON' $c$);
+       FROM inventory.stock_package_balance WHERE stock_package_id = md5('qa:pk:doc')::uuid) = 'QA-LPN-D1:10:0:10:QA_CARTON' $c$);
 
 \echo '--- permissions (V20261020000700)'
 SELECT pg_temp.expect_true('P1 SYSTEM_ADMIN holds every inventory-stock-packages permission', $c$

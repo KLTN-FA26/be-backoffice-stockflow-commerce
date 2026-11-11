@@ -10,5 +10,7 @@ public record TopProductResponse(
         @Schema(description = "Null when the product module no longer knows the SKU", example = "Paper cup 12oz")
         String productName,
         @Schema(description = "Units sold in the range, less cancelled orders", example = "1200") long quantitySold,
-        @Schema(description = "Revenue of those units, whole dong", example = "36000000") BigDecimal revenue) {
+        @Schema(description = "Revenue of those units before tax, whole dong", example = "36000000") BigDecimal revenue,
+        @Schema(description = "4B-3: cartons of lines placed by the carton, less cancelled orders; ranks a SKU after "
+                + "revenue", example = "24") long cartonsSold) {
 }

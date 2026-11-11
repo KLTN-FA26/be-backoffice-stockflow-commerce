@@ -42,14 +42,15 @@ public record EmailProperties(
     }
 
     /**
-     * @param enabled          switches the customer messages off without touching staff or supplier mail - for a
-     *                         staging server holding a copy of real customers, say. A message not sent for this
-     *                         reason is recorded as skipped, and not sent later when it is switched back on
+     * @param enabled          switches the customer messages off without touching staff or supplier mail. Off unless
+     *                         configured: customer e-mail is a later phase of the business documents, which keep
+     *                         only the in-app inbox for now. A message not sent for this reason is recorded as
+     *                         skipped, and not sent later when it is switched back on
      * @param maxAttempts      attempts of one message before it is given up (recorded as a terminal failure)
      * @param firstRetryDelay  the wait after the first failure worth retrying; doubled after each further one
      * @param maxRetryDelay    the longest wait between two attempts, whatever the provider's Retry-After says
      */
-    public record Customer(@DefaultValue("true") boolean enabled,
+    public record Customer(@DefaultValue("false") boolean enabled,
                            @DefaultValue("10") int maxAttempts,
                            @DefaultValue("PT1M") Duration firstRetryDelay,
                            @DefaultValue("PT6H") Duration maxRetryDelay) {

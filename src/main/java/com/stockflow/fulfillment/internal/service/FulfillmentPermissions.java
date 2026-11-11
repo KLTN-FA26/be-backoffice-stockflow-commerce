@@ -28,12 +28,6 @@ public final class FulfillmentPermissions {
      */
     public static final String PACKING = "fulfillment-packing";
 
-    /**
-     * READ: tasks held for a design-integrity check and their confirmed design files; UPDATE: re-verify and release
-     * the hold.
-     */
-    public static final String DESIGN_REVERIFICATION = "fulfillment-design-reverification";
-
     /** UPDATE: add and edit carriers in the carrier catalogue. */
     public static final String CARRIERS = "fulfillment-carriers";
 
@@ -47,13 +41,10 @@ public final class FulfillmentPermissions {
     public static final String LOAD_ESTIMATES = "fulfillment-load-estimates";
 
     /**
-     * CREATE: open a load; UPDATE: choose a shipment's carrier, put shipments on a load, scan and unscan parcels, and
-     * sign the manifest (handover).
+     * UPDATE: book a load plan's vehicle (and cancel the booking), start loading, scan and unscan parcels, scan off a
+     * parcel to unload, and sign the manifest (handover). Loads are born from confirmed plans: nothing opens one.
      */
     public static final String DISPATCH = "fulfillment-dispatch";
-
-    /** UPDATE: call a load off before it left. */
-    public static final String LOAD_CANCELLATIONS = "fulfillment-load-cancellations";
 
     /**
      * UPDATE: call a load plan, or one of its vehicles, off AFTER loading started - the controlled cancel, with a reason
@@ -61,6 +52,31 @@ public final class FulfillmentPermissions {
      * UNLOAD-DESIGN points 5-6; V20261102020100). Warehouse manager and system admin only.
      */
     public static final String CONTROLLED_CANCELLATIONS = "fulfillment-controlled-cancellations";
+
+    /**
+     * UPDATE: correct a load's waybill number after the vehicle left the warehouse, with a reason (3-2; kltn-docs 09
+     * BR-24 "sau khi rời kho chỉ Quản lý kho"; V20261108001400). Before that, recording it is
+     * {@link #DISPATCH}'s. Warehouse manager and system admin only.
+     */
+    public static final String WAYBILL_CORRECTIONS = "fulfillment-waybill-corrections";
+
+    /**
+     * READ: the import template and past imports; CREATE: preview and import a file of waybill numbers (3-3; kltn-docs
+     * 09 §4.4 "Nhập hàng loạt từ file"; V20261108001500). Dispatchers, warehouse managers and the system admin.
+     */
+    public static final String WAYBILL_IMPORTS = "fulfillment-waybill-imports";
+
+    /**
+     * READ: what carriers reported through their webhooks, and the error list; UPDATE: mark an error-list event dealt
+     * with, with a note (3-5; kltn-docs 09 §4.5 step 8; V20261108001700). Warehouse manager and system admin.
+     */
+    public static final String CARRIER_EVENTS = "fulfillment-carrier-events";
+
+    /**
+     * UPDATE: correct a shipment's outcome the carrier reported wrongly, DELIVERED ↔ DELIVERY_FAILED with a reason
+     * (3-6; kltn-docs 09 §4.3 step 5, E17; V20261108001800). Warehouse manager and system admin.
+     */
+    public static final String DELIVERY_CORRECTIONS = "fulfillment-delivery-corrections";
 
     /**
      * UPDATE: record a delivery outcome - on its own, RETURNED only; APPROVE: also DELIVERED and DELIVERY_FAILED, which
