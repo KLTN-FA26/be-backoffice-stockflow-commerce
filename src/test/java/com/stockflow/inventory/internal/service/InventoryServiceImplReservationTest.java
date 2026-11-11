@@ -123,10 +123,19 @@ class InventoryServiceImplReservationTest {
                 new StockAllocator.Candidate(item.id(), item.location(), item.lotNumber(), item.status(), item.available(), item.receivedAt(), UUID.randomUUID(), true)).toList());
     }
 
-    /** The cup's sellable, unheld units at HCM, as the warehouse's level lines read them. */
-    private void levelAtHcmIs(int units) {
-        when(repository.findLevelLinesBySku(CUP)).thenReturn(List.of(
-                new StockLevelLine(new LocationId("HCM-A01-1-A"), StockStatus.AVAILABLE, units, 0)));
+    /**
+     * The cup's sellable, unheld units at HCM, one whole free carton per argument on a pickable bin: the level line
+     * Inventory Level reads and the allocatable rows a warehouse promises from (review C4 P-1, {@link PickableStock}).
+     */
+    private List<StockItemRepository.Allocatable> levelAtHcmIs(int... cartons) {
+        when(repository.findLevelLinesBySku(CUP)).thenReturn(List.of(new StockLevelLine(
+                new LocationId("HCM-A01-1-A"), StockStatus.AVAILABLE, java.util.Arrays.stream(cartons).sum(), 0)));
+        List<StockItemRepository.Allocatable> allocatable = java.util.Arrays.stream(cartons)
+                .mapToObj(units -> new StockItemRepository.Allocatable(StockItemId.newId(), CUP.code(), "HCM-A01-1-A",
+                        units))
+                .toList();
+        when(repository.findAllocatable(anyCollection())).thenReturn(allocatable);
+        return allocatable;
     }
 
     private static SkuReservation hold(String sku, int units) {
@@ -195,11 +204,23 @@ class InventoryServiceImplReservationTest {
         @Test
         @DisplayName("units in doubt at a recount (a picker came up short) are not promised")
         void frozenUnitsAreNotPromised() {
-            levelAtHcmIs(100);
+            StockItemRepository.Allocatable doubtful = levelAtHcmIs(85, 15).get(1);
             when(cycleCounts.frozen(anyCollection())).thenReturn(List.of(
-                    new CycleCountRepository.Frozen(UUID.randomUUID(), "CUP-12OZ", "HCM-A01-1-A", 15)));
+                    new CycleCountRepository.Frozen(doubtful.id().value(), "CUP-12OZ", "HCM-A01-1-A", 15)));
 
             assertThat(hold(9, 10).cartonsHeld()).isEqualTo(8);
+        }
+
+        @Test
+        @DisplayName("a carton on a location no release allocates from is on hand, never promised (review C4 P-1)")
+        void cartonOffThePickableBinsIsNotPromised() {
+            when(repository.findLevelLinesBySku(CUP)).thenReturn(List.of(
+                    new StockLevelLine(new LocationId("HCM-QC01"), StockStatus.AVAILABLE, 50, 0)));
+            when(repository.findAllocatable(anyCollection())).thenReturn(List.of(
+                    new StockItemRepository.Allocatable(StockItemId.newId(), CUP.code(), "HCM-QC01", 50)));
+
+            assertThat(hold(1, 10).cartonsHeld()).isZero();
+            verify(skuReservations, never()).save(any());
         }
 
         @Test
