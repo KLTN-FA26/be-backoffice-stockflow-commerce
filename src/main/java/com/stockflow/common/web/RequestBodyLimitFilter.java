@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.stockflow.common.api.ApiResponse;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.i18n.Messages;
+import com.stockflow.common.logging.LogSafe;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ReadListener;
 import jakarta.servlet.ServletException;
@@ -118,8 +119,8 @@ public final class RequestBodyLimitFilter extends OncePerRequestFilter {
     }
 
     private void refuse(HttpServletRequest request, HttpServletResponse response, ErrorCode code) throws IOException {
-        log.warn("{} {} refused before its body was read: {}", request.getMethod(), request.getRequestURI(),
-                code.name());
+        log.warn("{} {} refused before its body was read: {}", LogSafe.text(request.getMethod()),
+                LogSafe.text(request.getRequestURI()), code.name());
         response.setStatus(code.httpStatus());
         response.setContentType("application/json");
         response.setCharacterEncoding(StandardCharsets.UTF_8.name());

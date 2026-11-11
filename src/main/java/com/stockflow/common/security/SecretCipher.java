@@ -10,7 +10,7 @@ import javax.crypto.Cipher;
 import javax.crypto.SecretKey;
 import javax.crypto.spec.GCMParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
-import java.nio.ByteBuffer;
+import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
 import java.security.SecureRandom;
@@ -89,9 +89,12 @@ public class SecretCipher {
             Cipher cipher = Cipher.getInstance(TRANSFORMATION);
             cipher.init(Cipher.ENCRYPT_MODE, current, new GCMParameterSpec(TAG_BITS, nonce));
             cipher.updateAAD(context.getBytes(StandardCharsets.UTF_8));
-            byte[] sealed = cipher.doFinal(secret.getBytes(StandardCharsets.UTF_8));
-            return VERSION + Base64.getEncoder().encodeToString(ByteBuffer.allocate(nonce.length + sealed.length)
-                    .put(nonce).put(sealed).array());
+            // nonce || ciphertext || tag, appended rather than sized from the sum of two lengths: no arithmetic on an
+            // array the random source filled (CodeQL java/uncontrolled-arithmetic).
+            ByteArrayOutputStream stored = new ByteArrayOutputStream();
+            stored.writeBytes(nonce);
+            stored.writeBytes(cipher.doFinal(secret.getBytes(StandardCharsets.UTF_8)));
+            return VERSION + Base64.getEncoder().encodeToString(stored.toByteArray());
         } catch (GeneralSecurityException impossible) {
             // AES-GCM is mandatory in every JDK; only a broken runtime gets here.
             throw new IllegalStateException("AES-GCM is unavailable", impossible);

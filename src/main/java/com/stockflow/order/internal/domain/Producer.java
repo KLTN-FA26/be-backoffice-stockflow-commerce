@@ -28,7 +28,6 @@ public final class Producer {
     public static final int DEFAULT_LEAD_DAYS = 14;
 
     private static final Pattern CODE = Pattern.compile("[A-Z0-9][A-Z0-9_-]{1,31}");
-    private static final Pattern EMAIL = Pattern.compile("[^@\\s]+@[^@\\s]+\\.[^@\\s]+");
 
     private final UUID id;
     private final String code;
@@ -92,7 +91,7 @@ public final class Producer {
             throw invalid("A producer has a name of at most 200 characters");
         }
         String newEmail = text(details.email(), 254);
-        if (newEmail != null && !EMAIL.matcher(newEmail).matches()) {
+        if (newEmail != null && !isEmail(newEmail)) {
             throw invalid("The e-mail address is not one");
         }
         Channel newChannel = details.channel() == null ? Channel.EMAIL : details.channel();
@@ -120,6 +119,39 @@ public final class Producer {
     /** Whether a new production order may name it. */
     public boolean takesOrders() {
         return status == Status.ACTIVE;
+    }
+
+    /**
+     * The shape {@code [^@\s]+@[^@\s]+\.[^@\s]+}: no whitespace, exactly one '@' with something before it, and a dot
+     * after it with something on both sides. Checked in one pass over the characters rather than by that regular
+     * expression, whose two {@code [^@\s]+} around the dot backtrack over each other: quadratic on a domain of many
+     * dots (CodeQL {@code java/polynomial-redos}). The 254-character bound kept it cheap; this keeps it linear.
+     */
+    static boolean isEmail(String value) {
+        int at = -1;
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            // Java's \s: space, tab, line feed, vertical tab, form feed, carriage return.
+            if (c == ' ' || c == '\t' || c == '\n' || c == '\013' || c == '\f' || c == '\r') {
+                return false;
+            }
+            if (c == '@') {
+                if (at >= 0) {
+                    return false;
+                }
+                at = i;
+            }
+        }
+        if (at < 1) {
+            return false;
+        }
+        // A dot with at least one character of the domain before it and one after it.
+        for (int i = at + 2; i < value.length() - 1; i++) {
+            if (value.charAt(i) == '.') {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** Trimmed, null when blank; refused when longer than {@code max}. */

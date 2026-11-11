@@ -9,6 +9,7 @@ import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.security.WarehouseScope;
 import com.stockflow.common.id.Identifiers;
+import com.stockflow.common.logging.LogSafe;
 import com.stockflow.common.persistence.Pages;
 import com.stockflow.common.persistence.SortWhitelist;
 import com.stockflow.inventory.api.CountReceivingPackagesCommand;
@@ -516,7 +517,8 @@ class StockOperationsServiceImpl implements StockOperations {
                         .ofLot(row.lotId()).leaving(carton.id()).arriving(carton.id()));
             }
         }
-        log.info("Quarantined carton {} ({} x {}) from {} into {}", normal, onHand, unit.sku(), from, to);
+        log.info("Quarantined carton {} ({} x {}) from {} into {}", LogSafe.text(normal), onHand, unit.sku(), from,
+                LogSafe.text(to));
         return view(carton, unit, onHand);
     }
 
