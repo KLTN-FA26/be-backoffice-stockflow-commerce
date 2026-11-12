@@ -20,6 +20,7 @@ import com.stockflow.invoicing.internal.domain.InvoiceParty;
 import com.stockflow.order.api.ReturnRequestLookup;
 import com.stockflow.order.api.ReturnRequestReference;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
@@ -247,8 +248,12 @@ public class EInvoiceCorrections {
      *
      * <p>A return is taken off once: a second call for the same return - the event delivered again - draws nothing up,
      * even if its drafts were voided since.</p>
+     *
+     * <p>A transaction of its own: its caller, the return's listener, must commit the announcement of what is left to
+     * the accountant even when the invoice's rules refuse the adjustment - a refusal joining the caller's transaction
+     * would mark it rollback-only and the announcement would go with it.</p>
      */
-    @Transactional
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
     public ReturnAdjustments drawUpForReturn(ReturnResolved resolved) {
         Map<UUID, Long> remaining = new LinkedHashMap<>();
         for (ReturnResolved.Line line : resolved.lines()) {
