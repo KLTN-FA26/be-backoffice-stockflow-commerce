@@ -2432,6 +2432,12 @@ class FtlDispatchIntegrationTest {
         Map<String, Object> settlement = jdbc.queryForMap("SELECT kind, fee_amount, fee_covered_amount, "
                 + "refundable_amount, collected_amount FROM payment.order_settlement WHERE order_id = ?", orderId);
         assertThat(settlement).containsEntry("kind", "REMAINDER_CLOSED");
+        // F7: by hand - 2 cartons x 2 pieces x 6,000,000, no VAT, all paid on signing; nothing was owed, so nothing
+        // is reduced, the fee is covered whole and no fee item is raised.
+        assertThat(order.total().amount()).isEqualByComparingTo("24000000");
+        amounts(settlement(orderId), 24_000_000, 24_000_000, 0, 24_000_000, 4_000_000, 4_000_000, 20_000_000, 0);
+        assertThat(settlement(orderId).get("fee_installment_id")).isNull();
+        assertThat(installments(orderId)).containsExactly("1 ON_SIGNING PAID 24000000/24000000/0");
         assertThat((BigDecimal) settlement.get("fee_amount")).isEqualByComparingTo("4000000");
         assertThat((BigDecimal) settlement.get("fee_covered_amount")).isEqualByComparingTo("4000000");
         assertThat((BigDecimal) settlement.get("collected_amount")).isEqualByComparingTo(collected);
@@ -2447,6 +2453,7 @@ class FtlDispatchIntegrationTest {
         assertThat(settlements.settleFailedDelivery(orderId)).isFalse();
         assertThat(orders.findById(orderId).orElseThrow().status()).isEqualTo(OrderStatus.RETURNED);
 
+        assertThat(refundRefused(orderId, new BigDecimal("20000001"))).isEqualTo(REFUND_EXCEEDS_REFUNDABLE);
         // The accountant records the refund (15 §4.5 step 16): the order follows it.
         UUID accountant = staff("ACCOUNTANT");
         context.getBean(com.stockflow.payment.internal.service.RefundService.class).record(
@@ -2458,6 +2465,150 @@ class FtlDispatchIntegrationTest {
         assertThat(settlements.failedDeliveryCandidates(0, 1000)).doesNotContain(orderId);
         assertThat(jdbc.queryForObject("SELECT refunded_at IS NOT NULL FROM ordering.customer_order WHERE id = ?",
                 Boolean.class, orderId)).as("what the closing run counts its delay from").isTrue();
+    }
+
+    // ---- F7: the money of a cancellation, every amount worked out by hand ---------------------------------------
+
+    private static final com.stockflow.common.error.ErrorCode REFUND_EXCEEDS_REFUNDABLE =
+            com.stockflow.common.error.ErrorCode.REFUND_EXCEEDS_REFUNDABLE;
+
+    /** The order's one settlement row. */
+    private Map<String, Object> settlement(UUID orderId) {
+        return jdbc.queryForMap("SELECT id, kind, collected_amount, closed_amount, reduced_amount, surplus_amount, "
+                + "fee_amount, fee_covered_amount, refundable_amount, fee_owed_amount, fee_installment_id "
+                + "FROM payment.order_settlement WHERE order_id = ?", orderId);
+    }
+
+    /**
+     * Every amount of a settlement against constants, in whole dong. Constants on purpose: compared with a sum read
+     * back from the same tables, the settlement would agree with any arithmetic.
+     */
+    private static void amounts(Map<String, Object> settlement, long collected, long closed, long reduced,
+                                long surplus, long fee, long covered, long refundable, long owed) {
+        Map<String, Long> wanted = new java.util.LinkedHashMap<>();
+        wanted.put("collected_amount", collected);
+        wanted.put("closed_amount", closed);
+        wanted.put("reduced_amount", reduced);
+        wanted.put("surplus_amount", surplus);
+        wanted.put("fee_amount", fee);
+        wanted.put("fee_covered_amount", covered);
+        wanted.put("refundable_amount", refundable);
+        wanted.put("fee_owed_amount", owed);
+        wanted.forEach((column, amount) -> assertThat((BigDecimal) settlement.get(column)).as(column)
+                .isEqualByComparingTo(BigDecimal.valueOf(amount)));
+    }
+
+    /** Each installment of the order as {@code seq milestone status amount/paid/reduced}, in whole dong, by seq. */
+    private List<String> installments(UUID orderId) {
+        return jdbc.queryForList("SELECT seq || ' ' || milestone || ' ' || status || ' ' || amount::bigint || '/' "
+                + "|| paid_amount::bigint || '/' || reduced_amount::bigint FROM payment.installment "
+                + "WHERE order_id = ? ORDER BY seq", String.class, orderId);
+    }
+
+    private void recordRefund(UUID orderId, BigDecimal amount) {
+        UUID accountant = staff("ACCOUNTANT");
+        context.getBean(com.stockflow.payment.internal.service.RefundService.class).record(
+                new com.stockflow.payment.internal.service.RefundService.RecordRefundCommand(orderId, amount,
+                        LocalDate.now(ConfirmedOrders.VIETNAM), "FT" + UUID.randomUUID().toString().replace("-", "")
+                        .substring(0, 16).toUpperCase(java.util.Locale.ROOT), null, accountant));
+    }
+
+    /** The error a refund of {@code amount} is refused with, or null when it is recorded. */
+    private com.stockflow.common.error.ErrorCode refundRefused(UUID orderId, BigDecimal amount) {
+        Throwable refused = catchThrowable(() -> recordRefund(orderId, amount));
+        return refused instanceof com.stockflow.common.error.BusinessException e ? e.errorCode() : null;
+    }
+
+    private static String cancelKeeping(long fee) {
+        return "{\"note\":\"Khách không nhận lại hàng\",\"agreedFee\":{\"amount\":" + fee + ",\"reason\":"
+                + "\"Hàng đã in theo thiết kế\",\"detail\":\"Theo điều khoản hợp đồng, thống nhất với khách\"}}";
+    }
+
+    @Test
+    @DisplayName("F7 money, paid in part: 30% on signing (7,200,000, paid) and 70% after delivery (16,800,000, not "
+            + "due); a fee above the goods closed is refused before anything changes; cancelled keeping 10,000,000 - "
+            + "closed 24,000,000, the installment after delivery reduced whole and CANCELLED, surplus 7,200,000 "
+            + "covers part of the fee, nothing refundable, 2,800,000 owed on a CANCELLATION_FEE item (seq 21, DUE)")
+    void aFailedDeliveryOfAnOrderPaidInPartIsCancelled() throws Exception {
+        UUID customer = tx.execute(s -> ReferenceRows.customer(entityManager));
+        UUID accountant = staff("ACCOUNTANT");
+        tx.executeWithoutResult(s -> jdbc.update("""
+                INSERT INTO customer.credit_profile (id, customer_id, credit_limit, credit_term_days, approved_by,
+                                                     approved_at)
+                VALUES (?, ?, 10000000000, 30, ?, NOW())""", Identifiers.newId(), customer, accountant));
+        OrderSummary order = ftlOrder(2, customer, List.of(
+                new SalesContracts.Installment("Deposit", "ON_SIGNING", null, new BigDecimal("30"), 0, null),
+                new SalesContracts.Installment("After delivery", "AFTER_DELIVERY", null, new BigDecimal("70"), 10,
+                        null)));
+        UUID orderId = order.orderId();
+        assertThat(installments(orderId)).containsExactly("1 ON_SIGNING PAID 7200000/7200000/0",
+                "2 AFTER_DELIVERY NOT_DUE 16800000/0/0");
+        UUID shipment = handedOver(order, ghn)[0];
+        failedAndCameBack(shipment, "CUSTOMER_ABSENT");
+        UUID caseId = receivedBack(shipment, null);
+        String cancellation = failures(orderId) + "/" + caseId + "/cancellation";
+
+        sales(body(post(cancellation), cancelKeeping(24_000_001))).andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("VALIDATION_FAILED"));
+        assertThat(orders.findById(orderId).orElseThrow().status()).isEqualTo(OrderStatus.ON_HOLD);
+        assertThat(caseRow(caseId)).containsEntry("status", "OPEN");
+
+        sales(body(post(cancellation), cancelKeeping(10_000_000))).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("CANCELLED"));
+        Map<String, Object> settled = settlement(orderId);
+        amounts(settled, 7_200_000, 24_000_000, 16_800_000, 7_200_000, 10_000_000, 7_200_000, 0, 2_800_000);
+        assertThat(installments(orderId)).containsExactly("1 ON_SIGNING PAID 7200000/7200000/0",
+                "2 AFTER_DELIVERY CANCELLED 16800000/0/16800000", "21 CANCELLATION_FEE DUE 2800000/0/0");
+        assertThat(jdbc.queryForObject("SELECT id FROM payment.installment WHERE order_id = ? AND seq = 21",
+                UUID.class, orderId)).isEqualTo(settled.get("fee_installment_id"));
+        assertThat(jdbc.queryForObject("SELECT amount::bigint FROM payment.installment_reduction "
+                + "WHERE settlement_id = ?", Long.class, settled.get("id"))).isEqualTo(16_800_000L);
+        assertThat(refundRefused(orderId, BigDecimal.ONE)).as("nothing is refundable")
+                .isEqualTo(REFUND_EXCEEDS_REFUNDABLE);
+    }
+
+    @Test
+    @DisplayName("F7, part delivered: two batches of 2 cartons (48,000,000, paid on signing); batch 1 delivered, "
+            + "batch 2 fails and comes back; its goods cancelled keeping 3,000,000 - closed 24,000,000 (batch 2 "
+            + "only), refundable 21,000,000 not 45,000,000; the order back to DELIVERED, not RETURNED")
+    void aFailedBatchAfterADeliveredOneIsCancelled() throws Exception {
+        UUID customer = tx.execute(s -> ReferenceRows.customer(entityManager));
+        CustomerSkuRows.Issued sofa = sofaOf(customer);
+        CustomerSkuRows.stock(jdbc, tx, sofa.sku(), 2 * 4);
+        UUID orderId = confirmedOrders().pay(confirmedOrders().signedInBatches(customer, 2,
+                ConfirmedOrders.Line.cartons(sofa, 4, 6_000_000))).orderId();
+        assertThat(installments(orderId)).containsExactly("1 ON_SIGNING PAID 48000000/48000000/0");
+        List<UUID> batchIds = jdbc.queryForList("""
+                SELECT b.id FROM ordering.delivery_batch b JOIN ordering.sales_contract c ON c.id = b.contract_id
+                 WHERE c.order_id = ? ORDER BY b.seq""", UUID.class, orderId);
+        UUID[] first = handedOver(confirmedOrders().release(orderId, HCM, coordinator), ghn);
+        oc(body(post(BASE + "/shipments/" + first[0] + "/delivery-outcome"), "{\"outcome\":\"DELIVERED\"}"))
+                .andExpect(status().isOk());
+
+        OrderSummary second = WithCurrentUser.call(confirmedOrders().sales(), DataScope.ALL,
+                () -> context.getBean(OrderReleases.class).release(orderId, HCM, coordinator));
+        LocalDate today = LocalDate.now(ConfirmedOrders.VIETNAM);
+        UUID consent = ChatRows.message(jdbc, tx, customer, orderId, "CUSTOMER");
+        WithCurrentUser.call(confirmedOrders().sales(), DataScope.ALL, () -> context.getBean(
+                DeliveryBatchService.class).changeWindow(confirmedOrders().sales(), orderId, batchIds.get(1),
+                new DeliveryBatchService.WindowChange(today, today.plusDays(2), WindowChangeReason.CUSTOMER_REQUEST,
+                        "The customer takes it now", null, consent)));
+        UUID[] next = handedOver(second, ghtk);
+        failedAndCameBack(next[0], "CUSTOMER_ABSENT");
+        assertThat(orders.findById(orderId).orElseThrow().status()).isEqualTo(OrderStatus.ON_HOLD);
+        UUID caseId = receivedBack(next[0], null);
+        assertThat(caseRow(caseId)).containsEntry("delivery_batch_id", batchIds.get(1));
+
+        JsonNode cancelled = data(sales(body(post(failures(orderId) + "/" + caseId + "/cancellation"),
+                cancelKeeping(3_000_000))).andExpect(status().isOk()));
+        assertThat(cancelled.path("orderStatus").asText()).as("batch 1 arrived").isEqualTo("DELIVERED");
+        assertThat(orders.findById(orderId).orElseThrow().status()).isEqualTo(OrderStatus.DELIVERED);
+        assertThat(jdbc.queryForObject("SELECT SUM(cancelled_quantity) FROM ordering.order_line WHERE order_id = ?",
+                Integer.class, orderId)).as("batch 2's four pieces only").isEqualTo(4);
+        amounts(settlement(orderId), 48_000_000, 24_000_000, 0, 24_000_000, 3_000_000, 3_000_000, 21_000_000, 0);
+        assertThat(installments(orderId)).containsExactly("1 ON_SIGNING PAID 48000000/48000000/0");
+        assertThat(refundRefused(orderId, new BigDecimal("21000001"))).isEqualTo(REFUND_EXCEEDS_REFUNDABLE);
+        assertThat(refundRefused(orderId, new BigDecimal("21000000"))).isNull();
     }
 
     @Test
