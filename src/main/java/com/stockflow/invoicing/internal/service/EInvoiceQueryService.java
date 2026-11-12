@@ -12,12 +12,14 @@ import com.stockflow.invoicing.internal.domain.EInvoice;
 import com.stockflow.invoicing.internal.domain.EInvoiceQueries;
 import com.stockflow.invoicing.internal.domain.EInvoiceRepository;
 import com.stockflow.invoicing.internal.domain.ProviderCallLog;
+import com.stockflow.invoicing.internal.domain.TaxRateTotal;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
@@ -144,24 +146,61 @@ public class EInvoiceQueryService {
 
     /**
      * {@link #register} as CSV: UTF-8 with a byte-order mark so a spreadsheet reads the Vietnamese names, one header
-     * line, one line per invoice. Bulk data leaving the system, so it is audited.
+     * line, one line per invoice. After the invoice's totals come its amount and VAT under each rate the VAT return
+     * declares apart ({@code amount_0, vat_0 ... amount_10, vat_10, amount_other, vat_other}; empty where it has none),
+     * so the return is filled by summing columns. Bulk data leaving the system, so it is audited.
      */
     @Auditable(action = AuditAction.EXPORT, resourceType = "einvoice-register")
     public String registerCsv(LocalDate from, LocalDate to) {
         StringBuilder csv = new StringBuilder("\uFEFF");
         csv.append("template_code,symbol,invoice_number,issue_date,type,status,adjusted,buyer_name,buyer_tax_code,"
-                + "buyer_address,order_number,amount_before_tax,tax_amount,total_amount,tax_authority_code,"
-                + "lookup_code,original_invoice\r\n");
+                + "buyer_address,order_number,amount_before_tax,tax_amount,total_amount,");
+        for (String rate : DECLARED_RATE_LABELS) {
+            csv.append("amount_").append(rate).append(",vat_").append(rate).append(',');
+        }
+        csv.append("tax_authority_code,lookup_code,original_invoice\r\n");
         for (EInvoiceQueries.RegisterEntry entry : register(from, to)) {
-            csv.append(String.join(",", cell(entry.templateCode()), cell(entry.symbol()),
+            List<String> cells = new ArrayList<>(List.of(cell(entry.templateCode()), cell(entry.symbol()),
                     "%08d".formatted(entry.invoiceNumber()), DAY.format(entry.issueDate()), entry.type().name(),
                     entry.status().name(), Boolean.toString(entry.adjusted()), cell(entry.buyerName()),
                     cell(entry.buyerTaxCode()), cell(entry.buyerAddress()), cell(entry.orderNumber()),
-                    money(entry.subtotal()), money(entry.taxTotal()), money(entry.grandTotal()),
-                    cell(entry.taxAuthorityCode()), cell(entry.lookupCode()), cell(entry.originalReference())))
-                    .append("\r\n");
+                    money(entry.subtotal()), money(entry.taxTotal()), money(entry.grandTotal())));
+            cells.addAll(byDeclaredRate(entry.byRate()));
+            cells.addAll(List.of(cell(entry.taxAuthorityCode()), cell(entry.lookupCode()),
+                    cell(entry.originalReference())));
+            csv.append(String.join(",", cells)).append("\r\n");
         }
         return csv.toString();
+    }
+
+    /**
+     * The rates the VAT return declares apart, each a pair of columns in the register: 0%, 5%, the reduced 8%, 10%.
+     * Any other rate - none is in use - is summed under {@code other}, so the columns always add up to the invoice's.
+     */
+    private static final List<BigDecimal> DECLARED_RATES = List.of(BigDecimal.ZERO, BigDecimal.valueOf(5),
+            BigDecimal.valueOf(8), BigDecimal.TEN);
+    private static final List<String> DECLARED_RATE_LABELS = List.of("0", "5", "8", "10", "other");
+
+    /** Amount and VAT under each declared rate, then under {@code other}; an empty cell for a rate the invoice lacks. */
+    private static List<String> byDeclaredRate(List<TaxRateTotal> totals) {
+        BigDecimal[][] sums = new BigDecimal[DECLARED_RATE_LABELS.size()][];
+        for (TaxRateTotal total : totals) {
+            int column = DECLARED_RATES.size();
+            for (int i = 0; i < DECLARED_RATES.size(); i++) {
+                if (DECLARED_RATES.get(i).compareTo(total.taxRate()) == 0) {
+                    column = i;
+                    break;
+                }
+            }
+            BigDecimal[] pair = sums[column] == null ? new BigDecimal[] {BigDecimal.ZERO, BigDecimal.ZERO} : sums[column];
+            sums[column] = new BigDecimal[] {pair[0].add(total.amount()), pair[1].add(total.taxAmount())};
+        }
+        List<String> cells = new ArrayList<>();
+        for (BigDecimal[] pair : sums) {
+            cells.add(pair == null ? "" : money(pair[0]));
+            cells.add(pair == null ? "" : money(pair[1]));
+        }
+        return cells;
     }
 
     private static String money(BigDecimal amount) {

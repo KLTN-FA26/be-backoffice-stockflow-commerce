@@ -69,15 +69,34 @@ public interface EInvoiceQueries {
 
     /**
      * One issued invoice in the register of a period ("bảng kê hoá đơn"), as the accountant declares it: who it was
-     * issued to, and its amount and tax.
+     * issued to, and its amount and tax - in total and <b>by VAT rate</b>. The VAT return asks for the sales and the
+     * tax of each rate apart (0%, 5%, 10%, and the reduced 8%), and one invoice may carry lines at two rates; a
+     * register with one amount per invoice could not be declared from without opening every invoice.
      *
      * @param status ISSUED, or REPLACED for one another invoice has since replaced
+     * @param byRate the invoice's amount and tax at each rate of its lines, lowest rate first (signed, as the lines
+     *               are: an adjustment that reduces is below zero); empty for an invoice of note lines only
      */
     record RegisterEntry(String templateCode, String symbol, int invoiceNumber, LocalDate issueDate,
                          EInvoiceType type, EInvoiceStatus status, boolean adjusted, String buyerName,
                          String buyerTaxCode, String buyerAddress, String orderNumber, BigDecimal subtotal,
                          BigDecimal taxTotal, BigDecimal grandTotal, String taxAuthorityCode, String lookupCode,
-                         String originalReference) {
+                         String originalReference, List<TaxRateTotal> byRate) {
+
+        public RegisterEntry {
+            byRate = byRate == null ? List.of() : List.copyOf(byRate);
+        }
+
+        /** An entry whose amounts by rate are not known; they read as none. */
+        public RegisterEntry(String templateCode, String symbol, int invoiceNumber, LocalDate issueDate,
+                             EInvoiceType type, EInvoiceStatus status, boolean adjusted, String buyerName,
+                             String buyerTaxCode, String buyerAddress, String orderNumber, BigDecimal subtotal,
+                             BigDecimal taxTotal, BigDecimal grandTotal, String taxAuthorityCode, String lookupCode,
+                             String originalReference) {
+            this(templateCode, symbol, invoiceNumber, issueDate, type, status, adjusted, buyerName, buyerTaxCode,
+                    buyerAddress, orderNumber, subtotal, taxTotal, grandTotal, taxAuthorityCode, lookupCode,
+                    originalReference, List.of());
+        }
     }
 
     /** Every invoice issued with a date from {@code from} to {@code to}, both included, by symbol and number. */
