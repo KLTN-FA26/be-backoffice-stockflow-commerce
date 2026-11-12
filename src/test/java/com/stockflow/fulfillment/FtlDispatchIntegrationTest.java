@@ -2414,7 +2414,8 @@ class FtlDispatchIntegrationTest {
 
         // F5: a warehouse manager reads only the cases of goods that came back to their own warehouses - none of a
         // warehouse nothing came back to, and another warehouse's order is not found - while HCM's sees this one.
-        UUID managerElsewhere = staff("WAREHOUSE_MANAGER", tx.execute(s -> otherWarehouse()));
+        UUID elsewhere = tx.execute(s -> otherWarehouse());
+        UUID managerElsewhere = staff("WAREHOUSE_MANAGER", elsewhere);
         assertThat(data(as(managerElsewhere, "WAREHOUSE_MANAGER", get(ORDERS + "/delivery-failures"))
                 .andExpect(status().isOk()))).isEmpty();
         as(managerElsewhere, "WAREHOUSE_MANAGER", get(failures(orderId))).andExpect(status().isNotFound());
