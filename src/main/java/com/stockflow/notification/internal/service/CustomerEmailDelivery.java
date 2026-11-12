@@ -25,10 +25,13 @@ import java.util.Optional;
  * <pre>
  * 1. state         already sent, or settled (skipped, refused, given up)?  -> nothing to do
  * 2. switch        customer mail off?                                     -> SKIPPED  CUSTOMER_EMAIL_DISABLED
- * 3. addressee     CustomerDirectory, read now (never carried on the event)
+ * 3. addressee     CustomerDirectory, read now (never carried on the event); the message's own recipient when it
+ *                  names one (an issued e-invoice goes to the address the invoice names)
  *                  no customer / no address / malformed address          -> SKIPPED  NO_RECIPIENT / RECIPIENT_MISSING / RECIPIENT_INVALID
  * 4. render        a template that cannot render is a bug, not an outage -> FAILED, final  RENDER_FAILED
- * 5. send          idempotency key = the message's reference
+ * 5. attachments   read from the store now; the store not answering is an outage -> as a failure worth retrying,
+ *                  ATTACHMENT_UNAVAILABLE
+ * 6. send          idempotency key = the message's reference
  *      accepted                                                           -> SENT (+ provider id)
  *      refused for this message or for every message (bad key)          -> FAILED, final, the transport's code
  *      worth retrying, attempts left                                      -> FAILED, next attempt at, and THROWS
@@ -91,16 +94,17 @@ class CustomerEmailDelivery {
             return skip(message, message.recipientLabel(), "CUSTOMER_EMAIL_DISABLED");
         }
 
-        Optional<CustomerContact> contact = message.customerId() == null ? Optional.empty()
-                : customers.contact(message.customerId());
-        String raw = message.customerId() == null ? message.guestAddress() : contact.map(CustomerContact::email)
-                .orElse(null);
-        if (message.customerId() != null && contact.isEmpty()) {
-            return skip(message, message.recipientLabel(), "CUSTOMER_NOT_FOUND");
+        boolean guest = message.recipient() == null && message.customerId() == null;
+        Optional<CustomerContact> contact = message.recipient() != null ? message.recipient().resolve()
+                : guest ? Optional.empty() : customers.contact(message.customerId());
+        String raw = guest ? message.guestAddress() : contact.map(CustomerContact::email).orElse(null);
+        if (!guest && contact.isEmpty()) {
+            return skip(message, message.recipientLabel(),
+                    message.recipient() != null ? "SOURCE_NOT_FOUND" : "CUSTOMER_NOT_FOUND");
         }
         if (raw == null || raw.isBlank()) {
             return skip(message, message.recipientLabel(),
-                    message.customerId() == null ? "NO_RECIPIENT" : "RECIPIENT_MISSING");
+                    guest ? "NO_RECIPIENT" : "RECIPIENT_MISSING");
         }
         Optional<String> address = EmailAddress.usable(raw);
         if (address.isEmpty()) {
@@ -121,10 +125,21 @@ class CustomerEmailDelivery {
             return Outcome.GAVE_UP;
         }
 
+        List<Email.Attachment> attachments;
+        try {
+            attachments = message.attachments() == null ? List.of() : message.attachments().load();
+        } catch (RuntimeException unavailable) {
+            // The files are stored and locked; not reading them now is the store's outage, not the message's fault.
+            log.warn("Customer e-mail {}: its attachments could not be read ({})", reference,
+                    unavailable.getClass().getSimpleName());
+            return failed(message, recipient, attempt, "ATTACHMENT_UNAVAILABLE", true, null);
+        }
+
         EmailReceipt receipt;
         try {
             receipt = transport.send(new Email(properties.from(), List.of(recipient), properties.replyTo(),
-                    rendered.subject(), rendered.text(), rendered.html(), reference, message.category()));
+                    rendered.subject(), rendered.text(), rendered.html(), reference, message.category(),
+                    attachments));
         } catch (EmailDeliveryException failed) {
             return failed(message, recipient, attempt, failed.code(), failed.retryable(), failed.retryAfter());
         } catch (RuntimeException unexpected) {

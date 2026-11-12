@@ -10,9 +10,15 @@
  * {@code OrderDelivered} from {@code contracts}. Plus {@code common} and {@code contracts}, which are available to every
  * module.</p>
  *
- * <p>Nothing depends on this module yet. When the order's completion asks whether every delivered shipment has an
- * issued invoice (plan §4), the question is declared in {@code order :: api} and answered here, as payment's
- * {@code InstallmentOrders} is answered by order: order must not depend on a module that depends on it.</p>
+ * <p>{@code notification :: api}, only to answer its question about an issued invoice ({@code EInvoiceDirectory}:
+ * what the mail to the buyer says and its two files, WF-05 E5). Notification hears of an issued, a refused and a stuck
+ * invoice through {@code EInvoiceIssued} and {@code EInvoiceNeedsAttention} from {@code contracts}; this module sends
+ * nothing itself.</p>
+ *
+ * <p>Nothing depends on this module. The order's completion asks whether every delivered shipment has an issued
+ * invoice (plan §4): that question is declared in {@code order :: api} ({@code DeliveryInvoices}) and answered here,
+ * as payment's {@code InstallmentOrders} is answered by order: order must not depend on a module that depends on
+ * it.</p>
  *
  * <p>The provider is a port ({@code EInvoiceProvider}). {@code SandboxProvider} is the default at capstone scale and
  * issues nothing of legal value; a real provider (Viettel SInvoice, package E3) is another implementation of the same
@@ -25,5 +31,5 @@
  *       you reaching in; {@code ModularityTest} will.</li>
  * </ul>
  */
-@org.springframework.modulith.ApplicationModule(allowedDependencies = {"order :: api", "customer :: api"})
+@org.springframework.modulith.ApplicationModule(allowedDependencies = {"order :: api", "customer :: api", "notification :: api"})
 package com.stockflow.invoicing;

@@ -414,8 +414,11 @@ class CustomerEmailComposer {
         return content(m, code, addressee, documentNumber, facts, table, List.of());
     }
 
-    /** {@code documentNumber} goes into the subject and the intro: the order's, or the return's (RMA) number. */
-    private EmailContent content(ResourceBundle m, String code, String addressee, String documentNumber,
+    /**
+     * {@code documentNumber} goes into the subject and the intro: the order's, the return's (RMA) or the invoice's
+     * number. Package-private: {@link EInvoiceEmailComposer} words its message the same way.
+     */
+    EmailContent content(ResourceBundle m, String code, String addressee, String documentNumber,
                                  List<Fact> facts, Table table, List<String> extraOutro) {
         String number = documentNumber == null ? "" : documentNumber;
         String intro = m.getString("email." + code + ".intro").formatted(number);
@@ -517,7 +520,7 @@ class CustomerEmailComposer {
         return Optional.of(m.getString(prefix + code));
     }
 
-    private ResourceBundle bundle() {
+    ResourceBundle bundle() {
         return ResourceBundle.getBundle("i18n.messages", properties.locale());
     }
 
