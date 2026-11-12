@@ -245,6 +245,14 @@ class FtlDispatchIntegrationTest {
     }
     /** The order picked and packed at the check station, one shipment of all its cartons. Returns the shipment and task. */
     private UUID[] packed(OrderSummary order, boolean kits) throws Exception {
+        UUID task = picked(order);
+        // The check station (4C-6): start, scan the LPN of every picked carton, label, complete: one shipment.
+        UUID shipment = CartonStationSupport.ship(this::packer, jdbc, json, task, null);
+        return new UUID[] {shipment, task};
+    }
+
+    /** The order's task created, every carton picked to dispatch: the task PICKED, at the check station. */
+    private UUID picked(OrderSummary order) throws Exception {
         UUID task = UUID.fromString(data(oc(body(post(BASE + "/tasks"), "{\"orderId\":\"" + order.orderId()
                 + "\",\"assignedUserId\":\"" + picker + "\"}")).andExpect(status().isCreated())).path("taskId").asText());
         packer(post(BASE + "/tasks/" + task + "/picking-start")).andExpect(status().isOk());
@@ -256,9 +264,7 @@ class FtlDispatchIntegrationTest {
                             + "\"}")).andExpect(status().isOk());
         }
         packer(post(BASE + "/tasks/" + task + "/picking-completion")).andExpect(status().isOk());
-        // The check station (4C-6): start, scan the LPN of every picked carton, label, complete: one shipment.
-        UUID shipment = CartonStationSupport.ship(this::packer, jdbc, json, task, null);
-        return new UUID[] {shipment, task};
+        return task;
     }
 
     private static String ids(List<UUID> ids) {
@@ -1897,6 +1903,55 @@ class FtlDispatchIntegrationTest {
                 () -> context.getBean(DeliveryBatchService.class).schedule(orderId));
         assertThat(schedule.batches()).extracting(DeliveryBatchService.BatchView::state)
                 .containsExactly(DeliveryBatchService.BatchState.IN_DELIVERY, DeliveryBatchService.BatchState.IN_DELIVERY);
+    }
+
+    @Test
+    @DisplayName("WF4-X02 (08 §4.2 step 4, §4.4 step 8; WF4-PF-STATUS 2026-11-12): a carton damaged at the check station "
+            + "is removed; completing in full is refused (PACKING_INCOMPLETE); Sales allows partial delivery; completed in "
+            + "part with a note - a shipment of the labelled carton READY_TO_DISPATCH, the session still IN_PROGRESS, the "
+            + "order PARTIALLY_FULFILLED at once; that shipment planned, loaded and handed over - the order still "
+            + "PARTIALLY_FULFILLED, the rest to come")
+    void completedInPartAtTheCheckStation() throws Exception {
+        OrderSummary order = ftlOrder(2);
+        allowPartial(order, false);
+        UUID task = picked(order);
+        assertThat(orders.findById(order.orderId()).orElseThrow().status()).isEqualTo(OrderStatus.PICKING);
+        CartonStationSupport.startAndScanAll(this::packer, jdbc, task);
+        List<String> lpns = CartonStationSupport.pickedLpns(jdbc, task);
+        assertThat(lpns).hasSize(2);
+        CartonStationSupport.post(this::packer, BASE + "/tasks/" + task + "/cartons/" + lpns.get(1) + "/removal",
+                "{\"note\":\"móp góc\"}").andExpect(status().isOk());
+        CartonStationSupport.labelAll(this::packer, task);
+
+        CartonStationSupport.post(this::packer, BASE + "/tasks/" + task + "/packing-completion", "{}")
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("PACKING_INCOMPLETE"));
+        CartonStationSupport.post(this::packer, BASE + "/tasks/" + task + "/packing-completion",
+                "{\"partial\":true,\"note\":\"1 thùng móp, giao sau\"}").andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("PACK_PARTIAL_NOT_ALLOWED"));
+        assertThat(orders.findById(order.orderId()).orElseThrow().status()).as("refused: nothing changed")
+                .isEqualTo(OrderStatus.PICKING);
+
+        allowPartial(order, true);
+        JsonNode done = CartonStationSupport.completeOnly(this::packer, json, task,
+                "{\"partial\":true,\"note\":\"1 thùng móp, giao sau\"}");
+        UUID shipment = UUID.fromString(done.path("shipmentId").asText());
+        assertThat(jdbc.queryForMap("SELECT status, package_count, partial, partial_note FROM fulfillment.shipment "
+                + "WHERE id = ?", shipment)).containsEntry("status", "READY_TO_DISPATCH")
+                .containsEntry("package_count", 1).containsEntry("partial", true)
+                .containsEntry("partial_note", "1 thùng móp, giao sau");
+        assertThat(jdbc.queryForObject("SELECT status FROM fulfillment.pack WHERE pick_id = ?", String.class, task))
+                .isEqualTo("IN_PROGRESS");
+        assertThat(orders.findById(order.orderId()).orElseThrow().status()).as("at once, nothing handed over yet")
+                .isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
+
+        String load = loadOf(confirmed(List.of(shipment), truck5t), 1);
+        loadAll(load, ghn);
+        handOver(load).andExpect(status().isOk());
+        assertThat(shipmentStatus(shipment)).isEqualTo("HANDED_OVER");
+        OrderSummary after = orders.findById(order.orderId()).orElseThrow();
+        assertThat(after.status()).as("one sofa carton of two still to come").isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
+        assertThat(after.lifecycle().shipments()).singleElement()
+                .satisfies(s -> assertThat(s.shipmentId()).isEqualTo(shipment));
     }
 
     @Test

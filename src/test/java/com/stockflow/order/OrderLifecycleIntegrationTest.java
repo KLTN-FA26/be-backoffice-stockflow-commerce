@@ -343,6 +343,132 @@ class OrderLifecycleIntegrationTest {
         assertThat(orders.recordDelivery(order.orderId(), staff).status()).as("idempotent").isEqualTo(OrderStatus.DELIVERED);
     }
 
+    // ---- WF4-PF-STATUS (owner decision 2026-11-12, kltn-docs 08 §4.4 step 8) -------------------------------------
+
+    @Test
+    @DisplayName("WF4-PF-STATUS: completed in part at the check station - PARTIALLY_FULFILLED at once, the customer sees "
+            + "it in preparation and not shipped; the rest not closed before the part left; the part handed over - "
+            + "still PARTIALLY_FULFILLED, in transit; the rest packed - PACKED; handed over - SHIPPED")
+    void completedInPartThenTheRest() {
+        OrderSummary order = picking(4);
+        OrderSummary partial = orders.markPartlyPacked(order.orderId(), staff);
+        assertThat(partial.status()).isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
+        assertThat(partial.lifecycle().shipments()).as("nothing handed over yet").isEmpty();
+        assertThat(orders.markPartlyPacked(order.orderId(), staff).status()).as("again: nothing changes")
+                .isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
+        CustomerOrders.Detail seen = customerOrders.myOrder(customer, order.orderId());
+        assertThat(seen.statusGroup()).as("17 §5.2: Đang chuẩn bị").isEqualTo(CustomerOrders.StatusGroup.PREPARING);
+        assertThat(seen.deliveryState()).isEqualTo(CustomerOrders.DeliveryState.NOT_SHIPPED);
+        assertThat(card(order.orderId()).deliveryState()).as("the list row too")
+                .isEqualTo(CustomerOrders.DeliveryState.NOT_SHIPPED);
+        assertThat(code(catchThrowable(() -> orders.closeRemainder(order.orderId(), CancellationReasonCode.OUT_OF_STOCK,
+                null, staff)))).as("its packed part still at dispatch").isEqualTo(ErrorCode.ORDER_INVALID_TRANSITION);
+
+        UUID s1 = UUID.randomUUID();
+        UUID s2 = UUID.randomUUID();
+        assertThat(orders.recordHandover(order.orderId(), handover(order, s1, 1)).status())
+                .isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
+        assertThat(customerOrders.myOrder(customer, order.orderId()).deliveryState())
+                .isEqualTo(CustomerOrders.DeliveryState.IN_TRANSIT);
+        assertThat(card(order.orderId()).deliveryState()).isEqualTo(CustomerOrders.DeliveryState.IN_TRANSIT);
+        assertThat(orders.markPacked(order.orderId(), staff).status()).isEqualTo(OrderStatus.PACKED);
+        assertThat(orders.recordHandover(order.orderId(), handover(order, s2, 3)).status())
+                .isEqualTo(OrderStatus.SHIPPED);
+        assertThat(orders.history(order.orderId())).extracting(OrderStatusChange::to).endsWith(OrderStatus.PICKING,
+                OrderStatus.PARTIALLY_FULFILLED, OrderStatus.PACKED, OrderStatus.SHIPPED);
+    }
+
+    @Test
+    @DisplayName("WF4-PF-STATUS: completed in part - not cancelled, by staff or on the customer's request; held and "
+            + "resolved back to PARTIALLY_FULFILLED; the part handed over, the rest closed: SHIPPED")
+    void cancellationAndHoldWhenCompletedInPart() {
+        OrderSummary order = picking(3);
+        orders.markPartlyPacked(order.orderId(), staff);
+        assertThat(code(catchThrowable(() -> WithCurrentUser.run(TestUsers.admin(), DataScope.ALL, () -> orders.cancel(
+                order.orderId(), "TEST"))))).isEqualTo(ErrorCode.ORDER_NOT_CANCELLABLE);
+        assertThat(code(catchThrowable(() -> orders.cancelOwn(order.orderId(), customer,
+                CancellationReasonCode.CUSTOMER_REQUEST, null, staff)))).isEqualTo(ErrorCode.ORDER_NOT_CANCELLABLE);
+        assertThat(customerOrders.myOrder(customer, order.orderId()).allowedActions().requestCancellation()).isFalse();
+
+        assertThat(orders.putOnHold(order.orderId(), HoldReason.ADDRESS, "sai phường", staff).lifecycle()
+                .statusBeforeHold()).isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
+        assertThat(code(catchThrowable(() -> orders.markPartlyPacked(order.orderId(), staff))))
+                .isEqualTo(ErrorCode.ORDER_INVALID_TRANSITION);
+        assertThat(code(catchThrowable(() -> orders.recordHandover(order.orderId(),
+                handover(order, UUID.randomUUID(), 1))))).isEqualTo(ErrorCode.ORDER_INVALID_TRANSITION);
+        assertThat(orders.resolveHold(order.orderId(), "đúng địa chỉ", staff).status())
+                .isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
+
+        orders.recordHandover(order.orderId(), handover(order, UUID.randomUUID(), 2));
+        OrderSummary closed = orders.closeRemainder(order.orderId(), CancellationReasonCode.OUT_OF_STOCK, null, staff);
+        assertThat(closed.status()).isEqualTo(OrderStatus.SHIPPED);
+        assertThat(jdbc.queryForObject("SELECT cancelled_quantity FROM ordering.order_line WHERE order_id = ?",
+                Integer.class, order.orderId())).as("the shortfall only").isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("WF4-PF-STATUS with a delivery schedule (17 §4.5, BR-29): batch 1 completed in part - PARTIALLY_FULFILLED; "
+            + "batch 2 not released while batch 1 is not all handed over; batch 1's rest packed - PACKED, handed over - "
+            + "PARTIALLY_FULFILLED; batch 2 released and packed in full - PACKED; handed over in its window - SHIPPED")
+    void completedInPartWithADeliverySchedule() {
+        CustomerSkuRows.Issued pairs = CustomerSkuRows.issue(jdbc, tx, entityManager, customer, 2);
+        CustomerSkuRows.stock(jdbc, tx, pairs.sku(), 8);
+        UUID orderId = confirmedOrders.pay(confirmedOrders.signedInBatches(customer, 2,
+                ConfirmedOrders.Line.cartons(pairs, 4, PRICE))).orderId();
+        placed.add(orderId);
+        tx.executeWithoutResult(s -> jdbc.update(
+                "UPDATE ordering.customer_order SET allow_partial_shipment = TRUE WHERE id = ?", orderId));
+        confirmedOrders.release(orderId, DemoData.WAREHOUSE_HCM, staff);
+        OrderSummary order = orders.startPicking(orderId, staff);
+        List<UUID> batches = jdbc.queryForList("""
+                SELECT b.id FROM ordering.delivery_batch b JOIN ordering.sales_contract c ON c.id = b.contract_id
+                 WHERE c.order_id = ? ORDER BY b.seq""", UUID.class, orderId);
+
+        // Batch 1 (2 cartons, 4 pieces): one carton removed at the check station, the other completed in part.
+        assertThat(orders.markPartlyPacked(orderId, staff).status()).isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
+        assertThat(code(catchThrowable(() -> releaseNext(orderId)))).as("batch 1 is still in the warehouse")
+                .isEqualTo(ErrorCode.DELIVERY_BATCH_NOT_NEXT);
+        UUID s1 = UUID.randomUUID();
+        assertThat(orders.recordHandover(orderId, handover(order, s1, 2)).status())
+                .isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
+        assertThat(code(catchThrowable(() -> releaseNext(orderId)))).as("batch 1 is not all handed over")
+                .isEqualTo(ErrorCode.DELIVERY_BATCH_NOT_NEXT);
+
+        // Batch 1's rest: packed in full, handed over - batch 2 still to come.
+        assertThat(orders.markPacked(orderId, staff).status()).isEqualTo(OrderStatus.PACKED);
+        assertThat(orders.recordHandover(orderId, handover(order, UUID.randomUUID(), 2)).status())
+                .isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
+        assertThat(jdbc.queryForList("SELECT DISTINCT delivery_batch_id FROM ordering.order_shipment WHERE order_id = ?",
+                UUID.class, orderId)).containsExactly(batches.get(0));
+
+        // Batch 2: released while PARTIALLY_FULFILLED, packed in full, handed over once its window is open.
+        assertThat(releaseNext(orderId).status()).isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
+        assertThat(orders.markPacked(orderId, staff).status()).isEqualTo(OrderStatus.PACKED);
+        UUID s3 = UUID.randomUUID();
+        assertThat(code(catchThrowable(() -> orders.recordHandover(orderId, handover(order, s3, 4)))))
+                .isEqualTo(ErrorCode.DELIVERY_BATCH_WINDOW_NOT_OPEN);
+        java.time.LocalDate today = java.time.LocalDate.now(ConfirmedOrders.VIETNAM);
+        UUID consent = com.stockflow.support.ChatRows.message(jdbc, tx, customer, orderId, "CUSTOMER");
+        WithCurrentUser.call(confirmedOrders.sales(), DataScope.ALL, () -> context.getBean(
+                com.stockflow.order.internal.service.DeliveryBatchService.class).changeWindow(confirmedOrders.sales(),
+                orderId, batches.get(1), new com.stockflow.order.internal.service.DeliveryBatchService.WindowChange(today,
+                        today.plusDays(2), com.stockflow.order.internal.domain.WindowChangeReason.CUSTOMER_REQUEST,
+                        "Khách nhận sớm", null, consent)));
+        assertThat(orders.recordHandover(orderId, handover(order, s3, 4)).status()).isEqualTo(OrderStatus.SHIPPED);
+        assertThat(jdbc.queryForObject("SELECT delivery_batch_id FROM ordering.order_shipment WHERE id = ?", UUID.class,
+                s3)).isEqualTo(batches.get(1));
+    }
+
+    private OrderSummary releaseNext(UUID orderId) {
+        return WithCurrentUser.call(confirmedOrders.sales(), DataScope.ALL,
+                () -> releases.release(orderId, DemoData.WAREHOUSE_HCM, staff));
+    }
+
+    private CustomerOrders.Card card(UUID orderId) {
+        return customerOrders.myOrders(customer, new CustomerOrders.Query(0, 50, List.of(), null, null, null, null))
+                .items().stream().filter(c -> c.orderId().equals(orderId)).findFirst().orElseThrow();
+    }
+
     @Test
     @DisplayName("the database refuses a jump the state machine does not have, and holds the same edges")
     void triggerRefusesJumps() {

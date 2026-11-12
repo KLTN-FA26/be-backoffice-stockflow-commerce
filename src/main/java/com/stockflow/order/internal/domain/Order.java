@@ -572,7 +572,8 @@ public final class Order extends AggregateRoot {
 
     /**
      * Everything still to ship is packed (kltn-docs 08, 17 §5): READY_TO_FULFILL (printed goods only, or stock picked
-     * while printing), PICKING, or PARTIALLY_FULFILLED (the rest of a split order) → PACKED. Records that a package was
+     * while printing), PICKING, or PARTIALLY_FULFILLED (the rest of a split order - completed in part before, or a later
+     * delivery batch) → PACKED. Records that a package was
      * completed, the fact the cancellation rules read. Refused while the order is on hold: resolve it first.
      *
      * @return whether this changed the order
@@ -593,6 +594,36 @@ public final class Order extends AggregateRoot {
         transitionTo(OrderStatus.PACKED, by, null, at);
         recordPacked(at);
         return true;
+    }
+
+    /**
+     * Part of what the order wants now is packed (kltn-docs 08 §4.4 step 8; owner decision WF4-PF-STATUS, 2026-11-12):
+     * the check station completed with cartons missing - removed as damaged, or never picked - and Sales allowed the
+     * order to ship in parts. The order is PARTIALLY_FULFILLED from this moment, not only once that part is handed over:
+     * READY_TO_FULFILL or PICKING → PARTIALLY_FULFILLED; an order already PARTIALLY_FULFILLED (the rest of a split order,
+     * a later delivery batch) stays so. Handing the part over then leaves it PARTIALLY_FULFILLED while units are still to
+     * go ({@link #recordHandover}); the rest packed in full makes it PACKED ({@link #markPacked}), as any full
+     * completion. Records that a package was completed, the fact the cancellation rules read. Refused while the order is
+     * on hold - resolve it first - and from any status the check station does not complete in.
+     *
+     * @return whether this changed the order
+     */
+    public boolean markPartlyPacked(Instant at, UUID by) {
+        java.util.Objects.requireNonNull(at, "at");
+        requireNotCancelled("its package is not completed");
+        switch (status) {
+            case PARTIALLY_FULFILLED -> {
+                return recordPacked(at);
+            }
+            case READY_TO_FULFILL, PICKING -> {
+                transitionTo(OrderStatus.PARTIALLY_FULFILLED, by, null, at);
+                recordPacked(at);
+                return true;
+            }
+            case ON_HOLD -> throw new InvalidOrderTransitionException(orderNumber, status,
+                    "resolve the hold before packing");
+            default -> throw new InvalidOrderTransitionException(orderNumber, status, OrderStatus.PARTIALLY_FULFILLED);
+        }
     }
 
     /**
@@ -1229,7 +1260,8 @@ public final class Order extends AggregateRoot {
      * thiếu"; 17 §5 "Partially Fulfilled → chốt"): the units not shipped - never picked, or come back - will not be
      * delivered. The order then shows its shipments (SHIPPED, DELIVERY_FAILED, DELIVERED or RETURNED);
      * {@code OrderRemainderClosed} tells fulfillment to stop the rest; the money is settled on the contract's installments
-     * by payment in the caller's transaction (4B-9). Only from PARTIALLY_FULFILLED: an order on hold is resolved first.
+     * by payment in the caller's transaction (4B-9). Only from PARTIALLY_FULFILLED with a part handed over: an order on
+     * hold is resolved first.
      *
      * @return the value of the units closed
      */
@@ -1255,6 +1287,14 @@ public final class Order extends AggregateRoot {
             throw new InvalidOrderTransitionException(orderNumber, status,
                     status == OrderStatus.ON_HOLD ? "resolve the hold before closing the rest"
                             : "only a partly fulfilled order has a rest to close");
+        }
+        if (shipments.isEmpty()) {
+            // WF4-PF-STATUS (2026-11-12): a partial completion makes the order PARTIALLY_FULFILLED before anything is
+            // handed over. Its packed part waits at dispatch as a shipment the order does not know yet, so "every unit
+            // not shipped" would close that part too, and its handover would then be refused. The rest is closed once
+            // the packed part has left.
+            throw new InvalidOrderTransitionException(orderNumber, status,
+                    "hand the packed part over before closing the rest");
         }
         // Historical since team plan 4D-3: no order replaces a return's goods any more.
         if (code == CancellationReasonCode.REPLACEMENT_WITHDRAWN) {

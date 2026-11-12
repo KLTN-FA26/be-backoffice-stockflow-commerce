@@ -123,6 +123,26 @@ class CustomerOrdersMappingTest {
                 .isEqualTo(DeliveryState.NOT_SHIPPED);
     }
 
+    @Test
+    @DisplayName("WF4-PF-STATUS (08 §4.4, 2026-11-12): an order completed in part at the check station is "
+            + "PARTIALLY_FULFILLED before anything left - not shipped, in the detail and in a list row; in transit once "
+            + "a part was handed over")
+    void partiallyFulfilledBeforeAnythingLeft() {
+        var inTransit = shipment(com.stockflow.order.api.OrderShipmentStatus.HANDED_OVER);
+        assertThat(CustomerOrdersService.deliveryState(OrderStatus.PARTIALLY_FULFILLED, lifecycle(null, List.of())))
+                .as("detail, nothing handed over").isEqualTo(DeliveryState.NOT_SHIPPED);
+        assertThat(CustomerOrdersService.rowDeliveryState(OrderStatus.PARTIALLY_FULFILLED, lifecycle(null, List.of()),
+                false)).as("list row, nothing handed over").isEqualTo(DeliveryState.NOT_SHIPPED);
+        assertThat(CustomerOrdersService.rowDeliveryState(OrderStatus.PARTIALLY_FULFILLED, lifecycle(null, List.of()),
+                true)).as("list row, a part handed over").isEqualTo(DeliveryState.IN_TRANSIT);
+        assertThat(CustomerOrdersService.rowDeliveryState(OrderStatus.SHIPPED, lifecycle(null, List.of()), false))
+                .as("other statuses as before").isEqualTo(DeliveryState.IN_TRANSIT);
+        assertThat(CustomerOrdersService.deliveryState(OrderStatus.PARTIALLY_FULFILLED, lifecycle(null,
+                List.of(inTransit)))).isEqualTo(DeliveryState.IN_TRANSIT);
+        assertThat(CustomerOrdersService.statusGroup(OrderStatus.PARTIALLY_FULFILLED)).as("17 §5.2: Đang chuẩn bị")
+                .isEqualTo(StatusGroup.PREPARING);
+    }
+
     private static com.stockflow.order.api.OrderSummary.Lifecycle lifecycle(java.time.Instant completedAt,
             List<com.stockflow.order.api.OrderSummary.Shipment> shipments) {
         return new com.stockflow.order.api.OrderSummary.Lifecycle(null, null, null, null, null, null, null, completedAt,

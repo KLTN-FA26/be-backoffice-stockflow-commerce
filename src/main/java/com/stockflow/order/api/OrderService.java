@@ -65,6 +65,17 @@ public interface OrderService {
     OrderSummary markPacked(UUID orderId, UUID by);
 
     /**
+     * Part of what the order wants now is packed - the check station completed in part, the order allowing it (kltn-docs
+     * 08 §4.4 step 8; owner decision WF4-PF-STATUS, 2026-11-12): READY_TO_FULFILL / PICKING → PARTIALLY_FULFILLED at
+     * once; an order already PARTIALLY_FULFILLED stays so. Also records that a package was completed (the cancellation
+     * rules read it). Joins the caller's transaction and takes the order's row lock. Idempotent.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code ORDER_CANCELLED}; {@code ORDER_INVALID_TRANSITION},
+     *         also while the order is ON_HOLD
+     */
+    OrderSummary markPartlyPacked(UUID orderId, UUID by);
+
+    /**
      * Everything handed to the carrier at once, no shipment recorded on the order: PACKED → SHIPPED (09 BR-03).
      *
      * @throws com.stockflow.common.error.BusinessException {@code ORDER_BALANCE_NOT_PAID} when money due before the
@@ -194,7 +205,7 @@ public interface OrderService {
     /**
      * Close what is left of a partly fulfilled order (17 edge "short pick"): its units not shipped will not be
      * delivered; their stock holds are released, payment refunds money received above what the order is now worth
-     * ({@code OrderRemainderClosed}). Only from PARTIALLY_FULFILLED.
+     * ({@code OrderRemainderClosed}). Only from PARTIALLY_FULFILLED, once a part of it was handed over.
      */
     default OrderSummary closeRemainder(UUID orderId, CancellationReasonCode reasonCode, String note, UUID by) {
         return closeRemainder(orderId, reasonCode, note, null, by);

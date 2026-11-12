@@ -82,11 +82,14 @@ class CustomerOrdersService implements CustomerOrders {
         var page = search.search(criteria, Pages.of(query.page(), query.size(), SORT.parse(query.sort())));
         List<UUID> ids = page.getContent().stream().map(OrderSummary::orderId).toList();
         Map<UUID, Integer> lineCounts = search.lineCounts(ids);
+        // A row carries no shipments: whether a partly fulfilled order has handed anything over is asked for those only.
+        Set<UUID> handedOver = search.withShipments(page.getContent().stream()
+                .filter(row -> row.status() == OrderStatus.PARTIALLY_FULFILLED).map(OrderSummary::orderId).toList());
         var requests = cancellationRequests.latestStatuses(ids);
         return Pages.toResponse(page, row -> new Card(row.orderId(), row.orderNumber(), row.status(),
                 statusGroup(row.status(), row.lifecycle()), row.total().amount(),
                 row.total().currency().getCurrencyCode(), row.placedAt(), lineCounts.getOrDefault(row.orderId(), 0),
-                deliveryState(row.status(), row.lifecycle()),
+                rowDeliveryState(row.status(), row.lifecycle(), handedOver.contains(row.orderId())),
                 requests.containsKey(row.orderId()) ? requests.get(row.orderId()).name() : null));
     }
 
@@ -217,9 +220,23 @@ class CustomerOrdersService implements CustomerOrders {
     }
 
     /**
+     * A list row's delivery state. The row carries no shipments, so a PARTIALLY_FULFILLED order is told by
+     * {@code handedOver}: since WF4-PF-STATUS (2026-11-12) the order is partial from its partial completion at the check
+     * station, before anything left - not shipped yet; in transit once a part was handed over.
+     */
+    static DeliveryState rowDeliveryState(OrderStatus status, OrderSummary.Lifecycle lifecycle, boolean handedOver) {
+        if (status == OrderStatus.PARTIALLY_FULFILLED) {
+            return handedOver ? DeliveryState.IN_TRANSIT : DeliveryState.NOT_SHIPPED;
+        }
+        return deliveryState(status, lifecycle);
+    }
+
+    /**
      * Only what staff recorded: a shipped order is in transit until someone records its delivery. With shipments
      * (split, G4-Q3) it sums them up (09 BR-05): partly delivered once one arrived and another has not.
-     * {@code lifecycle} may be null (a list row without its shipments): the status alone decides then.
+     * {@code lifecycle} may be null: the status alone decides then. With a lifecycle its shipments are all the order
+     * has (an order read whole): a PARTIALLY_FULFILLED order with none was completed in part at the check station and
+     * nothing of it left yet (WF4-PF-STATUS, 2026-11-12) - not shipped. A list row is read by {@link #rowDeliveryState}.
      */
     static DeliveryState deliveryState(OrderStatus status, OrderSummary.Lifecycle lifecycle) {
         List<OrderSummary.Shipment> shipments = lifecycle == null ? List.of() : lifecycle.shipments();
@@ -233,7 +250,7 @@ class CustomerOrdersService implements CustomerOrders {
             case SHIPPED -> anyDelivered ? DeliveryState.PARTIALLY_DELIVERED : DeliveryState.IN_TRANSIT;
             case DELIVERY_FAILED -> anyDelivered ? DeliveryState.PARTIALLY_DELIVERED : DeliveryState.DELIVERY_FAILED;
             case PARTIALLY_FULFILLED, PACKED, ON_HOLD -> anyDelivered ? DeliveryState.PARTIALLY_DELIVERED
-                    : anyInTransit || status == OrderStatus.PARTIALLY_FULFILLED && shipments.isEmpty()
+                    : anyInTransit || status == OrderStatus.PARTIALLY_FULFILLED && lifecycle == null
                     ? DeliveryState.IN_TRANSIT
                     : anyFailed ? DeliveryState.DELIVERY_FAILED : DeliveryState.NOT_SHIPPED;
             case DELIVERED, COMPLETED, RETURN_REQUESTED -> DeliveryState.DELIVERED;

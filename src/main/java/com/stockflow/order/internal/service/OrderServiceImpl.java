@@ -566,6 +566,16 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
     }
 
     @Override
+    public OrderSummary markPartlyPacked(UUID orderId, UUID by) {
+        Order order = lockOrder(orderId);
+        if (!order.markPartlyPacked(clock.instant(), by)) {
+            return toSummary(order);
+        }
+        log.info("Order {}: packed in part, {}", order.orderNumber(), order.status());
+        return saved(order);
+    }
+
+    @Override
     public OrderSummary markShipped(UUID orderId, java.time.Instant handedOverAt, UUID by) {
         Order order = lockOrder(orderId);
         if (!order.markShipped(handedOverAt == null ? clock.instant() : handedOverAt, by, installmentsDue(order))) {

@@ -325,6 +325,145 @@ class OrderLifecycleTest {
     }
 
     @Nested
+    @DisplayName("completed in part at the check station (08 §4.4; WF4-PF-STATUS, 2026-11-12)")
+    class CompletedInPart {
+
+        private Order partlyPacked() {
+            Order order = picking();
+            order.markPartlyPacked(NOW, STAFF);
+            return order;
+        }
+
+        @Test
+        @DisplayName("PICKING → PARTIALLY_FULFILLED at once, before anything is handed over; packed for good; again: "
+                + "nothing changes")
+        void partiallyFulfilledAtOnce() {
+            Order order = picking();
+            order.pullTransitions();
+            assertThat(order.markPartlyPacked(NOW, STAFF)).isTrue();
+            assertThat(order.status()).isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
+            assertThat(order.shipments()).as("nothing handed over yet").isEmpty();
+            assertThat(order.packedAt()).isEqualTo(NOW);
+            assertThat(order.packedForGood()).isTrue();
+            assertThat(order.pullTransitions()).extracting(OrderTransition::from, OrderTransition::to,
+                    OrderTransition::actorId).containsExactly(org.assertj.core.groups.Tuple.tuple(OrderStatus.PICKING,
+                    OrderStatus.PARTIALLY_FULFILLED, STAFF));
+            assertThat(order.markPartlyPacked(NOW, STAFF)).isFalse();
+            assertThat(order.pullTransitions()).isEmpty();
+        }
+
+        @Test
+        @DisplayName("released and not picking yet (READY_TO_FULFILL): PARTIALLY_FULFILLED too")
+        void fromReadyToFulfill() {
+            Order order = order();
+            order.markPartlyPacked(NOW, STAFF);
+            assertThat(order.status()).isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
+        }
+
+        @Test
+        @DisplayName("the part handed over: still PARTIALLY_FULFILLED; the rest packed in full: PACKED; handed over: "
+                + "SHIPPED")
+        void partHandedOverThenTheRest() {
+            Order order = partlyPacked();
+            order.pullTransitions();
+            assertThat(order.recordHandover(handover(S1, cups(order), 6))).isTrue();
+            assertThat(order.status()).isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
+            assertThat(order.outstandingUnits()).isEqualTo(9);
+            assertThat(order.pullTransitions()).as("no transition at the handover").isEmpty();
+            assertThat(order.markPacked(NOW, STAFF)).isTrue();
+            assertThat(order.status()).isEqualTo(OrderStatus.PACKED);
+            order.recordHandover(handover(S2, cups(order), 4, lids(order), 5));
+            assertThat(order.status()).isEqualTo(OrderStatus.SHIPPED);
+            assertThat(order.shippedAt()).isEqualTo(NOW);
+        }
+
+        @Test
+        @DisplayName("the rest packed before the first part left: PACKED; the first part handed over: PARTIALLY_FULFILLED; "
+                + "the rest: SHIPPED")
+        void restPackedBeforeTheFirstPartLeft() {
+            Order order = partlyPacked();
+            order.markPacked(NOW, STAFF);
+            assertThat(order.status()).isEqualTo(OrderStatus.PACKED);
+            order.recordHandover(handover(S1, cups(order), 6));
+            assertThat(order.status()).isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
+            order.recordHandover(handover(S2, cups(order), 4, lids(order), 5));
+            assertThat(order.status()).isEqualTo(OrderStatus.SHIPPED);
+        }
+
+        @Test
+        @DisplayName("a second part completed while partial: stays PARTIALLY_FULFILLED")
+        void aSecondPart() {
+            Order order = partlyPacked();
+            order.recordHandover(handover(S1, cups(order), 6));
+            order.pullTransitions();
+            assertThat(order.markPartlyPacked(NOW, STAFF)).isFalse();
+            assertThat(order.status()).isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
+            assertThat(order.pullTransitions()).isEmpty();
+        }
+
+        @Test
+        @DisplayName("held from PARTIALLY_FULFILLED: no partial completion, no handover; resolved back to "
+                + "PARTIALLY_FULFILLED with nothing handed over")
+        void heldAndResolved() {
+            Order order = partlyPacked();
+            order.putOnHold(HoldReason.ADDRESS, "sai phường", STAFF, NOW);
+            assertThat(order.statusBeforeHold()).isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
+            assertThat(code(catchThrowable(() -> order.markPartlyPacked(NOW, STAFF))))
+                    .isEqualTo(ErrorCode.ORDER_INVALID_TRANSITION);
+            assertThat(code(catchThrowable(() -> order.recordHandover(handover(S1, cups(order), 6)))))
+                    .isEqualTo(ErrorCode.ORDER_INVALID_TRANSITION);
+            order.resolveHold("đúng địa chỉ", STAFF, NOW);
+            assertThat(order.status()).isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
+            assertThat(order.shipments()).isEmpty();
+        }
+
+        @Test
+        @DisplayName("not cancelled (ORDER_NOT_CANCELLABLE): the order went through the check station")
+        void notCancelled() {
+            Order order = partlyPacked();
+            assertThat(code(catchThrowable(() -> order.cancel(CancellationReasonCode.OUT_OF_STOCK, null, null, STAFF,
+                    NOW)))).isEqualTo(ErrorCode.ORDER_NOT_CANCELLABLE);
+            assertThat(order.status()).isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
+        }
+
+        @Test
+        @DisplayName("the rest is closed only once the packed part was handed over: before, ORDER_INVALID_TRANSITION and "
+                + "nothing closed; after, the shortfall only - SHIPPED")
+        void restClosedOnlyOnceAPartLeft() {
+            Order order = partlyPacked();
+            assertThat(code(catchThrowable(() -> order.closeRemainder(CancellationReasonCode.OUT_OF_STOCK, null, STAFF,
+                    NOW)))).isEqualTo(ErrorCode.ORDER_INVALID_TRANSITION);
+            assertThat(order.lines()).allSatisfy(line -> assertThat(line.cancelledQuantity()).isZero());
+            order.recordHandover(handover(S1, cups(order), 6));
+            assertThat(order.closeRemainder(CancellationReasonCode.OUT_OF_STOCK, null, STAFF, NOW))
+                    .isEqualByComparingTo("500000");
+            assertThat(order.status()).isEqualTo(OrderStatus.SHIPPED);
+        }
+
+        @Test
+        @DisplayName("refused from CONFIRMED and PACKED (ORDER_INVALID_TRANSITION), and once cancelled (ORDER_CANCELLED)")
+        void refusals() {
+            Order packed = packed();
+            assertThat(code(catchThrowable(() -> packed.markPartlyPacked(NOW, STAFF))))
+                    .isEqualTo(ErrorCode.ORDER_INVALID_TRANSITION);
+            assertThat(packed.status()).isEqualTo(OrderStatus.PACKED);
+
+            Order confirmed = Order.draft(NUMBER, UUID.randomUUID(), UUID.randomUUID(), List.of(
+                    Order.line(new Sku("CUP"), 1, Money.vnd(1_000), null)), NOW);
+            confirmed.lines().forEach(line -> confirmed.attachReservations(line.id(), List.of(UUID.randomUUID())));
+            confirmed.sendContract(STAFF, NOW);
+            confirmed.contractSigned(false, false, STAFF, NOW);
+            assertThat(code(catchThrowable(() -> confirmed.markPartlyPacked(NOW, STAFF))))
+                    .isEqualTo(ErrorCode.ORDER_INVALID_TRANSITION);
+
+            Order cancelled = picking();
+            cancelled.cancel(CancellationReasonCode.OUT_OF_STOCK, null, null, STAFF, NOW);
+            assertThat(code(catchThrowable(() -> cancelled.markPartlyPacked(NOW, STAFF))))
+                    .isEqualTo(ErrorCode.ORDER_CANCELLED);
+        }
+    }
+
+    @Nested
     @DisplayName("split shipments (G4-Q3)")
     class Split {
 

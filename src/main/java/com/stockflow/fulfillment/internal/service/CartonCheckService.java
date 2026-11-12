@@ -328,9 +328,9 @@ class CartonCheckService implements CartonChecks {
     /**
      * See {@code FulfillmentService.completePacking}: checked in the order of 08 §4.4 step 8 ({@link CartonCheck#complete}),
      * then the labelled cartons not shipped yet become one shipment READY_TO_DISPATCH, {@code <order>-S<n>}. In full,
-     * the order is PACKED and the session COMPLETED; in part, the order records it (it was locked by its first label
-     * anyway) and the session goes on for the cartons picked later. The same request id again answers with the shipment
-     * it made. Nothing leaves stock here (08 BR-10).
+     * the order is PACKED and the session COMPLETED; in part, the order is PARTIALLY_FULFILLED at once (08 §4.4 step 8,
+     * owner decision WF4-PF-STATUS 2026-11-12) and the session goes on for the cartons picked later. The same request id
+     * again answers with the shipment it made. Nothing leaves stock here (08 BR-10).
      */
     public Completed complete(UUID taskId, PackingCompletion request, CurrentUser actor) {
         Context ctx = forWork(taskId);
@@ -364,14 +364,11 @@ class CartonCheckService implements CartonChecks {
         CartonCheck.Completion completion = check.complete(request.partial(), request.note(),
                 ctx.order().lifecycle() != null && ctx.order().lifecycle().allowPartialShipment(), wanted, skus);
         Instant now = clock.instant();
-        OrderSummary after;
-        if (completion.partial()) {
-            // Part of the order: its status follows the handover of what ships (17 §4.5).
-            orders.recordPacked(ctx.order().orderId());
-            after = requireOrder(ctx.order().orderId());
-        } else {
-            after = orders.markPacked(ctx.order().orderId(), actor.userId());
-        }
+        // In part: the order is PARTIALLY_FULFILLED at once (08 §4.4 step 8; owner decision WF4-PF-STATUS, 2026-11-12),
+        // not only when this part is handed over. In full: PACKED.
+        OrderSummary after = completion.partial()
+                ? orders.markPartlyPacked(ctx.order().orderId(), actor.userId())
+                : orders.markPacked(ctx.order().orderId(), actor.userId());
         long before = shipments.countByOrderId(ctx.order().orderId());
         Shipment shipment = Shipment.ready(Identifiers.newId(), ctx.order().orderNumber() + "-S" + (before + 1),
                 ctx.order().orderId(), ctx.pack().getId(), ctx.pick().getWarehouseId(), request.requestId(),

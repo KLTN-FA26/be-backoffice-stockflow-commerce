@@ -139,6 +139,7 @@ class CartonCheckServiceTest {
     private void orderIs(OrderSummary order) {
         when(orders.findById(orderId)).thenReturn(Optional.of(order));
         when(orders.markPacked(any(), any())).thenReturn(order);
+        when(orders.markPartlyPacked(any(), any())).thenReturn(order);
     }
 
     private void started() {
@@ -332,7 +333,8 @@ class CartonCheckServiceTest {
         }
 
         @Test
-        @DisplayName("a partial completion records the order as packed in part and leaves the session IN_PROGRESS")
+        @DisplayName("a partial completion makes the order PARTIALLY_FULFILLED at once (WF4-PF-STATUS) and leaves the "
+                + "session IN_PROGRESS")
         void partialCompletion() {
             started();
             service.check(pick.getId(), "LPN-1", actor);
@@ -341,8 +343,9 @@ class CartonCheckServiceTest {
 
             service.complete(pick.getId(), new PackingCompletion(null, true, "one carton wet"), actor);
 
-            verify(orders).recordPacked(orderId);
+            verify(orders).markPartlyPacked(orderId, actor.userId());
             verify(orders, never()).markPacked(any(), any());
+            verify(orders, never()).recordPacked(any());
             assertThat(check.status()).isEqualTo(PackStatus.IN_PROGRESS);
         }
     }

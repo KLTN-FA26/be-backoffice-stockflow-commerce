@@ -319,6 +319,14 @@ class OrderRepositoryAdapter implements OrderRepository, OrderSearchRepository {
         return counts;
     }
 
+    @Override
+    public java.util.Set<UUID> withShipments(Collection<UUID> orderIds) {
+        if (orderIds.isEmpty()) {
+            return java.util.Set.of();
+        }
+        return new java.util.HashSet<>(shipments.findOrderIdsWithShipments(orderIds));
+    }
+
     /**
      * A status name this build no longer knows reads as null rather than failing the whole history.
      * PAID, recorded before SCRUM-460, meant what CONFIRMED means now; the append-only history keeps

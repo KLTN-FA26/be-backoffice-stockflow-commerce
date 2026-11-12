@@ -201,7 +201,8 @@ class OrderController {
      */
     @PostMapping("/{orderId}/remainder-closure")
     @Operation(summary = "Close the rest of a partly fulfilled order: its unshipped units are not delivered; the "
-            + "order shows its shipments and refunds what was paid for the rest")
+            + "order shows its shipments and refunds what was paid for the rest. 409 ORDER_INVALID_TRANSITION while "
+            + "nothing of it was handed over yet (completed in part, its packed part still at dispatch)")
     @RequiresPermission(resource = OrderResources.ORDER_CANCELLATIONS,
             action = Action.UPDATE, scope = DataScope.ALL)
     public ApiResponse<OrderResponse> closeRemainder(@PathVariable UUID orderId,

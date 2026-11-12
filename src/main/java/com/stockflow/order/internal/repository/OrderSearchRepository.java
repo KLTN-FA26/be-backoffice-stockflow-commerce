@@ -57,4 +57,11 @@ public interface OrderSearchRepository {
      * map; empty input gives an empty map without touching the database.
      */
     Map<UUID, Integer> lineCounts(Collection<UUID> orderIds);
+
+    /**
+     * Which of these orders have a shipment handed over (any outcome since), in one query: a list row carries no
+     * shipments, and a PARTIALLY_FULFILLED order may have none yet (WF4-PF-STATUS, 2026-11-12). Empty input gives an
+     * empty set without touching the database.
+     */
+    java.util.Set<UUID> withShipments(Collection<UUID> orderIds);
 }

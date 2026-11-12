@@ -23,15 +23,18 @@ import java.util.stream.Collectors;
  *
  *   READY_TO_FULFILL ─▶ PICKING ─▶ PACKED ─handover─▶ SHIPPED ─▶ DELIVERED ─▶ COMPLETED ─▶ CLOSED
  *                                                                   └─▶ DELIVERY_FAILED ─▶ DELIVERED / RETURNED
- *                     PICKING / PACKED ─part handed over─▶ PARTIALLY_FULFILLED ─rest packed─▶ PACKED
+ *                     PICKING ─completed in part─▶ PARTIALLY_FULFILLED ─rest packed─▶ PACKED
+ *                     PACKED ─part handed over─▶ PARTIALLY_FULFILLED ─rest handed over─▶ SHIPPED
  *   DELIVERED ─▶ RETURN_REQUESTED ─▶ RETURNED ─▶ REFUNDED / PARTIALLY_REFUNDED ─▶ CLOSED
  * </pre>
  *
  * <p><b>Split shipments</b> (decision G4-Q3, 2026-10-19). {@code PARTIALLY_FULFILLED} is kltn-docs 17's "Partially
- * Fulfilled — giao một phần, phần còn lại backorder" and 09's "đơn ở trạng thái giao một phần": some of the order's goods
- * went to the carrier and some did not reach the customer — never shipped yet, or came back. It is left when the rest is
- * packed ({@code PACKED}), handed over ({@code SHIPPED}), or closed by staff, after which the order shows what its
- * shipments say ({@code SHIPPED}, {@code DELIVERY_FAILED}, {@code DELIVERED}, {@code RETURNED}). An order with every
+ * Fulfilled" and 09's "đơn ở trạng thái giao một phần": the order goes out in parts. It is entered when the check station
+ * completes part of what the order wants now (08 §4.4 step 8 - the owner's decision WF4-PF-STATUS of 2026-11-12: at
+ * once, not when that part is handed over), when part of it is handed over with the rest still to go (a later delivery
+ * batch, 17 §4.5), and when a shipment comes back while others arrived. It is left when the rest is packed
+ * ({@code PACKED}), handed over ({@code SHIPPED}), or closed by staff once a part has left, after which the order shows
+ * what its shipments say ({@code SHIPPED}, {@code DELIVERY_FAILED}, {@code DELIVERED}, {@code RETURNED}). An order with every
  * unit in a shipment follows its shipments: in transit while one is, {@code DELIVERY_FAILED} once all have an outcome and
  * one failed, {@code DELIVERED} when all arrived; a shipment that comes back while others arrived makes the order
  * partial again.</p>
@@ -99,8 +102,9 @@ public enum OrderStatus {
     PICKING,
 
     /**
-     * Part of it went to the carrier and part did not reach the customer: not shipped yet, or came back (split
-     * shipment, decision G4-Q3).
+     * Going out in parts (split shipment, decision G4-Q3): packed in part at the check station (08 §4.4, WF4-PF-STATUS
+     * 2026-11-12), or part of it handed over while the rest - of this delivery batch or of a later one - is still to
+     * go, or came back.
      */
     PARTIALLY_FULFILLED,
 
@@ -213,6 +217,7 @@ public enum OrderStatus {
             // PARTIALLY_FULFILLED: PACK-EARLY - its stock, packed while it was printed, handed over before the prints.
             case READY_TO_FULFILL -> target == PICKING || target == PACKED || target == PARTIALLY_FULFILLED
                     || target == ON_HOLD || target == CANCELLED;
+            // PARTIALLY_FULFILLED: completed in part at the check station (08 §4.4, WF4-PF-STATUS 2026-11-12).
             case PICKING -> target == PACKED || target == PARTIALLY_FULFILLED || target == ON_HOLD
                     || target == CANCELLED;
             // PACKED: the rest packed (17 §5). SHIPPED: the rest handed over. SHIPPED / DELIVERY_FAILED / DELIVERED /
