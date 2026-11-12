@@ -23,7 +23,8 @@ import java.util.UUID;
 
 /**
  * What is read off e-invoices: the accountant's list, one invoice with its calls to the provider, the links to an
- * issued invoice's files, and the register of a period (plan §1.4 "bảng kê hoá đơn").
+ * issued invoice's files, the register of a period (plan §1.4 "bảng kê hoá đơn"), and the customer's own issued
+ * invoices on the portal (WF-05 E5).
  */
 @Service
 @Transactional(readOnly = true)
@@ -82,6 +83,27 @@ public class EInvoiceQueryService {
         String name = "%s%s-%08d".formatted(invoice.templateCode(), invoice.symbol(), invoice.invoiceNumber());
         return kind == FileKind.XML ? files.downloadLink(invoice.xmlFileKey(), name + ".xml")
                 : files.downloadLink(invoice.pdfFileKey(), name + ".pdf");
+    }
+
+    /** The invoices issued to one customer, the newest invoice date first: the portal's list. */
+    public PageResponse<EInvoiceQueries.Listing> issuedTo(UUID customerId, int page, int size) {
+        var pageable = Pages.of(page, size);
+        return PageResponse.of(queries.issuedTo(customerId, (int) pageable.getOffset(), pageable.getPageSize()),
+                page, size, queries.countIssuedTo(customerId));
+    }
+
+    /**
+     * A short-lived link to the XML or PDF of an invoice issued to {@code customerId}.
+     *
+     * @throws BusinessException {@code EINVOICE_NOT_FOUND} for another customer's invoice, one not issued, and no
+     *         invoice alike: the customer learns nothing about invoices that are not its own - not even that one
+     *         exists, which a 403 or a 409 would say
+     */
+    public DownloadLink customerFileLink(UUID customerId, UUID id, FileKind kind) {
+        if (queries.findIssuedTo(customerId, id).isEmpty()) {
+            throw new BusinessException(ErrorCode.EINVOICE_NOT_FOUND);
+        }
+        return fileLink(id, kind);
     }
 
     /**

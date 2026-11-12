@@ -35,6 +35,27 @@ public interface EInvoiceQueries {
     long count(Filter filter);
 
     /**
+     * A page of the invoices issued to one customer, the newest invoice date first: what the customer sees on the
+     * portal. Issued ones only - ISSUED, and REPLACED so the customer still finds the invoice a replacement names; a
+     * draft, a refused or a voided invoice is the seller's working paper and never the customer's.
+     */
+    List<Listing> issuedTo(UUID customerId, int offset, int limit);
+
+    long countIssuedTo(UUID customerId);
+
+    /**
+     * The one invoice issued to {@code customerId}; empty for a draft, for another customer's invoice and for no
+     * invoice alike - the caller cannot tell which, and neither can whoever asked.
+     */
+    java.util.Optional<Listing> findIssuedTo(UUID customerId, UUID id);
+
+    /**
+     * Those of {@code shipmentIds} that have an invoice in force: ISSUED, and not an adjustment - an original, or the
+     * invoice that replaced it. What an order's completion asks about its delivered shipments.
+     */
+    java.util.Set<UUID> invoicedAmong(java.util.Collection<UUID> shipmentIds);
+
+    /**
      * One issued invoice in the register of a period ("bảng kê hoá đơn"), as the accountant declares it: who it was
      * issued to, and its amount and tax.
      *

@@ -53,8 +53,9 @@ import java.util.UUID;
 
 /**
  * E-invoices (WF-05 E2; plan §1.4; kltn-docs 21): the accountant reads the drafts drawn up on delivery, corrects the
- * buyer, issues them through the provider and follows the result; the Sales Manager reads. Back office only - the
- * customer's own view on the portal is package E5.
+ * buyer, issues them through the provider and follows the result; the Sales Manager reads. Back office only: every
+ * handler refuses a portal account, which holds {@code einvoices:READ} for its own invoices and reads them through
+ * {@link CustomerEInvoiceController}.
  *
  * <p><b>There is no endpoint that cancels or changes an issued invoice</b>, on purpose: the law has no cancellation
  * (TT 91/2026/TT-BTC Điều 10). A draft is voided; an issued invoice is adjusted or replaced by another invoice (package
