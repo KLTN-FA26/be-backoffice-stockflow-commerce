@@ -364,6 +364,12 @@ public enum ErrorCode {
     EINVOICE_BUYER_PROFILE_INCOMPLETE("The buyer's name, tax code and address are needed before the invoice is issued", 409),
     /** WF-05 E2 (21 BR-01): the shipment is not delivered, or delivered nothing an invoice can carry. */
     EINVOICE_NOT_INVOICEABLE("This shipment cannot be invoiced: it is not delivered", 409),
+    /**
+     * WF-05 E2 (NĐ 254 Điều 9 khoản 1; WF05-E0 L6): the delivered shipment has no delivery time, and the invoice is
+     * dated by it - never by today. A code of its own because it reaches the accountants as the cause of an
+     * {@code EInvoiceDraftFailed}, and it tells them what to correct.
+     */
+    EINVOICE_DELIVERY_TIME_MISSING("The delivery has no delivery time to date its invoice by; record it first", 409),
     /** WF-05 E2 (TT 91 Điều 4): no invoice series is in use at the provider for the invoice's year. */
     EINVOICE_SERIES_NOT_CONFIGURED("No invoice series is configured for the invoice's year", 409),
     /**
