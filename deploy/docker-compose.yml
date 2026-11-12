@@ -173,6 +173,16 @@ services:
       COMPANY_BANK_NAME: ${COMPANY_BANK_NAME:-}
       COMPANY_BANK_ACCOUNT_NUMBER: ${COMPANY_BANK_ACCOUNT_NUMBER:-}
       COMPANY_BANK_ACCOUNT_NAME: ${COMPANY_BANK_ACCOUNT_NAME:-}
+      # The seller on sales contracts and e-invoices (4B-4, WF-05 E1): the company's name, tax code and registered
+      # address, its legal representative and their title, as on its business registration. This compose runs the dev
+      # profile, so an unset or blank value falls back to an obviously made-up company and the server keeps working
+      # (the fallback is spelled out here because a blank passed through would override the profile's own default).
+      # A deployment in the prod profile sets all five: there the application refuses to start without them.
+      SELLER_NAME: ${SELLER_NAME:-DEMO STOCKFLOW CO LTD}
+      SELLER_TAX_CODE: ${SELLER_TAX_CODE:-0000000000}
+      SELLER_ADDRESS: ${SELLER_ADDRESS:-1 Demo Street, Ho Chi Minh City}
+      SELLER_REPRESENTATIVE: ${SELLER_REPRESENTATIVE:-Demo Director}
+      SELLER_REPRESENTATIVE_TITLE: ${SELLER_REPRESENTATIVE_TITLE:-Director}
       CACHE_VERSION: ${CACHE_VERSION:-v1}
       LOG_LEVEL: ${LOG_LEVEL:-DEBUG}
       AUDIT_ROUTINE_RETENTION: ${AUDIT_ROUTINE_RETENTION:-P180D}

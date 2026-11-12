@@ -354,8 +354,8 @@ public enum ErrorCode {
      * {@code details} lists each order, why, and what it still owes.
      */
     LOAD_HANDOVER_BLOCKED("Some orders on this vehicle may not be handed over yet", 409),
-    /** 4B-4: stockflow.order.seller.* is blank in this deployment. */
-    SELLER_PROFILE_UNAVAILABLE("The seller's company details are not configured; contracts cannot be drawn up", 503),
+    /** 4B-4, WF-05 E2: stockflow.seller.* is blank in this deployment; no contract or invoice names a seller. */
+    SELLER_PROFILE_UNAVAILABLE("The seller's company details are not configured; contracts and invoices cannot be drawn up", 503),
     /**
      * 4B-2 (kltn-docs 14 BR-04, 13 BR-02): a quote line, an order line placed from one, or a customer price names one
      * of the customer's own SKUs - not a stock variant or a blank. Another customer's SKU answers VARIANT_NOT_FOUND.

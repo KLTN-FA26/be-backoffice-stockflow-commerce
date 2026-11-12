@@ -494,16 +494,16 @@ stockflow:
       account-number: ${COMPANY_BANK_ACCOUNT_NUMBER:}
       account-name: ${COMPANY_BANK_ACCOUNT_NAME:}
 
+  # The seller a sales contract names (4B-4, kltn-docs 14 §4.3 step 11) and an e-invoice is issued by (WF-05 E1/E2).
+  # Blank here on purpose: local, dev and test carry a demo one, and in the prod profile the application refuses
+  # to start until all five are set (SellerProfileRequirement), so no contract or invoice names a made-up company.
+  seller:
+    name: ${SELLER_NAME:}
+    tax-code: ${SELLER_TAX_CODE:}
+    address: ${SELLER_ADDRESS:}
+    representative: ${SELLER_REPRESENTATIVE:}
+    representative-title: ${SELLER_REPRESENTATIVE_TITLE:}
   order:
-    # The seller a sales contract names (4B-4, kltn-docs 14 §4.3 step 11). Blank here on purpose and in prod: drawing up
-    # a contract answers 503 SELLER_PROFILE_UNAVAILABLE until every field is set per deployment, so no contract ever
-    # names a made-up company. local, dev and test carry a demo one.
-    seller:
-      name: ${SELLER_NAME:}
-      tax-code: ${SELLER_TAX_CODE:}
-      address: ${SELLER_ADDRESS:}
-      representative: ${SELLER_REPRESENTATIVE:}
-      representative-title: ${SELLER_REPRESENTATIVE_TITLE:}
     contract:
       # Print-sample rounds a new contract offers without charge (14 BR-18, decided 2026-11-05); Sales may change it.
       free-sample-rounds: ${CONTRACT_FREE_SAMPLE_ROUNDS:2}
