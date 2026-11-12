@@ -7,7 +7,10 @@ import jakarta.persistence.Table;
 
 import java.util.UUID;
 
-/** {@code customer.customer_legal_profile} (4B-4): one row per customer, written whole. */
+/**
+ * {@code customer.customer_legal_profile} (4B-4; invoice e-mail and bank account since WF-05 E1): one row per customer,
+ * written whole.
+ */
 @Entity
 @Table(name = "customer_legal_profile", schema = "customer")
 public class CustomerLegalProfileJpaEntity extends BaseEntity {
@@ -24,6 +27,18 @@ public class CustomerLegalProfileJpaEntity extends BaseEntity {
     @Column(name = "representative_title", nullable = false, length = 100)
     private String representativeTitle;
 
+    @Column(name = "invoice_email", length = 320)
+    private String invoiceEmail;
+
+    @Column(name = "bank_account_number", length = 34)
+    private String bankAccountNumber;
+
+    @Column(name = "bank_name", length = 200)
+    private String bankName;
+
+    @Column(name = "bank_account_holder", length = 200)
+    private String bankAccountHolder;
+
     protected CustomerLegalProfileJpaEntity() {
     }
 
@@ -38,8 +53,23 @@ public class CustomerLegalProfileJpaEntity extends BaseEntity {
         this.representativeTitle = representativeTitle;
     }
 
+    public void applyInvoiceEmail(String invoiceEmail) {
+        this.invoiceEmail = invoiceEmail;
+    }
+
+    /** All three, or all null: {@code ck_customer_legal_profile_bank}. */
+    public void applyBankAccount(String accountNumber, String bankName, String accountHolder) {
+        this.bankAccountNumber = accountNumber;
+        this.bankName = bankName;
+        this.bankAccountHolder = accountHolder;
+    }
+
     public UUID getCustomerId() { return customerId; }
     public String getRegisteredAddress() { return registeredAddress; }
     public String getRepresentativeName() { return representativeName; }
     public String getRepresentativeTitle() { return representativeTitle; }
+    public String getInvoiceEmail() { return invoiceEmail; }
+    public String getBankAccountNumber() { return bankAccountNumber; }
+    public String getBankName() { return bankName; }
+    public String getBankAccountHolder() { return bankAccountHolder; }
 }
