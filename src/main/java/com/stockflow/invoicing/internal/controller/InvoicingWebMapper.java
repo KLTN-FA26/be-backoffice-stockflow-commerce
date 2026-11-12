@@ -1,6 +1,7 @@
 package com.stockflow.invoicing.internal.controller;
 
 import com.stockflow.invoicing.internal.controller.dto.EInvoiceErrorNoticeResponse;
+import com.stockflow.invoicing.internal.controller.dto.CustomerEInvoiceErrorNoticeResponse;
 import com.stockflow.invoicing.internal.controller.dto.CustomerEInvoiceResponse;
 import com.stockflow.invoicing.internal.controller.dto.EInvoiceListItemResponse;
 import com.stockflow.invoicing.internal.controller.dto.EInvoiceProviderResponse;
@@ -78,6 +79,12 @@ final class InvoicingWebMapper {
     static ProviderCallResponse toResponse(ProviderCallLog.Call call) {
         return new ProviderCallResponse(call.provider(), call.transactionId(), call.operation().name(),
                 call.outcome().name(), call.httpStatus(), call.errorCode(), call.calledAt(), call.durationMs());
+    }
+
+    static CustomerEInvoiceErrorNoticeResponse toCustomerResponse(ErrorNotice.Snapshot notice) {
+        return new CustomerEInvoiceErrorNoticeResponse(notice.id(), notice.einvoiceId(), notice.formCode(),
+                notice.reason(), notice.correctBuyerName(), notice.correctBuyerAddress(), notice.status().name(),
+                notice.createdAt(), notice.respondedAt());
     }
 
     static EInvoiceErrorNoticeResponse toResponse(ErrorNotice.Snapshot notice) {

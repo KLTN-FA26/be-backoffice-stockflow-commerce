@@ -29,4 +29,10 @@ public interface EInvoiceDirectory {
      * @throws RuntimeException when the file store does not answer: an outage, and the caller tries again later
      */
     List<EInvoiceMail.File> files(UUID einvoiceId);
+
+    /**
+     * A 04/SS-HĐĐT notice of a wrong buyer name or address as the message to the buyer words it; empty when there is
+     * no such notice, it is of another kind, or its invoice was never issued. One read of the notice and its invoice.
+     */
+    Optional<EInvoiceErrorNoticeMail> errorNotice(UUID noticeId);
 }

@@ -12,8 +12,10 @@ import com.stockflow.common.security.DataScope;
 import com.stockflow.common.security.RequiresPermission;
 import com.stockflow.common.storage.DownloadLink;
 import com.stockflow.customer.api.CustomerService;
+import com.stockflow.invoicing.internal.controller.dto.CustomerEInvoiceErrorNoticeResponse;
 import com.stockflow.invoicing.internal.controller.dto.CustomerEInvoiceResponse;
 import com.stockflow.invoicing.internal.controller.dto.EInvoiceFileLinkResponse;
+import com.stockflow.invoicing.internal.service.EInvoiceErrorNotices;
 import com.stockflow.invoicing.internal.service.EInvoiceQueryService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -23,11 +25,13 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.List;
 import java.util.UUID;
 
 /**
  * The signed-in customer's own e-invoices on the portal (WF-05 E5; plan §1.4 "Khách xem hoặc tải hoá đơn của mình trên
- * portal"): the invoices issued to it, and a link to each one's PDF or XML.
+ * portal"): the invoices issued to it, a link to each one's PDF or XML, and the notices that one names the buyer
+ * wrongly (04/SS-HĐĐT) - the law has the buyer told of those, and the invoice it keeps stays as it was issued.
  *
  * <p><b>The customer is resolved from the sign-in, never from the request.</b> There is no customer id to pass, so
  * there is none to forge; an invoice id that is another customer's, a draft's or nobody's answers the same 404
@@ -44,10 +48,13 @@ import java.util.UUID;
 class CustomerEInvoiceController {
 
     private final EInvoiceQueryService queries;
+    private final EInvoiceErrorNotices errorNotices;
     private final CustomerService customers;
 
-    CustomerEInvoiceController(EInvoiceQueryService queries, CustomerService customers) {
+    CustomerEInvoiceController(EInvoiceQueryService queries, EInvoiceErrorNotices errorNotices,
+                               CustomerService customers) {
         this.queries = queries;
+        this.errorNotices = errorNotices;
         this.customers = customers;
     }
 
@@ -71,6 +78,17 @@ class CustomerEInvoiceController {
                                                       @AuthenticatedUser CurrentUser user) {
         DownloadLink link = queries.customerFileLink(ownCustomerId(user), id, kind);
         return ApiResponse.ok(new EInvoiceFileLinkResponse(link.url(), link.expiresAt()));
+    }
+
+    @GetMapping("/{id}/error-notices")
+    @Operation(summary = "The notices that one of the signed-in customer's own issued e-invoices names it wrongly "
+            + "(04/SS-HDDT: wrong name or address, right tax code; the invoice stays valid), oldest first, each with "
+            + "the name and address it should have carried; 404 EINVOICE_NOT_FOUND for any other invoice")
+    @RequiresPermission(resource = InvoicingResources.EINVOICES, action = Action.READ, scope = DataScope.OWN)
+    public ApiResponse<List<CustomerEInvoiceErrorNoticeResponse>> errorNotices(@PathVariable UUID id,
+                                                                               @AuthenticatedUser CurrentUser user) {
+        return ApiResponse.ok(errorNotices.toBuyer(ownCustomerId(user), id).stream()
+                .map(InvoicingWebMapper::toCustomerResponse).toList());
     }
 
     private UUID ownCustomerId(CurrentUser user) {

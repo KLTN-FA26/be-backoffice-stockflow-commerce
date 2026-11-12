@@ -120,6 +120,16 @@ public class EInvoiceErrorNotices {
         return notices.findByInvoice(invoiceId);
     }
 
+    /**
+     * The notices of a wrong buyer name or address of an invoice issued to {@code customerId}: what the portal shows the
+     * buyer beside the invoice, the law having it told of them.
+     *
+     * @throws BusinessException {@code EINVOICE_NOT_FOUND} for an invoice that is not the customer's own and issued
+     */
+    public List<ErrorNotice.Snapshot> toBuyer(UUID customerId, UUID invoiceId) {
+        return steps.toBuyer(customerId, invoiceId);
+    }
+
     /** Hashes only, as for every call to the provider: a notice names a buyer. */
     private void log(EInvoice.Snapshot invoice, ErrorNotice.Snapshot notice, Outcome outcome, String errorCode,
                      ErrorNoticeDocument document, NoticeReceipt receipt, Instant started) {

@@ -3,16 +3,19 @@ package com.stockflow.invoicing.internal.service;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
+import com.stockflow.contracts.EInvoiceErrorNoticeRecorded;
 import com.stockflow.invoicing.internal.domain.EInvoice;
 import com.stockflow.invoicing.internal.domain.EInvoiceProvider;
 import com.stockflow.invoicing.internal.domain.EInvoiceRepository;
 import com.stockflow.invoicing.internal.domain.EInvoiceStatus;
 import com.stockflow.invoicing.internal.domain.ErrorNotice;
 import com.stockflow.invoicing.internal.domain.ErrorNoticeRepository;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Clock;
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -30,19 +33,27 @@ class ErrorNoticeSteps {
     private final ErrorNoticeRepository notices;
     private final EInvoiceRepository invoices;
     private final InvoicingProperties properties;
+    private final ApplicationEventPublisher events;
     private final Clock clock;
 
     ErrorNoticeSteps(ErrorNoticeRepository notices, EInvoiceRepository invoices, InvoicingProperties properties,
-                     Clock clock) {
+                     ApplicationEventPublisher events, Clock clock) {
         this.notices = notices;
         this.invoices = invoices;
         this.properties = properties;
+        this.events = events;
         this.clock = clock;
     }
 
     /**
      * Records the notice, under the invoice's lock: two people notifying one invoice are decided one after the other,
      * and the second finds the first one's notice open.
+     *
+     * <p>A notice of a wrong buyer name or address publishes {@link EInvoiceErrorNoticeRecorded} in the same
+     * transaction: the law asks that the buyer be told and the tax authority notified, side by side (TT 91 Điều 10
+     * khoản 1 điểm a), so the buyer hears of it once the notice is recorded - not once the tax authority answers, which
+     * may take days and changes nothing about the invoice being wrong. A notice beside an adjustment or a replacement
+     * publishes nothing: that correction's own issued invoice tells the buyer.</p>
      */
     @Transactional
     public UUID record(UUID invoiceId, ErrorNotice.Subject subject, String reason, String correctBuyerName,
@@ -57,6 +68,11 @@ class ErrorNoticeSteps {
                         || corrections.liveReplacement(),
                 notices.hasOpen(invoiceId));
         notices.insert(notice);
+        if (subject == ErrorNotice.Subject.BUYER_NAME_ADDRESS) {
+            EInvoice.Snapshot issued = invoice.snapshot();
+            events.publishEvent(new EInvoiceErrorNoticeRecorded(notice.id(), issued.id(), issued.code(),
+                    issued.orderId(), issued.orderNumber(), issued.customerId(), notice.snapshot().createdAt()));
+        }
         return notice.id();
     }
 
@@ -84,6 +100,24 @@ class ErrorNoticeSteps {
             notices.update(notice);
         }
         return notice.snapshot();
+    }
+
+    /**
+     * The notices a buyer is told of - wrong name or address - of one invoice issued to it, oldest first.
+     *
+     * @throws BusinessException {@code EINVOICE_NOT_FOUND} for another customer's invoice, one never issued, and no
+     *         invoice alike, as on every portal read of an invoice: the customer learns nothing of invoices that are not
+     *         its own
+     */
+    @Transactional(readOnly = true)
+    public List<ErrorNotice.Snapshot> toBuyer(UUID customerId, UUID invoiceId) {
+        invoices.findById(invoiceId).map(EInvoice::snapshot)
+                .filter(invoice -> invoice.customerId() != null && invoice.customerId().equals(customerId))
+                .filter(invoice -> invoice.status().wasIssued())
+                .orElseThrow(() -> new BusinessException(ErrorCode.EINVOICE_NOT_FOUND));
+        return notices.findByInvoice(invoiceId).stream()
+                .filter(notice -> notice.subject() == ErrorNotice.Subject.BUYER_NAME_ADDRESS)
+                .toList();
     }
 
     @Transactional(readOnly = true)

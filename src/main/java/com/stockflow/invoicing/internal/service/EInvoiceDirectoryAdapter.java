@@ -4,7 +4,10 @@ import com.stockflow.common.storage.FileStorage;
 import com.stockflow.common.storage.StorageException;
 import com.stockflow.invoicing.internal.domain.EInvoice;
 import com.stockflow.invoicing.internal.domain.EInvoiceRepository;
+import com.stockflow.invoicing.internal.domain.ErrorNotice;
+import com.stockflow.invoicing.internal.domain.ErrorNoticeRepository;
 import com.stockflow.notification.api.EInvoiceDirectory;
+import com.stockflow.notification.api.EInvoiceErrorNoticeMail;
 import com.stockflow.notification.api.EInvoiceMail;
 import org.springframework.stereotype.Component;
 
@@ -16,7 +19,8 @@ import java.util.UUID;
 
 /**
  * Answers notification's question about an issued invoice (WF-05 E5, {@link EInvoiceDirectory}): what the message to
- * the buyer says, where it goes and the two files it carries. Notification declares the interface because it depends
+ * the buyer says, where it goes and the two files it carries; and what the notice that an issued invoice names its
+ * buyer wrongly (04/SS-HĐĐT) tells that buyer. Notification declares the interface because it depends
  * on no business module; see the interface for the argument.
  *
  * <p>Everything comes from the invoice as issued, which no longer changes: the buyer and the address copied onto it
@@ -33,10 +37,12 @@ import java.util.UUID;
 class EInvoiceDirectoryAdapter implements EInvoiceDirectory {
 
     private final EInvoiceRepository invoices;
+    private final ErrorNoticeRepository notices;
     private final FileStorage storage;
 
-    EInvoiceDirectoryAdapter(EInvoiceRepository invoices, FileStorage storage) {
+    EInvoiceDirectoryAdapter(EInvoiceRepository invoices, ErrorNoticeRepository notices, FileStorage storage) {
         this.invoices = invoices;
+        this.notices = notices;
         this.storage = storage;
     }
 
@@ -58,6 +64,24 @@ class EInvoiceDirectoryAdapter implements EInvoiceDirectory {
         String name = reference(invoice);
         return List.of(new EInvoiceMail.File(name + ".pdf", "application/pdf", read(invoice.pdfFileKey())),
                 new EInvoiceMail.File(name + ".xml", "application/xml", read(invoice.xmlFileKey())));
+    }
+
+    /**
+     * Addressed as the invoice is - to the buyer's invoice e-mail it carries: the notice changes nothing on the invoice,
+     * and the person who booked it is the one to tell.
+     */
+    @Override
+    public Optional<EInvoiceErrorNoticeMail> errorNotice(UUID noticeId) {
+        if (noticeId == null) {
+            return Optional.empty();
+        }
+        return notices.findById(noticeId).map(ErrorNotice::snapshot)
+                .filter(notice -> notice.subject() == ErrorNotice.Subject.BUYER_NAME_ADDRESS)
+                .flatMap(notice -> issued(notice.einvoiceId()).map(invoice -> new EInvoiceErrorNoticeMail(
+                        notice.id(), invoice.id(), invoice.customerId(), invoice.buyer().name(),
+                        invoice.buyer().email(), reference(invoice), invoice.orderNumber(), invoice.issueDate(),
+                        notice.formCode(), notice.reason(), notice.correctBuyerName(),
+                        notice.correctBuyerAddress())));
     }
 
     private Optional<EInvoice.Snapshot> issued(UUID einvoiceId) {
