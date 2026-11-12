@@ -370,6 +370,8 @@ public enum ErrorCode {
     EINVOICE_NOT_ISSUED("The e-invoice is not issued yet", 409),
     /** WF-05 E2: the e-invoice provider is not configured, or did not answer; nothing is known about the transaction until it is asked again. */
     EINVOICE_PROVIDER_UNAVAILABLE("The e-invoice provider is not available right now; the invoice will be checked again", 503),
+    /** WF-05 E3: a real e-invoice provider is put in use only once its account is stored. */
+    EINVOICE_PROVIDER_ACCOUNT_INCOMPLETE("The e-invoice provider's account is not stored yet", 409),
     /** 4B-4, WF-05 E2: stockflow.seller.* is blank in this deployment; no contract or invoice names a seller. */
     SELLER_PROFILE_UNAVAILABLE("The seller's company details are not configured; contracts and invoices cannot be drawn up", 503),
     /**

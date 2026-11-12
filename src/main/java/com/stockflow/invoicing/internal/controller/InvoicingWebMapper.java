@@ -1,6 +1,7 @@
 package com.stockflow.invoicing.internal.controller;
 
 import com.stockflow.invoicing.internal.controller.dto.EInvoiceListItemResponse;
+import com.stockflow.invoicing.internal.controller.dto.EInvoiceProviderResponse;
 import com.stockflow.invoicing.internal.controller.dto.EInvoiceRegisterEntryResponse;
 import com.stockflow.invoicing.internal.controller.dto.EInvoiceResponse;
 import com.stockflow.invoicing.internal.controller.dto.EInvoiceSettingsResponse;
@@ -9,6 +10,7 @@ import com.stockflow.invoicing.internal.domain.EInvoice;
 import com.stockflow.invoicing.internal.domain.EInvoiceQueries;
 import com.stockflow.invoicing.internal.domain.EInvoiceStatus;
 import com.stockflow.invoicing.internal.domain.InvoiceParty;
+import com.stockflow.invoicing.internal.domain.ProviderAccounts;
 import com.stockflow.invoicing.internal.domain.ProviderCallLog;
 import com.stockflow.invoicing.internal.domain.TaxRateTotal;
 import com.stockflow.invoicing.internal.service.EInvoiceSettingsService;
@@ -69,6 +71,11 @@ final class InvoicingWebMapper {
                 provider.username(), provider.secretSet(), provider.autoIssue(),
                 settings.series().stream().map(series -> new EInvoiceSettingsResponse.Series(series.templateCode(),
                         series.symbol(), series.year())).toList(), provider.version());
+    }
+
+    static EInvoiceProviderResponse toResponse(ProviderAccounts.Account account) {
+        return new EInvoiceProviderResponse(account.provider(), account.environment(), account.username(),
+                account.secretSealed() != null, account.active(), account.autoIssue(), account.version());
     }
 
     private static EInvoiceResponse.Party party(InvoiceParty party) {
