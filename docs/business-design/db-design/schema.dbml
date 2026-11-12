@@ -279,6 +279,7 @@ Enum ordering.customer_order_cancellation_reason_code {
   DUPLICATE_ORDER
   PRODUCTION_ISSUE
   REPLACEMENT_WITHDRAWN
+  DELIVERY_FAILED
   OTHER
 }
 
@@ -316,6 +317,22 @@ Enum ordering.delay_alert_type {
 Enum ordering.delivery_batch_window_change_reason_code {
   CUSTOMER_REQUEST
   SELLER_DELAY
+}
+
+Enum ordering.delivery_failure_case_failure_reason {
+  CUSTOMER_ABSENT
+  REFUSED
+  WRONG_ADDRESS
+  LOST
+  DAMAGED
+  OTHER
+}
+
+Enum ordering.delivery_failure_case_status {
+  OPEN
+  REDELIVERY
+  REDELIVERED
+  CANCELLED
 }
 
 Enum ordering.order_cancellation_request_reason_code {
@@ -359,6 +376,7 @@ Enum ordering.order_hold_reason {
   CUSTOMER
   FRAUD
   OTHER
+  DELIVERY_FAILED
 }
 
 Enum ordering.order_shipment_status {
@@ -515,6 +533,7 @@ Enum payment.installment_milestone {
   BEFORE_DELIVERY
   AFTER_DELIVERY
   CANCELLATION_FEE
+  FAILED_TRIP_FEE
 }
 
 Enum payment.installment_status {
@@ -522,7 +541,6 @@ Enum payment.installment_status {
   DUE
   PARTIALLY_PAID
   PAID
-  OVERDUE
   CANCELLED
 }
 
@@ -1382,6 +1400,7 @@ Table inventory.stock_adjustment [headercolor: #3E7C4A] {
   received_at         timestamptz
   reservation_id      uuid
   stock_package_id    uuid
+  counted_by          uuid
 }
 
 Table inventory.stock_item [headercolor: #3E7C4A] {
@@ -1445,6 +1464,8 @@ Table inventory.stock_movement [headercolor: #3E7C4A] {
   lot_id                uuid
   order_id              uuid
   order_number          varchar(32)
+  requested_by          uuid
+  counted_by            uuid
 }
 
 Table inventory.stock_package [headercolor: #3E7C4A] {
@@ -1967,6 +1988,53 @@ Table ordering.delivery_batch_window_change [headercolor: #C0392B] {
   evidence_message_id uuid
   changed_by          uuid [not null]
   changed_at          timestamptz [not null]
+}
+
+Table ordering.delivery_failure_case [headercolor: #C0392B] {
+  id                     uuid [pk]
+  order_id               uuid [not null]
+  shipment_id            uuid [not null, unique]
+  delivery_batch_id      uuid
+  receipt_id             uuid [not null, unique]
+  receipt_number         varchar(40) [not null]
+  warehouse_id           uuid [not null]
+  failure_reason         ordering.delivery_failure_case_failure_reason [not null]
+  failure_note           varchar(500)
+  status                 ordering.delivery_failure_case_status [not null, default: 'OPEN']
+  opened_at              timestamptz [not null]
+  decided_by             uuid
+  decided_at             timestamptz
+  decision_note          varchar(1000)
+  failed_trip_fee        decimal(19,4)
+  fee_installment_id     uuid
+  carrier_claim          boolean [not null, default: false]
+  released_at            timestamptz
+  released_by            uuid
+  redelivery_shipment_id uuid [unique]
+  redelivered_at         timestamptz
+  closed_at              timestamptz
+  closed_by              uuid
+  version                bigint [not null, default: 0]
+  created_at             timestamptz [not null, default: `now()`]
+}
+
+Table ordering.delivery_failure_case_carton [headercolor: #C0392B] {
+  case_id    uuid [not null]
+  lpn        varchar(64) [not null]
+  sku        varchar(64) [not null]
+  lot_number varchar(64)
+  quantity   int [not null]
+  condition  varchar(500)
+  indexes {
+    (case_id, lpn) [pk]
+  }
+}
+
+Table ordering.delivery_failure_case_hold [headercolor: #C0392B] {
+  reservation_id uuid [pk]
+  case_id        uuid [not null]
+  order_line_id  uuid [not null]
+  created_at     timestamptz [not null, default: `now()`]
 }
 
 Table ordering.order_cancellation_request [headercolor: #C0392B] {
@@ -3540,8 +3608,9 @@ Table fulfillment.pick [headercolor: #2C7873] {
   moved_to_dispatch_at  timestamptz
   moved_to_dispatch_by  uuid
   delivery_batch_id     uuid
+  redelivery_case_id    uuid
   indexes {
-    (order_id, delivery_batch_id) [unique]
+    (order_id, delivery_batch_id, redelivery_case_id) [unique]
   }
 }
 
@@ -4267,6 +4336,7 @@ Ref: inventory.cycle_count_line.location_code > warehouse.storage_location.locat
 Ref: inventory.cycle_count_line.sku > inventory.inventory_items.sku [delete: restrict]
 Ref: inventory.cycle_count_line.stock_package_id > inventory.stock_package.id [delete: restrict]
 Ref: inventory.inventory_items.sku > product.variants.sku [delete: restrict]
+Ref: inventory.stock_adjustment.counted_by > identity.app_user.id
 Ref: inventory.stock_adjustment.cycle_count_line_id > inventory.cycle_count_line.id [delete: restrict]
 Ref: inventory.stock_adjustment.decided_by > identity.app_user.id
 Ref: inventory.stock_adjustment.location_code > warehouse.storage_location.location_code [delete: restrict]
@@ -4283,10 +4353,12 @@ Ref: inventory.stock_lot.production_order_id > ordering.production_order.id [del
 Ref: inventory.stock_lot.sku > inventory.inventory_items.sku [delete: restrict]
 Ref: inventory.stock_lot.warehouse_id > warehouse.warehouse.id [delete: restrict]
 Ref: inventory.stock_movement.actor_id > identity.app_user.id
+Ref: inventory.stock_movement.counted_by > identity.app_user.id
 Ref: inventory.stock_movement.from_location_code > warehouse.storage_location.location_code [delete: restrict]
 Ref: inventory.stock_movement.from_stock_package_id > inventory.stock_package.id [delete: restrict]
 Ref: inventory.stock_movement.lot_id > inventory.stock_lot.id [delete: restrict]
 Ref: inventory.stock_movement.order_id > ordering.customer_order.id [delete: restrict]
+Ref: inventory.stock_movement.requested_by > identity.app_user.id
 Ref: inventory.stock_movement.sku > inventory.inventory_items.sku [delete: restrict]
 Ref: inventory.stock_movement.to_location_code > warehouse.storage_location.location_code [delete: restrict]
 Ref: inventory.stock_movement.to_stock_package_id > inventory.stock_package.id [delete: restrict]
@@ -4366,6 +4438,20 @@ Ref: ordering.delivery_batch_window_change.changed_by > identity.app_user.id
 Ref: ordering.delivery_batch_window_change.delivery_batch_id > ordering.delivery_batch.id [delete: restrict]
 Ref: ordering.delivery_batch_window_change.evidence_message_id > chat.message.id [delete: restrict]
 Ref: ordering.delivery_batch_window_change.order_id > ordering.customer_order.id [delete: restrict]
+Ref: ordering.delivery_failure_case.closed_by > identity.app_user.id
+Ref: ordering.delivery_failure_case.decided_by > identity.app_user.id
+Ref: ordering.delivery_failure_case.delivery_batch_id > ordering.delivery_batch.id [delete: restrict]
+Ref: ordering.delivery_failure_case.fee_installment_id > payment.installment.id [delete: restrict]
+Ref: ordering.delivery_failure_case.order_id > ordering.customer_order.id [delete: restrict]
+Ref: ordering.delivery_failure_case.receipt_id > procurement.goods_receipts.id [delete: restrict]
+Ref: ordering.delivery_failure_case.redelivery_shipment_id > ordering.order_shipment.id [delete: restrict]
+Ref: ordering.delivery_failure_case.released_by > identity.app_user.id
+Ref: ordering.delivery_failure_case.shipment_id > ordering.order_shipment.id [delete: restrict]
+Ref: ordering.delivery_failure_case.warehouse_id > warehouse.warehouse.id [delete: restrict]
+Ref: ordering.delivery_failure_case_carton.case_id > ordering.delivery_failure_case.id [delete: cascade]
+Ref: ordering.delivery_failure_case_hold.case_id > ordering.delivery_failure_case.id [delete: cascade]
+Ref: ordering.delivery_failure_case_hold.order_line_id > ordering.order_line.id [delete: cascade]
+Ref: ordering.delivery_failure_case_hold.reservation_id > inventory.stock_reservation.id [delete: restrict]
 Ref: ordering.order_cancellation_request.decided_by > identity.app_user.id
 Ref: ordering.order_cancellation_request.order_id > ordering.customer_order.id [delete: cascade]
 Ref: ordering.order_cancellation_request.requested_by > identity.app_user.id
@@ -4601,6 +4687,7 @@ Ref: fulfillment.pick.assigned_user_id > identity.app_user.id
 Ref: fulfillment.pick.delivery_batch_id > ordering.delivery_batch.id [delete: restrict]
 Ref: fulfillment.pick.moved_to_dispatch_by > identity.app_user.id
 Ref: fulfillment.pick.order_id > ordering.customer_order.id [delete: restrict]
+Ref: fulfillment.pick.redelivery_case_id > ordering.delivery_failure_case.id [delete: restrict]
 Ref: fulfillment.pick.staging_location_code > warehouse.storage_location.location_code [delete: restrict]
 Ref: fulfillment.pick.warehouse_id > warehouse.warehouse.id
 Ref: fulfillment.pick.wave_id > fulfillment.wave.id
@@ -4720,6 +4807,9 @@ TableGroup ordering_group [color: #C0392B] {
   ordering.delivery_batch_line
   ordering.delivery_batch_release
   ordering.delivery_batch_window_change
+  ordering.delivery_failure_case
+  ordering.delivery_failure_case_carton
+  ordering.delivery_failure_case_hold
   ordering.order_cancellation_request
   ordering.order_credit_check
   ordering.order_fee_line

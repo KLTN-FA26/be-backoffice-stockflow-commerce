@@ -59,8 +59,10 @@ class InstallmentController {
     }
 
     @GetMapping
-    @Operation(summary = "Installments, earliest due first; filter by customer, order, status, milestone, due day and "
-            + "whether their milestone came")
+    @Operation(summary = "Installments, earliest due first; filter by customer, order, status, milestone, due day, "
+            + "whether their milestone came and whether they are overdue (the aged-receivables reading: overdue is a "
+            + "flag worked out from the due day, not a status: status=OVERDUE is refused with 400 "
+            + "INSTALLMENT_OVERDUE_IS_A_FLAG)")
     @RequiresPermission(resource = PaymentResources.INSTALLMENTS, action = Action.READ, scope = DataScope.ALL)
     public ApiResponse<PageResponse<InstallmentResponse>> list(
             @RequestParam(required = false) UUID customerId,
@@ -69,14 +71,17 @@ class InstallmentController {
             @RequestParam(required = false) InstallmentMilestone milestone,
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate dueBefore,
             @RequestParam(required = false) Boolean reached,
+            @RequestParam(required = false) Boolean overdue,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(required = false) Integer size,
             @RequestParam(required = false) String sort,
             @AuthenticatedUser CurrentUser user) {
         // Customers hold payment-installments:READ for /me; this list is every customer's.
         ScopeGuards.requireBackOffice(user);
-        return ApiResponse.ok(installments.installments(customerId, orderId, status, milestone, dueBefore, reached, page,
-                size == null ? Pages.DEFAULT_PAGE_SIZE : size, sort).map(i -> PaymentWebMapper.toResponse(i, null)));
+        LocalDate today = installments.today();
+        return ApiResponse.ok(installments.installments(customerId, orderId, status, milestone, dueBefore, reached,
+                overdue, page, size == null ? Pages.DEFAULT_PAGE_SIZE : size, sort)
+                .map(i -> PaymentWebMapper.toResponse(i, null, today)));
     }
 
     @GetMapping("/me")
@@ -88,8 +93,10 @@ class InstallmentController {
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(required = false) Integer size,
             @AuthenticatedUser CurrentUser user) {
-        return ApiResponse.ok(installments.installments(customerOf(user), orderId, status, null, null, null, page,
-                size == null ? Pages.DEFAULT_PAGE_SIZE : size, null).map(i -> PaymentWebMapper.toResponse(i, null)));
+        LocalDate today = installments.today();
+        return ApiResponse.ok(installments.installments(customerOf(user), orderId, status, null, null, null, null,
+                page, size == null ? Pages.DEFAULT_PAGE_SIZE : size, null)
+                .map(i -> PaymentWebMapper.toResponse(i, null, today)));
     }
 
     @GetMapping("/me/orders/{orderId}")
@@ -97,7 +104,8 @@ class InstallmentController {
     @RequiresPermission(resource = PaymentResources.INSTALLMENTS, action = Action.READ, scope = DataScope.OWN)
     public ApiResponse<OrderInstallmentsResponse> myOrder(@PathVariable UUID orderId,
                                                           @AuthenticatedUser CurrentUser user) {
-        return ApiResponse.ok(PaymentWebMapper.toResponse(installments.ofOrder(orderId, customerOf(user))));
+        return ApiResponse.ok(PaymentWebMapper.toResponse(installments.ofOrder(orderId, customerOf(user)),
+                installments.today()));
     }
 
     @GetMapping("/me/{installmentId}")
@@ -109,7 +117,7 @@ class InstallmentController {
         // A voided receipt is the accountant's correction, not the customer's payment.
         List<InstallmentBook.ReceiptOfInstallment> live = detail.receipts().stream()
                 .filter(r -> r.status() == PaymentReceiptStatus.RECORDED).toList();
-        return ApiResponse.ok(PaymentWebMapper.toResponse(detail.installment(), live));
+        return ApiResponse.ok(PaymentWebMapper.toResponse(detail.installment(), live, installments.today()));
     }
 
     @GetMapping("/me/{installmentId}/transfer-instructions")
@@ -127,7 +135,8 @@ class InstallmentController {
     public ApiResponse<OrderInstallmentsResponse> ofOrder(@PathVariable UUID orderId,
                                                           @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
-        return ApiResponse.ok(PaymentWebMapper.toResponse(installments.ofOrder(orderId, null)));
+        return ApiResponse.ok(PaymentWebMapper.toResponse(installments.ofOrder(orderId, null),
+                installments.today()));
     }
 
     @GetMapping("/{installmentId}")
@@ -137,7 +146,8 @@ class InstallmentController {
                                                 @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
         var detail = installments.detail(installmentId, null);
-        return ApiResponse.ok(PaymentWebMapper.toResponse(detail.installment(), detail.receipts()));
+        return ApiResponse.ok(PaymentWebMapper.toResponse(detail.installment(), detail.receipts(),
+                installments.today()));
     }
 
     /** 15 §2, 16: the transfer details Sales sends the customer for one installment. */

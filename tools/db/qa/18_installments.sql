@@ -160,15 +160,15 @@ SELECT pg_temp.expect_fail('IN10 paid without a receipt (check_installment_paid)
 SELECT pg_temp.expect_fail('IN11 deleted', $q$
     DELETE FROM payment.installment WHERE id = md5('qa18:n2')::uuid $q$);
 
-\echo '--- the nightly sweep (15 §4.1 step 4)'
-SELECT pg_temp.expect_ok('IN12 past its due day and unpaid: OVERDUE', $q$
-    UPDATE payment.installment SET status = 'OVERDUE'
-     WHERE status IN ('DUE', 'PARTIALLY_PAID') AND due_date < CURRENT_DATE AND id = md5('qa18:n1')::uuid $q$);
-SELECT pg_temp.expect_true('IN12a the installment on signing is overdue; the one before delivery has no due day',
-    (SELECT status FROM payment.installment WHERE id = md5('qa18:n1')::uuid) = 'OVERDUE'
-    AND (SELECT due_date FROM payment.installment WHERE id = md5('qa18:n2')::uuid) IS NULL);
-SELECT pg_temp.expect_fail('IN13 OVERDUE back to DUE without being paid', $q$
-    UPDATE payment.installment SET status = 'DUE' WHERE id = md5('qa18:n1')::uuid $q$);
+\echo '--- overdue is a flag, not a status (15 §4.1 step 4; V20261121000100)'
+SELECT pg_temp.expect_true('IN12 past its due day and unpaid: overdue by its due day, its status still DUE',
+    (SELECT payment.installment_is_overdue(due_date, status) AND status = 'DUE'
+       FROM payment.installment WHERE id = md5('qa18:n1')::uuid));
+SELECT pg_temp.expect_true('IN12a the one before delivery has no due day and is never overdue',
+    (SELECT due_date IS NULL AND NOT payment.installment_is_overdue(due_date, status)
+       FROM payment.installment WHERE id = md5('qa18:n2')::uuid));
+SELECT pg_temp.expect_fail('IN13 OVERDUE written as a status', $q$
+    UPDATE payment.installment SET status = 'OVERDUE' WHERE id = md5('qa18:n1')::uuid $q$);
 
 \echo '--- receipts (15 §4.2, BR-03..BR-05)'
 SELECT pg_temp.expect_fail('IN14 a receipt with no line', $q$
@@ -202,7 +202,7 @@ SELECT pg_temp.expect_fail('IN17 another customer''s installment (BR-05)', $q$
     INSERT INTO payment.payment_receipt_line (id, receipt_id, installment_id, amount)
     VALUES (gen_random_uuid(), md5('qa18:rx')::uuid, md5('qa18:n1')::uuid, 400000);
     UPDATE payment.installment SET paid_amount = 400000 WHERE id = md5('qa18:n1')::uuid $q$);
-SELECT pg_temp.expect_ok('IN18 part of the overdue installment paid: it stays OVERDUE (15 §5.1)', $q$
+SELECT pg_temp.expect_ok('IN18 part of the overdue installment paid: PARTIALLY_PAID, the status says the money', $q$
     INSERT INTO payment.payment_receipt (id, customer_id, reference, received_on, amount, currency, status, recorded_by,
                                          recorded_at)
     SELECT md5('qa18:r1')::uuid, c.customer_id, 'FT-QA18-1', CURRENT_DATE, 400000, 'VND', 'RECORDED',
@@ -210,7 +210,10 @@ SELECT pg_temp.expect_ok('IN18 part of the overdue installment paid: it stays OV
       FROM ordering.customer_order c WHERE c.id = md5('qa18:order')::uuid;
     INSERT INTO payment.payment_receipt_line (id, receipt_id, installment_id, amount)
     VALUES (gen_random_uuid(), md5('qa18:r1')::uuid, md5('qa18:n1')::uuid, 400000);
-    UPDATE payment.installment SET paid_amount = 400000 WHERE id = md5('qa18:n1')::uuid $q$);
+    UPDATE payment.installment SET paid_amount = 400000, status = 'PARTIALLY_PAID'
+     WHERE id = md5('qa18:n1')::uuid $q$);
+SELECT pg_temp.expect_true('IN18a and still overdue for what is left',
+    (SELECT payment.installment_is_overdue(due_date, status) FROM payment.installment WHERE id = md5('qa18:n1')::uuid));
 SELECT pg_temp.expect_fail('IN19 the same statement line recorded on a second live receipt (BR-03)', $q$
     INSERT INTO payment.payment_receipt (id, customer_id, reference, received_on, amount, currency, status, recorded_by,
                                          recorded_at)
@@ -245,11 +248,11 @@ SELECT pg_temp.expect_fail('IN25 voided while its installment still counts its m
     UPDATE payment.payment_receipt SET status = 'VOIDED', voided_at = NOW(), voided_by = md5('demo:user:editor')::uuid,
            void_reason = 'wrong customer'
      WHERE id = md5('qa18:r1')::uuid $q$);
-SELECT pg_temp.expect_ok('IN26 voided, its installment put back: still OVERDUE, its due day past', $q$
+SELECT pg_temp.expect_ok('IN26 voided, its installment put back: DUE again, and overdue by its due day', $q$
     UPDATE payment.payment_receipt SET status = 'VOIDED', voided_at = NOW(), voided_by = md5('demo:user:editor')::uuid,
            void_reason = 'wrong customer'
      WHERE id = md5('qa18:r1')::uuid;
-    UPDATE payment.installment SET paid_amount = 0 WHERE id = md5('qa18:n1')::uuid $q$);
+    UPDATE payment.installment SET paid_amount = 0, status = 'DUE' WHERE id = md5('qa18:n1')::uuid $q$);
 SELECT pg_temp.expect_fail('IN27 a voided receipt brought back', $q$
     UPDATE payment.payment_receipt SET status = 'RECORDED', voided_at = NULL, voided_by = NULL, void_reason = NULL
      WHERE id = md5('qa18:r1')::uuid $q$);

@@ -292,6 +292,12 @@ class CartonQuarantineIntegrationTest {
                 .containsEntry("to_status", "AVAILABLE").containsEntry("from_location_code", quarantineArea)
                 .containsEntry("to_location_code", otherBin);
         assertThat(recorded.matching(PutawayCompleted.class, e -> e.putawayTaskId().equals(taskId))).isEmpty();
+        assertThat(recorded.matching(com.stockflow.contracts.QuarantineStockReleased.class,
+                e -> e.putawayTaskId().equals(taskId))).as("stock to promise again: announced once, for the orders "
+                + "waiting for it").singleElement().satisfies(e -> {
+                    assertThat(e.lpn()).isEqualTo(lpn);
+                    assertThat(e.locationCode()).isEqualTo(otherBin);
+                });
         assertThat(refusal(() -> quarantine.release(lpn, manager)).errorCode())
                 .isEqualTo(ErrorCode.STOCK_PACKAGE_NOT_QUARANTINED);
     }

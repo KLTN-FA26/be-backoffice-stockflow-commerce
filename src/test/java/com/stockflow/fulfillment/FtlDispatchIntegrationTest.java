@@ -2629,4 +2629,708 @@ class FtlDispatchIntegrationTest {
                 "UPDATE fulfillment.dispatch_load SET status = 'DISPATCHED' WHERE id = ?::uuid", loadId));
         assertThat(leaving).hasMessageContaining("tg_dispatch_load_unload_pending");
     }
+
+    // ---- WF-05 DS-05b: a shipment the carrier brought back ------------------------------------------------------
+
+    /** The LPNs of the cartons a shipment carried. */
+    private List<String> lpnsOf(UUID shipment) {
+        return jdbc.queryForList("SELECT lpn FROM fulfillment.package WHERE shipment_id = ? ORDER BY package_no",
+                String.class, shipment);
+    }
+
+    /** The order's one shipment of everything released, handed over to the carrier. */
+    private UUID[] handedOver(OrderSummary order, UUID carrier) throws Exception {
+        UUID[] made = packed(order, false);
+        String loadId = loadOf(confirmed(List.of(made[0]), truck5t), 1);
+        loadAll(loadId, carrier);
+        handOver(loadId).andExpect(status().isOk());
+        return made;
+    }
+
+    /** 09 §4.3 steps 2-3: the carrier could not deliver, then brought the shipment back. */
+    private void failedAndCameBack(UUID shipment, String reason) throws Exception {
+        oc(body(post(BASE + "/shipments/" + shipment + "/delivery-outcome"), "{\"outcome\":\"DELIVERY_FAILED\","
+                + "\"failureReason\":\"" + reason + "\"}")).andExpect(status().isOk());
+        oc(body(post(BASE + "/shipments/" + shipment + "/delivery-outcome"), "{\"outcome\":\"RETURNED\"}"))
+                .andExpect(status().isOk());
+    }
+
+    /**
+     * 03 §4.2 steps 9-12: the return receipt of a returned shipment - every carton scanned by LPN, the first with
+     * {@code condition} noted - confirmed. Returns the delivery failure case the receipt opened (after commit).
+     */
+    private UUID receivedBack(UUID shipment, String condition) {
+        var receipts = context.getBean(com.stockflow.procurement.internal.service.ReturnReceiptService.class);
+        var clerk = new com.stockflow.common.security.CurrentUser(picker, "clerk",
+                java.util.Set.of(com.stockflow.common.security.Role.WAREHOUSE_STAFF), java.util.Set.of(),
+                DataScope.WAREHOUSE, java.util.Set.of("HCM"), java.util.Set.of(HCM));
+        WithCurrentUser.call(clerk, DataScope.WAREHOUSE, () -> {
+            var draft = receipts.create(new com.stockflow.procurement.internal.service.ReturnReceiptService.Create(
+                    shipment, null, "HCM-QC01", "back from the carrier"), picker);
+            String note = condition;
+            for (String lpn : lpnsOf(shipment)) {
+                receipts.scan(draft.id(), lpn, note, picker);
+                note = null;
+            }
+            return receipts.confirm(draft.id(), picker);
+        });
+        Await.until("the delivery failure case opened by the return receipt", ASYNC, () -> jdbc.queryForObject(
+                "SELECT count(*) FROM ordering.delivery_failure_case WHERE shipment_id = ?", Long.class, shipment) == 1);
+        return jdbc.queryForObject("SELECT id FROM ordering.delivery_failure_case WHERE shipment_id = ?", UUID.class,
+                shipment);
+    }
+
+    /** 20 §4.8, 05 BR-14: the cartons that came back are released from quarantine and put away on a bin. */
+    private void releasedFromQuarantine(UUID shipment) {
+        var quarantine = context.getBean(com.stockflow.inventory.internal.service.CartonQuarantineService.class);
+        var putaway = context.getBean(com.stockflow.inventory.internal.service.PutawayService.class);
+        WithCurrentUser.run(confirmedOrders().sales(), DataScope.ALL, () -> {
+            for (String lpn : lpnsOf(shipment)) {
+                UUID task = quarantine.release(lpn, coordinator);
+                String bin = putaway.get(task).suggestions().stream().map(s -> s.locationCode()).findFirst()
+                        .orElse("HCM-A01-1-A");
+                putaway.confirm(task, bin, lpn, coordinator);
+            }
+        });
+    }
+
+    private long heldForCase(UUID caseId) {
+        return jdbc.queryForObject("SELECT COALESCE(SUM(r.quantity), 0) FROM ordering.delivery_failure_case_hold h "
+                + "JOIN inventory.stock_reservation r ON r.id = h.reservation_id WHERE h.case_id = ? "
+                + "AND r.status = 'HELD'", Long.class, caseId);
+    }
+
+    private Map<String, Object> caseRow(UUID caseId) {
+        return jdbc.queryForMap("SELECT status, failure_reason, failed_trip_fee, fee_installment_id, carrier_claim, "
+                + "released_at, redelivery_shipment_id, delivery_batch_id, closed_at FROM ordering.delivery_failure_case "
+                + "WHERE id = ?", caseId);
+    }
+
+    private String failures(UUID orderId) {
+        return ORDERS + "/" + orderId + "/delivery-failures";
+    }
+
+    @Test
+    @DisplayName("WF-05 DS-05b (a), redelivery: the carrier brings a refused shipment back - the order is ON_HOLD for "
+            + "DELIVERY_FAILED, not RETURNED, and no note resolves it; the return receipt takes the cartons into "
+            + "quarantine and opens the case; released from quarantine and put away they are held for their order "
+            + "again, out of ATP, before Sales decide; Sales deliver again and must charge the refused trip - a "
+            + "FAILED_TRIP_FEE item, due; the warehouse manager releases, a second task picks the very cartons, "
+            + "they are checked and handed over on a new shipment: the case REDELIVERED, the order SHIPPED then "
+            + "DELIVERED, and still owing the fee until it is paid")
+    void aFailedDeliveryIsDeliveredAgain() throws Exception {
+        UUID customer = tx.execute(s -> ReferenceRows.customer(entityManager));
+        OrderSummary order = ftlOrder(2, customer);
+        UUID orderId = order.orderId();
+        Sku sku = new Sku(sofaOf(customer).sku());
+        var inventory = context.getBean(com.stockflow.inventory.api.InventoryService.class);
+        UUID[] first = handedOver(order, ghn);
+        assertThat(orders.findById(orderId).orElseThrow().status()).isEqualTo(OrderStatus.SHIPPED);
+        List<String> cartons = lpnsOf(first[0]);
+        assertThat(cartons).hasSize(2);
+
+        failedAndCameBack(first[0], "REFUSED");
+        OrderSummary held = orders.findById(orderId).orElseThrow();
+        assertThat(held.status()).as("the order waits for Sales; it is not RETURNED by its shipment")
+                .isEqualTo(OrderStatus.ON_HOLD);
+        assertThat(held.lifecycle().holdReason()).isEqualTo(HoldReason.DELIVERY_FAILED);
+        assertThat(held.lifecycle().statusBeforeHold()).isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
+        assertThat(jdbc.queryForList("SELECT reason FROM ordering.order_hold WHERE order_id = ? AND resolved_at IS NULL",
+                String.class, orderId)).containsExactly("DELIVERY_FAILED");
+        sales(body(post(ORDERS + "/" + orderId + "/hold/resolution"), "{\"note\":\"a note is not a decision\"}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("ORDER_DELIVERY_FAILURE_USE_DECISION"));
+        assertThat(data(sales(get(failures(orderId))).andExpect(status().isOk()))).as("no goods back yet: no case")
+                .isEmpty();
+
+        // The return receipt: the cartons into quarantine, the case OPEN.
+        UUID caseId = receivedBack(first[0], "dented corner");
+        JsonNode open = data(sales(get(failures(orderId))).andExpect(status().isOk())).get(0);
+        assertThat(open.path("caseId").asText()).isEqualTo(caseId.toString());
+        assertThat(open.path("status").asText()).isEqualTo("OPEN");
+        assertThat(open.path("failureReason").asText()).isEqualTo("REFUSED");
+        assertThat(open.path("customerPaysFailedTrip").asBoolean()).isTrue();
+        assertThat(open.path("orderStatus").asText()).isEqualTo("ON_HOLD");
+        assertThat(open.path("cartons")).hasSize(2);
+        assertThat(open.path("cartons").findValuesAsText("condition")).contains("dented corner");
+        assertThat(open.path("lines").get(0).path("units").asInt()).isEqualTo(4);
+        assertThat(inventory.availableToPromise(sku, "HCM")).as("in quarantine: promised to no one").isZero();
+        assertThat(data(sales(get(ORDERS + "/delivery-failures").param("status", "OPEN")).andExpect(status().isOk()))
+                .findValuesAsText("caseId")).as("the queue Sales work").contains(caseId.toString());
+
+        // Who decides, and what a refused delivery must charge.
+        String redelivery = failures(orderId) + "/" + caseId + "/redelivery";
+        oc(body(post(redelivery), "{\"note\":\"giao lại\",\"failedTripFee\":850000}"))
+                .andExpect(status().isForbidden());
+        sales(body(post(redelivery), "{\"note\":\"Khách hẹn nhận lại\"}")).andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("VALIDATION_FAILED"));
+        sales(body(post(failures(orderId) + "/" + UUID.randomUUID() + "/redelivery"),
+                "{\"note\":\"giao lại\",\"failedTripFee\":850000}")).andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.errorCode").value("DELIVERY_FAILURE_CASE_NOT_FOUND"));
+
+        // Out of quarantine and on a bin: held for their own order again, before any decision, and still not ATP.
+        releasedFromQuarantine(first[0]);
+        Await.until("the goods that came back held for their order again", ASYNC, () -> heldForCase(caseId) == 4);
+        assertThat(inventory.availableToPromise(sku, "HCM")).as("kept for the customer they were made for").isZero();
+
+        JsonNode decided = data(sales(body(post(redelivery), "{\"note\":\"Khách hẹn nhận lại thứ Sáu\","
+                + "\"failedTripFee\":850000}")).andExpect(status().isOk()));
+        assertThat(decided.path("status").asText()).isEqualTo("REDELIVERY");
+        assertThat(decided.path("readyForRelease").asBoolean()).isTrue();
+        assertThat(decided.path("carrierClaim").asBoolean()).isFalse();
+        assertThat(decided.path("orderStatus").asText()).as("the hold lifted: the goods are owed a delivery again")
+                .isEqualTo("PARTIALLY_FULFILLED");
+        Map<String, Object> fee = jdbc.queryForMap("SELECT id, status, amount::bigint AS amount, seq, due_date FROM "
+                + "payment.installment WHERE order_id = ? AND milestone = 'FAILED_TRIP_FEE'", orderId);
+        assertThat(fee).containsEntry("status", "DUE").containsEntry("amount", 850_000L).containsEntry("seq", 21);
+        assertThat(caseRow(caseId)).containsEntry("fee_installment_id", fee.get("id"));
+        // A fee item of a failed trip is some case's fee: one written on its own is refused when it commits.
+        assertThat(catchThrowable(() -> tx.executeWithoutResult(t -> jdbc.update("""
+                INSERT INTO payment.installment (id, contract_id, order_id, customer_id, contract_number, order_number,
+                    seq, name, milestone, amount, currency, due_days, reached_at, due_date, status)
+                SELECT gen_random_uuid(), contract_id, order_id, customer_id, contract_number, order_number, 22, name,
+                       milestone, amount, currency, due_days, reached_at, due_date, status
+                  FROM payment.installment WHERE id = ?""", fee.get("id")))))
+                .hasMessageContaining("no delivery failure case of its order owes it");
+        assertThat(jdbc.queryForList("SELECT reason FROM ordering.order_hold WHERE order_id = ? AND resolved_at IS NULL",
+                String.class, orderId)).isEmpty();
+        sales(body(post(redelivery), "{\"note\":\"lần nữa\",\"failedTripFee\":850000}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("DELIVERY_FAILURE_INVALID_TRANSITION"));
+
+        // The same road again: release, a task of its own, the check station, a vehicle, the signature.
+        OrderSummary released = WithCurrentUser.call(confirmedOrders().sales(), DataScope.ALL,
+                () -> context.getBean(OrderReleases.class).release(orderId, HCM, coordinator));
+        assertThat(released.status()).isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
+        assertThat(caseRow(caseId).get("released_at")).isNotNull();
+        UUID[] again = handedOver(released, ghtk);
+        assertThat(again[1]).as("a task of its own").isNotEqualTo(first[1]);
+        assertThat(jdbc.queryForObject("SELECT redelivery_case_id FROM fulfillment.pick WHERE id = ?", UUID.class,
+                again[1])).isEqualTo(caseId);
+        assertThat(lpnsOf(again[0])).as("the very cartons that came back")
+                .containsExactlyInAnyOrderElementsOf(cartons);
+        assertThat(caseRow(caseId)).containsEntry("status", "REDELIVERED")
+                .containsEntry("redelivery_shipment_id", again[0]);
+        assertThat(orders.findById(orderId).orElseThrow().status()).isEqualTo(OrderStatus.SHIPPED);
+        assertThat(jdbc.queryForList("SELECT status FROM ordering.order_shipment WHERE order_id = ? ORDER BY "
+                + "handed_over_at", String.class, orderId)).containsExactly("RETURNED", "HANDED_OVER");
+
+        oc(body(post(BASE + "/shipments/" + again[0] + "/delivery-outcome"), "{\"outcome\":\"DELIVERED\"}"))
+                .andExpect(status().isOk());
+        assertThat(orders.findById(orderId).orElseThrow().status()).isEqualTo(OrderStatus.DELIVERED);
+        var payments = context.getBean(com.stockflow.payment.api.PaymentService.class);
+        assertThat(payments.installmentStanding(orderId).paid()).as("the failed trip is owed: the order does not "
+                + "complete until it is paid").isLessThan(payments.installmentStanding(orderId).total());
+        confirmedOrders().pay(customer, (UUID) fee.get("id"), new BigDecimal("850000"));
+        assertThat(payments.installmentStanding(orderId).paid())
+                .isEqualByComparingTo(payments.installmentStanding(orderId).total());
+    }
+
+    @Test
+    @DisplayName("WF-05 DS-05b (b), cancellation: nobody was home, the shipment comes back and Sales cancel what was "
+            + "not delivered - a fee is charged on a redelivery only when the customer made the trip fail (400 here); "
+            + "the rest is closed through the closure with its fee though no mass printing was recorded (the goods "
+            + "exist): the case CANCELLED, the order RETURNED (nothing of it was delivered), its settlement keeping "
+            + "the fee and making the rest refundable; the nightly settlement leaves it while the refund is not made, "
+            + "and the refund recorded moves it to PARTIALLY_REFUNDED")
+    void aFailedDeliveryIsCancelled() throws Exception {
+        UUID customer = tx.execute(s -> ReferenceRows.customer(entityManager));
+        OrderSummary order = ftlOrder(2, customer);
+        UUID orderId = order.orderId();
+        UUID[] first = handedOver(order, ghn);
+        failedAndCameBack(first[0], "CUSTOMER_ABSENT");
+        assertThat(orders.findById(orderId).orElseThrow().status()).isEqualTo(OrderStatus.ON_HOLD);
+        UUID caseId = receivedBack(first[0], null);
+
+        // F5: a warehouse manager reads only the cases of goods that came back to their own warehouses - none of a
+        // warehouse nothing came back to, and another warehouse's order is not found - while HCM's sees this one.
+        UUID elsewhere = tx.execute(s -> otherWarehouse());
+        UUID managerElsewhere = staff("WAREHOUSE_MANAGER", elsewhere);
+        assertThat(data(as(managerElsewhere, "WAREHOUSE_MANAGER", get(ORDERS + "/delivery-failures"))
+                .andExpect(status().isOk()))).isEmpty();
+        as(managerElsewhere, "WAREHOUSE_MANAGER", get(failures(orderId))).andExpect(status().isNotFound());
+        assertThat(data(oc(get(ORDERS + "/delivery-failures").param("status", "OPEN").param("limit", "200"))
+                .andExpect(status().isOk())).findValuesAsText("caseId")).contains(caseId.toString());
+        assertThat(data(oc(get(failures(orderId))).andExpect(status().isOk())).findValuesAsText("caseId"))
+                .containsExactly(caseId.toString());
+
+        sales(body(post(failures(orderId) + "/" + caseId + "/redelivery"), "{\"note\":\"giao lại\","
+                + "\"failedTripFee\":500000}")).andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("VALIDATION_FAILED"));
+
+        BigDecimal collected = jdbc.queryForObject("SELECT SUM(paid_amount) FROM payment.installment WHERE order_id = ?",
+                BigDecimal.class, orderId);
+        String cancellation = failures(orderId) + "/" + caseId + "/cancellation";
+        oc(body(post(cancellation), "{\"note\":\"huỷ\"}")).andExpect(status().isForbidden());
+        JsonNode cancelled = data(sales(body(post(cancellation), "{\"note\":\"Khách không nhận lại hàng\","
+                + "\"agreedFee\":{\"amount\":4000000,\"reason\":\"Hàng đã in theo thiết kế\",\"detail\":"
+                + "\"Theo điều khoản hợp đồng, thống nhất với khách\"}}")).andExpect(status().isOk()));
+        assertThat(cancelled.path("status").asText()).isEqualTo("CANCELLED");
+        assertThat(cancelled.path("orderStatus").asText()).as("nothing of it was delivered").isEqualTo("RETURNED");
+        assertThat(jdbc.queryForObject("SELECT SUM(cancelled_quantity) FROM ordering.order_line WHERE order_id = ?",
+                Integer.class, orderId)).isEqualTo(4);
+        assertThat(jdbc.queryForList("SELECT reason FROM ordering.order_hold WHERE order_id = ? AND resolved_at IS NULL",
+                String.class, orderId)).isEmpty();
+        Map<String, Object> settlement = jdbc.queryForMap("SELECT kind, fee_amount, fee_covered_amount, "
+                + "refundable_amount, collected_amount FROM payment.order_settlement WHERE order_id = ?", orderId);
+        assertThat(settlement).containsEntry("kind", "REMAINDER_CLOSED");
+        // F7: by hand - 2 cartons x 2 pieces x 6,000,000, no VAT, all paid on signing; nothing was owed, so nothing
+        // is reduced, the fee is covered whole and no fee item is raised.
+        assertThat(order.total().amount()).isEqualByComparingTo("24000000");
+        amounts(settlement(orderId), 24_000_000, 24_000_000, 0, 24_000_000, 4_000_000, 4_000_000, 20_000_000, 0);
+        assertThat(settlement(orderId).get("fee_installment_id")).isNull();
+        assertThat(installments(orderId)).containsExactly("1 ON_SIGNING PAID 24000000/24000000/0");
+        assertThat((BigDecimal) settlement.get("fee_amount")).isEqualByComparingTo("4000000");
+        assertThat((BigDecimal) settlement.get("fee_covered_amount")).isEqualByComparingTo("4000000");
+        assertThat((BigDecimal) settlement.get("collected_amount")).isEqualByComparingTo(collected);
+        BigDecimal refundable = (BigDecimal) settlement.get("refundable_amount");
+        assertThat(refundable).as("what was collected above the fee: nothing was delivered")
+                .isEqualByComparingTo(collected.subtract(new BigDecimal("4000000")));
+        sales(body(post(cancellation), "{\"note\":\"lần nữa\"}")).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("DELIVERY_FAILURE_INVALID_TRANSITION"));
+
+        // The nightly settlement: a candidate, left as it is while the refund is not made.
+        var settlements = context.getBean(com.stockflow.order.internal.service.OrderSettlementService.class);
+        assertThat(settlements.failedDeliveryCandidates(0, 1000)).contains(orderId);
+        assertThat(settlements.settleFailedDelivery(orderId)).isFalse();
+        assertThat(orders.findById(orderId).orElseThrow().status()).isEqualTo(OrderStatus.RETURNED);
+
+        assertThat(refundRefused(orderId, new BigDecimal("20000001"))).isEqualTo(REFUND_EXCEEDS_REFUNDABLE);
+        // The accountant records the refund (15 §4.5 step 16): the order follows it.
+        UUID accountant = staff("ACCOUNTANT");
+        context.getBean(com.stockflow.payment.internal.service.RefundService.class).record(
+                new com.stockflow.payment.internal.service.RefundService.RecordRefundCommand(orderId, refundable,
+                        LocalDate.now(ConfirmedOrders.VIETNAM), "FT" + UUID.randomUUID().toString().replace("-", "")
+                        .substring(0, 16).toUpperCase(), null, accountant));
+        Await.until("the order follows its refund", ASYNC,
+                () -> orders.findById(orderId).orElseThrow().status() == OrderStatus.PARTIALLY_REFUNDED);
+        assertThat(settlements.failedDeliveryCandidates(0, 1000)).doesNotContain(orderId);
+        assertThat(jdbc.queryForObject("SELECT refunded_at IS NOT NULL FROM ordering.customer_order WHERE id = ?",
+                Boolean.class, orderId)).as("what the closing run counts its delay from").isTrue();
+    }
+
+    // ---- F7: the money of a cancellation, every amount worked out by hand ---------------------------------------
+
+    private static final com.stockflow.common.error.ErrorCode REFUND_EXCEEDS_REFUNDABLE =
+            com.stockflow.common.error.ErrorCode.REFUND_EXCEEDS_REFUNDABLE;
+
+    /** The order's one settlement row. */
+    private Map<String, Object> settlement(UUID orderId) {
+        return jdbc.queryForMap("SELECT id, kind, collected_amount, closed_amount, reduced_amount, surplus_amount, "
+                + "fee_amount, fee_covered_amount, refundable_amount, fee_owed_amount, fee_installment_id "
+                + "FROM payment.order_settlement WHERE order_id = ?", orderId);
+    }
+
+    /**
+     * Every amount of a settlement against constants, in whole dong. Constants on purpose: compared with a sum read
+     * back from the same tables, the settlement would agree with any arithmetic.
+     */
+    private static void amounts(Map<String, Object> settlement, long collected, long closed, long reduced,
+                                long surplus, long fee, long covered, long refundable, long owed) {
+        Map<String, Long> wanted = new java.util.LinkedHashMap<>();
+        wanted.put("collected_amount", collected);
+        wanted.put("closed_amount", closed);
+        wanted.put("reduced_amount", reduced);
+        wanted.put("surplus_amount", surplus);
+        wanted.put("fee_amount", fee);
+        wanted.put("fee_covered_amount", covered);
+        wanted.put("refundable_amount", refundable);
+        wanted.put("fee_owed_amount", owed);
+        wanted.forEach((column, amount) -> assertThat((BigDecimal) settlement.get(column)).as(column)
+                .isEqualByComparingTo(BigDecimal.valueOf(amount)));
+    }
+
+    /** Each installment of the order as {@code seq milestone status amount/paid/reduced}, in whole dong, by seq. */
+    private List<String> installments(UUID orderId) {
+        return jdbc.queryForList("SELECT seq || ' ' || milestone || ' ' || status || ' ' || amount::bigint || '/' "
+                + "|| paid_amount::bigint || '/' || reduced_amount::bigint FROM payment.installment "
+                + "WHERE order_id = ? ORDER BY seq", String.class, orderId);
+    }
+
+    private void recordRefund(UUID orderId, BigDecimal amount) {
+        UUID accountant = staff("ACCOUNTANT");
+        context.getBean(com.stockflow.payment.internal.service.RefundService.class).record(
+                new com.stockflow.payment.internal.service.RefundService.RecordRefundCommand(orderId, amount,
+                        LocalDate.now(ConfirmedOrders.VIETNAM), "FT" + UUID.randomUUID().toString().replace("-", "")
+                        .substring(0, 16).toUpperCase(java.util.Locale.ROOT), null, accountant));
+    }
+
+    /** The error a refund of {@code amount} is refused with, or null when it is recorded. */
+    private com.stockflow.common.error.ErrorCode refundRefused(UUID orderId, BigDecimal amount) {
+        Throwable refused = catchThrowable(() -> recordRefund(orderId, amount));
+        return refused instanceof com.stockflow.common.error.BusinessException e ? e.errorCode() : null;
+    }
+
+    private static String cancelKeeping(long fee) {
+        return "{\"note\":\"Khách không nhận lại hàng\",\"agreedFee\":{\"amount\":" + fee + ",\"reason\":"
+                + "\"Hàng đã in theo thiết kế\",\"detail\":\"Theo điều khoản hợp đồng, thống nhất với khách\"}}";
+    }
+
+    @Test
+    @DisplayName("F7 money, paid in part: 30% on signing (7,200,000, paid) and 70% after delivery (16,800,000, not "
+            + "due); a fee above the goods closed is refused before anything changes; cancelled keeping 10,000,000 - "
+            + "closed 24,000,000, the installment after delivery reduced whole and CANCELLED, surplus 7,200,000 "
+            + "covers part of the fee, nothing refundable, 2,800,000 owed on a CANCELLATION_FEE item (seq 21, DUE)")
+    void aFailedDeliveryOfAnOrderPaidInPartIsCancelled() throws Exception {
+        UUID customer = tx.execute(s -> ReferenceRows.customer(entityManager));
+        UUID accountant = staff("ACCOUNTANT");
+        tx.executeWithoutResult(s -> jdbc.update("""
+                INSERT INTO customer.credit_profile (id, customer_id, credit_limit, credit_term_days, approved_by,
+                                                     approved_at)
+                VALUES (?, ?, 10000000000, 30, ?, NOW())""", Identifiers.newId(), customer, accountant));
+        OrderSummary order = ftlOrder(2, customer, List.of(
+                new SalesContracts.Installment("Deposit", "ON_SIGNING", null, new BigDecimal("30"), 0, null),
+                new SalesContracts.Installment("After delivery", "AFTER_DELIVERY", null, new BigDecimal("70"), 10,
+                        null)));
+        UUID orderId = order.orderId();
+        assertThat(installments(orderId)).containsExactly("1 ON_SIGNING PAID 7200000/7200000/0",
+                "2 AFTER_DELIVERY NOT_DUE 16800000/0/0");
+        UUID shipment = handedOver(order, ghn)[0];
+        failedAndCameBack(shipment, "CUSTOMER_ABSENT");
+        UUID caseId = receivedBack(shipment, null);
+        String cancellation = failures(orderId) + "/" + caseId + "/cancellation";
+
+        sales(body(post(cancellation), cancelKeeping(24_000_001))).andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("VALIDATION_FAILED"));
+        assertThat(orders.findById(orderId).orElseThrow().status()).isEqualTo(OrderStatus.ON_HOLD);
+        assertThat(caseRow(caseId)).containsEntry("status", "OPEN");
+
+        sales(body(post(cancellation), cancelKeeping(10_000_000))).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("CANCELLED"));
+        Map<String, Object> settled = settlement(orderId);
+        amounts(settled, 7_200_000, 24_000_000, 16_800_000, 7_200_000, 10_000_000, 7_200_000, 0, 2_800_000);
+        assertThat(installments(orderId)).containsExactly("1 ON_SIGNING PAID 7200000/7200000/0",
+                "2 AFTER_DELIVERY CANCELLED 16800000/0/16800000", "21 CANCELLATION_FEE DUE 2800000/0/0");
+        assertThat(jdbc.queryForObject("SELECT id FROM payment.installment WHERE order_id = ? AND seq = 21",
+                UUID.class, orderId)).isEqualTo(settled.get("fee_installment_id"));
+        assertThat(jdbc.queryForObject("SELECT amount::bigint FROM payment.installment_reduction "
+                + "WHERE settlement_id = ?", Long.class, settled.get("id"))).isEqualTo(16_800_000L);
+        assertThat(refundRefused(orderId, BigDecimal.ONE)).as("nothing is refundable")
+                .isEqualTo(REFUND_EXCEEDS_REFUNDABLE);
+        assertThat(orders.findById(orderId).orElseThrow().status()).as("nothing to refund, a fee owed (F8)")
+                .isEqualTo(OrderStatus.PARTIALLY_REFUNDED);
+    }
+
+    @Test
+    @DisplayName("F7, part delivered: two batches of 2 cartons (48,000,000, paid on signing); batch 1 delivered, "
+            + "batch 2 fails and comes back; its goods cancelled keeping 3,000,000 - closed 24,000,000 (batch 2 "
+            + "only), refundable 21,000,000 not 45,000,000; the order back to DELIVERED, not RETURNED")
+    void aFailedBatchAfterADeliveredOneIsCancelled() throws Exception {
+        UUID customer = tx.execute(s -> ReferenceRows.customer(entityManager));
+        CustomerSkuRows.Issued sofa = sofaOf(customer);
+        CustomerSkuRows.stock(jdbc, tx, sofa.sku(), 2 * 4);
+        UUID orderId = confirmedOrders().pay(confirmedOrders().signedInBatches(customer, 2,
+                ConfirmedOrders.Line.cartons(sofa, 4, 6_000_000))).orderId();
+        assertThat(installments(orderId)).containsExactly("1 ON_SIGNING PAID 48000000/48000000/0");
+        List<UUID> batchIds = jdbc.queryForList("""
+                SELECT b.id FROM ordering.delivery_batch b JOIN ordering.sales_contract c ON c.id = b.contract_id
+                 WHERE c.order_id = ? ORDER BY b.seq""", UUID.class, orderId);
+        UUID[] first = handedOver(confirmedOrders().release(orderId, HCM, coordinator), ghn);
+        oc(body(post(BASE + "/shipments/" + first[0] + "/delivery-outcome"), "{\"outcome\":\"DELIVERED\"}"))
+                .andExpect(status().isOk());
+
+        OrderSummary second = WithCurrentUser.call(confirmedOrders().sales(), DataScope.ALL,
+                () -> context.getBean(OrderReleases.class).release(orderId, HCM, coordinator));
+        LocalDate today = LocalDate.now(ConfirmedOrders.VIETNAM);
+        UUID consent = ChatRows.message(jdbc, tx, customer, orderId, "CUSTOMER");
+        WithCurrentUser.call(confirmedOrders().sales(), DataScope.ALL, () -> context.getBean(
+                DeliveryBatchService.class).changeWindow(confirmedOrders().sales(), orderId, batchIds.get(1),
+                new DeliveryBatchService.WindowChange(today, today.plusDays(2), WindowChangeReason.CUSTOMER_REQUEST,
+                        "The customer takes it now", null, consent)));
+        UUID[] next = handedOver(second, ghtk);
+        failedAndCameBack(next[0], "CUSTOMER_ABSENT");
+        assertThat(orders.findById(orderId).orElseThrow().status()).isEqualTo(OrderStatus.ON_HOLD);
+        UUID caseId = receivedBack(next[0], null);
+        assertThat(caseRow(caseId)).containsEntry("delivery_batch_id", batchIds.get(1));
+
+        JsonNode cancelled = data(sales(body(post(failures(orderId) + "/" + caseId + "/cancellation"),
+                cancelKeeping(3_000_000))).andExpect(status().isOk()));
+        assertThat(cancelled.path("orderStatus").asText()).as("batch 1 arrived").isEqualTo("DELIVERED");
+        assertThat(orders.findById(orderId).orElseThrow().status()).isEqualTo(OrderStatus.DELIVERED);
+        assertThat(jdbc.queryForObject("SELECT SUM(cancelled_quantity) FROM ordering.order_line WHERE order_id = ?",
+                Integer.class, orderId)).as("batch 2's four pieces only").isEqualTo(4);
+        amounts(settlement(orderId), 48_000_000, 24_000_000, 0, 24_000_000, 3_000_000, 3_000_000, 21_000_000, 0);
+        assertThat(installments(orderId)).containsExactly("1 ON_SIGNING PAID 48000000/48000000/0");
+        assertThat(refundRefused(orderId, new BigDecimal("21000001"))).isEqualTo(REFUND_EXCEEDS_REFUNDABLE);
+        assertThat(refundRefused(orderId, new BigDecimal("21000000"))).isNull();
+
+        // F2: a return request later takes the order to RETURNED (its effect written here directly: the RMA's own
+        // flow is ReturnRequestIntegrationTest's). Batch 1 was delivered, so the cancelled delivery failure does not
+        // settle it - not on a refund, not in the nightly run - and the return request stays the one to move it.
+        tx.executeWithoutResult(s -> {
+            jdbc.update("UPDATE ordering.customer_order SET status = 'RETURN_REQUESTED' WHERE id = ?", orderId);
+            jdbc.update("UPDATE ordering.customer_order SET status = 'RETURNED' WHERE id = ?", orderId);
+        });
+        assertThat(context.getBean(com.stockflow.order.internal.service.DeliveryFailureService.class)
+                .followRefunds(orderId, confirmedOrders().sales().userId())).isFalse();
+        assertThat(orders.findById(orderId).orElseThrow().status()).isEqualTo(OrderStatus.RETURNED);
+        assertThat(context.getBean(com.stockflow.order.internal.service.OrderSettlementService.class)
+                .failedDeliveryCandidates(0, 1000)).doesNotContain(orderId);
+    }
+
+    @Test
+    @DisplayName("WF-05 review F1 / F6.1: one order comes back on two shipments; the first is received back and "
+            + "Sales deliver it again - the order stays ON_HOLD, the second shipment came back with no case yet; "
+            + "Sales cancel what was not delivered without a case (no note 400, the warehouse manager 403): every "
+            + "case CANCELLED, the order RETURNED; the second shipment received back afterwards opens a case "
+            + "CANCELLED at once that holds nothing, and a second case-less cancellation is 409")
+    void twoShipmentsComeBackAndTheOrderWaitsForBoth() throws Exception {
+        UUID customer = tx.execute(s -> ReferenceRows.customer(entityManager));
+        OrderSummary order = ftlOrder(2, customer);
+        UUID orderId = order.orderId();
+        UUID[] both = packedInTwo(order, false);
+        JsonNode plan = confirmed(List.of(both[0], both[1]), truck5t);
+        for (int seq = 1; seq <= plan.path("vehicles").size(); seq++) {
+            String loadId = loadOf(plan, seq);
+            loadAll(loadId, ghn);
+            handOver(loadId).andExpect(status().isOk());
+        }
+        assertThat(orders.findById(orderId).orElseThrow().status()).isEqualTo(OrderStatus.SHIPPED);
+        failedAndCameBack(both[0], "DAMAGED");
+        failedAndCameBack(both[1], "DAMAGED");
+        UUID first = receivedBack(both[0], null);
+
+        JsonNode decided = data(sales(body(post(failures(orderId) + "/" + first + "/redelivery"),
+                "{\"note\":\"Hãng vận chuyển làm hỏng; giao lại\"}")).andExpect(status().isOk()));
+        assertThat(decided.path("status").asText()).isEqualTo("REDELIVERY");
+        assertThat(decided.path("orderStatus").asText()).as("the second shipment waits for its receipt")
+                .isEqualTo("ON_HOLD");
+        assertThat(jdbc.queryForList("SELECT reason FROM ordering.order_hold WHERE order_id = ? "
+                + "AND resolved_at IS NULL", String.class, orderId)).containsExactly("DELIVERY_FAILED");
+
+        String withoutCase = failures(orderId) + "/cancellation";
+        sales(body(post(withoutCase), "{\"note\":\" \"}")).andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("VALIDATION_FAILED"));
+        oc(body(post(withoutCase), cancelKeeping(2_000_000))).andExpect(status().isForbidden());
+        JsonNode closed = data(sales(body(post(withoutCase), cancelKeeping(2_000_000))).andExpect(status().isOk()));
+        assertThat(closed.findValuesAsText("caseId")).containsExactly(first.toString());
+        assertThat(closed.findValuesAsText("status")).containsExactly("CANCELLED");
+        assertThat(orders.findById(orderId).orElseThrow().status()).as("nothing of it was delivered")
+                .isEqualTo(OrderStatus.RETURNED);
+        assertThat(jdbc.queryForObject("SELECT SUM(cancelled_quantity) FROM ordering.order_line WHERE order_id = ?",
+                Integer.class, orderId)).as("both shipments' units").isEqualTo(4);
+        amounts(settlement(orderId), 24_000_000, 24_000_000, 0, 24_000_000, 2_000_000, 2_000_000, 22_000_000, 0);
+
+        // The second shipment's goods come back after the closure: owed to nobody, the case closed at birth.
+        UUID second = receivedBack(both[1], null);
+        assertThat(caseRow(second)).containsEntry("status", "CANCELLED");
+        assertThat(jdbc.queryForObject("SELECT decision_note FROM ordering.delivery_failure_case WHERE id = ?",
+                String.class, second))
+                .isEqualTo("Closed with the rest of the order before its goods were received back");
+        releasedFromQuarantine(both[1]);
+        assertThat(heldForCase(second)).as("held for no one").isZero();
+        sales(body(post(withoutCase), "{\"note\":\"lần nữa\"}")).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("DELIVERY_FAILURE_INVALID_TRANSITION"));
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM payment.order_settlement WHERE order_id = ?", Long.class,
+                orderId)).as("closed once").isEqualTo(1L);
+    }
+
+    @Test
+    @DisplayName("WF-05 review F3: Sales deliver again, the warehouse manager releases and a task is opened, nothing "
+            + "picked - Sales may still cancel what was not delivered: the case CANCELLED, the order RETURNED, the "
+            + "redelivery's task CANCELLED (RedeliveryWithdrawn) while the order's first task is left as it was, and "
+            + "the goods that came back are free stock again")
+    void aReleasedRedeliveryIsWithdrawnWithTheCancellation() throws Exception {
+        UUID customer = tx.execute(s -> ReferenceRows.customer(entityManager));
+        OrderSummary order = ftlOrder(2, customer);
+        UUID orderId = order.orderId();
+        Sku sku = new Sku(sofaOf(customer).sku());
+        var inventory = context.getBean(com.stockflow.inventory.api.InventoryService.class);
+        UUID[] first = handedOver(order, ghn);
+        failedAndCameBack(first[0], "DAMAGED");
+        UUID caseId = receivedBack(first[0], null);
+        releasedFromQuarantine(first[0]);
+        Await.until("the goods that came back held for their order again", ASYNC, () -> heldForCase(caseId) == 4);
+        sales(body(post(failures(orderId) + "/" + caseId + "/redelivery"), "{\"note\":\"Giao lại\"}"))
+                .andExpect(status().isOk());
+        WithCurrentUser.call(confirmedOrders().sales(), DataScope.ALL,
+                () -> context.getBean(OrderReleases.class).release(orderId, HCM, coordinator));
+        assertThat(caseRow(caseId).get("released_at")).isNotNull();
+        UUID task = UUID.fromString(data(oc(body(post(BASE + "/tasks"), "{\"orderId\":\"" + orderId
+                + "\",\"assignedUserId\":\"" + picker + "\"}")).andExpect(status().isCreated()))
+                .path("taskId").asText());
+        assertThat(jdbc.queryForObject("SELECT redelivery_case_id FROM fulfillment.pick WHERE id = ?", UUID.class,
+                task)).isEqualTo(caseId);
+        String firstTaskStatus = jdbc.queryForObject("SELECT status FROM fulfillment.pick WHERE id = ?", String.class,
+                first[1]);
+        assertThat(inventory.availableToPromise(sku, "HCM")).isZero();
+
+        JsonNode cancelled = data(sales(body(post(failures(orderId) + "/" + caseId + "/cancellation"),
+                cancelKeeping(1_000_000))).andExpect(status().isOk()));
+        assertThat(cancelled.path("status").asText()).isEqualTo("CANCELLED");
+        assertThat(orders.findById(orderId).orElseThrow().status()).as("nothing of it was delivered")
+                .isEqualTo(OrderStatus.RETURNED);
+        Await.until("fulfillment cancels the redelivery's task", ASYNC, () -> "CANCELLED".equals(jdbc.queryForObject(
+                "SELECT status FROM fulfillment.pick WHERE id = ?", String.class, task)));
+        assertThat(jdbc.queryForObject("SELECT status FROM fulfillment.pick WHERE id = ?", String.class, first[1]))
+                .as("only the redelivery's task").isEqualTo(firstTaskStatus);
+        assertThat(inventory.availableToPromise(sku, "HCM")).as("the allocations released").isEqualTo(4);
+    }
+
+    @Test
+    @DisplayName("WF-05 review F8: nothing paid (everything after delivery, on credit), the shipment comes back and "
+            + "is cancelled keeping 1,000,000 - nothing collected, the installment reduced whole, the fee owed on a "
+            + "CANCELLATION_FEE item; nothing went back, so the order is PARTIALLY_REFUNDED, not REFUNDED")
+    void anUnpaidFailedDeliveryCancelledWithAFeeIsNotRefundedInFull() throws Exception {
+        UUID customer = tx.execute(s -> ReferenceRows.customer(entityManager));
+        UUID accountant = staff("ACCOUNTANT");
+        tx.executeWithoutResult(s -> jdbc.update("""
+                INSERT INTO customer.credit_profile (id, customer_id, credit_limit, credit_term_days, approved_by,
+                                                     approved_at)
+                VALUES (?, ?, 10000000000, 30, ?, NOW())""", Identifiers.newId(), customer, accountant));
+        OrderSummary order = ftlOrder(2, customer, List.of(new SalesContracts.Installment("After delivery",
+                "AFTER_DELIVERY", null, new BigDecimal("100"), 10, null)));
+        UUID orderId = order.orderId();
+        assertThat(installments(orderId)).containsExactly("1 AFTER_DELIVERY NOT_DUE 24000000/0/0");
+        UUID shipment = handedOver(order, ghn)[0];
+        failedAndCameBack(shipment, "CUSTOMER_ABSENT");
+        UUID caseId = receivedBack(shipment, null);
+
+        sales(body(post(failures(orderId) + "/" + caseId + "/cancellation"), cancelKeeping(1_000_000)))
+                .andExpect(status().isOk());
+        amounts(settlement(orderId), 0, 24_000_000, 24_000_000, 0, 1_000_000, 0, 0, 1_000_000);
+        assertThat(installments(orderId)).containsExactly("1 AFTER_DELIVERY CANCELLED 24000000/0/24000000",
+                "21 CANCELLATION_FEE DUE 1000000/0/0");
+        assertThat(orders.findById(orderId).orElseThrow().status()).as("a fee owed and nothing refunded")
+                .isEqualTo(OrderStatus.PARTIALLY_REFUNDED);
+    }
+
+    @Test
+    @DisplayName("WF-05 review F4: an order's goods came back and wait for their case while another order of the same "
+            + "SKU has a shipping warehouse chosen - the waiting case is served first: free stock of that SKU is held "
+            + "for it, and the other order is not fully held")
+    void choosingAWarehouseServesTheWaitingCaseFirst() throws Exception {
+        UUID customer = tx.execute(s -> ReferenceRows.customer(entityManager));
+        CustomerSkuRows.Issued sofa = sofaOf(customer);
+        OrderSummary order = ftlOrder(2, customer);
+        UUID[] first = handedOver(order, ghn);
+        failedAndCameBack(first[0], "DAMAGED");
+        UUID caseId = receivedBack(first[0], null);
+        assertThat(heldForCase(caseId)).as("the cartons that came back are in quarantine").isZero();
+        // Fresh stock of the same SKU, inserted without an arrival event: only choosing a warehouse can serve the case.
+        CustomerSkuRows.stock(jdbc, tx, sofa.sku(), 4);
+        UUID other = confirmedOrders().pay(confirmedOrders().signed(customer, ConfirmedOrders.paidOnSigning(),
+                ConfirmedOrders.Line.cartons(sofa, 2, 6_000_000))).orderId();
+
+        var coverage = confirmedOrders().ship(other, HCM);
+
+        assertThat(heldForCase(caseId)).as("the waiting case is held for before the other order").isEqualTo(4);
+        assertThat(coverage.fullyHeld()).as("nothing was left for the other order").isFalse();
+    }
+
+    @Test
+    @DisplayName("WF-05 review F12: a partly shipped order is held for the customer; the carrier's webhook brings the "
+            + "shipment on the road back - no actor, so the customer hold stays open; Sales' decision resolves it as "
+            + "superseded and puts the DELIVERY_FAILED hold on record, raised by nobody when the shipment came back, "
+            + "resolved by the decision; no hold is left open")
+    void aHoldTheCarrierSupersededIsPutOnRecordAtTheDecision() throws Exception {
+        UUID manager = staff("WAREHOUSE_MANAGER", HCM);
+        String secret = "load-webhook-secret-f12-0123456789";
+        String code = "WF" + UUID.randomUUID().toString().substring(0, 6).toUpperCase();
+        UUID carrier = UUID.fromString(data(as(manager, "WAREHOUSE_MANAGER", body(post(BASE + "/carriers"),
+                "{\"code\":\"" + code + "\",\"name\":\"Xe tải webhook\",\"connection\":{\"connectionType\":"
+                        + "\"WEBHOOK_LOAD\",\"webhookSecret\":\"" + secret + "\"}}")).andExpect(status().isCreated()))
+                .path("carrierId").asText());
+        UUID customer = tx.execute(s -> ReferenceRows.customer(entityManager));
+        OrderSummary order = ftlOrder(2, customer);
+        UUID orderId = order.orderId();
+        UUID[] both = packedInTwo(order, false);
+        String loadId = loadOf(confirmed(List.of(both[0]), truck5t), 1);
+        String loadCode = load(loadId).path("code").asText();
+        dispatch(body(post(LOADS + "/" + loadId + "/booking"), "{\"carrierId\":\"" + carrier
+                + "\",\"vehiclePlate\":\"51C-WF.12\",\"waybillNo\":\"WF-" + loadId + "\"}")).andExpect(status().isOk());
+        loadAndSign(loadId, "51C-WF.12");
+        assertThat(orders.findById(orderId).orElseThrow().status()).isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
+        sales(body(post(ORDERS + "/" + orderId + "/hold"), "{\"reasonCode\":\"CUSTOMER\","
+                + "\"note\":\"Khách hẹn lại lịch nhận\"}")).andExpect(status().isOk());
+
+        String shipmentCode = jdbc.queryForObject("SELECT code FROM fulfillment.shipment WHERE id = ?", String.class,
+                both[0]);
+        String back = "{\"loadCode\":\"" + loadCode + "\",\"type\":\"RETURNED\",\"reportedAt\":\"" + Instant.now()
+                + "\",\"shipmentCode\":\"" + shipmentCode + "\"}";
+        hook(code, back, "X-Signature", com.stockflow.fulfillment.internal.service.CarrierWebhookTestSigner
+                .sign(secret, back)).andExpect(jsonPath("$.data.result").value("APPLIED"));
+        assertThat(shipmentStatus(both[0])).isEqualTo("RETURNED");
+        assertThat(jdbc.queryForObject("SELECT hold_reason FROM ordering.customer_order WHERE id = ?", String.class,
+                orderId)).isEqualTo("DELIVERY_FAILED");
+        assertThat(jdbc.queryForList("SELECT reason FROM ordering.order_hold WHERE order_id = ? "
+                + "AND resolved_at IS NULL", String.class, orderId)).as("nobody to resolve it as the carrier reported")
+                .containsExactly("CUSTOMER");
+
+        UUID caseId = receivedBack(both[0], null);
+        sales(body(post(failures(orderId) + "/" + caseId + "/redelivery"), "{\"note\":\"Giao lại chuyến sau\"}"))
+                .andExpect(status().isOk());
+
+        List<Map<String, Object>> rows = jdbc.queryForList("SELECT reason, note, raised_by, resolved_by, "
+                + "resolution_note, resolved_at FROM ordering.order_hold WHERE order_id = ? ORDER BY raised_at, reason",
+                orderId);
+        assertThat(rows).hasSize(2);
+        // The same Sales caller held the order and decided the case.
+        Object salesUser = rows.get(0).get("raised_by");
+        assertThat(rows.get(0)).containsEntry("reason", "CUSTOMER").containsEntry("resolved_by", salesUser)
+                .containsEntry("resolution_note",
+                        "Superseded: a shipment came back; the order was held for the failed delivery");
+        assertThat(rows.get(1)).containsEntry("reason", "DELIVERY_FAILED").containsEntry("note", "OTHER")
+                .containsEntry("resolved_by", salesUser).containsEntry("resolution_note", "Giao lại chuyến sau");
+        assertThat(rows.get(1).get("raised_by")).as("the carrier reported it").isNull();
+        assertThat(rows).allSatisfy(r -> assertThat(r.get("resolved_at")).isNotNull());
+        assertThat(orders.findById(orderId).orElseThrow().status()).isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
+    }
+
+    @Test
+    @DisplayName("WF-05 DS-05b with a delivery schedule: batch 1 is damaged on the way (DAMAGED) and comes back - the "
+            + "next batch is not released while it is owed (DELIVERY_BATCH_NOT_NEXT); delivered again at the carrier's "
+            + "cost (no fee, a claim against the carrier), its new shipment records batch 1 again; only then is "
+            + "batch 2 released")
+    void aFailedBatchIsDeliveredAgainBeforeTheNext() throws Exception {
+        UUID customer = tx.execute(s -> ReferenceRows.customer(entityManager));
+        CustomerSkuRows.Issued sofa = sofaOf(customer);
+        CustomerSkuRows.stock(jdbc, tx, sofa.sku(), 2 * 4);
+        UUID orderId = confirmedOrders().pay(confirmedOrders().signedInBatches(customer, 2,
+                ConfirmedOrders.Line.cartons(sofa, 4, 6_000_000))).orderId();
+        OrderSummary order = confirmedOrders().release(orderId, HCM, coordinator);
+        List<UUID> batchIds = jdbc.queryForList("""
+                SELECT b.id FROM ordering.delivery_batch b JOIN ordering.sales_contract c ON c.id = b.contract_id
+                 WHERE c.order_id = ? ORDER BY b.seq""", UUID.class, orderId);
+        UUID[] first = handedOver(order, ghn);
+        assertThat(orders.findById(orderId).orElseThrow().status()).isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
+
+        failedAndCameBack(first[0], "DAMAGED");
+        assertThat(orders.findById(orderId).orElseThrow().status()).isEqualTo(OrderStatus.ON_HOLD);
+        UUID caseId = receivedBack(first[0], null);
+        assertThat(caseRow(caseId)).containsEntry("delivery_batch_id", batchIds.get(0));
+        releasedFromQuarantine(first[0]);
+
+        JsonNode decided = data(sales(body(post(failures(orderId) + "/" + caseId + "/redelivery"),
+                "{\"note\":\"Hãng vận chuyển làm hỏng chuyến; giao lại\"}")).andExpect(status().isOk()));
+        assertThat(decided.path("carrierClaim").asBoolean()).as("not the customer's doing").isTrue();
+        assertThat(decided.path("failedTripFee").isMissingNode() || decided.path("failedTripFee").isNull())
+                .as("nothing charged").isTrue();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM payment.installment WHERE order_id = ? AND milestone = "
+                + "'FAILED_TRIP_FEE'", Long.class, orderId)).isZero();
+
+        // The redelivery first: naming batch 2 is refused, and so is anything but the goods that came back.
+        Throwable early = catchThrowable(() -> WithCurrentUser.call(confirmedOrders().sales(), DataScope.ALL,
+                () -> context.getBean(OrderReleases.class).release(orderId, HCM, batchIds.get(1), coordinator)));
+        assertThat(early).isInstanceOf(com.stockflow.common.error.BusinessException.class);
+        assertThat(((com.stockflow.common.error.BusinessException) early).errorCode())
+                .isEqualTo(com.stockflow.common.error.ErrorCode.DELIVERY_BATCH_NOT_NEXT);
+        OrderSummary released = WithCurrentUser.call(confirmedOrders().sales(), DataScope.ALL,
+                () -> context.getBean(OrderReleases.class).release(orderId, HCM, coordinator));
+        UUID[] again = handedOver(released, ghtk);
+        assertThat(jdbc.queryForObject("SELECT delivery_batch_id FROM fulfillment.pick WHERE id = ?", UUID.class,
+                again[1])).isEqualTo(batchIds.get(0));
+        assertThat(jdbc.queryForObject("SELECT delivery_batch_id FROM ordering.order_shipment WHERE id = ?", UUID.class,
+                again[0])).as("the batch delivered again").isEqualTo(batchIds.get(0));
+        assertThat(caseRow(caseId)).containsEntry("status", "REDELIVERED");
+        assertThat(orders.findById(orderId).orElseThrow().status()).as("batch 2 still to come")
+                .isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
+
+        // Batch 1 is on its way again: batch 2 may be released now, on a task of its own.
+        OrderSummary second = WithCurrentUser.call(confirmedOrders().sales(), DataScope.ALL,
+                () -> context.getBean(OrderReleases.class).release(orderId, HCM, coordinator));
+        assertThat(second.status()).isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
+        assertThat(jdbc.queryForList("SELECT delivery_batch_id FROM ordering.delivery_batch_release WHERE order_id = ? "
+                + "ORDER BY seq", UUID.class, orderId)).containsExactlyElementsOf(batchIds);
+    }
 }

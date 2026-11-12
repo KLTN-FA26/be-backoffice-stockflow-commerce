@@ -103,7 +103,9 @@ class OrderLifecycleMigrationUpgradeTest {
                                         "PENDING_CONTRACT>ON_HOLD", "PENDING_CONTRACT>CANCELLED",
                                         "CONFIRMED>AWAITING_STOCK", "AWAITING_STOCK>READY_TO_FULFILL",
                                         "AWAITING_STOCK>PARTIALLY_FULFILLED", "AWAITING_STOCK>ON_HOLD",
-                                        "AWAITING_STOCK>CANCELLED", "ON_HOLD>AWAITING_STOCK")
+                                        "AWAITING_STOCK>CANCELLED", "ON_HOLD>AWAITING_STOCK",
+                                        // V20261121000300 (WF-05: a shipment that came back holds the order) two.
+                                        "SHIPPED>ON_HOLD", "DELIVERY_FAILED>ON_HOLD")
                                         .contains(edge))
                                 .toList());
 

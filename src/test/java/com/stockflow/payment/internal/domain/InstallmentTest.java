@@ -86,16 +86,46 @@ class InstallmentTest {
     }
 
     @Test
-    @DisplayName("OVERDUE stays OVERDUE when paid in part, and is PAID when paid in full (§5.1)")
-    void overdueStaysUntilPaidInFull() {
-        Installment overdue = new Installment(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(),
+    @DisplayName("overdue is a flag from the due day: paid in part it is PARTIALLY_PAID and still overdue, paid in "
+            + "full it is PAID and no longer overdue (WF-05 fix plan, section 8)")
+    void overdueIsAFlagNotAStatus() {
+        Installment late = new Installment(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(),
+                UUID.randomUUID(), UUID.randomUUID(), "HD-1", "SO-1", 1, "Deposit", InstallmentMilestone.ON_SIGNING,
+                null, null, BigDecimal.valueOf(1_000), BigDecimal.ZERO, "VND", 0, AT, DAY, InstallmentStatus.DUE,
+                null, null, 3L);
+        assertThat(late.overdue(DAY)).as("due today is not overdue yet").isFalse();
+        assertThat(late.overdue(DAY.plusDays(1))).isTrue();
+        late.pay(BigDecimal.valueOf(300), AT);
+        assertThat(late.status()).as("the status says the money").isEqualTo(InstallmentStatus.PARTIALLY_PAID);
+        assertThat(late.overdue(DAY.plusDays(1))).as("and what is left is still overdue").isTrue();
+        late.pay(BigDecimal.valueOf(700), AT);
+        assertThat(late.status()).isEqualTo(InstallmentStatus.PAID);
+        assertThat(late.overdue(DAY.plusDays(1))).isFalse();
+    }
+
+    @Test
+    @DisplayName("never overdue: no due day (paid before delivery, or its milestone not come), or cancelled")
+    void neverOverdueWithoutADueDayOrOnceCancelled() {
+        Installment beforeDelivery = of(InstallmentMilestone.BEFORE_DELIVERY, 1_000, null);
+        beforeDelivery.reach(AT, DAY);
+        assertThat(beforeDelivery.overdue(DAY.plusDays(400))).isFalse();
+
+        Installment waiting = of(InstallmentMilestone.AFTER_DELIVERY, 1_000, 5);
+        assertThat(waiting.overdue(DAY.plusDays(400))).as("its milestone never came").isFalse();
+
+        Installment cancelled = of(InstallmentMilestone.ON_SIGNING, 1_000, 0);
+        cancelled.reach(AT, DAY);
+        cancelled.cancel(AT);
+        assertThat(cancelled.overdue(DAY.plusDays(1))).isFalse();
+    }
+
+    @Test
+    @DisplayName("OVERDUE is historical: no installment is restored in it")
+    void overdueStatusIsRefused() {
+        assertThatThrownBy(() -> new Installment(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(),
                 UUID.randomUUID(), UUID.randomUUID(), "HD-1", "SO-1", 1, "Deposit", InstallmentMilestone.ON_SIGNING,
                 null, null, BigDecimal.valueOf(1_000), BigDecimal.ZERO, "VND", 0, AT, DAY, InstallmentStatus.OVERDUE,
-                null, null, 3L);
-        overdue.pay(BigDecimal.valueOf(300), AT);
-        assertThat(overdue.status()).isEqualTo(InstallmentStatus.OVERDUE);
-        overdue.pay(BigDecimal.valueOf(700), AT);
-        assertThat(overdue.status()).isEqualTo(InstallmentStatus.PAID);
+                null, null, 3L)).isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
@@ -104,22 +134,23 @@ class InstallmentTest {
         Installment reached = of(InstallmentMilestone.ON_SIGNING, 1_000, 5);
         reached.reach(AT, DAY);
         reached.pay(BigDecimal.valueOf(1_000), AT);
-        reached.unpay(BigDecimal.valueOf(400), DAY);
+        reached.unpay(BigDecimal.valueOf(400));
         assertThat(reached.status()).isEqualTo(InstallmentStatus.PARTIALLY_PAID);
         assertThat(reached.paidAt()).isNull();
-        reached.unpay(BigDecimal.valueOf(600), DAY);
+        reached.unpay(BigDecimal.valueOf(600));
         assertThat(reached.status()).isEqualTo(InstallmentStatus.DUE);
 
         Installment early = of(InstallmentMilestone.AFTER_DELIVERY, 1_000, 5);
         early.pay(BigDecimal.valueOf(1_000), AT);
-        early.unpay(BigDecimal.valueOf(1_000), DAY);
+        early.unpay(BigDecimal.valueOf(1_000));
         assertThat(early.status()).as("its milestone never came").isEqualTo(InstallmentStatus.NOT_DUE);
 
         Installment late = of(InstallmentMilestone.ON_SIGNING, 1_000, 0);
         late.reach(AT, DAY.minusDays(3));
         late.pay(BigDecimal.valueOf(1_000), AT);
-        late.unpay(BigDecimal.valueOf(200), DAY);
-        assertThat(late.status()).as("its due day is past").isEqualTo(InstallmentStatus.OVERDUE);
+        late.unpay(BigDecimal.valueOf(200));
+        assertThat(late.status()).as("the money says it").isEqualTo(InstallmentStatus.PARTIALLY_PAID);
+        assertThat(late.overdue(DAY)).as("its due day is past").isTrue();
     }
 
     @Test

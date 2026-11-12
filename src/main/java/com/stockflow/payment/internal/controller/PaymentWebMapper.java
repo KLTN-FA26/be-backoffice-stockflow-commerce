@@ -15,12 +15,14 @@ final class PaymentWebMapper {
 
     static com.stockflow.payment.internal.controller.dto.InstallmentResponse toResponse(
             com.stockflow.payment.internal.domain.Installment i,
-            List<com.stockflow.payment.internal.domain.InstallmentBook.ReceiptOfInstallment> receipts) {
+            List<com.stockflow.payment.internal.domain.InstallmentBook.ReceiptOfInstallment> receipts,
+            java.time.LocalDate today) {
         return new com.stockflow.payment.internal.controller.dto.InstallmentResponse(i.id(), i.contractId(),
                 i.contractNumber(), i.orderId(), i.orderNumber(), i.customerId(), i.seq(), i.name(),
                 i.milestone().name(), i.deliveryBatchSeq(), i.amount(), i.paidAmount(), i.reducedAmount(),
                 i.outstanding(), i.currency(),
-                i.dueDays(), i.reachedAt(), i.dueDate(), i.status().name(), i.paidAt(), i.cancelledAt(),
+                i.dueDays(), i.reachedAt(), i.dueDate(), i.status().name(), i.overdue(today), i.paidAt(),
+                i.cancelledAt(),
                 i.transferReference(), receipts == null ? null : receipts.stream()
                         .map(r -> new com.stockflow.payment.internal.controller.dto.InstallmentResponse.Receipt(
                                 r.receiptId(), r.reference(), r.receivedOn(), r.amount(), r.status().name(),
@@ -28,7 +30,8 @@ final class PaymentWebMapper {
     }
 
     static com.stockflow.payment.internal.controller.dto.OrderInstallmentsResponse toResponse(
-            com.stockflow.payment.internal.service.InstallmentService.OrderInstallments o) {
+            com.stockflow.payment.internal.service.InstallmentService.OrderInstallments o,
+            java.time.LocalDate today) {
         var standing = o.standing();
         var first = o.installments().getFirst();
         return new com.stockflow.payment.internal.controller.dto.OrderInstallmentsResponse(standing.orderId(),
@@ -36,7 +39,7 @@ final class PaymentWebMapper {
                 standing.paymentStatus() == null ? null : standing.paymentStatus().name(), standing.total(),
                 standing.paid(), standing.total().subtract(standing.paid()), standing.onSigningPaid(),
                 standing.beforeDeliveryUnpaid(), standing.dueBeforeHandover(), first.currency(),
-                o.installments().stream().map(i -> toResponse(i, null)).toList());
+                o.installments().stream().map(i -> toResponse(i, null, today)).toList());
     }
 
     static com.stockflow.payment.internal.controller.dto.InstallmentTransferResponse toResponse(

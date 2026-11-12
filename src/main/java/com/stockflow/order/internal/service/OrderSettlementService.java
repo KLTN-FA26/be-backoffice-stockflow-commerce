@@ -24,7 +24,14 @@ import java.util.UUID;
  *       Its signed contract is completed with it (4B-8, 14 §5.2).
  *       An order with an open return is RETURN_REQUESTED and so not a candidate at all; the check here stays as the
  *       guard against a return opened between the candidate query and the row lock (SCRUM-243: the return service
- *       takes the same lock, so one of the two sees the other).</li>
+ *       takes the same lock, so one of the two sees the other).
+ *       <br>WF-05 fix plan, section 4, keeps these four conditions as they are - every delivery batch DELIVERED (the
+ *       order is DELIVERED only then), the return window passed, no return open, every installment paid, the amounts
+ *       closures and returns took off counted as settled - and "order COMPLETED and contract COMPLETED" is what the
+ *       workflow means by completion: there is no {@code CONTRACT_COMPLETED} status. A fifth condition, every
+ *       delivered batch invoiced (e-invoice ISSUED), comes with the invoicing module and is not checked here yet.</li>
+ *   <li>RETURNED by a cancelled failed delivery → REFUNDED / PARTIALLY_REFUNDED once its refunds are made
+ *       ({@link #settleFailedDelivery}; WF-05 fix plan, section 2): the order no run looked at before.</li>
  *   <li>COMPLETED / REFUNDED / PARTIALLY_REFUNDED → CLOSED after {@code stockflow.order.close-after-days} (default 30,
  *       decision G3-Q1).</li>
  * </ul>
@@ -41,6 +48,7 @@ public class OrderSettlementService {
     private final OrderEventPublisher events;
     private final com.stockflow.payment.api.PaymentService payments;
     private final com.stockflow.order.internal.domain.SalesContractRepository contracts;
+    private final DeliveryFailureService deliveryFailures;
     private final Clock clock;
     private final Duration returnWindow;
     private final Duration closeAfter;
@@ -48,8 +56,10 @@ public class OrderSettlementService {
     OrderSettlementService(OrderRepository repository, SettlementCandidates candidates, OrderEventPublisher events,
                            com.stockflow.payment.api.PaymentService payments,
                            com.stockflow.order.internal.domain.SalesContractRepository contracts,
+                           DeliveryFailureService deliveryFailures,
                            Clock clock, @Value("${stockflow.order.return-window-days:7}") int returnWindowDays,
                            @Value("${stockflow.order.close-after-days:30}") int closeAfterDays) {
+        this.deliveryFailures = deliveryFailures;
         this.repository = repository;
         this.candidates = candidates;
         this.events = events;
@@ -71,6 +81,29 @@ public class OrderSettlementService {
     }
 
     /**
+     * WF-05 fix plan, section 2 (the branch that cancels what was not delivered): orders RETURNED by Sales' cancellation
+     * after a failed delivery, nothing of them delivered, waiting for their refunds - what the nightly run offers
+     * {@link #settleFailedDelivery}. Before this, an order RETURNED by its shipments was looked at by no run and stayed
+     * RETURNED for good.
+     */
+    @Transactional(readOnly = true)
+    public List<UUID> failedDeliveryCandidates(int skip, int limit) {
+        return deliveryFailures.settlementCandidates(skip, limit);
+    }
+
+    /**
+     * Such an order whose refunds are all made - none included - is REFUNDED or PARTIALLY_REFUNDED: from there
+     * {@link #close} closes it after the closing delay, once it no longer owes. The refund recorded moves it at once
+     * ({@code ReturnedGoodsListener}); this is for the order with nothing to refund, and for an event that was missed.
+     *
+     * @return whether the order moved
+     */
+    @Transactional
+    public boolean settleFailedDelivery(UUID orderId) {
+        return deliveryFailures.followRefunds(orderId, null);
+    }
+
+    /**
      * Whether the order's installments still owe something (17 §4.6 step 21), read under the order's lock - a receipt
      * locks the order first. An order without installments owes nothing in the system (4B-10).
      */
@@ -83,13 +116,14 @@ public class OrderSettlementService {
     @Transactional
     public boolean complete(UUID orderId) {
         Order order = repository.findByIdForUpdate(new OrderId(orderId)).orElse(null);
-        if (order == null || !order.complete(clock.instant(), returnWindow, candidates.hasOpenReturn(orderId),
-                owing(order))) {
+        // One moment for both: the order and its contract complete together, and say so.
+        java.time.Instant now = clock.instant();
+        if (order == null || !order.complete(now, returnWindow, candidates.hasOpenReturn(orderId), owing(order))) {
             return false;
         }
         repository.save(order);
         // 4B-8 (14 §5.2): the order completed - every batch delivered, every installment paid - completes its contract.
-        contracts.findLiveByOrderId(orderId).filter(contract -> contract.complete(clock.instant()))
+        contracts.findLiveByOrderId(orderId).filter(contract -> contract.complete(now))
                 .ifPresent(contract -> {
                     contracts.save(contract);
                     log.info("Sales contract {} completed with its order", contract.contractNumber());

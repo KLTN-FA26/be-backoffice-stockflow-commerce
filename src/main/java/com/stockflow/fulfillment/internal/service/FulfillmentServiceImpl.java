@@ -98,10 +98,17 @@ class FulfillmentServiceImpl implements FulfillmentService {
         List<PickJpaEntity> existing = picks.findAllByOrderId(orderId);
         Set<UUID> pickedBatches = existing.stream().map(PickJpaEntity::getDeliveryBatchId)
                 .filter(java.util.Objects::nonNull).collect(java.util.stream.Collectors.toSet());
+        // WF-05 fix plan, section 2: goods of a shipment that came back, released to be delivered again, get a task of
+        // their own - a second pick of a batch (or an order) picked once already. It comes before a new batch: a
+        // batch is released only once the one before it is handed over, and that one is being handed over again.
+        Set<UUID> pickedCases = existing.stream().map(PickJpaEntity::getRedeliveryCaseId)
+                .filter(java.util.Objects::nonNull).collect(java.util.stream.Collectors.toSet());
+        var redelivery = orders.redeliveryToPick(orderId, pickedCases);
         // 4B-8 (07 BR-07): an order released by delivery batch gets a task per batch - the one released and not
         // picked yet. Nothing new to pick: the latest task answers, as a repeated request always did.
-        var batch = orders.batchToPick(orderId, pickedBatches);
-        if (batch.isEmpty() && !existing.isEmpty()) {
+        var batch = redelivery.isPresent() ? java.util.Optional.<com.stockflow.order.api.ReleasedBatch>empty()
+                : orders.batchToPick(orderId, pickedBatches);
+        if (redelivery.isEmpty() && batch.isEmpty() && !existing.isEmpty()) {
             PickJpaEntity latest = existing.getLast();
             requireWarehouseAssignee(assignedUserId, latest.getWarehouseId());
             TaskAccess.requireVisible(latest, actor);
@@ -110,7 +117,9 @@ class FulfillmentServiceImpl implements FulfillmentService {
         OrderSummary order = requireOrder(orderId);
         // Released - its warehouse chosen: READY_TO_FULFILL (SCRUM-423, kltn-docs 17 BR-02). A later delivery batch is
         // released while the order is PARTIALLY_FULFILLED and picked in that status (17 §4.5: no new order status).
-        boolean laterBatch = batch.isPresent() && order.status() == OrderStatus.PARTIALLY_FULFILLED;
+        // A redelivery is picked in that status too: the order owes the customer the goods that came back.
+        boolean laterBatch = (batch.isPresent() || redelivery.isPresent())
+                && order.status() == OrderStatus.PARTIALLY_FULFILLED;
         if (order.status() != OrderStatus.READY_TO_FULFILL && !laterBatch) {
             throw new BusinessException(ErrorCode.PICK_TASK_STATE_CONFLICT,
                     "Only a released order (READY_TO_FULFILL) or its released delivery batch can enter fulfillment; "
@@ -129,7 +138,9 @@ class FulfillmentServiceImpl implements FulfillmentService {
         var now = clock.instant();
         var pick = new PickJpaEntity(Identifiers.newId(), null, orderId, order.orderNumber(), warehouseId,
                 PickStatus.PENDING, to, stagingArea)
-                .forDeliveryBatch(batch.map(com.stockflow.order.api.ReleasedBatch::batchId).orElse(null));
+                .forDeliveryBatch(redelivery.isPresent() ? redelivery.get().deliveryBatchId()
+                        : batch.map(com.stockflow.order.api.ReleasedBatch::batchId).orElse(null))
+                .forRedelivery(redelivery.map(com.stockflow.order.api.RedeliveryToPick::caseId).orElse(null));
         pick.assign(assignedUserId, now);
         picks.saveAndFlush(pick);      // the pick row first: its lines' trigger and foreign key look for it
         packs.save(new PackJpaEntity(Identifiers.newId(), pick.getId(), PackStatus.PENDING, null));
