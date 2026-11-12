@@ -35,6 +35,19 @@ final class WebhookCredentials {
     }
 
     /**
+     * API_BOOKING while its credential is being replaced (WF-05 fix plan item 6): the header carries the current
+     * value or the next one. Both are compared whatever the first comes to, so the time taken does not say which
+     * of them a guess was closer to.
+     *
+     * @param next the second value that holds during a rotation; null when none is under way
+     */
+    static boolean headerHoldsEither(String current, String next, String given) {
+        boolean first = headerHolds(current, given);
+        boolean second = headerHolds(next, given);
+        return first | second;
+    }
+
+    /**
      * WEBHOOK_LOAD: {@code header} is the HMAC-SHA256 of the raw body under the carrier's secret, in hex, bare or as
      * {@code sha256=<hex>} (QD-11). The bytes as received are what is signed: a parsed and re-serialised body would
      * never match.

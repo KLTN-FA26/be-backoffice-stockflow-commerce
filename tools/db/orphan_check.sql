@@ -137,6 +137,8 @@ WITH reviewed(col, why) AS (
     ('inventory.stock_lot.purchase_order_number', 'purchase orders are gone; historical text only'),
     ('fulfillment.carrier_booking.service_code', 'the carrier''s own service vocabulary'),
     ('fulfillment.waybill_import_row.load_code', 'text from an uploaded file; an unmatched row is the point'),
+    ('fulfillment.delivery_outcome_import_row.shipment_code', 'text from an uploaded file; an unmatched row is the point'),
+    ('fulfillment.delivery_outcome_import_row.carrier_code', 'text from an uploaded file; an unmatched row is the point'),
     ('inventory.cycle_count.count_number', 'the row''s own business number'),
     ('inventory.stock_adjustment.adjustment_number', 'the row''s own business number'),
     ('procurement.goods_receipts.receipt_number', 'the row''s own business number'),
