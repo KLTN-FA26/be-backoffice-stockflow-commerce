@@ -46,8 +46,10 @@ import java.util.function.Supplier;
  *   <li>The invoice becomes SUBMITTING with a transaction id <b>before</b> the provider is called, and that is
  *       committed. From then on there is always something to ask about.</li>
  *   <li>{@link #reconcile} <b>asks first</b> ({@code query} by transaction id). Issued: take the result. Refused: record
- *       it. Still working: wait. Only when the provider has never heard of the transaction is the invoice submitted -
- *       under the same id, which the provider itself refuses to turn into a second invoice.</li>
+ *       it. Still working: wait. Only when the provider says clearly that it has never heard of the transaction is the
+ *       invoice submitted - under the same id, which the provider itself refuses to turn into a second invoice. An
+ *       answer that does not say ({@code UNKNOWN}: an error, a shape not recognised) is waited out like "still
+ *       working", unless nothing was ever sent under the transaction, when there is nothing it could be hiding.</li>
  *   <li>A call that fails changes nothing. The invoice stays SUBMITTING and the next reconciliation - the job's, or the
  *       accountant's "check again" - starts at step 2.</li>
  *   <li>Submitting <b>again</b> a transaction the provider does not know obeys the provider's own rule
@@ -139,7 +141,7 @@ public class EInvoiceIssuance {
      *         {@code EINVOICE_INVALID_TRANSITION} when it is not at the provider; 409
      *         {@code EINVOICE_RESUBMISSION_REFUSED} when the provider may still remember the transaction, does not
      *         confirm that it holds none, or is being asked about the invoice by somebody else right now; 503
- *         {@code EINVOICE_PROVIDER_UNAVAILABLE} when it does not answer
+     *         {@code EINVOICE_PROVIDER_UNAVAILABLE} when it does not answer
      */
     @Auditable(action = AuditAction.APPROVE, resourceType = "einvoice", resourceId = "#id")
     public EInvoice.Snapshot resubmitAsNew(UUID id, long expectedVersion, UUID by) {
@@ -250,10 +252,13 @@ public class EInvoiceIssuance {
         String transaction = invoice.transactionId();
         try {
             Result result = query(provider, invoice);
-            if (result.state() == ResultState.NOT_FOUND) {
+            // Null when nothing was ever sent under this transaction: then there is nothing to race or to forget, and
+            // an unclear answer cannot hide a send the provider is holding.
+            Instant lastSent = result.state() == ResultState.NOT_FOUND || result.state() == ResultState.UNKNOWN
+                    ? steps.lastSent(id, transaction).orElse(null) : null;
+            if (result.state() == ResultState.NOT_FOUND
+                    || result.state() == ResultState.UNKNOWN && lastSent == null) {
                 Instant now = clock.instant();
-                // Null when nothing was ever sent under this transaction: then there is nothing to race or to forget.
-                Instant lastSent = steps.lastSent(id, transaction).orElse(null);
                 if (lastSent != null && provider.resubmission().forgottenAt(invoice.submittedAt(), now)) {
                     // The provider no longer remembers the transaction id: the same id could become a second invoice.
                     // Not sent again on its own - marked for the accountant, who sends it as a new transaction.
@@ -295,6 +300,9 @@ public class EInvoiceIssuance {
                 }
                 case REJECTED -> steps.rejected(id, transaction, result.errorCode(), result.message());
                 case PENDING, NOT_FOUND -> { /* nothing to record yet: asked again on the next reconciliation */ }
+                case UNKNOWN -> log.warn("E-invoice {} (transaction {}): the provider's answer does not say whether it "
+                        + "holds the transaction; it will be asked again", LogSafe.text(invoice.code()),
+                        LogSafe.text(transaction));
             }
         } catch (StorageException unstored) {
             // The provider issued it, but its files could not be stored or locked for their ten years. It is not
@@ -318,6 +326,8 @@ public class EInvoiceIssuance {
                     case PENDING -> Outcome.PENDING;
                     case ISSUED -> Outcome.ISSUED;
                     case REJECTED -> Outcome.REJECTED;
+                    // The call log has no "unknown": an answer that does not say is logged as the error it carries.
+                    case UNKNOWN -> Outcome.ERROR;
                 }, Result::errorCode);
     }
 

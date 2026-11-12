@@ -175,7 +175,13 @@ public interface EInvoiceProvider {
         PENDING,
         ISSUED,
         /** Refused by the provider or the tax authority: no invoice exists for the transaction. */
-        REJECTED
+        REJECTED,
+        /**
+         * The provider answered, but not so as to say whether it holds the transaction (an error, a shape not
+         * recognised). Never taken for NOT_FOUND once anything was sent under the transaction: it is asked again
+         * later, and never sent again or as a new transaction because of it.
+         */
+        UNKNOWN
     }
 
     /**
@@ -183,7 +189,8 @@ public interface EInvoiceProvider {
      * @param taxAuthorityCode the tax authority's code ("mã của cơ quan thuế"); null unless ISSUED
      * @param lookupCode       what the buyer looks the invoice up by on the provider's portal; null unless ISSUED
      * @param signedAt         when the seller's signature was put on it; null unless ISSUED
-     * @param errorCode        and {@code message}: why it was refused; null unless REJECTED
+     * @param errorCode        and {@code message}: why it was refused, or what the unclear answer said; null unless
+     *                         REJECTED or UNKNOWN
      */
     record Result(ResultState state, Integer invoiceNumber, String taxAuthorityCode, String lookupCode,
                   Instant signedAt, String errorCode, String message) {

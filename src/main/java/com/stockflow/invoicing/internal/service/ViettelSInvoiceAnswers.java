@@ -27,7 +27,8 @@ import java.util.zip.ZipInputStream;
  *   <li><b>The error-code table.</b> The public copies of the description have the heading ("Danh sách lỗi trả về") and
  *       no table. So no error code is interpreted: only <i>that</i> there is one, and the HTTP status.</li>
  *   <li><b>What an unknown transaction id looks like</b> in {@code searchInvoiceByTransactionUuid}. Odoo takes "no
- *       {@code result}" as "never received"; the description shows no sample.</li>
+ *       {@code result}" as "never received"; the description shows no sample. Only the cleanest form of it is taken
+ *       for "never received" here.</li>
  *   <li><b>When the tax authority's code is there</b>, and what a refusal by the tax authority looks like. The
  *       description shows {@code codeOfTax}, {@code exchangeStatus}, {@code exchangeDes} on a look-up and defines no
  *       values for the last two.</li>
@@ -35,9 +36,9 @@ import java.util.zip.ZipInputStream;
  *       ({@code K21DTT4}, and the pre-2022 {@code AB/19E0000522}).</li>
  * </ol>
  *
- * <p>Each assumption errs towards <i>not knowing</i>: an answer that cannot be read is "no answer", and the invoice is
- * asked about again; nothing here turns an unclear answer into "refused" (which lets the accountant issue again) or
- * into "issued". When Viettel's test account and its full description are at hand, this class is the one to correct -
+ * <p>Each assumption errs towards <i>not knowing</i>: an answer that cannot be read is "no answer" or "unknown", and
+ * the invoice is asked about again; nothing here turns an unclear answer into "refused" (which lets the accountant
+ * issue again), "never received" (which sends the invoice again) or "issued". When Viettel's test account and its full description are at hand, this class is the one to correct -
  * the client, the payload and the provider do not interpret.</p>
  */
 final class ViettelSInvoiceAnswers {
@@ -89,10 +90,12 @@ final class ViettelSInvoiceAnswers {
      * <p>Documented: {@code result} is a list; its entry has {@code invoiceNo}, {@code reservationCode},
      * {@code issueDate} (milliseconds) and, once the tax authority gave its code, {@code codeOfTax}.</p>
      *
-     * <p>ASSUMPTION 2: a 2xx - or a 4xx that is SInvoice's decision - with no entry in {@code result} is NOT_FOUND,
-     * with or without an error code (Odoo: "no result" is "not sent yet"). It is safe to be wrong here only because the
-     * caller submits again under the same transaction id, which SInvoice answers with the first invoice, and only
-     * inside the time SInvoice remembers the id ({@code EInvoiceProvider.Resubmission}).</p>
+     * <p>ASSUMPTION 2: NOT_FOUND is only a clean "nothing": a 2xx with no error code and a {@code result} that is there
+     * and empty (null or an empty list; Odoo: "no result" is "not sent yet"). NOT_FOUND is what lets the caller send the
+     * transaction again, and the accountant send the invoice as a new transaction, so anything less clear - a 4xx, an
+     * error code with no entry, no {@code result} at all - is UNKNOWN: the invoice is asked about again later. Taking an
+     * error ("session expired", "tax code not registered") for "never received" would send an invoice SInvoice may well
+     * hold.</p>
      *
      * <p>ASSUMPTION 3: an entry without {@code codeOfTax} is PENDING, whatever {@code exchangeStatus} and
      * {@code exchangeDes} say. An invoice the tax authority refused still exists at SInvoice under its number, so it is
@@ -106,9 +109,15 @@ final class ViettelSInvoiceAnswers {
         if (!answered || body == null) {
             throw new ProviderUnavailableException("Viettel SInvoice answered a look-up with HTTP " + status);
         }
-        JsonNode entry = first(body.get("result"));
+        JsonNode result = body.get("result");
+        JsonNode entry = first(result);
         if (entry == null) {
-            return Result.of(ResultState.NOT_FOUND);
+            boolean empty = result != null && (result.isNull() || result.isArray() && result.isEmpty());
+            String error = errorCode(body);
+            if (status >= 200 && status < 300 && error == null && empty) {
+                return Result.of(ResultState.NOT_FOUND);
+            }
+            return new Result(ResultState.UNKNOWN, null, null, null, null, error, errorMessage(body));
         }
         String invoiceNo = text(entry, "invoiceNo");
         String taxAuthorityCode = text(entry, "codeOfTax");
