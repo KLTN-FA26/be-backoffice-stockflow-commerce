@@ -154,6 +154,29 @@ class DispatchLoadTest {
     }
 
     @Test
+    @DisplayName("WF4-DRIVER: a driver event writes only what the carrier sends - a phone-only event keeps the typed "
+            + "name and updates the phone, a name-only event keeps the phone, an empty one changes nothing; only a "
+            + "release takes the driver off")
+    void theCarriersDriverWritesOnlyWhatItSends() {
+        DispatchLoad load = vehicle();
+        load.book(GHN, null, null, null, "AHA-2", DISPATCHER, NOW);
+        assertThat(load.recordDriver("Tài xế gõ tay", "0900")).isTrue();
+
+        assertThat(load.carrierAssignedDriver(null, "0911")).isTrue();
+        assertThat(load.snapshot().driverName()).isEqualTo("Tài xế gõ tay");
+        assertThat(load.snapshot().driverPhone()).isEqualTo("0911");
+        assertThat(load.carrierAssignedDriver(" ", "0911")).isFalse();
+        assertThat(load.carrierAssignedDriver(null, null)).isFalse();
+        assertThat(load.carrierAssignedDriver("Lâm", null)).isTrue();
+        assertThat(load.snapshot().driverName()).isEqualTo("Lâm");
+        assertThat(load.snapshot().driverPhone()).isEqualTo("0911");
+
+        assertThat(load.carrierReleasedDriver()).isTrue();
+        assertThat(load.snapshot().driverName()).isNull();
+        assertThat(load.snapshot().driverPhone()).isNull();
+    }
+
+    @Test
     @DisplayName("waybill number (09 §4.4, BR-23, BR-24): booked with it or recorded after, kept while the carrier stays, "
             + "gone with the booking, required to leave, corrected after leaving only with a reason")
     void theWaybillNumber() {

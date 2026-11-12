@@ -1650,11 +1650,17 @@ class FtlDispatchIntegrationTest {
                 + "AND resource_id = ? AND outcome = 'SUCCESS' AND action = 'UPDATE' AND actor_id = ?", Long.class,
                 loadId, manager)).isPositive();
 
+        // An event with the driver's phone only: the phone is updated, the typed name stays.
+        aha(code, ahamove("AHA-D1", "ACCEPTED", "", "\"accept_time\":1800000000,\"supplier_id\":\"84903333333\"", ""))
+                .andExpect(jsonPath("$.data.result").value("APPLIED"));
+        assertThat(load(loadId).path("driverName").asText()).isEqualTo("Tài xế A");
+        assertThat(load(loadId).path("driverPhone").asText()).isEqualTo("84903333333");
+
         // The carrier's driver takes the order: it replaces the typed one. The driver gives it back: none is left.
-        aha(code, ahamove("AHA-D1", "ACCEPTED", "", "\"accept_time\":1800000000,\"supplier_name\":\"Tài xế B\","
+        aha(code, ahamove("AHA-D1", "ACCEPTED", "", "\"accept_time\":1800000100,\"supplier_name\":\"Tài xế B\","
                 + "\"supplier_id\":\"84902222222\"", "")).andExpect(jsonPath("$.data.result").value("APPLIED"));
         assertThat(load(loadId).path("driverName").asText()).isEqualTo("Tài xế B");
-        aha(code, ahamove("AHA-D1", "ASSIGNING", "", "\"accept_time\":1800000000", ""))
+        aha(code, ahamove("AHA-D1", "ASSIGNING", "", "\"accept_time\":1800000200", ""))
                 .andExpect(jsonPath("$.data.result").value("APPLIED"));
         assertThat(load(loadId).hasNonNull("driverName")).isFalse();
         sign(loadId, "51C-AHA.03").andExpect(status().isConflict())

@@ -434,16 +434,18 @@ public final class DispatchLoad {
 
     /**
      * A driver took the carrier's order (an API carrier's webhook, kltn-docs 09 §4.5 "tài xế nhận đơn"): the driver's
-     * name and phone go on the load while its vehicle is booked or loading. The plate is not touched: the carrier sends
-     * none, and it is given at the handover.
+     * name and phone go on the load while its vehicle is booked or loading. Only what the carrier sends is written: a
+     * name or phone it leaves out keeps the one recorded (a name typed by the dispatcher survives a phone-only event;
+     * a driver given back comes off through {@link #carrierReleasedDriver}). The plate is not touched: the carrier
+     * sends none, and it is given at the handover.
      *
      * @return whether it changed anything
      * @throws BusinessException {@code INVALID_LOAD_TRANSITION} with no vehicle booked, or once the vehicle left with
      *         another driver on its signed manifest
      */
     public boolean carrierAssignedDriver(String driver, String phone) {
-        String name = trimmed(driver);
-        String number = trimmed(phone);
+        String name = trimmed(driver) != null ? trimmed(driver) : driverName;
+        String number = trimmed(phone) != null ? trimmed(phone) : driverPhone;
         if (status == LoadStatus.DISPATCHED && Objects.equals(name, driverName) && Objects.equals(number, driverPhone)) {
             return false;
         }
