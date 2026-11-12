@@ -606,6 +606,21 @@ SELECT pg_temp.expect_refused('G11 the list of an issued adjustment is never tak
     DELETE FROM invoicing.einvoice_adjustment_listing WHERE einvoice_id = md5('qa92:disc')::uuid $q$);
 SELECT pg_temp.expect_refused('G12 a listed invoice was adjusted too: it is not replaced afterwards',
     'tg_einvoice_correction_form', $q$ SELECT pg_temp.correction('g12', 'REPLACEMENT', 'ERROR', 'y', 10) $q$);
+-- WF05-E0 L3 (V20261120000820): the discount took 1,650,000 off x and y (2,200,000) together. An adjustment of y
+-- alone counts it: until then only adjustments naming y were, and y's whole 1,100,000 could go as well.
+SELECT pg_temp.expect_refused('G13 an adjustment of a listed invoice counts the discount that listed it',
+    'tg_einvoice_adjustment_bound', $q$
+    SELECT pg_temp.correction('g13', 'ADJUSTMENT', 'TRADE_DISCOUNT', 'y', -10);
+    INSERT INTO invoicing.einvoice_line (id, einvoice_id, line_no, kind, fee_kind, item_name, unit, quantity, unit_price,
+                                         tax_rate, amount, tax_amount)
+    VALUES (gen_random_uuid(), md5('qa92:g13')::uuid, 1, 'FEE', 'SHIPPING_FEE', 'Chiet khau thuong mai', 'Lan', -1,
+            1000000, 10, -1000000, -100000) $q$);
+SELECT pg_temp.expect_ok('G14 ... and what x and y still hold together may go', $q$
+    SELECT pg_temp.correction('g14', 'ADJUSTMENT', 'TRADE_DISCOUNT', 'y', -5);
+    INSERT INTO invoicing.einvoice_line (id, einvoice_id, line_no, kind, fee_kind, item_name, unit, quantity, unit_price,
+                                         tax_rate, amount, tax_amount)
+    VALUES (gen_random_uuid(), md5('qa92:g14')::uuid, 1, 'FEE', 'SHIPPING_FEE', 'Chiet khau thuong mai', 'Lan', -1,
+            500000, 10, -500000, -50000) $q$);
 
 \echo '--- H. the provider''s log and the sandbox''s books'
 SELECT pg_temp.expect_ok('H1 sending a notice is logged as its own operation; a provider that has none answers NOT_SUPPORTED', $q$
