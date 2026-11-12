@@ -275,8 +275,8 @@ public interface OrderService {
     /**
      * WF-05 fix plan, section 2 (09 §4.3): the goods of a returned shipment that Sales decided to deliver again and the
      * warehouse manager released, with no pick task yet - what {@code createTask} opens a second pick for. Empty when
-     * the order has none, or every one of them is in {@code pickedCases}. Read without locks: the task is opened under
-     * the order's lock by its caller.
+     * the order has none, or every one of them is in {@code pickedCases}. Read without locks: its caller takes the
+     * order's row lock ({@link #lockedStatus}) and reads it again before opening the task (WF-05 review N4).
      */
     Optional<RedeliveryToPick> redeliveryToPick(UUID orderId, java.util.Collection<UUID> pickedCases);
 

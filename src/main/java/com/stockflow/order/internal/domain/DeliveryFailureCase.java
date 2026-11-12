@@ -274,6 +274,51 @@ public final class DeliveryFailureCase {
         }
     }
 
+    /**
+     * Refuses a case whose units are not whole cartons of their lines (WF-05 review N3). A line is ordered in cartons
+     * of its {@code unitsPerCarton}, and its stock is held and allocated a whole carton at a time, so a shipment leaves
+     * - and comes back - as whole cartons. A remainder below a carton could be held but never released: the release
+     * allocates whole cartons only ({@code StockAllocator.plan} skips a carton larger than what is still needed), and
+     * the case would wait for good. Such a case is a defect upstream, refused rather than opened.
+     *
+     * @param unitsPerCarton each line's carton size; a line missing, or 1, is not ordered in cartons
+     * @throws IllegalStateException naming the first line whose units are not whole cartons
+     */
+    public void requireWholeCartons(Map<UUID, Integer> unitsPerCarton) {
+        units.keySet().forEach(line -> requireWholeCartons(line, unitsPerCarton.getOrDefault(line, 1)));
+    }
+
+    /**
+     * The whole cartons of order line {@code lineId} still to hold for this case, {@code heldUnits} of it held already:
+     * what the goods that came back are held again by. Never a part of a carton ({@link #requireWholeCartons(Map)}).
+     *
+     * @param unitsPerCarton the line's carton size; 1 for a line not ordered in cartons
+     * @throws IllegalStateException when the line's units, or what is still missing of them, are not whole cartons
+     */
+    public int cartonsToHold(UUID lineId, int unitsPerCarton, int heldUnits) {
+        requireWholeCartons(lineId, unitsPerCarton);
+        int missing = units.getOrDefault(lineId, 0) - heldUnits;
+        if (missing <= 0) {
+            return 0;
+        }
+        if (missing % unitsPerCarton != 0) {
+            throw new IllegalStateException(("Delivery failure case of receipt %s: %d unit(s) of line %s are still to "
+                    + "hold, not whole cartons of %d").formatted(receiptNumber, missing, lineId, unitsPerCarton));
+        }
+        return missing / unitsPerCarton;
+    }
+
+    private void requireWholeCartons(UUID lineId, int unitsPerCarton) {
+        if (unitsPerCarton < 1) {
+            throw new IllegalArgumentException("A carton holds at least one unit");
+        }
+        int of = units.getOrDefault(lineId, 0);
+        if (of % unitsPerCarton != 0) {
+            throw new IllegalStateException(("Delivery failure case of receipt %s: %d unit(s) of line %s came back, "
+                    + "not whole cartons of %d").formatted(receiptNumber, of, lineId, unitsPerCarton));
+        }
+    }
+
     /** Every unit it is about, over its lines. */
     public int totalUnits() {
         return units.values().stream().mapToInt(Integer::intValue).sum();

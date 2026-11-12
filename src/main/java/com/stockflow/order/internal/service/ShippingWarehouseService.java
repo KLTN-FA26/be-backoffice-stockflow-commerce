@@ -284,12 +284,22 @@ public class ShippingWarehouseService {
      * orders whose returned goods are of it, are locked; {@code sku} null: any SKU (goods put away - the event does not
      * say which).
      *
-     * <p>A delivery failure case that could not be served fails the call once every order was tried (WF-05 review F4):
-     * the event that brought the stock stays in the publication registry and is delivered again, rather than leaving
-     * the returned goods to whichever order holds next. The retry is safe - each hold has its request id. A failed
+     * <p>The goods that came back from a failed delivery are held for their cases first, every case tried. If holding
+     * any case's goods failed, the call stops there and fails (WF-05 review F4, N2): no ordinary order is topped up in
+     * this run, since each top-up commits on its own and would take the free cartons the case is waiting for. A failed
      * top-up of an ordinary order is only logged: the next arrival serves it, and nothing else can take its place.</p>
      *
-     * @throws RuntimeException the first failure to hold a case's goods, after every order was tried
+     * <p>What happens to the event then. The listener's publication stays incomplete in {@code event_publication}. It
+     * is <em>not</em> retried while the application runs: nothing resubmits this listener's publications (the one
+     * scheduled resubmission, notification's {@code ProductionOrderMailRetry}, serves production-order mail only), and
+     * it is replayed at the next start when {@code republish-outstanding-events-on-restart} is on (it is in
+     * {@code application.yml}, not in tests). The replay is safe - each hold has its request id. Meanwhile every later arrival tries the case again first; while
+     * it keeps failing, each of those events stays incomplete too and the ordinary orders short of stock wait. That is
+     * the price of never giving a case's goods to another order: a case that fails for good is a defect to fix, seen
+     * in the log and in the registry.</p>
+     *
+     * @throws RuntimeException the first failure to hold a case's goods, after every case was tried and before any
+     *         ordinary order was topped up
      */
     @Transactional(propagation = org.springframework.transaction.annotation.Propagation.NOT_SUPPORTED)
     public int topUpWaiting(String sku) {
@@ -304,11 +314,16 @@ public class ShippingWarehouseService {
                     toppedUp++;
                 }
             } catch (RuntimeException e) {
-                log.warn("Order {}: holding the goods that came back failed; the event is delivered again", orderId, e);
+                log.warn("Order {}: holding the goods that came back failed; no other order is topped up in this run, "
+                        + "and the event stays incomplete in the publication registry", orderId, e);
                 if (caseFailed == null) {
                     caseFailed = e;
                 }
             }
+        }
+        if (caseFailed != null) {
+            // WF-05 review N2: topping up ordinary orders now would hand them the cartons the case is waiting for.
+            throw caseFailed;
         }
         for (UUID orderId : orders.waitingForStockAtShippingWarehouse()) {
             if (!shortOf(orderId, sku)) {
@@ -323,9 +338,6 @@ public class ShippingWarehouseService {
                 log.warn("Order {}: topping up its held stock failed; the next arrival tries again", orderId, e);
             }
         }
-        if (caseFailed != null) {
-            throw caseFailed;
-        }
         return toppedUp;
     }
 
@@ -336,10 +348,9 @@ public class ShippingWarehouseService {
      * lock, taken here; the SKUs' advisory locks next, sorted, as every hold takes them. Whatever the order's status:
      * it is ON_HOLD until Sales decide, and the goods wait for it all the same.
      *
-     * <p>A redelivery is exactly what came back, never more (WF-05 review F14): whole cartons while at least one carton
-     * of the line is still missing, then the rest below a carton as loose units. A shipment that came back with an odd
-     * count - a carton opened at the customer's, or a partial carton of the batch - is held to the unit, or its case
-     * could never be released.</p>
+     * <p>A redelivery is exactly what came back, never more (WF-05 review F14), and that is whole cartons of each line
+     * (review N3, {@code DeliveryFailureCase.cartonsToHold}): a shipment leaves and comes back as whole cartons, and
+     * the release allocates whole cartons only. A case is not opened otherwise, so nothing is ever held loose for one.</p>
      *
      * @return whether anything more was held
      */
@@ -384,31 +395,24 @@ public class ShippingWarehouseService {
                     continue;
                 }
                 int perCarton = unitsPerCarton(line);
-                int missingUnits = wanted.getValue() - held.getOrDefault(line.id(), 0);
-                if (missingUnits <= 0) {
+                int cartons = failure.cartonsToHold(line.id(), perCarton, held.getOrDefault(line.id(), 0));
+                if (cartons == 0) {
                     continue;
                 }
                 // One request per attempt: the case, the line, how many holds the case had for it (released ones stay
                 // on record) and the warehouse - a retried attempt holds once, a later arrival holds again.
                 long attempts = taken.stream().filter(hold -> hold.orderLineId().equals(line.id())).count();
                 String attempt = "redelivery:%s:%s:%d:%s".formatted(failure.id(), line.id(), attempts, warehouseCode);
-                // Whole cartons first, while one is missing; the rest below a carton as loose units, once no whole
-                // carton is (a carton's worth of loose units would be held loose otherwise).
-                int cartons = missingUnits / perCarton;
-                HoldStockCommand command = cartons > 0
-                        ? new HoldStockCommand(UUID.nameUUIDFromBytes(attempt.getBytes(StandardCharsets.UTF_8)),
-                                order.id().value(), line.sku(), warehouseCode, cartons, perCarton)
-                        : new HoldStockCommand(UUID.nameUUIDFromBytes((attempt + ":loose")
-                                .getBytes(StandardCharsets.UTF_8)), order.id().value(), line.sku(), warehouseCode,
-                                missingUnits, 1);
+                HoldStockCommand command = new HoldStockCommand(UUID.nameUUIDFromBytes(
+                        attempt.getBytes(StandardCharsets.UTF_8)), order.id().value(), line.sku(), warehouseCode,
+                        cartons, perCarton);
                 HoldStockResult result = inventory.holdAtWarehouse(command);
                 if (!result.reservationIds().isEmpty()) {
                     order.holdMore(line.id(), result.reservationIds());
                     deliveryFailures.recordHolds(failure.id(), line.id(), result.reservationIds());
                     more = true;
-                    log.info("Order {}: {} of {} {} of {} that came back held again at {}", order.orderNumber(),
-                            result.cartonsHeld(), command.cartons(), cartons > 0 ? "carton(s)" : "loose unit(s)",
-                            line.sku(), warehouseCode);
+                    log.info("Order {}: {} of {} carton(s) of {} that came back held again at {}", order.orderNumber(),
+                            result.cartonsHeld(), command.cartons(), line.sku(), warehouseCode);
                 }
             }
         }

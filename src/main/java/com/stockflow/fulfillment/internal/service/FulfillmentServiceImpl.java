@@ -90,20 +90,32 @@ class FulfillmentServiceImpl implements FulfillmentService {
      *
      * <p>The staging area is resolved after the warehouse is known and before anything is written: a STAGING task that
      * could stage nowhere is refused whole.</p>
+     *
+     * <p>A redelivery is opened under the order's row lock, taken before anything else is locked (the global order:
+     * customer_order first), and is read again under it (WF-05 review N4). Read without it, Sales cancelling the case
+     * at the same moment could commit first, and its {@code RedeliveryWithdrawn} listener could look for the order's
+     * picks before this one committed: the pick would stay PENDING for a CANCELLED case. Cancelling takes the order's
+     * row lock first too, so under it either the cancellation came first - the case is no longer released and no task
+     * is opened for it - or it waits for this pick, and its listener finds and cancels it.</p>
      */
     @Override
     public FulfillmentTask createTask(UUID orderId, UUID assignedUserId, PickDestination destination,
                                       String stagingLocationCode, CurrentUser actor) {
         require(actor, FulfillmentPermissions.TASK_ASSIGNMENT, Action.CREATE);
         List<PickJpaEntity> existing = picks.findAllByOrderId(orderId);
-        Set<UUID> pickedBatches = existing.stream().map(PickJpaEntity::getDeliveryBatchId)
-                .filter(java.util.Objects::nonNull).collect(java.util.stream.Collectors.toSet());
         // WF-05 fix plan, section 2: goods of a shipment that came back, released to be delivered again, get a task of
         // their own - a second pick of a batch (or an order) picked once already. It comes before a new batch: a
         // batch is released only once the one before it is handed over, and that one is being handed over again.
-        Set<UUID> pickedCases = existing.stream().map(PickJpaEntity::getRedeliveryCaseId)
+        var redelivery = orders.redeliveryToPick(orderId, redeliveryCasesOf(existing));
+        if (redelivery.isPresent()) {
+            // WF-05 review N4: the order's row lock first, then the picks and the case read again under it - the case
+            // may have been cancelled, or picked by a concurrent request, since the unlocked read.
+            orders.lockedStatus(orderId);
+            existing = picks.findAllByOrderId(orderId);
+            redelivery = orders.redeliveryToPick(orderId, redeliveryCasesOf(existing));
+        }
+        Set<UUID> pickedBatches = existing.stream().map(PickJpaEntity::getDeliveryBatchId)
                 .filter(java.util.Objects::nonNull).collect(java.util.stream.Collectors.toSet());
-        var redelivery = orders.redeliveryToPick(orderId, pickedCases);
         // 4B-8 (07 BR-07): an order released by delivery batch gets a task per batch - the one released and not
         // picked yet. Nothing new to pick: the latest task answers, as a repeated request always did.
         var batch = redelivery.isPresent() ? java.util.Optional.<com.stockflow.order.api.ReleasedBatch>empty()
@@ -147,6 +159,12 @@ class FulfillmentServiceImpl implements FulfillmentService {
         // SCRUM-267: one line per hold of the order's stock lines, in this warehouse (docs 07 step 2).
         pickLists.planLines(pick, order);
         return toTask(pick, nameOf(assignedUserId), null);
+    }
+
+    /** The delivery failure cases {@code picks} were opened for: their redeliveries have a task already. */
+    private static Set<UUID> redeliveryCasesOf(List<PickJpaEntity> picks) {
+        return picks.stream().map(PickJpaEntity::getRedeliveryCaseId).filter(java.util.Objects::nonNull)
+                .collect(java.util.stream.Collectors.toSet());
     }
 
     @Override
