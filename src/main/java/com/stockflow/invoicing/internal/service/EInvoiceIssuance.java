@@ -44,6 +44,10 @@ import java.util.function.Supplier;
  *       under the same id, which the provider itself refuses to turn into a second invoice.</li>
  *   <li>A call that fails changes nothing. The invoice stays SUBMITTING and the next reconciliation - the job's, or the
  *       accountant's "check again" - starts at step 2.</li>
+ *   <li>Submitting <b>again</b> a transaction the provider does not know obeys the provider's own rule
+ *       ({@link EInvoiceProvider#resubmission()}): a real provider may still be working on a submission a look-up does
+ *       not show yet (Viettel: 90 seconds), and remembers a transaction id only so long (Viettel: three days). Inside
+ *       the first the invoice waits; past the second nothing is sent automatically and a person looks.</li>
  * </ol>
  *
  * <p>No transaction is open while the provider is called: the steps before and after are short transactions of their
@@ -79,7 +83,7 @@ public class EInvoiceIssuance {
     @Auditable(action = AuditAction.APPROVE, resourceType = "einvoice", resourceId = "#id")
     public EInvoice.Snapshot issue(UUID id, Long expectedVersion, UUID by) {
         steps.submit(id, expectedVersion, by);
-        return reconcile(id);
+        return reconcile(id, true);
     }
 
     /**
@@ -87,6 +91,11 @@ public class EInvoiceIssuance {
      * Does nothing to an invoice in any other status. Safe to call at any time, by anyone, any number of times.
      */
     public EInvoice.Snapshot reconcile(UUID id) {
+        return reconcile(id, false);
+    }
+
+    /** @param firstSubmission whether this follows DRAFT → SUBMITTING directly, so nothing was sent before */
+    private EInvoice.Snapshot reconcile(UUID id, boolean firstSubmission) {
         EInvoice.Snapshot invoice = steps.get(id);
         if (invoice.status() != EInvoiceStatus.SUBMITTING) {
             return invoice;
@@ -96,6 +105,14 @@ public class EInvoiceIssuance {
         try {
             Result result = query(provider, invoice);
             if (result.state() == ResultState.NOT_FOUND) {
+                if (!firstSubmission && !provider.resubmission().allowedAt(invoice.submittedAt(), clock.instant())) {
+                    // Either the provider may still be working on what was sent, or it no longer remembers the
+                    // transaction id: sending now could issue a second invoice. Asked again later; past the window
+                    // it stays here until a person has looked at the provider's portal.
+                    log.warn("E-invoice {} (transaction {}): unknown to the provider, and not submitted again now",
+                            LogSafe.text(invoice.code()), LogSafe.text(transaction));
+                    return invoice;
+                }
                 InvoiceDocument document = document(invoice);
                 Submission submission = call(invoice, Operation.SUBMIT, hash(document.toString()),
                         () -> provider.submit(document), answer -> switch (answer.outcome()) {

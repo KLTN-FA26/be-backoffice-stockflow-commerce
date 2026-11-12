@@ -1,6 +1,7 @@
 package com.stockflow.invoicing.internal.domain;
 
 import java.math.BigDecimal;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.List;
@@ -21,8 +22,8 @@ import java.util.List;
  * <p>A provider must treat a second {@code submit} of a transaction id it already holds as the first one again, never
  * as a second invoice. Every implementation is held to that; it is what lets the caller retry.</p>
  *
- * <p>Implementations: {@code SandboxProvider} (the default; no legal value). A real one (Viettel SInvoice, package E3)
- * is added beside it and chosen by configuration - nothing about an invoice's rules names a provider.</p>
+ * <p>Implementations: {@code SandboxProvider} (the default; no legal value) and {@code ViettelSInvoiceProvider}
+ * (package E3), chosen by configuration - nothing about an invoice's rules names a provider.</p>
  */
 public interface EInvoiceProvider {
 
@@ -50,6 +51,38 @@ public interface EInvoiceProvider {
      * @throws ProviderUnavailableException when the provider did not answer, or the transaction is not issued
      */
     Documents download(String transactionId);
+
+    /**
+     * When a transaction the provider says it has never received may be submitted <b>again</b>. The first submission of
+     * a transaction is not bound by it. A provider that takes a submission in atomically has nothing to say here.
+     */
+    default Resubmission resubmission() {
+        return Resubmission.FREELY;
+    }
+
+    /**
+     * A real provider's promise "the same transaction id is never a second invoice" has edges, and this states them so
+     * the caller stays inside.
+     *
+     * @param quietPeriod how long after a submission the provider may still be working on it without a look-up finding
+     *                    it. Submitting again inside it races the first submission, and the provider may then issue
+     *                    two invoices
+     * @param window      how long the provider remembers a transaction id as already used; past it the same id is a new
+     *                    invoice, so nothing is submitted again automatically. Null: for ever
+     */
+    record Resubmission(Duration quietPeriod, Duration window) {
+
+        public static final Resubmission FREELY = new Resubmission(Duration.ZERO, null);
+
+        /** Whether a transaction first submitted at {@code submittedAt} and unknown to the provider may be sent again. */
+        public boolean allowedAt(Instant submittedAt, Instant now) {
+            if (submittedAt == null) {
+                return true;
+            }
+            Duration age = Duration.between(submittedAt, now);
+            return age.compareTo(quietPeriod) >= 0 && (window == null || age.compareTo(window) < 0);
+        }
+    }
 
     /** How a submission was received. */
     enum SubmissionOutcome {

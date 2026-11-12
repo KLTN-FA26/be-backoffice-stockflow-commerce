@@ -29,7 +29,7 @@ class EInvoiceProviders {
 
     /**
      * @throws BusinessException 503 {@code EINVOICE_PROVIDER_UNAVAILABLE} when the provider configured has no
-     *         implementation in this build (Viettel SInvoice before package E3)
+     *         implementation in this build
      */
     EInvoiceProvider require(String code) {
         EInvoiceProvider provider = byCode.get(code);
