@@ -1,12 +1,12 @@
 package com.stockflow.invoicing.internal.service;
 
 import com.stockflow.invoicing.internal.domain.EInvoice;
+import com.stockflow.invoicing.internal.domain.EInvoiceSending;
 import com.stockflow.support.Await;
 import org.springframework.test.util.AopTestUtils;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import java.time.Duration;
-import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -16,7 +16,7 @@ import java.util.UUID;
  * <p>Calling {@link EInvoiceIssuance#reconcile} instead would not do: while that thread is at the provider, reconcile
  * returns the invoice as it stands, and once it is done a second reconcile asks the provider again - a call the tests
  * that count calls do not expect. So the wait is for what that thread leaves behind: at least one provider call logged
- * for the invoice, and the invoice no longer held by any thread of this instance.</p>
+ * for the invoice, and the invoice's provider lease ({@code einvoice_sending.holder}) given up.</p>
  */
 public final class FirstSend {
 
@@ -35,11 +35,24 @@ public final class FirstSend {
     /** The invoice once the send already handed to another thread - by the accountant or the job - is over. */
     public static EInvoice.Snapshot awaited(EInvoiceIssuance issuance, EInvoiceQueryService queries, UUID id) {
         // Typed as Object on purpose: left generic, the call infers Class<?> and picks getField(Class, String).
-        Object target = AopTestUtils.getUltimateTargetObject(issuance);
-        @SuppressWarnings("unchecked")
-        Set<UUID> inFlight = (Set<UUID>) ReflectionTestUtils.getField(target, "inFlight");
+        Object steps = ReflectionTestUtils.getField(AopTestUtils.getUltimateTargetObject(issuance), "steps");
+        EInvoiceSending sending = (EInvoiceSending) ReflectionTestUtils.getField(
+                AopTestUtils.getUltimateTargetObject(steps), "sending");
         Await.until("the first send of e-invoice " + id + " is over", TIMEOUT,
-                () -> !queries.calls(id).isEmpty() && !inFlight.contains(id));
+                () -> !queries.calls(id).isEmpty() && free(sending, id));
         return queries.get(id);
+    }
+
+    /**
+     * Whether nobody holds the invoice's lease ({@code einvoice_sending.holder IS NULL} or run out): a claim that
+     * succeeds says so, and is given up at once.
+     */
+    private static boolean free(EInvoiceSending sending, UUID id) {
+        UUID probe = com.stockflow.common.id.Identifiers.newId();
+        if (!sending.claim(id, probe, Duration.ofSeconds(30))) {
+            return false;
+        }
+        sending.release(id, probe);
+        return true;
     }
 }

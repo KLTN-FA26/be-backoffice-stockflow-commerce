@@ -186,7 +186,7 @@ class ViettelSInvoiceContractTest {
     private ViettelSInvoiceProvider provider(SecretCipher opening) {
         HttpClientProperties http = new HttpClientProperties(Duration.ofSeconds(2), Duration.ofSeconds(2));
         ViettelSInvoiceProperties properties = new ViettelSInvoiceProperties(production.baseUrl(), viettel.baseUrl(),
-                READ_TIMEOUT, Duration.ofSeconds(90), Duration.ofDays(3), Duration.ofMillis(10), true);
+                READ_TIMEOUT, Duration.ofMinutes(7), Duration.ofDays(3), Duration.ofMillis(10), true);
         ViettelSInvoiceClient client = new ViettelSInvoiceClient(new RestClientFactory(http), http, properties, json,
                 clock);
         SellerProperties seller = new SellerProperties("CONG TY TNHH BAO BI STOCKFLOW", "0312345678",
