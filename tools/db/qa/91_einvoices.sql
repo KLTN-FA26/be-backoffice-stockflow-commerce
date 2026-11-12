@@ -72,10 +72,13 @@ INSERT INTO fulfillment.shipment (id, order_id, status, code, warehouse_id, pack
 VALUES (md5('qa91:s1')::uuid, md5('qa91:order')::uuid, 'READY_TO_DISPATCH', 'SO-QA-EI-S1', md5('demo:wh:HCM')::uuid, 1,
         NOW(), NOW()),
        (md5('qa91:s2')::uuid, md5('qa91:order')::uuid, 'READY_TO_DISPATCH', 'SO-QA-EI-S2', md5('demo:wh:HCM')::uuid, 1,
+        NOW(), NOW()),
+       (md5('qa91:s3')::uuid, md5('qa91:order')::uuid, 'READY_TO_DISPATCH', 'SO-QA-EI-S3', md5('demo:wh:HCM')::uuid, 1,
         NOW(), NOW());
 INSERT INTO ordering.order_shipment (id, order_id, status, amount, handed_over_at)
 VALUES (md5('qa91:s1')::uuid, md5('qa91:order')::uuid, 'HANDED_OVER', 1100000, NOW()),
-       (md5('qa91:s2')::uuid, md5('qa91:order')::uuid, 'HANDED_OVER', 1100000, NOW());
+       (md5('qa91:s2')::uuid, md5('qa91:order')::uuid, 'HANDED_OVER', 1100000, NOW()),
+       (md5('qa91:s3')::uuid, md5('qa91:order')::uuid, 'HANDED_OVER', 1100000, NOW());
 
 -- A draft of shipment 1: 10 cartons x 100,000 at 10%, and a plate fee of 500,000 at 8%.
 CREATE FUNCTION pg_temp.draft(tag TEXT, shipment TEXT, net NUMERIC, tax NUMERIC) RETURNS void LANGUAGE plpgsql AS $$
@@ -273,10 +276,10 @@ SELECT pg_temp.expect_fail('D14 what it is about changes: its shipment', $q$
     UPDATE invoicing.einvoice SET shipment_id = md5('qa91:s2')::uuid WHERE id = md5('qa91:a')::uuid $q$);
 SELECT pg_temp.expect_ok('D15 the bookkeeping columns alone may move', $q$
     UPDATE invoicing.einvoice SET version = version + 1, last_modified_at = NOW() WHERE id = md5('qa91:a')::uuid $q$);
-SELECT pg_temp.expect_ok('D16 it is flagged as having an adjustment (E4), and stays issued', $q$
+-- Since E4 (V20261120000500) the flag is written only as an adjustment of the invoice is issued; that path, and the
+-- flag never being taken back, are 92_einvoice_corrections.sql C21-C24.
+SELECT pg_temp.expect_fail('D16 it is not flagged as having an adjustment by hand, with no adjustment being issued', $q$
     UPDATE invoicing.einvoice SET adjusted = TRUE WHERE id = md5('qa91:a')::uuid $q$);
-SELECT pg_temp.expect_fail('D17 the flag is not taken back', $q$
-    UPDATE invoicing.einvoice SET adjusted = FALSE WHERE id = md5('qa91:a')::uuid $q$);
 
 \echo '--- numbers: once within a symbol (NĐ 254 Phụ lục điểm 2)'
 SELECT pg_temp.expect_ok('E1 the second shipment''s invoice, issued as number 2', $q$
@@ -289,7 +292,7 @@ SELECT pg_temp.expect_fail('E2 a draft never deleted either', $q$
 SELECT pg_temp.expect_true('E3 two invoices of one order, one per shipment',
     (SELECT count(*) = 2 FROM invoicing.einvoice WHERE order_id = md5('qa91:order')::uuid AND status = 'ISSUED'));
 
-\echo '--- adjustments and replacements (E4): only their place'
+\echo '--- adjustments and replacements: only their place here; their rules are 92_einvoice_corrections.sql'
 SELECT pg_temp.expect_fail('F1 an adjustment that names no invoice', $q$
     INSERT INTO invoicing.einvoice (id, code, type, status, order_id, order_number, customer_id, issue_date,
         issue_due_at, seller_name, seller_tax_code, seller_address, buyer_name, currency, payment_method, subtotal,
@@ -298,12 +301,12 @@ SELECT pg_temp.expect_fail('F1 an adjustment that names no invoice', $q$
            CURRENT_DATE, NOW(), 'S', '0312345678', 'A', 'B', 'VND', 'BANK_TRANSFER', -100000, -10000, -110000, 'x'
       FROM ordering.customer_order o WHERE o.id = md5('qa91:order')::uuid $q$);
 SELECT pg_temp.expect_ok('F2 an adjustment of an issued invoice, with a line below zero (TT 91 Điều 10 khoản 6 điểm c)', $q$
-    INSERT INTO invoicing.einvoice (id, code, type, status, order_id, order_number, customer_id, original_einvoice_id,
-        issue_date, issue_due_at, seller_name, seller_tax_code, seller_address, buyer_name, currency, payment_method,
-        subtotal, tax_total, grand_total, amount_in_words, adjustment_reason)
-    SELECT md5('qa91:adj')::uuid, 'EINV-QA91-ADJ', 'ADJUSTMENT', 'DRAFT', o.id, o.order_number, o.customer_id,
-           md5('qa91:a')::uuid, CURRENT_DATE, NOW(), 'S', '0312345678', 'A', 'B', 'VND', 'BANK_TRANSFER', -100000,
-           -10000, -110000, 'x', '1 carton returned'
+    INSERT INTO invoicing.einvoice (id, code, type, status, order_id, order_number, shipment_id, customer_id,
+        original_einvoice_id, correction_basis, issue_date, issue_due_at, seller_name, seller_tax_code, seller_address,
+        buyer_name, currency, payment_method, subtotal, tax_total, grand_total, amount_in_words, adjustment_reason)
+    SELECT md5('qa91:adj')::uuid, 'EINV-QA91-ADJ', 'ADJUSTMENT', 'DRAFT', o.id, o.order_number, md5('qa91:s1')::uuid,
+           o.customer_id, md5('qa91:a')::uuid, 'ERROR', CURRENT_DATE, NOW(), 'S', '0312345678', 'A', 'B', 'VND',
+           'BANK_TRANSFER', -100000, -10000, -110000, 'x', '1 carton too many'
       FROM ordering.customer_order o WHERE o.id = md5('qa91:order')::uuid;
     INSERT INTO invoicing.einvoice_line (id, einvoice_id, line_no, kind, order_line_id, sku, item_name, unit, quantity,
                                          units_per_carton, unit_price, tax_rate, amount, tax_amount)
@@ -324,12 +327,15 @@ SELECT pg_temp.expect_fail('F4 a replacement of an invoice that is not issued', 
     SELECT gen_random_uuid(), 'EINV-QA91-REP', 'REPLACEMENT', 'DRAFT', o.id, o.order_number, o.customer_id,
            md5('qa91:adj')::uuid, CURRENT_DATE, NOW(), 'S', '0312345678', 'A', 'B', 'VND', 'BANK_TRANSFER', 0, 0, 0, 'x'
       FROM ordering.customer_order o WHERE o.id = md5('qa91:order')::uuid $q$);
-SELECT pg_temp.expect_ok('F5 ISSUED -> REPLACED, the one way out of ISSUED', $q$
+-- Since E4 the one way out of ISSUED is taken only as a replacement is issued (92 E11-E17), and the shipment of a
+-- replaced original is invoiced by its replacement, never by a second original (92 E21).
+SELECT pg_temp.expect_fail('F5 ISSUED -> REPLACED by hand, with no replacement being issued', $q$
     UPDATE invoicing.einvoice SET status = 'REPLACED' WHERE id = md5('qa91:b')::uuid $q$);
-SELECT pg_temp.expect_fail('F6 a replaced invoice is final', $q$
-    UPDATE invoicing.einvoice SET status = 'ISSUED' WHERE id = md5('qa91:b')::uuid $q$);
-SELECT pg_temp.expect_ok('F7 a replaced original no longer stands in the way of its shipment''s next invoice', $q$
-    SELECT pg_temp.draft('c', 's2', 1000000, 100000);
+SELECT pg_temp.expect_fail('F6 a second original for a shipment whose invoice is issued (21 BR-01)', $q$
+    SELECT pg_temp.draft('c0', 's2', 1000000, 100000);
+    SELECT pg_temp.goods('c0', 1, 10) $q$);
+SELECT pg_temp.expect_ok('F7 the third shipment''s draft', $q$
+    SELECT pg_temp.draft('c', 's3', 1000000, 100000);
     SELECT pg_temp.goods('c', 1, 10) $q$);
 
 \echo '--- voiding a draft'
@@ -342,7 +348,7 @@ SELECT pg_temp.expect_fail('G3 a voided draft is final', $q$
     UPDATE invoicing.einvoice SET status = 'DRAFT', voided_at = NULL, void_reason = NULL
      WHERE id = md5('qa91:c')::uuid $q$);
 SELECT pg_temp.expect_ok('G4 its shipment is drawn up again', $q$
-    SELECT pg_temp.draft('d', 's2', 1000000, 100000);
+    SELECT pg_temp.draft('d', 's3', 1000000, 100000);
     SELECT pg_temp.goods('d', 1, 10) $q$);
 
 \echo '--- the provider, its series, its calls'
@@ -379,11 +385,11 @@ SELECT pg_temp.expect_fail('H11 a payload where a hash belongs', $q$
     VALUES (gen_random_uuid(), md5('qa91:a')::uuid, 'SANDBOX', 'tx', 'SUBMIT', 'ACCEPTED', '{"buyer":"CONG TY MUA"}',
             NOW(), 12) $q$);
 SELECT pg_temp.expect_fail('H12 a 04/SS notice for an invoice that was never issued', $q$
-    INSERT INTO invoicing.einvoice_error_notice (id, einvoice_id, reason)
-    VALUES (gen_random_uuid(), md5('qa91:d')::uuid, 'wrong address') $q$);
+    INSERT INTO invoicing.einvoice_error_notice (id, einvoice_id, reason, correct_buyer_address)
+    VALUES (gen_random_uuid(), md5('qa91:d')::uuid, 'wrong address', '14 Nguyen Hue') $q$);
 SELECT pg_temp.expect_ok('H13 a 04/SS notice for an issued invoice: no new invoice (TT 91 Điều 10 khoản 1 điểm a)', $q$
-    INSERT INTO invoicing.einvoice_error_notice (id, einvoice_id, reason)
-    VALUES (gen_random_uuid(), md5('qa91:a')::uuid, 'wrong address') $q$);
+    INSERT INTO invoicing.einvoice_error_notice (id, einvoice_id, reason, correct_buyer_address)
+    VALUES (gen_random_uuid(), md5('qa91:a')::uuid, 'wrong address', '14 Nguyen Hue') $q$);
 SELECT pg_temp.expect_fail('H14 the sandbox gives a number once per symbol', $q$
     INSERT INTO invoicing.sandbox_issuance (transaction_id, state, template_code, symbol, invoice_number,
         tax_authority_code, lookup_code, xml_document, pdf_document, request_hash, received_at, ready_at)
