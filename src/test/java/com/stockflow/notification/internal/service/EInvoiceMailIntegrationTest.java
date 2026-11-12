@@ -10,6 +10,7 @@ import com.stockflow.invoicing.internal.domain.EInvoice;
 import com.stockflow.invoicing.internal.domain.EInvoiceStatus;
 import com.stockflow.invoicing.internal.service.EInvoiceIssuance;
 import com.stockflow.invoicing.internal.service.EInvoiceQueryService;
+import com.stockflow.invoicing.internal.service.FirstSend;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderSummary;
 import com.stockflow.order.api.ShipmentHandover;
@@ -138,7 +139,8 @@ class EInvoiceMailIntegrationTest {
         staff = tx.execute(s -> ReferenceRows.user(entityManager));
         accountant = tx.execute(s -> ReferenceRows.user(entityManager));
         portalAccount = new StaffFixtures(jdbc, tx, entityManager).staff("CUSTOMER");
-        invoiceEmail = "ke.toan@" + customer + ".example.com";
+        // Not a reserved domain (example.com, *.test): the transport drops those before the API, as RECIPIENT_RESERVED_DOMAIN.
+        invoiceEmail = "ke.toan-" + customer + "@cup-maker.vn";
         contactEmail = jdbc.queryForObject("SELECT email FROM customer.customer WHERE id = ?", String.class, customer);
         confirmedOrders.legalProfile(customer);
         tx.executeWithoutResult(s -> {
@@ -213,7 +215,7 @@ class EInvoiceMailIntegrationTest {
             + "in its text, recorded SENT; the portal account is told; the event again sends and posts nothing twice")
     void sentOnceWithThePdfTheXmlAndTheLookupCode() throws Exception {
         EInvoice.Snapshot draft = draft();
-        EInvoice.Snapshot issued = issuance.issue(draft.id(), draft.version(), accountant);
+        EInvoice.Snapshot issued = FirstSend.issue(issuance, queries, draft.id(), draft.version(), accountant);
         assertThat(issued.status()).isEqualTo(EInvoiceStatus.ISSUED);
         String reference = reference(issued.id());
         Await.until("the e-invoice e-mail is recorded", ASYNC, () -> !rows(reference).isEmpty());
@@ -280,7 +282,7 @@ class EInvoiceMailIntegrationTest {
         EInvoice.Snapshot draft = draft();
         String reference = reference(draft.id());
         RESEND.failing.add(reference);
-        EInvoice.Snapshot issued = issuance.issue(draft.id(), draft.version(), accountant);
+        EInvoice.Snapshot issued = FirstSend.issue(issuance, queries, draft.id(), draft.version(), accountant);
         assertThat(issued.status()).as("the invoice is issued whatever becomes of its mail")
                 .isEqualTo(EInvoiceStatus.ISSUED);
         Await.until("the failure is recorded", ASYNC, () -> !rows(reference).isEmpty());

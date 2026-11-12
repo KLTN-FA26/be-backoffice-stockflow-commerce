@@ -52,7 +52,9 @@ class OrderSettlementServiceTest {
         // Without installments an order owes nothing in the system (4B-10).
         when(payments.installmentStanding(any())).thenAnswer(call -> InstallmentStanding.none(call.getArgument(0)));
         // Every delivery invoiced unless a test says otherwise (WF-05 condition 5).
-        when(invoices.invoiced(any())).thenAnswer(call -> Set.copyOf(call.<java.util.Collection<UUID>>getArgument(0)));
+        // Null-tolerant: a test re-stubbing with when(invoices.invoiced(any())) calls this answer with null.
+        when(invoices.invoiced(any())).thenAnswer(call -> call.getArgument(0) == null ? Set.of()
+                : Set.copyOf(call.<java.util.Collection<UUID>>getArgument(0)));
     }
 
     private OrderSettlementService at(Instant now) {

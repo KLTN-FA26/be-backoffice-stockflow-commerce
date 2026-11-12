@@ -92,7 +92,7 @@ public final class EInvoiceFixtures {
         EInvoice.Delivery other = delivery();
         EInvoice invoice = EInvoice.drawUpOriginal(UUID.randomUUID(), "EINV-20261112-%04d".formatted(number),
                 new EInvoice.Delivery(other.orderId(), other.orderNumber(), other.contractNumber(), other.shipmentId(),
-                        other.shipmentCode(), null, customerId, DELIVERED_ON), SELLER, BUYER, lines(), false);
+                        other.shipmentCode(), null, customerId, DELIVERED_ON), SELLER, BUYER, lines(), false, false);
         invoice.submit(SERIES, null, NOW);
         invoice.issued(number, "SBX" + number, "SBXL" + number, NOW, "einvoices/2026/11/12/" + number + ".xml",
                 "einvoices/2026/11/12/" + number + ".pdf", NOW);

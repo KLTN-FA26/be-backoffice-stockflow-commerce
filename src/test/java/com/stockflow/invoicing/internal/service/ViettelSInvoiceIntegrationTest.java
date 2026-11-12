@@ -229,6 +229,9 @@ class ViettelSInvoiceIntegrationTest {
             jdbc.update("UPDATE invoicing.einvoice_provider_config SET active = TRUE WHERE provider = ?", SANDBOX);
             jdbc.update("UPDATE invoicing.einvoice_provider_config SET username = NULL, secret_sealed = NULL, "
                     + "environment = 'SANDBOX' WHERE provider = ?", VIETTEL);
+            // No series in use at Viettel either: the first test to switch would otherwise leave one for the next.
+            jdbc.update("UPDATE invoicing.einvoice_series SET active = FALSE, version = version + 1 "
+                    + "WHERE provider = ? AND active", VIETTEL);
         });
     }
 
@@ -458,7 +461,7 @@ class ViettelSInvoiceIntegrationTest {
                 .willReturn(okJson(foundIssued(number, signedAt))));
         handsOverTheFiles(xml);
 
-        EInvoice.Snapshot issued = issuance.issue(draft.id(), draft.version(), accountant);
+        EInvoice.Snapshot issued = FirstSend.issue(issuance, queries, draft.id(), draft.version(), accountant);
 
         assertThat(issued.status()).isEqualTo(EInvoiceStatus.ISSUED);
         assertThat(issued.provider()).isEqualTo(VIETTEL);
@@ -511,7 +514,7 @@ class ViettelSInvoiceIntegrationTest {
         // Viettel takes the invoice in and works on it for longer than its answer is waited for.
         viettel.stubFor(post(urlPathMatching(CREATE)).willReturn(okJson(createdAnswer(number)).withFixedDelay(3_000)));
 
-        EInvoice.Snapshot waiting = issuance.issue(draft.id(), draft.version(), accountant);
+        EInvoice.Snapshot waiting = FirstSend.issue(issuance, queries, draft.id(), draft.version(), accountant);
 
         assertThat(waiting.status()).as("nothing is known: it waits under its transaction id")
                 .isEqualTo(EInvoiceStatus.SUBMITTING);
@@ -568,7 +571,7 @@ class ViettelSInvoiceIntegrationTest {
                         {"code":400,"message":"BAD_REQUEST_BUYER_TAX_CODE_INVALID",
                          "data":"Mã số thuế người mua không hợp lệ"}""")));
 
-        EInvoice.Snapshot rejected = issuance.issue(draft.id(), draft.version(), accountant);
+        EInvoice.Snapshot rejected = FirstSend.issue(issuance, queries, draft.id(), draft.version(), accountant);
 
         assertThat(rejected.status()).isEqualTo(EInvoiceStatus.REJECTED);
         assertThat(rejected.rejectionCode()).isEqualTo("BAD_REQUEST_BUYER_TAX_CODE_INVALID");
@@ -594,7 +597,7 @@ class ViettelSInvoiceIntegrationTest {
                 .withBody("<html>Service Unavailable</html>")));
         viettel.stubFor(post(urlPathMatching(CREATE)).willReturn(aResponse().withStatus(503)));
 
-        EInvoice.Snapshot waiting = issuance.issue(draft.id(), draft.version(), accountant);
+        EInvoice.Snapshot waiting = FirstSend.issue(issuance, queries, draft.id(), draft.version(), accountant);
 
         assertThat(waiting.status()).isEqualTo(EInvoiceStatus.SUBMITTING);
         assertThat(calls(draft.id())).as("the look-up gave no answer, so the invoice was not sent on a guess")
@@ -611,7 +614,7 @@ class ViettelSInvoiceIntegrationTest {
         providerAccounts.activate(SANDBOX, configured(SANDBOX).version());
         EInvoice.Snapshot draft = deliveredDraft();
 
-        EInvoice.Snapshot issued = issuance.issue(draft.id(), draft.version(), accountant);
+        EInvoice.Snapshot issued = FirstSend.issue(issuance, queries, draft.id(), draft.version(), accountant);
 
         assertThat(issued.status()).isEqualTo(EInvoiceStatus.ISSUED);
         assertThat(issued.provider()).isEqualTo(SANDBOX);

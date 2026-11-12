@@ -189,7 +189,7 @@ class Wf05DeliveryToCompletionIntegrationTest {
         assertThat(firstDraft.contractNumber()).isEqualTo(signed.contractNumber());
         assertThat(firstDraft.grandTotal()).as("two cartons at 100,000 and 10%").isEqualByComparingTo("220000");
         assertThat(firstDraft.warnings()).isEmpty();
-        EInvoice.Snapshot firstIssued = issuance.issue(firstDraft.id(), firstDraft.version(), accountant);
+        EInvoice.Snapshot firstIssued = FirstSend.issue(issuance, queries, firstDraft.id(), firstDraft.version(), accountant);
         assertThat(firstIssued.status()).isEqualTo(EInvoiceStatus.ISSUED);
         assertThat(firstIssued.provider()).isEqualTo("SANDBOX");
         // Customer e-mail is off here (CUSTOMER_EMAIL_ENABLED): the invoice's mail is recorded as skipped, not sent.
@@ -229,7 +229,7 @@ class Wf05DeliveryToCompletionIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT sum(grand_total) FROM invoicing.einvoice WHERE order_id = ?",
                 BigDecimal.class, orderId)).as("the invoices of the deliveries add up to the contract")
                 .isEqualByComparingTo(signed.total());
-        EInvoice.Snapshot secondIssued = issuance.issue(secondDraft.id(), secondDraft.version(), accountant);
+        EInvoice.Snapshot secondIssued = FirstSend.issue(issuance, queries, secondDraft.id(), secondDraft.version(), accountant);
         assertThat(secondIssued.status()).isEqualTo(EInvoiceStatus.ISSUED);
         assertThat(secondIssued.symbol()).isEqualTo(firstIssued.symbol());
         assertThat(secondIssued.invoiceNumber()).isGreaterThan(firstIssued.invoiceNumber());

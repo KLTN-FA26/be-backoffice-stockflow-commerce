@@ -101,6 +101,9 @@ class InvoicedBeforeCompletionIntegrationTest {
 
     private void buyer(String taxCode, String invoiceEmail) {
         tx.executeWithoutResult(s -> {
+            // A tax code belongs to one customer (uk_customer_tax_code): the sandbox's refused one is taken back from
+            // whichever earlier test customer was given it.
+            jdbc.update("UPDATE customer.customer SET tax_code = NULL WHERE tax_code = ? AND id <> ?", taxCode, customer);
             jdbc.update("UPDATE customer.customer SET tax_code = ? WHERE id = ?", taxCode, customer);
             jdbc.update("UPDATE customer.customer_legal_profile SET invoice_email = ? WHERE customer_id = ?",
                     invoiceEmail, customer);
@@ -183,7 +186,7 @@ class InvoicedBeforeCompletionIntegrationTest {
 
         staysDelivered(order.orderId(), "its one invoice is a draft");
 
-        assertThat(issuance.issue(draft.id(), draft.version(), accountant).status()).isEqualTo(EInvoiceStatus.ISSUED);
+        assertThat(FirstSend.issue(issuance, queries, draft.id(), draft.version(), accountant).status()).isEqualTo(EInvoiceStatus.ISSUED);
         completes(order.orderId());
     }
 
@@ -194,7 +197,7 @@ class InvoicedBeforeCompletionIntegrationTest {
         OrderSummary order = packed(1);
         EInvoice.Snapshot draft = draftOf(deliver(order, 1));
         pastTheReturnWindow(order.orderId());
-        assertThat(issuance.issue(draft.id(), draft.version(), accountant).status())
+        assertThat(FirstSend.issue(issuance, queries, draft.id(), draft.version(), accountant).status())
                 .isEqualTo(EInvoiceStatus.SUBMITTING);
 
         staysDelivered(order.orderId(), "its invoice is SUBMITTING");
@@ -211,7 +214,7 @@ class InvoicedBeforeCompletionIntegrationTest {
         OrderSummary order = packed(1);
         EInvoice.Snapshot draft = draftOf(deliver(order, 1));
         pastTheReturnWindow(order.orderId());
-        EInvoice.Snapshot rejected = issuance.issue(draft.id(), draft.version(), accountant);
+        EInvoice.Snapshot rejected = FirstSend.issue(issuance, queries, draft.id(), draft.version(), accountant);
         assertThat(rejected.status()).isEqualTo(EInvoiceStatus.REJECTED);
 
         staysDelivered(order.orderId(), "its invoice is REJECTED");
@@ -220,7 +223,7 @@ class InvoicedBeforeCompletionIntegrationTest {
         staysDelivered(order.orderId(), "its invoice is a draft again");
         EInvoice.Snapshot corrected = drafts.revise(new EInvoiceDrafts.Revise(draft.id(), reopened.version(), null,
                 taxCode, null, null, null));
-        assertThat(issuance.issue(draft.id(), corrected.version(), accountant).status())
+        assertThat(FirstSend.issue(issuance, queries, draft.id(), corrected.version(), accountant).status())
                 .isEqualTo(EInvoiceStatus.ISSUED);
         completes(order.orderId());
     }
@@ -238,7 +241,7 @@ class InvoicedBeforeCompletionIntegrationTest {
 
         EInvoice.Snapshot again = drafts.drawUp(order.orderId(), shipment).invoice();
         staysDelivered(order.orderId(), "drawn up again, a draft");
-        assertThat(issuance.issue(again.id(), again.version(), accountant).status()).isEqualTo(EInvoiceStatus.ISSUED);
+        assertThat(FirstSend.issue(issuance, queries, again.id(), again.version(), accountant).status()).isEqualTo(EInvoiceStatus.ISSUED);
         completes(order.orderId());
     }
 
@@ -255,10 +258,10 @@ class InvoicedBeforeCompletionIntegrationTest {
         pastTheReturnWindow(order.orderId());
 
         staysDelivered(order.orderId(), "neither invoice is issued");
-        assertThat(issuance.issue(first.id(), first.version(), accountant).status()).isEqualTo(EInvoiceStatus.ISSUED);
+        assertThat(FirstSend.issue(issuance, queries, first.id(), first.version(), accountant).status()).isEqualTo(EInvoiceStatus.ISSUED);
         staysDelivered(order.orderId(), "one of two is issued");
 
-        assertThat(issuance.issue(second.id(), second.version(), accountant).status())
+        assertThat(FirstSend.issue(issuance, queries, second.id(), second.version(), accountant).status())
                 .isEqualTo(EInvoiceStatus.ISSUED);
         completes(order.orderId());
     }
@@ -268,7 +271,7 @@ class InvoicedBeforeCompletionIntegrationTest {
     void issuedInsideTheReturnWindowStillWaits() {
         OrderSummary order = packed(1);
         EInvoice.Snapshot draft = draftOf(deliver(order, 1));
-        assertThat(issuance.issue(draft.id(), draft.version(), accountant).status()).isEqualTo(EInvoiceStatus.ISSUED);
+        assertThat(FirstSend.issue(issuance, queries, draft.id(), draft.version(), accountant).status()).isEqualTo(EInvoiceStatus.ISSUED);
 
         assertThat(settlements.complete(order.orderId())).as("delivered today").isFalse();
         assertThat(status(order.orderId())).isEqualTo(OrderStatus.DELIVERED);

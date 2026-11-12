@@ -104,6 +104,9 @@ class EInvoiceAccountantNoticesIntegrationTest {
 
     private void buyer(String taxCode, String invoiceEmail) {
         tx.executeWithoutResult(s -> {
+            // A tax code belongs to one customer (uk_customer_tax_code): the sandbox's refused one is taken back from
+            // whichever earlier test customer was given it.
+            jdbc.update("UPDATE customer.customer SET tax_code = NULL WHERE tax_code = ? AND id <> ?", taxCode, customer);
             jdbc.update("UPDATE customer.customer SET tax_code = ? WHERE id = ?", taxCode, customer);
             jdbc.update("UPDATE customer.customer_legal_profile SET invoice_email = ? WHERE customer_id = ?",
                     invoiceEmail, customer);
@@ -148,7 +151,7 @@ class EInvoiceAccountantNoticesIntegrationTest {
         buyer("0000000001", "ke.toan@" + customer + ".example.com");
         EInvoice.Snapshot draft = draft();
 
-        EInvoice.Snapshot rejected = issuance.issue(draft.id(), draft.version(), accountant);
+        EInvoice.Snapshot rejected = FirstSend.issue(issuance, queries, draft.id(), draft.version(), accountant);
         assertThat(rejected.status()).isEqualTo(EInvoiceStatus.REJECTED);
 
         Await.until("the accountant hears of the refusal", ASYNC,
@@ -164,7 +167,7 @@ class EInvoiceAccountantNoticesIntegrationTest {
 
         // Sent again as it stands, refused again: a new submission, a new notice.
         EInvoice.Snapshot reopened = drafts.reopen(draft.id(), rejected.version());
-        assertThat(issuance.issue(draft.id(), reopened.version(), accountant).status())
+        assertThat(FirstSend.issue(issuance, queries, draft.id(), reopened.version(), accountant).status())
                 .isEqualTo(EInvoiceStatus.REJECTED);
         Await.until("the second refusal is announced", ASYNC,
                 () -> notices(accountant, draft.id(), "EINVOICE_ATTENTION").size() == 2);
@@ -175,7 +178,7 @@ class EInvoiceAccountantNoticesIntegrationTest {
         EInvoice.Snapshot again = drafts.reopen(draft.id(), queries.get(draft.id()).version());
         EInvoice.Snapshot corrected = drafts.revise(new EInvoiceDrafts.Revise(draft.id(), again.version(), null,
                 taxCode, null, null, null));
-        assertThat(issuance.issue(draft.id(), corrected.version(), accountant).status())
+        assertThat(FirstSend.issue(issuance, queries, draft.id(), corrected.version(), accountant).status())
                 .isEqualTo(EInvoiceStatus.ISSUED);
         Await.until("the issue is published and handled", ASYNC, () -> jdbc.queryForObject("""
                 SELECT count(*) FROM event_publication WHERE completion_date IS NULL AND serialized_event LIKE ?""",
@@ -191,7 +194,7 @@ class EInvoiceAccountantNoticesIntegrationTest {
     void aStuckSubmissionReachesTheAccountantOnce() {
         buyer(taxCode, "ke.toan+sandbox-unreachable@" + customer + ".example.com");
         EInvoice.Snapshot draft = draft();
-        EInvoice.Snapshot waiting = issuance.issue(draft.id(), draft.version(), accountant);
+        EInvoice.Snapshot waiting = FirstSend.issue(issuance, queries, draft.id(), draft.version(), accountant);
         assertThat(waiting.status()).isEqualTo(EInvoiceStatus.SUBMITTING);
 
         jobs.warnStuck();

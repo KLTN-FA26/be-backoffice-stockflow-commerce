@@ -150,6 +150,9 @@ class EInvoiceIntegrationTest {
     /** The customer's tax code and the e-mail its invoices go to, as its profile holds them. */
     private void buyer(String taxCode, String invoiceEmail) {
         tx.executeWithoutResult(s -> {
+            // A tax code belongs to one customer (uk_customer_tax_code): the sandbox's refused one is taken back from
+            // whichever earlier test customer was given it.
+            jdbc.update("UPDATE customer.customer SET tax_code = NULL WHERE tax_code = ? AND id <> ?", taxCode, customer);
             jdbc.update("UPDATE customer.customer SET tax_code = ? WHERE id = ?", taxCode, customer);
             jdbc.update("UPDATE customer.customer_legal_profile SET invoice_email = ? WHERE customer_id = ?",
                     invoiceEmail, customer);
@@ -288,7 +291,7 @@ class EInvoiceIntegrationTest {
     void issuedAndImmutable() throws Exception {
         EInvoice.Snapshot draft = delivered(3).draft();
 
-        EInvoice.Snapshot issued = issuance.issue(draft.id(), draft.version(), accountant);
+        EInvoice.Snapshot issued = FirstSend.issue(issuance, queries, draft.id(), draft.version(), accountant);
 
         assertThat(issued.status()).isEqualTo(EInvoiceStatus.ISSUED);
         String year = "%02d".formatted(issued.issueDate().getYear() % 100);
@@ -384,8 +387,8 @@ class EInvoiceIntegrationTest {
         EInvoice.Snapshot first = delivered(1).draft();
         EInvoice.Snapshot second = delivered(1).draft();
 
-        EInvoice.Snapshot firstIssued = issuance.issue(first.id(), first.version(), accountant);
-        EInvoice.Snapshot secondIssued = issuance.issue(second.id(), second.version(), accountant);
+        EInvoice.Snapshot firstIssued = FirstSend.issue(issuance, queries, first.id(), first.version(), accountant);
+        EInvoice.Snapshot secondIssued = FirstSend.issue(issuance, queries, second.id(), second.version(), accountant);
 
         assertThat(secondIssued.symbol()).isEqualTo(firstIssued.symbol());
         assertThat(secondIssued.invoiceNumber()).as("NĐ 254 Phụ lục điểm 2: one after the other, none twice")
@@ -416,7 +419,7 @@ class EInvoiceIntegrationTest {
         assertThatThrownBy(() -> drafts.refreshBuyer(draft.id(), draft.version())).as("a stale version")
                 .extracting(EInvoiceIntegrationTest::code).isEqualTo(ErrorCode.OPTIMISTIC_LOCK);
 
-        assertThat(issuance.issue(draft.id(), refreshed.version(), accountant).status())
+        assertThat(FirstSend.issue(issuance, queries, draft.id(), refreshed.version(), accountant).status())
                 .isEqualTo(EInvoiceStatus.ISSUED);
         // The profile changes afterwards; the invoice keeps the buyer it was issued to.
         buyer(taxCode, "khac@" + customer + ".example.com");
@@ -431,7 +434,7 @@ class EInvoiceIntegrationTest {
         buyer(taxCode, "ke.toan+sandbox-reply-lost@" + customer + ".example.com");
         EInvoice.Snapshot draft = delivered(1).draft();
 
-        EInvoice.Snapshot waiting = issuance.issue(draft.id(), draft.version(), accountant);
+        EInvoice.Snapshot waiting = FirstSend.issue(issuance, queries, draft.id(), draft.version(), accountant);
 
         assertThat(waiting.status()).as("nothing is known: it waits under its transaction id")
                 .isEqualTo(EInvoiceStatus.SUBMITTING);
@@ -460,7 +463,7 @@ class EInvoiceIntegrationTest {
         buyer(taxCode, "ke.toan+sandbox-unreachable@" + customer + ".example.com");
         EInvoice.Snapshot draft = delivered(1).draft();
 
-        EInvoice.Snapshot waiting = issuance.issue(draft.id(), draft.version(), accountant);
+        EInvoice.Snapshot waiting = FirstSend.issue(issuance, queries, draft.id(), draft.version(), accountant);
         assertThat(waiting.status()).isEqualTo(EInvoiceStatus.SUBMITTING);
         assertThat(issuedAtTheProvider(draft.id())).as("it never arrived").isZero();
 
@@ -479,7 +482,7 @@ class EInvoiceIntegrationTest {
     void reconciledByTwoAtOnce() throws Exception {
         buyer(taxCode, "ke.toan+sandbox-unreachable@" + customer + ".example.com");
         EInvoice.Snapshot draft = delivered(1).draft();
-        issuance.issue(draft.id(), draft.version(), accountant);
+        FirstSend.issue(issuance, queries, draft.id(), draft.version(), accountant);
         assertThat(queries.get(draft.id()).status()).isEqualTo(EInvoiceStatus.SUBMITTING);
 
         ExecutorService pool = Executors.newFixedThreadPool(4);
@@ -512,7 +515,7 @@ class EInvoiceIntegrationTest {
         buyer("0000000001", "ke.toan@" + customer + ".example.com");
         EInvoice.Snapshot draft = delivered(1).draft();
 
-        EInvoice.Snapshot rejected = issuance.issue(draft.id(), draft.version(), accountant);
+        EInvoice.Snapshot rejected = FirstSend.issue(issuance, queries, draft.id(), draft.version(), accountant);
 
         assertThat(rejected.status()).isEqualTo(EInvoiceStatus.REJECTED);
         assertThat(rejected.rejectionCode()).isEqualTo("INVALID_BUYER_TAX_CODE");
@@ -534,7 +537,7 @@ class EInvoiceIntegrationTest {
                 taxCode, null, null, null));
         assertThat(jobs.issueAutomatically()).as("automatic issuing is off").isZero();
 
-        EInvoice.Snapshot issued = issuance.issue(draft.id(), corrected.version(), accountant);
+        EInvoice.Snapshot issued = FirstSend.issue(issuance, queries, draft.id(), corrected.version(), accountant);
 
         assertThat(issued.status()).isEqualTo(EInvoiceStatus.ISSUED);
         assertThat(issued.transactionId()).as("21 BR-04: a new attempt is a new transaction").isEqualTo(draft.id() + "-2");
@@ -549,7 +552,7 @@ class EInvoiceIntegrationTest {
         buyer(taxCode, "ke.toan+sandbox-authority-rejects@" + customer + ".example.com");
         EInvoice.Snapshot draft = delivered(1).draft();
 
-        EInvoice.Snapshot rejected = issuance.issue(draft.id(), draft.version(), accountant);
+        EInvoice.Snapshot rejected = FirstSend.issue(issuance, queries, draft.id(), draft.version(), accountant);
 
         assertThat(rejected.status()).isEqualTo(EInvoiceStatus.REJECTED);
         assertThat(rejected.rejectionCode()).isEqualTo("TAX_AUTHORITY_REJECTED");
@@ -612,7 +615,7 @@ class EInvoiceIntegrationTest {
     void aCorrectedDeliveryVoidsTheDraft() {
         Delivered delivered = delivered(1);
         Delivered issuedOne = delivered(1);
-        EInvoice.Snapshot issued = issuance.issue(issuedOne.draft().id(), issuedOne.draft().version(), accountant);
+        EInvoice.Snapshot issued = FirstSend.issue(issuance, queries, issuedOne.draft().id(), issuedOne.draft().version(), accountant);
 
         corrections.on(correction(delivered));
         corrections.on(correction(issuedOne));
@@ -714,7 +717,7 @@ class EInvoiceIntegrationTest {
 
         assertThat(jobs.issueAutomatically()).isGreaterThanOrEqualTo(1);
 
-        EInvoice.Snapshot issued = queries.get(complete.id());
+        EInvoice.Snapshot issued = FirstSend.awaited(issuance, queries, complete.id());
         assertThat(issued.status()).isEqualTo(EInvoiceStatus.ISSUED);
         assertThat(issued.submittedBy()).as("issued by the system").isNull();
         assertThat(queries.get(flagged.id()).status()).as("something to look at: left to the accountant")
@@ -753,7 +756,7 @@ class EInvoiceIntegrationTest {
                 Instant.now().minus(Duration.ofDays(2))), 0, 20).items()).isEmpty();
         // Issued late, it still is issued - and no longer among what is due.
         EInvoice.Snapshot current = queries.get(draft.id());
-        assertThat(issuance.issue(draft.id(), current.version(), accountant).status()).isEqualTo(EInvoiceStatus.ISSUED);
+        assertThat(FirstSend.issue(issuance, queries, draft.id(), current.version(), accountant).status()).isEqualTo(EInvoiceStatus.ISSUED);
         assertThat(queries.list(new EInvoiceQueries.Filter(null, null, draft.orderId(), null, null, null,
                 Instant.now()), 0, 20).items()).isEmpty();
     }

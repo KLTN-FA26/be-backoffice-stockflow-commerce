@@ -214,6 +214,10 @@ class OrderLifecycleIntegrationTest {
         assertThat(statusOf(order)).isEqualTo(OrderStatus.DELIVERED);
         jdbc.queryForList("SELECT id FROM invoicing.einvoice WHERE order_id = ?", UUID.class, order.orderId())
                 .forEach(invoice -> einvoices.issue(invoice, null, staff));
+        // Issuing returns SUBMITTING; the provider is called on another thread (WF-05 E3).
+        com.stockflow.support.Await.until("both invoices issued", Duration.ofSeconds(20),
+                () -> jdbc.queryForObject("SELECT count(*) FROM invoicing.einvoice WHERE order_id = ? AND status = "
+                        + "'ISSUED'", Long.class, order.orderId()) == 2);
         assertThat(settlements.complete(order.orderId())).isTrue();
         assertThat(statusOf(order)).isEqualTo(OrderStatus.COMPLETED);
         tx.executeWithoutResult(s -> jdbc.update("UPDATE ordering.customer_order SET completed_at = NOW() - interval '31 days' "
