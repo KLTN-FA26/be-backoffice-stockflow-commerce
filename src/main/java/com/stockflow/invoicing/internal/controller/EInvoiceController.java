@@ -190,9 +190,10 @@ class EInvoiceController {
     }
 
     @PostMapping("/{id}/issuance")
-    @Operation(summary = "Issue a draft through the provider. Answers SUBMITTING while the provider works on it, "
-            + "ISSUED or REJECTED once it has answered. 409 EINVOICE_BUYER_PROFILE_INCOMPLETE while the buyer's name, "
-            + "tax code, address or invoice e-mail is missing")
+    @Operation(summary = "Issue a draft through the provider. Answers SUBMITTING at once: the provider is called "
+            + "afterwards, and the invoice becomes ISSUED or REJECTED when it has answered (read it again, or ask with "
+            + "/reconciliation). 409 EINVOICE_BUYER_PROFILE_INCOMPLETE while the buyer's name, tax code, address or "
+            + "invoice e-mail is missing")
     @RequiresPermission(resource = InvoicingResources.EINVOICES, action = Action.APPROVE, scope = DataScope.ALL)
     public ApiResponse<EInvoiceResponse> issue(@PathVariable UUID id,
                                                @Valid @RequestBody EInvoiceVersionRequest request,
@@ -200,6 +201,19 @@ class EInvoiceController {
         ScopeGuards.requireBackOffice(user);
         return ApiResponse.ok(InvoicingWebMapper.toResponse(issuance.issue(id, request.version(), user.userId()),
                 clock.instant()));
+    }
+
+    @PostMapping("/{id}/resubmission")
+    @Operation(summary = "Send as a new transaction an e-invoice the provider does not know and no longer remembers "
+            + "the transaction of (warning UNKNOWN_TO_PROVIDER). Done only when the provider, asked now, confirms it "
+            + "holds no such invoice; otherwise 409 EINVOICE_RESUBMISSION_REFUSED. Answers SUBMITTING")
+    @RequiresPermission(resource = InvoicingResources.EINVOICES, action = Action.APPROVE, scope = DataScope.ALL)
+    public ApiResponse<EInvoiceResponse> resubmit(@PathVariable UUID id,
+                                                  @Valid @RequestBody EInvoiceVersionRequest request,
+                                                  @AuthenticatedUser CurrentUser user) {
+        ScopeGuards.requireBackOffice(user);
+        return ApiResponse.ok(InvoicingWebMapper.toResponse(issuance.resubmitAsNew(id, request.version(),
+                user.userId()), clock.instant()));
     }
 
     @PostMapping("/{id}/reconciliation")
