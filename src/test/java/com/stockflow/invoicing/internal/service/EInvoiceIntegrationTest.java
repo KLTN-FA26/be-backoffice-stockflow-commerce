@@ -91,6 +91,7 @@ class EInvoiceIntegrationTest {
     @Autowired EInvoiceQueryService queries;
     @Autowired EInvoiceSettingsService settings;
     @Autowired EInvoiceJobs jobs;
+    @Autowired com.stockflow.invoicing.internal.domain.EInvoiceSending sending;
     @Autowired OrderDeliveredListener listener;
     @Autowired com.stockflow.invoicing.internal.domain.EInvoiceRepository invoices;
     @Autowired org.springframework.context.ApplicationEventPublisher publisher;
@@ -475,6 +476,48 @@ class EInvoiceIntegrationTest {
                 tuple(Operation.SUBMIT, Outcome.ACCEPTED), tuple(Operation.QUERY, Outcome.ISSUED),
                 tuple(Operation.DOWNLOAD, Outcome.DOWNLOADED));
         assertThat(issuedAtTheProvider(draft.id())).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("review H2: while one instance holds an invoice's lease in the database, a second one cannot take "
+            + "it and neither asks nor sends - until the lease is given up or runs out")
+    void aLeaseHeldElsewhereKeepsEveryoneFromTheProvider() {
+        buyer(taxCode, "ke.toan+sandbox-unreachable@" + customer + ".example.com");
+        EInvoice.Snapshot draft = delivered(1).draft();
+        EInvoice.Snapshot waiting = FirstSend.issue(issuance, queries, draft.id(), draft.version(), accountant);
+        assertThat(waiting.status()).isEqualTo(EInvoiceStatus.SUBMITTING);
+        List<org.assertj.core.groups.Tuple> before = calls(draft.id());
+        UUID other = com.stockflow.common.id.Identifiers.newId();
+        UUID here = com.stockflow.common.id.Identifiers.newId();
+        Duration lease = Duration.ofMinutes(15);
+
+        // Another instance is at the provider for this invoice.
+        assertThat((boolean) tx.execute(s -> sending.claim(draft.id(), other, lease))).isTrue();
+
+        assertThat((boolean) tx.execute(s -> sending.claim(draft.id(), here, lease))).as("one holder at a time").isFalse();
+        assertThat((boolean) tx.execute(s -> sending.renew(draft.id(), here, lease))).as("not the holder's to extend").isFalse();
+        tx.executeWithoutResult(s -> sending.release(draft.id(), here));
+        assertThat((boolean) tx.execute(s -> sending.claim(draft.id(), here, lease))).as("not the holder's to give up").isFalse();
+        assertThat(issuance.reconcile(draft.id()).status()).isEqualTo(EInvoiceStatus.SUBMITTING);
+        assertThat(invoices.findSubmitting(10_000)).as("review L1: the job's batch leaves it to its holder")
+                .doesNotContain(draft.id());
+        jobs.reconcileSubmitting();
+        assertThatThrownBy(() -> issuance.resubmitAsNew(draft.id(), waiting.version(), accountant))
+                .extracting(EInvoiceIntegrationTest::code).isEqualTo(ErrorCode.EINVOICE_RESUBMISSION_REFUSED);
+        assertThat(calls(draft.id())).as("nobody but the holder called the provider").isEqualTo(before);
+        assertThat(issuedAtTheProvider(draft.id())).isZero();
+
+        // The holder died: its lease runs out on the database's clock, and the next one takes it.
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE invoicing.einvoice_sending SET held_until = now() - "
+                + "interval '1 second' WHERE einvoice_id = ?", draft.id()));
+        assertThat(invoices.findSubmitting(10_000)).contains(draft.id());
+
+        EInvoice.Snapshot issued = issuance.reconcile(draft.id());
+
+        assertThat(issued.status()).isEqualTo(EInvoiceStatus.ISSUED);
+        assertThat(issuedAtTheProvider(draft.id())).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT holder FROM invoicing.einvoice_sending WHERE einvoice_id = ?",
+                UUID.class, draft.id())).as("given up when done").isNull();
     }
 
     @Test
