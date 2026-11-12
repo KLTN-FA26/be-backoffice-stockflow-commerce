@@ -62,6 +62,12 @@ public interface EInvoiceQueries {
     java.util.Set<UUID> invoicedAmong(java.util.Collection<UUID> shipmentIds);
 
     /**
+     * Whether the order has an invoice of its shipping fee rest that is not issued yet: drawn up and not voided, and
+     * still a draft, at the provider, or refused.
+     */
+    boolean shippingFeeInvoiceUnissued(UUID orderId);
+
+    /**
      * One issued invoice in the register of a period ("bảng kê hoá đơn"), as the accountant declares it: who it was
      * issued to, and its amount and tax.
      *

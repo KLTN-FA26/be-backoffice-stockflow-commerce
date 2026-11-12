@@ -31,4 +31,10 @@ class DeliveryInvoicesAdapter implements DeliveryInvoices {
     public Set<UUID> invoiced(Collection<UUID> shipmentIds) {
         return shipmentIds == null || shipmentIds.isEmpty() ? Set.of() : queries.invoicedAmong(shipmentIds);
     }
+
+    @Override
+    @Transactional(readOnly = true)
+    public boolean shippingFeeUnissued(UUID orderId) {
+        return queries.shippingFeeInvoiceUnissued(orderId);
+    }
 }

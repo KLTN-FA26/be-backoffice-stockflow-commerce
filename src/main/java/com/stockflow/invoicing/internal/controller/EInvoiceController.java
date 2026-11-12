@@ -2,6 +2,8 @@ package com.stockflow.invoicing.internal.controller;
 
 import com.stockflow.common.api.ApiResponse;
 import com.stockflow.common.api.PageResponse;
+import com.stockflow.common.error.BusinessException;
+import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.persistence.Pages;
 import com.stockflow.common.security.Action;
 import com.stockflow.common.security.AuthenticatedUser;
@@ -160,11 +162,21 @@ class EInvoiceController {
 
     @PostMapping
     @Operation(summary = "Draw the draft e-invoice of a delivered shipment up, or return the one in force: for a "
-            + "shipment whose draft was voided or never made. 409 EINVOICE_NOT_INVOICEABLE unless it is delivered")
+            + "shipment whose draft was voided or never made. 409 EINVOICE_NOT_INVOICEABLE unless it is delivered. "
+            + "With no shipmentId: the invoice of the rest of the order's shipping fee after its undelivered rest was "
+            + "closed; 409 EINVOICE_NOT_INVOICEABLE when no part of the fee is left to it")
     @RequiresPermission(resource = InvoicingResources.EINVOICES, action = Action.CREATE, scope = DataScope.ALL)
     public ApiResponse<EInvoiceResponse> drawUp(@Valid @RequestBody DrawUpEInvoiceRequest request,
                                                 @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
+        if (request.shipmentId() == null) {
+            EInvoiceDrafts.DrawnUp rest = drafts.drawUpShippingFeeRest(request.orderId(), clock.instant())
+                    .orElseThrow(() -> new BusinessException(ErrorCode.EINVOICE_NOT_INVOICEABLE,
+                            "No part of the shipping fee of order %s is left to an invoice of its own: it has none, "
+                                    .formatted(request.orderId())
+                                    + "its invoices carry all of it, or a delivery still to be invoiced will"));
+            return ApiResponse.ok(InvoicingWebMapper.toResponse(rest.invoice(), clock.instant()));
+        }
         return ApiResponse.ok(InvoicingWebMapper.toResponse(
                 drafts.drawUp(request.orderId(), request.shipmentId()).invoice(), clock.instant()));
     }

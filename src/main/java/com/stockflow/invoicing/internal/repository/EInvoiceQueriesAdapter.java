@@ -147,6 +147,16 @@ class EInvoiceQueriesAdapter implements EInvoiceQueries {
     }
 
     @Override
+    public boolean shippingFeeInvoiceUnissued(UUID orderId) {
+        Boolean unissued = jdbc.queryForObject("""
+                SELECT EXISTS (SELECT 1 FROM invoicing.einvoice
+                                WHERE order_id = ? AND shipment_id IS NULL AND type = 'ORIGINAL'
+                                  AND status IN ('DRAFT', 'SUBMITTING', 'REJECTED'))""",
+                Boolean.class, orderId);
+        return Boolean.TRUE.equals(unissued);
+    }
+
+    @Override
     public List<RegisterEntry> register(LocalDate from, LocalDate to) {
         return jdbc.query("""
                 SELECT i.template_code, i.symbol, i.invoice_number, i.issue_date, i.type, i.status, i.adjusted,

@@ -28,8 +28,10 @@ import java.util.Set;
  *       delivery's share makes up the difference, instead of the fee coming up short.</li>
  * </ul>
  *
- * <p>An order closed with nothing more delivered leaves the rest of its shipping fee on no invoice: there is no
- * delivery to carry it. That is the closing step's to settle, not a delivery's.</p>
+ * <p><b>An order closed with nothing more to deliver</b> may have had every delivery invoiced already, each at its share
+ * of the pieces the order then meant to deliver: no delivery is left to take the rest of the fee. The closing step
+ * puts that rest on an invoice of its own ({@link #shippingRest}); while a delivery is still to be invoiced - in
+ * transit, or delivered and not yet drawn up - that delivery takes it as above, and the closing step draws nothing.</p>
  */
 public final class FeeAllocation {
 
@@ -80,5 +82,26 @@ public final class FeeAllocation {
         // Never below zero: invoices drawn up before part of the order was closed may already carry more than is
         // owed against what is left, and an original takes nothing back.
         return owed.subtract(invoiced.shippingFee()).max(BigDecimal.ZERO);
+    }
+
+    /**
+     * The rest of the order's shipping fee no delivery will carry, in whole dong: what the order's invoices lack of the
+     * whole fee, once every piece the order still means to deliver is on one of them. 0 otherwise.
+     *
+     * <p>Two cases draw nothing, on purpose. While the invoices carry fewer pieces than the order means to deliver, a
+     * delivery is still to be invoiced - on its way, or delivered and not yet drawn up - and {@link #shippingShare}
+     * gives it the rest when it is, so drawing it here as well would carry the money twice. And an order none of whose
+     * pieces is on an invoice delivered nothing the fee was for: whether a fee is owed for goods that never arrived is
+     * settled on the order's installments when its rest is closed, not by an invoice.</p>
+     *
+     * @param fee        the order's shipping fee before tax
+     * @param orderUnits the pieces the order means to deliver, as it stands now
+     * @param invoiced   what the order's invoices in force already carry
+     */
+    public static BigDecimal shippingRest(BigDecimal fee, long orderUnits, Invoiced invoiced) {
+        if (fee == null || fee.signum() <= 0 || invoiced.units() <= 0 || invoiced.units() < orderUnits) {
+            return BigDecimal.ZERO;
+        }
+        return fee.setScale(0, RoundingMode.HALF_UP).subtract(invoiced.shippingFee()).max(BigDecimal.ZERO);
     }
 }

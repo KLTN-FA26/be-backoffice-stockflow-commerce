@@ -85,6 +85,20 @@ class EInvoiceRepositoryAdapter implements EInvoiceRepository {
     }
 
     @Override
+    public Optional<EInvoice> findLiveShippingFeeInvoice(UUID orderId) {
+        // At most one original of the rest that was not voided (uk_einvoice_shipping_fee_rest); what replaced it names
+        // no shipment either. The issued one first, as for a shipment.
+        List<UUID> ids = jdbc.queryForList("""
+                SELECT id FROM invoicing.einvoice
+                 WHERE order_id = ? AND shipment_id IS NULL AND type IN ('ORIGINAL', 'REPLACEMENT')
+                   AND status NOT IN ('VOIDED_DRAFT', 'REPLACED')
+                 ORDER BY CASE WHEN status = 'ISSUED' THEN 0 ELSE 1 END, created_at, id
+                 LIMIT 1""",
+                UUID.class, orderId);
+        return ids.isEmpty() ? Optional.empty() : findById(ids.getFirst());
+    }
+
+    @Override
     public void lockOrder(UUID orderId) {
         // Wrapped in a sub-select: pg_advisory_xact_lock returns void. Released when the transaction ends.
         jdbc.queryForObject("SELECT 1 FROM (SELECT pg_advisory_xact_lock(hashtextextended(?, 0))) AS locked",

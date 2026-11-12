@@ -20,12 +20,14 @@ import com.stockflow.invoicing.internal.domain.InvoiceParty;
 import com.stockflow.order.api.DeliveredShipment;
 import com.stockflow.order.api.DeliveredShipments;
 import com.stockflow.order.api.FeeKind;
+import com.stockflow.order.api.OrderShippingFee;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.Clock;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
@@ -149,6 +151,74 @@ public class EInvoiceDrafts {
                 buyerOf(delivered.customerId()), lines.lines(), lines.rateDiffersFromContract(),
                 lines.rateNotOnContract());
         return new DrawnUp(invoices.save(invoice).snapshot(), true);
+    }
+
+    /**
+     * The invoice of the rest of an order's shipping fee, once its undelivered rest was closed: the one standing if
+     * there is one, else a new draft when some of the fee is on no invoice and no delivery is left to carry it
+     * ({@link FeeAllocation#shippingRest}); empty when there is nothing to draw up.
+     *
+     * <h2>Why an original of its own, and why dated the day of closing</h2>
+     *
+     * <p>The fee is the price of carrying the order, a service (NĐ 254 Điều 9 khoản 2: its invoice is drawn up when
+     * it is done), and what is owed for it is invoiced in full. It was invoiced delivery by delivery, each delivery at
+     * its share of the pieces the order then meant to deliver, and the delivery that completes the order takes the
+     * rest. Closing the
+     * rest of the order after every delivery was invoiced leaves no such delivery, and part of the fee on no invoice.
+     * The invoices already issued are not wrong - each was right for what the order was when it was drawn up - so this
+     * is not what an adjustment is for (TT 91 Điều 10: errors, returns, discounts), and the missing amount goes on a
+     * new original that names no shipment and carries that one fee line.</p>
+     *
+     * <p>It is dated the day the rest was closed: the carrying was finished at the last delivery, but the fee's last
+     * share was only known when the order stopped meaning to deliver anything more. Dating it back to the last
+     * delivery would make it overdue the day it was drawn up ({@code IssueDeadline}: the working day after its date).</p>
+     *
+     * <p>In its own transaction ({@code REQUIRES_NEW}) and under the order's invoicing lock, for the reasons
+     * {@link #drawUp} gives: a delivery's draft drawn up at the same moment either sees this one's fee line or is seen
+     * by it, so the fee is carried once, by whichever is decided second taking only what the first left.</p>
+     *
+     * @param closedAt when the order's rest was closed: the invoice's date, and the day of its VAT rate
+     * @throws BusinessException {@code EINVOICE_NOT_INVOICEABLE} for an order not priced in dong;
+     *         {@code SELLER_PROFILE_UNAVAILABLE} while the seller is not configured
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public Optional<DrawnUp> drawUpShippingFeeRest(UUID orderId, Instant closedAt) {
+        invoices.lockOrder(orderId);
+        Optional<EInvoice> standing = invoices.findLiveShippingFeeInvoice(orderId);
+        if (standing.isPresent()) {
+            return Optional.of(new DrawnUp(standing.get().snapshot(), false));
+        }
+        Optional<OrderShippingFee> found = shipments.shippingFee(orderId, closedAt);
+        if (found.isEmpty()) {
+            return Optional.empty();
+        }
+        OrderShippingFee order = found.get();
+        BigDecimal rest = FeeAllocation.shippingRest(order.fee().amount(), order.orderUnits(),
+                invoices.invoicedOfOrder(orderId));
+        if (rest.signum() <= 0) {
+            return Optional.empty();
+        }
+        if (!EInvoice.VND.equals(order.currency())) {
+            throw new BusinessException(ErrorCode.EINVOICE_NOT_INVOICEABLE,
+                    "Order %s is priced in %s; a VAT invoice is in dong".formatted(order.orderNumber(),
+                            order.currency()));
+        }
+        if (!seller.complete()) {
+            throw new BusinessException(ErrorCode.SELLER_PROFILE_UNAVAILABLE,
+                    "stockflow.seller.* is not configured in this deployment");
+        }
+        ResourceBundle t = ResourceBundle.getBundle("i18n.messages", Locale.forLanguageTag("vi"));
+        DeliveredShipment.Fee fee = order.fee();
+        EInvoiceLine line = EInvoiceLine.fee(Identifiers.newId(), 1, EInvoiceLine.FeeKind.SHIPPING_FEE, null,
+                t.getString("einvoice.line.shippingFee.rest"), t.getString("einvoice.unit.fee"), rest, fee.taxRate());
+        LocalDate closedOn = BusinessCalendar.date(closedAt == null ? clock.instant() : closedAt);
+        EInvoice invoice = EInvoice.drawUpOriginal(Identifiers.newId(), invoices.nextCode(closedOn),
+                new EInvoice.Delivery(order.orderId(), order.orderNumber(), order.contractNumber(), null, null, null,
+                        order.customerId(), closedOn),
+                new InvoiceParty(seller.name(), seller.taxCode(), seller.address(), null),
+                buyerOf(order.customerId()), List.of(line), differs(fee.taxRate(), fee.contractTaxRate()),
+                fee.contractTaxRate() == null);
+        return Optional.of(new DrawnUp(invoices.save(invoice).snapshot(), true));
     }
 
     /** The buyer copied again from the customer's legal profile, onto a draft (kltn-docs 21 §4.2 step 4). */

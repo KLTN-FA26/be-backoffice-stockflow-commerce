@@ -52,6 +52,12 @@ public interface EInvoiceRepository {
     boolean hasReplacedOriginalOfShipment(UUID shipmentId);
 
     /**
+     * The invoice that stands for the order's shipping fee rest - the original that names no shipment while it is not
+     * voided or replaced, else what replaced it - as {@link #findLiveOriginalOfShipment} answers for a shipment.
+     */
+    Optional<EInvoice> findLiveShippingFeeInvoice(UUID orderId);
+
+    /**
      * Takes the order's invoicing lock until the transaction ends: drafts of one order are drawn up one after the
      * other, so each sees the fees the one before put on its invoice, and a draft and the voiding of a corrected
      * delivery never pass each other.

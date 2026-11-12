@@ -22,4 +22,11 @@ public interface DeliveryInvoices {
      * transaction.
      */
     Set<UUID> invoiced(Collection<UUID> shipmentIds);
+
+    /**
+     * Whether the order has an invoice of the rest of its shipping fee - drawn up when its undelivered rest was closed
+     * after every delivery was invoiced - that is not issued yet. That amount is invoiced like a delivery, so the order
+     * waits for it as it waits for its deliveries' invoices. Read in the caller's transaction.
+     */
+    boolean shippingFeeUnissued(UUID orderId);
 }

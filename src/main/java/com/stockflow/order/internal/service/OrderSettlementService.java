@@ -86,14 +86,17 @@ public class OrderSettlementService {
     /**
      * Whether a delivered shipment of the order still has no e-invoice issued (WF-05 plan §4, condition 5), read under
      * the order's lock. Invoicing answers ({@code DeliveryInvoices}); the order only knows which shipments it
-     * delivered. An order delivered without shipments has nothing to invoice and waits for nothing.
+     * delivered. An order delivered without shipments has nothing to invoice and waits for nothing. The invoice of the
+     * rest of the shipping fee, drawn up when the order's undelivered rest was closed after its deliveries were all
+     * invoiced, is waited for the same way.
      */
     private boolean awaitingInvoice(Order order) {
         List<UUID> delivered = order.shipments().stream()
                 .filter(shipment -> shipment.status() == com.stockflow.order.api.OrderShipmentStatus.DELIVERED)
                 .map(shipment -> shipment.id())
                 .toList();
-        return !delivered.isEmpty() && !invoices.invoiced(delivered).containsAll(delivered);
+        return !delivered.isEmpty() && (!invoices.invoiced(delivered).containsAll(delivered)
+                || invoices.shippingFeeUnissued(order.id().value()));
     }
 
     /**

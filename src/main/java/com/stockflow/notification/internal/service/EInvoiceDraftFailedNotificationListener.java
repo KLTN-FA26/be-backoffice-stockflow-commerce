@@ -23,7 +23,8 @@ import java.util.ResourceBundle;
  *
  * <p>Who is told is decided by permission: the holders of {@value #AUDIENCE}, who can draw the draft up by hand. One
  * message per person per shipment ({@code einvoice-draft-failed:<shipment id>}), however often the delivery is told
- * again. System text only - the order's number and an error code. Titles and bodies are never logged.</p>
+ * again; the invoice of an order's shipping fee rest, which names no shipment, is told once per order
+ * ({@code einvoice-draft-failed:fee-rest:<order id>}), with its own text. System text only - the order's number and an error code. Titles and bodies are never logged.</p>
  */
 @Component
 class EInvoiceDraftFailedNotificationListener {
@@ -32,6 +33,7 @@ class EInvoiceDraftFailedNotificationListener {
 
     static final String CATEGORY = "EINVOICE_DRAFT_FAILED";
     static final String SOURCE_TYPE = "ORDER_SHIPMENT";
+    static final String ORDER_SOURCE_TYPE = "ORDER";
     /** Who draws a draft up by hand: EInvoiceController's POST. */
     static final String AUDIENCE = "einvoices:CREATE";
 
@@ -59,6 +61,14 @@ class EInvoiceDraftFailedNotificationListener {
 
     static InboxMessage message(EInvoiceDraftFailed event) {
         ResourceBundle texts = ResourceBundle.getBundle("i18n.messages", Locale.forLanguageTag("vi"));
+        if (event.shipmentId() == null) {
+            return new InboxMessage(CATEGORY, InboxSeverity.WARN,
+                    texts.getString("inbox.einvoice.draft-failed.fee-rest.title").formatted(event.orderNumber()),
+                    texts.getString("inbox.einvoice.draft-failed.fee-rest.body").formatted(event.orderNumber(),
+                            event.reasonCode()),
+                    "/invoicing/einvoices?orderId=" + event.orderId(), ORDER_SOURCE_TYPE, event.orderId().toString(),
+                    "einvoice-draft-failed:fee-rest:" + event.orderId());
+        }
         return new InboxMessage(CATEGORY, InboxSeverity.WARN,
                 texts.getString("inbox.einvoice.draft-failed.title").formatted(event.orderNumber()),
                 texts.getString("inbox.einvoice.draft-failed.body").formatted(event.orderNumber(), event.reasonCode()),

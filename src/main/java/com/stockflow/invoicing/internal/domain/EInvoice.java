@@ -153,7 +153,11 @@ public final class EInvoice {
         public static final Corrections NONE = new Corrections(false, false, BigDecimal.ZERO);
     }
 
-    /** The delivery an original invoices, as the order module names it. */
+    /**
+     * The delivery an original invoices, as the order module names it. For the invoice of an order's shipping fee rest
+     * ({@link #drawUpOriginal}) the shipment, its code and its batch are null and {@code deliveredOn} is the day the
+     * order's undelivered rest was closed.
+     */
     public record Delivery(UUID orderId, String orderNumber, String contractNumber, UUID shipmentId,
                            String shipmentCode, UUID deliveryBatchId, UUID customerId, LocalDate deliveredOn) {
     }
@@ -277,16 +281,26 @@ public final class EInvoice {
      * khoản 1 - the day the goods changed hands, whenever the invoice is issued), due by the end of the next working
      * day ({@link IssueDeadline}), its totals added up from {@code lines}.
      *
+     * <p>An original names no shipment in one case only: the rest of the order's shipping fee once its undelivered rest
+     * was closed and no delivery is left to carry it ({@link FeeAllocation#shippingRest}). It carries that fee and
+     * nothing else - goods are always a shipment's - and {@code ck_einvoice_original} with
+     * {@code tg_einvoice_shipping_fee_rest_lines} say so in the database.</p>
+     *
      * @param taxRateDiffersFromContract whether a line carries a VAT rate other than the one its order line fixed
      * @param taxRateNotOnContract       whether a line's order fixed no VAT rate at all
      * @throws IllegalArgumentException for a seller missing its name, tax code or address, no lines, two lines with one
-     *                                  number, or a line below zero - none of which a delivery produces
+     *                                  number, a line below zero, or a line other than the shipping fee on an
+     *                                  original that names no shipment - none of which a delivery produces
      */
     public static EInvoice drawUpOriginal(UUID id, String code, Delivery delivery, InvoiceParty seller,
                                           InvoiceParty buyer, List<EInvoiceLine> lines,
                                           boolean taxRateDiffersFromContract, boolean taxRateNotOnContract) {
         Objects.requireNonNull(delivery, "delivery");
-        Objects.requireNonNull(delivery.shipmentId(), "An original invoices a shipment");
+        if (delivery.shipmentId() == null && lines != null && lines.stream().anyMatch(line ->
+                line.kind() != EInvoiceLine.Kind.FEE || line.feeKind() != EInvoiceLine.FeeKind.SHIPPING_FEE)) {
+            throw new IllegalArgumentException(
+                    "An original invoices a shipment; one without a shipment carries the order's shipping fee only");
+        }
         if (seller == null || seller.name() == null || seller.taxCode() == null || seller.address() == null) {
             throw new IllegalArgumentException("An invoice names its seller: name, tax code and address");
         }

@@ -3,7 +3,9 @@ package com.stockflow.order.internal.service;
 import com.stockflow.common.domain.BusinessCalendar;
 import com.stockflow.order.api.DeliveredShipment;
 import com.stockflow.order.api.DeliveredShipments;
+import com.stockflow.order.api.FeeKind;
 import com.stockflow.order.api.OrderShipmentStatus;
+import com.stockflow.order.api.OrderShippingFee;
 import com.stockflow.order.internal.domain.Order;
 import com.stockflow.order.internal.domain.OrderFee;
 import com.stockflow.order.internal.domain.OrderId;
@@ -105,13 +107,46 @@ class DeliveredShipmentsService implements DeliveredShipments {
                     fee.amount().amount(), rateOf(taxClass, rates, fee.taxRate()), fee.taxRate()));
         }
 
-        long orderUnits = order.lines().stream().mapToLong(line -> line.quantity() - line.cancelledQuantity()).sum();
         String contractNumber = contracts.findLiveByOrderId(orderId).map(SalesContract::contractNumber).orElse(null);
-        String currency = order.lines().isEmpty() ? "VND"
-                : order.lines().getFirst().unitPrice().currency().getCurrencyCode();
         return Optional.of(new DeliveredShipment(orderId, order.orderNumber().value(), order.customerId(),
                 contractNumber, shipmentId, shipment.carriage() == null ? null : shipment.carriage().shipmentCode(),
-                shipment.deliveryBatchId(), deliveredAt, currency, lines, fees, orderUnits, units(shipment)));
+                shipment.deliveryBatchId(), deliveredAt, currency(order), lines, fees, orderUnits(order),
+                units(shipment)));
+    }
+
+    /**
+     * The shipping fee carries no SKU, so its rate is the day's STANDARD one - as on a delivery's invoice - and the
+     * rate the order fixed is handed over beside it.
+     */
+    @Override
+    @Transactional(readOnly = true)
+    public Optional<OrderShippingFee> shippingFee(UUID orderId, Instant on) {
+        Optional<Order> found = orders.findById(new OrderId(orderId));
+        if (found.isEmpty()) {
+            return Optional.empty();
+        }
+        Order order = found.get();
+        Optional<OrderFee> shipping = order.fees().stream()
+                .filter(fee -> fee.kind() == FeeKind.SHIPPING_FEE && fee.amount().amount().signum() > 0)
+                .findFirst();
+        if (shipping.isEmpty()) {
+            return Optional.empty();
+        }
+        OrderFee fee = shipping.get();
+        Map<String, BigDecimal> rates = taxRates.onDay(BusinessCalendar.date(on));
+        DeliveredShipment.Fee whole = new DeliveredShipment.Fee(FeeKind.SHIPPING_FEE, null, fee.amount().amount(),
+                rateOf(TaxClass.valueOf(TaxRates.STANDARD), rates, fee.taxRate()), fee.taxRate());
+        String contractNumber = contracts.findLiveByOrderId(orderId).map(SalesContract::contractNumber).orElse(null);
+        return Optional.of(new OrderShippingFee(orderId, order.orderNumber().value(), order.customerId(),
+                contractNumber, currency(order), whole, orderUnits(order)));
+    }
+
+    private static long orderUnits(Order order) {
+        return order.lines().stream().mapToLong(line -> line.quantity() - line.cancelledQuantity()).sum();
+    }
+
+    private static String currency(Order order) {
+        return order.lines().isEmpty() ? "VND" : order.lines().getFirst().unitPrice().currency().getCurrencyCode();
     }
 
     private static long units(OrderShipment shipment) {
