@@ -381,6 +381,18 @@ public class ShippingWarehouseService {
         return live;
     }
 
+    /**
+     * Whether a pick took any of a delivery failure case's goods: one of its holds - allocations, once released - is
+     * CONSUMED. Read without the stock rows' locks: a pick confirmed after this answer is put back
+     * ({@code RedeliveryWithdrawn}), never lost.
+     */
+    public boolean pickedFor(com.stockflow.order.internal.domain.DeliveryFailureCase failure) {
+        Set<UUID> ids = new LinkedHashSet<>();
+        deliveryFailures.holdsOf(failure.id()).forEach(hold -> ids.add(hold.reservationId()));
+        return !ids.isEmpty() && inventory.holds(ids).stream()
+                .anyMatch(hold -> hold.status() == HoldView.Status.CONSUMED);
+    }
+
     /** How many units of each line a delivery failure case has held: its holds still HELD (17 §4.2 step 3). */
     public Map<UUID, Integer> heldUnitsOf(com.stockflow.order.internal.domain.DeliveryFailureCase failure) {
         return heldUnits(deliveryFailures.holdsOf(failure.id()));

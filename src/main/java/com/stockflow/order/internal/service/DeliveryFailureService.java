@@ -5,6 +5,7 @@ import com.stockflow.common.audit.Auditable;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
+import com.stockflow.contracts.RedeliveryWithdrawn;
 import com.stockflow.contracts.ReturnedGoodsReceived;
 import com.stockflow.order.api.CancellationFee;
 import com.stockflow.order.api.DeliveryFailureReason;
@@ -19,6 +20,7 @@ import com.stockflow.payment.api.ChargeFailedDeliveryCommand;
 import com.stockflow.payment.api.PaymentService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -42,6 +44,7 @@ import java.util.UUID;
  *                 │    released, picked, checked, handed over ─▶ case REDELIVERED
  *                 └─▶ cancel what was not delivered: the rest closed with its fee,        ({@link #cancelUndelivered})
  *                      what was collected above goods delivered + fee refundable
+ *   no receipt yet (goods lost, or not received) ─▶ cancel without a case                 ({@link #cancelWithoutCase})
  * </pre>
  *
  * <p>The order is held from the shipment's outcome, not from the receipt: the customer is owed the goods from the
@@ -56,6 +59,9 @@ import java.util.UUID;
 public class DeliveryFailureService {
 
     private static final Logger log = LoggerFactory.getLogger(DeliveryFailureService.class);
+
+    /** The decision note of a case whose goods came back after the rest of the order was closed. */
+    static final String CLOSED_BEFORE_RECEIVED = "Closed with the rest of the order before its goods were received back";
 
     /** What Sales send to deliver again: why, and what the failed trip is charged at when the customer made it fail. */
     public record Redeliver(String note, BigDecimal failedTripFee) {
@@ -82,12 +88,14 @@ public class DeliveryFailureService {
     private final ShippingWarehouseService shippingWarehouses;
     private final PaymentService payments;
     private final OrderEventPublisher events;
+    private final ApplicationEventPublisher publisher;
     private final Clock clock;
 
     DeliveryFailureService(OrderRepository orders, DeliveryFailureCases cases, OrderServiceImpl orderService,
                            ShippingWarehouseService shippingWarehouses, PaymentService payments,
-                           OrderEventPublisher events, Clock clock) {
+                           OrderEventPublisher events, ApplicationEventPublisher publisher, Clock clock) {
         this.events = events;
+        this.publisher = publisher;
         this.orders = orders;
         this.cases = cases;
         this.orderService = orderService;
@@ -104,6 +112,11 @@ public class DeliveryFailureService {
      * {@link ReturnRequestService#goodsReceived} after the receipt committed, in a transaction of its own; a receipt
      * seen again opens nothing more. The cartons are in quarantine, so nothing is held yet: they are held for the order
      * as they are put away ({@link ShippingWarehouseService#holdReturnedGoods}).
+     *
+     * <p>Goods received back after the rest of the order was closed - Sales cancelled what was not delivered while this
+     * shipment's receipt was still to be made, or before it came back at all - are owed to nobody: the case opens and is
+     * CANCELLED at once, by the receiving clerk, with a note saying why (WF-05 review F1). It is on record and holds
+     * nothing; an OPEN case there would wait for a decision no path can take.</p>
      *
      * @throws IllegalStateException when the order knows the shipment but not as RETURNED - the event stays in the
      *         publication registry and is delivered again, so a defect here is seen rather than lost
@@ -140,7 +153,15 @@ public class DeliveryFailureService {
                         .map(c -> new DeliveryFailureCase.Carton(c.lpn(), c.sku(), c.lotNumber(), c.quantity(),
                                 c.condition())).toList(),
                 event.receivedAt().truncatedTo(ChronoUnit.MICROS));
-        cases.save(failure);
+        failure = cases.save(failure);
+        if (!order.owesUnitsOf(shipment.id())) {
+            // ck_delivery_failure_case_* and the trigger allow a case to be born OPEN only: it is opened, then closed.
+            failure.cancel(CLOSED_BEFORE_RECEIVED, event.receivedBy(), failure.openedAt());
+            cases.save(failure);
+            log.info("Order {}: the goods of shipment {} came back on receipt {} after the rest was closed; its case is "
+                    + "cancelled", order.orderNumber(), shipment.id(), event.receiptNumber());
+            return;
+        }
         log.info("Order {}: delivery failure case opened for shipment {} ({}), {} carton(s) back on receipt {}",
                 order.orderNumber(), shipment.id(), failure.failureReason(), failure.cartons().size(),
                 event.receiptNumber());
@@ -150,7 +171,8 @@ public class DeliveryFailureService {
 
     /**
      * (a) Sales decide to deliver the goods again (09 §4.3): the case is REDELIVERY, the order leaves its hold for
-     * PARTIALLY_FULFILLED once no case of it waits for a decision, and what of the goods is stock to promise is held for
+     * PARTIALLY_FULFILLED once nothing of it waits for a decision ({@link #decisionsWait}: a case OPEN, or a shipment
+     * that came back and whose receipt is still to be made), and what of the goods is stock to promise is held for
      * it at once - the rest as it is put away. The warehouse manager then releases it; fulfillment picks, checks and
      * hands it over as a new shipment, which closes the case.
      *
@@ -177,9 +199,7 @@ public class DeliveryFailureService {
         }
         failure.redeliver(command.failedTripFee(), feeItem, command.note(), by, now);
         cases.save(failure);
-        boolean othersWait = cases.ofOrder(orderId).stream()
-                .anyMatch(other -> other.status() == DeliveryFailureCase.Status.OPEN);
-        if (order.heldForDeliveryFailure() && !othersWait) {
+        if (order.heldForDeliveryFailure() && !decisionsWait(order, cases.ofOrder(orderId))) {
             orderService.resumeAfterDeliveryFailure(orderId, command.note(), by, now);
         }
         shippingWarehouses.holdReturnedGoods(orderId);
@@ -195,47 +215,120 @@ public class DeliveryFailureService {
      * units that came back and those never shipped. The fee agreed for the goods already made is kept; what was
      * collected above the goods delivered and the fee becomes refundable, and the accountant records the refund
      * ({@code refund_record}). Every case of the order still undecided or not handed over again is CANCELLED with it:
-     * the closure closes all of the order's undelivered units, not one shipment's.
+     * the closure closes all of the order's undelivered units, not one shipment's - a shipment that came back and whose
+     * receipt is still to be made included, whose case is then born CANCELLED ({@link #goodsReceived}).
+     *
+     * <p>A redelivery already released to the warehouse is withdrawn with it while nothing of it is picked (WF-05
+     * review F3): the closure releases its allocations and {@code RedeliveryWithdrawn} has fulfillment cancel its task.
+     * Once a pick took a carton the goods are on their way to the customer and are handed over; what they do not keep
+     * comes back through a return request.</p>
      *
      * <p>The order then shows its shipments: DELIVERED when some arrived, RETURNED when none did - from where the
      * nightly settlement moves it on once its refunds are made ({@link #followRefunds}).</p>
      *
      * @throws BusinessException {@code DELIVERY_FAILURE_CASE_NOT_FOUND}; {@code DELIVERY_FAILURE_INVALID_TRANSITION}
-     *         (the case closed, or its redelivery already released to the warehouse - its pick is under way);
-     *         {@code ORDER_NOT_ON_HOLD} / {@code ORDER_INVALID_TRANSITION} for an order with nothing left to close;
-     *         as {@code OrderService.closeRemainder} for the fee
+     *         (the case closed, or goods of a released redelivery picked already); {@code VALIDATION_FAILED} for a fee
+     *         when nothing is left to close; as {@code OrderService.closeRemainder} for the fee
      */
     @Auditable(action = AuditAction.TRANSITION, resourceType = "delivery-failure-case", resourceId = "#caseId",
             details = "{to: 'CANCELLED'}")
     public CaseView cancelUndelivered(UUID orderId, UUID caseId, Cancel command, UUID by) {
         Order order = lock(orderId);
         DeliveryFailureCase failure = load(orderId, caseId);
+        if (failure.status().isClosed()) {
+            throw new BusinessException(ErrorCode.DELIVERY_FAILURE_INVALID_TRANSITION,
+                    "Delivery failure case of receipt %s is %s and is not decided again".formatted(
+                            failure.receiptNumber(), failure.status()));
+        }
+        closeUndelivered(order, command, by);
+        log.info("Order {}: what the failed delivery of receipt {} left undelivered is cancelled", order.orderNumber(),
+                failure.receiptNumber());
+        return view(cases.find(caseId).orElseThrow());
+    }
+
+    /**
+     * (c) Sales cancel what was not delivered while the order is held for a shipment that came back and no case of it
+     * exists yet (WF-05 review F6.1): the goods were lost on the way back, or the warehouse has not made the return
+     * receipt and the customer will not wait. The same closure as {@link #cancelUndelivered}, the same money rules, the
+     * note mandatory - it is the only record of why the order closed before its goods were seen. Goods received back
+     * afterwards open a case that is CANCELLED at once ({@link #goodsReceived}).
+     *
+     * @return the order's cases afterwards, oldest first
+     * @throws BusinessException {@code NOT_FOUND}; {@code DELIVERY_FAILURE_INVALID_TRANSITION} when the order is not
+     *         held for a failed delivery, or every shipment that came back has its case (decide that case);
+     *         {@code VALIDATION_FAILED} without a note; as {@link #cancelUndelivered} otherwise
+     */
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "order", resourceId = "#orderId",
+            details = "{closed: 'UNDELIVERED_WITHOUT_CASE'}")
+    public List<CaseView> cancelWithoutCase(UUID orderId, Cancel command, UUID by) {
+        if (command.note() == null || command.note().isBlank() || command.note().strip().length() > 1000) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "Cancelling without the goods received back says why, in at most 1000 characters");
+        }
+        Order order = lock(orderId);
+        if (!order.heldForDeliveryFailure()) {
+            throw new BusinessException(ErrorCode.DELIVERY_FAILURE_INVALID_TRANSITION,
+                    "Order %s is %s, not held for a failed delivery".formatted(order.orderNumber(), order.status()));
+        }
+        if (uncased(order, cases.ofOrder(orderId)).isEmpty()) {
+            throw new BusinessException(ErrorCode.DELIVERY_FAILURE_INVALID_TRANSITION, ("Every shipment of order %s that "
+                    + "came back has its delivery failure case; decide the case").formatted(order.orderNumber()));
+        }
+        closeUndelivered(order, command, by);
+        log.info("Order {}: what was not delivered is cancelled before the goods that came back were received",
+                order.orderNumber());
+        return cases.ofOrder(orderId).stream().map(this::view).toList();
+    }
+
+    /**
+     * The closure both decisions share, on the locked order: every case not closed is CANCELLED, the rest of the order
+     * is closed with the agreed fee, a released redelivery is withdrawn from the warehouse, and a RETURNED order is
+     * offered to {@link #followRefunds}.
+     *
+     * <p>An order no longer held whose rest was closed already - nothing outstanding - only has its cases closed: there
+     * is nothing for a fee to be kept on, so one is refused rather than dropped.</p>
+     */
+    private void closeUndelivered(Order order, Cancel command, UUID by) {
+        UUID orderId = order.id().value();
         Instant now = now();
         List<DeliveryFailureCase> undecided = cases.ofOrder(orderId).stream()
                 .filter(other -> !other.status().isClosed()).toList();
-        if (failure.status().isClosed() || undecided.stream().anyMatch(DeliveryFailureCase::released)) {
-            throw new BusinessException(ErrorCode.DELIVERY_FAILURE_INVALID_TRANSITION, failure.status().isClosed()
-                    ? "Delivery failure case of receipt %s is %s and is not decided again".formatted(
-                            failure.receiptNumber(), failure.status())
-                    : ("Order %s has goods released to the warehouse to be delivered again; they are handed over, or "
-                            + "their task is cancelled, before the rest is closed").formatted(order.orderNumber()));
+        List<DeliveryFailureCase> withdrawn = undecided.stream().filter(DeliveryFailureCase::released).toList();
+        for (DeliveryFailureCase released : withdrawn) {
+            if (shippingWarehouses.pickedFor(released)) {
+                throw new BusinessException(ErrorCode.DELIVERY_FAILURE_INVALID_TRANSITION, ("Order %s: the goods of "
+                        + "receipt %s are picked to be delivered again; they are handed over, and what the customer "
+                        + "does not keep comes back on a return request").formatted(order.orderNumber(),
+                        released.receiptNumber()));
+            }
+        }
+        boolean held = order.heldForDeliveryFailure();
+        boolean restToClose = held
+                || (order.status() == OrderStatus.PARTIALLY_FULFILLED && order.outstandingUnits() > 0);
+        if (!restToClose && command.agreedFee() != null && command.agreedFee().amount().signum() > 0) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, ("Order %s has nothing left to close; no fee is "
+                    + "kept on it").formatted(order.orderNumber()));
         }
         for (DeliveryFailureCase each : undecided) {
             each.cancel(command.note(), by, now);
             cases.save(each);
         }
-        if (order.heldForDeliveryFailure()) {
+        if (held) {
             orderService.closeUndelivered(orderId, command.note(), command.agreedFee(), by, now);
-        } else {
+        } else if (restToClose) {
             // The hold was lifted by an earlier decision to deliver again: the order is PARTIALLY_FULFILLED, and its
             // rest is closed as any rest is.
             orderService.closeRemainder(orderId, com.stockflow.order.api.CancellationReasonCode.DELIVERY_FAILED,
                     command.note(), command.agreedFee(), by);
+        } else {
+            // Its rest was closed before (cases left open by WF-05 review F1 before its fix): only the cases close.
+            log.info("Order {} is {} with nothing outstanding; only its delivery failure cases are cancelled",
+                    order.orderNumber(), order.status());
         }
+        // After the closure released the allocations: fulfillment stops the task picking them.
+        withdrawn.forEach(released -> publisher.publishEvent(new RedeliveryWithdrawn(orderId,
+                order.orderNumber().value(), released.id(), by, now)));
         followRefunds(orderId, by);
-        log.info("Order {}: what the failed delivery of receipt {} left undelivered is cancelled", order.orderNumber(),
-                failure.receiptNumber());
-        return view(cases.find(caseId).orElseThrow());
     }
 
     // ------------------------------------------------------------------ after a cancellation
@@ -319,6 +412,24 @@ public class DeliveryFailureService {
         boolean ready = failure.awaitingRelease() && failure.units().entrySet().stream()
                 .allMatch(wanted -> held.getOrDefault(wanted.getKey(), 0) >= wanted.getValue());
         return new CaseView(failure, order.orderNumber().value(), order.customerId(), order.status(), held, ready);
+    }
+
+    /**
+     * What still waits for Sales on the order (WF-05 review F1): a case OPEN, or a shipment that came back, whose units
+     * the order still owes, with no case yet - its return receipt is still to be made. While anything waits the
+     * DELIVERY_FAILED hold stays: lifting it would let the order's next batch go before that decision.
+     */
+    private static boolean decisionsWait(Order order, List<DeliveryFailureCase> ofOrder) {
+        return ofOrder.stream().anyMatch(c -> c.status() == DeliveryFailureCase.Status.OPEN)
+                || !uncased(order, ofOrder).isEmpty();
+    }
+
+    /** The order's shipments that came back, still owed, with no delivery failure case yet. */
+    private static List<OrderShipment> uncased(Order order, List<DeliveryFailureCase> ofOrder) {
+        Set<UUID> cased = new java.util.HashSet<>();
+        ofOrder.forEach(c -> cased.add(c.shipmentId()));
+        return order.shipments().stream()
+                .filter(s -> s.isReturned() && !cased.contains(s.id()) && order.owesUnitsOf(s.id())).toList();
     }
 
     private Order lock(UUID orderId) {

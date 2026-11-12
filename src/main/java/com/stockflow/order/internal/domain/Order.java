@@ -1435,6 +1435,15 @@ public final class Order extends AggregateRoot {
                 .mapToInt(s -> s.quantityOf(lineId)).sum();
     }
 
+    /**
+     * Whether the order still owes a unit of a line {@code shipmentId} carried: neither shipped again nor closed. A
+     * shipment that came back is owed until it is delivered again or the rest of the order is closed - after a closure
+     * its goods, received back later, are owed to nobody (WF-05 review F1).
+     */
+    public boolean owesUnitsOf(UUID shipmentId) {
+        return requireShipment(shipmentId).quantities().keySet().stream().anyMatch(line -> unshippedUnits(line) > 0);
+    }
+
     /** Units neither closed nor in a shipment that is still with the carrier or the customer. */
     public int outstandingUnits() {
         return lines.stream().mapToInt(l -> l.quantity() - l.cancelledQuantity() - shippedUnits(l.id(), false)).sum();

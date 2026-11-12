@@ -39,7 +39,7 @@ import java.util.UUID;
  * cases to an order of their warehouses. Delivering again lifts the order's hold, so it answers to
  * {@code sales-order-holds:UPDATE}, Sales' (QD-12); cancelling what was not delivered is the closure of the rest with
  * its fee, so it answers to {@code sales-order-cancellations:UPDATE}, as {@code POST /orders/{id}/remainder-closure}
- * does. The release of a redelivery is the warehouse manager's, on the release endpoint as any release.</p>
+ * does - with a case, or, for goods never received back, without one. The release of a redelivery is the warehouse manager's, on the release endpoint as any release.</p>
  *
  * <p>Handler methods are public: the permission aspect needs a proxied public method.</p>
  */
@@ -100,8 +100,9 @@ class DeliveryFailureController {
     @Operation(summary = "Cancel what a failed delivery left undelivered (Sales): the rest of the order is closed "
             + "with the fee agreed for the goods already made - they are not refunded by default - and what was "
             + "collected above the goods delivered and the fee becomes refundable. Every undecided case of the order "
-            + "is cancelled with it. 409 DELIVERY_FAILURE_INVALID_TRANSITION when the case is closed or goods of the "
-            + "order are released to be delivered again")
+            + "is cancelled with it, and a redelivery released to the warehouse is withdrawn while nothing of it is "
+            + "picked. 409 DELIVERY_FAILURE_INVALID_TRANSITION when the case is closed or goods released to be "
+            + "delivered again are picked already")
     @RequiresPermission(resource = OrderResources.ORDER_CANCELLATIONS, action = Action.UPDATE, scope = DataScope.ALL)
     public ApiResponse<DeliveryFailureCaseResponse> cancel(@PathVariable UUID orderId, @PathVariable UUID caseId,
             @Valid @RequestBody DeliveryFailureCaseRequests.Cancellation request, @AuthenticatedUser CurrentUser user) {
@@ -109,6 +110,21 @@ class DeliveryFailureController {
         return ApiResponse.ok(toResponse(failures.cancelUndelivered(orderId, caseId,
                 new DeliveryFailureService.Cancel(request.note(), OrderWebMapper.toFee(request.agreedFee())),
                 user.userId())));
+    }
+
+    @PostMapping("/{orderId}/delivery-failures/cancellation")
+    @Operation(summary = "Cancel what was not delivered while the order is held for a shipment that came back and has "
+            + "no case yet - its goods lost on the way back, or their return receipt not made (Sales). The same "
+            + "closure and money as the case's cancellation; the note is mandatory. Goods received back later open a "
+            + "case that is cancelled at once. Answers the order's cases. 409 DELIVERY_FAILURE_INVALID_TRANSITION when "
+            + "the order is not held for a failed delivery or every shipment that came back has its case")
+    @RequiresPermission(resource = OrderResources.ORDER_CANCELLATIONS, action = Action.UPDATE, scope = DataScope.ALL)
+    public ApiResponse<List<DeliveryFailureCaseResponse>> cancelWithoutCase(@PathVariable UUID orderId,
+            @Valid @RequestBody DeliveryFailureCaseRequests.Cancellation request, @AuthenticatedUser CurrentUser user) {
+        ScopeGuards.requireBackOffice(user);
+        return ApiResponse.ok(failures.cancelWithoutCase(orderId,
+                new DeliveryFailureService.Cancel(request.note(), OrderWebMapper.toFee(request.agreedFee())),
+                user.userId()).stream().map(DeliveryFailureController::toResponse).toList());
     }
 
     private static DeliveryFailureCaseResponse toResponse(DeliveryFailureService.CaseView view) {
