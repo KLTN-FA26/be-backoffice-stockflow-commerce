@@ -107,9 +107,15 @@ public class EInvoiceDrafts {
      * fees, and a delivery corrected to a failure meanwhile is either seen here (nothing is drawn up) or finds this
      * draft when it comes to void it ({@link #voidForCorrectedDelivery}).</p>
      *
+     * <p><b>Dated the day of the delivery, never a guess.</b> The invoice's date is the day the goods passed to the
+     * buyer (NĐ 254 Điều 9 khoản 1). A delivered shipment without a delivery time is refused rather than dated today:
+     * today is a date the law does not allow once the delivery is a day old, and an invoice is never re-dated once it is
+     * issued. The refusal reaches the accountants as an {@code EInvoiceDraftFailed}; the draft is drawn up by hand once
+     * the delivery's time is recorded.</p>
+     *
      * @throws BusinessException {@code EINVOICE_NOT_INVOICEABLE} when the shipment is not delivered (or its delivery
-     *         was corrected to a failure), delivered nothing, is not priced in dong, or had its invoice replaced;
-     *         {@code SELLER_PROFILE_UNAVAILABLE} while the seller is not configured
+     *         was corrected to a failure), has no delivery time, delivered nothing, is not priced in dong, or had its
+     *         invoice replaced; {@code SELLER_PROFILE_UNAVAILABLE} while the seller is not configured
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public DrawnUp drawUp(UUID orderId, UUID shipmentId) {
@@ -141,8 +147,12 @@ public class EInvoiceDrafts {
             throw new BusinessException(ErrorCode.EINVOICE_NOT_INVOICEABLE,
                     "Shipment %s delivered nothing to invoice".formatted(shipmentId));
         }
-        LocalDate deliveredOn = BusinessCalendar.date(
-                delivered.deliveredAt() == null ? clock.instant() : delivered.deliveredAt());
+        if (delivered.deliveredAt() == null) {
+            throw new BusinessException(ErrorCode.EINVOICE_NOT_INVOICEABLE,
+                    "Shipment %s of order %s has no delivery time to date its invoice by".formatted(
+                            delivered.shipmentCode(), delivered.orderNumber()));
+        }
+        LocalDate deliveredOn = BusinessCalendar.date(delivered.deliveredAt());
         EInvoice invoice = EInvoice.drawUpOriginal(Identifiers.newId(), invoices.nextCode(deliveredOn),
                 new EInvoice.Delivery(delivered.orderId(), delivered.orderNumber(), delivered.contractNumber(),
                         delivered.shipmentId(), delivered.shipmentCode(), delivered.deliveryBatchId(),
