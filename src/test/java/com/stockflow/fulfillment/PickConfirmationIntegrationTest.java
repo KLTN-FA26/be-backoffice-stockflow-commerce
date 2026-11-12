@@ -567,10 +567,13 @@ class PickConfirmationIntegrationTest {
         int before = onHand(location, SOFA);
         String otherBin = otherSofaBin(location);
 
+        // BE-14 (WF4-R01): the right bin / carton travels as structured details, not only inside the English message.
         confirm(task, lineId, picker, "WAREHOUSE_STAFF", scan(otherBin, lpn))
-                .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("PICK_LOCATION_MISMATCH"));
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("PICK_LOCATION_MISMATCH"))
+                .andExpect(jsonPath("$.details.expectedLocationCode").value(location));
         confirm(task, lineId, picker, "WAREHOUSE_STAFF", scan(location, "TABLE-OAK-160"))
-                .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("PICK_ITEM_MISMATCH"));
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("PICK_ITEM_MISMATCH"))
+                .andExpect(jsonPath("$.details.expectedLpn").value(lpn));
         // The SKU is not enough for a carton's line: it would let the picker take any sofa carton of the bin.
         confirm(task, lineId, picker, "WAREHOUSE_STAFF", scan(location, "SOFA-3S-GREY"))
                 .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("PICK_ITEM_MISMATCH"));
@@ -581,7 +584,8 @@ class PickConfirmationIntegrationTest {
         String otherLpn = lpn(lines(task).get(1).path("lineId").asText());
         assertThat(otherLpn).isNotEqualTo(lpn);
         confirm(task, lineId, picker, "WAREHOUSE_STAFF", scan(location, otherLpn))
-                .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("PICK_ITEM_MISMATCH"));
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("PICK_ITEM_MISMATCH"))
+                .andExpect(jsonPath("$.details.expectedLpn").value(lpn));
         confirm(task, UUID.randomUUID().toString(), picker, "WAREHOUSE_STAFF", scan(location, lpn))
                 .andExpect(status().isNotFound()).andExpect(jsonPath("$.errorCode").value("NOT_FOUND"));
         // The request is the bin and the LPN: either one missing or blank is a validation error, naming the field.

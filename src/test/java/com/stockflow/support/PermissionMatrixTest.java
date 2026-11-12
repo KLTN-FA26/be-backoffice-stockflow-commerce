@@ -322,6 +322,10 @@ class PermissionMatrixTest {
             Map.entry("sales-contracts:APPROVE", Set.of(Role.SALES_STAFF, Role.SYSTEM_ADMIN)),
             // 4B-8 (V20261116000300, kltn-docs 17 BR-03): the warehouse manager of the warehouse released to.
             Map.entry("sales-order-releases:UPDATE", Set.of(Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
+            // WF4 BE-13 (V20261120000300, 17 §4.2, §4.5): the schedule is read by everyone who read it with the contract
+            // (sales-contracts:READ) and by whoever releases - the warehouse manager, who does not read the contract.
+            Map.entry("sales-order-delivery-batches:READ", Set.of(Role.SALES_STAFF, Role.SALES_MANAGER,
+                    Role.ACCOUNTANT, Role.PRODUCTION_COORDINATOR, Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             // 4B-6, kltn-docs 15 §2: the accountant records and voids receipts; Sales, the coordinator and the customer
             // (scope OWN) read the installments.
             Map.entry("payment-installments:READ", Set.of(Role.ACCOUNTANT, Role.SALES_STAFF, Role.SALES_MANAGER,
@@ -731,7 +735,7 @@ class PermissionMatrixTest {
         handlers().forEach(h -> byKey.put(h.key(), h));
         Map<String, String> expected = Map.of(
                 "POST /api/v1/orders/{orderId}/release", "sales-order-releases:UPDATE",
-                "GET /api/v1/orders/{orderId}/delivery-batches", "sales-contracts:READ",
+                "GET /api/v1/orders/{orderId}/delivery-batches", "sales-order-delivery-batches:READ",
                 "GET /api/v1/orders/me/{orderId}/delivery-batches", "sales-orders:READ",
                 "POST /api/v1/orders/{orderId}/delivery-batches/{batchId}/window-change", "sales-contracts:UPDATE",
                 "POST /api/v1/orders/{orderId}/delivery-batches/{batchId}/window-change/evidence/uploads",
@@ -744,6 +748,12 @@ class PermissionMatrixTest {
         });
         assertThat(byKey.get("GET /api/v1/orders/me/{orderId}/delivery-batches").rp().scope()).isEqualTo(DataScope.OWN);
         assertThat(roles.resolve(List.of(Role.CUSTOMER.authority())).permissions())
+                .doesNotContain(PermissionCode.parse("sales-contracts:READ"), PermissionCode.parse("sales-contracts:UPDATE"),
+                        PermissionCode.parse("sales-order-delivery-batches:READ"));
+        // BE-13: whoever releases reads the schedule (the grant follows the release permission) without the contract.
+        assertThat(roles.resolve(List.of(Role.WAREHOUSE_MANAGER.authority())).permissions())
+                .contains(PermissionCode.parse("sales-order-releases:UPDATE"),
+                        PermissionCode.parse("sales-order-delivery-batches:READ"))
                 .doesNotContain(PermissionCode.parse("sales-contracts:READ"), PermissionCode.parse("sales-contracts:UPDATE"));
     }
 

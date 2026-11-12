@@ -25,6 +25,15 @@ public final class OrderResources {
     public static final String HOLDS = "sales-order-holds";
 
     /**
+     * Reading an order's delivery schedule (17 §4.5, BR-29): the batches, the window in force, what is held and released.
+     * Its own resource, not {@code sales-contracts:READ}, which opens the contract itself: the warehouse manager releases
+     * batch by batch and must see the schedule without seeing the contract (WF4 BE-13). Held by everyone who read the
+     * schedule before and by whoever releases ({@link #RELEASES}); seeded by V20261120000300. Window changes stay
+     * {@code sales-contracts:UPDATE}.
+     */
+    public static final String DELIVERY_BATCHES = "sales-order-delivery-batches";
+
+    /**
      * Fulfillment's resource, declared there: recording that an order without shipments was delivered or was not
      * answers to the same {@code :APPROVE} as a shipment's outcome (09 BR-02) - the warehouse manager's since team
      * plan 5-7 (17 §2, BR-27).
