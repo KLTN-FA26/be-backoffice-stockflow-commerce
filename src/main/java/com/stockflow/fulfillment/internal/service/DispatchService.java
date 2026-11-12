@@ -575,6 +575,18 @@ class DispatchService implements Dispatching {
     }
 
     @Override
+    public LoadDetail recordDriver(UUID loadId, DriverEntry entry, CurrentUser actor) {
+        Locked locked = lockForChange(loadId);
+        DispatchLoad load = locked.load();
+        DispatchLoadJpaEntity header = locked.header();
+        if (load.recordDriver(entry.driverName(), entry.driverPhone())) {
+            header = store.save(load, header);
+            log.info("Load {}: driver recorded by hand", load.code());
+        }
+        return detail(header, load);
+    }
+
+    @Override
     public LoadDetail applyCarrierBooking(UUID loadId, UUID carrierId, UUID bookingId, String orderId,
                                           String trackingLink, CurrentUser actor) {
         Locked locked = lockForChange(loadId);
