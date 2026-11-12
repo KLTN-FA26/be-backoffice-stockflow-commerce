@@ -544,9 +544,12 @@ stockflow:
       sandbox-url: ${EINVOICE_VIETTEL_SANDBOX_URL:https://api-vinvoice.viettel.vn}
       # Viettel asks for at least 90 seconds before a transaction is sent again, and does not stop two submissions of
       # one transaction that overlap: the answer is waited for longer than that, and a transaction a look-up does not
-      # find is not submitted again inside the quiet period, nor after Viettel has forgotten its id (three days).
+      # find is not submitted again inside the quiet period since it was last sent, nor after Viettel has forgotten its
+      # id (three days after it was first sent). One call is up to four round trips (log-in and request, both again on
+      # a 401): 4 x (connect-timeout + read-timeout) must stay below the quiet period and the 15-minute provider lease,
+      # or the application does not start.
       read-timeout: ${EINVOICE_VIETTEL_READ_TIMEOUT:PT95S}
-      resubmit-quiet-period: ${EINVOICE_VIETTEL_RESUBMIT_QUIET_PERIOD:PT90S}
+      resubmit-quiet-period: ${EINVOICE_VIETTEL_RESUBMIT_QUIET_PERIOD:PT7M}
       resubmit-window: ${EINVOICE_VIETTEL_RESUBMIT_WINDOW:P3D}
       file-pause: ${EINVOICE_VIETTEL_FILE_PAUSE:PT2S}
       payment-status-paid: ${EINVOICE_VIETTEL_PAYMENT_STATUS_PAID:true}

@@ -264,20 +264,27 @@ public class EInvoiceCorrections {
         if (remaining.isEmpty() || invoices.hasAdjustmentForReturn(resolved.returnRequestId())) {
             return new ReturnAdjustments(List.of(), Map.of());
         }
-        List<EInvoice> candidates = invoices.findInForceOfOrder(resolved.orderId());
-        // Locked in id order, like every correction; then read again and walked oldest first.
-        new TreeSet<>(candidates.stream().map(EInvoice::id).toList()).forEach(invoices::findByIdForUpdate);
+        List<UUID> candidates = invoices.findInForceOfOrder(resolved.orderId());
+        // Locked in id order, like every correction, each read once as the lock refreshes it; then walked oldest
+        // first. One that is gone or no longer issued by the time its lock is held is passed over below.
+        Map<UUID, EInvoice> locked = new HashMap<>();
+        for (UUID id : new TreeSet<>(candidates)) {
+            invoices.findByIdForUpdate(id).ifPresent(invoice -> locked.put(id, invoice));
+        }
         ResourceBundle t = ResourceBundle.getBundle("i18n.messages", Locale.forLanguageTag("vi"));
         LocalDate date = BusinessCalendar.date(resolved.resolvedAt() == null ? clock.instant()
                 : resolved.resolvedAt());
         List<EInvoice.Snapshot> drafts = new ArrayList<>();
-        for (EInvoice candidate : candidates) {
-            EInvoice invoice = invoices.findById(candidate.id()).orElseThrow();
-            EInvoice.Corrections corrections = invoices.correctionsOf(invoice.id());
-            if (invoice.status() != EInvoiceStatus.ISSUED || corrections.liveReplacement()) {
+        for (UUID candidate : candidates) {
+            EInvoice invoice = locked.get(candidate);
+            if (invoice == null || invoice.status() != EInvoiceStatus.ISSUED) {
                 continue;
             }
-            Map<UUID, Long> taken = invoices.returnedPieces(invoice.id());
+            EInvoice.Corrections corrections = invoices.correctionsOf(invoice.id());
+            if (corrections.liveReplacement()) {
+                continue;
+            }
+            Map<UUID, Long> taken = invoices.piecesTakenOff(invoice.id());
             List<EInvoiceLine> lines = new ArrayList<>();
             for (EInvoiceLine line : invoice.lines()) {
                 Long wanted = line.kind() == EInvoiceLine.Kind.GOODS ? remaining.get(line.orderLineId()) : null;
@@ -368,7 +375,11 @@ public class EInvoiceCorrections {
         }
     }
 
-    /** Goods returned are never more than the invoice still holds of their order line. */
+    /**
+     * Goods returned are never more than the invoice still holds of their order line: what it invoiced, less what every
+     * live adjustment of it that changes a quantity - a return's or an error's - already took off
+     * ({@link EInvoiceRepository#piecesTakenOff}).
+     */
     private void requireWithinInvoiced(EInvoice original, List<EInvoiceLine> reductions) {
         Map<UUID, Long> held = new HashMap<>();
         for (EInvoiceLine line : original.lines()) {
@@ -376,7 +387,7 @@ public class EInvoiceCorrections {
                 held.merge(line.orderLineId(), line.pieces(), Long::sum);
             }
         }
-        invoices.returnedPieces(original.id()).forEach((line, pieces) -> held.merge(line, -pieces, Long::sum));
+        invoices.piecesTakenOff(original.id()).forEach((line, pieces) -> held.merge(line, -pieces, Long::sum));
         for (EInvoiceLine reduction : reductions) {
             if (reduction.kind() == EInvoiceLine.Kind.GOODS
                     && held.merge(reduction.orderLineId(), reduction.pieces(), Long::sum) < 0) {

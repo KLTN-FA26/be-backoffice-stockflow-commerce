@@ -79,22 +79,29 @@ public interface EInvoiceProvider {
      * the caller stays inside.
      *
      * @param quietPeriod how long after a submission the provider may still be working on it without a look-up finding
-     *                    it. Submitting again inside it races the first submission, and the provider may then issue
-     *                    two invoices
-     * @param window      how long the provider remembers a transaction id as already used; past it the same id is a new
-     *                    invoice, so nothing is submitted again automatically. Null: for ever
+     *                    it. Submitting again inside it races that submission, and the provider may then issue two
+     *                    invoices. It runs from the <b>last</b> submission: every one is a submission the provider may
+     *                    still be working on, so measuring from the first would let each one after the first quiet
+     *                    period race the one before it
+     * @param window      how long the provider remembers a transaction id as already used, from the first submission;
+     *                    past it the same id is a new invoice, so nothing is submitted again automatically. Null: for
+     *                    ever
      */
     record Resubmission(Duration quietPeriod, Duration window) {
 
         public static final Resubmission FREELY = new Resubmission(Duration.ZERO, null);
 
-        /** Whether a transaction first submitted at {@code submittedAt} and unknown to the provider may be sent again. */
-        public boolean allowedAt(Instant submittedAt, Instant now) {
-            if (submittedAt == null) {
+        /**
+         * Whether a transaction unknown to the provider may be sent again.
+         *
+         * @param submittedAt when it was first submitted
+         * @param lastSentAt  when it was last sent; null when it never was, and nothing then holds it back
+         */
+        public boolean allowedAt(Instant submittedAt, Instant lastSentAt, Instant now) {
+            if (lastSentAt == null) {
                 return true;
             }
-            Duration age = Duration.between(submittedAt, now);
-            return age.compareTo(quietPeriod) >= 0 && (window == null || age.compareTo(window) < 0);
+            return Duration.between(lastSentAt, now).compareTo(quietPeriod) >= 0 && !forgottenAt(submittedAt, now);
         }
 
         /** Whether the provider no longer remembers the id of a transaction first submitted at {@code submittedAt}. */
@@ -168,7 +175,13 @@ public interface EInvoiceProvider {
         PENDING,
         ISSUED,
         /** Refused by the provider or the tax authority: no invoice exists for the transaction. */
-        REJECTED
+        REJECTED,
+        /**
+         * The provider answered, but not so as to say whether it holds the transaction (an error, a shape not
+         * recognised). Never taken for NOT_FOUND once anything was sent under the transaction: it is asked again
+         * later, and never sent again or as a new transaction because of it.
+         */
+        UNKNOWN
     }
 
     /**
@@ -176,7 +189,8 @@ public interface EInvoiceProvider {
      * @param taxAuthorityCode the tax authority's code ("mã của cơ quan thuế"); null unless ISSUED
      * @param lookupCode       what the buyer looks the invoice up by on the provider's portal; null unless ISSUED
      * @param signedAt         when the seller's signature was put on it; null unless ISSUED
-     * @param errorCode        and {@code message}: why it was refused; null unless REJECTED
+     * @param errorCode        and {@code message}: why it was refused, or what the unclear answer said; null unless
+     *                         REJECTED or UNKNOWN
      */
     record Result(ResultState state, Integer invoiceNumber, String taxAuthorityCode, String lookupCode,
                   Instant signedAt, String errorCode, String message) {

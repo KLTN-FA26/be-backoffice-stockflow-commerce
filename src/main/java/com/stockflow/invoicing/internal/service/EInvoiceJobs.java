@@ -7,6 +7,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
+import java.time.Duration;
 import java.util.UUID;
 
 /**
@@ -28,12 +29,24 @@ import java.util.UUID;
  *
  * <p>Bounded batches, the most urgent first; what does not fit waits for the next run. One invoice failing does not
  * stop the others.</p>
+ *
+ * <p>The scheduler lock is not what keeps two instances from talking to the provider about one invoice at once: it
+ * runs out after {@code lockAtMostFor} however long the run takes, and the accountant's "check again" never takes it.
+ * That is the per-invoice lease ({@link EInvoiceIssuance#reconcile}). The lock only spares the provider a second batch
+ * asking the same questions, so the reconciliation stops starting new invoices after {@link #RECONCILE_BUDGET}, well
+ * inside the lock, and leaves the rest to the next run.</p>
  */
 @Component
 class EInvoiceJobs {
 
     private static final Logger log = LoggerFactory.getLogger(EInvoiceJobs.class);
     static final int BATCH = 50;
+    /**
+     * How long the reconciliation goes on starting new invoices. Below {@code lockAtMostFor} (10 minutes) by more than
+     * one invoice can take in the usual case; an invoice whose provider calls all run into their timeouts may still
+     * outlast the lock, and its lease is what protects it then.
+     */
+    static final Duration RECONCILE_BUDGET = Duration.ofMinutes(3);
 
     private final EInvoiceWorkQueues queues;
     private final EInvoiceIssuance issuance;
@@ -68,7 +81,12 @@ class EInvoiceJobs {
     /** @return how many invoices were asked about */
     int reconcileSubmitting() {
         int done = 0;
+        long stopAt = System.nanoTime() + RECONCILE_BUDGET.toNanos();
         for (UUID id : queues.submitting(BATCH)) {
+            if (System.nanoTime() - stopAt > 0) {
+                log.info("E-invoice reconciliation stopped after {}; the rest waits for the next run", RECONCILE_BUDGET);
+                break;
+            }
             try {
                 issuance.reconcile(id);
                 done++;

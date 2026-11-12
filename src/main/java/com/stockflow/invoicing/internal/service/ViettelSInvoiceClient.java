@@ -80,12 +80,33 @@ class ViettelSInvoiceClient {
     private final Clock clock;
     private final Map<String, Token> tokens = new ConcurrentHashMap<>();
 
+    /**
+     * @throws IllegalStateException when one call can take as long as the quiet period before a resend, or the lease on
+     *                               talking to the provider: a send still waiting for its answer could then be
+     *                               overlapped by a second one, which Viettel may turn into a second invoice
+     */
     ViettelSInvoiceClient(RestClientFactory clients, HttpClientProperties http, ViettelSInvoiceProperties properties,
                           ObjectMapper json, Clock clock) {
+        Duration longest = longestCall(http.connectTimeout(), properties.readTimeout());
+        if (properties.resubmitQuietPeriod().compareTo(longest) <= 0
+                || EInvoiceIssuance.PROVIDER_LEASE.compareTo(longest) <= 0) {
+            throw new IllegalStateException(("stockflow.invoicing.viettel: one call can take up to %s (four round trips "
+                    + "of connect and read timeout); the resubmit quiet period (%s) and the provider lease (%s) must "
+                    + "both be longer").formatted(longest, properties.resubmitQuietPeriod(),
+                    EInvoiceIssuance.PROVIDER_LEASE));
+        }
         this.sandbox = client(clients, http, properties.sandboxUrl(), properties.readTimeout());
         this.production = client(clients, http, properties.productionUrl(), properties.readTimeout());
         this.json = json;
         this.clock = clock;
+    }
+
+    /**
+     * The longest one call can take before it gives up: the log-in and the request, and both again when the request is
+     * answered 401 ({@link #authorised}) - four round trips, each up to the connect and the read timeout.
+     */
+    static Duration longestCall(Duration connectTimeout, Duration readTimeout) {
+        return connectTimeout.plus(readTimeout).multipliedBy(4);
     }
 
     /** The shared client with Viettel's own read timeout: its answer to a submission is waited for, not cut at 10 s. */

@@ -22,10 +22,14 @@ import java.time.Duration;
  *                          Viettel sets it here
  * @param readTimeout       how long an answer is waited for. Viettel asks an integrating system to wait for the answer
  *                          or at least 90 seconds before it sends a transaction again, so this is far above the
- *                          application's usual outbound timeout and must not be set below {@code resubmitQuietPeriod}
- * @param resubmitQuietPeriod how long after a submission the same transaction is not submitted again, even when a
+ *                          application's usual outbound timeout
+ * @param resubmitQuietPeriod how long after its last submission a transaction is not submitted again, even when a
  *                          look-up does not find it: Viettel does not stop two submissions of one transaction id that
- *                          overlap, and may issue two invoices (its description, "kiểm soát trùng giao dịch")
+ *                          overlap, and may issue two invoices (its description, "kiểm soát trùng giao dịch"). Longer
+ *                          than one whole call, timeouts included - four round trips of connect and read timeout,
+ *                          4 × (3 s + 95 s) by default ({@link ViettelSInvoiceClient#longestCall}, checked at
+ *                          startup) - so a send whose answer never came is not overlapped by the next one while it may
+ *                          still be running
  * @param resubmitWindow    how long Viettel treats a transaction id as already used (three days in its description).
  *                          Past it nothing is submitted again automatically
  * @param filePause         how long is waited before an invoice's file is asked for again when SInvoice hands over an
@@ -38,7 +42,7 @@ import java.time.Duration;
 public record ViettelSInvoiceProperties(@DefaultValue("https://api-vinvoice.viettel.vn") String productionUrl,
                                         @DefaultValue("https://api-vinvoice.viettel.vn") String sandboxUrl,
                                         @DefaultValue("PT95S") Duration readTimeout,
-                                        @DefaultValue("PT90S") Duration resubmitQuietPeriod,
+                                        @DefaultValue("PT7M") Duration resubmitQuietPeriod,
                                         @DefaultValue("P3D") Duration resubmitWindow,
                                         @DefaultValue("PT2S") Duration filePause,
                                         @DefaultValue("true") boolean paymentStatusPaid) {

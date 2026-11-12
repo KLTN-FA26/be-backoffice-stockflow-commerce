@@ -29,15 +29,19 @@ public interface EInvoiceRepository {
 
     /**
      * The issued invoices in force of an order - originals and replacements, never adjustments - the oldest first:
-     * what goods returned on the order are taken off.
+     * what goods returned on the order are taken off. Ids only: the caller locks them and reads each once, under its
+     * lock.
      */
-    List<EInvoice> findInForceOfOrder(UUID orderId);
+    List<UUID> findInForceOfOrder(UUID orderId);
 
     /**
-     * The pieces of each order line that the adjustments for returned goods of an invoice already take off it, by
-     * order line: adjustments that are not voided, issued or not.
+     * The pieces of each order line that the adjustments of an invoice already take off it, by order line: every
+     * adjustment that is not voided, issued or not, that changes a quantity - a return's, and an error's that lowered a
+     * quantity (one that raised it puts pieces back, below zero). Counting only the returns' adjustments let a return
+     * take off again pieces an error's adjustment had already taken, and leave pieces it had added unplaced. A price
+     * that was wrong and a trade discount change money, not pieces, and are not counted.
      */
-    java.util.Map<UUID, Long> returnedPieces(UUID invoiceId);
+    java.util.Map<UUID, Long> piecesTakenOff(UUID invoiceId);
 
     /** Whether an adjustment was ever drawn up for a return, voided or not: a return is taken off its invoices once. */
     boolean hasAdjustmentForReturn(UUID returnRequestId);
@@ -75,7 +79,11 @@ public interface EInvoiceRepository {
      */
     EInvoice save(EInvoice invoice);
 
-    /** Up to {@code limit} invoices waiting for the provider's answer, the longest waiting first. */
+    /**
+     * Up to {@code limit} invoices waiting for the provider's answer and nobody is asking about right now: the one
+     * asked about least recently first, and those marked unknown to the provider (which wait for the accountant) after
+     * all the others, so that no group of invoices keeps the rest out of a bounded batch.
+     */
     List<UUID> findSubmitting(int limit);
 
     /**

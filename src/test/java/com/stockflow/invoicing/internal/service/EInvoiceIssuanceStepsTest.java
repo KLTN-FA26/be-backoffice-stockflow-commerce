@@ -14,6 +14,7 @@ import com.stockflow.invoicing.internal.domain.EInvoice;
 import com.stockflow.invoicing.internal.domain.EInvoiceFixtures;
 import com.stockflow.invoicing.internal.domain.EInvoiceProvider;
 import com.stockflow.invoicing.internal.domain.EInvoiceRepository;
+import com.stockflow.invoicing.internal.domain.EInvoiceSending;
 import com.stockflow.invoicing.internal.domain.EInvoiceStatus;
 import com.stockflow.invoicing.internal.domain.InvoiceSettings;
 import org.junit.jupiter.api.BeforeEach;
@@ -55,10 +56,11 @@ class EInvoiceIssuanceStepsTest {
 
     private final EInvoiceRepository invoices = mock(EInvoiceRepository.class);
     private final FileTransfers files = mock(FileTransfers.class);
+    private final EInvoiceSending sending = mock(EInvoiceSending.class);
     private final InvoiceSettings settings = mock(InvoiceSettings.class);
     private final EInvoiceProviders providers = mock(EInvoiceProviders.class);
     private final ApplicationEventPublisher events = mock(ApplicationEventPublisher.class);
-    private final EInvoiceIssuanceSteps steps = new EInvoiceIssuanceSteps(invoices, settings, providers, files, events,
+    private final EInvoiceIssuanceSteps steps = new EInvoiceIssuanceSteps(invoices, sending, settings, providers, files, events,
             Clock.fixed(EInvoiceFixtures.NOW, ZoneOffset.UTC));
     private EInvoice invoice;
 

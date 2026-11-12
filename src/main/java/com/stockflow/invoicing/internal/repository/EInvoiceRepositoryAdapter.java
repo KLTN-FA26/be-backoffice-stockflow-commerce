@@ -147,23 +147,31 @@ class EInvoiceRepositoryAdapter implements EInvoiceRepository {
     }
 
     @Override
-    public List<EInvoice> findInForceOfOrder(UUID orderId) {
+    public List<UUID> findInForceOfOrder(UUID orderId) {
         return jdbc.queryForList("""
                 SELECT id FROM invoicing.einvoice
                  WHERE order_id = ? AND type IN ('ORIGINAL', 'REPLACEMENT') AND status = 'ISSUED'
-                 ORDER BY issue_date, created_at, id""", UUID.class, orderId).stream()
-                .map(id -> findById(id).orElseThrow()).toList();
+                 ORDER BY issue_date, created_at, id""", UUID.class, orderId);
     }
 
     @Override
-    public java.util.Map<UUID, Long> returnedPieces(UUID invoiceId) {
+    public java.util.Map<UUID, Long> piecesTakenOff(UUID invoiceId) {
+        // A return's lines are all goods taken off. An error's line moves pieces only when it is priced as the line
+        // it corrects (a quantity that was wrong, or a rate: off and on again at that price); a price that was wrong is
+        // stated at the difference over the whole quantity and moves none. A trade discount moves no goods.
         java.util.Map<UUID, Long> pieces = new java.util.HashMap<>();
         jdbc.query("""
                 SELECT l.order_line_id, sum(-l.quantity::bigint * COALESCE(l.units_per_carton, 1)) AS pieces
                   FROM invoicing.einvoice a
                   JOIN invoicing.einvoice_line l ON l.einvoice_id = a.id
-                 WHERE a.original_einvoice_id = ? AND a.correction_basis = 'RETURN' AND a.status <> 'VOIDED_DRAFT'
+                 WHERE a.original_einvoice_id = ? AND a.type = 'ADJUSTMENT' AND a.status <> 'VOIDED_DRAFT'
                    AND l.kind = 'GOODS'
+                   AND (a.correction_basis = 'RETURN'
+                        OR a.correction_basis = 'ERROR' AND EXISTS (
+                            SELECT 1 FROM invoicing.einvoice_line o
+                             WHERE o.einvoice_id = a.original_einvoice_id AND o.kind = 'GOODS'
+                               AND o.order_line_id = l.order_line_id AND o.unit_price = l.unit_price
+                               AND o.units_per_carton IS NOT DISTINCT FROM l.units_per_carton))
                  GROUP BY l.order_line_id""",
                 row -> {
                     pieces.put(row.getObject("order_line_id", UUID.class), row.getLong("pieces"));
@@ -219,9 +227,19 @@ class EInvoiceRepositoryAdapter implements EInvoiceRepository {
 
     @Override
     public List<UUID> findSubmitting(int limit) {
+        // einvoice_sending.held_until is when the invoice was last asked about once its lease is given up: the order
+        // is a round, never-asked first. Ordered by submitted_at alone, the oldest invoices - those marked unknown to
+        // the provider above all, which stay SUBMITTING for as long as the accountant leaves them - took every place
+        // in the batch on every run, and nothing newer was ever asked about.
         return jdbc.queryForList("""
-                SELECT id FROM invoicing.einvoice WHERE status = 'SUBMITTING'
-                 ORDER BY submitted_at, id LIMIT ?""", UUID.class, limit);
+                SELECT i.id
+                  FROM invoicing.einvoice i
+                  LEFT JOIN invoicing.einvoice_sending s ON s.einvoice_id = i.id
+                 WHERE i.status = 'SUBMITTING'
+                   AND (s.holder IS NULL OR s.held_until <= now())
+                 ORDER BY coalesce(i.warnings, '') LIKE '%UNKNOWN_TO_PROVIDER%', s.held_until NULLS FIRST,
+                          i.submitted_at, i.id
+                 LIMIT ?""", UUID.class, limit);
     }
 
     @Override
