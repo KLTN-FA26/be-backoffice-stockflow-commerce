@@ -144,13 +144,27 @@ class DeliveryFailureCasesAdapter implements DeliveryFailureCases {
     }
 
     @Override
-    public List<UUID> ordersWantingGoodsHeld() {
+    public List<UUID> ordersWantingGoodsHeld(Collection<String> skus) {
+        if (skus != null && skus.isEmpty()) {
+            return List.of();
+        }
+        StringBuilder sql = new StringBuilder("""
+                SELECT c.order_id, MIN(c.opened_at) AS first_opened FROM ordering.delivery_failure_case c
+                 WHERE (c.status = 'OPEN' OR (c.status = 'REDELIVERY' AND c.released_at IS NULL))""");
+        if (skus != null) {
+            // The case's cartons name their SKU: the goods it waits for are of these.
+            sql.append("""
+
+                    AND EXISTS (SELECT 1 FROM ordering.delivery_failure_case_carton cc
+                                 WHERE cc.case_id = c.id AND cc.sku IN (:skus))""");
+        }
+        sql.append(" GROUP BY c.order_id ORDER BY first_opened, c.order_id");
+        var select = entityManager.createNativeQuery(sql.toString());
+        if (skus != null) {
+            select.setParameter("skus", List.copyOf(skus));
+        }
         @SuppressWarnings("unchecked")
-        List<Object[]> rows = entityManager.createNativeQuery("""
-                        SELECT c.order_id, MIN(c.opened_at) AS first_opened FROM ordering.delivery_failure_case c
-                         WHERE c.status = 'OPEN' OR (c.status = 'REDELIVERY' AND c.released_at IS NULL)
-                         GROUP BY c.order_id ORDER BY first_opened, c.order_id""")
-                .getResultList();
+        List<Object[]> rows = select.getResultList();
         return rows.stream().map(r -> (UUID) r[0]).toList();
     }
 

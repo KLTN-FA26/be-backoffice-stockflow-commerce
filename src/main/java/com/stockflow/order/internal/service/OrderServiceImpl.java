@@ -726,6 +726,12 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
     /**
      * 4B-8: the delivery batch on its way out, if the order releases by batch. A redelivery with the warehouse (WF-05
      * fix plan, section 2) is the batch on its way: its shipment carries the batch it delivers again.
+     *
+     * <p>While a redelivery is released, every caller - the load plan, the truck leaving - sees that batch, with no
+     * delivery window ({@code windowStart} null: the goods were due already). A next batch released at the same time is
+     * then not checked against its window before the handover (WF-05 review F14); the handover itself still checks it,
+     * per shipment, so it cannot be handed over early - only planned onto a truck early. Accepted: at most one
+     * redelivery is released at a time and it goes first.</p>
      */
     private java.util.Optional<com.stockflow.order.internal.domain.BatchInFlight> inFlight(Order order) {
         return flightOf(order, releasedRedelivery(order.id().value())
