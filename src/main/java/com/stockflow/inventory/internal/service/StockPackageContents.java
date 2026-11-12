@@ -3,6 +3,8 @@ package com.stockflow.inventory.internal.service;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.inventory.internal.domain.LocationDirectory;
+import com.stockflow.inventory.internal.domain.ReleaseReason;
+import com.stockflow.inventory.internal.domain.Reservation;
 import com.stockflow.inventory.internal.domain.StockItem;
 import com.stockflow.inventory.internal.domain.StockItemRepository;
 import com.stockflow.inventory.internal.domain.StockPackage;
@@ -10,6 +12,8 @@ import com.stockflow.inventory.internal.domain.StockPackageId;
 import com.stockflow.inventory.internal.domain.StockPackageRepository;
 import com.stockflow.inventory.internal.domain.StockPackageStatus;
 import com.stockflow.inventory.internal.domain.StockStatus;
+import com.stockflow.inventory.spi.ShortPickLines;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
@@ -49,13 +53,17 @@ class StockPackageContents {
     private final StockPackageRepository stockPackages;
     private final StockItemRepository stockItems;
     private final LocationDirectory locations;
+    /** Fulfillment's answer to "is this hold a short line's?"; absent in a slice that boots inventory alone. */
+    private final ObjectProvider<ShortPickLines> shortPicks;
 
     StockPackageContents(StockPackageRepository stockPackages, StockItemRepository stockItems,
-                         LocationDirectory locations) {
+                         LocationDirectory locations, ObjectProvider<ShortPickLines> shortPicks) {
         this.stockPackages = stockPackages;
         this.stockItems = stockItems;
         this.locations = locations;
+        this.shortPicks = shortPicks;
     }
+
 
     /** The cartons of these rows, locked in id order; none when every row is loose. Call under the SKU lock. */
     public LockedCartons lockFor(Collection<StockItem> rows) {
@@ -99,10 +107,15 @@ class StockPackageContents {
      *   <li>Restocked: only a LOST carton, found again whole - its standard count back on the row it was emptied from
      *       (rows are never deleted at zero, and a carton is one row, V20261113000300), its lot unchanged (BR-18), as
      *       AVAILABLE stock unless it is in a QUARANTINE area ({@link #restockLost}).</li>
-     *   <li>Written off: only a carton in stock, every unit of it, none held for an order - a customer's hold is
-     *       never cancelled by a correction; it is released or reallocated first ({@code STOCK_PACKAGE_HELD}). The
-     *       carton is then LOST when {@code missingWhenEmpty} (a count did not find it, or it was written off as
-     *       lost), CONSUMED otherwise.</li>
+     *   <li>Written off: only a carton in stock, every unit of it. A customer's hold is never cancelled by a
+     *       correction: a carton held for an order is refused ({@code STOCK_PACKAGE_HELD}) - released or reallocated
+     *       first - with one exception, {@code releaseShortHolds}: a count's shortage of a carton whose every hold is
+     *       that of a pick line already reported SHORT (20 §4.2 step 8, 07 §4.4). The picker did not find the carton,
+     *       the order is held for it ({@code INVENTORY}) and the line waits for the warehouse manager; the hold is
+     *       given up ({@code SHORT_PICKED}), as reallocating it would, and the line stays SHORT until it is
+     *       reallocated ({@code InventoryServiceImpl#reallocate} accepts a hold given up this way). The carton is
+     *       then LOST when {@code missingWhenEmpty} (a count did not find it, or it was written off as lost),
+     *       CONSUMED otherwise.</li>
      * </ul>
      *
      * <p>Anything but the whole carton is refused ({@code STOCK_PACKAGE_TAKEN_WHOLE}): a request of the history asked
@@ -112,6 +125,16 @@ class StockPackageContents {
      * @return the row changed and the units it gained (positive) or gave (negative) - one ledger line
      */
     public List<RowChange> adjust(StockPackageId id, int delta, boolean missingWhenEmpty, Instant now) {
+        return adjust(id, delta, missingWhenEmpty, false, now);
+    }
+
+    /**
+     * As {@link #adjust(StockPackageId, int, boolean, Instant)}; with {@code releaseShortHolds}, a write-off gives up
+     * the holds a SHORT pick line stands on instead of refusing them. The caller publishes the row's events after the
+     * call (the release is announced like any other).
+     */
+    public List<RowChange> adjust(StockPackageId id, int delta, boolean missingWhenEmpty, boolean releaseShortHolds,
+                                  Instant now) {
         if (delta == 0) {
             throw new IllegalArgumentException("An adjustment changes the quantity");
         }
@@ -132,7 +155,7 @@ class StockPackageContents {
         }
         RowChange change = delta > 0
                 ? restockLost(carton, rows, delta)
-                : writeOff(carton, rows, missingWhenEmpty, now);
+                : writeOff(carton, rows, missingWhenEmpty, releaseShortHolds, now);
         if (change.delta() > 0) {
             // Units back in the carton they were counted into: the same receipt, proven by the LPN, so no age is lost.
             // saveMerged tells the FIFO trigger so (V20261017000450), which would otherwise refuse raising an
@@ -248,15 +271,15 @@ class StockPackageContents {
         return new RowChange(row, units);
     }
 
-    private static RowChange writeOff(StockPackage carton, List<StockItem> rows, boolean missingWhenEmpty,
-                                      Instant now) {
+    private RowChange writeOff(StockPackage carton, List<StockItem> rows, boolean missingWhenEmpty,
+                               boolean releaseShortHolds, Instant now) {
         if (carton.status() != StockPackageStatus.IN_STOCK) {
             throw new BusinessException(ErrorCode.INVALID_STOCK_PACKAGE_TRANSITION,
                     "%s is %s; there is nothing in it to write off".formatted(carton.lpn(), carton.status()));
         }
         StockItem row = rows.stream().filter(r -> !r.onHand().isZero()).findFirst().orElseThrow(() ->
                 new IllegalStateException("Stock package %s is in stock and empty".formatted(carton.lpn())));
-        if (!row.reserved().isZero()) {
+        if (!row.reserved().isZero() && !(releaseShortHolds && releaseHoldsOfShortLines(row, now))) {
             throw new BusinessException(ErrorCode.STOCK_PACKAGE_HELD,
                     "%s is held for an order; release or reallocate it before writing it off".formatted(carton.lpn()),
                     List.of(), Map.of("lpn", carton.lpn()));
@@ -269,6 +292,27 @@ class StockPackageContents {
             carton.consume(now);
         }
         return new RowChange(row, -units);
+    }
+
+    /**
+     * Gives up every live hold of {@code row} when each is the hold of a SHORT pick line (20 §4.2 step 8: the hold of a
+     * missing carton is handled as a shortage); changes nothing and answers false when any is not - a hold the picker
+     * has not reported is the order's, and is never cancelled by a correction. The release is {@code SHORT_PICKED}:
+     * what a reallocation does to the same hold, so the line, its order's hold and the reallocation that follows see
+     * one kind of hold whichever way the carton went.
+     */
+    private boolean releaseHoldsOfShortLines(StockItem row, Instant now) {
+        List<Reservation> live = row.reservations().stream().filter(r -> r.status().isActive()).toList();
+        ShortPickLines lines = shortPicks.getIfAvailable();
+        if (live.isEmpty() || lines == null) {
+            return false;
+        }
+        Set<java.util.UUID> shortHolds = lines.shortHolds(live.stream().map(r -> r.id().value()).toList());
+        if (!live.stream().allMatch(r -> shortHolds.contains(r.id().value()))) {
+            return false;
+        }
+        live.forEach(r -> row.releaseReservation(r.id(), ReleaseReason.SHORT_PICKED, now));
+        return true;
     }
 
     private static int held(List<StockItem> rows) {

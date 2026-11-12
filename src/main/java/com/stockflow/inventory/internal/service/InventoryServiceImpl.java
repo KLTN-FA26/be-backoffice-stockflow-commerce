@@ -28,6 +28,7 @@ import com.stockflow.inventory.internal.domain.Quantity;
 import com.stockflow.inventory.internal.domain.ReleaseReason;
 import com.stockflow.inventory.internal.domain.Reservation;
 import com.stockflow.inventory.internal.domain.ReservationId;
+import com.stockflow.inventory.internal.domain.ReservationStatus;
 import com.stockflow.inventory.internal.domain.StockAllocator;
 import com.stockflow.inventory.internal.domain.StockItem;
 import com.stockflow.inventory.internal.domain.StockItemId;
@@ -551,11 +552,12 @@ class InventoryServiceImpl implements InventoryService {
             StockItem locked = repository.findByIdForUpdate(id).orElseThrow();
             if (id.equals(view.id())) {
                 Reservation current = locked.findReservation(shortId).orElseThrow();
-                if (!current.status().isActive()) {
+                if (current.status().isActive()) {
+                    locked.releaseReservation(shortId, ReleaseReason.SHORT_PICKED, now);
+                } else if (!givenUpWithItsCarton(current, locked)) {
                     throw new BusinessException(ErrorCode.RESERVATION_NOT_ACTIVE,
                             "Allocation %s is already %s".formatted(shortId, current.status()));
                 }
-                locked.releaseReservation(shortId, ReleaseReason.SHORT_PICKED, now);
             }
             for (StockAllocator.AllocationLine line : lines) {
                 if (line.stockItemId().equals(id)) {
@@ -570,6 +572,17 @@ class InventoryServiceImpl implements InventoryService {
         log.info("Allocation {} of order {} came up short at {}; reallocated {} unit(s) to {} hold(s)", shortId,
                 command.orderId(), view.location(), shortHold.quantity(), made.size());
         return lines.stream().map(line -> made.get(line.stockItemId())).toList();
+    }
+
+    /**
+     * Whether the short allocation was already given up because its carton was written off: an approved count variance
+     * released it ({@code SHORT_PICKED}) while its pick line waited for this reallocation (20 §4.2 step 8, 07 §4.4), and
+     * the carton is empty now. A hold given up by an earlier reallocation names a carton still in stock, and is refused
+     * as before; a replay of that reallocation never gets here (it is answered from its own holds).
+     */
+    private static boolean givenUpWithItsCarton(Reservation hold, StockItem row) {
+        return hold.status() == ReservationStatus.RELEASED && hold.releaseReason() == ReleaseReason.SHORT_PICKED
+                && row.onHand().isZero();
     }
 
     /**

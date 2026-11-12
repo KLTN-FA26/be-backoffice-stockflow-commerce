@@ -43,7 +43,9 @@ class StockPackageContentsTest {
     private final StockItemRepository stockItems = mock(StockItemRepository.class);
     private final com.stockflow.inventory.internal.domain.LocationDirectory locations =
             mock(com.stockflow.inventory.internal.domain.LocationDirectory.class);
-    private final StockPackageContents contents = new StockPackageContents(stockPackages, stockItems, locations);
+    private final StockPackageContents contents = new StockPackageContents(stockPackages, stockItems, locations,
+            new org.springframework.beans.factory.support.StaticListableBeanFactory()
+                    .getBeanProvider(com.stockflow.inventory.spi.ShortPickLines.class));
 
     private static StockPackage carton(StockPackageId id, int counted) {
         return new StockPackage(id, "LPN-0001", UUID.randomUUID(), UUID.randomUUID(), 24, counted,
@@ -256,6 +258,74 @@ class StockPackageContentsTest {
             assertThat(held.onHand().value()).isEqualTo(24);
             assertThat(carton.status()).isEqualTo(StockPackageStatus.IN_STOCK);
             verify(stockPackages, never()).save(org.mockito.ArgumentMatchers.any());
+        }
+
+        /** A contents whose pick-line question is answered: {@code shortHolds} are the holds of SHORT lines. */
+        private StockPackageContents withShortLines(java.util.Set<UUID> shortHolds) {
+            var lines = (com.stockflow.inventory.spi.ShortPickLines) ids -> {
+                java.util.Set<UUID> answered = new java.util.HashSet<>(ids);
+                answered.retainAll(shortHolds);
+                return answered;
+            };
+            var beans = new org.springframework.beans.factory.support.StaticListableBeanFactory();
+            beans.addBean("shortPickLines", lines);
+            return new StockPackageContents(stockPackages, stockItems, locations,
+                    beans.getBeanProvider(com.stockflow.inventory.spi.ShortPickLines.class));
+        }
+
+        @Test
+        @DisplayName("a count's shortage of a carton whose hold is a SHORT line's is written off, the hold given up "
+                + "(SHORT_PICKED) with it - 20 §4.2 step 8")
+        void shortageOfAShortLinesCartonGivesUpTheHold() {
+            StockPackage carton = carton(id, 24);
+            StockItem held = row(id, 24);
+            var hold = held.allocate(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(),
+                    Quantity.of(24), NOW);
+            rowsOf(carton, held);
+
+            List<StockPackageContents.RowChange> changes =
+                    withShortLines(java.util.Set.of(hold.id().value())).adjust(id, -24, true, true, NOW);
+
+            assertThat(changes).singleElement().satisfies(c -> assertThat(c.delta()).isEqualTo(-24));
+            assertThat(held.onHand().value()).isZero();
+            assertThat(held.reserved().value()).isZero();
+            assertThat(hold.status()).isEqualTo(com.stockflow.inventory.internal.domain.ReservationStatus.RELEASED);
+            assertThat(hold.releaseReason()).isEqualTo(com.stockflow.inventory.internal.domain.ReleaseReason.SHORT_PICKED);
+            assertThat(carton.status()).isEqualTo(StockPackageStatus.LOST);
+            assertThat(held.pullDomainEvents()).as("the release is announced like any other").hasSize(2);
+        }
+
+        @Test
+        @DisplayName("a hold whose line was not reported short is not given up, even for a count variance: refused, "
+                + "nothing changes")
+        void aHoldOfALineNotShortIsKept() {
+            StockPackage carton = carton(id, 24);
+            StockItem held = row(id, 24);
+            var hold = held.allocate(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(),
+                    Quantity.of(24), NOW);
+            rowsOf(carton, held);
+
+            assertThat(codeOf(() -> withShortLines(java.util.Set.of()).adjust(id, -24, true, true, NOW)))
+                    .isEqualTo(ErrorCode.STOCK_PACKAGE_HELD);
+
+            assertThat(hold.status()).isEqualTo(com.stockflow.inventory.internal.domain.ReservationStatus.HELD);
+            assertThat(held.onHand().value()).isEqualTo(24);
+            assertThat(carton.status()).isEqualTo(StockPackageStatus.IN_STOCK);
+        }
+
+        @Test
+        @DisplayName("without the pick-line answer (inventory alone) or without asking for it, a held carton is refused")
+        void noAnswerNoRelease() {
+            StockPackage carton = carton(id, 24);
+            StockItem held = row(id, 24);
+            var hold = held.allocate(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(),
+                    Quantity.of(24), NOW);
+            rowsOf(carton, held);
+
+            assertThat(codeOf(() -> contents.adjust(id, -24, true, true, NOW))).isEqualTo(ErrorCode.STOCK_PACKAGE_HELD);
+            assertThat(codeOf(() -> withShortLines(java.util.Set.of(hold.id().value())).adjust(id, -24, true, false, NOW)))
+                    .isEqualTo(ErrorCode.STOCK_PACKAGE_HELD);
+            assertThat(hold.status()).isEqualTo(com.stockflow.inventory.internal.domain.ReservationStatus.HELD);
         }
 
         @Test
