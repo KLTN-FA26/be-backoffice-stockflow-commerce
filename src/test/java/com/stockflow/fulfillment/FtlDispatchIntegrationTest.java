@@ -86,7 +86,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         "stockflow.fulfillment.ahamove.webhook.max-future=P3650D",
         "stockflow.fulfillment.ahamove.webhook.allowed-ips=127.0.0.1,10.20.0.0/16",
         // 3-2: waybill files are scanned as every upload is; no ClamAV runs in tests.
-        "stockflow.upload-inspection.enabled=false"})
+        "stockflow.upload-inspection.enabled=false",
+        // bookingThroughTheCarriersApi calls the booking sweeper by hand; a scheduled run firing around it would settle
+        // the booking first or hold the sweeper's lock, and the call under test would see nothing to do.
+        "stockflow.fulfillment.carrier-booking-sweep-interval=PT24H"})
 class FtlDispatchIntegrationTest {
 
     private static final Sku SOFA = new Sku("SOFA-3S-GREY");
