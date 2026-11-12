@@ -488,6 +488,8 @@ Enum customer.customer_change_history_field {
   REGISTERED_ADDRESS
   REPRESENTATIVE
   REPRESENTATIVE_TITLE
+  INVOICE_EMAIL
+  BANK_ACCOUNT
 }
 
 Enum customer.customer_status_history_from_status {
@@ -540,6 +542,66 @@ Enum payment.payment_receipt_status {
 Enum payment.refund_record_status {
   RECORDED
   VOIDED
+}
+
+Enum invoicing.einvoice_status {
+  DRAFT
+  SUBMITTING
+  ISSUED
+  REJECTED
+  VOIDED_DRAFT
+  REPLACED
+}
+
+Enum invoicing.einvoice_type {
+  ORIGINAL
+  ADJUSTMENT
+  REPLACEMENT
+}
+
+Enum invoicing.einvoice_error_notice_status {
+  DRAFT
+  SENT
+  ACCEPTED
+  REJECTED
+}
+
+Enum invoicing.einvoice_line_kind {
+  GOODS
+  FEE
+}
+
+Enum invoicing.einvoice_provider_call_operation {
+  SUBMIT
+  QUERY
+  DOWNLOAD
+}
+
+Enum invoicing.einvoice_provider_call_outcome {
+  ACCEPTED
+  DUPLICATE
+  PENDING
+  ISSUED
+  REJECTED
+  NOT_FOUND
+  DOWNLOADED
+  TIMEOUT
+  ERROR
+}
+
+Enum invoicing.einvoice_provider_config_environment {
+  SANDBOX
+  PRODUCTION
+}
+
+Enum invoicing.einvoice_provider_config_provider {
+  SANDBOX
+  VIETTEL_SINVOICE
+}
+
+Enum invoicing.sandbox_issuance_state {
+  ISSUED
+  REJECTED
 }
 
 Enum design.design_artifact_artifact_role {
@@ -2498,6 +2560,17 @@ Table ordering.tax_rate [headercolor: #C0392B] {
   last_modified_by varchar(100)
 }
 
+Table ordering.tax_rate_period [headercolor: #C0392B] {
+  id         uuid [pk]
+  tax_class  varchar(16) [not null]
+  rate       decimal(5,2) [not null]
+  valid_from date [not null]
+  valid_to   date [not null]
+  note       varchar(500)
+  created_at timestamptz [not null, default: `now()`]
+  created_by varchar(100)
+}
+
 // =============================================================================
 // SCHEMA: customer
 // =============================================================================
@@ -2578,6 +2651,10 @@ Table customer.customer_legal_profile [headercolor: #D68910] {
   created_by           varchar(100)
   last_modified_at     timestamptz
   last_modified_by     varchar(100)
+  invoice_email        varchar(320)
+  bank_account_number  varchar(34)
+  bank_name            varchar(200)
+  bank_account_holder  varchar(200)
 }
 
 Table customer.customer_status_history [headercolor: #D68910] {
@@ -2769,6 +2846,184 @@ Table payment.refund_record [headercolor: #B8860B] {
   created_by       varchar(100)
   last_modified_at timestamptz
   last_modified_by varchar(100)
+}
+
+// =============================================================================
+// SCHEMA: invoicing
+// =============================================================================
+
+Table invoicing.einvoice [headercolor: #A0522D] {
+  id                   uuid [pk]
+  code                 varchar(32) [not null, unique]
+  type                 invoicing.einvoice_type [not null]
+  status               invoicing.einvoice_status [not null]
+  adjusted             boolean [not null, default: false]
+  order_id             uuid [not null]
+  order_number         varchar(32) [not null]
+  contract_number      varchar(40)
+  shipment_id          uuid
+  shipment_code        varchar(48)
+  delivery_batch_id    uuid
+  customer_id          uuid [not null]
+  original_einvoice_id uuid
+  provider             varchar(32)
+  attempt              int [not null, default: 0]
+  transaction_id       varchar(64) [unique]
+  template_code        varchar(1)
+  symbol               varchar(6)
+  invoice_number       int
+  tax_authority_code   varchar(64)
+  lookup_code          varchar(64)
+  issue_date           date [not null]
+  issue_due_at         timestamptz [not null]
+  due_warned_at        timestamptz
+  signed_at            timestamptz
+  seller_name          varchar(200) [not null]
+  seller_tax_code      varchar(14) [not null]
+  seller_address       varchar(500) [not null]
+  buyer_name           varchar(200) [not null]
+  buyer_tax_code       varchar(14)
+  buyer_address        varchar(500)
+  buyer_email          varchar(320)
+  currency             varchar(3) [not null]
+  payment_method       varchar(16) [not null]
+  subtotal             decimal(19,4) [not null]
+  tax_total            decimal(19,4) [not null]
+  grand_total          decimal(19,4) [not null]
+  amount_in_words      varchar(500) [not null]
+  warnings             varchar(200)
+  adjustment_reason    varchar(500)
+  agreement_file_key   varchar(500)
+  xml_file_key         varchar(500)
+  pdf_file_key         varchar(500)
+  rejection_code       varchar(64)
+  rejection_message    varchar(500)
+  submitted_at         timestamptz
+  submitted_by         uuid
+  issued_at            timestamptz
+  voided_at            timestamptz
+  voided_by            uuid
+  void_reason          varchar(500)
+  version              bigint [not null, default: 0]
+  created_at           timestamptz [not null, default: `now()`]
+  created_by           varchar(100)
+  last_modified_at     timestamptz
+  last_modified_by     varchar(100)
+}
+
+Table invoicing.einvoice_error_notice [headercolor: #A0522D] {
+  id               uuid [pk]
+  einvoice_id      uuid [not null]
+  form_code        varchar(16) [not null, default: '04/SS-HDDT']
+  reason           varchar(500) [not null]
+  status           invoicing.einvoice_error_notice_status [not null, default: 'DRAFT']
+  sent_at          timestamptz
+  response_code    varchar(64)
+  response_message varchar(500)
+  responded_at     timestamptz
+  version          bigint [not null, default: 0]
+  created_at       timestamptz [not null, default: `now()`]
+  created_by       varchar(100)
+  last_modified_at timestamptz
+  last_modified_by varchar(100)
+}
+
+Table invoicing.einvoice_line [headercolor: #A0522D] {
+  id               uuid [pk]
+  einvoice_id      uuid [not null]
+  line_no          int [not null]
+  kind             invoicing.einvoice_line_kind [not null]
+  fee_kind         varchar(16)
+  order_line_id    uuid
+  sku              varchar(64)
+  item_name        varchar(500) [not null]
+  unit             varchar(16) [not null]
+  quantity         int [not null]
+  units_per_carton int
+  unit_price       decimal(19,4) [not null]
+  tax_rate         decimal(5,2) [not null]
+  amount           decimal(19,4) [not null]
+  tax_amount       decimal(19,4) [not null]
+  indexes {
+    (einvoice_id, line_no) [unique]
+  }
+}
+
+Table invoicing.einvoice_provider_call [headercolor: #A0522D] {
+  id             uuid [pk]
+  einvoice_id    uuid [not null]
+  provider       varchar(32) [not null]
+  transaction_id varchar(64) [not null]
+  operation      invoicing.einvoice_provider_call_operation [not null]
+  outcome        invoicing.einvoice_provider_call_outcome [not null]
+  http_status    int
+  error_code     varchar(64)
+  request_hash   varchar(64)
+  response_hash  varchar(64)
+  called_at      timestamptz [not null]
+  duration_ms    bigint [not null]
+}
+
+Table invoicing.einvoice_provider_config [headercolor: #A0522D] {
+  id               uuid [pk]
+  provider         invoicing.einvoice_provider_config_provider [not null, unique]
+  environment      invoicing.einvoice_provider_config_environment [not null]
+  endpoint         varchar(500)
+  username         varchar(200)
+  secret_sealed    varchar(2000)
+  active           boolean [not null, default: false]
+  auto_issue       boolean [not null, default: false]
+  version          bigint [not null, default: 0]
+  created_at       timestamptz [not null, default: `now()`]
+  created_by       varchar(100)
+  last_modified_at timestamptz
+  last_modified_by varchar(100)
+}
+
+Table invoicing.einvoice_series [headercolor: #A0522D] {
+  id               uuid [pk]
+  provider         varchar(32) [not null]
+  template_code    varchar(1) [not null]
+  symbol           varchar(6) [not null]
+  year             smallint [not null]
+  active           boolean [not null, default: true]
+  version          bigint [not null, default: 0]
+  created_at       timestamptz [not null, default: `now()`]
+  created_by       varchar(100)
+  last_modified_at timestamptz
+  last_modified_by varchar(100)
+  indexes {
+    (provider, template_code, symbol) [unique]
+  }
+}
+
+Table invoicing.sandbox_issuance [headercolor: #A0522D] {
+  transaction_id     varchar(64) [pk]
+  state              invoicing.sandbox_issuance_state [not null]
+  template_code      varchar(1) [not null]
+  symbol             varchar(6) [not null]
+  invoice_number     int
+  tax_authority_code varchar(64)
+  lookup_code        varchar(64)
+  rejection_code     varchar(64)
+  rejection_message  varchar(500)
+  xml_document       text
+  pdf_document       bytea
+  request_hash       varchar(64) [not null]
+  received_at        timestamptz [not null]
+  ready_at           timestamptz [not null]
+  indexes {
+    (template_code, symbol, invoice_number) [unique]
+  }
+}
+
+Table invoicing.sandbox_number [headercolor: #A0522D] {
+  template_code varchar(1) [not null]
+  symbol        varchar(6) [not null]
+  last_number   int [not null, default: 0]
+  indexes {
+    (template_code, symbol) [pk]
+  }
 }
 
 // =============================================================================
@@ -4397,6 +4652,7 @@ Ref: ordering.sales_contract.cancelled_by > identity.app_user.id
 Ref: ordering.sales_contract.order_id > ordering.customer_order.id
 Ref: ordering.sales_contract.sent_by > identity.app_user.id
 Ref: ordering.sales_contract.signed_by > identity.app_user.id
+Ref: ordering.tax_rate_period.tax_class > ordering.tax_rate.tax_class
 Ref: customer.address.customer_id > customer.customer.id [delete: cascade]
 Ref: customer.credit_profile.approved_by > identity.app_user.id
 Ref: customer.credit_profile.customer_id > customer.customer.id [delete: cascade]
@@ -4432,6 +4688,18 @@ Ref: payment.refund_record.customer_id > customer.customer.id
 Ref: payment.refund_record.order_id > ordering.customer_order.id
 Ref: payment.refund_record.recorded_by > identity.app_user.id
 Ref: payment.refund_record.voided_by > identity.app_user.id
+Ref: invoicing.einvoice.customer_id > customer.customer.id
+Ref: invoicing.einvoice.delivery_batch_id > ordering.delivery_batch.id
+Ref: invoicing.einvoice.order_id > ordering.customer_order.id
+Ref: invoicing.einvoice.original_einvoice_id > invoicing.einvoice.id
+Ref: invoicing.einvoice.shipment_id > ordering.order_shipment.id
+Ref: invoicing.einvoice.submitted_by > identity.app_user.id
+Ref: invoicing.einvoice.voided_by > identity.app_user.id
+Ref: invoicing.einvoice_error_notice.einvoice_id > invoicing.einvoice.id
+Ref: invoicing.einvoice_line.einvoice_id > invoicing.einvoice.id
+Ref: invoicing.einvoice_line.order_line_id > ordering.order_line.id
+Ref: invoicing.einvoice_provider_call.einvoice_id > invoicing.einvoice.id
+Ref: invoicing.einvoice_series.provider > invoicing.einvoice_provider_config.provider
 Ref: design.design_artifact.draft_id > design.design_draft.id
 Ref: design.design_asset.draft_id > design.design_draft.id
 Ref: design.design_decision.actor_id > identity.app_user.id
@@ -4694,6 +4962,7 @@ TableGroup ordering_group [color: #C0392B] {
   ordering.return_request_status_history
   ordering.sales_contract
   ordering.tax_rate
+  ordering.tax_rate_period
 }
 
 TableGroup customer_group [color: #D68910] {
@@ -4715,6 +4984,17 @@ TableGroup payment_group [color: #B8860B] {
   payment.payment_receipt
   payment.payment_receipt_line
   payment.refund_record
+}
+
+TableGroup invoicing_group [color: #A0522D] {
+  invoicing.einvoice
+  invoicing.einvoice_error_notice
+  invoicing.einvoice_line
+  invoicing.einvoice_provider_call
+  invoicing.einvoice_provider_config
+  invoicing.einvoice_series
+  invoicing.sandbox_issuance
+  invoicing.sandbox_number
 }
 
 TableGroup design_group [color: #AA4A9E] {
