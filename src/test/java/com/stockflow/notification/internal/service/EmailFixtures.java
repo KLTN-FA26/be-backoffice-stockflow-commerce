@@ -22,7 +22,8 @@ final class EmailFixtures {
 
     static EmailProperties properties(String replyTo, boolean customerEnabled, int maxAttempts) {
         return new EmailProperties(EmailProvider.RECORDING, FROM, replyTo, Locale.forLanguageTag("vi"), "StockFlow",
-                new EmailProperties.Customer(customerEnabled, maxAttempts, Duration.ofMinutes(1), Duration.ofHours(6)),
+                new EmailProperties.Customer(customerEnabled, maxAttempts, Duration.ofMinutes(1), Duration.ofHours(6),
+                        customerEnabled),
                 new EmailProperties.Resend(null, "https://api.resend.com", null, Duration.ofMinutes(5), 2, 2));
     }
 

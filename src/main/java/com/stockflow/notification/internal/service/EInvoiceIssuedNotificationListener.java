@@ -24,15 +24,16 @@ import java.util.UUID;
  *
  * <ol>
  *   <li><b>On the portal, always.</b> A notice in the portal account's inbox that the invoice is there to read and
- *       download. This does not depend on e-mail: with customer e-mail switched off
- *       ({@code stockflow.notification.email.customer.enabled}, {@code CUSTOMER_EMAIL_ENABLED}) it is how the buyer
- *       learns of the invoice, and the invoice itself is on the portal either way. One notice per invoice
+ *       download. This does not depend on e-mail: with e-invoice e-mail switched off
+ *       ({@code stockflow.notification.email.customer.einvoice-enabled}, {@code EINVOICE_EMAIL_ENABLED}) it is how the
+ *       buyer learns of the invoice, and the invoice itself is on the portal either way. One notice per invoice
  *       ({@code einvoice-issued:<id>}). A customer whose portal account is not activated has no inbox; nothing is
  *       posted, and the invoice is on the portal the day it signs in.</li>
- *   <li><b>By e-mail, when customer e-mail is on,</b> to the address the invoice names, with the PDF and the XML
- *       attached ({@link EInvoiceEmailComposer}). Sent once, logged and retried by the machinery every customer
- *       message uses ({@link CustomerEmailDelivery}, {@link CustomerEmailRetry}); switched off, it is recorded as
- *       skipped ({@code CUSTOMER_EMAIL_DISABLED}).</li>
+ *   <li><b>By e-mail, when e-invoice e-mail is on</b> - its own switch, on unless configured otherwise, apart from the
+ *       order mail's - to the address the invoice names, with the PDF and the XML attached
+ *       ({@link EInvoiceEmailComposer}). Sent once, logged and retried by the machinery every customer message uses
+ *       ({@link CustomerEmailDelivery}, {@link CustomerEmailRetry}); switched off, it is recorded as skipped
+ *       ({@code EINVOICE_EMAIL_DISABLED}).</li>
  * </ol>
  *
  * <p>The notice first: an e-mail attempt worth retrying throws to keep the publication for the retry, and the buyer

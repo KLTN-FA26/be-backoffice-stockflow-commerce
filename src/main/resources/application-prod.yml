@@ -125,8 +125,9 @@ stockflow:
     access-key: ${S3_ACCESS_KEY:}
     secret-key: ${S3_SECRET_KEY:}
     # On in production unless the deployment says otherwise: an issued e-invoice's XML and PDF must be kept ten years
-    # (Luat Ke toan 2015 Dieu 41), and they are locked as part of issuing - an invoice is not marked issued when the
-    # lock fails (WF-05 E2). The bucket must have Object Lock; with it off, nothing is locked at all.
+    # from the end of the accounting year (Luat Ke toan 2015 Dieu 41), and they are locked as part of issuing, in
+    # COMPLIANCE mode (application.yml einvoice-mode) - an invoice is not marked issued when the lock fails (WF-05
+    # E2). The bucket must have Object Lock; with it off, nothing is locked at all.
     object-lock:
       enabled: ${S3_OBJECT_LOCK_ENABLED:true}
 

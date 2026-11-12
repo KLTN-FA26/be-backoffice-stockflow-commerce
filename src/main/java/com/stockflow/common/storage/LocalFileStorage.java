@@ -121,6 +121,11 @@ class LocalFileStorage implements FileStorage {
     }
 
     @Override
+    public void retain(String key, java.time.Instant until, ObjectLockProperties.Mode mode) {
+        retain(key, until);
+    }
+
+    @Override
     public java.util.List<StoredObject> list(String prefix, String startAfter, int max) {
         Path base = root.resolve(prefix).normalize();
         if (!base.startsWith(root) || !Files.isDirectory(base)) {

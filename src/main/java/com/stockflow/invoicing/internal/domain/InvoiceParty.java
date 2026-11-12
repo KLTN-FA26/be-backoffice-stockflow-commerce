@@ -20,11 +20,16 @@ public record InvoiceParty(String name, String taxCode, String address, String e
 
     /**
      * Whether a buyer can be invoiced (NĐ 254 Phụ lục điểm 4.b: an invoice without the buyer's details is worth nothing
-     * to the buyer; kltn-docs 21 BR-06): its name, tax code and address, and the e-mail address the invoice goes to.
-     * The same rule is {@code ck_einvoice_buyer_complete}.
+     * to the buyer; kltn-docs 21 BR-06): its name, tax code and address. The same rule is
+     * {@code ck_einvoice_buyer_complete}.
+     *
+     * <p>Not the e-mail. It is not invoice content in the law's list, only where the invoice is mailed; a buyer without
+     * one learns of the invoice on the portal and the mail is recorded as skipped. Requiring it would hold back an
+     * invoice the law requires to be issued by the next working day, for the want of something the law does not ask
+     * for.</p>
      */
     public boolean completeBuyer() {
-        return name != null && taxCode != null && address != null && email != null;
+        return name != null && taxCode != null && address != null;
     }
 
     private static String strip(String value) {

@@ -360,12 +360,23 @@ public enum ErrorCode {
     EINVOICE_INVALID_TRANSITION("The e-invoice's status does not allow this", 409),
     /** WF-05 E2 (21 BR-03): only a draft e-invoice is corrected. */
     EINVOICE_NOT_DRAFT("Only a draft e-invoice can be changed", 409),
-    /** WF-05 E2 (21 BR-06; NĐ 254 Phụ lục điểm 4.b): the buyer's name, tax code, address or invoice e-mail is missing, so the invoice is not issued. */
-    EINVOICE_BUYER_PROFILE_INCOMPLETE("The buyer's name, tax code, address and invoice e-mail are needed before the invoice is issued", 409),
+    /** WF-05 E2 (21 BR-06; NĐ 254 Phụ lục điểm 4.b): the buyer's name, tax code or address is missing, so the invoice is not issued. */
+    EINVOICE_BUYER_PROFILE_INCOMPLETE("The buyer's name, tax code and address are needed before the invoice is issued", 409),
     /** WF-05 E2 (21 BR-01): the shipment is not delivered, or delivered nothing an invoice can carry. */
     EINVOICE_NOT_INVOICEABLE("This shipment cannot be invoiced: it is not delivered", 409),
+    /**
+     * WF-05 E2 (NĐ 254 Điều 9 khoản 1; WF05-E0 L6): the delivered shipment has no delivery time, and the invoice is
+     * dated by it - never by today. A code of its own because it reaches the accountants as the cause of an
+     * {@code EInvoiceDraftFailed}, and it tells them what to correct.
+     */
+    EINVOICE_DELIVERY_TIME_MISSING("The delivery has no delivery time to date its invoice by; record it first", 409),
     /** WF-05 E2 (TT 91 Điều 4): no invoice series is in use at the provider for the invoice's year. */
     EINVOICE_SERIES_NOT_CONFIGURED("No invoice series is configured for the invoice's year", 409),
+    /**
+     * WF-05 E2 (NĐ 254 Phụ lục điểm 2; TT 91 Điều 10 khoản 6a): an invoice of the same year dated earlier is still to be
+     * issued; issuing this one first would give it the lower number, and numbers would run against the dates.
+     */
+    EINVOICE_OLDER_DRAFT_PENDING("An invoice dated earlier is still to be issued; issue or void it first", 409),
     /** WF-05 E2: the e-invoice is not issued, so it has no XML or PDF yet. */
     EINVOICE_NOT_ISSUED("The e-invoice is not issued yet", 409),
     /** WF-05 E2: the e-invoice provider is not configured, or did not answer; nothing is known about the transaction until it is asked again. */

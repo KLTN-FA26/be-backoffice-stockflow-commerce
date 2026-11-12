@@ -20,10 +20,13 @@ import java.util.UUID;
  * One VAT e-invoice (WF-05 E2, plan §1.4-§1.5; kltn-docs 21; NĐ 254/2026/NĐ-CP, TT 91/2026/TT-BTC).
  *
  * <p><b>Date and number.</b> An invoice's date is the day of its delivery (NĐ 254 Điều 9), fixed when it is drawn up;
- * its number is the provider's, given when it is issued. A draft issued late therefore takes a later number than an
- * invoice dated after it. The law asks for numbers that run on within a symbol (Phụ lục điểm 2) and for signing by the
- * next working day (điểm 7), which is why a draft carries a deadline; whether a real provider refuses a date before its
- * last number is a question for its adapter (package E3).</p>
+ * its number is the provider's, given when it is issued. The law asks for numbers that run on within a symbol in the
+ * order of the dates (Phụ lục điểm 2) and for signing by the next working day (điểm 7), which is why a draft carries a
+ * deadline. So an invoice is not sent while one of its year dated earlier waits to be issued
+ * ({@code EInvoiceIssuanceSteps.submit}, {@code EINVOICE_OLDER_DRAFT_PENDING}); an invoice dated before others that
+ * were already issued - a delivery recorded late - still goes out, with the next number, since one that could never
+ * be issued would be worse. Whether a real provider refuses a date before its last number is a question for its
+ * adapter (package E3).</p>
  *
  * <p>An original invoices one delivered shipment. It is drawn up as a draft the moment the delivery is recorded, with
  * the seller and the buyer <b>copied</b> onto it and its lines and totals fixed from the order's prices. From then on:</p>
@@ -31,7 +34,8 @@ import java.util.UUID;
  *   <li><b>A draft</b> takes two corrections - the buyer (refreshed from the customer's profile, or typed by the
  *       accountant) and the names on its lines. Its money never changes: quantities and prices are the contract's,
  *       and a draft that got them wrong is voided and drawn up again from the order.</li>
- *   <li><b>Issuing</b> needs a complete buyer (name, tax code, address, e-mail) and a series for the invoice's year.
+ *   <li><b>Issuing</b> needs a complete buyer (name, tax code, address - the e-mail only decides whether the
+ *       invoice is also mailed) and a series for the invoice's year.
  *       It gives the invoice a transaction id - its own id and the attempt's number - under which the provider knows
  *       at most one invoice. Every later question to the provider is asked under that id, so a reply that was lost can
  *       never turn into a second invoice for the same delivery.</li>
@@ -68,7 +72,7 @@ public final class EInvoice {
      * provider carries only {@link #UNKNOWN_TO_PROVIDER}.
      */
     public enum Warning {
-        /** The buyer's name, tax code, address or invoice e-mail is missing: issuing is refused until it is there. */
+        /** The buyer's name, tax code or address is missing: issuing is refused until it is there. */
         BUYER_PROFILE_INCOMPLETE,
         /** A line's VAT rate on the day of delivery is not the one the contract fixed: the totals differ from the contract's. */
         TAX_RATE_DIFFERS_FROM_CONTRACT,
@@ -608,17 +612,17 @@ public final class EInvoice {
      *
      * @param by who issued it; null when it was issued automatically
      * @throws BusinessException {@code EINVOICE_INVALID_TRANSITION} unless it is a draft;
-     *                           {@code EINVOICE_BUYER_PROFILE_INCOMPLETE} while the buyer's name, tax code, address or
-     *                           invoice e-mail is missing; {@code EINVOICE_AGREEMENT_REQUIRED} for the correction
+     *                           {@code EINVOICE_BUYER_PROFILE_INCOMPLETE} while the buyer's name, tax code or address
+     *                           is missing; {@code EINVOICE_AGREEMENT_REQUIRED} for the correction
      *                           of an error without the agreement of both parties;
      *                           {@code EINVOICE_SERIES_NOT_CONFIGURED} for a series of another year than the invoice's
-     *                           date
+     *                           date, or of a template other than a VAT invoice's
      */
     public void submit(InvoiceSeries series, UUID by, Instant now) {
         requireCanBecome(EInvoiceStatus.SUBMITTING);
         if (!buyer.completeBuyer()) {
             throw new BusinessException(ErrorCode.EINVOICE_BUYER_PROFILE_INCOMPLETE,
-                    "Invoice %s: the buyer's name, tax code, address and invoice e-mail are all needed".formatted(code));
+                    "Invoice %s: the buyer's name, tax code and address are all needed".formatted(code));
         }
         if (correctionBasis != null && correctionBasis.requiresAgreement() && agreementFileKey == null) {
             throw new BusinessException(ErrorCode.EINVOICE_AGREEMENT_REQUIRED, ("Invoice %s corrects an error: the "
@@ -626,6 +630,11 @@ public final class EInvoice {
                     + "(TT 91/2026/TT-BTC Điều 10 khoản 1 điểm b)").formatted(code));
         }
         Objects.requireNonNull(series, "series");
+        if (!series.vatTemplate()) {
+            throw new BusinessException(ErrorCode.EINVOICE_SERIES_NOT_CONFIGURED,
+                    "Series %s is of template %s; invoices are issued under %s, a VAT invoice".formatted(
+                            series.symbol(), series.templateCode(), InvoiceSeries.VAT_TEMPLATE));
+        }
         if (series.year() != issueDate.getYear()) {
             throw new BusinessException(ErrorCode.EINVOICE_SERIES_NOT_CONFIGURED,
                     "Invoice %s is dated %d; series %s is of %d".formatted(code, issueDate.getYear(), series.symbol(),

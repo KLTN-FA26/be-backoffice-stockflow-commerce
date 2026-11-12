@@ -73,7 +73,9 @@ final class InvoicingWebMapper {
         return new EInvoiceRegisterEntryResponse(entry.templateCode(), entry.symbol(), entry.invoiceNumber(),
                 entry.issueDate(), entry.type().name(), entry.status().name(), entry.adjusted(), entry.buyerName(),
                 entry.buyerTaxCode(), entry.buyerAddress(), entry.orderNumber(), entry.subtotal(), entry.taxTotal(),
-                entry.grandTotal(), entry.taxAuthorityCode(), entry.lookupCode(), entry.originalReference());
+                entry.grandTotal(), entry.taxAuthorityCode(), entry.lookupCode(), entry.originalReference(),
+                entry.byRate().stream().map(total -> new EInvoiceResponse.TaxRateTotal(total.taxRate(),
+                        total.amount(), total.taxAmount())).toList());
     }
 
     static ProviderCallResponse toResponse(ProviderCallLog.Call call) {

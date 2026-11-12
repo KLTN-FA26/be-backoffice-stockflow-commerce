@@ -237,7 +237,17 @@ class EInvoiceRepositoryAdapter implements EInvoiceRepository {
         return jdbc.queryForList("""
                 SELECT id FROM invoicing.einvoice
                  WHERE status = 'DRAFT' AND type = 'ORIGINAL' AND attempt = 0 AND warnings IS NULL
-                 ORDER BY issue_due_at, id LIMIT ?""", UUID.class, limit);
+                 ORDER BY issue_date, id LIMIT ?""", UUID.class, limit);
+    }
+
+    @Override
+    public Optional<String> findEarlierUnissued(UUID id, LocalDate issueDate) {
+        return jdbc.queryForList("""
+                SELECT code FROM invoicing.einvoice
+                 WHERE id <> ? AND status IN ('DRAFT', 'REJECTED', 'SUBMITTING')
+                   AND issue_date < ? AND issue_date >= ?
+                 ORDER BY issue_date, id LIMIT 1""", String.class, id, java.sql.Date.valueOf(issueDate),
+                java.sql.Date.valueOf(issueDate.withDayOfYear(1))).stream().findFirst();
     }
 
     @Override

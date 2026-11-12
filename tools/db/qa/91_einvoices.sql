@@ -192,9 +192,12 @@ SELECT pg_temp.expect_fail('C2 DRAFT -> REJECTED', $q$
      WHERE id = md5('qa91:a')::uuid $q$);
 SELECT pg_temp.expect_fail('C3 DRAFT -> REPLACED', $q$
     UPDATE invoicing.einvoice SET status = 'REPLACED' WHERE id = md5('qa91:a')::uuid $q$);
-SELECT pg_temp.expect_fail('C4 sent without the buyer''s invoice e-mail (21 BR-06)', $q$
-    UPDATE invoicing.einvoice SET buyer_email = NULL WHERE id = md5('qa91:a')::uuid;
+SELECT pg_temp.expect_fail('C4 sent without the buyer''s address (21 BR-06)', $q$
+    UPDATE invoicing.einvoice SET buyer_address = NULL WHERE id = md5('qa91:a')::uuid;
     SELECT pg_temp.submit('a') $q$);
+SELECT pg_temp.expect_fail('C4b sent under a template other than 1, a VAT invoice (WF05-E0 L1)', $q$
+    UPDATE invoicing.einvoice SET status = 'SUBMITTING', provider = 'SANDBOX', attempt = 1, transaction_id = 'x-qa91',
+           template_code = '2', symbol = 'C26TSB', submitted_at = NOW() WHERE id = md5('qa91:a')::uuid $q$);
 SELECT pg_temp.expect_fail('C5 sent without the buyer''s tax code', $q$
     UPDATE invoicing.einvoice SET buyer_tax_code = NULL WHERE id = md5('qa91:a')::uuid;
     SELECT pg_temp.submit('a') $q$);
@@ -204,7 +207,9 @@ SELECT pg_temp.expect_fail('C6 sent without a transaction id', $q$
 SELECT pg_temp.expect_fail('C7 sent under a symbol of another year than its date', $q$
     UPDATE invoicing.einvoice SET status = 'SUBMITTING', provider = 'SANDBOX', attempt = 1, transaction_id = 'x-qa91',
            template_code = '1', symbol = 'C27TSB', submitted_at = NOW() WHERE id = md5('qa91:a')::uuid $q$);
-SELECT pg_temp.expect_ok('C8 DRAFT -> SUBMITTING', $q$ SELECT pg_temp.submit('a') $q$);
+SELECT pg_temp.expect_ok('C8 DRAFT -> SUBMITTING, though the buyer has no invoice e-mail (WF05-E0 L7: not invoice content)', $q$
+    UPDATE invoicing.einvoice SET buyer_email = NULL WHERE id = md5('qa91:a')::uuid;
+    SELECT pg_temp.submit('a') $q$);
 SELECT pg_temp.expect_fail('C9 SUBMITTING -> DRAFT: only the provider''s answer moves it on', $q$
     UPDATE invoicing.einvoice SET status = 'DRAFT' WHERE id = md5('qa91:a')::uuid $q$);
 SELECT pg_temp.expect_fail('C10 SUBMITTING -> VOIDED_DRAFT: it may be at the provider', $q$
@@ -390,6 +395,9 @@ SELECT pg_temp.expect_fail('H3 a secret kept in clear', $q$
 SELECT pg_temp.expect_fail('H4 a symbol that is not one (TT 91 Phụ lục I)', $q$
     INSERT INTO invoicing.einvoice_series (id, provider, template_code, symbol, year, active)
     VALUES (gen_random_uuid(), 'SANDBOX', '1', 'X26TAA', 2026, FALSE) $q$);
+SELECT pg_temp.expect_fail('H4b a series of a template other than 1, a VAT invoice (WF05-E0 L1)', $q$
+    INSERT INTO invoicing.einvoice_series (id, provider, template_code, symbol, year, active)
+    VALUES (gen_random_uuid(), 'SANDBOX', '2', 'C26TAB', 2026, FALSE) $q$);
 SELECT pg_temp.expect_fail('H5 a symbol of another year than its series', $q$
     INSERT INTO invoicing.einvoice_series (id, provider, template_code, symbol, year, active)
     VALUES (gen_random_uuid(), 'SANDBOX', '1', 'C26TAA', 2027, FALSE) $q$);

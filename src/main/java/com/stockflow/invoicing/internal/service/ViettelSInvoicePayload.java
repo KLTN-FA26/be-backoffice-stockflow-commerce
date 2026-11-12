@@ -75,8 +75,7 @@ final class ViettelSInvoicePayload {
         // 0: the buyer takes the invoice, so its tax code and address are required - which they are (21 BR-06).
         buyer.put("buyerNotGetInvoice", 0);
 
-        root.putArray("payments").addObject().put("paymentMethodName",
-                invoice.paymentMethod() == null ? "TM/CK" : invoice.paymentMethod());
+        root.putArray("payments").addObject().put("paymentMethodName", paymentMethodName(invoice.paymentMethod()));
 
         ArrayNode items = root.putArray("itemInfo");
         for (EInvoiceLine line : invoice.lines()) {
@@ -126,6 +125,17 @@ final class ViettelSInvoicePayload {
         Instant at = issueDate.equals(today) ? now
                 : issueDate.atTime(LocalTime.of(23, 59, 59)).atZone(ZONE).toInstant();
         return at.getEpochSecond() * 1000;
+    }
+
+    /**
+     * The payment method as it is printed on the invoice. SInvoice prints {@code paymentMethodName} as given, so the
+     * stored code {@code BANK_TRANSFER} would reach the buyer as an English code word on a Vietnamese invoice. A
+     * transfer is printed "CK", the usual Vietnamese abbreviation for a bank transfer; anything else - there is nothing
+     * else today, {@code ck_einvoice_payment_method} - is "TM/CK", cash or transfer, which is what an invoice says
+     * when the method is not settled.
+     */
+    static String paymentMethodName(String paymentMethod) {
+        return "BANK_TRANSFER".equals(paymentMethod) ? "CK" : "TM/CK";
     }
 
     /** 8.00 → 8, 7.50 → 7.5: SInvoice's rate is a number of percent. */

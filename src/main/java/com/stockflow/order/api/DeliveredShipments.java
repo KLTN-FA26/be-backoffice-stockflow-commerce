@@ -17,9 +17,10 @@ public interface DeliveredShipments {
     Optional<DeliveredShipment> find(UUID orderId, UUID shipmentId);
 
     /**
-     * The order's shipping fee, whole, with the VAT rate in force on the day of {@code on}; empty when the order does
-     * not exist or has no shipping fee above zero. How much of it the order's invoices already carry is the invoicing
-     * module's to say.
+     * The order's shipping fee, whole, and when the carrying it pays for ended (its last delivery); empty when the
+     * order does not exist or has no shipping fee above zero. The VAT rate is the one in force on the day of the last
+     * delivery - the day the invoice of the fee is dated - or on the day of {@code on} when nothing was delivered. How
+     * much of the fee the order's invoices already carry is the invoicing module's to say.
      */
     Optional<OrderShippingFee> shippingFee(UUID orderId, Instant on);
 }

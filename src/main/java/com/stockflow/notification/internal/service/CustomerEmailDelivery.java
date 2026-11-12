@@ -25,6 +25,7 @@ import java.util.Optional;
  * <pre>
  * 1. state         already sent, or settled (skipped, refused, given up)?  -> nothing to do
  * 2. switch        customer mail off?                                     -> SKIPPED  CUSTOMER_EMAIL_DISABLED
+ *                  an e-invoice message, e-invoice mail off?              -> SKIPPED  EINVOICE_EMAIL_DISABLED
  * 3. addressee     CustomerDirectory, read now (never carried on the event); the message's own recipient when it
  *                  names one (an issued e-invoice goes to the address the invoice names)
  *                  no customer / no address / malformed address          -> SKIPPED  NO_RECIPIENT / RECIPIENT_MISSING / RECIPIENT_INVALID
@@ -90,8 +91,9 @@ class CustomerEmailDelivery {
         if (state.settled()) {
             return Outcome.ALREADY_SETTLED;
         }
-        if (!properties.customer().enabled()) {
-            return skip(message, message.recipientLabel(), "CUSTOMER_EMAIL_DISABLED");
+        String disabled = properties.customer().disabledReason(message.templateCode());
+        if (disabled != null) {
+            return skip(message, message.recipientLabel(), disabled);
         }
 
         boolean guest = message.recipient() == null && message.customerId() == null;

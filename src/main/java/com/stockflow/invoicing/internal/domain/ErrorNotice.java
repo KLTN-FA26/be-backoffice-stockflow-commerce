@@ -27,6 +27,12 @@ import java.util.UUID;
  */
 public final class ErrorNotice {
 
+    /**
+     * The form the notice is made on, which TT 91 names with the Vietnamese letter Đ ("04/SS-HĐĐT"). It is stored and
+     * sent in ASCII (and so says {@code ck_einvoice_error_notice_form}) because nothing yet says which spelling a
+     * provider's notice call expects. An open question (WF05-E0 L12): when a provider's notice call is built, its
+     * documentation decides, and this constant and the CHECK change together.
+     */
     public static final String FORM_CODE = "04/SS-HDDT";
 
     /** What the notice is about. */
