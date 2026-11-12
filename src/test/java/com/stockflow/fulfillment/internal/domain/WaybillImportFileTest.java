@@ -118,23 +118,23 @@ class WaybillImportFileTest {
             + "1 MB: refused whole")
     void malformed() {
         assertThatThrownBy(() -> WaybillImportFile.parse(utf8("h1,h2\nLD-1,WB\u00001\n")))
-                .isInstanceOf(WaybillImportFile.Malformed.class).hasMessageContaining("NUL");
+                .isInstanceOf(ImportCsv.Malformed.class).hasMessageContaining("NUL");
         assertThatThrownBy(() -> WaybillImportFile.parse(utf8("h1,h2\nLD-1,WB-1\n" + "\n".repeat(20_000))))
-                .isInstanceOf(WaybillImportFile.Malformed.class).hasMessageContaining("10000");
+                .isInstanceOf(ImportCsv.Malformed.class).hasMessageContaining("10000");
         assertThatThrownBy(() -> WaybillImportFile.parse(new byte[] {'a', ',', (byte) 0xC3, (byte) 0x28, '\n'}))
-                .isInstanceOf(WaybillImportFile.Malformed.class).hasMessageContaining("UTF-8");
-        assertThatThrownBy(() -> WaybillImportFile.parse(new byte[0])).isInstanceOf(WaybillImportFile.Malformed.class);
+                .isInstanceOf(ImportCsv.Malformed.class).hasMessageContaining("UTF-8");
+        assertThatThrownBy(() -> WaybillImportFile.parse(new byte[0])).isInstanceOf(ImportCsv.Malformed.class);
         assertThatThrownBy(() -> WaybillImportFile.parse(utf8("only,a,heading\n\n")))
-                .isInstanceOf(WaybillImportFile.Malformed.class).hasMessageContaining("no line");
+                .isInstanceOf(ImportCsv.Malformed.class).hasMessageContaining("no line");
         assertThatThrownBy(() -> WaybillImportFile.parse(utf8("h\n\"LD-1,WB-1\n")))
-                .isInstanceOf(WaybillImportFile.Malformed.class).hasMessageContaining("quote");
+                .isInstanceOf(ImportCsv.Malformed.class).hasMessageContaining("quote");
         StringBuilder many = new StringBuilder("h1,h2\n");
         for (int i = 0; i <= WaybillImportFile.MAX_ROWS; i++) {
             many.append("LD-").append(i).append(",WB-").append(i).append('\n');
         }
         assertThatThrownBy(() -> WaybillImportFile.parse(utf8(many.toString())))
-                .isInstanceOf(WaybillImportFile.Malformed.class).hasMessageContaining("1000");
+                .isInstanceOf(ImportCsv.Malformed.class).hasMessageContaining("1000");
         assertThatThrownBy(() -> WaybillImportFile.parse(new byte[WaybillImportFile.MAX_BYTES + 1]))
-                .isInstanceOf(WaybillImportFile.Malformed.class);
+                .isInstanceOf(ImportCsv.Malformed.class);
     }
 }
