@@ -4,10 +4,13 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.stockflow.common.security.DataScope;
 import com.stockflow.common.security.Role;
+import com.stockflow.common.storage.DownloadDisposition;
+import com.stockflow.common.storage.FileStorage;
 import com.stockflow.invoicing.internal.domain.EInvoice;
 import com.stockflow.invoicing.internal.domain.EInvoiceStatus;
 import com.stockflow.invoicing.internal.service.EInvoiceIssuance;
 import com.stockflow.invoicing.internal.service.EInvoiceQueryService;
+import com.stockflow.invoicing.internal.service.FirstSend;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderSummary;
 import com.stockflow.order.api.ShipmentHandover;
@@ -37,6 +40,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.transaction.support.TransactionTemplate;
 
@@ -49,6 +53,10 @@ import java.util.UUID;
 import java.util.concurrent.ThreadLocalRandom;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.nullable;
+import static org.mockito.Mockito.doAnswer;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -75,6 +83,8 @@ class CustomerEInvoicePortalIntegrationTest {
 
     @Autowired MockMvc mvc;
     @MockitoBean JwtDecoder decoder;
+    /** The test profile's local store signs no browser URL; the spy answers an https one, as MinIO would. */
+    @MockitoSpyBean FileStorage presigner;
     @Autowired OrderService orders;
     @Autowired EInvoiceIssuance issuance;
     @Autowired EInvoiceQueryService queries;
@@ -94,6 +104,12 @@ class CustomerEInvoicePortalIntegrationTest {
 
     /** A customer, its portal account and its SKU. */
     private record Portal(UUID customer, UUID account, CustomerSkuRows.Issued sku) {
+    }
+
+    @BeforeEach
+    void presignedUrls() {
+        doAnswer(call -> "https://minio.test/" + call.getArgument(0) + "?X-Amz-Signature=test").when(presigner)
+                .presignedDownloadUrl(anyString(), any(Duration.class), nullable(DownloadDisposition.class));
     }
 
     @BeforeEach
@@ -148,7 +164,7 @@ class CustomerEInvoicePortalIntegrationTest {
 
     private EInvoice.Snapshot issued(Portal portal, int cartons) {
         EInvoice.Snapshot draft = draft(portal, cartons);
-        EInvoice.Snapshot issued = issuance.issue(draft.id(), draft.version(), accountant);
+        EInvoice.Snapshot issued = FirstSend.issue(issuance, queries, draft.id(), draft.version(), accountant);
         assertThat(issued.status()).isEqualTo(EInvoiceStatus.ISSUED);
         return issued;
     }
@@ -239,15 +255,21 @@ class CustomerEInvoicePortalIntegrationTest {
                 assertThat(notMine == null ? shape : notMine).as("one answer for all three").isEqualTo(shape);
                 notMine = shape;
             }
+            // WF-05 item b: the notices of an invoice are read under the same rule as its files.
+            http.asCustomer(mine.account(), get(MINE + "/" + id + "/error-notices"))
+                    .andExpect(status().isNotFound())
+                    .andExpect(jsonPath("$.errorCode").value("EINVOICE_NOT_FOUND"));
         }
         // And it is not on the list either.
         http.asCustomer(mine.account(), get(MINE)).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.items.length()").value(0));
         // Its owner reads it.
         http.asCustomer(other.account(), get(MINE + "/" + theirs.id() + "/files/PDF")).andExpect(status().isOk());
+        http.asCustomer(other.account(), get(MINE + "/" + theirs.id() + "/error-notices")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.length()").value(0));
 
         // Issued to me now: mine to download.
-        EInvoice.Snapshot nowIssued = issuance.issue(myDraft.id(), myDraft.version(), accountant);
+        EInvoice.Snapshot nowIssued = FirstSend.issue(issuance, queries, myDraft.id(), myDraft.version(), accountant);
         assertThat(nowIssued.status()).isEqualTo(EInvoiceStatus.ISSUED);
         http.asCustomer(mine.account(), get(MINE + "/" + myDraft.id() + "/files/XML")).andExpect(status().isOk());
         http.asCustomer(other.account(), get(MINE + "/" + myDraft.id() + "/files/XML"))

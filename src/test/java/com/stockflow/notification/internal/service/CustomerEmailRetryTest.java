@@ -97,6 +97,35 @@ class CustomerEmailRetryTest {
     }
 
     @Test
+    @DisplayName("WF-05 item b: a failed error-notice mail is retried through its own listener, keyed by the notice")
+    void errorNoticeMailIsRetriedToo() {
+        var due = new com.stockflow.contracts.EInvoiceErrorNoticeRecorded(UUID.randomUUID(), UUID.randomUUID(),
+                "EINV-20261112-0001", UUID.randomUUID(), "SO-20261101-0007", UUID.randomUUID(), NOW);
+        var waiting = new com.stockflow.contracts.EInvoiceErrorNoticeRecorded(UUID.randomUUID(), UUID.randomUUID(),
+                "EINV-20261112-0002", UUID.randomUUID(), "SO-20261101-0008", UUID.randomUUID(), NOW);
+        String type = com.stockflow.contracts.EInvoiceErrorNoticeRecorded.class.getName();
+        when(reader.page(anyString(), anyString(), any(), nullable(UUID.class), eq(CustomerEmailRetry.PAGE)))
+                .thenReturn(List.of());
+        when(reader.page(eq(type), anyString(), any(), nullable(UUID.class), eq(CustomerEmailRetry.PAGE)))
+                .thenReturn(List.of(new PendingPublication(new UUID(0, 7), "due"),
+                        new PendingPublication(new UUID(0, 8), "waiting")));
+        when(serializer.deserialize("due", com.stockflow.contracts.EInvoiceErrorNoticeRecorded.class))
+                .thenReturn(due);
+        when(serializer.deserialize("waiting", com.stockflow.contracts.EInvoiceErrorNoticeRecorded.class))
+                .thenReturn(waiting);
+        when(log.waiting("customer-mail:einvoice.error-notice:" + waiting.noticeId(), NOW)).thenReturn(true);
+
+        retry().retry();
+
+        verify(reader).page(eq(type),
+                org.mockito.ArgumentMatchers.contains("EInvoiceErrorNoticeNotificationListener"), any(),
+                nullable(UUID.class), eq(CustomerEmailRetry.PAGE));
+        verify(errorNotices).on(due);
+        verify(errorNotices, never()).on(waiting);
+        org.mockito.Mockito.verifyNoInteractions(einvoiceDirectory);
+    }
+
+    @Test
     @DisplayName("a message inside its back-off is passed over; the others go back to the listener's proxy")
     void dispatchesWhatIsDue() {
         OrderPlaced due = placed(UUID.randomUUID(), null);

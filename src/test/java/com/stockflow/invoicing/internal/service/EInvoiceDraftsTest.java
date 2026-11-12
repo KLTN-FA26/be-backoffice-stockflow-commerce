@@ -16,6 +16,7 @@ import com.stockflow.invoicing.internal.domain.EInvoiceStatus;
 import com.stockflow.order.api.DeliveredShipment;
 import com.stockflow.order.api.DeliveredShipments;
 import com.stockflow.order.api.FeeKind;
+import com.stockflow.order.api.OrderShippingFee;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -508,5 +509,55 @@ class EInvoiceDraftsTest {
     private static ErrorCode code(Throwable thrown) {
         assertThat(thrown).isInstanceOf(BusinessException.class);
         return ((BusinessException) thrown).errorCode();
+    }
+
+    /** The order's shipping fee of 100,000 whole, the order now meaning to deliver {@code orderUnits} pieces. */
+    private OrderShippingFee shippingFee(long orderUnits) {
+        return new OrderShippingFee(ORDER, "SO-20261101-0007", CUSTOMER, "HD-20261101-0007", "VND",
+                new DeliveredShipment.Fee(FeeKind.SHIPPING_FEE, null, new BigDecimal("100000"), TEN, TEN), orderUnits);
+    }
+
+    @Test
+    @DisplayName("integration item a: the rest closed after every delivery was invoiced - the rest of the shipping fee "
+            + "goes on an original of its own, no shipment, one fee line, dated the day of closing; drawn up once")
+    void theShippingFeeRestOnAnInvoiceOfItsOwn() {
+        // 5,000 pieces ordered, 2,000 delivered and invoiced with 40,000 of the fee; the other 3,000 are closed.
+        drawUp(shipment(UUID.randomUUID(), 40, 0, 5000, DELIVERED_AT));
+        Instant closedAt = DELIVERED_AT.plus(java.time.Duration.ofDays(3));
+        when(shipments.shippingFee(ORDER, closedAt)).thenReturn(Optional.of(shippingFee(2000)));
+        when(invoices.findLiveShippingFeeInvoice(ORDER)).thenAnswer(call -> saved.stream()
+                .filter(invoice -> invoice.shipmentId() == null && invoice.status() != EInvoiceStatus.VOIDED_DRAFT)
+                .findFirst());
+
+        EInvoiceDrafts.DrawnUp rest = drafts.drawUpShippingFeeRest(ORDER, closedAt).orElseThrow();
+
+        assertThat(rest.created()).isTrue();
+        assertThat(rest.invoice().shipmentId()).isNull();
+        assertThat(rest.invoice().issueDate()).isEqualTo(LocalDate.of(2026, 11, 15));
+        assertThat(rest.invoice().lines()).singleElement().satisfies(line -> {
+            assertThat(line.feeKind()).isEqualTo(EInvoiceLine.FeeKind.SHIPPING_FEE);
+            assertThat(line.amount()).isEqualByComparingTo("60000");
+            assertThat(line.taxAmount()).isEqualByComparingTo("6000");
+        });
+
+        EInvoiceDrafts.DrawnUp again = drafts.drawUpShippingFeeRest(ORDER, closedAt).orElseThrow();
+        assertThat(again.created()).isFalse();
+        assertThat(again.invoice().id()).isEqualTo(rest.invoice().id());
+    }
+
+    @Test
+    @DisplayName("integration item a: while a delivery is still to be invoiced, closing draws nothing - that delivery "
+            + "takes the rest of the fee")
+    void aDeliveryStillToBeInvoicedTakesTheRest() {
+        // 5,000 ordered, 2,000 invoiced, 1,000 closed: 2,000 more are on their way (or delivered, not drawn up yet).
+        drawUp(shipment(UUID.randomUUID(), 40, 0, 5000, DELIVERED_AT));
+        when(shipments.shippingFee(any(), any())).thenReturn(Optional.of(shippingFee(4000)));
+
+        assertThat(drafts.drawUpShippingFeeRest(ORDER, DELIVERED_AT)).isEmpty();
+        assertThat(saved).as("nothing drawn up").hasSize(1);
+
+        EInvoice.Snapshot last = drawUp(shipment(UUID.randomUUID(), 40, 0, 4000, DELIVERED_AT));
+        assertThat(last.lines().getLast().amount()).as("the last delivery makes the fee whole")
+                .isEqualByComparingTo("60000");
     }
 }

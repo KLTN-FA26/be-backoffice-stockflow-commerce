@@ -50,6 +50,22 @@ class EInvoiceDraftFailedNotificationListenerTest {
     }
 
     @Test
+    void theShippingFeeRestHasItsOwnWordingAndKey() {
+        EInvoiceDraftFailed feeRest = new EInvoiceDraftFailed(UUID.randomUUID(), "SO-20261101-0007", null,
+                "EINVOICE_NOT_INVOICEABLE");
+
+        InboxMessage sent = EInvoiceDraftFailedNotificationListener.message(feeRest);
+
+        assertThat(sent.title()).isEqualTo(
+                "Chưa lập được hoá đơn cho phần phí vận chuyển còn lại của đơn SO-20261101-0007");
+        assertThat(sent.body()).contains("SO-20261101-0007", "EINVOICE_NOT_INVOICEABLE");
+        assertThat(sent.sourceType()).isEqualTo("ORDER");
+        assertThat(sent.sourceId()).isEqualTo(feeRest.orderId().toString());
+        assertThat(sent.dedupeKey()).as("one per order: there is no shipment to key on")
+                .isEqualTo("einvoice-draft-failed:fee-rest:" + feeRest.orderId());
+    }
+
+    @Test
     void nobodyToTellPostsNothing() {
         when(staff.activeHolders(any(), any())).thenReturn(List.of());
 

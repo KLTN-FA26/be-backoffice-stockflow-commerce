@@ -120,7 +120,30 @@ class EInvoiceTest {
             var noShipment = new EInvoice.Delivery(delivery.orderId(), delivery.orderNumber(), null, null, null, null,
                     delivery.customerId(), delivery.deliveredOn());
             assertThatThrownBy(() -> EInvoice.drawUpOriginal(id, "E-1", noShipment, EInvoiceFixtures.SELLER, BUYER,
-                    EInvoiceFixtures.lines(), false, false)).isInstanceOf(NullPointerException.class);
+                    EInvoiceFixtures.lines(), false, false)).as("goods are always a shipment's (integration item a)")
+                    .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("shipping fee only");
+            EInvoiceLine plate = EInvoiceLine.fee(UUID.randomUUID(), 1, EInvoiceLine.FeeKind.PLATE_FEE, "SKU", "Phi in",
+                    "Lan", new BigDecimal("500000"), BigDecimal.TEN);
+            assertThatThrownBy(() -> EInvoice.drawUpOriginal(id, "E-1", noShipment, EInvoiceFixtures.SELLER, BUYER,
+                    List.of(plate), false, false)).isInstanceOf(IllegalArgumentException.class);
+        }
+
+        @Test
+        @DisplayName("integration item a: an original that names no shipment carries the order's shipping fee rest")
+        void theShippingFeeRestNamesNoShipment() {
+            var delivery = EInvoiceFixtures.delivery();
+            var noShipment = new EInvoice.Delivery(delivery.orderId(), delivery.orderNumber(), null, null, null, null,
+                    delivery.customerId(), delivery.deliveredOn());
+            EInvoiceLine fee = EInvoiceLine.fee(UUID.randomUUID(), 1, EInvoiceLine.FeeKind.SHIPPING_FEE, null,
+                    "Phi van chuyen", "Lan", new BigDecimal("60000"), BigDecimal.TEN);
+
+            EInvoice rest = EInvoice.drawUpOriginal(UUID.randomUUID(), "E-1", noShipment, EInvoiceFixtures.SELLER,
+                    BUYER, List.of(fee), false, false);
+
+            assertThat(rest.shipmentId()).isNull();
+            assertThat(rest.status()).isEqualTo(DRAFT);
+            assertThat(rest.lines()).singleElement().extracting(EInvoiceLine::feeKind)
+                    .isEqualTo(EInvoiceLine.FeeKind.SHIPPING_FEE);
         }
     }
 

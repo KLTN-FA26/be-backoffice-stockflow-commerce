@@ -90,6 +90,19 @@ class EInvoiceAttentionNotificationListenerTest {
     }
 
     @Test
+    @DisplayName("UNKNOWN_TO_PROVIDER: critical, asks for a fresh send and keys on its own cause")
+    void anInvoiceUnknownToTheProviderIsAnnounced() {
+        InboxMessage sent = told(event(Cause.UNKNOWN_TO_PROVIDER, null, SUBMITTED));
+
+        assertThat(sent.category()).isEqualTo("EINVOICE_ATTENTION");
+        assertThat(sent.severity()).isEqualTo(InboxSeverity.CRITICAL);
+        assertThat(sent.title()).isEqualTo("Hoá đơn EINV-20261112-0001 cần gửi lại");
+        assertThat(sent.body()).contains("SO-20261101-0007", "09:15 12/11/2026", "00:00 14/11/2026");
+        assertThat(sent.link()).isEqualTo("/invoicing/einvoices/" + INVOICE);
+        assertThat(sent.dedupeKey()).isEqualTo("einvoice-unknown:" + INVOICE + ":" + SUBMITTED.toEpochMilli());
+    }
+
+    @Test
     @DisplayName("one message per submission and cause: a redelivery repeats the key, the next attempt and the other "
             + "cause have their own")
     void oncePerSubmissionAndCause() {
