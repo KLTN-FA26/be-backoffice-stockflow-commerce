@@ -2461,9 +2461,10 @@ class FtlDispatchIntegrationTest {
     }
 
     @Test
-    @DisplayName("WF-05 DS-05b with a delivery schedule: batch 1 is lost on the way and comes back - the next batch is "
-            + "not released while it is owed (DELIVERY_BATCH_NOT_NEXT); delivered again at the carrier's cost (no fee, "
-            + "a claim against the carrier), its new shipment records batch 1 again; only then is batch 2 released")
+    @DisplayName("WF-05 DS-05b with a delivery schedule: batch 1 is damaged on the way (DAMAGED) and comes back - the "
+            + "next batch is not released while it is owed (DELIVERY_BATCH_NOT_NEXT); delivered again at the carrier's "
+            + "cost (no fee, a claim against the carrier), its new shipment records batch 1 again; only then is "
+            + "batch 2 released")
     void aFailedBatchIsDeliveredAgainBeforeTheNext() throws Exception {
         UUID customer = tx.execute(s -> ReferenceRows.customer(entityManager));
         CustomerSkuRows.Issued sofa = sofaOf(customer);
