@@ -1,5 +1,6 @@
 package com.stockflow.invoicing.internal.controller;
 
+import com.stockflow.invoicing.internal.controller.dto.EInvoiceErrorNoticeResponse;
 import com.stockflow.invoicing.internal.controller.dto.EInvoiceListItemResponse;
 import com.stockflow.invoicing.internal.controller.dto.EInvoiceRegisterEntryResponse;
 import com.stockflow.invoicing.internal.controller.dto.EInvoiceResponse;
@@ -8,6 +9,7 @@ import com.stockflow.invoicing.internal.controller.dto.ProviderCallResponse;
 import com.stockflow.invoicing.internal.domain.EInvoice;
 import com.stockflow.invoicing.internal.domain.EInvoiceQueries;
 import com.stockflow.invoicing.internal.domain.EInvoiceStatus;
+import com.stockflow.invoicing.internal.domain.ErrorNotice;
 import com.stockflow.invoicing.internal.domain.InvoiceParty;
 import com.stockflow.invoicing.internal.domain.ProviderCallLog;
 import com.stockflow.invoicing.internal.domain.TaxRateTotal;
@@ -38,7 +40,12 @@ final class InvoicingWebMapper {
                         total.amount(), total.taxAmount())).toList(),
                 s.subtotal(), s.taxTotal(), s.grandTotal(), s.amountInWords(),
                 s.warnings().stream().sorted().map(Enum::name).toList(), s.rejectionCode(), s.rejectionMessage(),
-                s.submittedAt(), s.issuedAt(), s.voidedAt(), s.voidReason(), s.status().wasIssued(), s.version());
+                s.submittedAt(), s.issuedAt(), s.voidedAt(), s.voidReason(), s.status().wasIssued(), s.version(),
+                s.correctionBasis() == null ? null : s.correctionBasis().name(), s.adjustmentReason(),
+                s.correctionBasis() != null && s.correctionBasis().requiresAgreement(),
+                s.agreementFileKey() == null ? null
+                        : new EInvoiceResponse.Agreement(s.agreementNumber(), s.agreementDate()),
+                s.returnRequestId(), s.listedInvoiceIds());
     }
 
     static EInvoiceListItemResponse toResponse(EInvoiceQueries.Listing row, Instant now) {
@@ -61,6 +68,13 @@ final class InvoicingWebMapper {
     static ProviderCallResponse toResponse(ProviderCallLog.Call call) {
         return new ProviderCallResponse(call.provider(), call.transactionId(), call.operation().name(),
                 call.outcome().name(), call.httpStatus(), call.errorCode(), call.calledAt(), call.durationMs());
+    }
+
+    static EInvoiceErrorNoticeResponse toResponse(ErrorNotice.Snapshot notice) {
+        return new EInvoiceErrorNoticeResponse(notice.id(), notice.einvoiceId(), notice.formCode(),
+                notice.subject().name(), notice.reason(), notice.correctBuyerName(), notice.correctBuyerAddress(),
+                notice.status().name(), notice.sentAt(), notice.responseCode(), notice.responseMessage(),
+                notice.respondedAt(), notice.recordedBy(), notice.createdAt());
     }
 
     static EInvoiceSettingsResponse toResponse(EInvoiceSettingsService.Settings settings) {

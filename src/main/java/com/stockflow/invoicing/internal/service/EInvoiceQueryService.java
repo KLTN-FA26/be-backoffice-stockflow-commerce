@@ -84,6 +84,28 @@ public class EInvoiceQueryService {
                 : files.downloadLink(invoice.pdfFileKey(), name + ".pdf");
     }
 
+    /** The adjustments and the replacement of an invoice, voided ones too, oldest first. */
+    public List<EInvoiceQueries.Listing> corrections(UUID id) {
+        get(id);
+        return queries.correctionsOf(id);
+    }
+
+    /**
+     * A short-lived link to the signed agreement attached to a correction (TT 91 Điều 10 khoản 1 điểm b: kept, and
+     * shown when asked for).
+     *
+     * @throws BusinessException {@code EINVOICE_NOT_FOUND}; {@code EINVOICE_CORRECTION_NOT_APPLICABLE} for an invoice
+     *         with no agreement attached
+     */
+    public DownloadLink agreementLink(UUID id) {
+        EInvoice.Snapshot invoice = get(id);
+        if (invoice.agreementFileKey() == null) {
+            throw new BusinessException(ErrorCode.EINVOICE_CORRECTION_NOT_APPLICABLE,
+                    "Invoice %s has no agreement attached".formatted(invoice.code()));
+        }
+        return files.downloadLink(invoice.agreementFileKey(), "agreement-%s.pdf".formatted(invoice.code()));
+    }
+
     /**
      * Every invoice issued with a date in the period, by symbol and number.
      *

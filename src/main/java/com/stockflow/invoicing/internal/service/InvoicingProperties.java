@@ -14,9 +14,29 @@ import java.util.List;
  * @param dueWarningLead how long before an invoice's deadline the accountant is told; a day by default, which is the
  *                       start of the last day it can be issued on
  * @param sandbox        how the sandbox provider behaves
+ * @param corrections    what is done about an issued invoice that was wrong, where the law read leaves it open
  */
 @ConfigurationProperties(prefix = "stockflow.invoicing")
-public record InvoicingProperties(@DefaultValue("P1D") Duration dueWarningLead, @DefaultValue Sandbox sandbox) {
+public record InvoicingProperties(@DefaultValue("P1D") Duration dueWarningLead, @DefaultValue Sandbox sandbox,
+                                  @DefaultValue Corrections corrections) {
+
+    public InvoicingProperties {
+        corrections = corrections == null ? new Corrections(false) : corrections;
+    }
+
+    /** As before corrections existed: nothing the law leaves open is turned on. */
+    public InvoicingProperties(Duration dueWarningLead, Sandbox sandbox) {
+        this(dueWarningLead, sandbox, new Corrections(false));
+    }
+
+    /**
+     * @param errorNoticeWithCorrection whether a 04/SS-HĐĐT notice may also be recorded for an invoice that was
+     *                                  adjusted or replaced. TT 91 Điều 10 khoản 1 điểm b does not ask for one, and
+     *                                  whether a provider sends it by itself is not verified (plans/E0-legal.md row
+     *                                  2, open item 5): off until the provider or the tax authority says it is wanted
+     */
+    public record Corrections(@DefaultValue("false") boolean errorNoticeWithCorrection) {
+    }
 
     /**
      * @param processingDelay  how long the sandbox takes to "sign and get the tax authority's code": a submission is

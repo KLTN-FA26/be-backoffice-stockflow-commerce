@@ -519,6 +519,12 @@ stockflow:
       processing-delay: ${EINVOICE_SANDBOX_PROCESSING_DELAY:PT5S}
       # Buyer tax codes the sandbox refuses as wrong, to rehearse a rejection.
       rejected-tax-codes: ${EINVOICE_SANDBOX_REJECTED_TAX_CODES:0000000001}
+    corrections:
+      # Whether a 04/SS-HDDT notice may also be recorded for an invoice that was adjusted or replaced. TT 91/2026
+      # Dieu 10 khoan 1 diem b does not ask for one and it is not verified whether a provider sends it by itself
+      # (E0 row 2): off until the provider or the tax authority says otherwise. A wrong buyer name or address
+      # (diem a) is always notified, whatever this says.
+      error-notice-with-correction: ${EINVOICE_ERROR_NOTICE_WITH_CORRECTION:false}
   order:
     contract:
       # Print-sample rounds a new contract offers without charge (14 BR-18, decided 2026-11-05); Sales may change it.

@@ -287,7 +287,7 @@ public class EInvoiceDrafts {
         return contractRate != null && rate.compareTo(contractRate) != 0;
     }
 
-    private static String limited(String value, String field, int max) {
+    static String limited(String value, String field, int max) {
         String stripped = value.strip();
         if (stripped.length() > max) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, field + ": at most " + max + " characters");
@@ -296,7 +296,7 @@ public class EInvoiceDrafts {
     }
 
     /** Blank clears it; otherwise the canonical form the customer module keeps: 10 digits, 10-3, or 12. */
-    private static String taxCode(String entered) {
+    static String taxCode(String entered) {
         if (entered.isBlank()) {
             return null;
         }
@@ -311,7 +311,7 @@ public class EInvoiceDrafts {
         return compact;
     }
 
-    private static String email(String entered) {
+    static String email(String entered) {
         if (entered.isBlank()) {
             return null;
         }
