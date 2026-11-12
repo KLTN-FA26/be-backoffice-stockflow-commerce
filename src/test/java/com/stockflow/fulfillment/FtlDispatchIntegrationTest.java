@@ -2766,6 +2766,88 @@ class FtlDispatchIntegrationTest {
     }
 
     @Test
+    @DisplayName("WF-05 review F4: an order's goods came back and wait for their case while another order of the same "
+            + "SKU has a shipping warehouse chosen - the waiting case is served first: free stock of that SKU is held "
+            + "for it, and the other order is not fully held")
+    void choosingAWarehouseServesTheWaitingCaseFirst() throws Exception {
+        UUID customer = tx.execute(s -> ReferenceRows.customer(entityManager));
+        CustomerSkuRows.Issued sofa = sofaOf(customer);
+        OrderSummary order = ftlOrder(2, customer);
+        UUID[] first = handedOver(order, ghn);
+        failedAndCameBack(first[0], "DAMAGED");
+        UUID caseId = receivedBack(first[0], null);
+        assertThat(heldForCase(caseId)).as("the cartons that came back are in quarantine").isZero();
+        // Fresh stock of the same SKU, inserted without an arrival event: only choosing a warehouse can serve the case.
+        CustomerSkuRows.stock(jdbc, tx, sofa.sku(), 4);
+        UUID other = confirmedOrders().pay(confirmedOrders().signed(customer, ConfirmedOrders.paidOnSigning(),
+                ConfirmedOrders.Line.cartons(sofa, 2, 6_000_000))).orderId();
+
+        var coverage = confirmedOrders().ship(other, HCM);
+
+        assertThat(heldForCase(caseId)).as("the waiting case is held for before the other order").isEqualTo(4);
+        assertThat(coverage.fullyHeld()).as("nothing was left for the other order").isFalse();
+    }
+
+    @Test
+    @DisplayName("WF-05 review F12: a partly shipped order is held for the customer; the carrier's webhook brings the "
+            + "shipment on the road back - no actor, so the customer hold stays open; Sales' decision resolves it as "
+            + "superseded and puts the DELIVERY_FAILED hold on record, raised by nobody when the shipment came back, "
+            + "resolved by the decision; no hold is left open")
+    void aHoldTheCarrierSupersededIsPutOnRecordAtTheDecision() throws Exception {
+        UUID manager = staff("WAREHOUSE_MANAGER", HCM);
+        String secret = "load-webhook-secret-f12-0123456789";
+        String code = "WF" + UUID.randomUUID().toString().substring(0, 6).toUpperCase();
+        UUID carrier = UUID.fromString(data(as(manager, "WAREHOUSE_MANAGER", body(post(BASE + "/carriers"),
+                "{\"code\":\"" + code + "\",\"name\":\"Xe tải webhook\",\"connection\":{\"connectionType\":"
+                        + "\"WEBHOOK_LOAD\",\"webhookSecret\":\"" + secret + "\"}}")).andExpect(status().isCreated()))
+                .path("carrierId").asText());
+        UUID customer = tx.execute(s -> ReferenceRows.customer(entityManager));
+        OrderSummary order = ftlOrder(2, customer);
+        UUID orderId = order.orderId();
+        UUID[] both = packedInTwo(order, false);
+        String loadId = loadOf(confirmed(List.of(both[0]), truck5t), 1);
+        String loadCode = load(loadId).path("code").asText();
+        dispatch(body(post(LOADS + "/" + loadId + "/booking"), "{\"carrierId\":\"" + carrier
+                + "\",\"vehiclePlate\":\"51C-WF.12\",\"waybillNo\":\"WF-" + loadId + "\"}")).andExpect(status().isOk());
+        loadAndSign(loadId, "51C-WF.12");
+        assertThat(orders.findById(orderId).orElseThrow().status()).isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
+        sales(body(post(ORDERS + "/" + orderId + "/hold"), "{\"reasonCode\":\"CUSTOMER\","
+                + "\"note\":\"Khách hẹn lại lịch nhận\"}")).andExpect(status().isOk());
+
+        String shipmentCode = jdbc.queryForObject("SELECT code FROM fulfillment.shipment WHERE id = ?", String.class,
+                both[0]);
+        String back = "{\"loadCode\":\"" + loadCode + "\",\"type\":\"RETURNED\",\"reportedAt\":\"" + Instant.now()
+                + "\",\"shipmentCode\":\"" + shipmentCode + "\"}";
+        hook(code, back, "X-Signature", com.stockflow.fulfillment.internal.service.CarrierWebhookTestSigner
+                .sign(secret, back)).andExpect(jsonPath("$.data.result").value("APPLIED"));
+        assertThat(shipmentStatus(both[0])).isEqualTo("RETURNED");
+        assertThat(jdbc.queryForObject("SELECT hold_reason FROM ordering.customer_order WHERE id = ?", String.class,
+                orderId)).isEqualTo("DELIVERY_FAILED");
+        assertThat(jdbc.queryForList("SELECT reason FROM ordering.order_hold WHERE order_id = ? "
+                + "AND resolved_at IS NULL", String.class, orderId)).as("nobody to resolve it as the carrier reported")
+                .containsExactly("CUSTOMER");
+
+        UUID caseId = receivedBack(both[0], null);
+        sales(body(post(failures(orderId) + "/" + caseId + "/redelivery"), "{\"note\":\"Giao lại chuyến sau\"}"))
+                .andExpect(status().isOk());
+
+        List<Map<String, Object>> rows = jdbc.queryForList("SELECT reason, note, raised_by, resolved_by, "
+                + "resolution_note, resolved_at FROM ordering.order_hold WHERE order_id = ? ORDER BY raised_at, reason",
+                orderId);
+        assertThat(rows).hasSize(2);
+        // The same Sales caller held the order and decided the case.
+        Object salesUser = rows.get(0).get("raised_by");
+        assertThat(rows.get(0)).containsEntry("reason", "CUSTOMER").containsEntry("resolved_by", salesUser)
+                .containsEntry("resolution_note",
+                        "Superseded: a shipment came back; the order was held for the failed delivery");
+        assertThat(rows.get(1)).containsEntry("reason", "DELIVERY_FAILED").containsEntry("note", "OTHER")
+                .containsEntry("resolved_by", salesUser).containsEntry("resolution_note", "Giao lại chuyến sau");
+        assertThat(rows.get(1).get("raised_by")).as("the carrier reported it").isNull();
+        assertThat(rows).allSatisfy(r -> assertThat(r.get("resolved_at")).isNotNull());
+        assertThat(orders.findById(orderId).orElseThrow().status()).isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
+    }
+
+    @Test
     @DisplayName("WF-05 DS-05b with a delivery schedule: batch 1 is damaged on the way (DAMAGED) and comes back - the "
             + "next batch is not released while it is owed (DELIVERY_BATCH_NOT_NEXT); delivered again at the carrier's "
             + "cost (no fee, a claim against the carrier), its new shipment records batch 1 again; only then is "

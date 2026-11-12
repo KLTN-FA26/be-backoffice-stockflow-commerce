@@ -763,7 +763,9 @@ class PermissionMatrixTest {
                 "GET /api/v1/orders/{orderId}/delivery-failures", "sales-orders:READ",
                 "POST /api/v1/orders/{orderId}/delivery-failures/{caseId}/redelivery", "sales-order-holds:UPDATE",
                 "POST /api/v1/orders/{orderId}/delivery-failures/{caseId}/cancellation",
-                "sales-order-cancellations:UPDATE");
+                "sales-order-cancellations:UPDATE",
+                // WF-05 review F6.1: what came back with no case yet is cancelled under the same permission.
+                "POST /api/v1/orders/{orderId}/delivery-failures/cancellation", "sales-order-cancellations:UPDATE");
         expected.forEach((key, code) -> {
             assertThat(byKey).as(key).containsKey(key);
             RequiresPermission rp = byKey.get(key).rp();
