@@ -65,4 +65,35 @@ class SellerProfileRequirementTest {
             });
         }
     }
+
+    @Test
+    @DisplayName("review finding 5: prod refuses a tax code that is not one, and a value too long for its column")
+    void prodRefusesASellerThatCannotGoOnAnInvoice() {
+        record Wrong(int field, String value, String named) { }
+        for (Wrong wrong : new Wrong[] {
+                new Wrong(1, "0312345678 (HCM)", "SELLER_TAX_CODE"),
+                new Wrong(1, "031234567", "SELLER_TAX_CODE"),
+                new Wrong(1, "031234567890", "SELLER_TAX_CODE"),
+                new Wrong(1, "0312345678-01", "SELLER_TAX_CODE"),
+                new Wrong(0, "C".repeat(201), "SELLER_NAME"),
+                new Wrong(2, "D".repeat(501), "SELLER_ADDRESS"),
+                new Wrong(3, "N".repeat(201), "SELLER_REPRESENTATIVE"),
+                new Wrong(4, "T".repeat(101), "SELLER_REPRESENTATIVE_TITLE")}) {
+            String[] values = COMPLETE.clone();
+            values[wrong.field()] = values[wrong.field()].substring(0, values[wrong.field()].indexOf('=') + 1)
+                    + wrong.value();
+            runner.withPropertyValues("spring.profiles.active=prod").withPropertyValues(values)
+                    .run(context -> assertThat(context).as(wrong.named()).hasFailed().getFailure().rootCause()
+                            .isInstanceOf(IllegalStateException.class).hasMessageContaining(wrong.named()));
+        }
+        // A dependent unit's 10-3, and values exactly as long as their columns, start.
+        String[] edge = {
+                "stockflow.seller.name=" + "C".repeat(200),
+                "stockflow.seller.tax-code=0312345678-001",
+                "stockflow.seller.address=" + "D".repeat(500),
+                "stockflow.seller.representative=" + "N".repeat(200),
+                "stockflow.seller.representative-title=" + "T".repeat(100)};
+        runner.withPropertyValues("spring.profiles.active=prod").withPropertyValues(edge)
+                .run(context -> assertThat(context).hasNotFailed());
+    }
 }
