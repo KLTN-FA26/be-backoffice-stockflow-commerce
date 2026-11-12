@@ -158,7 +158,7 @@ public class EInvoiceDrafts {
      * there is one, else a new draft when some of the fee is on no invoice and no delivery is left to carry it
      * ({@link FeeAllocation#shippingRest}); empty when there is nothing to draw up.
      *
-     * <h2>Why an original of its own, and why dated the day of closing</h2>
+     * <h2>Why an original of its own, and why dated the day of the last delivery</h2>
      *
      * <p>The fee is the price of carrying the order, a service (NĐ 254 Điều 9 khoản 2: its invoice is drawn up when
      * it is done), and what is owed for it is invoiced in full. It was invoiced delivery by delivery, each delivery at
@@ -169,15 +169,22 @@ public class EInvoiceDrafts {
      * is not what an adjustment is for (TT 91 Điều 10: errors, returns, discounts), and the missing amount goes on a
      * new original that names no shipment and carries that one fee line.</p>
      *
-     * <p>It is dated the day the rest was closed: the carrying was finished at the last delivery, but the fee's last
-     * share was only known when the order stopped meaning to deliver anything more. Dating it back to the last
-     * delivery would make it overdue the day it was drawn up ({@code IssueDeadline}: the working day after its date).</p>
+     * <p>It is dated the day of the order's last delivery ({@link OrderShippingFee#lastDeliveredAt}), and at that
+     * day's VAT rate. A service is invoiced when it is completed (Điều 9 khoản 2), and the carrying the fee pays for
+     * was completed then, not when the order's rest was closed - which may be weeks later and is an office decision,
+     * not a service. The legal review (E0) does not say when a carriage billed apart from the goods counts as
+     * completed; the last delivery is the date this code takes, and it is an open question for the business owner.
+     * The price is that such an invoice is usually overdue the day it is drawn up: its deadline ({@code IssueDeadline},
+     * the working day after its date) has passed, the accountants are warned of it as of any late draft, and it is
+     * issued like any other. Only when no delivery has a time - an
+     * order none of whose shipments was delivered - does it fall back to the day of closing.</p>
      *
      * <p>In its own transaction ({@code REQUIRES_NEW}) and under the order's invoicing lock, for the reasons
      * {@link #drawUp} gives: a delivery's draft drawn up at the same moment either sees this one's fee line or is seen
      * by it, so the fee is carried once, by whichever is decided second taking only what the first left.</p>
      *
-     * @param closedAt when the order's rest was closed: the invoice's date, and the day of its VAT rate
+     * @param closedAt when the order's rest was closed: the invoice's date and the day of its VAT rate only when no
+     *                 delivery of the order has a time
      * @throws BusinessException {@code EINVOICE_NOT_INVOICEABLE} for an order not priced in dong;
      *         {@code SELLER_PROFILE_UNAVAILABLE} while the seller is not configured
      */
@@ -211,10 +218,12 @@ public class EInvoiceDrafts {
         DeliveredShipment.Fee fee = order.fee();
         EInvoiceLine line = EInvoiceLine.fee(Identifiers.newId(), 1, EInvoiceLine.FeeKind.SHIPPING_FEE, null,
                 t.getString("einvoice.line.shippingFee.rest"), t.getString("einvoice.unit.fee"), rest, fee.taxRate());
-        LocalDate closedOn = BusinessCalendar.date(closedAt == null ? clock.instant() : closedAt);
-        EInvoice invoice = EInvoice.drawUpOriginal(Identifiers.newId(), invoices.nextCode(closedOn),
+        Instant completedAt = order.lastDeliveredAt() != null ? order.lastDeliveredAt()
+                : closedAt != null ? closedAt : clock.instant();
+        LocalDate completedOn = BusinessCalendar.date(completedAt);
+        EInvoice invoice = EInvoice.drawUpOriginal(Identifiers.newId(), invoices.nextCode(completedOn),
                 new EInvoice.Delivery(order.orderId(), order.orderNumber(), order.contractNumber(), null, null, null,
-                        order.customerId(), closedOn),
+                        order.customerId(), completedOn),
                 new InvoiceParty(seller.name(), seller.taxCode(), seller.address(), null),
                 buyerOf(order.customerId()), List.of(line), differs(fee.taxRate(), fee.contractTaxRate()),
                 fee.contractTaxRate() == null);

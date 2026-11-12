@@ -116,7 +116,8 @@ class DeliveredShipmentsService implements DeliveredShipments {
 
     /**
      * The shipping fee carries no SKU, so its rate is the day's STANDARD one - as on a delivery's invoice - and the
-     * rate the order fixed is handed over beside it.
+     * rate the order fixed is handed over beside it. The day is that of the last delivery: the carrying ended then,
+     * and the invoice of the fee is dated then ({@code EInvoiceDrafts.drawUpShippingFeeRest}).
      */
     @Override
     @Transactional(readOnly = true)
@@ -133,12 +134,18 @@ class DeliveredShipmentsService implements DeliveredShipments {
             return Optional.empty();
         }
         OrderFee fee = shipping.get();
-        Map<String, BigDecimal> rates = taxRates.onDay(BusinessCalendar.date(on));
+        Instant lastDeliveredAt = order.shipments().stream()
+                .filter(shipment -> shipment.status() == OrderShipmentStatus.DELIVERED && shipment.outcomeAt() != null)
+                .map(OrderShipment::outcomeAt)
+                .max(Instant::compareTo)
+                .orElse(null);
+        Map<String, BigDecimal> rates = taxRates.onDay(BusinessCalendar.date(lastDeliveredAt == null ? on
+                : lastDeliveredAt));
         DeliveredShipment.Fee whole = new DeliveredShipment.Fee(FeeKind.SHIPPING_FEE, null, fee.amount().amount(),
                 rateOf(TaxClass.valueOf(TaxRates.STANDARD), rates, fee.taxRate()), fee.taxRate());
         String contractNumber = contracts.findLiveByOrderId(orderId).map(SalesContract::contractNumber).orElse(null);
         return Optional.of(new OrderShippingFee(orderId, order.orderNumber().value(), order.customerId(),
-                contractNumber, currency(order), whole, orderUnits(order)));
+                contractNumber, currency(order), whole, orderUnits(order), lastDeliveredAt));
     }
 
     private static long orderUnits(Order order) {
