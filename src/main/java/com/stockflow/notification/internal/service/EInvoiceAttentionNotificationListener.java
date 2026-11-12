@@ -19,13 +19,14 @@ import java.util.Objects;
 import java.util.ResourceBundle;
 
 /**
- * Tells the people who issue e-invoices that one was refused, or has waited too long for the provider (WF-05 E5; plan
+ * Tells the people who issue e-invoices that one was refused, has waited too long for the provider, or is no longer known
+ * to the provider and will not be sent again unless they send it (WF-05 E5 and E3; plan
  * §1.4 "Bị từ chối hoặc lỗi thì báo kế toán"). Without it a refusal is seen only by whoever happens to open the list,
  * while the invoice's deadline - the working day after its date - keeps running. An in-app message, as the deadline
  * warning is ({@link EInvoiceDueNotificationListener}); nothing by e-mail.
  *
  * <p>Who is told is decided by permission: the holders of {@link EInvoiceDueNotificationListener#AUDIENCE}. One message
- * per person, invoice, cause and submission ({@code einvoice-rejected:<id>:<submittedAt>}): an invoice refused,
+ * per person, invoice, cause and submission ({@code einvoice-<cause>:<id>:<submittedAt>}): an invoice refused,
  * corrected, sent again and refused again is a new refusal and is announced again; a redelivered event tells nobody
  * twice. System text only - codes and dates; the provider's sentence about a refusal is read on the invoice.</p>
  */
@@ -64,19 +65,24 @@ class EInvoiceAttentionNotificationListener {
     static InboxMessage message(EInvoiceNeedsAttention event) {
         ResourceBundle texts = ResourceBundle.getBundle("i18n.messages", Locale.forLanguageTag("vi"));
         String due = MOMENT.format(event.issueDueAt().atZone(BusinessCalendar.ZONE));
-        boolean rejected = event.cause() == EInvoiceNeedsAttention.Cause.REJECTED;
-        String key = rejected ? "inbox.einvoice.rejected" : "inbox.einvoice.stuck";
-        String body = rejected
+        String sent = MOMENT.format(event.submittedAt().atZone(BusinessCalendar.ZONE));
+        String kind = switch (event.cause()) {
+            case REJECTED -> "rejected";
+            case STUCK_SUBMITTING -> "stuck";
+            case UNKNOWN_TO_PROVIDER -> "unknown";
+        };
+        String key = "inbox.einvoice." + kind;
+        String body = event.cause() == EInvoiceNeedsAttention.Cause.REJECTED
                 ? texts.getString(key + ".body").formatted(event.code(), event.orderNumber(),
                         event.rejectionCode() == null ? "-" : event.rejectionCode(), due)
-                : texts.getString(key + ".body").formatted(event.code(), event.orderNumber(),
-                        MOMENT.format(event.submittedAt().atZone(BusinessCalendar.ZONE)), due);
-        return new InboxMessage(CATEGORY, rejected ? InboxSeverity.CRITICAL : InboxSeverity.WARN,
-                texts.getString(key + ".title").formatted(event.code()),
+                : texts.getString(key + ".body").formatted(event.code(), event.orderNumber(), sent, due);
+        // Stuck still resolves itself when the provider answers; refused and unknown do not, whoever waits.
+        InboxSeverity severity = event.cause() == EInvoiceNeedsAttention.Cause.STUCK_SUBMITTING
+                ? InboxSeverity.WARN : InboxSeverity.CRITICAL;
+        return new InboxMessage(CATEGORY, severity, texts.getString(key + ".title").formatted(event.code()),
                 body.length() <= InboxMessage.BODY_MAX ? body : body.substring(0, InboxMessage.BODY_MAX),
                 "/invoicing/einvoices/" + event.einvoiceId(), EInvoiceDueNotificationListener.SOURCE_TYPE,
                 event.einvoiceId().toString(),
-                (rejected ? "einvoice-rejected:" : "einvoice-stuck:") + event.einvoiceId() + ":"
-                        + event.submittedAt().toEpochMilli());
+                "einvoice-" + kind + ":" + event.einvoiceId() + ":" + event.submittedAt().toEpochMilli());
     }
 }

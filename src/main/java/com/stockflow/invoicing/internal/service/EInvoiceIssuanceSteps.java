@@ -92,6 +92,10 @@ class EInvoiceIssuanceSteps {
      * SUBMITTING → REJECTED, if the invoice still waits for {@code transactionId}. The accountants are told in the same
      * transaction ({@link EInvoiceNeedsAttention}): a refusal nobody hears of leaves the invoice unissued while its
      * deadline runs, and the refusal and its announcement are recorded together or not at all.
+     *
+     * <p>Except for {@link EInvoice#UNKNOWN_TO_PROVIDER_CODE}: that is not a refusal but the first half of sending an
+     * invoice again as a new transaction ({@link EInvoiceIssuance#resubmitAsNew}), done at the accountant's own
+     * request. Announcing it would tell the accountant that an invoice was refused at the moment it is being sent.</p>
      */
     @Transactional
     public void rejected(UUID id, String transactionId, String errorCode, String message) {
@@ -101,6 +105,9 @@ class EInvoiceIssuanceSteps {
         }
         invoice.rejected(errorCode == null || errorCode.isBlank() ? "REJECTED" : errorCode, message);
         EInvoice.Snapshot refused = invoices.save(invoice).snapshot();
+        if (EInvoice.UNKNOWN_TO_PROVIDER_CODE.equals(refused.rejectionCode())) {
+            return;
+        }
         events.publishEvent(new EInvoiceNeedsAttention(refused.id(), refused.code(), refused.orderId(),
                 refused.orderNumber(), EInvoiceNeedsAttention.Cause.REJECTED, refused.rejectionCode(),
                 refused.submittedAt(), refused.issueDueAt()));
@@ -173,7 +180,10 @@ class EInvoiceIssuanceSteps {
 
     /**
      * Marks an invoice still waiting for {@code transactionId} as unknown to the provider and no longer sent on its
-     * own (package E3).
+     * own (package E3). The accountants are told in the same transaction ({@link EInvoiceNeedsAttention}, cause
+     * {@code UNKNOWN_TO_PROVIDER}): from here on nothing sends it, so an invoice marked in silence would sit SUBMITTING
+     * while its deadline runs. Marked once, so announced once; the stuck-submission notice may also have gone out
+     * earlier, and says something else (still waiting, not given up on).
      *
      * @return whether it was marked now, as opposed to already marked or no longer waiting
      */
@@ -183,7 +193,10 @@ class EInvoiceIssuanceSteps {
         if (invoice == null || !invoice.flagUnknownToProvider()) {
             return false;
         }
-        invoices.save(invoice);
+        EInvoice.Snapshot unknown = invoices.save(invoice).snapshot();
+        events.publishEvent(new EInvoiceNeedsAttention(unknown.id(), unknown.code(), unknown.orderId(),
+                unknown.orderNumber(), EInvoiceNeedsAttention.Cause.UNKNOWN_TO_PROVIDER, null, unknown.submittedAt(),
+                unknown.issueDueAt()));
         return true;
     }
 
