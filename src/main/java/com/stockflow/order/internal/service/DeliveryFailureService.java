@@ -28,6 +28,7 @@ import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -298,7 +299,16 @@ public class DeliveryFailureService {
     /** The cases in {@code status} (any when null), oldest first, at most {@code limit}: what waits for Sales. */
     @Transactional(readOnly = true)
     public List<CaseView> list(DeliveryFailureCase.Status status, int limit) {
-        return cases.list(status, Math.max(1, Math.min(limit, 200))).stream().map(this::view).toList();
+        return list(status, null, limit);
+    }
+
+    /**
+     * The same, of the cases whose goods came back to one of {@code warehouses} when it is not null (a warehouse
+     * manager's: {@code OrderWarehouseVisibility.limitOf}); empty: none.
+     */
+    @Transactional(readOnly = true)
+    public List<CaseView> list(DeliveryFailureCase.Status status, Set<UUID> warehouses, int limit) {
+        return cases.list(status, warehouses, Math.max(1, Math.min(limit, 200))).stream().map(this::view).toList();
     }
 
     // ------------------------------------------------------------------ helpers

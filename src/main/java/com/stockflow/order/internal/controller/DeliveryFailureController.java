@@ -1,6 +1,8 @@
 package com.stockflow.order.internal.controller;
 
 import com.stockflow.common.api.ApiResponse;
+import com.stockflow.common.error.BusinessException;
+import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.security.Action;
 import com.stockflow.common.security.AuthenticatedUser;
 import com.stockflow.common.security.CurrentUser;
@@ -11,6 +13,7 @@ import com.stockflow.order.internal.controller.dto.DeliveryFailureCaseRequests;
 import com.stockflow.order.internal.controller.dto.DeliveryFailureCaseResponse;
 import com.stockflow.order.internal.domain.DeliveryFailureCase;
 import com.stockflow.order.internal.service.DeliveryFailureService;
+import com.stockflow.order.internal.service.OrderWarehouseVisibility;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
@@ -31,7 +34,9 @@ import java.util.UUID;
  * not delivered.
  *
  * <p>No resource of its own. Reading is reading orders ({@code sales-orders:READ}, back office only - the portal
- * customer holds it for their own orders). Delivering again lifts the order's hold, so it answers to
+ * customer holds it for their own orders), limited for a warehouse manager as the order endpoints are
+ * ({@link OrderWarehouseVisibility}): the list to the cases whose goods came back to their warehouses, one order's
+ * cases to an order of their warehouses. Delivering again lifts the order's hold, so it answers to
  * {@code sales-order-holds:UPDATE}, Sales' (QD-12); cancelling what was not delivered is the closure of the rest with
  * its fee, so it answers to {@code sales-order-cancellations:UPDATE}, as {@code POST /orders/{id}/remainder-closure}
  * does. The release of a redelivery is the warehouse manager's, on the release endpoint as any release.</p>
@@ -44,9 +49,11 @@ import java.util.UUID;
 class DeliveryFailureController {
 
     private final DeliveryFailureService failures;
+    private final OrderWarehouseVisibility warehouseVisibility;
 
-    DeliveryFailureController(DeliveryFailureService failures) {
+    DeliveryFailureController(DeliveryFailureService failures, OrderWarehouseVisibility warehouseVisibility) {
         this.failures = failures;
+        this.warehouseVisibility = warehouseVisibility;
     }
 
     @GetMapping("/delivery-failures")
@@ -58,7 +65,9 @@ class DeliveryFailureController {
             @RequestParam(defaultValue = "50") int limit,
             @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
-        return ApiResponse.ok(failures.list(status, limit).stream().map(DeliveryFailureController::toResponse).toList());
+        // A warehouse manager reads the cases of goods that came back to their warehouses only (5-7 review M1).
+        return ApiResponse.ok(failures.list(status, OrderWarehouseVisibility.limitOf(user), limit).stream()
+                .map(DeliveryFailureController::toResponse).toList());
     }
 
     @GetMapping("/{orderId}/delivery-failures")
@@ -67,6 +76,10 @@ class DeliveryFailureController {
     public ApiResponse<List<DeliveryFailureCaseResponse>> ofOrder(@PathVariable UUID orderId,
                                                                   @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
+        // As GET /orders/{id}: an order of another warehouse is not found for a warehouse manager.
+        if (!warehouseVisibility.visible(orderId, user)) {
+            throw new BusinessException(ErrorCode.NOT_FOUND, "No order with id " + orderId);
+        }
         return ApiResponse.ok(failures.ofOrder(orderId).stream().map(DeliveryFailureController::toResponse).toList());
     }
 
