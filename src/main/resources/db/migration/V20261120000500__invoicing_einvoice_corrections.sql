@@ -27,10 +27,11 @@ ALTER TABLE invoicing.einvoice
     ADD COLUMN return_request_id UUID,
     ADD CONSTRAINT fk_einvoice_return_request FOREIGN KEY (return_request_id) REFERENCES ordering.return_request (id),
     -- An original corrects nothing. A replacement corrects an error; an adjustment an error, a return or a trade discount.
+    -- COALESCE: a correction with no basis would make the comparisons NULL, and a CHECK lets NULL through.
     ADD CONSTRAINT ck_einvoice_correction_basis CHECK (
         (type = 'ORIGINAL' AND correction_basis IS NULL)
-        OR (type = 'ADJUSTMENT' AND correction_basis IN ('ERROR', 'RETURN', 'TRADE_DISCOUNT'))
-        OR (type = 'REPLACEMENT' AND correction_basis = 'ERROR')),
+        OR (type = 'ADJUSTMENT' AND COALESCE(correction_basis, '') IN ('ERROR', 'RETURN', 'TRADE_DISCOUNT'))
+        OR (type = 'REPLACEMENT' AND COALESCE(correction_basis, '') = 'ERROR')),
     -- TT 91 Điều 10 khoản 1 điểm b: the correction says what was wrong.
     ADD CONSTRAINT ck_einvoice_correction_reason CHECK (
         type = 'ORIGINAL' OR COALESCE(btrim(adjustment_reason), '') <> ''),
