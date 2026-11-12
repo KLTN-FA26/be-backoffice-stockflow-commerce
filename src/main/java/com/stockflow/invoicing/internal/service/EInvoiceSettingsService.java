@@ -13,8 +13,8 @@ import java.util.List;
  * The e-invoice settings an administrator reads and changes at runtime: which provider issues, under which series, and
  * whether a complete draft is issued without waiting for the accountant (plan §1.4 "cấu hình tự phát hành").
  *
- * <p>Only automatic issuing is changed here. The provider's account and the series of a real provider come with its
- * adapter (package E3); until then the sandbox and its seeded series are all there is to configure.</p>
+ * <p>Only automatic issuing is changed here. A provider's account, its series and which provider is in use are
+ * {@link EInvoiceProviderAccountService}'s.</p>
  */
 @Service
 public class EInvoiceSettingsService {

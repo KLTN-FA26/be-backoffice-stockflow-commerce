@@ -2981,17 +2981,18 @@ Table invoicing.einvoice_provider_config [headercolor: #A0522D] {
 }
 
 Table invoicing.einvoice_series [headercolor: #A0522D] {
-  id               uuid [pk]
-  provider         varchar(32) [not null]
-  template_code    varchar(1) [not null]
-  symbol           varchar(6) [not null]
-  year             smallint [not null]
-  active           boolean [not null, default: true]
-  version          bigint [not null, default: 0]
-  created_at       timestamptz [not null, default: `now()`]
-  created_by       varchar(100)
-  last_modified_at timestamptz
-  last_modified_by varchar(100)
+  id                     uuid [pk]
+  provider               varchar(32) [not null]
+  template_code          varchar(1) [not null]
+  symbol                 varchar(6) [not null]
+  year                   smallint [not null]
+  active                 boolean [not null, default: true]
+  version                bigint [not null, default: 0]
+  created_at             timestamptz [not null, default: `now()`]
+  created_by             varchar(100)
+  last_modified_at       timestamptz
+  last_modified_by       varchar(100)
+  provider_template_code varchar(20)
   indexes {
     (provider, template_code, symbol) [unique]
   }

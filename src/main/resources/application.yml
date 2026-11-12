@@ -519,6 +519,21 @@ stockflow:
       processing-delay: ${EINVOICE_SANDBOX_PROCESSING_DELAY:PT5S}
       # Buyer tax codes the sandbox refuses as wrong, to rehearse a rejection.
       rejected-tax-codes: ${EINVOICE_SANDBOX_REJECTED_TAX_CODES:0000000001}
+    viettel:
+      # Viettel SInvoice (WF-05 E3). Not in use until an administrator stores its account and switches to it
+      # (PUT /api/v1/einvoice-settings/providers/VIETTEL_SINVOICE/account, then .../activation); the account's password
+      # is sealed with STOCKFLOW_SECRETS_KEY and is not configuration. Viettel's public description names one API host;
+      # a test account is used against it, so the sandbox address differs only if Viettel gives another.
+      production-url: ${EINVOICE_VIETTEL_PRODUCTION_URL:https://api-vinvoice.viettel.vn}
+      sandbox-url: ${EINVOICE_VIETTEL_SANDBOX_URL:https://api-vinvoice.viettel.vn}
+      # Viettel asks for at least 90 seconds before a transaction is sent again, and does not stop two submissions of
+      # one transaction that overlap: the answer is waited for longer than that, and a transaction a look-up does not
+      # find is not submitted again inside the quiet period, nor after Viettel has forgotten its id (three days).
+      read-timeout: ${EINVOICE_VIETTEL_READ_TIMEOUT:PT95S}
+      resubmit-quiet-period: ${EINVOICE_VIETTEL_RESUBMIT_QUIET_PERIOD:PT90S}
+      resubmit-window: ${EINVOICE_VIETTEL_RESUBMIT_WINDOW:P3D}
+      file-pause: ${EINVOICE_VIETTEL_FILE_PAUSE:PT2S}
+      payment-status-paid: ${EINVOICE_VIETTEL_PAYMENT_STATUS_PAID:true}
   order:
     contract:
       # Print-sample rounds a new contract offers without charge (14 BR-18, decided 2026-11-05); Sales may change it.
