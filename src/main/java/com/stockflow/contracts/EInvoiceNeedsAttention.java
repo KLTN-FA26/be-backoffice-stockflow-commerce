@@ -15,8 +15,13 @@ import java.util.UUID;
  *       time it remembers one (WF-05 E3). It is not sent again on its own, since the same transaction id could become
  *       a second invoice: the accountant sends it as a new transaction. Published once per submission, when the
  *       invoice is marked.</li>
+ *   <li>{@link Cause#DELIVERY_FAILED_AFTER_SUBMISSION} - the warehouse corrected the invoice's delivery to a failure
+ *       after the invoice went to the provider (kltn-docs 21 §4.5). An invoice that may exist in law is never voided by
+ *       the system, so it stands for goods that were not delivered until the accountant draws up a full decrease
+ *       adjustment (TT 91 Điều 10). Published in the transaction that handles the correction, once per invoice and
+ *       submission.</li>
  * </ul>
- * Either way the deadline of the working day after the invoice's date keeps running (NĐ 254/2026/NĐ-CP Phụ lục điểm 7).
+ * For the first three the deadline of the working day after the invoice's date keeps running (NĐ 254/2026/NĐ-CP Phụ lục điểm 7).
  * Notification tells the people who issue invoices; nothing else listens.
  *
  * <p>Codes, ids and instants only: the provider's sentence about a refusal stays on the invoice, behind its
@@ -31,5 +36,5 @@ import java.util.UUID;
 public record EInvoiceNeedsAttention(UUID einvoiceId, String code, UUID orderId, String orderNumber, Cause cause,
                                      String rejectionCode, Instant submittedAt, Instant issueDueAt) {
 
-    public enum Cause { REJECTED, STUCK_SUBMITTING, UNKNOWN_TO_PROVIDER }
+    public enum Cause { REJECTED, STUCK_SUBMITTING, UNKNOWN_TO_PROVIDER, DELIVERY_FAILED_AFTER_SUBMISSION }
 }

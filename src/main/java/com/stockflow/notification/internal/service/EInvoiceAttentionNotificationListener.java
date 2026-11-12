@@ -19,8 +19,9 @@ import java.util.Objects;
 import java.util.ResourceBundle;
 
 /**
- * Tells the people who issue e-invoices that one was refused, has waited too long for the provider, or is no longer known
- * to the provider and will not be sent again unless they send it (WF-05 E5 and E3; plan
+ * Tells the people who issue e-invoices that one was refused, has waited too long for the provider, is no longer known
+ * to the provider and will not be sent again unless they send it (WF-05 E5 and E3), or invoices a delivery that was
+ * corrected to a failure after it went to the provider and needs a decrease adjustment (kltn-docs 21 §4.5; plan
  * §1.4 "Bị từ chối hoặc lỗi thì báo kế toán"). Without it a refusal is seen only by whoever happens to open the list,
  * while the invoice's deadline - the working day after its date - keeps running. An in-app message, as the deadline
  * warning is ({@link EInvoiceDueNotificationListener}); nothing by e-mail.
@@ -65,11 +66,12 @@ class EInvoiceAttentionNotificationListener {
     static InboxMessage message(EInvoiceNeedsAttention event) {
         ResourceBundle texts = ResourceBundle.getBundle("i18n.messages", Locale.forLanguageTag("vi"));
         String due = MOMENT.format(event.issueDueAt().atZone(BusinessCalendar.ZONE));
-        String sent = MOMENT.format(event.submittedAt().atZone(BusinessCalendar.ZONE));
+        String sent = event.submittedAt() == null ? "-" : MOMENT.format(event.submittedAt().atZone(BusinessCalendar.ZONE));
         String kind = switch (event.cause()) {
             case REJECTED -> "rejected";
             case STUCK_SUBMITTING -> "stuck";
             case UNKNOWN_TO_PROVIDER -> "unknown";
+            case DELIVERY_FAILED_AFTER_SUBMISSION -> "delivery-failed";
         };
         String key = "inbox.einvoice." + kind;
         String body = event.cause() == EInvoiceNeedsAttention.Cause.REJECTED
@@ -83,6 +85,7 @@ class EInvoiceAttentionNotificationListener {
                 body.length() <= InboxMessage.BODY_MAX ? body : body.substring(0, InboxMessage.BODY_MAX),
                 "/invoicing/einvoices/" + event.einvoiceId(), EInvoiceDueNotificationListener.SOURCE_TYPE,
                 event.einvoiceId().toString(),
-                "einvoice-" + kind + ":" + event.einvoiceId() + ":" + event.submittedAt().toEpochMilli());
+                "einvoice-" + kind + ":" + event.einvoiceId() + ":"
+                        + (event.submittedAt() == null ? 0 : event.submittedAt().toEpochMilli()));
     }
 }
