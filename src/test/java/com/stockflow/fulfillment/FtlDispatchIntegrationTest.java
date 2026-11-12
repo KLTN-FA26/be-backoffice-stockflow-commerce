@@ -3168,6 +3168,46 @@ class FtlDispatchIntegrationTest {
     }
 
     @Test
+    @DisplayName("WF-05 review F3, refused: the released redelivery's picker took a carton - cancelling what was not "
+            + "delivered is 409 DELIVERY_FAILURE_INVALID_TRANSITION, and nothing changes: the case REDELIVERY, the "
+            + "redelivery's task not cancelled, no settlement, the line not closed")
+    void aRedeliveryPickedAlreadyIsNotWithdrawn() throws Exception {
+        UUID customer = tx.execute(s -> ReferenceRows.customer(entityManager));
+        OrderSummary order = ftlOrder(2, customer);
+        UUID orderId = order.orderId();
+        UUID[] first = handedOver(order, ghn);
+        failedAndCameBack(first[0], "DAMAGED");
+        UUID caseId = receivedBack(first[0], null);
+        releasedFromQuarantine(first[0]);
+        Await.until("the goods that came back held for their order again", ASYNC, () -> heldForCase(caseId) == 4);
+        sales(body(post(failures(orderId) + "/" + caseId + "/redelivery"), "{\"note\":\"Giao lại\"}"))
+                .andExpect(status().isOk());
+        WithCurrentUser.call(confirmedOrders().sales(), DataScope.ALL,
+                () -> context.getBean(OrderReleases.class).release(orderId, HCM, coordinator));
+        UUID task = UUID.fromString(data(oc(body(post(BASE + "/tasks"), "{\"orderId\":\"" + orderId
+                + "\",\"assignedUserId\":\"" + picker + "\"}")).andExpect(status().isCreated()))
+                .path("taskId").asText());
+        packer(post(BASE + "/tasks/" + task + "/picking-start")).andExpect(status().isOk());
+        Map<String, Object> line = jdbc.queryForList("SELECT id, location_code, lpn FROM fulfillment.pick_line "
+                + "WHERE pick_id = ? ORDER BY id", task).get(0);
+        packer(body(post(BASE + "/tasks/" + task + "/pick-lines/" + line.get("id") + "/confirmation"),
+                "{\"locationCode\":\"" + line.get("location_code") + "\",\"lpn\":\"" + line.get("lpn") + "\"}"))
+                .andExpect(status().isOk());
+
+        sales(body(post(failures(orderId) + "/" + caseId + "/cancellation"), cancelKeeping(1_000_000)))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("DELIVERY_FAILURE_INVALID_TRANSITION"));
+        assertThat(caseRow(caseId)).containsEntry("status", "REDELIVERY");
+        assertThat(jdbc.queryForObject("SELECT status FROM fulfillment.pick WHERE id = ?", String.class, task))
+                .isNotEqualTo("CANCELLED");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM payment.order_settlement WHERE order_id = ?", Long.class,
+                orderId)).isZero();
+        assertThat(jdbc.queryForObject("SELECT SUM(cancelled_quantity) FROM ordering.order_line WHERE order_id = ?",
+                Integer.class, orderId)).isZero();
+        assertThat(orders.findById(orderId).orElseThrow().status()).isNotEqualTo(OrderStatus.RETURNED);
+    }
+
+    @Test
     @DisplayName("WF-05 review F8: nothing paid (everything after delivery, on credit), the shipment comes back and "
             + "is cancelled keeping 1,000,000 - nothing collected, the installment reduced whole, the fee owed on a "
             + "CANCELLATION_FEE item; nothing went back, so the order is PARTIALLY_REFUNDED, not REFUNDED")
@@ -3207,6 +3247,13 @@ class FtlDispatchIntegrationTest {
         failedAndCameBack(first[0], "DAMAGED");
         UUID caseId = receivedBack(first[0], null);
         assertThat(heldForCase(caseId)).as("the cartons that came back are in quarantine").isZero();
+        // F14: only the orders whose returned goods are of the SKUs asked about are locked and served.
+        var cases = context.getBean(com.stockflow.order.internal.domain.DeliveryFailureCases.class);
+        assertThat(cases.ordersWantingGoodsHeld(List.of(sofa.sku()))).contains(order.orderId());
+        assertThat(cases.ordersWantingGoodsHeld(List.of("NOT-" + sofa.sku()))).as("another SKU's arrival")
+                .doesNotContain(order.orderId());
+        assertThat(cases.ordersWantingGoodsHeld(List.of())).isEmpty();
+        assertThat(cases.ordersWantingGoodsHeld()).as("any SKU").contains(order.orderId());
         // Fresh stock of the same SKU, inserted without an arrival event: only choosing a warehouse can serve the case.
         CustomerSkuRows.stock(jdbc, tx, sofa.sku(), 4);
         UUID other = confirmedOrders().pay(confirmedOrders().signed(customer, ConfirmedOrders.paidOnSigning(),
