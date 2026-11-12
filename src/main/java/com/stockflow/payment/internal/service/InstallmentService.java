@@ -261,11 +261,19 @@ public class InstallmentService {
      * Every filter null means "any"; {@code dueBefore} keeps installments due before that day; {@code reached} true keeps
      * those whose milestone came (what is due), false those still waiting for it; {@code overdue} true keeps those
      * overdue today, false those that are not.
+     *
+     * @throws BusinessException {@code INSTALLMENT_OVERDUE_IS_A_FLAG} (400) for {@code status} OVERDUE: no installment is
+     *         in it any more ({@link InstallmentStatus}), so the filter would answer an empty list - which a client
+     *         written against the old status reads as "nothing overdue". It is told to send {@code overdue=true}.
      */
     @Transactional(readOnly = true)
     public PageResponse<Installment> installments(UUID customerId, UUID orderId, InstallmentStatus status,
                                                   InstallmentMilestone milestone, LocalDate dueBefore, Boolean reached,
                                                   Boolean overdue, int page, int size, String sort) {
+        if (status == InstallmentStatus.OVERDUE) {
+            throw new BusinessException(ErrorCode.INSTALLMENT_OVERDUE_IS_A_FLAG,
+                    "OVERDUE is not an installment status any more; filter with overdue=true");
+        }
         return Pages.toResponse(search.installments(new InstallmentSearch.InstallmentFilter(customerId, orderId, status,
                 milestone, dueBefore, reached, overdue, overdue == null ? null : today()),
                 Pages.of(page, size, SORT.parse(sort))));
