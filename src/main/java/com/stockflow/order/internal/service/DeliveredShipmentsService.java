@@ -116,8 +116,9 @@ class DeliveredShipmentsService implements DeliveredShipments {
 
     /**
      * The shipping fee carries no SKU, so its rate is the day's STANDARD one - as on a delivery's invoice - and the
-     * rate the order fixed is handed over beside it. The day is that of the last delivery: the carrying ended then,
-     * and the invoice of the fee is dated then ({@code EInvoiceDrafts.drawUpShippingFeeRest}).
+     * rate the order fixed is handed over beside it. The day is the one asked about - the day the order's rest was
+     * closed, which is the date of the fee's invoice ({@code EInvoiceDrafts.drawUpShippingFeeRest}; owner's decision
+     * on E0 M5) - not the last delivery's, which is handed over only as a fact about the order.
      */
     @Override
     @Transactional(readOnly = true)
@@ -139,8 +140,7 @@ class DeliveredShipmentsService implements DeliveredShipments {
                 .map(OrderShipment::outcomeAt)
                 .max(Instant::compareTo)
                 .orElse(null);
-        Map<String, BigDecimal> rates = taxRates.onDay(BusinessCalendar.date(lastDeliveredAt == null ? on
-                : lastDeliveredAt));
+        Map<String, BigDecimal> rates = taxRates.onDay(BusinessCalendar.date(on));
         DeliveredShipment.Fee whole = new DeliveredShipment.Fee(FeeKind.SHIPPING_FEE, null, fee.amount().amount(),
                 rateOf(TaxClass.valueOf(TaxRates.STANDARD), rates, fee.taxRate()), fee.taxRate());
         String contractNumber = contracts.findLiveByOrderId(orderId).map(SalesContract::contractNumber).orElse(null);

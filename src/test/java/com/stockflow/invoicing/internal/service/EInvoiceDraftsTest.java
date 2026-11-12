@@ -1,6 +1,7 @@
 package com.stockflow.invoicing.internal.service;
 
 import com.stockflow.common.config.SellerProperties;
+import com.stockflow.common.domain.BusinessCalendar;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.customer.api.CustomerLegalProfile;
@@ -535,7 +536,7 @@ class EInvoiceDraftsTest {
 
     @Test
     @DisplayName("integration item a: the rest closed after every delivery was invoiced - the rest of the shipping fee "
-            + "goes on an original of its own, no shipment, one fee line, dated the day of the last delivery (E0 M5); "
+            + "goes on an original of its own, no shipment, one fee line, dated the day the rest was closed (E0 M5); "
             + "drawn up once")
     void theShippingFeeRestOnAnInvoiceOfItsOwn() {
         // 5,000 pieces ordered, 2,000 delivered and invoiced with 40,000 of the fee; the other 3,000 are closed.
@@ -550,8 +551,9 @@ class EInvoiceDraftsTest {
 
         assertThat(rest.created()).isTrue();
         assertThat(rest.invoice().shipmentId()).isNull();
-        assertThat(rest.invoice().issueDate()).as("the carrying ended at the last delivery, not at the closing")
-                .isEqualTo(LocalDate.of(2026, 11, 12));
+        assertThat(rest.invoice().issueDate()).as("the day the rest was closed, not the last delivery's: no later number under an earlier date")
+                .isEqualTo(BusinessCalendar.date(closedAt))
+                .isAfter(BusinessCalendar.date(DELIVERED_AT));
         assertThat(rest.invoice().lines()).singleElement().satisfies(line -> {
             assertThat(line.feeKind()).isEqualTo(EInvoiceLine.FeeKind.SHIPPING_FEE);
             assertThat(line.amount()).isEqualByComparingTo("60000");
