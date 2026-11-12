@@ -24,6 +24,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.io.ByteArrayInputStream;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.Optional;
 import java.util.UUID;
@@ -239,17 +240,35 @@ class EInvoiceIssuanceSteps {
     /**
      * Records, and commits, that the invoice is being sent now - before it is: a send the application does not live to
      * see the end of still starts the quiet period ({@link EInvoiceProvider.Resubmission}). Under the invoice's lock,
-     * so nothing is recorded, and nothing is to be sent, once the invoice has moved on from this transaction.
+     * so nothing is recorded, and nothing is to be sent, once the invoice has moved on from this transaction; and only
+     * while {@code holder} still holds the lease, which is renewed so that it outlasts the send.
      *
-     * @return whether the invoice is still at the provider under {@code transactionId}, and may be sent
+     * @return whether the invoice is still at the provider under {@code transactionId}, and may be sent by
+     *         {@code holder}
      */
     @Transactional
-    public boolean aboutToSend(UUID id, String transactionId) {
-        if (waitingFor(id, transactionId) == null) {
+    public boolean aboutToSend(UUID id, String transactionId, UUID holder, Duration lease) {
+        if (waitingFor(id, transactionId) == null || !sending.renew(id, holder, lease)) {
             return false;
         }
         sending.sent(id, transactionId, clock.instant());
         return true;
+    }
+
+    /**
+     * Takes the lease on talking to the provider about the invoice ({@link EInvoiceSending}).
+     *
+     * @return whether {@code holder} holds it; false while somebody else does
+     */
+    @Transactional
+    public boolean claim(UUID id, UUID holder, Duration lease) {
+        return sending.claim(id, holder, lease);
+    }
+
+    /** Gives the lease up. */
+    @Transactional
+    public void release(UUID id, UUID holder) {
+        sending.release(id, holder);
     }
 
     /**

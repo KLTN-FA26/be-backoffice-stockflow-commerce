@@ -4,6 +4,7 @@ import com.stockflow.common.audit.AuditAction;
 import com.stockflow.common.audit.Auditable;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
+import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.logging.LogSafe;
 import com.stockflow.common.storage.Checksums;
 import com.stockflow.common.storage.StorageException;
@@ -30,9 +31,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
-import java.util.Set;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
 import java.util.function.Supplier;
 
@@ -53,12 +52,13 @@ import java.util.function.Supplier;
  *       accountant's "check again" - starts at step 2.</li>
  *   <li>Submitting <b>again</b> a transaction the provider does not know obeys the provider's own rule
  *       ({@link EInvoiceProvider#resubmission()}): a real provider may still be working on a submission a look-up does
- *       not show yet (Viettel: 90 seconds), and remembers a transaction id only so long (Viettel: three days). The
- *       first is counted from the <b>last</b> time the transaction was sent, which is recorded, and committed, before
- *       each send ({@link EInvoiceIssuanceSteps#aboutToSend}); the second from the first submission. Inside the first
- *       the invoice waits; past the second nothing is sent automatically: the invoice is marked
- *       {@code UNKNOWN_TO_PROVIDER} and the accountant sends it as a new transaction ({@link #resubmitAsNew}), which
- *       is done only when the provider, asked at that moment, confirms it holds no such transaction.</li>
+ *       not show yet (Viettel asks for 90 seconds; longer here than one call can take), and remembers a transaction
+ *       id only so long (Viettel: three days). The first is counted from the <b>last</b> time the transaction was
+ *       sent, which is recorded, and committed, before each send ({@link EInvoiceIssuanceSteps#aboutToSend}); the
+ *       second from the first submission. Inside the first the invoice waits; past the second nothing is sent
+ *       automatically: the invoice is marked {@code UNKNOWN_TO_PROVIDER} and the accountant sends it as a new
+ *       transaction ({@link #resubmitAsNew}), which is done only when the provider, asked at that moment, confirms it
+ *       holds no such transaction.</li>
  * </ol>
  *
  * <h2>Nobody waits for the provider</h2>
@@ -67,8 +67,12 @@ import java.util.function.Supplier;
  * provider alike - a real one may take a minute and a half to answer, and a screen that behaved differently per
  * provider would be learnt wrongly on the sandbox. If that thread never runs (the application stops), nothing is lost:
  * the invoice is SUBMITTING with its transaction id, and the reconciliation job takes it up under the same rules.
- * One invoice is worked on by one thread of this instance at a time ({@code inFlight}); across instances the quiet
- * period does the same job.</p>
+ * One thread at a time, on any instance, talks to the provider about an invoice: the one holding its lease
+ * ({@link com.stockflow.invoicing.internal.domain.EInvoiceSending}). The lease is in the database because the senders
+ * are on different instances - the job, the accountant's "check again", the send after "issue" - and it is renewed
+ * before every send, so that it outlasts the call. It expires on its own; an instance that dies holding it holds the invoice up for {@link #PROVIDER_LEASE}
+ * at most. The quiet period is the second line: a lease that ran out in the middle of a call cannot let a second send
+ * overlap the first, because the quiet period is longer than one whole call.</p>
  *
  * <p>An adjustment and a replacement are issued the same way (WF-05 E4): the document names the invoice they change,
  * and the step that records "issued" marks that invoice in the same transaction ({@link EInvoiceIssuanceSteps#issued}).</p>
@@ -87,8 +91,13 @@ public class EInvoiceIssuance {
     private final ProviderCallRecorder calls;
     private final Clock clock;
     private final AsyncTaskExecutor executor;
-    /** Invoices a thread of this instance is talking to the provider about right now. */
-    private final Set<UUID> inFlight = ConcurrentHashMap.newKeySet();
+
+    /**
+     * How long a lease on talking to the provider about an invoice lasts unless renewed. Longer than the longest single
+     * call to a provider (Viettel's is checked against it at startup, {@link ViettelSInvoiceClient}), so nobody takes
+     * the lease over while its holder waits for an answer.
+     */
+    static final Duration PROVIDER_LEASE = Duration.ofMinutes(15);
 
     EInvoiceIssuance(EInvoiceIssuanceSteps steps, EInvoiceProviders providers, ProviderCallRecorder calls,
                      Clock clock, @Qualifier("applicationTaskExecutor") AsyncTaskExecutor executor) {
@@ -128,12 +137,15 @@ public class EInvoiceIssuance {
      *
      * @throws BusinessException {@code EINVOICE_NOT_FOUND}; {@code OPTIMISTIC_LOCK}; 409
      *         {@code EINVOICE_INVALID_TRANSITION} when it is not at the provider; 409
-     *         {@code EINVOICE_RESUBMISSION_REFUSED} when the provider may still remember the transaction, or does not
-     *         confirm that it holds none; 503 {@code EINVOICE_PROVIDER_UNAVAILABLE} when it does not answer
+     *         {@code EINVOICE_RESUBMISSION_REFUSED} when the provider may still remember the transaction, does not
+     *         confirm that it holds none, or is being asked about the invoice by somebody else right now; 503
+ *         {@code EINVOICE_PROVIDER_UNAVAILABLE} when it does not answer
      */
     @Auditable(action = AuditAction.APPROVE, resourceType = "einvoice", resourceId = "#id")
     public EInvoice.Snapshot resubmitAsNew(UUID id, long expectedVersion, UUID by) {
-        if (!inFlight.add(id)) {
+        steps.get(id);
+        UUID holder = Identifiers.newId();
+        if (!steps.claim(id, holder, PROVIDER_LEASE)) {
             throw new BusinessException(ErrorCode.EINVOICE_RESUBMISSION_REFUSED,
                     "The provider is being asked about this invoice right now");
         }
@@ -171,7 +183,7 @@ public class EInvoiceIssuance {
             steps.reopenUnknown(id);
             submitting = steps.submit(id, null, by);
         } finally {
-            inFlight.remove(id);
+            release(id, holder);
         }
         // After this thread let go of the invoice: the sender takes hold of it itself.
         sendSoon(id);
@@ -202,18 +214,34 @@ public class EInvoiceIssuance {
      * Does nothing to an invoice in any other status. Safe to call at any time, by anyone, any number of times.
      */
     public EInvoice.Snapshot reconcile(UUID id) {
-        if (!inFlight.add(id)) {
-            // Another thread is at the provider for this invoice; two at once is how one transaction is sent twice.
-            return steps.get(id);
+        EInvoice.Snapshot invoice = steps.get(id);
+        if (invoice.status() != EInvoiceStatus.SUBMITTING) {
+            return invoice;
+        }
+        UUID holder = Identifiers.newId();
+        if (!steps.claim(id, holder, PROVIDER_LEASE)) {
+            // Somebody, here or on another instance, is at the provider for this invoice; two at once is how one
+            // transaction is sent twice.
+            return invoice;
         }
         try {
-            return reconcileAlone(id);
+            return reconcileAlone(id, holder);
         } finally {
-            inFlight.remove(id);
+            release(id, holder);
         }
     }
 
-    private EInvoice.Snapshot reconcileAlone(UUID id) {
+    /** Gives the lease up; when that fails, it runs out on its own. */
+    private void release(UUID id, UUID holder) {
+        try {
+            steps.release(id, holder);
+        } catch (RuntimeException failure) {
+            log.warn("The provider lease on e-invoice {} was not given up and runs out on its own: {}", id,
+                    failure.getClass().getSimpleName());
+        }
+    }
+
+    private EInvoice.Snapshot reconcileAlone(UUID id, UUID holder) {
         EInvoice.Snapshot invoice = steps.get(id);
         if (invoice.status() != EInvoiceStatus.SUBMITTING) {
             return invoice;
@@ -242,7 +270,7 @@ public class EInvoiceIssuance {
                             LogSafe.text(invoice.code()));
                     return invoice;
                 }
-                if (!steps.aboutToSend(id, transaction)) {
+                if (!steps.aboutToSend(id, transaction, holder, PROVIDER_LEASE)) {
                     return steps.get(id);
                 }
                 InvoiceDocument document = document(invoice, correctionOf(invoice));

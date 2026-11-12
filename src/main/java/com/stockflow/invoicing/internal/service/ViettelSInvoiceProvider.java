@@ -35,8 +35,9 @@ import java.util.UUID;
  *
  * <p>SInvoice answers a transaction id it holds with the invoice it made the first time - for three days, and not
  * while the first submission is still running, when it may make two. {@link #resubmission()} hands both limits to the
- * caller, and the client waits longer for an answer than the quiet period, so a submission is never abandoned and sent
- * again while SInvoice may still be working on it.</p>
+ * caller, and the quiet period is longer than the longest a call can take, timeouts included
+ * ({@link ViettelSInvoiceClient#longestCall}), so a submission given up on is not sent again while SInvoice may still
+ * be working on it.</p>
  *
  * <p>The system's transaction id (the invoice's id and its attempt, 38 characters or more) is longer than the 36
  * SInvoice takes, so SInvoice is given a UUID derived from it: the same for every retry and question of an attempt,
