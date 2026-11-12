@@ -229,8 +229,8 @@ class EInvoiceController {
     @PostMapping("/{id}/issuance")
     @Operation(summary = "Issue a draft through the provider. Answers SUBMITTING at once: the provider is called "
             + "afterwards, and the invoice becomes ISSUED or REJECTED when it has answered (read it again, or ask with "
-            + "/reconciliation). 409 EINVOICE_BUYER_PROFILE_INCOMPLETE while the buyer's name, tax code, address or "
-            + "invoice e-mail is missing")
+            + "/reconciliation). 409 EINVOICE_BUYER_PROFILE_INCOMPLETE while the buyer's name, tax code or address is "
+            + "missing")
     @RequiresPermission(resource = InvoicingResources.EINVOICES, action = Action.APPROVE, scope = DataScope.ALL)
     public ApiResponse<EInvoiceResponse> issue(@PathVariable UUID id,
                                                @Valid @RequestBody EInvoiceVersionRequest request,

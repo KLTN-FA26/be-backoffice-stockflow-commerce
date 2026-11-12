@@ -34,7 +34,8 @@ import java.util.UUID;
  *   <li><b>A draft</b> takes two corrections - the buyer (refreshed from the customer's profile, or typed by the
  *       accountant) and the names on its lines. Its money never changes: quantities and prices are the contract's,
  *       and a draft that got them wrong is voided and drawn up again from the order.</li>
- *   <li><b>Issuing</b> needs a complete buyer (name, tax code, address, e-mail) and a series for the invoice's year.
+ *   <li><b>Issuing</b> needs a complete buyer (name, tax code, address - the e-mail only decides whether the
+ *       invoice is also mailed) and a series for the invoice's year.
  *       It gives the invoice a transaction id - its own id and the attempt's number - under which the provider knows
  *       at most one invoice. Every later question to the provider is asked under that id, so a reply that was lost can
  *       never turn into a second invoice for the same delivery.</li>
@@ -71,7 +72,7 @@ public final class EInvoice {
      * provider carries only {@link #UNKNOWN_TO_PROVIDER}.
      */
     public enum Warning {
-        /** The buyer's name, tax code, address or invoice e-mail is missing: issuing is refused until it is there. */
+        /** The buyer's name, tax code or address is missing: issuing is refused until it is there. */
         BUYER_PROFILE_INCOMPLETE,
         /** A line's VAT rate on the day of delivery is not the one the contract fixed: the totals differ from the contract's. */
         TAX_RATE_DIFFERS_FROM_CONTRACT,
@@ -611,8 +612,8 @@ public final class EInvoice {
      *
      * @param by who issued it; null when it was issued automatically
      * @throws BusinessException {@code EINVOICE_INVALID_TRANSITION} unless it is a draft;
-     *                           {@code EINVOICE_BUYER_PROFILE_INCOMPLETE} while the buyer's name, tax code, address or
-     *                           invoice e-mail is missing; {@code EINVOICE_AGREEMENT_REQUIRED} for the correction
+     *                           {@code EINVOICE_BUYER_PROFILE_INCOMPLETE} while the buyer's name, tax code or address
+     *                           is missing; {@code EINVOICE_AGREEMENT_REQUIRED} for the correction
      *                           of an error without the agreement of both parties;
      *                           {@code EINVOICE_SERIES_NOT_CONFIGURED} for a series of another year than the invoice's
      *                           date, or of a template other than a VAT invoice's
@@ -621,7 +622,7 @@ public final class EInvoice {
         requireCanBecome(EInvoiceStatus.SUBMITTING);
         if (!buyer.completeBuyer()) {
             throw new BusinessException(ErrorCode.EINVOICE_BUYER_PROFILE_INCOMPLETE,
-                    "Invoice %s: the buyer's name, tax code, address and invoice e-mail are all needed".formatted(code));
+                    "Invoice %s: the buyer's name, tax code and address are all needed".formatted(code));
         }
         if (correctionBasis != null && correctionBasis.requiresAgreement() && agreementFileKey == null) {
             throw new BusinessException(ErrorCode.EINVOICE_AGREEMENT_REQUIRED, ("Invoice %s corrects an error: the "

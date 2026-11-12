@@ -360,8 +360,8 @@ public enum ErrorCode {
     EINVOICE_INVALID_TRANSITION("The e-invoice's status does not allow this", 409),
     /** WF-05 E2 (21 BR-03): only a draft e-invoice is corrected. */
     EINVOICE_NOT_DRAFT("Only a draft e-invoice can be changed", 409),
-    /** WF-05 E2 (21 BR-06; NĐ 254 Phụ lục điểm 4.b): the buyer's name, tax code, address or invoice e-mail is missing, so the invoice is not issued. */
-    EINVOICE_BUYER_PROFILE_INCOMPLETE("The buyer's name, tax code, address and invoice e-mail are needed before the invoice is issued", 409),
+    /** WF-05 E2 (21 BR-06; NĐ 254 Phụ lục điểm 4.b): the buyer's name, tax code or address is missing, so the invoice is not issued. */
+    EINVOICE_BUYER_PROFILE_INCOMPLETE("The buyer's name, tax code and address are needed before the invoice is issued", 409),
     /** WF-05 E2 (21 BR-01): the shipment is not delivered, or delivered nothing an invoice can carry. */
     EINVOICE_NOT_INVOICEABLE("This shipment cannot be invoiced: it is not delivered", 409),
     /** WF-05 E2 (TT 91 Điều 4): no invoice series is in use at the provider for the invoice's year. */
