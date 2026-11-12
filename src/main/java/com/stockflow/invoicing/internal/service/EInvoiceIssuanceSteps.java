@@ -93,9 +93,18 @@ class EInvoiceIssuanceSteps {
     }
 
     /**
-     * SUBMITTING → ISSUED, if the invoice still waits for {@code transactionId}: the two files are stored - deleted
-     * again if this transaction rolls back - and locked for ten years once it commits, and the invoice takes the
-     * provider's number and codes.
+     * SUBMITTING → ISSUED, if the invoice still waits for {@code transactionId}: the two files are stored and locked
+     * for ten years, and the invoice takes the provider's number and codes.
+     *
+     * <p><b>The lock is part of issuing, not an afterthought.</b> Elsewhere a record is locked after its transaction
+     * commits, and a lock that fails is logged. An invoice's files must be kept ten years (Luật Kế toán 2015 Điều 41):
+     * an invoice marked issued whose files nobody locked would look fine until the day they are gone. So both files
+     * are locked here, before the invoice is marked issued, and a lock that fails fails this step - the invoice stays
+     * SUBMITTING and the next reconciliation fetches and stores the files again. The provider has issued the invoice
+     * by then whatever happens here; a locked file left behind by a step that failed is a copy of a document that
+     * exists in law, not a record of something that did not happen.</p>
+     *
+     * @throws com.stockflow.common.storage.StorageException when a file cannot be stored or locked
      */
     @Transactional
     public void issued(UUID id, String transactionId, EInvoiceProvider.Result result,
@@ -107,11 +116,11 @@ class EInvoiceIssuanceSteps {
         String name = "%s%s-%08d".formatted(invoice.templateCode(), invoice.symbol(), result.invoiceNumber());
         StoredFile xml = store(name + ".xml", "application/xml", documents.xml());
         StoredFile pdf = store(name + ".pdf", "application/pdf", documents.pdf());
+        files.retainNow(xml.key(), RecordRetention.EINVOICE);
+        files.retainNow(pdf.key(), RecordRetention.EINVOICE);
         invoice.issued(result.invoiceNumber(), result.taxAuthorityCode(), result.lookupCode(), result.signedAt(),
                 xml.key(), pdf.key(), clock.instant());
         invoices.save(invoice);
-        files.retainAfterCommit(xml.key(), RecordRetention.EINVOICE);
-        files.retainAfterCommit(pdf.key(), RecordRetention.EINVOICE);
     }
 
     private StoredFile store(String name, String contentType, byte[] bytes) {

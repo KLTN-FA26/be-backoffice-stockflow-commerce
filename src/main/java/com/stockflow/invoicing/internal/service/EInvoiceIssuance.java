@@ -4,6 +4,7 @@ import com.stockflow.common.audit.AuditAction;
 import com.stockflow.common.audit.Auditable;
 import com.stockflow.common.logging.LogSafe;
 import com.stockflow.common.storage.Checksums;
+import com.stockflow.common.storage.StorageException;
 import com.stockflow.invoicing.internal.domain.EInvoice;
 import com.stockflow.invoicing.internal.domain.EInvoiceProvider;
 import com.stockflow.invoicing.internal.domain.EInvoiceProvider.InvoiceDocument;
@@ -119,6 +120,12 @@ public class EInvoiceIssuance {
                 case REJECTED -> steps.rejected(id, transaction, result.errorCode(), result.message());
                 case PENDING, NOT_FOUND -> { /* nothing to record yet: asked again on the next reconciliation */ }
             }
+        } catch (StorageException unstored) {
+            // The provider issued it, but its files could not be stored or locked for their ten years. It is not
+            // marked issued without them: it stays SUBMITTING, and the next reconciliation fetches them again.
+            log.error("E-invoice {} (transaction {}) is issued at the provider but its files were not stored and "
+                    + "locked; it will be reconciled again", LogSafe.text(invoice.code()), LogSafe.text(transaction),
+                    unstored);
         } catch (ProviderUnavailableException unavailable) {
             // Logged with the call. The invoice stays SUBMITTING under the same transaction id; nothing is sent again
             // here - the next reconciliation asks the provider first.
