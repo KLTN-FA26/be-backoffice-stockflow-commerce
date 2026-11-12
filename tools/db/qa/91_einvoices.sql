@@ -132,7 +132,8 @@ SELECT pg_temp.expect_fail('A4 a total with tax that is not the two others added
 SELECT pg_temp.expect_fail('A5 a second original in force for the same shipment (21 BR-01)', $q$
     SELECT pg_temp.draft('dup', 's1', 1000000, 100000);
     SELECT pg_temp.goods('dup', 1, 10) $q$);
-SELECT pg_temp.expect_fail('A6 an original that invoices no shipment', $q$
+-- An original without a shipment is the rest of its order's shipping fee (V20261120000700, section K): never empty.
+SELECT pg_temp.expect_fail('A6 an original that invoices no shipment and carries no line', $q$
     INSERT INTO invoicing.einvoice (id, code, type, status, order_id, order_number, customer_id, issue_date,
         issue_due_at, seller_name, seller_tax_code, seller_address, buyer_name, currency, payment_method, subtotal,
         tax_total, grand_total, amount_in_words)
@@ -294,11 +295,12 @@ SELECT pg_temp.expect_true('E3 two invoices of one order, one per shipment',
 
 \echo '--- adjustments and replacements: only their place here; their rules are 92_einvoice_corrections.sql'
 SELECT pg_temp.expect_fail('F1 an adjustment that names no invoice', $q$
-    INSERT INTO invoicing.einvoice (id, code, type, status, order_id, order_number, customer_id, issue_date,
-        issue_due_at, seller_name, seller_tax_code, seller_address, buyer_name, currency, payment_method, subtotal,
-        tax_total, grand_total, amount_in_words)
-    SELECT gen_random_uuid(), 'EINV-QA91-ADJ0', 'ADJUSTMENT', 'DRAFT', o.id, o.order_number, o.customer_id,
-           CURRENT_DATE, NOW(), 'S', '0312345678', 'A', 'B', 'VND', 'BANK_TRANSFER', -100000, -10000, -110000, 'x'
+    INSERT INTO invoicing.einvoice (id, code, type, status, order_id, order_number, customer_id, correction_basis,
+        issue_date, issue_due_at, seller_name, seller_tax_code, seller_address, buyer_name, currency, payment_method,
+        subtotal, tax_total, grand_total, amount_in_words, adjustment_reason)
+    SELECT gen_random_uuid(), 'EINV-QA91-ADJ0', 'ADJUSTMENT', 'DRAFT', o.id, o.order_number, o.customer_id, 'ERROR',
+           CURRENT_DATE, NOW(), 'S', '0312345678', 'A', 'B', 'VND', 'BANK_TRANSFER', -100000, -10000, -110000, 'x',
+           '1 carton too many'
       FROM ordering.customer_order o WHERE o.id = md5('qa91:order')::uuid $q$);
 SELECT pg_temp.expect_ok('F2 an adjustment of an issued invoice, with a line below zero (TT 91 Điều 10 khoản 6 điểm c)', $q$
     INSERT INTO invoicing.einvoice (id, code, type, status, order_id, order_number, shipment_id, customer_id,
@@ -315,10 +317,11 @@ SELECT pg_temp.expect_ok('F2 an adjustment of an issued invoice, with a line bel
 SELECT pg_temp.expect_fail('F3 an invoice that adjusts itself', $q$
     UPDATE invoicing.einvoice SET buyer_name = buyer_name WHERE FALSE;
     INSERT INTO invoicing.einvoice (id, code, type, status, order_id, order_number, customer_id, original_einvoice_id,
-        issue_date, issue_due_at, seller_name, seller_tax_code, seller_address, buyer_name, currency, payment_method,
-        subtotal, tax_total, grand_total, amount_in_words)
+        correction_basis, issue_date, issue_due_at, seller_name, seller_tax_code, seller_address, buyer_name, currency,
+        payment_method, subtotal, tax_total, grand_total, amount_in_words, adjustment_reason)
     SELECT md5('qa91:self')::uuid, 'EINV-QA91-SELF', 'ADJUSTMENT', 'DRAFT', o.id, o.order_number, o.customer_id,
-           md5('qa91:self')::uuid, CURRENT_DATE, NOW(), 'S', '0312345678', 'A', 'B', 'VND', 'BANK_TRANSFER', 0, 0, 0, 'x'
+           md5('qa91:self')::uuid, 'ERROR', CURRENT_DATE, NOW(), 'S', '0312345678', 'A', 'B', 'VND', 'BANK_TRANSFER',
+           0, 0, 0, 'x', 'sai so luong'
       FROM ordering.customer_order o WHERE o.id = md5('qa91:order')::uuid $q$);
 SELECT pg_temp.expect_fail('F4 a replacement of an invoice that is not issued', $q$
     INSERT INTO invoicing.einvoice (id, code, type, status, order_id, order_number, customer_id, original_einvoice_id,
@@ -350,6 +353,31 @@ SELECT pg_temp.expect_fail('G3 a voided draft is final', $q$
 SELECT pg_temp.expect_ok('G4 its shipment is drawn up again', $q$
     SELECT pg_temp.draft('d', 's3', 1000000, 100000);
     SELECT pg_temp.goods('d', 1, 10) $q$);
+
+\echo '--- K. the rest of the shipping fee: an original with no shipment, the fee line only, one per order (V20261120000700)'
+CREATE FUNCTION pg_temp.shipping_fee(tag TEXT, line_no INT) RETURNS void LANGUAGE sql AS $$
+    INSERT INTO invoicing.einvoice_line (id, einvoice_id, line_no, kind, fee_kind, sku, item_name, unit, quantity,
+                                         unit_price, tax_rate, amount, tax_amount)
+    VALUES (md5('qa91:' || tag || ':' || line_no)::uuid, md5('qa91:' || tag)::uuid, line_no, 'FEE', 'SHIPPING_FEE',
+            'QA-EI-OWN', 'Phi van chuyen', 'Lan', 1, 300000, 8, 300000, 24000);
+$$;
+SELECT pg_temp.expect_ok('K1 the rest of the shipping fee, on an original that invoices no shipment', $q$
+    SELECT pg_temp.draft('fee', NULL, 300000, 24000);
+    SELECT pg_temp.shipping_fee('fee', 1) $q$);
+SELECT pg_temp.expect_fail('K2 ... with a goods line on it', $q$
+    UPDATE invoicing.einvoice SET subtotal = subtotal + 1000000, tax_total = tax_total + 100000,
+           grand_total = grand_total + 1100000 WHERE id = md5('qa91:fee')::uuid;
+    SELECT pg_temp.goods('fee', 2, 10) $q$);
+SELECT pg_temp.expect_fail('K3 ... or another fee than the shipping fee', $q$
+    UPDATE invoicing.einvoice_line SET fee_kind = 'PLATE_FEE' WHERE id = md5('qa91:fee:1')::uuid $q$);
+SELECT pg_temp.expect_fail('K4 a second rest of the same order''s shipping fee', $q$
+    SELECT pg_temp.draft('fee2', NULL, 300000, 24000);
+    SELECT pg_temp.shipping_fee('fee2', 1) $q$);
+SELECT pg_temp.expect_ok('K5 the first one voided, the rest is drawn up again', $q$
+    UPDATE invoicing.einvoice SET status = 'VOIDED_DRAFT', voided_at = NOW(), void_reason = 'drawn up by mistake'
+     WHERE id = md5('qa91:fee')::uuid;
+    SELECT pg_temp.draft('fee2', NULL, 300000, 24000);
+    SELECT pg_temp.shipping_fee('fee2', 1) $q$);
 
 \echo '--- the provider, its series, its calls'
 SELECT pg_temp.expect_fail('H1 a second provider in use', $q$
