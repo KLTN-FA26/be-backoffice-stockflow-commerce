@@ -35,8 +35,9 @@ import java.util.UUID;
  *
  * <p>No resource of its own. Reading is reading orders ({@code sales-orders:READ}, back office only - the portal
  * customer holds it for their own orders), limited for a warehouse manager as the order endpoints are
- * ({@link OrderWarehouseVisibility}): the list to the cases whose goods came back to their warehouses, one order's
- * cases to an order of their warehouses. Delivering again lifts the order's hold, so it answers to
+ * ({@link OrderWarehouseVisibility}), by one rule for both reads (WF-05 review N5): the cases whose goods came back to
+ * their warehouses, in the list and on one order. An order with none of those is not found unless the order itself is
+ * of their warehouses (then its list is empty), so the endpoint does not confirm another warehouse's order. Delivering again lifts the order's hold, so it answers to
  * {@code sales-order-holds:UPDATE}, Sales' (QD-12); cancelling what was not delivered is the closure of the rest with
  * its fee, so it answers to {@code sales-order-cancellations:UPDATE}, as {@code POST /orders/{id}/remainder-closure}
  * does - with a case, or, for goods never received back, without one. The release of a redelivery is the warehouse manager's, on the release endpoint as any release.</p>
@@ -76,11 +77,15 @@ class DeliveryFailureController {
     public ApiResponse<List<DeliveryFailureCaseResponse>> ofOrder(@PathVariable UUID orderId,
                                                                   @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
-        // As GET /orders/{id}: an order of another warehouse is not found for a warehouse manager.
-        if (!warehouseVisibility.visible(orderId, user)) {
+        // The list's rule (WF-05 review N5): a warehouse manager reads the cases whose goods came back to their
+        // warehouses, whichever warehouse the order ships from.
+        java.util.Set<UUID> limit = OrderWarehouseVisibility.limitOf(user);
+        List<DeliveryFailureService.CaseView> cases = failures.ofOrder(orderId, limit);
+        if (cases.isEmpty() && limit != null && !warehouseVisibility.visible(orderId, user)) {
+            // As GET /orders/{id}: an order of another warehouse, with nothing of it back at theirs, is not found.
             throw new BusinessException(ErrorCode.NOT_FOUND, "No order with id " + orderId);
         }
-        return ApiResponse.ok(failures.ofOrder(orderId).stream().map(DeliveryFailureController::toResponse).toList());
+        return ApiResponse.ok(cases.stream().map(DeliveryFailureController::toResponse).toList());
     }
 
     @PostMapping("/{orderId}/delivery-failures/{caseId}/redelivery")

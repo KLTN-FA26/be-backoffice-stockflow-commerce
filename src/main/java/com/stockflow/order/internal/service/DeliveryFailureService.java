@@ -422,9 +422,21 @@ public class DeliveryFailureService {
     /** The order's delivery failure cases, oldest first. */
     @Transactional(readOnly = true)
     public List<CaseView> ofOrder(UUID orderId) {
+        return ofOrder(orderId, null);
+    }
+
+    /**
+     * The same, of the cases whose goods came back to one of {@code warehouses} when it is not null - the rule
+     * {@link #list(DeliveryFailureCase.Status, Set, int)} reads by, so that a warehouse manager sees the same cases in
+     * the list and on the order (WF-05 review N5); empty: none.
+     */
+    @Transactional(readOnly = true)
+    public List<CaseView> ofOrder(UUID orderId, Set<UUID> warehouses) {
         orders.findById(new OrderId(orderId))
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No order " + orderId));
-        return cases.ofOrder(orderId).stream().map(this::view).toList();
+        return cases.ofOrder(orderId).stream()
+                .filter(failure -> warehouses == null || warehouses.contains(failure.warehouseId()))
+                .map(this::view).toList();
     }
 
     /**
