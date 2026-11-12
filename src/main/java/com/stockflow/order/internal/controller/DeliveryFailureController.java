@@ -102,7 +102,8 @@ class DeliveryFailureController {
             + "collected above the goods delivered and the fee becomes refundable. Every undecided case of the order "
             + "is cancelled with it, and a redelivery released to the warehouse is withdrawn while nothing of it is "
             + "picked. 409 DELIVERY_FAILURE_INVALID_TRANSITION when the case is closed or goods released to be "
-            + "delivered again are picked already")
+            + "delivered again are picked already; 409 DELIVERY_FAILURE_REST_NOT_CLOSABLE while the order still owes "
+            + "units and is on hold for another reason or packed")
     @RequiresPermission(resource = OrderResources.ORDER_CANCELLATIONS, action = Action.UPDATE, scope = DataScope.ALL)
     public ApiResponse<DeliveryFailureCaseResponse> cancel(@PathVariable UUID orderId, @PathVariable UUID caseId,
             @Valid @RequestBody DeliveryFailureCaseRequests.Cancellation request, @AuthenticatedUser CurrentUser user) {

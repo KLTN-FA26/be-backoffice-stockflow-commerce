@@ -230,8 +230,10 @@ public class DeliveryFailureService {
      * nightly settlement moves it on once its refunds are made ({@link #followRefunds}).</p>
      *
      * @throws BusinessException {@code DELIVERY_FAILURE_CASE_NOT_FOUND}; {@code DELIVERY_FAILURE_INVALID_TRANSITION}
-     *         (the case closed, or goods of a released redelivery picked already); {@code VALIDATION_FAILED} for a fee
-     *         when nothing is left to close; as {@code OrderService.closeRemainder} for the fee
+     *         (the case closed, or goods of a released redelivery picked already);
+     *         {@code DELIVERY_FAILURE_REST_NOT_CLOSABLE} (units still owed, the order on hold for another reason or
+     *         packed); {@code VALIDATION_FAILED} for a fee when nothing is left to close; as
+     *         {@code OrderService.closeRemainder} for the fee
      */
     @Auditable(action = AuditAction.TRANSITION, resourceType = "delivery-failure-case", resourceId = "#caseId",
             details = "{to: 'CANCELLED'}")
@@ -291,6 +293,13 @@ public class DeliveryFailureService {
      * <p>An order no longer held whose rest was closed already - nothing outstanding - only has its cases closed: there
      * is nothing for a fee to be kept on, so one is refused rather than dropped.</p>
      *
+     * <p>An order that still owes units but is neither held for the failed delivery nor partly fulfilled - put on hold
+     * for another reason after a decision to deliver again, or packed - is refused (WF-05 review N1). Cancelling only
+     * its cases there would leave the units owed with no case to deliver them, the case's holds and allocations on the
+     * order lines, and money unsettled; and cancelling across the other hold would decide that hold for whoever put it
+     * on. The rest of an order is closed from PARTIALLY_FULFILLED only ({@code Order.closeRemainder}): the hold is
+     * resolved first, as for any closure, and the cancellation is made then.</p>
+     *
      * <p>It closes every undelivered unit of the order, later batches included, not only the failed shipment's (WF-05
      * review F6.2, kept as is): units are closed per line, not per batch; the release and handover of the next batch
      * ({@code nextToRelease}, {@code deliveredBatches}, {@code check_delivery_batch_of_order}) require the batch before
@@ -314,6 +323,14 @@ public class DeliveryFailureService {
         boolean held = order.heldForDeliveryFailure();
         boolean restToClose = held
                 || (order.status() == OrderStatus.PARTIALLY_FULFILLED && order.outstandingUnits() > 0);
+        if (!restToClose && order.outstandingUnits() > 0) {
+            // WF-05 review N1: owed units with no rest to close here - closing only the cases would strand them.
+            throw new BusinessException(ErrorCode.DELIVERY_FAILURE_REST_NOT_CLOSABLE, ("Order %s is %s%s and still "
+                    + "owes %d unit(s); %s before cancelling what was not delivered").formatted(order.orderNumber(),
+                    order.status(), order.holdReason() == null ? "" : " (" + order.holdReason() + ")",
+                    order.outstandingUnits(), order.status() == OrderStatus.ON_HOLD ? "resolve its hold"
+                            : "let what is packed leave"));
+        }
         if (!restToClose && command.agreedFee() != null && command.agreedFee().amount().signum() > 0) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, ("Order %s has nothing left to close; no fee is "
                     + "kept on it").formatted(order.orderNumber()));
@@ -330,7 +347,8 @@ public class DeliveryFailureService {
             orderService.closeRemainder(orderId, com.stockflow.order.api.CancellationReasonCode.DELIVERY_FAILED,
                     command.note(), command.agreedFee(), by);
         } else {
-            // Its rest was closed before (cases left open by WF-05 review F1 before its fix): only the cases close.
+            // Nothing outstanding (checked above): its rest was closed before - cases left open by WF-05 review F1
+            // before its fix - so only the cases close.
             log.info("Order {} is {} with nothing outstanding; only its delivery failure cases are cancelled",
                     order.orderNumber(), order.status());
         }

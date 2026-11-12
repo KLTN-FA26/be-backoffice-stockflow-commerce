@@ -434,6 +434,14 @@ public enum ErrorCode {
     DELIVERY_FAILURE_CASE_NOT_FOUND("Delivery failure case not found", 404),
     /** WF-05 fix plan, section 2: the case is not where that step starts from (decided already, not released, ...). */
     DELIVERY_FAILURE_INVALID_TRANSITION("This delivery failure case cannot take that step now", 409),
+    /**
+     * WF-05 review N1: cancelling what a failed delivery left undelivered on an order that still owes units but is
+     * neither held for the failed delivery nor partly fulfilled - on hold for another reason, or packed. Closing it
+     * there would cancel the case and leave its units owed with nothing to deliver them; resolve the hold, or let what
+     * is packed leave, first.
+     */
+    DELIVERY_FAILURE_REST_NOT_CLOSABLE("What this order has not delivered cannot be closed now: resolve its other "
+            + "hold first, or wait until what is packed has left", 409),
     /** G4-Q5: an order with shipments records its delivery outcome per shipment, not for the whole order. */
     ORDER_DELIVERY_VIA_SHIPMENT("This order's delivery is recorded per shipment", 409),
     /** G3-Q4: money due before the goods leave has not all arrived; the handover waits for it. */
