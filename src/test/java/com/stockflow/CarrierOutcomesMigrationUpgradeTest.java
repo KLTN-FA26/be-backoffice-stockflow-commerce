@@ -67,7 +67,8 @@ class CarrierOutcomesMigrationUpgradeTest {
                 long staff = version(db, "WAREHOUSE_STAFF");
 
                 var result = flyway(postgres, MIGRATION).migrate();
-                assertThat(result.migrations).extracting(m -> m.version).containsExactly(MIGRATION);
+                // Whatever lies between the baseline and this migration runs first; it is the last one applied.
+                assertThat(result.migrations).extracting(m -> m.version).endsWith(MIGRATION);
 
                 // What was there is kept, and reads as a webhook's.
                 assertThat(RawSql.texts(db, "SELECT result || ':' || source || ':' || (outcome_import_id IS NULL) "

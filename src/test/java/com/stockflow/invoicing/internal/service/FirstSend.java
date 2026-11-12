@@ -34,10 +34,12 @@ public final class FirstSend {
 
     /** The invoice once the send already handed to another thread - by the accountant or the job - is over. */
     public static EInvoice.Snapshot awaited(EInvoiceIssuance issuance, EInvoiceQueryService queries, UUID id) {
-        // Typed as Object on purpose: left generic, the call infers Class<?> and picks getField(Class, String).
-        Object steps = ReflectionTestUtils.getField(AopTestUtils.getUltimateTargetObject(issuance), "steps");
-        EInvoiceSending sending = (EInvoiceSending) ReflectionTestUtils.getField(
-                AopTestUtils.getUltimateTargetObject(steps), "sending");
+        // Each target in an Object variable of its own: passed inline, the generic getUltimateTargetObject is inferred
+        // as Class<?>, the call binds to getField(Class, String), and the target is cast to Class at run time.
+        Object issuanceTarget = AopTestUtils.getUltimateTargetObject(issuance);
+        Object steps = ReflectionTestUtils.getField(issuanceTarget, "steps");
+        Object stepsTarget = AopTestUtils.getUltimateTargetObject(steps);
+        EInvoiceSending sending = (EInvoiceSending) ReflectionTestUtils.getField(stepsTarget, "sending");
         Await.until("the first send of e-invoice " + id + " is over", TIMEOUT,
                 () -> !queries.calls(id).isEmpty() && free(sending, id));
         return queries.get(id);

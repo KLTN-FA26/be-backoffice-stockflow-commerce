@@ -60,8 +60,9 @@ class Wf05SmallGapsMigrationUpgradeTest {
                 seedAdjustments(db);
 
                 var result = flyway(postgres, COUNTER_MIGRATION).migrate();
+                // The e-invoice migrations (V20261120...) lie between the baseline and these two and run first.
                 assertThat(result.migrations).extracting(m -> m.version)
-                        .containsExactly(OVERDUE_MIGRATION, COUNTER_MIGRATION);
+                        .endsWith(OVERDUE_MIGRATION, COUNTER_MIGRATION);
 
                 // ---- overdue is a flag
                 assertThat(RawSql.texts(db, "SELECT seq || ':' || status FROM payment.installment ORDER BY seq"))

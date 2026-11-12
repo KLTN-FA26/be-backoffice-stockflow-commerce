@@ -37,6 +37,8 @@ class CustomerModuleTest {
     com.stockflow.notification.api.ProductionOrderResends productionOrderResendsMock;
     // A dependency of a bootstrapped dependency, not of this module: explicit ports only, the slice must not boot more.
     @MockitoBean com.stockflow.warehouse.api.WarehouseService warehouseServiceMock;
+    // Order completion asks invoicing whether every delivery is invoiced (WF-05 condition 5); invoicing is not loaded here.
+    @MockitoBean com.stockflow.order.api.DeliveryInvoices deliveryInvoicesMock;
 
     @Test
     @DisplayName("customer starts and answers through its api with the other modules absent")
