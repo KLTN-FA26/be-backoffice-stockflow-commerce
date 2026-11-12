@@ -55,9 +55,9 @@ public final class EInvoiceFixtures {
             }
             case VOIDED_DRAFT -> invoice.voidDraft("drawn up by mistake", null, NOW);
             case REPLACED -> {
-                // Package E4 moves an invoice here; until then it only ever comes from the database.
+                // As its replacement is issued (E4).
                 issue(invoice);
-                invoice = EInvoice.restore(withStatus(invoice.snapshot(), EInvoiceStatus.REPLACED));
+                invoice.replaced();
             }
         }
         return invoice;
@@ -78,6 +78,58 @@ public final class EInvoiceFixtures {
                 s.subtotal(), s.taxTotal(), s.grandTotal(), s.amountInWords(), s.warnings(), s.adjustmentReason(),
                 s.agreementFileKey(), s.xmlFileKey(), s.pdfFileKey(), s.rejectionCode(), s.rejectionMessage(),
                 s.submittedAt(), s.submittedBy(), s.issuedAt(), s.voidedAt(), s.voidedBy(), s.voidReason(),
-                s.version());
+                s.version(), s.correctionBasis(), s.agreementNumber(), s.agreementDate(), s.returnRequestId(),
+                s.listedInvoiceIds());
+    }
+
+    // ---- corrections (WF-05 E4; TT 91 Điều 10) --------------------------------------------------------------------
+
+    /** The day a correction is drawn up: the day after the delivery, a Friday. */
+    public static final LocalDate CORRECTED_ON = DELIVERED_ON.plusDays(1);
+
+    /** An issued original of another delivery to the same buyer, numbered {@code number}. */
+    public static EInvoice issuedFor(UUID customerId, int number) {
+        EInvoice.Delivery other = delivery();
+        EInvoice invoice = EInvoice.drawUpOriginal(UUID.randomUUID(), "EINV-20261112-%04d".formatted(number),
+                new EInvoice.Delivery(other.orderId(), other.orderNumber(), other.contractNumber(), other.shipmentId(),
+                        other.shipmentCode(), null, customerId, DELIVERED_ON), SELLER, BUYER, lines(), false);
+        invoice.submit(SERIES, null, NOW);
+        invoice.issued(number, "SBX" + number, "SBXL" + number, NOW, "einvoices/2026/11/12/" + number + ".xml",
+                "einvoices/2026/11/12/" + number + ".pdf", NOW);
+        return invoice;
+    }
+
+    /** The goods line of {@code invoice} changed by {@code cartons} cartons at its own price: below zero reduces. */
+    public static List<EInvoiceLine> cartons(EInvoice invoice, int cartons) {
+        EInvoiceLine goods = invoice.lines().getFirst();
+        return List.of(goods.corrected(UUID.randomUUID(), 1, cartons, goods.unitsPerCarton(), goods.unit(),
+                goods.unitPrice(), goods.taxRate(), goods.itemName()));
+    }
+
+    /** A draft adjustment of {@code original} by {@code cartons} cartons; nothing else corrects the invoice yet. */
+    public static EInvoice adjustment(EInvoice original, CorrectionBasis basis, int cartons) {
+        return EInvoice.drawUpAdjustment(UUID.randomUUID(), "EINV-20261113-0001", original, basis,
+                "sai so luong", original.buyer(), cartons(original, cartons), CORRECTED_ON,
+                basis == CorrectionBasis.RETURN ? UUID.randomUUID() : null, List.of(), EInvoice.Corrections.NONE);
+    }
+
+    /** A draft replacement of {@code original} stating {@code cartons} cartons. */
+    public static EInvoice replacement(EInvoice original, int cartons) {
+        return EInvoice.drawUpReplacement(UUID.randomUUID(), "EINV-20261113-0002", original, "sai so luong",
+                original.buyer(), cartons(original, cartons), CORRECTED_ON, EInvoice.Corrections.NONE);
+    }
+
+    /** The written agreement of both parties, attached. */
+    public static EInvoice agreed(EInvoice correction) {
+        correction.attachAgreement("einvoices/2026/11/13/agreement.pdf", "BB-01/2026", CORRECTED_ON, CORRECTED_ON);
+        return correction;
+    }
+
+    /** A correction sent and issued under {@code number}. */
+    public static EInvoice issued(EInvoice correction, int number) {
+        correction.submit(SERIES, null, NOW);
+        correction.issued(number, "SBX" + number, "SBXL" + number, NOW, "einvoices/2026/11/13/" + number + ".xml",
+                "einvoices/2026/11/13/" + number + ".pdf", NOW);
+        return correction;
     }
 }
