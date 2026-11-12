@@ -646,6 +646,17 @@ Enum fulfillment.carrier_event_result {
   UNMATCHED
   INVALID_SIGNATURE
   NEEDS_REVIEW
+  UNVERIFIED
+}
+
+Enum fulfillment.carrier_event_source {
+  WEBHOOK
+  FILE
+}
+
+Enum fulfillment.delivery_outcome_import_row_verdict {
+  ACCEPTED
+  ERROR
 }
 
 Enum fulfillment.dispatch_load_status {
@@ -3002,26 +3013,27 @@ Table design.design_snapshot [headercolor: #AA4A9E] {
 // =============================================================================
 
 Table fulfillment.carrier [headercolor: #2C7873] {
-  id                        uuid [pk]
-  code                      varchar(32) [not null, unique]
-  name                      varchar(120) [not null]
-  contact_name              varchar(120)
-  contact_phone             varchar(32)
-  status                    fulfillment.carrier_status [not null, default: 'ACTIVE']
-  version                   bigint [not null, default: 0]
-  created_at                timestamptz [not null, default: `now()`]
-  created_by                varchar(100)
-  last_modified_at          timestamptz
-  last_modified_by          varchar(100)
-  connection_type           fulfillment.carrier_connection_type [not null, default: 'MANUAL']
-  webhook_enabled           boolean [not null, default: false]
-  webhook_secret_sealed     text
-  webhook_auth_header       varchar(64)
-  webhook_auth_value_sealed text
-  api_environment           fulfillment.carrier_api_environment
-  api_account               varchar(64)
-  api_key_sealed            text
-  failure_reason_map        jsonb [not null, default: `'{}'::jsonb`]
+  id                             uuid [pk]
+  code                           varchar(32) [not null, unique]
+  name                           varchar(120) [not null]
+  contact_name                   varchar(120)
+  contact_phone                  varchar(32)
+  status                         fulfillment.carrier_status [not null, default: 'ACTIVE']
+  version                        bigint [not null, default: 0]
+  created_at                     timestamptz [not null, default: `now()`]
+  created_by                     varchar(100)
+  last_modified_at               timestamptz
+  last_modified_by               varchar(100)
+  connection_type                fulfillment.carrier_connection_type [not null, default: 'MANUAL']
+  webhook_enabled                boolean [not null, default: false]
+  webhook_secret_sealed          text
+  webhook_auth_header            varchar(64)
+  webhook_auth_value_sealed      text
+  api_environment                fulfillment.carrier_api_environment
+  api_account                    varchar(64)
+  api_key_sealed                 text
+  failure_reason_map             jsonb [not null, default: `'{}'::jsonb`]
+  webhook_auth_value_next_sealed text
 }
 
 Table fulfillment.carrier_api_call [headercolor: #2C7873] {
@@ -3092,6 +3104,9 @@ Table fulfillment.carrier_event [headercolor: #2C7873] {
   created_by          varchar(100)
   last_modified_at    timestamptz
   last_modified_by    varchar(100)
+  source              fulfillment.carrier_event_source [not null, default: 'WEBHOOK']
+  outcome_import_id   uuid
+  outcome_import_line int
 }
 
 Table fulfillment.carrier_pickup_point [headercolor: #2C7873] {
@@ -3144,6 +3159,46 @@ Table fulfillment.delivery_outcome_correction [headercolor: #2C7873] {
   created_by       varchar(100)
   last_modified_at timestamptz
   last_modified_by varchar(100)
+}
+
+Table fulfillment.delivery_outcome_import [headercolor: #2C7873] {
+  id               uuid [pk]
+  file_name        varchar(255) [not null]
+  file_sha256      varchar(64) [not null]
+  uploaded_by      uuid [not null]
+  uploaded_at      timestamptz [not null]
+  rows_total       int [not null]
+  rows_accepted    int [not null]
+  rows_rejected    int [not null]
+  version          bigint [not null, default: 0]
+  created_at       timestamptz [not null, default: `now()`]
+  created_by       varchar(100)
+  last_modified_at timestamptz
+  last_modified_by varchar(100)
+}
+
+Table fulfillment.delivery_outcome_import_row [headercolor: #2C7873] {
+  id               uuid [pk]
+  import_id        uuid [not null]
+  line_no          int [not null]
+  waybill_no       varchar(255)
+  outcome          varchar(255)
+  failure_reason   varchar(500)
+  reported_at      varchar(255)
+  recipient        varchar(255)
+  note             varchar(500)
+  shipment_code    varchar(255)
+  load_id          uuid
+  verdict          fulfillment.delivery_outcome_import_row_verdict [not null]
+  problem          varchar(32)
+  version          bigint [not null, default: 0]
+  created_at       timestamptz [not null, default: `now()`]
+  created_by       varchar(100)
+  last_modified_at timestamptz
+  last_modified_by varchar(100)
+  indexes {
+    (import_id, line_no) [unique]
+  }
 }
 
 Table fulfillment.dispatch_load [headercolor: #2C7873] {
@@ -4474,6 +4529,7 @@ Ref: fulfillment.carrier_booking.load_id > fulfillment.dispatch_load.id
 Ref: fulfillment.carrier_booking.requested_by > identity.app_user.id
 Ref: fulfillment.carrier_event.carrier_id > fulfillment.carrier.id
 Ref: fulfillment.carrier_event.load_id > fulfillment.dispatch_load.id
+Ref: fulfillment.carrier_event.outcome_import_id > fulfillment.delivery_outcome_import.id
 Ref: fulfillment.carrier_event.resolved_by > identity.app_user.id
 Ref: fulfillment.carrier_event.shipment_id > fulfillment.shipment.id
 Ref: fulfillment.carrier_event.warehouse_id > warehouse.warehouse.id
@@ -4483,6 +4539,9 @@ Ref: fulfillment.carrier_service_code.carrier_id > fulfillment.carrier.id
 Ref: fulfillment.carrier_service_code.vehicle_type_id > fulfillment.vehicle_type.id
 Ref: fulfillment.delivery_outcome_correction.corrected_by > identity.app_user.id
 Ref: fulfillment.delivery_outcome_correction.shipment_id > fulfillment.shipment.id
+Ref: fulfillment.delivery_outcome_import.uploaded_by > identity.app_user.id
+Ref: fulfillment.delivery_outcome_import_row.import_id > fulfillment.delivery_outcome_import.id
+Ref: fulfillment.delivery_outcome_import_row.load_id > fulfillment.dispatch_load.id
 Ref: fulfillment.dispatch_load.booked_by > identity.app_user.id
 Ref: fulfillment.dispatch_load.booking_cancelled_by > identity.app_user.id
 Ref: fulfillment.dispatch_load.cancelled_by > identity.app_user.id
@@ -4742,6 +4801,8 @@ TableGroup fulfillment_group [color: #2C7873] {
   fulfillment.carrier_pickup_point
   fulfillment.carrier_service_code
   fulfillment.delivery_outcome_correction
+  fulfillment.delivery_outcome_import
+  fulfillment.delivery_outcome_import_row
   fulfillment.dispatch_load
   fulfillment.dispatch_load_package
   fulfillment.dispatch_load_shipment
