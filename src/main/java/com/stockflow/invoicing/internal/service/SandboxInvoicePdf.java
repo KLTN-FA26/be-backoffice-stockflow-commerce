@@ -6,6 +6,7 @@ import com.stockflow.common.label.PrintedDocument;
 import com.stockflow.common.label.PrintedDocument.Line;
 import com.stockflow.invoicing.internal.domain.EInvoiceLine;
 import com.stockflow.invoicing.internal.domain.EInvoiceProvider.InvoiceDocument;
+import com.stockflow.invoicing.internal.domain.EInvoiceType;
 import com.stockflow.invoicing.internal.domain.InvoiceAbbreviations;
 import com.stockflow.invoicing.internal.domain.InvoiceParty;
 import com.stockflow.invoicing.internal.domain.TaxRateTotal;
@@ -56,6 +57,13 @@ class SandboxInvoicePdf {
         List<Line> lines = new ArrayList<>();
         lines.add(Line.bold(t.getString("einvoice.pdf.sandbox")));
         lines.add(Line.title(t.getString("einvoice.pdf.title")));
+        if (invoice.correction() != null) {
+            // TT 91 Điều 10 khoản 1 điểm b.1, b.2: what it is, the invoice it changes in the law's words, and why.
+            lines.add(Line.bold(t.getString(invoice.correction().type() == EInvoiceType.REPLACEMENT
+                    ? "einvoice.pdf.title.replacement" : "einvoice.pdf.title.adjustment")));
+            lines.add(Line.bold(CorrectionStatement.of(invoice.correction())));
+            lines.add(Line.text(t.getString("einvoice.correction.reason") + ": " + invoice.correction().reason()));
+        }
         lines.add(Line.bold(t.getString("einvoice.pdf.series").formatted(invoice.templateCode(), invoice.symbol(),
                 issued.invoiceNumber())));
         LocalDate date = invoice.issueDate();

@@ -22,13 +22,14 @@ final class EInvoicePersistenceMapper {
                 s.shipmentId(), s.shipmentCode(), s.deliveryBatchId(), s.customerId(), s.originalEInvoiceId(),
                 s.issueDate(), s.issueDueAt(), s.seller().name(), s.seller().taxCode(), s.seller().address(),
                 s.currency(), s.paymentMethod(), s.subtotal(), s.taxTotal(), s.grandTotal(), s.amountInWords(),
-                s.adjustmentReason(), s.agreementFileKey());
+                s.adjustmentReason(), s.correctionBasis(), s.returnRequestId());
     }
 
     /** Everything that follows the aggregate after it was drawn up. */
     static void apply(EInvoice.Snapshot s, EInvoiceJpaEntity entity) {
         entity.applyBuyer(s.buyer().name(), s.buyer().taxCode(), s.buyer().address(), s.buyer().email(),
                 warnings(s.warnings()));
+        entity.applyAgreement(s.agreementFileKey(), s.agreementNumber(), s.agreementDate());
         entity.applyState(s.status(), s.adjusted(), s.dueWarnedAt());
         entity.applySubmission(s.provider(), s.attempt(), s.transactionId(), s.templateCode(), s.symbol(),
                 s.submittedAt(), s.submittedBy(), s.rejectionCode(), s.rejectionMessage());
@@ -37,7 +38,7 @@ final class EInvoicePersistenceMapper {
         entity.applyVoid(s.voidedAt(), s.voidedBy(), s.voidReason());
     }
 
-    static EInvoice toDomain(EInvoiceJpaEntity e, List<EInvoiceLine> lines) {
+    static EInvoice toDomain(EInvoiceJpaEntity e, List<EInvoiceLine> lines, List<java.util.UUID> listed) {
         return EInvoice.restore(new EInvoice.Snapshot(e.getId(), e.getCode(), e.getType(), e.getStatus(),
                 e.isAdjusted(), e.getOrderId(), e.getOrderNumber(), e.getContractNumber(), e.getShipmentId(),
                 e.getShipmentCode(), e.getDeliveryBatchId(), e.getCustomerId(), e.getOriginalEInvoiceId(),
@@ -50,7 +51,8 @@ final class EInvoicePersistenceMapper {
                 e.getAmountInWords(), warnings(e.getWarnings()), e.getAdjustmentReason(), e.getAgreementFileKey(),
                 e.getXmlFileKey(), e.getPdfFileKey(), e.getRejectionCode(), e.getRejectionMessage(),
                 e.getSubmittedAt(), e.getSubmittedBy(), e.getIssuedAt(), e.getVoidedAt(), e.getVoidedBy(),
-                e.getVoidReason(), e.getVersion()));
+                e.getVoidReason(), e.getVersion(), e.getCorrectionBasis(), e.getAgreementNumber(),
+                e.getAgreementDate(), e.getReturnRequestId(), listed));
     }
 
     /** Codes in the enum's order, comma-separated; null for none, so the column says "nothing to look at" plainly. */

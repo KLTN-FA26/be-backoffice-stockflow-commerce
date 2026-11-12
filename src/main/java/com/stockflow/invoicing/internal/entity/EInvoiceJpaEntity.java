@@ -1,6 +1,7 @@
 package com.stockflow.invoicing.internal.entity;
 
 import com.stockflow.common.persistence.BaseEntity;
+import com.stockflow.invoicing.internal.domain.CorrectionBasis;
 import com.stockflow.invoicing.internal.domain.EInvoiceStatus;
 import com.stockflow.invoicing.internal.domain.EInvoiceType;
 import jakarta.persistence.Column;
@@ -142,8 +143,23 @@ public class EInvoiceJpaEntity extends BaseEntity {
     @Column(name = "adjustment_reason", updatable = false, length = 500)
     private String adjustmentReason;
 
-    @Column(name = "agreement_file_key", updatable = false, length = 500)
+    /** Why an adjustment or replacement exists; null on an original (WF-05 E4). */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "correction_basis", updatable = false, length = 16)
+    private CorrectionBasis correctionBasis;
+
+    @Column(name = "return_request_id", updatable = false)
+    private UUID returnRequestId;
+
+    /** The agreement is attached while the correction is a draft; {@code tg_einvoice_guard} refuses it afterwards. */
+    @Column(name = "agreement_file_key", length = 500)
     private String agreementFileKey;
+
+    @Column(name = "agreement_number", length = 64)
+    private String agreementNumber;
+
+    @Column(name = "agreement_date")
+    private LocalDate agreementDate;
 
     @Column(name = "xml_file_key", length = 500)
     private String xmlFileKey;
@@ -184,7 +200,8 @@ public class EInvoiceJpaEntity extends BaseEntity {
                              UUID customerId, UUID originalEInvoiceId, LocalDate issueDate, Instant issueDueAt,
                              String sellerName, String sellerTaxCode, String sellerAddress, String currency,
                              String paymentMethod, BigDecimal subtotal, BigDecimal taxTotal, BigDecimal grandTotal,
-                             String amountInWords, String adjustmentReason, String agreementFileKey) {
+                             String amountInWords, String adjustmentReason, CorrectionBasis correctionBasis,
+                             UUID returnRequestId) {
         super(id);
         this.code = code;
         this.type = type;
@@ -208,7 +225,8 @@ public class EInvoiceJpaEntity extends BaseEntity {
         this.grandTotal = grandTotal;
         this.amountInWords = amountInWords;
         this.adjustmentReason = adjustmentReason;
-        this.agreementFileKey = agreementFileKey;
+        this.correctionBasis = correctionBasis;
+        this.returnRequestId = returnRequestId;
     }
 
     public void applyBuyer(String name, String taxCode, String address, String email, String warnings) {
@@ -217,6 +235,12 @@ public class EInvoiceJpaEntity extends BaseEntity {
         this.buyerAddress = address;
         this.buyerEmail = email;
         this.warnings = warnings;
+    }
+
+    public void applyAgreement(String fileKey, String number, LocalDate date) {
+        this.agreementFileKey = fileKey;
+        this.agreementNumber = number;
+        this.agreementDate = date;
     }
 
     public void applyState(EInvoiceStatus status, boolean adjusted, Instant dueWarnedAt) {
@@ -306,4 +330,20 @@ public class EInvoiceJpaEntity extends BaseEntity {
     public Instant getVoidedAt() { return voidedAt; }
     public UUID getVoidedBy() { return voidedBy; }
     public String getVoidReason() { return voidReason; }
+
+    public CorrectionBasis getCorrectionBasis() {
+        return correctionBasis;
+    }
+
+    public UUID getReturnRequestId() {
+        return returnRequestId;
+    }
+
+    public String getAgreementNumber() {
+        return agreementNumber;
+    }
+
+    public LocalDate getAgreementDate() {
+        return agreementDate;
+    }
 }

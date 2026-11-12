@@ -16,8 +16,33 @@ public interface EInvoiceRepository {
      */
     Optional<EInvoice> findByIdForUpdate(UUID id);
 
-    /** The original invoice in force for a shipment - not voided, not replaced (kltn-docs 21 BR-01: at most one). */
+    /**
+     * The invoice that stands for a shipment (kltn-docs 21 BR-01: at most one in force): its original while that is not
+     * voided or replaced, else what replaced it. While a replacement is still a draft the invoice it will replace is
+     * the one in force, and the one returned.
+     */
     Optional<EInvoice> findLiveOriginalOfShipment(UUID shipmentId);
+
+    /** What already corrects an invoice: its live adjustments and replacement. Read under the invoice's lock. */
+    EInvoice.Corrections correctionsOf(UUID invoiceId);
+
+    /**
+     * The issued invoices in force of an order - originals and replacements, never adjustments - the oldest first:
+     * what goods returned on the order are taken off.
+     */
+    List<EInvoice> findInForceOfOrder(UUID orderId);
+
+    /**
+     * The pieces of each order line that the adjustments for returned goods of an invoice already take off it, by
+     * order line: adjustments that are not voided, issued or not.
+     */
+    java.util.Map<UUID, Long> returnedPieces(UUID invoiceId);
+
+    /** Whether an adjustment was ever drawn up for a return, voided or not: a return is taken off its invoices once. */
+    boolean hasAdjustmentForReturn(UUID returnRequestId);
+
+    /** Whether an adjustment for this return, not voided, already names this invoice ({@code uk_einvoice_return_adjustment}). */
+    boolean hasLiveReturnAdjustment(UUID returnRequestId, UUID invoiceId);
 
     /**
      * Writes the invoice against the version it was read at.

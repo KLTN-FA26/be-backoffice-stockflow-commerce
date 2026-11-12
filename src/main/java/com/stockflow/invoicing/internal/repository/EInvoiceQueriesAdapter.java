@@ -67,6 +67,15 @@ class EInvoiceQueriesAdapter implements EInvoiceQueries {
         return count == null ? 0 : count;
     }
 
+    @Override
+    public List<Listing> correctionsOf(UUID invoiceId) {
+        return jdbc.query("SELECT " + LIST_COLUMNS + " FROM invoicing.einvoice" + " " + """
+                 WHERE original_einvoice_id = ?
+                    OR id IN (SELECT einvoice_id FROM invoicing.einvoice_adjustment_listing
+                               WHERE listed_einvoice_id = ?)
+                 ORDER BY created_at, id""", LISTING, invoiceId, invoiceId);
+    }
+
     private static String where(Filter filter, List<Object> arguments) {
         List<String> predicates = new ArrayList<>();
         if (filter.status() != null) {

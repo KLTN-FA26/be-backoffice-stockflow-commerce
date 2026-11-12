@@ -21,11 +21,17 @@ public class SandboxLedger {
      *
      * @param issued  whether it ends issued (numbered) or refused by the simulated tax authority
      * @param readyAt when its simulated processing is done; before it the transaction is still pending
+     * @param kind    ORIGINAL, ADJUSTMENT or REPLACEMENT
+     * @param corrects the invoice an adjustment or replacement names; null on an original
      */
     public record Issuance(String transactionId, boolean issued, String templateCode, String symbol,
                            Integer invoiceNumber, String taxAuthorityCode, String lookupCode, String rejectionCode,
                            String rejectionMessage, String xml, byte[] pdf, String requestHash, Instant receivedAt,
-                           Instant readyAt) {
+                           Instant readyAt, String kind, Numbered corrects) {
+    }
+
+    /** An invoice as the provider knows it: by template, symbol and number. */
+    public record Numbered(String templateCode, String symbol, int invoiceNumber) {
     }
 
     private final JdbcTemplate jdbc;
@@ -37,7 +43,8 @@ public class SandboxLedger {
     public Optional<Issuance> find(String transactionId) {
         return jdbc.query("""
                 SELECT transaction_id, state, template_code, symbol, invoice_number, tax_authority_code, lookup_code,
-                       rejection_code, rejection_message, xml_document, pdf_document, request_hash, received_at, ready_at
+                       rejection_code, rejection_message, xml_document, pdf_document, request_hash, received_at, ready_at,
+                       kind, original_template_code, original_symbol, original_invoice_number
                   FROM invoicing.sandbox_issuance WHERE transaction_id = ?""",
                 (row, n) -> new Issuance(row.getString("transaction_id"), "ISSUED".equals(row.getString("state")),
                         row.getString("template_code"), row.getString("symbol"),
@@ -45,8 +52,29 @@ public class SandboxLedger {
                         row.getString("lookup_code"), row.getString("rejection_code"),
                         row.getString("rejection_message"), row.getString("xml_document"),
                         row.getBytes("pdf_document"), row.getString("request_hash"),
-                        row.getTimestamp("received_at").toInstant(), row.getTimestamp("ready_at").toInstant()),
+                        row.getTimestamp("received_at").toInstant(), row.getTimestamp("ready_at").toInstant(),
+                        row.getString("kind"), row.getString("original_template_code") == null ? null
+                                : new Numbered(row.getString("original_template_code"),
+                                        row.getString("original_symbol"), row.getInt("original_invoice_number"))),
                 transactionId).stream().findFirst();
+    }
+
+    /** Whether the sandbox issued an invoice under this template, symbol and number - its processing done or not. */
+    public boolean issuedInvoice(Numbered invoice) {
+        return Boolean.TRUE.equals(jdbc.queryForObject("""
+                SELECT EXISTS (SELECT 1 FROM invoicing.sandbox_issuance
+                                WHERE state = 'ISSUED' AND template_code = ? AND symbol = ? AND invoice_number = ?)""",
+                Boolean.class, invoice.templateCode(), invoice.symbol(), invoice.invoiceNumber()));
+    }
+
+    /** Whether the sandbox already took a replacement of this invoice in, under another transaction. */
+    public boolean replaced(Numbered invoice, String exceptTransactionId) {
+        return Boolean.TRUE.equals(jdbc.queryForObject("""
+                SELECT EXISTS (SELECT 1 FROM invoicing.sandbox_issuance
+                                WHERE state = 'ISSUED' AND kind = 'REPLACEMENT' AND original_template_code = ?
+                                  AND original_symbol = ? AND original_invoice_number = ? AND transaction_id <> ?)""",
+                Boolean.class, invoice.templateCode(), invoice.symbol(), invoice.invoiceNumber(),
+                exceptTransactionId));
     }
 
     /**
@@ -57,13 +85,17 @@ public class SandboxLedger {
         return jdbc.update("""
                 INSERT INTO invoicing.sandbox_issuance (transaction_id, state, template_code, symbol, invoice_number,
                     tax_authority_code, lookup_code, rejection_code, rejection_message, xml_document, pdf_document,
-                    request_hash, received_at, ready_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    request_hash, received_at, ready_at, kind, original_template_code, original_symbol,
+                    original_invoice_number)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT (transaction_id) DO NOTHING""", issuance.transactionId(),
                 issuance.issued() ? "ISSUED" : "REJECTED", issuance.templateCode(), issuance.symbol(),
                 issuance.invoiceNumber(), issuance.taxAuthorityCode(), issuance.lookupCode(),
                 issuance.rejectionCode(), issuance.rejectionMessage(), issuance.xml(), issuance.pdf(),
-                issuance.requestHash(), Timestamp.from(issuance.receivedAt()), Timestamp.from(issuance.readyAt())) == 1;
+                issuance.requestHash(), Timestamp.from(issuance.receivedAt()), Timestamp.from(issuance.readyAt()),
+                issuance.kind(), issuance.corrects() == null ? null : issuance.corrects().templateCode(),
+                issuance.corrects() == null ? null : issuance.corrects().symbol(),
+                issuance.corrects() == null ? null : issuance.corrects().invoiceNumber()) == 1;
     }
 
     /**

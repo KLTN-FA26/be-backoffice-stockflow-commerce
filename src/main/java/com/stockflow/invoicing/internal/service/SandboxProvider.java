@@ -35,6 +35,13 @@ import java.util.regex.Pattern;
  *       DUPLICATE and creates nothing; a different invoice under that id is refused.</li>
  *   <li><b>Returns the XML and the PDF</b> of an issued transaction ({@link TaxAuthorityInvoiceXml},
  *       {@link SandboxInvoicePdf}).</li>
+ *   <li><b>Issues adjustments and replacements</b> (WF-05 E4; TT 91 Điều 10): numbered in the same sequence as any
+ *       invoice, naming the invoice they change. It refuses one that names an invoice it never issued
+ *       ({@value #ORIGINAL_NOT_FOUND}) or one a replacement already took the place of ({@value #ORIGINAL_REPLACED}) -
+ *       what a provider that keeps its own books does.</li>
+ *   <li><b>Takes the notice "invoice drawn up wrongly"</b> (Mẫu 04/SS-HĐĐT) for an invoice it issued and answers as
+ *       the tax authority's Mẫu 01/TB-SSĐT would, with a reference marked {@code SBX}. It keeps nothing for a notice:
+ *       the same notice sent again gets the same answer.</li>
  * </ul>
  *
  * <h2>How to rehearse a failure</h2>
@@ -49,7 +56,9 @@ import java.util.regex.Pattern;
  *       blindly would issue twice;</li>
  *   <li>one ending {@value #UNREACHABLE} - the first submission never arrives (a timeout, nothing taken in);</li>
  *   <li>one ending {@value #AUTHORITY_REJECTS} - accepted, then refused by the simulated tax authority when its
- *       processing is done, {@value #TAX_AUTHORITY_REJECTED}.</li>
+ *       processing is done, {@value #TAX_AUTHORITY_REJECTED};</li>
+ *   <li>a notice whose reason contains {@value #NOTICE_REJECTS} - refused, {@value #NOTICE_REJECTED}; one containing
+ *       {@value #NOTICE_UNREACHABLE} - the provider does not answer.</li>
  * </ul>
  *
  * <p>Its books are in the database ({@link SandboxLedger}) and each call commits on its own, whatever transaction the
@@ -67,6 +76,12 @@ class SandboxProvider implements EInvoiceProvider {
     static final String REPLY_LOST = "+sandbox-reply-lost";
     static final String UNREACHABLE = "+sandbox-unreachable";
     static final String AUTHORITY_REJECTS = "+sandbox-authority-rejects";
+    static final String ORIGINAL_NOT_FOUND = "ORIGINAL_NOT_FOUND";
+    static final String ORIGINAL_REPLACED = "ORIGINAL_REPLACED";
+    static final String INVOICE_NOT_FOUND = "INVOICE_NOT_FOUND";
+    static final String NOTICE_REJECTED = "NOTICE_REJECTED";
+    static final String NOTICE_REJECTS = "[sandbox-notice-rejects]";
+    static final String NOTICE_UNREACHABLE = "[sandbox-notice-unreachable]";
     /** What every document of the sandbox says first, in the XML; the PDF says it in Vietnamese. */
     static final String NOTICE = "SANDBOX E-INVOICE - TEST DOCUMENT - NO LEGAL VALUE - not signed, not sent to the tax "
             + "authority";
@@ -131,12 +146,29 @@ class SandboxProvider implements EInvoiceProvider {
             return new Submission(SubmissionOutcome.REJECTED, INVALID_SERIES,
                     "The symbol is not one of the invoice's year");
         }
+        String kind = invoice.correction() == null ? "ORIGINAL" : invoice.correction().type().name();
+        SandboxLedger.Numbered corrects = invoice.correction() == null ? null
+                : new SandboxLedger.Numbered(invoice.correction().templateCode(), invoice.correction().symbol(),
+                        invoice.correction().invoiceNumber());
+        if (corrects != null) {
+            // The provider's own books decide, not the caller's word: the invoice named must be one it issued, and one
+            // that a replacement already stands in for takes no further adjustment or replacement.
+            if (!ledger.issuedInvoice(corrects)) {
+                return new Submission(SubmissionOutcome.REJECTED, ORIGINAL_NOT_FOUND,
+                        "The invoice to adjust or replace was not issued here");
+            }
+            if (ledger.replaced(corrects, invoice.transactionId())) {
+                return new Submission(SubmissionOutcome.REJECTED, ORIGINAL_REPLACED,
+                        "The invoice to adjust or replace was already replaced");
+            }
+        }
         Instant now = clock.instant();
         Instant ready = now.plus(properties.sandbox().processingDelay());
         if (mailbox.endsWith(AUTHORITY_REJECTS)) {
             ledger.insert(new SandboxLedger.Issuance(invoice.transactionId(), false, invoice.templateCode(),
                     invoice.symbol(), null, null, null, TAX_AUTHORITY_REJECTED,
-                    "The tax authority did not give the invoice a code (rehearsed)", null, null, hash, now, ready));
+                    "The tax authority did not give the invoice a code (rehearsed)", null, null, hash, now, ready,
+                    kind, corrects));
             return new Submission(SubmissionOutcome.ACCEPTED, null, null);
         }
         Optional<Integer> number = ledger.nextNumber(invoice.templateCode(), invoice.symbol());
@@ -151,7 +183,7 @@ class SandboxProvider implements EInvoiceProvider {
         boolean taken = ledger.insert(new SandboxLedger.Issuance(invoice.transactionId(), true,
                 invoice.templateCode(), invoice.symbol(), issued.invoiceNumber(), issued.taxAuthorityCode(),
                 issued.lookupCode(), null, null, TaxAuthorityInvoiceXml.write(invoice, issued, NOTICE),
-                pdf.render(invoice, issued), hash, now, ready));
+                pdf.render(invoice, issued), hash, now, ready, kind, corrects));
         if (!taken) {
             // The same transaction arrived twice at once and the other one won: this one creates nothing. Rolling back
             // gives its number back, so the symbol's numbers stay gapless.
@@ -184,6 +216,29 @@ class SandboxProvider implements EInvoiceProvider {
             throw new ProviderUnavailableException("Sandbox: transaction " + transactionId + " is not issued");
         }
         return new Documents(held.get().xml().getBytes(StandardCharsets.UTF_8), held.get().pdf());
+    }
+
+    @Override
+    public NoticeReceipt notifyError(ErrorNoticeDocument notice) {
+        String reason = notice.reason() == null ? "" : notice.reason().toLowerCase(Locale.ROOT);
+        if (reason.contains(NOTICE_UNREACHABLE)) {
+            throw new ProviderUnavailableException("Sandbox: the provider could not be reached (rehearsed)");
+        }
+        Boolean known = ownTransaction.execute(status -> ledger.issuedInvoice(
+                new SandboxLedger.Numbered(notice.templateCode(), notice.symbol(), notice.invoiceNumber())));
+        if (!Boolean.TRUE.equals(known)) {
+            return new NoticeReceipt(NoticeOutcome.REJECTED, INVOICE_NOT_FOUND,
+                    "The invoice the notice is about was not issued here");
+        }
+        if (reason.contains(NOTICE_REJECTS)) {
+            return new NoticeReceipt(NoticeOutcome.REJECTED, NOTICE_REJECTED,
+                    "The tax authority did not accept the notice (rehearsed)");
+        }
+        // Derived from the notice's reference alone: the same notice sent again is answered the same.
+        String digest = Checksums.sha256Hex(notice.reference().getBytes(StandardCharsets.UTF_8))
+                .toUpperCase(Locale.ROOT);
+        return new NoticeReceipt(NoticeOutcome.ACCEPTED, "SBX-TBSS-" + digest.substring(0, 16),
+                "Sandbox: notice received (simulated 01/TB-SSDT; no legal value)");
     }
 
     /** The part of the buyer's e-mail address before the {@code @}: where a rehearsal is asked for. */

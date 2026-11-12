@@ -2,6 +2,7 @@ package com.stockflow.invoicing.internal.service;
 
 import com.stockflow.invoicing.internal.domain.EInvoiceLine;
 import com.stockflow.invoicing.internal.domain.EInvoiceProvider.InvoiceDocument;
+import com.stockflow.invoicing.internal.domain.EInvoiceType;
 import com.stockflow.invoicing.internal.domain.InvoiceParty;
 import com.stockflow.invoicing.internal.domain.TaxRateTotal;
 import org.w3c.dom.Document;
@@ -32,7 +33,9 @@ import java.time.format.DateTimeFormatter;
  * (plans/E0-legal.md §2(c)). So the structure below follows the layout of the format's earlier versions as it is
  * publicly known - {@code HDon / DLHDon / TTChung, NDHDon (NBan, NMua, DSHHDVu, TToan) / MCCQT / DSCKS} - and has not
  * been checked against 2.1.1. It is good for what the sandbox needs: a well-formed document carrying every mandatory
- * content of NĐ 254 Điều 10 khoản 1. It is not evidence that a real provider's XML looks like this.</p>
+ * content of NĐ 254 Điều 10 khoản 1. It is not evidence that a real provider's XML looks like this. The block naming
+ * the invoice an adjustment or replacement changes ({@code TTHDLQuan}) is as provisional as the rest; the sentence the
+ * law words ({@link CorrectionStatement}) is carried beside it so the reference is there whatever the tags become.</p>
  *
  * <p>That is why this class stands alone: it takes the invoice as plain values and returns text, knows nothing of the
  * sandbox, storage or the database, and keeps every element name in {@link Tags}. When the annex is in hand the mapping
@@ -60,6 +63,14 @@ final class TaxAuthorityInvoiceXml {
         static final String CURRENCY = "DVTTe";
         static final String EXCHANGE_RATE = "TGia";
         static final String PAYMENT_METHOD = "HTTToan";
+        /** The invoice an adjustment or replacement changes: its nature (1 replaces, 2 adjusts) and what it names. */
+        static final String RELATED = "TTHDLQuan";
+        static final String RELATED_NATURE = "TCHDon";
+        static final String RELATED_TEMPLATE_CODE = "KHMSHDCLQuan";
+        static final String RELATED_SYMBOL = "KHHDCLQuan";
+        static final String RELATED_NUMBER = "SHDCLQuan";
+        static final String RELATED_DATE = "NLHDCLQuan";
+        static final String RELATED_NOTE = "GChu";
         static final String CONTENT = "NDHDon";
         static final String SELLER = "NBan";
         static final String BUYER = "NMua";
@@ -133,6 +144,17 @@ final class TaxAuthorityInvoiceXml {
             text(xml, general, Tags.CURRENCY, invoice.currency());
             text(xml, general, Tags.EXCHANGE_RATE, "1");
             text(xml, general, Tags.PAYMENT_METHOD, invoice.paymentMethod());
+            if (invoice.correction() != null) {
+                // TT 91 Điều 10 khoản 1 điểm b.1, b.2: the new invoice names the one it adjusts or replaces.
+                var correction = invoice.correction();
+                Element related = child(xml, general, Tags.RELATED);
+                text(xml, related, Tags.RELATED_NATURE, correction.type() == EInvoiceType.REPLACEMENT ? "1" : "2");
+                text(xml, related, Tags.RELATED_TEMPLATE_CODE, correction.templateCode());
+                text(xml, related, Tags.RELATED_SYMBOL, correction.symbol());
+                text(xml, related, Tags.RELATED_NUMBER, Integer.toString(correction.invoiceNumber()));
+                text(xml, related, Tags.RELATED_DATE, DateTimeFormatter.ISO_LOCAL_DATE.format(correction.issueDate()));
+                text(xml, related, Tags.RELATED_NOTE, correction.reason());
+            }
 
             Element content = child(xml, data, Tags.CONTENT);
             party(xml, child(xml, content, Tags.SELLER), invoice.seller());
@@ -140,8 +162,8 @@ final class TaxAuthorityInvoiceXml {
             Element items = child(xml, content, Tags.ITEMS);
             for (EInvoiceLine line : invoice.lines()) {
                 Element item = child(xml, items, Tags.ITEM);
-                // 1: goods or a service. The format's other natures (promotion, discount, note) are not produced here.
-                text(xml, item, Tags.ITEM_NATURE, "1");
+                // 1: goods or a service; 4: a note. The format's other natures (promotion, discount) are not produced.
+                text(xml, item, Tags.ITEM_NATURE, line.kind() == EInvoiceLine.Kind.NOTE ? "4" : "1");
                 text(xml, item, Tags.LINE_NO, Integer.toString(line.lineNo()));
                 if (line.sku() != null) {
                     text(xml, item, Tags.ITEM_CODE, line.sku());
@@ -173,6 +195,7 @@ final class TaxAuthorityInvoiceXml {
             other(xml, other, "ContractNumber", invoice.contractNumber());
             other(xml, other, "ReferenceCode", invoice.referenceCode());
             other(xml, other, "LookupCode", issued.lookupCode());
+            other(xml, other, "CorrectionStatement", CorrectionStatement.of(invoice.correction()));
 
             text(xml, root, Tags.TAX_AUTHORITY_CODE, issued.taxAuthorityCode());
             Element signatures = child(xml, root, Tags.SIGNATURES);
