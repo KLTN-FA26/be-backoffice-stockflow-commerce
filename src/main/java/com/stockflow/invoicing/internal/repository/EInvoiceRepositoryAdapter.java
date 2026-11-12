@@ -219,9 +219,19 @@ class EInvoiceRepositoryAdapter implements EInvoiceRepository {
 
     @Override
     public List<UUID> findSubmitting(int limit) {
+        // einvoice_sending.held_until is when the invoice was last asked about once its lease is given up: the order
+        // is a round, never-asked first. Ordered by submitted_at alone, the oldest invoices - those marked unknown to
+        // the provider above all, which stay SUBMITTING for as long as the accountant leaves them - took every place
+        // in the batch on every run, and nothing newer was ever asked about.
         return jdbc.queryForList("""
-                SELECT id FROM invoicing.einvoice WHERE status = 'SUBMITTING'
-                 ORDER BY submitted_at, id LIMIT ?""", UUID.class, limit);
+                SELECT i.id
+                  FROM invoicing.einvoice i
+                  LEFT JOIN invoicing.einvoice_sending s ON s.einvoice_id = i.id
+                 WHERE i.status = 'SUBMITTING'
+                   AND (s.holder IS NULL OR s.held_until <= now())
+                 ORDER BY coalesce(i.warnings, '') LIKE '%UNKNOWN_TO_PROVIDER%', s.held_until NULLS FIRST,
+                          i.submitted_at, i.id
+                 LIMIT ?""", UUID.class, limit);
     }
 
     @Override

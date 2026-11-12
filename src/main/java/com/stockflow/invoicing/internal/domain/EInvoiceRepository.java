@@ -75,7 +75,11 @@ public interface EInvoiceRepository {
      */
     EInvoice save(EInvoice invoice);
 
-    /** Up to {@code limit} invoices waiting for the provider's answer, the longest waiting first. */
+    /**
+     * Up to {@code limit} invoices waiting for the provider's answer and nobody is asking about right now: the one
+     * asked about least recently first, and those marked unknown to the provider (which wait for the accountant) after
+     * all the others, so that no group of invoices keeps the rest out of a bounded batch.
+     */
     List<UUID> findSubmitting(int limit);
 
     /**
