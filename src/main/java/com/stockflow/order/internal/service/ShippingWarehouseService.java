@@ -284,12 +284,22 @@ public class ShippingWarehouseService {
      * orders whose returned goods are of it, are locked; {@code sku} null: any SKU (goods put away - the event does not
      * say which).
      *
-     * <p>A delivery failure case that could not be served fails the call once every order was tried (WF-05 review F4):
-     * the event that brought the stock stays in the publication registry and is delivered again, rather than leaving
-     * the returned goods to whichever order holds next. The retry is safe - each hold has its request id. A failed
+     * <p>The goods that came back from a failed delivery are held for their cases first, every case tried. If holding
+     * any case's goods failed, the call stops there and fails (WF-05 review F4, N2): no ordinary order is topped up in
+     * this run, since each top-up commits on its own and would take the free cartons the case is waiting for. A failed
      * top-up of an ordinary order is only logged: the next arrival serves it, and nothing else can take its place.</p>
      *
-     * @throws RuntimeException the first failure to hold a case's goods, after every order was tried
+     * <p>What happens to the event then. The listener's publication stays incomplete in {@code event_publication}. It
+     * is <em>not</em> retried while the application runs: nothing resubmits this listener's publications (the one
+     * scheduled resubmission, notification's {@code ProductionOrderMailRetry}, serves production-order mail only), and
+     * it is replayed at the next start when {@code republish-outstanding-events-on-restart} is on (it is in
+     * {@code application.yml}, not in tests). The replay is safe - each hold has its request id. Meanwhile every later arrival tries the case again first; while
+     * it keeps failing, each of those events stays incomplete too and the ordinary orders short of stock wait. That is
+     * the price of never giving a case's goods to another order: a case that fails for good is a defect to fix, seen
+     * in the log and in the registry.</p>
+     *
+     * @throws RuntimeException the first failure to hold a case's goods, after every case was tried and before any
+     *         ordinary order was topped up
      */
     @Transactional(propagation = org.springframework.transaction.annotation.Propagation.NOT_SUPPORTED)
     public int topUpWaiting(String sku) {
@@ -304,11 +314,16 @@ public class ShippingWarehouseService {
                     toppedUp++;
                 }
             } catch (RuntimeException e) {
-                log.warn("Order {}: holding the goods that came back failed; the event is delivered again", orderId, e);
+                log.warn("Order {}: holding the goods that came back failed; no other order is topped up in this run, "
+                        + "and the event stays incomplete in the publication registry", orderId, e);
                 if (caseFailed == null) {
                     caseFailed = e;
                 }
             }
+        }
+        if (caseFailed != null) {
+            // WF-05 review N2: topping up ordinary orders now would hand them the cartons the case is waiting for.
+            throw caseFailed;
         }
         for (UUID orderId : orders.waitingForStockAtShippingWarehouse()) {
             if (!shortOf(orderId, sku)) {
@@ -322,9 +337,6 @@ public class ShippingWarehouseService {
             } catch (RuntimeException e) {
                 log.warn("Order {}: topping up its held stock failed; the next arrival tries again", orderId, e);
             }
-        }
-        if (caseFailed != null) {
-            throw caseFailed;
         }
         return toppedUp;
     }
