@@ -29,7 +29,22 @@ final class InvoicingWebMapper {
     private InvoicingWebMapper() {
     }
 
+    /** The warning the screen shows beside the stored ones while an earlier-dated invoice waits (E0 M6). */
+    static final String EARLIER_INVOICE_PENDING = "EARLIER_INVOICE_PENDING";
+
     static EInvoiceResponse toResponse(EInvoice.Snapshot s, Instant now) {
+        return toResponse(s, now, null);
+    }
+
+    /**
+     * @param earlierPending the code of an earlier-dated invoice still to be issued, which keeps this draft from being
+     *                       issued; null when there is none or it was not asked
+     */
+    static EInvoiceResponse toResponse(EInvoice.Snapshot s, Instant now, String earlierPending) {
+        List<String> warnings = new java.util.ArrayList<>(s.warnings().stream().sorted().map(Enum::name).toList());
+        if (earlierPending != null) {
+            warnings.add(EARLIER_INVOICE_PENDING);
+        }
         return new EInvoiceResponse(s.id(), s.code(), s.type().name(), s.status().name(), s.adjusted(), s.orderId(),
                 s.orderNumber(), s.contractNumber(), s.shipmentId(), s.shipmentCode(), s.deliveryBatchId(),
                 s.customerId(), s.originalEInvoiceId(), s.provider(), s.templateCode(), s.symbol(),
@@ -43,13 +58,13 @@ final class InvoicingWebMapper {
                 TaxRateTotal.of(s.lines()).stream().map(total -> new EInvoiceResponse.TaxRateTotal(total.taxRate(),
                         total.amount(), total.taxAmount())).toList(),
                 s.subtotal(), s.taxTotal(), s.grandTotal(), s.amountInWords(),
-                s.warnings().stream().sorted().map(Enum::name).toList(), s.rejectionCode(), s.rejectionMessage(),
+                List.copyOf(warnings), s.rejectionCode(), s.rejectionMessage(),
                 s.submittedAt(), s.issuedAt(), s.voidedAt(), s.voidReason(), s.status().wasIssued(), s.version(),
                 s.correctionBasis() == null ? null : s.correctionBasis().name(), s.adjustmentReason(),
                 s.correctionBasis() != null && s.correctionBasis().requiresAgreement(),
                 s.agreementFileKey() == null ? null
                         : new EInvoiceResponse.Agreement(s.agreementNumber(), s.agreementDate()),
-                s.returnRequestId(), s.listedInvoiceIds());
+                s.returnRequestId(), s.listedInvoiceIds(), earlierPending);
     }
 
     static EInvoiceListItemResponse toResponse(EInvoiceQueries.Listing row, Instant now) {
@@ -86,14 +101,14 @@ final class InvoicingWebMapper {
     static CustomerEInvoiceErrorNoticeResponse toCustomerResponse(ErrorNotice.Snapshot notice) {
         return new CustomerEInvoiceErrorNoticeResponse(notice.id(), notice.einvoiceId(), notice.formCode(),
                 notice.reason(), notice.correctBuyerName(), notice.correctBuyerAddress(), notice.status().name(),
-                notice.createdAt(), notice.respondedAt());
+                notice.createdAt(), notice.respondedAt(), ErrorNotice.FORM_NAME);
     }
 
     static EInvoiceErrorNoticeResponse toResponse(ErrorNotice.Snapshot notice) {
         return new EInvoiceErrorNoticeResponse(notice.id(), notice.einvoiceId(), notice.formCode(),
                 notice.subject().name(), notice.reason(), notice.correctBuyerName(), notice.correctBuyerAddress(),
                 notice.status().name(), notice.sentAt(), notice.responseCode(), notice.responseMessage(),
-                notice.respondedAt(), notice.recordedBy(), notice.createdAt());
+                notice.respondedAt(), notice.recordedBy(), notice.createdAt(), ErrorNotice.FORM_NAME);
     }
 
     static EInvoiceSettingsResponse toResponse(EInvoiceSettingsService.Settings settings) {

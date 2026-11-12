@@ -9,10 +9,13 @@ import java.util.UUID;
  * with the tax authority), SENT, ACCEPTED or REJECTED. Who recorded it and the provider's codes are the seller's own
  * and are left out.
  *
+ * @param formName            the form's name as the law prints it ({@code 04/SS-HĐĐT}), to show; {@code formCode} is
+ *                            its ASCII identifier
  * @param correctBuyerName    the name the invoice should have carried; null when the name was right
  * @param correctBuyerAddress the address the invoice should have carried; null when the address was right
  */
 public record CustomerEInvoiceErrorNoticeResponse(UUID id, UUID einvoiceId, String formCode, String reason,
                                                   String correctBuyerName, String correctBuyerAddress,
-                                                  String status, Instant recordedAt, Instant respondedAt) {
+                                                  String status, Instant recordedAt, Instant respondedAt,
+                                                  String formName) {
 }

@@ -13,7 +13,8 @@ import java.util.UUID;
  * @param buyerName           the buyer as the invoice names it
  * @param recipientEmail      the address the invoice is sent to: the buyer's invoice e-mail as the invoice holds it
  * @param reference           the invoice as people quote it: template code, symbol and number
- * @param formCode            the form the tax authority is notified on ({@code 04/SS-HDDT})
+ * @param formCode            the form the tax authority is notified on, by the name the law prints and the buyer reads
+ *                            ({@code 04/SS-HĐĐT})
  * @param reason              why the invoice is wrong, as the accountant wrote it on the notice
  * @param correctBuyerName    the name the invoice should have carried; null when the name was right
  * @param correctBuyerAddress the address the invoice should have carried; null when the address was right

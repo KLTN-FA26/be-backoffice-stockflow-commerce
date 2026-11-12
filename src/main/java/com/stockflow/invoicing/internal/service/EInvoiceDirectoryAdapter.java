@@ -80,7 +80,7 @@ class EInvoiceDirectoryAdapter implements EInvoiceDirectory {
                 .flatMap(notice -> issued(notice.einvoiceId()).map(invoice -> new EInvoiceErrorNoticeMail(
                         notice.id(), invoice.id(), invoice.customerId(), invoice.buyer().name(),
                         invoice.buyer().email(), reference(invoice), invoice.orderNumber(), invoice.issueDate(),
-                        notice.formCode(), notice.reason(), notice.correctBuyerName(),
+                        ErrorNotice.FORM_NAME, notice.reason(), notice.correctBuyerName(),
                         notice.correctBuyerAddress())));
     }
 

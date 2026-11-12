@@ -28,12 +28,19 @@ import java.util.UUID;
 public final class ErrorNotice {
 
     /**
-     * The form the notice is made on, which TT 91 names with the Vietnamese letter Đ ("04/SS-HĐĐT"). It is stored and
-     * sent in ASCII (and so says {@code ck_einvoice_error_notice_form}) because nothing yet says which spelling a
-     * provider's notice call expects. An open question (WF05-E0 L12): when a provider's notice call is built, its
-     * documentation decides, and this constant and the CHECK change together.
+     * The form the notice is made on, as this system identifies it: in ASCII, which is what is stored
+     * ({@code ck_einvoice_error_notice_form}), what the API answers as {@code formCode} and what a provider is handed
+     * (owner's decision 13/11/2026 on E0 L12). TT 91 writes the form's name with the Vietnamese letter Đ; that is a
+     * name to read, {@link #FORM_NAME}, not an identifier to compare. A provider whose notice call wants another
+     * spelling translates this code in its own adapter - the outgoing string is the adapter's to decide.
      */
     public static final String FORM_CODE = "04/SS-HDDT";
+
+    /**
+     * The form's name as TT 91/2026/TT-BTC prints it, for what people read: a screen ({@code formName} in the API), a
+     * message to the buyer, a printed document. Never stored and never compared.
+     */
+    public static final String FORM_NAME = "04/SS-HĐĐT";
 
     /** What the notice is about. */
     public enum Subject {
