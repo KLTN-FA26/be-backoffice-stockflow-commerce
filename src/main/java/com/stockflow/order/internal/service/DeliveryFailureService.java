@@ -137,7 +137,10 @@ public class DeliveryFailureService {
                 .orElse(null);
         if (shipment == null) {
             // An order handed over whole, before shipments were recorded on the order (G4-Q3): its outcome is the
-            // order's own (recordReturnedToOrigin) and there is no shipment of it for a case to be about.
+            // order's own (recordReturnedToOrigin) and there is no shipment of it for a case to be about. Historical
+            // data only (WF-05 review F13): a shipment leaves whole only when its parcels record no contents, which
+            // nothing packed since #136 does, so no current flow comes here. Such an order goes RETURNED with no
+            // case, as it did before WF-05.
             log.warn("Order {}: return receipt {} is against shipment {}, which the order does not know; no delivery "
                     + "failure case is opened", order.orderNumber(), event.receiptNumber(), event.shipmentId());
             return;
@@ -287,6 +290,12 @@ public class DeliveryFailureService {
      *
      * <p>An order no longer held whose rest was closed already - nothing outstanding - only has its cases closed: there
      * is nothing for a fee to be kept on, so one is refused rather than dropped.</p>
+     *
+     * <p>It closes every undelivered unit of the order, later batches included, not only the failed shipment's (WF-05
+     * review F6.2, kept as is): units are closed per line, not per batch; the release and handover of the next batch
+     * ({@code nextToRelease}, {@code deliveredBatches}, {@code check_delivery_batch_of_order}) require the batch before
+     * it handed over in full; the payment closure takes the latest batch first; and {@code OrderRemainderClosed} names
+     * no batch. Closing one batch is an open question in the WF05-dfail report.</p>
      */
     private void closeUndelivered(Order order, Cancel command, UUID by) {
         UUID orderId = order.id().value();

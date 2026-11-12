@@ -726,6 +726,12 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
     /**
      * 4B-8: the delivery batch on its way out, if the order releases by batch. A redelivery with the warehouse (WF-05
      * fix plan, section 2) is the batch on its way: its shipment carries the batch it delivers again.
+     *
+     * <p>While a redelivery is released, every caller - the load plan, the truck leaving - sees that batch, with no
+     * delivery window ({@code windowStart} null: the goods were due already). A next batch released at the same time is
+     * then not checked against its window before the handover (WF-05 review F14); the handover itself still checks it,
+     * per shipment, so it cannot be handed over early - only planned onto a truck early. Accepted: at most one
+     * redelivery is released at a time and it goes first.</p>
      */
     private java.util.Optional<com.stockflow.order.internal.domain.BatchInFlight> inFlight(Order order) {
         return flightOf(order, releasedRedelivery(order.id().value())
@@ -878,7 +884,7 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
         // any hold is (one open at a time, uk_order_active_hold); one raised earlier for another reason gives way to
         // it - that decision comes first. A hold is resolved by a person (ck_order_hold_resolution), so when the
         // carrier's report brought the shipment back (no actor) the earlier row stays open, and Sales' decision on the
-        // failed delivery resolves it.
+        // failed delivery puts the record straight ({@link #resolveHoldRow}).
         var open = holds.findFirstByOrderIdAndResolvedAtIsNullOrderByRaisedAtDesc(orderId);
         boolean superseded = open.isPresent() && !DELIVERY_FAILED_HOLD.equals(open.get().getReason()) && by != null;
         if (superseded) {
@@ -901,8 +907,9 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
      */
     Order resumeAfterDeliveryFailure(UUID orderId, String note, UUID by, Instant at) {
         Order order = lockOrder(orderId);
+        String heldFor = order.holdNote();
         order.resolveDeliveryFailure(note, by, at);
-        resolveHoldRow(orderId, note, by, at);
+        resolveHoldRow(order, heldFor, note, by, at);
         Order saved = repository.save(order);
         events.publishEventsOf(order);
         return saved;
@@ -918,16 +925,41 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
     OrderSummary closeUndelivered(UUID orderId, String note, com.stockflow.order.api.CancellationFee fee, UUID by,
                                   Instant at) {
         Order order = lockOrder(orderId);
+        String heldFor = order.holdNote();
         order.resolveDeliveryFailure(note, by, at);
-        resolveHoldRow(orderId, note, by, at);
+        resolveHoldRow(order, heldFor, note, by, at);
         return closeRest(order, CancellationReasonCode.DELIVERY_FAILED, note, fee, by, at);
     }
 
-    private void resolveHoldRow(UUID orderId, String note, UUID by, Instant at) {
-        holds.findFirstByOrderIdAndResolvedAtIsNullOrderByRaisedAtDesc(orderId).ifPresent(hold -> {
-            hold.resolve(by, note.trim(), at);
-            holds.save(hold);
-        });
+    /**
+     * Resolves the order's open hold row with Sales' decision on the failed delivery. When the shipment came back on
+     * the carrier's report while the order was held for another reason, that earlier row is still open: nobody could
+     * resolve it then (ck_order_hold_resolution names who resolved a hold, and no system account exists in
+     * {@code identity.app_user} to name). It is resolved now, as superseded, by the deciding user, and the
+     * DELIVERY_FAILED hold the order was under is put on record - raised when the shipment came back, by nobody (the
+     * carrier reported it), with the order's hold note - and resolved by the decision (WF-05 review F12). The trail
+     * then says what the order was held for, and when, rather than closing the old reason with this decision's note.
+     *
+     * @param heldFor the order's hold note before the decision lifted it
+     */
+    private void resolveHoldRow(Order order, String heldFor, String note, UUID by, Instant at) {
+        UUID orderId = order.id().value();
+        var open = holds.findFirstByOrderIdAndResolvedAtIsNullOrderByRaisedAtDesc(orderId);
+        if (open.isEmpty()) {
+            return;
+        }
+        OrderHoldJpaEntity hold = open.get();
+        if (!DELIVERY_FAILED_HOLD.equals(hold.getReason())) {
+            hold.resolve(by, "Superseded: a shipment came back; the order was held for the failed delivery", at);
+            holds.saveAndFlush(hold);
+            Instant cameBack = order.shipments().stream()
+                    .filter(com.stockflow.order.internal.domain.OrderShipment::isReturned)
+                    .map(com.stockflow.order.internal.domain.OrderShipment::outcomeAt).filter(java.util.Objects::nonNull)
+                    .max(java.util.Comparator.naturalOrder()).orElse(at);
+            hold = new OrderHoldJpaEntity(Identifiers.newId(), orderId, DELIVERY_FAILED_HOLD, cameBack, heldFor, null);
+        }
+        hold.resolve(by, note.trim(), at);
+        holds.save(hold);
     }
 
     @Override

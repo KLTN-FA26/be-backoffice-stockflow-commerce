@@ -37,7 +37,15 @@ public interface DeliveryFailureCases {
      * The orders with a case that still wants its goods held - OPEN, or to be delivered again and not released yet -
      * oldest case first: the first served when stock is put away.
      */
-    List<UUID> ordersWantingGoodsHeld();
+    default List<UUID> ordersWantingGoodsHeld() {
+        return ordersWantingGoodsHeld(null);
+    }
+
+    /**
+     * The same, limited to cases whose goods that came back include one of {@code skus} (null: any SKU) - WF-05 review
+     * F14: stock of one SKU locks only the orders whose returned goods it can serve.
+     */
+    List<UUID> ordersWantingGoodsHeld(Collection<String> skus);
 
     /**
      * Orders RETURNED whose every delivery failure case is closed and one of them CANCELLED, with no shipment
