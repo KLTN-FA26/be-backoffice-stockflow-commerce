@@ -354,6 +354,22 @@ public enum ErrorCode {
      * {@code details} lists each order, why, and what it still owes.
      */
     LOAD_HANDOVER_BLOCKED("Some orders on this vehicle may not be handed over yet", 409),
+    /** WF-05 E2: no e-invoice with that id. */
+    EINVOICE_NOT_FOUND("E-invoice not found", 404),
+    /** WF-05 E2 (kltn-docs 21 §5.1): the e-invoice's status does not allow this - an issued invoice above all, which is never cancelled or changed (TT 91 Điều 10). */
+    EINVOICE_INVALID_TRANSITION("The e-invoice's status does not allow this", 409),
+    /** WF-05 E2 (21 BR-03): only a draft e-invoice is corrected. */
+    EINVOICE_NOT_DRAFT("Only a draft e-invoice can be changed", 409),
+    /** WF-05 E2 (21 BR-06; NĐ 254 Phụ lục điểm 4.b): the buyer's name, tax code, address or invoice e-mail is missing, so the invoice is not issued. */
+    EINVOICE_BUYER_PROFILE_INCOMPLETE("The buyer's name, tax code, address and invoice e-mail are needed before the invoice is issued", 409),
+    /** WF-05 E2 (21 BR-01): the shipment is not delivered, or delivered nothing an invoice can carry. */
+    EINVOICE_NOT_INVOICEABLE("This shipment cannot be invoiced: it is not delivered", 409),
+    /** WF-05 E2 (TT 91 Điều 4): no invoice series is in use at the provider for the invoice's year. */
+    EINVOICE_SERIES_NOT_CONFIGURED("No invoice series is configured for the invoice's year", 409),
+    /** WF-05 E2: the e-invoice is not issued, so it has no XML or PDF yet. */
+    EINVOICE_NOT_ISSUED("The e-invoice is not issued yet", 409),
+    /** WF-05 E2: the e-invoice provider is not configured, or did not answer; nothing is known about the transaction until it is asked again. */
+    EINVOICE_PROVIDER_UNAVAILABLE("The e-invoice provider is not available right now; the invoice will be checked again", 503),
     /** 4B-4, WF-05 E2: stockflow.seller.* is blank in this deployment; no contract or invoice names a seller. */
     SELLER_PROFILE_UNAVAILABLE("The seller's company details are not configured; contracts and invoices cannot be drawn up", 503),
     /**

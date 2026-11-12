@@ -1,0 +1,162 @@
+package com.stockflow.invoicing.internal.repository;
+
+import com.stockflow.common.error.BusinessException;
+import com.stockflow.common.error.ErrorCode;
+import com.stockflow.invoicing.internal.domain.EInvoice;
+import com.stockflow.invoicing.internal.domain.EInvoiceLine;
+import com.stockflow.invoicing.internal.domain.EInvoiceRepository;
+import com.stockflow.invoicing.internal.entity.EInvoiceJpaEntity;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.LockModeType;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.stereotype.Repository;
+
+import java.sql.Timestamp;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
+import java.util.List;
+import java.util.Optional;
+import java.util.UUID;
+
+/**
+ * {@link EInvoiceRepository} over {@code invoicing.einvoice} and {@code invoicing.einvoice_line}.
+ *
+ * <p>The invoice row is a JPA entity, so its optimistic version guards the whole aggregate. Its lines are plain rows
+ * written with it and, on a draft, renamed - never mapped: they are inserted and read with SQL in the same
+ * transaction, as payment's receipt lines are.</p>
+ *
+ * <p>{@link #findByIdForUpdate} refreshes what it locks ({@code PESSIMISTIC_WRITE}): an invoice already in the
+ * persistence context would otherwise come back as it was read before the lock, and the lock would guard nothing.</p>
+ */
+@Repository
+class EInvoiceRepositoryAdapter implements EInvoiceRepository {
+
+    private static final DateTimeFormatter DAY = DateTimeFormatter.BASIC_ISO_DATE;
+
+    private final EInvoiceJpaRepository invoices;
+    private final EntityManager entityManager;
+    private final JdbcTemplate jdbc;
+
+    EInvoiceRepositoryAdapter(EInvoiceJpaRepository invoices, EntityManager entityManager, JdbcTemplate jdbc) {
+        this.invoices = invoices;
+        this.entityManager = entityManager;
+        this.jdbc = jdbc;
+    }
+
+    @Override
+    public Optional<EInvoice> findById(UUID id) {
+        return invoices.findById(id).map(this::toDomain);
+    }
+
+    @Override
+    public Optional<EInvoice> findByIdForUpdate(UUID id) {
+        EInvoiceJpaEntity entity = entityManager.find(EInvoiceJpaEntity.class, id);
+        if (entity == null) {
+            return Optional.empty();
+        }
+        entityManager.refresh(entity, LockModeType.PESSIMISTIC_WRITE);
+        return Optional.of(toDomain(entity));
+    }
+
+    @Override
+    public Optional<EInvoice> findLiveOriginalOfShipment(UUID shipmentId) {
+        // The predicate of uk_einvoice_original_per_shipment: at most one row.
+        List<UUID> ids = jdbc.queryForList("""
+                SELECT id FROM invoicing.einvoice
+                 WHERE shipment_id = ? AND type = 'ORIGINAL' AND status NOT IN ('VOIDED_DRAFT', 'REPLACED')""",
+                UUID.class, shipmentId);
+        return ids.isEmpty() ? Optional.empty() : findById(ids.getFirst());
+    }
+
+    @Override
+    public EInvoice save(EInvoice invoice) {
+        EInvoice.Snapshot snapshot = invoice.snapshot();
+        Optional<EInvoiceJpaEntity> existing = invoices.findById(snapshot.id());
+        if (existing.isEmpty()) {
+            EInvoiceJpaEntity entity = EInvoicePersistenceMapper.newEntity(snapshot);
+            EInvoicePersistenceMapper.apply(snapshot, entity);
+            // The invoice first: a line is refused unless its invoice is there, and a draft (tg_einvoice_line_guard).
+            EInvoiceJpaEntity saved = invoices.saveAndFlush(entity);
+            snapshot.lines().forEach(line -> insert(snapshot.id(), line));
+            return toDomain(saved);
+        }
+        EInvoiceJpaEntity entity = existing.get();
+        if (entity.getVersion() != snapshot.version()) {
+            throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK,
+                    "Invoice %s changed since it was read".formatted(snapshot.code()));
+        }
+        // Names first, while the row in the database is still the draft the aggregate allowed them on; a line whose
+        // name is unchanged matches no row, so an invoice past its draft never touches a line.
+        for (EInvoiceLine line : snapshot.lines()) {
+            jdbc.update("UPDATE invoicing.einvoice_line SET item_name = ? WHERE id = ? AND item_name <> ?",
+                    line.itemName(), line.id(), line.itemName());
+        }
+        EInvoicePersistenceMapper.apply(snapshot, entity);
+        return toDomain(invoices.saveAndFlush(entity));
+    }
+
+    @Override
+    public List<UUID> findSubmitting(int limit) {
+        return jdbc.queryForList("""
+                SELECT id FROM invoicing.einvoice WHERE status = 'SUBMITTING'
+                 ORDER BY submitted_at, id LIMIT ?""", UUID.class, limit);
+    }
+
+    @Override
+    public List<UUID> findDueUnwarned(Instant dueBefore, int limit) {
+        return jdbc.queryForList("""
+                SELECT id FROM invoicing.einvoice
+                 WHERE status IN ('DRAFT', 'REJECTED') AND due_warned_at IS NULL AND issue_due_at < ?
+                 ORDER BY issue_due_at, id LIMIT ?""", UUID.class, Timestamp.from(dueBefore), limit);
+    }
+
+    @Override
+    public List<UUID> findAutoIssuable(int limit) {
+        return jdbc.queryForList("""
+                SELECT id FROM invoicing.einvoice
+                 WHERE status = 'DRAFT' AND type = 'ORIGINAL' AND attempt = 0 AND warnings IS NULL
+                 ORDER BY issue_due_at, id LIMIT ?""", UUID.class, limit);
+    }
+
+    @Override
+    public String nextCode(LocalDate day) {
+        Long value = jdbc.queryForObject("""
+                INSERT INTO platform.document_sequence (document_type, sequence_date, last_value)
+                VALUES ('EINV', ?, 1)
+                ON CONFLICT (document_type, sequence_date)
+                DO UPDATE SET last_value = platform.document_sequence.last_value + 1
+                RETURNING last_value""", Long.class, java.sql.Date.valueOf(day));
+        return "EINV-%s-%04d".formatted(day.format(DAY), value);
+    }
+
+    private EInvoice toDomain(EInvoiceJpaEntity entity) {
+        return EInvoicePersistenceMapper.toDomain(entity, lines(entity.getId()));
+    }
+
+    private void insert(UUID invoiceId, EInvoiceLine line) {
+        jdbc.update("""
+                INSERT INTO invoicing.einvoice_line (id, einvoice_id, line_no, kind, fee_kind, order_line_id, sku,
+                    item_name, unit, quantity, units_per_carton, unit_price, tax_rate, amount, tax_amount)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", line.id(), invoiceId, line.lineNo(),
+                line.kind().name(), line.feeKind() == null ? null : line.feeKind().name(), line.orderLineId(),
+                line.sku(), line.itemName(), line.unit(), line.quantity(), line.unitsPerCarton(), line.unitPrice(),
+                line.taxRate(), line.amount(), line.taxAmount());
+    }
+
+    private List<EInvoiceLine> lines(UUID invoiceId) {
+        return jdbc.query("""
+                SELECT id, line_no, kind, fee_kind, order_line_id, sku, item_name, unit, quantity, units_per_carton,
+                       unit_price, tax_rate, amount, tax_amount
+                  FROM invoicing.einvoice_line WHERE einvoice_id = ? ORDER BY line_no""",
+                (row, n) -> new EInvoiceLine(row.getObject("id", UUID.class), row.getInt("line_no"),
+                        EInvoiceLine.Kind.valueOf(row.getString("kind")),
+                        row.getString("fee_kind") == null ? null
+                                : EInvoiceLine.FeeKind.valueOf(row.getString("fee_kind")),
+                        row.getObject("order_line_id", UUID.class), row.getString("sku"), row.getString("item_name"),
+                        row.getString("unit"), row.getInt("quantity"),
+                        row.getObject("units_per_carton", Integer.class), row.getBigDecimal("unit_price"),
+                        row.getBigDecimal("tax_rate"), row.getBigDecimal("amount"), row.getBigDecimal("tax_amount")),
+                invoiceId);
+    }
+}

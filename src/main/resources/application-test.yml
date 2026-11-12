@@ -46,6 +46,13 @@ stockflow:
     address: ${SELLER_ADDRESS:1 Demo Street, Ho Chi Minh City}
     representative: ${SELLER_REPRESENTATIVE:Demo Director}
     representative-title: ${SELLER_REPRESENTATIVE_TITLE:Director}
+  invoicing:
+    # The tests drive reconciliation, automatic issuing and the deadline sweep by hand: a job firing in the middle of
+    # a test would answer for the provider before the test asked. The sandbox answers at once.
+    reconcile-interval: PT24H
+    deadline-sweep-interval: PT24H
+    sandbox:
+      processing-delay: PT0S
   reporting:
     # The tests rebuild by hand against the orders they place; a backfill racing the first test would only add noise.
     backfill-on-startup: false
