@@ -348,10 +348,9 @@ public class ShippingWarehouseService {
      * lock, taken here; the SKUs' advisory locks next, sorted, as every hold takes them. Whatever the order's status:
      * it is ON_HOLD until Sales decide, and the goods wait for it all the same.
      *
-     * <p>A redelivery is exactly what came back, never more (WF-05 review F14): whole cartons while at least one carton
-     * of the line is still missing, then the rest below a carton as loose units. A shipment that came back with an odd
-     * count - a carton opened at the customer's, or a partial carton of the batch - is held to the unit, or its case
-     * could never be released.</p>
+     * <p>A redelivery is exactly what came back, never more (WF-05 review F14), and that is whole cartons of each line
+     * (review N3, {@code DeliveryFailureCase.cartonsToHold}): a shipment leaves and comes back as whole cartons, and
+     * the release allocates whole cartons only. A case is not opened otherwise, so nothing is ever held loose for one.</p>
      *
      * @return whether anything more was held
      */
@@ -396,31 +395,24 @@ public class ShippingWarehouseService {
                     continue;
                 }
                 int perCarton = unitsPerCarton(line);
-                int missingUnits = wanted.getValue() - held.getOrDefault(line.id(), 0);
-                if (missingUnits <= 0) {
+                int cartons = failure.cartonsToHold(line.id(), perCarton, held.getOrDefault(line.id(), 0));
+                if (cartons == 0) {
                     continue;
                 }
                 // One request per attempt: the case, the line, how many holds the case had for it (released ones stay
                 // on record) and the warehouse - a retried attempt holds once, a later arrival holds again.
                 long attempts = taken.stream().filter(hold -> hold.orderLineId().equals(line.id())).count();
                 String attempt = "redelivery:%s:%s:%d:%s".formatted(failure.id(), line.id(), attempts, warehouseCode);
-                // Whole cartons first, while one is missing; the rest below a carton as loose units, once no whole
-                // carton is (a carton's worth of loose units would be held loose otherwise).
-                int cartons = missingUnits / perCarton;
-                HoldStockCommand command = cartons > 0
-                        ? new HoldStockCommand(UUID.nameUUIDFromBytes(attempt.getBytes(StandardCharsets.UTF_8)),
-                                order.id().value(), line.sku(), warehouseCode, cartons, perCarton)
-                        : new HoldStockCommand(UUID.nameUUIDFromBytes((attempt + ":loose")
-                                .getBytes(StandardCharsets.UTF_8)), order.id().value(), line.sku(), warehouseCode,
-                                missingUnits, 1);
+                HoldStockCommand command = new HoldStockCommand(UUID.nameUUIDFromBytes(
+                        attempt.getBytes(StandardCharsets.UTF_8)), order.id().value(), line.sku(), warehouseCode,
+                        cartons, perCarton);
                 HoldStockResult result = inventory.holdAtWarehouse(command);
                 if (!result.reservationIds().isEmpty()) {
                     order.holdMore(line.id(), result.reservationIds());
                     deliveryFailures.recordHolds(failure.id(), line.id(), result.reservationIds());
                     more = true;
-                    log.info("Order {}: {} of {} {} of {} that came back held again at {}", order.orderNumber(),
-                            result.cartonsHeld(), command.cartons(), cartons > 0 ? "carton(s)" : "loose unit(s)",
-                            line.sku(), warehouseCode);
+                    log.info("Order {}: {} of {} carton(s) of {} that came back held again at {}", order.orderNumber(),
+                            result.cartonsHeld(), command.cartons(), line.sku(), warehouseCode);
                 }
             }
         }

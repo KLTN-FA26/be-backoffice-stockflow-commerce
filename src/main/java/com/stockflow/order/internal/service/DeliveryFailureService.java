@@ -118,8 +118,10 @@ public class DeliveryFailureService {
      * CANCELLED at once, by the receiving clerk, with a note saying why (WF-05 review F1). It is on record and holds
      * nothing; an OPEN case there would wait for a decision no path can take.</p>
      *
-     * @throws IllegalStateException when the order knows the shipment but not as RETURNED - the event stays in the
-     *         publication registry and is delivered again, so a defect here is seen rather than lost
+     * @throws IllegalStateException when the order knows the shipment but not as RETURNED, or when the units that came
+     *         back, still owed, are not whole cartons of their lines (WF-05 review N3: such a case could be held but
+     *         never released) - the publication stays incomplete in the registry and is replayed at the next start, so
+     *         a defect here is seen rather than lost; the order stays held, and Sales may cancel without a case
      */
     public void goodsReceived(ReturnedGoodsReceived event) {
         if (event.shipmentId() == null) {
@@ -156,15 +158,21 @@ public class DeliveryFailureService {
                         .map(c -> new DeliveryFailureCase.Carton(c.lpn(), c.sku(), c.lotNumber(), c.quantity(),
                                 c.condition())).toList(),
                 event.receivedAt().truncatedTo(ChronoUnit.MICROS));
-        failure = cases.save(failure);
         if (!order.owesUnitsOf(shipment.id())) {
             // ck_delivery_failure_case_* and the trigger allow a case to be born OPEN only: it is opened, then closed.
+            // It holds nothing, so whether its units are whole cartons does not matter.
+            failure = cases.save(failure);
             failure.cancel(CLOSED_BEFORE_RECEIVED, event.receivedBy(), failure.openedAt());
             cases.save(failure);
             log.info("Order {}: the goods of shipment {} came back on receipt {} after the rest was closed; its case is "
                     + "cancelled", order.orderNumber(), shipment.id(), event.receiptNumber());
             return;
         }
+        Map<UUID, Integer> unitsPerCarton = new java.util.HashMap<>();
+        order.lines().forEach(line -> unitsPerCarton.put(line.id(),
+                line.unitsPerCarton() == null || line.unitsPerCarton() < 1 ? 1 : line.unitsPerCarton()));
+        failure.requireWholeCartons(unitsPerCarton);
+        cases.save(failure);
         log.info("Order {}: delivery failure case opened for shipment {} ({}), {} carton(s) back on receipt {}",
                 order.orderNumber(), shipment.id(), failure.failureReason(), failure.cartons().size(),
                 event.receiptNumber());
