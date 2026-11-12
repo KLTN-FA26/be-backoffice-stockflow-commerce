@@ -336,10 +336,16 @@ public class DeliveryFailureService {
     /**
      * An order RETURNED by a cancellation of its undelivered goods - nothing of it was delivered - moves on once
      * everything its settlements made refundable is refunded (15 §4.5 step 17), nothing at all included: REFUNDED when
-     * no fee was kept on the closure, PARTIALLY_REFUNDED otherwise. From there the nightly settlement closes it after
+     * money went back and it was everything the customer paid, nothing kept and nothing still owed; PARTIALLY_REFUNDED
+     * otherwise - a fee kept or owed, or nothing paid and so nothing refunded (WF-05 review F8). From there the nightly
+     * settlement closes it after
      * {@code close-after-days}, once it no longer owes (a fee item not paid keeps it open). Called after the
      * cancellation, after each refund recorded ({@link ReturnedGoodsListener}), and by the nightly settlement for the
      * orders both missed.
+     *
+     * <p>An order with a shipment DELIVERED is not one of them (WF-05 review F2): it went RETURNED through a return
+     * request after a cancelled delivery failure left it DELIVERED, and the return request moves it
+     * ({@code ReturnRequestService.followRefunds}) once it is decided - not this, while it may still be open.</p>
      *
      * @return whether the order moved
      */
@@ -350,7 +356,9 @@ public class DeliveryFailureService {
         }
         List<DeliveryFailureCase> ofOrder = cases.ofOrder(orderId);
         boolean cancelled = ofOrder.stream().anyMatch(c -> c.status() == DeliveryFailureCase.Status.CANCELLED);
-        if (!cancelled || ofOrder.stream().anyMatch(c -> !c.status().isClosed())) {
+        boolean delivered = order.shipments().stream()
+                .anyMatch(s -> s.status() == com.stockflow.order.api.OrderShipmentStatus.DELIVERED);
+        if (!cancelled || delivered || ofOrder.stream().anyMatch(c -> !c.status().isClosed())) {
             // RETURNED through a return request (RMA): ReturnRequestService.followRefunds moves that order.
             return false;
         }
@@ -358,9 +366,13 @@ public class DeliveryFailureService {
         if (!progress.settled()) {
             return false;
         }
-        // In full when everything the customer paid is refundable - nothing was kept for the goods made; a fee kept,
-        // or still owed, makes it partial. Nothing paid and nothing kept is in full too.
-        boolean full = progress.refundable().compareTo(payments.installmentStanding(orderId).paid()) >= 0;
+        // In full when money went back and it was everything the customer paid, with nothing still owed on the
+        // installments: a fee kept (refundable below paid) or owed (owed above paid - a closure's fee item, a failed
+        // trip's) makes it partial, and so does nothing paid - nothing was refunded.
+        var standing = payments.installmentStanding(orderId);
+        boolean full = progress.refundable().signum() > 0
+                && progress.refundable().compareTo(standing.paid()) >= 0
+                && standing.total().compareTo(standing.paid()) <= 0;
         if (!order.refunded(full, by, now(), "DELIVERY_FAILED_SETTLED")) {
             return false;
         }

@@ -40,8 +40,9 @@ public interface DeliveryFailureCases {
     List<UUID> ordersWantingGoodsHeld();
 
     /**
-     * Orders RETURNED whose every delivery failure case is closed and one of them CANCELLED: nothing of the order was
-     * delivered and Sales cancelled what was not - they wait only for their refunds. Oldest decision first, the first
+     * Orders RETURNED whose every delivery failure case is closed and one of them CANCELLED, with no shipment
+     * DELIVERED: nothing of the order was delivered and Sales cancelled what was not - they wait only for their
+     * refunds. An order with goods delivered is RETURNED by a return request, which moves it (WF-05 review F2). Oldest decision first, the first
      * {@code skip} left out (the ones a run looked at and left as they were).
      */
     List<UUID> ordersReturnedByCancellation(int skip, int limit);

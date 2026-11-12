@@ -164,6 +164,8 @@ class DeliveryFailureCasesAdapter implements DeliveryFailureCases {
                          WHERE o.status = 'RETURNED'
                            AND NOT EXISTS (SELECT 1 FROM ordering.delivery_failure_case open
                                             WHERE open.order_id = o.id AND open.status IN ('OPEN', 'REDELIVERY'))
+                           AND NOT EXISTS (SELECT 1 FROM ordering.order_shipment s
+                                            WHERE s.order_id = o.id AND s.status = 'DELIVERED')
                          GROUP BY o.id ORDER BY first_closed, o.id""")
                 .setFirstResult(skip).setMaxResults(limit).getResultList();
         return rows.stream().map(r -> (UUID) r[0]).toList();
