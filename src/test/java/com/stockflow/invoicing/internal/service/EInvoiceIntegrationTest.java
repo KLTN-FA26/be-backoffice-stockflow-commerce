@@ -5,7 +5,9 @@ import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.security.DataScope;
 import com.stockflow.common.storage.FileStorage;
 import com.stockflow.contracts.OrderDelivered;
+import com.stockflow.contracts.ReturnResolved;
 import com.stockflow.contracts.ShipmentStatusChanged;
+import com.stockflow.invoicing.internal.domain.CorrectionBasis;
 import com.stockflow.invoicing.internal.domain.EInvoice;
 import com.stockflow.invoicing.internal.domain.EInvoiceLine;
 import com.stockflow.invoicing.internal.domain.EInvoiceQueries;
@@ -50,6 +52,7 @@ import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
@@ -96,6 +99,7 @@ class EInvoiceIntegrationTest {
     @Autowired com.stockflow.invoicing.internal.domain.EInvoiceRepository invoices;
     @Autowired org.springframework.context.ApplicationEventPublisher publisher;
     @Autowired DeliveryCorrectionListener corrections;
+    @Autowired EInvoiceCorrections invoiceCorrections;
     @Autowired FileStorage storage;
     @Autowired ApplicationContext context;
     @Autowired TransactionTemplate tx;
@@ -521,6 +525,81 @@ class EInvoiceIntegrationTest {
     }
 
     @Test
+    @DisplayName("review L1: more invoices unknown to the provider than a batch holds do not keep a newer one out "
+            + "of the batch the job asks about")
+    void invoicesUnknownToTheProviderDoNotFillTheBatch() {
+        EInvoice.Snapshot draft = delivered(1).draft();
+        EInvoice.Snapshot issued = FirstSend.issue(issuance, queries, draft.id(), draft.version(), accountant);
+        assertThat(issued.status()).isEqualTo(EInvoiceStatus.ISSUED);
+        int unknown = EInvoiceJobs.BATCH + 1;
+        // Written straight to the tables, as adjustments of the one issued invoice that change no money: a batch and
+        // one more at the provider for a month and marked unknown to it, and one sent just now. A real one of each
+        // would be an order delivered apiece.
+        String codes = "L1-" + issued.id().toString().substring(24) + "-";
+        String newerCode = codes + (unknown + 1);
+        try {
+            tx.executeWithoutResult(s -> {
+                jdbc.update("""
+                        INSERT INTO invoicing.einvoice (id, code, type, status, order_id, order_number, contract_number,
+                                shipment_id, shipment_code, delivery_batch_id, customer_id, original_einvoice_id,
+                                issue_date, issue_due_at, seller_name, seller_tax_code, seller_address, buyer_name,
+                                buyer_tax_code, buyer_address, buyer_email, currency, payment_method, subtotal,
+                                tax_total, grand_total, amount_in_words, adjustment_reason, correction_basis,
+                                agreement_file_key, agreement_number, agreement_date)
+                        SELECT gen_random_uuid(), ? || n::text, 'ADJUSTMENT', 'DRAFT', o.order_id, o.order_number,
+                               o.contract_number, o.shipment_id, o.shipment_code, o.delivery_batch_id, o.customer_id,
+                               o.id, o.issue_date, o.issue_due_at, o.seller_name, o.seller_tax_code, o.seller_address,
+                               o.buyer_name, o.buyer_tax_code, o.buyer_address, o.buyer_email, o.currency,
+                               o.payment_method, 0, 0, 0, o.amount_in_words, 'review L1', 'ERROR',
+                               'einvoices/review-l1.pdf', 'BB-L1', o.issue_date
+                          FROM invoicing.einvoice o CROSS JOIN generate_series(1, ?) n
+                         WHERE o.id = ?""", codes, unknown + 1, issued.id());
+                jdbc.update("""
+                        INSERT INTO invoicing.einvoice_line (id, einvoice_id, line_no, kind, item_name, unit, quantity,
+                                unit_price, tax_rate, amount, tax_amount)
+                        SELECT gen_random_uuid(), a.id, 1, 'NOTE', 'review L1', 'Lan', 1, 0, 0, 0, 0
+                          FROM invoicing.einvoice a WHERE a.code LIKE ?""", codes + "%");
+                jdbc.update("""
+                        UPDATE invoicing.einvoice a
+                           SET status = 'SUBMITTING', provider = o.provider, attempt = 1,
+                               transaction_id = a.id::text || '-1', template_code = o.template_code, symbol = o.symbol,
+                               submitted_at = CASE WHEN a.code = ? THEN now() ELSE now() - interval '30 days' END,
+                               warnings = CASE WHEN a.code = ? THEN NULL ELSE 'UNKNOWN_TO_PROVIDER' END
+                          FROM invoicing.einvoice o
+                         WHERE o.id = a.original_einvoice_id AND a.code LIKE ?""", newerCode, newerCode, codes + "%");
+            });
+            UUID newer = jdbc.queryForObject("SELECT id FROM invoicing.einvoice WHERE code = ?", UUID.class, newerCode);
+            assertThat(jdbc.queryForObject("""
+                    SELECT count(*) FROM invoicing.einvoice
+                     WHERE code LIKE ? AND status = 'SUBMITTING' AND warnings = 'UNKNOWN_TO_PROVIDER'
+                       AND submitted_at < now() - interval '1 day'""", Integer.class, codes + "%"))
+                    .as("more than a batch, all waiting longer than the newer one").isEqualTo(unknown);
+            // The job's batch - or, should other tests have left more than that waiting, as many as wait: either way
+            // fewer places than the unknown ones and the rest together.
+            int waiting = jdbc.queryForObject("""
+                    SELECT count(*) FROM invoicing.einvoice i
+                      LEFT JOIN invoicing.einvoice_sending s ON s.einvoice_id = i.id
+                     WHERE i.status = 'SUBMITTING' AND coalesce(i.warnings, '') NOT LIKE '%UNKNOWN_TO_PROVIDER%'
+                       AND (s.holder IS NULL OR s.held_until <= now())""", Integer.class);
+
+            List<UUID> batch = invoices.findSubmitting(Math.max(EInvoiceJobs.BATCH, waiting));
+
+            assertThat(batch).as("ordered by the time they were sent alone, the unknown ones took every place")
+                    .contains(newer);
+        } finally {
+            // Out of the way of every other test's job run: a draft again, then voided.
+            tx.executeWithoutResult(s -> {
+                jdbc.update("UPDATE invoicing.einvoice SET status = 'REJECTED', rejection_code = 'TEST_FIXTURE', "
+                        + "rejection_message = 'review L1' WHERE code LIKE ? AND status = 'SUBMITTING'", codes + "%");
+                jdbc.update("UPDATE invoicing.einvoice SET status = 'DRAFT' WHERE code LIKE ? AND status = 'REJECTED'",
+                        codes + "%");
+                jdbc.update("UPDATE invoicing.einvoice SET status = 'VOIDED_DRAFT', voided_at = now(), "
+                        + "void_reason = 'review L1 fixture' WHERE code LIKE ? AND status = 'DRAFT'", codes + "%");
+            });
+        }
+    }
+
+    @Test
     @DisplayName("asked about by two at once - the accountant and the job: one invoice at the provider, issued once")
     void reconciledByTwoAtOnce() throws Exception {
         buyer(taxCode, "ke.toan+sandbox-unreachable@" + customer + ".example.com");
@@ -734,6 +813,77 @@ class EInvoiceIntegrationTest {
 
         drafts.voidDraft(delivered.draft().id(), delivered.draft().version(), "drawn up by mistake", accountant);
         assertThat(invoices.invoicedOfOrder(delivered.orderId()).units()).as("a voided draft carries nothing").isZero();
+    }
+
+    // ---- goods returned --------------------------------------------------------------------------------------------
+
+    /** A delivery of 5 cartons - 250 pieces, 550,000 with tax - invoiced and issued. */
+    private EInvoice.Snapshot issuedDelivery() {
+        EInvoice.Snapshot draft = delivered(5).draft();
+        EInvoice.Snapshot issued = FirstSend.issue(issuance, queries, draft.id(), draft.version(), accountant);
+        assertThat(issued.status()).isEqualTo(EInvoiceStatus.ISSUED);
+        return issued;
+    }
+
+    /** A draft adjustment of the invoice's goods line: {@code cartons} at the line's own price, or at {@code price}. */
+    private void adjusted(EInvoice.Snapshot invoice, CorrectionBasis basis, int cartons, BigDecimal price) {
+        invoiceCorrections.adjust(new EInvoiceCorrections.Adjust(invoice.id(), basis, "review L2", null,
+                List.of(new EInvoiceCorrections.LineChange(invoice.lines().getFirst().id(), cartons, price, null,
+                        null)), null, null));
+    }
+
+    /**
+     * {@code pieces} of the invoice's goods line accepted back and refunded. The return itself is a bare row: the
+     * adjustment only has to be able to name it ({@code fk_einvoice_return_request}).
+     */
+    private ReturnResolved returned(EInvoice.Snapshot invoice, int pieces) {
+        UUID returnId = com.stockflow.common.id.Identifiers.newId();
+        String rma = "RMA-L2-" + returnId.toString().substring(24);
+        tx.executeWithoutResult(s -> jdbc.update("""
+                INSERT INTO ordering.return_request (id, rma_number, order_id, customer_id, status, reason_code,
+                                                     requested_at, order_number, request_id, channel, requested_by)
+                VALUES (?, ?, ?, ?, 'REQUESTED', 'PRINT_DEFECT', NOW(), ?, ?, 'PORTAL', ?)""", returnId, rma,
+                invoice.orderId(), invoice.customerId(), invoice.orderNumber(), UUID.randomUUID(), staff));
+        EInvoiceLine goods = invoice.lines().getFirst();
+        return new ReturnResolved(returnId, rma, invoice.orderId(), invoice.orderNumber(), invoice.customerId(), null,
+                null, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, "VND", true,
+                List.of(new ReturnResolved.Line(goods.orderLineId(), goods.sku(), pieces, 0, pieces, BigDecimal.ZERO)),
+                staff, Instant.now());
+    }
+
+    @Test
+    @DisplayName("review L2: a return is taken off what the invoice still holds - what it invoiced, with the pieces "
+            + "an error's adjustment added or took off; a wrong price and a trade discount move none")
+    void aReturnCountsThePiecesAnErrorAdjustmentMoved() {
+        // 250 pieces invoiced, and one carton more by an error's adjustment: 300 held.
+        EInvoice.Snapshot raised = issuedDelivery();
+        UUID raisedLine = raised.lines().getFirst().orderLineId();
+        adjusted(raised, CorrectionBasis.ERROR, 1, null);
+        // 250 pieces invoiced, and one carton fewer by an error's adjustment: 200 held. The price was 1,000 a carton
+        // too low on all five, and two cartons get a discount of 500 each: money, not pieces.
+        EInvoice.Snapshot lowered = issuedDelivery();
+        UUID loweredLine = lowered.lines().getFirst().orderLineId();
+        adjusted(lowered, CorrectionBasis.ERROR, -1, null);
+        adjusted(lowered, CorrectionBasis.ERROR, 5, new BigDecimal("1000"));
+        adjusted(lowered, CorrectionBasis.TRADE_DISCOUNT, -2, new BigDecimal("500"));
+        assertThat(invoices.piecesTakenOff(raised.id())).as("pieces put back count below zero")
+                .isEqualTo(Map.of(raisedLine, -50L));
+        assertThat(invoices.piecesTakenOff(lowered.id())).as("only the line that changed a quantity")
+                .isEqualTo(Map.of(loweredLine, 50L));
+
+        EInvoiceCorrections.ReturnAdjustments ofRaised = invoiceCorrections.drawUpForReturn(returned(raised, 300));
+        EInvoiceCorrections.ReturnAdjustments ofLowered = invoiceCorrections.drawUpForReturn(returned(lowered, 250));
+
+        assertThat(ofRaised.drafts()).hasSize(1);
+        assertThat(ofRaised.drafts().getFirst().lines()).as("all 300 held come off, the added carton with them")
+                .extracting(EInvoiceLine::pieces).containsExactly(-300L);
+        assertThat(ofRaised.unplaced()).isEmpty();
+        assertThat(ofLowered.drafts()).hasSize(1);
+        assertThat(ofLowered.drafts().getFirst().lines()).as("the carton the error took off is not returned again")
+                .extracting(EInvoiceLine::pieces).containsExactly(-200L);
+        assertThat(ofLowered.unplaced()).as("left to the accountant").isEqualTo(Map.of(loweredLine, 50L));
+        assertThat(invoices.piecesTakenOff(lowered.id())).as("the return's own adjustment counts from here on")
+                .isEqualTo(Map.of(loweredLine, 250L));
     }
 
     @Test
