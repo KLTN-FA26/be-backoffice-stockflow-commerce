@@ -67,7 +67,8 @@ class EInvoiceIssuanceSteps {
      * @throws BusinessException {@code EINVOICE_NOT_FOUND}, {@code OPTIMISTIC_LOCK}, {@code EINVOICE_INVALID_TRANSITION},
      *         {@code EINVOICE_BUYER_PROFILE_INCOMPLETE}, {@code EINVOICE_AGREEMENT_REQUIRED} (the correction of an
      *         error without the agreement of both parties), {@code EINVOICE_SERIES_NOT_CONFIGURED},
-     *         {@code EINVOICE_PROVIDER_UNAVAILABLE}
+     *         {@code EINVOICE_PROVIDER_UNAVAILABLE}, {@code EINVOICE_PROVIDER_CANNOT_CORRECT} (a correction, to a
+     *         provider that would issue it as an original)
      */
     @Transactional
     public EInvoice.Snapshot submit(UUID id, Long expectedVersion, UUID by) {
@@ -79,7 +80,13 @@ class EInvoiceIssuanceSteps {
         }
         InvoiceSettings.Provider provider = settings.active();
         // Refused here, not after the status moved: an invoice must not wait on a provider nobody can call.
-        providers.require(provider.provider());
+        EInvoiceProvider port = providers.require(provider.provider());
+        if (invoice.originalEInvoiceId() != null && !port.issuesCorrections()) {
+            // Sent anyway, it would come back an original: a second invoice for goods already invoiced.
+            throw new BusinessException(ErrorCode.EINVOICE_PROVIDER_CANNOT_CORRECT,
+                    "%s issues no adjustment or replacement; %s is not sent".formatted(provider.provider(),
+                            invoice.code()));
+        }
         InvoiceSeries series = settings.seriesInUse(provider.provider(), invoice.issueDate().getYear())
                 .orElseThrow(() -> new BusinessException(ErrorCode.EINVOICE_SERIES_NOT_CONFIGURED,
                         "No series is in use at %s for %d".formatted(provider.provider(),

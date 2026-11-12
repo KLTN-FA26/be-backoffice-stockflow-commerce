@@ -218,6 +218,12 @@ class SandboxProvider implements EInvoiceProvider {
         return new Documents(held.get().xml().getBytes(StandardCharsets.UTF_8), held.get().pdf());
     }
 
+    /** The sandbox records a correction as one and refuses one naming a transaction it never issued. */
+    @Override
+    public boolean issuesCorrections() {
+        return true;
+    }
+
     @Override
     public NoticeReceipt notifyError(ErrorNoticeDocument notice) {
         String reason = notice.reason() == null ? "" : notice.reason().toLowerCase(Locale.ROOT);

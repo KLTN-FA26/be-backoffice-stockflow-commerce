@@ -65,6 +65,16 @@ public interface EInvoiceProvider {
     }
 
     /**
+     * Whether this provider issues an adjustment or a replacement as one ({@link InvoiceDocument#correction}). An
+     * implementation that writes every document as an original must say no: a correction it took in would be issued as
+     * a second original invoice for the same goods - an invoice in law, which no correction of ours undoes. Corrections
+     * are refused before they are sent to such a provider ({@code EINVOICE_PROVIDER_CANNOT_CORRECT}).
+     */
+    default boolean issuesCorrections() {
+        return false;
+    }
+
+    /**
      * A real provider's promise "the same transaction id is never a second invoice" has edges, and this states them so
      * the caller stays inside.
      *

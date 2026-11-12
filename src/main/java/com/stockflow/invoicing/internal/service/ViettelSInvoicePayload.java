@@ -19,8 +19,10 @@ import java.time.ZoneId;
  * {@code payments}, {@code itemInfo}, {@code taxBreakdowns}, {@code summarizeInfo}. Every field name here is one that
  * description or Odoo's {@code l10n_vn_edi_viettel} shows; nothing is sent that neither shows.
  *
- * <p>Only an original invoice ({@code adjustmentType 1}) is written. Adjustments and replacements (package E4) add
- * {@code adjustmentType 5 / 3} and the reference to the original; the port does not carry those yet.</p>
+ * <p>Only an original invoice ({@code adjustmentType 1}) is written, and a correction is refused here rather than
+ * written as one: SInvoice's fields for an adjustment and a replacement ({@code adjustmentType 5 / 3} and the reference
+ * to the original) are not verified against a test account yet. {@link ViettelSInvoiceProvider#issuesCorrections} says
+ * no, so a correction never reaches this class; the refusal here is the last line, should it ever.</p>
  *
  * <p>Amounts are the invoice's own, line by line. SInvoice computes totals too; sending ours lets it refuse an invoice
  * whose arithmetic it disagrees with instead of quietly issuing other figures.</p>
@@ -40,6 +42,10 @@ final class ViettelSInvoicePayload {
      */
     static String of(ObjectMapper json, InvoiceDocument invoice, String transactionUuid, String providerTemplateCode,
                      boolean paid, Instant now) {
+        if (invoice.correction() != null) {
+            throw new IllegalArgumentException("SInvoice payload: corrections are not written; " + transactionUuid
+                    + " would be issued as an original");
+        }
         ObjectNode root = json.createObjectNode();
 
         ObjectNode general = root.putObject("generalInvoiceInfo");

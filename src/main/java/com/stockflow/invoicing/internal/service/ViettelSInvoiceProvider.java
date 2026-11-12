@@ -84,6 +84,16 @@ class ViettelSInvoiceProvider implements EInvoiceProvider {
         return new Resubmission(properties.resubmitQuietPeriod(), properties.resubmitWindow());
     }
 
+    /**
+     * No, until SInvoice's adjustment and replacement fields are verified against a test account: the payload writes
+     * every invoice as an original ({@link ViettelSInvoicePayload}), and a correction sent as one would be a second
+     * invoice for the same goods.
+     */
+    @Override
+    public boolean issuesCorrections() {
+        return false;
+    }
+
     @Override
     public Submission submit(InvoiceDocument invoice) {
         ViettelSInvoiceClient.Account account = account();

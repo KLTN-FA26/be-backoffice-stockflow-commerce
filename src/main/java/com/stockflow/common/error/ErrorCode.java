@@ -374,6 +374,8 @@ public enum ErrorCode {
     EINVOICE_PROVIDER_ACCOUNT_INCOMPLETE("The e-invoice provider's account is not stored yet", 409),
     /** WF-05 E3: an invoice at the provider is sent as a new transaction only when the provider no longer remembers the old one and confirms it holds no such invoice. */
     EINVOICE_RESUBMISSION_REFUSED("The e-invoice cannot be sent as a new transaction: the provider may hold it", 409),
+    /** WF-05 E3+E4: the provider in use writes every invoice as an original, so a correction sent to it would be a second invoice. */
+    EINVOICE_PROVIDER_CANNOT_CORRECT("The e-invoice provider in use cannot issue adjustments or replacements yet; the correction is kept as a draft", 409),
     /** WF-05 E4 (TT 91 Điều 10): only an issued invoice still in force is adjusted, replaced or notified as drawn up wrongly. */
     EINVOICE_NOT_IN_FORCE("Only an issued e-invoice that is still in force can be corrected", 409),
     /** WF-05 E4 (TT 91 Điều 10 khoản 6 điểm a): an invoice already adjusted is adjusted again, one replaced is replaced again. */
