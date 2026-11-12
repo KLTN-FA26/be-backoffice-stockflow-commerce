@@ -38,6 +38,22 @@ public interface CarrierEventJpaRepository extends BaseJpaRepository<CarrierEven
             + "com.stockflow.fulfillment.internal.domain.CarrierEventResult.NEEDS_REVIEW)")
     boolean handledBefore(@Param("key") String key, @Param("self") UUID self);
 
+    /**
+     * Closes the copies of a report that were left RECEIVED - each answered 503 so the carrier would send it again, or
+     * a line of a file that could not be applied then - once one copy is handled: they are repeats of it, and would
+     * otherwise stay open on the error list for someone to close by hand, one per retry. Only copies matched to a load
+     * carry a key, so each has the load a DUPLICATE names.
+     *
+     * @return how many were closed
+     */
+    @org.springframework.data.jpa.repository.Modifying(flushAutomatically = true)
+    @Query("update CarrierEventJpaEntity e set e.result = "
+            + "com.stockflow.fulfillment.internal.domain.CarrierEventResult.DUPLICATE, e.resultNote = :note, "
+            + "e.decidedAt = :at where e.dedupeKey = :key and e.id <> :self and e.loadId is not null and e.result = "
+            + "com.stockflow.fulfillment.internal.domain.CarrierEventResult.RECEIVED")
+    int closeUndecidedCopies(@Param("key") String key, @Param("self") UUID self, @Param("note") String note,
+                             @Param("at") Instant at);
+
     /** The events made from the lines of one imported file of delivery outcomes. */
     List<CarrierEventJpaEntity> findByOutcomeImportId(UUID outcomeImportId);
 

@@ -261,6 +261,24 @@ class CarrierEventApplier {
     /** @return the result decided */
     CarrierEventResult apply(UUID eventId, CarrierJpaEntity carrier, Matched m) {
         events.lockReportsOf("carrier-event:" + m.loadId());
+        CarrierEventResult result = decideUnderLock(eventId, carrier, m);
+        closeEarlierCopies(eventId, m.dedupeKey());
+        return result;
+    }
+
+    /**
+     * A report handled closes its copies still RECEIVED (WF-05 review F6): the ones answered 503 while the carrier's API
+     * did not answer, or while a booking was being saved. A copy another thread is handling right now finds itself
+     * decided when it reaches the load's lock, and says so.
+     */
+    private void closeEarlierCopies(UUID eventId, String dedupeKey) {
+        if (dedupeKey != null) {
+            events.closeUndecidedCopies(dedupeKey, eventId, "A copy of this report sent again was handled (event "
+                    + eventId + ")", clock.instant());
+        }
+    }
+
+    private CarrierEventResult decideUnderLock(UUID eventId, CarrierJpaEntity carrier, Matched m) {
         CarrierEventJpaEntity event = events.findById(eventId).orElseThrow();
         if (event.getResult() != CarrierEventResult.RECEIVED) {
             return event.getResult();
@@ -560,7 +578,9 @@ class CarrierEventApplier {
         }
         String why = failure instanceof BusinessException refused ? refused.getMessage()
                 : "Could not be applied (" + failure.getClass().getSimpleName() + ")";
-        return decide(event, CarrierEventResult.NEEDS_REVIEW, why);
+        CarrierEventResult result = decide(event, CarrierEventResult.NEEDS_REVIEW, why);
+        closeEarlierCopies(eventId, event.getDedupeKey());
+        return result;
     }
 
     // ------------------------------------------------------------------ helpers

@@ -1417,6 +1417,15 @@ class FtlDispatchIntegrationTest {
         ahamoveSays("AHA-V1", "IN PROCESS", "COMPLETED");
         aha(code, delivered).andExpect(status().isOk()).andExpect(jsonPath("$.data.result").value("APPLIED"));
         assertThat(shipmentStatus(shipment)).isEqualTo("DELIVERED");
+        // Review F6: the copy answered 503 is closed with it, so no retry stays open on the error list.
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM fulfillment.carrier_event WHERE carrier_id = ? AND "
+                + "result = 'RECEIVED'", Long.class, aha)).isZero();
+        assertThat(jdbc.queryForObject("SELECT result_note FROM fulfillment.carrier_event WHERE carrier_id = ? AND "
+                + "result = 'DUPLICATE'", String.class, aha)).contains("sent again was handled");
+        as(manager, "WAREHOUSE_MANAGER", get(EVENTS).param("result", "ERRORS").param("open", "true")
+                .param("carrierId", aha.toString())).andExpect(jsonPath("$.data.items.length()").value(2))
+                .andExpect(jsonPath("$.data.items[0].result").value("UNVERIFIED"))
+                .andExpect(jsonPath("$.data.items[1].result").value("UNVERIFIED"));
         // The same callback once more is a repeat, told without asking Ahamove again.
         org.mockito.Mockito.clearInvocations(carrierGateway);
         aha(code, delivered).andExpect(jsonPath("$.data.result").value("DUPLICATE"));
