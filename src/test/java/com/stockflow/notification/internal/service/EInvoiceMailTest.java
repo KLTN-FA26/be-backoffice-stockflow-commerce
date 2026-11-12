@@ -135,12 +135,20 @@ class EInvoiceMailTest {
     }
 
     @Test
-    @DisplayName("CUSTOMER_EMAIL_ENABLED off: recorded as skipped, no invoice read, no file fetched, nothing sent")
+    @DisplayName("EINVOICE_EMAIL_ENABLED off: recorded as skipped, no invoice read, no file fetched, nothing sent")
     void switchedOff() {
-        assertThat(delivery(properties(null, false, 10)).deliver(message)).isEqualTo(Outcome.SKIPPED);
+        assertThat(delivery(properties(null, true, false, 10)).deliver(message)).isEqualTo(Outcome.SKIPPED);
 
-        verify(log).skipped(message, "customer:" + customer, "CUSTOMER_EMAIL_DISABLED");
+        verify(log).skipped(message, "customer:" + customer, "EINVOICE_EMAIL_DISABLED");
         verifyNoInteractions(transport, einvoices, customers);
+    }
+
+    @Test
+    @DisplayName("E0 M2: customer mail switched off does not hold back the invoice - its delivery is the law's, not ours")
+    void customerMailOffStillSendsTheInvoice() {
+        assertThat(delivery(properties(null, false, true, 10)).deliver(message)).isEqualTo(Outcome.SENT);
+
+        verify(transport).send(any());
     }
 
     @Test
