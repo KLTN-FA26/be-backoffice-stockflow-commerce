@@ -117,8 +117,8 @@ public class EInvoiceDrafts {
             return new DrawnUp(inForce.get().snapshot(), false);
         }
         if (invoices.hasReplacedOriginalOfShipment(shipmentId)) {
-            // TODO(E4): what a shipment whose invoice was replaced may still be invoiced for is the replacement's
-            // business. Until E4 says, no second original is drawn up beside it.
+            // What a shipment whose invoice was replaced is invoiced for is its replacement's business (E4): an error
+            // is corrected on the replacement, never by a second original beside it.
             throw new BusinessException(ErrorCode.EINVOICE_NOT_INVOICEABLE,
                     "The invoice of shipment %s was replaced; it is not drawn up again".formatted(shipmentId));
         }
@@ -313,7 +313,7 @@ public class EInvoiceDrafts {
         return contractRate != null && rate.compareTo(contractRate) != 0;
     }
 
-    private static String limited(String value, String field, int max) {
+    static String limited(String value, String field, int max) {
         String stripped = value.strip();
         if (stripped.length() > max) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, field + ": at most " + max + " characters");
@@ -322,7 +322,7 @@ public class EInvoiceDrafts {
     }
 
     /** Blank clears it; otherwise the canonical form the customer module keeps: 10 digits, 10-3, or 12. */
-    private static String taxCode(String entered) {
+    static String taxCode(String entered) {
         if (entered.isBlank()) {
             return null;
         }
@@ -337,7 +337,7 @@ public class EInvoiceDrafts {
         return compact;
     }
 
-    private static String email(String entered) {
+    static String email(String entered) {
         if (entered.isBlank()) {
             return null;
         }

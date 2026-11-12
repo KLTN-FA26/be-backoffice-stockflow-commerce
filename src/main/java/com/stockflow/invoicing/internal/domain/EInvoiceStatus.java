@@ -7,7 +7,7 @@ import java.util.Set;
  * Where an e-invoice stands (WF-05 E2, plan §1.4; kltn-docs 21 §5.1).
  *
  * <pre>
- * DRAFT ──issue──▶ SUBMITTING ──provider/tax authority answer──▶ ISSUED ──replaced (E4)──▶ REPLACED
+ * DRAFT ──issue──▶ SUBMITTING ──provider/tax authority answer──▶ ISSUED ──replaced──▶ REPLACED
  *   │                   │ refused (a wrong tax code ...)
  *   │                   ▼
  *   │                REJECTED ──corrected──▶ DRAFT
@@ -34,7 +34,7 @@ public enum EInvoiceStatus {
     REJECTED,
     /** A draft that was never sent, given up with a reason. Final. */
     VOIDED_DRAFT,
-    /** An issued invoice another invoice replaced (E4). Final, no longer in force. */
+    /** An issued invoice another invoice replaced. Final, no longer in force. */
     REPLACED;
 
     public Set<EInvoiceStatus> next() {

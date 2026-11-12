@@ -19,6 +19,10 @@ import java.util.List;
  *   <li>{@link #download} fetches the XML and the PDF of an issued transaction.</li>
  * </ul>
  *
+ * <p>An adjustment and a replacement go the same way as an original: {@link InvoiceDocument#correction} names the
+ * invoice they change, and the provider refuses one that names an invoice it never issued or one already replaced.
+ * {@link #notifyError} is the fourth call, for the notice that changes no invoice (Mẫu 04/SS-HĐĐT).</p>
+ *
  * <p>A provider must treat a second {@code submit} of a transaction id it already holds as the first one again, never
  * as a second invoice. Every implementation is held to that; it is what lets the caller retry.</p>
  *
@@ -90,6 +94,48 @@ public interface EInvoiceProvider {
         }
     }
 
+    /**
+     * Sends the notice "invoice drawn up wrongly" (Mẫu 04/SS-HĐĐT, TT 91/2026/TT-BTC Điều 10 khoản 1 điểm a) to the tax
+     * authority through the provider, and returns its answer (Mẫu 01/TB-SSĐT, khoản 4) if it is already there. The
+     * notice's reference is the system's own and the provider treats a second sending of it as the first again.
+     *
+     * <p>A provider that has no such call answers {@link NoticeOutcome#NOT_SUPPORTED}: the notice stays recorded and
+     * is filed with the tax authority by hand. That is the default, so an implementation written before notices
+     * existed needs no change.</p>
+     *
+     * @throws ProviderUnavailableException when the provider did not answer
+     */
+    default NoticeReceipt notifyError(ErrorNoticeDocument notice) {
+        return new NoticeReceipt(NoticeOutcome.NOT_SUPPORTED, null, null);
+    }
+
+    /** How a notice was received. */
+    enum NoticeOutcome {
+        /** Taken in; the tax authority's answer is not there yet. */
+        PENDING,
+        /** The tax authority received and accepted it. */
+        ACCEPTED,
+        /** Refused by the provider or the tax authority. */
+        REJECTED,
+        /** This provider sends no notices. */
+        NOT_SUPPORTED
+    }
+
+    /** @param code and {@code message}: the answer's reference, or why it was refused */
+    record NoticeReceipt(NoticeOutcome outcome, String code, String message) {
+    }
+
+    /**
+     * A 04/SS-HĐĐT notice as it is handed to a provider - the columns of the form: the invoice's tax authority code,
+     * template, symbol, number and date, and the reason. {@code correctBuyerName} / {@code correctBuyerAddress}: what
+     * the invoice should have said, where the notice is about the buyer's name or address.
+     */
+    record ErrorNoticeDocument(String reference, String formCode, String taxAuthorityCode, String templateCode,
+                               String symbol, int invoiceNumber, LocalDate issueDate, InvoiceParty seller,
+                               String buyerTaxCode, String reason, String correctBuyerName,
+                               String correctBuyerAddress) {
+    }
+
     /** How a submission was received. */
     enum SubmissionOutcome {
         /** Taken in; the result comes later through {@link #query}. */
@@ -135,15 +181,38 @@ public interface EInvoiceProvider {
     }
 
     /**
+     * The invoice an adjustment or a replacement changes, as the new invoice must name it (TT 91 Điều 10 khoản 1 điểm
+     * b.1, b.2: "Điều chỉnh / Thay thế cho hóa đơn Mẫu số... ký hiệu... số... ngày... tháng... năm").
+     *
+     * @param type   ADJUSTMENT or REPLACEMENT
+     * @param reason what was wrong, or what the adjustment is for
+     */
+    record Correction(EInvoiceType type, String templateCode, String symbol, int invoiceNumber, LocalDate issueDate,
+                      String reason) {
+    }
+
+    /**
      * An invoice as it is handed to a provider: everything it says, and nothing about how the system stores it.
      *
      * @param referenceCode the system's own invoice code, for people matching the two systems
+     * @param correction    the invoice this one adjusts or replaces; null on an original
      */
     record InvoiceDocument(String transactionId, String referenceCode, String templateCode, String symbol,
                            LocalDate issueDate, InvoiceParty seller, InvoiceParty buyer, String currency,
                            String paymentMethod, String orderNumber, String contractNumber, List<EInvoiceLine> lines,
                            List<TaxRateTotal> totalsByRate, BigDecimal subtotal, BigDecimal taxTotal,
-                           BigDecimal grandTotal, String amountInWords) {
+                           BigDecimal grandTotal, String amountInWords, Correction correction) {
+
+        /** An original invoice. */
+        public InvoiceDocument(String transactionId, String referenceCode, String templateCode, String symbol,
+                               LocalDate issueDate, InvoiceParty seller, InvoiceParty buyer, String currency,
+                               String paymentMethod, String orderNumber, String contractNumber,
+                               List<EInvoiceLine> lines, List<TaxRateTotal> totalsByRate, BigDecimal subtotal,
+                               BigDecimal taxTotal, BigDecimal grandTotal, String amountInWords) {
+            this(transactionId, referenceCode, templateCode, symbol, issueDate, seller, buyer, currency, paymentMethod,
+                    orderNumber, contractNumber, lines, totalsByRate, subtotal, taxTotal, grandTotal, amountInWords,
+                    null);
+        }
     }
 
     /** The provider could not be reached or did not answer in time. Nothing is known about the transaction. */

@@ -35,6 +35,12 @@ public interface EInvoiceQueries {
     long count(Filter filter);
 
     /**
+     * The adjustments and the replacement of an invoice, voided ones too, oldest first: those that name it, and the
+     * trade-discount adjustments that list it.
+     */
+    List<Listing> correctionsOf(UUID invoiceId);
+
+    /**
      * One issued invoice in the register of a period ("bảng kê hoá đơn"), as the accountant declares it: who it was
      * issued to, and its amount and tax.
      *

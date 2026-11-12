@@ -68,6 +68,9 @@ import java.util.function.Supplier;
  * One invoice is worked on by one thread of this instance at a time ({@code inFlight}); across instances the quiet
  * period does the same job.</p>
  *
+ * <p>An adjustment and a replacement are issued the same way (WF-05 E4): the document names the invoice they change,
+ * and the step that records "issued" marks that invoice in the same transaction ({@link EInvoiceIssuanceSteps#issued}).</p>
+ *
  * <p>No transaction is open while the provider is called: the steps before and after are short transactions of their
  * own ({@link EInvoiceIssuanceSteps}). Every call is logged ({@link ProviderCallLog}) with hashes of what went and
  * came, never the content.</p>
@@ -240,7 +243,7 @@ public class EInvoiceIssuance {
                             LogSafe.text(invoice.code()));
                     return invoice;
                 }
-                InvoiceDocument document = document(invoice);
+                InvoiceDocument document = document(invoice, correctionOf(invoice));
                 Submission submission = call(invoice, Operation.SUBMIT, hash(document.toString()),
                         () -> provider.submit(document), answer -> switch (answer.outcome()) {
                             case ACCEPTED -> Outcome.ACCEPTED;
@@ -325,11 +328,29 @@ public class EInvoiceIssuance {
         return Checksums.sha256Hex(text.getBytes(StandardCharsets.UTF_8));
     }
 
-    /** The invoice as the provider is handed it. */
+    /**
+     * The invoice an adjustment or replacement changes, as the provider is to be told: its template, symbol, number
+     * and date, which it has because only an issued invoice is corrected. Null for an original.
+     */
+    private EInvoiceProvider.Correction correctionOf(EInvoice.Snapshot invoice) {
+        if (invoice.originalEInvoiceId() == null) {
+            return null;
+        }
+        EInvoice.Snapshot original = steps.get(invoice.originalEInvoiceId());
+        return new EInvoiceProvider.Correction(invoice.type(), original.templateCode(), original.symbol(),
+                original.invoiceNumber(), original.issueDate(), invoice.adjustmentReason());
+    }
+
+    /** An original invoice as the provider is handed it. */
     static InvoiceDocument document(EInvoice.Snapshot invoice) {
+        return document(invoice, null);
+    }
+
+    /** The invoice as the provider is handed it; {@code correction} names the invoice it changes, null on an original. */
+    static InvoiceDocument document(EInvoice.Snapshot invoice, EInvoiceProvider.Correction correction) {
         return new InvoiceDocument(invoice.transactionId(), invoice.code(), invoice.templateCode(), invoice.symbol(),
                 invoice.issueDate(), invoice.seller(), invoice.buyer(), invoice.currency(), invoice.paymentMethod(),
                 invoice.orderNumber(), invoice.contractNumber(), invoice.lines(), TaxRateTotal.of(invoice.lines()),
-                invoice.subtotal(), invoice.taxTotal(), invoice.grandTotal(), invoice.amountInWords());
+                invoice.subtotal(), invoice.taxTotal(), invoice.grandTotal(), invoice.amountInWords(), correction);
     }
 }

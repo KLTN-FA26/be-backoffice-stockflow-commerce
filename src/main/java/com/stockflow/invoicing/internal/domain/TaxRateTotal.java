@@ -12,10 +12,14 @@ import java.util.TreeMap;
  */
 public record TaxRateTotal(BigDecimal taxRate, BigDecimal amount, BigDecimal taxAmount) {
 
-    /** One total per rate on {@code lines}, lowest rate first. */
+    /** One total per rate on {@code lines}, lowest rate first; none for an invoice of note lines only. */
     public static List<TaxRateTotal> of(List<EInvoiceLine> lines) {
         Map<BigDecimal, BigDecimal[]> byRate = new TreeMap<>();
         for (EInvoiceLine line : lines) {
+            if (line.kind() == EInvoiceLine.Kind.NOTE) {
+                // Says something, is worth nothing: it belongs to no rate.
+                continue;
+            }
             BigDecimal[] sums = byRate.computeIfAbsent(line.taxRate(),
                     rate -> new BigDecimal[] {BigDecimal.ZERO, BigDecimal.ZERO});
             sums[0] = sums[0].add(line.amount());

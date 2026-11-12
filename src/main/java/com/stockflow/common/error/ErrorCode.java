@@ -374,6 +374,20 @@ public enum ErrorCode {
     EINVOICE_PROVIDER_ACCOUNT_INCOMPLETE("The e-invoice provider's account is not stored yet", 409),
     /** WF-05 E3: an invoice at the provider is sent as a new transaction only when the provider no longer remembers the old one and confirms it holds no such invoice. */
     EINVOICE_RESUBMISSION_REFUSED("The e-invoice cannot be sent as a new transaction: the provider may hold it", 409),
+    /** WF-05 E4 (TT 91 Điều 10): only an issued invoice still in force is adjusted, replaced or notified as drawn up wrongly. */
+    EINVOICE_NOT_IN_FORCE("Only an issued e-invoice that is still in force can be corrected", 409),
+    /** WF-05 E4 (TT 91 Điều 10 khoản 6 điểm a): an invoice already adjusted is adjusted again, one replaced is replaced again. */
+    EINVOICE_CORRECTION_FORM_FIXED("This e-invoice is already being corrected in the other form; the form first used is kept", 409),
+    /** WF-05 E4: the correction asked for is not one the law gives for this invoice (an adjustment of an adjustment, a return that adds, an agreement where none is asked). */
+    EINVOICE_CORRECTION_NOT_APPLICABLE("This correction does not apply to this e-invoice", 409),
+    /** WF-05 E4 (TT 91 Điều 10 khoản 1 điểm b): the correction of an error is not sent without the written agreement with the buyer. */
+    EINVOICE_AGREEMENT_REQUIRED("The written agreement with the buyer - its file, number and date - is needed before the correction is issued", 409),
+    /** WF-05 E4: adjustments may not reduce an invoice below nothing. */
+    EINVOICE_ADJUSTMENT_EXCEEDS_INVOICE("The adjustment would reduce the e-invoice by more than it holds", 409),
+    /** WF-05 E4: no such 04/SS-HĐĐT notice on this invoice. */
+    EINVOICE_ERROR_NOTICE_NOT_FOUND("Notice of an e-invoice drawn up wrongly not found", 404),
+    /** WF-05 E4: a notice of this invoice is still on its way, or the notice asked about is already answered. */
+    EINVOICE_ERROR_NOTICE_NOT_SENDABLE("This notice cannot be recorded or sent now: another one of the invoice is still open, or it is already answered", 409),
     /** 4B-4, WF-05 E2: stockflow.seller.* is blank in this deployment; no contract or invoice names a seller. */
     SELLER_PROFILE_UNAVAILABLE("The seller's company details are not configured; contracts and invoices cannot be drawn up", 503),
     /**

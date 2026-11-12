@@ -119,9 +119,11 @@ public enum FileCategory {
 
     /**
      * An issued e-invoice as the provider returned it (WF-05 E2; kltn-docs 21 §1): the XML, which is the invoice in
-     * law, and the PDF people read. Written by the system when the invoice is issued, never uploaded, and locked for
-     * ten years ({@link RecordRetention#EINVOICE}; Luật Kế toán 2015 Điều 41). No module claims the prefix for the
-     * orphaned-file sweep, so nothing under it is ever swept.
+     * law, and the PDF people read. Written by the system when the invoice is issued, and locked for ten years
+     * ({@link RecordRetention#EINVOICE}; Luật Kế toán 2015 Điều 41). The one upload here is the signed agreement of
+     * the two parties attached to a correction of an issued invoice (WF-05 E4; TT 91/2026/TT-BTC Điều 10 khoản 1 điểm
+     * b), a PDF kept and locked with the invoice it justifies. No module claims the prefix for the orphaned-file
+     * sweep, so nothing under it is ever swept.
      */
     EINVOICE("einvoices", 10 * 1024 * 1024, Set.of("application/xml", "application/pdf")),
 

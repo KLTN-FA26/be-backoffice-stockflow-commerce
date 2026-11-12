@@ -25,8 +25,11 @@ public record EInvoiceLine(UUID id, int lineNo, Kind kind, FeeKind feeKind, UUID
                            String itemName, String unit, int quantity, Integer unitsPerCarton, BigDecimal unitPrice,
                            BigDecimal taxRate, BigDecimal amount, BigDecimal taxAmount) {
 
-    /** Goods delivered, or a fee of the order. */
-    public enum Kind { GOODS, FEE }
+    /**
+     * Goods delivered, a fee of the order, or - on an adjustment only - a note: a line of no value saying what an
+     * adjustment that changes no money corrects (a wrong tax code, TT 91 Điều 10 khoản 1 điểm b).
+     */
+    public enum Kind { GOODS, FEE, NOTE }
 
     /** The order's fee lines (kltn-docs 14 BR-17, BR-20), by the names the order module gives them. */
     public enum FeeKind { PLATE_FEE, SHIPPING_FEE }
@@ -51,6 +54,10 @@ public record EInvoiceLine(UUID id, int lineNo, Kind kind, FeeKind feeKind, UUID
         }
         if (kind == Kind.FEE && (feeKind == null || orderLineId != null || unitsPerCarton != null)) {
             throw new IllegalArgumentException("A fee line says which fee, and names no order line or carton");
+        }
+        if (kind == Kind.NOTE && (feeKind != null || orderLineId != null || sku != null || unitsPerCarton != null
+                || quantity != 1 || unitPrice.signum() != 0 || taxRate.signum() != 0)) {
+            throw new IllegalArgumentException("A note line names nothing sold and is worth nothing");
         }
         if (quantity == 0 || (unitsPerCarton != null && unitsPerCarton < 1)) {
             throw new IllegalArgumentException("A line has a quantity, and a carton holds at least one piece");
@@ -89,6 +96,30 @@ public record EInvoiceLine(UUID id, int lineNo, Kind kind, FeeKind feeKind, UUID
         BigDecimal price = amount.setScale(0, RoundingMode.UNNECESSARY);
         return new EInvoiceLine(id, lineNo, Kind.FEE, feeKind, null, sku, itemName, unit, 1, null, price, taxRate,
                 price, vat(price, taxRate));
+    }
+
+    /** A line of no value that says what an adjustment corrects when no money changes. */
+    public static EInvoiceLine note(UUID id, int lineNo, String text, String unit) {
+        return new EInvoiceLine(id, lineNo, Kind.NOTE, null, null, null, text, unit, 1, null, BigDecimal.ZERO,
+                BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO);
+    }
+
+    /**
+     * This line as a correction states it: the same goods or fee, with the quantity, price, rate and name given. On
+     * an adjustment the quantity carries the direction - below zero reduces (TT 91 Điều 10 khoản 6 điểm c) - and the
+     * price is what each unit changes by; on a replacement they are what the line should have said.
+     */
+    public EInvoiceLine corrected(UUID id, int lineNo, int quantity, Integer unitsPerCarton, String unit,
+                                  BigDecimal unitPrice, BigDecimal taxRate, String name) {
+        BigDecimal price = unitPrice.setScale(0, RoundingMode.UNNECESSARY);
+        BigDecimal amount = price.multiply(BigDecimal.valueOf(quantity));
+        return new EInvoiceLine(id, lineNo, kind, feeKind, orderLineId, sku, name, unit, quantity, unitsPerCarton,
+                price, taxRate, amount, vat(amount, taxRate));
+    }
+
+    /** The pieces this line counts: its cartons times the pieces in one, or its quantity when counted in pieces. */
+    public long pieces() {
+        return (long) quantity * (unitsPerCarton == null ? 1 : unitsPerCarton);
     }
 
     /** The same line under another name: the one thing the accountant corrects on a draft's line. */

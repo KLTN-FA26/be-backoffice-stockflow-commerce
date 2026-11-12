@@ -62,10 +62,15 @@ class EInvoiceRepositoryAdapter implements EInvoiceRepository {
 
     @Override
     public Optional<EInvoice> findLiveOriginalOfShipment(UUID shipmentId) {
-        // The predicate of uk_einvoice_original_per_shipment: at most one row.
+        // At most one original that is not voided or replaced (uk_einvoice_original_per_shipment) and at most one
+        // issued original-or-replacement (uk_einvoice_in_force_per_shipment). The issued one first: a replacement
+        // still on its way does not stand for the shipment yet.
         List<UUID> ids = jdbc.queryForList("""
                 SELECT id FROM invoicing.einvoice
-                 WHERE shipment_id = ? AND type = 'ORIGINAL' AND status NOT IN ('VOIDED_DRAFT', 'REPLACED')""",
+                 WHERE shipment_id = ? AND type IN ('ORIGINAL', 'REPLACEMENT')
+                   AND status NOT IN ('VOIDED_DRAFT', 'REPLACED')
+                 ORDER BY CASE WHEN status = 'ISSUED' THEN 0 ELSE 1 END, created_at, id
+                 LIMIT 1""",
                 UUID.class, shipmentId);
         return ids.isEmpty() ? Optional.empty() : findById(ids.getFirst());
     }
@@ -109,6 +114,65 @@ class EInvoiceRepositoryAdapter implements EInvoiceRepository {
     }
 
     @Override
+    public EInvoice.Corrections correctionsOf(UUID invoiceId) {
+        // The predicates of tg_einvoice_starts_as_draft: an adjustment naming or listing the invoice, a replacement
+        // of it, neither voided.
+        return jdbc.queryForObject("""
+                SELECT EXISTS (SELECT 1 FROM invoicing.einvoice a
+                                WHERE a.type = 'ADJUSTMENT' AND a.status <> 'VOIDED_DRAFT'
+                                  AND (a.original_einvoice_id = ?
+                                       OR EXISTS (SELECT 1 FROM invoicing.einvoice_adjustment_listing l
+                                                   WHERE l.einvoice_id = a.id AND l.listed_einvoice_id = ?))),
+                       EXISTS (SELECT 1 FROM invoicing.einvoice r
+                                WHERE r.original_einvoice_id = ? AND r.type = 'REPLACEMENT'
+                                  AND r.status <> 'VOIDED_DRAFT'),
+                       (SELECT COALESCE(sum(a.grand_total), 0) FROM invoicing.einvoice a
+                         WHERE a.original_einvoice_id = ? AND a.type = 'ADJUSTMENT' AND a.status <> 'VOIDED_DRAFT')""",
+                (row, n) -> new EInvoice.Corrections(row.getBoolean(1), row.getBoolean(2), row.getBigDecimal(3)),
+                invoiceId, invoiceId, invoiceId, invoiceId);
+    }
+
+    @Override
+    public List<EInvoice> findInForceOfOrder(UUID orderId) {
+        return jdbc.queryForList("""
+                SELECT id FROM invoicing.einvoice
+                 WHERE order_id = ? AND type IN ('ORIGINAL', 'REPLACEMENT') AND status = 'ISSUED'
+                 ORDER BY issue_date, created_at, id""", UUID.class, orderId).stream()
+                .map(id -> findById(id).orElseThrow()).toList();
+    }
+
+    @Override
+    public java.util.Map<UUID, Long> returnedPieces(UUID invoiceId) {
+        java.util.Map<UUID, Long> pieces = new java.util.HashMap<>();
+        jdbc.query("""
+                SELECT l.order_line_id, sum(-l.quantity::bigint * COALESCE(l.units_per_carton, 1)) AS pieces
+                  FROM invoicing.einvoice a
+                  JOIN invoicing.einvoice_line l ON l.einvoice_id = a.id
+                 WHERE a.original_einvoice_id = ? AND a.correction_basis = 'RETURN' AND a.status <> 'VOIDED_DRAFT'
+                   AND l.kind = 'GOODS'
+                 GROUP BY l.order_line_id""",
+                row -> {
+                    pieces.put(row.getObject("order_line_id", UUID.class), row.getLong("pieces"));
+                }, invoiceId);
+        return pieces;
+    }
+
+    @Override
+    public boolean hasAdjustmentForReturn(UUID returnRequestId) {
+        return Boolean.TRUE.equals(jdbc.queryForObject(
+                "SELECT EXISTS (SELECT 1 FROM invoicing.einvoice WHERE return_request_id = ?)", Boolean.class,
+                returnRequestId));
+    }
+
+    @Override
+    public boolean hasLiveReturnAdjustment(UUID returnRequestId, UUID invoiceId) {
+        return Boolean.TRUE.equals(jdbc.queryForObject("""
+                SELECT EXISTS (SELECT 1 FROM invoicing.einvoice
+                                WHERE return_request_id = ? AND original_einvoice_id = ?
+                                  AND status <> 'VOIDED_DRAFT')""", Boolean.class, returnRequestId, invoiceId));
+    }
+
+    @Override
     public EInvoice save(EInvoice invoice) {
         EInvoice.Snapshot snapshot = invoice.snapshot();
         Optional<EInvoiceJpaEntity> existing = invoices.findById(snapshot.id());
@@ -118,6 +182,10 @@ class EInvoiceRepositoryAdapter implements EInvoiceRepository {
             // The invoice first: a line is refused unless its invoice is there, and a draft (tg_einvoice_line_guard).
             EInvoiceJpaEntity saved = invoices.saveAndFlush(entity);
             snapshot.lines().forEach(line -> insert(snapshot.id(), line));
+            // The list of a trade-discount adjustment, written with it (tg_einvoice_adjustment_listing_guard).
+            snapshot.listedInvoiceIds().forEach(listed -> jdbc.update(
+                    "INSERT INTO invoicing.einvoice_adjustment_listing (einvoice_id, listed_einvoice_id) VALUES (?, ?)",
+                    snapshot.id(), listed));
             return toDomain(saved);
         }
         EInvoiceJpaEntity entity = existing.get();
@@ -170,7 +238,10 @@ class EInvoiceRepositoryAdapter implements EInvoiceRepository {
     }
 
     private EInvoice toDomain(EInvoiceJpaEntity entity) {
-        return EInvoicePersistenceMapper.toDomain(entity, lines(entity.getId()));
+        return EInvoicePersistenceMapper.toDomain(entity, lines(entity.getId()),
+                entity.getCorrectionBasis() == null ? List.of() : jdbc.queryForList(
+                        "SELECT listed_einvoice_id FROM invoicing.einvoice_adjustment_listing WHERE einvoice_id = ? "
+                                + "ORDER BY listed_einvoice_id", UUID.class, entity.getId()));
     }
 
     private void insert(UUID invoiceId, EInvoiceLine line) {

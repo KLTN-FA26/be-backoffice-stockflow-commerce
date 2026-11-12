@@ -534,6 +534,12 @@ stockflow:
       resubmit-window: ${EINVOICE_VIETTEL_RESUBMIT_WINDOW:P3D}
       file-pause: ${EINVOICE_VIETTEL_FILE_PAUSE:PT2S}
       payment-status-paid: ${EINVOICE_VIETTEL_PAYMENT_STATUS_PAID:true}
+    corrections:
+      # Whether a 04/SS-HDDT notice may also be recorded for an invoice that was adjusted or replaced. TT 91/2026
+      # Dieu 10 khoan 1 diem b does not ask for one and it is not verified whether a provider sends it by itself
+      # (E0 row 2): off until the provider or the tax authority says otherwise. A wrong buyer name or address
+      # (diem a) is always notified, whatever this says.
+      error-notice-with-correction: ${EINVOICE_ERROR_NOTICE_WITH_CORRECTION:false}
   order:
     contract:
       # Print-sample rounds a new contract offers without charge (14 BR-18, decided 2026-11-05); Sales may change it.

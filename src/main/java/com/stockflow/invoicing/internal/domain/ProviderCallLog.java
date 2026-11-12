@@ -14,10 +14,11 @@ import java.util.UUID;
 public interface ProviderCallLog {
 
     /** What was asked of the provider. */
-    enum Operation { SUBMIT, QUERY, DOWNLOAD }
+    enum Operation { SUBMIT, QUERY, DOWNLOAD, NOTICE }
 
     /** How the call ended: the provider's own answer, or that it gave none. */
-    enum Outcome { ACCEPTED, DUPLICATE, PENDING, ISSUED, REJECTED, NOT_FOUND, DOWNLOADED, TIMEOUT, ERROR }
+    enum Outcome { ACCEPTED, DUPLICATE, PENDING, ISSUED, REJECTED, NOT_FOUND, DOWNLOADED, TIMEOUT, ERROR,
+        NOT_SUPPORTED }
 
     /**
      * @param httpStatus   the provider's HTTP status; null for a provider called in-process (the sandbox)

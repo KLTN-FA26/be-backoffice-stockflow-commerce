@@ -16,13 +16,38 @@ public interface EInvoiceRepository {
      */
     Optional<EInvoice> findByIdForUpdate(UUID id);
 
-    /** The original invoice in force for a shipment - not voided, not replaced (kltn-docs 21 BR-01: at most one). */
+    /**
+     * The invoice that stands for a shipment (kltn-docs 21 BR-01: at most one in force): its original while that is not
+     * voided or replaced, else what replaced it. While a replacement is still a draft the invoice it will replace is
+     * the one in force, and the one returned.
+     */
     Optional<EInvoice> findLiveOriginalOfShipment(UUID shipmentId);
 
+    /** What already corrects an invoice: its live adjustments and replacement. Read under the invoice's lock. */
+    EInvoice.Corrections correctionsOf(UUID invoiceId);
+
     /**
-     * Whether the shipment has an original that was replaced. TODO(E4): a replaced original is no longer "in force",
-     * so nothing but this stops a second original being drawn up beside its replacement; the replacement is E4's to
-     * create, and E4 decides what a shipment whose invoice was replaced may still be invoiced for.
+     * The issued invoices in force of an order - originals and replacements, never adjustments - the oldest first:
+     * what goods returned on the order are taken off.
+     */
+    List<EInvoice> findInForceOfOrder(UUID orderId);
+
+    /**
+     * The pieces of each order line that the adjustments for returned goods of an invoice already take off it, by
+     * order line: adjustments that are not voided, issued or not.
+     */
+    java.util.Map<UUID, Long> returnedPieces(UUID invoiceId);
+
+    /** Whether an adjustment was ever drawn up for a return, voided or not: a return is taken off its invoices once. */
+    boolean hasAdjustmentForReturn(UUID returnRequestId);
+
+    /** Whether an adjustment for this return, not voided, already names this invoice ({@code uk_einvoice_return_adjustment}). */
+    boolean hasLiveReturnAdjustment(UUID returnRequestId, UUID invoiceId);
+
+    /**
+     * Whether the shipment has an original that was replaced. Its replacement stands for the shipment and
+     * {@link #findLiveOriginalOfShipment} returns it, so this answers true only where that found nothing; a second
+     * original beside a replacement is refused here and by {@code tg_einvoice_original_per_shipment}.
      */
     boolean hasReplacedOriginalOfShipment(UUID shipmentId);
 

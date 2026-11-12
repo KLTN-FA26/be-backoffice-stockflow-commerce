@@ -566,15 +566,22 @@ Enum invoicing.einvoice_error_notice_status {
   REJECTED
 }
 
+Enum invoicing.einvoice_error_notice_subject {
+  BUYER_NAME_ADDRESS
+  WITH_CORRECTION
+}
+
 Enum invoicing.einvoice_line_kind {
   GOODS
   FEE
+  NOTE
 }
 
 Enum invoicing.einvoice_provider_call_operation {
   SUBMIT
   QUERY
   DOWNLOAD
+  NOTICE
 }
 
 Enum invoicing.einvoice_provider_call_outcome {
@@ -587,6 +594,7 @@ Enum invoicing.einvoice_provider_call_outcome {
   DOWNLOADED
   TIMEOUT
   ERROR
+  NOT_SUPPORTED
 }
 
 Enum invoicing.einvoice_provider_config_environment {
@@ -597,6 +605,12 @@ Enum invoicing.einvoice_provider_config_environment {
 Enum invoicing.einvoice_provider_config_provider {
   SANDBOX
   VIETTEL_SINVOICE
+}
+
+Enum invoicing.sandbox_issuance_kind {
+  ORIGINAL
+  ADJUSTMENT
+  REPLACEMENT
 }
 
 Enum invoicing.sandbox_issuance_state {
@@ -2909,23 +2923,39 @@ Table invoicing.einvoice [headercolor: #A0522D] {
   created_by           varchar(100)
   last_modified_at     timestamptz
   last_modified_by     varchar(100)
+  correction_basis     varchar(16)
+  agreement_number     varchar(64)
+  agreement_date       date
+  return_request_id    uuid
+}
+
+Table invoicing.einvoice_adjustment_listing [headercolor: #A0522D] {
+  einvoice_id        uuid [not null]
+  listed_einvoice_id uuid [not null]
+  indexes {
+    (einvoice_id, listed_einvoice_id) [pk]
+  }
 }
 
 Table invoicing.einvoice_error_notice [headercolor: #A0522D] {
-  id               uuid [pk]
-  einvoice_id      uuid [not null]
-  form_code        varchar(16) [not null, default: '04/SS-HDDT']
-  reason           varchar(500) [not null]
-  status           invoicing.einvoice_error_notice_status [not null, default: 'DRAFT']
-  sent_at          timestamptz
-  response_code    varchar(64)
-  response_message varchar(500)
-  responded_at     timestamptz
-  version          bigint [not null, default: 0]
-  created_at       timestamptz [not null, default: `now()`]
-  created_by       varchar(100)
-  last_modified_at timestamptz
-  last_modified_by varchar(100)
+  id                    uuid [pk]
+  einvoice_id           uuid [not null]
+  form_code             varchar(16) [not null, default: '04/SS-HDDT']
+  reason                varchar(500) [not null]
+  status                invoicing.einvoice_error_notice_status [not null, default: 'DRAFT']
+  sent_at               timestamptz
+  response_code         varchar(64)
+  response_message      varchar(500)
+  responded_at          timestamptz
+  version               bigint [not null, default: 0]
+  created_at            timestamptz [not null, default: `now()`]
+  created_by            varchar(100)
+  last_modified_at      timestamptz
+  last_modified_by      varchar(100)
+  subject               invoicing.einvoice_error_notice_subject [not null, default: 'BUYER_NAME_ADDRESS']
+  correct_buyer_name    varchar(200)
+  correct_buyer_address varchar(500)
+  recorded_by           uuid
 }
 
 Table invoicing.einvoice_line [headercolor: #A0522D] {
@@ -2999,20 +3029,24 @@ Table invoicing.einvoice_series [headercolor: #A0522D] {
 }
 
 Table invoicing.sandbox_issuance [headercolor: #A0522D] {
-  transaction_id     varchar(64) [pk]
-  state              invoicing.sandbox_issuance_state [not null]
-  template_code      varchar(1) [not null]
-  symbol             varchar(6) [not null]
-  invoice_number     int
-  tax_authority_code varchar(64)
-  lookup_code        varchar(64)
-  rejection_code     varchar(64)
-  rejection_message  varchar(500)
-  xml_document       text
-  pdf_document       bytea
-  request_hash       varchar(64) [not null]
-  received_at        timestamptz [not null]
-  ready_at           timestamptz [not null]
+  transaction_id          varchar(64) [pk]
+  state                   invoicing.sandbox_issuance_state [not null]
+  template_code           varchar(1) [not null]
+  symbol                  varchar(6) [not null]
+  invoice_number          int
+  tax_authority_code      varchar(64)
+  lookup_code             varchar(64)
+  rejection_code          varchar(64)
+  rejection_message       varchar(500)
+  xml_document            text
+  pdf_document            bytea
+  request_hash            varchar(64) [not null]
+  received_at             timestamptz [not null]
+  ready_at                timestamptz [not null]
+  kind                    invoicing.sandbox_issuance_kind [not null, default: 'ORIGINAL']
+  original_template_code  varchar(1)
+  original_symbol         varchar(6)
+  original_invoice_number int
   indexes {
     (template_code, symbol, invoice_number) [unique]
   }
@@ -4693,10 +4727,14 @@ Ref: invoicing.einvoice.customer_id > customer.customer.id
 Ref: invoicing.einvoice.delivery_batch_id > ordering.delivery_batch.id
 Ref: invoicing.einvoice.order_id > ordering.customer_order.id
 Ref: invoicing.einvoice.original_einvoice_id > invoicing.einvoice.id
+Ref: invoicing.einvoice.return_request_id > ordering.return_request.id
 Ref: invoicing.einvoice.shipment_id > ordering.order_shipment.id
 Ref: invoicing.einvoice.submitted_by > identity.app_user.id
 Ref: invoicing.einvoice.voided_by > identity.app_user.id
+Ref: invoicing.einvoice_adjustment_listing.einvoice_id > invoicing.einvoice.id
+Ref: invoicing.einvoice_adjustment_listing.listed_einvoice_id > invoicing.einvoice.id
 Ref: invoicing.einvoice_error_notice.einvoice_id > invoicing.einvoice.id
+Ref: invoicing.einvoice_error_notice.recorded_by > identity.app_user.id
 Ref: invoicing.einvoice_line.einvoice_id > invoicing.einvoice.id
 Ref: invoicing.einvoice_line.order_line_id > ordering.order_line.id
 Ref: invoicing.einvoice_provider_call.einvoice_id > invoicing.einvoice.id
@@ -4989,6 +5027,7 @@ TableGroup payment_group [color: #B8860B] {
 
 TableGroup invoicing_group [color: #A0522D] {
   invoicing.einvoice
+  invoicing.einvoice_adjustment_listing
   invoicing.einvoice_error_notice
   invoicing.einvoice_line
   invoicing.einvoice_provider_call

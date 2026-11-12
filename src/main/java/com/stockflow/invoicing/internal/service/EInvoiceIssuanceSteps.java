@@ -12,6 +12,7 @@ import com.stockflow.invoicing.internal.domain.EInvoice;
 import com.stockflow.invoicing.internal.domain.EInvoiceProvider;
 import com.stockflow.invoicing.internal.domain.EInvoiceRepository;
 import com.stockflow.invoicing.internal.domain.EInvoiceStatus;
+import com.stockflow.invoicing.internal.domain.EInvoiceType;
 import com.stockflow.invoicing.internal.domain.InvoiceSeries;
 import com.stockflow.invoicing.internal.domain.InvoiceSettings;
 import org.springframework.stereotype.Component;
@@ -59,7 +60,8 @@ class EInvoiceIssuanceSteps {
      *
      * @param expectedVersion the version the caller read; null when the system issues
      * @throws BusinessException {@code EINVOICE_NOT_FOUND}, {@code OPTIMISTIC_LOCK}, {@code EINVOICE_INVALID_TRANSITION},
-     *         {@code EINVOICE_BUYER_PROFILE_INCOMPLETE}, {@code EINVOICE_SERIES_NOT_CONFIGURED},
+     *         {@code EINVOICE_BUYER_PROFILE_INCOMPLETE}, {@code EINVOICE_AGREEMENT_REQUIRED} (the correction of an
+     *         error without the agreement of both parties), {@code EINVOICE_SERIES_NOT_CONFIGURED},
      *         {@code EINVOICE_PROVIDER_UNAVAILABLE}
      */
     @Transactional
@@ -104,20 +106,48 @@ class EInvoiceIssuanceSteps {
      * by then whatever happens here; a locked file left behind by a step that failed is a copy of a document that
      * exists in law, not a record of something that did not happen.</p>
      *
+     * <p>A correction marks the invoice it changes in the same transaction (TT 91 Điều 10): a replacement makes it
+     * REPLACED, an adjustment flags it - and every invoice a trade-discount adjustment lists - as adjusted. The
+     * corrected invoices are locked <b>before</b> the correction, in id order, the order drawing a correction up takes
+     * them in; and written before it, so the shipment never has two invoices in force
+     * ({@code uk_einvoice_in_force_per_shipment}). The agreement's file is locked with the invoice's own.</p>
+     *
      * @throws com.stockflow.common.storage.StorageException when a file cannot be stored or locked
      */
     @Transactional
     public void issued(UUID id, String transactionId, EInvoiceProvider.Result result,
                        EInvoiceProvider.Documents documents) {
+        EInvoice unlocked = invoices.findById(id).orElseThrow(() -> new BusinessException(ErrorCode.EINVOICE_NOT_FOUND));
+        java.util.List<EInvoice> corrected = new java.util.ArrayList<>();
+        if (unlocked.originalEInvoiceId() != null) {
+            java.util.TreeSet<UUID> ids = new java.util.TreeSet<>(unlocked.listedInvoiceIds());
+            ids.add(unlocked.originalEInvoiceId());
+            for (UUID correctedId : ids) {
+                corrected.add(invoices.findByIdForUpdate(correctedId).orElseThrow());
+            }
+        }
         EInvoice invoice = waitingFor(id, transactionId);
         if (invoice == null) {
             return;
+        }
+        for (EInvoice target : corrected) {
+            if (invoice.type() == EInvoiceType.REPLACEMENT) {
+                target.replaced();
+            } else if (!target.adjusted()) {
+                target.markAdjusted();
+            } else {
+                continue;
+            }
+            invoices.save(target);
         }
         String name = "%s%s-%08d".formatted(invoice.templateCode(), invoice.symbol(), result.invoiceNumber());
         StoredFile xml = store(name + ".xml", "application/xml", documents.xml());
         StoredFile pdf = store(name + ".pdf", "application/pdf", documents.pdf());
         files.retainNow(xml.key(), RecordRetention.EINVOICE);
         files.retainNow(pdf.key(), RecordRetention.EINVOICE);
+        if (invoice.agreementFileKey() != null) {
+            files.retainNow(invoice.agreementFileKey(), RecordRetention.EINVOICE);
+        }
         invoice.issued(result.invoiceNumber(), result.taxAuthorityCode(), result.lookupCode(), result.signedAt(),
                 xml.key(), pdf.key(), clock.instant());
         invoices.save(invoice);

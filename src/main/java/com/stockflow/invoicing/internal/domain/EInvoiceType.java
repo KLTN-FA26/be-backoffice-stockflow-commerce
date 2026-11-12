@@ -8,10 +8,10 @@ public enum EInvoiceType {
     /** The invoice of a delivered shipment (NĐ 254 Điều 9 khoản 3: every delivery is invoiced). */
     ORIGINAL,
     /**
-     * Changes an issued invoice, up or down, and names it; the original stays in force. Package E4 draws these up -
-     * here the type exists so the schema and the aggregate have its place.
+     * Changes an issued invoice, up or down, and names it; the original stays in force and is flagged once the
+     * adjustment is issued. For an error, returned goods or a trade discount ({@link CorrectionBasis}).
      */
     ADJUSTMENT,
-    /** Takes an issued invoice's place and names it; the original becomes REPLACED. Package E4. */
+    /** Takes an issued invoice's place and names it; the original becomes REPLACED as this one is issued. */
     REPLACEMENT
 }
