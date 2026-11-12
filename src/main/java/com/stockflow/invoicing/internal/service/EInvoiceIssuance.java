@@ -49,7 +49,9 @@ import java.util.function.Supplier;
  *       it. Still working: wait. Only when the provider says clearly that it has never heard of the transaction is the
  *       invoice submitted - under the same id, which the provider itself refuses to turn into a second invoice. An
  *       answer that does not say ({@code UNKNOWN}: an error, a shape not recognised) is waited out like "still
- *       working", unless nothing was ever sent under the transaction, when there is nothing it could be hiding.</li>
+ *       working", unless nothing was ever sent under the transaction, when there is nothing it could be hiding. A send
+ *       <b>again</b> that the provider refuses is recorded as refused only once a fresh look-up confirms it holds
+ *       nothing: the refusal may be of a duplicate of what it already holds.</li>
  *   <li>A call that fails changes nothing. The invoice stays SUBMITTING and the next reconciliation - the job's, or the
  *       accountant's "check again" - starts at step 2.</li>
  *   <li>Submitting <b>again</b> a transaction the provider does not know obeys the provider's own rule
@@ -285,12 +287,26 @@ public class EInvoiceIssuance {
                             case DUPLICATE -> Outcome.DUPLICATE;
                             case REJECTED -> Outcome.REJECTED;
                         }, Submission::errorCode);
-                if (submission.outcome() == SubmissionOutcome.REJECTED) {
+                // A provider that works at once has the result already; one that does not says PENDING.
+                if (submission.outcome() == SubmissionOutcome.REJECTED && lastSent == null) {
+                    // The first send refused: nothing else was ever sent under the transaction, so nothing exists.
                     steps.rejected(id, transaction, submission.errorCode(), submission.message());
                     return steps.get(id);
                 }
-                // A provider that works at once has the result already; one that does not says PENDING.
                 result = query(provider, invoice);
+                if (submission.outcome() == SubmissionOutcome.REJECTED) {
+                    // A send again refused is not proof that no invoice exists: a provider may refuse a transaction it
+                    // already holds from the earlier send ("duplicate") instead of answering with its invoice, and
+                    // recording REJECTED would let the accountant issue a second one. Refused only when the provider,
+                    // asked now, confirms it holds nothing; otherwise what it holds is taken below, or asked again.
+                    if (result.state() == ResultState.NOT_FOUND) {
+                        steps.rejected(id, transaction, submission.errorCode(), submission.message());
+                        return steps.get(id);
+                    }
+                    log.warn("E-invoice {} (transaction {}): sending again was refused ({}) but the provider does not "
+                            + "confirm it holds nothing ({})", LogSafe.text(invoice.code()), LogSafe.text(transaction),
+                            LogSafe.text(submission.errorCode()), result.state());
+                }
             }
             switch (result.state()) {
                 case ISSUED -> {
