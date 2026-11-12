@@ -34,10 +34,13 @@ public interface EInvoiceRepository {
     List<EInvoice> findInForceOfOrder(UUID orderId);
 
     /**
-     * The pieces of each order line that the adjustments for returned goods of an invoice already take off it, by
-     * order line: adjustments that are not voided, issued or not.
+     * The pieces of each order line that the adjustments of an invoice already take off it, by order line: every
+     * adjustment that is not voided, issued or not, that changes a quantity - a return's, and an error's that lowered a
+     * quantity (one that raised it puts pieces back, below zero). Counting only the returns' adjustments let a return
+     * take off again pieces an error's adjustment had already taken, and leave pieces it had added unplaced. A price
+     * that was wrong and a trade discount change money, not pieces, and are not counted.
      */
-    java.util.Map<UUID, Long> returnedPieces(UUID invoiceId);
+    java.util.Map<UUID, Long> piecesTakenOff(UUID invoiceId);
 
     /** Whether an adjustment was ever drawn up for a return, voided or not: a return is taken off its invoices once. */
     boolean hasAdjustmentForReturn(UUID returnRequestId);

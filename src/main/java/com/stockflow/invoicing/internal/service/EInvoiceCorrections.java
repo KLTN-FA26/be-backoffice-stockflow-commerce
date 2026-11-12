@@ -277,7 +277,7 @@ public class EInvoiceCorrections {
             if (invoice.status() != EInvoiceStatus.ISSUED || corrections.liveReplacement()) {
                 continue;
             }
-            Map<UUID, Long> taken = invoices.returnedPieces(invoice.id());
+            Map<UUID, Long> taken = invoices.piecesTakenOff(invoice.id());
             List<EInvoiceLine> lines = new ArrayList<>();
             for (EInvoiceLine line : invoice.lines()) {
                 Long wanted = line.kind() == EInvoiceLine.Kind.GOODS ? remaining.get(line.orderLineId()) : null;
@@ -368,7 +368,11 @@ public class EInvoiceCorrections {
         }
     }
 
-    /** Goods returned are never more than the invoice still holds of their order line. */
+    /**
+     * Goods returned are never more than the invoice still holds of their order line: what it invoiced, less what every
+     * live adjustment of it that changes a quantity - a return's or an error's - already took off
+     * ({@link EInvoiceRepository#piecesTakenOff}).
+     */
     private void requireWithinInvoiced(EInvoice original, List<EInvoiceLine> reductions) {
         Map<UUID, Long> held = new HashMap<>();
         for (EInvoiceLine line : original.lines()) {
@@ -376,7 +380,7 @@ public class EInvoiceCorrections {
                 held.merge(line.orderLineId(), line.pieces(), Long::sum);
             }
         }
-        invoices.returnedPieces(original.id()).forEach((line, pieces) -> held.merge(line, -pieces, Long::sum));
+        invoices.piecesTakenOff(original.id()).forEach((line, pieces) -> held.merge(line, -pieces, Long::sum));
         for (EInvoiceLine reduction : reductions) {
             if (reduction.kind() == EInvoiceLine.Kind.GOODS
                     && held.merge(reduction.orderLineId(), reduction.pieces(), Long::sum) < 0) {
