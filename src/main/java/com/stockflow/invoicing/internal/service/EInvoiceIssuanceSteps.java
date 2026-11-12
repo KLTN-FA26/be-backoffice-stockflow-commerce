@@ -114,6 +114,37 @@ class EInvoiceIssuanceSteps {
         files.retainAfterCommit(pdf.key(), RecordRetention.EINVOICE);
     }
 
+    /**
+     * Marks an invoice still waiting for {@code transactionId} as unknown to the provider and no longer sent on its
+     * own (package E3).
+     *
+     * @return whether it was marked now, as opposed to already marked or no longer waiting
+     */
+    @Transactional
+    public boolean flagUnknown(UUID id, String transactionId) {
+        EInvoice invoice = waitingFor(id, transactionId);
+        if (invoice == null || !invoice.flagUnknownToProvider()) {
+            return false;
+        }
+        invoices.save(invoice);
+        return true;
+    }
+
+    /**
+     * REJECTED → DRAFT for an invoice taken back from a provider that holds no such transaction, so it can be sent
+     * under a new one. Nothing else is reopened here: an invoice the provider refused is the accountant's to correct.
+     */
+    @Transactional
+    public void reopenUnknown(UUID id) {
+        EInvoice invoice = invoices.findByIdForUpdate(id)
+                .orElseThrow(() -> new BusinessException(ErrorCode.EINVOICE_NOT_FOUND));
+        if (invoice.status() == EInvoiceStatus.REJECTED
+                && EInvoice.UNKNOWN_TO_PROVIDER_CODE.equals(invoice.snapshot().rejectionCode())) {
+            invoice.reopen();
+            invoices.save(invoice);
+        }
+    }
+
     private StoredFile store(String name, String contentType, byte[] bytes) {
         return files.store(FileCategory.EINVOICE, new FileUpload(name, contentType, bytes.length,
                 new ByteArrayInputStream(bytes), Checksums.sha256Hex(bytes)));

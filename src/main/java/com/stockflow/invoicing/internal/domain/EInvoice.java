@@ -41,13 +41,26 @@ import java.util.UUID;
  */
 public final class EInvoice {
 
-    /** What the accountant should look at before issuing. A draft with any of them is never issued automatically. */
+    /**
+     * What the accountant should look at. A draft with any of them is never issued automatically; an invoice at the
+     * provider carries only {@link #UNKNOWN_TO_PROVIDER}.
+     */
     public enum Warning {
         /** The buyer's name, tax code, address or invoice e-mail is missing: issuing is refused until it is there. */
         BUYER_PROFILE_INCOMPLETE,
         /** A line's VAT rate on the day of delivery is not the one the contract fixed: the totals differ from the contract's. */
-        TAX_RATE_DIFFERS_FROM_CONTRACT
+        TAX_RATE_DIFFERS_FROM_CONTRACT,
+        /**
+         * Package E3: the invoice was handed to the provider, the provider says it never received the transaction, and
+         * the time the provider remembers a transaction id has passed - so it is not sent again on its own (the same
+         * id could become a second invoice). It waits for the accountant, who sends it as a new transaction once the
+         * provider confirms it holds none. Gone when the invoice is issued or leaves the provider.
+         */
+        UNKNOWN_TO_PROVIDER
     }
+
+    /** The rejection code of an invoice taken back from a provider that confirmed it holds no such transaction. */
+    public static final String UNKNOWN_TO_PROVIDER_CODE = "UNKNOWN_TO_PROVIDER";
 
     /** How the customer pays: by bank transfer against the contract's installments (kltn-docs 15), always. */
     public static final String BANK_TRANSFER = "BANK_TRANSFER";
@@ -345,6 +358,19 @@ public final class EInvoice {
         this.warnings.clear();
     }
 
+    /**
+     * Marks an invoice at the provider as one the provider does not know and that is no longer sent on its own.
+     *
+     * @return whether it was not marked before
+     */
+    public boolean flagUnknownToProvider() {
+        if (status != EInvoiceStatus.SUBMITTING) {
+            throw new BusinessException(ErrorCode.EINVOICE_INVALID_TRANSITION,
+                    "Invoice %s is %s, not at the provider".formatted(code, status));
+        }
+        return warnings.add(Warning.UNKNOWN_TO_PROVIDER);
+    }
+
     /** The provider or the tax authority refused it: SUBMITTING → REJECTED, with its reason. */
     public void rejected(String rejectionCode, String rejectionMessage) {
         requireCanBecome(EInvoiceStatus.REJECTED);
@@ -352,6 +378,9 @@ public final class EInvoice {
         this.status = EInvoiceStatus.REJECTED;
         this.rejectionMessage = rejectionMessage == null ? null
                 : rejectionMessage.substring(0, Math.min(500, rejectionMessage.length()));
+        // It has left the provider: what was worth a look there is settled. Left on, it would also keep the draft it
+        // becomes from being issued automatically.
+        this.warnings.remove(Warning.UNKNOWN_TO_PROVIDER);
     }
 
     /** Back to a draft to be corrected: REJECTED → DRAFT. What was refused stays on it until it is issued again. */

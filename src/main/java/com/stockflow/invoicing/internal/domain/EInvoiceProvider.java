@@ -82,6 +82,12 @@ public interface EInvoiceProvider {
             Duration age = Duration.between(submittedAt, now);
             return age.compareTo(quietPeriod) >= 0 && (window == null || age.compareTo(window) < 0);
         }
+
+        /** Whether the provider no longer remembers the id of a transaction first submitted at {@code submittedAt}. */
+        public boolean forgottenAt(Instant submittedAt, Instant now) {
+            return window != null && submittedAt != null
+                    && Duration.between(submittedAt, now).compareTo(window) >= 0;
+        }
     }
 
     /** How a submission was received. */
