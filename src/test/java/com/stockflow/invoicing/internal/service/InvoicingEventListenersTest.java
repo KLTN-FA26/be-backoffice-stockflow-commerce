@@ -3,6 +3,12 @@ package com.stockflow.invoicing.internal.service;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.contracts.EInvoiceDraftFailed;
+import com.stockflow.contracts.EInvoiceNeedsAttention;
+import com.stockflow.contracts.ShipmentStatusChanged;
+import com.stockflow.invoicing.internal.domain.EInvoice;
+import com.stockflow.invoicing.internal.domain.EInvoiceFixtures;
+import com.stockflow.invoicing.internal.domain.EInvoiceRepository;
+import com.stockflow.invoicing.internal.domain.EInvoiceStatus;
 import com.stockflow.contracts.EInvoiceReturnUnadjusted;
 import com.stockflow.contracts.OrderRemainderClosed;
 import com.stockflow.contracts.ReturnResolved;
@@ -39,6 +45,47 @@ class InvoicingEventListenersTest {
     private static final Instant AT = Instant.parse("2026-11-12T03:00:00Z");
 
     private final ApplicationEventPublisher events = mock(ApplicationEventPublisher.class);
+
+    @Nested
+    @DisplayName("a delivery corrected to a failure")
+    class DeliveryCorrection {
+
+        private final EInvoiceDrafts drafts = mock(EInvoiceDrafts.class);
+        private final EInvoiceRepository invoices = mock(EInvoiceRepository.class);
+        private final DeliveryCorrectionListener listener = new DeliveryCorrectionListener(drafts, invoices, events);
+        private final ShipmentStatusChanged corrected = new ShipmentStatusChanged(UUID.randomUUID(), UUID.randomUUID(),
+                "SO-20261101-0007-S1", UUID.randomUUID(), "SO-20261101-0007", UUID.randomUUID(), UUID.randomUUID(),
+                "DELIVERED", "DELIVERY_FAILED", "NOT_RECEIVED", 3, "Carrier", null, UUID.randomUUID(), AT);
+
+        @Test
+        @DisplayName("E0 M1: an invoice already at the provider is not voided - the accountants are told it needs an "
+                + "adjustment")
+        void anInvoiceAtTheProviderIsRaised() {
+            when(drafts.voidForCorrectedDelivery(corrected.orderId(), corrected.shipmentId()))
+                    .thenReturn(EInvoiceDrafts.CorrectionOutcome.LEFT_FOR_ADJUSTMENT);
+            EInvoice submitted = EInvoiceFixtures.in(EInvoiceStatus.SUBMITTING);
+            when(invoices.findLiveOriginalOfShipment(corrected.shipmentId())).thenReturn(Optional.of(submitted));
+
+            listener.on(corrected);
+
+            var published = ArgumentCaptor.forClass(EInvoiceNeedsAttention.class);
+            verify(events).publishEvent(published.capture());
+            assertThat(published.getValue().einvoiceId()).isEqualTo(submitted.snapshot().id());
+            assertThat(published.getValue().cause())
+                    .isEqualTo(EInvoiceNeedsAttention.Cause.DELIVERY_FAILED_AFTER_SUBMISSION);
+        }
+
+        @Test
+        @DisplayName("a draft voided: nothing to tell")
+        void aVoidedDraftIsQuiet() {
+            when(drafts.voidForCorrectedDelivery(corrected.orderId(), corrected.shipmentId()))
+                    .thenReturn(EInvoiceDrafts.CorrectionOutcome.VOIDED);
+
+            listener.on(corrected);
+
+            verifyNoInteractions(events, invoices);
+        }
+    }
 
     @Nested
     @DisplayName("the rest of the shipping fee, when an order's remainder is closed")

@@ -84,8 +84,8 @@ class EInvoiceTest {
         @Test
         @DisplayName("a buyer with something missing still gets its draft, flagged; a rate off the contract's is flagged")
         void warnings() {
-            EInvoice noEmail = EInvoiceFixtures.draft(new InvoiceParty("Cong ty", "0398765432", "1 Le Loi", " "));
-            assertThat(noEmail.warnings()).containsExactly(EInvoice.Warning.BUYER_PROFILE_INCOMPLETE);
+            EInvoice noAddress = EInvoiceFixtures.draft(new InvoiceParty("Cong ty", "0398765432", " ", "a@b.vn"));
+            assertThat(noAddress.warnings()).containsExactly(EInvoice.Warning.BUYER_PROFILE_INCOMPLETE);
 
             EInvoice otherRate = EInvoice.drawUpOriginal(UUID.randomUUID(), "EINV-20261112-0002",
                     EInvoiceFixtures.delivery(), EInvoiceFixtures.SELLER, BUYER, EInvoiceFixtures.lines(), true, false);
@@ -245,7 +245,7 @@ class EInvoiceTest {
 
         @ParameterizedTest(name = "buyer without {0}")
         @EnumSource(Missing.class)
-        @DisplayName("21 BR-06: a buyer without its name, tax code, address or invoice e-mail is not issued")
+        @DisplayName("21 BR-06: a buyer without its tax code or address is not issued")
         void anIncompleteBuyerIsNotIssued(Missing missing) {
             EInvoice invoice = EInvoiceFixtures.draft(missing.buyer());
             assertThatThrownBy(() -> invoice.submit(SERIES, null, NOW))
@@ -257,8 +257,7 @@ class EInvoiceTest {
 
         enum Missing {
             TAX_CODE(new InvoiceParty(BUYER.name(), null, BUYER.address(), BUYER.email())),
-            ADDRESS(new InvoiceParty(BUYER.name(), BUYER.taxCode(), "  ", BUYER.email())),
-            EMAIL(new InvoiceParty(BUYER.name(), BUYER.taxCode(), BUYER.address(), null));
+            ADDRESS(new InvoiceParty(BUYER.name(), BUYER.taxCode(), "  ", BUYER.email()));
 
             private final InvoiceParty buyer;
 
@@ -269,6 +268,27 @@ class EInvoiceTest {
             InvoiceParty buyer() {
                 return buyer;
             }
+        }
+
+        @Test
+        @DisplayName("E0 L7: a buyer without an e-mail is issued - the e-mail is where it is mailed, not invoice content")
+        void aBuyerWithoutAnEmailIsIssued() {
+            EInvoice invoice = EInvoiceFixtures.draft(new InvoiceParty(BUYER.name(), BUYER.taxCode(), BUYER.address(),
+                    null));
+            assertThat(invoice.warnings()).as("nothing holds back the automatic issuing").isEmpty();
+
+            invoice.submit(SERIES, null, NOW);
+
+            assertThat(invoice.status()).isEqualTo(SUBMITTING);
+        }
+
+        @Test
+        @DisplayName("E0 L1: a series of a template other than 1, a VAT invoice, is refused")
+        void aSeriesOfAnotherTemplate() {
+            EInvoice invoice = EInvoiceFixtures.draft();
+            assertThatThrownBy(() -> invoice.submit(new InvoiceSeries("SANDBOX", "2", SERIES.symbol(), SERIES.year()),
+                    null, NOW)).extracting(EInvoiceTest::code).isEqualTo(ErrorCode.EINVOICE_SERIES_NOT_CONFIGURED);
+            assertThat(invoice.status()).isEqualTo(DRAFT);
         }
 
         @Test
@@ -350,7 +370,7 @@ class EInvoiceTest {
         @Test
         @DisplayName("the buyer is revised on a draft, and the flag follows what is missing")
         void reviseBuyer() {
-            EInvoice invoice = EInvoiceFixtures.draft(new InvoiceParty("Cong ty", "0398765432", "1 Le Loi", null));
+            EInvoice invoice = EInvoiceFixtures.draft(new InvoiceParty("Cong ty", "0398765432", null, "a@b.vn"));
             assertThat(invoice.warnings()).contains(EInvoice.Warning.BUYER_PROFILE_INCOMPLETE);
 
             invoice.reviseBuyer(BUYER);

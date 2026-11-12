@@ -984,4 +984,12 @@ class ViettelSInvoiceContractTest {
             return now;
         }
     }
+
+    @Test
+    @DisplayName("E0 L9: a bank transfer is printed CK, never the stored code; anything unsettled is TM/CK")
+    void paymentMethodAsPrinted() {
+        assertThat(ViettelSInvoicePayload.paymentMethodName("BANK_TRANSFER")).isEqualTo("CK");
+        assertThat(ViettelSInvoicePayload.paymentMethodName(null)).isEqualTo("TM/CK");
+        assertThat(ViettelSInvoicePayload.paymentMethodName("TM/CK")).isEqualTo("TM/CK");
+    }
 }

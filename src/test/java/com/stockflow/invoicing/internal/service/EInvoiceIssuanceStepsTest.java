@@ -172,4 +172,26 @@ class EInvoiceIssuanceStepsTest {
         verify(invoices, never()).save(any());
         verify(settings, never()).seriesInUse(any(), org.mockito.ArgumentMatchers.anyInt());
     }
+
+    @Test
+    @DisplayName("E0 M6: a draft is not sent while one dated earlier this year is still unissued - numbers follow dates")
+    void anEarlierUnissuedDraftGoesFirst() {
+        EInvoice draft = EInvoiceFixtures.draft();
+        when(invoices.findByIdForUpdate(draft.id())).thenReturn(Optional.of(draft));
+        when(settings.active()).thenReturn(new InvoiceSettings.Provider("SANDBOX", "SANDBOX",
+                "https://sandbox.example", "user", true, true, 1));
+        when(providers.require("SANDBOX")).thenReturn(mock(EInvoiceProvider.class));
+        when(settings.seriesInUse("SANDBOX", draft.issueDate().getYear()))
+                .thenReturn(Optional.of(EInvoiceFixtures.SERIES));
+        when(invoices.findEarlierUnissued(draft.id(), draft.issueDate())).thenReturn(Optional.of("EINV-20261110-0003"));
+
+        assertThatThrownBy(() -> steps.submit(draft.id(), null, null))
+                .isInstanceOfSatisfying(BusinessException.class, refused -> {
+                    assertThat(refused.errorCode()).isEqualTo(ErrorCode.EINVOICE_OLDER_DRAFT_PENDING);
+                    assertThat(refused.errorCode().httpStatus()).isEqualTo(409);
+                });
+
+        assertThat(draft.status()).isEqualTo(EInvoiceStatus.DRAFT);
+        verify(invoices, never()).save(any());
+    }
 }

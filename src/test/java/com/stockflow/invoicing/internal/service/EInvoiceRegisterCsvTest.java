@@ -5,6 +5,7 @@ import com.stockflow.invoicing.internal.domain.EInvoiceRepository;
 import com.stockflow.invoicing.internal.domain.EInvoiceStatus;
 import com.stockflow.invoicing.internal.domain.EInvoiceType;
 import com.stockflow.invoicing.internal.domain.ProviderCallLog;
+import com.stockflow.invoicing.internal.domain.TaxRateTotal;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.storage.FileTransfers;
@@ -45,7 +46,26 @@ class EInvoiceRegisterCsvTest {
         assertThat(lines).hasSize(2);
         assertThat(lines[1]).isEqualTo("\"1\",\"C26TSB\",00000007,12/11/2026,ORIGINAL,ISSUED,false,"
                 + "\"Công ty \"\"Trà Sữa\"\", CN 1\",\"0398765432\",\"12 Nguyễn Huệ\",\"SO-20261101-0007\","
-                + "2500000,240000,2740000,\"SBX01\",\"SBXL1\",");
+                + "2500000,240000,2740000,,,,,,,,,,,\"SBX01\",\"SBXL1\",");
+    }
+
+    @Test
+    @DisplayName("E0 M3: amount and VAT stand apart per declared rate, 0/5/8/10 and other, summed within a rate")
+    void amountsByDeclaredRate() {
+        LocalDate day = LocalDate.of(2026, 11, 12);
+        when(queries.register(day, day)).thenReturn(List.of(new EInvoiceQueries.RegisterEntry("1", "C26TSB", 8, day,
+                EInvoiceType.ORIGINAL, EInvoiceStatus.ISSUED, false, "Cong ty A", "0398765432", "1 Le Loi", "SO-1",
+                new BigDecimal("2600000"), new BigDecimal("248000"), new BigDecimal("2848000"), null, null, null,
+                List.of(new TaxRateTotal(new BigDecimal("8.00"), new BigDecimal("500000.0000"),
+                                new BigDecimal("40000.0000")),
+                        new TaxRateTotal(BigDecimal.TEN, new BigDecimal("1500000"), new BigDecimal("150000")),
+                        new TaxRateTotal(new BigDecimal("10.0"), new BigDecimal("500000"), new BigDecimal("50000")),
+                        new TaxRateTotal(new BigDecimal("3.5"), new BigDecimal("100000"), new BigDecimal("8000"))))));
+
+        String line = service.registerCsv(day, day).split("\r\n")[1];
+
+        assertThat(line).endsWith("2600000,248000,2848000,"
+                + ",,,,500000,40000,2000000,200000,100000,8000,,,");
     }
 
     @Test

@@ -416,6 +416,16 @@ class EInvoiceDraftsTest {
     }
 
     @Test
+    @DisplayName("E0 L6: a delivery without a delivery time is refused with its own code, never dated today")
+    void aDeliveryWithoutATimeIsRefused() {
+        UUID shipmentId = UUID.randomUUID();
+        when(shipments.find(ORDER, shipmentId)).thenReturn(Optional.of(shipment(shipmentId, 1, 0, 3000, null)));
+        assertThatThrownBy(() -> drafts.drawUp(ORDER, shipmentId)).extracting(EInvoiceDraftsTest::code)
+                .isEqualTo(ErrorCode.EINVOICE_DELIVERY_TIME_MISSING);
+        verify(invoices, never()).save(any());
+    }
+
+    @Test
     @DisplayName("the accountant corrects the buyer and a line's name on a draft, against the version read")
     void revise() {
         EInvoice draft = EInvoiceFixtures.draft();
@@ -513,13 +523,20 @@ class EInvoiceDraftsTest {
 
     /** The order's shipping fee of 100,000 whole, the order now meaning to deliver {@code orderUnits} pieces. */
     private OrderShippingFee shippingFee(long orderUnits) {
+        return shippingFee(orderUnits, DELIVERED_AT);
+    }
+
+    /** The same, its last delivery at {@code lastDeliveredAt} (null: nothing was delivered). */
+    private OrderShippingFee shippingFee(long orderUnits, Instant lastDeliveredAt) {
         return new OrderShippingFee(ORDER, "SO-20261101-0007", CUSTOMER, "HD-20261101-0007", "VND",
-                new DeliveredShipment.Fee(FeeKind.SHIPPING_FEE, null, new BigDecimal("100000"), TEN, TEN), orderUnits);
+                new DeliveredShipment.Fee(FeeKind.SHIPPING_FEE, null, new BigDecimal("100000"), TEN, TEN), orderUnits,
+                lastDeliveredAt);
     }
 
     @Test
     @DisplayName("integration item a: the rest closed after every delivery was invoiced - the rest of the shipping fee "
-            + "goes on an original of its own, no shipment, one fee line, dated the day of closing; drawn up once")
+            + "goes on an original of its own, no shipment, one fee line, dated the day of the last delivery (E0 M5); "
+            + "drawn up once")
     void theShippingFeeRestOnAnInvoiceOfItsOwn() {
         // 5,000 pieces ordered, 2,000 delivered and invoiced with 40,000 of the fee; the other 3,000 are closed.
         drawUp(shipment(UUID.randomUUID(), 40, 0, 5000, DELIVERED_AT));
@@ -533,7 +550,8 @@ class EInvoiceDraftsTest {
 
         assertThat(rest.created()).isTrue();
         assertThat(rest.invoice().shipmentId()).isNull();
-        assertThat(rest.invoice().issueDate()).isEqualTo(LocalDate.of(2026, 11, 15));
+        assertThat(rest.invoice().issueDate()).as("the carrying ended at the last delivery, not at the closing")
+                .isEqualTo(LocalDate.of(2026, 11, 12));
         assertThat(rest.invoice().lines()).singleElement().satisfies(line -> {
             assertThat(line.feeKind()).isEqualTo(EInvoiceLine.FeeKind.SHIPPING_FEE);
             assertThat(line.amount()).isEqualByComparingTo("60000");
