@@ -37,12 +37,15 @@ class CustomerEmailRetryTest {
     private final OrderNotificationListener listener = mock(OrderNotificationListener.class);
     private final ReturnNotificationListener returns = mock(ReturnNotificationListener.class);
     private final CustomerEmailLog log = mock(CustomerEmailLog.class);
+    private final EInvoiceIssuedNotificationListener einvoices = mock(EInvoiceIssuedNotificationListener.class);
+    private final com.stockflow.notification.api.EInvoiceDirectory einvoiceDirectory =
+            mock(com.stockflow.notification.api.EInvoiceDirectory.class);
+    private final EInvoiceErrorNoticeNotificationListener errorNotices = mock(EInvoiceErrorNoticeNotificationListener.class);
     private final CustomerEmailComposer composer = new CustomerEmailComposer(properties());
 
     private CustomerEmailRetry retry() {
-        return new CustomerEmailRetry(reader, serializer, listener, returns, composer,
-                mock(EInvoiceIssuedNotificationListener.class), mock(EInvoiceEmailComposer.class),
-                mock(EInvoiceErrorNoticeNotificationListener.class), log,
+        return new CustomerEmailRetry(reader, serializer, listener, returns, composer, einvoices,
+                new EInvoiceEmailComposer(einvoiceDirectory, composer), errorNotices, log,
                 Clock.fixed(NOW, ZoneOffset.UTC));
     }
 
@@ -63,6 +66,34 @@ class CustomerEmailRetryTest {
         verify(reader).page(eq(type), org.mockito.ArgumentMatchers.contains("ReturnNotificationListener"), any(),
                 nullable(UUID.class), eq(CustomerEmailRetry.PAGE));
         verify(returns).on(event);
+    }
+
+    @Test
+    @DisplayName("WF-05 E5: a failed e-invoice mail is retried through its own listener once due, and passed over "
+            + "inside its back-off - asking which message the event calls for reads no invoice and no file")
+    void einvoiceMailIsRetriedToo() {
+        var due = new com.stockflow.contracts.EInvoiceIssued(UUID.randomUUID(), "EINV-20261112-0001",
+                UUID.randomUUID(), "SO-20261101-0007", UUID.randomUUID(), UUID.randomUUID(), NOW);
+        var waiting = new com.stockflow.contracts.EInvoiceIssued(UUID.randomUUID(), "EINV-20261112-0002",
+                UUID.randomUUID(), "SO-20261101-0008", UUID.randomUUID(), UUID.randomUUID(), NOW);
+        String type = com.stockflow.contracts.EInvoiceIssued.class.getName();
+        when(reader.page(anyString(), anyString(), any(), nullable(UUID.class), eq(CustomerEmailRetry.PAGE)))
+                .thenReturn(List.of());
+        when(reader.page(eq(type), anyString(), any(), nullable(UUID.class), eq(CustomerEmailRetry.PAGE)))
+                .thenReturn(List.of(new PendingPublication(new UUID(0, 5), "due"),
+                        new PendingPublication(new UUID(0, 6), "waiting")));
+        when(serializer.deserialize("due", com.stockflow.contracts.EInvoiceIssued.class)).thenReturn(due);
+        when(serializer.deserialize("waiting", com.stockflow.contracts.EInvoiceIssued.class)).thenReturn(waiting);
+        when(log.waiting("customer-mail:einvoice.issued:" + waiting.einvoiceId(), NOW)).thenReturn(true);
+
+        retry().retry();
+
+        verify(reader).page(eq(type), org.mockito.ArgumentMatchers.contains("EInvoiceIssuedNotificationListener"),
+                any(), nullable(UUID.class), eq(CustomerEmailRetry.PAGE));
+        verify(einvoices).on(due);
+        verify(einvoices, never()).on(waiting);
+        verify(log).lease("customer-mail:einvoice.issued:" + due.einvoiceId(), NOW.plus(CustomerEmailRetry.LEASE));
+        org.mockito.Mockito.verifyNoInteractions(einvoiceDirectory);
     }
 
     @Test

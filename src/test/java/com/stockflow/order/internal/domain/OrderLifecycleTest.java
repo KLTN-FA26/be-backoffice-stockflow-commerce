@@ -593,6 +593,18 @@ class OrderLifecycleTest {
         }
 
         @Test
+        @DisplayName("an order with a delivery not invoiced yet stays DELIVERED (WF-05 plan 4, condition 5)")
+        void awaitingAnInvoiceStaysDelivered() {
+            Order order = delivered();
+            order.pullDomainEvents();
+            assertThat(order.complete(NOW.plus(Duration.ofDays(30)), Duration.ofDays(7), false, false, true)).isFalse();
+            assertThat(order.status()).isEqualTo(OrderStatus.DELIVERED);
+            assertThat(order.pullDomainEvents()).as("nothing announced").isEmpty();
+            assertThat(order.complete(NOW.plus(Duration.ofDays(30)), Duration.ofDays(7), false, false, false)).isTrue();
+            assertThat(order.status()).isEqualTo(OrderStatus.COMPLETED);
+        }
+
+        @Test
         @DisplayName("RMA: DELIVERED → RETURN_REQUESTED → RETURNED → PARTIALLY_REFUNDED → CLOSED")
         void returnPath() {
             Order order = delivered();

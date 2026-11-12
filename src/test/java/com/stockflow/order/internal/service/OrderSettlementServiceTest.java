@@ -1,8 +1,12 @@
 package com.stockflow.order.internal.service;
 
+import com.stockflow.order.api.DeliveryInvoices;
 import com.stockflow.order.api.OrderStatus;
+import com.stockflow.order.api.ShipmentHandover;
 import com.stockflow.order.internal.domain.Order;
 import com.stockflow.order.internal.domain.OrderRepository;
+import com.stockflow.order.internal.domain.SalesContract;
+import com.stockflow.order.internal.domain.SalesContractRepository;
 import com.stockflow.order.internal.domain.SettlementCandidates;
 import com.stockflow.payment.api.InstallmentStanding;
 import com.stockflow.payment.api.PaymentService;
@@ -16,9 +20,11 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 import static com.stockflow.order.internal.service.OrderFixtures.NOW;
+import static com.stockflow.order.internal.service.OrderFixtures.STAFF;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
@@ -39,14 +45,19 @@ class OrderSettlementServiceTest {
     private final SettlementCandidates candidates = mock(SettlementCandidates.class);
     private final OrderEventPublisher events = mock(OrderEventPublisher.class);
     private final PaymentService payments = mock(PaymentService.class);
+    private final SalesContractRepository contracts = mock(SalesContractRepository.class);
+    private final DeliveryInvoices invoices = mock(DeliveryInvoices.class);
 
     {
         // Without installments an order owes nothing in the system (4B-10).
         when(payments.installmentStanding(any())).thenAnswer(call -> InstallmentStanding.none(call.getArgument(0)));
+        // Every delivery invoiced unless a test says otherwise (WF-05 condition 5).
+        when(invoices.invoiced(any())).thenAnswer(call -> Set.copyOf(call.<java.util.Collection<UUID>>getArgument(0)));
     }
 
     private OrderSettlementService at(Instant now) {
-        return new OrderSettlementService(repository, candidates, events, payments, org.mockito.Mockito.mock(com.stockflow.order.internal.domain.SalesContractRepository.class), org.mockito.Mockito.mock(com.stockflow.order.api.DeliveryInvoices.class), Clock.fixed(now, ZoneOffset.UTC), 7, 30);
+        return new OrderSettlementService(repository, candidates, events, payments, contracts, invoices,
+                Clock.fixed(now, ZoneOffset.UTC), 7, 30);
     }
 
     @Test
@@ -169,6 +180,108 @@ class OrderSettlementServiceTest {
 
         when(payments.installmentStanding(order.id().value())).thenReturn(standing(order.id().value(), 1_000, 400));
         assertThat(at(LATER.plus(Duration.ofDays(31))).close(order.id().value())).isFalse();
+        assertThat(order.status()).isEqualTo(OrderStatus.COMPLETED);
+    }
+
+    // ---- WF-05 plan 4, condition 5: every delivered shipment has its e-invoice issued ---------------------------------
+
+    /** Released, picked, packed and handed over whole on one shipment, delivered at NOW. */
+    private static Order deliveredOn(UUID shipment) {
+        Order order = OrderFixtures.released();
+        order.startPicking(STAFF, NOW);
+        order.markPacked(NOW, STAFF);
+        order.recordHandover(new ShipmentHandover(shipment, List.of(
+                new ShipmentHandover.Line(order.lines().get(0).id(), 10),
+                new ShipmentHandover.Line(order.lines().get(1).id(), 5)), NOW, STAFF));
+        order.recordShipmentDelivered(shipment, NOW, STAFF);
+        order.pullDomainEvents();
+        order.pullTransitions();
+        assertThat(order.status()).isEqualTo(OrderStatus.DELIVERED);
+        return order;
+    }
+
+    @Test
+    @DisplayName("condition 5: a delivered shipment without an issued e-invoice keeps the order DELIVERED and its "
+            + "contract untouched; invoiced, the order completes and its contract with it, saved together")
+    void aDeliveryNotInvoicedKeepsTheOrderDelivered() {
+        UUID shipment = UUID.randomUUID();
+        Order order = deliveredOn(shipment);
+        SalesContract contract = mock(SalesContract.class);
+        when(contract.complete(any())).thenReturn(true);
+        when(repository.findByIdForUpdate(order.id())).thenReturn(Optional.of(order));
+        when(contracts.findLiveByOrderId(order.id().value())).thenReturn(Optional.of(contract));
+        when(invoices.invoiced(List.of(shipment))).thenReturn(Set.of());
+
+        assertThat(at(LATER).complete(order.id().value())).isFalse();
+
+        assertThat(order.status()).isEqualTo(OrderStatus.DELIVERED);
+        verify(repository, never()).save(any());
+        verify(contract, never()).complete(any());
+        verify(contracts, never()).save(any());
+        verify(events, never()).publishEventsOf(any());
+
+        when(invoices.invoiced(List.of(shipment))).thenReturn(Set.of(shipment));
+        assertThat(at(LATER).complete(order.id().value())).isTrue();
+
+        assertThat(order.status()).isEqualTo(OrderStatus.COMPLETED);
+        verify(repository).save(order);
+        verify(contract).complete(LATER);
+        verify(contracts).save(contract);
+        verify(events).publishEventsOf(order);
+    }
+
+    @Test
+    @DisplayName("condition 5: an invoice of some other shipment does not stand in for the delivered one")
+    void anotherShipmentsInvoiceDoesNotCount() {
+        UUID shipment = UUID.randomUUID();
+        Order order = deliveredOn(shipment);
+        when(repository.findByIdForUpdate(order.id())).thenReturn(Optional.of(order));
+        when(invoices.invoiced(any())).thenReturn(Set.of(UUID.randomUUID()));
+
+        assertThat(at(LATER).complete(order.id().value())).isFalse();
+        assertThat(order.status()).isEqualTo(OrderStatus.DELIVERED);
+    }
+
+    @Test
+    @DisplayName("condition 5: an order delivered without shipments has no delivery to invoice - invoicing is not asked")
+    void anOrderWithoutShipmentsWaitsForNoInvoice() {
+        Order order = OrderFixtures.delivered(NOW);
+        when(repository.findByIdForUpdate(order.id())).thenReturn(Optional.of(order));
+
+        assertThat(at(LATER).complete(order.id().value())).isTrue();
+
+        verify(invoices, never()).invoiced(any());
+    }
+
+    @Test
+    @DisplayName("condition 5 does not replace the others: every shipment invoiced, an order still owing stays DELIVERED")
+    void invoicedButOwingStaysDelivered() {
+        UUID shipment = UUID.randomUUID();
+        Order order = deliveredOn(shipment);
+        when(repository.findByIdForUpdate(order.id())).thenReturn(Optional.of(order));
+        when(invoices.invoiced(any())).thenReturn(Set.of(shipment));
+        when(payments.installmentStanding(order.id().value())).thenReturn(standing(order.id().value(), 1_000, 400));
+
+        assertThat(at(LATER).complete(order.id().value())).isFalse();
+        assertThat(order.status()).isEqualTo(OrderStatus.DELIVERED);
+        verify(repository, never()).save(any());
+    }
+
+    @Test
+    @DisplayName("condition 5, the shipping-fee rest: every delivery invoiced but the fee rest not issued keeps the "
+            + "order DELIVERED; issued, the order completes")
+    void anUnissuedShippingFeeRestKeepsTheOrderDelivered() {
+        UUID shipment = UUID.randomUUID();
+        Order order = deliveredOn(shipment);
+        when(repository.findByIdForUpdate(order.id())).thenReturn(Optional.of(order));
+        when(invoices.shippingFeeUnissued(order.id().value())).thenReturn(true);
+
+        assertThat(at(LATER).complete(order.id().value())).isFalse();
+        assertThat(order.status()).isEqualTo(OrderStatus.DELIVERED);
+        verify(repository, never()).save(any());
+
+        when(invoices.shippingFeeUnissued(order.id().value())).thenReturn(false);
+        assertThat(at(LATER).complete(order.id().value())).isTrue();
         assertThat(order.status()).isEqualTo(OrderStatus.COMPLETED);
     }
 }
