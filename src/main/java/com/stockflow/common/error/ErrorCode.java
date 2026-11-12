@@ -705,6 +705,9 @@ public enum ErrorCode {
     /** 3-3 (09 §4.4): the file is not the system's template table; the message says why. */
     WAYBILL_IMPORT_INVALID_FILE("This file cannot be read as the waybill import template", 400),
     WAYBILL_IMPORT_NOT_FOUND("Waybill import not found", 404),
+    /** WF-05 fix plan item 5: the file is not the delivery-outcome template's table; the message says why. */
+    DELIVERY_OUTCOME_IMPORT_INVALID_FILE("This file cannot be read as the delivery outcome template", 400),
+    DELIVERY_OUTCOME_IMPORT_NOT_FOUND("Delivery outcome import not found", 404),
     LOAD_SCAN_ID_CONFLICT("This scan id was already used for another package or load", 409),
     /** SCRUM-392: parcels of a cancelled order are still on the vehicle; unload them before it is handed over. */
     LOAD_UNLOAD_PENDING("Parcels of a cancelled order are still on this vehicle; unload them first", 409),

@@ -93,6 +93,16 @@ public interface DispatchLoadJpaRepository extends BaseJpaRepository<DispatchLoa
             + "l.status as status, l.waybillNo as waybillNo from DispatchLoadJpaEntity l where l.code = :code")
     Optional<LoadFacts> findFactsByCode(@Param("code") String code);
 
+    /**
+     * The loads holding one of these waybill numbers, cancelled ones left out: a number is unique among a carrier's
+     * live loads only, so several loads may answer to one number.
+     */
+    @Query("select l.id as id, l.code as code, l.warehouseId as warehouseId, l.carrierId as carrierId, "
+            + "l.status as status, l.waybillNo as waybillNo from DispatchLoadJpaEntity l "
+            + "where l.waybillNo in :waybills and l.carrierId is not null "
+            + "and l.status <> com.stockflow.fulfillment.internal.domain.LoadStatus.CANCELLED order by l.code")
+    List<LoadFacts> findFactsByWaybills(@Param("waybills") Collection<String> waybills);
+
     interface LoadKey {
         UUID getWarehouseId();
 

@@ -1335,6 +1335,190 @@ class FtlDispatchIntegrationTest {
                 .andExpect(jsonPath("$.data.payload").value(waybill));
     }
 
+    // ---- delivery outcomes from a file (WF-05 item 5; 09 §4.3, BR-26, BR-27) ----------------------
+
+    private static final String OUTCOME_IMPORTS = BASE + "/delivery-outcome-imports";
+
+    private ResultActions outcomes(UUID user, String role, String path, String csv) throws Exception {
+        var file = new org.springframework.mock.web.MockMultipartFile("file", "ket-qua-giao.csv",
+                "application/vnd.ms-excel", ("\uFEFFMã vận đơn,Kết quả,Lý do,Thời điểm,Người nhận,Ghi chú,Mã shipment\r\n"
+                        + csv).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        return as(user, role, org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                .multipart(OUTCOME_IMPORTS + path).file(file));
+    }
+
+    private long fileEvents(String loadId) {
+        return jdbc.queryForObject("SELECT count(*) FROM fulfillment.carrier_event WHERE load_id = ?::uuid AND "
+                + "source = 'FILE'", Long.class, loadId);
+    }
+
+    @Test
+    @DisplayName("WF-05 item 5: delivery outcomes from a file - the preview checks each line and writes nothing; "
+            + "applying it makes one carrier event (source FILE) per accepted line, the failure reason mapped by the "
+            + "carrier's table; the same file again changes nothing (DUPLICATE); an older line is STALE; the warehouse "
+            + "manager's, within their warehouses")
+    void deliveryOutcomesFromAFile() throws Exception {
+        UUID manager = staff("WAREHOUSE_MANAGER", HCM);
+        UUID elsewhere = tx.execute(s -> otherWarehouse());
+        UUID managerElsewhere = staff("WAREHOUSE_MANAGER", elsewhere);
+        String code = "MF" + UUID.randomUUID().toString().substring(0, 6).toUpperCase();
+        UUID carrier = UUID.fromString(data(as(manager, "WAREHOUSE_MANAGER", body(post(BASE + "/carriers"),
+                "{\"code\":\"" + code + "\",\"name\":\"Xe tải ngoài\",\"connection\":{\"connectionType\":\"MANUAL\","
+                        + "\"failureReasonMap\":{\"Khách không nhận\":\"REFUSED\"}}}")).andExpect(status().isCreated()))
+                .path("carrierId").asText());
+        UUID first = packed(ftlOrder(1), false)[0];
+        UUID second = packed(ftlOrder(1), false)[0];
+        JsonNode plan = confirmed(List.of(first, second), truck5t);
+        assertThat(plan.path("vehicles")).hasSize(1);
+        String loadId = loadOf(plan, 1);
+        String firstCode = jdbc.queryForObject("SELECT code FROM fulfillment.shipment WHERE id = ?", String.class,
+                first);
+        String secondCode = jdbc.queryForObject("SELECT code FROM fulfillment.shipment WHERE id = ?", String.class,
+                second);
+        String waybill = "WF-" + loadId;
+        dispatch(body(post(LOADS + "/" + loadId + "/booking"), "{\"carrierId\":\"" + carrier
+                + "\",\"vehiclePlate\":\"51C-WF.01\",\"waybillNo\":\"" + waybill + "\"}")).andExpect(status().isOk());
+        Instant at = Instant.now().minus(Duration.ofHours(2)).truncatedTo(java.time.temporal.ChronoUnit.SECONDS);
+        String delivered = waybill + ",DELIVERED,," + at + ",Chị Lan,giao tận tay," + firstCode + "\r\n";
+        String failed = waybill + ",DELIVERY_FAILED,khách  KHÔNG nhận," + at + ",,," + secondCode + "\r\n";
+
+        // The vehicle has not left: its outcome is not a file's to give yet.
+        outcomes(manager, "WAREHOUSE_MANAGER", "/preview", delivered).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.lines[0].problem").value("LOAD_NOT_DISPATCHED"));
+        loadAndSign(loadId, "51C-WF.01");
+
+        // Step 1, the preview: each line checked, nothing written.
+        String file = delivered + failed
+                + "WF-NO-SUCH-NUMBER,DELIVERED,," + at + ",,,\r\n"
+                + waybill + ",SHIPPED,," + at + ",,,\r\n"
+                + waybill + ",DELIVERED,," + Instant.now().plus(Duration.ofDays(1)) + ",,," + firstCode + "\r\n"
+                + waybill + ",DELIVERY_FAILED,," + at + ",,," + secondCode + "\r\n";
+        outcomes(manager, "WAREHOUSE_MANAGER", "/preview", file).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.rowsTotal").value(6)).andExpect(jsonPath("$.data.rowsAccepted").value(2))
+                .andExpect(jsonPath("$.data.rowsRejected").value(4))
+                .andExpect(jsonPath("$.data.lines[0].verdict").value("ACCEPTED"))
+                .andExpect(jsonPath("$.data.lines[0].changes").value(true))
+                .andExpect(jsonPath("$.data.lines[0].loadCode").value(load(loadId).path("code").asText()))
+                .andExpect(jsonPath("$.data.lines[1].verdict").value("ACCEPTED"))
+                .andExpect(jsonPath("$.data.lines[2].problem").value("WAYBILL_NOT_FOUND"))
+                .andExpect(jsonPath("$.data.lines[3].problem").value("INVALID_OUTCOME"))
+                .andExpect(jsonPath("$.data.lines[4].problem").value("TIME_IN_FUTURE"))
+                .andExpect(jsonPath("$.data.lines[5].problem").value("REASON_REQUIRED"));
+        assertThat(fileEvents(loadId)).isZero();
+        assertThat(shipmentStatus(first)).isEqualTo("HANDED_OVER");
+        // Dispatch staff do not apply outcomes; a manager of another warehouse does not see this vehicle's number.
+        outcomes(dispatcher, "WAREHOUSE_STAFF", "/preview", file).andExpect(status().isForbidden());
+        outcomes(dispatcher, "WAREHOUSE_STAFF", "", file).andExpect(status().isForbidden());
+        outcomes(managerElsewhere, "WAREHOUSE_MANAGER", "/preview", delivered).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.lines[0].problem").value("WAYBILL_NOT_FOUND"));
+        var notATable = new org.springframework.mock.web.MockMultipartFile("file", "x.csv", "text/csv",
+                new byte[] {(byte) 0xC3, (byte) 0x28, 0x0A, 0x41});
+        as(manager, "WAREHOUSE_MANAGER", org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                .multipart(OUTCOME_IMPORTS).file(notATable)).andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("DELIVERY_OUTCOME_IMPORT_INVALID_FILE"));
+
+        // Step 2, applying it: one event per accepted line, through the webhooks' pipeline.
+        JsonNode applied = data(outcomes(manager, "WAREHOUSE_MANAGER", "", file).andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.rowsAccepted").value(2)).andExpect(jsonPath("$.data.rowsApplied").value(2))
+                .andExpect(jsonPath("$.data.lines[0].result").value("APPLIED"))
+                .andExpect(jsonPath("$.data.lines[1].result").value("APPLIED"))
+                .andExpect(jsonPath("$.data.lines[2].problem").value("WAYBILL_NOT_FOUND")));
+        String importId = applied.path("id").asText();
+        assertThat(shipmentStatus(first)).isEqualTo("DELIVERED");
+        assertThat(shipmentStatus(second)).isEqualTo("DELIVERY_FAILED");
+        Map<String, Object> failure = jdbc.queryForMap("SELECT failure_reason, failure_note, outcome_at FROM "
+                + "fulfillment.shipment WHERE id = ?", second);
+        assertThat(failure.get("failure_reason")).isEqualTo("REFUSED");
+        assertThat(failure.get("failure_note")).isEqualTo("khách  KHÔNG nhận");
+        assertThat(((java.sql.Timestamp) failure.get("outcome_at")).toInstant()).isEqualTo(at);
+        assertThat(fileEvents(loadId)).isEqualTo(2);
+        Map<String, Object> event = jdbc.queryForMap("SELECT source, signature_valid, outcome_import_id::text AS "
+                + "import_id, outcome_import_line, carrier_reference, payload, result FROM fulfillment.carrier_event "
+                + "WHERE shipment_id = ?", first);
+        assertThat(event).containsEntry("source", "FILE").containsEntry("signature_valid", true)
+                .containsEntry("import_id", importId).containsEntry("outcome_import_line", 2)
+                .containsEntry("carrier_reference", waybill).containsEntry("result", "APPLIED");
+        assertThat((String) event.get("payload")).contains("Chị Lan").contains("giao tận tay");
+        as(manager, "WAREHOUSE_MANAGER", get(EVENTS).param("loadId", loadId)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items.length()").value(2))
+                .andExpect(jsonPath("$.data.items[0].source").value("FILE"));
+
+        // The same file again: every accepted line is a repeat. Nothing changes.
+        long steps = jdbc.queryForObject("SELECT count(*) FROM fulfillment.shipment_event WHERE shipment_id IN (?, ?)",
+                Long.class, first, second);
+        outcomes(manager, "WAREHOUSE_MANAGER", "", file).andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.rowsAccepted").value(2)).andExpect(jsonPath("$.data.rowsApplied").value(0))
+                .andExpect(jsonPath("$.data.lines[0].changes").value(false))
+                .andExpect(jsonPath("$.data.lines[0].result").value("DUPLICATE"))
+                .andExpect(jsonPath("$.data.lines[1].result").value("DUPLICATE"));
+        assertThat(shipmentStatus(first)).isEqualTo("DELIVERED");
+        assertThat(shipmentStatus(second)).isEqualTo("DELIVERY_FAILED");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM fulfillment.shipment_event WHERE shipment_id IN (?, ?)",
+                Long.class, first, second)).isEqualTo(steps);
+
+        // A line older than what was applied to the shipment is outdated, as a webhook's report would be (BR-27).
+        outcomes(manager, "WAREHOUSE_MANAGER", "", waybill + ",DELIVERED,," + at.minus(Duration.ofMinutes(30)) + ",,,"
+                + secondCode + "\r\n").andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.lines[0].verdict").value("ACCEPTED"))
+                .andExpect(jsonPath("$.data.lines[0].result").value("STALE"));
+        assertThat(shipmentStatus(second)).isEqualTo("DELIVERY_FAILED");
+
+        // The import read back: its lines as written, and what came of each one's event.
+        as(manager, "WAREHOUSE_MANAGER", get(OUTCOME_IMPORTS + "/" + importId)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.fileName").value("ket-qua-giao.csv"))
+                .andExpect(jsonPath("$.data.rowsTotal").value(6)).andExpect(jsonPath("$.data.rowsApplied").value(2))
+                .andExpect(jsonPath("$.data.lines[0].recipient").value("Chị Lan"))
+                .andExpect(jsonPath("$.data.lines[0].result").value("APPLIED"))
+                .andExpect(jsonPath("$.data.lines[3].verdict").value("ERROR"))
+                .andExpect(jsonPath("$.data.lines[3].problem").value("INVALID_OUTCOME"));
+        as(manager, "WAREHOUSE_MANAGER", get(OUTCOME_IMPORTS)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items.length()").value(3))
+                .andExpect(jsonPath("$.data.items[2].id").value(importId));
+        as(managerElsewhere, "WAREHOUSE_MANAGER", get(OUTCOME_IMPORTS + "/" + importId))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.errorCode").value("DELIVERY_OUTCOME_IMPORT_NOT_FOUND"));
+        dispatch(get(OUTCOME_IMPORTS)).andExpect(status().isForbidden());
+        byte[] template = as(manager, "WAREHOUSE_MANAGER", get(OUTCOME_IMPORTS + "/template").header("Accept-Language",
+                "vi")).andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
+        assertThat(new String(template, java.nio.charset.StandardCharsets.UTF_8)).startsWith("\uFEFFMã vận đơn,")
+                .contains("Người nhận");
+    }
+
+    @Test
+    @DisplayName("WF-05 item 5: a line with no shipment code is about every shipment on the vehicle (BR-26); a webhook "
+            + "and a file reporting the same outcome of a WEBHOOK_LOAD carrier's vehicle are one report")
+    void aFileLineForTheWholeVehicle() throws Exception {
+        UUID manager = staff("WAREHOUSE_MANAGER", HCM);
+        String secret = "load-webhook-secret-file-0123456789";
+        String code = "WF" + UUID.randomUUID().toString().substring(0, 6).toUpperCase();
+        UUID carrier = UUID.fromString(data(as(manager, "WAREHOUSE_MANAGER", body(post(BASE + "/carriers"),
+                "{\"code\":\"" + code + "\",\"name\":\"Xe tải webhook\",\"connection\":{\"connectionType\":"
+                        + "\"WEBHOOK_LOAD\",\"webhookSecret\":\"" + secret + "\"}}")).andExpect(status().isCreated()))
+                .path("carrierId").asText());
+        UUID first = packed(ftlOrder(1), false)[0];
+        UUID second = packed(ftlOrder(1), false)[0];
+        String loadId = loadOf(confirmed(List.of(first, second), truck5t), 1);
+        String loadCode = load(loadId).path("code").asText();
+        String waybill = "WG-" + loadId;
+        dispatch(body(post(LOADS + "/" + loadId + "/booking"), "{\"carrierId\":\"" + carrier
+                + "\",\"vehiclePlate\":\"51C-WG.01\",\"waybillNo\":\"" + waybill + "\"}")).andExpect(status().isOk());
+        loadAndSign(loadId, "51C-WG.01");
+        Instant at = Instant.now().minus(Duration.ofHours(1)).truncatedTo(java.time.temporal.ChronoUnit.SECONDS);
+
+        // The carrier's webhook reports the whole vehicle delivered...
+        String delivered = "{\"loadCode\":\"" + loadCode + "\",\"type\":\"DELIVERED\",\"reportedAt\":\"" + at + "\"}";
+        hook(code, delivered, "X-Signature", com.stockflow.fulfillment.internal.service.CarrierWebhookTestSigner
+                .sign(secret, delivered)).andExpect(jsonPath("$.data.result").value("APPLIED"));
+        assertThat(shipmentStatus(first)).isEqualTo("DELIVERED");
+        assertThat(shipmentStatus(second)).isEqualTo("DELIVERED");
+        // ...and its list, applied afterwards, says the same of the same time: the report was handled already.
+        outcomes(manager, "WAREHOUSE_MANAGER", "", waybill + ",DELIVERED,," + at + ",,,\r\n")
+                .andExpect(status().isCreated()).andExpect(jsonPath("$.data.lines[0].changes").value(false))
+                .andExpect(jsonPath("$.data.lines[0].result").value("DUPLICATE"));
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM fulfillment.shipment_event WHERE shipment_id = ? AND "
+                + "status = 'DELIVERED'", Long.class, first)).isOne();
+    }
+
     // ---- following a delivery, correcting one (3-6; 09 §4.3, §4.5 step 9; 17 BR-27; E16, E17, E23) ----
 
     /** A customer with a portal account: {customer id, account id}. */

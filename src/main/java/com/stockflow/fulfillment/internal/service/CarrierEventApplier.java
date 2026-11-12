@@ -54,13 +54,21 @@ import java.util.stream.Collectors;
  * </ol>
  * A change the load's or shipment's state refuses throws; the caller then decides the call NEEDS_REVIEW in a third
  * transaction ({@link #failed}), keeping what was matched. A call on the error list is never applied again.
+ *
+ * <p>A line of an imported file of delivery outcomes takes the same second step after {@link #matchFile}.</p>
  */
 @Component
 class CarrierEventApplier {
 
-    /** What was matched, carried from the first transaction to the second. */
+    /**
+     * What was matched, carried from the first transaction to the second.
+     *
+     * @param failure the reason of a failed delivery when the report names an internal reason outright (a line of an
+     *                imported file); null when the carrier's own words are mapped by its table
+     */
     record Matched(CarrierReport report, UUID loadId, String loadCode, UUID warehouseId, UUID bookingId,
-                   String carrierOrderId, UUID shipmentId, String dedupeKey, List<CarrierReport> stops) { }
+                   String carrierOrderId, UUID shipmentId, String dedupeKey, List<CarrierReport> stops,
+                   FailureReasonMap.Resolution failure) { }
 
     private static final String E21_NOTE = "Returned by the carrier with no failed delivery reported first";
 
@@ -205,7 +213,47 @@ class CarrierEventApplier {
         List<CarrierReport> stops = api && report.kind() == CarrierEventKind.ORDER_COMPLETED
                 ? AhamoveWebhookReader.stops(tree, report.reference()) : List.of();
         return new Matched(report, load.getId(), load.getCode(), load.getWarehouseId(), bookingId, orderId, shipmentId,
-                key, stops);
+                key, stops, null);
+    }
+
+    /**
+     * A line of an imported file of delivery outcomes, kept as an event and matched (WF-05 fix plan item 5): the load
+     * the import found by its waybill number, and the shipment the line names, if any. From here on it is decided as a
+     * webhook call is ({@link #apply}), so a repeat and an outdated report are told by the same rules (BR-27). The
+     * report names the load by its code, as a WEBHOOK_LOAD carrier's own report does: the same outcome sent both ways
+     * is one report.
+     *
+     * @return what was matched, or null when the line is decided already (the load cancelled since the check, the
+     *         shipment no longer on it)
+     */
+    Matched matchFile(UUID eventId, CarrierJpaEntity carrier, CarrierEvents.FileLine line, String payload) {
+        DispatchLoadJpaRepository.LoadFacts load = loads.findFactsById(line.loadId()).orElseThrow();
+        CarrierEventJpaEntity event = CarrierEventJpaEntity.fromFile(eventId, carrier.getId(), carrier.getCode(),
+                clock.instant(), payload, line.importId(), line.line());
+        CarrierReport report = new CarrierReport(line.kind(), load.getCode(), null, line.shipmentCode(),
+                line.reportedAt(), null, null, null, null, line.wording());
+        event.read(report.kind(), line.waybillNo(), report.reportedAt());
+        if (load.getStatus() == LoadStatus.CANCELLED) {
+            event.matched(load.getWarehouseId(), load.getId(), null, null);
+            return decided(event, CarrierEventResult.UNMATCHED, "Load %s is cancelled (BR-22)".formatted(load.getCode()));
+        }
+        UUID shipmentId = null;
+        if (line.shipmentCode() != null) {
+            shipmentId = shipments.statesOnLoad(load.getId()).stream()
+                    .filter(s -> s.getCode().equals(line.shipmentCode())).map(ShipmentJpaRepository.ShipmentState::getId)
+                    .findFirst().orElse(null);
+            if (shipmentId == null) {
+                event.matched(load.getWarehouseId(), load.getId(), null, null);
+                return decided(event, CarrierEventResult.NEEDS_REVIEW, "Shipment %s did not leave on load %s"
+                        .formatted(line.shipmentCode(), load.getCode()));
+            }
+        }
+        String key = dedupeKey(carrier.getId(), report, payload.getBytes(StandardCharsets.UTF_8));
+        event.matched(load.getWarehouseId(), load.getId(), shipmentId, key);
+        events.saveAndFlush(event);
+        return new Matched(report, load.getId(), load.getCode(), load.getWarehouseId(), null, null, shipmentId, key,
+                List.of(), line.reason() == null ? null
+                : new FailureReasonMap.Resolution(line.reason(), line.note()));
     }
 
     // ------------------------------------------------------------------ 2. apply
@@ -271,8 +319,8 @@ class CarrierEventApplier {
         CarrierReport report = m.report();
         ShipmentStatus target = report.kind() == CarrierEventKind.DELIVERED ? ShipmentStatus.DELIVERED
                 : ShipmentStatus.DELIVERY_FAILED;
-        FailureReasonMap.Resolution failure = target == ShipmentStatus.DELIVERY_FAILED
-                ? FailureReasonMap.of(reasons(carrier)).resolve(report.failureWording()) : null;
+        FailureReasonMap.Resolution failure = target != ShipmentStatus.DELIVERY_FAILED ? null
+                : m.failure() != null ? m.failure() : FailureReasonMap.of(reasons(carrier)).resolve(report.failureWording());
         DeliveryFailureReason reason = failure == null ? null : failure.reason();
         String note = failure == null ? null : failure.carrierWording() != null ? failure.carrierWording()
                 : reason == DeliveryFailureReason.OTHER ? "The carrier gave no reason" : null;
@@ -460,11 +508,11 @@ class CarrierEventApplier {
      * one shows on the error list.
      */
     void retryLater(UUID eventId, String why) {
-        CarrierEventJpaEntity event = events.findById(eventId).orElseThrow();
-        if (event.getResult() == CarrierEventResult.RECEIVED) {
+        // A line of a file whose event could not even be kept has nothing to mark.
+        events.findById(eventId).filter(event -> event.getResult() == CarrierEventResult.RECEIVED).ifPresent(event -> {
             event.pending(why);
             events.saveAndFlush(event);
-        }
+        });
     }
 
     /**

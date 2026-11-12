@@ -230,6 +230,16 @@ class PermissionMatrixTest {
             Map.entry("POST /api/v1/fulfillment/waybill-imports", "fulfillment-waybill-imports:CREATE"),
             Map.entry("GET /api/v1/fulfillment/waybill-imports", "fulfillment-waybill-imports:READ"),
             Map.entry("GET /api/v1/fulfillment/waybill-imports/{importId}", "fulfillment-waybill-imports:READ"),
+            // WF-05 fix plan item 5 (V20261122000100): delivery outcomes applied from a file.
+            Map.entry("GET /api/v1/fulfillment/delivery-outcome-imports/template",
+                    "fulfillment-delivery-outcome-imports:READ"),
+            Map.entry("POST /api/v1/fulfillment/delivery-outcome-imports/preview",
+                    "fulfillment-delivery-outcome-imports:CREATE"),
+            Map.entry("POST /api/v1/fulfillment/delivery-outcome-imports",
+                    "fulfillment-delivery-outcome-imports:CREATE"),
+            Map.entry("GET /api/v1/fulfillment/delivery-outcome-imports", "fulfillment-delivery-outcome-imports:READ"),
+            Map.entry("GET /api/v1/fulfillment/delivery-outcome-imports/{importId}",
+                    "fulfillment-delivery-outcome-imports:READ"),
             Map.entry("GET /api/v1/fulfillment/carrier-events", "fulfillment-carrier-events:READ"),
             Map.entry("GET /api/v1/fulfillment/carrier-events/{eventId}", "fulfillment-carrier-events:READ"),
             Map.entry("POST /api/v1/fulfillment/carrier-events/{eventId}/resolution", "fulfillment-carrier-events:UPDATE"),
@@ -301,6 +311,11 @@ class PermissionMatrixTest {
             Map.entry("fulfillment-waybill-imports:CREATE", Set.of(Role.WAREHOUSE_STAFF, Role.WAREHOUSE_MANAGER,
                     Role.SYSTEM_ADMIN)),
             // 3-5, kltn-docs 09 §4.5 step 8: the warehouse manager reads and resolves the carriers' error list.
+            // WF-05 fix plan item 5: the warehouse manager applies a carrier's list of delivery outcomes.
+            Map.entry("fulfillment-delivery-outcome-imports:READ", Set.of(Role.WAREHOUSE_MANAGER,
+                    Role.SYSTEM_ADMIN)),
+            Map.entry("fulfillment-delivery-outcome-imports:CREATE", Set.of(Role.WAREHOUSE_MANAGER,
+                    Role.SYSTEM_ADMIN)),
             Map.entry("fulfillment-carrier-events:READ", Set.of(Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             Map.entry("fulfillment-carrier-events:UPDATE", Set.of(Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             // 3-6, kltn-docs 09 §4.3 step 5: the warehouse manager corrects an outcome the carrier reported wrongly.

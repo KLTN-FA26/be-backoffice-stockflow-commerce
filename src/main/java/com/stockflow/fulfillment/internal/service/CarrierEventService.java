@@ -55,6 +55,10 @@ import java.util.stream.Collectors;
  *   <li>it is applied ({@link CarrierEventApplier#apply}); a refusal is decided NEEDS_REVIEW in one more.</li>
  * </ol>
  * A process that dies between the first and the last leaves the call RECEIVED, which the error list shows.
+ *
+ * <p>A line of an imported file of delivery outcomes ({@link #recordFromFile}) is kept and matched in one transaction
+ * and applied in the next, by the same applier: one rule for a repeat and for an outdated report, whichever way the
+ * carrier's word came.</p>
  */
 @Service
 class CarrierEventService implements CarrierEvents {
@@ -141,6 +145,69 @@ class CarrierEventService implements CarrierEvents {
         }
         log.info("Carrier webhook {} for {}: {}", eventId, kept, result);
         return new Receipt(eventId, Objects.requireNonNull(result).name(), true, false);
+    }
+
+    // ------------------------------------------------------------------ a line of an imported file
+
+    @Override
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    public FileOutcome recordFromFile(FileLine line) {
+        UUID eventId = Identifiers.newId();
+        CarrierJpaEntity carrier = tx.execute(s -> carriers.findById(line.carrierId()).orElseThrow());
+        String payload = payload(line);
+        CarrierEventResult result;
+        try {
+            CarrierEventApplier.Matched matched = tx.execute(s -> applier.matchFile(eventId, carrier, line, payload));
+            result = matched == null ? tx.execute(s -> events.findById(eventId).orElseThrow().getResult())
+                    : tx.execute(s -> applier.apply(eventId, carrier, matched));
+        } catch (RuntimeException failure) {
+            if (!(failure instanceof BusinessException) && !uniqueRace(failure)) {
+                // A deadlock, a lost connection: not the line's fault. Left undecided; the file applied again makes a
+                // new event of the line, which this one - never handled - does not make a repeat.
+                log.error("Line {} of delivery-outcome import {} could not be applied now", line.line(),
+                        line.importId(), failure);
+                String why = "Could not be applied (" + failure.getClass().getSimpleName() + "): apply the file again";
+                tx.executeWithoutResult(s -> applier.retryLater(eventId, why));
+                return new FileOutcome(eventId, CarrierEventResult.RECEIVED.name(), why);
+            }
+            result = tx.execute(s -> applier.failed(eventId, failure));
+        }
+        String note = tx.execute(s -> events.findById(eventId).map(CarrierEventJpaEntity::getResultNote).orElse(null));
+        log.info("Line {} of delivery-outcome import {} (event {}): {}", line.line(), line.importId(), eventId, result);
+        return new FileOutcome(eventId, Objects.requireNonNull(result).name(), note);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Map<Integer, FileOutcome> outcomesOfImport(UUID importId) {
+        Map<Integer, FileOutcome> byLine = new HashMap<>();
+        events.findByOutcomeImportId(importId).forEach(e -> byLine.put(e.getOutcomeImportLine(),
+                new FileOutcome(e.getId(), e.getResult().name(), e.getResultNote())));
+        return byLine;
+    }
+
+    /** The line as the event keeps it: what the file said, as a webhook's body is kept. */
+    private String payload(FileLine line) {
+        com.fasterxml.jackson.databind.node.ObjectNode body = json.createObjectNode();
+        body.put("source", CarrierEventJpaEntity.FILE);
+        body.put("importId", line.importId().toString());
+        body.put("line", line.line());
+        body.put("waybillNo", line.waybillNo());
+        body.put("outcome", line.kind().name());
+        body.put("reportedAt", line.reportedAt().toString());
+        if (line.shipmentCode() != null) {
+            body.put("shipmentCode", line.shipmentCode());
+        }
+        if (line.reason() != null || line.wording() != null) {
+            body.put("failureReason", line.reason() != null ? line.reason().name() : line.wording());
+        }
+        if (line.recipient() != null) {
+            body.put("recipient", line.recipient());
+        }
+        if (line.note() != null) {
+            body.put("note", line.note());
+        }
+        return body.toString();
     }
 
     /** Two copies of one report applied at the same moment: one of them meets {@code uk_carrier_event_applied}. */
@@ -295,8 +362,8 @@ class CarrierEventService implements CarrierEvents {
         }
         Map<UUID, String> names = new HashMap<>(identities.displayNames(found.stream()
                 .map(CarrierEventJpaEntity::getResolvedBy).filter(Objects::nonNull).distinct().toList()));
-        return found.stream().map(e -> new EventRow(e.getId(), e.getCarrierId(), e.getCarrierCode(), e.getReceivedAt(),
-                e.isSignatureValid(), e.getEventKind() == null ? null : e.getEventKind().name(),
+        return found.stream().map(e -> new EventRow(e.getId(), e.getCarrierId(), e.getCarrierCode(), e.getSource(),
+                e.getReceivedAt(), e.isSignatureValid(), e.getEventKind() == null ? null : e.getEventKind().name(),
                 e.getCarrierReference(), e.getCarrierReportedAt(), e.getWarehouseId(), e.getLoadId(),
                 loadCodes.get(e.getLoadId()), e.getShipmentId(), shipmentCodes.get(e.getShipmentId()),
                 e.getResult().name(), e.getResultNote(), e.getDecidedAt(), e.getResolvedAt(), e.getResolvedBy(),

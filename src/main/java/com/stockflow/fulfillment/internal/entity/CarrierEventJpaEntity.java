@@ -13,13 +13,19 @@ import java.time.Instant;
 import java.util.UUID;
 
 /**
- * One call made to a carrier's webhook (table {@code fulfillment.carrier_event}; kltn-docs 09 §4.5 step 2, BR-27): kept
+ * One call made to a carrier's webhook - or one line of an imported file of delivery outcomes, which goes the same
+ * way ({@link #fromFile}) - (table {@code fulfillment.carrier_event}; kltn-docs 09 §4.5 step 2, BR-27): kept
  * before anything is done with it, then decided once ({@link #decide}), and - for the error list - resolved once by a
  * warehouse manager ({@link #resolve}). What was received never changes ({@code fulfillment.carrier_event_guard}).
  */
 @Entity
 @Table(name = "carrier_event", schema = "fulfillment")
 public class CarrierEventJpaEntity extends BaseEntity {
+
+    /** The carrier called its webhook. */
+    public static final String WEBHOOK = "WEBHOOK";
+    /** A line of a file of delivery outcomes a warehouse manager applied (WF-05 fix plan item 5). */
+    public static final String FILE = "FILE";
 
     @Column(name = "carrier_id", updatable = false) private UUID carrierId;
     @Column(name = "carrier_code", nullable = false, length = 64, updatable = false) private String carrierCode;
@@ -41,6 +47,9 @@ public class CarrierEventJpaEntity extends BaseEntity {
     @Column(name = "resolved_by") private UUID resolvedBy;
     @Column(name = "resolved_at") private Instant resolvedAt;
     @Column(name = "resolution_note", length = 1000) private String resolutionNote;
+    @Column(name = "source", nullable = false, length = 8, updatable = false) private String source = WEBHOOK;
+    @Column(name = "outcome_import_id", updatable = false) private UUID outcomeImportId;
+    @Column(name = "outcome_import_line", updatable = false) private Integer outcomeImportLine;
 
     protected CarrierEventJpaEntity() {
     }
@@ -67,6 +76,22 @@ public class CarrierEventJpaEntity extends BaseEntity {
             this.resultNote = cut(note);
             this.decidedAt = receivedAt;
         }
+    }
+
+    /**
+     * A line of an imported file of delivery outcomes, as an event: sent by someone signed in, so its credential holds;
+     * it names its import and line, and is decided by the same rules as a webhook call.
+     *
+     * @param payload the line as JSON - what the file said, kept as a webhook's body is
+     */
+    public static CarrierEventJpaEntity fromFile(UUID id, UUID carrierId, String carrierCode, Instant receivedAt,
+                                                 String payload, UUID outcomeImportId, int outcomeImportLine) {
+        CarrierEventJpaEntity event = new CarrierEventJpaEntity(id, carrierId, carrierCode, receivedAt, payload, true,
+                null);
+        event.source = FILE;
+        event.outcomeImportId = outcomeImportId;
+        event.outcomeImportLine = outcomeImportLine;
+        return event;
     }
 
     /** What the call reported, once read; set before it is decided. */
@@ -135,4 +160,7 @@ public class CarrierEventJpaEntity extends BaseEntity {
     public UUID getResolvedBy() { return resolvedBy; }
     public Instant getResolvedAt() { return resolvedAt; }
     public String getResolutionNote() { return resolutionNote; }
+    public String getSource() { return source; }
+    public UUID getOutcomeImportId() { return outcomeImportId; }
+    public Integer getOutcomeImportLine() { return outcomeImportLine; }
 }

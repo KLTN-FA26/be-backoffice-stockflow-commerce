@@ -6,6 +6,7 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 
 /** Every call made to a carrier's webhook (3-5). */
@@ -36,6 +37,9 @@ public interface CarrierEventJpaRepository extends BaseJpaRepository<CarrierEven
             + "com.stockflow.fulfillment.internal.domain.CarrierEventResult.IGNORED, "
             + "com.stockflow.fulfillment.internal.domain.CarrierEventResult.NEEDS_REVIEW)")
     boolean handledBefore(@Param("key") String key, @Param("self") UUID self);
+
+    /** The events made from the lines of one imported file of delivery outcomes. */
+    List<CarrierEventJpaEntity> findByOutcomeImportId(UUID outcomeImportId);
 
     /**
      * Reports about one load are applied one at a time (an advisory lock on {@code carrier-event:<loadId>}, held to the
