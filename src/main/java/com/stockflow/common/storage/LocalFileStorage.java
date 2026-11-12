@@ -217,6 +217,7 @@ class LocalFileStorage implements FileStorage {
             case ".mov" -> "video/quicktime";
             case ".webm" -> "video/webm";
             case ".pdf" -> "application/pdf";
+            case ".xml" -> "application/xml";
             case ".csv" -> "text/csv";
             case ".txt" -> "text/plain";
             case ".docx" -> "application/vnd.openxmlformats-officedocument.wordprocessingml.document";

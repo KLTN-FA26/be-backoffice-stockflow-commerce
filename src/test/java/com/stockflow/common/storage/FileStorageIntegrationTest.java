@@ -105,7 +105,7 @@ class FileStorageIntegrationTest {
     void retentionIsAppliedOnlyAfterCommitAndOnlyWhenEnabled() {
         var storage = mock(FileStorage.class);
         var enabled = new ObjectLockProperties(true, ObjectLockProperties.Mode.GOVERNANCE, Duration.ofDays(3),
-                Duration.ofDays(10));
+                Duration.ofDays(10), Duration.ofDays(3650));
         String key = "design-renders/2026/01/01/00000000-0000-7000-8000-000000000001.pdf";
         for (boolean lockOn : new boolean[]{true, false}) {
             var transfers = new FileTransfers(storage, properties(), Clock.systemUTC(),
@@ -142,7 +142,8 @@ class FileStorageIntegrationTest {
         org.mockito.Mockito.doThrow(new StorageException("no Object Lock on this bucket"))
                 .when(storage).retain(any(), any());
         var transfers = new FileTransfers(storage, properties(), Clock.systemUTC(),
-                new ObjectLockProperties(true, ObjectLockProperties.Mode.GOVERNANCE, Duration.ofDays(1), Duration.ofDays(1)));
+                new ObjectLockProperties(true, ObjectLockProperties.Mode.GOVERNANCE, Duration.ofDays(1), Duration.ofDays(1),
+                        Duration.ofDays(3650)));
         TransactionSynchronizationManager.setActualTransactionActive(true);
         TransactionSynchronizationManager.initSynchronization();
         try {
