@@ -86,9 +86,9 @@ public class OrderSettlementService {
     /**
      * Whether a delivered shipment of the order still has no e-invoice issued (WF-05 plan §4, condition 5), read under
      * the order's lock. Invoicing answers ({@code DeliveryInvoices}); the order only knows which shipments it
-     * delivered. An order delivered without shipments has nothing to invoice and waits for nothing. The invoice of the
-     * rest of the shipping fee, drawn up when the order's undelivered rest was closed after its deliveries were all
-     * invoiced, is waited for the same way.
+     * delivered. An order delivered without shipments has nothing to invoice and waits for nothing. The rest of the
+     * shipping fee, invoiced on its own when the order's undelivered rest was closed after its deliveries were all
+     * invoiced, is waited for the same way - also when its draft was refused and nothing carries it yet.
      */
     private boolean awaitingInvoice(Order order) {
         List<UUID> delivered = order.shipments().stream()
