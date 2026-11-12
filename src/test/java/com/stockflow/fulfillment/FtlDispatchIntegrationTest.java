@@ -2660,11 +2660,21 @@ class FtlDispatchIntegrationTest {
      * {@code condition} noted - confirmed. Returns the delivery failure case the receipt opened (after commit).
      */
     private UUID receivedBack(UUID shipment, String condition) {
+        returnReceipt(shipment, condition);
+        Await.until("the delivery failure case opened by the return receipt", ASYNC, () -> jdbc.queryForObject(
+                "SELECT count(*) FROM ordering.delivery_failure_case WHERE shipment_id = ?", Long.class, shipment) == 1);
+        return jdbc.queryForObject("SELECT id FROM ordering.delivery_failure_case WHERE shipment_id = ?", UUID.class,
+                shipment);
+    }
+
+    /** The return receipt of {@link #receivedBack}, confirmed, without waiting for the case it opens. */
+    private com.stockflow.procurement.internal.service.ReturnReceiptService.ReturnReceiptView returnReceipt(
+            UUID shipment, String condition) {
         var receipts = context.getBean(com.stockflow.procurement.internal.service.ReturnReceiptService.class);
         var clerk = new com.stockflow.common.security.CurrentUser(picker, "clerk",
                 java.util.Set.of(com.stockflow.common.security.Role.WAREHOUSE_STAFF), java.util.Set.of(),
                 DataScope.WAREHOUSE, java.util.Set.of("HCM"), java.util.Set.of(HCM));
-        WithCurrentUser.call(clerk, DataScope.WAREHOUSE, () -> {
+        return WithCurrentUser.call(clerk, DataScope.WAREHOUSE, () -> {
             var draft = receipts.create(new com.stockflow.procurement.internal.service.ReturnReceiptService.Create(
                     shipment, null, "HCM-QC01", "back from the carrier"), picker);
             String note = condition;
@@ -2674,10 +2684,6 @@ class FtlDispatchIntegrationTest {
             }
             return receipts.confirm(draft.id(), picker);
         });
-        Await.until("the delivery failure case opened by the return receipt", ASYNC, () -> jdbc.queryForObject(
-                "SELECT count(*) FROM ordering.delivery_failure_case WHERE shipment_id = ?", Long.class, shipment) == 1);
-        return jdbc.queryForObject("SELECT id FROM ordering.delivery_failure_case WHERE shipment_id = ?", UUID.class,
-                shipment);
     }
 
     /** 20 §4.8, 05 BR-14: the cartons that came back are released from quarantine and put away on a bin. */
@@ -2708,6 +2714,40 @@ class FtlDispatchIntegrationTest {
 
     private String failures(UUID orderId) {
         return ORDERS + "/" + orderId + "/delivery-failures";
+    }
+
+    /**
+     * The case's goods as if they came back to {@code warehouse}. What a case is about never changes, so its trigger is
+     * off for this one update, in the same transaction.
+     */
+    private void caseAt(UUID caseId, UUID warehouse) {
+        tx.executeWithoutResult(s -> {
+            jdbc.execute("ALTER TABLE ordering.delivery_failure_case DISABLE TRIGGER tg_delivery_failure_case");
+            jdbc.update("UPDATE ordering.delivery_failure_case SET warehouse_id = ? WHERE id = ?", warehouse, caseId);
+            jdbc.execute("ALTER TABLE ordering.delivery_failure_case ENABLE TRIGGER tg_delivery_failure_case");
+        });
+    }
+
+    /** The units held for the order (its holds, those of its delivery failure cases included). */
+    private long heldForOrder(UUID orderId) {
+        return jdbc.queryForObject("SELECT COALESCE(SUM(quantity), 0) FROM inventory.stock_reservation "
+                + "WHERE order_id = ? AND status = 'HELD'", Long.class, orderId);
+    }
+
+    /** Every hold recorded for a delivery failure case is refused by the database while {@code on}. */
+    private void caseHoldsRefused(boolean on) {
+        tx.executeWithoutResult(s -> {
+            if (on) {
+                jdbc.execute("CREATE OR REPLACE FUNCTION ordering.test_refuse_case_hold() RETURNS TRIGGER "
+                        + "LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'test: case hold refused'; END $$");
+                jdbc.execute("CREATE TRIGGER tg_test_refuse_case_hold BEFORE INSERT ON "
+                        + "ordering.delivery_failure_case_hold FOR EACH ROW EXECUTE FUNCTION "
+                        + "ordering.test_refuse_case_hold()");
+            } else {
+                jdbc.execute("DROP TRIGGER IF EXISTS tg_test_refuse_case_hold ON ordering.delivery_failure_case_hold");
+                jdbc.execute("DROP FUNCTION IF EXISTS ordering.test_refuse_case_hold()");
+            }
+        });
     }
 
     @Test
@@ -2853,6 +2893,20 @@ class FtlDispatchIntegrationTest {
                 .andExpect(status().isOk())).findValuesAsText("caseId")).contains(caseId.toString());
         assertThat(data(oc(get(failures(orderId))).andExpect(status().isOk())).findValuesAsText("caseId"))
                 .containsExactly(caseId.toString());
+        // WF-05 review N5: the order's cases are read by the list's rule - the warehouse the goods came back to, not
+        // the one the order ships from. With the case's goods back elsewhere, HCM's manager reads the order and none
+        // of its cases, and the other warehouse's manager reads the case of an order not of theirs.
+        caseAt(caseId, elsewhere);
+        try {
+            assertThat(data(oc(get(failures(orderId))).andExpect(status().isOk()))).isEmpty();
+            assertThat(data(as(managerElsewhere, "WAREHOUSE_MANAGER", get(failures(orderId)))
+                    .andExpect(status().isOk())).findValuesAsText("caseId")).containsExactly(caseId.toString());
+            assertThat(data(as(managerElsewhere, "WAREHOUSE_MANAGER", get(ORDERS + "/delivery-failures"))
+                    .andExpect(status().isOk())).findValuesAsText("caseId")).as("the same case in the list")
+                    .containsExactly(caseId.toString());
+        } finally {
+            caseAt(caseId, HCM);
+        }
 
         sales(body(post(failures(orderId) + "/" + caseId + "/redelivery"), "{\"note\":\"giao lại\","
                 + "\"failedTripFee\":500000}")).andExpect(status().isBadRequest())
@@ -3205,6 +3259,114 @@ class FtlDispatchIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT SUM(cancelled_quantity) FROM ordering.order_line WHERE order_id = ?",
                 Integer.class, orderId)).isZero();
         assertThat(orders.findById(orderId).orElseThrow().status()).isNotEqualTo(OrderStatus.RETURNED);
+    }
+
+    @Test
+    @DisplayName("WF-05 review N1: delivered again, not released, then held by Sales for the customer - cancelling "
+            + "what was not delivered is 409 DELIVERY_FAILURE_REST_NOT_CLOSABLE and changes nothing (the case, its "
+            + "held goods, no settlement, no line closed); the hold resolved, the same cancellation closes the rest")
+    void aRedeliveryHeldForTheCustomerIsCancelledOnlyOnceTheHoldIsResolved() throws Exception {
+        UUID customer = tx.execute(s -> ReferenceRows.customer(entityManager));
+        OrderSummary order = ftlOrder(2, customer);
+        UUID orderId = order.orderId();
+        UUID[] first = handedOver(order, ghn);
+        failedAndCameBack(first[0], "DAMAGED");
+        UUID caseId = receivedBack(first[0], null);
+        releasedFromQuarantine(first[0]);
+        Await.until("the goods that came back held for their order again", ASYNC, () -> heldForCase(caseId) == 4);
+        sales(body(post(failures(orderId) + "/" + caseId + "/redelivery"), "{\"note\":\"Giao lại\"}"))
+                .andExpect(status().isOk());
+        assertThat(orders.findById(orderId).orElseThrow().status()).isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
+        sales(body(post(ORDERS + "/" + orderId + "/hold"), "{\"reasonCode\":\"CUSTOMER\","
+                + "\"note\":\"Khách hẹn lại lịch nhận\"}")).andExpect(status().isOk());
+        String cancellation = failures(orderId) + "/" + caseId + "/cancellation";
+
+        sales(body(post(cancellation), cancelKeeping(1_000_000))).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("DELIVERY_FAILURE_REST_NOT_CLOSABLE"));
+        assertThat(caseRow(caseId)).containsEntry("status", "REDELIVERY");
+        assertThat(heldForCase(caseId)).isEqualTo(4);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM payment.order_settlement WHERE order_id = ?", Long.class,
+                orderId)).isZero();
+        assertThat(jdbc.queryForObject("SELECT SUM(cancelled_quantity) FROM ordering.order_line WHERE order_id = ?",
+                Integer.class, orderId)).isZero();
+        assertThat(orders.findById(orderId).orElseThrow().status()).isEqualTo(OrderStatus.ON_HOLD);
+
+        sales(body(post(ORDERS + "/" + orderId + "/hold/resolution"), "{\"note\":\"Khách không nhận nữa\"}"))
+                .andExpect(status().isOk());
+        assertThat(data(sales(body(post(cancellation), cancelKeeping(1_000_000))).andExpect(status().isOk()))
+                .path("status").asText()).isEqualTo("CANCELLED");
+        assertThat(jdbc.queryForObject("SELECT SUM(cancelled_quantity) FROM ordering.order_line WHERE order_id = ?",
+                Integer.class, orderId)).isEqualTo(4);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM payment.order_settlement WHERE order_id = ?", Long.class,
+                orderId)).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("WF-05 review N2: holding a waiting case's goods fails - topUpWaiting fails after trying the cases "
+            + "and before any ordinary order: another order short of the same SKU holds nothing in that run; once the "
+            + "case can be held, the next run holds the case's cartons first and then the other order's")
+    void aCaseThatCannotBeHeldStopsTheOrdinaryTopUp() throws Exception {
+        UUID customer = tx.execute(s -> ReferenceRows.customer(entityManager));
+        CustomerSkuRows.Issued sofa = sofaOf(customer);
+        OrderSummary order = ftlOrder(2, customer);
+        UUID[] first = handedOver(order, ghn);
+        failedAndCameBack(first[0], "DAMAGED");
+        UUID caseId = receivedBack(first[0], null);
+        UUID other = confirmedOrders().pay(confirmedOrders().signed(customer, ConfirmedOrders.paidOnSigning(),
+                ConfirmedOrders.Line.cartons(sofa, 2, 6_000_000))).orderId();
+        assertThat(confirmedOrders().ship(other, HCM).fullyHeld()).as("no free stock of the SKU yet").isFalse();
+        assertThat(heldForOrder(other)).isZero();
+        var shipping = context.getBean(com.stockflow.order.internal.service.ShippingWarehouseService.class);
+
+        caseHoldsRefused(true);
+        try {
+            // Enough for both, inserted without an arrival event: only the explicit run below serves anyone.
+            CustomerSkuRows.stock(jdbc, tx, sofa.sku(), 8);
+            Throwable failed = catchThrowable(() -> shipping.topUpWaiting(sofa.sku()));
+            assertThat(failed).as("the case's failure is the run's").isInstanceOf(RuntimeException.class)
+                    .hasStackTraceContaining("test: case hold refused");
+            assertThat(heldForCase(caseId)).isZero();
+            assertThat(heldForOrder(other)).as("no ordinary order is topped up in the failed run").isZero();
+        } finally {
+            caseHoldsRefused(false);
+        }
+
+        shipping.topUpWaiting(sofa.sku());
+        assertThat(heldForCase(caseId)).isEqualTo(4);
+        assertThat(heldForOrder(other)).isEqualTo(4);
+    }
+
+    @Test
+    @DisplayName("WF-05 review N3: the shipment that came back owes 3 units of a line sold in cartons of 2 - no "
+            + "case is opened (not whole cartons) and the order stays held; Sales cancel without a case, and the same "
+            + "goods received then open a case CANCELLED at once")
+    void goodsBackInPartOfACartonOpenNoCase() throws Exception {
+        UUID customer = tx.execute(s -> ReferenceRows.customer(entityManager));
+        OrderSummary order = ftlOrder(2, customer);
+        UUID orderId = order.orderId();
+        UUID shipment = handedOver(order, ghn)[0];
+        failedAndCameBack(shipment, "DAMAGED");
+        // No flow makes such a shipment (one leaves as whole cartons): the defect N3 keeps out of a case.
+        tx.executeWithoutResult(s -> jdbc.update(
+                "UPDATE ordering.order_shipment_line SET quantity = 3 WHERE shipment_id = ?", shipment));
+        var receipt = returnReceipt(shipment, null);
+        var received = new com.stockflow.contracts.ReturnedGoodsReceived(receipt.id(), receipt.number(), HCM, orderId,
+                order.orderNumber(), customer, shipment, null, receipt.quarantineLocationCode(), List.of(), picker,
+                Instant.now());
+        var decisions = context.getBean(com.stockflow.order.internal.service.DeliveryFailureService.class);
+
+        assertThat(catchThrowable(() -> tx.executeWithoutResult(s -> decisions.goodsReceived(received))))
+                .isInstanceOf(IllegalStateException.class).hasMessageContaining("not whole cartons of 2");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM ordering.delivery_failure_case WHERE shipment_id = ?",
+                Long.class, shipment)).isZero();
+        assertThat(orders.findById(orderId).orElseThrow().status()).isEqualTo(OrderStatus.ON_HOLD);
+
+        sales(body(post(failures(orderId) + "/cancellation"), "{\"note\":\"Hàng về không đủ thùng, khách không "
+                + "chờ\"}")).andExpect(status().isOk());
+        // The listener may have opened it already, after the cancellation: either way it is CANCELLED.
+        tx.executeWithoutResult(s -> decisions.goodsReceived(received));
+        assertThat(jdbc.queryForObject("SELECT status FROM ordering.delivery_failure_case WHERE shipment_id = ?",
+                String.class, shipment)).isEqualTo("CANCELLED");
     }
 
     @Test
