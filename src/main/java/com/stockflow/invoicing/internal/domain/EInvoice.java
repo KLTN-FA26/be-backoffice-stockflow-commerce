@@ -615,7 +615,7 @@ public final class EInvoice {
      *                           invoice e-mail is missing; {@code EINVOICE_AGREEMENT_REQUIRED} for the correction
      *                           of an error without the agreement of both parties;
      *                           {@code EINVOICE_SERIES_NOT_CONFIGURED} for a series of another year than the invoice's
-     *                           date
+     *                           date, or of a template other than a VAT invoice's
      */
     public void submit(InvoiceSeries series, UUID by, Instant now) {
         requireCanBecome(EInvoiceStatus.SUBMITTING);
@@ -629,6 +629,11 @@ public final class EInvoice {
                     + "(TT 91/2026/TT-BTC Điều 10 khoản 1 điểm b)").formatted(code));
         }
         Objects.requireNonNull(series, "series");
+        if (!series.vatTemplate()) {
+            throw new BusinessException(ErrorCode.EINVOICE_SERIES_NOT_CONFIGURED,
+                    "Series %s is of template %s; invoices are issued under %s, a VAT invoice".formatted(
+                            series.symbol(), series.templateCode(), InvoiceSeries.VAT_TEMPLATE));
+        }
         if (series.year() != issueDate.getYear()) {
             throw new BusinessException(ErrorCode.EINVOICE_SERIES_NOT_CONFIGURED,
                     "Invoice %s is dated %d; series %s is of %d".formatted(code, issueDate.getYear(), series.symbol(),

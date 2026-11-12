@@ -94,6 +94,10 @@ public class EInvoiceProviderAccountService {
     @Auditable(action = AuditAction.UPDATE, resourceType = "einvoice-settings", resourceId = "#provider")
     public void useSeries(String provider, String templateCode, String symbol, int year, String providerTemplateCode) {
         require(provider);
+        // ck_einvoice_series_template says the same: the seller issues VAT invoices only.
+        if (!InvoiceSeries.VAT_TEMPLATE.equals(templateCode)) {
+            throw invalid("templateCode", "Only template 1, a VAT invoice, is issued");
+        }
         // ck_einvoice_series_year says the same: a symbol names its year.
         if (symbol == null || symbol.length() != 6
                 || !symbol.substring(1, 3).equals("%02d".formatted(year % 100))) {
