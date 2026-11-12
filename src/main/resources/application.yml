@@ -376,6 +376,11 @@ stockflow:
         # only the in-app inbox for now, while the order and return mail here still describes flows they dropped
         # (guest orders, free replacement orders). The portal invitation is not customer order mail and still goes.
         enabled: ${CUSTOMER_EMAIL_ENABLED:false}
+        # E-invoice mail to the buyer (an invoice issued, with its PDF and XML; an error notice): its own switch, ON by
+        # default in every profile. An issued invoice is a legal record the seller must send the buyer in the way they
+        # agreed (NĐ 254/2026/NĐ-CP Điều 12 khoản 3) - the e-mail the invoice names, and the portal - so it does not
+        # wait for the order mail's later phase. Turn it off only on a server that must never write to real buyers.
+        einvoice-enabled: ${EINVOICE_EMAIL_ENABLED:true}
         max-attempts: 10
         first-retry-delay: PT1M
         max-retry-delay: PT6H

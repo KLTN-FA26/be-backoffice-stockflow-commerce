@@ -119,7 +119,8 @@ stockflow:
       # SMTP (the server's Mailpit) until the sending domain is verified in Resend: a dev server deployed on every
       # push to develop must not stop for a key it has not been given yet. EMAIL_PROVIDER=resend with
       # RESEND_API_KEY and RESEND_FROM switches it to Resend, which then refuses to start without them (as prod
-      # always does). Customer order mail stays off (CUSTOMER_EMAIL_ENABLED defaults to false, application.yml).
+      # always does). Customer order mail stays off (CUSTOMER_EMAIL_ENABLED defaults to false, application.yml);
+      # e-invoice mail is on (EINVOICE_EMAIL_ENABLED) and, over SMTP, stops at Mailpit.
       provider: ${EMAIL_PROVIDER:smtp}
       from: ${RESEND_FROM:${MAIL_FROM:}}
       resend:

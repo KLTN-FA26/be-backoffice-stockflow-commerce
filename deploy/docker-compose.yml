@@ -164,6 +164,9 @@ services:
       # Off until the customer mail phase of the business documents: no customer order mail, staff and producer
       # mail and the portal invitation unchanged. Never true on a server holding copies of real customers.
       CUSTOMER_EMAIL_ENABLED: ${CUSTOMER_EMAIL_ENABLED:-false}
+      # E-invoice mail to the buyer: on, since an issued invoice must reach the buyer (NĐ 254 Điều 12 khoản 3). With
+      # EMAIL_PROVIDER=smtp it stops at Mailpit; set false on a Resend server holding copies of real customers.
+      EINVOICE_EMAIL_ENABLED: ${EINVOICE_EMAIL_ENABLED:-true}
       TRACE_SAMPLING: ${TRACE_SAMPLING:-1.0}
       # B2B onboarding (SCRUM-429): the portal page an invitation links to. Without it Sales cannot create a customer
       # (503 PORTAL_INVITATION_UNAVAILABLE) and, with self-registration gone, nobody can. Required, never guessed.
