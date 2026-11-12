@@ -14,8 +14,13 @@ import java.util.Optional;
  * Asks Ahamove back before a final outcome its callback reported is applied (WF-05 fix plan item 6). The callback is
  * not signed - a fixed header value is all that tells Ahamove from anyone who learnt it - so what cannot be undone
  * quietly (a drop-off delivered or failed, the order cancelled, completed or returned) is applied only when
- * {@code GET /v3/orders/{id}}, called with the carrier's own key, gives the same. Journey milestones and the driver's
- * name are not asked back: they change nothing an order or an invoice follows from.
+ * {@code GET /v3/orders/{id}}, called with the carrier's own key, gives the same.
+ *
+ * <p><b>What is not asked back, and so rests on the header credential alone</b> (a risk accepted, WF-05 review F5):
+ * journey milestones (picked up, on its way, returning) and the driver's name and phone - nothing an order, an invoice
+ * or stock follows from, but the name and phone are what the warehouse reads when the vehicle arrives, so whoever holds
+ * the credential can put a wrong driver on a booked load; and, of a final outcome that is borne out, its time and the
+ * wording of a failure. Those are limited by the time window, the allow-list and the credential's rotation.</p>
  *
  * <p>Called with no transaction open, like every carrier call. An API that does not answer is not a verdict: the
  * callback is left to be sent again ({@link CarrierWebhookRetry}).</p>
@@ -89,9 +94,12 @@ class AhamoveOutcomeVerifier {
             case ORDER_CANCELLED -> order(report.reference(), "CANCELLED", state);
             case RETURNED -> {
                 String order = order(report.reference(), "COMPLETED", state);
-                yield order != null ? order : state.subStatus() == null || "RETURNED".equals(state.subStatus()) ? null
+                // A callback is read as "returned" only from COMPLETED / RETURNED, so the API must give both: a
+                // completed order with no sub-status is an ordinary completion, not the goods back.
+                yield order != null ? order : "RETURNED".equals(state.subStatus()) ? null
                         : "The callback says order %s is returned; the carrier's API says %s".formatted(
-                                report.reference(), state.subStatus());
+                                report.reference(), state.subStatus() == null ? "nothing of a return"
+                                        : state.subStatus());
             }
             case ORDER_COMPLETED -> {
                 String order = order(report.reference(), "COMPLETED", state);

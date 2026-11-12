@@ -209,6 +209,12 @@ class AhamoveOutcomeVerifierWireMockTest {
 
         ahamoveGives(order("COMPLETED", "IN_RETURN", "FAILED"));
         assertThat(verifier.verify(carrier, returned)).contains("returned").contains("IN_RETURN");
+        // Review F1: an order completed in the ordinary way - no sub-status at all - is not the goods back. A forged
+        // "returned" for a completed order whose failed drop-off is still with the driver must not pass.
+        ahamoveGives(order("COMPLETED", "", "COMPLETED", "FAILED"));
+        assertThat(verifier.verify(carrier, returned)).contains("returned").contains("nothing of a return");
+        ahamoveGives("{\"_id\":\"" + ORDER + "\",\"status\":\"COMPLETED\",\"path\":[{},{\"status\":\"FAILED\"}]}");
+        assertThat(verifier.verify(carrier, returned)).contains("nothing of a return");
         ahamoveGives(order("IN PROCESS", "", "FAILED"));
         assertThat(verifier.verify(carrier, returned)).contains("COMPLETED").contains("IN PROCESS");
     }
