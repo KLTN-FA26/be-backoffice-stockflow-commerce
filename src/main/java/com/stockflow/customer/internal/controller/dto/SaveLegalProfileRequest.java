@@ -1,13 +1,22 @@
 package com.stockflow.customer.internal.controller.dto;
 
-import jakarta.validation.constraints.NotBlank;
-import jakarta.validation.constraints.Size;
-
-/** A customer's legal profile, whole (4B-4); {@code version} is the one read, absent for the first. */
+/**
+ * A customer's legal profile, whole (4B-4; WF-05 E1); {@code version} is the one read, absent for the first. Not
+ * validated here: the service checks every field after the caller is known to be staff.
+ *
+ * @param invoiceEmail where e-invoices are sent; absent takes the customer's contact e-mail address
+ * @param bankAccount  the customer's bank account for refunds; absent records none
+ */
 public record SaveLegalProfileRequest(
-        @NotBlank @Size(max = 500) String registeredAddress,
-        @NotBlank @Size(max = 200) String representativeName,
-        @NotBlank @Size(max = 100) String representativeTitle,
+        String registeredAddress,
+        String representativeName,
+        String representativeTitle,
+        String invoiceEmail,
+        BankAccount bankAccount,
         Long version
 ) {
+
+    /** All three are required when an account is given. */
+    public record BankAccount(String accountNumber, String bankName, String accountHolder) {
+    }
 }

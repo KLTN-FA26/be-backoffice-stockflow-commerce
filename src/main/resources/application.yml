@@ -376,6 +376,11 @@ stockflow:
         # only the in-app inbox for now, while the order and return mail here still describes flows they dropped
         # (guest orders, free replacement orders). The portal invitation is not customer order mail and still goes.
         enabled: ${CUSTOMER_EMAIL_ENABLED:false}
+        # E-invoice mail to the buyer (an invoice issued, with its PDF and XML; an error notice): its own switch, ON by
+        # default in every profile. An issued invoice is a legal record the seller must send the buyer in the way they
+        # agreed (NĐ 254/2026/NĐ-CP Điều 12 khoản 3) - the e-mail the invoice names, and the portal - so it does not
+        # wait for the order mail's later phase. Turn it off only on a server that must never write to real buyers.
+        einvoice-enabled: ${EINVOICE_EMAIL_ENABLED:true}
         max-attempts: 10
         first-retry-delay: PT1M
         max-retry-delay: PT6H
@@ -417,15 +422,24 @@ stockflow:
     access-key: ${MINIO_ACCESS_KEY:stockflow}
     secret-key: ${MINIO_SECRET_KEY:stockflow123}
     presigned-url-ttl: PT10M        # a signed URL is a credential with no revocation; keep it short
-    # S3 Object Lock on business records (ObjectLockProperties): a confirmed design's files and a sales
-    # contract cannot be deleted or overwritten for these periods. Needs a bucket with Object Lock
-    # (infra/aws); MinIO in development has none, so it is off unless the deployment turns it on.
-    # The periods are placeholders until the business confirms them against the law that applies.
+    # S3 Object Lock on business records (ObjectLockProperties): a confirmed design's files, a sales
+    # contract and an issued e-invoice's XML and PDF cannot be deleted or overwritten for these periods. Needs a
+    # bucket with Object Lock (infra/aws); MinIO in development has none, so it is off unless the deployment turns it
+    # on - and while it is off, nothing below is used. The design and contract periods are placeholders until the
+    # business confirms them against the law that applies.
     object-lock:
       enabled: false
+      # The mode of design and contract locks.
       mode: GOVERNANCE
       confirmed-design: P1095D
       sales-contract: P3650D    # a sales contract as sent and as signed (4B-4)
+      # An issued e-invoice's XML and PDF: locked until the end of the tenth year after the year of issue, plus a
+      # day - accounting records are kept ten years from the end of the accounting year (Luat Ke toan 2015 Dieu 41;
+      # ND 174/2016 Dieu 12), not from the day of issue. A Period, counted from 1 January after the year of issue.
+      einvoice: P10Y
+      # COMPLIANCE whatever `mode` says: nobody, not even the account root, can lift it. GOVERNANCE only on a test
+      # bucket, whose invoices are not records and must stay deletable.
+      einvoice-mode: ${S3_OBJECT_LOCK_EINVOICE_MODE:COMPLIANCE}
     # Browser uploads straight to the object store (StagedUploads, docs/direct-uploads-fe-contract.md).
     staged-upload:
       url-ttl: PT15M            # the signed PUT; S3 checks it when the upload starts, not when it ends
@@ -494,16 +508,58 @@ stockflow:
       account-number: ${COMPANY_BANK_ACCOUNT_NUMBER:}
       account-name: ${COMPANY_BANK_ACCOUNT_NAME:}
 
+  # The seller a sales contract names (4B-4, kltn-docs 14 §4.3 step 11) and an e-invoice is issued by (WF-05 E1/E2).
+  # Blank here on purpose: local, dev and test carry a demo one, and in the prod profile the application refuses
+  # to start until all five are set (SellerProfileRequirement), so no contract or invoice names a made-up company.
+  seller:
+    name: ${SELLER_NAME:}
+    tax-code: ${SELLER_TAX_CODE:}
+    address: ${SELLER_ADDRESS:}
+    representative: ${SELLER_REPRESENTATIVE:}
+    representative-title: ${SELLER_REPRESENTATIVE_TITLE:}
+  invoicing:
+    # E-invoices (WF-05 E2). Which provider issues and whether complete drafts are issued automatically are data
+    # (invoicing.einvoice_provider_config), changed at runtime by the administrator - not here.
+    # How often invoices waiting for the provider's answer are asked about, and complete drafts issued when automatic
+    # issuing is on.
+    reconcile-interval: ${EINVOICE_RECONCILE_INTERVAL:PT30S}
+    # How often drafts close to their deadline are looked for, and how long before it the accountants are told. An
+    # invoice is signed and sent no later than the working day after its date (ND 254/2026 Phu luc diem 7).
+    deadline-sweep-interval: ${EINVOICE_DEADLINE_SWEEP_INTERVAL:PT15M}
+    due-warning-lead: ${EINVOICE_DUE_WARNING_LEAD:P1D}
+    # How long an invoice may wait for the provider's answer before the accountants are told it is stuck (the same
+    # sweep). The reconciliation keeps asking either way.
+    stuck-after: ${EINVOICE_STUCK_AFTER:PT30M}
+    sandbox:
+      # How long the sandbox provider takes to "sign and get the tax authority's code" before a result is there.
+      processing-delay: ${EINVOICE_SANDBOX_PROCESSING_DELAY:PT5S}
+      # Buyer tax codes the sandbox refuses as wrong, to rehearse a rejection.
+      rejected-tax-codes: ${EINVOICE_SANDBOX_REJECTED_TAX_CODES:0000000001}
+    viettel:
+      # Viettel SInvoice (WF-05 E3). Not in use until an administrator stores its account and switches to it
+      # (PUT /api/v1/einvoice-settings/providers/VIETTEL_SINVOICE/account, then .../activation); the account's password
+      # is sealed with STOCKFLOW_SECRETS_KEY and is not configuration. Viettel's public description names one API host;
+      # a test account is used against it, so the sandbox address differs only if Viettel gives another.
+      production-url: ${EINVOICE_VIETTEL_PRODUCTION_URL:https://api-vinvoice.viettel.vn}
+      sandbox-url: ${EINVOICE_VIETTEL_SANDBOX_URL:https://api-vinvoice.viettel.vn}
+      # Viettel asks for at least 90 seconds before a transaction is sent again, and does not stop two submissions of
+      # one transaction that overlap: the answer is waited for longer than that, and a transaction a look-up does not
+      # find is not submitted again inside the quiet period since it was last sent, nor after Viettel has forgotten its
+      # id (three days after it was first sent). One call is up to four round trips (log-in and request, both again on
+      # a 401): 4 x (connect-timeout + read-timeout) must stay below the quiet period and the 15-minute provider lease,
+      # or the application does not start.
+      read-timeout: ${EINVOICE_VIETTEL_READ_TIMEOUT:PT95S}
+      resubmit-quiet-period: ${EINVOICE_VIETTEL_RESUBMIT_QUIET_PERIOD:PT7M}
+      resubmit-window: ${EINVOICE_VIETTEL_RESUBMIT_WINDOW:P3D}
+      file-pause: ${EINVOICE_VIETTEL_FILE_PAUSE:PT2S}
+      payment-status-paid: ${EINVOICE_VIETTEL_PAYMENT_STATUS_PAID:true}
+    corrections:
+      # Whether a 04/SS-HDDT notice may also be recorded for an invoice that was adjusted or replaced. TT 91/2026
+      # Dieu 10 khoan 1 diem b does not ask for one and it is not verified whether a provider sends it by itself
+      # (E0 row 2): off until the provider or the tax authority says otherwise. A wrong buyer name or address
+      # (diem a) is always notified, whatever this says.
+      error-notice-with-correction: ${EINVOICE_ERROR_NOTICE_WITH_CORRECTION:false}
   order:
-    # The seller a sales contract names (4B-4, kltn-docs 14 §4.3 step 11). Blank here on purpose and in prod: drawing up
-    # a contract answers 503 SELLER_PROFILE_UNAVAILABLE until every field is set per deployment, so no contract ever
-    # names a made-up company. local, dev and test carry a demo one.
-    seller:
-      name: ${SELLER_NAME:}
-      tax-code: ${SELLER_TAX_CODE:}
-      address: ${SELLER_ADDRESS:}
-      representative: ${SELLER_REPRESENTATIVE:}
-      representative-title: ${SELLER_REPRESENTATIVE_TITLE:}
     contract:
       # Print-sample rounds a new contract offers without charge (14 BR-18, decided 2026-11-05); Sales may change it.
       free-sample-rounds: ${CONTRACT_FREE_SAMPLE_ROUNDS:2}

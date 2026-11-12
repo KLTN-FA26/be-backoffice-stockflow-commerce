@@ -73,6 +73,7 @@ class OrderLifecycleIntegrationTest {
     @Autowired CancellationRequestService cancellationRequests;
     @Autowired CustomerOrders customerOrders;
     @Autowired OrderSettlementService settlements;
+    @Autowired com.stockflow.invoicing.internal.service.EInvoiceIssuance einvoices;
     @Autowired com.stockflow.inventory.api.InventoryService inventory;
     @Autowired TransactionTemplate tx;
     @Autowired JdbcTemplate jdbc;
@@ -155,6 +156,16 @@ class OrderLifecycleIntegrationTest {
     @DisplayName("prepaid, end to end: hold and resolve, split handover, one failed then redelivered, completed, closed; "
             + "the history names who and why")
     void prepaidEndToEnd() {
+        // The buyer an e-invoice is issued to: a tax code and the e-mail its invoices go to (21 BR-06).
+        tx.executeWithoutResult(s -> {
+            jdbc.update("UPDATE customer.customer SET tax_code = ? WHERE id = ?", "03" + (10_000_000
+                    + java.util.concurrent.ThreadLocalRandom.current().nextInt(89_999_999)), customer);
+            jdbc.update("INSERT INTO customer.customer_legal_profile (id, customer_id, registered_address, "
+                    + "representative_name, representative_title, invoice_email, version, created_at) "
+                    + "VALUES (gen_random_uuid(), ?, '1 Le Loi, TP HCM', 'Tran Van A', 'Director', ?, 0, NOW()) "
+                    + "ON CONFLICT (customer_id) DO UPDATE SET invoice_email = EXCLUDED.invoice_email", customer,
+                    "ke.toan@" + customer + ".example.com");
+        });
         OrderSummary order = picking(4);
         assertThat(order.status()).isEqualTo(OrderStatus.PICKING);
 
@@ -195,6 +206,19 @@ class OrderLifecycleIntegrationTest {
         tx.executeWithoutResult(s -> jdbc.update("UPDATE ordering.customer_order SET delivered_at = NOW() - interval '8 days' "
                 + "WHERE id = ?", order.orderId()));
         assertThat(settlements.completionCandidates(0, 1000)).contains(order.orderId());
+        // WF-05 plan 4, condition 5: both deliveries were drawn up as drafts (after commit); until the accountant
+        // issues them the order stays DELIVERED.
+        com.stockflow.support.Await.until("the drafts of both deliveries", Duration.ofSeconds(20),
+                () -> jdbc.queryForObject("SELECT count(*) FROM invoicing.einvoice WHERE order_id = ? AND status = "
+                        + "'DRAFT'", Long.class, order.orderId()) == 2);
+        assertThat(settlements.complete(order.orderId())).as("its deliveries are not invoiced yet").isFalse();
+        assertThat(statusOf(order)).isEqualTo(OrderStatus.DELIVERED);
+        jdbc.queryForList("SELECT id FROM invoicing.einvoice WHERE order_id = ?", UUID.class, order.orderId())
+                .forEach(invoice -> einvoices.issue(invoice, null, staff));
+        // Issuing returns SUBMITTING; the provider is called on another thread (WF-05 E3).
+        com.stockflow.support.Await.until("both invoices issued", Duration.ofSeconds(20),
+                () -> jdbc.queryForObject("SELECT count(*) FROM invoicing.einvoice WHERE order_id = ? AND status = "
+                        + "'ISSUED'", Long.class, order.orderId()) == 2);
         assertThat(settlements.complete(order.orderId())).isTrue();
         assertThat(statusOf(order)).isEqualTo(OrderStatus.COMPLETED);
         tx.executeWithoutResult(s -> jdbc.update("UPDATE ordering.customer_order SET completed_at = NOW() - interval '31 days' "

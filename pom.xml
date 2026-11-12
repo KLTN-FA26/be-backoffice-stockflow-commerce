@@ -373,7 +373,8 @@
     </dependency>
 
     <!--
-      A carrier's HTTP API played back over a real socket (WF-05 fix plan item 6): what MockRestServiceServer cannot
+      A carrier's HTTP API, and an e-invoice provider's (Viettel SInvoice), played back over a real socket (WF-05 fix
+      plan items 1 and 6): what MockRestServiceServer cannot
       show is the client the application really builds - its timeouts, its error handling, a connection refused. The
       standalone jar carries its own Jetty, shaded, so it cannot disagree with the server Spring Boot manages.
     -->

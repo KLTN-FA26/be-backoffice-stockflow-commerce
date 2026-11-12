@@ -5,7 +5,8 @@ import com.stockflow.order.internal.domain.Order;
 import com.stockflow.order.internal.domain.OrderAddressSnapshot;
 import com.stockflow.order.internal.domain.OrderFee;
 import com.stockflow.order.internal.domain.OrderLine;
-import com.stockflow.order.internal.service.PrintedDocument.Line;
+import com.stockflow.common.label.PrintedDocument;
+import com.stockflow.common.label.PrintedDocument.Line;
 import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;

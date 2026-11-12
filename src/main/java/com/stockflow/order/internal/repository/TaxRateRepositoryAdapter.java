@@ -6,6 +6,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -13,7 +14,7 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * {@code ordering.tax_rate} and the order lines a SKU's production history is read from (4B-3). Plain SQL: two small
+ * {@code ordering.tax_rate}, its periods ({@code ordering.tax_rate_period}, WF-05 E2) and the order lines a SKU's production history is read from (4B-3). Plain SQL: two small
  * reads that join the caller's transaction.
  */
 @Repository
@@ -30,6 +31,19 @@ class TaxRateRepositoryAdapter implements TaxRates, SkuProductionHistory {
         Map<String, BigDecimal> rates = new HashMap<>();
         jdbc.query("SELECT tax_class, rate FROM ordering.tax_rate",
                 row -> { rates.put(row.getString(1), row.getBigDecimal(2)); });
+        return rates;
+    }
+
+    @Override
+    public Map<String, BigDecimal> onDay(LocalDate day) {
+        Map<String, BigDecimal> rates = new HashMap<>();
+        // At most one period covers a day (ex_tax_rate_period_overlap), so the join never doubles a class.
+        jdbc.query("""
+                SELECT r.tax_class, COALESCE(p.rate, r.rate)
+                  FROM ordering.tax_rate r
+                  LEFT JOIN ordering.tax_rate_period p
+                    ON p.tax_class = r.tax_class AND ? BETWEEN p.valid_from AND p.valid_to""",
+                row -> { rates.put(row.getString(1), row.getBigDecimal(2)); }, java.sql.Date.valueOf(day));
         return rates;
     }
 

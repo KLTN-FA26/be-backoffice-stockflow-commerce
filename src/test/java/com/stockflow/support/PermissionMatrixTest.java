@@ -95,6 +95,8 @@ class PermissionMatrixTest {
                     + "the token (4B-10: replaces GET /orders/payment-terms)"),
             Map.entry("GET /api/v1/installments/me", "the caller's own installments, selected by the customer profile of the "
                     + "token (4B-6)"),
+            Map.entry("GET /api/v1/einvoices/me", "the e-invoices issued to the caller's own customer, selected by the "
+                    + "customer profile of the token (WF-05 E5)"),
             Map.entry("GET /api/v1/customer/production-samples", "the caller's own print samples waiting for them, "
                     + "selected by the customer profile of the token (4A-4)"),
             Map.entry("GET /api/v1/notifications/me", "the caller's own inbox: every query is recipient_id = the token's subject"),

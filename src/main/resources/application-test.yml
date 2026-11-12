@@ -39,14 +39,20 @@ stockflow:
       bank-name: ${COMPANY_BANK_NAME:DEMO BANK (not a real bank)}
       account-number: ${COMPANY_BANK_ACCOUNT_NUMBER:0000000000}
       account-name: ${COMPANY_BANK_ACCOUNT_NAME:DEMO STOCKFLOW CO LTD}
-  order:
-    # Obviously not a real company (4B-4): demo values so a sales contract can be drawn up here.
-    seller:
-      name: ${SELLER_NAME:DEMO STOCKFLOW CO LTD}
-      tax-code: ${SELLER_TAX_CODE:0000000000}
-      address: ${SELLER_ADDRESS:1 Demo Street, Ho Chi Minh City}
-      representative: ${SELLER_REPRESENTATIVE:Demo Director}
-      representative-title: ${SELLER_REPRESENTATIVE_TITLE:Director}
+  # Obviously not a real company (4B-4, WF-05 E1): demo values so a contract and an invoice can be drawn up here.
+  seller:
+    name: ${SELLER_NAME:DEMO STOCKFLOW CO LTD}
+    tax-code: ${SELLER_TAX_CODE:0000000000}
+    address: ${SELLER_ADDRESS:1 Demo Street, Ho Chi Minh City}
+    representative: ${SELLER_REPRESENTATIVE:Demo Director}
+    representative-title: ${SELLER_REPRESENTATIVE_TITLE:Director}
+  invoicing:
+    # The tests drive reconciliation, automatic issuing and the deadline sweep by hand: a job firing in the middle of
+    # a test would answer for the provider before the test asked. The sandbox answers at once.
+    reconcile-interval: PT24H
+    deadline-sweep-interval: PT24H
+    sandbox:
+      processing-delay: PT0S
   reporting:
     # The tests rebuild by hand against the orders they place; a backfill racing the first test would only add noise.
     backfill-on-startup: false

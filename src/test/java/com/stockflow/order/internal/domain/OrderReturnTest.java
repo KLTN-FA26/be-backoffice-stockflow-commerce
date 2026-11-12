@@ -40,7 +40,7 @@ class OrderReturnTest {
         assertThat(order.requestReturn(STAFF, NOW, "RETURN_REQUESTED RMA-1")).isTrue();
         assertThat(order.requestReturn(STAFF, NOW, "RETURN_REQUESTED RMA-2")).isFalse();
         assertThat(order.status()).isEqualTo(OrderStatus.RETURN_REQUESTED);
-        assertThat(order.complete(NOW.plus(Duration.ofDays(30)), Duration.ofDays(7), false, false)).isFalse();
+        assertThat(order.complete(NOW.plus(Duration.ofDays(30)), Duration.ofDays(7), false, false, false)).isFalse();
         assertThat(order.pullTransitions()).singleElement().satisfies(t -> {
             assertThat(t.to()).isEqualTo(OrderStatus.RETURN_REQUESTED);
             assertThat(t.reason()).isEqualTo("RETURN_REQUESTED RMA-1");
@@ -55,7 +55,7 @@ class OrderReturnTest {
         assertThat(order.withdrawReturn(STAFF, NOW, "RETURN_REJECTED RMA-1")).isTrue();
         assertThat(order.withdrawReturn(STAFF, NOW, "again")).isFalse();
         assertThat(order.status()).isEqualTo(OrderStatus.DELIVERED);
-        assertThat(order.complete(NOW.plus(Duration.ofDays(6)), Duration.ofDays(7), false, false)).isTrue();
+        assertThat(order.complete(NOW.plus(Duration.ofDays(6)), Duration.ofDays(7), false, false, false)).isTrue();
     }
 
     @Test
@@ -72,7 +72,7 @@ class OrderReturnTest {
             assertThat(t.to()).isEqualTo(OrderStatus.RETURNED);
             assertThat(t.reason()).isEqualTo("GOODS_RETURNED RMA-1");
         });
-        assertThat(order.complete(NOW.plus(Duration.ofDays(30)), Duration.ofDays(7), false, false))
+        assertThat(order.complete(NOW.plus(Duration.ofDays(30)), Duration.ofDays(7), false, false, false))
                 .as("a returned order never completes").isFalse();
     }
 

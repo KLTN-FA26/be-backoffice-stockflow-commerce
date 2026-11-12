@@ -354,8 +354,55 @@ public enum ErrorCode {
      * {@code details} lists each order, why, and what it still owes.
      */
     LOAD_HANDOVER_BLOCKED("Some orders on this vehicle may not be handed over yet", 409),
-    /** 4B-4: stockflow.order.seller.* is blank in this deployment. */
-    SELLER_PROFILE_UNAVAILABLE("The seller's company details are not configured; contracts cannot be drawn up", 503),
+    /** WF-05 E2: no e-invoice with that id. */
+    EINVOICE_NOT_FOUND("E-invoice not found", 404),
+    /** WF-05 E2 (kltn-docs 21 §5.1): the e-invoice's status does not allow this - an issued invoice above all, which is never cancelled or changed (TT 91 Điều 10). */
+    EINVOICE_INVALID_TRANSITION("The e-invoice's status does not allow this", 409),
+    /** WF-05 E2 (21 BR-03): only a draft e-invoice is corrected. */
+    EINVOICE_NOT_DRAFT("Only a draft e-invoice can be changed", 409),
+    /** WF-05 E2 (21 BR-06; NĐ 254 Phụ lục điểm 4.b): the buyer's name, tax code or address is missing, so the invoice is not issued. */
+    EINVOICE_BUYER_PROFILE_INCOMPLETE("The buyer's name, tax code and address are needed before the invoice is issued", 409),
+    /** WF-05 E2 (21 BR-01): the shipment is not delivered, or delivered nothing an invoice can carry. */
+    EINVOICE_NOT_INVOICEABLE("This shipment cannot be invoiced: it is not delivered", 409),
+    /**
+     * WF-05 E2 (NĐ 254 Điều 9 khoản 1; WF05-E0 L6): the delivered shipment has no delivery time, and the invoice is
+     * dated by it - never by today. A code of its own because it reaches the accountants as the cause of an
+     * {@code EInvoiceDraftFailed}, and it tells them what to correct.
+     */
+    EINVOICE_DELIVERY_TIME_MISSING("The delivery has no delivery time to date its invoice by; record it first", 409),
+    /** WF-05 E2 (TT 91 Điều 4): no invoice series is in use at the provider for the invoice's year. */
+    EINVOICE_SERIES_NOT_CONFIGURED("No invoice series is configured for the invoice's year", 409),
+    /**
+     * WF-05 E2 (NĐ 254 Phụ lục điểm 2; TT 91 Điều 10 khoản 6a): an invoice of the same year dated earlier is still to be
+     * issued; issuing this one first would give it the lower number, and numbers would run against the dates.
+     */
+    EINVOICE_OLDER_DRAFT_PENDING("An invoice dated earlier is still to be issued; issue or void it first", 409),
+    /** WF-05 E2: the e-invoice is not issued, so it has no XML or PDF yet. */
+    EINVOICE_NOT_ISSUED("The e-invoice is not issued yet", 409),
+    /** WF-05 E2: the e-invoice provider is not configured, or did not answer; nothing is known about the transaction until it is asked again. */
+    EINVOICE_PROVIDER_UNAVAILABLE("The e-invoice provider is not available right now; the invoice will be checked again", 503),
+    /** WF-05 E3: a real e-invoice provider is put in use only once its account is stored. */
+    EINVOICE_PROVIDER_ACCOUNT_INCOMPLETE("The e-invoice provider's account is not stored yet", 409),
+    /** WF-05 E3: an invoice at the provider is sent as a new transaction only when the provider no longer remembers the old one and confirms it holds no such invoice. */
+    EINVOICE_RESUBMISSION_REFUSED("The e-invoice cannot be sent as a new transaction: the provider may hold it", 409),
+    /** WF-05 E3+E4: the provider in use writes every invoice as an original, so a correction sent to it would be a second invoice. */
+    EINVOICE_PROVIDER_CANNOT_CORRECT("The e-invoice provider in use cannot issue adjustments or replacements yet; the correction is kept as a draft", 409),
+    /** WF-05 E4 (TT 91 Điều 10): only an issued invoice still in force is adjusted, replaced or notified as drawn up wrongly. */
+    EINVOICE_NOT_IN_FORCE("Only an issued e-invoice that is still in force can be corrected", 409),
+    /** WF-05 E4 (TT 91 Điều 10 khoản 6 điểm a): an invoice already adjusted is adjusted again, one replaced is replaced again. */
+    EINVOICE_CORRECTION_FORM_FIXED("This e-invoice is already being corrected in the other form; the form first used is kept", 409),
+    /** WF-05 E4: the correction asked for is not one the law gives for this invoice (an adjustment of an adjustment, a return that adds, an agreement where none is asked). */
+    EINVOICE_CORRECTION_NOT_APPLICABLE("This correction does not apply to this e-invoice", 409),
+    /** WF-05 E4 (TT 91 Điều 10 khoản 1 điểm b): the correction of an error is not sent without the written agreement with the buyer. */
+    EINVOICE_AGREEMENT_REQUIRED("The written agreement with the buyer - its file, number and date - is needed before the correction is issued", 409),
+    /** WF-05 E4: adjustments may not reduce an invoice below nothing. */
+    EINVOICE_ADJUSTMENT_EXCEEDS_INVOICE("The adjustment would reduce the e-invoice by more than it holds", 409),
+    /** WF-05 E4: no such 04/SS-HĐĐT notice on this invoice. */
+    EINVOICE_ERROR_NOTICE_NOT_FOUND("Notice of an e-invoice drawn up wrongly not found", 404),
+    /** WF-05 E4: a notice of this invoice is still on its way, or the notice asked about is already answered. */
+    EINVOICE_ERROR_NOTICE_NOT_SENDABLE("This notice cannot be recorded or sent now: another one of the invoice is still open, or it is already answered", 409),
+    /** 4B-4, WF-05 E2: stockflow.seller.* is blank in this deployment; no contract or invoice names a seller. */
+    SELLER_PROFILE_UNAVAILABLE("The seller's company details are not configured; contracts and invoices cannot be drawn up", 503),
     /**
      * 4B-2 (kltn-docs 14 BR-04, 13 BR-02): a quote line, an order line placed from one, or a customer price names one
      * of the customer's own SKUs - not a stock variant or a blank. Another customer's SKU answers VARIANT_NOT_FOUND.
