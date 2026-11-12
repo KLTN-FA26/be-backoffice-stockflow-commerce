@@ -28,7 +28,9 @@ import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Ahamove's partner API v3 (3-4; developers.ahamove.com): {@code POST /v3/accounts/token},
- * {@code GET /v3/services?city_id=&delivery_type=TRUCK}, {@code POST /v3/orders}, {@code DELETE /v3/orders/{id}}.
+ * {@code GET /v3/services?city_id=&delivery_type=TRUCK}, {@code POST /v3/orders}, {@code DELETE /v3/orders/{id}},
+ * {@code GET /v3/orders/{id}} (the order as it is now: after a refused cancel, and before a final outcome its unsigned
+ * callback reported is applied).
  *
  * <p>A token is asked for with the carrier's account (the registered phone number) and key, and kept in memory for that
  * account and key: on production it lasts a year, and asking for a new one invalidates the old (Ahamove's FAQ), so it is
@@ -99,7 +101,7 @@ class AhamoveGateway implements CarrierBookingGateway {
     }
 
     @Override
-    public java.util.Optional<String> orderStatus(Caller caller, String orderId) {
+    public java.util.Optional<OrderState> orderState(Caller caller, String orderId) {
         Answer answer;
         try {
             answer = authorised(caller, "STATUS", HttpMethod.GET, "/v3/orders/" + UriUtils.encodePathSegment(orderId,
@@ -114,7 +116,24 @@ class AhamoveGateway implements CarrierBookingGateway {
         if (order != null && order.has("order") && order.get("order").isObject()) {
             order = order.get("order");
         }
-        return java.util.Optional.ofNullable(text(order, "status")).map(s -> s.strip().toUpperCase(Locale.ROOT));
+        if (order == null || !order.isObject()) {
+            return java.util.Optional.empty();
+        }
+        // The order as its callbacks carry it: path[0] is the pickup, each point after it a drop-off.
+        List<String> stops = new ArrayList<>();
+        JsonNode path = order.get("path");
+        if (path != null && path.isArray()) {
+            for (int k = 1; k < path.size(); k++) {
+                String status = upper(text(path.get(k), "status"));
+                stops.add(status == null ? "" : status);
+            }
+        }
+        return java.util.Optional.of(new OrderState(upper(text(order, "status")), upper(text(order, "sub_status")),
+                stops));
+    }
+
+    private static String upper(String value) {
+        return value == null ? null : value.strip().toUpperCase(Locale.ROOT);
     }
 
     @Override

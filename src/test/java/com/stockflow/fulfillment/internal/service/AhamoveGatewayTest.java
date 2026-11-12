@@ -63,7 +63,7 @@ class AhamoveGatewayTest {
                 return builder.baseUrl(baseUrl);
             }
         };
-        gateway = new AhamoveGateway(clients, new AhamoveProperties(STAGING, STAGING, "Khách hàng muốn hủy đơn"),
+        gateway = new AhamoveGateway(clients, new AhamoveProperties(STAGING, STAGING, "Khách hàng muốn hủy đơn", null),
                 calls, new ObjectMapper());
         caller = new CarrierBookingGateway.Caller(UUID.randomUUID(), UUID.randomUUID(), CarrierApiEnvironment.STAGING,
                 "84908000000", KEY);
@@ -208,6 +208,30 @@ class AhamoveGatewayTest {
 
         assertThat(gateway.orderStatus(caller, "24ABCD")).contains("CANCELLED");
         assertThat(gateway.orderStatus(caller, "24ABCE")).isEmpty();
+        server.verify();
+    }
+
+    @Test
+    @DisplayName("an order is read whole before a final outcome its callback reported is applied: its status, its "
+            + "sub-status and each drop-off's status, the pickup left out; an order with no body is not one")
+    void readsAnOrdersState() {
+        token("t1");
+        server.expect(requestTo(STAGING + "/v3/orders/24ABCD")).andExpect(method(HttpMethod.GET))
+                .andExpect(header("Authorization", "Bearer t1"))
+                .andRespond(withSuccess("{\"order\":{\"_id\":\"24ABCD\",\"status\":\"completed\",\"sub_status\":"
+                        + "\"returned\",\"path\":[{\"address\":\"kho\",\"status\":\"\"},{\"status\":\"Completed\"},"
+                        + "{\"address\":\"2 Hai Bà Trưng\"},{\"status\":\"FAILED\"}]}}", MediaType.APPLICATION_JSON));
+        server.expect(requestTo(STAGING + "/v3/orders/24ABCF")).andRespond(withSuccess("", MediaType.APPLICATION_JSON));
+
+        CarrierBookingGateway.OrderState state = gateway.orderState(caller, "24ABCD").orElseThrow();
+        assertThat(state.status()).isEqualTo("COMPLETED");
+        assertThat(state.subStatus()).isEqualTo("RETURNED");
+        assertThat(state.stopStatuses()).containsExactly("COMPLETED", "", "FAILED");
+        assertThat(state.stopStatus(1)).isEqualTo("COMPLETED");
+        assertThat(state.stopStatus(3)).isEqualTo("FAILED");
+        assertThat(state.stopStatus(0)).isNull();
+        assertThat(state.stopStatus(4)).isNull();
+        assertThat(gateway.orderState(caller, "24ABCF")).isEmpty();
         server.verify();
     }
 

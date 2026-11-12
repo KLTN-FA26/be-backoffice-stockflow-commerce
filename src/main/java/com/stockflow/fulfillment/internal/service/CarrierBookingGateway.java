@@ -65,12 +65,43 @@ public interface CarrierBookingGateway {
     List<ServiceOption> services(Caller caller, String cityId);
 
     /**
+     * An order as the carrier's API gives it now.
+     *
+     * @param status       the order's status, upper case ({@code ASSIGNING}, {@code IN PROCESS}, {@code COMPLETED},
+     *                     {@code CANCELLED}, ...); null when the carrier gave none
+     * @param subStatus    the order's sub-status, upper case; null when the carrier gave none
+     * @param stopStatuses the status of each drop-off in the order they were booked in (the first drop-off first),
+     *                     upper case, empty for one with none yet
+     */
+    record OrderState(String status, String subStatus, List<String> stopStatuses) {
+
+        public OrderState {
+            stopStatuses = stopStatuses == null ? List.of() : List.copyOf(stopStatuses);
+        }
+
+        /** The status of drop-off {@code stop} (1 = the first); null when the order has no such drop-off. */
+        public String stopStatus(int stop) {
+            return stop < 1 || stop > stopStatuses.size() ? null : stopStatuses.get(stop - 1);
+        }
+    }
+
+    /**
+     * The order as the carrier gives it now; empty when it knows no such order. Asked before a final outcome an
+     * unsigned webhook reported is applied (WF-05 fix plan item 6).
+     *
+     * @throws CarrierCallFailed when the carrier refused or did not answer
+     */
+    java.util.Optional<OrderState> orderState(Caller caller, String orderId);
+
+    /**
      * The status the carrier gives the order now ({@code ASSIGNING}, {@code CANCELLED}, ...); empty when it knows no
      * such order. Asked after a refused cancel, to tell an order already gone from one the driver picked up.
      *
      * @throws CarrierCallFailed when the carrier refused or did not answer
      */
-    java.util.Optional<String> orderStatus(Caller caller, String orderId);
+    default java.util.Optional<String> orderStatus(Caller caller, String orderId) {
+        return orderState(caller, orderId).map(OrderState::status);
+    }
 
     /**
      * A call that did not do what was asked.

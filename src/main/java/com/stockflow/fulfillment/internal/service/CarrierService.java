@@ -42,6 +42,9 @@ class CarrierService implements Carriers {
     private static final Set<String> STATUSES = Set.of("ACTIVE", "INACTIVE");
     private static final java.util.regex.Pattern CODE = java.util.regex.Pattern.compile("^[A-Z0-9][A-Z0-9_-]{1,31}$");
     private static final int MAX_SECRET = 512;
+    /** What the two webhook credentials are sealed under ({@link #context}). */
+    static final String WEBHOOK_AUTH_VALUE = "webhook-auth-value";
+    static final String WEBHOOK_AUTH_VALUE_NEXT = "webhook-auth-value-next";
 
     private final CarrierJpaRepository carriers;
     private final SecretCipher cipher;
@@ -102,6 +105,48 @@ class CarrierService implements Carriers {
                 carrier.status() == null ? row.getStatus() : status(carrier.status()));
         if (carrier.connection() != null) {
             connect(row, carrier.connection());
+        }
+        return view(carriers.saveAndFlush(row));
+    }
+
+    @Override
+    public CarrierView rotateWebhookCredential(UUID id, CredentialRotation step, String value, Long version) {
+        CarrierJpaEntity row = require(id);
+        if (version == null || version != row.getVersion()) {
+            throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK,
+                    "Carrier %s changed meanwhile; reload it".formatted(row.getCode()));
+        }
+        if (step == null) {
+            throw invalid("step", "START, PROMOTE or DISCARD");
+        }
+        if (!CarrierConnectionType.API_BOOKING.name().equals(row.getConnectionType())
+                || row.getWebhookAuthValueSealed() == null) {
+            throw new BusinessException(ErrorCode.CARRIER_NOT_API_BOOKING, ("Carrier %s carries no credential in a "
+                    + "webhook header").formatted(row.getCode()));
+        }
+        String current = row.getWebhookAuthValueSealed();
+        String next = row.getWebhookAuthValueNextSealed();
+        if (step == CredentialRotation.START) {
+            List<FieldError> errors = new ArrayList<>();
+            String fresh = secret(value, "value", 16, errors);
+            if (fresh == null && errors.isEmpty()) {
+                errors.add(FieldError.of("value", "required: the new credential"));
+            }
+            if (fresh != null && fresh.equals(cipher.open(current, context(row, WEBHOOK_AUTH_VALUE)))) {
+                errors.add(FieldError.of("value", "the credential already in use"));
+            }
+            if (!errors.isEmpty()) {
+                throw invalid(errors);
+            }
+            row.webhookCredentials(current, cipher.seal(fresh, context(row, WEBHOOK_AUTH_VALUE_NEXT)));
+        } else if (next == null) {
+            throw new BusinessException(ErrorCode.CARRIER_CREDENTIAL_ROTATION_NOT_STARTED);
+        } else if (step == CredentialRotation.PROMOTE) {
+            // A sealed value opens only under what it was sealed under: the next one is sealed again as the current.
+            String promoted = cipher.open(next, context(row, WEBHOOK_AUTH_VALUE_NEXT));
+            row.webhookCredentials(cipher.seal(promoted, context(row, WEBHOOK_AUTH_VALUE)), null);
+        } else {
+            row.webhookCredentials(current, null);
         }
         return view(carriers.saveAndFlush(row));
     }
@@ -170,8 +215,10 @@ class CarrierService implements Carriers {
                 signed ? (webhookSecret != null ? cipher.seal(webhookSecret, context(row, "webhook-secret"))
                         : keptSecret) : null,
                 connection.webhookAuthHeader(),
-                booking ? (authValue != null ? cipher.seal(authValue, context(row, "webhook-auth-value"))
+                booking ? (authValue != null ? cipher.seal(authValue, context(row, WEBHOOK_AUTH_VALUE))
                         : keptAuth) : null,
+                // A rotation under way goes on while the first credential stays; a new first one ends it.
+                booking && authValue == null ? row.getWebhookAuthValueNextSealed() : null,
                 env == null ? null : env.name(), connection.apiAccount(),
                 booking ? (apiKey != null ? cipher.seal(apiKey, context(row, "api-key")) : keptKey) : null,
                 stored);
@@ -240,7 +287,8 @@ class CarrierService implements Carriers {
         return new CarrierView(row.getId(), row.getCode(), row.getName(), row.getContactName(), row.getContactPhone(),
                 row.getStatus(), new ConnectionView(row.getConnectionType(), row.isWebhookEnabled(),
                 row.getWebhookSecretSealed() != null, row.getWebhookAuthHeader(),
-                row.getWebhookAuthValueSealed() != null, row.getApiEnvironment(), row.getApiAccount(),
+                row.getWebhookAuthValueSealed() != null, row.getWebhookAuthValueNextSealed() != null,
+                row.getApiEnvironment(), row.getApiAccount(),
                 row.getApiKeySealed() != null, Map.copyOf(row.getFailureReasonMap())), row.getVersion());
     }
 

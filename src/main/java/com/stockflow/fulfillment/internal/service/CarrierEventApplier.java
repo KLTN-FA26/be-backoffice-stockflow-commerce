@@ -269,12 +269,9 @@ class CarrierEventApplier {
             return decide(event, CarrierEventResult.DUPLICATE, "The same report was handled already");
         }
         CarrierReport report = m.report();
-        if (report.reportedAt() != null) {
-            Instant last = latest(events.lastAppliedToLoad(m.loadId()),
-                    m.shipmentId() == null ? null : events.lastAppliedToShipment(m.shipmentId()));
-            if (last != null && report.reportedAt().isBefore(last)) {
-                return decide(event, CarrierEventResult.STALE, "Older than the last report applied (" + last + ")");
-            }
+        Instant last = newerApplied(m);
+        if (last != null) {
+            return decide(event, CarrierEventResult.STALE, "Older than the last report applied (" + last + ")");
         }
         Instant at = report.reportedAt() != null ? report.reportedAt() : event.getReceivedAt();
         Outcome outcome = switch (report.kind()) {
@@ -292,6 +289,38 @@ class CarrierEventApplier {
             case OTHER -> new Outcome(CarrierEventResult.IGNORED, "A status the system has no use for");
         };
         return decide(event, outcome.result(), outcome.note());
+    }
+
+    /**
+     * The time of a report applied to the same shipment, or to the load, that is later than this one's (BR-27: this one
+     * is then outdated); null when there is none, or the report carries no time.
+     */
+    private Instant newerApplied(Matched m) {
+        Instant reportedAt = m.report().reportedAt();
+        if (reportedAt == null) {
+            return null;
+        }
+        Instant last = latest(events.lastAppliedToLoad(m.loadId()),
+                m.shipmentId() == null ? null : events.lastAppliedToShipment(m.shipmentId()));
+        return last != null && reportedAt.isBefore(last) ? last : null;
+    }
+
+    /**
+     * Whether the report is neither a repeat nor outdated by what is committed now - read without the load's lock, so
+     * not the decision ({@link #apply} decides under it), only whether asking the carrier's API about it is worth a
+     * call: a repeat or an outdated report is told so without one.
+     */
+    boolean fresh(UUID eventId, Matched m) {
+        return !events.handledBefore(m.dedupeKey(), eventId) && newerApplied(m) == null;
+    }
+
+    /**
+     * Decides a matched call without applying it: outside the time window, or not borne out by the carrier's API
+     * (WF-05 fix plan item 6). What was matched stays on it.
+     */
+    CarrierEventResult close(UUID eventId, CarrierEventResult result, String note) {
+        CarrierEventJpaEntity event = events.findById(eventId).orElseThrow();
+        return event.getResult() != CarrierEventResult.RECEIVED ? event.getResult() : decide(event, result, note);
     }
 
     private record Outcome(CarrierEventResult result, String note) { }

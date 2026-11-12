@@ -545,6 +545,21 @@ stockflow:
       production-url: ${AHAMOVE_PRODUCTION_URL:https://partner-api.ahamove.com}
       # The reason sent when an order is cancelled. Ahamove accepts only reasons from its own list of user reasons.
       cancel-comment: ${AHAMOVE_CANCEL_COMMENT:Khách hàng muốn hủy đơn}
+      # Ahamove does not sign its callbacks: a fixed header value is all that tells it from anyone who learnt the
+      # value. So (WF-05 fix plan item 6):
+      webhook:
+        # A final outcome (a drop-off delivered or failed, the order cancelled, completed or returned) is applied only
+        # once GET /v3/orders/{id} gives the same; otherwise the event is UNVERIFIED, on the manager's error list.
+        verify-outcomes: ${AHAMOVE_WEBHOOK_VERIFY_OUTCOMES:true}
+        # A report the carrier dates longer ago than this is logged STALE and not applied.
+        max-age: ${AHAMOVE_WEBHOOK_MAX_AGE:PT24H}
+        # A report dated later than now by more than this goes to the error list: applied, it would make every true
+        # report after it look outdated.
+        max-future: ${AHAMOVE_WEBHOOK_MAX_FUTURE:PT5M}
+        # Optional: the addresses and CIDR blocks callbacks may come from, comma-separated; empty allows any. Behind a
+        # reverse proxy the address seen is the proxy's unless forwarded headers are trusted (server.forward-headers-
+        # strategy), so set this only together with that.
+        allowed-ips: ${AHAMOVE_WEBHOOK_ALLOWED_IPS:}
 
   security:
     # Turns on the resource-server filter chain AND RequiresPermissionAspect. Both are behind the

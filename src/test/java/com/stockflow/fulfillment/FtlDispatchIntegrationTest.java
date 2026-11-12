@@ -79,6 +79,12 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         "stockflow.fulfillment.packing.dim-divisor=6000", "stockflow.fulfillment.load-planning.solver-budget=PT2S",
         "stockflow.fulfillment.load-planning.solver-wall-limit=PT2S",
         "stockflow.test.context=ftl-dispatch",
+        // WF-05 item 6: the callbacks here carry Ahamove's documented sample times, fixed years apart from the day the
+        // suite runs, so the time window is wide; a callback dated 2001 is still outside it. The allow-list holds the
+        // address MockMvc calls from, and a block.
+        "stockflow.fulfillment.ahamove.webhook.max-age=P3650D",
+        "stockflow.fulfillment.ahamove.webhook.max-future=P3650D",
+        "stockflow.fulfillment.ahamove.webhook.allowed-ips=127.0.0.1,10.20.0.0/16",
         // 3-2: waybill files are scanned as every upload is; no ClamAV runs in tests.
         "stockflow.upload-inspection.enabled=false"})
 class FtlDispatchIntegrationTest {
@@ -1138,6 +1144,7 @@ class FtlDispatchIntegrationTest {
                 String.class, loadId)).isEqualTo("PICKED_UP");
 
         // Drop-off 1 completed: its shipment delivered at the carrier's time (E25), recorded by nobody.
+        ahamoveSays("AHA-W1", "IN PROCESS", "COMPLETED");
         aha(code, ahamove("AHA-W1-1", "IN PROCESS", "", "", "\"status\":\"COMPLETED\",\"complete_time\":1800003600.5"))
                 .andExpect(jsonPath("$.data.result").value("APPLIED"));
         assertThat(shipmentStatus(shipment)).isEqualTo("DELIVERED");
@@ -1183,6 +1190,7 @@ class FtlDispatchIntegrationTest {
         aha(code, ahamove("AHA-C1", "CANCELLED", "", "\"cancel_time\":1800000800,\"cancel_by_user\":true", ""))
                 .andExpect(jsonPath("$.data.result").value("IGNORED"));
         assertThat(load(loadId).path("status").asText()).isEqualTo("VEHICLE_BOOKED");
+        ahamoveSays("AHA-C1", "CANCELLED");
         aha(code, ahamove("AHA-C1", "CANCELLED", "", "\"cancel_time\":1800000900,\"cancel_by_user\":false,"
                 + "\"cancel_comment\":\"Auto cancel, no driver accepted\"", ""))
                 .andExpect(jsonPath("$.data.result").value("APPLIED"));
@@ -1217,6 +1225,7 @@ class FtlDispatchIntegrationTest {
         loadAndSign(loadId, "51C-AHA.02");
 
         String wording = "Khách không nghe máy ".repeat(40);
+        ahamoveSays("AHA-K1", "COMPLETED", "FAILED");
         aha(code, ahamove("AHA-K1", "COMPLETED", "", "\"complete_time\":1800009000", "\"status\":\"FAILED\","
                 + "\"fail_time\":1800008000,\"fail_comment\":\"" + wording + "\""))
                 .andExpect(jsonPath("$.data.result").value("APPLIED"));
@@ -1333,6 +1342,198 @@ class FtlDispatchIntegrationTest {
                 .andExpect(status().isConflict());
         as(manager, "WAREHOUSE_MANAGER", get(EVENTS + "/" + appliedId)).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.payload").value(waybill));
+    }
+
+    /**
+     * What Ahamove's API gives for the order when a final outcome its callback reported is asked back (WF-05 item 6):
+     * the order's status and each drop-off's.
+     */
+    private void ahamoveSays(String orderId, String status, String... stops) {
+        org.mockito.Mockito.doReturn(java.util.Optional.of(new com.stockflow.fulfillment.internal.service
+                .CarrierBookingGateway.OrderState(status, null, List.of(stops)))).when(carrierGateway)
+                .orderState(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.eq(orderId));
+    }
+
+    /** An Ahamove carrier with a load booked on order {@code orderId} for one shipment, on the road: {shipment, load}. */
+    private Object[] ahamoveLoadOnTheRoad(UUID aha, String orderId, String plate) throws Exception {
+        UUID shipment = packed(ftlOrder(1), false)[0];
+        String loadId = loadOf(confirmed(List.of(shipment), truck5t), 1);
+        deliverTo(shipment, "79");
+        org.mockito.Mockito.when(carrierGateway.place(org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any())).thenReturn(new com.stockflow.fulfillment.internal.service
+                .CarrierBookingGateway.Placed(orderId, null));
+        dispatch(body(post(LOADS + "/" + loadId + "/booking"), "{\"carrierId\":\"" + aha + "\"}"))
+                .andExpect(status().isOk());
+        loadAndSign(loadId, plate);
+        return new Object[] {shipment, loadId};
+    }
+
+    @Test
+    @DisplayName("WF-05 item 6: Ahamove does not sign its callback, so a final outcome is asked back of its API - not "
+            + "borne out, it is UNVERIFIED, not applied and on the error list; an API that does not answer leaves it "
+            + "to be sent again (503); borne out, the same callback applies; a repeat is told without asking")
+    void ahamoveOutcomeIsAskedBack() throws Exception {
+        UUID manager = staff("WAREHOUSE_MANAGER", HCM);
+        UUID aha = apiCarrier(manager);
+        String code = carrierCode(aha);
+        Object[] road = ahamoveLoadOnTheRoad(aha, "AHA-V1", "51C-AHA.07");
+        UUID shipment = (UUID) road[0];
+        String delivered = ahamove("AHA-V1-1", "IN PROCESS", "", "", "\"status\":\"COMPLETED\","
+                + "\"complete_time\":1800003600");
+
+        // Ahamove's API gives the drop-off as still under way: whoever sent this, it is not applied.
+        ahamoveSays("AHA-V1", "IN PROCESS", "");
+        String unverified = data(aha(code, delivered).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.result").value("UNVERIFIED"))).path("eventId").asText();
+        assertThat(shipmentStatus(shipment)).isEqualTo("HANDED_OVER");
+        JsonNode kept = lastEvent(aha);
+        assertThat(kept.path("result_note").asText()).contains("drop-off 1").contains("AHA-V1").contains("COMPLETED");
+        assertThat(kept.path("shipment_id").asText()).isEqualTo(shipment.toString());
+        as(manager, "WAREHOUSE_MANAGER", get(EVENTS).param("result", "ERRORS").param("open", "true")
+                .param("carrierId", aha.toString())).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items.length()").value(1))
+                .andExpect(jsonPath("$.data.items[0].result").value("UNVERIFIED"))
+                .andExpect(jsonPath("$.data.items[0].source").value("WEBHOOK"));
+        as(manager, "WAREHOUSE_MANAGER", get(EVENTS).param("result", "UNVERIFIED").param("carrierId", aha.toString()))
+                .andExpect(jsonPath("$.data.items.length()").value(1));
+
+        // An order Ahamove does not know at all: the same.
+        org.mockito.Mockito.doReturn(java.util.Optional.empty()).when(carrierGateway)
+                .orderState(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.eq("AHA-V1"));
+        aha(code, delivered).andExpect(jsonPath("$.data.result").value("UNVERIFIED"));
+        assertThat(lastEvent(aha).path("result_note").asText()).contains("knows no order AHA-V1");
+
+        // The API does not answer: no verdict. The callback is kept undecided and asked for again.
+        org.mockito.Mockito.doThrow(new com.stockflow.fulfillment.internal.service.CarrierBookingGateway
+                .CarrierCallFailed(false, null, "Ahamove did not answer")).when(carrierGateway)
+                .orderState(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.eq("AHA-V1"));
+        aha(code, delivered).andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.errorCode").value("WEBHOOK_UNAVAILABLE"));
+        assertThat(lastEvent(aha).path("result").asText()).isEqualTo("RECEIVED");
+        assertThat(lastEvent(aha).path("result_note").asText()).contains("did not answer");
+        assertThat(shipmentStatus(shipment)).isEqualTo("HANDED_OVER");
+
+        // Sent again once the API bears it out: applied - the copies not verified before do not make it a repeat.
+        ahamoveSays("AHA-V1", "IN PROCESS", "COMPLETED");
+        aha(code, delivered).andExpect(status().isOk()).andExpect(jsonPath("$.data.result").value("APPLIED"));
+        assertThat(shipmentStatus(shipment)).isEqualTo("DELIVERED");
+        // The same callback once more is a repeat, told without asking Ahamove again.
+        org.mockito.Mockito.clearInvocations(carrierGateway);
+        aha(code, delivered).andExpect(jsonPath("$.data.result").value("DUPLICATE"));
+        org.mockito.Mockito.verify(carrierGateway, org.mockito.Mockito.never())
+                .orderState(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
+
+        // The manager deals with the unverified call by hand, once.
+        as(manager, "WAREHOUSE_MANAGER", body(post(EVENTS + "/" + unverified + "/resolution"),
+                "{\"note\":\"asked Ahamove by phone: the driver had not arrived yet\"}")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.event.result").value("UNVERIFIED"));
+        as(manager, "WAREHOUSE_MANAGER", body(post(EVENTS + "/" + unverified + "/resolution"), "{\"note\":\"again\"}"))
+                .andExpect(status().isConflict());
+    }
+
+    @Test
+    @DisplayName("WF-05 item 6: a forged cancel of an order Ahamove still has is UNVERIFIED and leaves the load booked; "
+            + "a callback dated outside the time window is not applied; a call from an address off the allow-list is "
+            + "refused whatever credential it carries")
+    void ahamoveForgedCancelWindowAndAllowList() throws Exception {
+        UUID manager = staff("WAREHOUSE_MANAGER", HCM);
+        UUID aha = apiCarrier(manager);
+        String code = carrierCode(aha);
+        UUID shipment = packed(ftlOrder(1), false)[0];
+        String loadId = loadOf(confirmed(List.of(shipment), truck5t), 1);
+        deliverTo(shipment, "79");
+        org.mockito.Mockito.when(carrierGateway.place(org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any())).thenReturn(new com.stockflow.fulfillment.internal.service
+                .CarrierBookingGateway.Placed("AHA-F1", null));
+        dispatch(body(post(LOADS + "/" + loadId + "/booking"), "{\"carrierId\":\"" + aha + "\"}"))
+                .andExpect(status().isOk());
+
+        ahamoveSays("AHA-F1", "ASSIGNING");
+        String cancel = ahamove("AHA-F1", "CANCELLED", "", "\"cancel_time\":1800000900,\"cancel_by_user\":false", "");
+        aha(code, cancel).andExpect(status().isOk()).andExpect(jsonPath("$.data.result").value("UNVERIFIED"));
+        JsonNode booked = load(loadId);
+        assertThat(booked.path("status").asText()).isEqualTo("VEHICLE_BOOKED");
+        assertThat(booked.path("carrierBooking").path("status").asText()).isEqualTo("BOOKED");
+        assertThat(lastEvent(aha).path("result_note").asText()).contains("CANCELLED").contains("ASSIGNING");
+
+        // A driver's acceptance dated 2001: recorded, outdated, not on the load.
+        aha(code, ahamove("AHA-F1", "ACCEPTED", "", "\"accept_time\":1000000000,\"supplier_name\":\"Tài xế cũ\","
+                + "\"supplier_id\":\"84903333333\"", "")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.result").value("STALE"));
+        assertThat(lastEvent(aha).path("result_note").asText()).contains("time window");
+        assertThat(load(loadId).path("driverName").asText("")).isNotEqualTo("Tài xế cũ");
+
+        // The right credential from an address that is not on the list: refused, kept as a summary.
+        String accepted = ahamove("AHA-F1", "ACCEPTED", "", "\"accept_time\":1800000000,\"supplier_name\":"
+                + "\"Tài xế A\",\"supplier_id\":\"84901111111\"", "");
+        mvc.perform(post(HOOKS + code).contentType(org.springframework.http.MediaType.APPLICATION_JSON)
+                        .content(accepted).header("apikey", AHA_CREDENTIAL).with(request -> {
+                            request.setRemoteAddr("203.0.113.9");
+                            return request;
+                        })).andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.errorCode").value("WEBHOOK_SIGNATURE_INVALID"));
+        JsonNode refused = lastEvent(aha);
+        assertThat(refused.path("result").asText()).isEqualTo("INVALID_SIGNATURE");
+        assertThat(refused.path("result_note").asText()).contains("allow-list").doesNotContain("203.0.113.9");
+        assertThat(refused.path("payload").asText()).startsWith("[refused: ");
+        // From inside a block of the list: taken.
+        mvc.perform(post(HOOKS + code).contentType(org.springframework.http.MediaType.APPLICATION_JSON)
+                        .content(accepted).header("apikey", AHA_CREDENTIAL).with(request -> {
+                            request.setRemoteAddr("10.20.3.4");
+                            return request;
+                        })).andExpect(status().isOk()).andExpect(jsonPath("$.data.result").value("APPLIED"));
+        assertThat(load(loadId).path("driverName").asText()).isEqualTo("Tài xế A");
+    }
+
+    @Test
+    @DisplayName("WF-05 item 6: a webhook credential is replaced without a gap - after START both the old and the new "
+            + "one are taken, after PROMOTE only the new one; the carrier's API never shows either")
+    void ahamoveCredentialRotation() throws Exception {
+        UUID manager = staff("WAREHOUSE_MANAGER", HCM);
+        UUID aha = apiCarrier(manager);
+        String code = carrierCode(aha);
+        String next = "webhook-credential-next-0123456789";
+        String call = ahamove("AHA-NONE", "ACCEPTED", "", "\"accept_time\":1800000000", "");
+        String rotation = BASE + "/carriers/" + aha + "/webhook-credential-rotation";
+        long version = data(as(manager, "WAREHOUSE_MANAGER", get(BASE + "/carriers/" + aha))).path("version").asLong();
+
+        hook(code, call, "apikey", next).andExpect(status().isUnauthorized());
+        dispatch(body(post(rotation), "{\"step\":\"START\",\"value\":\"" + next + "\",\"version\":" + version + "}"))
+                .andExpect(status().isForbidden());
+        as(manager, "WAREHOUSE_MANAGER", body(post(rotation), "{\"step\":\"PROMOTE\",\"version\":" + version + "}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("CARRIER_CREDENTIAL_ROTATION_NOT_STARTED"));
+        as(manager, "WAREHOUSE_MANAGER", body(post(rotation), "{\"step\":\"START\",\"value\":\"" + AHA_CREDENTIAL
+                + "\",\"version\":" + version + "}")).andExpect(status().isBadRequest());
+        as(manager, "WAREHOUSE_MANAGER", body(post(rotation), "{\"step\":\"SWAP\",\"value\":\"" + next
+                + "\",\"version\":" + version + "}")).andExpect(status().isBadRequest());
+
+        ResultActions start = as(manager, "WAREHOUSE_MANAGER", body(post(rotation), "{\"step\":\"START\",\"value\":\""
+                + next + "\",\"version\":" + version + "}")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.connection.webhookAuthValueConfigured").value(true))
+                .andExpect(jsonPath("$.data.connection.webhookAuthValueNextConfigured").value(true));
+        assertThat(start.andReturn().getResponse().getContentAsString()).doesNotContain(next)
+                .doesNotContain(AHA_CREDENTIAL);
+        long started = data(start).path("version").asLong();
+        // Both hold: Ahamove can be told the new one while calls with the old one still arrive.
+        hook(code, call, "apikey", AHA_CREDENTIAL).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.result").value("UNMATCHED"));
+        hook(code, call, "apikey", next).andExpect(status().isOk());
+        hook(code, call, "apikey", "neither-of-the-two-0123456789").andExpect(status().isUnauthorized());
+        as(manager, "WAREHOUSE_MANAGER", body(post(rotation), "{\"step\":\"PROMOTE\",\"version\":" + version + "}"))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("OPTIMISTIC_LOCK"));
+
+        as(manager, "WAREHOUSE_MANAGER", body(post(rotation), "{\"step\":\"PROMOTE\",\"version\":" + started + "}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.connection.webhookAuthValueNextConfigured").value(false));
+        hook(code, call, "apikey", AHA_CREDENTIAL).andExpect(status().isUnauthorized());
+        hook(code, call, "apikey", next).andExpect(status().isOk());
+
+        // A carrier with no header credential has nothing to rotate.
+        long manual = data(as(manager, "WAREHOUSE_MANAGER", get(BASE + "/carriers/" + ghn))).path("version").asLong();
+        as(manager, "WAREHOUSE_MANAGER", body(post(BASE + "/carriers/" + ghn + "/webhook-credential-rotation"),
+                "{\"step\":\"START\",\"value\":\"" + next + "\",\"version\":" + manual + "}"))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("CARRIER_NOT_API_BOOKING"));
     }
 
     // ---- delivery outcomes from a file (WF-05 item 5; 09 §4.3, BR-26, BR-27) ----------------------

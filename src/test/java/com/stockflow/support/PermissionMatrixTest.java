@@ -178,6 +178,9 @@ class PermissionMatrixTest {
             Map.entry("POST /api/v1/fulfillment/tasks/{taskId}/shipping-labels", "fulfillment-packing:READ"),
             Map.entry("POST /api/v1/fulfillment/carriers", "fulfillment-carriers:UPDATE"),
             Map.entry("PUT /api/v1/fulfillment/carriers/{carrierId}", "fulfillment-carriers:UPDATE"),
+            // WF-05 fix plan item 6: an unsigned webhook's credential replaced without a moment when none holds.
+            Map.entry("POST /api/v1/fulfillment/carriers/{carrierId}/webhook-credential-rotation",
+                    "fulfillment-carriers:UPDATE"),
             // 3-1 (V20261108001300): an API_BOOKING carrier's service codes, read as the catalogue is, kept as it is.
             Map.entry("GET /api/v1/fulfillment/carriers/{carrierId}/service-codes", "fulfillment-shipments:READ"),
             Map.entry("PUT /api/v1/fulfillment/carriers/{carrierId}/service-codes", "fulfillment-carriers:UPDATE"),

@@ -63,10 +63,16 @@ public interface CarrierEvents {
      * all for an unknown carrier - then matches it to a load and applies it. Never throws for what the call said: every
      * outcome is a result on the event.
      *
-     * @param header the call's headers by name, case-insensitive; null for one it lacks
-     * @param body   the raw body, at most 64 KiB
+     * <p>An API_BOOKING carrier's header is not a signature, so its call is defended further (WF-05 fix plan item 6):
+     * it may be limited to a list of addresses and may carry either of two credentials while one replaces the other;
+     * its report must fall in a window of time; and a final outcome is applied only once the carrier's own API gives
+     * the same - otherwise the event is UNVERIFIED.</p>
+     *
+     * @param header        the call's headers by name, case-insensitive; null for one it lacks
+     * @param remoteAddress the address the call came from
+     * @param body          the raw body, at most 64 KiB
      */
-    Receipt receive(String carrierCode, UnaryOperator<String> header, byte[] body);
+    Receipt receive(String carrierCode, UnaryOperator<String> header, String remoteAddress, byte[] body);
 
     /**
      * A line of an imported file, through the webhooks' own pipeline: kept as an event of source FILE, then decided
@@ -83,7 +89,7 @@ public interface CarrierEvents {
      * load's warehouse's.
      *
      * @param result one result, or {@code ERRORS} for the error list's (RECEIVED, UNMATCHED, INVALID_SIGNATURE,
-     *               NEEDS_REVIEW)
+     *               NEEDS_REVIEW, UNVERIFIED)
      * @param open   true: not resolved yet; false: resolved; null: both
      * @throws com.stockflow.common.error.BusinessException {@code UNSUPPORTED_PARAMETER} for an unknown result
      */

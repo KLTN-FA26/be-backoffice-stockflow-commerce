@@ -42,6 +42,7 @@
     <springdoc.version>2.8.6</springdoc.version>
     <mapstruct.version>1.6.3</mapstruct.version>
     <archunit.version>1.3.0</archunit.version>
+    <wiremock.version>3.13.1</wiremock.version>
     <jacoco.version>0.8.12</jacoco.version>
 
     <!--
@@ -368,6 +369,18 @@
     <dependency>
       <groupId>org.testcontainers</groupId>
       <artifactId>junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+
+    <!--
+      A carrier's HTTP API played back over a real socket (WF-05 fix plan item 6): what MockRestServiceServer cannot
+      show is the client the application really builds - its timeouts, its error handling, a connection refused. The
+      standalone jar carries its own Jetty, shaded, so it cannot disagree with the server Spring Boot manages.
+    -->
+    <dependency>
+      <groupId>org.wiremock</groupId>
+      <artifactId>wiremock-standalone</artifactId>
+      <version>${wiremock.version}</version>
       <scope>test</scope>
     </dependency>
   </dependencies>
