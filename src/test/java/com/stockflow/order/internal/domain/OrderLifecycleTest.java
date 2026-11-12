@@ -571,10 +571,10 @@ class OrderLifecycleTest {
             Order order = delivered();
             Duration week = Duration.ofDays(7);
             Instant windowEnd = ReturnPolicy.endOfDays(NOW, week);
-            assertThat(order.complete(windowEnd.minusSeconds(1), week, false, false))
+            assertThat(order.complete(windowEnd.minusSeconds(1), week, false, false, false))
                     .as("the customer may still claim on the 7th day").isFalse();
-            assertThat(order.complete(windowEnd, week, true, false)).as("a return is open").isFalse();
-            assertThat(order.complete(windowEnd, week, false, false)).isTrue();
+            assertThat(order.complete(windowEnd, week, true, false, false)).as("a return is open").isFalse();
+            assertThat(order.complete(windowEnd, week, false, false, false)).isTrue();
             assertThat(order.status()).isEqualTo(OrderStatus.COMPLETED);
             assertThat(order.close(NOW.plus(Duration.ofDays(20)), Duration.ofDays(30), false)).isFalse();
             assertThat(order.close(NOW.plus(Duration.ofDays(40)), Duration.ofDays(30), false)).isTrue();
@@ -587,9 +587,21 @@ class OrderLifecycleTest {
         @DisplayName("an order whose installments still owe stays DELIVERED (17 §4.6 step 21)")
         void owingStaysDelivered() {
             Order order = delivered();
-            assertThat(order.complete(NOW.plus(Duration.ofDays(30)), Duration.ofDays(7), false, true)).isFalse();
+            assertThat(order.complete(NOW.plus(Duration.ofDays(30)), Duration.ofDays(7), false, true, false)).isFalse();
             assertThat(order.status()).isEqualTo(OrderStatus.DELIVERED);
-            assertThat(order.complete(NOW.plus(Duration.ofDays(30)), Duration.ofDays(7), false, false)).isTrue();
+            assertThat(order.complete(NOW.plus(Duration.ofDays(30)), Duration.ofDays(7), false, false, false)).isTrue();
+        }
+
+        @Test
+        @DisplayName("an order with a delivery not invoiced yet stays DELIVERED (WF-05 plan 4, condition 5)")
+        void awaitingAnInvoiceStaysDelivered() {
+            Order order = delivered();
+            order.pullDomainEvents();
+            assertThat(order.complete(NOW.plus(Duration.ofDays(30)), Duration.ofDays(7), false, false, true)).isFalse();
+            assertThat(order.status()).isEqualTo(OrderStatus.DELIVERED);
+            assertThat(order.pullDomainEvents()).as("nothing announced").isEmpty();
+            assertThat(order.complete(NOW.plus(Duration.ofDays(30)), Duration.ofDays(7), false, false, false)).isTrue();
+            assertThat(order.status()).isEqualTo(OrderStatus.COMPLETED);
         }
 
         @Test
@@ -610,7 +622,7 @@ class OrderLifecycleTest {
         @DisplayName("a further claim reopens a COMPLETED or (PARTIALLY_)REFUNDED order; one still owed money never closes")
         void furtherClaims() {
             Order completed = delivered();
-            completed.complete(ReturnPolicy.endOfDays(NOW, Duration.ofDays(7)), Duration.ofDays(7), false, false);
+            completed.complete(ReturnPolicy.endOfDays(NOW, Duration.ofDays(7)), Duration.ofDays(7), false, false, false);
             assertThat(completed.requestReturn(STAFF, NOW, "late claim")).isTrue();
             assertThat(completed.status()).isEqualTo(OrderStatus.RETURN_REQUESTED);
 

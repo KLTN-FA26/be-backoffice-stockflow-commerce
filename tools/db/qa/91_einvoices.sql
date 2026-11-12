@@ -433,11 +433,13 @@ SELECT pg_temp.expect_true('J3 only the administrator changes the settings; the 
     (SELECT string_agg(r.code, ',') = 'SYSTEM_ADMIN' FROM identity.role_permission rp
        JOIN identity.app_role r ON r.id = rp.role_id JOIN identity.permission p ON p.id = rp.permission_id
       WHERE p.code = 'einvoice-settings:UPDATE'));
-SELECT pg_temp.expect_true('J4 nobody else holds an e-invoice permission - Sales staff, the warehouse, the customer',
+-- E5 (V20261120000600): the customer reads their own issued invoices on the portal - READ, and nothing else.
+SELECT pg_temp.expect_true('J4 nobody else holds an e-invoice permission - Sales staff, the warehouse; the customer only reads',
     (SELECT count(*) = 0 FROM identity.role_permission rp
        JOIN identity.app_role r ON r.id = rp.role_id JOIN identity.permission p ON p.id = rp.permission_id
       WHERE p.resource IN ('einvoices', 'einvoice-settings')
-        AND r.code NOT IN ('ACCOUNTANT', 'SALES_MANAGER', 'SYSTEM_ADMIN')));
+        AND r.code NOT IN ('ACCOUNTANT', 'SALES_MANAGER', 'SYSTEM_ADMIN')
+        AND NOT (r.code = 'CUSTOMER' AND p.resource = 'einvoices' AND p.action = 'READ')));
 SELECT pg_temp.expect_true('J5 the administrator still holds every permission',
     (SELECT count(*) FROM identity.permission)
         = (SELECT count(*) FROM identity.role_permission rp JOIN identity.app_role r ON r.id = rp.role_id
