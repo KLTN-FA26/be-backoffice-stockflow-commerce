@@ -1,6 +1,7 @@
 package com.stockflow.invoicing.internal.controller;
 
 import com.stockflow.invoicing.internal.controller.dto.EInvoiceErrorNoticeResponse;
+import com.stockflow.invoicing.internal.controller.dto.CustomerEInvoiceResponse;
 import com.stockflow.invoicing.internal.controller.dto.EInvoiceListItemResponse;
 import com.stockflow.invoicing.internal.controller.dto.EInvoiceProviderResponse;
 import com.stockflow.invoicing.internal.controller.dto.EInvoiceRegisterEntryResponse;
@@ -58,6 +59,13 @@ final class InvoicingWebMapper {
                 row.subtotal(), row.taxTotal(), row.grandTotal(),
                 row.warnings() == null ? List.of() : Arrays.asList(row.warnings().split(",")), row.rejectionCode(),
                 row.issuedAt());
+    }
+
+    /** The row as its buyer sees it: nothing of the seller's work on the invoice. */
+    static CustomerEInvoiceResponse toCustomerResponse(EInvoiceQueries.Listing row) {
+        return new CustomerEInvoiceResponse(row.id(), row.type().name(), row.status().name(), row.adjusted(),
+                row.orderId(), row.orderNumber(), row.shipmentCode(), row.issueDate(), row.templateCode(),
+                row.symbol(), row.invoiceNumber(), row.subtotal(), row.taxTotal(), row.grandTotal(), row.issuedAt());
     }
 
     static EInvoiceRegisterEntryResponse toResponse(EInvoiceQueries.RegisterEntry entry) {

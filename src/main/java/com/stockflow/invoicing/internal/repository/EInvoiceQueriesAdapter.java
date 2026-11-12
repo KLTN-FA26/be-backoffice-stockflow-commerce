@@ -110,6 +110,43 @@ class EInvoiceQueriesAdapter implements EInvoiceQueries {
     }
 
     @Override
+    public List<Listing> issuedTo(UUID customerId, int offset, int limit) {
+        return jdbc.query("SELECT " + LIST_COLUMNS + " FROM invoicing.einvoice " + """
+                WHERE customer_id = ? AND status IN ('ISSUED', 'REPLACED')
+                ORDER BY issue_date DESC, issued_at DESC, id
+                LIMIT ? OFFSET ?""", LISTING, customerId, limit, offset);
+    }
+
+    @Override
+    public long countIssuedTo(UUID customerId) {
+        Long count = jdbc.queryForObject("""
+                SELECT count(*) FROM invoicing.einvoice
+                 WHERE customer_id = ? AND status IN ('ISSUED', 'REPLACED')""", Long.class, customerId);
+        return count == null ? 0 : count;
+    }
+
+    @Override
+    public java.util.Optional<Listing> findIssuedTo(UUID customerId, UUID id) {
+        return jdbc.query("SELECT " + LIST_COLUMNS + " FROM invoicing.einvoice " + """
+                WHERE id = ? AND customer_id = ? AND status IN ('ISSUED', 'REPLACED')""", LISTING, id,
+                customerId).stream().findFirst();
+    }
+
+    @Override
+    public java.util.Set<UUID> invoicedAmong(java.util.Collection<UUID> shipmentIds) {
+        if (shipmentIds.isEmpty()) {
+            return java.util.Set.of();
+        }
+        java.util.Set<UUID> invoiced = new java.util.HashSet<>();
+        jdbc.query("""
+                SELECT DISTINCT shipment_id FROM invoicing.einvoice
+                 WHERE shipment_id = ANY (?) AND status = 'ISSUED' AND type <> 'ADJUSTMENT'""",
+                ps -> ps.setArray(1, ps.getConnection().createArrayOf("uuid", shipmentIds.toArray())),
+                row -> { invoiced.add(row.getObject(1, UUID.class)); });
+        return invoiced;
+    }
+
+    @Override
     public List<RegisterEntry> register(LocalDate from, LocalDate to) {
         return jdbc.query("""
                 SELECT i.template_code, i.symbol, i.invoice_number, i.issue_date, i.type, i.status, i.adjusted,

@@ -3028,6 +3028,15 @@ Table invoicing.einvoice_series [headercolor: #A0522D] {
   }
 }
 
+Table invoicing.einvoice_stuck_notice [headercolor: #A0522D] {
+  einvoice_id    uuid [not null]
+  transaction_id varchar(64) [not null]
+  notified_at    timestamptz [not null]
+  indexes {
+    (einvoice_id, transaction_id) [pk]
+  }
+}
+
 Table invoicing.sandbox_issuance [headercolor: #A0522D] {
   transaction_id          varchar(64) [pk]
   state                   invoicing.sandbox_issuance_state [not null]
@@ -4739,6 +4748,7 @@ Ref: invoicing.einvoice_line.einvoice_id > invoicing.einvoice.id
 Ref: invoicing.einvoice_line.order_line_id > ordering.order_line.id
 Ref: invoicing.einvoice_provider_call.einvoice_id > invoicing.einvoice.id
 Ref: invoicing.einvoice_series.provider > invoicing.einvoice_provider_config.provider
+Ref: invoicing.einvoice_stuck_notice.einvoice_id > invoicing.einvoice.id
 Ref: design.design_artifact.draft_id > design.design_draft.id
 Ref: design.design_asset.draft_id > design.design_draft.id
 Ref: design.design_decision.actor_id > identity.app_user.id
@@ -5033,6 +5043,7 @@ TableGroup invoicing_group [color: #A0522D] {
   invoicing.einvoice_provider_call
   invoicing.einvoice_provider_config
   invoicing.einvoice_series
+  invoicing.einvoice_stuck_notice
   invoicing.sandbox_issuance
   invoicing.sandbox_number
 }

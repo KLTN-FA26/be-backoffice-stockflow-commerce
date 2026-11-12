@@ -1,6 +1,7 @@
 package com.stockflow.invoicing.internal.service;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.boot.context.properties.bind.ConstructorBinding;
 import org.springframework.boot.context.properties.bind.DefaultValue;
 
 import java.time.Duration;
@@ -13,21 +14,37 @@ import java.util.List;
  *
  * @param dueWarningLead how long before an invoice's deadline the accountant is told; a day by default, which is the
  *                       start of the last day it can be issued on
+ * @param stuckAfter     how long an invoice may wait for the provider's answer before the accountants are told it is
+ *                       stuck; far longer than a provider takes, far shorter than the working day the law leaves
  * @param sandbox        how the sandbox provider behaves
  * @param corrections    what is done about an issued invoice that was wrong, where the law read leaves it open
  */
 @ConfigurationProperties(prefix = "stockflow.invoicing")
-public record InvoicingProperties(@DefaultValue("P1D") Duration dueWarningLead, @DefaultValue Sandbox sandbox,
+public record InvoicingProperties(@DefaultValue("P1D") Duration dueWarningLead,
+                                  @DefaultValue("PT30M") Duration stuckAfter, @DefaultValue Sandbox sandbox,
                                   @DefaultValue Corrections corrections) {
 
+    /**
+     * The constructor properties are bound through. Named, because a record with more than one constructor is
+     * otherwise not bound through any: the binder would look for a no-argument one and fail at startup.
+     */
+    @ConstructorBinding
     public InvoicingProperties {
+        stuckAfter = stuckAfter == null ? DEFAULT_STUCK_AFTER : stuckAfter;
         corrections = corrections == null ? new Corrections(false) : corrections;
     }
 
     /** As before corrections existed: nothing the law leaves open is turned on. */
-    public InvoicingProperties(Duration dueWarningLead, Sandbox sandbox) {
-        this(dueWarningLead, sandbox, new Corrections(false));
+    public InvoicingProperties(Duration dueWarningLead, Duration stuckAfter, Sandbox sandbox) {
+        this(dueWarningLead, stuckAfter, sandbox, new Corrections(false));
     }
+
+    /** As before stuck invoices were announced: the default wait, and nothing the law leaves open turned on. */
+    public InvoicingProperties(Duration dueWarningLead, Sandbox sandbox) {
+        this(dueWarningLead, DEFAULT_STUCK_AFTER, sandbox, new Corrections(false));
+    }
+
+    private static final Duration DEFAULT_STUCK_AFTER = Duration.ofMinutes(30);
 
     /**
      * @param errorNoticeWithCorrection whether a 04/SS-HĐĐT notice may also be recorded for an invoice that was

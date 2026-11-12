@@ -514,6 +514,9 @@ stockflow:
     # invoice is signed and sent no later than the working day after its date (ND 254/2026 Phu luc diem 7).
     deadline-sweep-interval: ${EINVOICE_DEADLINE_SWEEP_INTERVAL:PT15M}
     due-warning-lead: ${EINVOICE_DUE_WARNING_LEAD:P1D}
+    # How long an invoice may wait for the provider's answer before the accountants are told it is stuck (the same
+    # sweep). The reconciliation keeps asking either way.
+    stuck-after: ${EINVOICE_STUCK_AFTER:PT30M}
     sandbox:
       # How long the sandbox provider takes to "sign and get the tax authority's code" before a result is there.
       processing-delay: ${EINVOICE_SANDBOX_PROCESSING_DELAY:PT5S}

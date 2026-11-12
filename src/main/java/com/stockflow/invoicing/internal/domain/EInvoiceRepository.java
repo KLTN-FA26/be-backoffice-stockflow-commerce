@@ -84,6 +84,19 @@ public interface EInvoiceRepository {
      */
     List<UUID> findAutoIssuable(int limit);
 
+    /**
+     * Up to {@code limit} invoices sent to the provider before {@code submittedBefore} that still wait for its answer
+     * and whose accountants were not told about this submission, the longest waiting first.
+     */
+    List<UUID> findStuckUnannounced(Instant submittedBefore, int limit);
+
+    /**
+     * Notes that the accountants were told this submission is stuck.
+     *
+     * @return false when that was noted before: the submission is announced once
+     */
+    boolean markStuckAnnounced(UUID id, String transactionId, Instant now);
+
     /** The next internal invoice code of {@code day}: {@code EINV-yyyyMMdd-nnnn}. */
     String nextCode(java.time.LocalDate day);
 }

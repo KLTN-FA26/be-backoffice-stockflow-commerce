@@ -227,6 +227,24 @@ class EInvoiceRepositoryAdapter implements EInvoiceRepository {
     }
 
     @Override
+    public List<UUID> findStuckUnannounced(Instant submittedBefore, int limit) {
+        return jdbc.queryForList("""
+                SELECT i.id FROM invoicing.einvoice i
+                 WHERE i.status = 'SUBMITTING' AND i.submitted_at < ?
+                   AND NOT EXISTS (SELECT 1 FROM invoicing.einvoice_stuck_notice n
+                                    WHERE n.einvoice_id = i.id AND n.transaction_id = i.transaction_id)
+                 ORDER BY i.submitted_at, i.id LIMIT ?""", UUID.class, Timestamp.from(submittedBefore), limit);
+    }
+
+    @Override
+    public boolean markStuckAnnounced(UUID id, String transactionId, Instant now) {
+        return jdbc.update("""
+                INSERT INTO invoicing.einvoice_stuck_notice (einvoice_id, transaction_id, notified_at)
+                VALUES (?, ?, ?) ON CONFLICT (einvoice_id, transaction_id) DO NOTHING""", id, transactionId,
+                Timestamp.from(now)) == 1;
+    }
+
+    @Override
     public String nextCode(LocalDate day) {
         Long value = jdbc.queryForObject("""
                 INSERT INTO platform.document_sequence (document_type, sequence_date, last_value)

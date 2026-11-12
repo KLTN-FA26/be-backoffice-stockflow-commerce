@@ -8,6 +8,8 @@ import com.stockflow.common.storage.FileTransfers;
 import com.stockflow.common.storage.FileUpload;
 import com.stockflow.common.storage.RecordRetention;
 import com.stockflow.common.storage.StoredFile;
+import com.stockflow.contracts.EInvoiceIssued;
+import com.stockflow.contracts.EInvoiceNeedsAttention;
 import com.stockflow.invoicing.internal.domain.EInvoice;
 import com.stockflow.invoicing.internal.domain.EInvoiceProvider;
 import com.stockflow.invoicing.internal.domain.EInvoiceRepository;
@@ -15,6 +17,7 @@ import com.stockflow.invoicing.internal.domain.EInvoiceStatus;
 import com.stockflow.invoicing.internal.domain.EInvoiceType;
 import com.stockflow.invoicing.internal.domain.InvoiceSeries;
 import com.stockflow.invoicing.internal.domain.InvoiceSettings;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -38,14 +41,16 @@ class EInvoiceIssuanceSteps {
     private final InvoiceSettings settings;
     private final EInvoiceProviders providers;
     private final FileTransfers files;
+    private final ApplicationEventPublisher events;
     private final Clock clock;
 
     EInvoiceIssuanceSteps(EInvoiceRepository invoices, InvoiceSettings settings, EInvoiceProviders providers,
-                          FileTransfers files, Clock clock) {
+                          FileTransfers files, ApplicationEventPublisher events, Clock clock) {
         this.invoices = invoices;
         this.settings = settings;
         this.providers = providers;
         this.files = files;
+        this.events = events;
         this.clock = clock;
     }
 
@@ -83,7 +88,11 @@ class EInvoiceIssuanceSteps {
         return invoices.save(invoice).snapshot();
     }
 
-    /** SUBMITTING → REJECTED, if the invoice still waits for {@code transactionId}. */
+    /**
+     * SUBMITTING → REJECTED, if the invoice still waits for {@code transactionId}. The accountants are told in the same
+     * transaction ({@link EInvoiceNeedsAttention}): a refusal nobody hears of leaves the invoice unissued while its
+     * deadline runs, and the refusal and its announcement are recorded together or not at all.
+     */
     @Transactional
     public void rejected(UUID id, String transactionId, String errorCode, String message) {
         EInvoice invoice = waitingFor(id, transactionId);
@@ -91,7 +100,10 @@ class EInvoiceIssuanceSteps {
             return;
         }
         invoice.rejected(errorCode == null || errorCode.isBlank() ? "REJECTED" : errorCode, message);
-        invoices.save(invoice);
+        EInvoice.Snapshot refused = invoices.save(invoice).snapshot();
+        events.publishEvent(new EInvoiceNeedsAttention(refused.id(), refused.code(), refused.orderId(),
+                refused.orderNumber(), EInvoiceNeedsAttention.Cause.REJECTED, refused.rejectionCode(),
+                refused.submittedAt(), refused.issueDueAt()));
     }
 
     /**
@@ -111,6 +123,10 @@ class EInvoiceIssuanceSteps {
      * corrected invoices are locked <b>before</b> the correction, in id order, the order drawing a correction up takes
      * them in; and written before it, so the shipment never has two invoices in force
      * ({@code uk_einvoice_in_force_per_shipment}). The agreement's file is locked with the invoice's own.</p>
+     *
+     * <p>{@link EInvoiceIssued} is published here, in the transaction that makes the invoice ISSUED, so the buyer is
+     * told of exactly the invoices that were issued: the second arrival of the same answer returns above and publishes
+     * nothing.</p>
      *
      * @throws com.stockflow.common.storage.StorageException when a file cannot be stored or locked
      */
@@ -150,7 +166,9 @@ class EInvoiceIssuanceSteps {
         }
         invoice.issued(result.invoiceNumber(), result.taxAuthorityCode(), result.lookupCode(), result.signedAt(),
                 xml.key(), pdf.key(), clock.instant());
-        invoices.save(invoice);
+        EInvoice.Snapshot issued = invoices.save(invoice).snapshot();
+        events.publishEvent(new EInvoiceIssued(issued.id(), issued.code(), issued.orderId(), issued.orderNumber(),
+                issued.shipmentId(), issued.customerId(), issued.issuedAt()));
     }
 
     /**

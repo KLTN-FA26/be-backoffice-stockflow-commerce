@@ -1455,13 +1455,23 @@ public final class Order extends AggregateRoot {
      * one with a return request open. The window is counted in calendar days of Asia/Ho_Chi_Minh, exactly as a return
      * is ({@link ReturnPolicy#endOfDays}): the order never completes while its customer may still claim.
      *
-     * @param owing whether the order's installments still owe something, as payment reads them (4B-10: the order keeps
-     *              no money of its own); false for an order without installments
+     * <p>And one whose deliveries are not all invoiced stays DELIVERED too (WF-05 plan §4, condition 5). COMPLETED says
+     * the sale is finished on both sides, and it completes the contract with it. A delivery without its e-invoice is
+     * not finished: the law has every delivery invoiced (NĐ 254/2026/NĐ-CP Điều 9 khoản 3), the buyer cannot book the
+     * goods without it, and a draft nobody issued - or one the tax authority refused - would otherwise disappear
+     * behind an order that reads as done and is closed for good thirty days later. The order does not look at
+     * invoices itself (it has none): the caller asks invoicing and passes the answer, as it does for the money.</p>
+     *
+     * @param owing            whether the order's installments still owe something, as payment reads them (4B-10: the
+     *                         order keeps no money of its own); false for an order without installments
+     * @param awaitingInvoice  whether a delivered shipment of the order has no e-invoice issued yet; false for an
+     *                         order delivered without shipments, which has no delivery to invoice
      * @return whether this changed the order
      */
-    public boolean complete(Instant now, java.time.Duration returnWindow, boolean hasOpenReturn, boolean owing) {
+    public boolean complete(Instant now, java.time.Duration returnWindow, boolean hasOpenReturn, boolean owing,
+                            boolean awaitingInvoice) {
         if (status != OrderStatus.DELIVERED || deliveredAt == null || hasOpenReturn
-                || ReturnPolicy.endOfDays(deliveredAt, returnWindow).isAfter(now) || owing) {
+                || ReturnPolicy.endOfDays(deliveredAt, returnWindow).isAfter(now) || owing || awaitingInvoice) {
             return false;
         }
         transitionTo(OrderStatus.COMPLETED, null, "RETURN_WINDOW_CLOSED", now);

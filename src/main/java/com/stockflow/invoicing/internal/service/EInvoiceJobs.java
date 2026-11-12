@@ -21,7 +21,9 @@ import java.util.UUID;
  *       here, a moment after they were drawn up. Done by the job and not by the listener that draws the draft up: the
  *       listener's transaction has to commit the draft before anything may be sent anywhere.</li>
  *   <li><b>Deadline warnings</b> - an invoice is to be signed and sent no later than the working day after its date
- *       (NĐ 254 Phụ lục điểm 7); the accountants are told once, a day ahead by default, about each one still waiting.</li>
+ *       (NĐ 254 Phụ lục điểm 7); the accountants are told once, a day ahead by default, about each one still waiting.
+ *       In the same sweep they are told, once per submission, of an invoice that has waited for the provider's answer
+ *       for too long (WF-05 E5): the reconciliation keeps asking, but somebody has to know.</li>
  * </ul>
  *
  * <p>Bounded batches, the most urgent first; what does not fit waits for the next run. One invoice failing does not
@@ -57,8 +59,9 @@ class EInvoiceJobs {
     @SchedulerLock(name = "invoicing.deadline-warnings", lockAtMostFor = "PT10M", lockAtLeastFor = "PT5S")
     public void warnOfDeadlines() {
         int warned = warnDue();
-        if (warned > 0) {
-            log.info("E-invoices: {} close to their deadline announced", warned);
+        int stuck = warnStuck();
+        if (warned > 0 || stuck > 0) {
+            log.info("E-invoices: {} close to their deadline and {} stuck at the provider announced", warned, stuck);
         }
     }
 
@@ -103,6 +106,21 @@ class EInvoiceJobs {
                 }
             } catch (RuntimeException failure) {
                 log.warn("The deadline of e-invoice {} was not announced: {}", id, failure.toString());
+            }
+        }
+        return done;
+    }
+
+    /** @return how many stuck submissions were announced */
+    int warnStuck() {
+        int done = 0;
+        for (UUID id : queues.stuckUnannounced(BATCH)) {
+            try {
+                if (queues.announceStuck(id).isPresent()) {
+                    done++;
+                }
+            } catch (RuntimeException failure) {
+                log.warn("E-invoice {} stuck at the provider was not announced: {}", id, failure.toString());
             }
         }
         return done;
