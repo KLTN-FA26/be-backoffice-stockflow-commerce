@@ -131,7 +131,7 @@ class MinioChecksumAndLockIntegrationTest {
     @Test
     void retainLocksTheObjectInTheConfiguredMode() {
         var lock = new ObjectLockProperties(true, ObjectLockProperties.Mode.GOVERNANCE, Duration.ofDays(1),
-                Duration.ofDays(1), Duration.ofDays(3650));
+                Duration.ofDays(1), java.time.Period.ofYears(10), ObjectLockProperties.Mode.COMPLIANCE);
         var storage = storage("locked", lock);
         byte[] bytes = pdf("a confirmed design");
         var file = storage.store(FileCategory.DESIGN_RENDER, "d.pdf", "application/pdf", bytes.length,

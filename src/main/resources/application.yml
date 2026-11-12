@@ -422,16 +422,24 @@ stockflow:
     access-key: ${MINIO_ACCESS_KEY:stockflow}
     secret-key: ${MINIO_SECRET_KEY:stockflow123}
     presigned-url-ttl: PT10M        # a signed URL is a credential with no revocation; keep it short
-    # S3 Object Lock on business records (ObjectLockProperties): a confirmed design's files and a sales
-    # contract cannot be deleted or overwritten for these periods. Needs a bucket with Object Lock
-    # (infra/aws); MinIO in development has none, so it is off unless the deployment turns it on.
-    # The periods are placeholders until the business confirms them against the law that applies.
+    # S3 Object Lock on business records (ObjectLockProperties): a confirmed design's files, a sales
+    # contract and an issued e-invoice's XML and PDF cannot be deleted or overwritten for these periods. Needs a
+    # bucket with Object Lock (infra/aws); MinIO in development has none, so it is off unless the deployment turns it
+    # on - and while it is off, nothing below is used. The design and contract periods are placeholders until the
+    # business confirms them against the law that applies.
     object-lock:
       enabled: false
+      # The mode of design and contract locks.
       mode: GOVERNANCE
       confirmed-design: P1095D
       sales-contract: P3650D    # a sales contract as sent and as signed (4B-4)
-      einvoice: P3650D          # an issued e-invoice's XML and PDF: ten years (Luat Ke toan 2015 Dieu 41; WF-05 E2)
+      # An issued e-invoice's XML and PDF: locked until the end of the tenth year after the year of issue, plus a
+      # day - accounting records are kept ten years from the end of the accounting year (Luat Ke toan 2015 Dieu 41;
+      # ND 174/2016 Dieu 12), not from the day of issue. A Period, counted from 1 January after the year of issue.
+      einvoice: P10Y
+      # COMPLIANCE whatever `mode` says: nobody, not even the account root, can lift it. GOVERNANCE only on a test
+      # bucket, whose invoices are not records and must stay deletable.
+      einvoice-mode: ${S3_OBJECT_LOCK_EINVOICE_MODE:COMPLIANCE}
     # Browser uploads straight to the object store (StagedUploads, docs/direct-uploads-fe-contract.md).
     staged-upload:
       url-ttl: PT15M            # the signed PUT; S3 checks it when the upload starts, not when it ends

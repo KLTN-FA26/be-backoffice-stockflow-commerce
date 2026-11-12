@@ -31,7 +31,8 @@ class FileTransfersRetainNowTest {
 
     private FileTransfers transfers(boolean lockOn) {
         return new FileTransfers(storage, properties, clock, new ObjectLockProperties(lockOn,
-                ObjectLockProperties.Mode.COMPLIANCE, Duration.ofDays(1), Duration.ofDays(2), Duration.ofDays(3650)));
+                ObjectLockProperties.Mode.COMPLIANCE, Duration.ofDays(1), Duration.ofDays(2), java.time.Period.ofYears(10),
+                ObjectLockProperties.Mode.COMPLIANCE));
     }
 
     @Test

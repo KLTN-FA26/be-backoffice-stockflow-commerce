@@ -105,7 +105,7 @@ class FileStorageIntegrationTest {
     void retentionIsAppliedOnlyAfterCommitAndOnlyWhenEnabled() {
         var storage = mock(FileStorage.class);
         var enabled = new ObjectLockProperties(true, ObjectLockProperties.Mode.GOVERNANCE, Duration.ofDays(3),
-                Duration.ofDays(10), Duration.ofDays(3650));
+                Duration.ofDays(10), java.time.Period.ofYears(10), ObjectLockProperties.Mode.COMPLIANCE);
         String key = "design-renders/2026/01/01/00000000-0000-7000-8000-000000000001.pdf";
         for (boolean lockOn : new boolean[]{true, false}) {
             var transfers = new FileTransfers(storage, properties(), Clock.systemUTC(),
@@ -143,7 +143,8 @@ class FileStorageIntegrationTest {
                 .when(storage).retain(any(), any());
         var transfers = new FileTransfers(storage, properties(), Clock.systemUTC(),
                 new ObjectLockProperties(true, ObjectLockProperties.Mode.GOVERNANCE, Duration.ofDays(1), Duration.ofDays(1),
-                        Duration.ofDays(3650)));
+                        java.time.Period.ofYears(10),
+                ObjectLockProperties.Mode.COMPLIANCE));
         TransactionSynchronizationManager.setActualTransactionActive(true);
         TransactionSynchronizationManager.initSynchronization();
         try {

@@ -124,6 +124,9 @@ services:
       AWS_REGION: ${AWS_REGION:-ap-southeast-1}
       PRODUCT_MEDIA_CDN_BASE_URL: ${PRODUCT_MEDIA_CDN_BASE_URL:-https://media.${DOMAIN}}
       STOCKFLOW_STORAGE_OBJECT_LOCK_ENABLED: ${S3_OBJECT_LOCK_ENABLED:-false}
+      # With the lock on, an issued e-invoice's files are locked in COMPLIANCE for ten years from the end of the year:
+      # nobody can delete them, the bucket included. GOVERNANCE only on a bucket holding test invoices.
+      S3_OBJECT_LOCK_EINVOICE_MODE: ${S3_OBJECT_LOCK_EINVOICE_MODE:-COMPLIANCE}
       # Optional demo data (db/demo) - see .env.example for why it is off. Switching it either way
       # needs a database reset: Flyway refuses to start when migrations appear (or vanish) out of
       # order, and the demo versions interleave with the real ones.
