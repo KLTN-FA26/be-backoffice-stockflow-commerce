@@ -3010,6 +3010,14 @@ Table invoicing.einvoice_provider_config [headercolor: #A0522D] {
   last_modified_by varchar(100)
 }
 
+Table invoicing.einvoice_sending [headercolor: #A0522D] {
+  einvoice_id    uuid [pk]
+  transaction_id varchar(64)
+  last_sent_at   timestamptz
+  holder         uuid
+  held_until     timestamptz
+}
+
 Table invoicing.einvoice_series [headercolor: #A0522D] {
   id                     uuid [pk]
   provider               varchar(32) [not null]
@@ -4747,6 +4755,7 @@ Ref: invoicing.einvoice_error_notice.recorded_by > identity.app_user.id
 Ref: invoicing.einvoice_line.einvoice_id > invoicing.einvoice.id
 Ref: invoicing.einvoice_line.order_line_id > ordering.order_line.id
 Ref: invoicing.einvoice_provider_call.einvoice_id > invoicing.einvoice.id
+Ref: invoicing.einvoice_sending.einvoice_id > invoicing.einvoice.id
 Ref: invoicing.einvoice_series.provider > invoicing.einvoice_provider_config.provider
 Ref: invoicing.einvoice_stuck_notice.einvoice_id > invoicing.einvoice.id
 Ref: design.design_artifact.draft_id > design.design_draft.id
@@ -5042,6 +5051,7 @@ TableGroup invoicing_group [color: #A0522D] {
   invoicing.einvoice_line
   invoicing.einvoice_provider_call
   invoicing.einvoice_provider_config
+  invoicing.einvoice_sending
   invoicing.einvoice_series
   invoicing.einvoice_stuck_notice
   invoicing.sandbox_issuance
