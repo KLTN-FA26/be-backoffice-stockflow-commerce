@@ -40,7 +40,9 @@ class CustomerEmailRetryTest {
     private final CustomerEmailComposer composer = new CustomerEmailComposer(properties());
 
     private CustomerEmailRetry retry() {
-        return new CustomerEmailRetry(reader, serializer, listener, returns, composer, log,
+        return new CustomerEmailRetry(reader, serializer, listener, returns, composer,
+                mock(EInvoiceIssuedNotificationListener.class), mock(EInvoiceEmailComposer.class),
+                mock(EInvoiceErrorNoticeNotificationListener.class), log,
                 Clock.fixed(NOW, ZoneOffset.UTC));
     }
 

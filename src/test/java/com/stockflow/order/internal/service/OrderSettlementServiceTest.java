@@ -46,7 +46,7 @@ class OrderSettlementServiceTest {
     }
 
     private OrderSettlementService at(Instant now) {
-        return new OrderSettlementService(repository, candidates, events, payments, org.mockito.Mockito.mock(com.stockflow.order.internal.domain.SalesContractRepository.class), Clock.fixed(now, ZoneOffset.UTC), 7, 30);
+        return new OrderSettlementService(repository, candidates, events, payments, org.mockito.Mockito.mock(com.stockflow.order.internal.domain.SalesContractRepository.class), org.mockito.Mockito.mock(com.stockflow.order.api.DeliveryInvoices.class), Clock.fixed(now, ZoneOffset.UTC), 7, 30);
     }
 
     @Test
@@ -122,7 +122,7 @@ class OrderSettlementServiceTest {
     @DisplayName("a completed order is closed after the closing delay and not before (BR-05, G3-Q1)")
     void closesAfterTheClosingDelay() {
         Order order = OrderFixtures.delivered(NOW);
-        order.complete(LATER, Duration.ofDays(7), false, false);
+        order.complete(LATER, Duration.ofDays(7), false, false, false);
         order.pullDomainEvents();
         when(repository.findByIdForUpdate(order.id())).thenReturn(Optional.of(order));
 
