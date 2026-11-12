@@ -36,7 +36,7 @@ class SandboxDocumentsTest {
 
     private static InvoiceDocument document(InvoiceParty buyer, List<EInvoiceLine> lines) {
         EInvoice invoice = EInvoice.drawUpOriginal(UUID.randomUUID(), "EINV-20261112-0001",
-                EInvoiceFixtures.delivery(), EInvoiceFixtures.SELLER, buyer, lines, false);
+                EInvoiceFixtures.delivery(), EInvoiceFixtures.SELLER, buyer, lines, false, false);
         invoice.submit(EInvoiceFixtures.SERIES, null, EInvoiceFixtures.NOW);
         return EInvoiceIssuance.document(invoice.snapshot());
     }

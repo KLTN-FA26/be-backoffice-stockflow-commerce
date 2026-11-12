@@ -39,7 +39,7 @@ public final class EInvoiceFixtures {
 
     public static EInvoice draft(InvoiceParty buyer) {
         return EInvoice.drawUpOriginal(UUID.randomUUID(), "EINV-20261112-0001", delivery(), SELLER, buyer, lines(),
-                false);
+                false, false);
     }
 
     /** An invoice brought to {@code status} the way the application brings it there. */

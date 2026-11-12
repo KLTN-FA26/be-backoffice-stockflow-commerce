@@ -238,6 +238,9 @@ CREATE TABLE invoicing.einvoice
 );
 
 -- kltn-docs 21 BR-01: one original invoice in force per delivered shipment.
+-- A REPLACED original no longer counts here: what takes its place is a REPLACEMENT (package E4), not a second
+-- original. Until E4 settles what such a shipment may still be invoiced for, the application draws no original up for a
+-- shipment that has a replaced one (EInvoiceDrafts.drawUp); E4 is to state that rule here as well.
 CREATE UNIQUE INDEX uk_einvoice_original_per_shipment ON invoicing.einvoice (shipment_id)
     WHERE type = 'ORIGINAL' AND status NOT IN ('VOIDED_DRAFT', 'REPLACED');
 -- NĐ 254 Phụ lục điểm 2: a number is used once within a symbol.

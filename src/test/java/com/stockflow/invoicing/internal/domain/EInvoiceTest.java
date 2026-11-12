@@ -88,8 +88,16 @@ class EInvoiceTest {
             assertThat(noEmail.warnings()).containsExactly(EInvoice.Warning.BUYER_PROFILE_INCOMPLETE);
 
             EInvoice otherRate = EInvoice.drawUpOriginal(UUID.randomUUID(), "EINV-20261112-0002",
-                    EInvoiceFixtures.delivery(), EInvoiceFixtures.SELLER, BUYER, EInvoiceFixtures.lines(), true);
+                    EInvoiceFixtures.delivery(), EInvoiceFixtures.SELLER, BUYER, EInvoiceFixtures.lines(), true, false);
             assertThat(otherRate.warnings()).containsExactly(EInvoice.Warning.TAX_RATE_DIFFERS_FROM_CONTRACT);
+
+            // A line whose order fixed no VAT rate: the customer agreed to none, so the draft is never issued unseen.
+            EInvoice noRate = EInvoice.drawUpOriginal(UUID.randomUUID(), "EINV-20261112-0004",
+                    EInvoiceFixtures.delivery(), EInvoiceFixtures.SELLER, BUYER, EInvoiceFixtures.lines(), false, true);
+            assertThat(noRate.warnings()).containsExactly(EInvoice.Warning.TAX_RATE_NOT_ON_CONTRACT);
+            noRate.reviseBuyer(BUYER);
+            assertThat(noRate.warnings()).as("correcting the buyer does not settle it")
+                    .containsExactly(EInvoice.Warning.TAX_RATE_NOT_ON_CONTRACT);
         }
 
         @Test
@@ -98,21 +106,21 @@ class EInvoiceTest {
             var delivery = EInvoiceFixtures.delivery();
             UUID id = UUID.randomUUID();
             assertThatThrownBy(() -> EInvoice.drawUpOriginal(id, "E-1", delivery,
-                    new InvoiceParty("Seller", null, "1 Le Loi", null), BUYER, EInvoiceFixtures.lines(), false))
+                    new InvoiceParty("Seller", null, "1 Le Loi", null), BUYER, EInvoiceFixtures.lines(), false, false))
                     .isInstanceOf(IllegalArgumentException.class);
             assertThatThrownBy(() -> EInvoice.drawUpOriginal(id, "E-1", delivery, EInvoiceFixtures.SELLER, BUYER,
-                    List.of(), false)).isInstanceOf(IllegalArgumentException.class);
+                    List.of(), false, false)).isInstanceOf(IllegalArgumentException.class);
             EInvoiceLine one = EInvoiceFixtures.lines().getFirst();
             assertThatThrownBy(() -> EInvoice.drawUpOriginal(id, "E-1", delivery, EInvoiceFixtures.SELLER, BUYER,
-                    List.of(one, one), false)).isInstanceOf(IllegalArgumentException.class);
+                    List.of(one, one), false, false)).isInstanceOf(IllegalArgumentException.class);
             EInvoiceLine below = EInvoiceLine.goods(UUID.randomUUID(), 1, UUID.randomUUID(), "SKU", "Ly", "Thung", -1,
                     50, BigDecimal.TEN, BigDecimal.TEN);
             assertThatThrownBy(() -> EInvoice.drawUpOriginal(id, "E-1", delivery, EInvoiceFixtures.SELLER, BUYER,
-                    List.of(below), false)).isInstanceOf(IllegalArgumentException.class);
+                    List.of(below), false, false)).isInstanceOf(IllegalArgumentException.class);
             var noShipment = new EInvoice.Delivery(delivery.orderId(), delivery.orderNumber(), null, null, null, null,
                     delivery.customerId(), delivery.deliveredOn());
             assertThatThrownBy(() -> EInvoice.drawUpOriginal(id, "E-1", noShipment, EInvoiceFixtures.SELLER, BUYER,
-                    EInvoiceFixtures.lines(), false)).isInstanceOf(NullPointerException.class);
+                    EInvoiceFixtures.lines(), false, false)).isInstanceOf(NullPointerException.class);
         }
     }
 
@@ -253,7 +261,7 @@ class EInvoiceTest {
         @DisplayName("issued: the provider's number, the tax authority's code, the files; whatever was flagged is settled")
         void issued() {
             EInvoice invoice = EInvoice.drawUpOriginal(UUID.randomUUID(), "EINV-20261112-0003",
-                    EInvoiceFixtures.delivery(), EInvoiceFixtures.SELLER, BUYER, EInvoiceFixtures.lines(), true);
+                    EInvoiceFixtures.delivery(), EInvoiceFixtures.SELLER, BUYER, EInvoiceFixtures.lines(), true, false);
             invoice.submit(SERIES, null, NOW);
             invoice.issued(12345678, "SBXCODE", "SBXLOOK", NOW.plusSeconds(5), "einvoices/2026/11/12/x.xml",
                     "einvoices/2026/11/12/x.pdf", NOW.plusSeconds(6));

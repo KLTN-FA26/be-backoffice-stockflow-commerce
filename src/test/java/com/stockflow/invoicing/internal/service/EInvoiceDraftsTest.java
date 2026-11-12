@@ -11,6 +11,7 @@ import com.stockflow.invoicing.internal.domain.EInvoice;
 import com.stockflow.invoicing.internal.domain.EInvoiceFixtures;
 import com.stockflow.invoicing.internal.domain.EInvoiceLine;
 import com.stockflow.invoicing.internal.domain.EInvoiceRepository;
+import com.stockflow.invoicing.internal.domain.FeeAllocation;
 import com.stockflow.invoicing.internal.domain.EInvoiceStatus;
 import com.stockflow.order.api.DeliveredShipment;
 import com.stockflow.order.api.DeliveredShipments;
@@ -62,13 +63,41 @@ class EInvoiceDraftsTest {
             "1 Le Loi, P. Ben Nghe, TP HCM", "Nguyen Van A", "Giam doc");
     private final Clock clock = Clock.fixed(DELIVERED_AT.plusSeconds(60), ZoneOffset.UTC);
     private EInvoiceDrafts drafts;
+    /** The invoices "in the database": what a later draft of the same order sees. */
+    private final List<EInvoice> saved = new java.util.ArrayList<>();
 
     @BeforeEach
     void setUp() {
         drafts = new EInvoiceDrafts(invoices, shipments, legalProfiles, customers, seller, clock);
         when(invoices.findLiveOriginalOfShipment(any())).thenReturn(Optional.empty());
         when(invoices.nextCode(any())).thenReturn("EINV-20261112-0001");
-        when(invoices.save(any())).thenAnswer(call -> call.getArgument(0));
+        when(invoices.save(any())).thenAnswer(call -> {
+            EInvoice invoice = call.getArgument(0);
+            saved.removeIf(other -> other.id().equals(invoice.id()));
+            saved.add(invoice);
+            return invoice;
+        });
+        // What the database answers from the order's originals that were not voided (EInvoiceRepositoryAdapter).
+        when(invoices.invoicedOfOrder(any())).thenAnswer(call -> {
+            long units = 0;
+            BigDecimal shipping = BigDecimal.ZERO;
+            java.util.Set<String> plateSkus = new java.util.HashSet<>();
+            for (EInvoice invoice : saved) {
+                if (!invoice.orderId().equals(call.getArgument(0)) || invoice.status() == EInvoiceStatus.VOIDED_DRAFT) {
+                    continue;
+                }
+                for (EInvoiceLine line : invoice.lines()) {
+                    if (line.kind() == EInvoiceLine.Kind.GOODS) {
+                        units += (long) line.quantity() * (line.unitsPerCarton() == null ? 1 : line.unitsPerCarton());
+                    } else if (line.feeKind() == EInvoiceLine.FeeKind.SHIPPING_FEE) {
+                        shipping = shipping.add(line.amount());
+                    } else {
+                        plateSkus.add(line.sku());
+                    }
+                }
+            }
+            return new FeeAllocation.Invoiced(units, shipping, plateSkus);
+        });
         when(legalProfiles.legalProfile(CUSTOMER)).thenReturn(Optional.of(new CustomerLegalProfile(CUSTOMER,
                 "Cong ty Tra Sua", "0398765432", "12 Nguyen Hue, TP HCM", "Tran Van B", "Giam doc",
                 "ke.toan@trasua.example.com", null, 3)));
@@ -76,10 +105,16 @@ class EInvoiceDraftsTest {
 
     /**
      * An order of 40 cartons of cups (50 a carton, 2,000 a piece) and 10 cartons of lids (100 a carton, 500 a piece),
-     * a plate fee of 500,000 for the cups and a shipping fee of 100,000; this shipment carries {@code cupCartons} and
-     * {@code lidCartons} after {@code before} pieces were delivered.
+     * a plate fee of 500,000 for the cups and a shipping fee of 100,000 - 3,000 pieces in all; this shipment carries
+     * {@code cupCartons} and {@code lidCartons}.
      */
-    private DeliveredShipment shipment(UUID shipmentId, int cupCartons, int lidCartons, long before) {
+    private DeliveredShipment shipment(UUID shipmentId, int cupCartons, int lidCartons) {
+        return shipment(shipmentId, cupCartons, lidCartons, 3000, DELIVERED_AT);
+    }
+
+    /** The same, of an order that means to deliver {@code orderUnits} pieces, delivered when the carrier says. */
+    private DeliveredShipment shipment(UUID shipmentId, int cupCartons, int lidCartons, long orderUnits,
+                                       Instant deliveredAt) {
         List<DeliveredShipment.Line> lines = new java.util.ArrayList<>();
         if (cupCartons > 0) {
             lines.add(new DeliveredShipment.Line(LINE_CUP, CUP, "Ly giay 12oz", cupCartons, 50, cupCartons * 50,
@@ -90,10 +125,10 @@ class EInvoiceDraftsTest {
                     new BigDecimal("500"), TEN, TEN));
         }
         return new DeliveredShipment(ORDER, "SO-20261101-0007", CUSTOMER, "HD-20261101-0007", shipmentId,
-                "SO-20261101-0007-S1", null, DELIVERED_AT, "VND", lines,
+                "SO-20261101-0007-S1", null, deliveredAt, "VND", lines,
                 List.of(new DeliveredShipment.Fee(FeeKind.PLATE_FEE, CUP, new BigDecimal("500000"), TEN, TEN),
                         new DeliveredShipment.Fee(FeeKind.SHIPPING_FEE, null, new BigDecimal("100000"), TEN, TEN)),
-                3000, before, cupCartons * 50L + lidCartons * 100L);
+                orderUnits, cupCartons * 50L + lidCartons * 100L);
     }
 
     private EInvoice.Snapshot drawUp(DeliveredShipment delivered) {
@@ -106,7 +141,8 @@ class EInvoiceDraftsTest {
     @Test
     @DisplayName("the first delivery: cartons x the carton price, the plate fee whole, its share of the shipping fee")
     void theFirstDelivery() {
-        EInvoice.Snapshot invoice = drawUp(shipment(UUID.randomUUID(), 20, 5, 0));
+        EInvoice.Snapshot invoice = drawUp(shipment(UUID.randomUUID(), 20, 5));
+        verify(invoices).lockOrder(ORDER);
 
         assertThat(invoice.status()).isEqualTo(EInvoiceStatus.DRAFT);
         assertThat(invoice.issueDate()).isEqualTo(LocalDate.of(2026, 11, 12));
@@ -135,9 +171,9 @@ class EInvoiceDraftsTest {
     @Test
     @DisplayName("a later delivery carries no plate fee, and the shipping shares of all deliveries add up to the fee")
     void laterDeliveries() {
-        EInvoice.Snapshot first = drawUp(shipment(UUID.randomUUID(), 13, 0, 0));       // 650 pieces
-        EInvoice.Snapshot second = drawUp(shipment(UUID.randomUUID(), 13, 3, 650));    // 950 pieces
-        EInvoice.Snapshot third = drawUp(shipment(UUID.randomUUID(), 14, 7, 1600));    // 1,400 pieces
+        EInvoice.Snapshot first = drawUp(shipment(UUID.randomUUID(), 13, 0));    // 650 pieces
+        EInvoice.Snapshot second = drawUp(shipment(UUID.randomUUID(), 13, 3));   // 950 pieces
+        EInvoice.Snapshot third = drawUp(shipment(UUID.randomUUID(), 14, 7));    // 1,400 pieces
 
         assertThat(first.lines()).extracting(EInvoiceLine::feeKind).containsExactly(null,
                 EInvoiceLine.FeeKind.PLATE_FEE, EInvoiceLine.FeeKind.SHIPPING_FEE);
@@ -157,6 +193,115 @@ class EInvoiceDraftsTest {
     }
 
     @Test
+    @DisplayName("review finding 1: deliveries recorded against the carrier's clock - the plate fee once, the shipping "
+            + "fee once")
+    void deliveriesRecordedOutOfTimeOrder() {
+        // An order of 1,000 pieces. Shipment A (400) is recorded first, delivered 10/11 09:00. Shipment B (600) is
+        // recorded afterwards from a carrier report that puts its delivery at 09/11 16:00 - before A's.
+        EInvoice.Snapshot a = drawUp(shipment(UUID.randomUUID(), 8, 0, 1000, Instant.parse("2026-11-10T02:00:00Z")));
+        EInvoice.Snapshot b = drawUp(shipment(UUID.randomUUID(), 12, 0, 1000, Instant.parse("2026-11-09T09:00:00Z")));
+
+        assertThat(a.lines()).extracting(EInvoiceLine::feeKind, line -> line.amount().toPlainString())
+                .containsExactly(tuple(null, "800000"), tuple(EInvoiceLine.FeeKind.PLATE_FEE, "500000"),
+                        tuple(EInvoiceLine.FeeKind.SHIPPING_FEE, "40000"));
+        // B is the earlier delivery by the carrier's clock and the second invoice: no plate fee again, and the rest
+        // of the shipping fee - not a share measured from "nothing delivered before".
+        assertThat(b.lines()).extracting(EInvoiceLine::feeKind, line -> line.amount().toPlainString())
+                .containsExactly(tuple(null, "1200000"), tuple(EInvoiceLine.FeeKind.SHIPPING_FEE, "60000"));
+        assertThat(b.issueDate()).as("each invoice is still dated its own delivery")
+                .isEqualTo(LocalDate.of(2026, 11, 9));
+        assertThat(a.subtotal().add(b.subtotal())).as("goods 2,000,000 + plate 500,000 + shipping 100,000")
+                .isEqualByComparingTo("2600000");
+
+        // Three deliveries recorded in an order unlike their times: the shares still add up to the fee.
+        saved.clear();
+        BigDecimal shipping = BigDecimal.ZERO;
+        int plateFees = 0;
+        Instant[] carrierTimes = {Instant.parse("2026-11-12T02:00:00Z"), Instant.parse("2026-11-10T02:00:00Z"),
+                Instant.parse("2026-11-11T02:00:00Z")};
+        int[] cartons = {7, 6, 7};
+        for (int i = 0; i < 3; i++) {
+            EInvoice.Snapshot invoice = drawUp(shipment(UUID.randomUUID(), cartons[i], 0, 1000, carrierTimes[i]));
+            for (EInvoiceLine line : invoice.lines()) {
+                if (line.feeKind() == EInvoiceLine.FeeKind.SHIPPING_FEE) {
+                    shipping = shipping.add(line.amount());
+                } else if (line.feeKind() == EInvoiceLine.FeeKind.PLATE_FEE) {
+                    plateFees++;
+                }
+            }
+        }
+        assertThat(plateFees).isEqualTo(1);
+        assertThat(shipping).isEqualByComparingTo("100000");
+    }
+
+    @Test
+    @DisplayName("review finding 2: part of the order closed between two deliveries - the invoices still carry the fee")
+    void aClosureBetweenDeliveries() {
+        // 5,000 pieces ordered; 40 cartons (2,000) delivered: 40,000 of the 100,000 shipping fee.
+        EInvoice.Snapshot first = drawUp(shipment(UUID.randomUUID(), 40, 0, 5000, DELIVERED_AT));
+        assertThat(first.lines().getLast().amount()).isEqualByComparingTo("40000");
+        // 1,000 pieces are closed: the order now means to deliver 4,000, and the next 2,000 complete it.
+        EInvoice.Snapshot second = drawUp(shipment(UUID.randomUUID(), 40, 0, 4000, DELIVERED_AT));
+        assertThat(second.lines().getLast().feeKind()).isEqualTo(EInvoiceLine.FeeKind.SHIPPING_FEE);
+        assertThat(second.lines().getLast().amount()).as("60,000 - not the 50,000 of a fee re-measured against 4,000")
+                .isEqualByComparingTo("60000");
+        assertThat(second.lines().getLast().taxAmount()).isEqualByComparingTo("6000");
+    }
+
+    @Test
+    @DisplayName("a voided draft's fees are free again: the invoice drawn up in its place carries them")
+    void aVoidedDraftGivesItsFeesBack() {
+        UUID shipmentId = UUID.randomUUID();
+        EInvoice.Snapshot draft = drawUp(shipment(shipmentId, 20, 5));
+        EInvoice voided = saved.getFirst();
+        voided.voidDraft("drawn up by mistake", null, DELIVERED_AT);
+
+        EInvoice.Snapshot again = drawUp(shipment(shipmentId, 20, 5));
+
+        assertThat(again.id()).isNotEqualTo(draft.id());
+        assertThat(again.lines()).extracting(EInvoiceLine::feeKind, line -> line.amount().toPlainString())
+                .containsExactly(tuple(null, "2000000"), tuple(null, "250000"),
+                        tuple(EInvoiceLine.FeeKind.PLATE_FEE, "500000"), tuple(EInvoiceLine.FeeKind.SHIPPING_FEE, "50000"));
+    }
+
+    @Test
+    @DisplayName("review finding 4: a line whose order fixed no VAT rate is flagged, whatever rate was looked up")
+    void aLineWithoutVatOnTheOrderIsFlagged() {
+        UUID shipmentId = UUID.randomUUID();
+        DeliveredShipment delivered = new DeliveredShipment(ORDER, "SO-20261101-0007", CUSTOMER, null, shipmentId,
+                null, null, DELIVERED_AT, "VND",
+                List.of(new DeliveredShipment.Line(LINE_CUP, CUP, "Ly giay 12oz", 10, 50, 500,
+                        new BigDecimal("2000"), TEN, null)), List.of(), 500, 500);
+
+        EInvoice.Snapshot invoice = drawUp(delivered);
+
+        assertThat(invoice.lines().getFirst().taxAmount()).as("the day's rate is on the draft: 1,000,000 at 10%")
+                .isEqualByComparingTo("100000");
+        assertThat(invoice.warnings()).as("and the draft is not issued without the accountant")
+                .containsExactly(EInvoice.Warning.TAX_RATE_NOT_ON_CONTRACT);
+
+        // A fee without a rate on the order is flagged the same way.
+        saved.clear();
+        DeliveredShipment feeOnly = new DeliveredShipment(ORDER, "SO-20261101-0007", CUSTOMER, null,
+                UUID.randomUUID(), null, null, DELIVERED_AT, "VND", shipment(shipmentId, 1, 0).lines(),
+                List.of(new DeliveredShipment.Fee(FeeKind.SHIPPING_FEE, null, new BigDecimal("100000"), TEN, null)),
+                50, 50);
+        assertThat(drawUp(feeOnly).warnings()).containsExactly(EInvoice.Warning.TAX_RATE_NOT_ON_CONTRACT);
+    }
+
+    @Test
+    @DisplayName("review finding 7: a shipment whose invoice was replaced gets no second original (E4 decides)")
+    void aReplacedOriginalIsNotDrawnUpAgain() {
+        UUID shipmentId = UUID.randomUUID();
+        when(invoices.hasReplacedOriginalOfShipment(shipmentId)).thenReturn(true);
+
+        assertThatThrownBy(() -> drafts.drawUp(ORDER, shipmentId)).extracting(EInvoiceDraftsTest::code)
+                .isEqualTo(ErrorCode.EINVOICE_NOT_INVOICEABLE);
+        verify(shipments, never()).find(any(), any());
+        verify(invoices, never()).save(any());
+    }
+
+    @Test
     @DisplayName("the rate of the day of delivery is the invoice's; where it is not the contract's, the draft is flagged")
     void theRateOfTheDay() {
         UUID shipmentId = UUID.randomUUID();
@@ -166,7 +311,7 @@ class EInvoiceDraftsTest {
                 List.of(new DeliveredShipment.Line(LINE_CUP, CUP, "Ly giay 12oz", 10, 50, 500,
                         new BigDecimal("2000"), eight, TEN)),
                 List.of(new DeliveredShipment.Fee(FeeKind.SHIPPING_FEE, null, new BigDecimal("100000"), eight, TEN)),
-                500, 0, 500);
+                500, 500);
 
         EInvoice.Snapshot invoice = drawUp(delivered);
 
@@ -184,7 +329,7 @@ class EInvoiceDraftsTest {
         DeliveredShipment delivered = new DeliveredShipment(ORDER, "SO-20261101-0007", CUSTOMER, null, shipmentId,
                 null, null, DELIVERED_AT, "VND",
                 List.of(new DeliveredShipment.Line(LINE_CUP, CUP, "Ly giay 12oz", null, null, 30,
-                        new BigDecimal("2000"), TEN, null)), List.of(), 30, 0, 30);
+                        new BigDecimal("2000"), TEN, TEN)), List.of(), 30, 30);
 
         EInvoiceLine line = drawUp(delivered).lines().getFirst();
 
@@ -197,7 +342,7 @@ class EInvoiceDraftsTest {
     @Test
     @DisplayName("the seller and the buyer are copied: the buyer from its legal profile, with its invoice e-mail")
     void thePartiesAreCopied() {
-        EInvoice.Snapshot invoice = drawUp(shipment(UUID.randomUUID(), 20, 5, 0));
+        EInvoice.Snapshot invoice = drawUp(shipment(UUID.randomUUID(), 20, 5));
 
         assertThat(invoice.seller().name()).isEqualTo("CONG TY TNHH BAO BI");
         assertThat(invoice.seller().taxCode()).isEqualTo("0312345678");
@@ -216,7 +361,7 @@ class EInvoiceDraftsTest {
         when(customers.findById(CUSTOMER)).thenReturn(Optional.of(new CustomerSummary(CUSTOMER, null, "Cong ty Tra Sua",
                 "lien.he@trasua.example.com", null, null, null, "ACTIVE", 0, DELIVERED_AT)));
 
-        EInvoice.Snapshot invoice = drawUp(shipment(UUID.randomUUID(), 20, 5, 0));
+        EInvoice.Snapshot invoice = drawUp(shipment(UUID.randomUUID(), 20, 5));
 
         assertThat(invoice.buyer().name()).isEqualTo("Cong ty Tra Sua");
         assertThat(invoice.buyer().taxCode()).isNull();
@@ -250,18 +395,18 @@ class EInvoiceDraftsTest {
                 .isEqualTo(ErrorCode.EINVOICE_NOT_INVOICEABLE);
 
         DeliveredShipment dollars = new DeliveredShipment(ORDER, "SO-1", CUSTOMER, null, shipmentId, null, null,
-                DELIVERED_AT, "USD", shipment(shipmentId, 1, 0, 0).lines(), List.of(), 50, 0, 50);
+                DELIVERED_AT, "USD", shipment(shipmentId, 1, 0).lines(), List.of(), 50, 50);
         when(shipments.find(ORDER, shipmentId)).thenReturn(Optional.of(dollars));
         assertThatThrownBy(() -> drafts.drawUp(ORDER, shipmentId)).extracting(EInvoiceDraftsTest::code)
                 .isEqualTo(ErrorCode.EINVOICE_NOT_INVOICEABLE);
 
         DeliveredShipment nothing = new DeliveredShipment(ORDER, "SO-1", CUSTOMER, null, shipmentId, null, null,
-                DELIVERED_AT, "VND", List.of(), shipment(shipmentId, 1, 0, 0).fees(), 50, 0, 0);
+                DELIVERED_AT, "VND", List.of(), shipment(shipmentId, 1, 0).fees(), 50, 0);
         when(shipments.find(ORDER, shipmentId)).thenReturn(Optional.of(nothing));
         assertThatThrownBy(() -> drafts.drawUp(ORDER, shipmentId)).as("fees alone are not a delivery")
                 .extracting(EInvoiceDraftsTest::code).isEqualTo(ErrorCode.EINVOICE_NOT_INVOICEABLE);
 
-        when(shipments.find(ORDER, shipmentId)).thenReturn(Optional.of(shipment(shipmentId, 1, 0, 0)));
+        when(shipments.find(ORDER, shipmentId)).thenReturn(Optional.of(shipment(shipmentId, 1, 0)));
         EInvoiceDrafts noSeller = new EInvoiceDrafts(invoices, shipments, legalProfiles, customers,
                 new SellerProperties("CONG TY", " ", "1 Le Loi", "A", "Giam doc"), clock);
         assertThatThrownBy(() -> noSeller.drawUp(ORDER, shipmentId)).extracting(EInvoiceDraftsTest::code)
@@ -310,7 +455,7 @@ class EInvoiceDraftsTest {
                 new EInvoice.Delivery(ORDER, "SO-1", null, UUID.randomUUID(), null, null, CUSTOMER,
                         LocalDate.of(2026, 11, 12)), EInvoiceFixtures.SELLER,
                 new com.stockflow.invoicing.internal.domain.InvoiceParty("Cong ty Tra Sua", null, null, null),
-                EInvoiceFixtures.lines(), false);
+                EInvoiceFixtures.lines(), false, false);
         when(invoices.findByIdForUpdate(draft.id())).thenReturn(Optional.of(draft));
 
         EInvoice.Snapshot refreshed = drafts.refreshBuyer(draft.id(), 0);
@@ -336,14 +481,14 @@ class EInvoiceDraftsTest {
     @DisplayName("21 §4.5: a delivery corrected to a failure voids the shipment's draft - never an invoice at the provider")
     void aCorrectedDeliveryVoidsTheDraft() {
         UUID noInvoice = UUID.randomUUID();
-        assertThat(drafts.voidForCorrectedDelivery(noInvoice)).isEqualTo(EInvoiceDrafts.CorrectionOutcome.NO_INVOICE);
+        assertThat(drafts.voidForCorrectedDelivery(ORDER, noInvoice)).isEqualTo(EInvoiceDrafts.CorrectionOutcome.NO_INVOICE);
 
         for (EInvoiceStatus unsent : new EInvoiceStatus[] {EInvoiceStatus.DRAFT, EInvoiceStatus.REJECTED}) {
             EInvoice invoice = EInvoiceFixtures.in(unsent);
             when(invoices.findLiveOriginalOfShipment(invoice.shipmentId())).thenReturn(Optional.of(invoice));
             when(invoices.findByIdForUpdate(invoice.id())).thenReturn(Optional.of(invoice));
 
-            assertThat(drafts.voidForCorrectedDelivery(invoice.shipmentId())).as("%s", unsent)
+            assertThat(drafts.voidForCorrectedDelivery(invoice.orderId(), invoice.shipmentId())).as("%s", unsent)
                     .isEqualTo(EInvoiceDrafts.CorrectionOutcome.VOIDED);
             assertThat(invoice.status()).isEqualTo(EInvoiceStatus.VOIDED_DRAFT);
             assertThat(invoice.snapshot().voidedBy()).as("the system's doing").isNull();
@@ -354,7 +499,7 @@ class EInvoiceDraftsTest {
             when(invoices.findLiveOriginalOfShipment(invoice.shipmentId())).thenReturn(Optional.of(invoice));
             when(invoices.findByIdForUpdate(invoice.id())).thenReturn(Optional.of(invoice));
 
-            assertThat(drafts.voidForCorrectedDelivery(invoice.shipmentId())).as("%s", sent)
+            assertThat(drafts.voidForCorrectedDelivery(invoice.orderId(), invoice.shipmentId())).as("%s", sent)
                     .isEqualTo(EInvoiceDrafts.CorrectionOutcome.LEFT_FOR_ADJUSTMENT);
             assertThat(invoice.status()).as("it may exist in law: never voided").isEqualTo(sent);
         }

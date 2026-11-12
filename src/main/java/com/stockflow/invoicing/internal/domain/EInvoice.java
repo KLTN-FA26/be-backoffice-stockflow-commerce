@@ -19,6 +19,12 @@ import java.util.UUID;
 /**
  * One VAT e-invoice (WF-05 E2, plan §1.4-§1.5; kltn-docs 21; NĐ 254/2026/NĐ-CP, TT 91/2026/TT-BTC).
  *
+ * <p><b>Date and number.</b> An invoice's date is the day of its delivery (NĐ 254 Điều 9), fixed when it is drawn up;
+ * its number is the provider's, given when it is issued. A draft issued late therefore takes a later number than an
+ * invoice dated after it. The law asks for numbers that run on within a symbol (Phụ lục điểm 2) and for signing by the
+ * next working day (điểm 7), which is why a draft carries a deadline; whether a real provider refuses a date before its
+ * last number is a question for its adapter (package E3).</p>
+ *
  * <p>An original invoices one delivered shipment. It is drawn up as a draft the moment the delivery is recorded, with
  * the seller and the buyer <b>copied</b> onto it and its lines and totals fixed from the order's prices. From then on:</p>
  * <ul>
@@ -46,7 +52,12 @@ public final class EInvoice {
         /** The buyer's name, tax code, address or invoice e-mail is missing: issuing is refused until it is there. */
         BUYER_PROFILE_INCOMPLETE,
         /** A line's VAT rate on the day of delivery is not the one the contract fixed: the totals differ from the contract's. */
-        TAX_RATE_DIFFERS_FROM_CONTRACT
+        TAX_RATE_DIFFERS_FROM_CONTRACT,
+        /**
+         * A line's order fixed no VAT rate at all, so the rate on it was looked up for the day of delivery - or, for a
+         * product without a tax class, assumed standard. The customer agreed to no rate: the accountant decides.
+         */
+        TAX_RATE_NOT_ON_CONTRACT
     }
 
     /** How the customer pays: by bank transfer against the contract's installments (kltn-docs 15), always. */
@@ -189,12 +200,13 @@ public final class EInvoice {
      * day ({@link IssueDeadline}), its totals added up from {@code lines}.
      *
      * @param taxRateDiffersFromContract whether a line carries a VAT rate other than the one its order line fixed
+     * @param taxRateNotOnContract       whether a line's order fixed no VAT rate at all
      * @throws IllegalArgumentException for a seller missing its name, tax code or address, no lines, two lines with one
      *                                  number, or a line below zero - none of which a delivery produces
      */
     public static EInvoice drawUpOriginal(UUID id, String code, Delivery delivery, InvoiceParty seller,
                                           InvoiceParty buyer, List<EInvoiceLine> lines,
-                                          boolean taxRateDiffersFromContract) {
+                                          boolean taxRateDiffersFromContract, boolean taxRateNotOnContract) {
         Objects.requireNonNull(delivery, "delivery");
         Objects.requireNonNull(delivery.shipmentId(), "An original invoices a shipment");
         if (seller == null || seller.name() == null || seller.taxCode() == null || seller.address() == null) {
@@ -223,6 +235,9 @@ public final class EInvoice {
         }
         if (taxRateDiffersFromContract) {
             warnings.add(Warning.TAX_RATE_DIFFERS_FROM_CONTRACT);
+        }
+        if (taxRateNotOnContract) {
+            warnings.add(Warning.TAX_RATE_NOT_ON_CONTRACT);
         }
         return new EInvoice(new Snapshot(id, code, EInvoiceType.ORIGINAL, EInvoiceStatus.DRAFT, false,
                 delivery.orderId(), delivery.orderNumber(), delivery.contractNumber(), delivery.shipmentId(),

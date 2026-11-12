@@ -33,7 +33,7 @@ class DeliveryCorrectionListener {
         if (!"DELIVERED".equals(event.previousStatus()) || !"DELIVERY_FAILED".equals(event.status())) {
             return;
         }
-        switch (drafts.voidForCorrectedDelivery(event.shipmentId())) {
+        switch (drafts.voidForCorrectedDelivery(event.orderId(), event.shipmentId())) {
             case VOIDED -> log.info("The draft e-invoice of shipment {} was voided: its delivery was corrected to a "
                     + "failure", LogSafe.text(event.shipmentCode()));
             case LEFT_FOR_ADJUSTMENT -> log.warn("Shipment {} of order {} was corrected to a failed delivery after its "

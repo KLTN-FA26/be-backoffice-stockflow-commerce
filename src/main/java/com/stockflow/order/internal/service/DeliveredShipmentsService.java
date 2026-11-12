@@ -21,7 +21,6 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -40,17 +39,13 @@ import java.util.UUID;
  * the invoice to flag a difference. A SKU whose product has no tax class keeps the order's rate; a fee without one
  * takes STANDARD, as on a quote (D31).</p>
  *
- * <p>The order of deliveries - which shipment came first, how much was delivered before this one - is read from the
- * shipments' own delivery times, so asking again for the same shipment answers the same, whatever was invoiced
- * meanwhile.</p>
+ * <p>Nothing here ranks the order's deliveries. A shipment's delivery time is the carrier's, and a delivery that
+ * happened earlier can be recorded later, so "delivered before this one" read from those times would change after an
+ * invoice was drawn up from it. Which invoice is the order's first is the invoicing module's to say, from its own
+ * invoices.</p>
  */
 @Service
 class DeliveredShipmentsService implements DeliveredShipments {
-
-    /** Deliveries in the order they happened; the id settles two reported for the same instant. */
-    private static final Comparator<OrderShipment> BY_DELIVERY = Comparator
-            .comparing(OrderShipment::outcomeAt, Comparator.nullsLast(Comparator.naturalOrder()))
-            .thenComparing(OrderShipment::id);
 
     private final OrderRepository orders;
     private final SalesContractRepository contracts;
@@ -110,29 +105,37 @@ class DeliveredShipmentsService implements DeliveredShipments {
                     fee.amount().amount(), rateOf(taxClass, rates, fee.taxRate()), fee.taxRate()));
         }
 
-        long before = order.shipments().stream()
-                .filter(other -> other.status() == OrderShipmentStatus.DELIVERED && !other.id().equals(shipmentId)
-                        && BY_DELIVERY.compare(other, shipment) < 0)
-                .mapToLong(DeliveredShipmentsService::units).sum();
         long orderUnits = order.lines().stream().mapToLong(line -> line.quantity() - line.cancelledQuantity()).sum();
         String contractNumber = contracts.findLiveByOrderId(orderId).map(SalesContract::contractNumber).orElse(null);
         String currency = order.lines().isEmpty() ? "VND"
                 : order.lines().getFirst().unitPrice().currency().getCurrencyCode();
         return Optional.of(new DeliveredShipment(orderId, order.orderNumber().value(), order.customerId(),
                 contractNumber, shipmentId, shipment.carriage() == null ? null : shipment.carriage().shipmentCode(),
-                shipment.deliveryBatchId(), deliveredAt, currency, lines, fees, orderUnits, before, units(shipment)));
+                shipment.deliveryBatchId(), deliveredAt, currency, lines, fees, orderUnits, units(shipment)));
     }
 
     private static long units(OrderShipment shipment) {
         return shipment.quantities().values().stream().mapToLong(Integer::longValue).sum();
     }
 
-    /** The day's rate of the class; the order's own rate where the class or its rate is unknown; 0 where neither is. */
+    /**
+     * The day's rate of the class; the order's own rate where the class or its rate is unknown. Where neither is
+     * known the day's STANDARD rate stands in: 0% is a rate of its own in law, not "no VAT", and an invoice must not
+     * go out at it by default. The invoice flags every line whose order fixed no rate, so this guess is never issued
+     * without the accountant.
+     */
     private static BigDecimal rateOf(TaxClass taxClass, Map<String, BigDecimal> rates, BigDecimal contractRate) {
         BigDecimal ofDay = taxClass == null ? null : rates.get(taxClass.name());
         if (ofDay != null) {
             return ofDay;
         }
-        return contractRate == null ? BigDecimal.ZERO : contractRate;
+        if (contractRate != null) {
+            return contractRate;
+        }
+        BigDecimal standard = rates.get(TaxRates.STANDARD);
+        if (standard == null) {
+            throw new IllegalStateException("ordering.tax_rate has no STANDARD rate");
+        }
+        return standard;
     }
 }

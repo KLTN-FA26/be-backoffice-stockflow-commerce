@@ -5,6 +5,7 @@ import com.stockflow.common.error.ErrorCode;
 import com.stockflow.invoicing.internal.domain.EInvoice;
 import com.stockflow.invoicing.internal.domain.EInvoiceLine;
 import com.stockflow.invoicing.internal.domain.EInvoiceRepository;
+import com.stockflow.invoicing.internal.domain.FeeAllocation;
 import com.stockflow.invoicing.internal.entity.EInvoiceJpaEntity;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.LockModeType;
@@ -70,6 +71,44 @@ class EInvoiceRepositoryAdapter implements EInvoiceRepository {
     }
 
     @Override
+    public boolean hasReplacedOriginalOfShipment(UUID shipmentId) {
+        Boolean replaced = jdbc.queryForObject("""
+                SELECT EXISTS (SELECT 1 FROM invoicing.einvoice
+                                WHERE shipment_id = ? AND type = 'ORIGINAL' AND status = 'REPLACED')""",
+                Boolean.class, shipmentId);
+        return Boolean.TRUE.equals(replaced);
+    }
+
+    @Override
+    public void lockOrder(UUID orderId) {
+        // Wrapped in a sub-select: pg_advisory_xact_lock returns void. Released when the transaction ends.
+        jdbc.queryForObject("SELECT 1 FROM (SELECT pg_advisory_xact_lock(hashtextextended(?, 0))) AS locked",
+                Integer.class, "einvoice-order:" + orderId);
+    }
+
+    @Override
+    public FeeAllocation.Invoiced invoicedOfOrder(UUID orderId) {
+        // Every original of the order that was not voided: a replaced one counts too - what replaces it carries its
+        // lines again, and a fee must not be drawn up a second time beside the replacement.
+        return jdbc.queryForObject("""
+                SELECT COALESCE(sum(l.quantity * COALESCE(l.units_per_carton, 1)) FILTER (WHERE l.kind = 'GOODS'), 0)
+                           AS units,
+                       COALESCE(sum(l.amount) FILTER (WHERE l.fee_kind = 'SHIPPING_FEE'), 0) AS shipping,
+                       COALESCE(array_agg(DISTINCT l.sku) FILTER (WHERE l.fee_kind = 'PLATE_FEE'), '{}') AS plate_skus
+                  FROM invoicing.einvoice i
+                  JOIN invoicing.einvoice_line l ON l.einvoice_id = i.id
+                 WHERE i.order_id = ? AND i.type = 'ORIGINAL' AND i.status <> 'VOIDED_DRAFT'""",
+                (row, n) -> new FeeAllocation.Invoiced(row.getLong("units"), row.getBigDecimal("shipping"),
+                        plateSkus((String[]) row.getArray("plate_skus").getArray())), orderId);
+    }
+
+    private static java.util.Set<String> plateSkus(String[] skus) {
+        java.util.Set<String> set = new java.util.HashSet<>(java.util.Arrays.asList(skus));
+        set.remove(null);
+        return set;
+    }
+
+    @Override
     public EInvoice save(EInvoice invoice) {
         EInvoice.Snapshot snapshot = invoice.snapshot();
         Optional<EInvoiceJpaEntity> existing = invoices.findById(snapshot.id());
@@ -107,7 +146,7 @@ class EInvoiceRepositoryAdapter implements EInvoiceRepository {
     public List<UUID> findDueUnwarned(Instant dueBefore, int limit) {
         return jdbc.queryForList("""
                 SELECT id FROM invoicing.einvoice
-                 WHERE status IN ('DRAFT', 'REJECTED') AND due_warned_at IS NULL AND issue_due_at < ?
+                 WHERE status IN ('DRAFT', 'REJECTED', 'SUBMITTING') AND due_warned_at IS NULL AND issue_due_at < ?
                  ORDER BY issue_due_at, id LIMIT ?""", UUID.class, Timestamp.from(dueBefore), limit);
     }
 

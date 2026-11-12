@@ -139,21 +139,23 @@ class DeliveredShipmentsServiceTest {
                 fee -> fee.amount().toPlainString()).containsExactly(
                 tuple(FeeKind.PLATE_FEE, "CUP-12OZ", "500000"), tuple(FeeKind.SHIPPING_FEE, null, "150000"));
         assertThat(delivered.orderUnits()).isEqualTo(15);
-        assertThat(delivered.unitsDeliveredBefore()).isZero();
         assertThat(delivered.unitsInShipment()).isEqualTo(6);
     }
 
     @Test
-    @DisplayName("a later delivery knows what was delivered before it, by delivery time - whatever is asked first")
+    @DisplayName("each delivery answers for itself: its own goods and time, the order's fees whole, no ranking")
     void aLaterDelivery() {
+        // S2 is recorded first though the carrier says S1 arrived earlier: neither answer depends on the other.
         order.recordShipmentDelivered(S2, SECOND_DELIVERY, STAFF);
-        assertThat(find(S2).unitsDeliveredBefore()).as("S1 is not delivered yet: S2 is the order's first").isZero();
-
+        DeliveredShipment alone = find(S2);
         order.recordShipmentDelivered(S1, FIRST_DELIVERY, STAFF);
         DeliveredShipment second = find(S2);
-        assertThat(second.unitsDeliveredBefore()).as("S1 was delivered earlier, though recorded later").isEqualTo(6);
+        assertThat(second).as("the same answer whatever else was delivered meanwhile").isEqualTo(alone);
         assertThat(second.unitsInShipment()).isEqualTo(9);
-        assertThat(find(S1).unitsDeliveredBefore()).isZero();
+        assertThat(second.orderUnits()).isEqualTo(15);
+        assertThat(second.fees()).as("the fees whole: which invoice carries them is the invoicing module's to say")
+                .hasSize(2);
+        assertThat(find(S1).deliveredAt()).isEqualTo(FIRST_DELIVERY);
         // A SKU without a product name is named by its code; without a carton unit it is counted in pieces.
         assertThat(second.lines()).extracting(DeliveredShipment.Line::sku, DeliveredShipment.Line::name,
                 DeliveredShipment.Line::units).containsExactly(tuple("CUP-12OZ", "Ly giay 12oz", 4),
@@ -192,5 +194,37 @@ class DeliveredShipmentsServiceTest {
         assertThat(delivered.fees().get(0).taxRate()).as("the plate fee's SKU has no class either")
                 .isEqualByComparingTo("10");
         assertThat(delivered.fees().get(1).taxRate()).as("the shipping fee is STANDARD").isEqualByComparingTo("8");
+    }
+
+    @Test
+    @DisplayName("review finding 4: no rate on the order and no tax class - the day's STANDARD rate, never 0%, and the "
+            + "order's rate handed over as missing")
+    void noRateAnywhereIsNotZeroPercent() {
+        Order plain = Order.draft(OrderNumber.of(LocalDate.of(2026, 11, 2), 10), UUID.randomUUID(), UUID.randomUUID(),
+                List.of(Order.line(new Sku("CUP-12OZ"), 10, Money.vnd(100_000), null)), PLACED);
+        plain.lines().forEach(line -> plain.attachReservations(line.id(), List.of(UUID.randomUUID())));
+        plain.sendContract(STAFF, PLACED);
+        plain.contractSigned(false, false, STAFF, PLACED);
+        plain.chooseShippingWarehouse(HCM, true, STAFF, PLACED);
+        plain.release(HCM, "HCM", STAFF, PLACED);
+        plain.startPicking(STAFF, PLACED);
+        plain.markPacked(PLACED, STAFF);
+        UUID shipment = UUID.randomUUID();
+        plain.recordHandover(new ShipmentHandover(shipment,
+                List.of(new ShipmentHandover.Line(plain.lines().getFirst().id(), 10)), PLACED, STAFF), BigDecimal.ZERO);
+        plain.recordShipmentDelivered(shipment, FIRST_DELIVERY, STAFF);
+        when(orders.findById(new OrderId(plain.id().value()))).thenReturn(Optional.of(plain));
+        when(taxRates.onDay(any())).thenReturn(Map.of("STANDARD", new BigDecimal("8")));
+
+        // The product has a class: the day's rate of that class, and still no rate from the order.
+        DeliveredShipment.Line classed = service.find(plain.id().value(), shipment).orElseThrow().lines().getFirst();
+        assertThat(classed.taxRate()).isEqualByComparingTo("8");
+        assertThat(classed.contractTaxRate()).as("the order fixed none: the invoice flags it").isNull();
+
+        // No class either: STANDARD stands in. 0% would be a rate of its own, not "no VAT".
+        when(products.taxClassesOf(any())).thenReturn(Map.of());
+        DeliveredShipment.Line unclassed = service.find(plain.id().value(), shipment).orElseThrow().lines().getFirst();
+        assertThat(unclassed.taxRate()).isEqualByComparingTo("8");
+        assertThat(unclassed.contractTaxRate()).isNull();
     }
 }

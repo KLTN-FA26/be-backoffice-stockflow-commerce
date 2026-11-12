@@ -21,6 +21,7 @@ import com.stockflow.order.api.DeliveredShipment;
 import com.stockflow.order.api.DeliveredShipments;
 import com.stockflow.order.api.FeeKind;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
@@ -44,15 +45,16 @@ import java.util.regex.Pattern;
  *   <li><b>Goods</b>: each order line the shipment delivered, as cartons at the carton's price - the contract's price
  *       of a piece times the pieces in a carton - with the VAT rate of the day of delivery ({@code ordering.tax_rate}).
  *       A line not ordered in cartons is counted in pieces.</li>
- *   <li><b>Fees</b>: the plate fees on the invoice of the order's first delivery, and this delivery's share of the
- *       order's shipping fee ({@link FeeAllocation}).</li>
+ *   <li><b>Fees</b>: each plate fee on the first invoice drawn up for the order, and this delivery's share of the
+ *       order's shipping fee - both decided from what the order's invoices already carry ({@link FeeAllocation}).</li>
  *   <li><b>The parties, copied</b>: the seller from this deployment's configuration, the buyer from the customer's
  *       legal profile - name, tax code, registered address, invoice e-mail. A buyer with something missing still gets
  *       its draft, flagged; it is issuing that is refused.</li>
  * </ul>
  *
- * <p>A shipment has one original invoice in force. Asking again for a shipment that has one returns it; two requests
- * arriving together are decided by {@code uk_einvoice_original_per_shipment}, and the loser's transaction fails whole.</p>
+ * <p>A shipment has one original invoice in force. Asking again for a shipment that has one returns it. Drafts of one
+ * order are drawn up one after the other, under the order's invoicing lock: the second sees the first, and the fees it
+ * carries. {@code uk_einvoice_original_per_shipment} is the last line of defence.</p>
  */
 @Service
 public class EInvoiceDrafts {
@@ -93,15 +95,32 @@ public class EInvoiceDrafts {
     /**
      * The original invoice of a delivered shipment: the one in force if there is one, else a new draft.
      *
+     * <p><b>In a transaction of its own</b> ({@code REQUIRES_NEW}), whoever calls. The listener that hears of a
+     * delivery runs in its own transaction and must end normally when a delivery has nothing to invoice; an exception
+     * leaving a method that had joined that transaction would mark it rollback-only, the listener's event would never
+     * be completed, and it would be delivered and refused again at every restart. Here a refusal rolls back this
+     * transaction alone.</p>
+     *
+     * <p>Under the order's invoicing lock, taken before anything is read: two drafts of one order see each other's
+     * fees, and a delivery corrected to a failure meanwhile is either seen here (nothing is drawn up) or finds this
+     * draft when it comes to void it ({@link #voidForCorrectedDelivery}).</p>
+     *
      * @throws BusinessException {@code EINVOICE_NOT_INVOICEABLE} when the shipment is not delivered (or its delivery
-     *         was corrected to a failure), delivered nothing, or is not priced in dong;
+     *         was corrected to a failure), delivered nothing, is not priced in dong, or had its invoice replaced;
      *         {@code SELLER_PROFILE_UNAVAILABLE} while the seller is not configured
      */
-    @Transactional
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
     public DrawnUp drawUp(UUID orderId, UUID shipmentId) {
+        invoices.lockOrder(orderId);
         Optional<EInvoice> inForce = invoices.findLiveOriginalOfShipment(shipmentId);
         if (inForce.isPresent()) {
             return new DrawnUp(inForce.get().snapshot(), false);
+        }
+        if (invoices.hasReplacedOriginalOfShipment(shipmentId)) {
+            // TODO(E4): what a shipment whose invoice was replaced may still be invoiced for is the replacement's
+            // business. Until E4 says, no second original is drawn up beside it.
+            throw new BusinessException(ErrorCode.EINVOICE_NOT_INVOICEABLE,
+                    "The invoice of shipment %s was replaced; it is not drawn up again".formatted(shipmentId));
         }
         DeliveredShipment delivered = shipments.find(orderId, shipmentId)
                 .orElseThrow(() -> new BusinessException(ErrorCode.EINVOICE_NOT_INVOICEABLE,
@@ -115,7 +134,7 @@ public class EInvoiceDrafts {
             throw new BusinessException(ErrorCode.SELLER_PROFILE_UNAVAILABLE,
                     "stockflow.seller.* is not configured in this deployment");
         }
-        Lines lines = lines(delivered);
+        Lines lines = lines(delivered, invoices.invoicedOfOrder(orderId));
         if (lines.lines().isEmpty()) {
             throw new BusinessException(ErrorCode.EINVOICE_NOT_INVOICEABLE,
                     "Shipment %s delivered nothing to invoice".formatted(shipmentId));
@@ -127,7 +146,8 @@ public class EInvoiceDrafts {
                         delivered.shipmentId(), delivered.shipmentCode(), delivered.deliveryBatchId(),
                         delivered.customerId(), deliveredOn),
                 new InvoiceParty(seller.name(), seller.taxCode(), seller.address(), null),
-                buyerOf(delivered.customerId()), lines.lines(), lines.rateDiffersFromContract());
+                buyerOf(delivered.customerId()), lines.lines(), lines.rateDiffersFromContract(),
+                lines.rateNotOnContract());
         return new DrawnUp(invoices.save(invoice).snapshot(), true);
     }
 
@@ -198,7 +218,10 @@ public class EInvoiceDrafts {
      * only ever adjusted (21 §4.4: a full decrease), which is package E4's.</p>
      */
     @Transactional
-    public CorrectionOutcome voidForCorrectedDelivery(UUID shipmentId) {
+    public CorrectionOutcome voidForCorrectedDelivery(UUID orderId, UUID shipmentId) {
+        // The lock a draft is drawn up under: a draft being drawn up for this shipment right now is finished first,
+        // and found here.
+        invoices.lockOrder(orderId);
         Optional<EInvoice> inForce = invoices.findLiveOriginalOfShipment(shipmentId);
         if (inForce.isEmpty()) {
             return CorrectionOutcome.NO_INVOICE;
@@ -240,13 +263,15 @@ public class EInvoiceDrafts {
         return new InvoiceParty(customer.fullName(), customer.taxCode(), null, customer.email());
     }
 
-    private record Lines(List<EInvoiceLine> lines, boolean rateDiffersFromContract) {
+    private record Lines(List<EInvoiceLine> lines, boolean rateDiffersFromContract, boolean rateNotOnContract) {
     }
 
-    private static Lines lines(DeliveredShipment delivered) {
+    /** The goods of the delivery, then the fees this invoice carries given what the order's invoices carry already. */
+    private static Lines lines(DeliveredShipment delivered, FeeAllocation.Invoiced invoiced) {
         ResourceBundle t = ResourceBundle.getBundle("i18n.messages", Locale.forLanguageTag("vi"));
         List<EInvoiceLine> lines = new ArrayList<>();
         boolean differs = false;
+        boolean notOnContract = false;
         for (DeliveredShipment.Line goods : delivered.lines()) {
             boolean cartons = goods.cartons() != null;
             lines.add(EInvoiceLine.goods(Identifiers.newId(), lines.size() + 1, goods.orderLineId(), goods.sku(),
@@ -255,20 +280,20 @@ public class EInvoiceDrafts {
                     cartons ? goods.unitPrice().multiply(BigDecimal.valueOf(goods.unitsPerCarton())) : goods.unitPrice(),
                     goods.taxRate()));
             differs |= differs(goods.taxRate(), goods.contractTaxRate());
+            notOnContract |= goods.contractTaxRate() == null;
         }
         if (lines.isEmpty()) {
-            return new Lines(lines, false);
+            return new Lines(lines, false, false);
         }
         for (DeliveredShipment.Fee fee : delivered.fees()) {
             BigDecimal amount;
             String name;
             if (fee.kind() == FeeKind.PLATE_FEE) {
-                amount = FeeAllocation.carriesPlateFees(delivered.unitsDeliveredBefore()) ? fee.amount()
-                        : BigDecimal.ZERO;
+                amount = FeeAllocation.carriesPlateFee(fee.sku(), invoiced) ? fee.amount() : BigDecimal.ZERO;
                 name = t.getString("einvoice.line.plateFee").formatted(fee.sku());
             } else {
                 amount = FeeAllocation.shippingShare(fee.amount(), delivered.orderUnits(),
-                        delivered.unitsDeliveredBefore(), delivered.unitsInShipment());
+                        delivered.unitsInShipment(), invoiced);
                 name = delivered.shipmentCode() == null ? t.getString("einvoice.line.shippingFee.plain")
                         : t.getString("einvoice.line.shippingFee").formatted(delivered.shipmentCode());
             }
@@ -279,8 +304,9 @@ public class EInvoiceDrafts {
                     EInvoiceLine.FeeKind.valueOf(fee.kind().name()), fee.sku(), name, t.getString("einvoice.unit.fee"),
                     amount, fee.taxRate()));
             differs |= differs(fee.taxRate(), fee.contractTaxRate());
+            notOnContract |= fee.contractTaxRate() == null;
         }
-        return new Lines(lines, differs);
+        return new Lines(lines, differs, notOnContract);
     }
 
     private static boolean differs(BigDecimal rate, BigDecimal contractRate) {
