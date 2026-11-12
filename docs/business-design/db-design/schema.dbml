@@ -3188,6 +3188,7 @@ Table fulfillment.delivery_outcome_import_row [headercolor: #2C7873] {
   recipient        varchar(255)
   note             varchar(500)
   shipment_code    varchar(255)
+  carrier_code     varchar(255)
   load_id          uuid
   verdict          fulfillment.delivery_outcome_import_row_verdict [not null]
   problem          varchar(32)
