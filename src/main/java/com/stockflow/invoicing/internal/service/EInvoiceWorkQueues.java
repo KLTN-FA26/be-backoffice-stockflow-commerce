@@ -1,6 +1,7 @@
 package com.stockflow.invoicing.internal.service;
 
 import com.stockflow.contracts.EInvoiceIssueDue;
+import com.stockflow.contracts.EInvoiceNeedsAttention;
 import com.stockflow.invoicing.internal.domain.EInvoice;
 import com.stockflow.invoicing.internal.domain.EInvoiceRepository;
 import com.stockflow.invoicing.internal.domain.EInvoiceStatus;
@@ -79,5 +80,38 @@ class EInvoiceWorkQueues {
                 before.issueDate(), before.issueDueAt());
         events.publishEvent(due);
         return Optional.of(due);
+    }
+
+    /** Invoices that have waited for the provider's answer for longer than the configured time, not yet announced. */
+    @Transactional(readOnly = true)
+    public List<UUID> stuckUnannounced(int limit) {
+        return invoices.findStuckUnannounced(clock.instant().minus(properties.stuckAfter()), limit);
+    }
+
+    /**
+     * Tells the accountants once that a submission is stuck: the note that they were told and the event are written in
+     * one transaction, so the two go together or not at all. The invoice itself is not touched - it stays SUBMITTING
+     * under the same transaction id, and the reconciliation goes on asking about it.
+     *
+     * @return the announcement, or empty when the invoice has moved on or this submission was announced meanwhile
+     */
+    @Transactional
+    public Optional<EInvoiceNeedsAttention> announceStuck(UUID id) {
+        Optional<EInvoice> found = invoices.findByIdForUpdate(id);
+        if (found.isEmpty()) {
+            return Optional.empty();
+        }
+        EInvoice.Snapshot invoice = found.get().snapshot();
+        Instant now = clock.instant();
+        if (invoice.status() != EInvoiceStatus.SUBMITTING
+                || !invoice.submittedAt().isBefore(now.minus(properties.stuckAfter()))
+                || !invoices.markStuckAnnounced(id, invoice.transactionId(), now)) {
+            return Optional.empty();
+        }
+        EInvoiceNeedsAttention stuck = new EInvoiceNeedsAttention(invoice.id(), invoice.code(), invoice.orderId(),
+                invoice.orderNumber(), EInvoiceNeedsAttention.Cause.STUCK_SUBMITTING, null, invoice.submittedAt(),
+                invoice.issueDueAt());
+        events.publishEvent(stuck);
+        return Optional.of(stuck);
     }
 }

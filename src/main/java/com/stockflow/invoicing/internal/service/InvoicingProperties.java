@@ -13,10 +13,13 @@ import java.util.List;
  *
  * @param dueWarningLead how long before an invoice's deadline the accountant is told; a day by default, which is the
  *                       start of the last day it can be issued on
+ * @param stuckAfter     how long an invoice may wait for the provider's answer before the accountants are told it is
+ *                       stuck; far longer than a provider takes, far shorter than the working day the law leaves
  * @param sandbox        how the sandbox provider behaves
  */
 @ConfigurationProperties(prefix = "stockflow.invoicing")
-public record InvoicingProperties(@DefaultValue("P1D") Duration dueWarningLead, @DefaultValue Sandbox sandbox) {
+public record InvoicingProperties(@DefaultValue("P1D") Duration dueWarningLead,
+                                  @DefaultValue("PT30M") Duration stuckAfter, @DefaultValue Sandbox sandbox) {
 
     /**
      * @param processingDelay  how long the sandbox takes to "sign and get the tax authority's code": a submission is
