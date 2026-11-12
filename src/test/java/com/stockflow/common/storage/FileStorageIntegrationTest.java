@@ -125,7 +125,8 @@ class FileStorageIntegrationTest {
                     if (lockOn && commit) {
                         org.mockito.Mockito.verify(storage).retain(org.mockito.ArgumentMatchers.eq(key),
                                 org.mockito.ArgumentMatchers.argThat(until -> until.isAfter(
-                                        java.time.Instant.now().plus(Duration.ofDays(3)).minusSeconds(60))));
+                                        java.time.Instant.now().plus(Duration.ofDays(3)).minusSeconds(60))),
+                                org.mockito.ArgumentMatchers.eq(ObjectLockProperties.Mode.GOVERNANCE));
                     } else {
                         org.mockito.Mockito.verifyNoInteractions(storage);
                     }
@@ -140,7 +141,7 @@ class FileStorageIntegrationTest {
     void aFailedLockAfterCommitIsLoggedNotThrown() {
         var storage = mock(FileStorage.class);
         org.mockito.Mockito.doThrow(new StorageException("no Object Lock on this bucket"))
-                .when(storage).retain(any(), any());
+                .when(storage).retain(any(), any(), any());
         var transfers = new FileTransfers(storage, properties(), Clock.systemUTC(),
                 new ObjectLockProperties(true, ObjectLockProperties.Mode.GOVERNANCE, Duration.ofDays(1), Duration.ofDays(1),
                         java.time.Period.ofYears(10),
