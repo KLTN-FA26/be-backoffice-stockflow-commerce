@@ -68,7 +68,8 @@ class EInvoiceWorkQueues {
         }
         EInvoice invoice = found.get();
         EInvoice.Snapshot before = invoice.snapshot();
-        if ((before.status() != EInvoiceStatus.DRAFT && before.status() != EInvoiceStatus.REJECTED)
+        // Still to be issued: a draft, a rejected one, or one the provider has not answered for.
+        if (before.status().wasIssued() || before.status() == EInvoiceStatus.VOIDED_DRAFT
                 || before.dueWarnedAt() != null) {
             return Optional.empty();
         }

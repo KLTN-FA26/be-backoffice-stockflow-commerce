@@ -92,6 +92,8 @@ class EInvoiceIntegrationTest {
     @Autowired EInvoiceSettingsService settings;
     @Autowired EInvoiceJobs jobs;
     @Autowired OrderDeliveredListener listener;
+    @Autowired com.stockflow.invoicing.internal.domain.EInvoiceRepository invoices;
+    @Autowired org.springframework.context.ApplicationEventPublisher publisher;
     @Autowired DeliveryCorrectionListener corrections;
     @Autowired FileStorage storage;
     @Autowired ApplicationContext context;
@@ -626,7 +628,7 @@ class EInvoiceIntegrationTest {
         assertThat(voided.voidedBy()).as("the system's doing").isNull();
         assertThat(voided.voidReason()).contains("corrected to a failure");
         assertThat(invoiceOf(delivered.shipmentId())).as("no invoice in force for an undelivered shipment").isNull();
-        assertThat(drafts.voidForCorrectedDelivery(issuedOne.shipmentId()))
+        assertThat(drafts.voidForCorrectedDelivery(issuedOne.orderId(), issuedOne.shipmentId()))
                 .isEqualTo(EInvoiceDrafts.CorrectionOutcome.LEFT_FOR_ADJUSTMENT);
         assertThat(queries.get(issued.id())).as("issued: untouched").isEqualTo(issued);
         assertThat(queries.get(untouched.draft().id()).status()).isEqualTo(EInvoiceStatus.DRAFT);
@@ -636,6 +638,56 @@ class EInvoiceIntegrationTest {
         return new ShipmentStatusChanged(UUID.randomUUID(), delivered.shipmentId(), "S", delivered.orderId(),
                 delivered.orderNumber(), customer, DemoData.WAREHOUSE_HCM, "DELIVERED", "DELIVERY_FAILED",
                 "CUSTOMER_ABSENT", 1, "Truck Co", null, staff, Instant.now());
+    }
+
+    @Test
+    @DisplayName("review finding 3: a delivery with nothing to invoice completes its event and is put before the "
+            + "accountant, instead of being refused again for ever")
+    void aRefusedDraftCompletesItsEvent() {
+        Delivered delivered = delivered(1);
+        UUID notDelivered = UUID.randomUUID();
+
+        // Through the registry and the real listener: published inside a transaction, heard after its commit.
+        tx.executeWithoutResult(s -> publisher.publishEvent(new OrderDelivered(delivered.orderId(),
+                delivered.orderNumber(), customer, null, delivered.draft().grandTotal(), null, "VND", null,
+                Instant.now(), notDelivered, null)));
+
+        String mine = "%" + notDelivered + "%";
+        Await.until("the invoicing listener's publication of the refused delivery is completed", ASYNC,
+                () -> jdbc.queryForObject("""
+                        SELECT count(*) FROM event_publication
+                         WHERE listener_id LIKE '%invoicing%OrderDeliveredListener%' AND serialized_event LIKE ?
+                           AND completion_date IS NOT NULL""", Long.class, mine) == 1);
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM event_publication
+                 WHERE listener_id LIKE '%invoicing%OrderDeliveredListener%' AND serialized_event LIKE ?
+                   AND completion_date IS NULL""", Long.class, mine)).as("nothing left to deliver again").isZero();
+        // The refusal is announced: EInvoiceDraftFailed went to its listener, naming the shipment and the reason.
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM event_publication
+                 WHERE event_type LIKE '%EInvoiceDraftFailed' AND serialized_event LIKE ?
+                   AND serialized_event LIKE '%EINVOICE_NOT_INVOICEABLE%'""", Long.class, mine))
+                .isGreaterThanOrEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM invoicing.einvoice WHERE shipment_id = ?", Long.class,
+                notDelivered)).isZero();
+        assertThat(queries.get(delivered.draft().id()).status()).as("the order's real draft is untouched")
+                .isEqualTo(EInvoiceStatus.DRAFT);
+    }
+
+    @Test
+    @DisplayName("what an order's invoices already carry is read from its originals that were not voided")
+    void whatTheOrdersInvoicesCarry() {
+        Delivered delivered = delivered(4);
+
+        assertThat(invoices.invoicedOfOrder(delivered.orderId()).units()).as("4 cartons of 50").isEqualTo(200);
+        assertThat(invoices.invoicedOfOrder(delivered.orderId()).plateFeeSkus()).as("no fee lines on this order")
+                .isEmpty();
+        assertThat(invoices.invoicedOfOrder(delivered.orderId()).shippingFee()).isEqualByComparingTo("0");
+        assertThat(invoices.invoicedOfOrder(UUID.randomUUID()).units()).as("an order without invoices").isZero();
+        assertThat(invoices.hasReplacedOriginalOfShipment(delivered.shipmentId())).isFalse();
+
+        drafts.voidDraft(delivered.draft().id(), delivered.draft().version(), "drawn up by mistake", accountant);
+        assertThat(invoices.invoicedOfOrder(delivered.orderId()).units()).as("a voided draft carries nothing").isZero();
     }
 
     @Test
