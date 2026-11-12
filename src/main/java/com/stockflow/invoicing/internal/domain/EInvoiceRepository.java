@@ -1,6 +1,7 @@
 package com.stockflow.invoicing.internal.domain;
 
 import java.time.Instant;
+import java.time.LocalDate;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -84,11 +85,19 @@ public interface EInvoiceRepository {
     List<UUID> findDueUnwarned(Instant dueBefore, int limit);
 
     /**
-     * Up to {@code limit} drafts the system may issue by itself, the nearest deadline first: originals that were never
+     * Up to {@code limit} drafts the system may issue by itself, the earliest dated first: originals that were never
      * sent and have nothing to look at. A draft that came back from a rejection is not among them - somebody has to
-     * correct it first.
+     * correct it first. Dated order, not deadline order, because an invoice is refused while one dated before it waits
+     * ({@link #findEarlierUnissued}), and the deadline does not tell a Friday's invoice from a Saturday's.
      */
     List<UUID> findAutoIssuable(int limit);
+
+    /**
+     * The code of an invoice other than {@code id}, dated in the year of {@code issueDate} but before it, that is
+     * still to be issued - a draft, a rejected one, or one the provider has not answered for - the earliest dated
+     * first; empty when there is none. A voided draft is not waiting for anything.
+     */
+    Optional<String> findEarlierUnissued(UUID id, LocalDate issueDate);
 
     /**
      * Up to {@code limit} invoices sent to the provider before {@code submittedBefore} that still wait for its answer

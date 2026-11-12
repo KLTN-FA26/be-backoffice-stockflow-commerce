@@ -20,10 +20,13 @@ import java.util.UUID;
  * One VAT e-invoice (WF-05 E2, plan §1.4-§1.5; kltn-docs 21; NĐ 254/2026/NĐ-CP, TT 91/2026/TT-BTC).
  *
  * <p><b>Date and number.</b> An invoice's date is the day of its delivery (NĐ 254 Điều 9), fixed when it is drawn up;
- * its number is the provider's, given when it is issued. A draft issued late therefore takes a later number than an
- * invoice dated after it. The law asks for numbers that run on within a symbol (Phụ lục điểm 2) and for signing by the
- * next working day (điểm 7), which is why a draft carries a deadline; whether a real provider refuses a date before its
- * last number is a question for its adapter (package E3).</p>
+ * its number is the provider's, given when it is issued. The law asks for numbers that run on within a symbol in the
+ * order of the dates (Phụ lục điểm 2) and for signing by the next working day (điểm 7), which is why a draft carries a
+ * deadline. So an invoice is not sent while one of its year dated earlier waits to be issued
+ * ({@code EInvoiceIssuanceSteps.submit}, {@code EINVOICE_OLDER_DRAFT_PENDING}); an invoice dated before others that
+ * were already issued - a delivery recorded late - still goes out, with the next number, since one that could never
+ * be issued would be worse. Whether a real provider refuses a date before its last number is a question for its
+ * adapter (package E3).</p>
  *
  * <p>An original invoices one delivered shipment. It is drawn up as a draft the moment the delivery is recorded, with
  * the seller and the buyer <b>copied</b> onto it and its lines and totals fixed from the order's prices. From then on:</p>

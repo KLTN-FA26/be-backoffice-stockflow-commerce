@@ -63,10 +63,22 @@ class EInvoiceIssuanceSteps {
      * DRAFT → SUBMITTING, committed before the provider hears of it: from here on the invoice has a transaction id,
      * and whatever happens to the call, the answer is found again under it.
      *
+     * <p><b>Not before an invoice dated earlier.</b> The provider numbers invoices in the order they reach it, and the
+     * numbers of a symbol must run on in the order of the invoices' dates (NĐ 254 Phụ lục điểm 2; TT 91 Điều 10
+     * khoản 6a). So an invoice is refused while one of the same year dated before it is still to be issued
+     * ({@code EINVOICE_OLDER_DRAFT_PENDING}, naming it): the accountant issues or voids that one first, and the
+     * automatic issuing takes drafts earliest dated first. What this does not prevent: an invoice drawn up with a date
+     * before invoices already issued - a delivery recorded late, the rest of a shipping fee dated at the order's last
+     * delivery - is still issued, with the next number. Refusing it would leave it unissuable for good, which the law
+     * forbids more plainly than it forbids the order of numbers; such an invoice is the exception the accountant can
+     * explain. Nor two submissions in the same instant, one of them of a draft not committed yet: the check reads
+     * committed rows.</p>
+     *
      * @param expectedVersion the version the caller read; null when the system issues
      * @throws BusinessException {@code EINVOICE_NOT_FOUND}, {@code OPTIMISTIC_LOCK}, {@code EINVOICE_INVALID_TRANSITION},
      *         {@code EINVOICE_BUYER_PROFILE_INCOMPLETE}, {@code EINVOICE_AGREEMENT_REQUIRED} (the correction of an
      *         error without the agreement of both parties), {@code EINVOICE_SERIES_NOT_CONFIGURED},
+     *         {@code EINVOICE_OLDER_DRAFT_PENDING} (an invoice of the year dated before it is still to be issued),
      *         {@code EINVOICE_PROVIDER_UNAVAILABLE}, {@code EINVOICE_PROVIDER_CANNOT_CORRECT} (a correction, to a
      *         provider that would issue it as an original)
      */
@@ -91,6 +103,11 @@ class EInvoiceIssuanceSteps {
                 .orElseThrow(() -> new BusinessException(ErrorCode.EINVOICE_SERIES_NOT_CONFIGURED,
                         "No series is in use at %s for %d".formatted(provider.provider(),
                                 invoice.issueDate().getYear())));
+        invoices.findEarlierUnissued(invoice.id(), invoice.issueDate()).ifPresent(earlier -> {
+            throw new BusinessException(ErrorCode.EINVOICE_OLDER_DRAFT_PENDING,
+                    "%s is dated before %s and is still to be issued; issue or void it first".formatted(earlier,
+                            invoice.code()));
+        });
         invoice.submit(series, by, clock.instant());
         return invoices.save(invoice).snapshot();
     }
