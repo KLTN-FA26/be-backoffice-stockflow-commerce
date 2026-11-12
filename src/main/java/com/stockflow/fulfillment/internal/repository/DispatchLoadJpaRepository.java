@@ -83,14 +83,19 @@ public interface DispatchLoadJpaRepository extends BaseJpaRepository<DispatchLoa
         com.stockflow.fulfillment.internal.domain.LoadStatus getStatus();
 
         String getWaybillNo();
+
+        /** When the vehicle left; null until it has. */
+        java.time.Instant getDispatchedAt();
     }
 
     @Query("select l.id as id, l.code as code, l.warehouseId as warehouseId, l.carrierId as carrierId, "
-            + "l.status as status, l.waybillNo as waybillNo from DispatchLoadJpaEntity l where l.id = :id")
+            + "l.status as status, l.waybillNo as waybillNo, l.dispatchedAt as dispatchedAt "
+            + "from DispatchLoadJpaEntity l where l.id = :id")
     Optional<LoadFacts> findFactsById(@Param("id") UUID id);
 
     @Query("select l.id as id, l.code as code, l.warehouseId as warehouseId, l.carrierId as carrierId, "
-            + "l.status as status, l.waybillNo as waybillNo from DispatchLoadJpaEntity l where l.code = :code")
+            + "l.status as status, l.waybillNo as waybillNo, l.dispatchedAt as dispatchedAt "
+            + "from DispatchLoadJpaEntity l where l.code = :code")
     Optional<LoadFacts> findFactsByCode(@Param("code") String code);
 
     /**
@@ -98,8 +103,8 @@ public interface DispatchLoadJpaRepository extends BaseJpaRepository<DispatchLoa
      * live loads only, so several loads may answer to one number.
      */
     @Query("select l.id as id, l.code as code, l.warehouseId as warehouseId, l.carrierId as carrierId, "
-            + "l.status as status, l.waybillNo as waybillNo from DispatchLoadJpaEntity l "
-            + "where l.waybillNo in :waybills and l.carrierId is not null "
+            + "l.status as status, l.waybillNo as waybillNo, l.dispatchedAt as dispatchedAt "
+            + "from DispatchLoadJpaEntity l where l.waybillNo in :waybills and l.carrierId is not null "
             + "and l.status <> com.stockflow.fulfillment.internal.domain.LoadStatus.CANCELLED order by l.code")
     List<LoadFacts> findFactsByWaybills(@Param("waybills") Collection<String> waybills);
 

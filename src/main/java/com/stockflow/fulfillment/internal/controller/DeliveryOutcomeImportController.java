@@ -54,7 +54,7 @@ class DeliveryOutcomeImportController {
 
     @GetMapping("/template")
     @Operation(summary = "The template: CSV UTF-8 with a byte-order mark; waybill number, outcome (DELIVERED / "
-            + "DELIVERY_FAILED), failure reason, time, received by, note, shipment code")
+            + "DELIVERY_FAILED), failure reason, time, received by, note, shipment code, carrier code")
     @RequiresPermission(resource = FulfillmentResources.DELIVERY_OUTCOME_IMPORTS, action = Action.READ)
     public ResponseEntity<byte[]> template() {
         return ResponseEntity.ok()

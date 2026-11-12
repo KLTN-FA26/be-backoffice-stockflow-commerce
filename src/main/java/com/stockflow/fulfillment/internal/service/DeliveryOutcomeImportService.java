@@ -18,7 +18,9 @@ import com.stockflow.fulfillment.internal.domain.DeliveryOutcomeFile;
 import com.stockflow.fulfillment.internal.domain.ImportCsv;
 import com.stockflow.fulfillment.internal.entity.DeliveryOutcomeImportJpaEntity;
 import com.stockflow.fulfillment.internal.entity.DeliveryOutcomeImportRowJpaEntity;
+import com.stockflow.fulfillment.internal.entity.CarrierJpaEntity;
 import com.stockflow.fulfillment.internal.entity.DispatchLoadJpaEntity;
+import com.stockflow.fulfillment.internal.repository.CarrierJpaRepository;
 import com.stockflow.fulfillment.internal.repository.DeliveryOutcomeImportJpaRepository;
 import com.stockflow.fulfillment.internal.repository.DeliveryOutcomeImportRowJpaRepository;
 import com.stockflow.fulfillment.internal.repository.DispatchLoadJpaRepository;
@@ -61,6 +63,7 @@ class DeliveryOutcomeImportService implements DeliveryOutcomeImports {
 
     private final DispatchLoadJpaRepository loads;
     private final ShipmentJpaRepository shipments;
+    private final CarrierJpaRepository carriers;
     private final DeliveryOutcomeImportJpaRepository imports;
     private final DeliveryOutcomeImportRowJpaRepository importRows;
     private final CarrierEvents events;
@@ -70,11 +73,12 @@ class DeliveryOutcomeImportService implements DeliveryOutcomeImports {
 
     @SuppressWarnings("java:S107")
     DeliveryOutcomeImportService(DispatchLoadJpaRepository loads, ShipmentJpaRepository shipments,
-                                 DeliveryOutcomeImportJpaRepository imports,
+                                 CarrierJpaRepository carriers, DeliveryOutcomeImportJpaRepository imports,
                                  DeliveryOutcomeImportRowJpaRepository importRows, CarrierEvents events,
                                  Messages messages, TransactionOperations tx, Clock clock) {
         this.loads = loads;
         this.shipments = shipments;
+        this.carriers = carriers;
         this.imports = imports;
         this.importRows = importRows;
         this.events = events;
@@ -93,7 +97,9 @@ class DeliveryOutcomeImportService implements DeliveryOutcomeImports {
                 messages.get("fulfillment.delivery-outcome-import.recipient", "Received by"),
                 messages.get("fulfillment.delivery-outcome-import.note", "Note"),
                 messages.get("fulfillment.delivery-outcome-import.shipmentCode",
-                        "Shipment code (blank: the whole vehicle)")));
+                        "Shipment code (blank: the whole vehicle)"),
+                messages.get("fulfillment.delivery-outcome-import.carrierCode",
+                        "Carrier code (when two carriers share the number)")));
     }
 
     @Override
@@ -126,7 +132,8 @@ class DeliveryOutcomeImportService implements DeliveryOutcomeImports {
             importRows.saveAll(verdicts.stream().map(v -> new DeliveryOutcomeImportRowJpaEntity(Identifiers.newId(),
                     importId, v.row().line(), v.row().waybillNo(), v.row().outcome(), v.row().failureReason(),
                     v.row().reportedAt(), v.row().recipient(), v.row().note(), v.row().shipmentCode(),
-                    v.load() == null ? null : v.load().loadId(), v.problem() == null ? null : v.problem().name()))
+                    v.row().carrierCode(), v.load() == null ? null : v.load().loadId(),
+                    v.problem() == null ? null : v.problem().name()))
                     .toList());
             importRows.flush();
             return saved;
@@ -174,7 +181,8 @@ class DeliveryOutcomeImportService implements DeliveryOutcomeImports {
         return view(record, rows.stream().map(r -> {
             CarrierEvents.FileOutcome outcome = outcomes.get(r.getLineNo());
             return new Line(r.getLineNo(), r.getWaybillNo(), r.getOutcome(), r.getFailureReason(), r.getReportedAt(),
-                    r.getRecipient(), r.getNote(), r.getShipmentCode(), r.getLoadId(), loadCodes.get(r.getLoadId()),
+                    r.getRecipient(), r.getNote(), r.getShipmentCode(), r.getCarrierCode(), r.getLoadId(),
+                    loadCodes.get(r.getLoadId()),
                     r.getVerdict(), null, r.getProblem(), outcome == null ? null : outcome.eventId(),
                     outcome == null ? null : outcome.result(), outcome == null ? null : outcome.note());
         }).toList());
@@ -208,11 +216,15 @@ class DeliveryOutcomeImportService implements DeliveryOutcomeImports {
                     .forEach(s -> onLoad.computeIfAbsent(s.getLoadId(), id -> new ArrayList<>())
                             .add(new DeliveryOutcomeCheck.ShipmentFacts(s.getId(), s.getCode(), s.getStatus())));
         }
+        Map<UUID, String> carrierCodes = found.isEmpty() ? Map.of() : carriers.findAllById(found.stream()
+                        .map(DispatchLoadJpaRepository.LoadFacts::getCarrierId).collect(Collectors.toSet())).stream()
+                .collect(Collectors.toMap(CarrierJpaEntity::getId, CarrierJpaEntity::getCode));
         Map<String, List<DeliveryOutcomeCheck.LoadFacts>> byWaybill = new HashMap<>();
         for (DispatchLoadJpaRepository.LoadFacts load : found) {
             byWaybill.computeIfAbsent(load.getWaybillNo(), number -> new ArrayList<>())
                     .add(new DeliveryOutcomeCheck.LoadFacts(load.getId(), load.getCode(), load.getCarrierId(),
-                            load.getStatus(), onLoad.getOrDefault(load.getId(), List.of())));
+                            carrierCodes.get(load.getCarrierId()), load.getStatus(), load.getDispatchedAt(),
+                            onLoad.getOrDefault(load.getId(), List.of())));
         }
         return DeliveryOutcomeCheck.check(rows, byWaybill, clock.instant());
     }
@@ -220,7 +232,7 @@ class DeliveryOutcomeImportService implements DeliveryOutcomeImports {
     private static Line line(DeliveryOutcomeCheck.Verdict v, CarrierEvents.FileOutcome outcome) {
         DeliveryOutcomeFile.Row r = v.row();
         return new Line(r.line(), r.waybillNo(), r.outcome(), r.failureReason(), r.reportedAt(), r.recipient(),
-                r.note(), r.shipmentCode(), v.load() == null ? null : v.load().loadId(),
+                r.note(), r.shipmentCode(), r.carrierCode(), v.load() == null ? null : v.load().loadId(),
                 v.load() == null ? null : v.load().code(),
                 v.accepted() ? DeliveryOutcomeImportRowJpaEntity.ACCEPTED : DeliveryOutcomeImportRowJpaEntity.ERROR,
                 v.accepted() ? v.changes() : null, v.problem() == null ? null : v.problem().name(),

@@ -68,6 +68,7 @@ CREATE TABLE fulfillment.delivery_outcome_import_row
     recipient        VARCHAR(255),
     note             VARCHAR(500),
     shipment_code    VARCHAR(255),
+    carrier_code     VARCHAR(255),
     load_id          UUID,
     verdict          VARCHAR(16)  NOT NULL,
     problem          VARCHAR(32),
@@ -88,7 +89,7 @@ CREATE TABLE fulfillment.delivery_outcome_import_row
     CONSTRAINT ck_delivery_outcome_import_row_problem CHECK ((verdict = 'ERROR') = (problem IS NOT NULL)
         AND (problem IS NULL OR problem IN ('MISSING_FIELDS', 'TEXT_TOO_LONG', 'INVALID_OUTCOME', 'INVALID_TIME',
             'TIME_IN_FUTURE', 'REASON_REQUIRED', 'WAYBILL_NOT_FOUND', 'WAYBILL_AMBIGUOUS', 'LOAD_NOT_DISPATCHED',
-            'SHIPMENT_NOT_ON_LOAD', 'DUPLICATE_IN_FILE', 'OUTCOME_NOT_ALLOWED'))),
+            'TIME_BEFORE_DISPATCH', 'SHIPMENT_NOT_ON_LOAD', 'DUPLICATE_IN_FILE', 'OUTCOME_NOT_ALLOWED'))),
     -- An accepted line found its load; a refused one may not have found any.
     CONSTRAINT ck_delivery_outcome_import_row_load CHECK (verdict = 'ERROR'
         OR (load_id IS NOT NULL AND waybill_no IS NOT NULL))

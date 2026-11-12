@@ -7,11 +7,12 @@ import java.util.List;
  * The system's file template for recording delivery outcomes a carrier sent as a list (WF-05 fix plan item 5; kltn-docs
  * 09 §4.3; the same CSV as the waybill import's, read and written by {@link ImportCsv}).
  *
- * <p>Seven columns in this order: the waybill number, the outcome ({@code DELIVERED} or {@code DELIVERY_FAILED}), the
+ * <p>Eight columns in this order: the waybill number, the outcome ({@code DELIVERED} or {@code DELIVERY_FAILED}), the
  * reason of a failed delivery, when it happened (the first, second and fourth are required; the third with a failed
- * delivery), who received the goods, a note, and the shipment's code. A line without a shipment code is about every
- * shipment that left on the vehicle (BR-26); one with it is about that shipment only. The first line is the heading and
- * is not read as data.</p>
+ * delivery), who received the goods, a note, the shipment's code and the carrier's code. A line without a shipment code
+ * is about every shipment that left on the vehicle (BR-26); one with it is about that shipment only. The carrier's code
+ * is needed only when two carriers gave the same waybill number - a number is unique within one carrier, not across
+ * them. The first line is the heading and is not read as data.</p>
  *
  * <p>A file that is not such a table at all is refused whole ({@link ImportCsv.Malformed}); everything about a line's
  * content is {@link DeliveryOutcomeCheck}'s, line by line, so one bad line does not refuse the others.</p>
@@ -20,12 +21,12 @@ public final class DeliveryOutcomeFile {
 
     /** One import is one carrier's list for a day or two, not a data migration. */
     public static final int MAX_ROWS = 1_000;
-    /** A thousand lines of seven short columns fit in far less. */
+    /** A thousand lines of eight short columns fit in far less. */
     public static final int MAX_BYTES = 1024 * 1024;
     /** Physical lines read at all, blank ones included: a file of nothing but line breaks is not read to the end. */
     static final int MAX_LINES = MAX_ROWS * 10;
     /** How many headings the template has. */
-    public static final int COLUMNS = 7;
+    public static final int COLUMNS = 8;
 
     private DeliveryOutcomeFile() {
     }
@@ -36,13 +37,13 @@ public final class DeliveryOutcomeFile {
      * @param line the line's number in the file, the heading being line 1 - the row Excel shows it on
      */
     public record Row(int line, String waybillNo, String outcome, String failureReason, String reportedAt,
-                      String recipient, String note, String shipmentCode) {
+                      String recipient, String note, String shipmentCode, String carrierCode) {
     }
 
     /**
      * The empty template: the byte-order mark and the heading line.
      *
-     * @param headings the seven headings in the reader's language (never read back: columns go by position)
+     * @param headings the eight headings in the reader's language (never read back: columns go by position)
      */
     public static byte[] template(List<String> headings) {
         if (headings == null || headings.size() != COLUMNS) {
@@ -62,7 +63,8 @@ public final class DeliveryOutcomeFile {
         List<Row> rows = new ArrayList<>();
         for (int i = 1; i < records.size(); i++) {
             ImportCsv.Record r = records.get(i);
-            rows.add(new Row(r.line(), r.cell(0), r.cell(1), r.cell(2), r.cell(3), r.cell(4), r.cell(5), r.cell(6)));
+            rows.add(new Row(r.line(), r.cell(0), r.cell(1), r.cell(2), r.cell(3), r.cell(4), r.cell(5), r.cell(6),
+                    r.cell(7)));
         }
         if (rows.isEmpty()) {
             throw new ImportCsv.Malformed("The file has no line below its heading");

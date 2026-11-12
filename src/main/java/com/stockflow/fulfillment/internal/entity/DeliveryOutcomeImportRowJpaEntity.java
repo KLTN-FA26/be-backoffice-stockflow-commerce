@@ -28,6 +28,7 @@ public class DeliveryOutcomeImportRowJpaEntity extends BaseEntity {
     @Column(name = "recipient", length = 255, updatable = false) private String recipient;
     @Column(name = "note", length = 500, updatable = false) private String note;
     @Column(name = "shipment_code", length = 255, updatable = false) private String shipmentCode;
+    @Column(name = "carrier_code", length = 255, updatable = false) private String carrierCode;
     @Column(name = "load_id", updatable = false) private UUID loadId;
     @Column(name = "verdict", nullable = false, length = 16, updatable = false) private String verdict;
     @Column(name = "problem", length = 32, updatable = false) private String problem;
@@ -39,7 +40,8 @@ public class DeliveryOutcomeImportRowJpaEntity extends BaseEntity {
     @SuppressWarnings("java:S107")
     public DeliveryOutcomeImportRowJpaEntity(UUID id, UUID importId, int lineNo, String waybillNo, String outcome,
                                              String failureReason, String reportedAt, String recipient, String note,
-                                             String shipmentCode, UUID loadId, String problem) {
+                                             String shipmentCode, String carrierCode, UUID loadId,
+                                             String problem) {
         super(id);
         this.importId = importId;
         this.lineNo = lineNo;
@@ -50,6 +52,7 @@ public class DeliveryOutcomeImportRowJpaEntity extends BaseEntity {
         this.recipient = cut(recipient, 255);
         this.note = cut(note, 500);
         this.shipmentCode = cut(shipmentCode, 255);
+        this.carrierCode = cut(carrierCode, 255);
         this.loadId = loadId;
         this.verdict = problem == null ? ACCEPTED : ERROR;
         this.problem = problem;
@@ -68,6 +71,7 @@ public class DeliveryOutcomeImportRowJpaEntity extends BaseEntity {
     public String getRecipient() { return recipient; }
     public String getNote() { return note; }
     public String getShipmentCode() { return shipmentCode; }
+    public String getCarrierCode() { return carrierCode; }
     public UUID getLoadId() { return loadId; }
     public String getVerdict() { return verdict; }
     public String getProblem() { return problem; }

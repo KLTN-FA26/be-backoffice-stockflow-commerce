@@ -30,7 +30,7 @@ public interface DeliveryOutcomeImports {
      * @param resultNote the event's note
      */
     record Line(int line, String waybillNo, String outcome, String failureReason, String reportedAt, String recipient,
-                String note, String shipmentCode, UUID loadId, String loadCode, String verdict, Boolean changes,
+                String note, String shipmentCode, String carrierCode, UUID loadId, String loadCode, String verdict, Boolean changes,
                 String problem, UUID eventId, String result, String resultNote) { }
 
     /** A file checked and not applied. */

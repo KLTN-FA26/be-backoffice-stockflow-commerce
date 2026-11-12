@@ -10,22 +10,22 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * The delivery-outcome template (WF-05 fix plan item 5): seven columns by position, read by the reader the waybill
+ * The delivery-outcome template (WF-05 fix plan item 5): eight columns by position, read by the reader the waybill
  * import uses - a file Excel saved with semicolons included - and refused whole only when it is not a table at all.
  */
 class DeliveryOutcomeFileTest {
 
-    private static final String HEADING = "Mã vận đơn,Kết quả,Lý do,Thời điểm,Người nhận,Ghi chú,Mã shipment\r\n";
+    private static final String HEADING = "Mã vận đơn,Kết quả,Lý do,Thời điểm,Người nhận,Ghi chú,Mã shipment,Mã hãng\r\n";
 
     private static byte[] file(String lines) {
         return ("﻿" + HEADING + lines).getBytes(StandardCharsets.UTF_8);
     }
 
     @Test
-    @DisplayName("the template is the byte-order mark and the seven headings, and reads back as a file with no line")
+    @DisplayName("the template is the byte-order mark and the eight headings, and reads back as a file with no line")
     void templateIsTheHeadingLine() {
         byte[] template = DeliveryOutcomeFile.template(List.of("Mã vận đơn", "Kết quả", "Lý do", "Thời điểm",
-                "Người nhận", "Ghi chú", "Mã shipment"));
+                "Người nhận", "Ghi chú", "Mã shipment", "Mã hãng"));
 
         assertThat(template).startsWith((byte) 0xEF, (byte) 0xBB, (byte) 0xBF);
         assertThat(new String(template, StandardCharsets.UTF_8)).isEqualTo("﻿" + HEADING);
@@ -40,15 +40,15 @@ class DeliveryOutcomeFileTest {
             + "line numbered as Excel shows it")
     void readsLinesByPosition() {
         List<DeliveryOutcomeFile.Row> rows = DeliveryOutcomeFile.parse(file(
-                "WB-1, DELIVERED ,,2026-11-09 10:15,Chị Lan,\"giao tận tay, ký nhận\",SO-1-S1\r\n"
+                "WB-1, DELIVERED ,,2026-11-09 10:15,Chị Lan,\"giao tận tay, ký nhận\",SO-1-S1, ghn \r\n"
                         + "\r\n"
                         + "WB-2,DELIVERY_FAILED,Khách vắng,2026-11-09T11:00:00+07:00\r\n"));
 
         assertThat(rows).containsExactly(
                 new DeliveryOutcomeFile.Row(2, "WB-1", "DELIVERED", null, "2026-11-09 10:15", "Chị Lan",
-                        "giao tận tay, ký nhận", "SO-1-S1"),
+                        "giao tận tay, ký nhận", "SO-1-S1", "ghn"),
                 new DeliveryOutcomeFile.Row(4, "WB-2", "DELIVERY_FAILED", "Khách vắng", "2026-11-09T11:00:00+07:00",
-                        null, null, null));
+                        null, null, null, null));
     }
 
     @Test
@@ -58,7 +58,7 @@ class DeliveryOutcomeFileTest {
                 + "WB-1;DELIVERED;;9/11/2026 10:15;;;\r\n").getBytes(StandardCharsets.UTF_8));
 
         assertThat(rows).containsExactly(new DeliveryOutcomeFile.Row(2, "WB-1", "DELIVERED", null, "9/11/2026 10:15",
-                null, null, null));
+                null, null, null, null));
     }
 
     @Test

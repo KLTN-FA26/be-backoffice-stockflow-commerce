@@ -23,17 +23,19 @@ class DeliveryOutcomeCheckTest {
     private static final Instant NOW = Instant.parse("2026-11-12T03:00:00Z");
     private static final String AT = "2026-11-12 09:00";
     private static final UUID CARRIER = UUID.randomUUID();
+    /** The vehicles here left the day before the outcomes they are told. */
+    private static final Instant LEFT = Instant.parse("2026-11-11T02:00:00Z");
     private static final ShipmentFacts S1 = new ShipmentFacts(UUID.randomUUID(), "SO-1-S1", ShipmentStatus.HANDED_OVER);
     private static final ShipmentFacts S2 = new ShipmentFacts(UUID.randomUUID(), "SO-2-S1", ShipmentStatus.HANDED_OVER);
     private static final LoadFacts LOAD = load("LD-1", LoadStatus.DISPATCHED, S1, S2);
 
     private static LoadFacts load(String code, LoadStatus status, ShipmentFacts... shipments) {
-        return new LoadFacts(UUID.randomUUID(), code, CARRIER, status, List.of(shipments));
+        return new LoadFacts(UUID.randomUUID(), code, CARRIER, "GHN", status, LEFT, List.of(shipments));
     }
 
     private static DeliveryOutcomeFile.Row row(int line, String waybill, String outcome, String reason, String at,
                                                String note, String shipment) {
-        return new DeliveryOutcomeFile.Row(line, waybill, outcome, reason, at, null, note, shipment);
+        return new DeliveryOutcomeFile.Row(line, waybill, outcome, reason, at, null, note, shipment, null);
     }
 
     private static Verdict one(DeliveryOutcomeFile.Row row, LoadFacts... holders) {
@@ -189,5 +191,42 @@ class DeliveryOutcomeCheckTest {
                 row(2, "WB-1", "SHIPPED", null, AT, null, "SO-1-S1"),
                 row(3, "WB-1", "DELIVERED", null, AT, null, "SO-1-S1")), Map.of("WB-1", List.of(LOAD)), NOW);
         assertThat(oneBad).extracting(Verdict::problem).containsExactly(Problem.INVALID_OUTCOME, null);
+    }
+
+    @Test
+    @DisplayName("review F3: an outcome dated before the vehicle left is refused - a year typed wrongly would date the "
+            + "delivery before the handover; the moment it left is allowed")
+    void refusesATimeBeforeTheVehicleLeft() {
+        // 2025 for 2026: a readable time, not in the future, and a year before the vehicle left.
+        Verdict wrongYear = one(row(2, "WB-1", "DELIVERED", null, "12/11/2025 09:00", null, "SO-1-S1"), LOAD);
+        assertThat(wrongYear.problem()).isEqualTo(Problem.TIME_BEFORE_DISPATCH);
+        assertThat(wrongYear.load()).isEqualTo(LOAD);
+        assertThat(one(row(2, "WB-1", "DELIVERED", null, "2026-11-11T01:59:59Z", null, null), LOAD).problem())
+                .isEqualTo(Problem.TIME_BEFORE_DISPATCH);
+        assertThat(one(row(2, "WB-1", "DELIVERED", null, "2026-11-11T02:00:00Z", null, null), LOAD).accepted())
+                .isTrue();
+        // A vehicle that has not left is told so, not that the time is early.
+        assertThat(one(row(2, "WB-1", "DELIVERED", null, "12/11/2025 09:00", null, null),
+                load("LD-3", LoadStatus.LOADING, S1)).problem()).isEqualTo(Problem.LOAD_NOT_DISPATCHED);
+    }
+
+    @Test
+    @DisplayName("review F4: a waybill number two carriers gave is settled by the line's carrier code, in either case; "
+            + "a code no holder of the number has finds no vehicle")
+    void theCarrierCodeTellsTwoCarriersVehiclesApart() {
+        LoadFacts october = new LoadFacts(UUID.randomUUID(), "LD-OCT", UUID.randomUUID(), "GHTK",
+                LoadStatus.DISPATCHED, LEFT.minusSeconds(86_400L * 30), List.of(
+                new ShipmentFacts(UUID.randomUUID(), "SO-8-S1", ShipmentStatus.DELIVERED)));
+        DeliveryOutcomeFile.Row unnamed = row(2, "WB-1", "DELIVERED", null, AT, null, null);
+        assertThat(one(unnamed, october, LOAD).problem()).isEqualTo(Problem.WAYBILL_AMBIGUOUS);
+
+        java.util.function.Function<String, DeliveryOutcomeFile.Row> named = carrier -> new DeliveryOutcomeFile.Row(2,
+                "WB-1", "DELIVERED", null, AT, null, null, null, carrier);
+        Verdict today = one(named.apply("ghn"), october, LOAD);
+        assertThat(today.accepted()).isTrue();
+        assertThat(today.load()).isEqualTo(LOAD);
+        assertThat(one(named.apply("GHTK"), october, LOAD).load()).isEqualTo(october);
+        assertThat(one(named.apply("AHA"), october, LOAD).problem()).isEqualTo(Problem.WAYBILL_NOT_FOUND);
+        assertThat(one(named.apply("x".repeat(33)), october, LOAD).problem()).isEqualTo(Problem.TEXT_TOO_LONG);
     }
 }

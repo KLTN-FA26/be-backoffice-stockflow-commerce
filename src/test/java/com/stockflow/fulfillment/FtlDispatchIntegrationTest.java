@@ -1551,10 +1551,16 @@ class FtlDispatchIntegrationTest {
 
     private ResultActions outcomes(UUID user, String role, String path, String csv) throws Exception {
         var file = new org.springframework.mock.web.MockMultipartFile("file", "ket-qua-giao.csv",
-                "application/vnd.ms-excel", ("\uFEFFMã vận đơn,Kết quả,Lý do,Thời điểm,Người nhận,Ghi chú,Mã shipment\r\n"
+                "application/vnd.ms-excel", ("\uFEFFMã vận đơn,Kết quả,Lý do,Thời điểm,Người nhận,Ghi chú,Mã shipment,Mã hãng\r\n"
                         + csv).getBytes(java.nio.charset.StandardCharsets.UTF_8));
         return as(user, role, org.springframework.test.web.servlet.request.MockMvcRequestBuilders
                 .multipart(OUTCOME_IMPORTS + path).file(file));
+    }
+
+    /** When the vehicle left: no outcome of it is earlier (review F3). */
+    private Instant leftAt(String loadId) {
+        return jdbc.queryForObject("SELECT dispatched_at FROM fulfillment.dispatch_load WHERE id = ?::uuid",
+                java.sql.Timestamp.class, loadId).toInstant();
     }
 
     private long fileEvents(String loadId) {
@@ -1588,24 +1594,33 @@ class FtlDispatchIntegrationTest {
         String waybill = "WF-" + loadId;
         dispatch(body(post(LOADS + "/" + loadId + "/booking"), "{\"carrierId\":\"" + carrier
                 + "\",\"vehiclePlate\":\"51C-WF.01\",\"waybillNo\":\"" + waybill + "\"}")).andExpect(status().isOk());
-        Instant at = Instant.now().minus(Duration.ofHours(2)).truncatedTo(java.time.temporal.ChronoUnit.SECONDS);
-        String delivered = waybill + ",DELIVERED,," + at + ",Chị Lan,giao tận tay," + firstCode + "\r\n";
-        String failed = waybill + ",DELIVERY_FAILED,khách  KHÔNG nhận," + at + ",,," + secondCode + "\r\n";
 
         // The vehicle has not left: its outcome is not a file's to give yet.
-        outcomes(manager, "WAREHOUSE_MANAGER", "/preview", delivered).andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.lines[0].problem").value("LOAD_NOT_DISPATCHED"));
+        outcomes(manager, "WAREHOUSE_MANAGER", "/preview", waybill + ",DELIVERED,," + Instant.now() + ",,,\r\n")
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.lines[0].problem").value("LOAD_NOT_DISPATCHED"));
         loadAndSign(loadId, "51C-WF.01");
+        // The carrier's times, a moment after the vehicle left. The first line names the carrier too (review F4).
+        Instant left = leftAt(loadId);
+        Instant at = left.truncatedTo(java.time.temporal.ChronoUnit.SECONDS).plusSeconds(2);
+        String delivered = waybill + ",DELIVERED,," + at + ",Chị Lan,giao tận tay," + firstCode + ","
+                + code.toLowerCase() + "\r\n";
+        String failed = waybill + ",DELIVERY_FAILED,khách  KHÔNG nhận," + at + ",,," + secondCode + "\r\n";
 
         // Step 1, the preview: each line checked, nothing written.
         String file = delivered + failed
                 + "WF-NO-SUCH-NUMBER,DELIVERED,," + at + ",,,\r\n"
                 + waybill + ",SHIPPED,," + at + ",,,\r\n"
                 + waybill + ",DELIVERED,," + Instant.now().plus(Duration.ofDays(1)) + ",,," + firstCode + "\r\n"
-                + waybill + ",DELIVERY_FAILED,," + at + ",,," + secondCode + "\r\n";
+                + waybill + ",DELIVERY_FAILED,," + at + ",,," + secondCode + "\r\n"
+                // Review F3: last year's date for this year's - readable, not in the future, before the vehicle left.
+                + waybill + ",DELIVERED,," + left.minus(Duration.ofDays(365)) + ",,," + firstCode + "\r\n"
+                // Review F4: the number as another carrier's.
+                + waybill + ",DELIVERED,," + at + ",,," + firstCode + ",NO-SUCH-CARRIER\r\n";
         outcomes(manager, "WAREHOUSE_MANAGER", "/preview", file).andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.rowsTotal").value(6)).andExpect(jsonPath("$.data.rowsAccepted").value(2))
-                .andExpect(jsonPath("$.data.rowsRejected").value(4))
+                .andExpect(jsonPath("$.data.rowsTotal").value(8)).andExpect(jsonPath("$.data.rowsAccepted").value(2))
+                .andExpect(jsonPath("$.data.rowsRejected").value(6))
+                .andExpect(jsonPath("$.data.lines[6].problem").value("TIME_BEFORE_DISPATCH"))
+                .andExpect(jsonPath("$.data.lines[7].problem").value("WAYBILL_NOT_FOUND"))
                 .andExpect(jsonPath("$.data.lines[0].verdict").value("ACCEPTED"))
                 .andExpect(jsonPath("$.data.lines[0].changes").value(true))
                 .andExpect(jsonPath("$.data.lines[0].loadCode").value(load(loadId).path("code").asText()))
@@ -1626,6 +1641,24 @@ class FtlDispatchIntegrationTest {
         as(manager, "WAREHOUSE_MANAGER", org.springframework.test.web.servlet.request.MockMvcRequestBuilders
                 .multipart(OUTCOME_IMPORTS).file(notATable)).andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.errorCode").value("DELIVERY_OUTCOME_IMPORT_INVALID_FILE"));
+
+        // An apply that stopped half-way (the process died after the file and its lines were recorded): its accepted
+        // line has no event, and reads so. Applying the file again is what finishes it.
+        UUID interrupted = UUID.randomUUID();
+        tx.executeWithoutResult(s -> {
+            jdbc.update("INSERT INTO fulfillment.delivery_outcome_import (id, file_name, file_sha256, uploaded_by, "
+                    + "uploaded_at, rows_total, rows_accepted, rows_rejected) VALUES (?, 'ket-qua-giao.csv', "
+                    + "repeat('a', 64), ?, NOW() - INTERVAL '1 hour', 1, 1, 0)", interrupted, manager);
+            jdbc.update("INSERT INTO fulfillment.delivery_outcome_import_row (id, import_id, line_no, waybill_no, "
+                    + "outcome, reported_at, shipment_code, load_id, verdict) VALUES (gen_random_uuid(), ?, 2, ?, "
+                    + "'DELIVERED', ?, ?, ?::uuid, 'ACCEPTED')", interrupted, waybill, at.toString(), firstCode, loadId);
+        });
+        as(manager, "WAREHOUSE_MANAGER", get(OUTCOME_IMPORTS + "/" + interrupted)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.rowsAccepted").value(1)).andExpect(jsonPath("$.data.rowsApplied").value(0))
+                .andExpect(jsonPath("$.data.lines[0].verdict").value("ACCEPTED"))
+                .andExpect(jsonPath("$.data.lines[0].result").doesNotExist())
+                .andExpect(jsonPath("$.data.lines[0].eventId").doesNotExist());
+        assertThat(shipmentStatus(first)).isEqualTo("HANDED_OVER");
 
         // Step 2, applying it: one event per accepted line, through the webhooks' pipeline.
         JsonNode applied = data(outcomes(manager, "WAREHOUSE_MANAGER", "", file).andExpect(status().isCreated())
@@ -1667,7 +1700,7 @@ class FtlDispatchIntegrationTest {
                 Long.class, first, second)).isEqualTo(steps);
 
         // A line older than what was applied to the shipment is outdated, as a webhook's report would be (BR-27).
-        outcomes(manager, "WAREHOUSE_MANAGER", "", waybill + ",DELIVERED,," + at.minus(Duration.ofMinutes(30)) + ",,,"
+        outcomes(manager, "WAREHOUSE_MANAGER", "", waybill + ",DELIVERED,," + at.minusSeconds(1) + ",,,"
                 + secondCode + "\r\n").andExpect(status().isCreated())
                 .andExpect(jsonPath("$.data.lines[0].verdict").value("ACCEPTED"))
                 .andExpect(jsonPath("$.data.lines[0].result").value("STALE"));
@@ -1676,14 +1709,17 @@ class FtlDispatchIntegrationTest {
         // The import read back: its lines as written, and what came of each one's event.
         as(manager, "WAREHOUSE_MANAGER", get(OUTCOME_IMPORTS + "/" + importId)).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.fileName").value("ket-qua-giao.csv"))
-                .andExpect(jsonPath("$.data.rowsTotal").value(6)).andExpect(jsonPath("$.data.rowsApplied").value(2))
+                .andExpect(jsonPath("$.data.rowsTotal").value(8)).andExpect(jsonPath("$.data.rowsApplied").value(2))
                 .andExpect(jsonPath("$.data.lines[0].recipient").value("Chị Lan"))
+                .andExpect(jsonPath("$.data.lines[0].carrierCode").value(code.toLowerCase()))
+                .andExpect(jsonPath("$.data.lines[6].problem").value("TIME_BEFORE_DISPATCH"))
                 .andExpect(jsonPath("$.data.lines[0].result").value("APPLIED"))
                 .andExpect(jsonPath("$.data.lines[3].verdict").value("ERROR"))
                 .andExpect(jsonPath("$.data.lines[3].problem").value("INVALID_OUTCOME"));
         as(manager, "WAREHOUSE_MANAGER", get(OUTCOME_IMPORTS)).andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.items.length()").value(3))
-                .andExpect(jsonPath("$.data.items[2].id").value(importId));
+                .andExpect(jsonPath("$.data.items.length()").value(4))
+                .andExpect(jsonPath("$.data.items[2].id").value(importId))
+                .andExpect(jsonPath("$.data.items[3].id").value(interrupted.toString()));
         as(managerElsewhere, "WAREHOUSE_MANAGER", get(OUTCOME_IMPORTS + "/" + importId))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.errorCode").value("DELIVERY_OUTCOME_IMPORT_NOT_FOUND"));
@@ -1691,7 +1727,7 @@ class FtlDispatchIntegrationTest {
         byte[] template = as(manager, "WAREHOUSE_MANAGER", get(OUTCOME_IMPORTS + "/template").header("Accept-Language",
                 "vi")).andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
         assertThat(new String(template, java.nio.charset.StandardCharsets.UTF_8)).startsWith("\uFEFFMã vận đơn,")
-                .contains("Người nhận");
+                .contains("Người nhận").contains("Mã hãng");
     }
 
     @Test
@@ -1713,7 +1749,7 @@ class FtlDispatchIntegrationTest {
         dispatch(body(post(LOADS + "/" + loadId + "/booking"), "{\"carrierId\":\"" + carrier
                 + "\",\"vehiclePlate\":\"51C-WG.01\",\"waybillNo\":\"" + waybill + "\"}")).andExpect(status().isOk());
         loadAndSign(loadId, "51C-WG.01");
-        Instant at = Instant.now().minus(Duration.ofHours(1)).truncatedTo(java.time.temporal.ChronoUnit.SECONDS);
+        Instant at = leftAt(loadId).truncatedTo(java.time.temporal.ChronoUnit.SECONDS).plusSeconds(2);
 
         // The carrier's webhook reports the whole vehicle delivered...
         String delivered = "{\"loadCode\":\"" + loadCode + "\",\"type\":\"DELIVERED\",\"reportedAt\":\"" + at + "\"}";

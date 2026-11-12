@@ -23,8 +23,10 @@ import java.util.UUID;
  * <p>In order, a line is an error when: its waybill number, outcome or time is missing; a cell is longer than what it
  * is kept in; the outcome is neither {@code DELIVERED} nor {@code DELIVERY_FAILED}; the time cannot be read, or is
  * later than now; a failed delivery gives no reason (or gives {@code OTHER} with no note); no vehicle the importer may
- * see has the number; several vehicles on the road have it; the vehicle has not left (or none of its shipments has);
- * the shipment named did not leave on it; another line is about the same shipment; a shipment it is about cannot take
+ * see has the number - of the carrier named, when the line names one; several vehicles on the road have it, which
+ * happens only across carriers, so naming the carrier settles it; the vehicle has not left (or none of its shipments
+ * has); the time is before the vehicle left - a year typed wrongly would otherwise date the delivery, and everything
+ * counted from it, before the handover; the shipment named did not leave on it; another line is about the same shipment; a shipment it is about cannot take
  * the outcome (09 §5: a delivered one is not failed afterwards). Otherwise it is accepted - and
  * {@link Verdict#changes()} says whether anything is still to change.</p>
  *
@@ -37,6 +39,7 @@ public final class DeliveryOutcomeCheck {
     static final Duration CLOCK_SKEW = Duration.ofMinutes(5);
     private static final int WAYBILL_MAX = 64;
     private static final int SHIPMENT_CODE_MAX = 48;
+    private static final int CARRIER_CODE_MAX = 32;
     private static final int RECIPIENT_MAX = 120;
     /** The failure note of a shipment (and of its order) is 500 characters. */
     private static final int TEXT_MAX = 500;
@@ -53,17 +56,22 @@ public final class DeliveryOutcomeCheck {
     /** Why a line is not applied. */
     public enum Problem {
         MISSING_FIELDS, TEXT_TOO_LONG, INVALID_OUTCOME, INVALID_TIME, TIME_IN_FUTURE, REASON_REQUIRED,
-        WAYBILL_NOT_FOUND, WAYBILL_AMBIGUOUS, LOAD_NOT_DISPATCHED, SHIPMENT_NOT_ON_LOAD, DUPLICATE_IN_FILE,
-        OUTCOME_NOT_ALLOWED
+        WAYBILL_NOT_FOUND, WAYBILL_AMBIGUOUS, LOAD_NOT_DISPATCHED, TIME_BEFORE_DISPATCH, SHIPMENT_NOT_ON_LOAD,
+        DUPLICATE_IN_FILE, OUTCOME_NOT_ALLOWED
     }
 
     /** A shipment that left on a vehicle. */
     public record ShipmentFacts(UUID id, String code, ShipmentStatus status) {
     }
 
-    /** A vehicle holding a waybill number, of a warehouse the importer may see, and the shipments on it. */
-    public record LoadFacts(UUID loadId, String code, UUID carrierId, LoadStatus status,
-                            List<ShipmentFacts> shipments) {
+    /**
+     * A vehicle holding a waybill number, of a warehouse the importer may see, and the shipments on it.
+     *
+     * @param carrierCode  its carrier's code, by which a line tells it from another carrier's vehicle with the number
+     * @param dispatchedAt when it left; no outcome of it is earlier
+     */
+    public record LoadFacts(UUID loadId, String code, UUID carrierId, String carrierCode, LoadStatus status,
+                            Instant dispatchedAt, List<ShipmentFacts> shipments) {
     }
 
     /**
@@ -139,7 +147,8 @@ public final class DeliveryOutcomeCheck {
         if (parsed.problem() != null) {
             return error(row, parsed.problem(), null, null, parsed);
         }
-        List<LoadFacts> holders = loadsByWaybill.getOrDefault(row.waybillNo(), List.of());
+        List<LoadFacts> holders = loadsByWaybill.getOrDefault(row.waybillNo(), List.of()).stream()
+                .filter(l -> row.carrierCode() == null || row.carrierCode().equalsIgnoreCase(l.carrierCode())).toList();
         if (holders.isEmpty()) {
             return error(row, Problem.WAYBILL_NOT_FOUND, null, null, parsed);
         }
@@ -151,6 +160,9 @@ public final class DeliveryOutcomeCheck {
             return error(row, Problem.WAYBILL_AMBIGUOUS, null, null, parsed);
         }
         LoadFacts load = left.get(0);
+        if (load.dispatchedAt() != null && parsed.reportedAt().isBefore(load.dispatchedAt())) {
+            return error(row, Problem.TIME_BEFORE_DISPATCH, load, null, parsed);
+        }
         List<ShipmentFacts> targets = load.shipments();
         UUID shipmentId = null;
         if (row.shipmentCode() != null) {
@@ -183,6 +195,7 @@ public final class DeliveryOutcomeCheck {
             return new Parsed(Problem.MISSING_FIELDS, null, null, null, null);
         }
         if (tooLong(row.waybillNo(), WAYBILL_MAX) || tooLong(row.shipmentCode(), SHIPMENT_CODE_MAX)
+                || tooLong(row.carrierCode(), CARRIER_CODE_MAX)
                 || tooLong(row.recipient(), RECIPIENT_MAX) || tooLong(row.note(), TEXT_MAX)
                 || tooLong(row.failureReason(), TEXT_MAX)) {
             return new Parsed(Problem.TEXT_TOO_LONG, null, null, null, null);
