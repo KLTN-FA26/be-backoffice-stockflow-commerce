@@ -424,6 +424,16 @@ public enum ErrorCode {
     ORDER_NOT_ON_HOLD("This order is not on hold", 409),
     /** G3-2: a credit hold is decided through credit approval, not resolved like the others. */
     ORDER_CREDIT_HOLD_USE_APPROVAL("A credit hold is decided through credit approval", 409),
+    /**
+     * WF-05 fix plan, section 2: a hold for a failed delivery is lifted by deciding its delivery failure case - deliver
+     * again, or cancel what was not delivered - not resolved with a note.
+     */
+    ORDER_DELIVERY_FAILURE_USE_DECISION("This order is held for a failed delivery; decide to deliver again or to "
+            + "cancel what was not delivered", 409),
+    /** WF-05 fix plan, section 2: no delivery failure case of that id on that order. */
+    DELIVERY_FAILURE_CASE_NOT_FOUND("Delivery failure case not found", 404),
+    /** WF-05 fix plan, section 2: the case is not where that step starts from (decided already, not released, ...). */
+    DELIVERY_FAILURE_INVALID_TRANSITION("This delivery failure case cannot take that step now", 409),
     /** G4-Q5: an order with shipments records its delivery outcome per shipment, not for the whole order. */
     ORDER_DELIVERY_VIA_SHIPMENT("This order's delivery is recorded per shipment", 409),
     /** G3-Q4: money due before the goods leave has not all arrived; the handover waits for it. */

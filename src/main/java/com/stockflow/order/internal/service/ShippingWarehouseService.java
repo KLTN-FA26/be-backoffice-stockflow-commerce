@@ -64,6 +64,11 @@ import java.util.UUID;
  *       schedule, every carton of every line.</li>
  *   <li><b>Next batch</b> (4A-6, BR-04): whether the batch the order delivers next - the earliest not released - is
  *       held in full: what decides, with a production order sent for it, that the order waits for stock.</li>
+ *   <li><b>Goods that came back</b> (WF-05 fix plan, section 2): the units of a shipment the carrier brought back are
+ *       held for their order again the moment they are stock to promise - released from quarantine and put away -
+ *       before any other order is served, whether Sales have decided the delivery failure case or not. They are the
+ *       customer's own goods: no other order's top-up takes them meanwhile, and a redelivery is released with exactly
+ *       the holds taken for its case. A case cancelled frees them with the rest of the order.</li>
  * </ul>
  *
  * <p>Locks: the order row first, then the SKUs' advisory locks (sorted, {@code prepareReservation}), as checkout and
@@ -118,11 +123,14 @@ public class ShippingWarehouseService {
     private final TransactionTemplate eachOrder;
     private final com.stockflow.order.internal.domain.ProductionOrderRepository productionOrders;
     private final DeliveryBatchRecords batchRecords;
+    private final com.stockflow.order.internal.domain.DeliveryFailureCases deliveryFailures;
 
     ShippingWarehouseService(OrderRepository orders, InventoryService inventory, WarehouseDirectory warehouses,
                              SalesContractRepository contracts, Clock clock, PlatformTransactionManager transactions,
                              com.stockflow.order.internal.domain.ProductionOrderRepository productionOrders,
-                             DeliveryBatchRecords batchRecords) {
+                             DeliveryBatchRecords batchRecords,
+                             com.stockflow.order.internal.domain.DeliveryFailureCases deliveryFailures) {
+        this.deliveryFailures = deliveryFailures;
         this.batchRecords = batchRecords;
         this.productionOrders = productionOrders;
         this.orders = orders;
@@ -234,6 +242,18 @@ public class ShippingWarehouseService {
     @Transactional(propagation = org.springframework.transaction.annotation.Propagation.NOT_SUPPORTED)
     public int topUpWaiting(String sku) {
         int toppedUp = 0;
+        // First the goods that came back from a failed delivery: they are held for their own order again before any
+        // other order of that SKU is served (WF-05 fix plan, section 2) - the oldest case first.
+        for (UUID orderId : deliveryFailures.ordersWantingGoodsHeld()) {
+            try {
+                Boolean more = eachOrder.execute(status -> holdReturnedGoods(orderId));
+                if (Boolean.TRUE.equals(more)) {
+                    toppedUp++;
+                }
+            } catch (RuntimeException e) {
+                log.warn("Order {}: holding the goods that came back failed; the next arrival tries again", orderId, e);
+            }
+        }
         for (UUID orderId : orders.waitingForStockAtShippingWarehouse()) {
             if (!shortOf(orderId, sku)) {
                 continue;
@@ -248,6 +268,142 @@ public class ShippingWarehouseService {
             }
         }
         return toppedUp;
+    }
+
+    /**
+     * WF-05 fix plan, section 2: the order's delivery failure cases that still want their goods held - not decided yet,
+     * or to be delivered again and not released - hold, at the warehouse the goods came back to, as many whole cartons
+     * of each line of the returned shipment as are available and not held for the case already. Under the order's row
+     * lock, taken here; the SKUs' advisory locks next, sorted, as every hold takes them. Whatever the order's status:
+     * it is ON_HOLD until Sales decide, and the goods wait for it all the same.
+     *
+     * @return whether anything more was held
+     */
+    @Transactional
+    public boolean holdReturnedGoods(UUID orderId) {
+        Order order = orders.findByIdForUpdate(new OrderId(orderId)).orElse(null);
+        if (order == null) {
+            return false;
+        }
+        boolean more = holdReturnedGoods(order);
+        if (more) {
+            orders.save(order);
+        }
+        return more;
+    }
+
+    /** The same on an order the caller locked and will save. */
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public boolean holdReturnedGoods(Order order) {
+        List<com.stockflow.order.internal.domain.DeliveryFailureCase> wanting = deliveryFailures
+                .ofOrder(order.id().value()).stream()
+                .filter(com.stockflow.order.internal.domain.DeliveryFailureCase::wantsGoodsHeld).toList();
+        if (wanting.isEmpty()) {
+            return false;
+        }
+        Map<UUID, OrderLine> lines = linesById(order);
+        Set<Sku> skus = new java.util.TreeSet<>(Comparator.comparing(Sku::code));
+        wanting.forEach(failure -> failure.units().keySet().stream().map(lines::get)
+                .filter(java.util.Objects::nonNull).forEach(line -> skus.add(line.sku())));
+        if (skus.isEmpty()) {
+            return false;
+        }
+        inventory.prepareReservation(skus);
+        boolean more = false;
+        for (com.stockflow.order.internal.domain.DeliveryFailureCase failure : wanting) {
+            String warehouseCode = warehouses.codeOf(failure.warehouseId()).orElse(null);
+            if (warehouseCode == null) {
+                continue;
+            }
+            List<com.stockflow.order.internal.domain.DeliveryFailureCases.Hold> taken =
+                    deliveryFailures.holdsOf(failure.id());
+            Map<UUID, Integer> held = heldUnits(taken);
+            for (Map.Entry<UUID, Integer> wanted : failure.units().entrySet()) {
+                OrderLine line = lines.get(wanted.getKey());
+                if (line == null) {
+                    continue;
+                }
+                int perCarton = unitsPerCarton(line);
+                int missing = (wanted.getValue() - held.getOrDefault(line.id(), 0)) / perCarton;
+                if (missing <= 0) {
+                    continue;
+                }
+                // One request per attempt: the case, the line, how many holds the case had for it (released ones stay
+                // on record) and the warehouse - a retried attempt holds once, a later arrival holds again.
+                long attempts = taken.stream().filter(hold -> hold.orderLineId().equals(line.id())).count();
+                UUID requestId = UUID.nameUUIDFromBytes(("redelivery:%s:%s:%d:%s".formatted(failure.id(), line.id(),
+                        attempts, warehouseCode)).getBytes(StandardCharsets.UTF_8));
+                HoldStockResult result = inventory.holdAtWarehouse(new HoldStockCommand(requestId, order.id().value(),
+                        line.sku(), warehouseCode, missing, perCarton));
+                if (!result.reservationIds().isEmpty()) {
+                    order.holdMore(line.id(), result.reservationIds());
+                    deliveryFailures.recordHolds(failure.id(), line.id(), result.reservationIds());
+                    more = true;
+                    log.info("Order {}: {} of {} carton(s) of {} that came back held again at {}",
+                            order.orderNumber(), result.cartonsHeld(), missing, line.sku(),
+                            warehouseCode);
+                }
+            }
+        }
+        return more;
+    }
+
+    /**
+     * WF-05 fix plan, section 2: a redelivery is released with every unit of its returned shipment held for its case -
+     * the holds still HELD, which the release allocates.
+     *
+     * @return those holds
+     * @throws BusinessException {@code ORDER_STOCK_NOT_HELD} naming the lines short: goods still in quarantine, or
+     *         written off - Sales then cancel what was not delivered instead
+     */
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public Set<UUID> heldForRedelivery(Order order, com.stockflow.order.internal.domain.DeliveryFailureCase failure) {
+        List<com.stockflow.order.internal.domain.DeliveryFailureCases.Hold> taken =
+                deliveryFailures.holdsOf(failure.id());
+        Map<UUID, Integer> held = heldUnits(taken);
+        Map<UUID, OrderLine> lines = linesById(order);
+        List<String> short_ = failure.units().entrySet().stream()
+                .filter(wanted -> held.getOrDefault(wanted.getKey(), 0) < wanted.getValue())
+                .map(wanted -> "%s (%d of %d units)".formatted(lines.containsKey(wanted.getKey())
+                        ? lines.get(wanted.getKey()).sku().code() : wanted.getKey(),
+                        held.getOrDefault(wanted.getKey(), 0), wanted.getValue()))
+                .toList();
+        if (!short_.isEmpty()) {
+            throw new BusinessException(ErrorCode.ORDER_STOCK_NOT_HELD, ("The goods of return receipt %s are not all "
+                    + "held for order %s again: %s. They are held once released from quarantine and put away")
+                    .formatted(failure.receiptNumber(), order.orderNumber(), String.join(", ", short_)));
+        }
+        Set<UUID> ids = new LinkedHashSet<>();
+        taken.forEach(hold -> ids.add(hold.reservationId()));
+        Set<UUID> live = new LinkedHashSet<>();
+        inventory.holds(ids).stream().filter(hold -> hold.status() == HoldView.Status.HELD)
+                .forEach(hold -> live.add(hold.reservationId()));
+        return live;
+    }
+
+    /** How many units of each line a delivery failure case has held: its holds still HELD (17 §4.2 step 3). */
+    public Map<UUID, Integer> heldUnitsOf(com.stockflow.order.internal.domain.DeliveryFailureCase failure) {
+        return heldUnits(deliveryFailures.holdsOf(failure.id()));
+    }
+
+    private Map<UUID, Integer> heldUnits(List<com.stockflow.order.internal.domain.DeliveryFailureCases.Hold> taken) {
+        Map<UUID, Integer> held = new HashMap<>();
+        if (taken.isEmpty()) {
+            return held;
+        }
+        Map<UUID, UUID> lineOf = new HashMap<>();
+        taken.forEach(hold -> lineOf.put(hold.reservationId(), hold.orderLineId()));
+        for (HoldView hold : inventory.holds(lineOf.keySet())) {
+            if (hold.status() == HoldView.Status.HELD) {
+                held.merge(lineOf.get(hold.reservationId()), hold.quantity(), Integer::sum);
+            }
+        }
+        return held;
+    }
+
+    /** A line's pieces per carton; a line not ordered in cartons counts one piece a carton, as a batch's units do. */
+    private static int unitsPerCarton(OrderLine line) {
+        return line.unitsPerCarton() == null || line.unitsPerCarton() <= 0 ? 1 : line.unitsPerCarton();
     }
 
     /**

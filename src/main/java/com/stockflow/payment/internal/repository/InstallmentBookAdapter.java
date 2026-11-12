@@ -104,7 +104,8 @@ class InstallmentBookAdapter implements InstallmentBook, InstallmentSearch {
     public BigDecimal afterDeliveryUnpaid(UUID customerId) {
         return decimal(entityManager.createNativeQuery("""
                         SELECT COALESCE(SUM(amount - reduced_amount - paid_amount), 0) FROM payment.installment
-                         WHERE customer_id = :customer AND milestone IN ('AFTER_DELIVERY', 'CANCELLATION_FEE')
+                         WHERE customer_id = :customer
+                           AND milestone IN ('AFTER_DELIVERY', 'CANCELLATION_FEE', 'FAILED_TRIP_FEE')
                            AND status NOT IN ('PAID', 'CANCELLED')""")
                 .setParameter("customer", customerId)
                 .getSingleResult());

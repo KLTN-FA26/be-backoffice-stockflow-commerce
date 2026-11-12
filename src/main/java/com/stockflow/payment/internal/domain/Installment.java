@@ -78,8 +78,8 @@ public final class Installment {
         this.contractId = Objects.requireNonNull(contractId, "contractId");
         this.milestone = Objects.requireNonNull(milestone, "milestone");
         // ck_installment_fee_item: a fee item names no plan row, every other installment names its own.
-        if ((milestone == InstallmentMilestone.CANCELLATION_FEE) != (contractInstallmentId == null)) {
-            throw new IllegalArgumentException("Only a cancellation fee item has no plan row");
+        if (milestone.feeItem() != (contractInstallmentId == null)) {
+            throw new IllegalArgumentException("Only a fee item has no plan row");
         }
         this.contractInstallmentId = contractInstallmentId;
         this.orderId = Objects.requireNonNull(orderId, "orderId");
@@ -136,6 +136,21 @@ public final class Installment {
      */
     public static Installment openFee(Installment ofContract, int seq, String name, BigDecimal owed, Instant at,
                                       LocalDate day) {
+        return openFee(InstallmentMilestone.CANCELLATION_FEE, ofContract, seq, name, owed, at, day);
+    }
+
+    /**
+     * The fee item of a failed trip (WF-05 fix plan, section 2): what the customer pays for a delivery they refused or
+     * misaddressed, once Sales decide to deliver again. As the cancellation fee item: due at once, numbered after the
+     * plan, never lowered by a closure and never cancelled - the trip failed whatever becomes of the order.
+     */
+    public static Installment openDeliveryFailureFee(Installment ofContract, int seq, String name, BigDecimal owed,
+                                                     Instant at, LocalDate day) {
+        return openFee(InstallmentMilestone.FAILED_TRIP_FEE, ofContract, seq, name, owed, at, day);
+    }
+
+    private static Installment openFee(InstallmentMilestone kind, Installment ofContract, int seq, String name,
+                                       BigDecimal owed, Instant at, LocalDate day) {
         Objects.requireNonNull(ofContract, "ofContract");
         if (seq < FIRST_FEE_SEQ || seq > LAST_FEE_SEQ) {
             throw new IllegalArgumentException("A fee item is numbered %d to %d, not %d"
@@ -143,7 +158,7 @@ public final class Installment {
         }
         Installment fee = new Installment(Identifiers.newId(), ofContract.contractId, null, ofContract.orderId,
                 ofContract.customerId, ofContract.contractNumber, ofContract.orderNumber, seq, name,
-                InstallmentMilestone.CANCELLATION_FEE, null, null, owed, BigDecimal.ZERO, ofContract.currency, 0, null,
+                kind, null, null, owed, BigDecimal.ZERO, ofContract.currency, 0, null,
                 null, InstallmentStatus.NOT_DUE, null, null, 0L);
         fee.reach(at, day);
         return fee;
@@ -290,9 +305,12 @@ public final class Installment {
         return amount.subtract(reducedAmount);
     }
 
-    /** A cancellation fee item rather than a row of the contract's plan (15 §4.6 step 18). */
+    /**
+     * A fee item rather than a row of the contract's plan: a cancellation fee (15 §4.6 step 18) or the fee of a failed
+     * trip. Its money is the fee's alone - no settlement counts it as collected for goods, and it is never refunded.
+     */
     public boolean isFeeItem() {
-        return milestone == InstallmentMilestone.CANCELLATION_FEE;
+        return milestone.feeItem();
     }
 
     public boolean reached() { return reachedAt != null; }

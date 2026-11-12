@@ -73,6 +73,11 @@ class PaymentServiceImpl implements PaymentService {
     }
 
     @Override
+    public java.util.Optional<UUID> chargeFailedDelivery(com.stockflow.payment.api.ChargeFailedDeliveryCommand command) {
+        return installments.chargeFailedDelivery(command);
+    }
+
+    @Override
     public java.util.Optional<com.stockflow.payment.api.OrderSettlementResult> settleReturn(
             com.stockflow.payment.api.SettleReturnCommand command) {
         return settlements.settleReturn(command);

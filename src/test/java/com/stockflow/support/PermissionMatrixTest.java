@@ -748,6 +748,41 @@ class PermissionMatrixTest {
     }
 
     /**
+     * WF-05 fix plan, section 2 (kltn-docs 09 §4.3, 17 §4.8): a delivery failure case is Sales' to decide. Delivering
+     * again lifts the order's hold ({@code sales-order-holds:UPDATE}); cancelling what was not delivered is the closure
+     * of the rest with its fee ({@code sales-order-cancellations:UPDATE}, as {@code /remainder-closure}); the cases are
+     * read as orders are. Sales hold all three; the warehouse manager, who releases the redelivery, decides neither;
+     * the customer holds {@code sales-orders:READ} for their own orders and is refused by the back-office check.
+     */
+    @Test
+    void theDeliveryFailureEndpointsNeedTheirPermissions() {
+        Map<String, Handler> byKey = new HashMap<>();
+        handlers().forEach(h -> byKey.put(h.key(), h));
+        Map<String, String> expected = Map.of(
+                "GET /api/v1/orders/delivery-failures", "sales-orders:READ",
+                "GET /api/v1/orders/{orderId}/delivery-failures", "sales-orders:READ",
+                "POST /api/v1/orders/{orderId}/delivery-failures/{caseId}/redelivery", "sales-order-holds:UPDATE",
+                "POST /api/v1/orders/{orderId}/delivery-failures/{caseId}/cancellation",
+                "sales-order-cancellations:UPDATE");
+        expected.forEach((key, code) -> {
+            assertThat(byKey).as(key).containsKey(key);
+            RequiresPermission rp = byKey.get(key).rp();
+            assertThat(rp).as(key + " is guarded").isNotNull();
+            assertThat(PermissionCode.of(rp.resource(), rp.action())).as(key).isEqualTo(PermissionCode.parse(code));
+            assertThat(rp.scope()).as(key).isEqualTo(DataScope.ALL);
+        });
+        assertThat(roles.resolve(List.of(Role.SALES_STAFF.authority())).permissions())
+                .contains(PermissionCode.parse("sales-order-holds:UPDATE"),
+                        PermissionCode.parse("sales-order-cancellations:UPDATE"), PermissionCode.parse("sales-orders:READ"));
+        assertThat(roles.resolve(List.of(Role.WAREHOUSE_MANAGER.authority())).permissions())
+                .doesNotContain(PermissionCode.parse("sales-order-holds:UPDATE"),
+                        PermissionCode.parse("sales-order-cancellations:UPDATE"));
+        assertThat(roles.resolve(List.of(Role.CUSTOMER.authority())).permissions())
+                .doesNotContain(PermissionCode.parse("sales-order-holds:UPDATE"),
+                        PermissionCode.parse("sales-order-cancellations:UPDATE"));
+    }
+
+    /**
      * kltn-docs 01 §5.1: suspending, resuming and discontinuing a product are the System Admin's. The three handlers
      * need {@code product-lifecycle:APPROVE}, and the seeded matrix grants it to SYSTEM_ADMIN and nobody else - not
      * the Sales Manager, who approves and publishes with {@code product-products:APPROVE}.

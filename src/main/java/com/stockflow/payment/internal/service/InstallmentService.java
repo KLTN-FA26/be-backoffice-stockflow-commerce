@@ -188,6 +188,36 @@ public class InstallmentService {
     }
 
     /**
+     * {@link com.stockflow.payment.api.PaymentService#chargeFailedDelivery}: the fee item of a failed trip, numbered
+     * after the contract's plan and its other fee items, due from today. The order's installments are locked first, in
+     * id order, as every money movement of the order locks them - so two fee items never take the same number.
+     */
+    public Optional<UUID> chargeFailedDelivery(com.stockflow.payment.api.ChargeFailedDeliveryCommand command) {
+        List<Installment> ofOrder = book.lockOfOrder(command.orderId());
+        if (ofOrder.isEmpty()) {
+            return Optional.empty();
+        }
+        BigDecimal amount = command.amount();
+        if (amount.signum() <= 0 || amount.stripTrailingZeros().scale() > 0) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "The fee of a failed trip is more than zero, in whole units of the currency");
+        }
+        Installment first = ofOrder.stream().filter(i -> !i.isFeeItem()).findFirst().orElse(ofOrder.getFirst());
+        int seq = ofOrder.stream().filter(Installment::isFeeItem).mapToInt(Installment::seq).max()
+                .orElse(Installment.FIRST_FEE_SEQ - 1) + 1;
+        if (seq > Installment.LAST_FEE_SEQ) {
+            throw new IllegalStateException("Contract %s has no room for another fee item"
+                    .formatted(first.contractNumber()));
+        }
+        Installment fee = Installment.openDeliveryFailureFee(first, seq, command.label(), amount,
+                command.chargedAt(), LocalDate.ofInstant(command.chargedAt(), BUSINESS_ZONE));
+        book.save(fee);
+        log.info("Contract {}: failed trip charged {} {} on fee item {} ({})", first.contractNumber(),
+                amount.toPlainString(), first.currency(), seq, command.label());
+        return Optional.of(fee.id());
+    }
+
+    /**
      * The business day overdue is read on (15 §4.1 step 4): an installment is overdue from the day after its due day, in
      * the business calendar - worked out when asked, by no nightly job (WF-05 fix plan, section 8).
      */

@@ -18,9 +18,11 @@ public record InstallmentResponse(UUID installmentId, UUID contractId,
                                   UUID orderId, @Schema(example = "SO-20261108-000007") String orderNumber,
                                   UUID customerId, int seq, @Schema(example = "Đặt cọc") String name,
                                   @Schema(description = "CANCELLATION_FEE: the part of a cancellation fee the "
-                                          + "money collected did not cover (15 §4.6 step 18), paid like an installment",
+                                          + "money collected did not cover (15 §4.6 step 18), paid like an installment. "
+                                          + "FAILED_TRIP_FEE: the trip of a delivery the customer refused or "
+                                          + "misaddressed, charged when it is delivered again",
                                           allowableValues = {"ON_SIGNING", "BEFORE_DELIVERY", "AFTER_DELIVERY",
-                                                  "CANCELLATION_FEE"})
+                                                  "CANCELLATION_FEE", "FAILED_TRIP_FEE"})
                                   String milestone,
                                   @Schema(description = "The delivery batch it is tied to (17 §4.5); null when none")
                                   Integer deliveryBatchSeq,

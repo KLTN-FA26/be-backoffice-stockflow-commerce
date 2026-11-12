@@ -279,7 +279,7 @@ public final class OrderSettlement {
                 case AFTER_DELIVERY -> 0;
                 case BEFORE_DELIVERY -> 1;
                 case ON_SIGNING -> 2;
-                case CANCELLATION_FEE -> 3;
+                case CANCELLATION_FEE, FAILED_TRIP_FEE -> 3;
             })
             .thenComparing(Installment::seq, Comparator.reverseOrder());
 

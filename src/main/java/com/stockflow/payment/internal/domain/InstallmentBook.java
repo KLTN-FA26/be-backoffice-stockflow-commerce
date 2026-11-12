@@ -45,8 +45,8 @@ public interface InstallmentBook {
 
     /**
      * 15 BR-10: what the customer's installments paid after delivery still owe - every status but PAID and CANCELLED,
-     * NOT_DUE included: every signed contract's, held for credit or not - and, since 4B-9, the cancellation fee items not
-     * paid ("khoản phí huỷ chưa trả"); each net of what closures of the rest took off.
+     * NOT_DUE included: every signed contract's, held for credit or not - and, since 4B-9, the fee items not paid
+     * ("khoản phí huỷ chưa trả", and the fee of a failed trip); each net of what closures of the rest took off.
      */
     BigDecimal afterDeliveryUnpaid(UUID customerId);
 
