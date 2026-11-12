@@ -11,6 +11,10 @@ import java.time.Instant;
  * {@code maxFuture}. A report from the future is worse than an old one: once applied, its date makes every true report
  * after it look outdated (BR-27 compares carrier times), so it goes to the error list rather than to the log only.
  *
+ * <p>{@code maxFuture} is a clock's allowance, and what it allows is a risk accepted (WF-05 review F5): a forged
+ * milestone dated that far ahead makes a true report arriving within those minutes look outdated, once per load (a
+ * milestone is recorded once). Keep it as small as the carrier's clock permits.</p>
+ *
  * <p>A report the carrier gives no time for is not judged here; the final outcomes among those are asked back of the
  * carrier's API instead.</p>
  */

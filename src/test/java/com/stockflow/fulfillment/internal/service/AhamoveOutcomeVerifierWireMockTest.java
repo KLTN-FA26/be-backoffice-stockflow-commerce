@@ -275,6 +275,31 @@ class AhamoveOutcomeVerifierWireMockTest {
     }
 
     @Test
+    @DisplayName("review F2: told to come back later (429, 408, 425), or answered 200 with nothing that reads as an "
+            + "order, Ahamove has said nothing about the order - no verdict, the callback is to be sent again")
+    void aPassingRefusalOrAnUnreadableAnswerIsNoVerdict() {
+        CarrierEventApplier.Matched delivered = matched(stop(CarrierEventKind.DELIVERED, 1));
+
+        for (int status : new int[] {429, 408, 425}) {
+            AHAMOVE.stubFor(get(urlEqualTo("/v3/orders/" + ORDER)).willReturn(aResponse().withStatus(status)
+                    .withHeader("Content-Type", "application/json")
+                    .withBody("{\"code\":\"TOO_MANY_REQUESTS\",\"title\":\"Slow down\"}")));
+            assertThatThrownBy(() -> verifier.verify(carrier, delivered)).as("HTTP " + status)
+                    .isInstanceOf(CarrierWebhookRetry.class).hasMessageContaining("send it again");
+        }
+        for (String body : new String[] {"", "   ", "<html>maintenance</html>", "[]", "null", "\"ok\""}) {
+            AHAMOVE.stubFor(get(urlEqualTo("/v3/orders/" + ORDER)).willReturn(aResponse().withStatus(200)
+                    .withHeader("Content-Type", "application/json").withBody(body)));
+            assertThatThrownBy(() -> verifier.verify(carrier, delivered)).as("body '" + body + "'")
+                    .isInstanceOf(CarrierWebhookRetry.class);
+        }
+        // A refusal that is a verdict stays one, and so does "no such order".
+        AHAMOVE.stubFor(get(urlEqualTo("/v3/orders/" + ORDER)).willReturn(aResponse().withStatus(400)
+                .withHeader("Content-Type", "application/json").withBody("{\"code\":\"INVALID_ORDER\"}")));
+        assertThat(verifier.verify(carrier, delivered)).contains("refused");
+    }
+
+    @Test
     @DisplayName("only final outcomes are asked back: a milestone, the driver's name and our own cancel echoed are not; "
             + "switched off, nothing is")
     void onlyFinalOutcomesAreAskedBack() {

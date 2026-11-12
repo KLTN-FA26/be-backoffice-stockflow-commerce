@@ -110,6 +110,11 @@ class AhamoveGateway implements CarrierBookingGateway {
             if (failed.answered() && failed.getMessage() != null && failed.getMessage().startsWith("404")) {
                 return java.util.Optional.empty();
             }
+            if (failed.answered() && passing(failed.getMessage())) {
+                // Too many requests, too early, timed out: Ahamove said nothing about the order - asked again later it
+                // will. Told apart from a refusal, which is a verdict.
+                throw new CarrierCallFailed(false, failed.code(), failed.getMessage());
+            }
             throw failed;
         }
         JsonNode order = answer.json();
@@ -117,7 +122,9 @@ class AhamoveGateway implements CarrierBookingGateway {
             order = order.get("order");
         }
         if (order == null || !order.isObject()) {
-            return java.util.Optional.empty();
+            // A 200 with no order in it is not "no such order" (that is a 404): nothing was learnt.
+            throw new CarrierCallFailed(false, null, "Ahamove answered the lookup of order " + orderId
+                    + " with nothing that reads as an order");
         }
         // The order as its callbacks carry it: path[0] is the pickup, each point after it a drop-off.
         List<String> stops = new ArrayList<>();
@@ -130,6 +137,12 @@ class AhamoveGateway implements CarrierBookingGateway {
         }
         return java.util.Optional.of(new OrderState(upper(text(order, "status")), upper(text(order, "sub_status")),
                 stops));
+    }
+
+    /** 408, 425, 429: the request was not served this time; the same one may be later. */
+    private static boolean passing(String described) {
+        return described != null
+                && (described.startsWith("408") || described.startsWith("425") || described.startsWith("429"));
     }
 
     private static String upper(String value) {

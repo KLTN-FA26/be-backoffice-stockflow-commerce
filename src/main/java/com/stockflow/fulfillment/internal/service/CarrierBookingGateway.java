@@ -86,10 +86,12 @@ public interface CarrierBookingGateway {
     }
 
     /**
-     * The order as the carrier gives it now; empty when it knows no such order. Asked before a final outcome an
-     * unsigned webhook reported is applied (WF-05 fix plan item 6).
+     * The order as the carrier gives it now; empty only when the carrier says it knows no such order. Asked before a
+     * final outcome an unsigned webhook reported is applied (WF-05 fix plan item 6).
      *
-     * @throws CarrierCallFailed when the carrier refused or did not answer
+     * @throws CarrierCallFailed when the carrier refused, or did not answer - which includes being told to come back
+     *         later (too many requests, a request timed out) and an answer with no order in it: none of those says
+     *         anything about the order
      */
     java.util.Optional<OrderState> orderState(Caller caller, String orderId);
 
