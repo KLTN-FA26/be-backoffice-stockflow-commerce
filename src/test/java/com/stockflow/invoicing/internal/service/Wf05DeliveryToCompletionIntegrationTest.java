@@ -66,7 +66,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 @IntegrationTest
 @Import(PostgresContainer.class)
 @TestPropertySource(properties = {"stockflow.upload-inspection.enabled=false",
-        "stockflow.notification.email.customer.enabled=false"})
+        "stockflow.notification.email.customer.enabled=false",
+        // The buyer's e-invoice mail has a switch of its own (E0 M2), on by default.
+        "stockflow.notification.email.customer.einvoice-enabled=false"})
 class Wf05DeliveryToCompletionIntegrationTest {
 
     private static final Duration ASYNC = Duration.ofSeconds(20);
@@ -192,12 +194,12 @@ class Wf05DeliveryToCompletionIntegrationTest {
         EInvoice.Snapshot firstIssued = FirstSend.issue(issuance, queries, firstDraft.id(), firstDraft.version(), accountant);
         assertThat(firstIssued.status()).isEqualTo(EInvoiceStatus.ISSUED);
         assertThat(firstIssued.provider()).isEqualTo("SANDBOX");
-        // Customer e-mail is off here (CUSTOMER_EMAIL_ENABLED): the invoice's mail is recorded as skipped, not sent.
+        // E-invoice mail is off here (EINVOICE_EMAIL_ENABLED): the invoice's mail is recorded as skipped, not sent.
         String mail = "customer-mail:einvoice.issued:" + firstIssued.id();
         Await.until("the invoice's e-mail is settled", ASYNC, () -> jdbc.queryForObject("SELECT count(*) FROM "
                 + "notification.delivery_log WHERE operation_reference = ?", Long.class, mail) == 1);
         assertThat(jdbc.queryForObject("SELECT status || ':' || error FROM notification.delivery_log WHERE "
-                + "operation_reference = ?", String.class, mail)).isEqualTo("SKIPPED:CUSTOMER_EMAIL_DISABLED");
+                + "operation_reference = ?", String.class, mail)).isEqualTo("SKIPPED:EINVOICE_EMAIL_DISABLED");
         assertThat(context.getBean(com.stockflow.notification.internal.service.RecordingEmailTransport.class)
                 .sentTo("ke.toan@" + customer + ".example.com")).as("nothing reaches the buyer's mailbox").isEmpty();
 

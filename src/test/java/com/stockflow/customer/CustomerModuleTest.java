@@ -39,6 +39,8 @@ class CustomerModuleTest {
     @MockitoBean com.stockflow.warehouse.api.WarehouseService warehouseServiceMock;
     // Order completion asks invoicing whether every delivery is invoiced (WF-05 condition 5); invoicing is not loaded here.
     @MockitoBean com.stockflow.order.api.DeliveryInvoices deliveryInvoicesMock;
+    // Notification words the buyer's e-invoice mail from what invoicing hands it; invoicing is not loaded here.
+    @MockitoBean com.stockflow.notification.api.EInvoiceDirectory einvoiceDirectoryMock;
 
     @Test
     @DisplayName("customer starts and answers through its api with the other modules absent")
