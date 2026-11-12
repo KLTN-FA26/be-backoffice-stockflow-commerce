@@ -1037,12 +1037,12 @@ class StockOperationsServiceImpl implements StockOperations {
             stockPackages.findAllById(List.of(adjustment.stockPackageId())).stream().findFirst()
                     .ifPresent(this::requireNoOpenPutaway);
         }
-        // A count's shortage of a carton the order still holds is handled as a shortage (20 §4.2 step 8): when its
-        // pick line is already reported SHORT, the hold is given up with the carton and the line waits, as it does,
-        // for the warehouse manager's reallocation. Any other adjustment keeps refusing a held carton.
+        // A count's shortage of a carton an order still holds is handled as a shortage (20 §4.2 step 8): the hold is given
+        // up with the carton and announced, and fulfillment turns the order's line SHORT after the commit. Any other
+        // adjustment keeps refusing a held carton.
         List<StockPackageContents.RowChange> changes = cartons.adjust(adjustment.stockPackageId(),
                 adjustment.quantityDelta(), adjustment.reason().leavesCartonLost(),
-                adjustment.reason() == AdjustmentReason.COUNT_VARIANCE, now);
+                adjustment.reason() == AdjustmentReason.COUNT_VARIANCE ? approverId : null, now);
         StockAdjustment saved = adjustments.save(adjustment);
         String reason = ledgerReason(adjustment);
         for (StockPackageContents.RowChange change : changes) {
@@ -1053,7 +1053,7 @@ class StockOperationsServiceImpl implements StockOperations {
                     Math.abs(change.delta()), row.status(), StockMovement.ReferenceType.STOCK_ADJUSTMENT,
                     adjustment.id(), reason, approverId, now).ofLot(row.lotId());
             ledger.append(down ? line.leaving(adjustment.stockPackageId()) : line.arriving(adjustment.stockPackageId()));
-            // The hold a short line stood on, if the write-off gave it up: announced after the row is saved.
+            // The holds the write-off gave up, if any: announced after the row is saved.
             events.publishEventsOf(row);
         }
         log.info("Posted adjustment {}: {} {} in carton {} at {}", adjustment.number(), adjustment.quantityDelta(),

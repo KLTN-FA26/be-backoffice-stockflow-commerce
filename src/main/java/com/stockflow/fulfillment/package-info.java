@@ -9,8 +9,7 @@
  * available to every module. From inventory it uses two named interfaces: {@code api}, and
  * {@code consumption} — the narrow one that deducts picked stock, books put-backs and moves cartons into and out of
  * a staging area, in the pick line's own transaction (SCRUM-275, team plan 4C-5). No other module may use
- * {@code consumption}. It also implements the one question inventory asks of it, {@code inventory :: spi}
- * ({@code ShortPickLines}: which holds are those of a line reported short).</p>
+ * {@code consumption}.</p>
  *
  * <p>The module has two packages and the split is the whole point:</p>
  * <ul>
@@ -21,5 +20,5 @@
  * </ul>
  */
 @org.springframework.modulith.ApplicationModule(allowedDependencies = {"order :: api", "inventory :: api",
-        "inventory :: consumption", "inventory :: spi", "warehouse :: api", "identity :: api", "customer :: api", "payment :: api"})
+        "inventory :: consumption", "warehouse :: api", "identity :: api", "customer :: api", "payment :: api"})
 package com.stockflow.fulfillment;

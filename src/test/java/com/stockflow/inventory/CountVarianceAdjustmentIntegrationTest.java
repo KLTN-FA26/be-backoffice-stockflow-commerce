@@ -44,8 +44,8 @@ import static org.assertj.core.api.Assertions.catchThrowable;
  * asked as one whole-carton COUNT_VARIANCE adjustment and posted through the SCRUM-145 four-eyes approval, with the
  * commit-time carton checks (V20261020000200, V20261113000300) live. A carton a count did not find is written off
  * whole and goes LOST; a LOST carton a later count finds is restocked whole on its own row, its lot kept. A
- * variance of part of a carton cannot be asked (the database refuses it), and a carton held for a customer's order is
- * refused at approval and posts nothing.
+ * variance of part of a carton cannot be asked (the database refuses it), and a carton held for a customer's order, counted missing, is written off with its hold given up as a short pick (any
+ * other adjustment of it is refused).
  */
 @IntegrationTest
 @Import(PostgresContainer.class)
@@ -270,24 +270,52 @@ class CountVarianceAdjustmentIntegrationTest {
     }
 
     @Test
-    @DisplayName("a carton held for a customer's order is refused at approval (STOCK_PACKAGE_HELD); nothing posts, the "
-            + "hold stays")
-    void shortageOfAHeldCartonIsRefusedAtApproval() {
+    @DisplayName("a carton held for a customer's order, counted missing: approved, it is written off and the hold is "
+            + "given up as a short pick (20 §4.2 step 8); the shortage itself is fulfillment's, after the commit")
+    void shortageOfAHeldCartonGivesUpTheHold() {
         UUID box = carton("H");
         UUID hold = hold(confirmedOrder());
-        String holdBefore = jdbc.queryForObject("select status || ':' || quantity from inventory.stock_reservation"
-                + " where id = ?", String.class, hold);
         UUID line = countLine(box);
         StockAdjustmentSummary asked = operations.requestCountVariance(line, cartonSlot(box), -CARTON_FACTOR, clerk,
                 null);
 
-        Throwable refused = catchThrowable(() -> operations.approve(asked.adjustmentId(), manager));
+        StockAdjustmentSummary posted = operations.approve(asked.adjustmentId(), manager);
+
+        assertThat(posted.status()).isEqualTo(StockAdjustmentStatus.POSTED);
+        assertThat(cartonState(box)).containsEntry("status", "LOST").containsEntry("held", 0L);
+        assertThat(adjustmentLedger()).singleElement().satisfies(row -> {
+            assertThat(row.get("from_stock_package_id")).isEqualTo(box);
+            assertThat(row.get("quantity")).isEqualTo(CARTON_FACTOR);
+        });
+        assertThat(jdbc.queryForObject("select status || ':' || release_reason from inventory.stock_reservation "
+                + "where id = ?", String.class, hold)).isEqualTo("RELEASED:SHORT_PICKED");
+        assertThat(jdbc.queryForObject("select reserved from inventory.stock_item where stock_package_id = ?",
+                Integer.class, box)).isZero();
+    }
+
+    @Test
+    @DisplayName("any other adjustment of a carton held for an order is still refused (STOCK_PACKAGE_HELD): nothing "
+            + "posts, the hold stays")
+    void otherAdjustmentOfAHeldCartonIsStillRefused() {
+        UUID box = carton("I");
+        UUID hold = hold(confirmedOrder());
+        String holdBefore = jdbc.queryForObject("select status || ':' || quantity from inventory.stock_reservation"
+                + " where id = ?", String.class, hold);
+        // Asking to write a held carton off is refused at once, and a held carton cannot be asked for once pending:
+        // the request is written as a row, as one asked before the hold would have left it.
+        UUID adjustment = Identifiers.newId();
+        tx.executeWithoutResult(s -> jdbc.update("""
+                insert into inventory.stock_adjustment (id, adjustment_number, location_code, sku, lot_number,
+                    quantity_delta, reason_code, status, requested_by, stock_package_id)
+                values (?, ?, ?, ?, ?, ?, 'DAMAGED', 'PENDING_APPROVAL', ?, ?)""", adjustment,
+                "ADJ-IT-" + adjustment.toString().substring(24).toUpperCase(Locale.ROOT), BIN, sku, lot,
+                -CARTON_FACTOR, clerk, box));
+
+        Throwable refused = catchThrowable(() -> operations.approve(adjustment, manager));
 
         assertThat(codeOf(refused)).isEqualTo(ErrorCode.STOCK_PACKAGE_HELD);
         assertThat(cartonState(box)).containsEntry("status", "IN_STOCK").containsEntry("held", (long) CARTON_FACTOR);
         assertThat(adjustmentLedger()).isEmpty();
-        assertThat(jdbc.queryForObject("select status from inventory.stock_adjustment where id = ?", String.class,
-                asked.adjustmentId())).isEqualTo("PENDING_APPROVAL");
         assertThat(jdbc.queryForObject("select status || ':' || quantity from inventory.stock_reservation where id = ?",
                 String.class, hold)).isEqualTo(holdBefore);
     }

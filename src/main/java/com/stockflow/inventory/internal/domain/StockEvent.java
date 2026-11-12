@@ -72,4 +72,16 @@ public sealed interface StockEvent extends DomainEvent {
             return payload.sku() + "@" + payload.locationCode();
         }
     }
+
+    record HeldCartonWrittenOff(UUID eventId, Instant occurredAt, com.stockflow.contracts.StockHeldCartonWrittenOff payload)
+            implements StockEvent {
+        public HeldCartonWrittenOff(com.stockflow.contracts.StockHeldCartonWrittenOff payload) {
+            this(UUID.randomUUID(), Instant.now(), payload);
+        }
+
+        @Override
+        public String aggregateId() {
+            return payload.sku() + "@" + payload.locationCode();
+        }
+    }
 }

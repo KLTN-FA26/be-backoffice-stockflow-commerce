@@ -123,9 +123,7 @@ class PickConsumptionServiceTest {
     private final StockPackageRepository stockPackages = mock(StockPackageRepository.class);
     private final PickConsumptionService service = new PickConsumptionService(stockItems, ledger,
             new InventoryEventPublisher(publisher), locations, policies,
-            new StockPackageContents(stockPackages, stockItems, locations,
-                    new org.springframework.beans.factory.support.StaticListableBeanFactory()
-                            .getBeanProvider(com.stockflow.inventory.spi.ShortPickLines.class)), Clock.fixed(NOW, ZoneOffset.UTC),
+            new StockPackageContents(stockPackages, stockItems, locations), Clock.fixed(NOW, ZoneOffset.UTC),
             cycleCounts, stockPackages, mock(CartonPlacement.class));
     private final List<StockItem> saved = new ArrayList<>();
     private final List<StockItem> merged = new ArrayList<>();

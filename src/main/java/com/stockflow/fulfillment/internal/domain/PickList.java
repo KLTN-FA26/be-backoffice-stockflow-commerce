@@ -317,6 +317,27 @@ public final class PickList {
     }
 
     /**
+     * The carton of a line was written off by an approved count's shortage while the line still stood on its hold
+     * (kltn-docs 20 §4.2 step 8): a shortage of the goods held for the order, handled as a short pick (07 §4.4 step 9)
+     * without anyone at the bin. The line turns SHORT, {@code NOT_FOUND}, of the whole carton, where the carton was
+     * expected; nothing is deducted. Unlike {@link #reportShort} it needs no scan and no task state: the task may not
+     * have started, and the line may be OPEN or STAGED. A line already SHORT (the picker reported it first), or one that
+     * is no longer live (picked, put back, superseded), is left as it is.
+     *
+     * @return the line when it turned SHORT now; empty when there was nothing to change
+     */
+    public Optional<PickLine> shortByCount(UUID lineId) {
+        PickLine line = requireLine(lineId);
+        if (status == PickStatus.CANCELLED
+                || line.status() != PickLineStatus.OPEN && line.status() != PickLineStatus.STAGED
+                || line.lpn() == null) {
+            return Optional.empty();
+        }
+        line.reportShort(ShortPickReason.NOT_FOUND, expectedAt(line));
+        return Optional.of(line);
+    }
+
+    /**
      * Where a line's carton should be: the staging area for a line staged (or reported short there), else its bin.
      */
     public static String expectedAt(PickLine line) {

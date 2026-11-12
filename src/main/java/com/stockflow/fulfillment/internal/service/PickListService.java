@@ -436,6 +436,35 @@ class PickListService implements PickLists {
         return added.stream().map(line -> view(taskId, line, barcodes.get(line.sku()))).toList();
     }
 
+    @Override
+    public void shortenForWrittenOffCarton(UUID orderId, UUID reservationId, UUID decidedBy) {
+        var live = pickLines.findLiveByReservationId(reservationId);
+        if (live.isEmpty()) {
+            // No task opened for the order yet (a task's lines are planned from the live holds, so the given-up hold
+            // would simply be missing from it): the order must not go to the floor short of a carton unnoticed.
+            OrderSummary order = orders.findById(orderId).orElse(null);
+            if (order != null && order.status() == com.stockflow.order.api.OrderStatus.READY_TO_FULFILL) {
+                holdForInventoryIfHoldable(orderId, decidedBy, ("Carton counted missing: the order's "
+                        + "allocation %s is a shortage").formatted(reservationId));
+            }
+            return;
+        }
+        // The pick before the order (and no stock row): a confirmation or a short report of the same task waits here.
+        PickJpaEntity pick = lockPick(live.get().getPickId());
+        List<PickLineJpaEntity> stored = pickLines.findByPickIdOrderBySequenceNoAscIdAsc(pick.getId());
+        PickList list = toList(pick, stored);
+        var turned = list.shortByCount(live.get().getId());
+        if (turned.isEmpty()) {
+            return;
+        }
+        PickLine line = turned.get();
+        writeBack(list, stored, Set.of(line.id()));
+        holdForInventoryIfHoldable(orderId, decidedBy, "Carton %s (%d x %s) counted missing at %s".formatted(line.lpn(),
+                line.allocatedQty(), line.sku(), PickList.expectedAt(line)));
+        log.info("Pick line {} of task {} short: its carton {} was written off by an approved count", line.id(),
+                pick.getId(), line.lpn());
+    }
+
     /**
      * {@inheritDoc}
      *
@@ -483,6 +512,17 @@ class PickListService implements PickLists {
         orders.lockedStatus(orderId);
         if (orders.findById(orderId).orElseThrow().status() != com.stockflow.order.api.OrderStatus.ON_HOLD) {
             orders.putOnHold(orderId, com.stockflow.order.api.HoldReason.INVENTORY, note, by);
+        }
+    }
+
+    /**
+     * {@link #holdForInventory}, for a shortage nobody reported at a bin: an order no longer in a status that can be
+     * held (cancelled, shipped) has nothing to stop, and failing here would only make the event retry for ever.
+     */
+    private void holdForInventoryIfHoldable(UUID orderId, UUID by, String note) {
+        var status = orders.lockedStatus(orderId);
+        if (status.isPresent() && status.get().mayBePutOnHold()) {
+            holdForInventory(orderId, by, note);
         }
     }
 

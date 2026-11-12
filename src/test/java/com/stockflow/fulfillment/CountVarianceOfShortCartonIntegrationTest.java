@@ -1,8 +1,6 @@
 package com.stockflow.fulfillment;
 
 import com.stockflow.common.domain.Sku;
-import com.stockflow.common.error.BusinessException;
-import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.security.DataScope;
 import com.stockflow.inventory.api.StockAdjustmentStatus;
 import com.stockflow.inventory.api.StockAdjustmentSummary;
@@ -45,23 +43,20 @@ import java.util.Map;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * The count variance of a carton a short pick line stands on (WF4-X01; kltn-docs 20 §4.2 step 8, 07 §4.4 steps 9-11),
- * through the real filter chain, permission aspect, warehouse scope and database: the picker reports the carton short,
- * the order is held for stock ({@code INVENTORY}) and the carton is counted blind; the count asks a whole-carton
- * {@code COUNT_VARIANCE}.
+ * The count variance of a carton an order holds (WF4-X01; kltn-docs 20 §4.2 step 8, 07 §4.4 steps 9-11), through the real
+ * filter chain, permission aspect, warehouse scope and database. The carton's hold is handled as a shortage: approving
+ * the whole-carton {@code COUNT_VARIANCE} writes the carton off (LOST, one {@code ADJUSTMENT} ledger line), gives its hold
+ * up and, after the commit, fulfillment turns the pick line that stood on it SHORT and holds the order for stock
+ * ({@code INVENTORY}); the warehouse manager reallocates.
  *
- * <p>Approving it must work whichever comes first. Approved while the short line still stands on the carton's hold, the
- * write-off posts (carton LOST, ledger {@code ADJUSTMENT}), the hold is given up with the carton and the line stays
- * SHORT, its order held, until the warehouse manager reallocates it. Reallocated first, the write-off posts on a free
- * carton as before. Either way the order ends with one live hold, on another carton, and nothing is left standing on
- * the carton that was written off. A carton held for an order whose line was <em>not</em> reported short is still
- * refused ({@code STOCK_PACKAGE_HELD}): nothing tells the line, so a correction does not cancel that hold.</p>
+ * <p>Covered: a line the picker reported short (the blind count a short pick opens), approved before and after the
+ * reallocation; a line nobody reported (a released task, a manual count); a released order with no task yet; a hold
+ * of an order not released (a SKU-level hold, no carton is held); and the event handled twice.</p>
  */
 @IntegrationTest
 @Import({PostgresContainer.class, RedisContainer.class})
@@ -78,6 +73,7 @@ class CountVarianceOfShortCartonIntegrationTest {
     @MockitoBean JwtDecoder decoder;
     @Autowired OrderService orders;
     @Autowired StockOperations operations;
+    @Autowired com.stockflow.fulfillment.internal.service.PickLists pickLists;
     @Autowired CycleCounts cycleCounts;
     @Autowired JdbcTemplate jdbc;
     @Autowired TransactionTemplate tx;
@@ -337,44 +333,154 @@ class CountVarianceOfShortCartonIntegrationTest {
         assertSettled(s);
     }
 
-    @Test
-    @DisplayName("a carton the order holds whose line was not reported short is still refused at approval: nothing posts, "
-            + "the hold stays")
-    void aHeldCartonOfALineNotReportedShortIsStillRefused() throws Exception {
+    // ------------------------------------------------------------------ a shortage nobody reported at a bin
+
+    /** A confirmed order of one carton, released from HCM. */
+    private UUID releasedOrder() {
         UUID order = confirmedOrders.release(
                 confirmedOrders.confirmed(DemoData.CUSTOMER_ID, ConfirmedOrders.Line.cartons(sofaCarton, 1, 12_000_000))
                         .orderId(), HCM, coordinator).orderId();
         placed.add(order);
-        send(token(coordinator, "SYSTEM_ADMIN"), API + "/tasks",
-                "{\"orderId\":\"" + order + "\",\"assignedUserId\":\"" + picker + "\"}").andExpect(status().isCreated());
-        Map<String, Object> hold = liveHolds(order).getFirst();
-        UUID carton = (UUID) hold.get("stock_package_id");
-        UUID holdId = (UUID) hold.get("id");
-        // A manual count finds the carton missing, as a count of the bin does.
+        return order;
+    }
+
+    private UUID openTask(UUID order) throws Exception {
+        return taskIdOf(send(token(coordinator, "SYSTEM_ADMIN"), API + "/tasks",
+                "{\"orderId\":\"" + order + "\",\"assignedUserId\":\"" + picker + "\"}")
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString());
+    }
+
+    /**
+     * A manual count of the bin that does not find {@code carton} (the other cartons are seen): one pending
+     * COUNT_VARIANCE of it, asked as a submitted count asks it.
+     */
+    private StockAdjustmentSummary manualCountMisses(UUID carton) {
         UUID count = WithCurrentUser.call(TestUsers.admin(), DataScope.ALL, () -> cycleCounts.plan(
-                new CycleCounts.PlanCycleCountCommand(HCM, null, null, true, "Manual count",
-                        List.of(), List.of(), List.of("HCM-A01-1-A"), List.of(sofa.code())), false).count().id());
-        UUID countLine = jdbc.queryForObject("SELECT id FROM inventory.cycle_count_line WHERE cycle_count_id = ? "
-                + "AND stock_package_id = ?", UUID.class, count, carton);
+                new CycleCounts.PlanCycleCountCommand(HCM, null, null, true, "Manual count", List.of(), List.of(),
+                        List.of("HCM-A01-1-A"), List.of(sofa.code())), false).count().id());
         WithCurrentUser.run(TestUsers.admin(), DataScope.ALL, () -> {
-            for (UUID line : jdbc.queryForList("SELECT id FROM inventory.cycle_count_line WHERE cycle_count_id = ?",
-                    UUID.class, count)) {
-                cycleCounts.count(count, line, !line.equals(countLine), counter, false);
+            for (Map<String, Object> line : jdbc.queryForList(
+                    "SELECT id, stock_package_id FROM inventory.cycle_count_line WHERE cycle_count_id = ?", count)) {
+                cycleCounts.count(count, (UUID) line.get("id"), !carton.equals(line.get("stock_package_id")), counter,
+                        false);
             }
             cycleCounts.submit(count, counter, false);
         });
         UUID adjustment = jdbc.queryForObject("SELECT id FROM inventory.stock_adjustment WHERE stock_package_id = ? "
                 + "AND status = 'PENDING_APPROVAL'", UUID.class, carton);
+        return WithCurrentUser.call(TestUsers.admin(), DataScope.ALL,
+                () -> operations.findAdjustment(adjustment).orElseThrow());
+    }
 
-        Throwable refused = catchThrowable(() -> WithCurrentUser.run(TestUsers.admin(), DataScope.ALL,
-                () -> operations.approve(adjustment, approver)));
+    private void awaitLine(UUID line, String wanted) {
+        com.stockflow.support.Await.until("line " + line + " is " + wanted, java.time.Duration.ofSeconds(20),
+                () -> wanted.equals(lineStatus(line)));
+    }
 
-        assertThat(refused).isInstanceOf(BusinessException.class);
-        assertThat(((BusinessException) refused).errorCode()).isEqualTo(ErrorCode.STOCK_PACKAGE_HELD);
-        assertThat(cartonState(carton)).containsEntry("status", "IN_STOCK").containsEntry("live_holds", 1L);
-        assertThat(holdState(holdId)).containsEntry("status", "HELD");
-        assertThat(ledgerOf(adjustment)).isEmpty();
-        assertThat(jdbc.queryForObject("SELECT status FROM inventory.stock_adjustment WHERE id = ?", String.class,
-                adjustment)).isEqualTo("PENDING_APPROVAL");
+    private void awaitHold(UUID order) {
+        com.stockflow.support.Await.until("order " + order + " is held for stock", java.time.Duration.ofSeconds(20),
+                () -> orders.findById(order).orElseThrow().status() == OrderStatus.ON_HOLD);
+    }
+
+    @Test
+    @DisplayName("a carton on a released task line that was never reported short, found missing by a count: approved, the "
+            + "line turns SHORT and the order is held INVENTORY, then the manager reallocates")
+    void aLineNobodyReportedShortBecomesTheShortage() throws Exception {
+        UUID order = releasedOrder();
+        UUID task = openTask(order);
+        Map<String, Object> line = jdbc.queryForMap("SELECT id, lpn, reservation_id FROM fulfillment.pick_line "
+                + "WHERE pick_id = ? AND status = 'OPEN'", task);
+        UUID lineId = (UUID) line.get("id");
+        UUID carton = jdbc.queryForObject("SELECT id FROM inventory.stock_package WHERE lpn = ?", UUID.class,
+                line.get("lpn"));
+        Scenario s = new Scenario(order, task, lineId, (String) line.get("lpn"), carton,
+                (UUID) line.get("reservation_id"), manualCountMisses(carton));
+        assertThat(orders.findById(order).orElseThrow().status()).isNotEqualTo(OrderStatus.ON_HOLD);
+
+        assertThat(approve(s).status()).isEqualTo(StockAdjustmentStatus.POSTED);
+
+        // After the commit: the line is the shortage a picker's report would have made, the order held for stock.
+        awaitLine(lineId, "SHORT");
+        awaitHold(order);
+        OrderSummary held = orders.findById(order).orElseThrow();
+        assertThat(held.lifecycle().holdReason()).isEqualTo(HoldReason.INVENTORY);
+        assertThat(cartonState(carton)).containsEntry("status", "LOST").containsEntry("on_hand", 0L)
+                .containsEntry("live_holds", 0L);
+        assertThat(holdState(s.hold())).containsEntry("status", "RELEASED").containsEntry("release_reason",
+                "SHORT_PICKED");
+        assertThat(liveHolds(order)).isEmpty();
+        assertThat(jdbc.queryForObject("SELECT short_reason FROM fulfillment.pick_line WHERE id = ?", String.class,
+                lineId)).isEqualTo("NOT_FOUND");
+
+        assertThat(reallocate(s)).singleElement().satisfies(l -> assertThat(l.get("lpn")).isNotEqualTo(s.lpn()));
+        assertSettled(s);
+    }
+
+    @Test
+    @DisplayName("the event handled twice changes nothing the second time: one hold on the order, the line SHORT once")
+    void theEventIsIdempotent() throws Exception {
+        UUID order = releasedOrder();
+        UUID task = openTask(order);
+        Map<String, Object> line = jdbc.queryForMap("SELECT id, lpn, reservation_id FROM fulfillment.pick_line "
+                + "WHERE pick_id = ? AND status = 'OPEN'", task);
+        UUID carton = jdbc.queryForObject("SELECT id FROM inventory.stock_package WHERE lpn = ?", UUID.class,
+                line.get("lpn"));
+        StockAdjustmentSummary variance = manualCountMisses(carton);
+        WithCurrentUser.call(TestUsers.admin(), DataScope.ALL, () -> operations.approve(variance.adjustmentId(),
+                approver));
+        awaitLine((UUID) line.get("id"), "SHORT");
+        awaitHold(order);
+        int transitions = jdbc.queryForObject("SELECT count(*) FROM ordering.order_status_history WHERE order_id = ?",
+                Integer.class, order);
+
+        WithCurrentUser.run(TestUsers.admin(), DataScope.ALL,
+                () -> pickLists.shortenForWrittenOffCarton(order, (UUID) line.get("reservation_id"), approver));
+
+        assertThat(lineStatus((UUID) line.get("id"))).isEqualTo("SHORT");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM ordering.order_status_history WHERE order_id = ?",
+                Integer.class, order)).isEqualTo(transitions);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM ordering.order_hold WHERE order_id = ?", Integer.class,
+                order)).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("a released order with no task yet: the carton's allocation is written off and the order is held "
+            + "INVENTORY, so it does not go to the floor short of a carton")
+    void aReleasedOrderWithoutATaskIsHeld() {
+        UUID order = releasedOrder();
+        UUID hold = (UUID) liveHolds(order).getFirst().get("id");
+        UUID carton = (UUID) liveHolds(order).getFirst().get("stock_package_id");
+        StockAdjustmentSummary variance = manualCountMisses(carton);
+
+        WithCurrentUser.call(TestUsers.admin(), DataScope.ALL, () -> operations.approve(variance.adjustmentId(),
+                approver));
+
+        awaitHold(order);
+        assertThat(orders.findById(order).orElseThrow().lifecycle().holdReason()).isEqualTo(HoldReason.INVENTORY);
+        assertThat(cartonState(carton)).containsEntry("status", "LOST").containsEntry("live_holds", 0L);
+        assertThat(holdState(hold)).containsEntry("status", "RELEASED").containsEntry("release_reason", "SHORT_PICKED");
+        assertThat(liveHolds(order)).isEmpty();
+    }
+
+    @Test
+    @DisplayName("a Confirmed order not released yet holds by SKU, no carton: a carton counted missing is written off, "
+            + "nothing of the order's is touched")
+    void aSkuLevelHoldDoesNotBlockTheWriteOff() {
+        UUID order = confirmedOrders.confirmed(DemoData.CUSTOMER_ID,
+                ConfirmedOrders.Line.cartons(sofaCarton, 1, 12_000_000)).orderId();
+        placed.add(order);
+        confirmedOrders.ship(order, HCM);
+        assertThat(liveHolds(order)).as("no allocation on a carton before the release").isEmpty();
+        UUID carton = jdbc.queryForObject("""
+                SELECT p.id FROM inventory.stock_package p JOIN inventory.stock_item s ON s.stock_package_id = p.id
+                 WHERE s.sku = ? AND p.status = 'IN_STOCK' ORDER BY p.lpn LIMIT 1""", UUID.class, sofa.code());
+        StockAdjustmentSummary variance = manualCountMisses(carton);
+
+        assertThat(WithCurrentUser.call(TestUsers.admin(), DataScope.ALL, () -> operations.approve(
+                variance.adjustmentId(), approver)).status()).isEqualTo(StockAdjustmentStatus.POSTED);
+
+        assertThat(cartonState(carton)).containsEntry("status", "LOST").containsEntry("on_hand", 0L);
+        assertThat(ledgerOf(variance.adjustmentId())).hasSize(1);
+        assertThat(orders.findById(order).orElseThrow().status()).isEqualTo(OrderStatus.CONFIRMED);
     }
 }
