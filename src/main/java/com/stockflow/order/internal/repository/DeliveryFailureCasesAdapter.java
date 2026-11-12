@@ -126,9 +126,21 @@ class DeliveryFailureCasesAdapter implements DeliveryFailureCases {
     }
 
     @Override
-    public List<DeliveryFailureCase> list(DeliveryFailureCase.Status status, int limit) {
-        return status == null ? query("ORDER BY c.opened_at, c.id", null, limit)
-                : query("WHERE c.status = :value ORDER BY c.opened_at, c.id", status.name(), limit);
+    public List<DeliveryFailureCase> list(DeliveryFailureCase.Status status, Collection<UUID> warehouses, int limit) {
+        if (warehouses != null && warehouses.isEmpty()) {
+            return List.of();
+        }
+        StringBuilder where = new StringBuilder("WHERE TRUE");
+        Map<String, Object> parameters = new LinkedHashMap<>();
+        if (status != null) {
+            where.append(" AND c.status = :status");
+            parameters.put("status", status.name());
+        }
+        if (warehouses != null) {
+            where.append(" AND c.warehouse_id IN (:warehouses)");
+            parameters.put("warehouses", List.copyOf(warehouses));
+        }
+        return query(where.append(" ORDER BY c.opened_at, c.id").toString(), parameters, limit);
     }
 
     @Override
@@ -201,11 +213,13 @@ class DeliveryFailureCasesAdapter implements DeliveryFailureCases {
 
     /** The cases {@code where} keeps, each with its shipment's lines and its cartons: three statements, not 2n + 1. */
     private List<DeliveryFailureCase> query(String where, Object value, int limit) {
+        return query(where, value == null ? Map.of() : Map.of("value", value), limit);
+    }
+
+    private List<DeliveryFailureCase> query(String where, Map<String, Object> parameters, int limit) {
         var select = entityManager.createNativeQuery("SELECT " + COLUMNS + " FROM ordering.delivery_failure_case c "
                 + where);
-        if (value != null) {
-            select.setParameter("value", value);
-        }
+        parameters.forEach(select::setParameter);
         if (limit > 0) {
             select.setMaxResults(limit);
         }

@@ -191,6 +191,16 @@ public class InstallmentService {
      * {@link com.stockflow.payment.api.PaymentService#chargeFailedDelivery}: the fee item of a failed trip, numbered
      * after the contract's plan and its other fee items, due from today. The order's installments are locked first, in
      * id order, as every money movement of the order locks them - so two fee items never take the same number.
+     *
+     * <p><b>Due today, deliberately</b> (open question for the owner, WF-05 review F10). The fee is owed for a trip
+     * that already happened, as the cancellation fee item is (15 §5.1 "đến hạn ngay"); no payment term was agreed for
+     * it, so none is invented here. The consequence is meant: from the next business day it is unpaid it is overdue
+     * ({@link Installment#overdue}), and the customer's credit position then shows it overdue - which refuses the
+     * release of their orders paying after delivery, this one's next batches included ({@code CUSTOMER_CREDIT_OVERDUE},
+     * {@code OrderReleaseService.release}), until it is paid. The redelivery itself is
+     * released without that check ({@code OrderReleaseService.releaseRedelivery}), so the goods that came back are
+     * never held hostage by their own fee. Giving the fee a term (a {@code due_days}, or the contract's terms) would be
+     * a one-line change in {@link Installment#openDeliveryFailureFee}.</p>
      */
     public Optional<UUID> chargeFailedDelivery(com.stockflow.payment.api.ChargeFailedDeliveryCommand command) {
         List<Installment> ofOrder = book.lockOfOrder(command.orderId());
@@ -261,11 +271,19 @@ public class InstallmentService {
      * Every filter null means "any"; {@code dueBefore} keeps installments due before that day; {@code reached} true keeps
      * those whose milestone came (what is due), false those still waiting for it; {@code overdue} true keeps those
      * overdue today, false those that are not.
+     *
+     * @throws BusinessException {@code INSTALLMENT_OVERDUE_IS_A_FLAG} (400) for {@code status} OVERDUE: no installment is
+     *         in it any more ({@link InstallmentStatus}), so the filter would answer an empty list - which a client
+     *         written against the old status reads as "nothing overdue". It is told to send {@code overdue=true}.
      */
     @Transactional(readOnly = true)
     public PageResponse<Installment> installments(UUID customerId, UUID orderId, InstallmentStatus status,
                                                   InstallmentMilestone milestone, LocalDate dueBefore, Boolean reached,
                                                   Boolean overdue, int page, int size, String sort) {
+        if (status == InstallmentStatus.OVERDUE) {
+            throw new BusinessException(ErrorCode.INSTALLMENT_OVERDUE_IS_A_FLAG,
+                    "OVERDUE is not an installment status any more; filter with overdue=true");
+        }
         return Pages.toResponse(search.installments(new InstallmentSearch.InstallmentFilter(customerId, orderId, status,
                 milestone, dueBefore, reached, overdue, overdue == null ? null : today()),
                 Pages.of(page, size, SORT.parse(sort))));

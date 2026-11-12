@@ -26,8 +26,12 @@ public interface DeliveryFailureCases {
     /** The order's cases, oldest first. */
     List<DeliveryFailureCase> ofOrder(UUID orderId);
 
-    /** Cases in {@code status} (any when null), oldest first: what waits for Sales. */
-    List<DeliveryFailureCase> list(DeliveryFailureCase.Status status, int limit);
+    /**
+     * Cases in {@code status} (any when null), oldest first: what waits for Sales. {@code warehouses} not null keeps
+     * the cases whose goods came back to one of them - empty keeps none (a caller limited to warehouses and assigned
+     * none sees nothing, never everything).
+     */
+    List<DeliveryFailureCase> list(DeliveryFailureCase.Status status, Collection<UUID> warehouses, int limit);
 
     /**
      * The orders with a case that still wants its goods held - OPEN, or to be delivered again and not released yet -

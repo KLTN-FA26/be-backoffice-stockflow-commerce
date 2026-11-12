@@ -454,6 +454,11 @@ public enum ErrorCode {
     INSTALLMENT_NOT_PAYABLE("This installment is paid or cancelled; it takes no more money", 409),
     /** 4B-6, 15 BR-05: a receipt pays installments of its own customer only. */
     INSTALLMENT_CUSTOMER_MISMATCH("This installment belongs to another customer", 409),
+    /**
+     * WF-05 fix plan, section 8: OVERDUE is no longer a status any installment is in - overdue is the flag
+     * {@code overdue=true}. A filter on the old status would answer an empty list, which reads as "nothing overdue".
+     */
+    INSTALLMENT_OVERDUE_IS_A_FLAG("Overdue is not an installment status; filter with overdue=true", 400),
     /** 4B-6: no payment receipt with that id. */
     PAYMENT_RECEIPT_NOT_FOUND("Payment receipt not found", 404),
     /** 4B-6, 15 BR-03: one bank statement line, one live receipt. */

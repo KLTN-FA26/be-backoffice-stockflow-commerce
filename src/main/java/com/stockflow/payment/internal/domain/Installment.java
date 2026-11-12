@@ -142,7 +142,8 @@ public final class Installment {
     /**
      * The fee item of a failed trip (WF-05 fix plan, section 2): what the customer pays for a delivery they refused or
      * misaddressed, once Sales decide to deliver again. As the cancellation fee item: due at once, numbered after the
-     * plan, never lowered by a closure and never cancelled - the trip failed whatever becomes of the order.
+     * plan, never lowered by a closure and never cancelled - the trip failed whatever becomes of the order. Due at once
+     * is deliberate and an open question for the owner (see {@code InstallmentService.chargeFailedDelivery}).
      */
     public static Installment openDeliveryFailureFee(Installment ofContract, int seq, String name, BigDecimal owed,
                                                      Instant at, LocalDate day) {

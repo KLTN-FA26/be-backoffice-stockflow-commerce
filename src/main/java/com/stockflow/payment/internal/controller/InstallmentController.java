@@ -61,7 +61,8 @@ class InstallmentController {
     @GetMapping
     @Operation(summary = "Installments, earliest due first; filter by customer, order, status, milestone, due day, "
             + "whether their milestone came and whether they are overdue (the aged-receivables reading: overdue is a "
-            + "flag worked out from the due day, not a status)")
+            + "flag worked out from the due day, not a status: status=OVERDUE is refused with 400 "
+            + "INSTALLMENT_OVERDUE_IS_A_FLAG)")
     @RequiresPermission(resource = PaymentResources.INSTALLMENTS, action = Action.READ, scope = DataScope.ALL)
     public ApiResponse<PageResponse<InstallmentResponse>> list(
             @RequestParam(required = false) UUID customerId,
