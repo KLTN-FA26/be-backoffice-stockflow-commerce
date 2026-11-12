@@ -92,7 +92,7 @@ import static org.assertj.core.api.Assertions.tuple;
  * transaction id - <b>one</b> {@code createInvoice} per invoice, counted at the stub.</p>
  *
  * <p>Viettel's answer is waited for one second here ({@code read-timeout}), so "no answer" is a real read timeout on a
- * socket. The quiet period stays at Viettel's 90 seconds: a transaction the look-up does not find is not sent again
+ * socket. The quiet period stays at its default of 7 minutes from the last send: a transaction the look-up does not find is not sent again
  * while a test runs.</p>
  */
 @IntegrationTest
@@ -529,7 +529,7 @@ class ViettelSInvoiceIntegrationTest {
         EInvoice.Snapshot stillWaiting = issuance.reconcile(draft.id());
 
         assertThat(stillWaiting.status()).isEqualTo(EInvoiceStatus.SUBMITTING);
-        assertThat(calls(draft.id())).as("inside Viettel's 90 seconds an unknown transaction is asked about, not sent "
+        assertThat(calls(draft.id())).as("inside the quiet period an unknown transaction is asked about, not sent "
                 + "again: two overlapping submissions can become two invoices").containsExactly(
                 tuple(Operation.QUERY, Outcome.NOT_FOUND), tuple(Operation.SUBMIT, Outcome.TIMEOUT),
                 tuple(Operation.QUERY, Outcome.NOT_FOUND));

@@ -444,19 +444,43 @@ class ViettelSInvoiceContractTest {
     }
 
     @Test
-    @DisplayName("a transaction SInvoice has never received: no entry in result (ASSUMPTION 2)")
+    @DisplayName("a transaction SInvoice has never received: a 2xx whose result is empty or null (ASSUMPTION 2)")
     void anUnknownTransactionIsNotFound() {
         signsIn();
         viettel.stubFor(post(urlEqualTo(SEARCH)).inScenario("unknown").whenScenarioStateIs(Scenario.STARTED)
                 .willReturn(okJson("{\"errorCode\":null,\"description\":null,\"result\":[]}")).willSetStateTo("null"));
         viettel.stubFor(post(urlEqualTo(SEARCH)).inScenario("unknown").whenScenarioStateIs("null")
-                .willReturn(okJson("{\"errorCode\":null,\"description\":null,\"result\":null}")).willSetStateTo("none"));
-        viettel.stubFor(post(urlEqualTo(SEARCH)).inScenario("unknown").whenScenarioStateIs("none")
-                .willReturn(okJson("{\"errorCode\":null,\"description\":null}")));
+                .willReturn(okJson("{\"errorCode\":null,\"description\":null,\"result\":null}")));
 
         assertThat(provider.query(TRANSACTION)).isEqualTo(Result.of(ResultState.NOT_FOUND));
         assertThat(provider.query(TRANSACTION)).isEqualTo(Result.of(ResultState.NOT_FOUND));
-        assertThat(provider.query(TRANSACTION)).isEqualTo(Result.of(ResultState.NOT_FOUND));
+    }
+
+    @Test
+    @DisplayName("review M1: an answer that does not clearly say 'nothing' is UNKNOWN, never NOT_FOUND - no result at "
+            + "all, an error code on a 200, a 4xx envelope")
+    void anUnclearLookUpIsUnknownNotNotFound() {
+        signsIn();
+        viettel.stubFor(post(urlEqualTo(SEARCH)).inScenario("unclear").whenScenarioStateIs(Scenario.STARTED)
+                .willReturn(okJson("{\"errorCode\":null,\"description\":null}")).willSetStateTo("error"));
+        viettel.stubFor(post(urlEqualTo(SEARCH)).inScenario("unclear").whenScenarioStateIs("error")
+                .willReturn(okJson("{\"errorCode\":\"SESSION_EXPIRED\",\"description\":\"Phien het han\","
+                        + "\"result\":[]}")).willSetStateTo("envelope"));
+        viettel.stubFor(post(urlEqualTo(SEARCH)).inScenario("unclear").whenScenarioStateIs("envelope")
+                .willReturn(aResponse().withStatus(400).withHeader("Content-Type", "application/json").withBody("""
+                        {"code":400,"message":"BAD_REQUEST_TAX_CODE_NOT_REGISTERED","data":"MST chua dang ky"}""")));
+
+        Result noResult = provider.query(TRANSACTION);
+        Result withError = provider.query(TRANSACTION);
+        Result envelope = provider.query(TRANSACTION);
+
+        assertThat(noResult.state()).as("no 'result' at all says nothing").isEqualTo(ResultState.UNKNOWN);
+        assertThat(withError.state()).as("an error code is an error, whatever the empty list beside it")
+                .isEqualTo(ResultState.UNKNOWN);
+        assertThat(withError.errorCode()).isEqualTo("SESSION_EXPIRED");
+        assertThat(envelope.state()).as("a 400 whose body is Viettel's JSON envelope").isEqualTo(ResultState.UNKNOWN);
+        assertThat(List.of(noResult, withError, envelope)).extracting(Result::state)
+                .doesNotContain(ResultState.NOT_FOUND);
     }
 
     // ---- a refusal -------------------------------------------------------------------------------------------------
@@ -640,41 +664,72 @@ class ViettelSInvoiceContractTest {
     }
 
     @Test
-    @DisplayName("the caller is told SInvoice's limits: no second submission inside 90 s, none after three days")
+    @DisplayName("the caller is told SInvoice's limits: no second send inside 7 minutes of the last one, none after "
+            + "three days from the first")
     void statesWhenATransactionMayBeSentAgain() {
         EInvoiceProvider.Resubmission resubmission = provider.resubmission();
         Instant submitted = EInvoiceFixtures.NOW;
 
-        assertThat(resubmission.quietPeriod()).isEqualTo(Duration.ofSeconds(90));
+        assertThat(resubmission.quietPeriod()).isEqualTo(Duration.ofMinutes(7));
         assertThat(resubmission.window()).isEqualTo(Duration.ofDays(3));
-        assertThat(resubmission.allowedAt(submitted, submitted.plusSeconds(30)))
+        assertThat(resubmission.allowedAt(submitted, submitted, submitted.plusSeconds(30)))
                 .as("SInvoice may still be working on the first submission").isFalse();
-        assertThat(resubmission.allowedAt(submitted, submitted.plusSeconds(89))).isFalse();
-        assertThat(resubmission.allowedAt(submitted, submitted.plusSeconds(90))).isTrue();
-        assertThat(resubmission.allowedAt(submitted, submitted.plus(Duration.ofDays(3)).minusSeconds(1))).isTrue();
-        assertThat(resubmission.allowedAt(submitted, submitted.plus(Duration.ofDays(3))))
+        assertThat(resubmission.allowedAt(submitted, submitted, submitted.plusSeconds(419))).isFalse();
+        assertThat(resubmission.allowedAt(submitted, submitted, submitted.plusSeconds(420))).isTrue();
+        assertThat(resubmission.allowedAt(submitted, submitted, submitted.plus(Duration.ofDays(3)).minusSeconds(1)))
+                .isTrue();
+        assertThat(resubmission.allowedAt(submitted, submitted, submitted.plus(Duration.ofDays(3))))
                 .as("SInvoice has forgotten the id: the same id would be a second invoice").isFalse();
-        assertThat(EInvoiceProvider.Resubmission.FREELY.allowedAt(submitted, submitted))
+        assertThat(EInvoiceProvider.Resubmission.FREELY.allowedAt(submitted, submitted, submitted))
                 .as("the sandbox takes a submission in atomically").isTrue();
     }
 
     @Test
-    @DisplayName("the defaults wait for an answer longer than the quiet period, so a submission is never abandoned "
+    @DisplayName("the defaults: a quiet period longer than one whole call, so a submission is never abandoned "
             + "and sent again while SInvoice may still work on it")
     void theDefaultsNeverAbandonASubmissionEarly() {
         ViettelSInvoiceProperties defaults = new org.springframework.boot.context.properties.bind.Binder(
                 new org.springframework.boot.context.properties.source.MapConfigurationPropertySource())
                 .bindOrCreate("stockflow.invoicing.viettel", ViettelSInvoiceProperties.class);
 
-        assertThat(defaults.readTimeout()).isGreaterThanOrEqualTo(defaults.resubmitQuietPeriod());
-        assertThat(defaults.resubmitQuietPeriod()).as("Viettel: at least 90 seconds").isGreaterThanOrEqualTo(
-                Duration.ofSeconds(90));
+        assertThat(defaults.readTimeout()).as("Viettel: wait for the answer, or at least 90 seconds")
+                .isGreaterThanOrEqualTo(Duration.ofSeconds(90));
+        assertThat(defaults.resubmitQuietPeriod()).as("review H1: 7 minutes, longer than one whole call")
+                .isEqualTo(Duration.ofMinutes(7))
+                .isGreaterThan(ViettelSInvoiceClient.longestCall(Duration.ofSeconds(3), defaults.readTimeout()));
         assertThat(defaults.resubmitWindow()).isEqualTo(Duration.ofDays(3));
         assertThat(defaults.productionUrl()).isEqualTo("https://api-vinvoice.viettel.vn");
         assertThatThrownBy(() -> new ViettelSInvoiceProperties("https://a", "https://a", Duration.ofSeconds(95),
                 Duration.ofDays(3), Duration.ofDays(3), Duration.ofSeconds(2), true))
                 .as("a window no longer than the quiet period leaves no time to send again")
                 .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    @DisplayName("review H2: the client refuses to start when one whole call (four round trips) can outlast the quiet "
+            + "period before a resend, or the provider lease")
+    void aCallThatCanOutlastTheQuietPeriodOrTheLeaseIsRefusedAtStartup() {
+        HttpClientProperties http = new HttpClientProperties(Duration.ofSeconds(3), Duration.ofSeconds(3));
+        ObjectMapper mapper = json;
+
+        // 4 x (3 s + 95 s) = 392 s: inside 7 minutes and inside the 15-minute lease.
+        new ViettelSInvoiceClient(new RestClientFactory(http), http, new ViettelSInvoiceProperties(production.baseUrl(),
+                viettel.baseUrl(), Duration.ofSeconds(95), Duration.ofMinutes(7), Duration.ofDays(3),
+                Duration.ofMillis(10), true), mapper, clock);
+
+        assertThatThrownBy(() -> new ViettelSInvoiceClient(new RestClientFactory(http), http,
+                new ViettelSInvoiceProperties(production.baseUrl(), viettel.baseUrl(), Duration.ofSeconds(95),
+                        Duration.ofSeconds(90), Duration.ofDays(3), Duration.ofMillis(10), true), mapper, clock))
+                .as("a quiet period shorter than one call: a send still waiting could be overlapped")
+                .isInstanceOf(IllegalStateException.class).hasMessageContaining("quiet period");
+        assertThat(ViettelSInvoiceClient.longestCall(Duration.ofSeconds(3), Duration.ofSeconds(240)))
+                .as("a read timeout of 4 minutes: 972 s, past the 15-minute lease")
+                .isGreaterThan(EInvoiceIssuance.PROVIDER_LEASE);
+        assertThatThrownBy(() -> new ViettelSInvoiceClient(new RestClientFactory(http), http,
+                new ViettelSInvoiceProperties(production.baseUrl(), viettel.baseUrl(), Duration.ofSeconds(240),
+                        Duration.ofMinutes(30), Duration.ofDays(3), Duration.ofMillis(10), true), mapper, clock))
+                .as("a call that can outlast the lease")
+                .isInstanceOf(IllegalStateException.class).hasMessageContaining("lease");
     }
 
     // ---- the token -------------------------------------------------------------------------------------------------
