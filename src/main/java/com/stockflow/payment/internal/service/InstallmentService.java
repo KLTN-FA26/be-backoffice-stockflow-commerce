@@ -31,7 +31,7 @@ import java.util.UUID;
 
 /**
  * A signed contract's installments (4B-6, kltn-docs 15 §4.1, §4.3, §5.1, §5.2): opened with the signature, due when
- * their milestone comes, OVERDUE past their due day. Receipts pay them ({@link PaymentReceiptService}); a cancellation
+ * their milestone comes, overdue - a flag, not a status - past their due day. Receipts pay them ({@link PaymentReceiptService}); a cancellation
  * or a closure of the rest settles them with the order ({@link OrderSettlementService}, 4B-9).
  *
  * <ul>
@@ -187,13 +187,12 @@ public class InstallmentService {
         }
     }
 
-    /** 15 §4.1 step 4: every night, installments past their due day and not paid in full become OVERDUE. */
-    public int markOverdue() {
-        List<UUID> marked = book.markOverdue(LocalDate.now(clock.withZone(BUSINESS_ZONE)));
-        if (!marked.isEmpty()) {
-            log.info("{} installment(s) became overdue", marked.size());
-        }
-        return marked.size();
+    /**
+     * The business day overdue is read on (15 §4.1 step 4): an installment is overdue from the day after its due day, in
+     * the business calendar - worked out when asked, by no nightly job (WF-05 fix plan, section 8).
+     */
+    public LocalDate today() {
+        return LocalDate.now(clock.withZone(BUSINESS_ZONE));
     }
 
     /** {@link com.stockflow.payment.api.PaymentService#installmentStanding}. */
@@ -230,14 +229,16 @@ public class InstallmentService {
 
     /**
      * Every filter null means "any"; {@code dueBefore} keeps installments due before that day; {@code reached} true keeps
-     * those whose milestone came (what is due), false those still waiting for it.
+     * those whose milestone came (what is due), false those still waiting for it; {@code overdue} true keeps those
+     * overdue today, false those that are not.
      */
     @Transactional(readOnly = true)
     public PageResponse<Installment> installments(UUID customerId, UUID orderId, InstallmentStatus status,
                                                   InstallmentMilestone milestone, LocalDate dueBefore, Boolean reached,
-                                                  int page, int size, String sort) {
+                                                  Boolean overdue, int page, int size, String sort) {
         return Pages.toResponse(search.installments(new InstallmentSearch.InstallmentFilter(customerId, orderId, status,
-                milestone, dueBefore, reached), Pages.of(page, size, SORT.parse(sort))));
+                milestone, dueBefore, reached, overdue, overdue == null ? null : today()),
+                Pages.of(page, size, SORT.parse(sort))));
     }
 
     /**

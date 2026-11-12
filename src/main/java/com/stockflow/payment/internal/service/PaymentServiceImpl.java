@@ -38,7 +38,7 @@ class PaymentServiceImpl implements PaymentService {
     @Override
     @Transactional(readOnly = true)
     public CreditPosition creditPosition(UUID customerId) {
-        var overdue = installmentBook.overdue(customerId);
+        var overdue = installmentBook.overdue(customerId, installments.today());
         return new CreditPosition(installmentBook.afterDeliveryUnpaid(customerId), overdue.amount().signum() > 0,
                 overdue.amount(), overdue.oldestDueDate());
     }

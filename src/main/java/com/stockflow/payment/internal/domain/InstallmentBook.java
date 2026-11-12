@@ -43,9 +43,6 @@ public interface InstallmentBook {
     /** Whether the contract's installments were opened already (a signature replayed opens nothing twice). */
     boolean opened(UUID contractId);
 
-    /** DUE and PARTIALLY_PAID installments past their due day become OVERDUE (15 §4.1 step 4); returns their ids. */
-    List<UUID> markOverdue(LocalDate today);
-
     /**
      * 15 BR-10: what the customer's installments paid after delivery still owe - every status but PAID and CANCELLED,
      * NOT_DUE included: every signed contract's, held for credit or not - and, since 4B-9, the cancellation fee items not
@@ -53,8 +50,12 @@ public interface InstallmentBook {
      */
     BigDecimal afterDeliveryUnpaid(UUID customerId);
 
-    /** The customer's OVERDUE installments, of any milestone (15 §4.3 step 9: "đợt / khoản quá hạn"). */
-    Overdue overdue(UUID customerId);
+    /**
+     * The customer's installments overdue on {@code today}, of any milestone (15 §4.3 step 9: "đợt / khoản quá hạn"):
+     * past their due day and still owing ({@link Installment#overdue}) - read from the due day, not from a status a
+     * nightly job would have to keep (WF-05 fix plan, section 8).
+     */
+    Overdue overdue(UUID customerId, LocalDate today);
 
     // ---- receipts ---------------------------------------------------------------------------------------------------
 

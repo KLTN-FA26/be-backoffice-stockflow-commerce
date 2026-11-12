@@ -31,11 +31,16 @@ public record InstallmentResponse(UUID installmentId, UUID contractId,
                                   Integer dueDays,
                                   @Schema(description = "When its milestone came; null while NOT_DUE")
                                   Instant reachedAt,
-                                  @Schema(description = "Past it and not paid in full, it becomes OVERDUE; null before "
+                                  @Schema(description = "Past it and not paid in full, it is overdue; null before "
                                           + "its milestone and for an installment paid before delivery")
                                   LocalDate dueDate,
-                                  @Schema(allowableValues = {"NOT_DUE", "DUE", "PARTIALLY_PAID", "PAID", "OVERDUE",
-                                          "CANCELLED"}) String status,
+                                  @Schema(description = "What the money and the milestone say. Overdue is not a "
+                                          + "status: read `overdue`", allowableValues = {"NOT_DUE", "DUE",
+                                          "PARTIALLY_PAID", "PAID", "CANCELLED"}) String status,
+                                  @Schema(description = "Past its due day and still owing, today in the business "
+                                          + "calendar. Worked out when read; an overdue installment paid in part is "
+                                          + "PARTIALLY_PAID and overdue")
+                                  boolean overdue,
                                   Instant paidAt, Instant cancelledAt,
                                   @Schema(description = "What the customer writes in the transfer: contract number + "
                                           + "installment (15 §4.2 step 5)", example = "HD-20261108-000007-1 DOT1")
