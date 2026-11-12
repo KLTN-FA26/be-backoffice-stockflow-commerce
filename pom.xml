@@ -370,6 +370,18 @@
       <artifactId>junit-jupiter</artifactId>
       <scope>test</scope>
     </dependency>
+
+    <!--
+      A provider's HTTP API stood up for real in contract tests (Viettel SInvoice): a read timeout and a dropped
+      connection only happen on a socket, which MockRestServiceServer does not have. The standalone jar shades its
+      own Jetty, so it cannot disagree with the application's.
+    -->
+    <dependency>
+      <groupId>org.wiremock</groupId>
+      <artifactId>wiremock-standalone</artifactId>
+      <version>3.13.1</version>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
 
   <build>
