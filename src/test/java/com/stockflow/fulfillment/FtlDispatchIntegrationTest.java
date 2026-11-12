@@ -2412,6 +2412,17 @@ class FtlDispatchIntegrationTest {
         assertThat(orders.findById(orderId).orElseThrow().status()).isEqualTo(OrderStatus.ON_HOLD);
         UUID caseId = receivedBack(first[0], null);
 
+        // F5: a warehouse manager reads only the cases of goods that came back to their own warehouses - none of a
+        // warehouse nothing came back to, and another warehouse's order is not found - while HCM's sees this one.
+        UUID managerElsewhere = staff("WAREHOUSE_MANAGER", tx.execute(s -> otherWarehouse()));
+        assertThat(data(as(managerElsewhere, "WAREHOUSE_MANAGER", get(ORDERS + "/delivery-failures"))
+                .andExpect(status().isOk()))).isEmpty();
+        as(managerElsewhere, "WAREHOUSE_MANAGER", get(failures(orderId))).andExpect(status().isNotFound());
+        assertThat(data(oc(get(ORDERS + "/delivery-failures").param("status", "OPEN").param("limit", "200"))
+                .andExpect(status().isOk())).findValuesAsText("caseId")).contains(caseId.toString());
+        assertThat(data(oc(get(failures(orderId))).andExpect(status().isOk())).findValuesAsText("caseId"))
+                .containsExactly(caseId.toString());
+
         sales(body(post(failures(orderId) + "/" + caseId + "/redelivery"), "{\"note\":\"giao lại\","
                 + "\"failedTripFee\":500000}")).andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.errorCode").value("VALIDATION_FAILED"));
