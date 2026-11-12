@@ -75,8 +75,7 @@ class EInvoiceIssuanceSteps {
      * khoản 6a). So an invoice is refused while one of the same year dated before it is still to be issued
      * ({@code EINVOICE_OLDER_DRAFT_PENDING}, naming it): the accountant issues or voids that one first, and the
      * automatic issuing takes drafts earliest dated first. What this does not prevent: an invoice drawn up with a date
-     * before invoices already issued - a delivery recorded late, the rest of a shipping fee dated at the order's last
-     * delivery - is still issued, with the next number. Refusing it would leave it unissuable for good, which the law
+     * before invoices already issued - a delivery recorded late - is still issued, with the next number. Refusing it would leave it unissuable for good, which the law
      * forbids more plainly than it forbids the order of numbers; such an invoice is the exception the accountant can
      * explain. Nor two submissions in the same instant, one of them of a draft not committed yet: the check reads
      * committed rows.</p>
@@ -112,8 +111,8 @@ class EInvoiceIssuanceSteps {
                                 invoice.issueDate().getYear())));
         invoices.findEarlierUnissued(invoice.id(), invoice.issueDate()).ifPresent(earlier -> {
             throw new BusinessException(ErrorCode.EINVOICE_OLDER_DRAFT_PENDING,
-                    "%s is dated before %s and is still to be issued; issue or void it first".formatted(earlier,
-                            invoice.code()));
+                    "%s is dated before %s and is still to be issued; issue %s first, or void it".formatted(earlier,
+                            invoice.code(), earlier));
         });
         invoice.submit(series, by, clock.instant());
         return invoices.save(invoice).snapshot();

@@ -376,7 +376,7 @@ public enum ErrorCode {
      * WF-05 E2 (NĐ 254 Phụ lục điểm 2; TT 91 Điều 10 khoản 6a): an invoice of the same year dated earlier is still to be
      * issued; issuing this one first would give it the lower number, and numbers would run against the dates.
      */
-    EINVOICE_OLDER_DRAFT_PENDING("An invoice dated earlier is still to be issued; issue or void it first", 409),
+    EINVOICE_OLDER_DRAFT_PENDING("An invoice dated earlier is still to be issued; issue that one first, or void it", 409),
     /** WF-05 E2: the e-invoice is not issued, so it has no XML or PDF yet. */
     EINVOICE_NOT_ISSUED("The e-invoice is not issued yet", 409),
     /** WF-05 E2: the e-invoice provider is not configured, or did not answer; nothing is known about the transaction until it is asked again. */

@@ -132,11 +132,15 @@ class EInvoiceController {
     }
 
     @GetMapping("/{id}")
-    @Operation(summary = "One e-invoice with its lines, totals by VAT rate and total in words")
+    @Operation(summary = "One e-invoice with its lines, totals by VAT rate and total in words; a draft that an "
+            + "earlier-dated invoice still to be issued keeps back names it (earlierPendingInvoice, warning "
+            + "EARLIER_INVOICE_PENDING)")
     @RequiresPermission(resource = InvoicingResources.EINVOICES, action = Action.READ, scope = DataScope.ALL)
     public ApiResponse<EInvoiceResponse> get(@PathVariable UUID id, @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
-        return ApiResponse.ok(InvoicingWebMapper.toResponse(queries.get(id), clock.instant()));
+        com.stockflow.invoicing.internal.domain.EInvoice.Snapshot invoice = queries.get(id);
+        return ApiResponse.ok(InvoicingWebMapper.toResponse(invoice, clock.instant(),
+                queries.earlierPending(invoice).orElse(null)));
     }
 
     @GetMapping("/{id}/provider-calls")

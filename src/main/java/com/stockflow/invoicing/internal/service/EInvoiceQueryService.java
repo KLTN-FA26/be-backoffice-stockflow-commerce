@@ -65,6 +65,19 @@ public class EInvoiceQueryService {
         return invoices.findById(id).orElseThrow(() -> new BusinessException(ErrorCode.EINVOICE_NOT_FOUND)).snapshot();
     }
 
+    /**
+     * The code of the invoice that keeps this draft from being issued: one of the same year dated before it and still
+     * to be issued (owner's decision on E0 M6; the rule itself is {@code EInvoiceIssuanceSteps.submit}). Asked here so
+     * the accountant is warned on the screen, before an attempt is refused. Empty for anything but a draft: nothing
+     * else is waiting to be sent.
+     */
+    public java.util.Optional<String> earlierPending(EInvoice.Snapshot invoice) {
+        if (invoice.status() != com.stockflow.invoicing.internal.domain.EInvoiceStatus.DRAFT) {
+            return java.util.Optional.empty();
+        }
+        return invoices.findEarlierUnissued(invoice.id(), invoice.issueDate());
+    }
+
     /** The invoice's calls to the provider, oldest first. */
     public List<ProviderCallLog.Call> calls(UUID id) {
         get(id);

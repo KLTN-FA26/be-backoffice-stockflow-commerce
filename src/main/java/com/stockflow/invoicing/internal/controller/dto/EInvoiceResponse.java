@@ -17,6 +17,12 @@ import java.util.UUID;
  * it ({@code agreementRequired}) - {@code returnRequestId} the return a RETURN adjustment is for, and
  * {@code listedInvoiceIds} the other invoices a trade discount covers. An adjustment's lines are signed: below zero
  * reduces.</p>
+ *
+ * <p>{@code earlierPendingInvoice} (owner's decision on E0 M6), on the invoice read by itself: the code of an invoice
+ * of the same year dated before this draft that is still to be issued. While there is one, issuing this draft is
+ * refused ({@code EINVOICE_OLDER_DRAFT_PENDING}) - numbers run in the order of the dates - so the screen says so before
+ * the accountant tries; {@code warnings} then carries {@code EARLIER_INVOICE_PENDING} too. Null when nothing waits, on
+ * an invoice that is not a draft, and in the answers of the other operations.</p>
  */
 public record EInvoiceResponse(UUID id, String code, String type, String status, boolean adjusted, UUID orderId,
                                String orderNumber, String contractNumber, UUID shipmentId, String shipmentCode,
@@ -29,7 +35,8 @@ public record EInvoiceResponse(UUID id, String code, String type, String status,
                                String rejectionCode, String rejectionMessage, Instant submittedAt, Instant issuedAt,
                                Instant voidedAt, String voidReason, boolean hasFiles, long version,
                                String correctionBasis, String correctionReason, boolean agreementRequired,
-                               Agreement agreement, UUID returnRequestId, List<UUID> listedInvoiceIds) {
+                               Agreement agreement, UUID returnRequestId, List<UUID> listedInvoiceIds,
+                               String earlierPendingInvoice) {
 
     public record Agreement(String number, LocalDate date) {
     }
