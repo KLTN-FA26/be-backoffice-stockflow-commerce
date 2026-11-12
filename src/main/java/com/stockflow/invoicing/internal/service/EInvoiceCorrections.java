@@ -264,17 +264,24 @@ public class EInvoiceCorrections {
         if (remaining.isEmpty() || invoices.hasAdjustmentForReturn(resolved.returnRequestId())) {
             return new ReturnAdjustments(List.of(), Map.of());
         }
-        List<EInvoice> candidates = invoices.findInForceOfOrder(resolved.orderId());
-        // Locked in id order, like every correction; then read again and walked oldest first.
-        new TreeSet<>(candidates.stream().map(EInvoice::id).toList()).forEach(invoices::findByIdForUpdate);
+        List<UUID> candidates = invoices.findInForceOfOrder(resolved.orderId());
+        // Locked in id order, like every correction, each read once as the lock refreshes it; then walked oldest
+        // first. One that is gone or no longer issued by the time its lock is held is passed over below.
+        Map<UUID, EInvoice> locked = new HashMap<>();
+        for (UUID id : new TreeSet<>(candidates)) {
+            invoices.findByIdForUpdate(id).ifPresent(invoice -> locked.put(id, invoice));
+        }
         ResourceBundle t = ResourceBundle.getBundle("i18n.messages", Locale.forLanguageTag("vi"));
         LocalDate date = BusinessCalendar.date(resolved.resolvedAt() == null ? clock.instant()
                 : resolved.resolvedAt());
         List<EInvoice.Snapshot> drafts = new ArrayList<>();
-        for (EInvoice candidate : candidates) {
-            EInvoice invoice = invoices.findById(candidate.id()).orElseThrow();
+        for (UUID candidate : candidates) {
+            EInvoice invoice = locked.get(candidate);
+            if (invoice == null || invoice.status() != EInvoiceStatus.ISSUED) {
+                continue;
+            }
             EInvoice.Corrections corrections = invoices.correctionsOf(invoice.id());
-            if (invoice.status() != EInvoiceStatus.ISSUED || corrections.liveReplacement()) {
+            if (corrections.liveReplacement()) {
                 continue;
             }
             Map<UUID, Long> taken = invoices.piecesTakenOff(invoice.id());

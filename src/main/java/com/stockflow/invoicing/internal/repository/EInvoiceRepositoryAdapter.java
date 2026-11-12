@@ -147,12 +147,11 @@ class EInvoiceRepositoryAdapter implements EInvoiceRepository {
     }
 
     @Override
-    public List<EInvoice> findInForceOfOrder(UUID orderId) {
+    public List<UUID> findInForceOfOrder(UUID orderId) {
         return jdbc.queryForList("""
                 SELECT id FROM invoicing.einvoice
                  WHERE order_id = ? AND type IN ('ORIGINAL', 'REPLACEMENT') AND status = 'ISSUED'
-                 ORDER BY issue_date, created_at, id""", UUID.class, orderId).stream()
-                .map(id -> findById(id).orElseThrow()).toList();
+                 ORDER BY issue_date, created_at, id""", UUID.class, orderId);
     }
 
     @Override

@@ -29,9 +29,10 @@ public interface EInvoiceRepository {
 
     /**
      * The issued invoices in force of an order - originals and replacements, never adjustments - the oldest first:
-     * what goods returned on the order are taken off.
+     * what goods returned on the order are taken off. Ids only: the caller locks them and reads each once, under its
+     * lock.
      */
-    List<EInvoice> findInForceOfOrder(UUID orderId);
+    List<UUID> findInForceOfOrder(UUID orderId);
 
     /**
      * The pieces of each order line that the adjustments of an invoice already take off it, by order line: every
