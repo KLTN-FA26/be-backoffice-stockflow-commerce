@@ -53,8 +53,10 @@ import java.util.function.Supplier;
  *       accountant's "check again" - starts at step 2.</li>
  *   <li>Submitting <b>again</b> a transaction the provider does not know obeys the provider's own rule
  *       ({@link EInvoiceProvider#resubmission()}): a real provider may still be working on a submission a look-up does
- *       not show yet (Viettel: 90 seconds), and remembers a transaction id only so long (Viettel: three days). Inside
- *       the first the invoice waits; past the second nothing is sent automatically: the invoice is marked
+ *       not show yet (Viettel: 90 seconds), and remembers a transaction id only so long (Viettel: three days). The
+ *       first is counted from the <b>last</b> time the transaction was sent, which is recorded, and committed, before
+ *       each send ({@link EInvoiceIssuanceSteps#aboutToSend}); the second from the first submission. Inside the first
+ *       the invoice waits; past the second nothing is sent automatically: the invoice is marked
  *       {@code UNKNOWN_TO_PROVIDER} and the accountant sends it as a new transaction ({@link #resubmitAsNew}), which
  *       is done only when the provider, asked at that moment, confirms it holds no such transaction.</li>
  * </ol>
@@ -184,7 +186,7 @@ public class EInvoiceIssuance {
         try {
             executor.execute(() -> {
                 try {
-                    reconcile(id, true);
+                    reconcile(id);
                 } catch (RuntimeException failure) {
                     log.warn("E-invoice {} was not sent right away and is left to the job: {}", id,
                             failure.getClass().getSimpleName());
@@ -200,23 +202,18 @@ public class EInvoiceIssuance {
      * Does nothing to an invoice in any other status. Safe to call at any time, by anyone, any number of times.
      */
     public EInvoice.Snapshot reconcile(UUID id) {
-        return reconcile(id, false);
-    }
-
-    /** @param firstSubmission whether this follows DRAFT → SUBMITTING directly, so nothing was sent before */
-    private EInvoice.Snapshot reconcile(UUID id, boolean firstSubmission) {
         if (!inFlight.add(id)) {
             // Another thread is at the provider for this invoice; two at once is how one transaction is sent twice.
             return steps.get(id);
         }
         try {
-            return reconcileAlone(id, firstSubmission);
+            return reconcileAlone(id);
         } finally {
             inFlight.remove(id);
         }
     }
 
-    private EInvoice.Snapshot reconcileAlone(UUID id, boolean firstSubmission) {
+    private EInvoice.Snapshot reconcileAlone(UUID id) {
         EInvoice.Snapshot invoice = steps.get(id);
         if (invoice.status() != EInvoiceStatus.SUBMITTING) {
             return invoice;
@@ -227,7 +224,9 @@ public class EInvoiceIssuance {
             Result result = query(provider, invoice);
             if (result.state() == ResultState.NOT_FOUND) {
                 Instant now = clock.instant();
-                if (!firstSubmission && provider.resubmission().forgottenAt(invoice.submittedAt(), now)) {
+                // Null when nothing was ever sent under this transaction: then there is nothing to race or to forget.
+                Instant lastSent = steps.lastSent(id, transaction).orElse(null);
+                if (lastSent != null && provider.resubmission().forgottenAt(invoice.submittedAt(), now)) {
                     // The provider no longer remembers the transaction id: the same id could become a second invoice.
                     // Not sent again on its own - marked for the accountant, who sends it as a new transaction.
                     if (steps.flagUnknown(id, transaction)) {
@@ -237,11 +236,14 @@ public class EInvoiceIssuance {
                     }
                     return steps.get(id);
                 }
-                if (!firstSubmission && !provider.resubmission().allowedAt(invoice.submittedAt(), now)) {
-                    // The provider may still be working on what was sent: sending now races it. Asked again later.
+                if (!provider.resubmission().allowedAt(invoice.submittedAt(), lastSent, now)) {
+                    // The provider may still be working on what was last sent: sending now races it. Asked again later.
                     log.debug("E-invoice {}: unknown to the provider inside its quiet period; not sent again yet",
                             LogSafe.text(invoice.code()));
                     return invoice;
+                }
+                if (!steps.aboutToSend(id, transaction)) {
+                    return steps.get(id);
                 }
                 InvoiceDocument document = document(invoice, correctionOf(invoice));
                 Submission submission = call(invoice, Operation.SUBMIT, hash(document.toString()),

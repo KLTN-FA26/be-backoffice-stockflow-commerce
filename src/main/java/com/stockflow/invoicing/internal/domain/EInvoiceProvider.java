@@ -79,22 +79,29 @@ public interface EInvoiceProvider {
      * the caller stays inside.
      *
      * @param quietPeriod how long after a submission the provider may still be working on it without a look-up finding
-     *                    it. Submitting again inside it races the first submission, and the provider may then issue
-     *                    two invoices
-     * @param window      how long the provider remembers a transaction id as already used; past it the same id is a new
-     *                    invoice, so nothing is submitted again automatically. Null: for ever
+     *                    it. Submitting again inside it races that submission, and the provider may then issue two
+     *                    invoices. It runs from the <b>last</b> submission: every one is a submission the provider may
+     *                    still be working on, so measuring from the first would let each one after the first quiet
+     *                    period race the one before it
+     * @param window      how long the provider remembers a transaction id as already used, from the first submission;
+     *                    past it the same id is a new invoice, so nothing is submitted again automatically. Null: for
+     *                    ever
      */
     record Resubmission(Duration quietPeriod, Duration window) {
 
         public static final Resubmission FREELY = new Resubmission(Duration.ZERO, null);
 
-        /** Whether a transaction first submitted at {@code submittedAt} and unknown to the provider may be sent again. */
-        public boolean allowedAt(Instant submittedAt, Instant now) {
-            if (submittedAt == null) {
+        /**
+         * Whether a transaction unknown to the provider may be sent again.
+         *
+         * @param submittedAt when it was first submitted
+         * @param lastSentAt  when it was last sent; null when it never was, and nothing then holds it back
+         */
+        public boolean allowedAt(Instant submittedAt, Instant lastSentAt, Instant now) {
+            if (lastSentAt == null) {
                 return true;
             }
-            Duration age = Duration.between(submittedAt, now);
-            return age.compareTo(quietPeriod) >= 0 && (window == null || age.compareTo(window) < 0);
+            return Duration.between(lastSentAt, now).compareTo(quietPeriod) >= 0 && !forgottenAt(submittedAt, now);
         }
 
         /** Whether the provider no longer remembers the id of a transaction first submitted at {@code submittedAt}. */

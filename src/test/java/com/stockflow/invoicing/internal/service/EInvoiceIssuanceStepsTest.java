@@ -48,7 +48,8 @@ class EInvoiceIssuanceStepsTest {
 
     private final EInvoiceRepository invoices = mock(EInvoiceRepository.class);
     private final FileTransfers files = mock(FileTransfers.class);
-    private final EInvoiceIssuanceSteps steps = new EInvoiceIssuanceSteps(invoices, mock(InvoiceSettings.class),
+    private final EInvoiceIssuanceSteps steps = new EInvoiceIssuanceSteps(invoices,
+            mock(com.stockflow.invoicing.internal.domain.EInvoiceSending.class), mock(InvoiceSettings.class),
             mock(EInvoiceProviders.class), files,
             mock(org.springframework.context.ApplicationEventPublisher.class), Clock.fixed(EInvoiceFixtures.NOW, ZoneOffset.UTC));
     private EInvoice invoice;

@@ -23,7 +23,7 @@ import java.time.Duration;
  * @param readTimeout       how long an answer is waited for. Viettel asks an integrating system to wait for the answer
  *                          or at least 90 seconds before it sends a transaction again, so this is far above the
  *                          application's usual outbound timeout and must not be set below {@code resubmitQuietPeriod}
- * @param resubmitQuietPeriod how long after a submission the same transaction is not submitted again, even when a
+ * @param resubmitQuietPeriod how long after its last submission a transaction is not submitted again, even when a
  *                          look-up does not find it: Viettel does not stop two submissions of one transaction id that
  *                          overlap, and may issue two invoices (its description, "kiểm soát trùng giao dịch")
  * @param resubmitWindow    how long Viettel treats a transaction id as already used (three days in its description).
