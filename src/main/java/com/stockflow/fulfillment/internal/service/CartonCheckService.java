@@ -475,6 +475,13 @@ class CartonCheckService implements CartonChecks {
      * order's; null for a task of an order without a schedule.
      */
     private Map<UUID, Integer> batchUnits(Context ctx) {
+        UUID redeliveryCase = ctx.pick().getRedeliveryCaseId();
+        if (redeliveryCase != null) {
+            // WF-05 fix plan, section 2: a redelivery's task expects the units that came back, not the whole batch
+            // again (a line it does not carry is expected at 0, as a batch's task expects of the other batches' lines).
+            return orders.redelivery(redeliveryCase).map(com.stockflow.order.api.RedeliveryToPick::units)
+                    .orElse(Map.of());
+        }
         UUID batchId = ctx.pick().getDeliveryBatchId();
         return batchId == null ? null : orders.batchUnits(ctx.order().orderId(), batchId);
     }

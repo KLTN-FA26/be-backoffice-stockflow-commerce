@@ -266,6 +266,18 @@ public class DeliveryBatchService {
      */
     @Transactional(propagation = Propagation.MANDATORY)
     public Optional<BatchInFlight> inFlight(Order order) {
+        return inFlight(order, null);
+    }
+
+    /**
+     * The same, while goods of {@code redeliveredBatchId} that came back are with the warehouse to be handed over again
+     * (WF-05 fix plan, section 2): that batch is the one on its way - its shipment carries it, and what must be paid
+     * before it leaves is what the batch waited for. Its window has passed, so none holds the redelivery back. The
+     * units not left behind are still those of the batches after the latest released: a batch released meanwhile is
+     * with the warehouse too and leaves with the redelivery, or Sales allow a partial shipment. Null: no redelivery.
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public Optional<BatchInFlight> inFlight(Order order, UUID redeliveredBatchId) {
         List<DeliveryBatchRecords.Release> releases = records.releasesOf(order.id().value());
         if (releases.isEmpty()) {
             return Optional.empty();
@@ -283,6 +295,11 @@ public class DeliveryBatchService {
         Map<UUID, OrderLine> lines = linesById(order);
         int later = contract.schedule().stream().filter(b -> b.seq() > batch.seq()).mapToInt(b -> unitsOf(b, lines))
                 .sum();
+        DeliveryBatch redelivered = redeliveredBatchId == null ? null : contract.schedule().stream()
+                .filter(b -> b.id().equals(redeliveredBatchId)).findFirst().orElse(null);
+        if (redelivered != null) {
+            return Optional.of(new BatchInFlight(redelivered.id(), redelivered.seq(), null, later));
+        }
         List<DeliveryBatchRecords.WindowChange> moved = changesByBatch(order).getOrDefault(batch.id(), List.of());
         LocalDate start = moved.isEmpty() ? batch.windowStart() : moved.getLast().newStart();
         return Optional.of(new BatchInFlight(batch.id(), batch.seq(), start, later));

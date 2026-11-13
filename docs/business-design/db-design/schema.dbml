@@ -279,6 +279,7 @@ Enum ordering.customer_order_cancellation_reason_code {
   DUPLICATE_ORDER
   PRODUCTION_ISSUE
   REPLACEMENT_WITHDRAWN
+  DELIVERY_FAILED
   OTHER
 }
 
@@ -316,6 +317,22 @@ Enum ordering.delay_alert_type {
 Enum ordering.delivery_batch_window_change_reason_code {
   CUSTOMER_REQUEST
   SELLER_DELAY
+}
+
+Enum ordering.delivery_failure_case_failure_reason {
+  CUSTOMER_ABSENT
+  REFUSED
+  WRONG_ADDRESS
+  LOST
+  DAMAGED
+  OTHER
+}
+
+Enum ordering.delivery_failure_case_status {
+  OPEN
+  REDELIVERY
+  REDELIVERED
+  CANCELLED
 }
 
 Enum ordering.order_cancellation_request_reason_code {
@@ -359,6 +376,7 @@ Enum ordering.order_hold_reason {
   CUSTOMER
   FRAUD
   OTHER
+  DELIVERY_FAILED
 }
 
 Enum ordering.order_shipment_status {
@@ -488,6 +506,8 @@ Enum customer.customer_change_history_field {
   REGISTERED_ADDRESS
   REPRESENTATIVE
   REPRESENTATIVE_TITLE
+  INVOICE_EMAIL
+  BANK_ACCOUNT
 }
 
 Enum customer.customer_status_history_from_status {
@@ -515,6 +535,7 @@ Enum payment.installment_milestone {
   BEFORE_DELIVERY
   AFTER_DELIVERY
   CANCELLATION_FEE
+  FAILED_TRIP_FEE
 }
 
 Enum payment.installment_status {
@@ -522,7 +543,6 @@ Enum payment.installment_status {
   DUE
   PARTIALLY_PAID
   PAID
-  OVERDUE
   CANCELLED
 }
 
@@ -540,6 +560,80 @@ Enum payment.payment_receipt_status {
 Enum payment.refund_record_status {
   RECORDED
   VOIDED
+}
+
+Enum invoicing.einvoice_status {
+  DRAFT
+  SUBMITTING
+  ISSUED
+  REJECTED
+  VOIDED_DRAFT
+  REPLACED
+}
+
+Enum invoicing.einvoice_type {
+  ORIGINAL
+  ADJUSTMENT
+  REPLACEMENT
+}
+
+Enum invoicing.einvoice_error_notice_status {
+  DRAFT
+  SENT
+  ACCEPTED
+  REJECTED
+}
+
+Enum invoicing.einvoice_error_notice_subject {
+  BUYER_NAME_ADDRESS
+  WITH_CORRECTION
+}
+
+Enum invoicing.einvoice_line_kind {
+  GOODS
+  FEE
+  NOTE
+}
+
+Enum invoicing.einvoice_provider_call_operation {
+  SUBMIT
+  QUERY
+  DOWNLOAD
+  NOTICE
+}
+
+Enum invoicing.einvoice_provider_call_outcome {
+  ACCEPTED
+  DUPLICATE
+  PENDING
+  ISSUED
+  REJECTED
+  NOT_FOUND
+  DOWNLOADED
+  TIMEOUT
+  ERROR
+  NOT_SUPPORTED
+}
+
+Enum invoicing.einvoice_provider_config_environment {
+  SANDBOX
+  PRODUCTION
+}
+
+Enum invoicing.einvoice_provider_config_provider {
+  SANDBOX
+  VIETTEL_SINVOICE
+}
+
+Enum invoicing.sandbox_issuance_kind {
+  ORIGINAL
+  ADJUSTMENT
+  REPLACEMENT
+}
+
+Enum invoicing.sandbox_issuance_state {
+  ISSUED
+  REJECTED
 }
 
 Enum design.design_artifact_artifact_role {
@@ -646,6 +740,17 @@ Enum fulfillment.carrier_event_result {
   UNMATCHED
   INVALID_SIGNATURE
   NEEDS_REVIEW
+  UNVERIFIED
+}
+
+Enum fulfillment.carrier_event_source {
+  WEBHOOK
+  FILE
+}
+
+Enum fulfillment.delivery_outcome_import_row_verdict {
+  ACCEPTED
+  ERROR
 }
 
 Enum fulfillment.dispatch_load_status {
@@ -1371,6 +1476,7 @@ Table inventory.stock_adjustment [headercolor: #3E7C4A] {
   received_at         timestamptz
   reservation_id      uuid
   stock_package_id    uuid
+  counted_by          uuid
 }
 
 Table inventory.stock_item [headercolor: #3E7C4A] {
@@ -1434,6 +1540,8 @@ Table inventory.stock_movement [headercolor: #3E7C4A] {
   lot_id                uuid
   order_id              uuid
   order_number          varchar(32)
+  requested_by          uuid
+  counted_by            uuid
 }
 
 Table inventory.stock_package [headercolor: #3E7C4A] {
@@ -1956,6 +2064,53 @@ Table ordering.delivery_batch_window_change [headercolor: #C0392B] {
   evidence_message_id uuid
   changed_by          uuid [not null]
   changed_at          timestamptz [not null]
+}
+
+Table ordering.delivery_failure_case [headercolor: #C0392B] {
+  id                     uuid [pk]
+  order_id               uuid [not null]
+  shipment_id            uuid [not null, unique]
+  delivery_batch_id      uuid
+  receipt_id             uuid [not null, unique]
+  receipt_number         varchar(40) [not null]
+  warehouse_id           uuid [not null]
+  failure_reason         ordering.delivery_failure_case_failure_reason [not null]
+  failure_note           varchar(500)
+  status                 ordering.delivery_failure_case_status [not null, default: 'OPEN']
+  opened_at              timestamptz [not null]
+  decided_by             uuid
+  decided_at             timestamptz
+  decision_note          varchar(1000)
+  failed_trip_fee        decimal(19,4)
+  fee_installment_id     uuid
+  carrier_claim          boolean [not null, default: false]
+  released_at            timestamptz
+  released_by            uuid
+  redelivery_shipment_id uuid [unique]
+  redelivered_at         timestamptz
+  closed_at              timestamptz
+  closed_by              uuid
+  version                bigint [not null, default: 0]
+  created_at             timestamptz [not null, default: `now()`]
+}
+
+Table ordering.delivery_failure_case_carton [headercolor: #C0392B] {
+  case_id    uuid [not null]
+  lpn        varchar(64) [not null]
+  sku        varchar(64) [not null]
+  lot_number varchar(64)
+  quantity   int [not null]
+  condition  varchar(500)
+  indexes {
+    (case_id, lpn) [pk]
+  }
+}
+
+Table ordering.delivery_failure_case_hold [headercolor: #C0392B] {
+  reservation_id uuid [pk]
+  case_id        uuid [not null]
+  order_line_id  uuid [not null]
+  created_at     timestamptz [not null, default: `now()`]
 }
 
 Table ordering.order_cancellation_request [headercolor: #C0392B] {
@@ -2498,6 +2653,17 @@ Table ordering.tax_rate [headercolor: #C0392B] {
   last_modified_by varchar(100)
 }
 
+Table ordering.tax_rate_period [headercolor: #C0392B] {
+  id         uuid [pk]
+  tax_class  varchar(16) [not null]
+  rate       decimal(5,2) [not null]
+  valid_from date [not null]
+  valid_to   date [not null]
+  note       varchar(500)
+  created_at timestamptz [not null, default: `now()`]
+  created_by varchar(100)
+}
+
 // =============================================================================
 // SCHEMA: customer
 // =============================================================================
@@ -2578,6 +2744,10 @@ Table customer.customer_legal_profile [headercolor: #D68910] {
   created_by           varchar(100)
   last_modified_at     timestamptz
   last_modified_by     varchar(100)
+  invoice_email        varchar(320)
+  bank_account_number  varchar(34)
+  bank_name            varchar(200)
+  bank_account_holder  varchar(200)
 }
 
 Table customer.customer_status_history [headercolor: #D68910] {
@@ -2769,6 +2939,222 @@ Table payment.refund_record [headercolor: #B8860B] {
   created_by       varchar(100)
   last_modified_at timestamptz
   last_modified_by varchar(100)
+}
+
+// =============================================================================
+// SCHEMA: invoicing
+// =============================================================================
+
+Table invoicing.einvoice [headercolor: #A0522D] {
+  id                   uuid [pk]
+  code                 varchar(32) [not null, unique]
+  type                 invoicing.einvoice_type [not null]
+  status               invoicing.einvoice_status [not null]
+  adjusted             boolean [not null, default: false]
+  order_id             uuid [not null]
+  order_number         varchar(32) [not null]
+  contract_number      varchar(40)
+  shipment_id          uuid
+  shipment_code        varchar(48)
+  delivery_batch_id    uuid
+  customer_id          uuid [not null]
+  original_einvoice_id uuid
+  provider             varchar(32)
+  attempt              int [not null, default: 0]
+  transaction_id       varchar(64) [unique]
+  template_code        varchar(1)
+  symbol               varchar(6)
+  invoice_number       int
+  tax_authority_code   varchar(64)
+  lookup_code          varchar(64)
+  issue_date           date [not null]
+  issue_due_at         timestamptz [not null]
+  due_warned_at        timestamptz
+  signed_at            timestamptz
+  seller_name          varchar(200) [not null]
+  seller_tax_code      varchar(14) [not null]
+  seller_address       varchar(500) [not null]
+  buyer_name           varchar(200) [not null]
+  buyer_tax_code       varchar(14)
+  buyer_address        varchar(500)
+  buyer_email          varchar(320)
+  currency             varchar(3) [not null]
+  payment_method       varchar(16) [not null]
+  subtotal             decimal(19,4) [not null]
+  tax_total            decimal(19,4) [not null]
+  grand_total          decimal(19,4) [not null]
+  amount_in_words      varchar(500) [not null]
+  warnings             varchar(200)
+  adjustment_reason    varchar(500)
+  agreement_file_key   varchar(500)
+  xml_file_key         varchar(500)
+  pdf_file_key         varchar(500)
+  rejection_code       varchar(64)
+  rejection_message    varchar(500)
+  submitted_at         timestamptz
+  submitted_by         uuid
+  issued_at            timestamptz
+  voided_at            timestamptz
+  voided_by            uuid
+  void_reason          varchar(500)
+  version              bigint [not null, default: 0]
+  created_at           timestamptz [not null, default: `now()`]
+  created_by           varchar(100)
+  last_modified_at     timestamptz
+  last_modified_by     varchar(100)
+  correction_basis     varchar(16)
+  agreement_number     varchar(64)
+  agreement_date       date
+  return_request_id    uuid
+}
+
+Table invoicing.einvoice_adjustment_listing [headercolor: #A0522D] {
+  einvoice_id        uuid [not null]
+  listed_einvoice_id uuid [not null]
+  indexes {
+    (einvoice_id, listed_einvoice_id) [pk]
+  }
+}
+
+Table invoicing.einvoice_error_notice [headercolor: #A0522D] {
+  id                    uuid [pk]
+  einvoice_id           uuid [not null]
+  form_code             varchar(16) [not null, default: '04/SS-HDDT']
+  reason                varchar(500) [not null]
+  status                invoicing.einvoice_error_notice_status [not null, default: 'DRAFT']
+  sent_at               timestamptz
+  response_code         varchar(64)
+  response_message      varchar(500)
+  responded_at          timestamptz
+  version               bigint [not null, default: 0]
+  created_at            timestamptz [not null, default: `now()`]
+  created_by            varchar(100)
+  last_modified_at      timestamptz
+  last_modified_by      varchar(100)
+  subject               invoicing.einvoice_error_notice_subject [not null, default: 'BUYER_NAME_ADDRESS']
+  correct_buyer_name    varchar(200)
+  correct_buyer_address varchar(500)
+  recorded_by           uuid
+}
+
+Table invoicing.einvoice_line [headercolor: #A0522D] {
+  id               uuid [pk]
+  einvoice_id      uuid [not null]
+  line_no          int [not null]
+  kind             invoicing.einvoice_line_kind [not null]
+  fee_kind         varchar(16)
+  order_line_id    uuid
+  sku              varchar(64)
+  item_name        varchar(500) [not null]
+  unit             varchar(16) [not null]
+  quantity         int [not null]
+  units_per_carton int
+  unit_price       decimal(19,4) [not null]
+  tax_rate         decimal(5,2) [not null]
+  amount           decimal(19,4) [not null]
+  tax_amount       decimal(19,4) [not null]
+  indexes {
+    (einvoice_id, line_no) [unique]
+  }
+}
+
+Table invoicing.einvoice_provider_call [headercolor: #A0522D] {
+  id             uuid [pk]
+  einvoice_id    uuid [not null]
+  provider       varchar(32) [not null]
+  transaction_id varchar(64) [not null]
+  operation      invoicing.einvoice_provider_call_operation [not null]
+  outcome        invoicing.einvoice_provider_call_outcome [not null]
+  http_status    int
+  error_code     varchar(64)
+  request_hash   varchar(64)
+  response_hash  varchar(64)
+  called_at      timestamptz [not null]
+  duration_ms    bigint [not null]
+}
+
+Table invoicing.einvoice_provider_config [headercolor: #A0522D] {
+  id               uuid [pk]
+  provider         invoicing.einvoice_provider_config_provider [not null, unique]
+  environment      invoicing.einvoice_provider_config_environment [not null]
+  endpoint         varchar(500)
+  username         varchar(200)
+  secret_sealed    varchar(2000)
+  active           boolean [not null, default: false]
+  auto_issue       boolean [not null, default: false]
+  version          bigint [not null, default: 0]
+  created_at       timestamptz [not null, default: `now()`]
+  created_by       varchar(100)
+  last_modified_at timestamptz
+  last_modified_by varchar(100)
+}
+
+Table invoicing.einvoice_sending [headercolor: #A0522D] {
+  einvoice_id    uuid [pk]
+  transaction_id varchar(64)
+  last_sent_at   timestamptz
+  holder         uuid
+  held_until     timestamptz
+}
+
+Table invoicing.einvoice_series [headercolor: #A0522D] {
+  id                     uuid [pk]
+  provider               varchar(32) [not null]
+  template_code          varchar(1) [not null]
+  symbol                 varchar(6) [not null]
+  year                   smallint [not null]
+  active                 boolean [not null, default: true]
+  version                bigint [not null, default: 0]
+  created_at             timestamptz [not null, default: `now()`]
+  created_by             varchar(100)
+  last_modified_at       timestamptz
+  last_modified_by       varchar(100)
+  provider_template_code varchar(20)
+  indexes {
+    (provider, template_code, symbol) [unique]
+  }
+}
+
+Table invoicing.einvoice_stuck_notice [headercolor: #A0522D] {
+  einvoice_id    uuid [not null]
+  transaction_id varchar(64) [not null]
+  notified_at    timestamptz [not null]
+  indexes {
+    (einvoice_id, transaction_id) [pk]
+  }
+}
+
+Table invoicing.sandbox_issuance [headercolor: #A0522D] {
+  transaction_id          varchar(64) [pk]
+  state                   invoicing.sandbox_issuance_state [not null]
+  template_code           varchar(1) [not null]
+  symbol                  varchar(6) [not null]
+  invoice_number          int
+  tax_authority_code      varchar(64)
+  lookup_code             varchar(64)
+  rejection_code          varchar(64)
+  rejection_message       varchar(500)
+  xml_document            text
+  pdf_document            bytea
+  request_hash            varchar(64) [not null]
+  received_at             timestamptz [not null]
+  ready_at                timestamptz [not null]
+  kind                    invoicing.sandbox_issuance_kind [not null, default: 'ORIGINAL']
+  original_template_code  varchar(1)
+  original_symbol         varchar(6)
+  original_invoice_number int
+  indexes {
+    (template_code, symbol, invoice_number) [unique]
+  }
+}
+
+Table invoicing.sandbox_number [headercolor: #A0522D] {
+  template_code varchar(1) [not null]
+  symbol        varchar(6) [not null]
+  last_number   int [not null, default: 0]
+  indexes {
+    (template_code, symbol) [pk]
+  }
 }
 
 // =============================================================================
@@ -3002,26 +3388,27 @@ Table design.design_snapshot [headercolor: #AA4A9E] {
 // =============================================================================
 
 Table fulfillment.carrier [headercolor: #2C7873] {
-  id                        uuid [pk]
-  code                      varchar(32) [not null, unique]
-  name                      varchar(120) [not null]
-  contact_name              varchar(120)
-  contact_phone             varchar(32)
-  status                    fulfillment.carrier_status [not null, default: 'ACTIVE']
-  version                   bigint [not null, default: 0]
-  created_at                timestamptz [not null, default: `now()`]
-  created_by                varchar(100)
-  last_modified_at          timestamptz
-  last_modified_by          varchar(100)
-  connection_type           fulfillment.carrier_connection_type [not null, default: 'MANUAL']
-  webhook_enabled           boolean [not null, default: false]
-  webhook_secret_sealed     text
-  webhook_auth_header       varchar(64)
-  webhook_auth_value_sealed text
-  api_environment           fulfillment.carrier_api_environment
-  api_account               varchar(64)
-  api_key_sealed            text
-  failure_reason_map        jsonb [not null, default: `'{}'::jsonb`]
+  id                             uuid [pk]
+  code                           varchar(32) [not null, unique]
+  name                           varchar(120) [not null]
+  contact_name                   varchar(120)
+  contact_phone                  varchar(32)
+  status                         fulfillment.carrier_status [not null, default: 'ACTIVE']
+  version                        bigint [not null, default: 0]
+  created_at                     timestamptz [not null, default: `now()`]
+  created_by                     varchar(100)
+  last_modified_at               timestamptz
+  last_modified_by               varchar(100)
+  connection_type                fulfillment.carrier_connection_type [not null, default: 'MANUAL']
+  webhook_enabled                boolean [not null, default: false]
+  webhook_secret_sealed          text
+  webhook_auth_header            varchar(64)
+  webhook_auth_value_sealed      text
+  api_environment                fulfillment.carrier_api_environment
+  api_account                    varchar(64)
+  api_key_sealed                 text
+  failure_reason_map             jsonb [not null, default: `'{}'::jsonb`]
+  webhook_auth_value_next_sealed text
 }
 
 Table fulfillment.carrier_api_call [headercolor: #2C7873] {
@@ -3092,6 +3479,9 @@ Table fulfillment.carrier_event [headercolor: #2C7873] {
   created_by          varchar(100)
   last_modified_at    timestamptz
   last_modified_by    varchar(100)
+  source              fulfillment.carrier_event_source [not null, default: 'WEBHOOK']
+  outcome_import_id   uuid
+  outcome_import_line int
 }
 
 Table fulfillment.carrier_pickup_point [headercolor: #2C7873] {
@@ -3144,6 +3534,47 @@ Table fulfillment.delivery_outcome_correction [headercolor: #2C7873] {
   created_by       varchar(100)
   last_modified_at timestamptz
   last_modified_by varchar(100)
+}
+
+Table fulfillment.delivery_outcome_import [headercolor: #2C7873] {
+  id               uuid [pk]
+  file_name        varchar(255) [not null]
+  file_sha256      varchar(64) [not null]
+  uploaded_by      uuid [not null]
+  uploaded_at      timestamptz [not null]
+  rows_total       int [not null]
+  rows_accepted    int [not null]
+  rows_rejected    int [not null]
+  version          bigint [not null, default: 0]
+  created_at       timestamptz [not null, default: `now()`]
+  created_by       varchar(100)
+  last_modified_at timestamptz
+  last_modified_by varchar(100)
+}
+
+Table fulfillment.delivery_outcome_import_row [headercolor: #2C7873] {
+  id               uuid [pk]
+  import_id        uuid [not null]
+  line_no          int [not null]
+  waybill_no       varchar(255)
+  outcome          varchar(255)
+  failure_reason   varchar(500)
+  reported_at      varchar(255)
+  recipient        varchar(255)
+  note             varchar(500)
+  shipment_code    varchar(255)
+  carrier_code     varchar(255)
+  load_id          uuid
+  verdict          fulfillment.delivery_outcome_import_row_verdict [not null]
+  problem          varchar(32)
+  version          bigint [not null, default: 0]
+  created_at       timestamptz [not null, default: `now()`]
+  created_by       varchar(100)
+  last_modified_at timestamptz
+  last_modified_by varchar(100)
+  indexes {
+    (import_id, line_no) [unique]
+  }
 }
 
 Table fulfillment.dispatch_load [headercolor: #2C7873] {
@@ -3484,8 +3915,9 @@ Table fulfillment.pick [headercolor: #2C7873] {
   moved_to_dispatch_at  timestamptz
   moved_to_dispatch_by  uuid
   delivery_batch_id     uuid
+  redelivery_case_id    uuid
   indexes {
-    (order_id, delivery_batch_id) [unique]
+    (order_id, delivery_batch_id, redelivery_case_id) [unique]
   }
 }
 
@@ -4211,6 +4643,7 @@ Ref: inventory.cycle_count_line.location_code > warehouse.storage_location.locat
 Ref: inventory.cycle_count_line.sku > inventory.inventory_items.sku [delete: restrict]
 Ref: inventory.cycle_count_line.stock_package_id > inventory.stock_package.id [delete: restrict]
 Ref: inventory.inventory_items.sku > product.variants.sku [delete: restrict]
+Ref: inventory.stock_adjustment.counted_by > identity.app_user.id
 Ref: inventory.stock_adjustment.cycle_count_line_id > inventory.cycle_count_line.id [delete: restrict]
 Ref: inventory.stock_adjustment.decided_by > identity.app_user.id
 Ref: inventory.stock_adjustment.location_code > warehouse.storage_location.location_code [delete: restrict]
@@ -4227,10 +4660,12 @@ Ref: inventory.stock_lot.production_order_id > ordering.production_order.id [del
 Ref: inventory.stock_lot.sku > inventory.inventory_items.sku [delete: restrict]
 Ref: inventory.stock_lot.warehouse_id > warehouse.warehouse.id [delete: restrict]
 Ref: inventory.stock_movement.actor_id > identity.app_user.id
+Ref: inventory.stock_movement.counted_by > identity.app_user.id
 Ref: inventory.stock_movement.from_location_code > warehouse.storage_location.location_code [delete: restrict]
 Ref: inventory.stock_movement.from_stock_package_id > inventory.stock_package.id [delete: restrict]
 Ref: inventory.stock_movement.lot_id > inventory.stock_lot.id [delete: restrict]
 Ref: inventory.stock_movement.order_id > ordering.customer_order.id [delete: restrict]
+Ref: inventory.stock_movement.requested_by > identity.app_user.id
 Ref: inventory.stock_movement.sku > inventory.inventory_items.sku [delete: restrict]
 Ref: inventory.stock_movement.to_location_code > warehouse.storage_location.location_code [delete: restrict]
 Ref: inventory.stock_movement.to_stock_package_id > inventory.stock_package.id [delete: restrict]
@@ -4310,6 +4745,20 @@ Ref: ordering.delivery_batch_window_change.changed_by > identity.app_user.id
 Ref: ordering.delivery_batch_window_change.delivery_batch_id > ordering.delivery_batch.id [delete: restrict]
 Ref: ordering.delivery_batch_window_change.evidence_message_id > chat.message.id [delete: restrict]
 Ref: ordering.delivery_batch_window_change.order_id > ordering.customer_order.id [delete: restrict]
+Ref: ordering.delivery_failure_case.closed_by > identity.app_user.id
+Ref: ordering.delivery_failure_case.decided_by > identity.app_user.id
+Ref: ordering.delivery_failure_case.delivery_batch_id > ordering.delivery_batch.id [delete: restrict]
+Ref: ordering.delivery_failure_case.fee_installment_id > payment.installment.id [delete: restrict]
+Ref: ordering.delivery_failure_case.order_id > ordering.customer_order.id [delete: restrict]
+Ref: ordering.delivery_failure_case.receipt_id > procurement.goods_receipts.id [delete: restrict]
+Ref: ordering.delivery_failure_case.redelivery_shipment_id > ordering.order_shipment.id [delete: restrict]
+Ref: ordering.delivery_failure_case.released_by > identity.app_user.id
+Ref: ordering.delivery_failure_case.shipment_id > ordering.order_shipment.id [delete: restrict]
+Ref: ordering.delivery_failure_case.warehouse_id > warehouse.warehouse.id [delete: restrict]
+Ref: ordering.delivery_failure_case_carton.case_id > ordering.delivery_failure_case.id [delete: cascade]
+Ref: ordering.delivery_failure_case_hold.case_id > ordering.delivery_failure_case.id [delete: cascade]
+Ref: ordering.delivery_failure_case_hold.order_line_id > ordering.order_line.id [delete: cascade]
+Ref: ordering.delivery_failure_case_hold.reservation_id > inventory.stock_reservation.id [delete: restrict]
 Ref: ordering.order_cancellation_request.decided_by > identity.app_user.id
 Ref: ordering.order_cancellation_request.order_id > ordering.customer_order.id [delete: cascade]
 Ref: ordering.order_cancellation_request.requested_by > identity.app_user.id
@@ -4397,6 +4846,7 @@ Ref: ordering.sales_contract.cancelled_by > identity.app_user.id
 Ref: ordering.sales_contract.order_id > ordering.customer_order.id
 Ref: ordering.sales_contract.sent_by > identity.app_user.id
 Ref: ordering.sales_contract.signed_by > identity.app_user.id
+Ref: ordering.tax_rate_period.tax_class > ordering.tax_rate.tax_class
 Ref: customer.address.customer_id > customer.customer.id [delete: cascade]
 Ref: customer.credit_profile.approved_by > identity.app_user.id
 Ref: customer.credit_profile.customer_id > customer.customer.id [delete: cascade]
@@ -4432,6 +4882,24 @@ Ref: payment.refund_record.customer_id > customer.customer.id
 Ref: payment.refund_record.order_id > ordering.customer_order.id
 Ref: payment.refund_record.recorded_by > identity.app_user.id
 Ref: payment.refund_record.voided_by > identity.app_user.id
+Ref: invoicing.einvoice.customer_id > customer.customer.id
+Ref: invoicing.einvoice.delivery_batch_id > ordering.delivery_batch.id
+Ref: invoicing.einvoice.order_id > ordering.customer_order.id
+Ref: invoicing.einvoice.original_einvoice_id > invoicing.einvoice.id
+Ref: invoicing.einvoice.return_request_id > ordering.return_request.id
+Ref: invoicing.einvoice.shipment_id > ordering.order_shipment.id
+Ref: invoicing.einvoice.submitted_by > identity.app_user.id
+Ref: invoicing.einvoice.voided_by > identity.app_user.id
+Ref: invoicing.einvoice_adjustment_listing.einvoice_id > invoicing.einvoice.id
+Ref: invoicing.einvoice_adjustment_listing.listed_einvoice_id > invoicing.einvoice.id
+Ref: invoicing.einvoice_error_notice.einvoice_id > invoicing.einvoice.id
+Ref: invoicing.einvoice_error_notice.recorded_by > identity.app_user.id
+Ref: invoicing.einvoice_line.einvoice_id > invoicing.einvoice.id
+Ref: invoicing.einvoice_line.order_line_id > ordering.order_line.id
+Ref: invoicing.einvoice_provider_call.einvoice_id > invoicing.einvoice.id
+Ref: invoicing.einvoice_sending.einvoice_id > invoicing.einvoice.id
+Ref: invoicing.einvoice_series.provider > invoicing.einvoice_provider_config.provider
+Ref: invoicing.einvoice_stuck_notice.einvoice_id > invoicing.einvoice.id
 Ref: design.design_artifact.draft_id > design.design_draft.id
 Ref: design.design_asset.draft_id > design.design_draft.id
 Ref: design.design_decision.actor_id > identity.app_user.id
@@ -4474,6 +4942,7 @@ Ref: fulfillment.carrier_booking.load_id > fulfillment.dispatch_load.id
 Ref: fulfillment.carrier_booking.requested_by > identity.app_user.id
 Ref: fulfillment.carrier_event.carrier_id > fulfillment.carrier.id
 Ref: fulfillment.carrier_event.load_id > fulfillment.dispatch_load.id
+Ref: fulfillment.carrier_event.outcome_import_id > fulfillment.delivery_outcome_import.id
 Ref: fulfillment.carrier_event.resolved_by > identity.app_user.id
 Ref: fulfillment.carrier_event.shipment_id > fulfillment.shipment.id
 Ref: fulfillment.carrier_event.warehouse_id > warehouse.warehouse.id
@@ -4483,6 +4952,9 @@ Ref: fulfillment.carrier_service_code.carrier_id > fulfillment.carrier.id
 Ref: fulfillment.carrier_service_code.vehicle_type_id > fulfillment.vehicle_type.id
 Ref: fulfillment.delivery_outcome_correction.corrected_by > identity.app_user.id
 Ref: fulfillment.delivery_outcome_correction.shipment_id > fulfillment.shipment.id
+Ref: fulfillment.delivery_outcome_import.uploaded_by > identity.app_user.id
+Ref: fulfillment.delivery_outcome_import_row.import_id > fulfillment.delivery_outcome_import.id
+Ref: fulfillment.delivery_outcome_import_row.load_id > fulfillment.dispatch_load.id
 Ref: fulfillment.dispatch_load.booked_by > identity.app_user.id
 Ref: fulfillment.dispatch_load.booking_cancelled_by > identity.app_user.id
 Ref: fulfillment.dispatch_load.cancelled_by > identity.app_user.id
@@ -4541,6 +5013,7 @@ Ref: fulfillment.pick.assigned_user_id > identity.app_user.id
 Ref: fulfillment.pick.delivery_batch_id > ordering.delivery_batch.id [delete: restrict]
 Ref: fulfillment.pick.moved_to_dispatch_by > identity.app_user.id
 Ref: fulfillment.pick.order_id > ordering.customer_order.id [delete: restrict]
+Ref: fulfillment.pick.redelivery_case_id > ordering.delivery_failure_case.id [delete: restrict]
 Ref: fulfillment.pick.staging_location_code > warehouse.storage_location.location_code [delete: restrict]
 Ref: fulfillment.pick.warehouse_id > warehouse.warehouse.id
 Ref: fulfillment.pick.wave_id > fulfillment.wave.id
@@ -4660,6 +5133,9 @@ TableGroup ordering_group [color: #C0392B] {
   ordering.delivery_batch_line
   ordering.delivery_batch_release
   ordering.delivery_batch_window_change
+  ordering.delivery_failure_case
+  ordering.delivery_failure_case_carton
+  ordering.delivery_failure_case_hold
   ordering.order_cancellation_request
   ordering.order_credit_check
   ordering.order_fee_line
@@ -4694,6 +5170,7 @@ TableGroup ordering_group [color: #C0392B] {
   ordering.return_request_status_history
   ordering.sales_contract
   ordering.tax_rate
+  ordering.tax_rate_period
 }
 
 TableGroup customer_group [color: #D68910] {
@@ -4715,6 +5192,20 @@ TableGroup payment_group [color: #B8860B] {
   payment.payment_receipt
   payment.payment_receipt_line
   payment.refund_record
+}
+
+TableGroup invoicing_group [color: #A0522D] {
+  invoicing.einvoice
+  invoicing.einvoice_adjustment_listing
+  invoicing.einvoice_error_notice
+  invoicing.einvoice_line
+  invoicing.einvoice_provider_call
+  invoicing.einvoice_provider_config
+  invoicing.einvoice_sending
+  invoicing.einvoice_series
+  invoicing.einvoice_stuck_notice
+  invoicing.sandbox_issuance
+  invoicing.sandbox_number
 }
 
 TableGroup design_group [color: #AA4A9E] {
@@ -4742,6 +5233,8 @@ TableGroup fulfillment_group [color: #2C7873] {
   fulfillment.carrier_pickup_point
   fulfillment.carrier_service_code
   fulfillment.delivery_outcome_correction
+  fulfillment.delivery_outcome_import
+  fulfillment.delivery_outcome_import_row
   fulfillment.dispatch_load
   fulfillment.dispatch_load_package
   fulfillment.dispatch_load_shipment

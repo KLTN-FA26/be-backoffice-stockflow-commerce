@@ -38,7 +38,7 @@ class PaymentServiceImpl implements PaymentService {
     @Override
     @Transactional(readOnly = true)
     public CreditPosition creditPosition(UUID customerId) {
-        var overdue = installmentBook.overdue(customerId);
+        var overdue = installmentBook.overdue(customerId, installments.today());
         return new CreditPosition(installmentBook.afterDeliveryUnpaid(customerId), overdue.amount().signum() > 0,
                 overdue.amount(), overdue.oldestDueDate());
     }
@@ -70,6 +70,11 @@ class PaymentServiceImpl implements PaymentService {
     public java.util.Optional<com.stockflow.payment.api.OrderSettlementResult> settleRemainderClosure(
             com.stockflow.payment.api.SettleRemainderClosureCommand command) {
         return settlements.settleRemainderClosure(command);
+    }
+
+    @Override
+    public java.util.Optional<UUID> chargeFailedDelivery(com.stockflow.payment.api.ChargeFailedDeliveryCommand command) {
+        return installments.chargeFailedDelivery(command);
     }
 
     @Override

@@ -56,6 +56,11 @@ final class FulfillmentWorkResourceDeclarations {
             apiPath = "/api/v1/fulfillment/waybill-imports", actions = {Action.READ, Action.CREATE})
     static final class WaybillImports { private WaybillImports() { } }
 
+    @PermissionResource(code = FulfillmentResources.DELIVERY_OUTCOME_IMPORTS, group = "Fulfillment",
+            label = "Delivery outcomes applied from a file", route = "/fulfillment/delivery-outcome-imports",
+            apiPath = "/api/v1/fulfillment/delivery-outcome-imports", actions = {Action.READ, Action.CREATE})
+    static final class DeliveryOutcomeImports { private DeliveryOutcomeImports() { } }
+
     @PermissionResource(code = FulfillmentResources.CARRIER_EVENTS, group = "Fulfillment",
             label = "Carrier webhook events and their error list", route = "/fulfillment/carrier-events",
             apiPath = "/api/v1/fulfillment/carrier-events", actions = {Action.READ, Action.UPDATE})

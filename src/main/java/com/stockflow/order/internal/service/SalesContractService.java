@@ -1,5 +1,6 @@
 package com.stockflow.order.internal.service;
 
+import com.stockflow.common.config.SellerProperties;
 import com.stockflow.common.audit.AuditAction;
 import com.stockflow.common.audit.Auditable;
 import com.stockflow.common.domain.Money;
@@ -121,7 +122,7 @@ class SalesContractService implements SalesContracts {
         }
         if (!seller.complete()) {
             throw new BusinessException(ErrorCode.SELLER_PROFILE_UNAVAILABLE,
-                    "stockflow.order.seller.* is not configured in this deployment");
+                    "stockflow.seller.* is not configured in this deployment");
         }
         CustomerLegalProfile buyer = legalProfiles.legalProfile(order.customerId())
                 .orElseThrow(() -> new BusinessException(ErrorCode.CUSTOMER_LEGAL_PROFILE_MISSING, ("Customer of "

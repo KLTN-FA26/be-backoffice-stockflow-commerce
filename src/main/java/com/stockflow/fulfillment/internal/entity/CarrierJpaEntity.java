@@ -16,7 +16,7 @@ import java.util.UUID;
  * liên hệ"). A small catalogue the warehouse manager keeps; an INACTIVE carrier stays on the shipments and loads it
  * already has, and takes no new load.
  *
- * <p>The connection settings (3-1; kltn-docs 09 §4.1 step 2, BR-21) sit on the same row. The three secrets are stored
+ * <p>The connection settings (3-1; kltn-docs 09 §4.1 step 2, BR-21) sit on the same row. The secrets are stored
  * sealed by {@code SecretCipher} ({@code *_sealed}, {@code v1:...}), never in clear, and are never read back to a
  * client: the row answers only whether each is set. Which settings a kind of connection needs is
  * {@code CarrierConnection}'s rule and {@code ck_carrier_connection_*}'s.</p>
@@ -35,6 +35,7 @@ public class CarrierJpaEntity extends BaseEntity {
     @Column(name = "webhook_secret_sealed") private String webhookSecretSealed;
     @Column(name = "webhook_auth_header", length = 64) private String webhookAuthHeader;
     @Column(name = "webhook_auth_value_sealed") private String webhookAuthValueSealed;
+    @Column(name = "webhook_auth_value_next_sealed") private String webhookAuthValueNextSealed;
     @Column(name = "api_environment", length = 16) private String apiEnvironment;
     @Column(name = "api_account", length = 64) private String apiAccount;
     @Column(name = "api_key_sealed") private String apiKeySealed;
@@ -66,19 +67,41 @@ public class CarrierJpaEntity extends BaseEntity {
     /**
      * Replaces the connection settings whole. The caller has already sealed the secrets and checked the settings
      * against {@code CarrierConnection}; a setting the connection does not use is passed as null and so cleared.
+     *
+     * @param webhookAuthValueNextSealed the second webhook credential of a rotation under way, kept only while the
+     *                                   first stays what it was
      */
+    @SuppressWarnings("java:S107")
     public void connect(String connectionType, boolean webhookEnabled, String webhookSecretSealed,
-                        String webhookAuthHeader, String webhookAuthValueSealed, String apiEnvironment,
-                        String apiAccount, String apiKeySealed, Map<String, String> failureReasonMap) {
+                        String webhookAuthHeader, String webhookAuthValueSealed, String webhookAuthValueNextSealed,
+                        String apiEnvironment, String apiAccount, String apiKeySealed,
+                        Map<String, String> failureReasonMap) {
         this.connectionType = connectionType;
         this.webhookEnabled = webhookEnabled;
         this.webhookSecretSealed = webhookSecretSealed;
         this.webhookAuthHeader = webhookAuthHeader;
         this.webhookAuthValueSealed = webhookAuthValueSealed;
+        this.webhookAuthValueNextSealed = webhookAuthValueSealed == null ? null : webhookAuthValueNextSealed;
         this.apiEnvironment = apiEnvironment;
         this.apiAccount = apiAccount;
         this.apiKeySealed = apiKeySealed;
         this.failureReasonMap = new LinkedHashMap<>(failureReasonMap);
+    }
+
+    /**
+     * The two webhook credentials of an API_BOOKING carrier while one replaces the other (WF-05 fix plan item 6): both
+     * hold until the new one is promoted to be the only one, or dropped.
+     *
+     * @param currentSealed the credential the header is checked against first; never null
+     * @param nextSealed    a second credential that holds as well; null when no rotation is under way
+     * @throws IllegalStateException for a carrier whose webhooks carry no header credential
+     */
+    public void webhookCredentials(String currentSealed, String nextSealed) {
+        if (!"API_BOOKING".equals(connectionType) || webhookAuthValueSealed == null || currentSealed == null) {
+            throw new IllegalStateException("Carrier " + code + " has no webhook header credential to rotate");
+        }
+        this.webhookAuthValueSealed = currentSealed;
+        this.webhookAuthValueNextSealed = nextSealed;
     }
 
     public String getCode() { return code; }
@@ -91,6 +114,7 @@ public class CarrierJpaEntity extends BaseEntity {
     public String getWebhookSecretSealed() { return webhookSecretSealed; }
     public String getWebhookAuthHeader() { return webhookAuthHeader; }
     public String getWebhookAuthValueSealed() { return webhookAuthValueSealed; }
+    public String getWebhookAuthValueNextSealed() { return webhookAuthValueNextSealed; }
     public String getApiEnvironment() { return apiEnvironment; }
     public String getApiAccount() { return apiAccount; }
     public String getApiKeySealed() { return apiKeySealed; }

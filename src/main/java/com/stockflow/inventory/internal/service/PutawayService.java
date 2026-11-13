@@ -53,7 +53,8 @@ import java.util.stream.Collectors;
  * <p>A task has one of two sources (kltn-docs 05 BR-01): a carton of a confirmed receipt, INBOUND at the receiving
  * area, or a carton a warehouse manager released from quarantine (team plan 4D-1), QUARANTINE at the quarantine area;
  * putting either away makes it AVAILABLE (05 BR-14). A release names no receipt line, so its lot is read from the
- * carton's own rows, and finishing it announces nothing: {@link PutawayCompleted} is for the receipt's closing.</p>
+ * carton's own rows, and finishing it announces no receipt's putaway - {@link PutawayCompleted} is for the receipt's
+ * closing - but {@code QuarantineStockReleased}: the carton is stock to promise again.</p>
  *
  * <p>Every task is one carton, put away whole (kltn-docs 05 BR-08; team plan 4C-2). Where a task's goods stand now
  * (its <i>source</i>) is derived, never stored: the carton's current bin, wherever a hand move has taken it. Loose
@@ -227,7 +228,8 @@ public class PutawayService {
     /**
      * Puts goods away: the task's carton moves whole into {@code locationCode} and its units turn AVAILABLE, in one
      * step (kltn-docs 05 BR-08) - from INBOUND for a receipt's task, from QUARANTINE for a quarantine release's (05
-     * BR-14) - and the task is DONE; a receipt's task publishes {@link PutawayCompleted}.
+     * BR-14) - and the task is DONE; a receipt's task publishes {@link PutawayCompleted}, a quarantine release's
+     * {@code QuarantineStockReleased}.
      *
      * <p>{@code locationCode} is a bin, or an OVERFLOW area of the same warehouse when no bin takes the carton - the
      * warehouse is full or the carton fits no bin (05 BR-13). Goods in OVERFLOW are put away all the same: AVAILABLE,
@@ -270,6 +272,11 @@ public class PutawayService {
         PutawayTaskView after = tasks.recordPutaway(task.id(), units, left, target.id());
         if ("DONE".equals(after.status()) && !release) {
             events.publishEvent(new PutawayCompleted(task.goodsReceiptId(), task.goodsReceiptLineId(), task.id()));
+        } else if ("DONE".equals(after.status())) {
+            // No receipt closes on a quarantine release, but its carton is stock to promise again: the orders waiting
+            // for it - first the one a returned shipment's carton came back for - hold it now (WF-05 fix plan).
+            events.publishEvent(new com.stockflow.contracts.QuarantineStockReleased(task.id(), source.lpn(),
+                    target.locationCode()));
         }
         return view(after, locate(List.of(after), reads, false).get(after.id()), reads);
     }

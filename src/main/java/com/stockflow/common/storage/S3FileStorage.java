@@ -172,6 +172,11 @@ class S3FileStorage implements FileStorage {
 
     @Override
     public void retain(String key, Instant until) {
+        retain(key, until, objectLock.mode());
+    }
+
+    @Override
+    public void retain(String key, Instant until, ObjectLockProperties.Mode mode) {
         if (until == null || !until.isAfter(clock.instant())) {
             throw new IllegalArgumentException("A retention must end in the future");
         }
@@ -180,7 +185,7 @@ class S3FileStorage implements FileStorage {
                     .bucket(properties.bucket())
                     .key(StorageKeys.requireValid(key))
                     .retention(ObjectLockRetention.builder()
-                            .mode(objectLock.mode() == ObjectLockProperties.Mode.COMPLIANCE
+                            .mode(mode == ObjectLockProperties.Mode.COMPLIANCE
                                     ? ObjectLockRetentionMode.COMPLIANCE : ObjectLockRetentionMode.GOVERNANCE)
                             .retainUntilDate(until)
                             .build())
