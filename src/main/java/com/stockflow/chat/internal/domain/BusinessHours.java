@@ -15,7 +15,7 @@ import java.util.Set;
  * When Sales answer customers (kltn-docs 16 §4.1 step 3, open question F3; decided 2026-11-13: 08:00-17:30, Monday to
  * Saturday, Vietnam time). The chat's clocks count in these hours: a first answer due in 15 minutes is due 15 working
  * minutes later, so a question asked at 17:25 on Saturday is due at 08:10 on Monday - not overdue all Sunday - and the
- * customer is shown when to expect it.
+ * customer is shown when to expect it. The resolution target is counted in working days of the same hours.
  *
  * <p>No public holidays: none was decided, and a holiday counted as a working day only makes an alert early, never a
  * conversation forgotten.</p>
@@ -77,6 +77,19 @@ public record BusinessHours(ZoneId zone, Set<DayOfWeek> days, LocalTime opens, L
             left = left.minus(today);
             cursor = nextOpening(close);
         }
+    }
+
+    /**
+     * The moment {@code days} working days after {@code from}: the same time of day that many working days on, a
+     * non-working day skipped (16 BR-09, the resolution target). Asked on Saturday at 17:00, two working days are due
+     * on Tuesday at 17:00; asked outside business hours, they run from the next opening, so the second day ends at
+     * closing. Counted as {@code days} times the working day's length, so a day and its hours stay one calendar.
+     */
+    public Instant plusWorkingDays(Instant from, int days) {
+        if (days < 1) {
+            throw new IllegalArgumentException("At least one working day");
+        }
+        return plus(from, Duration.between(opens, closes).multipliedBy(days));
     }
 
     /** Working time between two moments: how long a customer really waited (16 BR-09 measured in business hours). */

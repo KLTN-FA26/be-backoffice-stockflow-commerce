@@ -10,7 +10,7 @@ import java.util.UUID;
  * @param statuses   the statuses shown; empty means every status but the ended ones
  * @param assignedTo only this agent's conversations; null for anyone's
  * @param unassigned only those nobody has
- * @param overdue    only those whose first answer is late (BR-09)
+ * @param overdue    only those whose first answer or resolution is late (BR-09)
  * @param customerId only this customer's; null for every customer's
  * @param about      only those about this document; null for any
  */

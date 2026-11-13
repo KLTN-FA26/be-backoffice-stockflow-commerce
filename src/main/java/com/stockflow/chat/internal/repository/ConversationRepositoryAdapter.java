@@ -34,13 +34,19 @@ import java.util.stream.Collectors;
  * Implements the {@link ConversationRepository} port: the conversation row, its contexts and its log.
  *
  * <p>The lists are native SQL, each one statement for the page and one for the count, because the queue's order
- * (overdue first answers first, BR-09) and the "about this document" filter are easier to state, and to index, in SQL
+ * (the overdue first, BR-09) and the "about this document" filter are easier to state, and to index, in SQL
  * than in the criteria API. Each list returns ids in order and loads the rows by id.</p>
  */
 @Repository
 class ConversationRepositoryAdapter implements ConversationRepository {
 
     private static final String ENDED = "('RESOLVED', 'AUTO_CLOSED', 'CLOSED')";
+    /**
+     * BR-09 in the queue: the first answer is late, or the resolution is (Conversation#firstResponseOverdueAt,
+     * #resolutionOverdueAt). One predicate for the overdue filter and the order, so the two never disagree.
+     */
+    private static final String OVERDUE = "(c.status not in " + ENDED + " and ((c.first_responded_at is null"
+            + " and c.first_response_due_at < :now) or c.resolution_due_at < :now))";
     /** The context row's document, whatever its kind: exactly one of these columns is set (ck_conversation_context_reference). */
     private static final String REFERENCE = "coalesce(x.product_id, x.variant_id, x.design_id, x.design_project_id, "
             + "x.quote_id, x.order_id, x.contract_id, x.production_order_id, x.einvoice_id)";
@@ -142,17 +148,15 @@ class ConversationRepositoryAdapter implements ConversationRepository {
             where.append(" and c.assigned_agent_id is null");
         }
         if (filter.overdue()) {
-            where.append(" and c.first_responded_at is null and c.first_response_due_at < :now and c.status not in ")
-                    .append(ENDED);
+            where.append(" and ").append(OVERDUE);
         }
         if (filter.customerId() != null) {
             where.append(" and c.customer_id = :customer");
             params.put("customer", filter.customerId());
         }
         about(where, params, filter.about());
-        return slice(where.toString(), " order by (c.first_responded_at is null and c.first_response_due_at < :now"
-                + " and c.status not in " + ENDED + ") desc, coalesce(c.last_message_at, c.created_at) desc, c.id desc",
-                params, page, size);
+        return slice(where.toString(), " order by " + OVERDUE + " desc, coalesce(c.last_message_at, c.created_at)"
+                + " desc, c.id desc", params, page, size);
     }
 
     @Override
@@ -255,6 +259,15 @@ class ConversationRepositoryAdapter implements ConversationRepository {
                  where c.first_responded_at is null and c.first_response_alerted_at is null
                    and c.first_response_due_at < :at and c.status not in""" + " " + ENDED + """
                  order by c.first_response_due_at, c.id limit :limit""", now, limit);
+    }
+
+    @Override
+    public List<UUID> resolutionOverdueUnalerted(Instant now, int limit) {
+        return ids("""
+                select c.id from chat.conversation c
+                 where c.resolution_alerted_at is null and c.resolution_due_at < :at
+                   and c.status not in""" + " " + ENDED + """
+                 order by c.resolution_due_at, c.id limit :limit""", now, limit);
     }
 
     @Override

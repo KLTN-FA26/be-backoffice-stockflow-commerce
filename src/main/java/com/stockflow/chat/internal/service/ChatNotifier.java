@@ -26,7 +26,9 @@ import java.util.UUID;
  *       trang giữa chừng") - at most once per conversation per {@link ChatProperties#customerNoticePeriod}, however
  *       many replies come in it: the inbox's dedupe key names the period. The first notice of a period also asks the
  *       notification module to e-mail them ({@link CustomerChatReplied}), sent only where customer mail is on;</li>
- *   <li><b>the chat supervisors</b>, when a first answer is late (BR-09), once per conversation.</li>
+ *   <li><b>the chat supervisors</b>, when a first answer is late (BR-09), once per conversation; and when a
+ *       conversation is not resolved by its resolution target, once per run of its clock (a reopened conversation's
+ *       new clock may alert again: the dedupe key names the due time).</li>
  * </ul>
  * Every notice is posted in the caller's transaction: a reply rolled back tells nobody. Titles and bodies are the
  * system's own words - never what anyone typed, which the bell would show to someone else.
@@ -86,6 +88,22 @@ public class ChatNotifier {
                 m.getString("inbox.chat.overdue.title"), m.getString("inbox.chat.overdue.body").formatted(due),
                 "/chat/conversations/" + c.id(), "CHAT_CONVERSATION", c.id().toString(),
                 "chat-first-response-overdue:" + c.id()));
+    }
+
+    /** {@code c} is not resolved by its target: the chat supervisors hear of it, once per due time. */
+    public void resolutionOverdue(Conversation c) {
+        List<UUID> supervisors = identity.notificationRecipientsHolding(ANSWERS_ESCALATIONS, null).stream()
+                .map(StaffContact::userId).toList();
+        if (supervisors.isEmpty() || c.resolutionDueAt() == null) {
+            return;
+        }
+        ResourceBundle m = bundle();
+        String due = TIME.withZone(ZoneId.of(properties.businessZone())).format(c.resolutionDueAt());
+        inbox.post(supervisors, new InboxMessage("CHAT_SLA", InboxSeverity.WARN,
+                m.getString("inbox.chat.resolution-overdue.title"),
+                m.getString("inbox.chat.resolution-overdue.body").formatted(due), "/chat/conversations/" + c.id(),
+                "CHAT_CONVERSATION", c.id().toString(),
+                "chat-resolution-overdue:" + c.id() + ":" + c.resolutionDueAt().getEpochSecond()));
     }
 
     /** The start of the notice period {@code at} falls in: periods are counted from the epoch, so all agree on them. */

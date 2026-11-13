@@ -127,9 +127,9 @@ public class ChatViews {
         return new ChatConversationView(row.id(), row.customerId(), row.customerName(), row.subject(), row.status(),
                 row.nextStatuses(), row.assignedAgentId(), row.assignedAgentName(), row.agentOnline(),
                 row.escalationReason(), row.firstResponseDueAt(), row.firstRespondedAt(), row.firstResponseOverdue(),
-                row.reopenUntil(), row.continuedFromId(), row.createdAt(), row.lastMessageAt(), row.lastSeq(),
-                row.unread(), row.lastMessage(), about, read, row.withinBusinessHours(), row.expectedResponseAt(),
-                row.resolvedAt(), row.canRate(), row.csatScore(), row.csatComment(), row.csatSubmittedAt());
+                row.resolutionDueAt(), row.resolutionOverdue(), row.reopenUntil(), row.continuedFromId(),
+                row.createdAt(), row.lastMessageAt(), row.lastSeq(), row.unread(), row.lastMessage(), about, read,
+                row.withinBusinessHours(), row.expectedResponseAt(), row.resolvedAt(), row.canRate(), row.csatScore(), row.csatComment(), row.csatSubmittedAt());
     }
 
     public List<ChatLogEntryView> log(List<LogEntry> entries) {
@@ -165,9 +165,10 @@ public class ChatViews {
         return new ChatConversationView(s.id(), s.customerId(), customerName, s.subject(), s.status(), next,
                 s.assignedAgentId(), agentName, presence.isOnline(s.assignedAgentId()),
                 staff == null ? null : s.escalationReason(), s.firstResponseDueAt(), s.firstRespondedAt(),
-                c.firstResponseOverdueAt(now), s.reopenUntil(), s.continuedFromId(), s.createdAt(), lastAt, lastSeq,
-                unread, newest, about, read, hours.isOpenAt(now), expectedResponseAt(c, hours, now), s.resolvedAt(),
-                s.status() == ConversationStatus.RESOLVED && s.csatSubmittedAt() == null, s.csatScore(),
+                c.firstResponseOverdueAt(now), staff == null ? null : s.resolutionDueAt(),
+                staff != null && c.resolutionOverdueAt(now), s.reopenUntil(), s.continuedFromId(), s.createdAt(),
+                lastAt, lastSeq, unread, newest, about, read, hours.isOpenAt(now), expectedResponseAt(c, hours, now),
+                s.resolvedAt(), s.status() == ConversationStatus.RESOLVED && s.csatSubmittedAt() == null, s.csatScore(),
                 staff == null ? null : s.csatComment(), s.csatSubmittedAt());
     }
 

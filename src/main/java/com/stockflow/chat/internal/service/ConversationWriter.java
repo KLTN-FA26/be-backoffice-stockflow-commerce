@@ -82,6 +82,19 @@ public class ConversationWriter {
         return properties.businessHours().plus(from, properties.firstResponseTarget());
     }
 
+    /**
+     * When a conversation asked about at {@code from} is to be resolved: {@link ChatProperties#resolutionTarget}
+     * working days later (BR-09) - asked on Saturday at 17:00, by Tuesday at 17:00.
+     */
+    public Instant resolutionDue(Instant from) {
+        return properties.businessHours().plusWorkingDays(from, properties.resolutionTarget().getDays());
+    }
+
+    /** Both BR-09 clocks of a customer asking at {@code from}. */
+    public Conversation.Due due(Instant from) {
+        return new Conversation.Due(firstResponseDue(from), resolutionDue(from));
+    }
+
     /** The conversation under its row lock; {@code CHAT_CONVERSATION_NOT_FOUND} when there is none. */
     public Conversation lock(UUID conversationId) {
         return conversations.findByIdForUpdate(conversationId)
@@ -110,16 +123,16 @@ public class ConversationWriter {
     }
 
     /**
-     * {@link #open(UUID, String, Actor, List, UUID, UUID)}, with the first-response clock running from now
-     * ({@code clockRunning}) or from the customer's first word: a conversation the system opens to carry a card that
-     * asks Sales nothing (an invoice, a parcel shipped) is not late for an answer nobody asked for.
+     * {@link #open(UUID, String, Actor, List, UUID, UUID)}, with the BR-09 clocks (first response, resolution)
+     * running from now ({@code clockRunning}) or from the customer's first word: a conversation the system opens to
+     * carry a card that asks Sales nothing (an invoice, a parcel shipped) is not late for an answer nobody asked for.
      */
     public Conversation open(UUID customerId, String subject, Actor opener, List<ContextResolver.Resolved> about,
                              UUID assignTo, UUID continuedFromId, boolean clockRunning) {
         Instant now = clock.instant();
         UUID orderId = about.isEmpty() || about.get(0).ref().kind() != ContextKind.ORDER ? null
                 : about.get(0).ref().id();
-        Instant due = clockRunning ? firstResponseDue(now) : null;
+        Conversation.Due due = clockRunning ? due(now) : Conversation.Due.NONE;
         Conversation c = Conversation.open(Identifiers.newId(), customerId, subject, orderId, opener, continuedFromId,
                 now, due);
         c.route(assignTo != null ? assignTo : router.agentFor(c, about).orElse(null), now);

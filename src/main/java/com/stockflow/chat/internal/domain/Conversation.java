@@ -22,6 +22,11 @@ import java.util.UUID;
  * conversation along, only a supervisor brings one back from an escalation, only the system routes, auto-closes and
  * closes.</p>
  *
+ * <p>The two clocks of BR-09 run from the moment the customer asks something (the caller works out their due times in
+ * business hours, {@link Due}): the first answer's stops at the first answer, the resolution's at RESOLVED. A
+ * conversation the customer reopens is a new question to resolve, so its resolution clock starts again; the first
+ * answer was given once and is not owed again.</p>
+ *
  * <p>Messages are not loaded with it. A message is numbered here ({@code accept*Message} returns its sequence) under
  * the conversation's row lock, which is what makes the numbering gapless and a retried send find its first attempt.</p>
  */
@@ -29,6 +34,16 @@ public final class Conversation extends AggregateRoot {
 
     /** {@code chat.conversation.csat_comment}. */
     public static final int MAX_CSAT_COMMENT = 2000;
+
+    /**
+     * When a customer asking at a moment is due their first answer and the resolution of what they asked (BR-09),
+     * worked out by the caller in business hours. Either may be null: that clock does not start.
+     */
+    public record Due(Instant firstResponse, Instant resolution) {
+
+        /** No clock starts: a conversation the system opens for a card nobody asked a question about. */
+        public static final Due NONE = new Due(null, null);
+    }
 
     /** Everything the aggregate holds, for the repository to store and restore. */
     public record Snapshot(UUID id, UUID customerId, UUID orderId, String subject, ConversationStatus status,
@@ -138,6 +153,15 @@ public final class Conversation extends AggregateRoot {
      */
     public static Conversation open(UUID id, UUID customerId, String subject, UUID orderId, Actor opener,
                                     UUID continuedFromId, Instant now, Instant firstResponseDueAt) {
+        return open(id, customerId, subject, orderId, opener, continuedFromId, now, new Due(firstResponseDueAt, null));
+    }
+
+    /**
+     * A new conversation whose first answer and resolution are due as {@code due} says (16 §4.1 step 3, BR-09); with
+     * {@link Due#NONE} neither clock runs until the customer first writes.
+     */
+    public static Conversation open(UUID id, UUID customerId, String subject, UUID orderId, Actor opener,
+                                    UUID continuedFromId, Instant now, Due due) {
         if (opener.isCustomer() || opener.isStaff()) {
             Objects.requireNonNull(opener.userId(), "opener");
         }
@@ -146,9 +170,9 @@ public final class Conversation extends AggregateRoot {
             title = title.substring(0, 300);
         }
         Conversation c = new Conversation(new Snapshot(id, customerId, orderId, title, ConversationStatus.NEW,
-                opener.type(), opener.userId(), null, null, now, firstResponseDueAt, null, null, null, null,
-                null, null, null, null, null, null, null, null, null, 0, null, null, null, continuedFromId, null, now,
-                0));
+                opener.type(), opener.userId(), null, null, now, due.firstResponse(), null, null, due.resolution(),
+                null, null, null, null, null, null, null, null, null, null, 0, null, null, null, continuedFromId, null,
+                now, 0));
         c.record(continuedFromId == null ? ConversationEventType.OPENED : ConversationEventType.CONTINUED, opener, now,
                 null, null, null, continuedFromId == null ? null : "{\"continuedFrom\":\"" + continuedFromId + "\"}");
         return c;
@@ -232,7 +256,7 @@ public final class Conversation extends AggregateRoot {
      *                           customer starts a new conversation that continues it
      */
     public long acceptCustomerMessage(Actor customer, Instant now) {
-        return acceptCustomerMessage(customer, now, null);
+        return acceptCustomerMessage(customer, now, Due.NONE);
     }
 
     /**
@@ -240,23 +264,35 @@ public final class Conversation extends AggregateRoot {
      * none runs yet: a conversation the system opened for a card waits for nobody until the customer asks something.
      */
     public long acceptCustomerMessage(Actor customer, Instant now, Instant dueIfNotRunning) {
+        return acceptCustomerMessage(customer, now, new Due(dueIfNotRunning, null));
+    }
+
+    /**
+     * {@link #acceptCustomerMessage(Actor, Instant)}, starting each BR-09 clock that does not run yet at what
+     * {@code due} says - and the resolution clock again when this message reopens a resolved or auto-closed
+     * conversation: what the customer asks now is a new thing to resolve.
+     */
+    public long acceptCustomerMessage(Actor customer, Instant now, Due due) {
         if (!customer.isCustomer()) {
             throw new IllegalArgumentException("Not the customer");
         }
+        boolean reopened = false;
         if (status == ConversationStatus.RESOLVED || status == ConversationStatus.AUTO_CLOSED) {
             if (!reopensAt(now)) {
                 throw new BusinessException(ErrorCode.CHAT_CONVERSATION_ENDED);
             }
             move(ConversationStatus.REOPENED, customer, now, "The customer wrote again");
+            reopened = true;
         } else if (status == ConversationStatus.CLOSED) {
             throw new BusinessException(ErrorCode.CHAT_CONVERSATION_ENDED);
         } else if (status == ConversationStatus.WAITING_ON_CUSTOMER) {
             move(ConversationStatus.ACTIVE, customer, now, "The customer answered");
         }
         lastCustomerMessageAt = now;
-        if (firstRespondedAt == null && firstResponseDueAt == null && dueIfNotRunning != null) {
-            firstResponseDueAt = dueIfNotRunning;
+        if (firstRespondedAt == null && firstResponseDueAt == null && due.firstResponse() != null) {
+            firstResponseDueAt = due.firstResponse();
         }
+        startResolutionClock(due.resolution(), reopened);
         return next(now);
     }
 
@@ -267,6 +303,14 @@ public final class Conversation extends AggregateRoot {
      * @throws BusinessException {@code CHAT_CONVERSATION_ENDED} for one that is not, or no longer, reopenable
      */
     public void reopen(Actor customer, Instant now) {
+        reopen(customer, now, null);
+    }
+
+    /**
+     * {@link #reopen(Actor, Instant)}, its resolution due again at {@code resolutionDue} (BR-09): the customer came
+     * back because something is not resolved after all.
+     */
+    public void reopen(Actor customer, Instant now, Instant resolutionDue) {
         if (!customer.isCustomer()) {
             throw new IllegalArgumentException("Not the customer");
         }
@@ -274,6 +318,7 @@ public final class Conversation extends AggregateRoot {
             throw new BusinessException(ErrorCode.CHAT_CONVERSATION_ENDED);
         }
         move(ConversationStatus.REOPENED, customer, now, "The customer came back");
+        startResolutionClock(resolutionDue, true);
     }
 
     /**
@@ -422,6 +467,28 @@ public final class Conversation extends AggregateRoot {
     }
 
     /**
+     * The conversation is not resolved by its resolution target and the supervisors have not been told yet (BR-09, the
+     * SLA job): marks them told and logs RESOLUTION_OVERDUE, once per run of the clock - a reopened conversation's new
+     * clock may alert again.
+     *
+     * @return whether they are to be told now
+     */
+    public boolean alertResolutionOverdue(Instant now) {
+        if (!resolutionOverdueAt(now) || resolutionAlertedAt != null) {
+            return false;
+        }
+        resolutionAlertedAt = now;
+        record(ConversationEventType.RESOLUTION_OVERDUE, Actor.system(), now, null, assignedAgentId, null,
+                "{\"dueAt\":\"" + resolutionDueAt + "\"}");
+        return true;
+    }
+
+    /** Whether the resolution is late: the conversation goes on and was to be resolved before {@code now} (BR-09). */
+    public boolean resolutionOverdueAt(Instant now) {
+        return resolutionDueAt != null && !status.isEnded() && resolutionDueAt.isBefore(now);
+    }
+
+    /**
      * The customer rates how the conversation went (16 §4.6 step 18, BR-09 CSAT; decided 2026-11-13: 1 to 5 stars and an
      * optional comment), once, while it is resolved: a rating asked of a conversation still going on would rate half of
      * it, and a second rating would let one conversation count twice.
@@ -506,6 +573,17 @@ public final class Conversation extends AggregateRoot {
                 target, note, detailJson));
     }
 
+    /**
+     * Starts the resolution clock at {@code due} unless one runs already; {@code again} restarts it, the earlier alert
+     * forgotten with it. A null {@code due} starts nothing.
+     */
+    private void startResolutionClock(Instant due, boolean again) {
+        if (due != null && (resolutionDueAt == null || again)) {
+            resolutionDueAt = due;
+            resolutionAlertedAt = null;
+        }
+    }
+
     private void giveTo(UUID agentId, Instant now) {
         assignedAgentId = agentId;
         assignedAt = now;
@@ -560,6 +638,8 @@ public final class Conversation extends AggregateRoot {
     public ConversationStatus status() { return status; }
     public UUID assignedAgentId() { return assignedAgentId; }
     public Instant firstResponseDueAt() { return firstResponseDueAt; }
+    public Instant resolutionDueAt() { return resolutionDueAt; }
+    public Instant resolutionAlertedAt() { return resolutionAlertedAt; }
     public Instant firstRespondedAt() { return firstRespondedAt; }
     public Instant reopenUntil() { return reopenUntil; }
     public long lastMessageSeq() { return lastMessageSeq; }
