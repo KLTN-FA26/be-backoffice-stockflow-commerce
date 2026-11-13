@@ -83,7 +83,7 @@ public class ChatAttachmentService {
             }
         });
         return send(conversationId, caller.customerId(), caller.actor(), upload, caption, clientMessageId,
-                c -> c.acceptCustomerMessage(caller.actor(), clock.instant(), writer.firstResponseDue(clock.instant())));
+                c -> c.acceptCustomerMessage(caller.actor(), clock.instant(), writer.due(clock.instant())));
     }
 
     /** A file from the agent in charge (or a supervisor) to the customer. */

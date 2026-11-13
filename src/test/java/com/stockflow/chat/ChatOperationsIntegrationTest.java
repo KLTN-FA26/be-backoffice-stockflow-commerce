@@ -2,7 +2,9 @@ package com.stockflow.chat;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.stockflow.chat.internal.domain.BusinessHours;
 import com.stockflow.chat.internal.service.ChatLifecycle;
+import com.stockflow.chat.internal.service.ChatProperties;
 import com.stockflow.common.security.Role;
 import com.stockflow.support.ReferenceRows;
 import com.stockflow.support.SecuredIntegrationTest;
@@ -23,6 +25,10 @@ import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilde
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.nio.charset.StandardCharsets;
+import java.sql.Timestamp;
+import java.time.DayOfWeek;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -52,6 +58,7 @@ class ChatOperationsIntegrationTest {
     @Autowired EntityManager entityManager;
     @Autowired ObjectMapper json;
     @Autowired ChatLifecycle lifecycle;
+    @Autowired ChatProperties properties;
 
     private SecuredMvc http;
     private StaffFixtures people;
@@ -118,6 +125,62 @@ class ChatOperationsIntegrationTest {
         tx.executeWithoutResult(s -> jdbc.update("UPDATE chat.conversation SET first_response_due_at = NOW() -"
                 + " INTERVAL '1 minute' WHERE id = ?", answered));
         assertThat(lifecycle.alertFirstResponse(answered)).isFalse();
+    }
+
+    @Test
+    @DisplayName("BR-09: not resolved in 2 working days - logged and told to the supervisors once, not before; counted "
+            + "in business hours; a resolved conversation never")
+    void resolutionOverdueOnce() throws Exception {
+        UUID late = open("Bao gia gap");
+        staff(Role.SALES_STAFF, sales, post(STAFF + "/" + late + "/claim")).andExpect(status().isOk());
+        reply(sales, late, "Em dang xu ly a").andExpect(status().isCreated());
+
+        // Due 2 working days after the question, in the chat's hours: 19 working hours later, never on a Sunday.
+        Instant asked = jdbc.queryForObject("SELECT occurred_at FROM chat.conversation_event WHERE conversation_id = ?"
+                + " AND type = 'OPENED'", Timestamp.class, late).toInstant();
+        Instant due = jdbc.queryForObject("SELECT resolution_due_at FROM chat.conversation WHERE id = ?",
+                Timestamp.class, late).toInstant();
+        BusinessHours hours = properties.businessHours();
+        assertThat(hours.between(asked, due)).isEqualTo(Duration.ofMinutes(2 * 570));
+        assertThat(due.atZone(hours.zone()).getDayOfWeek()).isNotEqualTo(DayOfWeek.SUNDAY);
+        assertThat(hours.isOpenAt(due) || due.atZone(hours.zone()).toLocalTime().equals(hours.closes())).isTrue();
+        assertThat(due).isAfter(asked.plus(Duration.ofHours(19)));
+
+        // Not before the target.
+        assertThat(lifecycle.overdueResolutions()).doesNotContain(late);
+        assertThat(lifecycle.alertResolution(late)).isFalse();
+        staff(Role.SALES_STAFF, sales, get(STAFF).param("overdue", "true")
+                .param("customerId", alice.customer().toString())).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[?(@.id == '" + late + "')]").isEmpty());
+
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE chat.conversation SET resolution_due_at = NOW() -"
+                + " INTERVAL '1 minute' WHERE id = ?", late));
+        long before = people.messages(manager);
+        assertThat(lifecycle.overdueResolutions()).contains(late);
+        assertThat(lifecycle.alertResolution(late)).isTrue();
+        assertThat(lifecycle.alertResolution(late)).isFalse();
+        assertThat(lifecycle.overdueResolutions()).doesNotContain(late);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM chat.conversation_event WHERE conversation_id = ? AND"
+                + " type = 'RESOLUTION_OVERDUE'", Long.class, late)).isEqualTo(1L);
+        assertThat(people.messages(manager)).as("the supervisor's inbox, once").isEqualTo(before + 1);
+        // Answered in time, so it is in the overdue queue for its resolution alone; the customer is shown no deadline.
+        staff(Role.SALES_STAFF, sales, get(STAFF).param("overdue", "true")
+                .param("customerId", alice.customer().toString())).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[?(@.id == '" + late + "')].resolutionOverdue").value(true))
+                .andExpect(jsonPath("$.data.items[?(@.id == '" + late + "')].firstResponseOverdue").value(false));
+        staff(Role.SALES_STAFF, sales, get(STAFF + "/" + late)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.resolutionDueAt").isNotEmpty());
+        http.asCustomer(alice.account(), get(MINE + "/" + late)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.resolutionDueAt").doesNotExist())
+                .andExpect(jsonPath("$.data.resolutionOverdue").value(false));
+
+        UUID resolved = open("Hoi nhanh");   // routed to the Sales who looked after her last (16 §4.1 step 2.2)
+        reply(sales, resolved, "Da xong").andExpect(status().isCreated());
+        move(sales, resolved, "RESOLVED");
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE chat.conversation SET resolution_due_at = NOW() -"
+                + " INTERVAL '1 minute' WHERE id = ?", resolved));
+        assertThat(lifecycle.overdueResolutions()).doesNotContain(resolved);
+        assertThat(lifecycle.alertResolution(resolved)).isFalse();
     }
 
     @Test

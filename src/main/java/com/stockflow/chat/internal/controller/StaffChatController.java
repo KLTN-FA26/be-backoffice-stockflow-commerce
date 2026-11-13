@@ -79,7 +79,8 @@ class StaffChatController {
 
     @GetMapping("/conversations")
     @Operation(summary = "The queue: by status (default: every status but the ended ones), mine, unassigned, overdue "
-            + "first response, customer or document; overdue first answers first (16 BR-09), then the most recent")
+            + "(a late first response or resolution), customer or document; the overdue first (16 BR-09), then the "
+            + "most recent")
     @RequiresPermission(resource = ChatResources.CONVERSATIONS, action = Action.READ)
     public ApiResponse<PageResponse<ChatConversationView>> inbox(@AuthenticatedUser CurrentUser user,
             @RequestParam(required = false) Set<ConversationStatus> status,

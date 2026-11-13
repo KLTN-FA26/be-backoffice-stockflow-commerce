@@ -525,6 +525,9 @@ stockflow:
     business-closes: ${CHAT_BUSINESS_CLOSES:17:30}
     # BR-09: the first answer is due this long after the customer asks, in business time.
     first-response-target: ${CHAT_FIRST_RESPONSE_TARGET:PT15M}
+    # BR-09: a conversation is to be resolved this many working days (of the hours above) after the customer asks -
+    # or reopens it; past that the chat supervisors are told once. Days only (P2D or 2d).
+    resolution-target: ${CHAT_RESOLUTION_TARGET:P2D}
     # 16 §5: a conversation waiting on a silent customer this long is auto-closed; a resolved or auto-closed one
     # reopens on the customer's word for this long, then is closed for good.
     auto-close-after: ${CHAT_AUTO_CLOSE_AFTER:P7D}

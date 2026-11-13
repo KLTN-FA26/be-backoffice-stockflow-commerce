@@ -149,7 +149,7 @@ public class CustomerChatService {
         }
         if (c.reopensAt(writer.now())) {
             UUID agent = c.assignedAgentId();
-            c.reopen(caller.actor(), writer.now());
+            c.reopen(caller.actor(), writer.now(), writer.resolutionDue(writer.now()));
             writer.save(c, agent);
         }
         return views.detail(c, user.userId(), null);
@@ -185,7 +185,7 @@ public class CustomerChatService {
                                                String clientMessageId) {
         return writer.post(c, caller.actor(), clientMessageId, text,
                 conversation -> conversation.acceptCustomerMessage(caller.actor(), writer.now(),
-                        writer.firstResponseDue(writer.now())),
+                        writer.due(writer.now())),
                 seq -> ChatMessage.text(Identifiers.newId(), c.id(), seq, caller.actor(), text,
                         blankToNull(clientMessageId), null, writer.now()));
     }

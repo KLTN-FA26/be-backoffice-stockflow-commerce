@@ -29,7 +29,10 @@ public interface ConversationRepository extends AggregateRepository<Conversation
     /** The customer's conversations, any status, the most recently active first; only those about {@code about}. */
     Slice<Conversation> ofCustomer(UUID customerId, ContextRef about, int page, int size);
 
-    /** The staff's queue: overdue first answers first (BR-09), then the most recently active. */
+    /**
+     * The staff's queue: the overdue first (a late first answer or a late resolution, BR-09), then the most recently
+     * active.
+     */
     Slice<Conversation> inbox(InboxFilter filter, Instant now, int page, int size);
 
     /** Every conversation about {@code ref}, any customer, the newest first, at most {@code limit}. */
@@ -61,6 +64,12 @@ public interface ConversationRepository extends AggregateRepository<Conversation
 
     /** Conversations whose first answer is late and whose supervisors were not told yet (BR-09), at most {@code limit}. */
     List<UUID> firstResponseOverdueUnalerted(Instant now, int limit);
+
+    /**
+     * Conversations not resolved by their resolution target whose supervisors were not told yet (BR-09), at most
+     * {@code limit}.
+     */
+    List<UUID> resolutionOverdueUnalerted(Instant now, int limit);
 
     /** Conversations waiting on the customer since before {@code silentSince}, at most {@code limit} (16 §5). */
     List<UUID> waitingOnCustomerSince(Instant silentSince, int limit);

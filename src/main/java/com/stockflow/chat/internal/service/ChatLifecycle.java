@@ -13,8 +13,8 @@ import java.util.UUID;
 
 /**
  * The conversation's clocks (kltn-docs 16 §5, BR-09), one conversation per transaction: a late first answer alerts the
- * chat supervisors once; a conversation waiting on a customer silent for {@link ChatProperties#autoCloseAfter} is
- * auto-closed; one resolved or auto-closed past its {@link ChatProperties#reopenWindow} is closed for good.
+ * chat supervisors once, and so does a conversation not resolved by its {@link ChatProperties#resolutionTarget}; a
+ * conversation waiting on a customer silent for {@link ChatProperties#autoCloseAfter} is auto-closed; one resolved or auto-closed past its {@link ChatProperties#reopenWindow} is closed for good.
  *
  * <p>Each step locks its conversation and asks again whether it still applies - a customer may have written, an agent
  * answered, between the job's list and the lock - so a step that no longer applies does nothing, and the job may run on
@@ -46,6 +46,11 @@ public class ChatLifecycle {
     }
 
     @Transactional(readOnly = true)
+    public List<UUID> overdueResolutions() {
+        return conversations.resolutionOverdueUnalerted(clock.instant(), properties.slaJobBatch());
+    }
+
+    @Transactional(readOnly = true)
     public List<UUID> silentCustomers() {
         return conversations.waitingOnCustomerSince(clock.instant().minus(properties.autoCloseAfter()),
                 properties.slaJobBatch());
@@ -65,6 +70,18 @@ public class ChatLifecycle {
         }
         writer.save(c, agent);
         notifier.firstResponseOverdue(c);
+        return true;
+    }
+
+    /** Not resolved by its target: RESOLUTION_OVERDUE logged and the supervisors told, once per run of the clock. */
+    public boolean alertResolution(UUID conversationId) {
+        Conversation c = writer.lock(conversationId);
+        UUID agent = c.assignedAgentId();
+        if (!c.alertResolutionOverdue(clock.instant())) {
+            return false;
+        }
+        writer.save(c, agent);
+        notifier.resolutionOverdue(c);
         return true;
     }
 

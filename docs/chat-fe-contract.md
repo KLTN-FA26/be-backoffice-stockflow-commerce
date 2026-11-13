@@ -31,7 +31,7 @@ Base `/api/v1/chat`. A portal account is refused (**403**) on all of these.
 
 | Method | Path | Body / params | Answer |
 |---|---|---|---|
-| GET | `/conversations` | `status*, mine, unassigned, overdue, customerId, contextKind, contextId, page, size` | queue page (overdue first answers first) |
+| GET | `/conversations` | `status*, mine, unassigned, overdue, customerId, contextKind, contextId, page, size` | queue page, the overdue first. `overdue=true`: only those whose first answer **or resolution** is late (BR-09) |
 | POST | `/conversations` | `{customerId, subject?, contextKind?, contextId?, text?, clientMessageId?}` | conversation, assigned to the caller |
 | GET | `/conversations/{id}` | | detail with `nextStatuses` |
 | GET | `/conversations/{id}/messages` | as the customer's | internal notes included |
@@ -68,10 +68,13 @@ A known variable with no value becomes empty; an unknown `{name}` is left as wri
 
 **Conversation** (`ChatConversationView`): `id, customerId, customerName, subject, status, nextStatuses (staff),
 assignedAgentId, assignedAgentName, agentOnline, escalationReason (staff), firstResponseDueAt, firstRespondedAt,
-firstResponseOverdue, reopenUntil, continuedFromId, createdAt, lastMessageAt, lastSeq, unread, lastMessage, contexts,
-readMarkers (detail), withinBusinessHours, expectedResponseAt, resolvedAt, canRate, csatScore, csatComment (staff),
-csatSubmittedAt`.
+firstResponseOverdue, resolutionDueAt (staff), resolutionOverdue (staff), reopenUntil, continuedFromId, createdAt,
+lastMessageAt, lastSeq, unread, lastMessage, contexts, readMarkers (detail), withinBusinessHours, expectedResponseAt,
+resolvedAt, canRate, csatScore, csatComment (staff), csatSubmittedAt`.
 Show "Sale sẽ phản hồi lúc …" with `expectedResponseAt` when `withinBusinessHours` is false or no first answer came.
+`resolutionDueAt` is when the conversation is to be RESOLVED (`resolution-target` working days after the customer asked,
+counted again from a reopen); `resolutionOverdue` is true past it while the conversation goes on - mark the queue row
+as for `firstResponseOverdue`. Both are null / false in the customer's view.
 
 **Message** (`ChatMessageView`): `id, conversationId, seq, kind (TEXT|ATTACHMENT|CARD|SYSTEM|INTERNAL_NOTE),
 visibility (CUSTOMER|STAFF), senderType (CUSTOMER|AGENT|SYSTEM), senderId, senderName, body, clientMessageId, contextId,
@@ -127,7 +130,9 @@ Envelope `{type, conversationId, data, at}`; `type`: `message.created`, `message
 
 A customer with no socket open is told of Sales' replies in the bell (category `CHAT`, link
 `/chat/conversations/{id}`) once per conversation per hour, and by e-mail where customer mail is on. Supervisors get
-`CHAT_SLA` (WARN) when a first answer is late, once per conversation.
+`CHAT_SLA` (WARN) when a first answer is late, once per conversation, and when a conversation is past its resolution
+target, once per due time (a reopened conversation's new due time may alert again). The log (`/events`) gets
+`FIRST_RESPONSE_OVERDUE` / `RESOLUTION_OVERDUE` with `detail.dueAt`.
 
 ## 6. Report
 
@@ -149,6 +154,7 @@ csatDistribution {"1".."5"}`.
 |---|---|
 | business hours | `Asia/Ho_Chi_Minh`, MONDAY-SATURDAY, 08:00-17:30 (`CHAT_BUSINESS_*`) |
 | first-response target (business time) | `PT15M` |
+| resolution target, working days of the business hours (`resolution-target`, `CHAT_RESOLUTION_TARGET`) | `P2D` (asked Saturday 17:00 -> due Tuesday 17:00) |
 | auto-close after customer silence in WAITING_ON_CUSTOMER | `P7D` |
 | reopen window after RESOLVED / AUTO_CLOSED, then CLOSED | `P14D` |
 | edit/delete window | `PT5M` |

@@ -93,13 +93,13 @@ public class StaffChatService {
      *
      * @param mine       only the caller's own conversations
      * @param unassigned only those nobody has
-     * @param overdue    only those whose first answer is late (BR-09)
+     * @param overdue    only those whose first answer or resolution is late (BR-09)
      */
     public record InboxQuery(Set<ConversationStatus> statuses, boolean mine, boolean unassigned, boolean overdue,
                              UUID customerId, ContextRef about, int page, Integer size) {
     }
 
-    /** The queue: overdue first answers first (BR-09), then the most recently active. */
+    /** The queue: the overdue first (a late first answer or resolution, BR-09), then the most recently active. */
     @Transactional(readOnly = true)
     public PageResponse<ChatConversationView> inbox(CurrentUser user, InboxQuery query) {
         Actor staff = callers.staff(user);

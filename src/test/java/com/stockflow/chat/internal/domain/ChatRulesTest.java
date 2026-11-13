@@ -99,6 +99,37 @@ class ChatRulesTest {
     }
 
     @Test
+    @DisplayName("BR-09: resolution due 2 working days on - Saturday 17:00 -> Tuesday 17:00; alerts once, not before, "
+            + "never once resolved; a reopen starts the clock again")
+    void resolutionAlertOnce() {
+        assertThat(HOURS.plusWorkingDays(at(2026, 11, 14, 17, 0), 2)).isEqualTo(at(2026, 11, 17, 17, 0));
+        assertThat(HOURS.plusWorkingDays(at(2026, 11, 16, 10, 0), 2)).as("Monday").isEqualTo(at(2026, 11, 18, 10, 0));
+        assertThat(HOURS.plusWorkingDays(at(2026, 11, 15, 12, 0), 2)).as("Sunday: from Monday's opening")
+                .isEqualTo(at(2026, 11, 17, 17, 30));
+
+        Instant t0 = at(2026, 11, 14, 17, 0);
+        Instant due = HOURS.plusWorkingDays(t0, 2);
+        Conversation c = Conversation.open(UUID.randomUUID(), UUID.randomUUID(), null, null, PORTAL, null, t0,
+                new Conversation.Due(t0.plusSeconds(900), due));
+        c.route(AGENT_ID, t0);
+        c.acceptAgentMessage(AGENT, t0.plusSeconds(60));
+        assertThat(c.alertResolutionOverdue(at(2026, 11, 17, 16, 59))).as("not before the target").isFalse();
+        assertThat(c.alertResolutionOverdue(at(2026, 11, 17, 17, 1))).isTrue();
+        assertThat(c.alertResolutionOverdue(at(2026, 11, 17, 18, 0))).isFalse();
+        assertThat(c.pullLog()).extracting(LogEntry::type).containsOnlyOnce(ConversationEventType.RESOLUTION_OVERDUE);
+
+        Instant resolvedAt = at(2026, 11, 17, 18, 0);
+        c.changeStatus(AGENT, ConversationStatus.RESOLVED, null, resolvedAt, Duration.ofDays(14));
+        assertThat(c.resolutionOverdueAt(at(2026, 11, 20, 10, 0))).as("resolved: nothing is late").isFalse();
+        Instant back = at(2026, 11, 18, 9, 0);
+        c.acceptCustomerMessage(PORTAL, back, new Conversation.Due(back.plusSeconds(900),
+                HOURS.plusWorkingDays(back, 2)));
+        assertThat(c.status()).isEqualTo(ConversationStatus.REOPENED);
+        assertThat(c.resolutionDueAt()).as("a new question to resolve").isEqualTo(at(2026, 11, 20, 9, 0));
+        assertThat(c.alertResolutionOverdue(at(2026, 11, 20, 9, 1))).as("the new clock alerts again").isTrue();
+    }
+
+    @Test
     @DisplayName("CSAT: 1-5, once, while resolved")
     void csatOnce() {
         Instant t0 = Instant.parse("2026-11-13T03:00:00Z");
