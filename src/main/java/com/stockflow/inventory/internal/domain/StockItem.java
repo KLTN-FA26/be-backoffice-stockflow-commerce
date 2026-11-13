@@ -523,6 +523,16 @@ public final class StockItem extends AggregateRoot {
     }
 
     /**
+     * WF4-COUNT-EDGE (a): this row's carton, {@code units} of it, was written off by an approved count's shortage (20 §4.2
+     * step 8). Announced as {@code StockWrittenOffByCount}, after the save, so the order module can recompute what orders
+     * hold of the SKU at the warehouse by SKU - a carton fewer may leave a hold uncovered. Call after {@link #adjustBy}.
+     */
+    public void announceCountWriteOff(int units, UUID decidedBy) {
+        registerEvent(new StockEvent.WrittenOffByCount(new com.stockflow.contracts.StockWrittenOffByCount(sku.code(),
+                location.warehouseCode(), units, decidedBy)));
+    }
+
+    /**
      * The goods have been picked: turn a hold into a real deduction (BRD 3.7 / 3.8).
      *
      * <p>This is the only method that lowers {@code onHand}, and it can only do so through a live

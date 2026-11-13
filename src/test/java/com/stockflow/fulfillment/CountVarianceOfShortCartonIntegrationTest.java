@@ -79,6 +79,7 @@ class CountVarianceOfShortCartonIntegrationTest {
     @Autowired TransactionTemplate tx;
     @Autowired EntityManager entityManager;
     @Autowired ApplicationContext context;
+    @Autowired com.stockflow.order.internal.service.ShippingWarehouseService shippingWarehouses;
 
     private ConfirmedOrders confirmedOrders;
     private Sku sofa;
@@ -482,5 +483,175 @@ class CountVarianceOfShortCartonIntegrationTest {
         assertThat(cartonState(carton)).containsEntry("status", "LOST").containsEntry("on_hand", 0L);
         assertThat(ledgerOf(variance.adjustmentId())).hasSize(1);
         assertThat(orders.findById(order).orElseThrow().status()).isEqualTo(OrderStatus.CONFIRMED);
+    }
+
+    // ------------------------------------------------------------------ WF4-COUNT-EDGE (a): holds by SKU
+
+    /** Units the order holds by SKU (before its release) still live. */
+    private int heldBySku(UUID order) {
+        return jdbc.queryForObject("""
+                SELECT COALESCE(SUM(quantity), 0) FROM inventory.stock_reservation
+                 WHERE order_id = ? AND stock_item_id IS NULL AND status = 'HELD'""", Integer.class, order);
+    }
+
+    private UUID freeCarton() {
+        return jdbc.queryForObject("""
+                SELECT p.id FROM inventory.stock_package p JOIN inventory.stock_item s ON s.stock_package_id = p.id
+                 WHERE s.sku = ? AND p.status = 'IN_STOCK' AND s.reserved = 0 ORDER BY p.lpn LIMIT 1""", UUID.class,
+                sofa.code());
+    }
+
+    /** The order module handled the count's write-off of the SKU (its publication completed). */
+    private void awaitRecomputed() {
+        com.stockflow.support.Await.until("the holds of " + sofa.code() + " are recomputed",
+                java.time.Duration.ofSeconds(20), () -> jdbc.queryForObject("""
+                        SELECT COUNT(*) FROM event_publication
+                         WHERE event_type = 'com.stockflow.contracts.StockWrittenOffByCount'
+                           AND serialized_event LIKE ? AND completion_date IS NOT NULL""", Integer.class,
+                        "%" + sofa.code() + "%") > 0);
+    }
+
+    @Test
+    @DisplayName("WF4-COUNT-EDGE a: a Confirmed order holding by SKU every carton of HCM, one counted missing: its hold is "
+            + "cut to the cartons left, the order short of one carton as at its confirmation, still CONFIRMED")
+    void aConfirmedOrderGivesUpTheHoldNoCartonCovers() {
+        UUID order = confirmedOrders.confirmed(DemoData.CUSTOMER_ID,
+                ConfirmedOrders.Line.cartons(sofaCarton, 5, 12_000_000)).orderId();
+        placed.add(order);
+        confirmedOrders.ship(order, HCM);
+        assertThat(heldBySku(order)).as("the five cartons of HCM, held by SKU").isEqualTo(10);
+        UUID first = jdbc.queryForObject("""
+                SELECT id FROM inventory.stock_reservation WHERE order_id = ? AND stock_item_id IS NULL
+                   AND status = 'HELD'""", UUID.class, order);
+        StockAdjustmentSummary variance = manualCountMisses(freeCarton());
+
+        assertThat(WithCurrentUser.call(TestUsers.admin(), DataScope.ALL, () -> operations.approve(
+                variance.adjustmentId(), approver)).status()).isEqualTo(StockAdjustmentStatus.POSTED);
+
+        com.stockflow.support.Await.until("the order holds four cartons", java.time.Duration.ofSeconds(20),
+                () -> heldBySku(order) == 8);
+        assertThat(holdState(first)).containsEntry("status", "RELEASED").containsEntry("release_reason",
+                "SHORT_PICKED");
+        UUID kept = jdbc.queryForObject("""
+                SELECT id FROM inventory.stock_reservation WHERE order_id = ? AND stock_item_id IS NULL
+                   AND status = 'HELD'""", UUID.class, order);
+        assertThat(jdbc.queryForObject("SELECT warehouse_code FROM inventory.stock_reservation WHERE id = ?",
+                String.class, kept)).isEqualTo("HCM");
+        assertThat(holdsRecordedOnTheOrder(order)).as("the order line records the new hold beside the released one")
+                .contains(first, kept);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM ordering.delivery_batch_hold WHERE reservation_id = ?",
+                Integer.class, kept)).as("for the delivery batch the released hold stood for").isEqualTo(1);
+        var coverage = WithCurrentUser.call(TestUsers.admin(), DataScope.ALL, () -> shippingWarehouses.coverage(order));
+        assertThat(coverage.fullyHeld()).isFalse();
+        assertThat(coverage.lines()).singleElement().satisfies(line -> {
+            assertThat(line.heldCartons()).isEqualTo(4);
+            assertThat(line.shortCartons()).isEqualTo(1);
+        });
+        assertThat(orders.findById(order).orElseThrow().status()).as("AWAITING_STOCK once a production order is sent")
+                .isEqualTo(OrderStatus.CONFIRMED);
+
+        // The event handled again: every hold is covered, nothing changes.
+        assertThat(shippingWarehouses.giveUpUncovered(sofa.code(), "HCM")).isZero();
+        assertThat(heldBySku(order)).isEqualTo(8);
+    }
+
+    @Test
+    @DisplayName("WF4-COUNT-EDGE a: an order holding fewer cartons than are left keeps its hold")
+    void aHoldStillCoveredIsKept() {
+        UUID order = confirmedOrders.confirmed(DemoData.CUSTOMER_ID,
+                ConfirmedOrders.Line.cartons(sofaCarton, 3, 12_000_000)).orderId();
+        placed.add(order);
+        confirmedOrders.ship(order, HCM);
+        StockAdjustmentSummary variance = manualCountMisses(freeCarton());
+
+        WithCurrentUser.call(TestUsers.admin(), DataScope.ALL, () -> operations.approve(variance.adjustmentId(),
+                approver));
+
+        awaitRecomputed();
+        assertThat(heldBySku(order)).isEqualTo(6);
+        assertThat(jdbc.queryForObject("""
+                SELECT COUNT(*) FROM inventory.stock_reservation WHERE order_id = ? AND stock_item_id IS NULL
+                   AND status <> 'HELD'""", Integer.class, order)).isZero();
+    }
+
+    @Test
+    @DisplayName("WF4-COUNT-EDGE a, not decided: two orders holding the SKU by SKU, one carton counted missing - which "
+            + "order gives its hold up is not in kltn-docs, so both holds are kept")
+    void twoOrdersShortOfTheSameCartonsKeepTheirHolds() {
+        UUID a = confirmedOrders.confirmed(DemoData.CUSTOMER_ID,
+                ConfirmedOrders.Line.cartons(sofaCarton, 3, 12_000_000)).orderId();
+        placed.add(a);
+        confirmedOrders.ship(a, HCM);
+        UUID b = confirmedOrders.confirmed(DemoData.CUSTOMER_ID,
+                ConfirmedOrders.Line.cartons(sofaCarton, 2, 12_000_000)).orderId();
+        placed.add(b);
+        confirmedOrders.ship(b, HCM);
+        StockAdjustmentSummary variance = manualCountMisses(freeCarton());
+
+        WithCurrentUser.call(TestUsers.admin(), DataScope.ALL, () -> operations.approve(variance.adjustmentId(),
+                approver));
+
+        awaitRecomputed();
+        assertThat(heldBySku(a)).isEqualTo(6);
+        assertThat(heldBySku(b)).isEqualTo(4);
+    }
+
+    // ------------------------------------------------------------------ WF4-COUNT-EDGE (b): no task yet
+
+    @Test
+    @DisplayName("WF4-COUNT-EDGE b: a released order with no task, its carton counted missing and held INVENTORY - the "
+            + "warehouse manager opens the task, the carton's line is SHORT, the reallocation resumes the order PICKING")
+    void theManagerOpensTheTaskAndReallocatesTheShortLine() throws Exception {
+        UUID order = releasedOrder();
+        UUID hold = (UUID) liveHolds(order).getFirst().get("id");
+        UUID carton = (UUID) liveHolds(order).getFirst().get("stock_package_id");
+        String lpn = jdbc.queryForObject("SELECT lpn FROM inventory.stock_package WHERE id = ?", String.class, carton);
+        StockAdjustmentSummary variance = manualCountMisses(carton);
+        WithCurrentUser.call(TestUsers.admin(), DataScope.ALL, () -> operations.approve(variance.adjustmentId(),
+                approver));
+        awaitHold(order);
+
+        UUID task = taskIdOf(send(token(manager, "WAREHOUSE_MANAGER"), API + "/tasks",
+                "{\"orderId\":\"" + order + "\",\"assignedUserId\":\"" + picker + "\"}")
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString());
+
+        Map<String, Object> line = jdbc.queryForMap("""
+                SELECT id, status, short_reason, short_qty, picked_qty, reservation_id, lpn FROM fulfillment.pick_line
+                 WHERE pick_id = ?""", task);
+        assertThat(line).containsEntry("status", "SHORT").containsEntry("short_reason", "NOT_FOUND")
+                .containsEntry("short_qty", 2).containsEntry("picked_qty", 0).containsEntry("reservation_id", hold)
+                .containsEntry("lpn", lpn);
+        OrderSummary held = orders.findById(order).orElseThrow();
+        assertThat(held.status()).isEqualTo(OrderStatus.ON_HOLD);
+        assertThat(held.lifecycle().holdReason()).isEqualTo(HoldReason.INVENTORY);
+        assertThat(held.lifecycle().statusBeforeHold()).as("resolving the hold goes on picking")
+                .isEqualTo(OrderStatus.PICKING);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM ordering.order_hold WHERE order_id = ?", Integer.class,
+                order)).as("one hold, not stacked").isEqualTo(1);
+
+        Scenario s = new Scenario(order, task, (UUID) line.get("id"), lpn, carton, hold, variance);
+        assertThat(reallocate(s)).singleElement().satisfies(l -> assertThat(l.get("lpn")).isNotEqualTo(lpn));
+        assertSettled(s);
+        assertThat(orders.findById(order).orElseThrow().status()).isEqualTo(OrderStatus.PICKING);
+    }
+
+    @Test
+    @DisplayName("WF4-COUNT-EDGE b: the task opened again by a repeated request plans nothing twice")
+    void theTaskIsOpenedOnce() throws Exception {
+        UUID order = releasedOrder();
+        UUID carton = (UUID) liveHolds(order).getFirst().get("stock_package_id");
+        StockAdjustmentSummary variance = manualCountMisses(carton);
+        WithCurrentUser.call(TestUsers.admin(), DataScope.ALL, () -> operations.approve(variance.adjustmentId(),
+                approver));
+        awaitHold(order);
+
+        UUID task = openTask(order);
+        UUID again = openTask(order);
+
+        assertThat(again).isEqualTo(task);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM fulfillment.pick_line WHERE pick_id = ?", Integer.class,
+                task)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM ordering.order_hold WHERE order_id = ?", Integer.class,
+                order)).isEqualTo(1);
     }
 }

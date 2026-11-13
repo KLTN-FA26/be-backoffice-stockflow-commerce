@@ -121,9 +121,25 @@ class PickListService implements PickLists {
      * @return the lines added
      */
     public List<PickLine> planLines(PickJpaEntity pick, OrderSummary order) {
+        return planLines(pick, order, pick.getAssignedUserId());
+    }
+
+    /**
+     * {@link #planLines(PickJpaEntity, OrderSummary)}, naming who planned them. WF4-COUNT-EDGE (b): a hold an approved
+     * count gave up with its carton before any line stood on it (the order released, no task yet) gets its line SHORT
+     * at once ({@link PickList#plan(List, Map, Set, java.util.function.Supplier)}), and the order is held for stock
+     * ({@code INVENTORY}) in {@code by}'s name, as a picker's short report holds it (07 §4.4 step 9) - for the warehouse
+     * manager to reallocate the line ({@link #reallocateShort}), which resolves the hold once no line is short. The
+     * caller holds the pick's lock and, when it took it, the order's after it.
+     */
+    public List<PickLine> planLines(PickJpaEntity pick, OrderSummary order, UUID by) {
         List<PickLineJpaEntity> stored = pickLines.findByPickIdOrderBySequenceNoAscIdAsc(pick.getId());
         PickList list = toList(pick, stored);
-        List<PickLine> added = list.plan(orderLinesOf(order), holdsOf(pick, order), Identifiers::newId);
+        Map<UUID, PickList.Hold> holds = holdsOf(pick, order);
+        Set<UUID> released = holds.values().stream().filter(hold -> !hold.live()).map(PickList.Hold::reservationId)
+                .collect(Collectors.toSet());
+        Set<UUID> givenUp = released.isEmpty() ? Set.of() : inventory.holdsGivenUpWithTheirCarton(released);
+        List<PickLine> added = list.plan(orderLinesOf(order), holds, givenUp, Identifiers::newId);
         if (!added.isEmpty()) {
             pickLines.saveAll(added.stream().map(line -> PickLineMapper.toNewEntity(pick.getId(), line)).toList());
             if (pick.getStatus() == PickStatus.STAGED || pick.getStatus() == PickStatus.PICKED) {
@@ -132,6 +148,15 @@ class PickListService implements PickLists {
             }
             log.info("Planned {} pick line(s) for task {} of order {}{}", added.size(), pick.getId(),
                     pick.getOrderNumber(), stored.isEmpty() ? "" : " (top-up)");
+            List<PickLine> shortages = added.stream().filter(line -> line.status() == PickLineStatus.SHORT).toList();
+            if (!shortages.isEmpty()) {
+                PickLine first = shortages.getFirst();
+                holdForInventoryIfHoldable(pick.getOrderId(), by, ("Carton %s (%d x %s) counted missing at %s before "
+                        + "the task: %d line(s) short").formatted(first.lpn(), first.allocatedQty(), first.sku(),
+                        PickList.expectedAt(first), shortages.size()));
+                log.info("Task {} of order {}: {} line(s) planned SHORT, their cartons written off by an approved count",
+                        pick.getId(), pick.getOrderNumber(), shortages.size());
+            }
         }
         return added;
     }
@@ -491,7 +516,7 @@ class PickListService implements PickLists {
                             pack.getStatus()));
                 });
         OrderSummary order = TaskAccess.orderInFulfilment(orders, pick);
-        List<PickLine> added = planLines(pick, order);
+        List<PickLine> added = planLines(pick, order, actor.userId());
         if (!added.isEmpty() && order.status() != com.stockflow.order.api.OrderStatus.ON_HOLD) {
             // 07 §4.3 step 7: the order is picking again with its task (READY_TO_FULFILL -> PICKING; an order already
             // picking is left alone). An order on hold stays held: the hold resolves back to where it was.

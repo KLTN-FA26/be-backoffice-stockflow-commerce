@@ -378,6 +378,114 @@ public class ShippingWarehouseService {
     }
 
     /**
+     * WF4-COUNT-EDGE (a), kltn-docs 20 §4.2 step 8 ("khoản giữ được xử lý như thiếu hàng"): an approved count wrote a
+     * carton of {@code sku} off at {@code warehouseCode}, and what orders hold there by SKU - before their release - may
+     * no longer be covered by the cartons left. The holds are recomputed: the units no carton covers are given up
+     * ({@link InventoryService#shrinkHold}), so the order is short again exactly as the stock check at its confirmation
+     * leaves an order short (17 §4.2 steps 3 and 5): the line holds fewer cartons, the batch shows what it lacks, it is
+     * listed among the short delivery batches the production coordinator draws a production order up from (§4.12 step
+     * 47) and its delay alerts are recomputed. Its status does not change here: as at confirmation, an order goes
+     * AWAITING_STOCK once a production order for its shortage is sent (BR-04, {@link Order#awaitStock}).
+     *
+     * <p>Within the order, the latest delivery batch gives its holds up first, the newest hold first: held cartons count
+     * for the earliest batch first (17 §4.2 step 3, BR-29).</p>
+     *
+     * <p><b>One order only.</b> When the uncovered holds belong to more than one order, nothing is given up: kltn-docs
+     * does not say which order loses its hold first, and that rule waits for the owner (WF4-COUNT-EDGE, reported). The
+     * holds stay as they are, as before this change - the release that finds too few cartons is refused
+     * ({@code INSUFFICIENT_STOCK}).</p>
+     *
+     * <p>Locks: the order's row, then the SKU's advisory lock - as choosing a warehouse and topping up take them - and
+     * the figures are read again under both. Idempotent: a repeated event finds every hold covered and changes
+     * nothing.</p>
+     *
+     * @return the units of holds given up
+     */
+    public int giveUpUncovered(String sku, String warehouseCode) {
+        Sku code = new Sku(sku);
+        com.stockflow.inventory.api.SkuHoldCover cover = inventory.skuHoldCover(code, warehouseCode);
+        if (cover.uncoveredUnits() == 0) {
+            return 0;
+        }
+        Set<UUID> holders = holdersOf(cover);
+        if (holders.size() != 1) {
+            log.warn("{} at {}: {} unit(s) held by SKU are no longer covered after a count's shortage, held by {} orders "
+                            + "{}; which one gives its hold up is not decided (WF4-COUNT-EDGE), so the holds are kept",
+                    sku, warehouseCode, cover.uncoveredUnits(), holders.size(), holders);
+            return 0;
+        }
+        UUID orderId = holders.iterator().next();
+        Order order = orders.findByIdForUpdate(new OrderId(orderId)).orElse(null);
+        if (order == null) {
+            return 0;
+        }
+        inventory.prepareReservation(Set.of(code));
+        cover = inventory.skuHoldCover(code, warehouseCode);
+        if (cover.uncoveredUnits() == 0) {
+            return 0;
+        }
+        if (!holdersOf(cover).equals(holders)) {
+            log.warn("{} at {}: the holds changed hands meanwhile ({}); kept as they are", sku, warehouseCode,
+                    holdersOf(cover));
+            return 0;
+        }
+        Map<UUID, OrderLine> lineOfHold = new HashMap<>();
+        order.lines().forEach(line -> line.reservationIds().forEach(id -> lineOfHold.put(id, line)));
+        Map<UUID, DeliveryBatchRecords.Hold> recorded = new HashMap<>();
+        batchRecords.holdsOf(orderId).forEach(h -> recorded.put(h.reservationId(), h));
+        Map<UUID, Integer> seqOf = new HashMap<>();
+        contracts.findLiveByOrderId(orderId).ifPresent(contract -> contract.schedule()
+                .forEach(batch -> seqOf.put(batch.id(), batch.seq())));
+        // The latest batch first (a hold of no batch counts as the latest), then the newest hold.
+        Comparator<com.stockflow.inventory.api.SkuHoldCover.Hold> latestFirst = Comparator
+                .comparing((com.stockflow.inventory.api.SkuHoldCover.Hold h) -> {
+                    DeliveryBatchRecords.Hold of = recorded.get(h.reservationId());
+                    return of == null ? Integer.MAX_VALUE : seqOf.getOrDefault(of.batchId(), Integer.MAX_VALUE);
+                })
+                .thenComparing(com.stockflow.inventory.api.SkuHoldCover.Hold::reservedAt)
+                .thenComparing(com.stockflow.inventory.api.SkuHoldCover.Hold::reservationId)
+                .reversed();
+        int left = cover.uncoveredUnits();
+        int givenUp = 0;
+        for (com.stockflow.inventory.api.SkuHoldCover.Hold hold : cover.holds().stream().sorted(latestFirst).toList()) {
+            if (left <= 0) {
+                break;
+            }
+            OrderLine line = lineOfHold.get(hold.reservationId());
+            if (line == null || line.unitsPerCarton() == null || line.unitsPerCarton() <= 0) {
+                log.warn("Order {}: hold {} of {} is on no carton line of the order; left as it is", order.orderNumber(),
+                        hold.reservationId(), sku);
+                continue;
+            }
+            // Whole cartons (17 BR-21): the cut is rounded up to the line's carton.
+            int cartons = (left + line.unitsPerCarton() - 1) / line.unitsPerCarton();
+            int cut = Math.min(hold.quantity(), cartons * line.unitsPerCarton());
+            java.util.Optional<UUID> kept = inventory.shrinkHold(hold.reservationId(), hold.quantity() - cut);
+            if (kept.isPresent()) {
+                order.holdMore(line.id(), List.of(kept.get()));
+                DeliveryBatchRecords.Hold batch = recorded.get(hold.reservationId());
+                if (batch != null) {
+                    batchRecords.recordHolds(orderId, batch.batchId(), line.id(), List.of(kept.get()));
+                }
+            }
+            left -= cut;
+            givenUp += cut;
+        }
+        if (givenUp > 0) {
+            orders.save(order);
+            log.info("Order {}: {} unit(s) of {} held at {} given up after a count's shortage; the order is short of them "
+                    + "again", order.orderNumber(), givenUp, sku, warehouseCode);
+        }
+        return givenUp;
+    }
+
+    private static Set<UUID> holdersOf(com.stockflow.inventory.api.SkuHoldCover cover) {
+        Set<UUID> holders = new LinkedHashSet<>();
+        cover.holds().forEach(h -> holders.add(h.orderId()));
+        return holders;
+    }
+
+    /**
      * 4B-8 (17 BR-03): the batch released is held in full at the shipping warehouse - every carton of every line it
      * carries, counting only the holds taken for it.
      *

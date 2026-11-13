@@ -92,6 +92,34 @@ public interface InventoryService {
     Map<String, Integer> availableToPromiseByWarehouse(Sku sku);
 
     /**
+     * WF4-COUNT-EDGE (a): the live SKU reservations of {@code sku} held at {@code warehouseCode} and the whole free
+     * cartons there that cover them ({@link SkuHoldCover}). Read in the caller's transaction; under the SKU's advisory
+     * lock ({@link #prepareReservation}) it is the figure the next hold or release sees.
+     */
+    SkuHoldCover skuHoldCover(Sku sku, String warehouseCode);
+
+    /**
+     * WF4-COUNT-EDGE (a): a hold at a warehouse that stock no longer covers keeps only {@code keepUnits}. The live SKU
+     * reservation is released ({@code SHORT_PICKED}: a count found its stock missing, 20 §4.2 step 8) and, when
+     * {@code keepUnits} is above zero, a new one of {@code keepUnits} is held at the same warehouse for the same order -
+     * not checked against what is available, as it holds less than the one it replaces. Joins the caller's transaction,
+     * under the SKU's advisory lock. Idempotent: called again for the same hold and size it answers the same.
+     *
+     * @return the new hold's id; empty when {@code keepUnits} is zero
+     * @throws com.stockflow.common.error.BusinessException {@code RESERVATION_NOT_FOUND} (not a SKU reservation at a
+     *         warehouse), {@code RESERVATION_NOT_ACTIVE} (already closed, and not by this call),
+     *         {@code VALIDATION_FAILED} ({@code keepUnits} negative or not below the hold)
+     */
+    Optional<UUID> shrinkHold(UUID reservationId, int keepUnits);
+
+    /**
+     * WF4-COUNT-EDGE (b): the holds among {@code reservationIds} that an approved count gave up with their carton (20 §4.2
+     * step 8): allocations released as a short pick whose carton is empty now - the shortage of a released order that the
+     * reallocation of a short line replaces ({@link #reallocate}). Read-only; any other id is left out.
+     */
+    java.util.Set<UUID> holdsGivenUpWithTheirCarton(Collection<UUID> reservationIds);
+
+    /**
      * HELD → ALLOCATED (docs 03 §6, 04c F-FUL step 02): the order was released to a warehouse; each live SKU
      * reservation of the order becomes allocations of whole LPN cartons on pickable bins of that warehouse, one
      * allocation per carton, in the SKU's removal order - the earliest receipt first (FIFO, kltn-docs 07 BR-03) - and

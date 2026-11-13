@@ -282,6 +282,10 @@ class StockPackageContents {
         }
         int units = row.onHand().value();
         row.adjustBy(-units);
+        if (giveUpHoldsBy != null) {
+            // A count's shortage (WF4-COUNT-EDGE a): the warehouse has a carton fewer; holds by SKU are recomputed.
+            row.announceCountWriteOff(units, giveUpHoldsBy);
+        }
         if (missingWhenEmpty) {
             carton.lose(now);
         } else {

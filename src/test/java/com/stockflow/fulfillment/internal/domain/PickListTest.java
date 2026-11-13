@@ -106,6 +106,36 @@ class PickListTest {
         }
 
         @Test
+        @DisplayName("WF4-COUNT-EDGE b: a hold an approved count gave up with its carton before the task gets its line SHORT "
+                + "(NOT_FOUND, nothing taken) beside the live holds' OPEN lines; planned once; another released hold is not")
+        void aHoldGivenUpWithItsCartonIsPlannedShort() {
+            UUID line = UUID.randomUUID();
+            UUID live = UUID.randomUUID();
+            UUID givenUp = UUID.randomUUID();
+            UUID released = UUID.randomUUID();
+            var list = new PickList(UUID.randomUUID(), HCM, PickStatus.PENDING, false, List.of());
+            var order = List.of(new PickList.OrderLine(line, "SOFA-3S-GREY", List.of(live, givenUp, released)));
+            var holds = Map.of(live, hold(live, "SOFA-3S-GREY", "HCM-A01-2-B", HCM, 2, "LPN-1"),
+                    givenUp, new PickList.Hold(givenUp, "SOFA-3S-GREY", "HCM-A01-1-A", HCM, null, 2, false, "LPN-2",
+                            false),
+                    released, new PickList.Hold(released, "SOFA-3S-GREY", "HCM-A01-3-A", HCM, null, 2, false, "LPN-3",
+                            true));
+
+            List<PickLine> added = list.plan(order, holds, java.util.Set.of(givenUp), UUID::randomUUID);
+
+            assertThat(added).extracting(PickLine::reservationId).containsExactly(givenUp, live);
+            PickLine shortLine = added.getFirst();
+            assertThat(shortLine.status()).isEqualTo(PickLineStatus.SHORT);
+            assertThat(shortLine.shortReason()).isEqualTo(ShortPickReason.NOT_FOUND);
+            assertThat(shortLine.shortQty()).isEqualTo(2);
+            assertThat(shortLine.pickedQty()).isZero();
+            assertThat(shortLine.lpn()).isEqualTo("LPN-2");
+            assertThat(added.get(1).status()).isEqualTo(PickLineStatus.OPEN);
+            assertThat(list.hasShortLines()).isTrue();
+            assertThat(list.plan(order, holds, java.util.Set.of(givenUp), UUID::randomUUID)).isEmpty();
+        }
+
+        @Test
         @DisplayName("planning again adds nothing: lines are planned once")
         void planningIsIdempotent() {
             UUID h1 = UUID.randomUUID();

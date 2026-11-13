@@ -368,6 +368,94 @@ class InventoryServiceImpl implements InventoryService {
     }
 
     /**
+     * {@inheritDoc}
+     *
+     * <p>The holds are read without a row lock; the caller takes the SKU's advisory lock first when it acts on them, as
+     * every hold and allocation of the SKU does.</p>
+     */
+    @Override
+    @Transactional(propagation = Propagation.REQUIRED, readOnly = true)
+    public com.stockflow.inventory.api.SkuHoldCover skuHoldCover(Sku sku, String warehouseCode) {
+        String warehouse = new LocationId(warehouseCode).code();
+        long coverable = new PickableStock(repository, locations, cycleCounts).coverableAt(sku, warehouse);
+        List<com.stockflow.inventory.api.SkuHoldCover.Hold> holds = skuReservations.findHeldAt(sku.code(), warehouse)
+                .stream().map(r -> new com.stockflow.inventory.api.SkuHoldCover.Hold(r.id().value(), r.orderId(),
+                        r.quantity().value(), r.reservedAt()))
+                .toList();
+        return new com.stockflow.inventory.api.SkuHoldCover(sku.code(), warehouse, Math.toIntExact(coverable), holds);
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Locks the SKU, then the hold. The replacement's request id is named after the hold and the size kept, so a
+     * repeated call finds it instead of holding twice ({@code uk_stock_reservation_request}).</p>
+     */
+    @Override
+    @Transactional(propagation = Propagation.REQUIRED)
+    public Optional<UUID> shrinkHold(UUID reservationId, int keepUnits) {
+        SkuReservation found = skuReservations.findById(ReservationId.of(reservationId))
+                .filter(r -> r.warehouseCode() != null)
+                .orElseThrow(() -> new BusinessException(ErrorCode.RESERVATION_NOT_FOUND,
+                        "No hold at a warehouse with id " + reservationId));
+        if (keepUnits < 0 || keepUnits >= found.quantity().value()) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Hold %s of %d unit(s) cannot keep %d"
+                    .formatted(reservationId, found.quantity().value(), keepUnits));
+        }
+        UUID requestId = UUID.nameUUIDFromBytes(("shrink:%s:%d".formatted(reservationId, keepUnits))
+                .getBytes(StandardCharsets.UTF_8));
+        policies.lock(found.sku().code());   // re-entrant: the caller may have taken it in prepareReservation
+        List<SkuReservation> replayed = skuReservations.findHeldForRequest(requestId);
+        if (!replayed.isEmpty()) {
+            return Optional.of(replayed.getFirst().id().value());
+        }
+        SkuReservation hold = skuReservations.findByIdForUpdate(ReservationId.of(reservationId)).orElseThrow();
+        Instant now = clock.instant();
+        if (!hold.release(ReleaseReason.SHORT_PICKED, now)) {
+            if (keepUnits == 0 && hold.status() == ReservationStatus.RELEASED
+                    && hold.releaseReason() == ReleaseReason.SHORT_PICKED) {
+                return Optional.empty();
+            }
+            throw new BusinessException(ErrorCode.RESERVATION_NOT_ACTIVE,
+                    "Hold %s is already %s".formatted(reservationId, hold.status()));
+        }
+        skuReservations.save(hold);
+        events.publishEventsOf(hold);
+        if (keepUnits == 0) {
+            log.info("Order {}: hold {} of {} at {} given up whole; stock no longer covers it", hold.orderId(),
+                    reservationId, hold.sku(), hold.warehouseCode());
+            return Optional.empty();
+        }
+        // The release first: tg_stock_reservation_soft_atp checks the insert against every hold still HELD.
+        skuReservations.flush();
+        SkuReservation kept = skuReservations.save(hold.keeping(keepUnits, requestId, now));
+        events.publishEventsOf(kept);
+        log.info("Order {}: hold {} of {} at {} cut from {} to {} unit(s) (hold {}); stock no longer covers it",
+                hold.orderId(), reservationId, hold.sku(), hold.warehouseCode(), hold.quantity(), keepUnits, kept.id());
+        return Optional.of(kept.id().value());
+    }
+
+    /** {@inheritDoc} */
+    @Override
+    @Transactional(propagation = Propagation.REQUIRED, readOnly = true)
+    public Set<UUID> holdsGivenUpWithTheirCarton(Collection<UUID> reservationIds) {
+        if (reservationIds.isEmpty()) {
+            return Set.of();
+        }
+        Set<UUID> givenUp = new LinkedHashSet<>();
+        for (com.stockflow.inventory.internal.domain.HoldDetail detail : repository.findHolds(Set.copyOf(reservationIds))) {
+            if (detail.status() != ReservationStatus.RELEASED) {
+                continue;
+            }
+            ReservationId id = ReservationId.of(detail.reservationId());
+            repository.findIdByReservationId(id).flatMap(repository::findById)
+                    .filter(row -> row.findReservation(id).map(hold -> givenUpWithItsCarton(hold, row)).orElse(false))
+                    .ifPresent(row -> givenUp.add(detail.reservationId()));
+        }
+        return givenUp;
+    }
+
+    /**
      * Each warehouse's levels of the SKU. ATP per warehouse (20 BR-01): what a release there could allocate - whole
      * free cartons on pickable, usable locations, none frozen, the very set the release plans over
      * ({@link PickableStock}; review P-1: a carton in a receiving area is on hand, never allocated, so never promised) -

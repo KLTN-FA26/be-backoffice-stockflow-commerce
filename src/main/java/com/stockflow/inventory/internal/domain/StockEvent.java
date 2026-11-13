@@ -73,6 +73,18 @@ public sealed interface StockEvent extends DomainEvent {
         }
     }
 
+    record WrittenOffByCount(UUID eventId, Instant occurredAt, com.stockflow.contracts.StockWrittenOffByCount payload)
+            implements StockEvent {
+        public WrittenOffByCount(com.stockflow.contracts.StockWrittenOffByCount payload) {
+            this(UUID.randomUUID(), Instant.now(), payload);
+        }
+
+        @Override
+        public String aggregateId() {
+            return payload.sku() + "@" + payload.warehouseCode();
+        }
+    }
+
     record HeldCartonWrittenOff(UUID eventId, Instant occurredAt, com.stockflow.contracts.StockHeldCartonWrittenOff payload)
             implements StockEvent {
         public HeldCartonWrittenOff(com.stockflow.contracts.StockHeldCartonWrittenOff payload) {

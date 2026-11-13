@@ -142,6 +142,19 @@ public final class PickList {
      *         before, so such a hold was written around both, and a line for it could be confirmed by no LPN
      */
     public List<PickLine> plan(List<OrderLine> orderLines, Map<UUID, Hold> holds, Supplier<UUID> ids) {
+        return plan(orderLines, holds, Set.of(), ids);
+    }
+
+    /**
+     * {@link #plan(List, Map, Supplier)}, with the holds an approved count gave up with their carton before the task
+     * existed ({@code givenUp}; WF4-COUNT-EDGE b, kltn-docs 20 §4.2 step 8): the order was released, the carton then
+     * counted missing, and no line stood on its allocation. Each gets the line it would have had, SHORT at once
+     * ({@code NOT_FOUND}, nothing deducted) - the shortage a picker's report makes (07 §4.4 step 9) - for the warehouse
+     * manager to reallocate as any short line ({@link #replaceShort}). A given-up hold that had a line once is left
+     * alone, as every hold is.
+     */
+    public List<PickLine> plan(List<OrderLine> orderLines, Map<UUID, Hold> holds, Set<UUID> givenUp,
+                               Supplier<UUID> ids) {
         boolean opening = status == PickStatus.PENDING || status == PickStatus.PICKING;
         boolean topUp = (status == PickStatus.STAGED || status == PickStatus.PICKED) && !lines.isEmpty();
         if (!opening && !topUp) {
@@ -149,20 +162,21 @@ public final class PickList {
         }
         Set<UUID> planned = new java.util.HashSet<>();
         lines.stream().map(PickLine::reservationId).filter(Objects::nonNull).forEach(planned::add);
-        record Stop(UUID orderLineId, Hold hold) { }
+        record Stop(UUID orderLineId, Hold hold, boolean shortage) { }
         List<Stop> stops = new ArrayList<>();
         Set<String> elsewhere = new TreeSet<>();
         for (OrderLine line : orderLines) {
             for (UUID reservationId : line.reservationIds()) {
                 Hold hold = holds.get(reservationId);
-                if (hold == null || !hold.live() || planned.contains(reservationId)) {
+                boolean shortage = hold != null && !hold.live() && givenUp.contains(reservationId);
+                if (hold == null || !hold.live() && !shortage || planned.contains(reservationId)) {
                     continue;       // consumed, released or expired, or a line has it: nothing new to take off a shelf
                 }
                 if (!warehouseId.equals(hold.warehouseId())) {
                     elsewhere.add(hold.sku());
                     continue;
                 }
-                stops.add(new Stop(line.lineId(), hold));
+                stops.add(new Stop(line.lineId(), hold, shortage));
             }
         }
         if (!elsewhere.isEmpty()) {
@@ -178,8 +192,12 @@ public final class PickList {
         int sequence = lines.stream().mapToInt(PickLine::sequenceNo).max().orElse(0) + 1;
         for (Stop stop : stops) {
             Hold hold = stop.hold();
-            added.add(PickLine.open(ids.get(), stop.orderLineId(), hold.reservationId(), hold.sku(),
-                    hold.locationCode(), hold.lotNumber(), sequence++, hold.quantity(), hold.lpn(), hold.wholeCarton()));
+            PickLine line = PickLine.open(ids.get(), stop.orderLineId(), hold.reservationId(), hold.sku(),
+                    hold.locationCode(), hold.lotNumber(), sequence++, hold.quantity(), hold.lpn(), hold.wholeCarton());
+            if (stop.shortage()) {
+                line.reportShort(ShortPickReason.NOT_FOUND, hold.locationCode());
+            }
+            added.add(line);
         }
         lines.addAll(added);
         return added;
