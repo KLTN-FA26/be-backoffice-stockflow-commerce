@@ -173,7 +173,7 @@ public class PutawayTripService {
         }
         Map<UUID, StockPackage> cartonOf = cartonsOf(taskOf.values());
 
-        Map<UUID, UUID> assigned = assign(trip.warehouseId(), tripId, new ArrayList<>(taskOf.values()));
+        Map<UUID, UUID> assigned = assign(trip.warehouseId(), new ArrayList<>(taskOf.values()));
 
         // The route starts where the last carton came from (05 §4.5 step 14).
         UUID startLocationId = cart.stream().max(Comparator.comparing(PutawayTripView.Carton::loadedAt))
@@ -189,7 +189,7 @@ public class PutawayTripService {
      * and given to the cartons before it is counted as taken, else the OVERFLOW area. Cartons of one lot follow one
      * another.
      */
-    private Map<UUID, UUID> assign(UUID warehouseId, UUID tripId, List<PutawayTaskView> cart) {
+    private Map<UUID, UUID> assign(UUID warehouseId, List<PutawayTaskView> cart) {
         Map<UUID, CartonLoad> loads = occupancy.loadsOf(cart.stream().map(PutawayTaskView::stockPackageId).toList());
         Map<UUID, String> lotOf = new HashMap<>();
         cart.forEach(task -> lotOf.put(task.id(), putaway.lotOfTask(task)));
@@ -200,6 +200,7 @@ public class PutawayTripService {
             byLot.computeIfAbsent(task.sku() + "|" + (lot == null ? task.id() : lot), key -> new ArrayList<>())
                     .add(task);
         }
+        // Every hold in the warehouse is another trip's: this one is still LOADING and holds nothing yet.
         List<Reserved> reserved = new ArrayList<>(putaway.heldByTrips(warehouseId, null));
         Map<String, UUID> binIds = warehouses.putawayCandidates(warehouseId).stream()
                 .collect(Collectors.toMap(c -> c.locationCode(), c -> c.locationId(), (a, b) -> a));
