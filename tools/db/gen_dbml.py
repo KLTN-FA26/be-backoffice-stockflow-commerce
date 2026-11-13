@@ -80,9 +80,15 @@ for c in cons:
     elif c["type"] == "f":
         fks.append(c)
     elif c["type"] == "c":
-        m = re.match(r"^CHECK \(\(\((\w+)\)::text = ANY \(\(ARRAY\[(.*)\]\)::text\[\]\)\)\)$", c["def"])
+        # A CHECK restored from a dump (the baseline, V20261111000000) is stored with every element cast,
+        # "ANY (ARRAY[('A'::character varying)::text, ...])", where one written as "IN ('A', ...)" is stored as
+        # "ANY ((ARRAY['A'::character varying, ...])::text[])". Read the first as the second, or a database built
+        # from the baseline - every database since the squash - draws no enum but the ones added after it.
+        d = re.sub(r"\('([^']*)'::character varying\)::text", r"'\1'::character varying", c["def"])
+        d = re.sub(r"= ANY \(ARRAY\[([^\]]*)\]\)", r"= ANY ((ARRAY[\1])::text[])", d)
+        m = re.match(r"^CHECK \(\(\((\w+)\)::text = ANY \(\(ARRAY\[(.*)\]\)::text\[\]\)\)\)$", d)
         if not m:
-            m = re.match(r"^CHECK \(\(\((\w+) IS NULL\) OR \(\((\w+)\)::text = ANY \(\(ARRAY\[(.*)\]\)::text\[\]\)\)\)\)$", c["def"])
+            m = re.match(r"^CHECK \(\(\((\w+) IS NULL\) OR \(\((\w+)\)::text = ANY \(\(ARRAY\[(.*)\]\)::text\[\]\)\)\)\)$", d)
             # "col IS NULL OR col IN (...)" only: "other IS NULL OR col IN (...)" is a rule about some rows, not the
             # column's values - read as an enum, it would replace the real list with a subset of it.
             if m and m.group(1) == m.group(2):
