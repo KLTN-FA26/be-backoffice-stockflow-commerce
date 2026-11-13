@@ -1,0 +1,1674 @@
+// =====================================================================================
+// StockFlowCommerce - WF3: Thiếu tồn → Đơn sản xuất → Duyệt mẫu in → Nhập kho → Cất hàng
+// Người demo: Nguyễn Hoài Phương. Kịch bản: Kich_ban_demo_StockFlowCommerce.xlsx
+// (12 bước happy, X01–X08, R01–R14).
+//
+// ĐÂY LÀ THIẾT KẾ ĐỀ XUẤT, KHÔNG PHẢI DATABASE HIỆN TẠI.
+// Nền: docs/business-design/db-design/schema.dbml trên origin/develop (df34c338, sinh từ database
+// thật ngày 2026-11-11). Đối chiếu với docs kltn-docs 601320b (2026-11-08): 01, 03, 05, 06, 11,
+// 16, 17, 20. Phân tích đầy đủ: wf3-phan-tich-docs-vs-db.md.
+// Cách đọc: cột có note "đề xuất: ..." và bảng có Note "ĐỀ XUẤT (bảng mới)" là phần khác database;
+// mọi thứ còn lại giữ nguyên như database. Ref chỉ giữ khi cả hai đầu nằm trong file. Bỏ FK tới
+// identity.app_user (người lập / duyệt / thực hiện) cho dễ đọc; các cột vẫn còn.
+// Mở: https://dbdiagram.io/d -> xoá mẫu -> dán toàn bộ -> Auto-arrange.
+// Bảng được gom thành 11 cụm (TableGroup c01..c11) theo thứ tự hàng đi qua luồng; phần
+// "Đọc nhanh theo cụm" ở đầu wf3-giai-thich-bang.md giải thích từng cụm bằng lời thường.
+//
+// A. THÊM - docs yêu cầu, database chưa có
+//   1. Lượt cất (05 §4.5, BR-15..17): warehouse.putaway_trip, warehouse.putaway_trip_item,
+//      warehouse.putaway_hold_minutes. Dùng ở B10–12, X07, R10–R13.
+//   2. Đơn SX bù (17 §4.13, BR-31): production_order.kind + origin_production_order_id,
+//      bảng ordering.production_order_damage_adjustment. Dùng ở X05, R08.
+//   3. Bảng sức chứa kho (06 §4.6, BR-19, BR-20): warehouse.utilization_pct,
+//      area.max_stack_height, shelf_level.usable_height bắt buộc. Dùng ở B1, B3, X08.
+//      Thể tích bin / khu / thùng và cả bảng sức chứa đều tính khi đọc, không lưu.
+//   4. Thẻ duyệt mẫu in trong chat (16 bước 11, BR-10): chat.message.kind, card_type,
+//      card_reference_id. Dùng ở B6.
+//   5. Lịch sử đổi SKU dòng đơn (17 §4.7 bước 25): ordering.order_line_sku_change. Dùng ở X02.
+//
+// B. MÔ HÌNH THÙNG - thùng là đơn vị duy nhất (01 BR-03, 03 BR-12/13, 20 BR-14/18)
+//   1. Quy cách thùng nằm trên inventory.inventory_items (units_per_carton, carton_*).
+//      Bỏ inventory.uom_conversions, product.variant_sales_units, mọi cột uom_conversion_id.
+//   2. Gộp inventory.stock_item vào inventory.stock_package: thùng LPN mang lô, vị trí,
+//      tình trạng hàng (stock_status) và ngày nhập. Hai bảng hiện là 1:1.
+//   3. Mọi số lượng đếm bằng thùng: stock_reservation.cartons, goods_receipt_lines.received_cartons,
+//      order_line.cartons. Sổ cái và phiếu điều chỉnh: mỗi dòng đúng một thùng, bỏ số lượng.
+//
+// C. BỎ - phần thừa so với docs (nên dọn khi squash migration về một baseline)
+//   Cột bị bỏ ghi ở cuối Note của từng bảng ("Đề xuất bỏ cột: ...").
+//   - Giá trị enum của tính năng đã bỏ: xem dòng "đề xuất: bỏ ..." trên từng Enum.
+//   - stock_reservation.expires_at (khoản giữ không có hạn - 20 §5.6).
+//   - Cột chép lại thứ đã có ở chỗ khác trong cùng module: stock_adjustment.sku / lot_number
+//     (lấy từ thùng), stock_movement.lot_number (đã có lot_id), stock_lot.production_order_code
+//     (luôn bằng lot_number), production_order_line.total_units (= cartons × units_per_carton),
+//     delivery_batch_hold.order_id (lấy từ dòng đơn).
+//   - Cột của tính năng đã bỏ: stock_adjustment.received_at / reservation_id (tồn lẻ, SCRAP),
+//     stock_lot.goods_receipt_id / goods_receipt_number (lô theo phiếu mua hàng).
+//   - ordering.order_line_reservation: trùng với delivery_batch_hold, hai bảng luôn ghi cùng lúc.
+//   - ordering.customer_order: từ 61 cột còn 24. Bỏ ảnh chụp liên hệ và địa chỉ xuất hoá đơn của
+//     thời bán lẻ, tiền (tính từ dòng đơn), mốc thời gian (order_status_history), treo đơn
+//     (order_hold), release (delivery_batch_release), phí huỷ (payment.order_settlement).
+//     Bảng nguồn của từng cột: xem wf3-giai-thich-bang.md mục 1.
+//   - Không còn trong file vì không thuộc WF3 hoặc không còn dùng: warehouse.move_task
+//     (không file Java nào dùng; 11 là di chuyển thủ công ghi thẳng sổ MOVE),
+//     procurement.goods_receipt_return_cartons (thùng của phiếu HÀNG HOÀN, thuộc WF5),
+//     procurement.goods_receipt_photos (03 không có ảnh cho phiếu theo Đơn SX).
+//
+// LUỒNG CHÍNH (bước → bảng)
+//   B1–2  customer_order.shipping_warehouse_id · delivery_batch/_line → giữ thùng FIFO:
+//         stock_reservation (theo SKU) + delivery_batch_hold
+//   B3–5  production_order DRAFT + production_order_line → PENDING_APPROVAL → SENT
+//         (production_order_slip + file PDF/X ở design_artifact, notification.delivery_log;
+//         đơn bán → AWAITING_STOCK) → ACCEPTED
+//   B6–7  production_order_sample_round + _sample_media; thẻ trong chat.message
+//         → SAMPLE_PENDING → IN_PRODUCTION
+//   B8–9  goods_receipts/_lines + production_order_receipt; mỗi thùng một stock_package
+//         (RECEIVING → IN_STOCK, stock_status INBOUND), lô = stock_lot.production_order_code;
+//         stock_movement RECEIPT; mỗi thùng một putaway_task
+//   B10–12 putaway_trip LOADING → IN_PROGRESS (gán bin, giữ chỗ, lộ trình trên putaway_trip_item)
+//         → quét bin + LPN: stock_package về bin, stock_status AVAILABLE, stock_movement MOVE,
+//         putaway_task DONE → lượt COMPLETED; phiếu CLOSED; đơn → READY_TO_FULFILL
+// =====================================================================================
+
+// đề xuất: bỏ IN_PRODUCTION (không có trong docs)
+Enum ordering.customer_order_status {
+  DRAFT
+  PENDING_CONTRACT
+  PENDING_PAYMENT
+  CONFIRMED
+  AWAITING_STOCK
+  READY_TO_FULFILL
+  PICKING
+  PARTIALLY_FULFILLED
+  PACKED
+  ON_HOLD
+  SHIPPED
+  DELIVERY_FAILED
+  DELIVERED
+  RETURN_REQUESTED
+  RETURNED
+  REFUNDED
+  PARTIALLY_REFUNDED
+  COMPLETED
+  CANCELLED
+  CLOSED
+}
+
+// đề xuất: bỏ PAYMENT_FAILED, REPLACEMENT_WITHDRAWN (không có trong docs)
+Enum ordering.customer_order_cancellation_reason_code {
+  CUSTOMER_REQUEST
+  DUPLICATE_ORDER
+  OTHER
+  PAYMENT_NOT_RECEIVED
+  OUT_OF_STOCK
+  SUSPECTED_FRAUD
+  CREDIT_REJECTED
+  PRODUCTION_ISSUE
+}
+
+Enum ordering.sales_contract_status {
+  DRAFT
+  SENT
+  SIGNED
+  COMPLETED
+  CANCELLED
+}
+
+Enum customer.customer_status {
+  PENDING_ACTIVATION
+  ACTIVE
+  INACTIVE
+  BLOCKED
+}
+
+// đề xuất: bỏ EXPIRED (không có trong docs)
+Enum inventory.stock_reservation_status {
+  HELD
+  ALLOCATED
+  CONSUMED
+  RELEASED
+}
+
+Enum ordering.production_order_kind {
+  STANDARD
+  REPLACEMENT
+}
+
+Enum ordering.production_order_status {
+  DRAFT
+  PENDING_APPROVAL
+  SENT
+  ACCEPTED
+  SAMPLE_PENDING
+  IN_PRODUCTION
+  PARTIALLY_RECEIVED
+  RECEIVED
+  CANCELLED
+  CLOSED
+}
+
+Enum ordering.producer_channel {
+  EMAIL
+  PDF
+}
+
+Enum ordering.producer_status {
+  ACTIVE
+  INACTIVE
+}
+
+Enum design.design_artifact_artifact_role {
+  CUSTOMER_PREVIEW
+  TECHNICAL_SPEC
+  PRINT_READY
+  PRODUCTION_INSTRUCTION
+}
+
+Enum design.design_draft_status {
+  DRAFT
+  PENDING_REVIEW
+  APPROVED
+  ARCHIVED
+}
+
+Enum ordering.production_order_sample_round_result {
+  APPROVED
+  REPRINT_REQUESTED
+}
+
+Enum chat.conversation_status {
+  OPEN
+  ASSIGNED
+  CLOSED
+}
+
+Enum chat.message_sender_type {
+  CUSTOMER
+  AGENT
+  SYSTEM
+}
+
+Enum chat.message_kind {
+  TEXT
+  ACTION_CARD
+}
+
+Enum ordering.delay_alert_type {
+  AT_RISK
+  PRODUCTION_LATE
+  PO_NEEDED
+  DELIVERY_LATE
+}
+
+Enum ordering.delivery_batch_window_change_reason_code {
+  CUSTOMER_REQUEST
+  SELLER_DELAY
+}
+
+Enum notification.user_notification_severity {
+  INFO
+  WARN
+  CRITICAL
+}
+
+Enum notification.delivery_log_channel {
+  EMAIL
+  SMS
+  PUSH
+  API
+}
+
+Enum notification.delivery_log_status {
+  PENDING
+  SENT
+  FAILED
+  SKIPPED
+}
+
+Enum notification.delivery_log_provider {
+  RESEND
+  SMTP
+  RECORDING
+}
+
+Enum notification.delivery_log_provider_status {
+  DELIVERY_DELAYED
+  DELIVERED
+  BOUNCED
+  COMPLAINED
+  FAILED
+}
+
+// đề xuất: bỏ CONFIRMED (không có trong docs)
+Enum procurement.goods_receipts_status {
+  DRAFT
+  IN_PUTAWAY
+  CLOSED
+  CANCELLED
+}
+
+// đề xuất: bỏ PURCHASE (không có trong docs)
+Enum procurement.goods_receipts_receipt_type {
+  PRODUCTION
+  RETURN
+}
+
+Enum ordering.production_order_receipt_status {
+  DRAFT
+  CONFIRMED
+  CANCELLED
+}
+
+Enum inventory.stock_package_status {
+  RECEIVING
+  IN_STOCK
+  CONSUMED
+  LOST
+  VOID
+}
+
+Enum inventory.stock_status {
+  INBOUND
+  AVAILABLE
+  QUARANTINE
+}
+
+// đề xuất: bỏ GOODS_RECEIPT (không có trong docs)
+Enum inventory.stock_lot_origin_type {
+  PRODUCTION_ORDER
+  UNTRACED
+}
+
+// đề xuất: bỏ PUTAWAY, TRANSFER_OUT, TRANSFER_IN, COUNT_CORRECTION, RETURN_IN, SCRAP, CONSUMPTION, SUPPLIER_RETURN (không có trong docs)
+Enum inventory.stock_movement_movement_type {
+  RECEIPT
+  MOVE
+  ADJUSTMENT
+  STATUS_CHANGE
+  PICK
+  PUT_BACK
+}
+
+// đề xuất: bỏ QC_INSPECTION, PACKAGE, TRANSFER_ORDER_LINE, CYCLE_COUNT_LINE, RETURN_REQUEST_LINE, PRODUCTION_ORDER, EXPIRY_SWEEP, DAMAGE_REPORT (code trên develop không còn ghi)
+Enum inventory.stock_movement_reference_type {
+  GOODS_RECEIPT_LINE
+  GOODS_RECEIPT
+  PUTAWAY_TASK
+  PICK_LINE
+  ORDER
+  STOCK_ADJUSTMENT
+  MOVE_TASK
+  STOCK_PACKAGE
+}
+
+Enum inventory.stock_adjustment_direction {
+  DECREASE
+  INCREASE
+}
+
+// đề xuất: bỏ EXPIRED, SCRAP, SAMPLE, SUBCONTRACT_LOSS (không có trong docs)
+Enum inventory.stock_adjustment_reason_code {
+  DAMAGED
+  LOST
+  FOUND
+  DATA_CORRECTION
+  OTHER
+  COUNT_VARIANCE
+}
+
+// đề xuất: bỏ APPROVED (không có trong docs)
+Enum inventory.stock_adjustment_status {
+  PENDING_APPROVAL
+  POSTED
+  REJECTED
+  WITHDRAWN
+}
+
+Enum product.variants_status {
+  DRAFT
+  ACTIVE
+  BLOCKED
+  OBSOLETE
+}
+
+// đề xuất: bỏ IN_PROGRESS (không có trong docs)
+Enum warehouse.putaway_task_status {
+  PENDING
+  DONE
+  CANCELLED
+}
+
+Enum warehouse.putaway_trip_status {
+  LOADING
+  IN_PROGRESS
+  COMPLETED
+  CLOSED
+}
+
+Enum warehouse.putaway_trip_item_status {
+  ON_CART
+  PLACED
+  RETURNED
+}
+
+Enum warehouse.warehouse_status {
+  ACTIVE
+  INACTIVE
+}
+
+// đề xuất: bỏ SUBCONTRACTOR (không có trong docs)
+Enum warehouse.storage_location_kind {
+  BIN
+  AREA
+}
+
+Enum warehouse.storage_location_status {
+  ACTIVE
+  BLOCKED
+  MAINTENANCE
+  INACTIVE
+}
+
+Enum warehouse.bin_type {
+  STANDARD
+  PALLET
+  SMALL_PARTS
+}
+
+Enum warehouse.shelf_status {
+  ACTIVE
+  BLOCKED
+  MAINTENANCE
+  INACTIVE
+}
+
+// đề xuất: bỏ PRODUCTION (không có trong docs)
+Enum warehouse.area_type {
+  RECEIVING
+  QUARANTINE
+  OVERFLOW
+  STAGING
+  DISPATCH
+  NON_STORAGE
+}
+
+Enum warehouse.area_status {
+  ACTIVE
+  BLOCKED
+  MAINTENANCE
+  INACTIVE
+}
+
+Enum warehouse.boundary_type {
+  WALL
+  DOOR
+}
+
+Enum payment.installment_milestone {
+  ON_SIGNING
+  BEFORE_DELIVERY
+  AFTER_DELIVERY
+  CANCELLATION_FEE
+}
+
+Enum payment.installment_status {
+  NOT_DUE
+  DUE
+  PARTIALLY_PAID
+  PAID
+  OVERDUE
+  CANCELLED
+}
+
+Enum payment.order_settlement_kind {
+  ORDER_CANCELLED
+  REMAINDER_CLOSED
+  GOODS_RETURNED
+}
+
+// ---------- 1. Đơn bán và lịch giao: đầu vào của luồng (bước 1) ----------
+Table ordering.customer_order [headercolor: #C0392B] {
+  id                           uuid [pk]
+  order_number                 varchar(32) [not null, unique]
+  customer_id                  uuid [not null, note: 'đề xuất: NOT NULL: chỉ bán sỉ cho khách có hồ sơ, không còn khách vãng lai (14)']
+  request_id                   uuid [not null, unique]
+  status                       ordering.customer_order_status [not null]
+  currency                     varchar(3) [not null]
+  placed_at                    timestamptz [not null]
+  version                      bigint [not null, default: 0]
+  created_at                   timestamptz [not null]
+  created_by                   varchar(100)
+  last_modified_at             timestamptz
+  last_modified_by             varchar(100)
+  shipping_recipient_name      varchar(200) [not null, note: 'đề xuất: NOT NULL: người nhận bắt buộc khi tạo đơn (14); không còn contact_name để thay']
+  shipping_phone               varchar(32) [not null, note: 'đề xuất: NOT NULL: như trên']
+  shipping_line1               varchar(255) [not null, note: 'đề xuất: NOT NULL: địa chỉ giao bắt buộc khi tạo đơn (14)']
+  shipping_line2               varchar(255)
+  shipping_ward_code           varchar(20)
+  shipping_ward_name           varchar(120)
+  shipping_province_code       varchar(20)
+  shipping_province_name       varchar(120)
+  shipping_country_code        varchar(2)
+  shipping_postal_code         varchar(20)
+  cancellation_reason_code     ordering.customer_order_cancellation_reason_code
+  status_before_hold           varchar(32)
+  fulfilment_started_at        timestamptz
+  goods_left_at                timestamptz
+  shipping_warehouse_id        uuid
+  shipping_warehouse_chosen_at timestamptz
+  shipping_warehouse_chosen_by uuid
+  first_labeled_at             timestamptz
+  Note: 'Đơn bán. B1 chọn kho xuất (shipping_warehouse_id); B4 → AWAITING_STOCK; B12 → READY_TO_FULFILL. Đề xuất chỉ giữ dữ liệu của riêng đơn: tiền tính từ dòng đơn, mốc thời gian lấy từ order_status_history, treo đơn ở order_hold, release ở delivery_batch_release, phí huỷ ở payment.order_settlement. Đề xuất bỏ cột: total_amount, tax_amount, net_amount, closed_amount, contact_name, contact_email, contact_phone, billing_recipient_name, billing_phone, billing_line1, billing_line2, billing_ward_code, billing_ward_name, billing_province_code, billing_province_name, billing_country_code, billing_postal_code, warehouse_id, released_at, released_by, cancellation_reason, cancellation_retained_amount, cancellation_fee_reason, cancellation_fee_detail, cancellation_fee_amount, printing_started_at, packed_at, hold_reason, hold_note, shipped_at, delivered_at, delivery_failure_reason, completed_at, refunded_at, closed_at, allow_partial_shipment, contract_signed_at'
+}
+
+Table ordering.order_line [headercolor: #C0392B] {
+  id                      uuid [pk]
+  order_id                uuid [not null]
+  sku                     varchar(64) [not null]
+  unit_price              decimal(19,4) [not null]
+  currency                varchar(3) [not null]
+  design_snapshot_id      uuid
+  design_checksum         varchar(64)
+  cancelled_cartons       int [not null, default: 0, note: 'đề xuất: thay cancelled_quantity theo cái']
+  requested_delivery_date date
+  cartons                 int [not null, note: 'đề xuất: NOT NULL: số lượng dòng đơn là số thùng']
+  units_per_carton        int [not null, note: 'đề xuất: NOT NULL: chốt từ SKU khi lập báo giá (14 BR-08); giá ghi theo cái']
+  tax_rate                decimal(5,2)
+  Note: 'Dòng đơn: SKU riêng, số thùng, giá theo cái. B3 điền sẵn dòng thiếu vào Đơn SX; X02 đổi SKU. Đề xuất bỏ cột: tax_amount, quantity, uom_conversion_id'
+}
+
+Table ordering.delivery_batch [headercolor: #C0392B] {
+  id           uuid [pk]
+  contract_id  uuid [not null]
+  seq          smallint [not null]
+  window_start date
+  window_end   date
+  indexes {
+    (contract_id, seq) [unique]
+  }
+  Note: 'Đợt giao của hợp đồng. window_start / window_end là cửa sổ ĐÃ KÝ, không bao giờ đổi; cửa sổ hiệu lực = lần dời gần nhất ở delivery_batch_window_change (X04), chưa dời thì là cửa sổ đã ký. Trạng thái đợt là giá trị tính ra, không lưu (17 §5.5)'
+}
+
+Table ordering.delivery_batch_line [headercolor: #C0392B] {
+  id                uuid [pk]
+  delivery_batch_id uuid [not null]
+  order_line_id     uuid [not null]
+  cartons           int [not null]
+  indexes {
+    (delivery_batch_id, order_line_id) [unique]
+  }
+  Note: 'Số thùng mỗi dòng trong từng đợt giao → tính phần còn thiếu'
+}
+
+Table ordering.sales_contract [headercolor: #C0392B] {
+  id                          uuid [pk]
+  contract_number             varchar(40) [not null, unique]
+  order_id                    uuid [not null]
+  status                      ordering.sales_contract_status [not null]
+  seller_name                 varchar(200) [not null]
+  seller_tax_code             varchar(14) [not null]
+  seller_address              varchar(500) [not null]
+  seller_representative       varchar(200) [not null]
+  seller_representative_title varchar(100) [not null]
+  buyer_name                  varchar(200) [not null]
+  buyer_tax_code              varchar(14)
+  buyer_address               varchar(500) [not null]
+  buyer_representative        varchar(200) [not null]
+  buyer_representative_title  varchar(100) [not null]
+  free_sample_rounds          int [not null]
+  sent_at                     timestamptz
+  sent_by                     uuid
+  sent_document_key           varchar(512)
+  signed_on                   date
+  signed_file_key             varchar(512)
+  signed_file_name            varchar(255)
+  signed_at                   timestamptz
+  signed_by                   uuid
+  cancelled_at                timestamptz
+  cancelled_by                uuid
+  cancellation_reason         varchar(500)
+  completed_at                timestamptz
+  version                     bigint [not null, default: 0]
+  created_at                  timestamptz [not null, default: `now()`]
+  created_by                  varchar(100)
+  last_modified_at            timestamptz
+  last_modified_by            varchar(100)
+  Note: 'free_sample_rounds: số lần in mẫu miễn phí (X01, R04)'
+}
+
+Table customer.customer [headercolor: #D68910] {
+  id               uuid [pk]
+  full_name        varchar(200) [not null]
+  email            varchar(320) [not null, unique]
+  phone            varchar(32)
+  segment_id       uuid
+  status           customer.customer_status [not null]
+  version          bigint [not null, default: 0]
+  created_at       timestamptz [not null]
+  created_by       varchar(100)
+  last_modified_at timestamptz
+  last_modified_by varchar(100)
+  user_id          uuid
+  tax_code         varchar(14)
+  Note: 'Khách sỉ của đơn bán / Đơn SX'
+}
+
+Table ordering.order_status_history [headercolor: #C0392B] {
+  id               uuid [pk]
+  order_id         uuid [not null]
+  from_status      varchar(32)
+  to_status        varchar(32) [not null]
+  reason           varchar(500)
+  actor_id         uuid
+  occurred_at      timestamptz [not null]
+  version          bigint [not null, default: 0]
+  created_at       timestamptz [not null, default: `now()`]
+  created_by       varchar(100)
+  last_modified_at timestamptz
+  last_modified_by varchar(100)
+  Note: 'Lịch sử trạng thái đơn bán (Confirmed → Awaiting Stock → Ready to Fulfill)'
+}
+
+Table ordering.order_line_sku_change [headercolor: #C0392B] {
+  id                     uuid [pk]
+  order_id               uuid [not null]
+  order_line_id          uuid [not null]
+  old_sku                varchar(64) [not null]
+  new_sku                varchar(64) [not null, note: 'phải cùng số cái / thùng với SKU cũ (17 §4.7 bước 25)']
+  old_design_snapshot_id uuid
+  new_design_snapshot_id uuid
+  note                   varchar(500)
+  changed_by             uuid [not null]
+  changed_at             timestamptz [not null]
+  Note: 'ĐỀ XUẤT (bảng mới). X02: lịch sử đổi SKU của dòng đơn khi khách sửa thiết kế (17 §4.7 bước 25: mỗi lần đổi ghi lịch sử)'
+}
+
+// ---------- 2. Giữ hàng cho đơn (bước 2) ----------
+Table inventory.stock_reservation [headercolor: #3E7C4A] {
+  id                uuid [pk]
+  stock_package_id  uuid [note: 'đề xuất: thùng được phân bổ, thay stock_item_id; null = giữ theo SKU chưa gắn thùng (20 §5.6)']
+  order_id          uuid [not null]
+  root_request_id   uuid [not null]
+  request_id        uuid [not null, unique]
+  cartons           int [not null, note: 'đề xuất: số thùng giữ (khoản phân bổ luôn = 1); thay quantity theo cái']
+  reserved_at       timestamptz [not null]
+  status            inventory.stock_reservation_status [not null]
+  release_reason    varchar(32)
+  closed_at         timestamptz
+  sku               varchar(64) [not null]
+  allocated_from_id uuid
+  order_number      varchar(32)
+  warehouse_code    varchar(64)
+  Note: 'Khoản giữ hàng hai tầng: giữ theo SKU (stock_package_id null, B2) và phân bổ từng thùng (WF4). X05 nhả giữ. Đề xuất bỏ cột: expires_at'
+}
+
+Table ordering.delivery_batch_hold [headercolor: #C0392B] {
+  reservation_id    uuid [pk]
+  delivery_batch_id uuid [not null]
+  order_line_id     uuid [not null]
+  created_at        timestamptz [not null, default: `now()`]
+  Note: 'Khoản giữ hàng ↔ dòng đơn ↔ đợt giao. B2 giữ hàng tính cho đợt giao sớm nhất trước; X05 nhả giữ 2 thùng lỗi. Đề xuất: là bảng nối duy nhất, thay cả ordering.order_line_reservation (hai bảng luôn được ghi cùng lúc). Đề xuất bỏ cột: order_id'
+}
+
+// ---------- 3. Đơn sản xuất (bước 3–5, X05) ----------
+Table ordering.production_order [headercolor: #C0392B] {
+  id                         uuid [pk]
+  code                       varchar(32) [not null, unique]
+  kind                       ordering.production_order_kind [not null, default: 'STANDARD', note: 'đề xuất: loại thường / bù (17 §4.13, BR-31)']
+  origin_production_order_id uuid [note: 'đề xuất: Đơn SX gốc; bắt buộc khi kind = REPLACEMENT (CHECK)']
+  sales_order_id             uuid [not null]
+  delivery_batch_id          uuid [not null]
+  customer_id                uuid [not null]
+  producer_id                uuid [not null]
+  receiving_warehouse_id     uuid [not null]
+  need_by_date               date [not null]
+  status                     ordering.production_order_status [not null]
+  sample_approval_required   boolean [not null]
+  sample_required_by_default boolean [not null]
+  sample_waiver_reason       varchar(500)
+  unit_price                 decimal(19,4)
+  currency                   varchar(3) [not null, default: 'VND']
+  note                       varchar(500)
+  drawn_up_by                uuid [not null]
+  submitted_at               timestamptz
+  approved_by                uuid
+  approved_at                timestamptz
+  returned_reason            varchar(500)
+  sent_at                    timestamptz
+  production_started_at      timestamptz
+  cancelled_by               uuid
+  cancelled_at               timestamptz
+  cancellation_reason        varchar(500)
+  closed_by                  uuid
+  closed_at                  timestamptz
+  closing_reason             varchar(500)
+  version                    bigint [not null, default: 0]
+  created_at                 timestamptz [not null, default: `now()`]
+  created_by                 varchar(100)
+  last_modified_at           timestamptz
+  last_modified_by           varchar(100)
+  expected_completion_date   date
+  Note: 'Draft → Pending Approval → Sent → Accepted → Sample Pending → In Production → (Partially) Received / Closed / Cancelled; drawn_up_by ≠ approved_by (R01); kind = REPLACEMENT là Đơn SX bù (X05)'
+}
+
+Table ordering.production_order_line [headercolor: #C0392B] {
+  id                   uuid [pk]
+  production_order_id  uuid [not null]
+  order_line_id        uuid [not null]
+  sku                  varchar(64) [not null]
+  cartons              int [not null]
+  units_per_carton     int [not null]
+  design_snapshot_id   uuid [not null]
+  print_file_checksum  varchar(128) [not null]
+  packing_requirements varchar(500)
+  received_cartons     int [not null, default: 0]
+  indexes {
+    (production_order_id, order_line_id) [unique]
+  }
+  Note: 'Dòng Đơn SX: SKU, số thùng, design_snapshot (file PDF/X), received_cartons. Đề xuất bỏ cột: total_units'
+}
+
+Table ordering.producer [headercolor: #C0392B] {
+  id                 uuid [pk]
+  code               varchar(32) [not null, unique]
+  name               varchar(200) [not null]
+  contact_name       varchar(200)
+  contact_phone      varchar(32)
+  email              varchar(254)
+  channel            ordering.producer_channel [not null]
+  standard_lead_days int [not null, default: 14]
+  status             ordering.producer_status [not null, default: 'ACTIVE']
+  note               varchar(500)
+  version            bigint [not null, default: 0]
+  created_at         timestamptz [not null, default: `now()`]
+  created_by         varchar(100)
+  last_modified_at   timestamptz
+  last_modified_by   varchar(100)
+  Note: 'Danh mục đơn vị sản xuất: kênh EMAIL / PDF, thời gian SX chuẩn (D09)'
+}
+
+Table ordering.production_order_slip [headercolor: #C0392B] {
+  production_order_id uuid [pk]
+  storage_key         varchar(512) [not null, unique]
+  sha256              character(64) [not null]
+  size_bytes          bigint [not null]
+  created_at          timestamptz [not null, default: `now()`]
+  Note: 'B4 phiếu PDF Đơn SX gửi đơn vị SX'
+}
+
+Table ordering.production_order_status_history [headercolor: #C0392B] {
+  id                  uuid [pk]
+  production_order_id uuid [not null]
+  from_status         varchar(24)
+  to_status           varchar(24) [not null]
+  reason              varchar(500)
+  changed_by          uuid
+  changed_at          timestamptz [not null]
+  Note: 'Lịch sử trạng thái Đơn SX (R03 trả lại, X02 huỷ, X03 đóng thiếu)'
+}
+
+Table ordering.production_order_status_transition [headercolor: #C0392B] {
+  from_status varchar(24) [not null]
+  to_status   varchar(24) [not null]
+  indexes {
+    (from_status, to_status) [pk]
+  }
+  Note: 'Bảng chuyển trạng thái hợp lệ của Đơn SX'
+}
+
+Table ordering.production_order_damage_adjustment [headercolor: #C0392B] {
+  production_order_id uuid [not null, note: 'Đơn SX bù']
+  stock_adjustment_id uuid [not null, unique, note: 'phiếu ghi giảm DAMAGED đã POSTED của một thùng; unique: mỗi thùng lỗi chỉ được bù một lần']
+  indexes {
+    (production_order_id, stock_adjustment_id) [pk]
+  }
+  Note: 'ĐỀ XUẤT (bảng mới). X05/R08: Đơn SX bù ↔ các phiếu ghi giảm DAMAGED nó bù. Số thùng của Đơn SX bù ≤ số dòng ở đây (17 BR-31)'
+}
+
+// ---------- 4. File thiết kế gửi kèm Đơn SX (bước 4, X02) ----------
+Table design.design_snapshot [headercolor: #AA4A9E] {
+  id                uuid [pk]
+  draft_id          uuid [not null]
+  checksum          varchar(128) [not null]
+  artifact_url      varchar(500) [not null]
+  confirmed_at      timestamptz [not null]
+  version           bigint [not null, default: 0]
+  created_at        timestamptz [not null]
+  created_by        varchar(100)
+  last_modified_at  timestamptz
+  last_modified_by  varchar(100)
+  artifact_id       uuid
+  confirmed_by      uuid
+  spec              varchar(4000)
+  reviewed_by       uuid
+  review_notes      varchar(2000)
+  artifact_manifest jsonb [not null]
+  document          text
+  document_checksum varchar(64)
+  assets            jsonb
+  template          jsonb
+  Note: 'Bản thiết kế đã duyệt, chốt cứng; dòng Đơn SX trỏ tới đây'
+}
+
+Table design.design_artifact [headercolor: #AA4A9E] {
+  id                uuid [pk]
+  draft_id          uuid [not null]
+  storage_key       varchar(500) [not null, unique]
+  original_name     varchar(255) [not null]
+  content_type      varchar(100) [not null]
+  size_bytes        bigint [not null]
+  stored_at         timestamptz [not null]
+  checksum          varchar(64) [not null]
+  version           bigint [not null, default: 0]
+  created_at        timestamptz [not null]
+  created_by        varchar(100)
+  last_modified_at  timestamptz
+  last_modified_by  varchar(100)
+  upload_key        varchar(400)
+  artifact_role     design.design_artifact_artifact_role [not null]
+  document_checksum varchar(64)
+  template_version  bigint
+  indexes {
+    (draft_id, id) [unique]
+  }
+  Note: 'File hệ thống xuất khi bản thiết kế được duyệt: PRINT_READY là file in PDF/X gửi kèm Đơn SX (B4), kiểm bằng checksum'
+}
+
+Table design.design_draft [headercolor: #AA4A9E] {
+  id                  uuid [pk]
+  customer_id         uuid [not null]
+  product_id          uuid [not null]
+  name                varchar(200)
+  spec                varchar(4000)
+  status              design.design_draft_status [not null]
+  version             bigint [not null, default: 0]
+  created_at          timestamptz [not null]
+  created_by          varchar(100)
+  last_modified_at    timestamptz
+  last_modified_by    varchar(100)
+  owner_user_id       uuid
+  current_artifact_id uuid
+  reviewed_by         uuid
+  review_notes        varchar(2000)
+  parent_snapshot_id  uuid
+  current_artifacts   jsonb [not null]
+  variant_id          uuid
+  sku                 varchar(64)
+  template_id         uuid
+  template_code       varchar(50)
+  review_requested_at timestamptz
+  reviewed_at         timestamptz
+  archived_at         timestamptz
+  project_id          uuid
+  Note: 'X02 bản sửa thiết kế khách gửi duyệt (Pending Review)'
+}
+
+// ---------- 5. Mẫu in và chat (bước 6–7, X01) ----------
+Table ordering.production_order_sample_round [headercolor: #C0392B] {
+  id                      uuid [pk]
+  production_order_id     uuid [not null]
+  round_no                int [not null]
+  reprint_reason          varchar(16)
+  physical_sample_sent_on date
+  opened_by               uuid [not null]
+  opened_at               timestamptz [not null]
+  result                  ordering.production_order_sample_round_result
+  customer_note           varchar(500)
+  answered_by             uuid
+  answered_at             timestamptz
+  created_at              timestamptz [not null, default: `now()`]
+  indexes {
+    (production_order_id, round_no) [unique]
+  }
+  Note: 'Mỗi vòng mẫu: reprint_reason PRINT_DEFECT / CUSTOMER_CHANGE, kết quả duyệt / in lại'
+}
+
+Table ordering.production_order_sample_media [headercolor: #C0392B] {
+  id              uuid [pk]
+  sample_round_id uuid [not null]
+  storage_key     varchar(512) [not null, unique]
+  file_name       varchar(255) [not null]
+  content_type    varchar(100) [not null]
+  size_bytes      bigint [not null]
+  uploaded_by     uuid [not null]
+  uploaded_at     timestamptz [not null]
+  Note: 'Ảnh / video mẫu in tải lên cho từng vòng'
+}
+
+Table chat.conversation [headercolor: #4C93A8] {
+  id                uuid [pk]
+  customer_id       uuid [not null]
+  order_id          uuid
+  subject           varchar(300)
+  status            chat.conversation_status [not null]
+  assigned_agent_id uuid
+  version           bigint [not null, default: 0]
+  created_at        timestamptz [not null]
+  created_by        varchar(100)
+  last_modified_at  timestamptz
+  last_modified_by  varchar(100)
+  Note: 'Hội thoại Sale – khách'
+}
+
+Table chat.message [headercolor: #4C93A8] {
+  id               uuid [pk]
+  conversation_id  uuid [not null]
+  sender_type      chat.message_sender_type [not null]
+  sender_id        uuid
+  kind              chat.message_kind [not null, default: 'TEXT', note: 'đề xuất: tin nhắn chữ hay thẻ hành động do hệ thống sinh (16 BR-10)']
+  card_type         varchar(40) [note: 'đề xuất: loại thẻ, ví dụ PRINT_SAMPLE_APPROVAL; bắt buộc khi kind = ACTION_CARD']
+  card_reference_id uuid [note: 'đề xuất: chứng từ của thẻ: vòng mẫu in (production_order_sample_round.id) với thẻ duyệt mẫu']
+  body             varchar(4000) [not null]
+  sent_at          timestamptz [not null]
+  version          bigint [not null, default: 0]
+  created_at       timestamptz [not null]
+  created_by       varchar(100)
+  last_modified_at timestamptz
+  last_modified_by varchar(100)
+  Note: 'Tin nhắn; đề xuất thêm thẻ hành động (B6 thẻ duyệt mẫu in). X04 tin nhắn làm bằng chứng dời lịch'
+}
+
+// ---------- 6. Cảnh báo trễ, dời lịch, thông báo (X04) ----------
+Table ordering.delay_alert [headercolor: #C0392B] {
+  id                  uuid [pk]
+  type                ordering.delay_alert_type [not null]
+  production_order_id uuid
+  delivery_batch_id   uuid
+  subject_id          uuid [note: 'generated: COALESCE(production_order_id, delivery_batch_id)']
+  sales_order_id      uuid [not null]
+  opened_at           timestamptz [not null]
+  closed_at           timestamptz
+  Note: 'X04 cảnh báo AT_RISK / PRODUCTION_LATE / PO_NEEDED / DELIVERY_LATE, tự đóng khi hết điều kiện'
+}
+
+Table ordering.delivery_batch_window_change [headercolor: #C0392B] {
+  id                  uuid [pk]
+  delivery_batch_id   uuid [not null]
+  old_window_start    date [not null]
+  old_window_end      date [not null]
+  new_window_start    date [not null]
+  new_window_end      date [not null]
+  reason_code         ordering.delivery_batch_window_change_reason_code [not null]
+  note                varchar(1000) [not null]
+  evidence_file_key   varchar(512)
+  evidence_file_name  varchar(255)
+  evidence_message_id uuid
+  changed_by          uuid [not null]
+  changed_at          timestamptz [not null]
+  Note: 'X04 lịch sử dời cửa sổ giao, chỉ ghi thêm. Dòng mới nhất của một đợt là cửa sổ hiệu lực của đợt đó. Bắt buộc lý do, ghi chú và đúng một bằng chứng (file hoặc tin nhắn chat). Đề xuất bỏ cột: order_id'
+}
+
+Table notification.user_notification [headercolor: #A6763F] {
+  id           uuid [pk]
+  recipient_id uuid [not null]
+  category     varchar(40) [not null]
+  severity     notification.user_notification_severity [not null]
+  title        varchar(200) [not null]
+  body         varchar(1000)
+  link         varchar(300)
+  source_type  varchar(40)
+  source_id    varchar(100)
+  dedupe_key   varchar(200) [not null]
+  created_at   timestamptz [not null, default: `now()`]
+  read_at      timestamptz
+  indexes {
+    (recipient_id, dedupe_key) [unique]
+  }
+  Note: 'Hộp thông báo: Quản lý kho kho nhận (B4), Điều phối SX (X05), cảnh báo trễ (X04)'
+}
+
+Table notification.delivery_log [headercolor: #A6763F] {
+  id                  uuid [pk]
+  template_code       varchar(64)
+  channel             notification.delivery_log_channel [not null]
+  recipient           varchar(500) [not null]
+  status              notification.delivery_log_status [not null]
+  error               varchar(1000)
+  sent_at             timestamptz
+  version             bigint [not null, default: 0]
+  created_at          timestamptz [not null]
+  created_by          varchar(100)
+  last_modified_at    timestamptz
+  last_modified_by    varchar(100)
+  external_reference  varchar(100)
+  operation_reference varchar(100)
+  terminal            boolean [not null, default: false]
+  delivery_generation int [not null, default: 0]
+  attempt_number      int [not null, default: 1]
+  provider            notification.delivery_log_provider
+  provider_message_id varchar(100)
+  next_attempt_at     timestamptz
+  provider_status     notification.delivery_log_provider_status
+  provider_status_at  timestamptz
+  Note: 'Nhật ký gửi email Đơn SX / mẫu đã duyệt cho đơn vị SX'
+}
+
+// ---------- 7. Nhập kho theo Đơn SX (bước 8–9) ----------
+Table procurement.goods_receipts [headercolor: #7D5BA6] {
+  id                     uuid [pk]
+  receipt_number         varchar(30) [not null, unique]
+  warehouse_id           uuid [not null]
+  status                 procurement.goods_receipts_status [not null, default: 'DRAFT']
+  received_at            timestamptz [not null]
+  received_by            uuid [not null]
+  confirmed_at           timestamptz
+  confirmed_by           uuid
+  delivery_note          varchar(100)
+  note                   text
+  version                bigint [not null, default: 0]
+  created_at             timestamptz [not null, default: `now()`]
+  created_by             varchar(100)
+  last_modified_at       timestamptz
+  last_modified_by       varchar(100)
+  closed_at              timestamptz
+  receipt_type           procurement.goods_receipts_receipt_type [not null]
+  production_order_id    uuid
+  customer_order_id      uuid
+  return_shipment_id     uuid
+  return_request_id      uuid
+  quarantine_location_id uuid
+  Note: 'Phiếu nhập: DRAFT → IN_PUTAWAY → CLOSED (R05 chặn khi mẫu chưa duyệt, R14 sai kho). Một phiếu = một Đơn SX'
+}
+
+Table procurement.goods_receipt_lines [headercolor: #7D5BA6] {
+  id                       uuid [pk]
+  receipt_id               uuid [not null]
+  inventory_item_id        uuid [not null]
+  location_id              uuid [not null]
+  received_cartons         int [not null, note: 'đề xuất: số thùng nhận của dòng; thay received_qty decimal(18,3)']
+  lot_number               varchar(64) [not null]
+  note                     varchar(255)
+  version                  bigint [not null, default: 0]
+  created_at               timestamptz [not null, default: `now()`]
+  created_by               varchar(100)
+  last_modified_at         timestamptz
+  last_modified_by         varchar(100)
+  production_order_line_id uuid
+  indexes {
+    (receipt_id, production_order_line_id) [unique]
+  }
+  Note: 'Mỗi dòng Đơn SX một dòng nhập; các thùng của dòng là stock_package.goods_receipt_line_id (R07 không vượt số thùng còn mở). Đề xuất bỏ cột: uom_conversion_id'
+}
+
+Table ordering.production_order_receipt [headercolor: #C0392B] {
+  production_order_id uuid [not null]
+  goods_receipt_id    uuid [not null, unique]
+  receipt_number      varchar(30) [not null]
+  status              ordering.production_order_receipt_status [not null]
+  indexes {
+    (production_order_id, goods_receipt_id) [pk]
+  }
+  Note: 'Liên kết Đơn SX ↔ phiếu nhập; X03 Partially Received. Đề xuất bỏ cột: opened_at, settled_at'
+}
+
+Table platform.document_sequence [headercolor: #616161] {
+  document_type varchar(16) [not null]
+  sequence_date date [not null]
+  last_value    bigint [not null, default: 0]
+  indexes {
+    (document_type, sequence_date) [pk]
+  }
+  Note: 'Sinh mã Đơn SX / số phiếu nhập / LPN theo ngày'
+}
+
+// ---------- 8. SKU, thùng và tồn kho (bước 2, 8–12, X05–X06) ----------
+Table inventory.inventory_items [headercolor: #3E7C4A] {
+  id                uuid [pk]
+  sku               varchar(64) [not null, unique]
+  barcode           varchar(64)
+  units_per_carton      int [note: 'đề xuất: số cái chuẩn / thùng, cố định cho SKU (01 BR-03, 03 BR-13); thay uom_conversions.factor. Bắt buộc với SKU riêng (CHECK)']
+  carton_length_cm      decimal(10,2) [note: 'đề xuất: dài thùng; thay package_length_cm']
+  carton_width_cm       decimal(10,2) [note: 'đề xuất: rộng thùng; thay package_width_cm']
+  carton_height_cm      decimal(10,2) [note: 'đề xuất: cao thùng; thay package_height_cm. Thể tích thùng = D × R × C, tính khi dùng']
+  carton_weight_kg      decimal(10,3) [note: 'đề xuất: khối lượng thùng đầy (hàng + vỏ thùng); thay package_weight_kg']
+  version           bigint [not null, default: 0]
+  created_at        timestamptz [not null, default: `now()`]
+  created_by        varchar(100)
+  last_modified_at  timestamptz
+  last_modified_by  varchar(100)
+  rotatable         boolean [not null, default: true]
+  Note: 'Hàng tồn của SKU + QUY CÁCH THÙNG DUY NHẤT (đề xuất: gộp từ uom_conversions; bỏ đơn vị cơ sở, bộ kiện, pack_size). Đề xuất bỏ cột: unit_of_measure, weight_kg, length_cm, width_cm, height_cm, package_length_cm, package_width_cm, package_height_cm, package_count, pack_size'
+}
+
+Table inventory.stock_package [headercolor: #3E7C4A] {
+  id                    uuid [pk]
+  lpn                   varchar(30) [not null, unique]
+  inventory_item_id     uuid [not null]
+  lot_id                uuid [note: 'đề xuất: lô của thùng, chuyển từ stock_item.lot_id; bắt buộc khi IN_STOCK (20 BR-22)']
+  location_code         varchar(64) [not null]
+  status                inventory.stock_package_status [not null, default: 'RECEIVING']
+  stock_status          inventory.stock_status [note: 'đề xuất: tình trạng hàng INBOUND / AVAILABLE / QUARANTINE, chuyển từ stock_item.status; chỉ có khi thùng IN_STOCK (20 §5.1)']
+  received_at           timestamptz [note: 'đề xuất: ngày nhập dùng cho FIFO, chuyển từ stock_item.received_at; hàng hoàn nhập lại thì là ngày nhập lại']
+  goods_receipt_line_id uuid
+  closed_at             timestamptz
+  version               bigint [not null, default: 0]
+  created_at            timestamptz [not null, default: `now()`]
+  created_by            varchar(100)
+  last_modified_at      timestamptz
+  last_modified_by      varchar(100)
+  Note: 'THÙNG LPN = đơn vị tồn kho duy nhất (đề xuất: gộp stock_item vào đây). RECEIVING (B8) → IN_STOCK + INBOUND (B9) → AVAILABLE ở bin (B12) → QUARANTINE (X05). Đề xuất bỏ cột: uom_conversion_id, nominal_qty, received_qty'
+}
+
+Table inventory.stock_lot [headercolor: #3E7C4A] {
+  id                    uuid [pk]
+  sku                   varchar(64) [not null]
+  lot_number            varchar(64) [not null, note: 'đề xuất: NOT NULL: mọi tồn đều mang lô (20 BR-22). Bằng mã Đơn SX, hoặc UNTRACED; duy nhất theo (sku, lot_number)']
+  received_at           timestamptz
+  origin_type           inventory.stock_lot_origin_type [not null]
+  warehouse_id          uuid
+  version               bigint [not null, default: 0]
+  created_at            timestamptz [not null, default: `now()`]
+  created_by            varchar(100)
+  last_modified_at      timestamptz
+  last_modified_by      varchar(100)
+  production_order_id   uuid
+  Note: 'Lô của một SKU. lot_number = mã Đơn SX; mọi thùng của một dòng Đơn SX, kể cả nhận qua nhiều phiếu, cùng một lô (03 BR-03). Truy xuất lô X05. Đề xuất bỏ cột: goods_receipt_id, goods_receipt_number, production_order_code'
+}
+
+Table inventory.stock_movement [headercolor: #3E7C4A] {
+  id                    uuid [pk]
+  movement_type         inventory.stock_movement_movement_type [not null]
+  sku                   varchar(64) [not null]
+  from_location_code    varchar(64)
+  to_location_code      varchar(64)
+  from_status           varchar(32)
+  to_status             varchar(32)
+  reference_type        inventory.stock_movement_reference_type [not null]
+  reference_id          uuid [not null]
+  reason                varchar(500)
+  actor_id              uuid
+  occurred_at           timestamptz [not null]
+  version               bigint [not null, default: 0]
+  created_at            timestamptz [not null, default: `now()`]
+  created_by            varchar(100)
+  last_modified_at      timestamptz
+  last_modified_by      varchar(100)
+  stock_package_id      uuid [not null, note: 'đề xuất: mỗi dòng sổ là đúng một thùng; thay from_/to_stock_package_id và quantity']
+  lot_id                uuid
+  order_id              uuid
+  order_number          varchar(32)
+  Note: 'Sổ cái: mỗi dòng một thùng, không sửa không xoá. RECEIPT (B9), MOVE (B12 cất, X08 dời), STATUS_CHANGE (X05 cách ly), ADJUSTMENT (X05/X06). Đề xuất bỏ cột: quantity, lot_number, to_stock_package_id'
+}
+
+Table inventory.stock_adjustment [headercolor: #3E7C4A] {
+  id                  uuid [pk]
+  adjustment_number   varchar(30) [not null, unique]
+  location_code       varchar(64) [not null]
+  direction           inventory.stock_adjustment_direction [not null, note: 'đề xuất: DECREASE ghi giảm cả thùng / INCREASE nạp lại thùng (20 §4.3); thay quantity_delta theo cái']
+  reason_code         inventory.stock_adjustment_reason_code [not null]
+  note                varchar(1000)
+  status              inventory.stock_adjustment_status [not null, default: 'PENDING_APPROVAL']
+  cycle_count_line_id uuid
+  requested_by        uuid [not null]
+  decided_by          uuid
+  decided_at          timestamptz
+  rejection_reason    varchar(500)
+  posted_at           timestamptz
+  version             bigint [not null, default: 0]
+  created_at          timestamptz [not null, default: `now()`]
+  created_by          varchar(100)
+  last_modified_at    timestamptz
+  last_modified_by    varchar(100)
+  withdrawn_at        timestamptz
+  stock_package_id    uuid [not null, note: 'đề xuất: NOT NULL: mỗi phiếu điều chỉnh đúng một thùng (20 BR-14, BR-18); SKU và lô lấy từ thùng']
+  Note: 'X05/X06 phiếu điều chỉnh một thùng: PENDING_APPROVAL → POSTED, người duyệt ≠ người đề nghị (20 BR-05). Đề xuất bỏ cột: sku, lot_number, received_at, reservation_id'
+}
+
+Table product.variants [headercolor: #2E86AB] {
+  id                  uuid [pk]
+  product_id          uuid [not null]
+  sku                 varchar(64) [not null, unique]
+  name                varchar(255) [not null]
+  status              product.variants_status [not null, default: 'DRAFT']
+  is_default          boolean [not null, default: false]
+  attribute_signature varchar(512) [not null]
+  position            int [not null, default: 0]
+  obsoleted_at        timestamptz
+  version             bigint [not null, default: 0]
+  created_at          timestamptz [not null, default: `now()`]
+  created_by          varchar(100)
+  last_modified_at    timestamptz
+  last_modified_by    varchar(100)
+  owner_customer_id   uuid
+  design_snapshot_id  uuid
+  source_variant_id   uuid
+  indexes {
+    (product_id, attribute_signature) [unique]
+  }
+  Note: 'SKU riêng của khách; X02 sinh SKU mới sau khi duyệt bản sửa'
+}
+
+// ---------- 9. Cất hàng (bước 10–12, X07) ----------
+Table warehouse.putaway_task [headercolor: #8E6C3A] {
+  id                    uuid [pk]
+  warehouse_id          uuid [not null, note: 'đề xuất: kho của nhiệm vụ: lọc nhiệm vụ theo kho, chỉ nhận lên xe thùng cùng kho (05 BR-15); thùng gỡ cách ly không có phiếu nhập']
+  goods_receipt_id      uuid
+  sku                   varchar(64) [not null]
+  placed_location_id    uuid [note: 'đề xuất: đổi tên từ target_location_id: bin (hoặc khu OVERFLOW) NV kho quét thực tế khi cất']
+  status                warehouse.putaway_task_status [not null]
+  version               bigint [not null, default: 0]
+  created_at            timestamptz [not null]
+  created_by            varchar(100)
+  last_modified_at      timestamptz
+  last_modified_by      varchar(100)
+  goods_receipt_line_id uuid
+  stock_package_id      uuid [not null, note: 'đề xuất: NOT NULL: mỗi nhiệm vụ đúng một thùng (05 BR-08); bỏ quantity']
+  source                varchar(32) [not null, default: 'RECEIPT']
+  completed_at          timestamptz [note: 'đề xuất: lúc cất xong']
+  completed_by          uuid [note: 'đề xuất: NV kho đã cất']
+  Note: 'Mỗi thùng một nhiệm vụ cất: PENDING → DONE. X07 thùng chưa cất vẫn PENDING khi lượt đóng. Đề xuất bỏ cột: quantity'
+}
+
+Table warehouse.putaway_trip [headercolor: #8E6C3A] {
+  id                uuid [pk]
+  warehouse_id      uuid [not null]
+  operator_id       uuid [not null, note: 'NV kho đi lượt này']
+  status            warehouse.putaway_trip_status [not null, default: 'LOADING']
+  start_location_id uuid [note: 'khu nguồn (RECEIVING / QUARANTINE) của thùng quét lên xe cuối cùng: điểm xuất phát của lộ trình']
+  started_at        timestamptz [note: 'lúc bấm Bắt đầu đi cất: gán bin, giữ chỗ, sắp lộ trình']
+  last_activity_at  timestamptz [not null, note: 'lần quét gần nhất trong lượt; quá warehouse.putaway_hold_minutes thì nhả chỗ giữ']
+  closed_at         timestamptz
+  closed_by         uuid [note: 'người đóng: NV kho, hoặc Quản lý kho đóng thay (X07)']
+  version           bigint [not null, default: 0]
+  created_at        timestamptz [not null, default: `now()`]
+  indexes {
+    operator_id [unique, name: 'uk_putaway_trip_open_operator', note: 'unique WHERE status IN (LOADING, IN_PROGRESS): mỗi NV kho tối đa một lượt mở (05 BR-15)']
+    (warehouse_id, status)
+  }
+  Note: 'ĐỀ XUẤT (bảng mới). Lượt cất (05 §4.5): LOADING → IN_PROGRESS → COMPLETED / CLOSED. B10–12, X07, R10–R13'
+}
+
+Table warehouse.putaway_trip_item [headercolor: #8E6C3A] {
+  trip_id              uuid [not null]
+  putaway_task_id      uuid [not null, note: 'nhiệm vụ cất = một thùng; LPN lấy qua putaway_task.stock_package_id']
+  status               warehouse.putaway_trip_item_status [not null, default: 'ON_CART']
+  assigned_location_id uuid [note: 'bin được gán khi bắt đầu đi cất, hoặc khu OVERFLOW; null khi lượt còn LOADING']
+  stop_sequence        int [note: 'thứ tự điểm dừng trên lộ trình; các thùng cùng bin cùng số']
+  hold_released_at     timestamptz [note: 'lúc nhả chỗ giữ ở bin được gán; null = đang giữ chỗ. Thể tích / khối lượng giữ = quy cách thùng của SKU, không lưu']
+  loaded_at            timestamptz [not null, note: 'lúc quét thùng lên xe']
+  placed_at            timestamptz [note: 'lúc thùng được cất (nhiệm vụ DONE)']
+  indexes {
+    (trip_id, putaway_task_id) [pk]
+    putaway_task_id [unique, name: 'uk_putaway_trip_item_on_cart', note: 'unique WHERE status = ON_CART: một nhiệm vụ thuộc tối đa một lượt mở (05 BR-15)']
+    assigned_location_id [name: 'ix_putaway_trip_item_hold', note: 'WHERE hold_released_at IS NULL: cộng chỗ đang giữ của một bin']
+  }
+  Note: 'ĐỀ XUẤT (bảng mới). Thùng trên xe của lượt: bin được gán, thứ tự điểm dừng, giữ chỗ bin (05 BR-15, BR-16, BR-17)'
+}
+
+// ---------- 10. Kho và Kho Map (bước 1, 11, X08) ----------
+Table warehouse.warehouse [headercolor: #8E6C3A] {
+  id               uuid [pk]
+  name             varchar(200) [not null]
+  status           warehouse.warehouse_status [not null]
+  version          bigint [not null, default: 0]
+  created_at       timestamptz [not null]
+  created_by       varchar(100)
+  last_modified_at timestamptz
+  last_modified_by varchar(100)
+  prefix           varchar(10) [not null, unique]
+  address          varchar(500) [not null]
+  return_address   varchar(500)
+  map_unit         varchar(8) [not null]
+  map_width        decimal(10,3) [not null]
+  map_height       decimal(10,3) [not null]
+  utilization_pct      decimal(5,2) [not null, default: 100, note: 'đề xuất: hệ số sử dụng của kho, trong (0, 100]; chỉ dùng cho Bảng sức chứa (06 §4.6, BR-20)']
+  putaway_hold_minutes int [not null, default: 30, note: 'đề xuất: số phút lượt cất không thao tác thì nhả chỗ giữ bin (05 BR-16, C46)']
+  Note: 'Kho nhận / kho xuất; khung Kho Map'
+}
+
+Table warehouse.storage_location [headercolor: #8E6C3A] {
+  id                uuid [pk]
+  warehouse_id      uuid [not null]
+  kind              warehouse.storage_location_kind [not null]
+  location_code     varchar(64) [not null, unique]
+  max_weight        decimal(10,3)
+  is_pickable       boolean [not null]
+  is_putaway_target boolean [not null]
+  status            warehouse.storage_location_status [not null]
+  version           bigint [not null, default: 0]
+  created_at        timestamptz [not null, default: `now()`]
+  created_by        varchar(100)
+  last_modified_at  timestamptz
+  last_modified_by  varchar(100)
+  Note: 'Vị trí tồn kho chung của bin và khu: mã vị trí, tải trọng, cờ cho cất / cho lấy'
+}
+
+Table warehouse.bin [headercolor: #8E6C3A] {
+  id               uuid [pk]
+  level_id         uuid [not null]
+  location_id      uuid [not null, unique]
+  code             varchar(20) [not null]
+  description      varchar(1000)
+  x                decimal(10,3) [not null]
+  y                decimal(10,3) [not null]
+  width            decimal(10,3) [not null]
+  length           decimal(10,3) [not null]
+  rotation         int [not null]
+  type             warehouse.bin_type [not null]
+  version          bigint [not null, default: 0]
+  created_at       timestamptz [not null, default: `now()`]
+  created_by       varchar(100)
+  last_modified_at timestamptz
+  last_modified_by varchar(100)
+  indexes {
+    (level_id, code) [unique]
+  }
+  Note: 'Bin: toạ độ trong kệ, rộng × dài. Thể tích = rộng × dài × chiều cao lọt, tính khi đọc'
+}
+
+Table warehouse.shelf_level [headercolor: #8E6C3A] {
+  id               uuid [pk]
+  shelf_id         uuid [not null]
+  level_index      int [not null]
+  elevation        decimal(10,3)
+  usable_height    decimal(10,3) [not null, note: 'đề xuất: NOT NULL: chiều cao lọt bắt buộc (06 BR-19); hiện chỉ là CHECK NOT VALID']
+  max_weight       decimal(10,3)
+  version          bigint [not null, default: 0]
+  created_at       timestamptz [not null, default: `now()`]
+  created_by       varchar(100)
+  last_modified_at timestamptz
+  last_modified_by varchar(100)
+  indexes {
+    (shelf_id, level_index) [unique]
+  }
+  Note: 'Tầng kệ: chiều cao lọt → thể tích bin, kiểm thùng vừa bin'
+}
+
+Table warehouse.shelf [headercolor: #8E6C3A] {
+  id               uuid [pk]
+  warehouse_id     uuid [not null]
+  zone_id          uuid
+  code             varchar(20) [not null]
+  name             varchar(200) [not null]
+  description      varchar(1000)
+  x                decimal(10,3) [not null]
+  y                decimal(10,3) [not null]
+  width            decimal(10,3) [not null]
+  length           decimal(10,3) [not null]
+  rotation         int [not null]
+  is_obstacle      boolean [not null]
+  pick_north       boolean [not null]
+  pick_east        boolean [not null]
+  pick_south       boolean [not null]
+  pick_west        boolean [not null]
+  status           warehouse.shelf_status [not null]
+  version          bigint [not null, default: 0]
+  created_at       timestamptz [not null, default: `now()`]
+  created_by       varchar(100)
+  last_modified_at timestamptz
+  last_modified_by varchar(100)
+  indexes {
+    (warehouse_id, code) [unique]
+  }
+  Note: 'Kệ: toạ độ, mặt lấy hàng → điểm đứng của lộ trình'
+}
+
+Table warehouse.zone [headercolor: #8E6C3A] {
+  id               uuid [pk]
+  warehouse_id     uuid [not null]
+  name             varchar(100) [not null]
+  color            varchar(7)
+  version          bigint [not null, default: 0]
+  created_at       timestamptz [not null, default: `now()`]
+  created_by       varchar(100)
+  last_modified_at timestamptz
+  last_modified_by varchar(100)
+  indexes {
+    (warehouse_id, name) [unique]
+  }
+  Note: 'Nhóm kệ để hiển thị; Bảng sức chứa xem theo zone'
+}
+
+Table warehouse.area [headercolor: #8E6C3A] {
+  id               uuid [pk]
+  warehouse_id     uuid [not null]
+  location_id      uuid [unique]
+  code             varchar(20) [not null]
+  type             warehouse.area_type [not null]
+  name             varchar(200) [not null]
+  x                decimal(10,3) [not null]
+  y                decimal(10,3) [not null]
+  width            decimal(10,3) [not null]
+  length           decimal(10,3) [not null]
+  rotation         int [not null]
+  max_stack_height decimal(10,3) [note: 'đề xuất: chiều cao xếp tối đa (m); bắt buộc với khu chứa hàng (CHECK). Thể tích khu = rộng × dài × chiều cao này (06 BR-19)']
+  is_obstacle      boolean [not null]
+  status           warehouse.area_status [not null]
+  version          bigint [not null, default: 0]
+  created_at       timestamptz [not null, default: `now()`]
+  created_by       varchar(100)
+  last_modified_at timestamptz
+  last_modified_by varchar(100)
+  indexes {
+    (warehouse_id, code) [unique]
+  }
+  Note: 'Khu trên sàn: RECEIVING (khu nhận), QUARANTINE (X05), OVERFLOW (X08), STAGING, DISPATCH'
+}
+
+Table warehouse.boundary [headercolor: #8E6C3A] {
+  id                 uuid [pk]
+  warehouse_id       uuid [not null]
+  type               warehouse.boundary_type [not null]
+  start_x            decimal(10,3) [not null]
+  start_y            decimal(10,3) [not null]
+  end_x              decimal(10,3) [not null]
+  end_y              decimal(10,3) [not null]
+  is_passable        boolean [not null]
+  operational_status varchar(32)
+  version            bigint [not null, default: 0]
+  created_at         timestamptz [not null, default: `now()`]
+  created_by         varchar(100)
+  last_modified_at   timestamptz
+  last_modified_by   varchar(100)
+  Note: 'Tường / cửa trên Kho Map'
+}
+
+// ---------- 11. Giao một phần và quyết toán (X03) ----------
+Table ordering.order_partial_shipment_decision [headercolor: #C0392B] {
+  id               uuid [pk]
+  order_id         uuid [not null]
+  allowed          boolean [not null]
+  order_status     varchar(32) [not null]
+  note             varchar(500)
+  decided_by       uuid
+  decided_at       timestamptz [not null]
+  version          bigint [not null, default: 0]
+  created_at       timestamptz [not null, default: `now()`]
+  created_by       varchar(100)
+  last_modified_at timestamptz
+  last_modified_by varchar(100)
+  Note: 'X03 nhánh B: cho phép giao một phần'
+}
+
+Table payment.installment [headercolor: #B8860B] {
+  id                      uuid [pk]
+  contract_id             uuid [not null]
+  contract_installment_id uuid [unique]
+  order_id                uuid [not null]
+  customer_id             uuid [not null]
+  contract_number         varchar(40) [not null]
+  order_number            varchar(32) [not null]
+  seq                     smallint [not null]
+  name                    varchar(100) [not null]
+  milestone               payment.installment_milestone [not null]
+  delivery_batch_id       uuid
+  delivery_batch_seq      smallint
+  amount                  decimal(19,4) [not null]
+  paid_amount             decimal(19,4) [not null, default: 0]
+  currency                varchar(3) [not null]
+  due_days                int
+  reached_at              timestamptz
+  due_date                date
+  status                  payment.installment_status [not null]
+  paid_at                 timestamptz
+  cancelled_at            timestamptz
+  version                 bigint [not null, default: 0]
+  created_at              timestamptz [not null, default: `now()`]
+  created_by              varchar(100)
+  last_modified_at        timestamptz
+  last_modified_by        varchar(100)
+  reduced_amount          decimal(19,4) [not null, default: 0]
+  indexes {
+    (contract_id, seq) [unique]
+  }
+  Note: 'Đợt thanh toán gắn đợt giao'
+}
+
+Table payment.order_settlement [headercolor: #B8860B] {
+  id                 uuid [pk]
+  order_id           uuid [not null]
+  contract_id        uuid [not null]
+  customer_id        uuid [not null]
+  order_number       varchar(32) [not null]
+  contract_number    varchar(40) [not null]
+  kind               payment.order_settlement_kind [not null]
+  source_id          uuid [not null]
+  currency           varchar(3) [not null]
+  collected_amount   decimal(19,4) [not null]
+  closed_amount      decimal(19,4) [not null, default: 0]
+  reduced_amount     decimal(19,4) [not null, default: 0]
+  surplus_amount     decimal(19,4) [not null]
+  fee_amount         decimal(19,4) [not null, default: 0]
+  fee_percent        decimal(5,2)
+  fee_reason         varchar(500)
+  fee_detail         varchar(2000)
+  fee_covered_amount decimal(19,4) [not null, default: 0]
+  refundable_amount  decimal(19,4) [not null, default: 0]
+  fee_owed_amount    decimal(19,4) [not null, default: 0]
+  fee_installment_id uuid [unique]
+  settled_by         uuid
+  settled_at         timestamptz [not null]
+  version            bigint [not null, default: 0]
+  created_at         timestamptz [not null, default: `now()`]
+  created_by         varchar(100)
+  last_modified_at   timestamptz
+  last_modified_by   varchar(100)
+  indexes {
+    (kind, source_id) [unique]
+  }
+  Note: 'X03 nhánh B: đóng phần còn lại của đơn'
+}
+
+Table payment.installment_reduction [headercolor: #B8860B] {
+  id             uuid [pk]
+  settlement_id  uuid [not null]
+  installment_id uuid [not null]
+  amount         decimal(19,4) [not null]
+  created_at     timestamptz [not null, default: `now()`]
+  indexes {
+    (settlement_id, installment_id) [unique]
+  }
+  Note: 'X03 nhánh B: giảm số phải thu theo giá trị phần không giao'
+}
+
+// ---------- Quan hệ có sẵn trong database (chỉ giữ Ref có cả hai đầu trong file) ----------
+Ref: product.variants.design_snapshot_id > design.design_snapshot.id
+Ref: product.variants.owner_customer_id > customer.customer.id
+Ref: product.variants.source_variant_id > product.variants.id
+Ref: inventory.inventory_items.sku > product.variants.sku [delete: restrict]
+Ref: inventory.stock_adjustment.location_code > warehouse.storage_location.location_code [delete: restrict]
+Ref: inventory.stock_adjustment.stock_package_id > inventory.stock_package.id [delete: restrict]
+Ref: inventory.stock_lot.production_order_id > ordering.production_order.id [delete: restrict]
+Ref: inventory.stock_lot.sku > inventory.inventory_items.sku [delete: restrict]
+Ref: inventory.stock_lot.warehouse_id > warehouse.warehouse.id [delete: restrict]
+Ref: inventory.stock_movement.from_location_code > warehouse.storage_location.location_code [delete: restrict]
+Ref: inventory.stock_movement.lot_id > inventory.stock_lot.id [delete: restrict]
+Ref: inventory.stock_movement.order_id > ordering.customer_order.id [delete: restrict]
+Ref: inventory.stock_movement.sku > inventory.inventory_items.sku [delete: restrict]
+Ref: inventory.stock_movement.to_location_code > warehouse.storage_location.location_code [delete: restrict]
+Ref: inventory.stock_package.goods_receipt_line_id > procurement.goods_receipt_lines.id [delete: restrict]
+Ref: inventory.stock_package.inventory_item_id > inventory.inventory_items.id [delete: restrict]
+Ref: inventory.stock_package.location_code > warehouse.storage_location.location_code [delete: restrict]
+Ref: inventory.stock_reservation.allocated_from_id > inventory.stock_reservation.id [delete: restrict]
+Ref: inventory.stock_reservation.order_id > ordering.customer_order.id [delete: restrict]
+Ref: inventory.stock_reservation.sku > inventory.inventory_items.sku [delete: restrict]
+Ref: inventory.stock_reservation.warehouse_code > warehouse.warehouse.prefix [delete: restrict]
+Ref: warehouse.area.location_id > warehouse.storage_location.id [delete: restrict]
+Ref: warehouse.area.warehouse_id > warehouse.warehouse.id
+Ref: warehouse.bin.level_id > warehouse.shelf_level.id
+Ref: warehouse.bin.location_id > warehouse.storage_location.id [delete: restrict]
+Ref: warehouse.boundary.warehouse_id > warehouse.warehouse.id
+Ref: warehouse.putaway_task.goods_receipt_id > procurement.goods_receipts.id [delete: restrict]
+Ref: warehouse.putaway_task.goods_receipt_line_id > procurement.goods_receipt_lines.id [delete: restrict]
+Ref: warehouse.putaway_task.sku > inventory.inventory_items.sku [delete: restrict]
+Ref: warehouse.putaway_task.stock_package_id > inventory.stock_package.id [delete: restrict]
+Ref: warehouse.shelf.warehouse_id > warehouse.warehouse.id [delete: restrict]
+Ref: warehouse.shelf.zone_id > warehouse.zone.id
+Ref: warehouse.shelf_level.shelf_id > warehouse.shelf.id
+Ref: warehouse.storage_location.warehouse_id > warehouse.warehouse.id [delete: restrict]
+Ref: warehouse.zone.warehouse_id > warehouse.warehouse.id
+Ref: procurement.goods_receipt_lines.inventory_item_id > inventory.inventory_items.id [delete: restrict]
+Ref: procurement.goods_receipt_lines.location_id > warehouse.storage_location.id [delete: restrict]
+Ref: procurement.goods_receipt_lines.production_order_line_id > ordering.production_order_line.id [delete: restrict]
+Ref: procurement.goods_receipt_lines.receipt_id > procurement.goods_receipts.id [delete: cascade]
+Ref: procurement.goods_receipts.customer_order_id > ordering.customer_order.id [delete: restrict]
+Ref: procurement.goods_receipts.production_order_id > ordering.production_order.id [delete: restrict]
+Ref: procurement.goods_receipts.quarantine_location_id > warehouse.storage_location.id [delete: restrict]
+Ref: procurement.goods_receipts.warehouse_id > warehouse.warehouse.id [delete: restrict]
+Ref: ordering.customer_order.customer_id > customer.customer.id [delete: restrict]
+Ref: ordering.customer_order.shipping_warehouse_id > warehouse.warehouse.id [delete: restrict]
+Ref: ordering.delay_alert.delivery_batch_id > ordering.delivery_batch.id [delete: cascade]
+Ref: ordering.delay_alert.production_order_id > ordering.production_order.id
+Ref: ordering.delay_alert.sales_order_id > ordering.customer_order.id
+Ref: ordering.delivery_batch.contract_id > ordering.sales_contract.id [delete: cascade]
+Ref: ordering.delivery_batch_hold.delivery_batch_id > ordering.delivery_batch.id [delete: restrict]
+Ref: ordering.delivery_batch_hold.order_line_id > ordering.order_line.id [delete: cascade]
+Ref: ordering.delivery_batch_hold.reservation_id > inventory.stock_reservation.id [delete: restrict]
+Ref: ordering.delivery_batch_line.delivery_batch_id > ordering.delivery_batch.id [delete: cascade]
+Ref: ordering.delivery_batch_line.order_line_id > ordering.order_line.id
+Ref: ordering.delivery_batch_window_change.delivery_batch_id > ordering.delivery_batch.id [delete: restrict]
+Ref: ordering.delivery_batch_window_change.evidence_message_id > chat.message.id [delete: restrict]
+Ref: ordering.order_line.design_snapshot_id > design.design_snapshot.id [delete: restrict]
+Ref: ordering.order_line.order_id > ordering.customer_order.id [delete: cascade]
+Ref: ordering.order_line.sku > product.variants.sku [delete: restrict]
+Ref: ordering.order_partial_shipment_decision.order_id > ordering.customer_order.id [delete: cascade]
+Ref: ordering.order_status_history.order_id > ordering.customer_order.id [delete: cascade]
+Ref: ordering.production_order.customer_id > customer.customer.id
+Ref: ordering.production_order.delivery_batch_id > ordering.delivery_batch.id
+Ref: ordering.production_order.producer_id > ordering.producer.id
+Ref: ordering.production_order.receiving_warehouse_id > warehouse.warehouse.id
+Ref: ordering.production_order.sales_order_id > ordering.customer_order.id
+Ref: ordering.production_order_line.design_snapshot_id > design.design_snapshot.id
+Ref: ordering.production_order_line.order_line_id > ordering.order_line.id
+Ref: ordering.production_order_line.production_order_id > ordering.production_order.id [delete: cascade]
+Ref: ordering.production_order_receipt.goods_receipt_id > procurement.goods_receipts.id [delete: restrict]
+Ref: ordering.production_order_receipt.production_order_id > ordering.production_order.id [delete: restrict]
+Ref: ordering.production_order_sample_media.sample_round_id > ordering.production_order_sample_round.id
+Ref: ordering.production_order_sample_round.production_order_id > ordering.production_order.id
+Ref: ordering.production_order_slip.production_order_id > ordering.production_order.id
+Ref: ordering.production_order_status_history.production_order_id > ordering.production_order.id
+Ref: ordering.sales_contract.order_id > ordering.customer_order.id
+Ref: payment.installment.contract_id > ordering.sales_contract.id
+Ref: payment.installment.customer_id > customer.customer.id
+Ref: payment.installment.delivery_batch_id > ordering.delivery_batch.id
+Ref: payment.installment.order_id > ordering.customer_order.id
+Ref: payment.installment_reduction.installment_id > payment.installment.id
+Ref: payment.installment_reduction.settlement_id > payment.order_settlement.id
+Ref: payment.order_settlement.contract_id > ordering.sales_contract.id
+Ref: payment.order_settlement.customer_id > customer.customer.id
+Ref: payment.order_settlement.fee_installment_id > payment.installment.id
+Ref: payment.order_settlement.order_id > ordering.customer_order.id
+Ref: design.design_artifact.draft_id > design.design_draft.id
+Ref: design.design_draft.customer_id > customer.customer.id [delete: restrict]
+Ref: design.design_draft.(id, current_artifact_id) > design.design_artifact.(draft_id, id)
+Ref: design.design_draft.parent_snapshot_id > design.design_snapshot.id
+Ref: design.design_draft.variant_id > product.variants.id
+Ref: design.design_snapshot.draft_id > design.design_draft.id
+Ref: design.design_snapshot.(draft_id, artifact_id) > design.design_artifact.(draft_id, id)
+Ref: chat.conversation.customer_id > customer.customer.id [delete: restrict]
+Ref: chat.conversation.order_id > ordering.customer_order.id [delete: restrict]
+Ref: chat.message.conversation_id > chat.conversation.id [delete: cascade]
+
+// ---------- Quan hệ mới của thiết kế đề xuất ----------
+Ref: inventory.stock_package.lot_id > inventory.stock_lot.id [delete: restrict]
+Ref: inventory.stock_reservation.stock_package_id > inventory.stock_package.id [delete: restrict]
+Ref: inventory.stock_movement.stock_package_id > inventory.stock_package.id [delete: restrict]
+Ref: ordering.order_line_sku_change.order_id > ordering.customer_order.id [delete: restrict]
+Ref: ordering.order_line_sku_change.order_line_id > ordering.order_line.id [delete: restrict]
+Ref: ordering.production_order.origin_production_order_id > ordering.production_order.id [delete: restrict]
+Ref: ordering.production_order_damage_adjustment.production_order_id > ordering.production_order.id [delete: restrict]
+Ref: ordering.production_order_damage_adjustment.stock_adjustment_id > inventory.stock_adjustment.id [delete: restrict]
+Ref: warehouse.putaway_task.warehouse_id > warehouse.warehouse.id [delete: restrict]
+Ref: warehouse.putaway_task.placed_location_id > warehouse.storage_location.id [delete: restrict]
+Ref: warehouse.putaway_trip.warehouse_id > warehouse.warehouse.id [delete: restrict]
+Ref: warehouse.putaway_trip.start_location_id > warehouse.storage_location.id [delete: restrict]
+Ref: warehouse.putaway_trip_item.trip_id > warehouse.putaway_trip.id [delete: cascade]
+Ref: warehouse.putaway_trip_item.putaway_task_id > warehouse.putaway_task.id [delete: restrict]
+Ref: warehouse.putaway_trip_item.assigned_location_id > warehouse.storage_location.id [delete: restrict]
+
+TableGroup c01_don_ban_lich_giao {
+  ordering.customer_order
+  ordering.order_line
+  ordering.delivery_batch
+  ordering.delivery_batch_line
+  ordering.sales_contract
+  customer.customer
+  ordering.order_status_history
+  ordering.order_line_sku_change
+  Note: '1. Đơn bán và lịch giao: đầu vào của luồng (bước 1)'
+}
+
+TableGroup c02_giu_hang {
+  inventory.stock_reservation
+  ordering.delivery_batch_hold
+  Note: '2. Giữ hàng cho đơn (bước 2)'
+}
+
+TableGroup c03_don_san_xuat {
+  ordering.production_order
+  ordering.production_order_line
+  ordering.producer
+  ordering.production_order_slip
+  ordering.production_order_status_history
+  ordering.production_order_status_transition
+  ordering.production_order_damage_adjustment
+  Note: '3. Đơn sản xuất (bước 3–5, X05)'
+}
+
+TableGroup c04_file_thiet_ke {
+  design.design_snapshot
+  design.design_artifact
+  design.design_draft
+  Note: '4. File thiết kế gửi kèm Đơn SX (bước 4, X02)'
+}
+
+TableGroup c05_mau_in {
+  ordering.production_order_sample_round
+  ordering.production_order_sample_media
+  chat.conversation
+  chat.message
+  Note: '5. Mẫu in và chat (bước 6–7, X01)'
+}
+
+TableGroup c06_tre_doi_lich_thong_bao {
+  ordering.delay_alert
+  ordering.delivery_batch_window_change
+  notification.user_notification
+  notification.delivery_log
+  Note: '6. Cảnh báo trễ, dời lịch, thông báo (X04)'
+}
+
+TableGroup c07_nhap_kho {
+  procurement.goods_receipts
+  procurement.goods_receipt_lines
+  ordering.production_order_receipt
+  platform.document_sequence
+  Note: '7. Nhập kho theo Đơn SX (bước 8–9)'
+}
+
+TableGroup c08_sku_thung_ton_kho {
+  inventory.inventory_items
+  inventory.stock_package
+  inventory.stock_lot
+  inventory.stock_movement
+  inventory.stock_adjustment
+  product.variants
+  Note: '8. SKU, thùng và tồn kho (bước 2, 8–12, X05–X06)'
+}
+
+TableGroup c09_cat_hang {
+  warehouse.putaway_task
+  warehouse.putaway_trip
+  warehouse.putaway_trip_item
+  Note: '9. Cất hàng (bước 10–12, X07)'
+}
+
+TableGroup c10_kho_map {
+  warehouse.warehouse
+  warehouse.storage_location
+  warehouse.bin
+  warehouse.shelf_level
+  warehouse.shelf
+  warehouse.zone
+  warehouse.area
+  warehouse.boundary
+  Note: '10. Kho và Kho Map (bước 1, 11, X08)'
+}
+
+TableGroup c11_giao_mot_phan_quyet_toan {
+  ordering.order_partial_shipment_decision
+  payment.installment
+  payment.order_settlement
+  payment.installment_reduction
+  Note: '11. Giao một phần và quyết toán (X03)'
+}
