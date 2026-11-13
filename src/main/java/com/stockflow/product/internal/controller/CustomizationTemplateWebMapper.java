@@ -8,12 +8,15 @@ import com.stockflow.product.api.PrintArea;
 import com.stockflow.product.api.PrintAreaShape;
 import com.stockflow.product.api.PrintConfig;
 import com.stockflow.product.api.ProductModel;
+import com.stockflow.product.api.TemplateModel3d;
 import com.stockflow.product.internal.controller.dto.CustomizationTemplateRequest;
 import com.stockflow.product.internal.controller.dto.CustomizationTemplateResponse;
 import com.stockflow.product.internal.controller.dto.ProductModelRequest;
 import com.stockflow.product.internal.domain.PrintConfigRules;
 import com.stockflow.product.internal.service.PrintConfigService;
 import org.springframework.stereotype.Component;
+
+import java.util.List;
 
 /** Customization template requests to service drafts, and templates to responses. */
 @Component
@@ -28,7 +31,13 @@ class CustomizationTemplateWebMapper {
         var areas = request.printAreas().stream()
                 .map(a -> new PrintConfigRules.AreaSpec(a.code(), a.name(), a.safeMarginMm(), a.bleedMm()))
                 .toList();
-        return new PrintConfigService.Draft(request.code(), request.name(), limits, toModel(request.model()), areas);
+        List<TemplateModel3d.Surface> surfaces = request.model3d() == null || request.model3d().surfaces() == null
+                ? null
+                : request.model3d().surfaces().stream()
+                        .map(s -> s == null ? null : new TemplateModel3d.Surface(s.printAreaCode(), s.meshName()))
+                        .toList();
+        return new PrintConfigService.Draft(request.code(), request.name(), limits, toModel(request.model()), areas,
+                surfaces);
     }
 
     CustomizationTemplateResponse toResponse(PrintConfig config) {
@@ -37,7 +46,14 @@ class CustomizationTemplateWebMapper {
                 config.allowedFileFormats(), config.maxFileSizeMb(), config.maxColors(), config.allowedFontCodes(),
                 config.active(), config.model() == null ? null : toResponse(config.model()),
                 config.printAreas().stream().map(CustomizationTemplateWebMapper::toResponse).toList(),
-                config.referenceFileName(), config.version());
+                config.referenceFileName(), config.version(), toResponse(config.model3d()));
+    }
+
+    private static CustomizationTemplateResponse.Model3d toResponse(TemplateModel3d model3d) {
+        return new CustomizationTemplateResponse.Model3d(model3d.hasFile(), model3d.fileName(), model3d.fileChecksum(),
+                model3d.surfaces().stream()
+                        .map(s -> new CustomizationTemplateResponse.Surface(s.printAreaCode(), s.meshName()))
+                        .toList());
     }
 
     private static ProductModel toModel(ProductModelRequest m) {

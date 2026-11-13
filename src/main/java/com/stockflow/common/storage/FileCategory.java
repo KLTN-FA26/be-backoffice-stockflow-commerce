@@ -58,6 +58,15 @@ public enum FileCategory {
             Set.of("application/pdf", "image/png")),
 
     /**
+     * A customization template's 3D model (kltn-docs 01 §4.10; FE request 2026-11-13 B-1): a glTF 2.0 binary
+     * ({@code .glb}) the back office measured the template's model from, which the storefront's studio draws the design
+     * on. Never parsed on the server - only its signature and version are checked - and served only through a signed
+     * link. Its own category: a model is not a document, and a replaced one is kept while an approved design's snapshot
+     * still names it.
+     */
+    PRINT_MODEL("print-models", 10 * 1024 * 1024, Set.of("model/gltf-binary")),
+
+    /**
      * Documents kept with a business record: a production order's slip (4A-3), a load's waybill from its carrier
      * (kltn-docs 09 §4.4, BR-28). A photo of a paper document too: a delivery note is signed on paper. A purchase
      * order's attachments were kept here until purchasing went (4A-8): no record claims them any more, so the

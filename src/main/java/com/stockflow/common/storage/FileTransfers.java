@@ -321,6 +321,21 @@ public class FileTransfers {
         return viewLink(key, properties.presignedUrlTtl());
     }
 
+    /**
+     * The longest a signed link may live: {@link StorageProperties} refuses a longer configured lifetime, and the AWS
+     * bucket policy ({@code infra/aws/media-cloudfront.yaml}) refuses any signature older than an hour.
+     */
+    public static final Duration LONGEST_LINK = Duration.ofHours(1);
+
+    /**
+     * {@link #viewLink(String)} valid for {@link #LONGEST_LINK} whatever the configured lifetime: for a file a browser
+     * fetches and caches for a whole working session, such as a template's 3D model the studio reloads as the customer
+     * works. Only for files that are not personal or business records; no existence check.
+     */
+    public DownloadLink sessionViewLink(String key) {
+        return sign(key, LONGEST_LINK, DownloadDisposition.inline(LONGEST_LINK));
+    }
+
     /** {@link #viewLink(String)} valid for {@code validFor}, never longer than the configured link lifetime. */
     public DownloadLink viewLink(String key, Duration validFor) {
         Duration ttl = validFor.compareTo(properties.presignedUrlTtl()) > 0 ? properties.presignedUrlTtl() : validFor;
