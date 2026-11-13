@@ -224,16 +224,21 @@ SELECT pg_temp.expect_fail('BR19 a window change that names a chat message that 
 INSERT INTO customer.customer (id, full_name, email, tax_code, status, version, created_at)
 VALUES (md5('qa29:other-customer')::uuid, 'QA other customer', 'qa29-other@example.com', '0399999929', 'ACTIVE', 0,
         NOW());
-INSERT INTO chat.conversation (id, customer_id, order_id, subject, status, version, created_at)
-SELECT md5('qa29:conv')::uuid, o.customer_id, o.id, 'Lich giao', 'OPEN', 0, NOW()
+-- Every message names the account that sent it (V20261124000200); the demo editor stands in for both sides here.
+INSERT INTO chat.conversation (id, customer_id, order_id, subject, status, opened_by_type, status_changed_at, version,
+                               created_at)
+SELECT md5('qa29:conv')::uuid, o.customer_id, o.id, 'Lich giao', 'QUEUED', 'CUSTOMER', NOW(), 0, NOW()
   FROM ordering.customer_order o WHERE o.id = md5('qa29:order')::uuid;
-INSERT INTO chat.conversation (id, customer_id, subject, status, version, created_at)
-VALUES (md5('qa29:conv-other')::uuid, md5('qa29:other-customer')::uuid, 'Hoi gia', 'OPEN', 0, NOW());
-INSERT INTO chat.message (id, conversation_id, sender_type, sender_id, body, sent_at, version, created_at)
-VALUES (md5('qa29:msg-agent')::uuid, md5('qa29:conv')::uuid, 'AGENT', md5('demo:user:editor')::uuid,
+INSERT INTO chat.conversation (id, customer_id, subject, status, opened_by_type, status_changed_at, version, created_at)
+VALUES (md5('qa29:conv-other')::uuid, md5('qa29:other-customer')::uuid, 'Hoi gia', 'QUEUED', 'CUSTOMER', NOW(), 0,
+        NOW());
+INSERT INTO chat.message (id, conversation_id, seq, sender_type, sender_id, body, sent_at, version, created_at)
+VALUES (md5('qa29:msg-agent')::uuid, md5('qa29:conv')::uuid, 1, 'AGENT', md5('demo:user:editor')::uuid,
         'Chung toi doi dot 2 nhe', NOW(), 0, NOW()),
-       (md5('qa29:msg-other')::uuid, md5('qa29:conv-other')::uuid, 'CUSTOMER', NULL, 'Dong y', NOW(), 0, NOW()),
-       (md5('qa29:msg-own')::uuid, md5('qa29:conv')::uuid, 'CUSTOMER', NULL, 'Dong y doi dot 2', NOW(), 0, NOW());
+       (md5('qa29:msg-other')::uuid, md5('qa29:conv-other')::uuid, 1, 'CUSTOMER', md5('demo:user:editor')::uuid,
+        'Dong y', NOW(), 0, NOW()),
+       (md5('qa29:msg-own')::uuid, md5('qa29:conv')::uuid, 2, 'CUSTOMER', md5('demo:user:editor')::uuid,
+        'Dong y doi dot 2', NOW(), 0, NOW());
 SELECT pg_temp.expect_fail('BR19a consent by a message the agent sent', $q$
     INSERT INTO ordering.delivery_batch_window_change (id, delivery_batch_id, order_id, old_window_start, old_window_end,
         new_window_start, new_window_end, reason_code, note, evidence_message_id, changed_by, changed_at)

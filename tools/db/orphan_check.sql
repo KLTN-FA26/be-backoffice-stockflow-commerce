@@ -118,7 +118,7 @@ WITH reviewed(col, why) AS (
     ('payment.installment.contract_number', 'counted in section 1'),
     ('payment.order_settlement.contract_number', 'counted in section 1'),
     ('notification.delivery_log.template_code', 'counted in section 1'),
-    ('chat.message.sender_id', 'customer or user, by sender type'),
+    ('chat.message.client_message_id', 'the sending client''s own id of the message: idempotency key of a retried send'),
     ('fulfillment.carrier_booking.carrier_order_id', 'the carrier''s own id'),
     ('fulfillment.dispatch_load.request_id', 'idempotency key'),
     ('fulfillment.dispatch_load_package.scan_id', 'idempotency key of the scan'),

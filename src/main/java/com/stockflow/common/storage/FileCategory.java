@@ -136,6 +136,13 @@ public enum FileCategory {
      */
     EINVOICE("einvoices", 10 * 1024 * 1024, Set.of("application/xml", "application/pdf")),
 
+    /**
+     * A file sent in a chat conversation (kltn-docs 16 §3: reference pictures, photos of a faulty product, a signed
+     * contract scan): images and PDF, 20 MB - the chat's own limit, stated again by {@code ck_message_attachment_*}.
+     */
+    CHAT_ATTACHMENT("chat-attachments", 20 * 1024 * 1024,
+            Set.of("image/jpeg", "image/png", "image/webp", "application/pdf")),
+
     /** Generated reports awaiting download. Short-lived; the retention job clears them. */
     EXPORT("exports", 100 * 1024 * 1024,
             Set.of("text/csv",

@@ -142,6 +142,21 @@ public enum ErrorCode {
 
     // ---- 409: the request is fine, the current state is not
     CONFLICT("Conflicting state", 409),
+    /** kltn-docs 16 §5: the conversation cannot move to that status from where it is, or not by this caller. */
+    CHAT_TRANSITION_NOT_ALLOWED("The conversation cannot move to that status now", 409),
+    /**
+     * The conversation is closed, or resolved past its reopen window: nothing more is written in it. The customer
+     * reopens, which starts a new conversation continuing it (16 §5).
+     */
+    CHAT_CONVERSATION_ENDED("The conversation has ended; start a new one", 409),
+    /** 16 edge case "nhiều agent cùng mở": only the agent in charge (or a chat supervisor) answers the customer. */
+    CHAT_NOT_ASSIGNEE("Only the agent in charge of the conversation can do this", 409),
+    /** Claiming a conversation another agent already has. */
+    CHAT_ALREADY_ASSIGNED("Another agent already has this conversation", 409),
+    /** The account a conversation was to be handed to does not answer customers (chat-conversations:UPDATE, staff). */
+    CHAT_AGENT_NOT_AVAILABLE("This person cannot take chat conversations", 409),
+    /** A retried send named the client id of an earlier message with something else in it. */
+    CHAT_CLIENT_MESSAGE_ID_REUSED("This client message id was already used for another message", 409),
     /** The inventory item already has a unit with this code (its base unit included). */
     UOM_CONVERSION_DUPLICATE("This SKU already has a unit of measure with this code", 409),
     /**
@@ -370,6 +385,14 @@ public enum ErrorCode {
     LOAD_HANDOVER_BLOCKED("Some orders on this vehicle may not be handed over yet", 409),
     /** WF-05 E2: no e-invoice with that id. */
     EINVOICE_NOT_FOUND("E-invoice not found", 404),
+    /** F-13: also the answer for another customer's conversation - a conversation id means something to its customer only. */
+    CHAT_CONVERSATION_NOT_FOUND("Conversation not found", 404),
+    /**
+     * kltn-docs 16 BR-02: the document a conversation was to be about does not exist, or is not the conversation's
+     * customer's - one answer for both, so the chat cannot be used to learn which documents exist.
+     */
+    CHAT_CONTEXT_NOT_FOUND("The document to talk about was not found", 404),
+    CHAT_MESSAGE_NOT_FOUND("Message not found", 404),
     /** WF-05 E2 (kltn-docs 21 §5.1): the e-invoice's status does not allow this - an issued invoice above all, which is never cancelled or changed (TT 91 Điều 10). */
     EINVOICE_INVALID_TRANSITION("The e-invoice's status does not allow this", 409),
     /** WF-05 E2 (21 BR-03): only a draft e-invoice is corrected. */

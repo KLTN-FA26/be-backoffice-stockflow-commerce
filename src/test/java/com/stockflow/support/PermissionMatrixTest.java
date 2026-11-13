@@ -105,7 +105,9 @@ class PermissionMatrixTest {
             Map.entry("GET /api/v1/quotes", "portal list: the caller's own customer's quotes, sent ones only (SCRUM-448)"),
             Map.entry("GET /api/v1/catalog/products/availability",
                     "stock indicator of the caller's own ACTIVE customer's own SKUs, the customer taken from the token "
-                            + "(SCRUM-429, 5-3)"));
+                            + "(SCRUM-429, 5-3)"),
+            Map.entry("GET /api/v1/chat/me/conversations", "the caller's own conversations (F-13), selected by the "
+                    + "customer profile of the token; a document filter only narrows them"));
 
     /**
      * Handlers with neither {@code @RequiresPermission} nor {@code @PreAuthorize}. They are open to anyone signed in
@@ -387,6 +389,12 @@ class PermissionMatrixTest {
             Map.entry("platform-actuator:READ", Set.of(Role.SALES_MANAGER, Role.SYSTEM_ADMIN)),
             Map.entry("platform-actuator:UPDATE", Set.of(Role.SALES_MANAGER, Role.SYSTEM_ADMIN)),
             Map.entry("sales-order-cancellations:READ", Set.of(Role.SALES_STAFF, Role.SYSTEM_ADMIN)),
+            // F-13 (V20261124000300, kltn-docs 16 §2): the customer (its own, scope OWN) and Sales chat; the Sales
+            // Manager supervises - assigns from the queue, takes escalations.
+            Map.entry("chat-conversations:UPDATE", Set.of(Role.CUSTOMER, Role.SALES_STAFF, Role.SALES_MANAGER,
+                    Role.SYSTEM_ADMIN)),
+            Map.entry("chat-supervision:UPDATE", Set.of(Role.SALES_MANAGER, Role.SYSTEM_ADMIN)),
+            Map.entry("chat-canned-responses:READ", Set.of(Role.SALES_STAFF, Role.SALES_MANAGER, Role.SYSTEM_ADMIN)),
             // The warehouse manager reads the orders of their warehouses only (V20261115000200, 5-7 review M1).
             Map.entry("sales-orders:READ", Set.of(Role.CUSTOMER, Role.SALES_STAFF, Role.ACCOUNTANT,
                     Role.PRODUCTION_COORDINATOR, Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
@@ -460,7 +468,11 @@ class PermissionMatrixTest {
                 Map.entry("POST /api/v1/returns/{returnId}/evidence", "{\"uploadId\":\"" + UUID.randomUUID() + "\"}"),
                 // 4A-4: a well-formed reprint request, so only the owner check can refuse another customer's round.
                 Map.entry("POST /api/v1/customer/production-samples/{roundId}/reprint-request",
-                        "{\"note\":\"stolen\"}"));
+                        "{\"note\":\"stolen\"}"),
+                // F-13 (kltn-docs 16 BR-02): a conversation of the attacker's own, about the victim's order - only the
+                // owner check of the context can refuse it.
+                Map.entry("POST /api/v1/chat/me/conversations", "{\"contextKind\":\"ORDER\",\"contextId\":\""
+                        + victimOrder + "\",\"text\":\"stolen\"}"));
     }
 
 

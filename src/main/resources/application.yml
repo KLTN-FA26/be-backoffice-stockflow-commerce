@@ -179,6 +179,9 @@ spring:
 
   task:
     execution:
+      # FORCE: build applicationTaskExecutor even though the STOMP broker (sales chat) brings executors of its own;
+      # by default Boot backs off when any Executor bean exists, and @Async would lose its executor (AsyncConfig).
+      mode: force
       pool:
         core-size: 8
         max-size: 32
