@@ -413,9 +413,6 @@ SELECT pg_temp.expect_true('CD9 the two CHECKs and the trigger are in place',
     AND EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'tg_stock_movement_adjustment_people' AND NOT tgisinternal));
 
 \echo '--- what the migration kept'
-SELECT pg_temp.expect_true('CM1 the unopened flags were archived whole before the column went',
-    EXISTS (SELECT 1 FROM platform.legacy_archive WHERE source_table = 'inventory.stock_package.unopened'
-               AND row_data ? 'unopened' AND row_data ? 'lpn'));
 SELECT pg_temp.expect_true('CM2 the new triggers and checks are in place',
     (SELECT count(*) FROM pg_trigger WHERE tgname IN ('tg_cycle_count_line_carton', 'tg_stock_adjustment_whole_carton')
         AND NOT tgisinternal) = 2

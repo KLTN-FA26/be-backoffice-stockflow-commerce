@@ -20,8 +20,8 @@ code, and points at the code for the rest.
 ## 1. Read this first: what has been verified
 
 **The suite runs.** `mvn test` resolves, compiles and executes under Maven; on the integration tip of the rescope it
-is about 4,570 tests (unit, integration against Testcontainers Postgres + Redis, migration upgrade tests,
-and the fitness functions). Earlier versions of this file said it had never run; that was true until the first
+was about 4,570 tests (unit, integration against Testcontainers Postgres + Redis, migration upgrade tests,
+and the fitness functions); the migration squash of 2026-11-11 removed the ~70 upgrade tests with the path they tested. Earlier versions of this file said it had never run; that was true until the first
 Maven-enabled build and is no longer. Do not "restore" the old caution: when a test is red, it is information.
 
 What each layer of checking covers, and what it does not:
@@ -31,8 +31,8 @@ What each layer of checking covers, and what it does not:
 | `tools/verify.py` — **run it first** | package↔path, module boundaries, `allowedDependencies`, unused imports, `@Scheduled` without `@SchedulerLock`, non-public proxied methods, Flyway version collisions, entity↔migration, `@NamedInterface` | anything needing a running context |
 | `ModularityTest`, `ArchitectureTest`, `PermissionMatrixTest`, `MessageBundleTest` | module boundaries, layering and base-layer traps, the permission matrix, en/vi error bundles | behaviour |
 | unit + integration tests | domain rules, Spring wiring, JPA mapping, SQL, locking | what nobody wrote a test for |
-| `*MigrationUpgradeTest` | a migration run over demo-like data: schema and remaining rows afterwards | the migrations that were not changed |
-| `tools/db/qa/run.sh <db>` | adversarial SQL against a freshly migrated database: every CHECK / trigger refuses what it should | application code |
+| `tools/db/qa/*.sql` (`RepositorySqlQaTest` in CI, `tools/db/qa/run.sh <db>` by hand) | adversarial SQL against a freshly migrated database with the demo seed: every CHECK / trigger refuses what it should; plus the orphan check | application code |
+| `*MigrationUpgradeTest` (write one when a migration changes or drops what holds rows) | a migration run over rows written before it: schema and remaining rows afterwards | the migrations that were not changed |
 
 A green run is evidence, not proof: the failures this stack produces are mostly silent (see §5), and a single-request
 happy path passes most of them. Fixtures matter: a test that builds a world the migrations cannot produce proves
@@ -76,10 +76,14 @@ idempotency, rate limiting, auditing, storage, locking, validation, i18n, the AP
 exception handler. **Do not rebuild any of it inside a module.** `README.md` has the table of what
 is there; `docs/adding-a-module.md` §3 has the "use this, not that" list.
 
-Migrations: the schema lives in `src/main/resources/db/migration`; `docs/business-design/db-design/schema.dbml`
+Migrations: the schema lives in `src/main/resources/db/migration`. Everything up to 2026-11-11 is ONE file,
+`V20261111000000__baseline.sql` (the 270 migrations before it were squashed while every database held demo data only;
+its header says how it was made and checked, git history up to `df34c338` keeps the originals), and the demo seed is
+one file too, `db/demo/V20261111000001__demo_seed.sql`. `docs/business-design/db-design/schema.dbml`
 is generated from the migrated database. Removed features were dropped by migration, with no archive (the VPS data
 is rebuilt on deploy, owner decision QD-1); historical enum constants stay. `event_publication` stays unqualified in
-`public` because Spring Modulith owns it (`V20260901000400` explains why).
+`public` because Spring Modulith owns it (the original `V20260901000400` explained why: its entity maps an
+unqualified name).
 
 ---
 
@@ -489,16 +493,18 @@ more than the list: in this stack, the dangerous failures are silent.
 - If a fitness function is genuinely wrong, change it and write down why — in the class javadoc or a
   new ADR. Deleting a rule to make a build pass is the one thing that is not allowed.
 - **Migrations are written by whoever builds the feature; the schema owner (Tú) reviews every one before merge.**
-  Add them to `db/migration` with the feature's code (`ddl-auto: validate` means an entity change and its
+  Add them to `db/migration` with the feature's code, versioned above the baseline (`ddl-auto: validate` means an entity change and its
   migration go in the same PR). Only add: never edit or delete a migration that has merged (Flyway validates
-  checksums, and `develop` deploys), and never edit a demo migration — write a new one. Version
+  checksums, and `develop` deploys), and never edit a demo migration — write a new one (the baseline and the demo seed included: they are
+  applied wherever a database was rebuilt after 2026-11-11). Version
   `VyyyyMMddNNNNNN__<schema>_<what>.sql`, **newer than every migration on every branch already merged**, because
   Flyway does not run out of order; a branch carrying older numbers renames before merging, and `verify.py` catches
   duplicates. Removing a feature: clean the leftover rows in the migration (cancel or delete), then drop; no archive and
   no "refuse while rows are in progress" (the VPS database is rebuilt on deploy, owner decision QD-1); keep historical
   enum constants; rewrite SQL functions that mention dropped objects in the same file (Postgres does not track
   dependencies in function bodies); a write to `identity.role_permission` advances `app_role.version` in the same
-  file. Every drop or CHECK change gets a lean `*MigrationUpgradeTest` and adversarial SQL under `tools/db/qa/`.
+  file. Every drop or CHECK change gets adversarial SQL under `tools/db/qa/` (run by `RepositorySqlQaTest`), and a
+  lean `*MigrationUpgradeTest` when it changes rows that exist.
   Read `docs/business-design/db-design/README.md` before writing an entity (its "no one writes migrations" line is
   from September and no longer true).
 - Cross-module references are foreign keys (ADR-0007). Validate a reference in the service first

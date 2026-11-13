@@ -10,8 +10,8 @@ import java.util.stream.Collectors;
  * <p>Public because {@code OrderSummary} carries it and other modules branch on it. The transitions stay private to
  * the module — {@link #canTransitionTo} is exposed so a caller can ask, but only {@code order} may actually move a
  * row. The same table is written a second time in the database ({@code ordering.order_status_transition}, enforced by
- * the trigger {@code tg_order_status_transition}); {@code OrderLifecycleIntegrationTest#triggerRefusesJumps} and
- * {@code OrderLifecycleMigrationUpgradeTest} check the two are equal.</p>
+ * the trigger {@code tg_order_status_transition}); {@code OrderLifecycleIntegrationTest#triggerRefusesJumps} checks
+ * the two are equal.</p>
  *
  * <pre>
  *   DRAFT ─contract sent─▶ PENDING_CONTRACT ─signed─▶ PENDING_PAYMENT (an installment on signing) / CONFIRMED /

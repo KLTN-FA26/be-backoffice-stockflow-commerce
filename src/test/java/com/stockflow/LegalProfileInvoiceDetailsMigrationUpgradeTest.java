@@ -18,7 +18,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class LegalProfileInvoiceDetailsMigrationUpgradeTest {
 
-    private static final String BEFORE = "20261117000300";
+    /** The baseline: every migration before 2026-11-11 is one file since the squash. */
+    private static final String BEFORE = "20261111000000";
     private static final String MIGRATION = "20261120000100";
 
     @Test

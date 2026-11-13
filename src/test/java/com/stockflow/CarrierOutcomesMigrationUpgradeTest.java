@@ -19,7 +19,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class CarrierOutcomesMigrationUpgradeTest {
 
-    private static final String BEFORE = "20261117000300";
+    /** The baseline: every migration before 2026-11-11 is one file since the squash. */
+    private static final String BEFORE = "20261111000000";
     private static final String MIGRATION = "20261122000100";
     private static final String USER = "00000000-0000-4000-8000-0000000000aa";
     private static final String WAREHOUSE = "00000000-0000-4000-8000-0000000000e1";

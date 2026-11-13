@@ -30,7 +30,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class Wf05SmallGapsMigrationUpgradeTest {
 
-    private static final String BEFORE = "20261117000300";
+    /** The baseline: every migration before 2026-11-11 is one file since the squash. */
+    private static final String BEFORE = "20261111000000";
     private static final String OVERDUE_MIGRATION = "20261121000100";
     private static final String COUNTER_MIGRATION = "20261121000200";
 
