@@ -24,4 +24,7 @@ public interface WarehouseRepository extends AggregateRepository<Warehouse, UUID
 
     /** Every shelf and area of the warehouse still on the layout; see {@link Placement}. */
     List<Placement> findPlacements(UUID warehouseId);
+
+    /** Every location code of the warehouse - its bins' and its storage areas' - of any status (06 BR-04). */
+    List<String> findLocationCodes(UUID warehouseId);
 }

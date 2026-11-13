@@ -12,6 +12,7 @@ import com.stockflow.warehouse.internal.domain.LocationStatus;
 import com.stockflow.warehouse.internal.domain.Placement;
 import com.stockflow.warehouse.internal.domain.Shelf;
 import com.stockflow.warehouse.internal.domain.ShelfRepository;
+import com.stockflow.warehouse.internal.domain.StorageLocation;
 import com.stockflow.warehouse.internal.domain.Warehouse;
 import com.stockflow.warehouse.internal.domain.WarehouseRepository;
 import com.stockflow.warehouse.internal.domain.ZoneRepository;
@@ -64,10 +65,12 @@ class ShelfLayoutServiceImpl implements ShelfLayoutService {
      * this module alone has no inventory; the application always has one.
      */
     private final ObjectProvider<BinOccupants> occupants;
+    private final EmptyBeforeInactive emptyBeforeInactive;
 
     ShelfLayoutServiceImpl(ShelfRepository shelves, WarehouseRepository warehouses, ZoneRepository zones,
-                           ObjectProvider<BinOccupants> occupants) {
+                           ObjectProvider<BinOccupants> occupants, EmptyBeforeInactive emptyBeforeInactive) {
         this.occupants = occupants;
+        this.emptyBeforeInactive = emptyBeforeInactive;
         this.shelves = shelves;
         this.warehouses = warehouses;
         this.zones = zones;
@@ -112,6 +115,12 @@ class ShelfLayoutServiceImpl implements ShelfLayoutService {
         Shelf shelf = require(shelfId);
         if (shelf.status() == LocationStatus.INACTIVE && status != null && status != LocationStatus.INACTIVE) {
             requirePlaceable(warehouse, shelf.id(), shelf.footprint());
+        }
+        if (status == LocationStatus.INACTIVE && shelf.status() != LocationStatus.INACTIVE) {
+            emptyBeforeInactive.require(shelf.levels().stream()
+                    .flatMap(level -> level.bins().stream())
+                    .map(bin -> bin.location().locationCode())
+                    .toList(), "shelf " + shelf.code());
         }
         shelf.changeStatus(status);
         return ShelfSummary.of(shelves.save(shelf));
@@ -185,6 +194,10 @@ class ShelfLayoutServiceImpl implements ShelfLayoutService {
     public ShelfSummary.BinEntry changeBinStatus(UUID shelfId, UUID levelId, UUID binId, LocationStatus status) {
         lockWarehouseOf(shelfId);
         Shelf shelf = require(shelfId);
+        StorageLocation location = shelf.level(levelId).bin(binId).location();
+        if (status == LocationStatus.INACTIVE && location.status() != LocationStatus.INACTIVE) {
+            emptyBeforeInactive.require(List.of(location.locationCode()), "bin " + location.locationCode());
+        }
         shelf.changeBinStatus(levelId, binId, status);
         return ShelfSummary.BinEntry.of(shelves.save(shelf).level(levelId), binId);
     }

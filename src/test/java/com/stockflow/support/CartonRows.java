@@ -32,6 +32,20 @@ public final class CartonRows {
     }
 
     /**
+     * Moves every carton standing at a location whose code starts with {@code codePrefix} to {@code to}, rows and all,
+     * by SQL - what a warehouse manager does before taking a place off the layout (kltn-docs 06 BR-04), for a test whose
+     * subject is the layout rather than the move. {@code to} should be an area: no bin-fit check applies there.
+     *
+     * @return how many cartons moved
+     */
+    public static int moveOut(JdbcTemplate jdbc, String codePrefix, String to) {
+        jdbc.update("UPDATE inventory.stock_item SET location_code = ? WHERE location_code LIKE ? || '%'"
+                + " AND stock_package_id IS NOT NULL", to, codePrefix);
+        return jdbc.update("UPDATE inventory.stock_package SET location_code = ? WHERE location_code LIKE ? || '%'",
+                to, codePrefix);
+    }
+
+    /**
      * The SKU's carton unit of {@code factor} units, made the first time (code {@code CTN}); the existing one when the
      * SKU has a carton unit already, whatever its factor.
      */
