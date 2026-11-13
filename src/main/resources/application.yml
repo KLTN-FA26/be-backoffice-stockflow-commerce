@@ -446,6 +446,16 @@ stockflow:
     max-concurrent: 4
     acquire-timeout: PT15S
 
+  # The PDF/X output intent stamped into an approved print file (PrintOutputIntentProperties). Blank profile =
+  # the interim sRGB intent until the printer's ICC profile is chosen (open question B35); then e.g.
+  # profile: file:/etc/stockflow/ISOcoated_v2_eci.icc, output-condition-identifier: FOGRA39.
+  design:
+    print:
+      output-intent:
+        profile: ${DESIGN_PRINT_ICC_PROFILE:}
+        output-condition-identifier: ${DESIGN_PRINT_OUTPUT_CONDITION:}
+        info: ${DESIGN_PRINT_OUTPUT_INFO:}
+
   catalog:
     availability:
       # At or under this many cartons a customer's own SKU shows "low stock" (kltn-docs 13 §4.4 step 4,

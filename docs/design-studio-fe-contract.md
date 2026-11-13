@@ -332,8 +332,11 @@ warning level, and the minimum is the template's `minDpi` (300).
 
 ## 11. Known limits
 
-- **PDF/X:** the stamped print file is identified as PDF/X-4 (TrimBox, BleedBox, `GTS_PDFXVersion`, `Trapped`) but
-  has no ICC output intent until the printer's profile is chosen (B35).
+- **PDF/X:** the stamped print file is identified as PDF/X-4 (TrimBox, BleedBox, `GTS_PDFXVersion`, `Trapped`) and
+  carries a `GTS_PDFX` output intent from `stockflow.design.print.output-intent`. Until the printer's ICC profile is
+  chosen (B35) that is the interim sRGB profile (`sRGB IEC61966-2.1`), a display profile a strict PDF/X-4 checker can
+  still reject; the production instruction says which intent is embedded. Colours are never converted to the profile,
+  and nothing in the build checks conformance (no veraPDF).
 - **Quotes:** writing a quote from a request, with the customer's SKU filled in, is plan D5 and belongs to the order
   module. Quotes, orders and production orders still use the blank SKU and snapshot until then.
 - **Library formats:** the library takes the image types a design takes (PNG, JPEG, WebP). B43's SVG and PDF are
