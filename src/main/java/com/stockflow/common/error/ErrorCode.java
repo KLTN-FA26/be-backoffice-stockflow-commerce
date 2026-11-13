@@ -737,6 +737,11 @@ public enum ErrorCode {
     PRODUCT_NOT_CUSTOMIZABLE("This product cannot be customized", 409),
     /** A template code is unique per variant. */
     PRINT_CONFIG_CODE_TAKEN("This variant already has a template with this code", 409),
+    /**
+     * A template's 3D surfaces name a print area its model does not have, name one twice, or give a mesh name that is
+     * empty or longer than 100 characters; {@code fieldErrors} names each entry at fault (FE request 2026-11-13 B-2).
+     */
+    PRINT_CONFIG_SURFACES_INVALID("The 3D model's surfaces do not match the template's print areas", 422),
     /** A customer SKU is issued only from an ordinary ACTIVE variant of an approved or published product (B20). */
     CUSTOMER_SKU_SOURCE_UNAVAILABLE("This variant cannot have customer SKUs now", 409),
     /** A customer holds at most 50 drafts at once (kltn-docs 12 B37); deleting one makes room. */
