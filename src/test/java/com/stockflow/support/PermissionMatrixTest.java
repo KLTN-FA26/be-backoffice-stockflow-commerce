@@ -432,6 +432,15 @@ class PermissionMatrixTest {
                         + "\",\"version\":0},{\"id\":\"" + UUID.randomUUID() + "\",\"version\":0}]}"),
                 Map.entry("POST /api/v1/designs/{designId}/assets/library", "{\"assetId\":\"" + UUID.randomUUID()
                         + "\"}"),
+                // FE request 2026-11-13 E-1..E-4: well-formed writes on the victim's project and design.
+                Map.entry("POST /api/v1/design-projects/{id}/assets/from-design", "{\"designId\":\"" + victimDesign
+                        + "\",\"assetId\":\"" + UUID.randomUUID() + "\"}"),
+                Map.entry("POST /api/v1/design-projects/{id}/texts", "{\"text\":\"stolen\",\"style\":{\"fontCode\":"
+                        + "\"inter\",\"sizePt\":24,\"color\":\"#1F2937\",\"align\":\"center\",\"lineHeight\":1.2}}"),
+                Map.entry("POST /api/v1/design-projects/{id}/preflight-failures", "{\"items\":[{\"designId\":\""
+                        + victimDesign + "\",\"issues\":[{\"rule\":\"ON_SEAM\"}]}]}"),
+                Map.entry("POST /api/v1/designs/{id}/clones", "{\"variantSku\":\"SOFA-3S-BLUE\",\"document\":{"
+                        + "\"schemaVersion\":1,\"templateCode\":\"BODY\",\"sku\":\"SOFA-3S-BLUE\",\"surfaces\":{}}}"),
                 Map.entry("PUT /api/v1/designs/{id}/document", "{\"version\":0,\"document\":{\"schemaVersion\":1,"
                         + "\"templateCode\":\"BODY\",\"sku\":\"SOFA-3S-GREY\",\"surfaces\":{}}}"),
                 // SCRUM-448 / R1: valid bodies, so only the owner check can refuse the victim's quote and order.

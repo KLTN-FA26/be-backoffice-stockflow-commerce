@@ -32,13 +32,21 @@ public class DesignProjectAssetJpaEntity extends BaseEntity {
     private int widthPx;
     @Column(name = "height_px", nullable = false, updatable = false)
     private int heightPx;
+    /**
+     * What a retry of the request that made this file names it by: an upload's {@code Idempotency-Key}, or the design
+     * image it was saved from. Unique per project ({@code uk_design_project_asset_upload_key}); {@code null} for an
+     * upload sent without a key.
+     */
+    @Column(name = "upload_key", updatable = false, length = 300)
+    private String uploadKey;
 
     protected DesignProjectAssetJpaEntity() {
     }
 
     public DesignProjectAssetJpaEntity(UUID projectId, String storageKey, String originalName, String contentType,
-                                       long sizeBytes, String checksum, int widthPx, int heightPx) {
+                                       long sizeBytes, String checksum, int widthPx, int heightPx, String uploadKey) {
         super(Identifiers.newId());
+        this.uploadKey = uploadKey;
         this.projectId = projectId;
         this.storageKey = storageKey;
         this.originalName = originalName;
@@ -57,4 +65,5 @@ public class DesignProjectAssetJpaEntity extends BaseEntity {
     public String getChecksum() { return checksum; }
     public int getWidthPx() { return widthPx; }
     public int getHeightPx() { return heightPx; }
+    public String getUploadKey() { return uploadKey; }
 }

@@ -6,6 +6,7 @@ import com.stockflow.common.security.Action;
 import com.stockflow.common.security.AuthenticatedUser;
 import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.RequiresPermission;
+import com.stockflow.design.internal.controller.dto.DesignCloneResponse;
 import com.stockflow.design.internal.controller.dto.DesignDecisionResponse;
 import com.stockflow.design.internal.controller.dto.DesignDocumentResponse;
 import com.stockflow.design.internal.controller.dto.DesignDraftResponse;
@@ -29,6 +30,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -171,6 +173,25 @@ class CustomerDesignController {
             @AuthenticatedUser CurrentUser user) throws com.fasterxml.jackson.core.JsonProcessingException {
         return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(ApiResponse.ok(
                 json.readTree(service.template(id, actor(user), DesignWorkflowController.readRights(user)))));
+    }
+
+    /**
+     * Clones the design onto another variant of its product (FE request 2026-11-13 E-3): {@code {variantSku,
+     * document}}, the layout already fitted to the target's print areas. The body is taken as text, as a layout save's
+     * is, and capped before it is read ({@code stockflow.web.body-limits}). The {@code Idempotency-Key} is required: the
+     * idempotency filter answers a retry with the first response, so a lost answer never makes a second clone.
+     */
+    @PostMapping(path = "/{id}/clones", consumes = MediaType.APPLICATION_JSON_VALUE)
+    @Operation(summary = "Clone the design onto another variant of its product: {variantSku, document}; "
+            + "Idempotency-Key required")
+    @RequiresPermission(resource = DesignResources.DESIGNS, action = Action.CREATE)
+    public ResponseEntity<ApiResponse<DesignCloneResponse>> cloneDesign(@PathVariable UUID id,
+            @RequestHeader(name = "Idempotency-Key", required = false) String requestKey, @RequestBody String body,
+            @AuthenticatedUser CurrentUser user) {
+        // Required, but checked by the service after the owner check: a stranger learns nothing from a 400.
+        var clone = service.cloneDesign(id, actor(user), requestKey, body);
+        return ResponseEntity.status(HttpStatus.CREATED).body(ApiResponse.ok(
+                new DesignCloneResponse(drafts.toResponse(clone.design()), clone.notInProject())));
     }
 
     private static UUID actor(CurrentUser user) {

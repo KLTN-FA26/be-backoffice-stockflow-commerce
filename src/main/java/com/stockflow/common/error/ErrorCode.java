@@ -865,6 +865,11 @@ public enum ErrorCode {
     DESIGN_IN_ANOTHER_PROJECT("This design belongs to another project", 409),
     /** A design waiting for review neither leaves its project nor moves to another (kltn-docs 12 BR-17). */
     DESIGN_PENDING_IN_PROJECT("A design waiting for review stays in its project", 409),
+    /**
+     * A design is cloned only onto another ACTIVE variant of its own product (FE request 2026-11-13 E-3; BR-01, BR-02):
+     * not onto its own variant, nor one of another product, nor one that cannot be designed on.
+     */
+    DESIGN_CLONE_TARGET_INVALID("This design cannot be cloned onto that variant", 409),
     /** The same idempotency key is still being processed. The client should poll, not retry blindly. */
     IDEMPOTENT_REQUEST_IN_PROGRESS("An identical request is still being processed", 409),
     PRODUCT_CODE_ALREADY_EXISTS("A product with this code already exists", 409),

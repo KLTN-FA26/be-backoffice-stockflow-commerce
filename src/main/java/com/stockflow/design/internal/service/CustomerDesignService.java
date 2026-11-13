@@ -8,6 +8,7 @@ import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.storage.FileTransfers;
 import com.stockflow.common.storage.StorageException;
 import com.stockflow.common.id.Identifiers;
+import com.stockflow.common.idempotency.IdempotencyKeys;
 import com.stockflow.common.json.CanonicalJson;
 import com.stockflow.customer.api.CustomerService;
 import com.stockflow.customer.api.CustomerSummary;
@@ -307,6 +308,101 @@ public class CustomerDesignService {
             projects.joinRevision(draft, sourceId, source.getProjectId(), actor);
         }
         return views.of(draft);
+    }
+
+    /** A clone and, when it could not join the source's project, why: {@code PROJECT_ARCHIVED} or {@code PROJECT_FULL}. */
+    public record CloneResult(DesignWorkflowService.DraftView design, String notInProject) {
+    }
+
+    /**
+     * Clones one of the caller's designs onto another variant of the same product (FE request 2026-11-13 E-3, accepted
+     * beyond kltn-docs 12): a new draft on the target variant's active template, with the layout the studio fitted to
+     * that template's print areas. {@code body} is {@code {"variantSku": ..., "document": {...}}}, read here as
+     * {@link #saveDocument} reads a layout, so what is checked and stored is exactly what the browser sent.
+     *
+     * <p>The source is any of the caller's designs but an archived one. The target follows what {@link #start} asks of
+     * a variant (BR-01, BR-02): an ACTIVE variant of the same approved or published CUSTOMIZABLE product, other than the
+     * source's, with the active template the layout names ({@code document.templateCode}); a variant of another
+     * product, an inactive one, or the source's own is {@code DESIGN_CLONE_TARGET_INVALID}. The layout passes
+     * {@link DesignDocumentRules} against that template, and every image it places must be one of the source's.</p>
+     *
+     * <p>The source's images are given to the clone as a revision gets them ({@code copyAssets}: same ids, the same
+     * stored files, never removed), so the layout's {@code assetId}s are valid on the clone unchanged. The clone counts
+     * against the draft limit (B37) and joins the source's project as a revision does ({@link
+     * DesignProjectService#joinRevision}); when it cannot, the answer says why. A retry is answered by the
+     * {@code Idempotency-Key} the endpoint requires (the HTTP idempotency filter): the same key and body return the
+     * first response, the same key with another body is {@code IDEMPOTENCY_KEY_REUSED}.</p>
+     */
+    @Auditable(action = AuditAction.CREATE, resourceType = "design")
+    public CloneResult cloneDesign(UUID sourceId, UUID actor, String requestKey, String body) {
+        // Whose design it is comes first: anyone else is told it does not exist, whatever they sent.
+        DesignDraftJpaEntity source = drafts.findById(sourceId)
+                .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
+        CustomerDesignRules.requireOwner(actor, source.getOwnerUserId(), source.getStatus());
+        if (requestKey == null) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A clone needs an Idempotency-Key header");
+        }
+        IdempotencyKeys.validate(requestKey);
+        Map<?, ?> request = requestObject(body);
+        if (!(request.get("variantSku") instanceof String sku) || sku.isBlank() || sku.length() > 64) {
+            throw invalid("variantSku", "variantSku must name a variant in at most 64 characters", "NotBlank");
+        }
+        if (!(request.get("document") instanceof Map<?, ?> document)) {
+            throw invalid("document", "document must be a JSON object", "NotNull");
+        }
+        if (!(document.get("templateCode") instanceof String templateCode) || templateCode.isBlank()) {
+            throw invalid("document", "document.templateCode must name the target variant's template", "NotBlank");
+        }
+        String targetSku = sku.strip();
+        CustomerSummary customer = activeCustomerOf(actor);
+        if (!customer.customerId().equals(source.getCustomerId())) {
+            throw new BusinessException(ErrorCode.NOT_FOUND);
+        }
+        if (targetSku.equals(source.getSku())) {
+            throw new BusinessException(ErrorCode.DESIGN_CLONE_TARGET_INVALID,
+                    "The design is already on " + targetSku + "; pick another variant of the product");
+        }
+        requireDesignable(source.getProductId());
+        PrintConfig template = cloneTarget(source.getProductId(), targetSku, templateCode);
+        requireRoomForDraft(customer.customerId());
+
+        String problem = DesignDocumentRules.problem(document,
+                frame(template, assets.idsOf(sourceId).stream().map(UUID::toString).toList()));
+        if (problem != null) {
+            throw invalid("document", problem, "DesignDocument");
+        }
+        String layout = canonical(document);
+        String name = source.getName() + " · " + template.sku();
+        var draft = new DesignDraftJpaEntity(Identifiers.newId(), source.getCustomerId(), source.getProductId(),
+                name.length() <= 200 ? name : name.substring(0, 200).strip(), null, DesignStatus.DRAFT);
+        draft.ownedBy(actor);
+        draft.drawOn(template.variantId(), template.sku(), template.templateId(), template.code());
+        drafts.saveAndFlush(draft);
+        assets.copyAssets(sourceId, draft.getId());
+        documents.save(new DesignDocumentJpaEntity(draft.getId(), layout, CanonicalJson.sha256Hex(layout),
+                clock.instant()));
+        decide(draft, actor, DesignDecisionType.CREATED, "Cloned from design " + sourceId + ": SKU " + template.sku()
+                + ", template " + template.code());
+        String notInProject = source.getProjectId() == null ? null
+                : projects.joinRevision(draft, sourceId, source.getProjectId(), actor);
+        return new CloneResult(views.of(draft), notInProject);
+    }
+
+    /**
+     * The active template {@code code} of the ACTIVE variant {@code sku} of {@code productId}. A variant of this product
+     * whose template {@code code} exists but cannot be designed on now is {@code PRINT_CONFIG_NOT_FOUND}, as for
+     * {@link #start}; any other variant is no target for a clone.
+     */
+    private PrintConfig cloneTarget(UUID productId, String sku, String code) {
+        return printConfigs.activeOfProduct(productId).stream()
+                .filter(t -> t.sku().equals(sku) && t.code().equals(code))
+                .findFirst()
+                .orElseThrow(() -> printConfigs.ofVariant(sku, code)
+                        .filter(t -> t.productId().equals(productId))
+                        .map(t -> new BusinessException(ErrorCode.PRINT_CONFIG_NOT_FOUND,
+                                "This variant has no active template " + code))
+                        .orElseGet(() -> new BusinessException(ErrorCode.DESIGN_CLONE_TARGET_INVALID,
+                                sku + " is not an active variant of this product with the template " + code)));
     }
 
     private DesignDraftJpaEntity lockOwnDraft(UUID id, UUID actor, long version) {
