@@ -4,13 +4,23 @@ import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.design.internal.domain.PrintSurface;
 import com.stockflow.product.api.PrintConfig;
+import java.awt.color.ColorSpace;
+import java.awt.color.ICC_Profile;
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
 import org.apache.pdfbox.cos.COSName;
 import org.apache.pdfbox.pdmodel.PDDocument;
+import org.apache.pdfbox.pdmodel.PDDocumentCatalog;
 import org.apache.pdfbox.pdmodel.PDPage;
 import org.apache.pdfbox.pdmodel.common.PDMetadata;
 import org.apache.pdfbox.pdmodel.common.PDRectangle;
+import org.apache.pdfbox.pdmodel.graphics.color.PDOutputIntent;
+import org.springframework.core.io.DefaultResourceLoader;
+import org.springframework.core.io.Resource;
 import org.springframework.stereotype.Component;
 
 /**
@@ -18,11 +28,13 @@ import org.springframework.stereotype.Component;
  * TrimBox and BleedBox from the template's geometry, its CropBox the whole page (a tighter one would hide the bleed
  * from the press's software) and no ArtBox (PDF/X allows a page a TrimBox or an ArtBox, not both), and the PDF/X-4
  * identification - {@code GTS_PDFXVersion} in the document information and in the XMP metadata, and {@code Trapped}
- * set to {@code False}.
+ * set to {@code False} - and the PDF/X output intent ({@code GTS_PDFX}) of {@link PrintOutputIntentProperties}, which
+ * replaces any PDF/X output intent the file brought with it (PDF/X allows one).
  *
- * <p>What it does not do: embed a CMYK output intent. That needs the printer's ICC profile, which the business has not
- * chosen yet (open question B35), so the file is identified as PDF/X-4 but does not conform to it; the production
- * instruction says so. Nothing here validates conformance (there is no veraPDF in the build).</p>
+ * <p>The output intent is interim until the printer's ICC profile is configured (open question B35): the JDK's sRGB
+ * profile, which describes the RGB content the studio produces but is a display profile, so a strict PDF/X-4 checker
+ * can still reject the file; the production instruction says which intent is embedded. The content is never converted
+ * to the intent's colour space. Nothing here validates conformance (there is no veraPDF in the build).</p>
  *
  * <p>The file is checked against the template first ({@link PrintFileGeometry}, as at submission): a file that does not
  * fit is refused rather than stamped with boxes that would cut it in the wrong place.</p>
@@ -34,6 +46,30 @@ import org.springframework.stereotype.Component;
 class PrintReadyStamp {
 
     private static final float POINTS_PER_MM = PrintFileGeometry.POINTS_PER_MM;
+    private static final COSName GTS_PDFX = COSName.getPDFName("GTS_PDFX");
+
+    private final PrintOutputIntentProperties intent;
+    /** The ICC profile's bytes, read and checked once: a profile that cannot be read stops startup, not an approval. */
+    private final byte[] profile;
+
+    PrintReadyStamp(PrintOutputIntentProperties intent) {
+        this.intent = intent;
+        this.profile = profileOf(intent);
+    }
+
+    private static byte[] profileOf(PrintOutputIntentProperties intent) {
+        if (intent.interim()) {
+            return ICC_Profile.getInstance(ColorSpace.CS_sRGB).getData();
+        }
+        Resource resource = new DefaultResourceLoader().getResource(intent.profile());
+        try (InputStream in = resource.getInputStream()) {
+            // getInstance refuses what is not an ICC profile, so a wrong file is found here rather than by the press.
+            return ICC_Profile.getInstance(in).getData();
+        } catch (IOException | IllegalArgumentException ex) {
+            throw new IllegalStateException("stockflow.design.print.output-intent.profile " + intent.profile()
+                    + " is not a readable ICC profile", ex);
+        }
+    }
 
     /**
      * {@code pdf} stamped for {@code template}, written to {@code out}; {@code title} names it in its metadata.
@@ -69,12 +105,31 @@ class PrintReadyStamp {
             PDMetadata metadata = new PDMetadata(document);
             metadata.importXMPMetadata(xmp(title).getBytes(StandardCharsets.UTF_8));
             document.getDocumentCatalog().setMetadata(metadata);
+            embedOutputIntent(document);
             document.save(out.path().toFile());
         } catch (BusinessException refused) {
             throw refused;
         } catch (IOException | RuntimeException | StackOverflowError unreadable) {
             throw invalid("The print file is not a readable PDF");
         }
+    }
+
+    /** The configured PDF/X output intent, in place of any the file had; other standards' intents (PDF/A) stay. */
+    private void embedOutputIntent(PDDocument document) throws IOException {
+        PDOutputIntent outputIntent = new PDOutputIntent(document, new ByteArrayInputStream(profile));
+        outputIntent.getCOSObject().setItem(COSName.S, GTS_PDFX);
+        outputIntent.setOutputConditionIdentifier(intent.outputConditionIdentifier());
+        outputIntent.setInfo(intent.info());
+        outputIntent.setRegistryName(intent.registryName());
+        PDDocumentCatalog catalog = document.getDocumentCatalog();
+        List<PDOutputIntent> intents = new ArrayList<>();
+        for (PDOutputIntent existing : catalog.getOutputIntents()) {
+            if (!GTS_PDFX.equals(existing.getCOSObject().getCOSName(COSName.S))) {
+                intents.add(existing);
+            }
+        }
+        intents.add(outputIntent);
+        catalog.setOutputIntents(intents);
     }
 
     /** The XMP packet: the PDF/X identification, the trapping state and the title, nothing a reader must not see. */
