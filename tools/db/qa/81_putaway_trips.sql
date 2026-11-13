@@ -1,5 +1,5 @@
 -- =============================================================================
--- Adversarial checks + happy paths for putaway trips (V20261118000100; kltn-docs 05 §4.5, BR-15, BR-16; Jira
+-- Adversarial checks + happy paths for putaway trips (V20261124000100; kltn-docs 05 §4.5, BR-15, BR-16; Jira
 -- SCRUM-573): the status rules of a trip and of a carton on its cart, one open trip per clerk, one open cart per
 -- carton, and the grants of the new resource. Each rule is attacked by the statement that breaks only it
 -- (expect_fail_by names the rule). Needs the demo seed: two of its quarantined cartons in HCM-QC01 are given quarantine
