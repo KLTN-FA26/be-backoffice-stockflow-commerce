@@ -200,8 +200,9 @@ SELECT pg_temp.expect_true('WC25 a putaway task of a receipt line names its cart
                AND pg_get_constraintdef(oid) LIKE '%goods_receipt_line_id IS NULL%stock_package_id IS NOT NULL%'));
 
 \echo '--- the history written before stays as it was'
-SELECT pg_temp.expect_true('WC26 the new checks are NOT VALID: old loose lines and tasks are kept',
-    (SELECT bool_and(NOT convalidated) FROM pg_constraint
+-- Added NOT VALID to keep old loose lines and tasks; on a fresh database (baseline V20261111000000, 2026-11-11): no row predates it, so they are created validated.
+SELECT pg_temp.expect_true('WC26 the carton checks are validated: no loose line or task is left',
+    (SELECT bool_and(convalidated) FROM pg_constraint
       WHERE conname IN ('ck_stock_movement_receipt_in_carton', 'ck_stock_movement_move_task_carton',
                         'ck_stock_movement_putaway_carton', 'ck_putaway_task_receipt_carton')));
 

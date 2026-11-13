@@ -262,7 +262,7 @@ left a window in which an order existed with no stock behind it.
 | `BaseLayerRegressionTest` | the base-layer defects found in review — entity equality under a lazy proxy, `isNew()` with an application-assigned id, `OWN` scope with no user id, a nested permission guard clearing its caller's scope |
 | `StockItemTest`, `OrderTest`, `StockAllocatorTest` | business rules, as plain unit tests with no container — milliseconds, because the domain has no framework on it |
 | `ShippingWarehouseIntegrationTest` | an order and its stock holds commit together, against a real Postgres |
-| `*MigrationUpgradeTest` | each removal or CHECK change run over demo-like data: schema and remaining rows afterwards |
+| `RepositorySqlQaTest` | every adversarial script in `tools/db/qa/` and the orphan check, on a freshly migrated database with the demo seed |
 | `InventoryModuleTest` | inventory boots **alone**, with the other thirteen modules absent |
 | `MessageBundleTest` | every `ErrorCode` is translated in both bundles, and they agree |
 | `ApiEnvelopeTest` | the response shape every client depends on |
@@ -348,8 +348,10 @@ One database, `stockflow`; one schema per module. Three rules, and the reasoning
 Rule 2 gives up the option of extracting a module without first dropping its incoming keys, and
 buys referential integrity the database enforces on every code path.
 
-Migrations are timestamped, `V20260901000200__inventory_stock.sql`, not `V2__`. With five people
-committing in parallel, sequential numbers collide constantly.
+Migrations are timestamped, `V20261112000100__inventory_stock.sql`, not `V2__`. With five people
+committing in parallel, sequential numbers collide constantly. Everything up to 2026-11-11 is one file,
+`V20261111000000__baseline.sql` (the 270 migrations before it were squashed while every database held demo
+data only; git history keeps them), and the demo seed one more, `db/demo/V20261111000001__demo_seed.sql`.
 
 Spring Modulith's `event_publication` table lives on the default search path rather than in a
 schema of its own: the JPA event registry maps it to an unqualified name, and moving it would leave
