@@ -104,12 +104,13 @@ public class EInvoiceProviderAccountService {
             throw invalid("symbol", "The symbol's two digits are the year's last two");
         }
         boolean sandbox = SandboxProvider.CODE.equals(provider);
-        if (sandbox != (providerTemplateCode == null || providerTemplateCode.isBlank())) {
+        String ownTemplateCode = providerTemplateCode == null || providerTemplateCode.isBlank() ? null
+                : providerTemplateCode.strip();
+        if (sandbox != (ownTemplateCode == null)) {
             throw invalid("providerTemplateCode", sandbox ? "The sandbox has no template code of its own"
                     : "The provider's own template code is required");
         }
-        accounts.useSeries(new InvoiceSeries(provider, templateCode, symbol, year),
-                sandbox ? null : providerTemplateCode.strip());
+        accounts.useSeries(new InvoiceSeries(provider, templateCode, symbol, year), ownTemplateCode);
     }
 
     /**

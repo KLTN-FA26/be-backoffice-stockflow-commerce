@@ -104,7 +104,7 @@ class DeliveryOutcomeImportService implements DeliveryOutcomeImports {
 
     @Override
     @Transactional(readOnly = true)
-    public Preview preview(byte[] file, CurrentUser actor) {
+    public Preview preview(byte[] file) {
         List<DeliveryOutcomeFile.Row> rows = parse(file);
         List<DeliveryOutcomeCheck.Verdict> verdicts = check(rows);
         int accepted = (int) verdicts.stream().filter(DeliveryOutcomeCheck.Verdict::accepted).count();

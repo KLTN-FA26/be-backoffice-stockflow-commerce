@@ -56,7 +56,7 @@ public interface DeliveryOutcomeImports {
      * @throws com.stockflow.common.error.BusinessException 400 {@code DELIVERY_OUTCOME_IMPORT_INVALID_FILE} for a file
      *         that is not the template's table (not UTF-8, no data line, over 1,000 lines, a quote left open)
      */
-    Preview preview(byte[] file, CurrentUser actor);
+    Preview preview(byte[] file);
 
     /**
      * Records the file and its lines, then sends each accepted line through the carrier-event pipeline, one event per

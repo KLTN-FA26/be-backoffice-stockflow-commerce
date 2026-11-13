@@ -112,17 +112,17 @@ class DeliveryFailureCasesAdapter implements DeliveryFailureCases {
 
     @Override
     public Optional<DeliveryFailureCase> find(UUID id) {
-        return query("WHERE c.id = :value ORDER BY c.opened_at, c.id", id, 0).stream().findFirst();
+        return queryBy("WHERE c.id = :value ORDER BY c.opened_at, c.id", id, 0).stream().findFirst();
     }
 
     @Override
     public Optional<DeliveryFailureCase> findByShipment(UUID shipmentId) {
-        return query("WHERE c.shipment_id = :value ORDER BY c.opened_at, c.id", shipmentId, 0).stream().findFirst();
+        return queryBy("WHERE c.shipment_id = :value ORDER BY c.opened_at, c.id", shipmentId, 0).stream().findFirst();
     }
 
     @Override
     public List<DeliveryFailureCase> ofOrder(UUID orderId) {
-        return query("WHERE c.order_id = :value ORDER BY c.opened_at, c.id", orderId, 0);
+        return queryBy("WHERE c.order_id = :value ORDER BY c.opened_at, c.id", orderId, 0);
     }
 
     @Override
@@ -228,7 +228,7 @@ class DeliveryFailureCasesAdapter implements DeliveryFailureCases {
     }
 
     /** The cases {@code where} keeps, each with its shipment's lines and its cartons: three statements, not 2n + 1. */
-    private List<DeliveryFailureCase> query(String where, Object value, int limit) {
+    private List<DeliveryFailureCase> queryBy(String where, Object value, int limit) {
         return query(where, value == null ? Map.of() : Map.of("value", value), limit);
     }
 

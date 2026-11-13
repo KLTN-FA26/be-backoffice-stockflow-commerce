@@ -51,6 +51,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.stream.StreamSupport;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -189,13 +190,9 @@ class CustomerEInvoicePortalIntegrationTest {
         List<String> ids = new ArrayList<>();
         page.at("/data/items").forEach(item -> ids.add(item.path("id").asText()));
         assertThat(ids).containsExactlyInAnyOrder(first.id().toString(), second.id().toString());
-        JsonNode item = null;
-        for (JsonNode candidate : page.at("/data/items")) {
-            if (candidate.path("id").asText().equals(first.id().toString())) {
-                item = candidate;
-            }
-        }
-        assertThat(item).isNotNull();
+        JsonNode item = StreamSupport.stream(page.at("/data/items").spliterator(), false)
+                .filter(candidate -> candidate.path("id").asText().equals(first.id().toString()))
+                .findFirst().orElseThrow();
         assertThat(item.path("status").asText()).isEqualTo("ISSUED");
         assertThat(item.path("type").asText()).isEqualTo("ORIGINAL");
         assertThat(item.path("orderId").asText()).isEqualTo(first.orderId().toString());

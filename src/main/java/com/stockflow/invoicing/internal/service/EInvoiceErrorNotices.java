@@ -43,7 +43,7 @@ public class EInvoiceErrorNotices {
     private static final Logger log = LoggerFactory.getLogger(EInvoiceErrorNotices.class);
 
     /** What the accountant notifies: the buyer's name and address as they should have been, and why. */
-    public record Record(UUID invoiceId, ErrorNotice.Subject subject, String reason, String correctBuyerName,
+    public record Notify(UUID invoiceId, ErrorNotice.Subject subject, String reason, String correctBuyerName,
                          String correctBuyerAddress) {
     }
 
@@ -68,7 +68,7 @@ public class EInvoiceErrorNotices {
      * @throws com.stockflow.common.error.BusinessException {@code EINVOICE_NOT_FOUND}, and what {@link ErrorNotice#record} refuses
      */
     @Auditable(action = AuditAction.APPROVE, resourceType = "einvoice-error-notice", resourceId = "#command.invoiceId()")
-    public ErrorNotice.Snapshot record(Record command, UUID by) {
+    public ErrorNotice.Snapshot record(Notify command, UUID by) {
         UUID noticeId = steps.record(command.invoiceId(), command.subject() == null
                         ? ErrorNotice.Subject.BUYER_NAME_ADDRESS : command.subject(), command.reason(),
                 command.correctBuyerName(), command.correctBuyerAddress(), by);

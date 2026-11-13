@@ -315,7 +315,9 @@ public class EInvoiceIssuance {
                     steps.issued(id, transaction, result, documents);
                 }
                 case REJECTED -> steps.rejected(id, transaction, result.errorCode(), result.message());
-                case PENDING, NOT_FOUND -> { /* nothing to record yet: asked again on the next reconciliation */ }
+                // Nothing to record yet for either: asked again on the next reconciliation.
+                case PENDING -> { }
+                case NOT_FOUND -> { }
                 case UNKNOWN -> log.warn("E-invoice {} (transaction {}): the provider's answer does not say whether it "
                         + "holds the transaction; it will be asked again", LogSafe.text(invoice.code()),
                         LogSafe.text(transaction));

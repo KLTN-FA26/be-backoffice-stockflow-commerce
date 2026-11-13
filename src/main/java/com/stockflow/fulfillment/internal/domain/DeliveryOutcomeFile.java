@@ -59,10 +59,10 @@ public final class DeliveryOutcomeFile {
      *         or no data line, over {@value #MAX_ROWS} data lines, or with a quote left open
      */
     public static List<Row> parse(byte[] bytes) {
-        List<ImportCsv.Record> records = ImportCsv.read(bytes, MAX_BYTES, MAX_LINES);
+        List<ImportCsv.CsvLine> records = ImportCsv.read(bytes, MAX_BYTES, MAX_LINES);
         List<Row> rows = new ArrayList<>();
         for (int i = 1; i < records.size(); i++) {
-            ImportCsv.Record r = records.get(i);
+            ImportCsv.CsvLine r = records.get(i);
             rows.add(new Row(r.line(), r.cell(0), r.cell(1), r.cell(2), r.cell(3), r.cell(4), r.cell(5), r.cell(6),
                     r.cell(7)));
         }

@@ -69,9 +69,9 @@ class DeliveryOutcomeImportController {
     @Operation(summary = "Step 1: check each line of a file against the vehicle its waybill number names; nothing is "
             + "written. 400 DELIVERY_OUTCOME_IMPORT_INVALID_FILE")
     @RequiresPermission(resource = FulfillmentResources.DELIVERY_OUTCOME_IMPORTS, action = Action.CREATE)
-    public ApiResponse<DeliveryOutcomeImports.Preview> preview(@RequestPart("file") MultipartFile file,
-                                                               @AuthenticatedUser CurrentUser actor) {
-        return ApiResponse.ok(imports.preview(read(file), actor));
+    public ApiResponse<DeliveryOutcomeImports.Preview> preview(@RequestPart("file") MultipartFile file) {
+        // The warehouse scope the guard set is what limits the check; the caller is not needed.
+        return ApiResponse.ok(imports.preview(read(file)));
     }
 
     @PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE)

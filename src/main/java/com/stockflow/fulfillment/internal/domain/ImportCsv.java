@@ -45,7 +45,7 @@ public final class ImportCsv {
      *
      * @param line the line's number in the file, the heading being line 1 - the row Excel shows it on
      */
-    public record Record(int line, List<String> cells) {
+    public record CsvLine(int line, List<String> cells) {
 
         /** The cell at {@code index}, trimmed; null when the line is shorter or the cell blank. */
         public String cell(int index) {
@@ -65,7 +65,7 @@ public final class ImportCsv {
      * @throws Malformed for a file that is empty, over {@code maxBytes}, not UTF-8, holding a NUL, with no heading line,
      *         over {@code maxLines} lines, or with a quote left open
      */
-    public static List<Record> read(byte[] bytes, int maxBytes, int maxLines) {
+    public static List<CsvLine> read(byte[] bytes, int maxBytes, int maxLines) {
         if (bytes == null || bytes.length == 0) {
             throw new Malformed("The file is empty");
         }
@@ -79,7 +79,7 @@ public final class ImportCsv {
         if (text.indexOf('\0') >= 0) {
             throw new Malformed("The file holds a NUL character: save it from the template as CSV UTF-8");
         }
-        List<Record> records = records(text, delimiter(text), maxLines);
+        List<CsvLine> records = records(text, delimiter(text), maxLines);
         if (records.isEmpty()) {
             throw new Malformed("The file has no heading line");
         }
@@ -147,8 +147,8 @@ public final class ImportCsv {
     }
 
     /** RFC 4180 records, the blank ones dropped as they are read; quoted cells may hold delimiters and line breaks. */
-    private static List<Record> records(String text, char delimiter, int maxLines) {
-        List<Record> records = new ArrayList<>();
+    private static List<CsvLine> records(String text, char delimiter, int maxLines) {
+        List<CsvLine> records = new ArrayList<>();
         List<String> record = new ArrayList<>();
         StringBuilder cell = new StringBuilder();
         boolean quoted = false;
@@ -205,9 +205,9 @@ public final class ImportCsv {
         return records;
     }
 
-    private static void keep(List<Record> records, int line, List<String> cells) {
+    private static void keep(List<CsvLine> records, int line, List<String> cells) {
         if (cells.stream().anyMatch(c -> !c.isBlank())) {
-            records.add(new Record(line, cells));
+            records.add(new CsvLine(line, cells));
         }
     }
 

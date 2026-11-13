@@ -360,7 +360,7 @@ class EInvoiceController {
                                                                 @Valid @RequestBody RecordErrorNoticeRequest request,
                                                                 @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
-        return ApiResponse.ok(InvoicingWebMapper.toResponse(errorNotices.record(new EInvoiceErrorNotices.Record(id,
+        return ApiResponse.ok(InvoicingWebMapper.toResponse(errorNotices.record(new EInvoiceErrorNotices.Notify(id,
                 request.subject(), request.reason(), request.correctBuyerName(), request.correctBuyerAddress()),
                 user.userId())));
     }

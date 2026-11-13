@@ -168,15 +168,18 @@ public final class ErrorNotice {
                 this.status = Status.SENT;
                 this.sentAt = sentAt == null ? now : sentAt;
             }
-            case ACCEPTED, REJECTED -> {
-                this.status = receipt.outcome() == EInvoiceProvider.NoticeOutcome.ACCEPTED ? Status.ACCEPTED
-                        : Status.REJECTED;
-                this.sentAt = sentAt == null ? now : sentAt;
-                this.respondedAt = now;
-                this.responseCode = limit(receipt.code(), 64);
-                this.responseMessage = limit(receipt.message(), 500);
-            }
+            case ACCEPTED -> decided(Status.ACCEPTED, receipt, now);
+            case REJECTED -> decided(Status.REJECTED, receipt, now);
         }
+    }
+
+    /** The tax authority's answer: final. */
+    private void decided(Status answer, EInvoiceProvider.NoticeReceipt receipt, Instant now) {
+        this.status = answer;
+        this.sentAt = sentAt == null ? now : sentAt;
+        this.respondedAt = now;
+        this.responseCode = limit(receipt.code(), 64);
+        this.responseMessage = limit(receipt.message(), 500);
     }
 
     public Snapshot snapshot() {
