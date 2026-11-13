@@ -13,6 +13,7 @@ import com.stockflow.design.internal.domain.DesignDecisionType;
 import com.stockflow.design.internal.domain.DesignStatus;
 import com.stockflow.design.internal.domain.ProjectEventType;
 import com.stockflow.design.internal.domain.QuoteRequestRules;
+import com.stockflow.design.internal.domain.QuoteRequestStatus;
 import com.stockflow.design.internal.entity.DesignDecisionJpaEntity;
 import com.stockflow.design.internal.entity.DesignDraftJpaEntity;
 import com.stockflow.design.internal.entity.DesignProjectJpaEntity;
@@ -34,6 +35,8 @@ import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.function.Function;
@@ -52,6 +55,12 @@ import org.springframework.transaction.annotation.Transactional;
  *
  * <p>The sales staff are told ({@link DesignProjectQuoteRequested}) and list the requests with the project's name as
  * context (BR-17), until the chat module carries the request as a card of several lines.</p>
+ *
+ * <p><b>One open request per project</b>, as per design (B40): the customer who clicks "ask for a quote" twice - a
+ * double click, a retried request, a second tab - gets the request already open, and the sales staff are told once.
+ * Asking something else while it is open changes what it asks, and they are told what it asks now. Once they close it
+ * as answered, the project asks anew. Every writer takes the project's lock first, so two asks never both find none
+ * open; {@code uk_design_project_quote_request_open} is the last line of defence.</p>
  */
 @Service
 @Transactional
@@ -101,20 +110,26 @@ public class DesignProjectQuoteRequestService {
     /** A project quote request as read; {@code projectName} is the context the sales staff see (BR-17). */
     public record ProjectQuoteRequestView(UUID id, UUID projectId, String projectName, UUID customerId,
                                           String customerName, LocalDate desiredDeliveryDate, UUID requestedBy,
-                                          Instant requestedAt, List<LineView> lines) {
+                                          Instant requestedAt, QuoteRequestStatus status, Instant closedAt,
+                                          UUID closedBy, List<LineView> lines) {
+    }
+
+    /** A request as asked: {@code created} when it is new, false when the open one answers (or now asks this). */
+    public record Asked(ProjectQuoteRequestView request, boolean created) {
     }
 
     /**
      * The project's owner asks one quote over {@code asked}: at least one, each an approved design of the project
-     * named once, with 1 to {@value QuoteRequestRules#MAX_CARTONS} cartons; one delivery date, today or later.
+     * named once, with 1 to {@value QuoteRequestRules#MAX_CARTONS} cartons; one delivery date, today or later. With a
+     * request of the project open, the same ask answers with it and changes nothing - no history, no notice - and a
+     * different one changes what it asks.
      *
      * @throws BusinessException 400 for no line, a design named twice, cartons out of range, a past date; 409
      *         {@code DESIGN_NOT_APPROVED}, {@code DESIGN_PROJECT_ARCHIVED}, {@code CUSTOMER_NOT_ACTIVE}; 404 for a
      *         design not in the project, or anyone but the owner
      */
     @Auditable(action = AuditAction.CREATE, resourceType = "design-project", resourceId = "#projectId")
-    public ProjectQuoteRequestView request(UUID projectId, UUID actor, List<LineInput> asked,
-                                           LocalDate desiredDeliveryDate) {
+    public Asked request(UUID projectId, UUID actor, List<LineInput> asked, LocalDate desiredDeliveryDate) {
         if (asked == null || asked.isEmpty()) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A project quote request names at least one design");
         }
@@ -140,8 +155,27 @@ public class DesignProjectQuoteRequestService {
         }
         Map<UUID, String> skus = customerSkusOf(designs.values());
 
-        DesignProjectQuoteRequestJpaEntity request = requests.saveAndFlush(new DesignProjectQuoteRequestJpaEntity(
-                projectId, actor, desiredDeliveryDate));
+        Optional<DesignProjectQuoteRequestJpaEntity> open = requests.findOpen(projectId);
+        DesignProjectQuoteRequestJpaEntity request;
+        String history;
+        if (open.isPresent()) {
+            request = open.get();
+            List<DesignProjectQuoteRequestLineJpaEntity> before = lines.findByRequestIdIn(List.of(request.getId()));
+            if (sameAsk(request, before, asked, desiredDeliveryDate)) {
+                // A second click on the same ask: the request it made, told to nobody again.
+                return new Asked(views(List.of(request)).getFirst(), false);
+            }
+            // Deleted and flushed before the new lines go in: Hibernate would otherwise insert first and meet the key.
+            lines.deleteAll(before);
+            lines.flush();
+            request.askAgain(desiredDeliveryDate);
+            request = requests.saveAndFlush(request);
+            history = "Request " + request.getId() + " asked again: ";
+        } else {
+            request = requests.saveAndFlush(new DesignProjectQuoteRequestJpaEntity(projectId, actor,
+                    desiredDeliveryDate));
+            history = "Request " + request.getId() + ": ";
+        }
         List<DesignProjectQuoteRequested.Line> facts = new ArrayList<>();
         for (LineInput line : asked) {
             lines.save(new DesignProjectQuoteRequestLineJpaEntity(request.getId(), line.designId(), line.cartons()));
@@ -152,13 +186,47 @@ public class DesignProjectQuoteRequestService {
             facts.add(new DesignProjectQuoteRequested.Line(line.designId(), skus.get(line.designId()), line.cartons()));
         }
         lines.flush();
-        projectService.record(project, actor, ProjectEventType.PROJECT_QUOTE_REQUESTED, "Request " + request.getId()
-                + ": " + asked.stream().map(l -> l.designId() + " x" + l.cartons()).collect(Collectors.joining(", "))
+        projectService.record(project, actor, ProjectEventType.PROJECT_QUOTE_REQUESTED, history
+                + asked.stream().map(l -> l.designId() + " x" + l.cartons()).collect(Collectors.joining(", "))
                 + (desiredDeliveryDate == null ? "" : "; delivery by " + desiredDeliveryDate));
         Instant now = clock.instant();
         events.publishEvent(new DesignProjectQuoteRequested(request.getId(), projectId, project.getCustomerId(), facts,
                 desiredDeliveryDate, now));
+        return new Asked(views(List.of(request)).getFirst(), open.isEmpty());
+    }
+
+    /**
+     * A salesperson closes a request they have answered - quoted it, or settled it with the customer - so that the
+     * project asks again, for its next order, with a new one. Closing a closed request changes nothing.
+     *
+     * @throws BusinessException 404 for no such request
+     */
+    @Auditable(action = AuditAction.UPDATE, resourceType = "design-project-quote-request", resourceId = "#requestId")
+    public ProjectQuoteRequestView close(UUID requestId, UUID actor) {
+        if (actor == null) {
+            throw new BusinessException(ErrorCode.UNAUTHORIZED);
+        }
+        UUID projectId = requests.findById(requestId).map(DesignProjectQuoteRequestJpaEntity::getProjectId)
+                .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
+        // The project's lock first, as an ask takes it: no ask slips in between reading the request and closing it.
+        projects.lockById(projectId).orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
+        DesignProjectQuoteRequestJpaEntity request = requests.lockById(requestId)
+                .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
+        if (request.getStatus() == QuoteRequestStatus.OPEN) {
+            request.close(clock.instant(), actor);
+            request = requests.saveAndFlush(request);
+        }
         return views(List.of(request)).getFirst();
+    }
+
+    /** Whether {@code asked} on {@code date} is what the open request already asks: the same designs, cartons, day. */
+    private static boolean sameAsk(DesignProjectQuoteRequestJpaEntity request,
+                                   List<DesignProjectQuoteRequestLineJpaEntity> before, List<LineInput> asked,
+                                   LocalDate date) {
+        Map<UUID, Integer> was = before.stream().collect(Collectors.toMap(
+                DesignProjectQuoteRequestLineJpaEntity::getDraftId, DesignProjectQuoteRequestLineJpaEntity::getCartons));
+        Map<UUID, Integer> now = asked.stream().collect(Collectors.toMap(LineInput::designId, LineInput::cartons));
+        return was.equals(now) && Objects.equals(request.getDesiredDeliveryDate(), date);
     }
 
     /** The project's quote requests, the newest first, to its owner. */
@@ -236,7 +304,8 @@ public class DesignProjectQuoteRequestService {
                     }).toList();
             return new ProjectQuoteRequestView(request.getId(), project.getId(), project.getName(),
                     project.getCustomerId(), names.get(project.getCustomerId()), request.getDesiredDeliveryDate(),
-                    request.getRequestedBy(), request.getCreatedAt(), inRequest);
+                    request.getRequestedBy(), request.getCreatedAt(), request.getStatus(), request.getClosedAt(),
+                    request.getClosedBy(), inRequest);
         }).toList();
     }
 }

@@ -38,6 +38,7 @@ class DesignProjectNotificationTest {
 
         assertThat(message.title()).contains("2 bản");
         assertThat(message.body()).contains("CUP12-0312345678-01 x10", "BAG-0312345678-01 x4", "01/12/2026");
-        assertThat(message.dedupeKey()).isEqualTo("design-project-quote:" + event.requestId());
+        assertThat(message.dedupeKey()).isEqualTo("design-project-quote:" + event.requestId() + ":"
+                + event.requestedAt().toEpochMilli());
     }
 }

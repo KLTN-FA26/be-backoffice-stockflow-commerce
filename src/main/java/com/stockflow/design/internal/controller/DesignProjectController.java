@@ -346,15 +346,30 @@ class DesignProjectController {
         return ApiResponse.ok(new DesignBatchSubmittedResponse(round, toResponse(projects.get(id, actor(user)))));
     }
 
+    /**
+     * 201 with a new request; 200 when the project's open request answers - the same ask again changes nothing and
+     * tells nobody, a different one changes what it asks.
+     */
     @PostMapping("/design-projects/{id}/quote-requests")
-    @ResponseStatus(HttpStatus.CREATED)
-    @Operation(summary = "Ask one quote over approved designs of the project")
+    @Operation(summary = "Ask one quote over approved designs of the project; while one is open, asking again answers "
+            + "with it (the same ask) or changes it (another)")
     @RequiresPermission(resource = DesignResources.QUOTE_REQUESTS, action = Action.CREATE)
-    public ApiResponse<DesignProjectQuoteRequestResponse> requestQuote(@PathVariable UUID id,
+    public ResponseEntity<ApiResponse<DesignProjectQuoteRequestResponse>> requestQuote(@PathVariable UUID id,
             @Valid @RequestBody ProjectQuoteRequest request, @AuthenticatedUser CurrentUser user) {
-        return ApiResponse.ok(toResponse(quotes.request(id, actor(user), request.lines().stream()
+        DesignProjectQuoteRequestService.Asked asked = quotes.request(id, actor(user), request.lines().stream()
                 .map(l -> new DesignProjectQuoteRequestService.LineInput(l.designId(), l.cartons())).toList(),
-                request.desiredDeliveryDate())));
+                request.desiredDeliveryDate());
+        return ResponseEntity.status(asked.created() ? HttpStatus.CREATED : HttpStatus.OK)
+                .body(ApiResponse.ok(toResponse(asked.request())));
+    }
+
+    /** A salesperson closes a project request they have answered; the project asks again, for its next order, anew. */
+    @PostMapping("/design-project-quote-requests/{requestId}/closure")
+    @Operation(summary = "Close a project quote request once answered")
+    @RequiresPermission(resource = DesignResources.QUOTE_REQUESTS, action = Action.UPDATE)
+    public ApiResponse<DesignProjectQuoteRequestResponse> closeQuoteRequest(@PathVariable UUID requestId,
+                                                                            @AuthenticatedUser CurrentUser user) {
+        return ApiResponse.ok(toResponse(quotes.close(requestId, actor(user))));
     }
 
     @GetMapping("/design-projects/{id}/quote-requests")
@@ -397,7 +412,8 @@ class DesignProjectController {
     private static DesignProjectQuoteRequestResponse toResponse(
             DesignProjectQuoteRequestService.ProjectQuoteRequestView r) {
         return new DesignProjectQuoteRequestResponse(r.id(), r.projectId(), r.projectName(), r.customerId(),
-                r.customerName(), r.desiredDeliveryDate(), r.requestedBy(), r.requestedAt(), r.lines().stream()
+                r.customerName(), r.desiredDeliveryDate(), r.requestedBy(), r.requestedAt(), r.status().name(),
+                r.closedAt(), r.closedBy(), r.lines().stream()
                 .map(l -> new DesignProjectQuoteRequestResponse.Line(l.designId(), l.designName(),
                         l.designStatus().name(), l.customerSku(), l.cartons())).toList());
     }

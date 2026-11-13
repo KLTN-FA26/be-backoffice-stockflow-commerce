@@ -72,7 +72,8 @@ public interface InstallmentBook {
 
     /**
      * 15 BR-03: whether a live receipt records this statement reference: one statement line is one sum of money,
-     * recorded once.
+     * recorded once - compared {@link PaymentReceipt#normalize normalised}, so a different case or spacing is the same
+     * line.
      */
     boolean referenceInUse(String reference);
 

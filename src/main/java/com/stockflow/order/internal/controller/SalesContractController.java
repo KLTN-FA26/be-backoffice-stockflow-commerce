@@ -43,9 +43,8 @@ import java.util.UUID;
 /**
  * The sales contract of an order (4B-4; kltn-docs 14 §4.3 steps 11-17, §5.2). Sales draws it up, edits and sends it
  * ({@code sales-contracts:CREATE / UPDATE}) and records it signed ({@code :APPROVE}); accounting and the Sales Manager
- * read it. A change locks the order as the caller's data scope sees it - out of scope is 404; reading follows
- * {@code GET /orders/{id}}, which the back office reads whole. Handlers are public so the permission proxy advises
- * them.
+ * read it. A change locks the order as the caller's data scope sees it, and a read reads it under the same scope - out
+ * of scope is 404 either way. Handlers are public so the permission proxy advises them.
  */
 @RestController
 @RequestMapping("/api/v1/orders/{orderId}/contract")
@@ -105,6 +104,20 @@ class SalesContractController {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "version: the version read");
         }
         return ApiResponse.ok(contracts.edit(user, orderId, request.version(), draft(request)));
+    }
+
+    @GetMapping("/payment-plan-suggestion")
+    @Operation(summary = "The draft's payment plan with every installment tied to a delivery batch suggested again from "
+            + "the batches as they are now (14 BR-13, DS-02b): the rest of the total after the untied installments, "
+            + "shared as the batches' goods are worth with tax; the last tied one takes the rounding. Adds up to "
+            + "totalAmount. Nothing is saved: send it back with PUT at the version given. 409 "
+            + "SALES_CONTRACT_STATUS_INVALID once sent; 409 PAYMENT_PLAN_INVALID when the untied installments take the "
+            + "whole total")
+    @RequiresPermission(resource = OrderResources.SALES_CONTRACTS, action = Action.READ)
+    public ApiResponse<SalesContracts.PlanSuggestion> paymentPlanSuggestion(@PathVariable UUID orderId,
+                                                                           @AuthenticatedUser CurrentUser user) {
+        ScopeGuards.requireBackOffice(user);
+        return ApiResponse.ok(contracts.suggestPaymentPlan(orderId));
     }
 
     @PostMapping("/sending")

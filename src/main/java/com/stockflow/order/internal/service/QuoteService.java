@@ -163,10 +163,10 @@ class QuoteService implements Quotes {
     @Transactional(readOnly = true)
     public PageResponse<Row> list(CurrentUser user, Criteria criteria) {
         Optional<UUID> own = portalCustomer(user);
-        var page = search.search(new QuoteSearch.Criteria(own.orElse(criteria.customerId()), criteria.statuses(),
-                criteria.search(), own.isPresent()), Pages.of(criteria.page(), criteria.size(),
-                SORT.parse(criteria.sort())));
         Instant now = clock.instant();
+        var page = search.search(new QuoteSearch.Criteria(own.orElse(criteria.customerId()), criteria.statuses(),
+                criteria.search(), own.isPresent(), now), Pages.of(criteria.page(), criteria.size(),
+                SORT.parse(criteria.sort())));
         return Pages.toResponse(page.map(r -> new Row(r.id(), r.quoteNumber(), r.customerId(),
                 r.status() == QuoteStatus.SENT && !now.isBefore(r.validUntil()) ? QuoteStatus.EXPIRED : r.status(),
                 r.revision(), r.validUntil(), r.sentAt(), r.convertedOrderId(), r.createdAt(),
