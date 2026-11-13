@@ -332,6 +332,21 @@ SELECT pg_temp.expect_fail('P16aj a project quote request line for no carton', $
     FROM identity.app_user u ORDER BY u.id LIMIT 1;
     INSERT INTO design.design_project_quote_request_line (request_id, draft_id, cartons)
     VALUES (md5('qa:project-quote:CUP')::uuid, md5('qa:design:CUP')::uuid, 0) $q$);
+SELECT pg_temp.expect_fail('P16ak two open quote requests of one project (uk_design_project_quote_request_open)', $q$
+    INSERT INTO design.design_project_quote_request (id, project_id, requested_by, created_at)
+    SELECT gen_random_uuid(), md5('qa:project:CUP')::uuid, u.id, NOW()
+    FROM identity.app_user u ORDER BY u.id LIMIT 2 $q$);
+SELECT pg_temp.expect_fail('P16al a project quote request closed with no time', $q$
+    INSERT INTO design.design_project_quote_request (id, project_id, requested_by, status, created_at)
+    SELECT gen_random_uuid(), md5('qa:project:CUP')::uuid, u.id, 'CLOSED', NOW()
+    FROM identity.app_user u ORDER BY u.id LIMIT 1 $q$);
+SELECT pg_temp.expect_ok('P16am an open request and a closed one of one project', $q$
+    INSERT INTO design.design_project_quote_request (id, project_id, requested_by, status, closed_at, created_at)
+    SELECT gen_random_uuid(), md5('qa:project:CUP')::uuid, u.id, 'CLOSED', NOW(), NOW()
+    FROM identity.app_user u ORDER BY u.id LIMIT 1;
+    INSERT INTO design.design_project_quote_request (id, project_id, requested_by, created_at)
+    SELECT gen_random_uuid(), md5('qa:project:CUP')::uuid, u.id, NOW()
+    FROM identity.app_user u ORDER BY u.id LIMIT 1 $q$);
 SELECT pg_temp.expect_fail('P17 category path not under its parent', $q$
     INSERT INTO product.categories (id, parent_id, code, name, slug, path, depth)
     VALUES (gen_random_uuid(), md5('demo:cat:LIVING')::uuid, 'CHAIR', 'Ghế', 'ghe', '/DINING/CHAIR', 1) $q$);

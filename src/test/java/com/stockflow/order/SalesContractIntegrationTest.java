@@ -290,12 +290,12 @@ class SalesContractIntegrationTest {
                 "The customer wants two batches"));
         assertThat(cancelled.status()).isEqualTo("CANCELLED");
         assertThat(cancelled.cancellationReason()).isEqualTo("The customer wants two batches");
-        assertThatThrownBy(() -> contracts.get(orderId))
+        assertThatThrownBy(() -> asSales(() -> contracts.get(orderId)))
                 .extracting(SalesContractIntegrationTest::code).isEqualTo(ErrorCode.SALES_CONTRACT_NOT_FOUND);
 
         SalesContracts.ContractView second = asSales(() -> contracts.create(sales, orderId, null));
         assertThat(second.contractNumber()).isEqualTo(first.contractNumber().replaceAll("-1$", "-2"));
-        assertThat(contracts.history(orderId)).extracting(SalesContracts.ContractView::status)
+        assertThat(asSales(() -> contracts.history(orderId))).extracting(SalesContracts.ContractView::status)
                 .containsExactly("DRAFT", "CANCELLED");
     }
 
@@ -318,6 +318,6 @@ class SalesContractIntegrationTest {
                 java.util.Arrays.asList((SalesContracts.Batch) null), null))))
                 .as("a null batch is a rule broken, not a crash")
                 .extracting(SalesContractIntegrationTest::code).isEqualTo(ErrorCode.DELIVERY_SCHEDULE_INVALID);
-        assertThat(contracts.history(orderId)).as("nothing was kept").isEmpty();
+        assertThat(asSales(() -> contracts.history(orderId))).as("nothing was kept").isEmpty();
     }
 }

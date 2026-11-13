@@ -385,6 +385,36 @@ class InstallmentReceiptIntegrationTest {
     }
 
     @Test
+    @DisplayName("A1 (15 BR-03): the same statement line typed in another case or with spaces is the same line")
+    void aStatementLineIsOneLineHoweverItIsTyped() {
+        Signed signed = signed(share("Deposit", "ON_SIGNING", "30", 0), share("Rest", "BEFORE_DELIVERY", "70", null));
+        UUID onSigning = signed.seq(1);
+        String statementLine = reference();
+        PaymentReceipt first = record(customerId, statementLine, line(onSigning, 100_000));
+        // "FT1A2B..." typed as "ft 1a2b ..." and with a tab: the money of one line, counted once.
+        String retyped = " " + statementLine.substring(0, 2).toLowerCase() + " " + statementLine.substring(2, 8)
+                .toLowerCase() + "\t" + statementLine.substring(8) + " ";
+        long receiptsBefore = receiptRows(customerId);
+        for (String typed : List.of(statementLine.toLowerCase(), retyped)) {
+            assertThatThrownBy(() -> record(customerId, typed, line(onSigning, 100_000))).as(typed)
+                    .extracting(InstallmentReceiptIntegrationTest::code)
+                    .isEqualTo(ErrorCode.PAYMENT_RECEIPT_REFERENCE_IN_USE);
+        }
+        assertThat(receiptRows(customerId)).isEqualTo(receiptsBefore);
+        assertThat(installment(onSigning).paidAmount()).isEqualByComparingTo(dong(100_000));
+        assertThat(jdbc.queryForObject("SELECT reference || '|' || reference_normalized FROM payment.payment_receipt "
+                + "WHERE id = ?", String.class, first.id())).as("kept as typed, compared normalised")
+                .isEqualTo(statementLine + "|" + statementLine);
+        // The list finds it however it is typed.
+        assertThat(receipts.receipts(customerId, null, retyped, 0, 20, null).items())
+                .extracting(PaymentReceipt::id).containsExactly(first.id());
+
+        // Voided, its line is free again - in any spelling.
+        voidReceipt(first.id(), "Recorded against the wrong installment", false);
+        assertThat(record(customerId, retyped, line(onSigning, 100_000)).reference()).isEqualTo(retyped.strip());
+    }
+
+    @Test
     @DisplayName("15 BR-03, BR-05: a receipt that does not fit is refused whole, and writes nothing")
     void refusals() {
         Signed signed = signed(share("Deposit", "ON_SIGNING", "30", 0), share("Rest", "BEFORE_DELIVERY", "70", null));

@@ -610,6 +610,12 @@ stockflow:
       # is checked again (the production order still open, the file still the approved one) and gets a presigned URL
       # of minutes, so this may cover a production run; a later message (the approved sample) carries fresh links.
       file-links-valid-for: ${PRODUCTION_ORDER_FILE_LINKS_VALID_FOR:P30D}
+    follow-up:
+      # When the salesperson who sent a contract is told, once, in the inbox (14 §6): the customer has not signed it, or
+      # has signed and not paid the installment due on signing. Nothing is cancelled for them; Sales decides.
+      unsigned-contract-after: ${SALES_FOLLOW_UP_UNSIGNED_CONTRACT_AFTER:P3D}
+      unpaid-order-after: ${SALES_FOLLOW_UP_UNPAID_ORDER_AFTER:P3D}
+      interval: ${SALES_FOLLOW_UP_INTERVAL:PT1H}
 
   customer:
     # Where the portal invitation e-mail sends the customer's contact (SCRUM-450); the token is

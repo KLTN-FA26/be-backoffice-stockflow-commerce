@@ -31,6 +31,9 @@ public interface InstallmentSearch {
 
     Page<Installment> installments(InstallmentFilter filter, Pageable pageable);
 
-    /** Every filter null means "any"; {@code reference} matches the statement reference exactly. */
+    /**
+     * Every filter null means "any"; {@code reference} matches the statement reference as BR-03 compares it - case and
+     * whitespace aside ({@code PaymentReceipt.normalize}).
+     */
     Page<PaymentReceipt> receipts(UUID customerId, PaymentReceiptStatus status, String reference, Pageable pageable);
 }
