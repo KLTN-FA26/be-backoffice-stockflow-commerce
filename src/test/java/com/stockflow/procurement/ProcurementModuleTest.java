@@ -43,6 +43,9 @@ class ProcurementModuleTest {
     com.stockflow.product.api.ProductPublication productPublicationMock;
     @org.springframework.test.context.bean.override.mockito.MockitoBean
     com.stockflow.notification.api.NotificationService notificationServiceMock;
+    // order's SalesFollowUpService posts inbox notices (WF-02 A10)
+    @org.springframework.test.context.bean.override.mockito.MockitoBean
+    com.stockflow.notification.api.Inbox inboxMock;
     @org.springframework.test.context.bean.override.mockito.MockitoBean
     com.stockflow.identity.api.PortalAccountService portalAccountServiceMock;
     @org.springframework.test.context.bean.override.mockito.MockitoBean
