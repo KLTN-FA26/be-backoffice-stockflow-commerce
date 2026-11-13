@@ -68,6 +68,7 @@ class ShipmentService implements Shipments {
     private final ShipmentContext context;
     private final OrderService orders;
     private final IdentityService identities;
+    private final com.stockflow.fulfillment.internal.repository.DeliveryOutcomeCorrectionJpaRepository corrections;
     private final Clock clock;
 
     @SuppressWarnings("java:S107")
@@ -76,7 +77,9 @@ class ShipmentService implements Shipments {
                     PickJpaRepository picks, CarrierJpaRepository carriers, DispatchLoadJpaRepository loads,
                     DispatchLoadShipmentJpaRepository members, ShipmentTimeline timeline, ShipmentContext context,
                     OrderService orders,
-                    IdentityService identities, Clock clock) {
+                    IdentityService identities,
+                    com.stockflow.fulfillment.internal.repository.DeliveryOutcomeCorrectionJpaRepository corrections,
+                    Clock clock) {
         this.shipments = shipments;
         this.locks = locks;
         this.events = events;
@@ -89,6 +92,7 @@ class ShipmentService implements Shipments {
         this.context = context;
         this.orders = orders;
         this.identities = identities;
+        this.corrections = corrections;
         this.clock = clock;
     }
 
@@ -133,32 +137,6 @@ class ShipmentService implements Shipments {
     }
 
     @Override
-    public ShipmentDetail assignCarrier(UUID shipmentId, UUID carrierId, CurrentUser actor) {
-        ShipmentJpaEntity row = lock(shipmentId);
-        if (carrierId != null) {
-            CarrierJpaEntity carrier = carriers.findById(carrierId)
-                    .orElseThrow(() -> new BusinessException(ErrorCode.CARRIER_NOT_FOUND));
-            if (!carrier.isActive()) {
-                throw new BusinessException(ErrorCode.CARRIER_INACTIVE,
-                        "Carrier %s is no longer in use".formatted(carrier.getCode()));
-            }
-        }
-        members.findByShipmentIdInAndActiveTrue(Set.of(shipmentId)).stream().findFirst().ifPresent(on -> {
-            if (!Objects.equals(carrierId, row.getCarrierId())) {
-                throw new BusinessException(ErrorCode.SHIPMENT_ON_ANOTHER_LOAD, "Shipment %s is on load %s; take it "
-                        .formatted(row.getCode(), loads.findById(on.getLoadId()).map(DispatchLoadJpaEntity::getCode)
-                                .orElse("?")) + "off before choosing another carrier");
-            }
-        });
-        Shipment shipment = row.toDomain();
-        if (shipment.assignCarrier(carrierId)) {
-            row.apply(shipment);
-            shipments.saveAndFlush(row);
-        }
-        return detail(row);
-    }
-
-    @Override
     public ShipmentDetail recordOutcome(UUID shipmentId, Outcome outcome, CurrentUser actor) {
         ShipmentJpaEntity row = lock(shipmentId);
         Shipment shipment = row.toDomain();
@@ -180,7 +158,7 @@ class ShipmentService implements Shipments {
         if (!changed) {
             return detail(row);
         }
-        OrderSummary order = tellOrder(row, target, reason, note, by);
+        OrderSummary order = tellOrder(row, target, reason, note, by, now);
         row.apply(shipment);
         shipments.saveAndFlush(row);
         String carrierName = row.getCarrierId() == null ? null
@@ -193,20 +171,127 @@ class ShipmentService implements Shipments {
         return detail(row);
     }
 
+    @Override
+    public ShipmentDetail correctOutcome(UUID shipmentId, Correction correction, CurrentUser actor) {
+        String why = correction.reason() == null || correction.reason().isBlank() ? null : correction.reason().strip();
+        if (why == null || why.length() > 500) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A correction says why the carrier was wrong",
+                    List.of(FieldError.of("reason", "required, at most 500 characters")));
+        }
+        ShipmentStatus target = switch (correction.outcome() == null ? "" : correction.outcome().strip()
+                .toUpperCase(Locale.ROOT)) {
+            case "DELIVERED" -> ShipmentStatus.DELIVERED;
+            case "DELIVERY_FAILED" -> ShipmentStatus.DELIVERY_FAILED;
+            default -> throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Unknown corrected outcome",
+                    List.of(FieldError.of("outcome", "DELIVERED or DELIVERY_FAILED")));
+        };
+        DeliveryFailureReason reason = target == ShipmentStatus.DELIVERY_FAILED ? reason(correction.failureReason())
+                : null;
+        String note = target == ShipmentStatus.DELIVERY_FAILED && correction.note() != null
+                && !correction.note().isBlank() ? correction.note().strip() : null;
+        ShipmentJpaEntity row = lock(shipmentId);
+        Shipment shipment = row.toDomain();
+        ShipmentStatus before = shipment.status();
+        Instant now = clock.instant();
+        UUID by = actor.userId();
+        if (target == ShipmentStatus.DELIVERY_FAILED && before == ShipmentStatus.DELIVERED && !knownToOrder(row)) {
+            // Left as the whole order before shipments were recorded: its delivery is the order's own, not a shipment's.
+            throw new BusinessException(ErrorCode.SHIPMENT_STATE_CONFLICT, ("Shipment %s left as the whole order before "
+                    + "shipments were recorded: its delivery cannot be corrected here").formatted(row.getCode()));
+        }
+        if (!shipment.correctOutcome(target, reason, note, by, now)) {
+            return detail(row);
+        }
+        // The order follows in this transaction: a delivery taken back, or a failure that was a delivery after all.
+        OrderSummary order = target == ShipmentStatus.DELIVERY_FAILED
+                ? orders.correctShipmentToFailed(row.getOrderId(), row.getId(), orderReason(reason), note, now, by)
+                : tellOrder(row, ShipmentStatus.DELIVERED, null, null, by, now);
+        corrections.save(new com.stockflow.fulfillment.internal.entity.DeliveryOutcomeCorrectionJpaEntity(
+                com.stockflow.common.id.Identifiers.newId(), row.getId(), before.name(), target.name(),
+                reason == null ? null : reason.name(), note, why, by, now));
+        row.apply(shipment);
+        shipments.saveAndFlush(row);
+        String carrierName = row.getCarrierId() == null ? null
+                : carriers.findById(row.getCarrierId()).map(CarrierJpaEntity::getName).orElse(null);
+        String loadCode = row.getLoadId() == null ? null
+                : loads.findById(row.getLoadId()).map(DispatchLoadJpaEntity::getCode).orElse(null);
+        timeline.record(shipment, before, order, null, carrierName, loadCode);
+        log.info("Shipment {}: {} corrected to {} by hand ({})", row.getCode(), before, target, why);
+        return detail(row);
+    }
+
+    /**
+     * An outcome the carrier's webhook reported (3-5; kltn-docs 09 §4.5 step 7), in the caller's transaction: the
+     * shipment locked and moved as {@link #recordOutcome} moves it, the order told in the same transaction - at the time
+     * the carrier gives (E25) and recorded by nobody, its steps naming the carrier event they came from.
+     *
+     * @param target DELIVERED, DELIVERY_FAILED (with {@code reason}; OTHER with {@code note}) or RETURNED
+     * @return whether it changed anything; false when the shipment already had that outcome
+     * @throws BusinessException {@code SHIPMENT_STATE_CONFLICT} when the shipment cannot take it (not handed over, or
+     *         already further along) - the caller's NEEDS_REVIEW
+     */
+    public boolean carrierOutcome(UUID shipmentId, ShipmentStatus target, DeliveryFailureReason reason, String note,
+                                  Instant at, UUID carrierEventId) {
+        ShipmentJpaEntity row = lock(shipmentId);
+        // E17, under the shipment's lock: a correction committed while the report was being matched still wins.
+        if (!corrections.correctedAmong(List.of(shipmentId)).isEmpty()) {
+            throw new BusinessException(ErrorCode.SHIPMENT_STATE_CONFLICT, ("The outcome of %s was corrected by hand: "
+                    + "the carrier's report is not applied (E17)").formatted(row.getCode()));
+        }
+        Shipment shipment = row.toDomain();
+        ShipmentStatus before = shipment.status();
+        // The failure note is 500 characters on the shipment and on the order; a carrier's wording has no limit (E22).
+        String trimmed = note == null || note.isBlank() ? null : note.strip();
+        String kept = trimmed == null || trimmed.length() <= 500 ? trimmed : trimmed.substring(0, 497) + "...";
+        boolean changed = switch (target) {
+            case DELIVERED -> shipment.carrierDelivered(at);
+            case DELIVERY_FAILED -> shipment.carrierFailed(Objects.requireNonNull(reason, "reason"), kept, at);
+            case RETURNED -> shipment.carrierReturned(at);
+            default -> throw new IllegalArgumentException(target.name());
+        };
+        if (!changed) {
+            return false;
+        }
+        OrderSummary order = tellOrder(row, target, reason, kept, null, at);
+        row.apply(shipment);
+        shipments.saveAndFlush(row);
+        String carrierName = row.getCarrierId() == null ? null
+                : carriers.findById(row.getCarrierId()).map(CarrierJpaEntity::getName).orElse(null);
+        String loadCode = row.getLoadId() == null ? null
+                : loads.findById(row.getLoadId()).map(DispatchLoadJpaEntity::getCode).orElse(null);
+        timeline.record(shipment, before, order, null, carrierName, loadCode, carrierEventId);
+        log.info("Shipment {}: {} -> {} as its carrier reported (order now {})", row.getCode(), before, target,
+                order == null ? "?" : order.status());
+        return true;
+    }
+
+    /** Whether the order records this shipment (one handed over as the whole order, before loads, does not). */
+    private boolean knownToOrder(ShipmentJpaEntity row) {
+        return !row.isWholeOrderHandover() && orders.findById(row.getOrderId())
+                .map(o -> o.lifecycle() != null && o.lifecycle().shipments().stream()
+                        .anyMatch(s -> s.shipmentId().equals(row.getId())))
+                .orElse(false);
+    }
+
     /**
      * The order follows in this transaction (A1). A shipment the order does not know while it records no shipment at
      * all left as the whole order (before loads existed, or packed before parcels recorded their contents): its outcome
      * is the order's own, as long as it is the order's only shipment not cancelled.
+     *
+     * @param at when it happened: now for an outcome a person records, the carrier's time for one its webhook reports
      */
     private OrderSummary tellOrder(ShipmentJpaEntity row, ShipmentStatus target, DeliveryFailureReason reason,
-                                   String note, UUID by) {
+                                   String note, UUID by, Instant at) {
         OrderSummary order = orders.findById(row.getOrderId())
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No order " + row.getOrderId()));
         boolean known = order.lifecycle() != null && order.lifecycle().shipments().stream()
                 .anyMatch(s -> s.shipmentId().equals(row.getId()));
         boolean orderHasNone = order.lifecycle() == null || order.lifecycle().shipments().isEmpty();
         // The whole-order path, for one rule only: the order does not know this shipment and records none - a shipment
-        // handed over as the whole order (wholeOrderHandover), however it got there.
+        // handed over as the whole order (wholeOrderHandover), however it got there. Historical data only (WF-05 review
+        // F13): DispatchService hands a shipment over whole only when its parcels record no contents, which nothing
+        // packed since #136 does. A RETURNED outcome here returns the whole order and opens no delivery failure case -
+        // the WF-05 flow needs the order to know the shipment - which is accepted for those old rows.
         if (!known && (row.isWholeOrderHandover() || orderHasNone)) {
             long others = shipments.findByOrderIdOrderByReadyAtAscIdAsc(row.getOrderId()).stream()
                     .filter(s -> !s.getId().equals(row.getId()) && s.getStatus() != ShipmentStatus.CANCELLED)
@@ -217,17 +302,18 @@ class ShipmentService implements Shipments {
                         + "this order's outcome by hand");
             }
             return switch (target) {
-                case DELIVERED -> orders.recordDelivery(row.getOrderId(), by);
-                case DELIVERY_FAILED -> orders.recordDeliveryFailure(row.getOrderId(), orderReason(reason), note, by);
-                case RETURNED -> orders.recordReturnedToOrigin(row.getOrderId(), by);
+                case DELIVERED -> orders.recordDelivery(row.getOrderId(), at, by);
+                case DELIVERY_FAILED -> orders.recordDeliveryFailure(row.getOrderId(), orderReason(reason), note, at,
+                        by);
+                case RETURNED -> orders.recordReturnedToOrigin(row.getOrderId(), at, by);
                 default -> throw new IllegalStateException(target.name());
             };
         }
         return switch (target) {
-            case DELIVERED -> orders.recordShipmentDelivered(row.getOrderId(), row.getId(), by);
+            case DELIVERED -> orders.recordShipmentDelivered(row.getOrderId(), row.getId(), at, by);
             case DELIVERY_FAILED -> orders.recordShipmentDeliveryFailed(row.getOrderId(), row.getId(),
-                    orderReason(reason), note, by);
-            case RETURNED -> orders.recordShipmentReturned(row.getOrderId(), row.getId(), by);
+                    orderReason(reason), note, at, by);
+            case RETURNED -> orders.recordShipmentReturned(row.getOrderId(), row.getId(), at, by);
             default -> throw new IllegalStateException(target.name());
         };
     }
@@ -247,7 +333,7 @@ class ShipmentService implements Shipments {
         ShipmentRow view = rows(List.of(row)).getFirst();
         List<Parcel> parcels = packages.findByShipmentIdOrderByPackageNoAsc(row.getId()).stream()
                 .map(p -> new Parcel(p.getId(), p.getLabelCode(), p.getStatus().name(), p.getWeightKg(),
-                        p.getLengthCm(), p.getWidthCm(), p.getHeightCm(), p.getKit(), p.getLabelOutdatedAt())).toList();
+                        p.getLengthCm(), p.getWidthCm(), p.getHeightCm())).toList();
         List<ShipmentEventJpaEntity> steps = events.findByShipmentIdOrderByOccurredAtAscIdAsc(row.getId());
         Map<UUID, String> names = new java.util.HashMap<>(identities.displayNames(steps.stream()
                 .map(ShipmentEventJpaEntity::getRecordedBy).filter(Objects::nonNull).distinct().toList()));
@@ -280,11 +366,9 @@ class ShipmentService implements Shipments {
             loads.findByIdIn(Set.copyOf(loadOf.values())).forEach(l -> loadCodes.put(l.getId(), l.getCode()));
         }
         Map<UUID, UUID> tasks = context.tasks(found);
-        Map<UUID, String> currencies = context.currencies(found.stream().map(ShipmentJpaEntity::getOrderId).toList());
         return found.stream().map(s -> new ShipmentRow(s.getId(), s.getCode(), s.getOrderId(),
                 numbers.get(s.getOrderId()), tasks.get(s.getId()), s.getWarehouseId(), s.getStatus().name(),
-                s.getDeliveryMode().name(), s.getPackageCount(), s.getCodAmount(), currencies.get(s.getOrderId()),
-                s.getCarrierId(), carrierNames.get(s.getCarrierId()),
+                s.getPackageCount(), s.getCarrierId(), carrierNames.get(s.getCarrierId()),
                 loadOf.get(s.getId()), loadCodes.get(loadOf.get(s.getId())), s.isPartial(), s.getReadyAt(),
                 s.getHandedOverAt(), s.getOutcomeAt(), s.getFailureReason() == null ? null : s.getFailureReason().name(),
                 s.isWholeOrderHandover(), s.getVersion())).toList();

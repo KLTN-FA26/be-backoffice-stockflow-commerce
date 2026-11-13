@@ -58,9 +58,10 @@ class OrderSkuReferenceProbeIntegrationTest {
             + "COMPLETED, CANCELLED and RETURNED do not")
     void everyOrderStatus() {
         Map<String, UUID> expected = new LinkedHashMap<>();
-        List<String> counted = List.of("PENDING_PAYMENT", "CONFIRMED", "IN_PRODUCTION", "READY_TO_FULFILL", "PICKING",
-                "PARTIALLY_FULFILLED", "PACKED", "ON_HOLD");
-        List<String> notCounted = List.of("DRAFT", "SHIPPED", "DELIVERED", "COMPLETED", "CANCELLED", "RETURNED");
+        // DRAFT counts since 4B-5: an order made from a quote, its contract being drawn up - it will ship the SKU.
+        List<String> counted = List.of("DRAFT", "PENDING_PAYMENT", "CONFIRMED", "IN_PRODUCTION", "READY_TO_FULFILL",
+                "PICKING", "PARTIALLY_FULFILLED", "PACKED", "ON_HOLD");
+        List<String> notCounted = List.of("SHIPPED", "DELIVERED", "COMPLETED", "CANCELLED", "RETURNED");
         counted.forEach(status -> expected.put(status, order(status, sku)));
         notCounted.forEach(status -> order(status, sku));
 

@@ -15,6 +15,8 @@ import com.stockflow.order.internal.entity.OrderShipmentJpaEntity;
 import com.stockflow.order.internal.entity.OrderStatusHistoryJpaEntity;
 import com.stockflow.order.internal.domain.OrderShipment;
 import com.stockflow.order.internal.domain.OrderTransition;
+import com.stockflow.order.internal.domain.ContractOrderSaved;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.domain.Specification;
@@ -40,15 +42,32 @@ class OrderRepositoryAdapter implements OrderRepository, OrderSearchRepository {
     private final java.time.Clock clock;
     private final jakarta.persistence.EntityManager entityManager;
 
+    private final ApplicationEventPublisher events;
+
     OrderRepositoryAdapter(OrderJpaRepository jpa, OrderNumberSequence sequence,
                            OrderStatusHistoryJpaRepository history, OrderShipmentJpaRepository shipments,
-                           java.time.Clock clock, jakarta.persistence.EntityManager entityManager) {
+                           java.time.Clock clock, jakarta.persistence.EntityManager entityManager,
+                           ApplicationEventPublisher events) {
+        this.events = events;
         this.entityManager = entityManager;
         this.shipments = shipments;
         this.jpa = jpa;
         this.sequence = sequence;
         this.history = history;
         this.clock = clock;
+    }
+
+    @Override
+    public java.util.List<UUID> waitingForStockAtShippingWarehouse() {
+        @SuppressWarnings("unchecked")
+        java.util.List<UUID> ids = entityManager.createNativeQuery("""
+                        SELECT id FROM ordering.customer_order
+                         WHERE status IN ('CONFIRMED', 'AWAITING_STOCK', 'READY_TO_FULFILL', 'PICKING', 'PACKED',
+                                          'PARTIALLY_FULFILLED')
+                           AND shipping_warehouse_id IS NOT NULL
+                         ORDER BY contract_signed_at, id""")
+                .getResultList();
+        return ids;
     }
 
     @Override
@@ -87,6 +106,12 @@ class OrderRepositoryAdapter implements OrderRepository, OrderSearchRepository {
      * already was.
      */
     @Override
+    public Optional<Order> findByIdInScopeForReading(OrderId id) {
+        return jpa.findByIdInScope(id.value()).flatMap(scoped -> jpa.findByIdWithLines(scoped.getId()))
+                .map(this::toDomain);
+    }
+
+    @Override
     public Optional<Order> findByIdInScope(OrderId id) {
         // The probe is let go before the lock: kept managed, the locking query would upgrade it with a version check
         // and answer a concurrent change (a package completed while this waited) with an optimistic-lock failure
@@ -116,13 +141,6 @@ class OrderRepositoryAdapter implements OrderRepository, OrderSearchRepository {
     }
 
     @Override
-    public List<Order> findLiveSince(UUID customerId, java.time.Instant since) {
-        return jpa.findLiveSinceWithLines(customerId, since).stream()
-                .map(this::toDomain)
-                .toList();
-    }
-
-    @Override
     public OrderNumber nextOrderNumber(LocalDate date) {
         return OrderNumber.of(date, sequence.nextFor(date));
     }
@@ -140,11 +158,22 @@ class OrderRepositoryAdapter implements OrderRepository, OrderSearchRepository {
             if (stepwise) {
                 // The row passes through every edge, so tg_order_status_transition checks each one: resolving a hold
                 // may move the order on at once (ON_HOLD → PARTIALLY_FULFILLED → DELIVERED), and ON_HOLD → DELIVERED
-                // is no edge. Every other column already holds its final value, which every step's CHECKs accept.
+                // is no edge. Every other column already holds its final value, which every step's CHECKs accept -
+                // except the hold columns when the order ends ON_HOLD after a step that is not (a payment confirms it,
+                // then its lapsed stock holds it: PENDING_PAYMENT → CONFIRMED → ON_HOLD). A step off hold carries
+                // none of them, as ck_order_hold_* require; the final values come back for the last step.
+                var finalHoldReason = managed.getHoldReason();
+                var finalStatusBeforeHold = managed.getStatusBeforeHold();
+                var finalHoldNote = managed.getHoldNote();
                 for (int i = 0; i < steps.size() - 1; i++) {
-                    managed.moveTo(steps.get(i).to());
+                    OrderStatus step = steps.get(i).to();
+                    managed.moveTo(step);
+                    if (step != OrderStatus.ON_HOLD) {
+                        managed.holdColumns(null, null, null);
+                    }
                     jpa.saveAndFlush(managed);
                 }
+                managed.holdColumns(finalHoldReason, finalStatusBeforeHold, finalHoldNote);
                 managed.moveTo(order.status());
                 steps.forEach(step -> recordTransition(order, step));
             } else if (previous != order.status()) {
@@ -156,13 +185,25 @@ class OrderRepositoryAdapter implements OrderRepository, OrderSearchRepository {
             // shipments are read, so the replaced lines are written first.
             OrderJpaEntity saved = jpa.saveAndFlush(managed);
             saveShipments(order);
+            announce(order);
             return toDomain(saved);
         }
         OrderJpaEntity inserted = jpa.save(OrderPersistenceMapper.toNewEntity(order));
         // A new order is inserted in the status it was placed in: one history row, from nothing.
         recordTransition(order, new OrderTransition(null, order.status(), null, null, null));
         saveShipments(order);
+        announce(order);
         return toDomain(inserted);
+    }
+
+    /**
+     * 4A-7: an order of a contract saved is announced here, where every path writing one passes, so its delay alerts
+     * are recomputed after the commit whichever operation changed it. Other orders have no delivery batches to be late.
+     */
+    private void announce(Order order) {
+        if (order.paidByContract()) {
+            events.publishEvent(new ContractOrderSaved(order.id().value()));
+        }
     }
 
     /** The order's shipments: a new one is inserted with its units, a known one takes its status and outcome. */
@@ -176,9 +217,10 @@ class OrderRepositoryAdapter implements OrderRepository, OrderSearchRepository {
         for (OrderShipment shipment : order.shipments()) {
             OrderShipmentJpaEntity row = rows.computeIfAbsent(shipment.id(), id -> new OrderShipmentJpaEntity(id,
                     order.id().value(), shipment.quantities(), shipment.amount(), shipment.handedOverAt(),
-                    shipment.handedOverBy()).withCod(shipment.codAmount()).withCarriage(shipment.carriage()));
+                    shipment.handedOverBy()).withCarriage(shipment.carriage())
+                    .withDeliveryBatch(shipment.deliveryBatchId()));
             row.apply(shipment.status(), shipment.outcomeAt(), shipment.outcomeBy(), shipment.failureReason(),
-                    shipment.failureNote(), shipment.billedAmount());
+                    shipment.failureNote());
             shipments.save(row);
         }
         shipments.flush();
@@ -208,8 +250,30 @@ class OrderRepositoryAdapter implements OrderRepository, OrderSearchRepository {
                         Specs.eq("customerId", criteria.customerId()))
                 .and(statusIn(criteria.statuses()))
                 .and(placedBetween(criteria.placedFrom(), criteria.placedBefore()))
-                .and(matches(criteria.search()));
+                .and(matches(criteria.search()))
+                .and(inWarehouses(criteria.warehouseIds()));
         return jpa.findAll(spec, pageable).map(OrderPersistenceMapper::toListSummary);
+    }
+
+    /**
+     * Orders shipping from (4B-7) or released to one of {@code ids}; null: no limit. Not {@code Specs.eq}/{@code in},
+     * which answer "all" for a missing value: an empty set here is a caller assigned to no warehouse, who sees nothing.
+     */
+    private static Specification<OrderJpaEntity> inWarehouses(java.util.Set<UUID> ids) {
+        if (ids == null) {
+            return null;
+        }
+        return (root, query, cb) -> ids.isEmpty() ? cb.disjunction()
+                : cb.or(root.get("shippingWarehouseId").in(ids), root.get("warehouseId").in(ids));
+    }
+
+    @Override
+    public boolean inWarehouses(UUID orderId, java.util.Set<UUID> warehouseIds) {
+        if (orderId == null || warehouseIds == null || warehouseIds.isEmpty()) {
+            return false;
+        }
+        return jpa.count(Specification.<OrderJpaEntity>where((root, query, cb) -> cb.equal(root.get("id"), orderId))
+                .and(inWarehouses(warehouseIds))) > 0;
     }
 
     @Override
@@ -228,16 +292,9 @@ class OrderRepositoryAdapter implements OrderRepository, OrderSearchRepository {
      */
     @Override
     public Page<com.stockflow.order.api.FulfillmentCandidate> awaitingTask(UUID warehouseId, Pageable pageable) {
-        // createTask's rule (review of #150): READY_TO_FULFILL, or IN_PRODUCTION with a stock line - and no task yet.
-        Specification<OrderJpaEntity> openable = (root, query, cb) -> {
-            var stockLine = query.subquery(UUID.class);
-            var line = stockLine.from(com.stockflow.order.internal.entity.OrderLineJpaEntity.class);
-            stockLine.select(line.get("id")).where(cb.equal(line.get("order").get("id"), root.get("id")),
-                    cb.isNull(line.get("designSnapshotId")));
-            return cb.and(cb.isNull(root.get("fulfilmentStartedAt")), cb.or(
-                    cb.equal(root.get("status"), OrderStatus.READY_TO_FULFILL),
-                    cb.and(cb.equal(root.get("status"), OrderStatus.IN_PRODUCTION), cb.exists(stockLine))));
-        };
+        // createTask's rule (review of #150): READY_TO_FULFILL, and no task yet.
+        Specification<OrderJpaEntity> openable = (root, query, cb) -> cb.and(
+                cb.isNull(root.get("fulfilmentStartedAt")), cb.equal(root.get("status"), OrderStatus.READY_TO_FULFILL));
         Specification<OrderJpaEntity> spec = Specification.<OrderJpaEntity>where(openable)
                 .and(Specs.eq("warehouseId", warehouseId))
                 .and(com.stockflow.common.security.WarehouseScope.warehousesIn("warehouseId"));

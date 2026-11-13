@@ -6,22 +6,18 @@ import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.DataScope;
 import com.stockflow.common.security.Role;
-import com.stockflow.common.storage.FileStorage;
 import com.stockflow.customer.api.CustomerService;
 import com.stockflow.customer.api.SaveAddressCommand;
-import com.stockflow.order.api.PaymentTerm;
 import com.stockflow.order.internal.domain.QuoteStatus;
 import com.stockflow.order.internal.service.Quotes;
 import com.stockflow.product.api.ProductService;
 import com.stockflow.product.api.ProductStatus;
 import com.stockflow.product.internal.service.ProductTaxonomyService;
-import com.stockflow.production.internal.service.SampleProductionProgress;
-import com.stockflow.production.internal.service.SampleRequests;
 import com.stockflow.support.Await;
-import com.stockflow.support.ConfirmedDesigns;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
 import com.stockflow.support.ProductFixtures;
+import com.stockflow.support.CustomerSkuRows;
 import com.stockflow.support.ReferenceRows;
 import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.BeforeEach;
@@ -53,7 +49,7 @@ import static org.assertj.core.api.Assertions.catchThrowable;
 /**
  * Review of PR #109, item 6 (BR-PRD-005 for sales, decision of 2026-10-16): a SKU that is INACTIVE or
  * DISCONTINUED goes on no new quote, no sending or revision of one, no acceptance - an old quote included - no
- * conversion into a new order and no new sample. The refusal names the SKU and the line; nothing is substituted.
+ * conversion into a new order. The refusal names the SKU and the line; nothing is substituted.
  * Work already running carries on, and a product resumed is accepted again: the status is asked at every step.
  *
  * <p>The product is this test's own, made by the product module as it makes every product, so suspending it
@@ -70,29 +66,23 @@ class InactiveSkuQuoteIntegrationTest {
     private static final Duration ASYNC = Duration.ofSeconds(15);
 
     @Autowired Quotes quotes;
-    @Autowired SampleRequests samples;
-    @Autowired SampleProductionProgress workshop;
     @Autowired CustomerService customers;
     @Autowired ProductService products;
     @Autowired ProductTaxonomyService taxonomy;
-    @Autowired FileStorage storage;
     @Autowired JdbcTemplate jdbc;
     @Autowired EntityManager entityManager;
     @Autowired TransactionTemplate tx;
     /** Sales notices are captured, never sent. */
     @MockitoBean JavaMailSenderImpl mail;
 
-    private UUID hcm;
     private CurrentUser sales;
     private CurrentUser portal;
     private UUID customerId;
     private UUID productId;
     private String sku;
-    private ConfirmedDesigns.Design design;
 
     @BeforeEach
     void setUp() throws Exception {
-        hcm = jdbc.queryForObject("SELECT id FROM warehouse.warehouse WHERE prefix = 'HCM'", UUID.class);
         sales = staff(Role.SALES_STAFF);
         UUID portalUser = tx.execute(s -> ReferenceRows.user(entityManager));
         portal = new CurrentUser(portalUser, "portal-" + portalUser, Set.of(Role.CUSTOMER), Set.of(), DataScope.ALL,
@@ -103,13 +93,13 @@ class InactiveSkuQuoteIntegrationTest {
         UUID approver = tx.execute(s -> ReferenceRows.user(entityManager));
         productId = ProductFixtures.approved(products, ProductFixtures.taxonomy(taxonomy, suffix), suffix, editor,
                 approver).productId();
-        sku = "FX-" + suffix;
-        tx.executeWithoutResult(s -> jdbc.update("""
-                INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, version, created_at,
-                    received_at)
-                VALUES (?, ?, 'HCM-A02-1-A', 30, 0, 'AVAILABLE', 0, NOW(), clock_timestamp() - interval '2 days')""",
-                Identifiers.newId(), sku));
-        design = ConfirmedDesigns.confirmedFor(storage, jdbc, tx, entityManager, customerId, productId);
+        UUID variant = jdbc.queryForObject("SELECT id FROM product.variants WHERE sku = ?", UUID.class, "FX-" + suffix);
+        // 4B-2: what is quoted is the customer's own SKU, drawn on this product - suspending the product stops it too.
+        sku = CustomerSkuRows.issueOn(jdbc, tx, customerId, new ReferenceRows.ProductRow(productId, variant,
+                "FX-" + suffix), 10).sku();
+        CustomerSkuRows.stock(jdbc, tx, sku, 100);
+        // Produced before (4B-3): this test is about the SKU's status, not a first production's plate fee.
+        CustomerSkuRows.produced(jdbc, tx, customerId, sku);
     }
 
     // ------------------------------------------------------------------------------------- fixtures
@@ -132,9 +122,8 @@ class InactiveSkuQuoteIntegrationTest {
     }
 
     private Quotes.Draft draft() {
-        return new Quotes.Draft(PaymentTerm.PREPAID, null, Instant.now().plus(Duration.ofDays(7)), "Prices exclude VAT",
-                List.of(new Quotes.Line(sku, design.snapshotId(), "Logo front, 2 colours", 3,
-                        List.of(new Quotes.Tier(2, new BigDecimal("3000"))))));
+        return new Quotes.Draft(Instant.now().plus(Duration.ofDays(7)), "Prices exclude VAT",
+                List.of(new Quotes.Line(sku, 3, List.of(new Quotes.Tier(2, new BigDecimal("3000"))))));
     }
 
     private Quotes.QuoteView drafted() {
@@ -153,19 +142,6 @@ class InactiveSkuQuoteIntegrationTest {
 
     private static Quotes.Acceptance acceptance(Quotes.QuoteView quote) {
         return new Quotes.Acceptance(quote.version(), Map.of(quote.lines().getFirst().id(), 3));
-    }
-
-    /** The sample BR-ORD-008 asks for before acceptance, made and approved while the SKU is active. */
-    private void approvedSample() {
-        SampleRequests.Sample sample = samples.create(sales, new SampleRequests.Create(customerId, null,
-                new SampleRequests.Draft(design.snapshotId(), sku, 2, null)));
-        SampleRequests.Sample submitted = samples.submit(sales, sample.id(), hcm);
-        workshop.productionCompleted(submitted.productionOrder().id());
-        samples.markSent(sales, sample.id());
-        samples.approve(portal, sample.id());
-        Await.until("the order module records the approved sample", ASYNC, () -> jdbc.queryForObject(
-                "SELECT count(*) FROM ordering.approved_sample WHERE sample_request_id = ?", Integer.class,
-                sample.id()) == 1);
     }
 
     private long productVersion() {
@@ -207,7 +183,7 @@ class InactiveSkuQuoteIntegrationTest {
         assertRefusedFor(send, "PRODUCT_INACTIVE");
         assertThat(((BusinessException) send).getMessage()).contains("line 1");
         assertThat(((BusinessException) send).fieldErrors()).extracting(f -> f.field())
-                .containsExactly("lines[0].blankSku");
+                .containsExactly("lines[0].sku");
         assertRefusedFor(catchThrowable(() -> quotes.edit(sales, created.id(), created.version(), draft())),
                 "PRODUCT_INACTIVE");
         assertRefusedFor(catchThrowable(this::drafted), "PRODUCT_INACTIVE");
@@ -220,7 +196,6 @@ class InactiveSkuQuoteIntegrationTest {
     @Test
     @DisplayName("a quote sent before the product was discontinued cannot be accepted after it")
     void anOldQuoteIsNotAcceptedOnADiscontinuedSku() {
-        approvedSample();
         Quotes.QuoteView sent = sent();
         products.discontinue(productId, "End of line", productVersion());
 
@@ -235,7 +210,6 @@ class InactiveSkuQuoteIntegrationTest {
     @Test
     @DisplayName("an accepted quote is not converted while its SKU is suspended; nothing is placed; resumed, it converts")
     void conversionAsksTheStatusAgain() {
-        approvedSample();
         Quotes.QuoteView accepted = accepted();
         int before = ordersOfCustomer();
         suspend();
@@ -263,7 +237,6 @@ class InactiveSkuQuoteIntegrationTest {
     @DisplayName("decision 2026-10-17: an accepted quote whose SKU stopped is cancelled by Sales with a reason, kept in "
             + "its history and still shown to the customer; with every SKU active it is converted, not cancelled")
     void anAcceptedQuoteWithAStoppedSkuIsCancelledWithAReason() {
-        approvedSample();
         Quotes.QuoteView accepted = accepted();
         assertThat(code(catchThrowable(() -> quotes.cancel(sales, accepted.id(), accepted.version(), "Changed my mind"))))
                 .as("every SKU active: convert it").isEqualTo(ErrorCode.INVALID_QUOTE_TRANSITION);
@@ -300,7 +273,6 @@ class InactiveSkuQuoteIntegrationTest {
     @Test
     @DisplayName("race: a suspension during an acceptance waits for it; the conversion after it is refused")
     void aSuspensionDuringAnAcceptanceWaitsForIt() throws Exception {
-        approvedSample();
         Quotes.QuoteView sent = sent();
         CountDownLatch acceptedNotCommitted = new CountDownLatch(1);
         CountDownLatch commit = new CountDownLatch(1);
@@ -334,26 +306,5 @@ class InactiveSkuQuoteIntegrationTest {
         assertRefusedFor(catchThrowable(() -> quotes.convert(sales, sent.id(),
                 new Quotes.Conversion(quotes.get(sales, sent.id()).version(), null, null))), "PRODUCT_INACTIVE");
         assertThat(accepted.status()).isEqualTo(QuoteStatus.ACCEPTED);
-    }
-
-    @Test
-    @DisplayName("no new sample on a suspended blank; a sample already in the workshop carries on")
-    void newSamplesAreRefusedRunningOnesCarryOn() {
-        SampleRequests.Sample running = samples.create(sales, new SampleRequests.Create(customerId, null,
-                new SampleRequests.Draft(design.snapshotId(), sku, 2, null)));
-        UUID runningOrder = samples.submit(sales, running.id(), hcm).productionOrder().id();
-        SampleRequests.Sample waiting = samples.create(sales, new SampleRequests.Create(customerId, null,
-                new SampleRequests.Draft(design.snapshotId(), sku, 2, null)));
-        suspend();
-
-        assertRefusedFor(catchThrowable(() -> samples.create(sales, new SampleRequests.Create(customerId, null,
-                new SampleRequests.Draft(design.snapshotId(), sku, 2, null)))), "PRODUCT_INACTIVE");
-        assertRefusedFor(catchThrowable(() -> samples.submit(sales, waiting.id(), hcm)), "PRODUCT_INACTIVE");
-        assertThat(jdbc.queryForObject("""
-                SELECT count(*) FROM production.production_order WHERE sample_request_id = ?""", Integer.class, waiting.id()))
-                .as("no production order, no blanks held").isZero();
-
-        workshop.productionCompleted(runningOrder);
-        assertThat(samples.markSent(sales, running.id()).status().name()).isEqualTo("SENT_TO_CUSTOMER");
     }
 }

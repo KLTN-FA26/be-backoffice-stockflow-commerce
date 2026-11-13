@@ -4,7 +4,7 @@ import java.util.UUID;
 
 /**
  * A storage location as receiving needs it: which warehouse it belongs to and, for an area, what
- * kind of area it is ({@code RECEIVING}, {@code QUALITY_CONTROL}, {@code QUARANTINE}...).
+ * kind of area it is ({@code RECEIVING}, {@code QUARANTINE}...).
  *
  * @param areaType null for a bin
  */

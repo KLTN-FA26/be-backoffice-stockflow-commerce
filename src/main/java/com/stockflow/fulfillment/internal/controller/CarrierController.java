@@ -7,8 +7,14 @@ import com.stockflow.common.audit.Auditable;
 import com.stockflow.common.persistence.Pages;
 import com.stockflow.common.security.Action;
 import com.stockflow.common.security.RequiresPermission;
+import com.stockflow.fulfillment.internal.controller.dto.CarrierCredentialRotationRequest;
+import com.stockflow.fulfillment.internal.controller.dto.CarrierPickupPointsRequest;
 import com.stockflow.fulfillment.internal.controller.dto.CarrierRequest;
+import com.stockflow.fulfillment.internal.controller.dto.CarrierServiceOptionResponse;
 import com.stockflow.fulfillment.internal.controller.dto.CarrierResponse;
+import com.stockflow.fulfillment.internal.controller.dto.CarrierServiceCodeResponse;
+import com.stockflow.fulfillment.internal.controller.dto.CarrierServiceCodesRequest;
+import com.stockflow.fulfillment.internal.service.CarrierServiceCodes;
 import com.stockflow.fulfillment.internal.service.Carriers;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -24,12 +30,14 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.List;
 import java.util.UUID;
 
 /**
- * The carrier catalogue (G4-2a; kltn-docs 09 §3). {@code fulfillment-shipments:READ} to list (dispatch staff choose
- * from it, coordinators read it); {@code fulfillment-carriers:UPDATE} to keep it - seeded for the warehouse manager
- * (spec G4 §6.4).
+ * The carrier catalogue (G4-2a; kltn-docs 09 §3) and each carrier's connection settings and service codes (3-1; 09
+ * §4.1 step 2). {@code fulfillment-shipments:READ} to list (dispatch staff choose from it, managers read it);
+ * {@code fulfillment-carriers:UPDATE} to keep it - seeded for the warehouse manager (spec G4 §6.4). Secrets go in and
+ * never come out: the response says whether each is set.
  */
 @RestController
 @RequestMapping("/api/v1/fulfillment/carriers")
@@ -37,11 +45,56 @@ import java.util.UUID;
 class CarrierController {
 
     private final Carriers carriers;
+    private final CarrierServiceCodes serviceCodes;
+    private final com.stockflow.fulfillment.internal.service.CarrierPickupPoints pickupPoints;
+    private final com.stockflow.fulfillment.internal.service.Bookings bookings;
     private final DispatchWebMapper mapper;
 
-    CarrierController(Carriers carriers, DispatchWebMapper mapper) {
+    CarrierController(Carriers carriers, CarrierServiceCodes serviceCodes,
+                      com.stockflow.fulfillment.internal.service.CarrierPickupPoints pickupPoints,
+                      com.stockflow.fulfillment.internal.service.Bookings bookings, DispatchWebMapper mapper) {
         this.carriers = carriers;
+        this.serviceCodes = serviceCodes;
+        this.pickupPoints = pickupPoints;
+        this.bookings = bookings;
         this.mapper = mapper;
+    }
+
+    @GetMapping("/{carrierId}/services")
+    @Operation(summary = "An API_BOOKING carrier's truck services in a city, asked of its API (to choose service codes "
+            + "from). 409 CARRIER_NOT_API_BOOKING; 422 CARRIER_BOOKING_FAILED; 502 when it does not answer")
+    @RequiresPermission(resource = FulfillmentResources.CARRIERS, action = Action.UPDATE)
+    public ApiResponse<List<CarrierServiceOptionResponse>> services(@PathVariable UUID carrierId,
+                                                                    @RequestParam String cityId) {
+        return ApiResponse.ok(bookings.services(carrierId, cityId).stream()
+                .map(s -> new CarrierServiceOptionResponse(s.id(), s.name(), s.cityId())).toList());
+    }
+
+    @GetMapping("/{carrierId}/pickup-points")
+    @Operation(summary = "Where an API_BOOKING carrier picks up at each warehouse")
+    @RequiresPermission(resource = FulfillmentResources.SHIPMENTS, action = Action.READ)
+    public ApiResponse<List<CarrierPickupPointsRequest.Point>> pickupPoints(@PathVariable UUID carrierId) {
+        return ApiResponse.ok(pickupPoints.list(carrierId).stream().map(CarrierController::toPoint).toList());
+    }
+
+    @PutMapping("/{carrierId}/pickup-points")
+    @Operation(summary = "Replace an API_BOOKING carrier's pickup points (one per warehouse: the address as the carrier "
+            + "reads it, the contact, the province); 409 CARRIER_NOT_API_BOOKING")
+    @RequiresPermission(resource = FulfillmentResources.CARRIERS, action = Action.UPDATE)
+    @Auditable(action = AuditAction.UPDATE, resourceType = "carrier", resourceId = "#carrierId")
+    public ApiResponse<List<CarrierPickupPointsRequest.Point>> replacePickupPoints(@PathVariable UUID carrierId,
+            @Valid @RequestBody CarrierPickupPointsRequest request) {
+        return ApiResponse.ok(pickupPoints.replace(carrierId, request.pickupPoints().stream()
+                        .map(p -> new com.stockflow.fulfillment.internal.service.CarrierPickupPoints.PickupPoint(
+                                p.warehouseId(), p.provinceCode(), p.address(), p.contactName(), p.contactPhone()))
+                        .toList())
+                .stream().map(CarrierController::toPoint).toList());
+    }
+
+    private static CarrierPickupPointsRequest.Point toPoint(
+            com.stockflow.fulfillment.internal.service.CarrierPickupPoints.PickupPoint p) {
+        return new CarrierPickupPointsRequest.Point(p.warehouseId(), p.provinceCode(), p.address(), p.contactName(),
+                p.contactPhone());
     }
 
     @GetMapping
@@ -62,23 +115,63 @@ class CarrierController {
 
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
-    @Operation(summary = "Declare a carrier; 409 CARRIER_CODE_EXISTS")
+    @Operation(summary = "Declare a carrier, with how it connects; 409 CARRIER_CODE_EXISTS, 503 SECRETS_UNAVAILABLE")
     @RequiresPermission(resource = FulfillmentResources.CARRIERS, action = Action.UPDATE)
     @Auditable(action = AuditAction.CREATE, resourceType = "carrier", resourceId = "#result?.data()?.carrierId()")
     public ApiResponse<CarrierResponse> create(@Valid @RequestBody CarrierRequest request) {
         return ApiResponse.ok(mapper.toResponse(carriers.create(new Carriers.SaveCarrier(request.code(),
-                request.name(), request.contactName(), request.contactPhone(), request.status(), null))));
+                request.name(), request.contactName(), request.contactPhone(), request.status(),
+                mapper.toInput(request.connection()), null))));
     }
 
     @PutMapping("/{carrierId}")
-    @Operation(summary = "Change a carrier (send the version read); INACTIVE takes no new load. 409 OPTIMISTIC_LOCK, "
-            + "CARRIER_CODE_EXISTS")
+    @Operation(summary = "Change a carrier (send the version read); INACTIVE takes no new load. Leave connection out to "
+            + "keep it; a secret left out keeps the saved one. 409 OPTIMISTIC_LOCK, CARRIER_CODE_EXISTS, "
+            + "503 SECRETS_UNAVAILABLE")
     @RequiresPermission(resource = FulfillmentResources.CARRIERS, action = Action.UPDATE)
     @Auditable(action = AuditAction.UPDATE, resourceType = "carrier", resourceId = "#carrierId")
     public ApiResponse<CarrierResponse> update(@PathVariable UUID carrierId,
                                                @Valid @RequestBody CarrierRequest request) {
         return ApiResponse.ok(mapper.toResponse(carriers.update(carrierId, new Carriers.SaveCarrier(request.code(),
                 request.name(), request.contactName(), request.contactPhone(), request.status(),
-                request.version()))));
+                mapper.toInput(request.connection()), request.version()))));
+    }
+
+    @PostMapping("/{carrierId}/webhook-credential-rotation")
+    @Operation(summary = "Replace an API_BOOKING carrier's webhook credential in two steps, both holding in between: "
+            + "START with the new value, then PROMOTE once the carrier sends it (or DISCARD). 409 "
+            + "CARRIER_NOT_API_BOOKING, CARRIER_CREDENTIAL_ROTATION_NOT_STARTED, OPTIMISTIC_LOCK")
+    @RequiresPermission(resource = FulfillmentResources.CARRIERS, action = Action.UPDATE)
+    @Auditable(action = AuditAction.UPDATE, resourceType = "carrier", resourceId = "#carrierId")
+    public ApiResponse<CarrierResponse> rotateWebhookCredential(@PathVariable UUID carrierId,
+            @Valid @RequestBody CarrierCredentialRotationRequest request) {
+        Carriers.CredentialRotation step;
+        try {
+            step = Carriers.CredentialRotation.valueOf(request.step().strip().toUpperCase(java.util.Locale.ROOT));
+        } catch (IllegalArgumentException unknown) {
+            step = null;
+        }
+        return ApiResponse.ok(mapper.toResponse(carriers.rotateWebhookCredential(carrierId, step, request.value(),
+                request.version())));
+    }
+
+    @GetMapping("/{carrierId}/service-codes")
+    @Operation(summary = "An API_BOOKING carrier's service code per vehicle type and province")
+    @RequiresPermission(resource = FulfillmentResources.SHIPMENTS, action = Action.READ)
+    public ApiResponse<List<CarrierServiceCodeResponse>> serviceCodes(@PathVariable UUID carrierId) {
+        return ApiResponse.ok(serviceCodes.list(carrierId).stream().map(mapper::toResponse).toList());
+    }
+
+    @PutMapping("/{carrierId}/service-codes")
+    @Operation(summary = "Replace an API_BOOKING carrier's service codes (one per vehicle type and province); "
+            + "409 CARRIER_NOT_API_BOOKING, 404 VEHICLE_TYPE_NOT_FOUND")
+    @RequiresPermission(resource = FulfillmentResources.CARRIERS, action = Action.UPDATE)
+    @Auditable(action = AuditAction.UPDATE, resourceType = "carrier", resourceId = "#carrierId")
+    public ApiResponse<List<CarrierServiceCodeResponse>> replaceServiceCodes(@PathVariable UUID carrierId,
+            @Valid @RequestBody CarrierServiceCodesRequest request) {
+        return ApiResponse.ok(serviceCodes.replace(carrierId, request.codes().stream()
+                        .map(c -> new CarrierServiceCodes.SaveServiceCode(c.vehicleTypeId(), c.provinceCode(),
+                                c.carrierCityCode(), c.serviceCode())).toList())
+                .stream().map(mapper::toResponse).toList());
     }
 }

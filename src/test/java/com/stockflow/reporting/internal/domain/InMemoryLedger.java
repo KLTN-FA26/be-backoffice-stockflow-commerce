@@ -82,11 +82,6 @@ final class InMemoryLedger implements SalesRollupLedger {
     final Map<UUID, OrderContribution> closures = new java.util.LinkedHashMap<>();
 
     @Override
-    public boolean markClosureApplied(UUID closureId, OrderContribution taken) {
-        return closures.putIfAbsent(closureId, taken) == null;
-    }
-
-    @Override
     public java.util.List<OrderContribution> closuresOfOrder(UUID orderId) {
         return closures.values().stream().filter(c -> c.orderId().equals(orderId)).toList();
     }

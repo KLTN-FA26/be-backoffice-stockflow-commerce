@@ -1,5 +1,6 @@
 package com.stockflow.warehouse.internal.service;
 
+import com.stockflow.warehouse.api.BinSize;
 import com.stockflow.warehouse.api.PutawayCandidate;
 import com.stockflow.warehouse.api.StorageLocationView;
 import com.stockflow.warehouse.api.WarehouseService;
@@ -33,12 +34,9 @@ import java.util.UUID;
 class WarehouseServiceImpl implements WarehouseService {
 
     private final LocationLookupRepository locations;
-    private final com.stockflow.warehouse.internal.repository.SubcontractorSiteRepository sites;
 
-    WarehouseServiceImpl(LocationLookupRepository locations,
-                         com.stockflow.warehouse.internal.repository.SubcontractorSiteRepository sites) {
+    WarehouseServiceImpl(LocationLookupRepository locations) {
         this.locations = locations;
-        this.sites = sites;
     }
 
     /** Upper-cased first: every part of a code is {@code [A-Z0-9]} (BR-10), and scanners and people disagree on case. */
@@ -69,12 +67,12 @@ class WarehouseServiceImpl implements WarehouseService {
     }
 
     @Override
-    @org.springframework.transaction.annotation.Transactional
-    public StorageLocationView subcontractorLocation(UUID warehouseId, UUID supplierId, String supplierCode) {
-        java.util.Objects.requireNonNull(warehouseId, "warehouseId");
-        java.util.Objects.requireNonNull(supplierId, "supplierId");
-        String code = sites.locationOf(warehouseId, supplierId, supplierCode);
-        return locations.findByLocationCode(code).map(WarehouseServiceImpl::toView).orElseThrow();
+    public java.util.Set<String> areaLocationCodes(StorageLocationView.AreaType type) {
+        if (type == null) {
+            return java.util.Set.of();
+        }
+        return java.util.Set.copyOf(locations.findAreaLocationCodes(
+                com.stockflow.warehouse.internal.domain.AreaType.valueOf(type.name())));
     }
 
     @Override
@@ -100,6 +98,12 @@ class WarehouseServiceImpl implements WarehouseService {
     }
 
     @Override
+    public java.util.List<WarehouseView> activeWarehouses() {
+        return locations.findActiveWarehouseHeaders().stream().map(w -> new WarehouseView(w.id(), w.prefix(), w.name(),
+                w.address(), true)).toList();
+    }
+
+    @Override
     public java.util.List<String> shelfCodesOf(UUID warehouseId, UUID zoneId) {
         if (warehouseId == null || zoneId == null) {
             return java.util.List.of();
@@ -118,34 +122,30 @@ class WarehouseServiceImpl implements WarehouseService {
     }
 
     @Override
-    public java.util.List<PutawayCandidate> putawayCandidates(UUID warehouseId,
-                                                              StorageLocationView.StorageClass storageClass) {
-        if (warehouseId == null || storageClass == null) {
+    public java.util.List<PutawayCandidate> putawayCandidates(UUID warehouseId) {
+        if (warehouseId == null) {
             return java.util.List.of();
         }
-        return locations.findPutawayCandidates(warehouseId,
-                        com.stockflow.warehouse.internal.domain.StorageClass.valueOf(storageClass.name()), null)
+        return locations.findPutawayCandidates(warehouseId, null)
                 .stream()
                 .map(WarehouseServiceImpl::toCandidate)
                 .toList();
     }
 
     @Override
-    public java.util.Optional<PutawayCandidate> putawayCandidate(UUID warehouseId,
-                                                                StorageLocationView.StorageClass storageClass,
-                                                                String locationCode) {
-        if (warehouseId == null || storageClass == null || locationCode == null) {
+    public java.util.Optional<PutawayCandidate> putawayCandidate(UUID warehouseId, String locationCode) {
+        if (warehouseId == null || locationCode == null) {
             return java.util.Optional.empty();
         }
-        return locations.findPutawayCandidates(warehouseId,
-                        com.stockflow.warehouse.internal.domain.StorageClass.valueOf(storageClass.name()), locationCode)
+        return locations.findPutawayCandidates(warehouseId, locationCode)
                 .stream()
                 .findFirst()
                 .map(WarehouseServiceImpl::toCandidate);
     }
 
     private static PutawayCandidate toCandidate(LocationLookupRepository.PutawayCandidateRow row) {
-        return new PutawayCandidate(row.locationId(), row.locationCode(), row.capacityUnits(), row.maxWeight());
+        return new PutawayCandidate(row.locationId(), row.locationCode(),
+                new BinSize(row.width(), row.length(), row.usableHeight()), row.maxWeight());
     }
 
     private static StorageLocationView toView(LocationRow row) {
@@ -154,9 +154,9 @@ class WarehouseServiceImpl implements WarehouseService {
                 : EffectiveStatus.ofArea(row.warehouseStatus(), row.status());
         return new StorageLocationView(row.id(), StorageLocationView.Kind.valueOf(row.kind().name()),
                 row.warehouseId(), row.locationCode(),
-                StorageLocationView.StorageClass.valueOf(row.storageClass().name()),
                 StorageLocationView.Status.valueOf(row.status().name()),
                 StorageLocationView.Status.valueOf(effective.name()), EffectiveStatus.isUsable(effective),
-                row.areaType() == null ? null : StorageLocationView.AreaType.valueOf(row.areaType().name()));
+                row.areaType() == null ? null : StorageLocationView.AreaType.valueOf(row.areaType().name()),
+                row.kind() == StorageLocationKind.BIN ? new BinSize(row.width(), row.length(), row.usableHeight()) : null);
     }
 }

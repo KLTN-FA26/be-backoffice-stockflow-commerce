@@ -43,7 +43,7 @@ class ProductAdminWebMapper {
                 file == null ? null : file.originalName(), file == null ? null : file.contentType(),
                 file == null ? null : file.sizeBytes(), file == null ? null : file.storedAt(),
                 m.renditions().stream().map(r -> new MediaResponse.Rendition(r.edge(), r.width(), r.height(),
-                        r.file().contentType(), r.file().sizeBytes())).toList(),
+                        r.file().contentType(), r.file().sizeBytes(), m.renditionUrls().get(r.edge()))).toList(),
                 m.altText(), m.sortOrder(), m.primary(), m.published(), m.publishedAt(), m.publishedBy(),
                 m.uploadedBy(), m.uploadedAt(), m.version());
     }

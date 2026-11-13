@@ -21,8 +21,17 @@ public interface LocationDirectory {
 
     LocationState stateOf(LocationId location);
 
-    /** Whether the location is a PACKING area: where finished custom goods wait for their package. */
-    boolean isPackingArea(LocationId location);
+    /**
+     * Whether the location is a STAGING area (kltn-docs 07 §1, 20 §4.9): where cartons picked for an order that may not
+     * leave yet wait, still held for it. Stock enters and leaves it only by picking (11 BR-09, 20 BR-20).
+     */
+    boolean isStagingArea(LocationId location);
+
+    /**
+     * The location codes of every STAGING area, whatever their status: the stock standing there is not available to
+     * promise, held or not - a cancelled order's cartons stay out until they are put back (20 BR-20).
+     */
+    java.util.Set<String> stagingAreas();
 
     /**
      * The locations among {@code locations} a picker may take stock from now (pickable and usable), each with its
@@ -34,13 +43,10 @@ public interface LocationDirectory {
     java.util.Optional<java.util.UUID> warehouseOf(LocationId location);
 
     /**
-     * Whether the location is a QUARANTINE area: where goods that may not be sold wait apart from good ones - QC's
-     * held and rejected goods (docs 03), damaged goods (docs 03 §5).
+     * Whether the location is a QUARANTINE area: where goods that may not be sold wait apart from good ones - returned
+     * cartons and damaged ones (kltn-docs 20 §4.8).
      */
     boolean isQuarantineArea(LocationId location);
-
-    /** The usable QUARANTINE areas of a warehouse, by location code: where damaged goods can be put. */
-    java.util.List<LocationId> quarantineAreas(java.util.UUID warehouseId);
 
     /** Whether the location is a bin on a shelf, as opposed to a floor area: where goods are stored for picking. */
     boolean isBin(LocationId location);

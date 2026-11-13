@@ -26,7 +26,7 @@ import java.util.UUID;
  * (→ {@code DISCONTINUED}, terminal). Same URLs as before, under {@code /api/v1/products}.
  *
  * <p><b>Who.</b> kltn-docs 01 §5.1: {@code Active → Inactive}, {@code Inactive → Active} and {@code Discontinued} are
- * the System Admin's. These handlers used {@code product-products:APPROVE}, which the E-commerce Admin holds to
+ * the System Admin's. These handlers used {@code product-products:APPROVE}, which the Sales Manager holds to
  * approve and publish; they now have a resource of their own, {@code product-lifecycle:APPROVE}, granted to
  * SYSTEM_ADMIN only (V20261019000700). APPROVE because it is the sensitive, sign-off class of action: an
  * administrator ticks it explicitly, never through "select all". Approving, rejecting, publishing and
@@ -54,12 +54,12 @@ class ProductLifecycleController {
 
     /**
      * Terminal (WBS 3.1.8.1). BR-PRD-005 is a warning (kltn-docs 01 step 12): the product is discontinued
-     * and the response lists the purchase order lines and order lines that still refer to it. The body
+     * and the response lists the production order lines and order lines that still refer to it. The body
      * carries the reason (mandatory) and the version the screen read.
      */
     @PostMapping("/{productId}/discontinuation")
     @Operation(summary = "Discontinue an approved, published or suspended product, with a reason; "
-            + "open purchase orders and orders are reported as warnings, never refused")
+            + "open production orders and orders are reported as warnings, never refused")
     @RequiresPermission(resource = ProductResources.LIFECYCLE, action = Action.APPROVE)
     public ApiResponse<ProductDiscontinuationResponse> discontinue(@PathVariable UUID productId,
                                                                    @Valid @RequestBody DiscontinueProductRequest request) {
@@ -68,7 +68,7 @@ class ProductLifecycleController {
     }
 
     @PostMapping("/{productId}/suspension")
-    @Operation(summary = "Suspend an approved or published product (INACTIVE): hidden, no new purchase order lines")
+    @Operation(summary = "Suspend an approved or published product (INACTIVE): hidden, no new quote or order lines")
     @RequiresPermission(resource = ProductResources.LIFECYCLE, action = Action.APPROVE)
     public ApiResponse<ProductResponse> suspend(@PathVariable UUID productId,
                                                 @Valid @RequestBody SuspendProductRequest request) {

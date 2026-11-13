@@ -45,8 +45,15 @@ INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, 
                                      placed_at, version, created_at)
 SELECT md5('qa15:other')::uuid, 'SO-QA-15B', c.id, gen_random_uuid(), 'PENDING_PAYMENT', 1000, 'VND', NOW(), 0, NOW()
   FROM customer.customer c ORDER BY c.id LIMIT 1;
-INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, version, created_at, received_at)
-VALUES (md5('qa15:layer')::uuid, 'SOFA-3S-GREY', 'HCM-B01-2-B', 6, 0, 'AVAILABLE', 0, NOW(), NOW() - interval '3 days');
+-- One carton of 2 (the allocation below takes it whole; stock is kept in whole cartons only: ck_stock_item_whole_cartons).
+INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)
+VALUES (md5('qa15:u')::uuid, md5('demo:item:SOFA-3S-GREY')::uuid, 'QA_QA15', 2);
+INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, received_qty, location_code, status)
+VALUES (md5('qa15:p')::uuid, 'QA-QA15-1', md5('demo:item:SOFA-3S-GREY')::uuid, md5('qa15:u')::uuid, 2, 2, 'HCM-B01-2-B', 'IN_STOCK');
+INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, version, created_at,
+                                  received_at, stock_package_id)
+VALUES (md5('qa15:layer')::uuid, 'SOFA-3S-GREY', 'HCM-B01-2-B', 'QA15-LOT', 2, 0, 'AVAILABLE', 0, NOW(), NOW() - interval '3 days',
+        md5('qa15:p')::uuid);
 
 \echo '--- SKU reservations (V20261023000100)'
 SELECT pg_temp.expect_ok('SR1 a checkout reservation of a SKU, on no stock row', $q$
@@ -98,7 +105,7 @@ SELECT pg_temp.expect_true('SR10 the allocation names its order',
     (SELECT order_number = 'SO-QA-15' FROM inventory.stock_reservation WHERE id = md5('qa15:alloc')::uuid));
 
 \echo '--- lots (V20261023000200)'
-SELECT pg_temp.expect_true('LT1 a layer written without a lot got one',
+SELECT pg_temp.expect_true('LT1 a layer written with a lot number got a lot row (live stock without one is refused since 5-5: QA 70)',
     (SELECT lot_id IS NOT NULL FROM inventory.stock_item WHERE id = md5('qa15:layer')::uuid));
 SELECT pg_temp.expect_true('LT2 every layer has a lot', NOT EXISTS (SELECT 1 FROM inventory.stock_item WHERE lot_id IS NULL));
 SELECT pg_temp.expect_fail('LT3 a layer moved into a lot of another SKU', $q$
@@ -110,10 +117,10 @@ SELECT pg_temp.expect_fail('LT4 a ledger line naming a lot of another SKU', $q$
     VALUES (gen_random_uuid(), 'PICK', 'SOFA-3S-GREY', 'HCM-B01-2-B', 1, 'ORDER', md5('qa15:order')::uuid, NOW(),
             (SELECT id FROM inventory.stock_lot WHERE sku <> 'SOFA-3S-GREY' LIMIT 1)) $q$);
 SELECT pg_temp.expect_ok('LT5 a pick from the layer takes its lot and its order number', $q$
-    INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, quantity, reference_type,
-        reference_id, occurred_at, order_id)
-    VALUES (md5('qa15:pick')::uuid, 'PICK', 'SOFA-3S-GREY', 'HCM-B01-2-B', 1, 'ORDER', md5('qa15:order')::uuid, NOW(),
-            md5('qa15:order')::uuid) $q$);
+    INSERT INTO inventory.stock_movement (id, movement_type, sku, lot_number, from_location_code, quantity,
+        reference_type, reference_id, occurred_at, order_id)
+    VALUES (md5('qa15:pick')::uuid, 'PICK', 'SOFA-3S-GREY', 'QA15-LOT', 'HCM-B01-2-B', 1, 'ORDER',
+            md5('qa15:order')::uuid, NOW(), md5('qa15:order')::uuid) $q$);
 SELECT pg_temp.expect_true('LT6 ... with the layer''s lot and the order''s number',
     (SELECT m.lot_id = s.lot_id AND m.order_number = 'SO-QA-15'
        FROM inventory.stock_movement m, inventory.stock_item s

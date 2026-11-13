@@ -100,7 +100,7 @@ class CustomerController {
                 request.taxCode()))));
     }
 
-    /** Activating, suspending or closing a customer account: its own resource, seeded for the E-commerce Admin. */
+    /** Activating, suspending or closing a customer account: its own resource, seeded for the Sales Manager. */
     @PostMapping("/{customerId}/status")
     @RequiresPermission(resource = CustomerResources.STATUS, action = Action.APPROVE)
     public ApiResponse<CustomerResponse> changeStatus(@PathVariable UUID customerId,

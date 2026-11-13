@@ -2,8 +2,6 @@ package com.stockflow.inventory.internal.domain;
 
 import com.stockflow.common.domain.Sku;
 
-import java.time.LocalDate;
-import java.time.Instant;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
@@ -62,12 +60,16 @@ public interface StockItemRepository {
     /** Sellable stock for one SKU across all locations. Used by the query side, never before a lock. */
     List<StockItem> findAvailableBySku(Sku sku);
 
-    /** Aggregated query port: no reservation history is needed for storefront availability. */
-    default java.util.Map<String, Long> availableQuantities(java.util.Set<String> skus, LocalDate today) {
-        return skus.stream().collect(java.util.stream.Collectors.toMap(code -> code,
-                code -> findAvailableBySku(new Sku(code)).stream()
-                        .filter(item -> item.expiryDate() == null || !item.expiryDate().isBefore(today))
-                        .mapToLong(item -> item.available().value()).sum()));
+    /**
+     * The stock rows of these SKUs a release could allocate: AVAILABLE, each the whole content of a sealed carton in
+     * stock that nothing holds (team plan 4C-2; kltn-docs 07 BR-03). Available to promise is counted from these, so
+     * checkout never promises loose units or an opened carton that no release would hand out. Where they stand is the
+     * caller's to judge (pickable bins are the warehouse module's). Nothing expires (team plan 5-1).
+     */
+    List<Allocatable> findAllocatable(Collection<String> skus);
+
+    /** A row {@link #findAllocatable} returns: the carton's units at its location. */
+    record Allocatable(StockItemId id, String sku, String locationCode, int units) {
     }
 
     /** Per (location, status) subtotals of one SKU, all statuses included; feeds Inventory Level. */
@@ -78,34 +80,6 @@ public interface StockItemRepository {
      * They are part of the {@code reserved} of {@link #findLevelLinesBySku}; Inventory Level shows them apart.
      */
     Map<String, Integer> findAllocatedBySku(Sku sku);
-
-    /** Sellable units ({@code onHand − reserved} of AVAILABLE stock) per SKU; absent when none. */
-    Map<Sku, Integer> sumAvailableBySkus(Collection<Sku> skus, LocalDate today);
-
-    /**
-     * The loose stock rows of {@code sku} at {@code location}: rows in a stock package are left out. A row in a
-     * carton is keyed by the carton, not the bin (V20261020000200), and loose units merged into an unopened one
-     * would break its counted quantity at commit.
-     *
-     * <p>There is deliberately no lookup of "every row of a SKU at a bin": a bin may hold a loose layer and
-     * several cartons of the very same receipt, and a caller that found one by (SKU, bin, lot, receipt time)
-     * would take or fill the others by chance. Stock in a carton is reached through its carton.</p>
-     */
-    List<StockItem> findLooseBySkuAndLocation(Sku sku, LocationId location);
-
-    /**
-     * The loose INBOUND rows of one lot, in id order, unlocked. A confirmed receipt opens its own lot per (SKU, lot
-     * number, expiry), so these are exactly one receipt line's loose goods still waiting for putaway; the caller
-     * locks the rows it takes from.
-     */
-    List<StockItem> findLooseInboundByLot(Sku sku, java.util.UUID lotId);
-
-    /**
-     * Where each lot's loose goods wait: the location code of the lowest-id loose INBOUND row with units, per lot, in
-     * one query that loads no reservations. A lot with no such row is absent. For reading only: nothing here may be
-     * taken from, because the rows are neither locked nor loaded.
-     */
-    java.util.Map<java.util.UUID, String> looseInboundLocationByLot(java.util.Collection<java.util.UUID> lotIds);
 
     /**
      * What is left in a stock package: the sum of its rows' {@code on_hand}, as this transaction has written them
@@ -122,42 +96,12 @@ public interface StockItemRepository {
      */
     List<StockItemId> findIdsInStockPackages(Collection<StockPackageId> stockPackageIds);
 
-    /** Every stock item holding at least one reservation that expired before {@code cutoff}. */
-    List<StockItem> findWithReservationsExpiredBefore(Instant cutoff, int limit);
-
     /** Locates the aggregate that owns a reservation, given only the id order handed back. */
     Optional<StockItem> findByReservationIdForUpdate(ReservationId reservationId);
-
-    /**
-     * Every stock item holding at least one live reservation for this order.
-     *
-     * <p>One order line can be spread over several lots, so cancelling an order has to reach all
-     * of them. Takes a raw {@code UUID} rather than an {@code OrderId} type because {@code order}
-     * owns that concept — inventory only stores the reference.</p>
-     */
-    List<StockItem> findWithReservationsForOrder(java.util.UUID orderId);
-
-    /** The same for a production order's live holds, locked in id order. */
-    List<StockItem> findWithReservationsForProductionOrder(java.util.UUID productionOrderId);
-
-    /**
-     * SCRUM-287 PR T: the stock rows holding a transfer order's live allocation, locked in id order (the caller holds
-     * the SKUs' advisory locks first).
-     */
-    List<StockItem> findWithReservationsForTransferOrder(java.util.UUID transferOrderId);
-
-    /** The ids of a production order's live holds, oldest first, read without locking (a screen's view). */
-    List<java.util.UUID> findHeldReservationIdsOfProductionOrder(java.util.UUID productionOrderId);
 
     /** The stock item a reservation is on, without locking it — so it can be locked in id order with another. */
     Optional<StockItemId> findIdByReservationId(ReservationId reservationId);
 
-    /**
-     * Persist a {@link StockItem#handOverReservation hand-over}: {@code from} gave up the hold {@code moved}
-     * and {@code to} (new or existing) took it over. The reservation row keeps its id and changes parent;
-     * it is never deleted and inserted again — order lines and fulfilment lines reference it.
-     */
-    void saveHandOver(StockItem from, StockItem to, ReservationId moved);
 
     /**
      * The live (HELD) reservations of an order with the SKU and location they sit at, read-only and
@@ -183,7 +127,7 @@ public interface StockItemRepository {
      * left or into their layer at another bin). The database refuses to raise an existing FIFO layer's
      * {@code on_hand} — replenishment must be a new layer, or FIFO loses the age of the incoming units — and
      * this tells it, for this row and this statement only, that nothing new is entering: the units carry the
-     * same receipt time, lot, expiry and serial, which the database checks as before.
+     * same receipt time, lot and serial, which the database checks as before.
      */
     StockItem saveMerged(StockItem stockItem);
 }

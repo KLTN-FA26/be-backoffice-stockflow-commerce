@@ -5,33 +5,30 @@ import com.stockflow.order.api.OrderSummary;
 import java.util.UUID;
 
 /**
- * Release of an order by the Order Coordinator (SCRUM-423). Not on {@code order :: api}: only this
- * module's controller drives it; other modules learn of it from {@code OrderLinesReleasedForProduction}
- * and {@code OrderReleased}.
+ * Release of an order by the warehouse manager of the warehouse (SCRUM-423, 17 BR-03). Not on {@code order :: api}: only this
+ * module's controller drives it; other modules learn of it from {@code OrderReleased}.
  */
 public interface OrderReleases {
 
     /**
-     * Release a CONFIRMED order (paid in full, or a deposit order whose deposit is in) from a warehouse: to IN_PRODUCTION
-     * when it has print lines, READY_TO_FULFILL otherwise.
+     * Release a CONFIRMED order (confirmed by its contract's installments on signing) - or an order of a contract
+     * AWAITING_STOCK whose stock is now all held (4A-6) - from a warehouse: to READY_TO_FULFILL, every line allocated on
+     * bins of that warehouse.
      *
      * @throws com.stockflow.common.error.BusinessException {@code WAREHOUSE_NOT_FOUND},
-     *         {@code DESIGN_SAMPLE_NOT_APPROVED} (BR-PRD-08), {@code ORDER_DEPOSIT_NOT_RECEIVED} (BR-PRD-09),
+     *         {@code ORDER_PRINT_GOODS_NOT_RECEIVED} (a legacy print line - a blank with a design snapshot - whose goods
+     *         were never received; QD-16), {@code ORDER_STOCK_NOT_HELD}, {@code CUSTOMER_CREDIT_OVERDUE},
      *         {@code CONFLICT} (not in a releasable status)
      */
     OrderSummary release(UUID orderId, UUID warehouseId, UUID releasedBy);
 
     /**
-     * As {@link #release(UUID, UUID, UUID)}, choosing how the order travels on the way (LP-1, lead's decision
-     * 2026-10-22): null keeps the order's mode (PARCEL unless changed before). A mode other than the order's - read
-     * under the order's row lock, so a change racing the release is seen - needs
-     * {@code sales-order-delivery-modes:UPDATE} as well; the change is recorded in the order's history.
+     * 4B-8 (17 §4.5, BR-03, BR-29): the same for an order with a signed delivery schedule - its next delivery batch.
      *
-     * @throws com.stockflow.common.security.PermissionDeniedException a mode other than the order's without that
-     *         permission: nothing is released
-     * @throws com.stockflow.common.error.BusinessException also {@code DELIVERY_MODE_FTL_NO_COD} (LP-2): nothing is
-     *         released then
+     * @param deliveryBatchId the batch the caller means to release; null: the next one, whichever it is
+     * @throws com.stockflow.common.error.BusinessException {@code DELIVERY_BATCH_NOT_NEXT} for another batch, or while
+     *         the batch before the next still has goods to hand over; {@code ORDER_STOCK_NOT_HELD} for a batch not held
+     *         in full
      */
-    OrderSummary release(UUID orderId, UUID warehouseId, com.stockflow.order.api.DeliveryMode deliveryMode,
-                         com.stockflow.common.security.CurrentUser actor);
+    OrderSummary release(UUID orderId, UUID warehouseId, UUID deliveryBatchId, UUID releasedBy);
 }

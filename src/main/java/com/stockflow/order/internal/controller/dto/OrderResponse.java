@@ -45,40 +45,17 @@ public record OrderResponse(
         Address shippingAddress,
         Address billingAddress,
 
-        @Schema(example = "PREPAID", description = "PREPAID, DEPOSIT or CREDIT; null on list rows that do not carry it")
-        String paymentTerm,
-
         @Schema(description = "The warehouse the order was released from; null until released (SCRUM-423)")
         UUID warehouseId,
 
         Instant releasedAt,
 
-        @Schema(description = "Money received so far; null on rows that do not carry it")
-        BigDecimal paidAmount,
-
-        @Schema(description = "The deposit a DEPOSIT order needs before it is confirmed; null otherwise")
-        BigDecimal depositRequired,
-
-        Instant depositReceivedAt,
-        Instant paidInFullAt,
-
-        @Schema(example = "PARTIALLY_PAID", description = "UNPAID, PARTIALLY_PAID, ON_CREDIT or PAID (kltn-docs 15 §5.2)")
-        String paymentStatus,
-
-        @Schema(description = "Days to pay after delivery: a credit order's, or an ON_CREDIT deposit order's for its "
-                + "balance; null otherwise")
-        Integer creditTermDays,
-
-        @Schema(example = "BEFORE_DELIVERY", description = "A deposit order's way of collecting the balance: "
-                + "BEFORE_DELIVERY (by transfer, before the handover), ON_DELIVERY (the carrier collects it) or "
-                + "ON_CREDIT (a receivable on delivery, due after creditTermDays); null for other terms (G2-3)")
-        String balancePolicy,
-
         @Schema(description = "Set when the order is CANCELLED")
         Cancellation cancellation,
 
-        @Schema(example = "ADDRESS", description = "Staff only. Set while ON_HOLD: CREDIT, DESIGN_MISMATCH, PAYMENT, "
-                + "ADDRESS, INVENTORY, CUSTOMER, FRAUD or OTHER (G3-2); null for a customer, who gets holdReasonPublic")
+        @Schema(example = "ADDRESS", description = "Staff only. Set while ON_HOLD: CREDIT, PAYMENT, ADDRESS, "
+                + "INVENTORY, CUSTOMER, FRAUD, OTHER (G3-2) or DELIVERY_FAILED - a shipment came back and Sales decide its "
+                + "delivery failure case; null for a customer, who gets holdReasonPublic")
         String holdReason,
 
         @Schema(example = "PICKING", description = "Staff only. Where resolving the hold goes back to; null for a "
@@ -109,48 +86,41 @@ public record OrderResponse(
         Instant completedAt,
         Instant closedAt,
 
-        @Schema(description = "What deliveries billed as receivables (a credit order)")
-        BigDecimal billedAmount,
-
         @Schema(description = "The total less the units closed out of a partly fulfilled order")
         BigDecimal effectiveTotal,
 
-        @Schema(description = "What the customer still owes on the order (effectiveTotal - paidAmount, never below 0)")
-        BigDecimal amountDue,
-
-        @Schema(description = "What must be paid before the goods may leave (G3-Q4): packing warns, handover refuses "
-                + "while it is above 0")
+        @Schema(description = "What the order itself knows must be paid before the goods may leave: 0 since 4B-10 - "
+                + "the handover reads the contract's installments (GET /api/v1/installments/orders/{orderId}, "
+                + "dueBeforeHandover)")
         BigDecimal amountDueBeforeHandover,
 
         @Schema(description = "The shipments handed to the carrier, oldest first (split shipments, G4-Q3)")
         List<Shipment> shipments,
 
-        @Schema(description = "What carriers are to collect on delivery: the unpaid balance of an ON_DELIVERY deposit "
-                + "order, 0 otherwise (G2-3)")
-        BigDecimal amountDueOnDelivery,
-
         @Schema(description = "Sales allowed the order to ship in parts (PACK-PARTIAL): packing may complete part of "
-                + "it, part of it may be handed over, and a mixed order's stock may ship while its prints are made "
-                + "(PACK-EARLY). False by default; set with PUT /orders/{orderId}/partial-shipment; null on rows that "
-                + "do not carry it")
+                + "it, and part of it may be handed over. False by default; set with PUT "
+                + "/orders/{orderId}/partial-shipment; null on rows that do not carry it")
         Boolean allowPartialShipment,
 
-        @Schema(description = "Its printed goods are at packing: no print lines, or production completed. False while "
-                + "the order is printed, or partly shipped before production completed (PACK-EARLY); null on rows "
-                + "that do not carry it")
+        @Schema(deprecated = true, description = "Always true: printing is done outside the system, so an order's "
+                + "goods are in stock before it is released. Kept for clients that still read it; null on rows that "
+                + "do not carry it")
         Boolean printLinesReady,
 
-        @Schema(example = "PARCEL", description = "How the order travels (LP-1): PARCEL (parcels through a carrier, the "
-                + "default) or FULL_TRUCKLOAD (a whole truck or container, planned in 3D). Chosen by the Order "
-                + "Coordinator at release or with PUT /orders/{orderId}/delivery-mode; packing copies it onto every "
-                + "shipment; null on rows that do not carry it")
-        String deliveryMode,
+        @Schema(description = "4B-3: the total before tax - goods and fee lines; totalAmount is it plus taxAmount")
+        BigDecimal netAmount,
 
-        @Schema(description = "Packing started (its first package was opened), or the order is past packing, cancelled "
-                + "or closed: the delivery mode can no longer change (409 DELIVERY_MODE_LOCKED); null on rows that do "
-                + "not carry it")
-        Boolean deliveryModeLocked
+        @Schema(description = "4B-3: the VAT of every line and fee line, each rounded to the dong; 0 for an order "
+                + "placed without VAT")
+        BigDecimal taxAmount,
+
+        @Schema(description = "4B-3: the fee lines - a plate fee per SKU produced for the first time, the shipping fee")
+        List<Fee> fees
 ) {
+
+    /** A fee line with its VAT (14 BR-17, BR-20, BR-21). */
+    public record Fee(String kind, String sku, BigDecimal amount, BigDecimal taxRate, BigDecimal taxAmount) {
+    }
 
     @Schema(name = "OrderShipment")
     public record Shipment(
@@ -158,13 +128,10 @@ public record OrderResponse(
             @Schema(example = "HANDED_OVER", description = "HANDED_OVER, DELIVERED, DELIVERY_FAILED or RETURNED")
             String status,
             @Schema(description = "The goods' value at the order's prices") BigDecimal amount,
-            @Schema(description = "What its delivery billed a credit order") BigDecimal billedAmount,
             Instant handedOverAt,
             Instant outcomeAt,
             String failureReason,
-            List<ShipmentLine> lines,
-            @Schema(description = "What the carrier collects on delivering it (ON_DELIVERY), fixed at the handover; "
-                    + "the amount printed on the label (kltn-docs 15 BR-08)") BigDecimal codAmount) {
+            List<ShipmentLine> lines) {
     }
 
     @Schema(name = "OrderShipmentLine")
@@ -209,25 +176,46 @@ public record OrderResponse(
             @Schema(description = "Units closed out of a partly fulfilled order: they will not be delivered")
             Integer cancelledQuantity,
 
-            @Schema(description = "A print line production could not finish: what the customer agreed to go without "
-                    + "(review 2026-10-25, S6), and how much of it production closed; null when nothing was agreed")
-            ProductionShortfall productionShortfall,
+            @Schema(description = "SCRUM-502: the date the customer asked to receive this print line, from its quote. "
+                    + "Null when none was asked or for a stock line")
+            java.time.LocalDate requestedDeliveryDate,
 
-            @Schema(description = "SCRUM-502: the date the customer asked to receive this print line, from its quote; "
-                    + "the production order's due date. Null when none was asked or for a stock line")
-            java.time.LocalDate requestedDeliveryDate
+            @Schema(description = "4B-2: cartons ordered; quantity is cartons x unitsPerCarton pieces. Null for a line "
+                    + "not ordered in cartons")
+            Integer cartons,
+
+            @Schema(description = "4B-2: pieces per carton fixed on the line when it was quoted")
+            Integer unitsPerCarton,
+
+            @Schema(description = "4B-3: the VAT rate fixed on the line, a percentage; null for a line without VAT")
+            BigDecimal taxRate,
+
+            @Schema(description = "4B-3: the line's VAT, rounded to the dong; null for a line without VAT")
+            BigDecimal taxAmount
     ) {
+
+        public Line(UUID lineId, String sku, int quantity, BigDecimal unitPrice, BigDecimal lineTotal,
+                    List<UUID> reservationIds, UUID designSnapshotId, String designChecksum, Integer shippedQuantity,
+                    Integer deliveredQuantity, Integer cancelledQuantity, java.time.LocalDate requestedDeliveryDate,
+                    Integer cartons, Integer unitsPerCarton) {
+            this(lineId, sku, quantity, unitPrice, lineTotal, reservationIds, designSnapshotId, designChecksum,
+                    shippedQuantity, deliveredQuantity, cancelledQuantity, requestedDeliveryDate, cartons,
+                    unitsPerCarton, null, null);
+        }
+
+        public Line(UUID lineId, String sku, int quantity, BigDecimal unitPrice, BigDecimal lineTotal,
+                    List<UUID> reservationIds, UUID designSnapshotId, String designChecksum, Integer shippedQuantity,
+                    Integer deliveredQuantity, Integer cancelledQuantity, java.time.LocalDate requestedDeliveryDate) {
+            this(lineId, sku, quantity, unitPrice, lineTotal, reservationIds, designSnapshotId, designChecksum,
+                    shippedQuantity, deliveredQuantity, cancelledQuantity, requestedDeliveryDate, null, null, null,
+                    null);
+        }
 
         public Line(UUID lineId, String sku, int quantity, BigDecimal unitPrice, BigDecimal lineTotal,
                     List<UUID> reservationIds, UUID designSnapshotId, String designChecksum, Integer shippedQuantity,
                     Integer deliveredQuantity, Integer cancelledQuantity) {
             this(lineId, sku, quantity, unitPrice, lineTotal, reservationIds, designSnapshotId, designChecksum,
-                    shippedQuantity, deliveredQuantity, cancelledQuantity, null, null);
+                    shippedQuantity, deliveredQuantity, cancelledQuantity, null);
         }
-    }
-
-    @Schema(name = "OrderLineProductionShortfall")
-    public record ProductionShortfall(int agreedQuantity, String note, UUID agreedBy, java.time.Instant agreedAt,
-                                      int closedQuantity) {
     }
 }

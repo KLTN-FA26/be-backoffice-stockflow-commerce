@@ -1,7 +1,8 @@
 # StockFlowCommerce — modular monolith
 
-Inventory, print production and B2B sales for a business that prints cups and packaging to its
-wholesale customers' designs.
+A finished-goods warehouse and B2B sales for a business whose cups and packaging are printed to its
+wholesale customers' designs - by producers outside the system since 2026-11-07, so the goods arrive
+printed, in cartons.
 Capstone **FA26SE029** · group **GFA26SE03** · supervisor **Nguyễn Minh Sang**.
 
 One Spring Boot application, one Postgres database, **fourteen modules whose boundaries the build
@@ -10,6 +11,8 @@ enforces**. It is not a monolith with hopeful package names — a boundary viola
 
 The previous architecture was fourteen microservices. Why it changed, what that bought and what it
 cost, is [ADR-0005](docs/adr/0005-modular-monolith.md) — read that first if you only read one file.
+The November 2026 change of scope (B2B only, printed goods from outside producers, whole cartons, full truckloads) is
+[ADR-0010](docs/adr/0010-rescope-b2b-printed-goods.md); the current business analysis is the kltn-docs repository.
 
 ---
 
@@ -57,7 +60,7 @@ callable from the browser.
 The `local` profile adds `db/demo`, which seeds stock so the endpoints return something:
 
 ```bash
-curl "localhost:8080/api/v1/inventory/stock-items/atp?sku=SOFA-3S-GREY"
+curl "localhost:8080/api/v1/inventory/stock-items/atp?sku=<a sku from db/demo>"
 ```
 
 ---
@@ -76,14 +79,15 @@ com.stockflow
 │
 ├── identity/        Users, roles, permissions, sessions              → schema identity
 ├── customer/        Profiles, addresses, segments                    → schema customer
-├── product/         Product master, variants, attributes, BOM        → schema product
-├── catalog/         Storefront catalog, pricing, promotions, search  → schema catalog
-├── inventory/       Stock, ATP, reservations, counts, transfers      → schema inventory
+├── product/         Product master, customer SKUs, print configuration → schema product
+├── catalog/         Storefront catalog and search (no prices)        → schema catalog
+├── inventory/       Whole-carton stock, ATP, holds, counts, quarantine → schema inventory
 ├── warehouse/       Warehouses, zones, bins, capacity                → schema warehouse
-├── order/           Cart, orders, amendments, RMA                    → schema ordering
-├── payment/         Payments, deposits, refunds, reconciliation      → schema payment
-├── fulfillment/     Picking, packing, shipments, tracking            → schema fulfillment
-├── procurement/     Suppliers, POs, goods receipt, QC                → schema procurement
+├── order/           Quotes, contracts, orders, production orders, returns → schema ordering
+├── payment/         Contract installments, receipts, settlements, refunds → schema payment
+├── invoicing/       VAT e-invoices per delivery, provider port, sandbox   → schema invoicing
+├── fulfillment/     Picking, staging, carton check, load plans, carriers → schema fulfillment
+├── procurement/     Goods receipts (production orders, returns)      → schema procurement
 ├── design/          Design studio, templates, snapshots, print jobs  → schema design
 ├── chat/            Conversations, messages, agent assignment        → schema chat
 ├── notification/    Templates, preferences, delivery log             → schema notification
@@ -153,11 +157,12 @@ the short version:
 | `idempotency` | any request carrying `Idempotency-Key` becomes safe to retry |
 | `ratelimit` | `@RateLimit` on an endpoint, Redis token bucket |
 | `audit` | `@Auditable` → append-only `platform.audit_log`, split retention |
-| `storage` | `FileStorage` port, S3/MinIO and local, content-type allow-list with magic-number check |
+| `storage` | `FileStorage` port, S3/MinIO and local, content-type allow-list with magic-number check; `ImageDimensions` (upright size from the header, ≤ 40 MP) |
 | `lock` | `DistributedLock`, and ShedLock so `@Scheduled` is safe on more than one instance |
 | `http` | `RestClientFactory` — timeouts, correlation propagation, call logging |
 | `validation` | `@ValidSku`, `@VietnamPhone`, `@NotBlankTrimmed` |
-| `web` | correlation ids, request logging, one exception handler for the whole platform |
+| `web` | correlation ids, request logging, per-route body caps (`stockflow.web.body-limits`, 413 before anything reads the body), one exception handler for the whole platform |
+| `json` | `CanonicalJson` — RFC 8785, the byte-for-byte JSON a browser's `JSON.stringify` with sorted keys produces, for checksums both sides compute |
 | `api` | the response envelope: `fieldErrors` a form can place, `correlationId` for support |
 | `i18n` | Vietnamese by default, English on `Accept-Language`; every `ErrorCode` translated |
 | `config` | Jackson, async MDC propagation, OpenAPI + JWT, locale, MVC, clock |
@@ -213,9 +218,9 @@ The compiler allows both — it is all one jar. The build does not.
 |---|---|---|
 | **When** | you need the result inside your transaction | you are announcing a fact |
 | **Coupling** | caller declares the dependency | publisher knows nobody |
-| **Example** | `order → inventory.reserve()` | `payment` publishes `PaymentCaptured` |
+| **Example** | `order → inventory.holdAtWarehouse()` | `payment` publishes `PaymentReceiptRecorded` |
 
-`order → inventory` is a call: an order without its stock is a bug, so the two must commit
+`order → inventory` is a call: a hold without its order, or an order whose hold was lost, is a bug, so the two must commit
 together. `payment → order` is an event: payment succeeded whatever order does next, and a direct
 call would create a cycle, since order already listens to payment.
 
@@ -223,32 +228,29 @@ call would create a cycle, since order already listens to payment.
 
 ## The central claim, and its test
 
-Placing an order and reserving its stock are **one transaction**:
+Holding an order's stock is **one transaction** with the order (`ShippingWarehouseService.choose`, once Sales
+picks the shipping warehouse of an order drawn up from an accepted quote; there is no checkout since team plan
+5-2 and 4B-10):
 
 ```java
 @Transactional
-public OrderSummary placeOrder(PlaceOrderCommand command) {
-    Order order = Order.draft(...);
-    for (OrderLine line : order.lines()) {
-        ReserveStockResult r = inventory.reserve(...);      // joins THIS transaction
-        order.attachReservations(line.id(), r.reservationIds());
+public Coverage choose(UUID orderId, UUID warehouseId, UUID by) {
+    Order order = lockOrder(orderId);
+    inventory.prepareReservation(skus);                     // SKU advisory locks, sorted
+    for (OrderLine line : stillShort) {
+        HoldStockResult r = inventory.holdAtWarehouse(...); // joins THIS transaction
+        order.holdMore(line.id(), r.reservationIds());
     }
-    order.submit();
-    return toSummary(repository.save(order));
+    return coverage(repository.save(order));
 }
 ```
 
-(`reservationIds`, plural: a line for ten units is often drawn from two lots, and each lot is a
-separate hold. Keeping only the first would release half the stock on cancellation and leave the
-rest held until it expired.)
+(`reservationIds`, plural: a line is often held from several cartons, and each carton is a separate hold.
+Keeping only the first would release part of the stock on cancellation and leave the rest held.)
 
 Under the microservices design this same step needed an outbox row, a Kafka topic, an idempotent
 consumer, two response events, a saga state row, a timeout, and a compensating release — and still
 left a window in which an order existed with no stock behind it.
-
-`PlaceOrderIntegrationTest.stockIsRolledBackWhenTheOrderFails()` places an order, asserts the stock
-is held, throws, and asserts the stock is back. Against a real Postgres. That test is the
-architecture's argument, and it is the test that could not have been written before.
 
 ---
 
@@ -260,8 +262,8 @@ architecture's argument, and it is the test that could not have been written bef
 | `ArchitectureTest` | layering inside a module, plus the traps in the shared base: a soft-deletable entity without `@SQLRestriction`, a scoped entity behind an unscoped repository, a cache named by string literal, a random UUID used as a primary key, a `@Scheduled` job without `@SchedulerLock`, a proxied method that is not public |
 | `BaseLayerRegressionTest` | the base-layer defects found in review — entity equality under a lazy proxy, `isNew()` with an application-assigned id, `OWN` scope with no user id, a nested permission guard clearing its caller's scope |
 | `StockItemTest`, `OrderTest`, `StockAllocatorTest` | business rules, as plain unit tests with no container — milliseconds, because the domain has no framework on it |
-| `PlaceOrderIntegrationTest` | the atomicity claim, against a real Postgres |
-| `InventoryEventIntegrationTest` | cross-module event delivery and listener idempotency |
+| `ShippingWarehouseIntegrationTest` | an order and its stock holds commit together, against a real Postgres |
+| `RepositorySqlQaTest` | every adversarial script in `tools/db/qa/` and the orphan check, on a freshly migrated database with the demo seed |
 | `InventoryModuleTest` | inventory boots **alone**, with the other thirteen modules absent |
 | `MessageBundleTest` | every `ErrorCode` is translated in both bundles, and they agree |
 | `ApiEnvelopeTest` | the response shape every client depends on |
@@ -347,8 +349,10 @@ One database, `stockflow`; one schema per module. Three rules, and the reasoning
 Rule 2 gives up the option of extracting a module without first dropping its incoming keys, and
 buys referential integrity the database enforces on every code path.
 
-Migrations are timestamped, `V20260901000200__inventory_stock.sql`, not `V2__`. With five people
-committing in parallel, sequential numbers collide constantly.
+Migrations are timestamped, `V20261112000100__inventory_stock.sql`, not `V2__`. With five people
+committing in parallel, sequential numbers collide constantly. Everything up to 2026-11-11 is one file,
+`V20261111000000__baseline.sql` (the 270 migrations before it were squashed while every database held demo
+data only; git history keeps them), and the demo seed one more, `db/demo/V20261111000001__demo_seed.sql`.
 
 Spring Modulith's `event_publication` table lives on the default search path rather than in a
 schema of its own: the JPA event registry maps it to an unqualified name, and moving it would leave
@@ -365,7 +369,7 @@ places.
 
 1. [`docs/adr/0005-modular-monolith.md`](docs/adr/0005-modular-monolith.md) — the decision and its price
 2. `inventory/` — the reference module, fully implemented through all four layers
-3. `order/internal/service/OrderServiceImpl.java` — the saga collapse, with the distributed version described in the javadoc
+3. `order/internal/service/ShippingWarehouseService.java` — the saga collapse, with the distributed version described in ADR-0005 and why it still holds in [ADR-0010](docs/adr/0010-rescope-b2b-printed-goods.md)
 4. [`docs/adding-a-module.md`](docs/adding-a-module.md) — the recipe for the next module, and what not to rebuild
-5. `docs/business-design/` — data flows, state machines, 50 business rules, per-step storage
+5. The kltn-docs repository (`docs/`) — the current business analysis; `docs/business-design/` is the pre-rescope version, marked superseded
 6. `ModularityTest` — the twenty lines that keep all of the above true

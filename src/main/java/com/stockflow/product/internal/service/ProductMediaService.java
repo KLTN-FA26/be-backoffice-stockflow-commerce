@@ -105,10 +105,14 @@ public class ProductMediaService {
         this.clock = clock;
     }
 
+    /** @param renditionUrls edge to a short-lived link showing that rendition; filled by {@link #list} only */
     public record MediaView(UUID id, UUID variantId, String kind, String url, StoredFile original,
                             List<ImageRendition> renditions, String altText, int sortOrder, boolean primary,
                             boolean published, Instant publishedAt, UUID publishedBy, String uploadedBy,
-                            Instant uploadedAt, long version) {
+                            Instant uploadedAt, long version, java.util.Map<Integer, String> renditionUrls) {
+        public MediaView {
+            renditionUrls = renditionUrls == null ? java.util.Map.of() : java.util.Map.copyOf(renditionUrls);
+        }
     }
 
     public record PublicRendition(int edge, int width, int height, String contentType, String url) {
@@ -257,7 +261,13 @@ public class ProductMediaService {
     @Transactional(readOnly = true)
     public List<MediaView> list(UUID productId, UUID variantId) {
         variants.requireVariant(productId, variantId);
-        return media.findByVariantIdOrderBySortOrderAscIdAsc(variantId).stream().map(ProductMediaService::view).toList();
+        // Each rendition with its own link, signed locally: the gallery shows twenty thumbnails from one answer.
+        return media.findByVariantIdOrderBySortOrderAscIdAsc(variantId).stream().map(image -> {
+            java.util.Map<Integer, String> urls = new java.util.HashMap<>();
+            image.getRenditions().forEach(r -> files.tryViewLink(r.file().key())
+                    .ifPresent(link -> urls.put(r.edge(), link.url())));
+            return view(image, urls);
+        }).toList();
     }
 
     @Transactional(readOnly = true)
@@ -265,22 +275,28 @@ public class ProductMediaService {
         return view(requireMedia(productId, variantId, mediaId));
     }
 
-    /** A short-lived link to the private original. Only for a stored file: a URL image has its URL. */
+    /**
+     * A short-lived link saving the private original under its uploaded name. Only for a stored file: a URL image has
+     * its URL. Audited: the original is the photograph exactly as taken, location metadata included.
+     */
     @Transactional(readOnly = true)
+    @Auditable(action = AuditAction.EXPORT, resourceType = "product-media", resourceId = "#mediaId",
+            details = "{file: 'original'}")
     public DownloadLink downloadLink(UUID productId, UUID variantId, UUID mediaId) {
         var image = requireMedia(productId, variantId, mediaId);
         if (image.storedFile() == null) {
             throw new BusinessException(ErrorCode.CONFLICT, "This image is an external URL, not a stored file");
         }
-        return files.downloadLink(image.getStorageKey());
+        return files.downloadLink(image.getStorageKey(), image.storedFile().originalName());
     }
 
+    /** A link showing a display rendition in the page: no round trip to the store, cacheable while it lives. */
     @Transactional(readOnly = true)
     public DownloadLink renditionLink(UUID productId, UUID variantId, UUID mediaId, int edge) {
         var rendition = requireMedia(productId, variantId, mediaId).getRenditions().stream()
                 .filter(r -> r.edge() == edge).findFirst()
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No rendition of edge " + edge));
-        return files.downloadLink(rendition.file().key());
+        return files.viewLink(rendition.file().key());
     }
 
     // ------------------------------------------------------------------ edits
@@ -410,7 +426,8 @@ public class ProductMediaService {
         VariantJpaEntity variant = wanted.isEmpty() ? defaultVariant
                 : variantRows.findBySku(wanted).filter(v -> v.getProductId().equals(productId))
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
-        if (variant == null || variant.getStatus() != VariantStatus.ACTIVE) {
+        // A customer's own SKU is nobody else's to see (kltn-docs 13 BR-02), and this gallery is anonymous.
+        if (variant == null || variant.getStatus() != VariantStatus.ACTIVE || variant.getOwnerCustomerId() != null) {
             throw new BusinessException(ErrorCode.NOT_FOUND);
         }
         List<PublicImage> images = publishedImages(variant.getId());
@@ -488,7 +505,8 @@ public class ProductMediaService {
 
     private StoredFile store(FileCategory category, String name, String contentType, byte[] bytes,
                              List<String> written) {
-        StoredFile file = storage.store(category, name, contentType, bytes.length, new ByteArrayInputStream(bytes));
+        StoredFile file = storage.store(category, name, contentType, bytes.length, new ByteArrayInputStream(bytes),
+                sha256(bytes));
         written.add(file.key());
         return file;
     }
@@ -512,9 +530,13 @@ public class ProductMediaService {
     }
 
     static MediaView view(MediaJpaEntity m) {
+        return view(m, java.util.Map.of());
+    }
+
+    static MediaView view(MediaJpaEntity m, java.util.Map<Integer, String> renditionUrls) {
         return new MediaView(m.getId(), m.getVariantId(), m.getKind(), m.getUrl(), m.storedFile(), m.getRenditions(),
                 m.getAltText(), m.getSortOrder(), m.isPrimary(), m.isPublished(), m.getPublishedAt(),
-                m.getPublishedBy(), m.getCreatedBy(), m.getCreatedAt(), m.getVersion());
+                m.getPublishedBy(), m.getCreatedBy(), m.getCreatedAt(), m.getVersion(), renditionUrls);
     }
 
     /** Carries a failure that happened while committing, where the outcome is unknown. */

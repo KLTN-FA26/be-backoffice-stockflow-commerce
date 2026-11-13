@@ -8,20 +8,16 @@ import com.stockflow.common.security.Action;
 import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.Role;
 import com.stockflow.common.security.WarehouseScope;
-import com.stockflow.design.api.DesignArtifactRole;
-import com.stockflow.design.api.DesignService;
-import com.stockflow.fulfillment.api.FulfillmentArtifactAccess;
 import com.stockflow.fulfillment.api.FulfillmentAssignee;
 import com.stockflow.fulfillment.api.FulfillmentService;
 import com.stockflow.fulfillment.api.FulfillmentTask;
 import com.stockflow.fulfillment.api.FulfillmentTaskQuery;
 import com.stockflow.fulfillment.api.PackingCompletion;
-import com.stockflow.fulfillment.internal.domain.DesignVerificationResult;
+import com.stockflow.fulfillment.api.PickDestination;
 import com.stockflow.fulfillment.internal.domain.PackStatus;
 import com.stockflow.fulfillment.internal.domain.PickStatus;
 import com.stockflow.fulfillment.internal.entity.PackJpaEntity;
 import com.stockflow.fulfillment.internal.entity.PickJpaEntity;
-import com.stockflow.fulfillment.internal.repository.DesignVerificationJpaRepository;
 import com.stockflow.fulfillment.internal.repository.PackJpaRepository;
 import com.stockflow.fulfillment.internal.repository.PickJpaRepository;
 import com.stockflow.order.api.OrderService;
@@ -62,26 +58,21 @@ class FulfillmentServiceImpl implements FulfillmentService {
 
     private final PickJpaRepository picks;
     private final PackJpaRepository packs;
-    private final DesignVerificationJpaRepository verifications;
     private final OrderService orders;
-    private final DesignService designs;
     private final Clock clock;
     private final IdentityService identities;
     private final InventoryService inventory;
     private final WarehouseService warehouses;
     private final PickListService pickLists;
-    private final PackingService packing;
+    private final CartonCheckService cartonChecks;
 
-    FulfillmentServiceImpl(PickJpaRepository picks, PackJpaRepository packs,
-            DesignVerificationJpaRepository verifications, OrderService orders,
-            DesignService designs, IdentityService identities, InventoryService inventory,
-            WarehouseService warehouses, PickListService pickLists, PackingService packing, Clock clock) {
-        this.packing = packing;
+    FulfillmentServiceImpl(PickJpaRepository picks, PackJpaRepository packs, OrderService orders,
+            IdentityService identities, InventoryService inventory,
+            WarehouseService warehouses, PickListService pickLists, CartonCheckService cartonChecks, Clock clock) {
+        this.cartonChecks = cartonChecks;
         this.picks = picks;
         this.packs = packs;
-        this.verifications = verifications;
         this.orders = orders;
-        this.designs = designs;
         this.identities = identities;
         this.inventory = inventory;
         this.warehouses = warehouses;
@@ -91,41 +82,89 @@ class FulfillmentServiceImpl implements FulfillmentService {
 
     @Override
     public FulfillmentTask createTask(UUID orderId, UUID assignedUserId, CurrentUser actor) {
+        return createTask(orderId, assignedUserId, PickDestination.DISPATCH, null, actor);
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>The staging area is resolved after the warehouse is known and before anything is written: a STAGING task that
+     * could stage nowhere is refused whole.</p>
+     *
+     * <p>A redelivery is opened under the order's row lock, taken before anything else is locked (the global order:
+     * customer_order first), and is read again under it (WF-05 review N4). Read without it, Sales cancelling the case
+     * at the same moment could commit first, and its {@code RedeliveryWithdrawn} listener could look for the order's
+     * picks before this one committed: the pick would stay PENDING for a CANCELLED case. Cancelling takes the order's
+     * row lock first too, so under it either the cancellation came first - the case is no longer released and no task
+     * is opened for it - or it waits for this pick, and its listener finds and cancels it.</p>
+     */
+    @Override
+    public FulfillmentTask createTask(UUID orderId, UUID assignedUserId, PickDestination destination,
+                                      String stagingLocationCode, CurrentUser actor) {
         require(actor, FulfillmentPermissions.TASK_ASSIGNMENT, Action.CREATE);
-        var existing = picks.findByOrderId(orderId);
-        if (existing.isPresent()) {
-            requireWarehouseAssignee(assignedUserId, existing.get().getWarehouseId());
-            TaskAccess.requireVisible(existing.get(), actor);
-            return toTask(existing.get());
+        List<PickJpaEntity> existing = picks.findAllByOrderId(orderId);
+        // WF-05 fix plan, section 2: goods of a shipment that came back, released to be delivered again, get a task of
+        // their own - a second pick of a batch (or an order) picked once already. It comes before a new batch: a
+        // batch is released only once the one before it is handed over, and that one is being handed over again.
+        var redelivery = orders.redeliveryToPick(orderId, redeliveryCasesOf(existing));
+        if (redelivery.isPresent()) {
+            // WF-05 review N4: the order's row lock first, then the picks and the case read again under it - the case
+            // may have been cancelled, or picked by a concurrent request, since the unlocked read.
+            orders.lockedStatus(orderId);
+            existing = picks.findAllByOrderId(orderId);
+            redelivery = orders.redeliveryToPick(orderId, redeliveryCasesOf(existing));
+        }
+        Set<UUID> pickedBatches = existing.stream().map(PickJpaEntity::getDeliveryBatchId)
+                .filter(java.util.Objects::nonNull).collect(java.util.stream.Collectors.toSet());
+        // 4B-8 (07 BR-07): an order released by delivery batch gets a task per batch - the one released and not
+        // picked yet. Nothing new to pick: the latest task answers, as a repeated request always did.
+        var batch = redelivery.isPresent() ? java.util.Optional.<com.stockflow.order.api.ReleasedBatch>empty()
+                : orders.batchToPick(orderId, pickedBatches);
+        if (redelivery.isEmpty() && batch.isEmpty() && !existing.isEmpty()) {
+            PickJpaEntity latest = existing.getLast();
+            requireWarehouseAssignee(assignedUserId, latest.getWarehouseId());
+            TaskAccess.requireVisible(latest, actor);
+            return toTask(latest);
         }
         OrderSummary order = requireOrder(orderId);
-        // Released - its warehouse chosen - and production (if any) delivered: READY_TO_FULFILL (SCRUM-423, kltn-docs
-        // 17 BR-02). A CONFIRMED order is released by the coordinator first (G3-2). A mixed order IN_PRODUCTION has its
-        // stock lines picked in parallel (17 §4.2 step 5, PACK-EARLY); the order stays IN_PRODUCTION meanwhile and the
-        // goods wait at packing - or, when Sales allowed partial shipments, are packed and shipped ahead of the prints.
-        boolean parallel = order.status() == OrderStatus.IN_PRODUCTION
-                && order.lines().stream().anyMatch(line -> line.designSnapshotId() == null);
-        if (order.status() != OrderStatus.READY_TO_FULFILL && !parallel) {
-            throw new BusinessException(ErrorCode.PICK_TASK_STATE_CONFLICT, order.status() == OrderStatus.IN_PRODUCTION
-                    ? "Order %s has only print lines: its task opens when production completes".formatted(
-                            order.orderNumber())
-                    : "Only a released order (READY_TO_FULFILL, or IN_PRODUCTION with stock lines) can enter "
-                            + "fulfillment; it is " + order.status());
+        // Released - its warehouse chosen: READY_TO_FULFILL (SCRUM-423, kltn-docs 17 BR-02). A later delivery batch is
+        // released while the order is PARTIALLY_FULFILLED and picked in that status (17 §4.5: no new order status).
+        // A redelivery is picked in that status too: the order owes the customer the goods that came back.
+        boolean laterBatch = (batch.isPresent() || redelivery.isPresent())
+                && order.status() == OrderStatus.PARTIALLY_FULFILLED;
+        if (order.status() != OrderStatus.READY_TO_FULFILL && !laterBatch) {
+            throw new BusinessException(ErrorCode.PICK_TASK_STATE_CONFLICT,
+                    "Only a released order (READY_TO_FULFILL) or its released delivery batch can enter fulfillment; "
+                            + "it is " + order.status());
         }
         UUID warehouseId = pickingWarehouse(order);
         WarehouseScope.requireWarehouse(warehouseId);
         requireWarehouseAssignee(assignedUserId, warehouseId);
-        // In this transaction, under the order's row lock (A1): READY_TO_FULFILL → PICKING; IN_PRODUCTION stays.
-        orders.startPicking(orderId, actor.userId());
+        PickDestination to = destination == null ? PickDestination.DISPATCH : destination;
+        String stagingArea = stagingAreaFor(warehouseId, to, stagingLocationCode);
+        // In this transaction, under the order's row lock (A1): READY_TO_FULFILL → PICKING; a later batch leaves the
+        // order PARTIALLY_FULFILLED.
+        if (!laterBatch) {
+            orders.startPicking(orderId, actor.userId());
+        }
         var now = clock.instant();
         var pick = new PickJpaEntity(Identifiers.newId(), null, orderId, order.orderNumber(), warehouseId,
-                PickStatus.PENDING);
+                PickStatus.PENDING, to, stagingArea)
+                .forDeliveryBatch(redelivery.isPresent() ? redelivery.get().deliveryBatchId()
+                        : batch.map(com.stockflow.order.api.ReleasedBatch::batchId).orElse(null))
+                .forRedelivery(redelivery.map(com.stockflow.order.api.RedeliveryToPick::caseId).orElse(null));
         pick.assign(assignedUserId, now);
         picks.saveAndFlush(pick);      // the pick row first: its lines' trigger and foreign key look for it
         packs.save(new PackJpaEntity(Identifiers.newId(), pick.getId(), PackStatus.PENDING, null));
         // SCRUM-267: one line per hold of the order's stock lines, in this warehouse (docs 07 step 2).
         pickLists.planLines(pick, order);
         return toTask(pick, nameOf(assignedUserId), null);
+    }
+
+    /** The delivery failure cases {@code picks} were opened for: their redeliveries have a task already. */
+    private static Set<UUID> redeliveryCasesOf(List<PickJpaEntity> picks) {
+        return picks.stream().map(PickJpaEntity::getRedeliveryCaseId).filter(java.util.Objects::nonNull)
+                .collect(java.util.stream.Collectors.toSet());
     }
 
     @Override
@@ -147,17 +186,9 @@ class FulfillmentServiceImpl implements FulfillmentService {
             filters.add((root, q, cb) -> cb.equal(root.get("assignedUserId"), query.assignedUserId()));
         }
         // Whose tasks (data scope, not access - the endpoint's permission decided that): every task of the caller's
-        // warehouses with oversight, those on a design hold for whoever re-verifies designs, otherwise the caller's own.
+        // warehouses with oversight, otherwise the caller's own.
         if (actor.can(FulfillmentPermissions.TASK_OVERSIGHT, Action.READ)) {
             // no further filter
-        } else if (actor.can(FulfillmentPermissions.DESIGN_REVERIFICATION, Action.READ)) {
-            filters.add((root, q, cb) -> {
-                var held = q.subquery(UUID.class);
-                var pack = held.from(PackJpaEntity.class);
-                held.select(pack.get("pickId")).where(cb.equal(pack.get("pickId"), root.get("id")),
-                        cb.equal(pack.get("status"), PackStatus.ON_HOLD));
-                return cb.exists(held);
-            });
         } else {
             actor.require(FulfillmentPermissions.PICK_LISTS, Action.READ);
             filters.add((root, q, cb) -> cb.equal(root.get("assignedUserId"), actor.userId()));
@@ -198,6 +229,85 @@ class FulfillmentServiceImpl implements FulfillmentService {
     }
 
     @Override
+    public FulfillmentTask changeDestination(UUID taskId, PickDestination destination, String stagingLocationCode,
+                                             CurrentUser actor) {
+        require(actor, FulfillmentPermissions.TASK_ASSIGNMENT, Action.UPDATE);
+        var pick = lockPick(taskId);
+        WarehouseScope.requireWarehouse(pick.getWarehouseId());
+        if (pick.getStatus() != PickStatus.PENDING) {
+            throw new BusinessException(ErrorCode.PICK_TASK_STATE_CONFLICT,
+                    "A task is given another destination only while PENDING; it is " + pick.getStatus());
+        }
+        PickDestination to = destination == null ? PickDestination.DISPATCH : destination;
+        pick.changeDestination(to, stagingAreaFor(pick.getWarehouseId(), to, stagingLocationCode));
+        return toTask(picks.save(pick));
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Locks: the pick, then the order (read under its lock: a cancellation locks the order before the stock rows it
+     * releases), then inventory's - the SKUs, the cartons, the rows - as every write of a task. The same request again,
+     * the task already moved, answers the task as it is before the order is looked at.</p>
+     */
+    @Override
+    public FulfillmentTask moveToDispatch(UUID taskId, CurrentUser actor) {
+        require(actor, FulfillmentPermissions.TASK_ASSIGNMENT, Action.UPDATE);
+        var pick = lockPick(taskId);
+        WarehouseScope.requireWarehouse(pick.getWarehouseId());
+        if (pick.getStatus() == PickStatus.PICKED && pick.getMovedToDispatchAt() != null) {
+            return toTask(pick);
+        }
+        if (pick.getStatus() != PickStatus.STAGED) {
+            throw new BusinessException(ErrorCode.PICK_TASK_STATE_CONFLICT,
+                    "A task moves to dispatch from STAGED; it is " + pick.getStatus());
+        }
+        TaskAccess.requireStillInFulfilment(orders, pick);
+        if (orders.lockedStatus(pick.getOrderId()).orElseThrow() == OrderStatus.ON_HOLD) {
+            // 07 edge case, an order on hold while its task is STAGED: its cartons stay in the staging area until the
+            // hold is resolved.
+            throw new BusinessException(ErrorCode.PICK_ORDER_ON_HOLD, "Order %s is on hold; task %s stays staged"
+                    .formatted(pick.getOrderNumber(), taskId));
+        }
+        pickLists.moveStagedLinesToDispatch(pick, actor.userId());
+        pick.moveToDispatch(actor.userId(), clock.instant());
+        return toTask(picks.save(pick));
+    }
+
+    /**
+     * The staging area a task of {@code warehouseId} takes its cartons to (07 §3): none for a DISPATCH task, whatever
+     * was sent (a form may still carry an earlier choice); for a STAGING task the one named - an active STAGING area of
+     * that warehouse - or, none named, the warehouse's only active one.
+     *
+     * @throws BusinessException {@code STAGING_AREA_INVALID} otherwise
+     */
+    private String stagingAreaFor(UUID warehouseId, PickDestination destination, String requested) {
+        if (destination != PickDestination.STAGING) {
+            return null;
+        }
+        if (requested != null && !requested.isBlank()) {
+            return warehouses.findLocation(requested.trim())
+                    .filter(view -> view.areaType() == StorageLocationView.AreaType.STAGING)
+                    .filter(view -> warehouseId.equals(view.warehouseId()) && view.usable())
+                    .map(StorageLocationView::locationCode)
+                    .orElseThrow(() -> new BusinessException(ErrorCode.STAGING_AREA_INVALID,
+                            "%s is not an active staging area of the task's warehouse".formatted(requested.trim()),
+                            List.of(FieldError.of("stagingLocationCode", "must be an active staging area of the "
+                                    + "task's warehouse"))));
+        }
+        List<String> areas = warehouses.areasOf(warehouseId, StorageLocationView.AreaType.STAGING).stream()
+                .filter(StorageLocationView::usable).map(StorageLocationView::locationCode).toList();
+        if (areas.size() != 1) {
+            throw new BusinessException(ErrorCode.STAGING_AREA_INVALID, areas.isEmpty()
+                    ? "The warehouse has no active staging area" : "The warehouse has %d active staging areas; name one"
+                            .formatted(areas.size()),
+                    List.of(FieldError.of("stagingLocationCode", areas.isEmpty()
+                            ? "the warehouse has no active staging area" : "name one of " + String.join(", ", areas))));
+        }
+        return areas.get(0);
+    }
+
+    @Override
     @Transactional(readOnly = true)
     public FulfillmentTask findTask(UUID taskId, CurrentUser actor) {
         var pick = requirePick(taskId);
@@ -222,8 +332,9 @@ class FulfillmentServiceImpl implements FulfillmentService {
     }
 
     /**
-     * Docs 07 step 9: only when every line is picked ({@code PICK_LINES_INCOMPLETE} otherwise).
-     * Completing a task that is already PICKED by its assignee is answered with the task as it is
+     * Docs 07 step 6: only when every line is picked - or staged ({@code PICK_LINES_INCOMPLETE} otherwise). A STAGING
+     * task completes STAGED, its cartons waiting in the staging area for the warehouse manager (team plan 4C-5).
+     * Completing a task that is already PICKED (or STAGED) by its assignee is answered with the task as it is
      * (SCRUM-482): a scanner retrying a lost response must get the first answer back, not a 409. It is
      * answered before the order is looked at, because the order has moved on since; nothing is applied
      * again. Another user, or any other status, is refused as before.
@@ -233,7 +344,7 @@ class FulfillmentServiceImpl implements FulfillmentService {
         var pick = lockPick(taskId);
         WarehouseScope.requireWarehouse(pick.getWarehouseId());
         pick.requireAssigned(actor.userId());
-        if (pick.getStatus() == PickStatus.PICKED) {
+        if (pick.getStatus() == PickStatus.PICKED || pick.getStatus() == PickStatus.STAGED) {
             return toTask(pick);
         }
         var order = requireOrderInFulfilment(pick);
@@ -245,51 +356,26 @@ class FulfillmentServiceImpl implements FulfillmentService {
     }
 
     @Override
-    @Transactional(readOnly = true)
-    public FulfillmentArtifactAccess artifactDownload(UUID taskId, UUID orderLineId, String role,
-                                                       CurrentUser actor) {
-        var pick = requirePick(taskId);
-        TaskAccess.requireArtifactAccess(pick, actor);
-        var line = requireOrderInFulfilment(pick).lines().stream()
-                .filter(value -> value.lineId().equals(orderLineId))
-                .findFirst().orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
-        if (line.designSnapshotId() == null || line.designChecksum() == null) {
-            throw new BusinessException(ErrorCode.NOT_FOUND, "Order line has no confirmed design");
-        }
-        DesignArtifactRole parsedRole;
-        try {
-            parsedRole = DesignArtifactRole.valueOf(role.toUpperCase(java.util.Locale.ROOT));
-        } catch (IllegalArgumentException ex) {
-            throw new BusinessException(ErrorCode.UNSUPPORTED_PARAMETER, "Unknown design artifact role");
-        }
-        var artifact = designs.fulfillmentDownload(
-                line.designSnapshotId(), line.designChecksum(), parsedRole);
-        return new FulfillmentArtifactAccess(artifact.artifactId(), artifact.role().name(),
-                artifact.originalName(), artifact.contentType(), artifact.sizeBytes(), artifact.checksum(),
-                artifact.url(), artifact.expiresAt());
-    }
-
-    @Override
     public FulfillmentTask completePacking(UUID taskId, CurrentUser actor) {
         return completePacking(taskId, PackingCompletion.whole(), actor);
     }
 
-    /** G4-5: see {@link PackingService#complete}; the answer is the task, with the shipment and the payment warning. */
+    /**
+     * The check station's completion (team plan 4C-6, kltn-docs 08 §4.4): see {@link CartonCheckService#complete}; the
+     * answer is the task, with the shipment and the warning of an installment due before delivery still unpaid.
+     */
     @Override
     public FulfillmentTask completePacking(UUID taskId, PackingCompletion completion, CurrentUser actor) {
         require(actor, FulfillmentPermissions.PACKING, Action.UPDATE);
-        PackingService.Completed outcome = packing.complete(taskId, completion == null ? PackingCompletion.whole()
-                : completion, actor);
+        CartonCheckService.Completed outcome = cartonChecks.complete(taskId, completion == null
+                ? PackingCompletion.whole() : completion, actor);
         FulfillmentTask task = toTask(requirePick(taskId));
-        return outcome.shipmentId() == null ? task
-                : withPaymentWarning(task, outcome.order()).withShipment(outcome.shipmentId());
-    }
-
-    @Override
-    public FulfillmentTask reverifyDesignIntegrity(UUID taskId, String resolutionNote, CurrentUser actor) {
-        require(actor, FulfillmentPermissions.DESIGN_REVERIFICATION, Action.UPDATE);
-        packing.reverify(taskId, resolutionNote, actor);
-        return toTask(requirePick(taskId));
+        if (outcome.shipmentId() == null) {
+            return task;
+        }
+        FulfillmentTask shipped = task.withShipment(outcome.shipmentId());
+        return outcome.paymentDue() == null ? shipped : shipped.withPaymentDue(new FulfillmentTask.PaymentDue(
+                outcome.paymentDue().amount(), outcome.paymentDue().currency()));
     }
 
     private FulfillmentTask toTask(PickJpaEntity pick) {
@@ -313,29 +399,12 @@ class FulfillmentServiceImpl implements FulfillmentService {
             log.warn("Fulfillment task {} (order {}) has no pack row; shown as packing not started", pick.getId(),
                     pick.getOrderNumber());
         }
-        var evidence = pack == null ? List.<FulfillmentTask.IntegrityEvidence>of()
-                : verifications.findByPackIdOrderByVerifiedAtDesc(pack.getId()).stream()
-                .map(value -> new FulfillmentTask.IntegrityEvidence(value.getOrderLineId(), value.getSnapshotId(),
-                        value.getExpectedChecksum(), value.getActualChecksum(),
-                        value.getResult() == DesignVerificationResult.MATCH, value.getVerifiedAt()))
-                .toList();
         return new FulfillmentTask(pick.getId(), pick.getOrderId(), pick.getOrderNumber(), pick.getWarehouseId(),
                 pick.getAssignedUserId(), assignedUserName, pick.getStatus().name(),
                 (pack == null ? PackStatus.PENDING : pack.getStatus()).name(),
                 pick.getAssignedAt(), pick.getStartedAt(), pick.getPickedAt(), pack == null ? null : pack.getPackedAt(),
-                evidence, lines);
-    }
-
-    /**
-     * G3-Q4 / G2-3: the early warning at packing - the order still owes money its terms want before the goods leave,
-     * so the handover will be refused until the accountant records it.
-     */
-    private static FulfillmentTask withPaymentWarning(FulfillmentTask task, OrderSummary packed) {
-        var due = packed == null || packed.lifecycle() == null ? null : packed.lifecycle().amountDueBeforeHandover();
-        if (due == null || due.signum() <= 0) {
-            return task;
-        }
-        return task.withPaymentDue(new FulfillmentTask.PaymentDue(due, packed.total().currency().getCurrencyCode()));
+                lines, null, null, pick.getDestination(), pick.getStagingLocationCode(), pick.getStagedAt(),
+                pick.getMovedToDispatchAt());
     }
 
     private String nameOf(UUID userId) {
@@ -405,7 +474,7 @@ class FulfillmentServiceImpl implements FulfillmentService {
      * The warehouse a new task is picked in: the order's own once it is released; for a stock-only
      * order picked straight from CONFIRMED, where its holds are. Release does not check where the holds
      * sit, so they are checked here: stock in two warehouses, or outside the order's, cannot be picked as
-     * one task (the goods would have to be moved by a transfer order first, docs 11 BR-01).
+     * one task (stock never changes warehouse, docs 11 BR-01).
      */
     private UUID pickingWarehouse(OrderSummary order) {
         List<OrderHold> holds = inventory.holdsOf(order.orderId());

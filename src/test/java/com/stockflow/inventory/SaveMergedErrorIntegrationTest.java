@@ -6,6 +6,7 @@ import com.stockflow.inventory.internal.domain.LocationId;
 import com.stockflow.inventory.internal.domain.Quantity;
 import com.stockflow.inventory.internal.domain.StockItem;
 import com.stockflow.inventory.internal.domain.StockItemRepository;
+import com.stockflow.inventory.internal.domain.StockPackageId;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
 import org.junit.jupiter.api.DisplayName;
@@ -38,9 +39,10 @@ class SaveMergedErrorIntegrationTest {
     @Test
     @DisplayName("a failed merge write surfaces as its own integrity violation (409), not the aborted clean-up (500)")
     void theOriginalErrorSurvivesTheCleanup() {
-        // A layer at a location that does not exist: the INSERT breaks fk_stock_item_location.
-        StockItem nowhere = StockItem.receiveInbound(new Sku("SOFA-3S-GREY"), new LocationId("HCM-ZZ99-9-Z"), null,
-                null, Quantity.of(1), Instant.now());
+        // A carton's layer at a location that does not exist: the INSERT breaks fk_stock_item_location. (In a carton -
+        // also unknown - because a loose row holding a unit is refused first, by ck_stock_item_whole_cartons, 23514.)
+        StockItem nowhere = StockItem.receiveInboundInto(new StockPackageId(java.util.UUID.randomUUID()),
+                new Sku("SOFA-3S-GREY"), new LocationId("HCM-ZZ99-9-Z"), "LOT-SMERR", Quantity.of(1), Instant.now(), null);
 
         Throwable thrown = catchThrowable(() -> tx.executeWithoutResult(s -> stockItems.saveMerged(nowhere)));
 

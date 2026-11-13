@@ -4,7 +4,6 @@ import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.DataScope;
-import com.stockflow.fulfillment.internal.domain.DeliveryMode;
 import com.stockflow.fulfillment.internal.domain.DispatchLoad;
 import com.stockflow.fulfillment.internal.domain.LoadPlan;
 import com.stockflow.fulfillment.internal.domain.LoadPlanStatus;
@@ -13,7 +12,6 @@ import com.stockflow.fulfillment.internal.domain.loadplanning.LoadPlanRequest;
 import com.stockflow.fulfillment.internal.domain.loadplanning.LoadPlanResult;
 import com.stockflow.fulfillment.internal.domain.loadplanning.LoadPlanner;
 import com.stockflow.fulfillment.internal.domain.PackageStatus;
-import com.stockflow.fulfillment.internal.domain.PackageType;
 import com.stockflow.fulfillment.internal.domain.ShipmentStatus;
 import com.stockflow.fulfillment.internal.entity.DispatchLoadJpaEntity;
 import com.stockflow.fulfillment.internal.entity.LoadPlanJpaEntity;
@@ -30,15 +28,12 @@ import com.stockflow.fulfillment.internal.repository.LoadPlanNumbers;
 import com.stockflow.fulfillment.internal.repository.LoadPlanPackageJpaRepository;
 import com.stockflow.fulfillment.internal.repository.LoadPlanStore;
 import com.stockflow.fulfillment.internal.repository.LoadPlanVehicleJpaRepository;
-import com.stockflow.fulfillment.internal.repository.PackJpaRepository;
 import com.stockflow.fulfillment.internal.repository.PackageJpaRepository;
-import com.stockflow.fulfillment.internal.repository.PackageLineJpaRepository;
+import com.stockflow.fulfillment.internal.repository.ParcelContents;
 import com.stockflow.fulfillment.internal.repository.PickJpaRepository;
 import com.stockflow.fulfillment.internal.repository.ShipmentJpaRepository;
 import com.stockflow.fulfillment.internal.repository.ShipmentLocks;
 import com.stockflow.fulfillment.internal.repository.VehicleTypeJpaRepository;
-import com.stockflow.inventory.api.TransferDeliveryMode;
-import com.stockflow.inventory.api.TransferFulfillment;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.OrderSummary;
 import com.stockflow.support.WithCurrentUser;
@@ -109,13 +104,13 @@ class LoadPlanServiceTest {
     private final WarehouseService warehouses = mock(WarehouseService.class);
     private final LoadPlanEstimateComparison estimates = mock(LoadPlanEstimateComparison.class);
     private final PickJpaRepository picks = mock(PickJpaRepository.class);
-    private final PackageLineJpaRepository packageLines = mock(PackageLineJpaRepository.class);
+    private final ParcelContents packageLines = mock(ParcelContents.class);
     private final DispatchLoadShipmentJpaRepository loadMembers = mock(DispatchLoadShipmentJpaRepository.class);
-    private final TransferFulfillment transfers = mock(TransferFulfillment.class);
-    private final PackJpaRepository packs = mock(PackJpaRepository.class);
+    /** A labelled carton's corrected spec on planning (4C-6, review M2): CartonMeasuresTest's; a no-op here. */
+    private final CartonMeasures cartonMeasures = mock(CartonMeasures.class);
     private final LoadPlanService service = new LoadPlanService(plans, members, planVehicles, store, numbers, parcels,
             packages, shipments, shipmentLocks, vehicleTypes, loads, loadStore, loadNumbers, warehouses, estimates, picks,
-            packageLines, loadMembers, Clock.fixed(NOW, ZoneOffset.UTC), Duration.ofSeconds(2), Duration.ofSeconds(12), transfers, packs, mock(PlatformTransactionManager.class));
+            packageLines, loadMembers, cartonMeasures, Clock.fixed(NOW, ZoneOffset.UTC), Duration.ofSeconds(2), Duration.ofSeconds(12), mock(PlatformTransactionManager.class));
 
     private final CurrentUser actor = FulfillmentFixtures.user();
     private FulfillmentFixtures.PlannedPlan planned;
@@ -161,9 +156,7 @@ class LoadPlanServiceTest {
         int no = 1;
         for (UUID id : ids) {
             PackageJpaEntity row = new PackageJpaEntity(id, UUID.randomUUID(), no, "PKG-" + no++);
-            row.apply(planned.shipmentId(), PackageType.CARTON, PackageStatus.SEALED, new BigDecimal("100"),
-                    new BigDecimal("100"), new BigDecimal("100"), new BigDecimal("100"), null, true, false, false, false,
-                    NOW, null, null, null);
+            FulfillmentFixtures.applyCarton(row, PackageStatus.SEALED, planned.shipmentId(), new BigDecimal("100"), new BigDecimal("100"), new BigDecimal("100"), new BigDecimal("100"));
             out.put(id, new LoadPlanParcels.Parcel(row, null, null, LoadPlanParcels.carton(row, "CUBE"), "CUBE"));
         }
         return out;
@@ -212,10 +205,9 @@ class LoadPlanServiceTest {
     @DisplayName("creating a plan (09 §4.2 step 1)")
     class Creating {
 
-        private LoadPlans.CreatePlan request(String source, List<UUID> shipmentIds, List<UUID> typeIds,
-                                             List<UUID> transferIds) {
+        private LoadPlans.CreatePlan request(String source, List<UUID> shipmentIds, List<UUID> typeIds) {
             return new LoadPlans.CreatePlan(UUID.randomUUID(), WAREHOUSE, shipmentIds, typeIds, "SINGLE_TYPE", "note",
-                    source, transferIds);
+                    source);
         }
 
         @BeforeEach
@@ -248,26 +240,29 @@ class LoadPlanServiceTest {
                     null), actor)).errorCode()).isEqualTo(ErrorCode.WAREHOUSE_NOT_FOUND);
 
             WithCurrentUser.run(FulfillmentFixtures.userOf(OTHER_WAREHOUSE), DataScope.WAREHOUSE, () ->
-                    assertThat(refusal(() -> service.create(request(null, null, null, null), actor)).errorCode())
+                    assertThat(refusal(() -> service.create(request(null, null, null), actor)).errorCode())
                             .isEqualTo(ErrorCode.OUT_OF_DATA_SCOPE));
         }
 
         @Test
-        @DisplayName("a source type other than ORDER or TRANSFER, or a selection mode the planner does not know, is VALIDATION_FAILED")
+        @DisplayName("a source type other than ORDER - TRANSFER included, transfers were removed - or a selection mode the "
+                + "planner does not know, is VALIDATION_FAILED")
         void sourceAndModeAreValidated() {
-            var thrown = refusal(() -> service.create(request("PALLET", null, null, null), actor));
-            assertThat(thrown.errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
-            assertThat(thrown.fieldErrors()).extracting(f -> f.field()).containsExactly("sourceType");
+            for (String source : List.of("PALLET", "TRANSFER")) {
+                var thrown = refusal(() -> service.create(request(source, null, null), actor));
+                assertThat(thrown.errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
+                assertThat(thrown.fieldErrors()).extracting(f -> f.field()).containsExactly("sourceType");
+            }
 
             var badMode = refusal(() -> service.create(new LoadPlans.CreatePlan(UUID.randomUUID(), WAREHOUSE, null, null,
-                    "CHEAPEST", null, null, null), actor));
+                    "CHEAPEST", null, null), actor));
             assertThat(badMode.fieldErrors()).extracting(f -> f.field()).containsExactly("selectionMode");
         }
 
         @Test
         @DisplayName("an empty plan is a DRAFT: no parcels, no types, saved as a new plan with the next number")
         void emptyDraft() {
-            var detail = service.create(request(null, null, null, null), actor);
+            var detail = service.create(request(null, null, null), actor);
 
             assertThat(detail.status()).isEqualTo("DRAFT");
             assertThat(detail.code()).isEqualTo("LP-20261022-0009");
@@ -277,17 +272,30 @@ class LoadPlanServiceTest {
         }
 
         @Test
-        @DisplayName("an ORDER plan takes shipments only and a TRANSFER plan one transfer only: LOAD_PLAN_SOURCE_MISMATCH")
-        void oneSourcePerPlan() {
-            assertThat(refusal(() -> service.create(request("ORDER", null, null, List.of(UUID.randomUUID())), actor))
-                    .errorCode()).isEqualTo(ErrorCode.LOAD_PLAN_SOURCE_MISMATCH);
-            assertThat(refusal(() -> service.create(request("TRANSFER", List.of(UUID.randomUUID()), null, null), actor))
-                    .errorCode()).isEqualTo(ErrorCode.LOAD_PLAN_SOURCE_MISMATCH);
+        @DisplayName("a shipment that is not found, not waiting, or of another warehouse is refused")
+        void shipmentGuards() {
+            UUID unknown = UUID.randomUUID();
+            when(shipmentLocks.lock(any())).thenReturn(List.of());
+            assertThat(refusal(() -> service.create(request(null, List.of(unknown), List.of(TRUCK_TYPE)), actor))
+                    .errorCode()).isEqualTo(ErrorCode.SHIPMENT_NOT_FOUND);
+
+            ShipmentJpaEntity cancelled = fullTruckload(ShipmentStatus.CANCELLED, WAREHOUSE);
+            when(shipmentLocks.lock(any())).thenReturn(List.of(cancelled));
+            assertThat(refusal(() -> service.create(request(null, List.of(cancelled.getId()), List.of(TRUCK_TYPE)),
+                    actor)).errorCode()).isEqualTo(ErrorCode.SHIPMENT_STATE_CONFLICT);
+
+            ShipmentJpaEntity elsewhere = fullTruckload(ShipmentStatus.READY_TO_DISPATCH, OTHER_WAREHOUSE);
+            when(shipmentLocks.lock(any())).thenReturn(List.of(elsewhere));
+            var otherWarehouse = refusal(() -> service.create(request(null, List.of(elsewhere.getId()),
+                    List.of(TRUCK_TYPE)), actor));
+            assertThat(otherWarehouse.errorCode()).isEqualTo(ErrorCode.SHIPMENT_NOT_FOR_LOAD);
+            assertThat(otherWarehouse.getMessage()).contains(elsewhere.getCode(), "another warehouse");
         }
 
-        private ShipmentJpaEntity fullTruckload(ShipmentStatus status, DeliveryMode mode, UUID warehouse) {
+
+        private ShipmentJpaEntity fullTruckload(ShipmentStatus status, UUID warehouse) {
             var s = com.stockflow.fulfillment.internal.domain.Shipment.ready(UUID.randomUUID(), "SO-1-S1", UUID.randomUUID(),
-                    UUID.randomUUID(), warehouse, null, mode, 2, BigDecimal.ZERO, null, actor.userId(), NOW);
+                    UUID.randomUUID(), warehouse, null, 2, null, actor.userId(), NOW);
             if (status == ShipmentStatus.CANCELLED) {
                 s.cancel("x", actor.userId(), NOW);
             }
@@ -304,34 +312,9 @@ class LoadPlanServiceTest {
         }
 
         @Test
-        @DisplayName("a shipment that is not found, not waiting, or not a full truckload of this warehouse is refused")
-        void shipmentGuards() {
-            UUID unknown = UUID.randomUUID();
-            when(shipmentLocks.lock(any())).thenReturn(List.of());
-            assertThat(refusal(() -> service.create(request(null, List.of(unknown), List.of(TRUCK_TYPE), null), actor))
-                    .errorCode()).isEqualTo(ErrorCode.SHIPMENT_NOT_FOUND);
-
-            ShipmentJpaEntity cancelled = fullTruckload(ShipmentStatus.CANCELLED, DeliveryMode.FULL_TRUCKLOAD, WAREHOUSE);
-            when(shipmentLocks.lock(any())).thenReturn(List.of(cancelled));
-            assertThat(refusal(() -> service.create(request(null, List.of(cancelled.getId()), List.of(TRUCK_TYPE), null),
-                    actor)).errorCode()).isEqualTo(ErrorCode.SHIPMENT_STATE_CONFLICT);
-
-            ShipmentJpaEntity parcelMode = fullTruckload(ShipmentStatus.READY_TO_DISPATCH, DeliveryMode.PARCEL, WAREHOUSE);
-            when(shipmentLocks.lock(any())).thenReturn(List.of(parcelMode));
-            assertThat(refusal(() -> service.create(request(null, List.of(parcelMode.getId()), List.of(TRUCK_TYPE), null),
-                    actor)).errorCode()).isEqualTo(ErrorCode.SHIPMENT_NOT_FOR_LOAD);
-
-            ShipmentJpaEntity elsewhere = fullTruckload(ShipmentStatus.READY_TO_DISPATCH, DeliveryMode.FULL_TRUCKLOAD,
-                    OTHER_WAREHOUSE);
-            when(shipmentLocks.lock(any())).thenReturn(List.of(elsewhere));
-            assertThat(refusal(() -> service.create(request(null, List.of(elsewhere.getId()), List.of(TRUCK_TYPE), null),
-                    actor)).errorCode()).isEqualTo(ErrorCode.SHIPMENT_NOT_FOR_LOAD);
-        }
-
-        @Test
         @DisplayName("BR-09: a shipment with a parcel in another live plan is LOAD_PLAN_PACKAGE_TAKEN, naming that plan")
         void parcelHeldByAnotherPlan() {
-            ShipmentJpaEntity row = fullTruckload(ShipmentStatus.READY_TO_DISPATCH, DeliveryMode.FULL_TRUCKLOAD, WAREHOUSE);
+            ShipmentJpaEntity row = fullTruckload(ShipmentStatus.READY_TO_DISPATCH, WAREHOUSE);
             when(shipmentLocks.lock(any())).thenReturn(List.of(row));
             List<PackageJpaEntity> sealed = sealedParcelsOf(row, 2);
             UUID otherPlan = UUID.randomUUID();
@@ -343,7 +326,7 @@ class LoadPlanServiceTest {
             when(other.getCode()).thenReturn("LP-OTHER");
             when(plans.findById(otherPlan)).thenReturn(Optional.of(other));
 
-            var thrown = refusal(() -> service.create(request(null, List.of(row.getId()), List.of(TRUCK_TYPE), null),
+            var thrown = refusal(() -> service.create(request(null, List.of(row.getId()), List.of(TRUCK_TYPE)),
                     actor));
 
             assertThat(thrown.errorCode()).isEqualTo(ErrorCode.LOAD_PLAN_PACKAGE_TAKEN);
@@ -353,40 +336,40 @@ class LoadPlanServiceTest {
         @Test
         @DisplayName("BR-09: a parcel without sizes or weight is LOAD_PLAN_PACKAGE_UNMEASURED")
         void parcelNotMeasured() {
-            ShipmentJpaEntity row = fullTruckload(ShipmentStatus.READY_TO_DISPATCH, DeliveryMode.FULL_TRUCKLOAD, WAREHOUSE);
+            ShipmentJpaEntity row = fullTruckload(ShipmentStatus.READY_TO_DISPATCH, WAREHOUSE);
             when(shipmentLocks.lock(any())).thenReturn(List.of(row));
             PackageJpaEntity unmeasured = FulfillmentFixtures.parcel(row.getId(), 1, null, null, null, null);
             when(packages.findByShipmentIdOrderByPackageNoAsc(row.getId())).thenReturn(List.of(unmeasured));
             when(parcels.describe(any())).thenReturn(Map.of(unmeasured.getId(), new LoadPlanParcels.Parcel(unmeasured, row,
                     null, null, "X")));
 
-            assertThat(refusal(() -> service.create(request(null, List.of(row.getId()), List.of(TRUCK_TYPE), null), actor))
+            assertThat(refusal(() -> service.create(request(null, List.of(row.getId()), List.of(TRUCK_TYPE)), actor))
                     .errorCode()).isEqualTo(ErrorCode.LOAD_PLAN_PACKAGE_UNMEASURED);
         }
 
         @Test
         @DisplayName("a vehicle type that does not exist is VEHICLE_TYPE_NOT_FOUND; an INACTIVE one VEHICLE_TYPE_INACTIVE")
         void vehicleTypes() {
-            ShipmentJpaEntity row = fullTruckload(ShipmentStatus.READY_TO_DISPATCH, DeliveryMode.FULL_TRUCKLOAD, WAREHOUSE);
+            ShipmentJpaEntity row = fullTruckload(ShipmentStatus.READY_TO_DISPATCH, WAREHOUSE);
             when(shipmentLocks.lock(any())).thenReturn(List.of(row));
             List<PackageJpaEntity> sealed = sealedParcelsOf(row, 1);
             when(parcels.describe(any())).thenReturn(Map.of(sealed.getFirst().getId(), new LoadPlanParcels.Parcel(
                     sealed.getFirst(), row, null, LoadPlanParcels.carton(sealed.getFirst(), "X"), "X")));
             UUID unknownType = UUID.randomUUID();
             when(vehicleTypes.findAllById(any())).thenReturn(List.of());
-            assertThat(refusal(() -> service.create(request(null, List.of(row.getId()), List.of(unknownType), null), actor))
+            assertThat(refusal(() -> service.create(request(null, List.of(row.getId()), List.of(unknownType)), actor))
                     .errorCode()).isEqualTo(ErrorCode.VEHICLE_TYPE_NOT_FOUND);
 
             truckType.apply("Truck", "TRUCK", 2000, 1000, 1000, 0, null, null, new BigDecimal("1000"), 1, null, "INACTIVE");
             when(vehicleTypes.findAllById(any())).thenReturn(List.of(truckType));
-            assertThat(refusal(() -> service.create(request(null, List.of(row.getId()), List.of(TRUCK_TYPE), null), actor))
+            assertThat(refusal(() -> service.create(request(null, List.of(row.getId()), List.of(TRUCK_TYPE)), actor))
                     .errorCode()).isEqualTo(ErrorCode.VEHICLE_TYPE_INACTIVE);
         }
 
         @Test
         @DisplayName("a valid plan takes the shipment's free parcels whole and the chosen types, locking the order's task first")
         void createsWithInputs() {
-            ShipmentJpaEntity row = fullTruckload(ShipmentStatus.READY_TO_DISPATCH, DeliveryMode.FULL_TRUCKLOAD, WAREHOUSE);
+            ShipmentJpaEntity row = fullTruckload(ShipmentStatus.READY_TO_DISPATCH, WAREHOUSE);
             when(shipmentLocks.lock(any())).thenReturn(List.of(row));
             when(shipmentLocks.ordersOf(any())).thenReturn(List.of(row.getOrderId()));
             List<PackageJpaEntity> sealed = sealedParcelsOf(row, 2);
@@ -395,11 +378,11 @@ class LoadPlanServiceTest {
                     LoadPlanParcels.carton(p, "CUBE"), "CUBE")));
             when(parcels.describe(any())).thenReturn(described);
 
-            var detail = service.create(request(null, List.of(row.getId()), List.of(TRUCK_TYPE), null), actor);
+            var detail = service.create(request(null, List.of(row.getId()), List.of(TRUCK_TYPE)), actor);
 
             assertThat(detail.packageCount()).isEqualTo(2);
             assertThat(detail.status()).isEqualTo("DRAFT");
-            verify(picks).lockByOrderId(row.getOrderId());
+            verify(picks).lockAllByOrderId(row.getOrderId());
         }
 
         @Test
@@ -407,65 +390,20 @@ class LoadPlanServiceTest {
         void racesAreRefereedByTheDatabase() {
             org.mockito.Mockito.doThrow(new DataIntegrityViolationException("x",
                     new RuntimeException("duplicate key value violates unique constraint \"uk_load_plan_package_active\""))).when(store).insert(any(), any());
-            assertThat(refusal(() -> service.create(request(null, null, null, null), actor)).errorCode())
+            assertThat(refusal(() -> service.create(request(null, null, null), actor)).errorCode())
                     .isEqualTo(ErrorCode.LOAD_PLAN_PACKAGE_TAKEN);
 
             org.mockito.Mockito.doThrow(new DataIntegrityViolationException("x",
                     new RuntimeException("tg_load_plan_package_check failed"))).when(store).insert(any(), any());
-            assertThat(refusal(() -> service.create(request(null, null, null, null), actor)).errorCode())
+            assertThat(refusal(() -> service.create(request(null, null, null), actor)).errorCode())
                     .isEqualTo(ErrorCode.SHIPMENT_STATE_CONFLICT);
 
             org.mockito.Mockito.doThrow(new DataIntegrityViolationException("x",
                     new RuntimeException("something else"))).when(store).insert(any(), any());
-            assertThatThrownBy(() -> service.create(request(null, null, null, null), actor))
+            assertThatThrownBy(() -> service.create(request(null, null, null), actor))
                     .isInstanceOf(DataIntegrityViolationException.class);
         }
 
-        @Test
-        @DisplayName("a transfer plan carries one transfer order: two is VALIDATION_FAILED on 'transferOrderIds'")
-        void oneTransferOnly() {
-            var thrown = refusal(() -> service.create(request("TRANSFER", null, List.of(TRUCK_TYPE),
-                    List.of(UUID.randomUUID(), UUID.randomUUID())), actor));
-
-            assertThat(thrown.errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
-            assertThat(thrown.fieldErrors()).extracting(f -> f.field()).containsExactly("transferOrderIds");
-        }
-
-        private TransferFulfillment.TransferView transfer(UUID id, UUID from, String status, boolean packed) {
-            return new TransferFulfillment.TransferView(id, "TO-0001", from, OTHER_WAREHOUSE, status,
-                    TransferDeliveryMode.FULL_TRUCKLOAD, packed ? NOW : null, null, null, List.of());
-        }
-
-        @Test
-        @DisplayName("a transfer that does not exist is TRANSFER_ORDER_NOT_FOUND; one leaving another warehouse LOAD_PLAN_SOURCE_MISMATCH; one not packed TRANSFER_NOT_PACKED")
-        void transferGuards() {
-            UUID id = UUID.randomUUID();
-            when(transfers.find(id)).thenReturn(Optional.empty());
-            assertThat(refusal(() -> service.create(request("TRANSFER", null, List.of(TRUCK_TYPE), List.of(id)), actor))
-                    .errorCode()).isEqualTo(ErrorCode.TRANSFER_ORDER_NOT_FOUND);
-
-            when(transfers.find(id)).thenReturn(Optional.of(transfer(id, OTHER_WAREHOUSE, "PICKING", true)));
-            assertThat(refusal(() -> service.create(request("TRANSFER", null, List.of(TRUCK_TYPE), List.of(id)), actor))
-                    .errorCode()).isEqualTo(ErrorCode.LOAD_PLAN_SOURCE_MISMATCH);
-
-            when(transfers.find(id)).thenReturn(Optional.of(transfer(id, WAREHOUSE, "PICKING", false)));
-            assertThat(refusal(() -> service.create(request("TRANSFER", null, List.of(TRUCK_TYPE), List.of(id)), actor))
-                    .errorCode()).isEqualTo(ErrorCode.TRANSFER_NOT_PACKED);
-            when(transfers.find(id)).thenReturn(Optional.of(transfer(id, WAREHOUSE, "APPROVED", true)));
-            assertThat(refusal(() -> service.create(request("TRANSFER", null, List.of(TRUCK_TYPE), List.of(id)), actor))
-                    .errorCode()).isEqualTo(ErrorCode.TRANSFER_NOT_PACKED);
-        }
-
-        @Test
-        @DisplayName("a transfer without a free sealed parcel is LOAD_PLAN_PACKAGE_TAKEN")
-        void transferWithoutParcels() {
-            UUID id = UUID.randomUUID();
-            when(transfers.find(id)).thenReturn(Optional.of(transfer(id, WAREHOUSE, "PICKING", true)));
-            when(packages.findByTransferOrderIdIn(any())).thenReturn(List.of());
-
-            assertThat(refusal(() -> service.create(request("TRANSFER", null, List.of(TRUCK_TYPE), List.of(id)), actor))
-                    .errorCode()).isEqualTo(ErrorCode.LOAD_PLAN_PACKAGE_TAKEN);
-        }
     }
 
     @Nested
@@ -627,8 +565,8 @@ class LoadPlanServiceTest {
         private final RecordingTransactions transactions = new RecordingTransactions();
         private final LoadPlanService withTransactions = new LoadPlanService(plans, members, planVehicles, store,
                 numbers, parcels, packages, shipments, shipmentLocks, vehicleTypes, loads, loadStore, loadNumbers,
-                warehouses, estimates, picks, packageLines, loadMembers, Clock.fixed(NOW, ZoneOffset.UTC),
-                Duration.ofSeconds(2), Duration.ofSeconds(12), transfers, packs, transactions);
+                warehouses, estimates, picks, packageLines, loadMembers, cartonMeasures, Clock.fixed(NOW, ZoneOffset.UTC),
+                Duration.ofSeconds(2), Duration.ofSeconds(12), transactions);
         private final List<Boolean> activeDuringSearch = new ArrayList<>();
         private final List<List<String>> eventsAtSearch = new ArrayList<>();
 
@@ -786,8 +724,7 @@ class LoadPlanServiceTest {
 
         private ShipmentJpaEntity shipmentRow(ShipmentStatus status) {
             var s = com.stockflow.fulfillment.internal.domain.Shipment.ready(planned.shipmentId(), "SO-1-S1",
-                    UUID.randomUUID(), UUID.randomUUID(), WAREHOUSE, null, DeliveryMode.FULL_TRUCKLOAD, 2, BigDecimal.ZERO,
-                    null, actor.userId(), NOW);
+                    UUID.randomUUID(), UUID.randomUUID(), WAREHOUSE, null, 2, null, actor.userId(), NOW);
             if (status == ShipmentStatus.CANCELLED) {
                 s.cancel("x", actor.userId(), NOW);
             }
@@ -829,13 +766,13 @@ class LoadPlanServiceTest {
             ArgumentCaptor<DispatchLoad> opened = ArgumentCaptor.forClass(DispatchLoad.class);
             verify(loadStore).insert(opened.capture());
             assertThat(opened.getValue().status()).isEqualTo(LoadStatus.PLANNED);
-            assertThat(opened.getValue().mode()).isEqualTo(DeliveryMode.FULL_TRUCKLOAD);
             assertThat(opened.getValue().activeShipments()).containsExactly(planned.shipmentId());
             assertThat(opened.getValue().loadPlanVehicleId()).isEqualTo(plan.activeVehicles().getFirst().id());
         }
 
         @Test
-        @DisplayName("a shipment already on a parcel load cannot also be on a vehicle: SHIPMENT_ON_ANOTHER_LOAD")
+        @DisplayName("a shipment already on another plan's load cannot also be on this plan's vehicle: "
+                + "SHIPMENT_ON_ANOTHER_LOAD, naming that load")
         void shipmentOnAnotherLoad() {
             ShipmentJpaEntity row = shipmentRow(ShipmentStatus.READY_TO_DISPATCH);
             when(shipmentLocks.lock(any())).thenReturn(List.of(row));
@@ -843,17 +780,17 @@ class LoadPlanServiceTest {
             when(loadNumbers.next(any())).thenReturn("LD-20261022-0001");
             UUID otherLoad = UUID.randomUUID();
             var onLoad = new com.stockflow.fulfillment.internal.entity.DispatchLoadShipmentJpaEntity(UUID.randomUUID(),
-                    otherLoad, row.getId(), DeliveryMode.PARCEL);
+                    otherLoad, row.getId());
             when(loadMembers.findByShipmentIdInAndActiveTrue(any())).thenReturn(List.of(onLoad));
             DispatchLoadJpaEntity otherHeader = mock(DispatchLoadJpaEntity.class);
             when(otherHeader.getId()).thenReturn(otherLoad);
-            when(otherHeader.getCode()).thenReturn("LD-PARCEL");
+            when(otherHeader.getCode()).thenReturn("LD-OTHER");
             when(loads.findByIdIn(any())).thenReturn(List.of(otherHeader));
 
             var thrown = refusal(() -> service.confirm(plan.id(), 0L, actor));
 
             assertThat(thrown.errorCode()).isEqualTo(ErrorCode.SHIPMENT_ON_ANOTHER_LOAD);
-            assertThat(thrown.getMessage()).contains("LD-PARCEL");
+            assertThat(thrown.getMessage()).contains("LD-OTHER");
         }
 
         @Test
@@ -863,12 +800,9 @@ class LoadPlanServiceTest {
             useAsStoredPlan(planned.plan());
             planned.plan().acknowledgeUnplaced(planned.dispatcher(), NOW, null, planned.cartons());
             OrderSummary order = FulfillmentFixtures.order(UUID.randomUUID(), List.of());
-            var lifecycle = new OrderSummary.Lifecycle(null, null, null, null, null, null, null, null, null,
-                    BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, List.of(), List.of(),
-                    BigDecimal.ZERO, BigDecimal.ZERO, false, true);
+            var lifecycle = new OrderSummary.Lifecycle(null, null, null, null, null, null, null, null, null, BigDecimal.ZERO, BigDecimal.ZERO, List.of(), List.of(), false);
             OrderSummary strict = new OrderSummary(order.orderId(), "SO-0777", order.customerId(), OrderStatus.PACKED,
-                    order.total(), order.lines(), NOW, null, null, null, null, null, null, null, null, null, WAREHOUSE, NOW,
-                    null, null, lifecycle);
+                    order.total(), order.lines(), NOW, null, null, null, null, null, null, null, null, WAREHOUSE, NOW, null, lifecycle);
             org.mockito.Mockito.doAnswer(call -> {
                 Map<UUID, LoadPlanParcels.Parcel> described = new LinkedHashMap<>();
                 parcelsOf(call.getArgument(0)).forEach((id, p) -> described.put(id, new LoadPlanParcels.Parcel(p.row(),
@@ -880,6 +814,57 @@ class LoadPlanServiceTest {
 
             assertThat(thrown.errorCode()).isEqualTo(ErrorCode.ORDER_PARTIAL_SHIPMENT_NOT_ALLOWED);
             assertThat(thrown.fieldErrors()).extracting(f -> f.message()).containsExactly("SO-0777");
+        }
+
+        /**
+         * An order that may not ship in parts, every parcel of the plan its own and 3 units in each (6 leaving), whose
+         * units due together the order module answers with {@code dueTogether}.
+         */
+        private UUID strictOrderDue(int dueTogether) {
+            ShipmentJpaEntity row = shipmentRow(ShipmentStatus.READY_TO_DISPATCH);
+            when(shipmentLocks.lock(any())).thenReturn(List.of(row));
+            when(shipments.findAllById(any())).thenReturn(List.of(row));
+            when(loadNumbers.next(any())).thenReturn("LD-20261111-0001");
+            OrderSummary order = FulfillmentFixtures.order(UUID.randomUUID(), List.of());
+            var lifecycle = new OrderSummary.Lifecycle(null, null, null, null, null, null, null, null, null,
+                    BigDecimal.ZERO, BigDecimal.ZERO, List.of(), List.of(), false);
+            OrderSummary strict = new OrderSummary(order.orderId(), "SO-0888", order.customerId(), OrderStatus.PACKED,
+                    order.total(), order.lines(), NOW, null, null, null, null, null, null, null, null, WAREHOUSE, NOW,
+                    null, lifecycle);
+            org.mockito.Mockito.doAnswer(call -> {
+                Map<UUID, LoadPlanParcels.Parcel> described = new LinkedHashMap<>();
+                parcelsOf(call.getArgument(0)).forEach((id, p) -> described.put(id, new LoadPlanParcels.Parcel(p.row(),
+                        null, strict, p.carton(), p.partName())));
+                return described;
+            }).when(parcels).of(any());
+            UUID line = UUID.randomUUID();
+            when(packageLines.of(any())).thenAnswer(call -> call.<java.util.Collection<UUID>>getArgument(0).stream()
+                    .map(id -> new com.stockflow.fulfillment.internal.repository.ParcelContents.Line(id, line, 3))
+                    .toList());
+            when(parcels.unitsDueTogether(any())).thenReturn(Map.of(strict.orderId(), dueTogether));
+            return strict.orderId();
+        }
+
+        @Test
+        @DisplayName("LP-4, 4B-8 (17 BR-15): a plan carrying exactly the units due together - the delivery batch in "
+                + "flight, not the whole order - confirms for an order that may not ship in parts")
+        void exactlyTheBatchIsWhole() {
+            UUID orderId = strictOrderDue(6);
+
+            assertThat(service.confirm(plan.id(), 0L, actor).status()).isEqualTo("CONFIRMED");
+            verify(parcels).unitsDueTogether(java.util.Set.of(orderId));
+        }
+
+        @Test
+        @DisplayName("LP-4, 4B-8: one unit short of what is due together is a partial shipment: refused")
+        void oneUnitShortIsRefused() {
+            strictOrderDue(7);
+
+            var thrown = refusal(() -> service.confirm(plan.id(), 0L, actor));
+
+            assertThat(thrown.errorCode()).isEqualTo(ErrorCode.ORDER_PARTIAL_SHIPMENT_NOT_ALLOWED);
+            assertThat(thrown.fieldErrors()).extracting(f -> f.message()).containsExactly("SO-0888");
+            verify(loadStore, never()).insert(any());
         }
 
         @Test
@@ -1018,7 +1003,7 @@ class LoadPlanServiceTest {
     }
 
     @Nested
-    @DisplayName("an order or a transfer cancelled out of a plan, and parcels a plan holds")
+    @DisplayName("an order cancelled out of a plan, and parcels a plan holds")
     class Releases {
 
         @Test
@@ -1074,19 +1059,6 @@ class LoadPlanServiceTest {
             verifyNoInteractions(store);
         }
 
-        @Test
-        @DisplayName("a transfer whose picking was cancelled cancels the plan that holds it, with its loads")
-        void releaseTransfer() {
-            UUID transferId = UUID.randomUUID();
-            LoadPlanPackageJpaEntity held = mock(LoadPlanPackageJpaEntity.class);
-            when(held.getLoadPlanId()).thenReturn(plan.id());
-            when(members.findByTransferOrderIdAndActiveTrue(transferId)).thenReturn(List.of(held));
-
-            service.releaseTransfer(transferId, "picking cancelled", NOW);
-
-            assertThat(plan.status()).isEqualTo(LoadPlanStatus.CANCELLED);
-            verify(store).save(eq(plan), eq(header), eq(NOW));
-        }
     }
 
     @Nested
@@ -1098,8 +1070,8 @@ class LoadPlanServiceTest {
         void balanced() {
             PackageJpaEntity a = FulfillmentFixtures.parcel(planned.shipmentId(), 1, "100", "100", "100", "100");
             ShipmentJpaEntity row = ShipmentJpaEntity.of(com.stockflow.fulfillment.internal.domain.Shipment.ready(
-                    planned.shipmentId(), "SO-1-S1", UUID.randomUUID(), null, WAREHOUSE, null,
-                    DeliveryMode.FULL_TRUCKLOAD, 2, BigDecimal.ZERO, null, actor.userId(), NOW));
+                    planned.shipmentId(), "SO-1-S1", UUID.randomUUID(), null, WAREHOUSE, null, 2, null,
+                    actor.userId(), NOW));
             when(shipments.findAllById(any())).thenReturn(List.of(row));
             when(parcels.ordersOf(any())).thenReturn(Map.of());
             when(packages.findByShipmentIdIn(any())).thenReturn(List.of(a));
@@ -1112,19 +1084,5 @@ class LoadPlanServiceTest {
             assertThat(reconciliation.pieceCheck().balanced()).isTrue();
             assertThat(reconciliation.shipments()).singleElement().satisfies(s -> assertThat(s.code()).isEqualTo("SO-1-S1"));
         }
-    }
-
-    @Test
-    @DisplayName("a transfer is a manifest line waiting for dispatch while it is packed and picking; a cancelled picking and a transfer past it are not")
-    void transferAsAManifestLine() {
-        assertThat(LoadPlanService.transferFacts(new TransferFulfillment.TransferView(UUID.randomUUID(), "TO-1", WAREHOUSE,
-                OTHER_WAREHOUSE, "PICKING", TransferDeliveryMode.FULL_TRUCKLOAD, NOW, null, null, List.of())).status())
-                .isEqualTo(ShipmentStatus.READY_TO_DISPATCH);
-        assertThat(LoadPlanService.transferFacts(new TransferFulfillment.TransferView(UUID.randomUUID(), "TO-1", WAREHOUSE,
-                OTHER_WAREHOUSE, "PICKING", TransferDeliveryMode.FULL_TRUCKLOAD, null, null, null, List.of())).status())
-                .isEqualTo(ShipmentStatus.CANCELLED);
-        assertThat(LoadPlanService.transferFacts(new TransferFulfillment.TransferView(UUID.randomUUID(), "TO-1", WAREHOUSE,
-                OTHER_WAREHOUSE, "IN_TRANSIT", TransferDeliveryMode.FULL_TRUCKLOAD, NOW, null, null, List.of())).status())
-                .isEqualTo(ShipmentStatus.HANDED_OVER);
     }
 }

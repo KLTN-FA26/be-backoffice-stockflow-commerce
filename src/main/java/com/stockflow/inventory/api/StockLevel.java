@@ -11,8 +11,8 @@ package com.stockflow.inventory.api;
  * <ul>
  *   <li>{@code onHand} — every physical unit, whatever its status;</li>
  *   <li>{@code available} — units in {@code AVAILABLE} status, <b>before</b> subtracting holds;</li>
- *   <li>{@code reserved} — units held on this warehouse's rows and not allocated: production, transfer and older
- *       checkout holds;</li>
+ *   <li>{@code reserved} — units held on this warehouse's rows and not allocated: older checkout
+ *       holds;</li>
  *   <li>{@code allocated} — units a release placed on a bin and lot for picking (F-FUL step 02, SCRUM-152), held until
  *       picked. Disjoint from {@code reserved}, as the glossary keeps the two apart;</li>
  *   <li>{@code atp} — {@code available - reserved - allocated}, capped by what is still promisable system-wide once

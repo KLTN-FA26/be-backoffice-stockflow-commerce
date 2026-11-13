@@ -20,12 +20,12 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * Customer groups from the back office (user decision P7, 2026-10-12): the E-commerce Admin (and System Admin)
- * creates and renames groups and puts customers in them; Sales and the Order Coordinator read. Who may call
+ * Customer groups from the back office (user decision P7, 2026-10-12): the Sales Manager (and System Admin)
+ * creates and renames groups and puts customers in them; Sales reads. Who may call
  * what is the {@code customer-segments} resource (V20261017000600).
  *
- * <p>A group change moves only later prices: catalog reads a customer's group when it prices (own tiers, then
- * the group's price, then the base price), and quotes and orders keep the prices they were given.</p>
+ * <p>A group prices nothing (kltn-docs 13 BR-04: the customer's own price list is the one source of a price, team
+ * plan 5-3), so moving a customer between groups changes no price.</p>
  */
 @Service
 @Transactional

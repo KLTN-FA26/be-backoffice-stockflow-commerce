@@ -10,7 +10,6 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.time.Instant;
-import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -45,19 +44,19 @@ class LotTraceSearchAdapter implements LotTraceSearch {
     @Override
     public List<LotTrace.Summary> lots(Filter filter, long offset, int limit) {
         MapSqlParameterSource params = new MapSqlParameterSource().addValue("offset", offset).addValue("limit", limit);
-        String sql = summarySelect(filter.warehouses(), filter.today(), params) + " WHERE " + where(filter, params)
+        String sql = summarySelect(filter.warehouses(), params) + " WHERE " + where(filter, params)
                 + " ORDER BY l.received_at DESC NULLS LAST, l.id LIMIT :limit OFFSET :offset";
         return jdbc.query(sql, params, (rs, i) -> summary(rs));
     }
 
     @Override
-    public Optional<LotTrace.Summary> lot(UUID lotId, Set<String> warehouses, LocalDate today) {
+    public Optional<LotTrace.Summary> lot(UUID lotId, Set<String> warehouses) {
         MapSqlParameterSource params = new MapSqlParameterSource().addValue("lotId", lotId);
         StringBuilder where = new StringBuilder("l.id = :lotId");
         if (!warehouses.isEmpty()) {
             where.append(" AND ").append(wasIn(warehouses, params));
         }
-        return jdbc.query(summarySelect(warehouses, today, params) + " WHERE " + where, params, (rs, i) -> summary(rs))
+        return jdbc.query(summarySelect(warehouses, params) + " WHERE " + where, params, (rs, i) -> summary(rs))
                 .stream().findFirst();
     }
 
@@ -77,7 +76,7 @@ class LotTraceSearchAdapter implements LotTraceSearch {
     public List<LotTrace.Hold> holds(UUID lotId, Set<String> warehouses) {
         MapSqlParameterSource params = new MapSqlParameterSource().addValue("lotId", lotId);
         String sql = """
-                SELECT r.id, r.order_id, r.order_number, r.production_order_id, r.allocated_from_id, si.location_code,
+                SELECT r.id, r.order_id, r.order_number, r.allocated_from_id, si.location_code,
                        r.quantity,
                        r.status, r.reserved_at, r.closed_at
                   FROM inventory.stock_reservation r
@@ -85,7 +84,7 @@ class LotTraceSearchAdapter implements LotTraceSearch {
                  WHERE si.lot_id = :lotId""" + inWarehouses("si.location_code", warehouses, params)
                 + " ORDER BY r.reserved_at, r.id";
         return jdbc.query(sql, params, (rs, i) -> new LotTrace.Hold(uuid(rs, "id"), uuid(rs, "order_id"),
-                rs.getString("order_number"), uuid(rs, "production_order_id"), uuid(rs, "allocated_from_id"), rs.getString("location_code"),
+                rs.getString("order_number"), uuid(rs, "allocated_from_id"), rs.getString("location_code"),
                 rs.getInt("quantity"), rs.getString("status"), instant(rs, "reserved_at"), instant(rs, "closed_at")));
     }
 
@@ -139,17 +138,14 @@ class LotTraceSearchAdapter implements LotTraceSearch {
 
     /**
      * The lot with its receipt quantity and current balance, narrowed to {@code warehouses}. {@code available} is
-     * what {@code StockItem.available()} means, summed: unheld units of AVAILABLE rows, and none of a row past its
-     * expiry on {@code today} - expired stock is on hand, never available.
+     * what {@code StockItem.available()} means, summed: unheld units of AVAILABLE rows.
      */
-    private static String summarySelect(Set<String> warehouses, LocalDate today, MapSqlParameterSource params) {
-        params.addValue("today", today);
+    private static String summarySelect(Set<String> warehouses, MapSqlParameterSource params) {
         String items = inWarehouses("si.location_code", warehouses, params);
         String receipts = inWarehouses("m.to_location_code", warehouses, params);
         return """
-                SELECT l.id, l.sku, l.lot_number, l.expiry_date, l.received_at, l.origin_type, l.goods_receipt_id,
-                       l.goods_receipt_number, l.purchase_order_id, l.purchase_order_number, l.supplier_id,
-                       l.supplier_name, l.warehouse_id,
+                SELECT l.id, l.sku, l.lot_number, l.received_at, l.origin_type, l.goods_receipt_id,
+                       l.goods_receipt_number, l.warehouse_id, l.production_order_id, l.production_order_code,
                        COALESCE((SELECT sum(m.quantity) FROM inventory.stock_movement m
                                   WHERE m.lot_id = l.id AND m.movement_type = 'RECEIPT'""" + receipts + "), 0) AS received,"
                 + """
@@ -157,8 +153,7 @@ class LotTraceSearchAdapter implements LotTraceSearch {
                 + "), 0) AS on_hand,"
                 + """
                        COALESCE((SELECT sum(si.on_hand - si.reserved) FROM inventory.stock_item si
-                                  WHERE si.lot_id = l.id AND si.status = 'AVAILABLE'
-                                    AND (si.expiry_date IS NULL OR si.expiry_date >= :today)""" + items
+                                  WHERE si.lot_id = l.id AND si.status = 'AVAILABLE'""" + items
                 + "), 0) AS available,"
                 + """
                        COALESCE((SELECT sum(si.reserved) FROM inventory.stock_item si WHERE si.lot_id = l.id""" + items
@@ -231,13 +226,9 @@ class LotTraceSearchAdapter implements LotTraceSearch {
     }
 
     private static LotTrace.Summary summary(ResultSet rs) throws SQLException {
-        LocalDate expiry = rs.getObject("expiry_date", LocalDate.class);
-        return new LotTrace.Summary(uuid(rs, "id"), rs.getString("sku"), rs.getString("lot_number"), expiry,
-                instant(rs, "received_at"), rs.getString("origin_type"), uuid(rs, "goods_receipt_id"),
-                rs.getString("goods_receipt_number"), uuid(rs, "purchase_order_id"),
-                rs.getString("purchase_order_number"), uuid(rs, "supplier_id"), rs.getString("supplier_name"),
-                uuid(rs, "warehouse_id"), rs.getLong("received"), rs.getLong("on_hand"), rs.getLong("available"),
-                rs.getLong("held"));
+        return new LotTrace.Summary(uuid(rs, "id"), rs.getString("sku"), rs.getString("lot_number"), instant(rs, "received_at"), rs.getString("origin_type"), uuid(rs, "goods_receipt_id"),
+                rs.getString("goods_receipt_number"), uuid(rs, "warehouse_id"), rs.getLong("received"), rs.getLong("on_hand"), rs.getLong("available"),
+                rs.getLong("held"), uuid(rs, "production_order_id"), rs.getString("production_order_code"));
     }
 
     private static UUID uuid(ResultSet rs, String column) throws SQLException {

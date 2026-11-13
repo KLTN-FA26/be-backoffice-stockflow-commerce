@@ -15,7 +15,6 @@ import org.springframework.data.repository.query.Param;
 
 import java.time.Instant;
 import java.util.Collection;
-import java.util.List;
 import java.util.Optional;
 
 /** Delivery evidence and bounded status projections shared by services inside notification. */
@@ -31,89 +30,6 @@ public interface DeliveryLogJpaRepository extends BaseJpaRepository<DeliveryLogJ
 
     boolean existsByOperationReferenceAndDeliveryGenerationAndTerminalTrue(
             String reference, int generation);
-
-    interface LatestStatus {
-        String getReference();
-
-        String getStatus();
-
-        boolean getTerminal();
-    }
-
-    @Query(
-            value =
-                    """
-select 'purchase-order:' || c.purchase_order_id as reference,
-       case when exists (select 1 from notification.delivery_log s where s.external_reference='purchase-order:' || c.purchase_order_id)
-            then 'SENT' when c.suppressed then 'SUPPRESSED' else coalesce(l.status, 'QUEUED') end as status,
-       coalesce(l.terminal, false) as terminal
-from notification.po_delivery_control c
-left join lateral (
-    select status,terminal from notification.delivery_log
-    where operation_reference='purchase-order:' || c.purchase_order_id and delivery_generation=c.generation
-    order by created_at desc,id desc limit 1
-) l on true
-where 'purchase-order:' || c.purchase_order_id in (:references)
-""",
-            nativeQuery = true)
-    List<LatestStatus> latestStatuses(Collection<String> references);
-
-    @Query(
-            value =
-                    """
-select 'purchase-order:' || c.purchase_order_id || ':cancellation' as reference,
-    coalesce(l.status, 'QUEUED') as status, coalesce(l.terminal,false) as terminal
-from notification.po_delivery_control c
-left join lateral (
-    select status,terminal from notification.delivery_log
-    where operation_reference='purchase-order:' || c.purchase_order_id || ':cancellation'
-    order by case when status='SENT' then 0 else 1 end, created_at desc,id desc limit 1
-) l on true
-where c.cancellation_requested and 'purchase-order:' || c.purchase_order_id || ':cancellation' in (:references)
-""",
-            nativeQuery = true)
-    List<LatestStatus> cancellationStatuses(Collection<String> references);
-
-    /** {@link LatestStatus} with the amendment revision the notice announced. */
-    interface AmendmentStatus extends LatestStatus {
-        int getRevision();
-    }
-
-    /**
-     * The latest delivery attempt of the highest revision among the amendment notices of each order
-     * ({@code purchase-order:{id}:revision:{n}}, SCRUM-117); {@code reference} is the order id, {@code revision} the
-     * n. An order none of whose notices was attempted yet has no row.
-     */
-    @Query(
-            value =
-                    """
-select distinct on (split_part(operation_reference, ':', 2))
-       split_part(operation_reference, ':', 2) as reference, status, terminal,
-       cast(split_part(operation_reference, ':', 4) as integer) as revision
-from notification.delivery_log
-where operation_reference like 'purchase-order:%:revision:%'
-  and split_part(operation_reference, ':', 2) in (:orderIds)
-order by split_part(operation_reference, ':', 2),
-         cast(split_part(operation_reference, ':', 4) as integer) desc, created_at desc, id desc
-""",
-            nativeQuery = true)
-    List<AmendmentStatus> amendmentStatuses(Collection<String> orderIds);
-
-    /**
-     * Whether a notice of a later amendment of the order than {@code revision} was attempted at all, delivered or not
-     * (SCRUM-117). The revision is parsed inside a CASE, the one construct whose evaluation order SQL guarantees, so
-     * the order's own and cancellation references never reach the cast.
-     */
-    @Query(
-            value =
-                    """
-select exists (select 1 from notification.delivery_log
-               where case when operation_reference like 'purchase-order:' || :orderId || ':revision:%'
-                          then cast(split_part(operation_reference, ':', 4) as integer) > :revision
-                          else false end)
-""",
-            nativeQuery = true)
-    boolean existsLaterAmendmentNotice(String orderId, int revision);
 
     Page<DeliveryLogJpaEntity> findByOperationReferenceIn(
             Collection<String> references, Pageable pageable);
@@ -134,6 +50,16 @@ select exists (select 1 from notification.delivery_log
      */
     @Query("select max(l.nextAttemptAt) from DeliveryLogJpaEntity l where l.operationReference = :reference")
     Instant nextAttemptAt(@Param("reference") String reference);
+
+    /** {@link #nextAttemptAt(String)} of one generation: an earlier generation's waits do not hold up a later one. */
+    @Query("""
+            select max(l.nextAttemptAt) from DeliveryLogJpaEntity l
+            where l.operationReference = :reference and l.deliveryGeneration = :generation""")
+    Instant nextAttemptAt(@Param("reference") String reference, @Param("generation") int generation);
+
+    /** The newest generation of a message, null when it was never attempted. */
+    @Query("select max(l.deliveryGeneration) from DeliveryLogJpaEntity l where l.operationReference = :reference")
+    Integer latestGeneration(@Param("reference") String reference);
 
     /**
      * Pushes the retryable failures of a message to {@code until} at least ({@code CustomerEmailLog.lease}); only

@@ -2,7 +2,6 @@ package com.stockflow.inventory.internal.repository;
 
 import com.stockflow.inventory.internal.entity.StockItemJpaEntity;
 
-import com.stockflow.inventory.internal.domain.LocationId;
 import com.stockflow.inventory.internal.domain.StockAllocator;
 import com.stockflow.inventory.internal.domain.ReservationId;
 import com.stockflow.inventory.internal.domain.StockItem;
@@ -12,13 +11,9 @@ import com.stockflow.inventory.internal.domain.StockItemRepository;
 import com.stockflow.common.domain.Sku;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.LockModeType;
-import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Repository;
 
-import java.time.LocalDate;
-import java.time.Instant;
 import java.util.Collection;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -136,10 +131,13 @@ class StockItemRepositoryAdapter implements StockItemRepository {
     }
 
     @Override
-    public java.util.Map<String, Long> availableQuantities(java.util.Set<String> skus, LocalDate today) {
-        if (skus.isEmpty()) return java.util.Map.of();
-        return jpa.availableTotals(skus, today).stream().collect(java.util.stream.Collectors.toMap(
-                StockItemJpaRepository.AvailableTotal::getSku, StockItemJpaRepository.AvailableTotal::getQuantity));
+    public List<Allocatable> findAllocatable(Collection<String> skus) {
+        if (skus.isEmpty()) {
+            return List.of();      // "in ()" is not valid SQL, and there is nothing to ask
+        }
+        return jpa.findAllocatable(skus).stream()
+                .map(row -> new Allocatable(new StockItemId(row.id()), row.sku(), row.locationCode(), row.units()))
+                .toList();
     }
 
     @Override
@@ -153,18 +151,6 @@ class StockItemRepositoryAdapter implements StockItemRepository {
     public Map<String, Integer> findAllocatedBySku(Sku sku) {
         return jpa.findAllocatedRowsBySku(sku.code()).stream()
                 .collect(java.util.stream.Collectors.toMap(AllocatedRow::locationCode, row -> (int) row.quantity()));
-    }
-
-    @Override
-    public Map<Sku, Integer> sumAvailableBySkus(Collection<Sku> skus, LocalDate today) {
-        if (skus.isEmpty()) {
-            return Map.of();      // "in ()" is not valid SQL, and there is nothing to ask
-        }
-        Map<Sku, Integer> totals = new HashMap<>();
-        for (SkuAtpRow row : jpa.sumAvailableBySkus(skus.stream().map(Sku::code).toList(), today)) {
-            totals.put(new Sku(row.sku()), Math.toIntExact(row.atp()));
-        }
-        return totals;
     }
 
     @Override
@@ -191,69 +177,11 @@ class StockItemRepositoryAdapter implements StockItemRepository {
     }
 
     @Override
-    public List<StockItem> findLooseBySkuAndLocation(Sku sku, LocationId location) {
-        return jpa.findLooseBySkuAndLocation(sku.code(), location.code()).stream()
-                .map(StockItemPersistenceMapper::toDomain)
-                .toList();
-    }
-
-    @Override
-    public List<StockItem> findLooseInboundByLot(Sku sku, java.util.UUID lotId) {
-        return jpa.findLooseInboundByLot(sku.code(), lotId).stream()
-                .map(StockItemPersistenceMapper::toDomain)
-                .toList();
-    }
-
-    @Override
-    public Map<UUID, String> looseInboundLocationByLot(Collection<UUID> lotIds) {
-        if (lotIds.isEmpty()) {
-            return Map.of();
-        }
-        Map<UUID, String> first = new HashMap<>();
-        // Ordered by id, so the first row met for a lot is its lowest.
-        for (Object[] row : jpa.findLooseInboundLocations(lotIds)) {
-            first.putIfAbsent((UUID) row[0], (String) row[1]);
-        }
-        return first;
-    }
-
-    @Override
-    public List<StockItem> findWithReservationsExpiredBefore(Instant cutoff, int limit) {
-        return jpa.findStockItemIdsWithExpiredReservations(cutoff, PageRequest.of(0, limit)).stream()
-                .map(jpa::findByIdWithReservations)
-                .flatMap(Optional::stream)
-                .map(StockItemPersistenceMapper::toDomain)
-                .toList();
-    }
-
-    @Override
     public Optional<StockItem> findByReservationIdForUpdate(ReservationId reservationId) {
         return jpa.findStockItemIdByReservationId(reservationId.value())
                 .flatMap(id -> findByIdForUpdate(new StockItemId(id)));
     }
 
-    @Override
-    public List<StockItem> findWithReservationsForProductionOrder(UUID productionOrderId) {
-        return jpa.findStockItemIdsHoldingProductionOrder(productionOrderId).stream()
-                .sorted(java.util.Comparator.comparing(UUID::toString))
-                .map(id -> findByIdForUpdate(new StockItemId(id)))
-                .flatMap(Optional::stream)
-                .toList();
-    }
-
-    @Override
-    public List<StockItem> findWithReservationsForTransferOrder(UUID transferOrderId) {
-        return jpa.findStockItemIdsHoldingTransferOrder(transferOrderId).stream()
-                .sorted(java.util.Comparator.comparing(UUID::toString))
-                .map(id -> findByIdForUpdate(new StockItemId(id)))
-                .flatMap(Optional::stream)
-                .toList();
-    }
-
-    @Override
-    public List<UUID> findHeldReservationIdsOfProductionOrder(UUID productionOrderId) {
-        return jpa.findHeldReservationIdsOfProductionOrder(productionOrderId);
-    }
 
     @Override
     public Optional<StockItemId> findIdByReservationId(ReservationId reservationId) {
@@ -310,35 +238,6 @@ class StockItemRepositoryAdapter implements StockItemRepository {
     }
 
     @Override
-    public void saveHandOver(StockItem from, StockItem to, ReservationId moved) {
-        boolean merged = jpa.existsById(to.id().value());
-        if (!merged) {
-            StockItemJpaEntity fresh = StockItemPersistenceMapper.toNewEntity(to);
-            fresh.getReservations().removeIf(r -> r.getId().equals(moved.value()));
-            jpa.save(fresh);
-        }
-        entityManager.flush();
-        int updated = entityManager.createNativeQuery(
-                        "update inventory.stock_reservation set stock_item_id = :to where id = :id and stock_item_id = :from")
-                .setParameter("to", to.id().value())
-                .setParameter("id", moved.value())
-                .setParameter("from", from.id().value())
-                .executeUpdate();
-        if (updated != 1) {
-            throw new IllegalStateException("Reservation %s is no longer on stock item %s".formatted(moved, from.id()));
-        }
-        for (StockItem item : List.of(from, to)) {
-            jpa.findByIdWithReservations(item.id().value()).ifPresent(entityManager::refresh);
-        }
-        save(from);
-        if (merged) {
-            saveMerged(to);
-        } else {
-            save(to);
-        }
-    }
-
-    @Override
     public List<com.stockflow.inventory.internal.domain.HeldStock> findHeldForOrder(UUID orderId) {
         return jpa.findHeldForOrder(orderId);
     }
@@ -346,14 +245,6 @@ class StockItemRepositoryAdapter implements StockItemRepository {
     @Override
     public List<com.stockflow.inventory.internal.domain.HoldDetail> findHolds(Collection<UUID> reservationIds) {
         return reservationIds.isEmpty() ? List.of() : jpa.findHolds(reservationIds);
-    }
-
-    @Override
-    public List<StockItem> findWithReservationsForOrder(UUID orderId) {
-        return jpa.findStockItemIdsHoldingOrder(orderId).stream()
-                .map(id -> findByIdForUpdate(new StockItemId(id)))
-                .flatMap(Optional::stream)
-                .toList();
     }
 
     /**

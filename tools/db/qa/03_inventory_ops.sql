@@ -1,9 +1,31 @@
 -- =============================================================================
--- Adversarial checks + happy paths: stock ledger, adjustments, cycle counts, transfer orders,
--- move tasks (docs 07, 10, 11). Needs the demo seed. Rolled back at the end.
+-- Adversarial checks + happy paths: stock ledger, adjustments, cycle counts, move tasks (docs 07, 11). Transfers
+-- between warehouses were removed (V20261108000300). Needs the demo seed. Rolled back at the end.
 -- =============================================================================
 \set ON_ERROR_STOP on
 BEGIN;
+-- V20261111000110 (team plan 4C-1) put the demo stock into cartons. The checks of loose stock below - loose stock goes
+-- with 4C-3 - use the demo sofa rows as they were before it. The sofas' cartons stay beside them, so the books hold
+-- the demo sofas twice for the length of this script; no check here reads a SKU's total.
+-- Since 5-5 enforce_sku_policy refuses live stock with no lot and a layer raised in place, for every SKU: the demo
+-- rows are lot-less zero rows that 4C-1 emptied, so this fixture - and only this statement pair - writes them back by
+-- hand under a lot of their own, with the trigger off. Everything checked after it runs with the trigger on.
+-- Since the whole-carton rule (ck_stock_item_whole_cartons, V20261117000100) a row with units must sit in a carton, so
+-- the two demo rows are filled the only way the table allows: each in a carton of its own size (25 and 8 sofas).
+ALTER TABLE inventory.stock_item DISABLE TRIGGER trg_stock_sku_policy;
+INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)
+VALUES (md5('qa03x:demo:u25')::uuid, md5('demo:item:SOFA-3S-GREY')::uuid, 'QA_DEMO25', 25),
+       (md5('qa03x:demo:u8')::uuid, md5('demo:item:SOFA-3S-GREY')::uuid, 'QA_DEMO8', 8);
+INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, received_qty, location_code, status)
+VALUES (md5('qa03x:demo:p25')::uuid, 'QA-DEMO-25', md5('demo:item:SOFA-3S-GREY')::uuid, md5('qa03x:demo:u25')::uuid, 25, 25, 'HCM-A01-2-B', 'IN_STOCK'),
+       (md5('qa03x:demo:p8')::uuid, 'QA-DEMO-8', md5('demo:item:SOFA-3S-GREY')::uuid, md5('qa03x:demo:u8')::uuid, 8, 8, 'HCM-A02-1-A', 'IN_STOCK');
+UPDATE inventory.stock_item SET on_hand = 25, lot_number = 'QA-LOT', lot_id = NULL, stock_package_id = md5('qa03x:demo:p25')::uuid
+ WHERE id = '11111111-1111-4111-8111-111111111111';
+UPDATE inventory.stock_item SET on_hand = 8, lot_number = 'QA-LOT', lot_id = NULL, stock_package_id = md5('qa03x:demo:p8')::uuid
+ WHERE id = '22222222-2222-4222-8222-222222222222';
+SET CONSTRAINTS ALL IMMEDIATE;
+SET CONSTRAINTS ALL DEFERRED;
+ALTER TABLE inventory.stock_item ENABLE TRIGGER trg_stock_sku_policy;
 
 -- Inserts a warehouse whether or not the pre-C2 column "code" still exists (C2 drops it).
 CREATE FUNCTION pg_temp.qa_warehouse(wid UUID, wprefix TEXT, wunit TEXT, w NUMERIC, h NUMERIC) RETURNS void
@@ -32,6 +54,23 @@ BEGIN
     RAISE EXCEPTION 'FAIL  %: the database accepted it', label;
 END $$;
 
+-- Refused by the named rule: a statement that breaks something else proves nothing.
+CREATE FUNCTION pg_temp.expect_fail_by(label TEXT, rule TEXT, stmt TEXT) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+    BEGIN
+        EXECUTE stmt;
+        SET CONSTRAINTS ALL IMMEDIATE;
+        SET CONSTRAINTS ALL DEFERRED;
+    EXCEPTION WHEN OTHERS THEN
+        IF SQLERRM NOT LIKE '%' || rule || '%' THEN
+            RAISE EXCEPTION 'FAIL  %: refused, but not by %: %', label, rule, SQLERRM;
+        END IF;
+        RAISE NOTICE 'ok    %  [%]', label, rule;
+        RETURN;
+    END;
+    RAISE EXCEPTION 'FAIL  %: the database accepted it', label;
+END $$;
+
 CREATE FUNCTION pg_temp.expect_ok(label TEXT, stmt TEXT) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN
     EXECUTE stmt;
@@ -43,16 +82,17 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 
 SELECT pg_temp.qa_warehouse(md5('qa:wh:HN')::uuid, 'HN', 'M', 30, 20);
-INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, storage_class, is_pickable, is_putaway_target, status)
-VALUES (md5('qa:loc:HN-RCV')::uuid, md5('qa:wh:HN')::uuid, 'AREA', 'HN-RCV01', 'NORMAL', FALSE, FALSE, 'ACTIVE');
+INSERT INTO warehouse.storage_location (id, warehouse_id, kind, location_code, is_pickable, is_putaway_target, status)
+VALUES (md5('qa:loc:HN-RCV')::uuid, md5('qa:wh:HN')::uuid, 'AREA', 'HN-RCV01', FALSE, FALSE, 'ACTIVE');
 INSERT INTO warehouse.area (id, warehouse_id, location_id, code, type, name, x, y, width, length, rotation, is_obstacle, status)
 VALUES (gen_random_uuid(), md5('qa:wh:HN')::uuid, md5('qa:loc:HN-RCV')::uuid, 'RCV01', 'RECEIVING', 'x', 1, 1, 5, 5, 0, FALSE, 'ACTIVE');
 
 \echo '--- stock movement ledger (docs 11 BR-06)'
+-- Loose, so a return's decision: a person's move names its carton since V20261111000200 (QA 41).
 SELECT pg_temp.expect_ok('I1 a MOVE between two bins', $q$
     INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, to_location_code, quantity,
         reference_type, reference_id, actor_id, occurred_at)
-    VALUES (md5('qa:mv:1')::uuid, 'MOVE', 'SOFA-3S-GREY', 'HCM-A01-2-B', 'HCM-A01-1-A', 2, 'MOVE_TASK', gen_random_uuid(),
+    VALUES (md5('qa:mv:1')::uuid, 'MOVE', 'SOFA-3S-GREY', 'HCM-A01-2-B', 'HCM-A01-1-A', 2, 'RETURN_REQUEST_LINE', gen_random_uuid(),
         md5('demo:user:editor')::uuid, NOW()) $q$);
 SELECT pg_temp.expect_fail('I2 a MOVE to the same location', $q$
     INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, to_location_code, quantity, reference_type, reference_id, occurred_at)
@@ -66,85 +106,86 @@ SELECT pg_temp.expect_fail('I4 an ADJUSTMENT with both sides', $q$
 SELECT pg_temp.expect_fail('I5 a STATUS_CHANGE that changes nothing', $q$
     INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, to_location_code, quantity, from_status, to_status, reference_type, reference_id, occurred_at)
     VALUES (gen_random_uuid(), 'STATUS_CHANGE', 'SOFA-3S-GREY', 'HCM-QC01', 'HCM-QC01', 1, 'QUARANTINE', 'QUARANTINE', 'QC_INSPECTION', gen_random_uuid(), NOW()) $q$);
-SELECT pg_temp.expect_fail('I6 movement to a location that does not exist', $q$
-    INSERT INTO inventory.stock_movement (id, movement_type, sku, to_location_code, quantity, reference_type, reference_id, occurred_at)
-    VALUES (gen_random_uuid(), 'RECEIPT', 'SOFA-3S-GREY', 'HCM-NOWHERE', 1, 'GOODS_RECEIPT_LINE', gen_random_uuid(), NOW()) $q$);
-SELECT pg_temp.expect_fail('I7 movement of an unknown sku', $q$
-    INSERT INTO inventory.stock_movement (id, movement_type, sku, to_location_code, quantity, reference_type, reference_id, occurred_at)
-    VALUES (gen_random_uuid(), 'RECEIPT', 'NOPE', 'HCM-RCV01', 1, 'GOODS_RECEIPT_LINE', gen_random_uuid(), NOW()) $q$);
+SELECT pg_temp.expect_fail_by('I6 movement to a location that does not exist', 'fk_stock_movement_to', $q$
+    INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, to_location_code, quantity, reference_type, reference_id, occurred_at)
+    VALUES (gen_random_uuid(), 'MOVE', 'SOFA-3S-GREY', 'HCM-A01-2-B', 'HCM-NOWHERE', 1, 'RETURN_REQUEST_LINE', gen_random_uuid(), NOW()) $q$);
+-- Loose reference type on purpose: a RECEIPT or MOVE_TASK line is refused earlier by the carton checks, which would hide the key.
+SELECT pg_temp.expect_fail_by('I7 movement of an unknown sku', 'fk_stock_movement_item', $q$
+    INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, to_location_code, quantity, reference_type, reference_id, occurred_at)
+    VALUES (gen_random_uuid(), 'MOVE', 'NOPE', 'HCM-A01-2-B', 'HCM-A01-1-A', 1, 'RETURN_REQUEST_LINE', gen_random_uuid(), NOW()) $q$);
 SELECT pg_temp.expect_fail('I8 ledger row edited', $q$ UPDATE inventory.stock_movement SET quantity = 3 WHERE id = md5('qa:mv:1')::uuid $q$);
 SELECT pg_temp.expect_fail('I9 ledger row deleted', $q$ DELETE FROM inventory.stock_movement WHERE id = md5('qa:mv:1')::uuid $q$);
 
-\echo '--- cycle count and stock adjustment'
+\echo '--- cycle count and stock adjustment (by carton since V20261113000300, team plan 4C-3)'
+-- Two whole cartons of 4 sofas on HCM-A01-2-B and HCM-A02-1-A: what a count line and an adjustment name.
+INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)
+VALUES (md5('qa03:unit')::uuid, md5('demo:item:SOFA-3S-GREY')::uuid, 'QA03_CTN', 4);
+INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, received_qty,
+                                     location_code, status)
+VALUES (md5('qa03:pk1')::uuid, 'QA03-LPN-1', md5('demo:item:SOFA-3S-GREY')::uuid, md5('qa03:unit')::uuid, 4, 4,
+        'HCM-A01-2-B', 'IN_STOCK'),
+       (md5('qa03:pk2')::uuid, 'QA03-LPN-2', md5('demo:item:SOFA-3S-GREY')::uuid, md5('qa03:unit')::uuid, 4, 4,
+        'HCM-A02-1-A', 'IN_STOCK');
+INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, created_at,
+                                  received_at, stock_package_id)
+VALUES (md5('qa03:pk1:row')::uuid, 'SOFA-3S-GREY', 'HCM-A01-2-B', 'UNTRACED', 4, 0, 'AVAILABLE', NOW(),
+        NOW() - interval '1 day', md5('qa03:pk1')::uuid),
+       (md5('qa03:pk2:row')::uuid, 'SOFA-3S-GREY', 'HCM-A02-1-A', 'UNTRACED', 4, 0, 'AVAILABLE', NOW(),
+        NOW() - interval '1 day', md5('qa03:pk2')::uuid);
 INSERT INTO inventory.cycle_count (id, count_number, warehouse_id, trigger_type, status, started_at, assigned_user_id)
 VALUES (md5('qa:cc:1')::uuid, 'CC-QA-1', md5('demo:wh:HCM')::uuid, 'SHORT_PICK', 'IN_PROGRESS', NOW(), md5('demo:user:editor')::uuid);
 SELECT pg_temp.expect_fail('I10 counting a location of another warehouse', $q$
+    INSERT INTO inventory.cycle_count_line (id, cycle_count_id, location_code, sku, expected_qty, stock_package_id)
+    VALUES (gen_random_uuid(), md5('qa:cc:1')::uuid, 'HN-RCV01', 'SOFA-3S-GREY', 0, md5('qa03:pk1')::uuid) $q$);
+SELECT pg_temp.expect_fail('I10b a loose count line: a count states cartons', $q$
     INSERT INTO inventory.cycle_count_line (id, cycle_count_id, location_code, sku, expected_qty)
-    VALUES (gen_random_uuid(), md5('qa:cc:1')::uuid, 'HN-RCV01', 'SOFA-3S-GREY', 0) $q$);
-SELECT pg_temp.expect_ok('I11 a count line, counted 23 of 25 expected', $q$
-    INSERT INTO inventory.cycle_count_line (id, cycle_count_id, location_code, sku, expected_qty, counted_qty, counted_by, counted_at)
-    VALUES (md5('qa:ccl:1')::uuid, md5('qa:cc:1')::uuid, 'HCM-A01-2-B', 'SOFA-3S-GREY', 25, 23, md5('demo:user:editor')::uuid, NOW()) $q$);
+    VALUES (gen_random_uuid(), md5('qa:cc:1')::uuid, 'HCM-A01-2-B', 'SOFA-3S-GREY', 0) $q$);
+SELECT pg_temp.expect_ok('I11 a count line: the carton booked, not found', $q$
+    INSERT INTO inventory.cycle_count_line (id, cycle_count_id, location_code, sku, expected_qty, counted_qty, counted_by, counted_at, stock_package_id)
+    VALUES (md5('qa:ccl:1')::uuid, md5('qa:cc:1')::uuid, 'HCM-A01-2-B', 'SOFA-3S-GREY', 4, 0, md5('demo:user:editor')::uuid, NOW(), md5('qa03:pk1')::uuid) $q$);
+SELECT pg_temp.expect_fail('I11b a count line, counted 3 of 4 booked: a carton is counted whole', $q$
+    INSERT INTO inventory.cycle_count_line (id, cycle_count_id, location_code, sku, expected_qty, counted_qty, counted_by, counted_at, stock_package_id)
+    VALUES (gen_random_uuid(), md5('qa:cc:1')::uuid, 'HCM-A02-1-A', 'SOFA-3S-GREY', 4, 3, md5('demo:user:editor')::uuid, NOW(), md5('qa03:pk2')::uuid) $q$);
 SELECT pg_temp.expect_fail('I12 counted quantity without who/when', $q$
-    INSERT INTO inventory.cycle_count_line (id, cycle_count_id, location_code, sku, expected_qty, counted_qty)
-    VALUES (gen_random_uuid(), md5('qa:cc:1')::uuid, 'HCM-A02-1-A', 'SOFA-3S-GREY', 8, 8) $q$);
-SELECT pg_temp.expect_fail('I13 the same slot twice in one count', $q$
-    INSERT INTO inventory.cycle_count_line (id, cycle_count_id, location_code, sku, expected_qty)
-    VALUES (gen_random_uuid(), md5('qa:cc:1')::uuid, 'HCM-A01-2-B', 'SOFA-3S-GREY', 25) $q$);
+    INSERT INTO inventory.cycle_count_line (id, cycle_count_id, location_code, sku, expected_qty, counted_qty, stock_package_id)
+    VALUES (gen_random_uuid(), md5('qa:cc:1')::uuid, 'HCM-A02-1-A', 'SOFA-3S-GREY', 4, 4, md5('qa03:pk2')::uuid) $q$);
+SELECT pg_temp.expect_fail('I13 the same carton twice in one count', $q$
+    INSERT INTO inventory.cycle_count_line (id, cycle_count_id, location_code, sku, expected_qty, stock_package_id)
+    VALUES (gen_random_uuid(), md5('qa:cc:1')::uuid, 'HCM-A01-2-B', 'SOFA-3S-GREY', 4, md5('qa03:pk1')::uuid) $q$);
 SELECT pg_temp.expect_fail('I14 COMPLETED count without completed_at', $q$
     UPDATE inventory.cycle_count SET status = 'COMPLETED' WHERE id = md5('qa:cc:1')::uuid $q$);
 SELECT pg_temp.expect_fail('I15 count variance adjustment without its count line', $q$
-    INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, quantity_delta, reason_code, requested_by)
-    VALUES (gen_random_uuid(), 'ADJ-QA-X', 'HCM-A01-2-B', 'SOFA-3S-GREY', -2, 'COUNT_VARIANCE', md5('demo:user:editor')::uuid) $q$);
-SELECT pg_temp.expect_ok('I16 variance adjustment requested', $q$
+    INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, quantity_delta, reason_code, requested_by, stock_package_id)
+    VALUES (gen_random_uuid(), 'ADJ-QA-X', 'HCM-A01-2-B', 'SOFA-3S-GREY', -4, 'COUNT_VARIANCE', md5('demo:user:editor')::uuid, md5('qa03:pk1')::uuid) $q$);
+SELECT pg_temp.expect_fail('I15b count variance adjustment of no carton', $q$
     INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, quantity_delta, reason_code, cycle_count_line_id, requested_by)
-    VALUES (md5('qa:adj:1')::uuid, 'ADJ-QA-1', 'HCM-A01-2-B', 'SOFA-3S-GREY', -2, 'COUNT_VARIANCE', md5('qa:ccl:1')::uuid, md5('demo:user:editor')::uuid) $q$);
+    VALUES (gen_random_uuid(), 'ADJ-QA-Y', 'HCM-A01-2-B', 'SOFA-3S-GREY', -2, 'COUNT_VARIANCE', md5('qa:ccl:1')::uuid, md5('demo:user:editor')::uuid) $q$);
+SELECT pg_temp.expect_fail('I15c count variance of part of a carton', $q$
+    INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, quantity_delta, reason_code, cycle_count_line_id, requested_by, stock_package_id)
+    VALUES (gen_random_uuid(), 'ADJ-QA-Z', 'HCM-A01-2-B', 'SOFA-3S-GREY', -2, 'COUNT_VARIANCE', md5('qa:ccl:1')::uuid, md5('demo:user:editor')::uuid, md5('qa03:pk1')::uuid) $q$);
+SELECT pg_temp.expect_ok('I16 variance adjustment requested: the whole carton', $q$
+    INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, quantity_delta, reason_code, cycle_count_line_id, requested_by, stock_package_id)
+    VALUES (md5('qa:adj:1')::uuid, 'ADJ-QA-1', 'HCM-A01-2-B', 'SOFA-3S-GREY', -4, 'COUNT_VARIANCE', md5('qa:ccl:1')::uuid, md5('demo:user:editor')::uuid, md5('qa03:pk1')::uuid) $q$);
 SELECT pg_temp.expect_fail('I17 adjustment approved by its requester', $q$
     UPDATE inventory.stock_adjustment SET status = 'APPROVED', decided_by = requested_by, decided_at = NOW() WHERE id = md5('qa:adj:1')::uuid $q$);
 SELECT pg_temp.expect_fail('I18 rejection without a reason', $q$
     UPDATE inventory.stock_adjustment SET status = 'REJECTED', decided_by = md5('demo:user:approver')::uuid, decided_at = NOW() WHERE id = md5('qa:adj:1')::uuid $q$);
 SELECT pg_temp.expect_fail('I19 zero adjustment', $q$
     UPDATE inventory.stock_adjustment SET quantity_delta = 0 WHERE id = md5('qa:adj:1')::uuid $q$);
-SELECT pg_temp.expect_ok('I20 approved by someone else, posted, with its ledger row', $q$
+SELECT pg_temp.expect_ok('I20 approved by someone else, posted: the carton written off whole and LOST, with its ledger row', $q$
     UPDATE inventory.stock_adjustment SET status = 'APPROVED', decided_by = md5('demo:user:approver')::uuid, decided_at = NOW() WHERE id = md5('qa:adj:1')::uuid;
     UPDATE inventory.stock_adjustment SET status = 'POSTED', posted_at = NOW() WHERE id = md5('qa:adj:1')::uuid;
-    UPDATE inventory.stock_item SET on_hand = on_hand - 2 WHERE id = '11111111-1111-4111-8111-111111111111';
+    UPDATE inventory.stock_item SET on_hand = 0 WHERE id = md5('qa03:pk1:row')::uuid;
+    UPDATE inventory.stock_package SET status = 'LOST', closed_at = NOW() WHERE id = md5('qa03:pk1')::uuid;
     INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, quantity, reference_type, reference_id, actor_id, occurred_at)
-    VALUES (gen_random_uuid(), 'COUNT_CORRECTION', 'SOFA-3S-GREY', 'HCM-A01-2-B', 2, 'STOCK_ADJUSTMENT', md5('qa:adj:1')::uuid, md5('demo:user:approver')::uuid, NOW()) $q$);
+    VALUES (gen_random_uuid(), 'COUNT_CORRECTION', 'SOFA-3S-GREY', 'HCM-A01-2-B', 4, 'STOCK_ADJUSTMENT', md5('qa:adj:1')::uuid, md5('demo:user:approver')::uuid, NOW()) $q$);
 
-\echo '--- inter-warehouse transfer (docs 10)'
-SELECT pg_temp.expect_fail('I21 transfer within one warehouse (BR-01)', $q$
-    INSERT INTO inventory.transfer_order (id, transfer_number, from_warehouse_id, to_warehouse_id)
-    VALUES (gen_random_uuid(), 'TO-QA-X', md5('demo:wh:HCM')::uuid, md5('demo:wh:HCM')::uuid) $q$);
-INSERT INTO inventory.transfer_order (id, transfer_number, from_warehouse_id, to_warehouse_id, reason)
-VALUES (md5('qa:to:1')::uuid, 'TO-QA-1', md5('demo:wh:HCM')::uuid, md5('qa:wh:HN')::uuid, 'REBALANCING');
-INSERT INTO inventory.transfer_order_line (id, transfer_order_id, line_no, sku, requested_qty)
-VALUES (md5('qa:tol:1')::uuid, md5('qa:to:1')::uuid, 1, 'SOFA-3S-GREY', 5);
-SELECT pg_temp.expect_fail('I22 approved by its submitter', $q$
-    UPDATE inventory.transfer_order SET status = 'APPROVED', submitted_by = md5('demo:user:editor')::uuid, submitted_at = NOW(),
-        approved_by = md5('demo:user:editor')::uuid, approved_at = NOW() WHERE id = md5('qa:to:1')::uuid $q$);
-SELECT pg_temp.expect_fail('I23 shipping more than requested', $q$
-    UPDATE inventory.transfer_order_line SET shipped_qty = 6 WHERE id = md5('qa:tol:1')::uuid $q$);
-SELECT pg_temp.expect_fail('I24 IN_TRANSIT without dispatch evidence', $q$
-    UPDATE inventory.transfer_order SET status = 'IN_TRANSIT', submitted_by = md5('demo:user:editor')::uuid, submitted_at = NOW(),
-        approved_by = md5('demo:user:approver')::uuid, approved_at = NOW() WHERE id = md5('qa:to:1')::uuid $q$);
-SELECT pg_temp.expect_ok('I25 submit, approve, dispatch 5', $q$
-    UPDATE inventory.transfer_order SET status = 'IN_TRANSIT', submitted_by = md5('demo:user:editor')::uuid, submitted_at = NOW(),
-        approved_by = md5('demo:user:approver')::uuid, approved_at = NOW(),
-        dispatched_by = md5('demo:user:editor')::uuid, dispatched_at = NOW() WHERE id = md5('qa:to:1')::uuid;
-    UPDATE inventory.transfer_order_line SET shipped_qty = 5 WHERE id = md5('qa:tol:1')::uuid $q$);
-SELECT pg_temp.expect_fail('I26 cancelled after dispatch (BR-04)', $q$
-    UPDATE inventory.transfer_order SET status = 'CANCELLED', cancel_reason = 'x' WHERE id = md5('qa:to:1')::uuid $q$);
-SELECT pg_temp.expect_fail('I27 destination receives more than was shipped', $q$
-    UPDATE inventory.transfer_order_line SET received_qty = 6 WHERE id = md5('qa:tol:1')::uuid $q$);
-SELECT pg_temp.expect_fail('I28 short receipt without a discrepancy note (BR-05)', $q$
-    UPDATE inventory.transfer_order_line SET received_qty = 4 WHERE id = md5('qa:tol:1')::uuid $q$);
-SELECT pg_temp.expect_ok('I29 4 good + 1 damaged, noted; putaway at the destination from the TO line', $q$
-    UPDATE inventory.transfer_order_line SET received_qty = 4, damaged_qty = 1, received_by = md5('demo:user:approver')::uuid WHERE id = md5('qa:tol:1')::uuid;
-    UPDATE inventory.transfer_order SET status = 'RECEIVED', received_at = NOW() WHERE id = md5('qa:to:1')::uuid;
-    INSERT INTO warehouse.putaway_task (id, transfer_order_line_id, sku, quantity, status, created_at)
-    VALUES (gen_random_uuid(), md5('qa:tol:1')::uuid, 'SOFA-3S-GREY', 4, 'PENDING', NOW()) $q$);
-SELECT pg_temp.expect_fail('I30 CLOSED (short-close) without a reason', $q$
-    UPDATE inventory.transfer_order SET status = 'CLOSED', closed_at = NOW() WHERE id = md5('qa:to:1')::uuid $q$);
+\echo '--- inter-warehouse transfer (removed, V20261108000300)'
+SELECT pg_temp.expect_fail('I21 transfer orders are gone: stock never changes warehouse', $q$
+    SELECT 1 FROM inventory.transfer_order $q$);
+SELECT pg_temp.expect_fail('I22 a putaway task has no transfer line to come from', $q$
+    INSERT INTO warehouse.putaway_task (id, sku, quantity, status, created_at)
+    VALUES (gen_random_uuid(), 'SOFA-3S-GREY', 4, 'PENDING', NOW()) $q$);
 
 \echo '--- intra-warehouse move task (docs 11)'
 SELECT pg_temp.expect_fail('I31 move to a location of another warehouse (BR-01)', $q$
@@ -179,9 +220,9 @@ SELECT pg_temp.expect_fail('I37 lowercase document type', $q$
 \echo '--- holds: a deadline only while the order waits for payment (SCRUM-465, V20261013000100)'
 SELECT pg_temp.expect_ok('I38 a pinned hold (no deadline) on a stock row', $q$
     INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, currency, placed_at,
-                                         created_at, paid_amount, paid_in_full_at)
+                                         created_at, contract_signed_at)
     VALUES (md5('qa:order:pinned')::uuid, 'SO-QA-PIN', 'c0000000-0000-4000-8000-000000000001', gen_random_uuid(), 'CONFIRMED',
-            10000000, 'VND', NOW(), NOW(), 10000000, NOW());
+            10000000, 'VND', NOW(), NOW(), NOW());
     INSERT INTO inventory.stock_reservation (id, stock_item_id, order_id, root_request_id, request_id, quantity,
                                             reserved_at, expires_at, status)
     SELECT md5('qa:res:pinned')::uuid, s.id, md5('qa:order:pinned')::uuid, md5('qa:req:pinned')::uuid,
@@ -212,20 +253,6 @@ SELECT pg_temp.expect_fail('I46 a pending adjustment that says it was withdrawn'
     INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, quantity_delta, reason_code, requested_by, withdrawn_at)
     VALUES (gen_random_uuid(), 'ADJ-QA-S3', 'HCM-A01-2-B', 'SOFA-3S-GREY', -1, 'DAMAGED', md5('demo:user:editor')::uuid, NOW()) $q$);
 
-\echo '--- editing a draft transfer (SCRUM-462, V20261013000600)'
-INSERT INTO inventory.transfer_order (id, transfer_number, from_warehouse_id, to_warehouse_id, reason)
-VALUES (md5('qa:to:2')::uuid, 'TO-QA-2', md5('demo:wh:HCM')::uuid, md5('qa:wh:HN')::uuid, 'REBALANCING');
-INSERT INTO inventory.transfer_order_line (id, transfer_order_id, line_no, sku, requested_qty)
-VALUES (md5('qa:tol:2')::uuid, md5('qa:to:2')::uuid, 1, 'SOFA-3S-GREY', 5);
-SELECT pg_temp.expect_ok('I47 a DRAFT transfer turned around, with a new date, reason and quantity', $q$
-    UPDATE inventory.transfer_order SET from_warehouse_id = md5('qa:wh:HN')::uuid, to_warehouse_id = md5('demo:wh:HCM')::uuid,
-           reason = 'DEMAND', expected_date = CURRENT_DATE + 3 WHERE id = md5('qa:to:2')::uuid;
-    UPDATE inventory.transfer_order_line SET requested_qty = 3 WHERE id = md5('qa:tol:2')::uuid $q$);
-SELECT pg_temp.expect_fail('I48 the date of a transfer past DRAFT', $q$
-    UPDATE inventory.transfer_order SET expected_date = CURRENT_DATE + 9 WHERE id = md5('qa:to:1')::uuid $q$);
-SELECT pg_temp.expect_fail('I49 the requested quantity of a transfer past DRAFT', $q$
-    UPDATE inventory.transfer_order_line SET requested_qty = 9 WHERE id = md5('qa:tol:1')::uuid $q$);
-
 \echo '--- in-app inbox (SCRUM-147, V20261014000400); I50-I54 belong to the stock-alert migration'
 INSERT INTO notification.user_notification (id, recipient_id, category, severity, title, dedupe_key, created_at)
 VALUES (md5('qa:inbox:1')::uuid, md5('demo:user:editor')::uuid, 'QA', 'INFO', 'QA message', 'qa:key', NOW());
@@ -251,96 +278,8 @@ SELECT pg_temp.expect_fail('I56 a message for a user that does not exist', $q$
     INSERT INTO notification.user_notification (id, recipient_id, category, severity, title, dedupe_key)
     VALUES (md5('qa:inbox:5')::uuid, md5('qa:no-such-user')::uuid, 'QA', 'INFO', 'QA message', 'qa:key5') $q$);
 
-\echo '--- stock alerts and the dirty queue (SCRUM-147, V20261014000900)'
-SELECT pg_temp.expect_ok('I50 one open REORDER alert for a SKU', $q$
-    INSERT INTO inventory.stock_alert (id, kind, sku, observed_qty, threshold_qty, opened_at, last_observed_at)
-    VALUES (md5('qa:alert:1')::uuid, 'REORDER', 'SOFA-3S-GREY', 3, 10, NOW(), NOW()) $q$);
-SELECT pg_temp.expect_fail('I50 a second open alert of the same kind and SKU', $q$
-    INSERT INTO inventory.stock_alert (id, kind, sku, observed_qty, threshold_qty, opened_at, last_observed_at)
-    VALUES (md5('qa:alert:2')::uuid, 'REORDER', 'SOFA-3S-GREY', 2, 10, NOW(), NOW()) $q$);
-SELECT pg_temp.expect_ok('I50 the same SKU under another kind', $q$
-    INSERT INTO inventory.stock_alert (id, kind, sku, observed_qty, threshold_qty, opened_at, last_observed_at)
-    VALUES (md5('qa:alert:3')::uuid, 'SAFETY', 'SOFA-3S-GREY', 3, 5, NOW(), NOW()) $q$);
-SELECT pg_temp.expect_ok('I50 an acknowledged alert still blocks a duplicate (it is not resolved)', $q$
-    UPDATE inventory.stock_alert SET status = 'ACKNOWLEDGED', acknowledged_by = md5('demo:user:editor')::uuid,
-           acknowledged_at = NOW() WHERE id = md5('qa:alert:3')::uuid $q$);
-SELECT pg_temp.expect_fail('I50 a duplicate of the acknowledged alert', $q$
-    INSERT INTO inventory.stock_alert (id, kind, sku, observed_qty, threshold_qty, opened_at, last_observed_at)
-    VALUES (md5('qa:alert:4')::uuid, 'SAFETY', 'SOFA-3S-GREY', 1, 5, NOW(), NOW()) $q$);
-SELECT pg_temp.expect_ok('I50 once resolved, the condition can open a new episode', $q$
-    UPDATE inventory.stock_alert SET status = 'RESOLVED', resolved_at = NOW(), resolution = 'RECOVERED'
-     WHERE id = md5('qa:alert:1')::uuid;
-    INSERT INTO inventory.stock_alert (id, kind, sku, observed_qty, threshold_qty, opened_at, last_observed_at)
-    VALUES (md5('qa:alert:5')::uuid, 'REORDER', 'SOFA-3S-GREY', 1, 10, NOW(), NOW()) $q$);
-SELECT pg_temp.expect_fail('I50 two open EXPIRING alerts for the same lot with no lot number', $q$
-    INSERT INTO inventory.stock_alert (id, kind, sku, warehouse_id, expiry_date, observed_qty, opened_at, last_observed_at)
-    VALUES (md5('qa:alert:6')::uuid, 'EXPIRING', 'SOFA-3S-GREY', md5('demo:wh:HCM')::uuid, CURRENT_DATE + 5, 4, NOW(), NOW()),
-           (md5('qa:alert:7')::uuid, 'EXPIRING', 'SOFA-3S-GREY', md5('demo:wh:HCM')::uuid, CURRENT_DATE + 5, 4, NOW(), NOW()) $q$);
-SELECT pg_temp.expect_fail('I51 RESOLVED without the time it was resolved', $q$
-    UPDATE inventory.stock_alert SET status = 'RESOLVED', resolution = 'RECOVERED' WHERE id = md5('qa:alert:5')::uuid $q$);
-SELECT pg_temp.expect_fail('I51 RESOLVED without how it was resolved', $q$
-    UPDATE inventory.stock_alert SET status = 'RESOLVED', resolved_at = NOW() WHERE id = md5('qa:alert:5')::uuid $q$);
-SELECT pg_temp.expect_fail('I51 an open alert that says it was resolved', $q$
-    UPDATE inventory.stock_alert SET resolved_at = NOW(), resolution = 'RECOVERED' WHERE id = md5('qa:alert:5')::uuid $q$);
-SELECT pg_temp.expect_fail('I51 ACKNOWLEDGED with nobody who acknowledged it', $q$
-    UPDATE inventory.stock_alert SET status = 'ACKNOWLEDGED' WHERE id = md5('qa:alert:5')::uuid $q$);
-SELECT pg_temp.expect_fail('I51 a resolution the screen does not know', $q$
-    UPDATE inventory.stock_alert SET status = 'RESOLVED', resolved_at = NOW(), resolution = 'FORGOTTEN'
-     WHERE id = md5('qa:alert:5')::uuid $q$);
-SELECT pg_temp.expect_fail('I51 a REORDER alert resolved as EXPIRED_OUT', $q$
-    UPDATE inventory.stock_alert SET status = 'RESOLVED', resolved_at = NOW(), resolution = 'EXPIRED_OUT'
-     WHERE id = md5('qa:alert:5')::uuid $q$);
-SELECT pg_temp.expect_fail('I52 an EXPIRING alert without an expiry date', $q$
-    INSERT INTO inventory.stock_alert (id, kind, sku, warehouse_id, observed_qty, opened_at, last_observed_at)
-    VALUES (md5('qa:alert:8')::uuid, 'EXPIRING', 'SOFA-3S-GREY', md5('demo:wh:HCM')::uuid, 4, NOW(), NOW()) $q$);
-SELECT pg_temp.expect_fail('I52 an EXPIRED alert without a warehouse', $q$
-    INSERT INTO inventory.stock_alert (id, kind, sku, expiry_date, observed_qty, opened_at, last_observed_at)
-    VALUES (md5('qa:alert:9')::uuid, 'EXPIRED', 'SOFA-3S-GREY', CURRENT_DATE - 1, 4, NOW(), NOW()) $q$);
-SELECT pg_temp.expect_ok('I52 an EXPIRED alert with a warehouse, a lot, a date and a held reservation', $q$
-    INSERT INTO inventory.stock_alert (id, kind, sku, warehouse_id, lot_number, expiry_date, observed_qty,
-                                       reservation_impaired, opened_at, last_observed_at)
-    VALUES (md5('qa:alert:10')::uuid, 'EXPIRED', 'SOFA-3S-GREY', md5('demo:wh:HCM')::uuid, 'LOT-QA', CURRENT_DATE - 1, 4,
-            TRUE, NOW(), NOW()) $q$);
-SELECT pg_temp.expect_fail('I53 a REORDER alert that names a warehouse', $q$
-    INSERT INTO inventory.stock_alert (id, kind, sku, warehouse_id, observed_qty, threshold_qty, opened_at, last_observed_at)
-    VALUES (md5('qa:alert:11')::uuid, 'REORDER', 'SOFA-3S-GREY', md5('demo:wh:HCM')::uuid, 1, 10, NOW(), NOW()) $q$);
-SELECT pg_temp.expect_fail('I53 a SAFETY alert that names a lot', $q$
-    INSERT INTO inventory.stock_alert (id, kind, sku, lot_number, observed_qty, threshold_qty, opened_at, last_observed_at)
-    VALUES (md5('qa:alert:12')::uuid, 'SAFETY', 'SOFA-3S-GREY', 'LOT-1', 1, 10, NOW(), NOW()) $q$);
-SELECT pg_temp.expect_fail('I53 a REORDER alert without its threshold', $q$
-    INSERT INTO inventory.stock_alert (id, kind, sku, observed_qty, opened_at, last_observed_at)
-    VALUES (md5('qa:alert:13')::uuid, 'REORDER', 'SOFA-3S-GREY', 1, NOW(), NOW()) $q$);
-SELECT pg_temp.expect_fail('I53 a held reservation flagged on a REORDER alert', $q$
-    UPDATE inventory.stock_alert SET reservation_impaired = TRUE WHERE id = md5('qa:alert:5')::uuid $q$);
-SELECT pg_temp.expect_fail('I53 an alert for a SKU that has no inventory item', $q$
-    INSERT INTO inventory.stock_alert (id, kind, sku, observed_qty, threshold_qty, opened_at, last_observed_at)
-    VALUES (md5('qa:alert:14')::uuid, 'REORDER', 'NO-SUCH-SKU', 1, 10, NOW(), NOW()) $q$);
-DELETE FROM inventory.stock_alert_dirty;
-SELECT pg_temp.expect_ok('I54 a stock row whose on_hand changes marks its SKU dirty', $q$
-    UPDATE inventory.stock_item SET on_hand = on_hand + 1
-     WHERE sku = 'SOFA-3S-GREY' AND location_code = 'HCM-A01-2-B';
-    DO $d$ BEGIN
-        IF (SELECT count(*) FROM inventory.stock_alert_dirty WHERE sku = 'SOFA-3S-GREY') <> 1 THEN
-            RAISE EXCEPTION 'on_hand change did not mark the SKU dirty exactly once';
-        END IF;
-    END $d$ $q$);
-DELETE FROM inventory.stock_alert_dirty;
-SELECT pg_temp.expect_ok('I54 an UPDATE that does not change on_hand, status or expiry does not mark it', $q$
-    UPDATE inventory.stock_item SET on_hand = on_hand, last_modified_by = 'qa'
-     WHERE sku = 'SOFA-3S-GREY' AND location_code = 'HCM-A01-2-B';
-    DO $d$ BEGIN
-        IF EXISTS (SELECT 1 FROM inventory.stock_alert_dirty) THEN
-            RAISE EXCEPTION 'a write that changed nothing the thresholds read marked the SKU dirty';
-        END IF;
-    END $d$ $q$);
-SELECT pg_temp.expect_ok('I54 a status change and a new stock row mark the SKU dirty', $q$
-    UPDATE inventory.stock_item SET status = 'QUARANTINE'
-     WHERE sku = 'SOFA-3S-GREY' AND location_code = 'HCM-A01-2-B' AND status = 'AVAILABLE';
-    DO $d$ BEGIN
-        IF NOT EXISTS (SELECT 1 FROM inventory.stock_alert_dirty WHERE sku = 'SOFA-3S-GREY') THEN
-            RAISE EXCEPTION 'a status change did not mark the SKU dirty';
-        END IF;
-    END $d$ $q$);
+-- I50-I54 (stock alerts and their dirty queue) went with the alerts (team plan 5-1, V20261111000300): see
+-- 42_alerts_and_expiry_removed.sql.
 
 ROLLBACK;
 \echo 'PASS 03_inventory_ops'

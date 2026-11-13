@@ -1,5 +1,11 @@
 # State Machines
 
+> **Superseded by kltn-docs (rescope, 2026-11).** This document is the pre-rescope business analysis (web shop, in-house
+> printing, purchasing, loose stock). The current source of truth is the kltn-docs repository (`docs/`); the code and
+> `CLAUDE.md` §4 describe what is built; [ADR-0010](../adr/0010-rescope-b2b-printed-goods.md) lists what changed. Kept for
+> history only: do not take a flow, state or rule from here without checking it against kltn-docs.
+> *Tài liệu này đã được thay thế bởi kltn-docs; chỉ giữ để tham khảo lịch sử.*
+
 Eighteen machines. For each: the diagram, then a transition table giving the **trigger**, the
 **actor allowed to fire it**, the **guard** that must hold, and the **event emitted**.
 
@@ -440,7 +446,7 @@ order of the order is completed (machine 16).
 **Implemented 2026-10-19 (G3-2, SCRUM-239/246/247).** The statuses of kltn-docs 17 §5, written twice: the
 exhaustive switch `OrderStatus.canTransitionTo` and the table `ordering.order_status_transition`, which the trigger
 `tg_order_status_transition` enforces on every `UPDATE` of a status (the two are compared by
-`OrderStatusTest`, `OrderLifecycleIntegrationTest` and `OrderLifecycleMigrationUpgradeTest`). `IN_FULFILMENT` is gone
+`OrderStatusTest` and `OrderLifecycleIntegrationTest`). `IN_FULFILMENT` is gone
 (rows became `PICKING`, or `PACKED` when a package was completed); there is no `PAYMENT_FAILED` (G3-Q2: a bank
 transfer that never comes is a cancellation when the hold runs out). Every change writes a history row with who made
 it and why (`order_status_history.actor_id`, `reason`).

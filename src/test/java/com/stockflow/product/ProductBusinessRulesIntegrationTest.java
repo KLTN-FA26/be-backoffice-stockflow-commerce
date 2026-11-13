@@ -5,7 +5,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.stockflow.product.api.ProductService;
 import com.stockflow.product.internal.service.ProductTaxonomyService;
 import com.stockflow.product.internal.service.ProductTaxonomyService.CategoryDetails;
-import com.stockflow.support.ApprovalLimitFixtures;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
 import com.stockflow.support.ProductFixtures;
@@ -73,11 +72,11 @@ class ProductBusinessRulesIntegrationTest {
         tax = ProductFixtures.taxonomy(taxonomy, suffix);
     }
 
-    /** ECOMMERCE_ADMIN holds every product-products permission. */
+    /** SALES_MANAGER holds every product-products permission. */
     private String editor() {
         String token = UUID.randomUUID().toString();
         when(decoder.decode(token)).thenReturn(Jwt.withTokenValue(token).header("alg", "RS256")
-                .subject(editorUser.toString()).claim("roles", List.of("ECOMMERCE_ADMIN")).build());
+                .subject(editorUser.toString()).claim("roles", List.of("SALES_MANAGER")).build());
         return "Bearer " + token;
     }
 
@@ -208,7 +207,7 @@ class ProductBusinessRulesIntegrationTest {
     @Test
     @DisplayName("another brand, or a discontinued product, is not a duplicate")
     void otherBrandOrDiscontinuedIsNotADuplicate() throws Exception {
-        UUID approverUser = tx.execute(s -> ApprovalLimitFixtures.approver(entityManager));
+        UUID approverUser = tx.execute(s -> ReferenceRows.user(entityManager));
         var old = ProductFixtures.approved(products, tax, "OLD" + suffix, editorUser, approverUser);
         products.discontinue(old.productId(), "replaced", old.version());
         ProductFixtures.Taxonomy other = ProductFixtures.taxonomy(taxonomy, suffix + "O");

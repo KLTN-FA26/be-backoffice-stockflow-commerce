@@ -2,21 +2,13 @@ package com.stockflow;
 
 import static org.assertj.core.api.Assertions.*;
 
-import com.stockflow.catalog.api.CatalogService;
-import com.stockflow.catalog.internal.domain.SellingPrice;
 import com.stockflow.catalog.internal.service.CatalogCommerceService;
 import com.stockflow.catalog.internal.service.CatalogProjectionService;
-import com.stockflow.common.domain.BusinessCalendar;
-import com.stockflow.common.domain.Money;
-import com.stockflow.common.domain.Sku;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.inventory.api.*;
 import com.stockflow.inventory.internal.service.InventoryItems;
 import com.stockflow.order.api.OrderService;
-import com.stockflow.order.api.PlaceGuestOrderCommand;
-import com.stockflow.order.api.PlaceOrderCommand;
-import com.stockflow.support.DemoData;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
 
@@ -31,10 +23,8 @@ import org.springframework.test.web.servlet.request.MockMvcRequestBuilders;
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers;
 import org.springframework.transaction.support.TransactionTemplate;
 
-import java.math.BigDecimal;
 import java.sql.Timestamp;
 import java.time.Instant;
-import java.time.LocalDate;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
@@ -58,28 +48,21 @@ class InventoryCatalogIntegrationTest {
     @Autowired TransactionTemplate transactions;
     @Autowired MockMvc mvc;
     @Autowired OrderService orders;
-    @Autowired CatalogService checkoutCatalog;
+    @Autowired com.stockflow.product.api.ProductService productService;
 
+    /** 5-3 (kltn-docs 13 BR-04, §4.1 step 2): a variant has no price, so nothing about one keeps a product unlisted. */
     @Test
-    void missingPriceRollsBackTheWholeBackfillAndRetryDiscoversItLater() {
+    void everyVariantIsProjectedWithoutAPrice() {
         var f = fixture("APPROVED");
         gallery(f);
         String second = f.sku() + "-2";
         write("insert into product.variants(id,product_id,sku,name,status,attribute_signature)"
                 + " values (?,?,?,'Second','ACTIVE','SECOND')", UUID.randomUUID(), f.product(), second);
         write("update product.products set status='PUBLISHED',published_at=now() where id=?", f.product());
-        testPrice(f.sku());
         var source = jdbc.queryForMap("select * from product.products where id=?", f.product());
-        assertThatThrownBy(() -> projection.project(f.product()))
-                .isInstanceOfSatisfying(BusinessException.class,
-                        e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.PRICE_NOT_AVAILABLE));
-        assertThat(jdbc.queryForObject("select count(*) from catalog.product_listing where product_id=?",
-                Long.class, f.product())).isZero();
-        assertThat(jdbc.queryForObject("select count(*) from catalog.catalog_entry where product_id=?",
-                Long.class, f.product())).isZero();
-        testPrice(second);
-        projectionListener.retry();
-        assertThat(catalog.detail(catalog.get(f.product()).slug()).variants()).hasSize(2);
+        projection.project(f.product());
+        assertThat(catalog.detail(catalog.get(f.product()).slug()).variants())
+                .extracting(CatalogCommerceService.Variant::sku).containsExactlyInAnyOrder(f.sku(), second);
         assertThat(jdbc.queryForMap("select * from product.products where id=?", f.product())).isEqualTo(source);
     }
 
@@ -88,14 +71,12 @@ class InventoryCatalogIntegrationTest {
         for (String status : List.of("DRAFT", "APPROVED")) {
             var f = fixture(status);
             gallery(f);
-            testPrice(f.sku());
             projection.project(f.product());
             assertThat(jdbc.queryForObject("select count(*) from catalog.product_listing where product_id=?",
                     Long.class, f.product())).isZero();
         }
         var f = fixture("APPROVED");
         gallery(f);
-        testPrice(f.sku());
         write("update product.products set status='PUBLISHED',published_at=now() where id=?", f.product());
         write("update product.media set is_published=false where variant_id=?", f.skuId());
         assertThatThrownBy(() -> projection.project(f.product()))
@@ -109,93 +90,14 @@ class InventoryCatalogIntegrationTest {
     void rebuildCannotOverwriteANewerEntryAndRollsBackPartialWrites() {
         var f = fixture("APPROVED");
         gallery(f);
-        testPrice(f.sku());
         write("update product.products set status='PUBLISHED',published_at=now() where id=?", f.product());
         projection.project(f.product());
-        write("update catalog.catalog_entry set source_revision=100,price=777,title='Newer snapshot' where sku=?", f.sku());
+        write("update catalog.catalog_entry set source_revision=100,title='Newer snapshot' where sku=?", f.sku());
         var entry = jdbc.queryForMap("select * from catalog.catalog_entry where sku=?", f.sku());
         assertThatThrownBy(() -> projection.project(f.product()))
                 .isInstanceOfSatisfying(BusinessException.class,
                         e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.CONFLICT));
         assertThat(jdbc.queryForMap("select * from catalog.catalog_entry where sku=?", f.sku())).isEqualTo(entry);
-    }
-
-    private void testPrice(String sku) {
-        write("insert into catalog.pricing_rule(id,name,sku,price,currency,active,created_at)"
-                + " values (?,?,?,12500000,'VND',true,now())", UUID.randomUUID(), "BASE:" + sku, sku);
-    }
-
-    @Test
-    void stockMoveKeepsCanonicalSerialAndReceiptIdentity() {
-        var f = fixture("APPROVED");
-        items.configure(f.itemId(),
-                0,
-                policy(null, RemovalStrategy.FIFO, TrackingMode.SERIAL, false));
-        var received = Instant.parse("2026-09-01T00:00:00Z");
-        var source = stock(f, 1, received, null, "MOVE-SERIAL");
-        write("update inventory.stock_item set location_code='HCM-A01-1-B' where id=?", source);
-        var command =
-                new MoveStockCommand(
-                        UUID.randomUUID(),
-                        new Sku(f.sku()),
-                        null,
-                        "HCM-A01-1-B",
-                        "HCM-PACK01",
-                        1,
-                        MoveReference.MOVE_TASK,
-                        null,
-                        jdbc.queryForObject(
-                                "select id from identity.app_user where"
-                                    + " id=md5('demo:user:editor')::uuid",
-                                UUID.class));
-        var moved = inventory.move(command);
-        assertThat(
-                        jdbc.queryForMap(
-                                """
-                                select on_hand,serial_number,received_at from inventory.stock_item
-                                where sku=? and location_code='HCM-PACK01'
-                                """,
-                                f.sku()))
-                .containsEntry("on_hand", 1)
-                .containsEntry("serial_number", "MOVE-SERIAL")
-                .containsEntry("received_at", Timestamp.from(received));
-        assertThat(inventory.move(command).movementId()).isEqualTo(moved.movementId());
-    }
-
-    @Test
-    void stockMoveDoesNotChooseAnArbitraryReceiptLayer() {
-        var f = fixture("APPROVED");
-        items.configure(f.itemId(),
-                0,
-                policy(null, RemovalStrategy.FIFO, TrackingMode.NONE, false));
-        stock(f, 3, Instant.parse("2026-09-01T00:00:00Z"), null, null);
-        stock(f, 4, Instant.parse("2026-09-02T00:00:00Z"), null, null);
-        var command =
-                new MoveStockCommand(
-                        UUID.randomUUID(),
-                        new Sku(f.sku()),
-                        null,
-                        "HCM-A01-1-A",
-                        "HCM-PACK01",
-                        1,
-                        MoveReference.MOVE_TASK,
-                        null,
-                        jdbc.queryForObject(
-                                "select id from identity.app_user where"
-                                    + " id=md5('demo:user:editor')::uuid",
-                                UUID.class));
-        assertThatThrownBy(() -> inventory.move(command))
-                .isInstanceOfSatisfying(
-                        BusinessException.class,
-                        ex ->
-                                assertThat(ex.errorCode())
-                                        .isEqualTo(ErrorCode.INVENTORY_POLICY_STOCK_CONFLICT));
-        assertThat(
-                        jdbc.queryForObject(
-                                "select sum(on_hand) from inventory.stock_item where sku=?",
-                                Integer.class,
-                                f.sku()))
-                .isEqualTo(7);
     }
 
     record Fixture(UUID product, UUID skuId, String sku, UUID itemId) {}
@@ -258,279 +160,69 @@ values (?,?,'https://example.test/cover.jpg',true,now(),md5('demo:user:approver'
                 f.skuId());
     }
 
-    UUID stock(Fixture f, int quantity, Instant receipt, LocalDate expiry, String serial) {
+    /** A row in no carton: only ever an emptied one ({@code quantity} 0) since V20261117000100. */
+    UUID stock(Fixture f, int quantity, Instant receipt) {
         UUID id = UUID.randomUUID();
         write(
                 """
-insert into inventory.stock_item(id,sku,location_code,on_hand,reserved,status,received_at,expiry_date,serial_number,lot_number,created_at)
-values (?,?,'HCM-A01-1-A',?,0,'AVAILABLE',?,?,?,?,now())
+insert into inventory.stock_item(id,sku,location_code,lot_number,on_hand,reserved,status,received_at,created_at)
+values (?,?,'HCM-A01-1-A','UNTRACED',?,0,'AVAILABLE',?,now())
 """,
                 id,
                 f.sku(),
                 quantity,
-                receipt == null ? null : Timestamp.from(receipt),
-                expiry,
-                serial,
-                expiry == null ? null : "TEST-LOT");
+                receipt == null ? null : Timestamp.from(receipt));
         return id;
     }
 
-    InventoryPolicy policy(
-            Integer threshold, RemovalStrategy strategy, TrackingMode tracking, boolean expiry) {
-        return new InventoryPolicy(
-                threshold, null, null, strategy, tracking, expiry, expiry ? 365 : null);
+    /** One sealed carton of 2 units at HCM-A01-1-A; its stock row's id. */
+    UUID carton(Fixture f, Instant receipt) {
+        // In a transaction: the pool does not auto-commit, and the carton and its row are checked together at commit.
+        return transactions.execute(status -> com.stockflow.support.CartonRows.stock(jdbc, f.sku(), "HCM-A01-1-A", 1,
+                2, null, receipt)).getFirst().stockItemId();
+    }
+
+    /** Describes the item with the logistics it already has: a write that advances the version and nothing else. */
+    InventoryItems.Detail touch(Fixture f, long expectedVersion) {
+        return items.describe(f.itemId(), expectedVersion, items.get(f.itemId()).logistics());
     }
 
     @Test
-    void batchAvailabilityExcludesHoldsBlockedAndExpiredStock() {
+    void batchAvailabilityExcludesHoldsAndBlockedStock() {
         var a = fixture("DRAFT");
         var b = fixture("DRAFT");
-        UUID held = stock(a, 6, null, null, null);
-        write("update inventory.stock_item set reserved=2 where id=?", held);
-        UUID blocked = stock(b, 10, null, null, null);
-        write("update inventory.stock_item set status='QUARANTINE' where id=?", blocked);
-        Instant qcReceipt = Instant.parse("2026-09-03T00:00:00Z");
-        for (String status : List.of("INBOUND", "BLOCKED")) {
-            UUID pending = stock(a, 30, qcReceipt, null, null);
-            write("update inventory.stock_item set status=? where id=?", status, pending);
-            qcReceipt = qcReceipt.plusSeconds(1);
-        }
-        stock(a, 20, Instant.parse("2026-01-01T00:00:00Z"), LocalDate.of(2000, 1, 1), null);
+        Instant received = Instant.parse("2026-01-02T00:00:00Z");
+        // Since team plan 4C-2 only whole sealed cartons nothing holds are promised: two free cartons of 2 count; a
+        // held one and cartons not AVAILABLE do not, nor an emptied loose row (no row in no carton holds units since
+        // V20261117000100, ck_stock_item_whole_cartons).
+        transactions.executeWithoutResult(s -> {
+            com.stockflow.support.CartonRows.stock(jdbc, a.sku(), "HCM-A01-1-A", 2, 2, null, received);
+            UUID held = com.stockflow.support.CartonRows.stock(jdbc, a.sku(), "HCM-A01-1-A", 1, 2, null, received)
+                    .getFirst().stockItemId();
+            jdbc.update("update inventory.stock_item set reserved=2 where id=?", held);
+            for (String status : List.of("INBOUND", "BLOCKED")) {
+                com.stockflow.support.CartonRows.stock(jdbc, a.sku(), "HCM-A01-1-A", 1, 2, null, received, status);
+            }
+            com.stockflow.support.CartonRows.stock(jdbc, b.sku(), "HCM-A01-1-A", 1, 10, null, received, "QUARANTINE");
+        });
+        stock(a, 0, Instant.parse("2026-01-01T00:00:00Z"));
         var available = inventory.availableQuantities(Set.of(a.sku(), b.sku(), "MISSING-SKU"));
         assertThat(available.get(a.sku())).isEqualTo(4L);
         assertThat(available.getOrDefault(b.sku(), 0L)).isZero();
         assertThat(available.getOrDefault("MISSING-SKU", 0L)).isZero();
-        // Policy uses usable on-hand before reservations; QC stock is still excluded.
-        assertThat(items.get(a.itemId()).evaluation().usableOnHand()).isEqualTo(6L);
-    }
-
-    @Test
-    void basePriceDatabaseRejectsForeignCurrencyAndFractionalVnd() {
-        var f = fixture("DRAFT");
-        var listing = catalog.edit(f.product(), 0, "money-" + f.sku(), null, null);
-        catalog.price(
-                f.product(),
-                f.sku(),
-                listing.revision(),
-                new SellingPrice(new BigDecimal("100"), "VND"),
-                "test");
-        assertThatThrownBy(
-                        () ->
-                                write(
-                                        "update catalog.pricing_rule set currency='USD' where"
-                                                + " name=?",
-                                        "BASE:" + f.sku()))
-                .isInstanceOf(DataIntegrityViolationException.class);
-        assertThatThrownBy(
-                        () ->
-                                write(
-                                        "update catalog.pricing_rule set price=100.49 where name=?",
-                                        "BASE:" + f.sku()))
-                .isInstanceOf(DataIntegrityViolationException.class);
-    }
-
-    /**
-     * The server price and the replayed snapshot, through account checkout. This test used guest
-     * checkout until SCRUM-450 retired it (B2B only, decision 2026-10-06); the pricing guarantees it
-     * pins belong to the checkout that remains, and the retired one must not reserve anything.
-     */
-    @Test
-    void accountCheckoutUsesServerPriceAndReplayKeepsTheAgreedSnapshot() {
-        var f = fixture("APPROVED");
-        gallery(f);
-        stock(f, 10, null, null, null);
-        var listing = catalog.edit(f.product(), 0, "checkout-" + f.sku(), null, null);
-        catalog.price(
-                f.product(),
-                f.sku(),
-                listing.revision(),
-                new SellingPrice(new BigDecimal("100"), "VND"),
-                "test");
-        catalog.publish(f.product());
-        projection.project(f.product());
-        UUID buyer = activeCustomerWithShippingAddress();
-        var tampered =
-                new PlaceOrderCommand(
-                        UUID.randomUUID(), buyer, null, null, true,
-                        List.of(new PlaceOrderCommand.Line(new Sku(f.sku()), 1, Money.vnd(1), null)));
-        assertThatThrownBy(() -> orders.placeOrder(tampered))
-                .isInstanceOfSatisfying(
-                        BusinessException.class,
-                        e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.CHECKOUT_PRICE_CHANGED));
-        assertThat(inventory.availableToPromise(new Sku(f.sku()))).isEqualTo(10);
-
-        var address =
-                new PlaceGuestOrderCommand.Address(
-                        "Minh", "0901234567", "12 Nguyen Hue", null, "26734", "Ben Nghe", "79",
-                        "Ho Chi Minh City", "VN", null);
-        assertThatThrownBy(() -> orders.placeGuestOrder(new PlaceGuestOrderCommand(
-                        UUID.randomUUID(), "minh@example.com", address, address,
-                        List.of(new PlaceGuestOrderCommand.Line(new Sku(f.sku()), 1, Money.vnd(100))))))
-                .isInstanceOfSatisfying(
-                        BusinessException.class,
-                        e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.GUEST_CHECKOUT_DISABLED));
-        assertThat(inventory.availableToPromise(new Sku(f.sku()))).isEqualTo(10);
-
-        var accepted =
-                new PlaceOrderCommand(
-                        UUID.randomUUID(), buyer, null, null, true,
-                        List.of(new PlaceOrderCommand.Line(new Sku(f.sku()), 1, Money.vnd(100), null)));
-        var order = orders.placeOrder(accepted);
-        catalog.price(
-                f.product(),
-                f.sku(),
-                catalog.get(f.product()).revision(),
-                new SellingPrice(new BigDecimal("200"), "VND"),
-                "test");
-        assertThat(orders.placeOrder(accepted).orderId()).isEqualTo(order.orderId());
-        assertThat(orders.placeOrder(accepted).total()).isEqualTo(Money.vnd(100));
-        assertThat(inventory.availableToPromise(new Sku(f.sku()))).isEqualTo(9);
-        catalog.unpublish(f.product());
-        assertThatThrownBy(() -> checkoutCatalog.checkoutPrices(Set.of(f.sku())))
-                .isInstanceOfSatisfying(
-                        BusinessException.class,
-                        e ->
-                                assertThat(e.errorCode())
-                                        .isEqualTo(ErrorCode.PRODUCT_NOT_PURCHASABLE));
-    }
-
-    /** An ACTIVE customer of its own with a default shipping address, so account checkout can run. */
-    private UUID activeCustomerWithShippingAddress() {
-        UUID customer = com.stockflow.common.id.Identifiers.newId();
-        transactions.executeWithoutResult(status -> {
-            jdbc.update("""
-                    INSERT INTO customer.customer(id, full_name, email, status, version, created_at)
-                    VALUES (?, 'Checkout Buyer', ?, 'ACTIVE', 0, now())""",
-                    customer, "buyer-" + customer + "@example.test");
-            jdbc.update("""
-                    INSERT INTO customer.address(id, customer_id, type, recipient_name, phone, line1, ward,
-                        ward_code, province, province_code, country, is_default, version, created_at)
-                    VALUES (?, ?, 'SHIPPING', 'Minh', '+84901234567', '12 Nguyen Hue', 'Ben Nghe', '26734',
-                        'Ho Chi Minh City', '79', 'VN', true, 0, now())""",
-                    com.stockflow.common.id.Identifiers.newId(), customer);
-        });
-        return customer;
-    }
-
-    @Test
-    void thresholdsAreNullableZeroIsMeaningfulAndHigherThanStockIsAllowed() {
-        var f = fixture("DRAFT");
-        assertThat(items.get(f.itemId()).policy().reorderPoint()).isNull();
-        var saved =
-                items.configure(f.itemId(),
-                        0,
-                        policy(10, RemovalStrategy.FEFO, TrackingMode.NONE, false));
-        assertThat(saved.evaluation().reorderRequired()).isTrue();
-        assertThat(inventoryControl.policy(new Sku(f.sku())).reorderPoint()).isEqualTo(10);
-        var cleared =
-                items.configure(f.itemId(),
-                        saved.version(),
-                        policy(null, RemovalStrategy.FEFO, TrackingMode.NONE, false));
-        assertThat(cleared.evaluation().reorderRequired()).isNull();
-        var zero =
-                items.configure(f.itemId(),
-                        cleared.version(),
-                        policy(0, RemovalStrategy.FEFO, TrackingMode.NONE, false));
-        assertThat(zero.evaluation().reorderRequired()).isTrue();
     }
 
     @Test
     void staleVersionCannotOverwrite() {
         var a = fixture("DRAFT");
         // "the SKU must belong to the product" is gone: the item is addressed by its own id (spec D1)
-        items.configure(a.itemId(),
-                0,
-                policy(5, RemovalStrategy.FEFO, TrackingMode.NONE, false));
-        assertThatThrownBy(
-                        () ->
-                                items.configure(a.itemId(),
-                                        0,
-                                        policy(6, RemovalStrategy.FEFO, TrackingMode.NONE, false)))
-                .isInstanceOf(BusinessException.class);
+        touch(a, 0);
+        assertThatThrownBy(() -> touch(a, 0)).isInstanceOf(BusinessException.class);
     }
 
+    /** 5-3 (kltn-docs 13 §4.1 step 2): publishing needs an approved product and gallery, never a price. */
     @Test
-    void legacyUnknownReceiptBlocksFifoWithoutChangingTheSku() {
-        var f = fixture("DRAFT");
-        stock(f, 10, null, null, null);
-        assertThatThrownBy(
-                        () ->
-                                items.configure(f.itemId(),
-                                        0,
-                                        policy(3, RemovalStrategy.FIFO, TrackingMode.NONE, false)))
-                .isInstanceOf(BusinessException.class);
-        assertThat(items.get(f.itemId()).policy().reorderPoint()).isNull();
-    }
-
-    @Test
-    void fifoActuallyReservesTheOlderReceiptLayer() {
-        var f = fixture("APPROVED");
-        items.configure(f.itemId(),
-                0,
-                policy(2, RemovalStrategy.FIFO, TrackingMode.NONE, false));
-        var newer = stock(f, 5, Instant.parse("2026-09-02T00:00:00Z"), null, null);
-        var older = stock(f, 5, Instant.parse("2026-09-01T00:00:00Z"), null, null);
-        var placed = orders.placeOrder(
-                new PlaceOrderCommand(
-                        UUID.randomUUID(),
-                        DemoData.CUSTOMER_ID,
-                        List.of(
-                                new PlaceOrderCommand.Line(
-                                        new Sku(f.sku()), 2, Money.vnd(100), null))));
-        // SCRUM-152: checkout holds the SKU only; no layer is chosen until the order is allocated to a warehouse.
-        assertThat(jdbc.queryForObject("select coalesce(sum(reserved),0) from inventory.stock_item where id in (?,?)",
-                Integer.class, older, newer)).isZero();
-        transactions.executeWithoutResult(s -> inventory.allocate(
-                new com.stockflow.inventory.api.AllocateStockCommand(placed.orderId(), "HCM")));
-        assertThat(
-                        jdbc.queryForObject(
-                                "select reserved from inventory.stock_item where id=?",
-                                Integer.class,
-                                older))
-                .isEqualTo(2);
-        assertThat(
-                        jdbc.queryForObject(
-                                "select reserved from inventory.stock_item where id=?",
-                                Integer.class,
-                                newer))
-                .isZero();
-    }
-
-    @Test
-    void serialFlagIsEnforcedAtStockIngressAndCannotBeDisabledWithStock() {
-        var f = fixture("DRAFT");
-        var saved =
-                items.configure(f.itemId(),
-                        0,
-                        policy(null, RemovalStrategy.FIFO, TrackingMode.SERIAL, false));
-        assertThatThrownBy(() -> stock(f, 2, Instant.parse("2026-09-01T00:00:00Z"), null, "SN-1"))
-                .isInstanceOf(DataIntegrityViolationException.class);
-        stock(f, 1, Instant.parse("2026-09-01T00:00:00Z"), null, "SN-1");
-        assertThatThrownBy(
-                        () ->
-                                items.configure(f.itemId(),
-                                        saved.version(),
-                                        policy(
-                                                null,
-                                                RemovalStrategy.FIFO,
-                                                TrackingMode.NONE,
-                                                false)))
-                .isInstanceOf(BusinessException.class);
-    }
-
-    @Test
-    void expiredAvailableRowsDoNotInflateAtpOrThresholdStock() {
-        var f = fixture("DRAFT");
-        stock(f, 9, null, LocalDate.of(2000, 1, 1), null);
-        assertThat(inventory.availableToPromise(new Sku(f.sku()))).isZero();
-        assertThat(inventory.availableToPromise(List.of(new Sku(f.sku()))).get(new Sku(f.sku())))
-                .isZero();
-        assertThat(inventory.availableToPromise(new Sku(f.sku()), "HCM")).isZero();
-        assertThat(items.get(f.itemId()).evaluation().usableOnHand()).isZero();
-    }
-
-    @Test
-    void draftSeoIsPrivateAndPublicationRequiresPriceAndApprovedGallery() {
+    void draftSeoIsPrivateAndPublicationRequiresAnApprovedGalleryButNoPrice() {
         var f = fixture("DRAFT");
         catalog.edit(f.product(), 0, "draft-" + f.sku(), "Private SEO", null);
         projection.project(f.product());
@@ -541,30 +233,18 @@ values (?,?,'HCM-A01-1-A',?,0,'AVAILABLE',?,?,?,?,now())
         write("update product.products set status='APPROVED' where id=?", f.product());
         assertThatThrownBy(() -> catalog.publish(f.product()))
                 .isInstanceOf(BusinessException.class);
-        var listing = catalog.get(f.product());
-        catalog.price(
-                f.product(),
-                f.sku(),
-                listing.revision(),
-                new SellingPrice(new BigDecimal("100.00"), "VND"),
-                "test");
-        assertThat(catalog.price(f.product(), f.sku()).basePrice().amount())
-                .isEqualByComparingTo("100");
-        assertThatThrownBy(() -> catalog.publish(f.product()))
-                .isInstanceOf(BusinessException.class);
+        gallery(f);
+        catalog.publish(f.product());
+        projection.project(f.product());
+        assertThat(catalog.detail("draft-" + f.sku().toLowerCase()).variants())
+                .extracting(CatalogCommerceService.Variant::sku).containsExactly(f.sku());
     }
 
     @Test
     void publishProjectsAllSkusAndUnpublishHidesImmediatelyEvenBeforeProjection() {
         var f = fixture("APPROVED");
         gallery(f);
-        var listing = catalog.edit(f.product(), 0, "public-" + f.sku(), "SEO", null);
-        catalog.price(
-                f.product(),
-                f.sku(),
-                listing.revision(),
-                new SellingPrice(new BigDecimal("100.00"), "VND"),
-                "test");
+        catalog.edit(f.product(), 0, "public-" + f.sku(), "SEO", null);
         catalog.publish(f.product());
         projection.project(f.product());
         String slug = catalog.get(f.product()).slug();
@@ -594,182 +274,28 @@ values (?,?,'HCM-A01-1-A',?,0,'AVAILABLE',?,?,?,?,now())
     }
 
     @Test
-    void negativeThresholdIsHttp400AndPublicCatalogReturnsAPage() throws Exception {
+    void negativeVersionIsHttp400AndPublicCatalogReturnsAPage() throws Exception {
         var f = fixture("DRAFT");
         mvc.perform(
-                        MockMvcRequestBuilders.put("/api/v1/inventory/items/" + f.itemId() + "/policy")
+                        MockMvcRequestBuilders.put("/api/v1/inventory/items/" + f.itemId() + "/logistics")
                                 .contentType("application/json")
                                 .content(
                                         """
-{"version":0,"reorderPoint":-1,"removalStrategy":"FIFO","trackingMode":"NONE","expiryTracked":false}
+{"version":-1,"unitOfMeasure":"EACH","storageClass":"NORMAL","requiresAdultSignature":false}
 """))
                 .andExpect(MockMvcResultMatchers.status().isBadRequest());
         mvc.perform(MockMvcRequestBuilders.get("/api/v1/catalog/products"))
                 .andExpect(MockMvcResultMatchers.status().isOk());
     }
 
-    @Test
-    void maxQtyRoundTripsThroughInventoryControl() throws Exception {
-        var f = fixture("DRAFT");
-        String path = "/api/v1/inventory/items/" + f.itemId();
-        mvc.perform(
-                        MockMvcRequestBuilders.put(path + "/policy")
-                                .contentType("application/json")
-                                .content(
-                                        """
-{"version":0,"reorderPoint":10,"safetyStock":5,"maxQty":40,"removalStrategy":"FIFO","trackingMode":"NONE","expiryTracked":false}
-"""))
-                .andExpect(MockMvcResultMatchers.status().isOk())
-                .andExpect(MockMvcResultMatchers.jsonPath("$.data.policy.maxQty").value(40));
-        mvc.perform(MockMvcRequestBuilders.get(path))
-                .andExpect(MockMvcResultMatchers.status().isOk())
-                .andExpect(MockMvcResultMatchers.jsonPath("$.data.policy.maxQty").value(40));
-        assertThat(
-                        jdbc.queryForObject(
-                                "select max_qty from inventory.inventory_items where sku=?",
-                                Integer.class,
-                                f.sku()))
-                .isEqualTo(40);
-        assertThat(inventoryControl.policy(new Sku(f.sku())).maxQty()).isEqualTo(40);
-    }
-
-    @Test
-    void maxQtyBelowTheReorderPointIs400OnTheField() throws Exception {
-        var f = fixture("DRAFT");
-        mvc.perform(
-                        MockMvcRequestBuilders.put("/api/v1/inventory/items/" + f.itemId() + "/policy")
-                                .contentType("application/json")
-                                .content(
-                                        """
-{"version":0,"reorderPoint":10,"maxQty":5,"removalStrategy":"FIFO","trackingMode":"NONE","expiryTracked":false}
-"""))
-                .andExpect(MockMvcResultMatchers.status().isBadRequest())
-                .andExpect(MockMvcResultMatchers.jsonPath("$.fieldErrors[0].field").value("maxQty"))
-                .andExpect(
-                        MockMvcResultMatchers.jsonPath("$.fieldErrors[0].code")
-                                .value("INVENTORY_MAX_QTY_BELOW_THRESHOLD"));
-        assertThat(
-                        jdbc.queryForObject(
-                                "select max_qty from inventory.inventory_items where sku=?",
-                                Integer.class,
-                                f.sku()))
-                .isNull();
-    }
-
-    @Test
-    void databaseConstraintsRejectNegativeThresholdsEvenWithoutTheService() {
-        var f = fixture("DRAFT");
-        assertThatThrownBy(
-                        () ->
-                                write(
-                                        "update inventory.inventory_items set reorder_point=-1"
-                                                + " where sku=?",
-                                        f.sku()))
-                .isInstanceOf(DataIntegrityViolationException.class);
-    }
-
     // inventoryControlCannotChangeDuringApprovalOrAfterDiscontinuation removed: an inventory item is
     // independent of its product's status (spec D1); the policy is editable in every product state.
-
-    @Test
-    void expiryCannotBeDisabledAndIngressRejectsMissingOrExpiredDates() {
-        var f = fixture("DRAFT");
-        var saved =
-                items.configure(f.itemId(),
-                        0,
-                        policy(5, RemovalStrategy.FEFO, TrackingMode.LOT_SERIAL, true));
-        Instant receipt = Instant.now().minusSeconds(60);
-        LocalDate today = BusinessCalendar.date(receipt);
-        assertThatThrownBy(() -> stock(f, 1, receipt, null, "EXP-1"))
-                .isInstanceOf(DataIntegrityViolationException.class);
-        assertThatThrownBy(() -> stock(f, 1, receipt, today.minusDays(1), "EXP-1"))
-                .isInstanceOf(DataIntegrityViolationException.class);
-        stock(f, 1, receipt, today.plusDays(10), "EXP-1");
-        assertThatThrownBy(
-                        () ->
-                                items.configure(f.itemId(),
-                                        saved.version(),
-                                        policy(
-                                                5,
-                                                RemovalStrategy.FEFO,
-                                                TrackingMode.SERIAL,
-                                                false)))
-                .isInstanceOf(BusinessException.class);
-    }
-
-    @Test
-    void shorterShelfLifeCannotInvalidateExistingStock() {
-        var f = fixture("DRAFT");
-        var saved =
-                items.configure(f.itemId(),
-                        0,
-                        policy(5, RemovalStrategy.FEFO, TrackingMode.LOT_SERIAL, true));
-        Instant receipt = Instant.now().minusSeconds(60);
-        LocalDate receiptDay = BusinessCalendar.date(receipt);
-        stock(f, 1, receipt, receiptDay.plusDays(10), "SHELF-1");
-
-        assertThatThrownBy(
-                        () ->
-                                items.configure(f.itemId(),
-                                        saved.version(),
-                                        new InventoryPolicy(
-                                                5,
-                                                null,
-                                                null,
-                                                RemovalStrategy.FEFO,
-                                                TrackingMode.LOT_SERIAL,
-                                                true,
-                                                5)))
-                .isInstanceOfSatisfying(
-                        BusinessException.class,
-                        e ->
-                                assertThat(e.errorCode())
-                                        .isEqualTo(ErrorCode.INVENTORY_POLICY_STOCK_CONFLICT));
-        assertThat(items.get(f.itemId()).policy().maxShelfLifeDays()).isEqualTo(365);
-        assertThat(inventoryControl.policy(new Sku(f.sku())).maxShelfLifeDays()).isEqualTo(365);
-
-        var allowed =
-                items.configure(f.itemId(),
-                        saved.version(),
-                        new InventoryPolicy(
-                                5, null, null, RemovalStrategy.FEFO, TrackingMode.LOT_SERIAL, true, 10));
-        assertThat(allowed.policy().maxShelfLifeDays()).isEqualTo(10);
-    }
-
-    @Test
-    void shelfLifeLimitRequiresKnownReceiptAgeForExistingStock() {
-        var f = fixture("DRAFT");
-        Instant now = Instant.now();
-        LocalDate today = BusinessCalendar.date(now);
-        stock(f, 1, null, today.plusDays(10), "UNKNOWN-AGE");
-        assertThatThrownBy(
-                        () ->
-                                items.configure(f.itemId(),
-                                        0,
-                                        policy(
-                                                5,
-                                                RemovalStrategy.FEFO,
-                                                TrackingMode.LOT_SERIAL,
-                                                true)))
-                .isInstanceOfSatisfying(
-                        BusinessException.class,
-                        e ->
-                                assertThat(e.errorCode())
-                                        .isEqualTo(ErrorCode.INVENTORY_POLICY_STOCK_CONFLICT));
-        assertThat(items.get(f.itemId()).version()).isZero();
-    }
 
     @Test
     void duplicatePublicationDoesNotIncrementRevisionAndOlderEventUsesLatestSeo() {
         var f = fixture("APPROVED");
         gallery(f);
-        var listing = catalog.edit(f.product(), 0, "repeat-" + f.sku(), "Old SEO", null);
-        catalog.price(
-                f.product(),
-                f.sku(),
-                listing.revision(),
-                new SellingPrice(new BigDecimal("100"), "VND"),
-                "test");
+        catalog.edit(f.product(), 0, "repeat-" + f.sku(), "Old SEO", null);
         catalog.publish(f.product());
         long revision = catalog.get(f.product()).revision();
         catalog.publish(f.product());
@@ -787,38 +313,6 @@ values (?,?,'HCM-A01-1-A',?,0,'AVAILABLE',?,?,?,?,now())
     }
 
     @Test
-    void equalPriorityPricesConflictAndASecondPublishCannotBypassIt() {
-        var f = fixture("APPROVED");
-        gallery(f);
-        var listing = catalog.edit(f.product(), 0, "price-" + f.sku(), null, null);
-        catalog.price(
-                f.product(),
-                f.sku(),
-                listing.revision(),
-                new SellingPrice(new BigDecimal("100"), "VND"),
-                "test");
-        write(
-                """
-insert into catalog.pricing_rule(id,name,sku,price,currency,priority,active,created_at)
-values (?,'Conflicting test rule',?,200,'VND',0,true,now())
-""",
-                UUID.randomUUID(),
-                f.sku());
-        assertThatThrownBy(() -> catalog.publish(f.product()))
-                .isInstanceOfSatisfying(
-                        BusinessException.class,
-                        e ->
-                                assertThat(e.errorCode())
-                                        .isEqualTo(ErrorCode.CATALOG_PRICE_AMBIGUOUS));
-        assertThat(
-                        jdbc.queryForObject(
-                                "select status from product.products where id=?",
-                                String.class,
-                                f.product()))
-                .isEqualTo("APPROVED");
-    }
-
-    @Test
     void twoWritersWithTheSameSkuVersionCannotBothWin() throws Exception {
         var f = fixture("DRAFT");
         try (var executor = Executors.newFixedThreadPool(2)) {
@@ -827,9 +321,7 @@ values (?,'Conflicting test rule',?,200,'VND',0,true,now())
                     () -> {
                         start.await();
                         try {
-                            items.configure(f.itemId(),
-                                    0,
-                                    policy(5, RemovalStrategy.FEFO, TrackingMode.NONE, false));
+                            touch(f, 0);
                             return true;
                         } catch (BusinessException e) {
                             assertThat(e.errorCode()).isEqualTo(ErrorCode.OPTIMISTIC_LOCK);
@@ -885,78 +377,12 @@ values (?,'Conflicting test rule',?,200,'VND',0,true,now())
     }
 
     @Test
-    void concurrentIngressIsSeenBeforePolicyChangeCanCommit() throws Exception {
-        var f = fixture("DRAFT");
-        try (var executor = Executors.newFixedThreadPool(2)) {
-            var inserted = new CountDownLatch(1);
-            var commit = new CountDownLatch(1);
-            var ingress =
-                    executor.submit(
-                            () ->
-                                    transactions.execute(
-                                            status -> {
-                                                stock(
-                                                        f,
-                                                        2,
-                                                        Instant.parse("2026-09-01T00:00:00Z"),
-                                                        null,
-                                                        null);
-                                                inserted.countDown();
-                                                try {
-                                                    if (!commit.await(10, TimeUnit.SECONDS))
-                                                        throw new IllegalStateException(
-                                                                "Timed out");
-                                                } catch (InterruptedException e) {
-                                                    Thread.currentThread().interrupt();
-                                                    throw new IllegalStateException(e);
-                                                }
-                                                return true;
-                                            }));
-            assertThat(inserted.await(10, TimeUnit.SECONDS)).isTrue();
-            var changed =
-                    executor.submit(
-                            () -> {
-                                try {
-                                    items.configure(f.itemId(),
-                                            0,
-                                            policy(
-                                                    null,
-                                                    RemovalStrategy.FIFO,
-                                                    TrackingMode.SERIAL,
-                                                    false));
-                                    return true;
-                                } catch (BusinessException e) {
-                                    assertThat(e.errorCode())
-                                            .isEqualTo(ErrorCode.INVENTORY_POLICY_STOCK_CONFLICT);
-                                    return false;
-                                }
-                            });
-            commit.countDown();
-            assertThat(ingress.get(15, TimeUnit.SECONDS)).isTrue();
-            assertThat(changed.get(15, TimeUnit.SECONDS)).isFalse();
-        }
-    }
-
-    @Test
-    void canonicalVariantCreatesInventoryItemAndPolicyHasItsOwnVersion() {
+    void canonicalVariantCreatesInventoryItemWithItsOwnVersion() {
         var f = fixture("DRAFT");
         write("update product.variants set status='DRAFT' where id=?", f.skuId());
         var initial = items.get(f.itemId());
-        assertThat(initial.policy().trackingMode()).isEqualTo(TrackingMode.NONE);
-        assertThat(initial.evaluation().reorderRequired()).isNull();
-        var saved =
-                items.configure(f.itemId(),
-                        initial.version(),
-                        new InventoryPolicy(
-                                100, 5, null, RemovalStrategy.FEFO, TrackingMode.LOT_SERIAL, true, 30));
+        var saved = touch(f, initial.version());
         assertThat(saved.version()).isEqualTo(initial.version() + 1);
-        assertThat(saved.evaluation().reorderRequired()).isTrue();
-        assertThat(
-                        jdbc.queryForObject(
-                                "select safety_stock from inventory.inventory_items where sku=?",
-                                Integer.class,
-                                f.sku()))
-                .isEqualTo(5);
         assertThat(
                         jdbc.queryForObject(
                                 "select version from product.variants where id=?",
@@ -980,12 +406,6 @@ values (?,'Conflicting test rule',?,200,'VND',0,true,now())
                                 String.class,
                                 f.product()))
                 .isEqualTo("First");
-        catalog.price(
-                f.product(),
-                f.sku(),
-                listing.revision(),
-                new SellingPrice(new BigDecimal("100"), "VND"),
-                "test");
         catalog.publish(f.product());
         projection.project(f.product());
         long staleRevision = catalog.get(f.product()).revision();
@@ -1034,13 +454,7 @@ values (?,'Conflicting test rule',?,200,'VND',0,true,now())
         write(
                 "update product.media set created_by=published_by::text where variant_id=?",
                 f.skuId());
-        var listing = catalog.edit(f.product(), 0, "media-" + f.sku(), null, null);
-        catalog.price(
-                f.product(),
-                f.sku(),
-                listing.revision(),
-                new SellingPrice(new BigDecimal("100"), "VND"),
-                "test");
+        catalog.edit(f.product(), 0, "media-" + f.sku(), null, null);
         assertThatThrownBy(() -> catalog.publish(f.product()))
                 .isInstanceOfSatisfying(
                         BusinessException.class,
@@ -1061,12 +475,8 @@ values (?,'Conflicting test rule',?,200,'VND',0,true,now())
         catalog.publish(f.product());
         projection.project(f.product());
         write("update product.variants set status='BLOCKED' where id=?", f.skuId());
-        assertThatThrownBy(() -> checkoutCatalog.checkoutPrices(Set.of(f.sku())))
-                .isInstanceOfSatisfying(
-                        BusinessException.class,
-                        e ->
-                                assertThat(e.errorCode())
-                                        .isEqualTo(ErrorCode.PRODUCT_NOT_PURCHASABLE));
+        assertThat(productService.purchasability(Set.of(f.sku())))
+                .containsEntry(f.sku().toUpperCase(), com.stockflow.product.api.Purchasability.VARIANT_NOT_ACTIVE);
     }
 
     @Test
@@ -1079,12 +489,6 @@ values (?,'Conflicting test rule',?,200,'VND',0,true,now())
                 UUID.randomUUID(),
                 f.skuId());
         var listing = catalog.edit(f.product(), 0, "gallery-" + f.sku(), null, null);
-        catalog.price(
-                f.product(),
-                f.sku(),
-                listing.revision(),
-                new SellingPrice(new BigDecimal("100"), "VND"),
-                "test");
         catalog.publish(f.product());
         projection.project(f.product());
         String path = "/api/v1/catalog/products/" + listing.slug();

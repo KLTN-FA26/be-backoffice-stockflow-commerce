@@ -14,6 +14,14 @@ import java.util.UUID;
  */
 public interface OrderRepository {
 
+    /**
+     * 4B-7 (17 §4.2 step 3): the orders of a contract with a shipping warehouse whose holds stock arriving later tops
+     * up, earliest signed first, so the oldest order is served first - CONFIRMED, AWAITING_STOCK (4A-6), and since 4B-8
+     * an order already released whose later delivery batches still hold (READY_TO_FULFILL to PARTIALLY_FULFILLED).
+     */
+    java.util.List<UUID> waitingForStockAtShippingWarehouse();
+
+
     Optional<Order> findById(OrderId id);
 
     Optional<Order> findByIdForUpdate(OrderId id);
@@ -32,16 +40,17 @@ public interface OrderRepository {
      */
     Optional<Order> findByIdInScope(OrderId id);
 
+    /**
+     * {@link #findByIdInScope} without the lock, for a read: the order when the current {@code DataScope} lets the
+     * caller see it, empty when it does not - so a read-only transaction asks no {@code FOR UPDATE} and an order out of
+     * scope reads as absent, as it does to a change.
+     */
+    Optional<Order> findByIdInScopeForReading(OrderId id);
+
     /** Idempotency: a resubmitted checkout must return the original order, not create a second. */
     Optional<Order> findByRequestId(UUID requestId);
 
     List<Order> findByCustomerId(UUID customerId);
-
-    /**
-     * The customer's orders placed at or after {@code since} that are not cancelled, newest first, with their lines:
-     * what the duplicate-order check compares a new checkout with (SCRUM-190).
-     */
-    List<Order> findLiveSince(UUID customerId, java.time.Instant since);
 
     /** The status and hold reason of each order among {@code ids} that exists, in one query, without its lines. */
     List<com.stockflow.order.api.OrderHoldState> holdStates(java.util.Collection<UUID> ids);

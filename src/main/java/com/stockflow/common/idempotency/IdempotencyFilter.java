@@ -5,6 +5,7 @@ import com.stockflow.common.api.ApiResponse;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.security.CurrentUserProvider;
+import com.stockflow.common.web.RequestBodyTooLargeException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
@@ -48,7 +49,7 @@ import java.util.Set;
  * <h2>Interaction with the application's own idempotency</h2>
  *
  * <p>This is HTTP-level and complements, rather than replaces, the domain-level keys —
- * {@code PlaceOrderCommand.requestId}, {@code ReserveStockCommand.requestId}. The two catch
+ * {@code PlaceOrderCommand.requestId}, {@code HoldStockCommand.requestId}. The two catch
  * different retries: this one catches a client resending the same HTTP request; the domain one
  * catches a caller reaching the service by any route, including from another module in-process.
  * Removing either leaves a real hole.</p>
@@ -92,6 +93,9 @@ public final class IdempotencyFilter extends OncePerRequestFilter {
     /** Provider webhooks: anonymous, signed, idempotent by their own message ids. */
     static final String WEBHOOK_PATH = "/api/v1/notifications/webhooks/";
 
+    /** Carriers' webhooks (3-5): anonymous, authenticated by their credential, repeats told apart by the event log. */
+    static final String CARRIER_WEBHOOK_PATH = "/api/v1/fulfillment/carrier-webhooks/";
+
     /**
      * How long a stored response can be replayed.
      *
@@ -122,7 +126,8 @@ public final class IdempotencyFilter extends OncePerRequestFilter {
         // A provider's webhook (SCRUM-352) is not a client's retry: it carries its own idempotency (Svix's message
         // id) and caps its body at 64 KiB as it reads it. Buffering it here first, whatever its size, would bypass
         // that cap (review of #195, N3).
-        if (request.getRequestURI() != null && request.getRequestURI().startsWith(WEBHOOK_PATH)) {
+        if (request.getRequestURI() != null && (request.getRequestURI().startsWith(WEBHOOK_PATH)
+                || request.getRequestURI().startsWith(CARRIER_WEBHOOK_PATH))) {
             return true;
         }
         if (request.getHeader(IdempotencyKeys.HEADER) == null) {
@@ -157,7 +162,14 @@ public final class IdempotencyFilter extends OncePerRequestFilter {
             return;
         }
 
-        CachedBodyRequest buffered = CachedBodyRequest.wrap(request);
+        CachedBodyRequest buffered;
+        try {
+            buffered = CachedBodyRequest.wrap(request);
+        } catch (RequestBodyTooLargeException tooLarge) {
+            // A route capped by RequestBodyLimitFilter: the cap bites while the body is buffered, before any claim.
+            writeError(response, ErrorCode.REQUEST_BODY_TOO_LARGE, ErrorCode.REQUEST_BODY_TOO_LARGE.defaultMessage());
+            return;
+        }
         String caller = IdempotencyKeys.callerNamespace(
                 currentUserProvider.current().map(u -> u.userId()).orElse(null));
         String fingerprint = IdempotencyKeys.fingerprint(

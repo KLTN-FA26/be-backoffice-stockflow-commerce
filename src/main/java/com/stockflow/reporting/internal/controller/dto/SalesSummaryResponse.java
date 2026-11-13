@@ -25,7 +25,8 @@ public record SalesSummaryResponse(
     @Schema(description = "Totals of one period")
     public record Totals(
             @Schema(description = "Orders placed, less those cancelled", example = "42") long ordersCount,
-            @Schema(description = "Their total, whole dong", example = "504000000") BigDecimal revenue,
+            @Schema(description = "Their total before tax, fee lines included (17 §4.11, D33), whole dong",
+                    example = "504000000") BigDecimal revenue,
             @Schema(description = "revenue / ordersCount, whole dong; 0 when there are no orders", example = "12000000")
             BigDecimal averageOrderValue) {
     }

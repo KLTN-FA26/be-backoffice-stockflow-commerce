@@ -4,8 +4,6 @@ import com.stockflow.common.api.PageResponse;
 import com.stockflow.order.api.CancellationReasonCode;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.OrderSummary;
-import com.stockflow.order.api.PaymentStatus;
-import com.stockflow.order.api.PaymentTerm;
 
 import java.math.BigDecimal;
 import java.time.Instant;
@@ -33,8 +31,14 @@ public interface CustomerOrders {
      * step to the customer.
      */
     enum StatusGroup {
-        AWAITING_PAYMENT, UNDER_REVIEW, CONFIRMED, IN_PRODUCTION, PREPARING, SHIPPING, DELIVERED, CANCELLED,
-        RETURNED
+        /** 4B-5 (17 §5.2 "Chờ ký hợp đồng"): the contract was sent and waits to be signed. */
+        AWAITING_CONTRACT,
+        AWAITING_PAYMENT, UNDER_REVIEW, CONFIRMED,
+        /** 4A-6 (17 §5.2 "Đang chờ hàng"): AWAITING_STOCK - its goods are being produced to be received into stock. */
+        AWAITING_STOCK,
+        /** Legacy: an order released with lines printed in house; no order enters IN_PRODUCTION any more. */
+        IN_PRODUCTION,
+        PREPARING, SHIPPING, DELIVERED, CANCELLED, RETURNED
     }
 
     /**
@@ -45,13 +49,14 @@ public interface CustomerOrders {
 
     /**
      * What the customer may do with the order now, so the portal does not keep its own copy of the rules (G3-2):
-     * cancel at once, ask for a cancellation, or order the same again.
+     * cancel at once, or ask for a cancellation. Ordering the same again is not among them: it opens a chat with Sales
+     * on any order (kltn-docs 13 BR-08), and there is nothing to decide here.
      */
-    record AllowedActions(boolean cancel, boolean requestCancellation, boolean reorder) {
+    record AllowedActions(boolean cancel, boolean requestCancellation) {
     }
 
     /** Where printing a line stands. {@code NOT_REQUIRED} for a line of stock goods. */
-    enum ProductionState { NOT_REQUIRED, NOT_STARTED, IN_PROGRESS, DONE, CANCELLED }
+    enum ProductionState { NOT_REQUIRED, NOT_STARTED, DONE, CANCELLED }
 
     /**
      * @param statuses  empty or null for every status
@@ -83,20 +88,29 @@ public interface CustomerOrders {
                                    Instant decidedAt, String decisionNote) {
     }
 
-    /** @param goodQuantity good units printed so far, as the production module reported them */
+    /** @param goodQuantity the line's units once released (printed outside the system, in stock); 0 before */
     record Production(ProductionState state, int goodQuantity) {
     }
 
-    /**
-     * @param productSlug  where the line's SKU is on sale in the storefront today ({@code /catalog/{slug}}); with
-     *                     {@code productTitle} and {@code productImageUrl} what a portal needs to put the line
-     *                     back in a basket (reorder, SCRUM-190). All three are null when the SKU is not on sale now
-     *                     (suspended, discontinued, unpublished): the portal skips such a line. They describe
-     *                     today's catalogue, not what the order froze
-     */
+    /** @param taxRate the line's VAT rate (4B-3); null, with {@code taxAmount}, on a line placed without VAT */
     record Line(UUID lineId, String sku, int quantity, BigDecimal unitPrice, BigDecimal lineTotal,
-                UUID designSnapshotId, Production production, String productSlug, String productTitle,
-                String productImageUrl) {
+                UUID designSnapshotId, Production production, Integer cartons, Integer unitsPerCarton,
+                BigDecimal taxRate, BigDecimal taxAmount) {
+    }
+
+    /**
+     * The order's money as its documents show it (4B-3; kltn-docs 14 BR-09, BR-21): before tax - the lines and the fee
+     * lines - the VAT, and the total with it ({@link Detail#total()}).
+     */
+    record Charges(BigDecimal netTotal, BigDecimal taxTotal, List<Fee> fees) {
+
+        public Charges {
+            fees = fees == null ? List.of() : List.copyOf(fees);
+        }
+    }
+
+    /** A plate fee (with the SKU it is for) or the shipping fee, with its VAT. */
+    record Fee(String kind, String sku, BigDecimal amount, BigDecimal taxRate, BigDecimal taxAmount) {
     }
 
     /**
@@ -107,20 +121,15 @@ public interface CustomerOrders {
                          CancellationReasonCode reasonCode) {
     }
 
-    /** @param depositRequired null unless the order is on DEPOSIT terms; {@code creditTermDays} only on CREDIT */
-    record Payment(PaymentStatus status, BigDecimal paidAmount, BigDecimal depositRequired,
-                   Integer creditTermDays) {
-    }
-
     /**
      * One shipment of the order as the customer reads it (G4-2a, kltn-docs 09 BR-05): from its handover to the carrier
      * on. Who handed it over or recorded its outcome, the note on a failure, the money it carries: none of it is here.
      *
-     * @param shipmentCode  null for a shipment recorded before G4-2a (as are packageCount 0, carrier and mode)
+     * @param shipmentCode  null for a shipment recorded before G4-2a (as are packageCount 0 and the carrier)
      * @param failureReason set once a delivery failed (kept after a retry delivered it, as the history does)
      */
     record Shipment(String shipmentCode, com.stockflow.order.api.OrderShipmentStatus status, int packageCount,
-                    String carrierName, String deliveryMode, Instant handedOverAt, Instant outcomeAt,
+                    String carrierName, Instant handedOverAt, Instant outcomeAt,
                     com.stockflow.order.api.DeliveryFailureReason failureReason) {
     }
 
@@ -129,13 +138,15 @@ public interface CustomerOrders {
      *                         {@code UNDER_REVIEW}, never the internal reason
      * @param timeline         oldest first
      * @param shipments        handed over to a carrier, oldest first; empty before the first handover
-     * @param deliveryMode     SCRUM-209: PARCEL or FULL_TRUCKLOAD as the order carries it; null without a lifecycle
+     *
+     * <p>No payment block since 4B-10: the order has no payment terms or money of its own - the customer reads its
+     * contract's installments ({@code GET /api/v1/installments/me/orders/{orderId}}).</p>
      */
     record Detail(UUID orderId, String orderNumber, OrderStatus status, StatusGroup statusGroup,
-                  String holdReasonPublic, PaymentTerm paymentTerm, BigDecimal total, String currency,
-                  Instant placedAt, OrderSummary.AddressSummary shippingAddress, Payment payment, List<Line> lines,
+                  String holdReasonPublic, BigDecimal total, String currency,
+                  Instant placedAt, OrderSummary.AddressSummary shippingAddress, List<Line> lines,
                   List<TimelineEntry> timeline, DeliveryState deliveryState, AllowedActions allowedActions,
-                  CancellationRequestView cancellationRequest, List<Shipment> shipments, String deliveryMode) {
+                  CancellationRequestView cancellationRequest, List<Shipment> shipments, Charges charges) {
 
         public Detail {
             shipments = shipments == null ? List.of() : List.copyOf(shipments);

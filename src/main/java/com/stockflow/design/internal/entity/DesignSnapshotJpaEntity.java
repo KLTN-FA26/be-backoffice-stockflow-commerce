@@ -19,6 +19,11 @@ import org.hibernate.type.SqlTypes;
  *
  * <p>Once confirmed it is never edited — a change produces a new snapshot. Order
  * stores only this id + checksum, never a copy of the artifact.</p>
+ *
+ * <p>An approved customer's design also keeps its layout, the images it places and the template as it was
+ * (kltn-docs 12 BR-08); its checksum then covers the layout and the images too
+ * ({@link #checksumOf}). A snapshot of the staff workflow has none of them, and its checksum is computed as it always
+ * was.</p>
  */
 @Entity
 @Table(name = "design_snapshot", schema = "design")
@@ -49,6 +54,41 @@ public class DesignSnapshotJpaEntity extends BaseEntity {
     @JdbcTypeCode(SqlTypes.JSON)
     @Column(name = "artifact_manifest", nullable = false, updatable = false, columnDefinition = "jsonb")
     private List<DesignSnapshotArtifact> artifactManifest = List.of();
+    @Column(name = "document", updatable = false, columnDefinition = "text")
+    private String document;
+    @Column(name = "document_checksum", updatable = false, length = 64)
+    private String documentChecksum;
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "assets", updatable = false, columnDefinition = "jsonb")
+    private List<com.stockflow.design.internal.domain.DesignSnapshotAsset> assets;
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "template", updatable = false, columnDefinition = "jsonb")
+    private String template;
+
+    /**
+     * An approved customer's design (kltn-docs 12 §4.5): its files, its layout and the images it places, and the
+     * template as it was approved on. {@code reviewer} is the Sales Manager who approved it. The customer's SKU issued
+     * for it names this snapshot, not the other way round: the snapshot is written once.
+     */
+    public static DesignSnapshotJpaEntity approved(UUID id, DesignDraftJpaEntity draft,
+                                                   List<DesignArtifactJpaEntity> files, String document,
+                                                   String documentChecksum,
+                                                   List<com.stockflow.design.internal.domain.DesignSnapshotAsset> assets,
+                                                   String template, UUID reviewer, Instant now) {
+        List<DesignSnapshotArtifact> manifest = toManifest(files);
+        var snapshot = new DesignSnapshotJpaEntity(id, draft.getId(), checksumOf(manifest, documentChecksum, assets),
+                primary(files).storedFile().key(), now);
+        snapshot.artifactId = primary(files).getId();
+        snapshot.confirmedBy = reviewer;
+        snapshot.reviewedBy = reviewer;
+        snapshot.spec = draft.getSpec() == null ? "Approved design " + draft.getName() : draft.getSpec();
+        snapshot.artifactManifest = manifest;
+        snapshot.document = document;
+        snapshot.documentChecksum = documentChecksum;
+        snapshot.assets = List.copyOf(assets);
+        snapshot.template = template;
+        return snapshot;
+    }
 
     public DesignSnapshotJpaEntity(UUID id, DesignDraftJpaEntity draft, DesignArtifactJpaEntity artifact,
                                    UUID actor, Instant now) {
@@ -70,6 +110,12 @@ public class DesignSnapshotJpaEntity extends BaseEntity {
     public UUID getConfirmedBy() { return confirmedBy; }
     public String getSpec() { return spec; }
     public List<DesignSnapshotArtifact> getArtifactManifest() { return List.copyOf(artifactManifest); }
+    public String getDocument() { return document; }
+    public String getDocumentChecksum() { return documentChecksum; }
+    public List<com.stockflow.design.internal.domain.DesignSnapshotAsset> getAssets() {
+        return assets == null ? null : List.copyOf(assets);
+    }
+    public String getTemplate() { return template; }
 
     protected DesignSnapshotJpaEntity() {
     }
@@ -89,6 +135,17 @@ public class DesignSnapshotJpaEntity extends BaseEntity {
     public Instant getConfirmedAt() { return confirmedAt; }
 
     public static String manifestChecksum(List<DesignSnapshotArtifact> manifest) {
+        return checksumOf(manifest, null, List.of());
+    }
+
+    /**
+     * The snapshot's checksum: a {@code ROLE:artifactId:checksum} line per file, by role; then, for a customer's
+     * design, {@code DESIGN_DOCUMENT:<layout checksum>} and a {@code DESIGN_ASSET:<id>:<checksum>} line per image, by
+     * id. Without a layout the extra lines are absent, so a snapshot of the staff workflow keeps the checksum it was
+     * confirmed with.
+     */
+    public static String checksumOf(List<DesignSnapshotArtifact> manifest, String documentChecksum,
+                                    List<com.stockflow.design.internal.domain.DesignSnapshotAsset> assets) {
         try {
             var digest = java.security.MessageDigest.getInstance("SHA-256");
             manifest.stream().sorted(Comparator.comparing(value -> value.role().name())).forEach(value -> {
@@ -99,6 +156,13 @@ public class DesignSnapshotJpaEntity extends BaseEntity {
                 digest.update(value.checksum().getBytes(java.nio.charset.StandardCharsets.US_ASCII));
                 digest.update((byte) '\n');
             });
+            if (documentChecksum != null) {
+                digest.update(("DESIGN_DOCUMENT:" + documentChecksum + "\n")
+                        .getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+                assets.stream().sorted(Comparator.comparing(asset -> asset.assetId().toString())).forEach(asset ->
+                        digest.update(("DESIGN_ASSET:" + asset.assetId() + ":" + asset.checksum() + "\n")
+                                .getBytes(java.nio.charset.StandardCharsets.US_ASCII)));
+            }
             return HexFormat.of().formatHex(digest.digest());
         } catch (java.security.NoSuchAlgorithmException impossible) { throw new IllegalStateException(impossible); }
     }

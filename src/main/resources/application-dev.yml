@@ -102,6 +102,14 @@ stockflow:
       bank-name: ${COMPANY_BANK_NAME:DEMO BANK (not a real bank)}
       account-number: ${COMPANY_BANK_ACCOUNT_NUMBER:0000000000}
       account-name: ${COMPANY_BANK_ACCOUNT_NAME:DEMO STOCKFLOW CO LTD}
+      bank-bin: ${COMPANY_BANK_BIN:970000}   # not a bank's BIN: the demo VietQR code names no real bank
+  # Obviously not a real company (4B-4, WF-05 E1): demo values so a contract and an invoice can be drawn up here.
+  seller:
+    name: ${SELLER_NAME:DEMO STOCKFLOW CO LTD}
+    tax-code: ${SELLER_TAX_CODE:0000000000}
+    address: ${SELLER_ADDRESS:1 Demo Street, Ho Chi Minh City}
+    representative: ${SELLER_REPRESENTATIVE:Demo Director}
+    representative-title: ${SELLER_REPRESENTATIVE_TITLE:Director}
   security:
     # ON. A server never runs with security off — that is what the `local` profile is for, and it
     # must never leave a laptop.
@@ -112,7 +120,8 @@ stockflow:
       # SMTP (the server's Mailpit) until the sending domain is verified in Resend: a dev server deployed on every
       # push to develop must not stop for a key it has not been given yet. EMAIL_PROVIDER=resend with
       # RESEND_API_KEY and RESEND_FROM switches it to Resend, which then refuses to start without them (as prod
-      # always does). A server holding copies of real customers should also set CUSTOMER_EMAIL_ENABLED=false.
+      # always does). Customer order mail stays off (CUSTOMER_EMAIL_ENABLED defaults to false, application.yml);
+      # e-invoice mail is on (EINVOICE_EMAIL_ENABLED) and, over SMTP, stops at Mailpit.
       provider: ${EMAIL_PROVIDER:smtp}
       from: ${RESEND_FROM:${MAIL_FROM:}}
       resend:

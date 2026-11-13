@@ -12,7 +12,6 @@ import jakarta.persistence.OneToMany;
 import jakarta.persistence.Table;
 import jakarta.persistence.UniqueConstraint;
 
-import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -43,26 +42,23 @@ import java.util.UUID;
 public class StockItemJpaEntity extends BaseEntity {
     @Column(name = "received_at")
     private java.time.Instant receivedAt;
-    @Column(name = "serial_number", length = 100)
-    private String serialNumber;
     /** The lot of these units (SCRUM-142); {@code tg_stock_item_lot} fills it on insert when the application did not. */
     @Column(name = "lot_id")
     private UUID lotId;
     public UUID getLotId() { return lotId; }
     public java.time.Instant getReceivedAt() { return receivedAt; }
-    public String getSerialNumber() { return serialNumber; }
     public StockItemJpaEntity(UUID id, String sku, String locationCode, String lotNumber,
-                       LocalDate expiryDate, int onHand, int reserved, StockStatus status,
-                       java.time.Instant receivedAt, String serialNumber) {
-        this(id, sku, locationCode, lotNumber, expiryDate, onHand, reserved, status);
-        this.receivedAt = receivedAt; this.serialNumber = serialNumber;
+                       int onHand, int reserved, StockStatus status,
+                       java.time.Instant receivedAt) {
+        this(id, sku, locationCode, lotNumber, onHand, reserved, status);
+        this.receivedAt = receivedAt;
     }
 
     /** A new row as the mapper writes it: its lot (null: the trigger resolves it) and its stock package (null: loose). */
     public StockItemJpaEntity(UUID id, String sku, String locationCode, String lotNumber,
-                       LocalDate expiryDate, int onHand, int reserved, StockStatus status,
-                       java.time.Instant receivedAt, String serialNumber, UUID lotId, UUID stockPackageId) {
-        this(id, sku, locationCode, lotNumber, expiryDate, onHand, reserved, status, receivedAt, serialNumber);
+                       int onHand, int reserved, StockStatus status,
+                       java.time.Instant receivedAt, UUID lotId, UUID stockPackageId) {
+        this(id, sku, locationCode, lotNumber, onHand, reserved, status, receivedAt);
         this.lotId = lotId;
         this.stockPackageId = stockPackageId;
     }
@@ -76,9 +72,6 @@ public class StockItemJpaEntity extends BaseEntity {
     /** Nullable: not every product is lot-tracked. Part of the unique key, so NULLs matter here. */
     @Column(name = "lot_number", length = 64)
     private String lotNumber;
-
-    @Column(name = "expiry_date")
-    private LocalDate expiryDate;
 
     @Column(name = "on_hand", nullable = false)
     private int onHand;
@@ -116,7 +109,7 @@ public class StockItemJpaEntity extends BaseEntity {
      * {@code cascade = ALL}, {@code orphanRemoval = true}, and no repository of their own.
      *
      * <p>{@code FetchType.LAZY} because the ATP read path never touches them, and
-     * {@code @BatchSize} to stop the sweeper's list query from issuing one SELECT per item.</p>
+     * {@code @BatchSize} to stop a list query from issuing one SELECT per item.</p>
      */
     @OneToMany(mappedBy = "stockItem", cascade = CascadeType.ALL,
             orphanRemoval = true, fetch = FetchType.LAZY)
@@ -128,12 +121,11 @@ public class StockItemJpaEntity extends BaseEntity {
     }
 
     public StockItemJpaEntity(UUID id, String sku, String locationCode, String lotNumber,
-                       LocalDate expiryDate, int onHand, int reserved, StockStatus status) {
+                       int onHand, int reserved, StockStatus status) {
         super(id);
         this.sku = sku;
         this.locationCode = locationCode;
         this.lotNumber = lotNumber;
-        this.expiryDate = expiryDate;
         this.onHand = onHand;
         this.reserved = reserved;
         this.status = status;
@@ -157,7 +149,6 @@ public class StockItemJpaEntity extends BaseEntity {
     public String getSku() { return sku; }
     public String getLocationCode() { return locationCode; }
     public String getLotNumber() { return lotNumber; }
-    public LocalDate getExpiryDate() { return expiryDate; }
     public int getOnHand() { return onHand; }
     public int getReserved() { return reserved; }
     public StockStatus getStatus() { return status; }

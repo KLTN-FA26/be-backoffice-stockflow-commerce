@@ -1,6 +1,5 @@
 package com.stockflow.inventory;
 
-import com.stockflow.common.domain.Sku;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
@@ -8,11 +7,11 @@ import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.DataScope;
 import com.stockflow.common.security.Role;
 import com.stockflow.inventory.api.InventoryService;
-import com.stockflow.inventory.api.ReserveStockCommand;
 import com.stockflow.inventory.internal.domain.ReservationStatus;
 import com.stockflow.inventory.internal.domain.StockStatus;
 import com.stockflow.inventory.internal.service.StockBrowsing;
 import com.stockflow.support.DemoData;
+import com.stockflow.support.Holds;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
 import com.stockflow.support.WithCurrentUser;
@@ -68,10 +67,15 @@ class StockBrowsingIntegrationTest {
                     "Browse fixture", sku.toLowerCase(Locale.ROOT));
             jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature)"
                     + " values (?,?,?,'Browse fixture','')", Identifiers.newId(), product, sku);
-            jdbc.update("update inventory.inventory_items set policy_configured=true where sku=?", sku);
-            stock("HCM-A01-1-B", 10, "AVAILABLE");
-            stock("HCM-A02-2-A", 4, "QUARANTINE");
-            stock("HCM-A01-2-B", 0, "AVAILABLE");
+            // Two sealed cartons of 3: the older one is allocated whole, the other stays free.
+            com.stockflow.support.CartonRows.stock(jdbc, sku, "HCM-A01-1-B", 1, 3, null,
+                    java.time.Instant.parse("2026-01-01T00:00:00Z"));
+            com.stockflow.support.CartonRows.stock(jdbc, sku, "HCM-A01-1-A", 1, 3, null,
+                    java.time.Instant.parse("2026-02-01T00:00:00Z"));
+            // A quarantined carton of 4, and an emptied loose row of the history (stock is whole cartons only).
+            com.stockflow.support.CartonRows.carton(jdbc, sku, "HCM-A02-2-A", 4, null,
+                    java.time.Instant.parse("2026-01-15T00:00:00Z"), "QUARANTINE");
+            emptied("HCM-A01-2-B");
             jdbc.update("""
                     INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount,
                                                          currency, placed_at, version, created_at)
@@ -79,9 +83,8 @@ class StockBrowsingIntegrationTest {
                     order, "SO-20991231-%06d".formatted(ThreadLocalRandom.current().nextInt(1_000_000)),
                     DemoData.CUSTOMER_ID, UUID.randomUUID());
         });
-        // SCRUM-152: checkout holds the SKU; releasing the order to HCM puts the hold on a bin.
-        UUID reservation = inventory.reserve(new ReserveStockCommand(UUID.randomUUID(), new Sku(sku), 3, order))
-                .reservationIds().get(0);
+        // Sales holds the SKU at HCM (4B-7); releasing the order to HCM puts the hold on the oldest whole carton.
+        UUID reservation = tx.execute(s -> Holds.units(inventory, order, sku, "HCM", 3));
         softReservation = reservation;
         tx.executeWithoutResult(s -> inventory.allocate(
                 new com.stockflow.inventory.api.AllocateStockCommand(order, "HCM")));
@@ -89,10 +92,11 @@ class StockBrowsingIntegrationTest {
 
     private UUID softReservation;
 
-    private void stock(String location, int onHand, String status) {
+    /** A loose row emptied long ago: the only kind a row in no carton may be (ck_stock_item_whole_cartons). */
+    private void emptied(String location) {
         jdbc.update("""
-                INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, version, created_at)
-                VALUES (?, ?, ?, ?, 0, ?, 0, NOW())""", Identifiers.newId(), sku, location, onHand, status);
+                INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, version, created_at)
+                VALUES (?, ?, ?, 'UNTRACED', 0, 0, 'AVAILABLE', 0, NOW())""", Identifiers.newId(), sku, location);
     }
 
     private static ErrorCode codeOf(Throwable thrown) {
@@ -150,22 +154,23 @@ class StockBrowsingIntegrationTest {
     void warehouseStock() {
         var rows = browsing.warehouseStock(DemoData.WAREHOUSE_HCM, query(null, null, false)).items();
         assertThat(rows).extracting(StockBrowsing.StockRow::locationCode)
-                .containsExactly("HCM-A01-1-B", "HCM-A02-2-A");
-        assertThat(rows).extracting(StockBrowsing.StockRow::available).containsExactly(7, 0);
-        assertThat(rows).extracting(StockBrowsing.StockRow::reserved).containsExactly(3, 0);
+                .containsExactly("HCM-A01-1-A", "HCM-A01-1-B", "HCM-A02-2-A");
+        assertThat(rows).extracting(StockBrowsing.StockRow::available).containsExactly(3, 0, 0);
+        assertThat(rows).extracting(StockBrowsing.StockRow::reserved).containsExactly(0, 3, 0);
 
-        assertThat(browsing.warehouseStock(DemoData.WAREHOUSE_HCM, query(null, null, true)).items()).hasSize(3);
+        assertThat(browsing.warehouseStock(DemoData.WAREHOUSE_HCM, query(null, null, true)).items()).hasSize(4);
         assertThat(browsing.warehouseStock(DemoData.WAREHOUSE_HCM, query(null, List.of(StockStatus.QUARANTINE), false))
                 .items()).extracting(StockBrowsing.StockRow::locationCode).containsExactly("HCM-A02-2-A");
         assertThat(browsing.warehouseStock(DemoData.WAREHOUSE_HCM, query("hcm-a01", null, true)).items())
-                .extracting(StockBrowsing.StockRow::locationCode).containsExactly("HCM-A01-1-B", "HCM-A01-2-B");
+                .extracting(StockBrowsing.StockRow::locationCode)
+                .containsExactly("HCM-A01-1-A", "HCM-A01-1-B", "HCM-A01-2-B");
         assertThat(codeOf(catchThrowable(() -> browsing.warehouseStock(DemoData.WAREHOUSE_HCM,
                 query("HN-A01", null, false))))).isEqualTo(ErrorCode.VALIDATION_FAILED);
         assertThat(codeOf(catchThrowable(() -> browsing.warehouseStock(UUID.randomUUID(), query(null, null, false)))))
                 .isEqualTo(ErrorCode.WAREHOUSE_NOT_FOUND);
 
         assertThat(WithCurrentUser.call(HCM_CLERK, HCM_CLERK.scope(),
-                () -> browsing.warehouseStock(DemoData.WAREHOUSE_HCM, query(null, null, false))).items()).hasSize(2);
+                () -> browsing.warehouseStock(DemoData.WAREHOUSE_HCM, query(null, null, false))).items()).hasSize(3);
         assertThat(codeOf(catchThrowable(() -> WithCurrentUser.call(OTHER_CLERK, OTHER_CLERK.scope(),
                 () -> browsing.warehouseStock(DemoData.WAREHOUSE_HCM, query(null, null, false))))))
                 .isEqualTo(ErrorCode.OUT_OF_DATA_SCOPE);

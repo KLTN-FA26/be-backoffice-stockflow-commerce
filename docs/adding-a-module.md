@@ -11,7 +11,7 @@ why the boundaries exist.
 
 ## 0. Before any code
 
-Two decisions, and both are hard to change later.
+Two decisions, and both are hard to change later. The examples below use an invented `dock` module (appointments for inbound trucks); no such module exists, so nothing here is a pointer into the code. For a real module of each kind read `inventory/` (the reference) or `fulfillment/`.
 
 **What is the aggregate root?** The thing that must be consistent in one transaction. Everything
 inside it is loaded and saved with it and has no repository of its own.
@@ -21,13 +21,13 @@ Every name you add is a coupling `ModularityTest` will then permit for ever.
 
 ```java
 /**
- * <b>Suppliers, purchase orders, goods receipt, QC</b>
+ * <b>Dock appointments for inbound trucks</b>
  *
- * <p>WBS 3.11 · database schema {@code procurement}</p>
+ * <p>illustrative module (none of that name exists) · database schema {@code dock}</p>
  */
 @org.springframework.modulith.ApplicationModule(
-        allowedDependencies = {"product :: api", "warehouse :: api"})
-package com.stockflow.procurement;
+        allowedDependencies = {"warehouse :: api"})
+package com.stockflow.dock;
 ```
 
 Note the `:: api` suffix. Each module publishes its API as a **named interface** (see `## 1. The
@@ -42,15 +42,15 @@ rejected. Always name the interface.
 ## 1. The shape
 
 ```
-procurement/
-├── package-info.java              @ApplicationModule(allowedDependencies = {"product :: api"})
+dock/
+├── package-info.java              @ApplicationModule(allowedDependencies = {"warehouse :: api"})
 │
 ├── api/                            the PUBLIC API. Other modules see only this package.
 │   ├── package-info.java           @NamedInterface("api")  <- without it the package is PRIVATE
-│   ├── ProcurementService.java    ─┐ Records and interfaces only.
-│   ├── PlacePurchaseOrderCommand.java │ Never an entity, never a domain object.
-│   ├── PurchaseOrderSummary.java   │
-│   └── PurchaseOrderStatus.java   ─┘
+│   ├── DockService.java    ─┐ Records and interfaces only.
+│   ├── BookAppointmentCommand.java │ Never an entity, never a domain object.
+│   ├── AppointmentSummary.java   │
+│   └── AppointmentStatus.java   ─┘
 │
 └── internal/                       invisible to every other module
     ├── domain/          aggregate, value objects, repository PORT. No Spring, no JPA.
@@ -224,6 +224,9 @@ no test can enforce it.
 | Distributed job | `@SchedulerLock(name = "...")` on `@Scheduled` | assume one instance |
 | Ad-hoc lock | `DistributedLock` | — but prefer a row lock, see its javadoc |
 | Files | `FileStorage` | write to the filesystem |
+| Image size | `ImageDimensions.of(...)` — upright, from the header | decode the image to measure it |
+| JSON checksum both sides compute | `CanonicalJson.canonicalize(...)` + `sha256Hex` (RFC 8785) | hash `ObjectMapper` output |
+| A large JSON body | a `stockflow.web.body-limits` entry | read it whole and check its size afterwards |
 | Outbound HTTP | `RestClientFactory.forService(...)` | `RestClient.create()` — no timeout |
 | Time | inject `Clock` | `Instant.now()` — untestable |
 | The signed-in user | `@AuthenticatedUser CurrentUser user` | inject `CurrentUserProvider` and unwrap |
@@ -237,12 +240,12 @@ no test can enforce it.
 
 ### 4.1 Migration first
 
-`src/main/resources/db/migration/V<yyyyMMddHHmmss>__procurement_purchase_orders.sql`
+`src/main/resources/db/migration/V<yyyyMMddHHmmss>__dock_appointments.sql`
 
-Timestamped, not `V7__`. With five people committing in parallel, sequential numbers collide daily.
+Timestamped, not `V7__`. With five people committing in parallel, sequential numbers collide daily. The version must be newer than every migration already merged (Flyway does not run out of order); the person writing the module writes its migration and the schema owner reviews it before merge (CLAUDE.md §7).
 
 ```sql
-CREATE TABLE procurement.purchase_orders
+CREATE TABLE dock.appointments
 (
     id               UUID         NOT NULL,
     version          BIGINT       NOT NULL DEFAULT 0,   -- BaseEntity
@@ -251,7 +254,7 @@ CREATE TABLE procurement.purchase_orders
     last_modified_at TIMESTAMPTZ,
     last_modified_by VARCHAR(100),
     ...
-    CONSTRAINT pk_purchase_orders PRIMARY KEY (id)
+    CONSTRAINT pk_appointments PRIMARY KEY (id)
 );
 ```
 
@@ -265,32 +268,32 @@ past.
 ### 4.2 Domain — no framework
 
 ```java
-public final class PurchaseOrder extends AggregateRoot {
+public final class Appointment extends AggregateRoot {
     // final: aggregates have no subtypes, and it silences the this-escape lint
-    private final PurchaseOrderId id;
-    private PurchaseOrderStatus status;
+    private final AppointmentId id;
+    private AppointmentStatus status;
 
     public void approve(UserId approver, Instant now) {
         if (!status.canTransitionTo(APPROVED)) {
             // a dedicated BusinessException (409): GlobalExceptionHandler logs a bare
             // IllegalStateException at ERROR, as the bug it usually is
-            throw new InvalidPurchaseOrderTransitionException(id, status, APPROVED);
+            throw new InvalidAppointmentTransitionException(id, status, APPROVED);
         }
         this.status = APPROVED;
-        registerEvent(new PurchaseOrderEvent.Approved(...));
+        registerEvent(new AppointmentEvent.Approved(...));
     }
 }
 ```
 
-No annotations. That is what lets `PurchaseOrderTest` run in milliseconds with no container, and
+No annotations. That is what lets `AppointmentTest` run in milliseconds with no container, and
 `ArchitectureTest` enforces it.
 
 The repository port lives here too, and speaks the domain's language — no `Page`, no
 `Specification`, nothing from Spring Data:
 
 ```java
-public interface PurchaseOrderRepository extends AggregateRepository<PurchaseOrder, PurchaseOrderId> {
-    List<PurchaseOrder> findAwaitingApproval();
+public interface AppointmentRepository extends AggregateRepository<Appointment, AppointmentId> {
+    List<Appointment> findAwaitingApproval();
 }
 ```
 
@@ -298,16 +301,16 @@ public interface PurchaseOrderRepository extends AggregateRepository<PurchaseOrd
 
 ```java
 @Entity
-@Table(name = "purchase_orders", schema = "procurement")
-class PurchaseOrderJpaEntity extends BaseEntity implements ScopedEntity {
+@Table(name = "appointments", schema = "dock")
+class AppointmentJpaEntity extends BaseEntity implements ScopedEntity {
 
-    static final PurchaseOrderJpaEntity SCOPE_PROTOTYPE = new PurchaseOrderJpaEntity();
+    static final AppointmentJpaEntity SCOPE_PROTOTYPE = new AppointmentJpaEntity();
 
     @Enumerated(EnumType.STRING)          // never ORDINAL
     @Column(name = "status", nullable = false, length = 32)
-    private PurchaseOrderStatus status;
+    private AppointmentStatus status;
 
-    @Override public String ownerAttribute()     { return "buyerId"; }
+    @Override public String ownerAttribute()     { return "carrierId"; }
     @Override public String warehouseAttribute() { return "warehouseCode"; }
 }
 ```
@@ -323,7 +326,7 @@ Mapper hand-written; adapter implements the port and is the only class that spea
 ```java
 @Service
 @Transactional
-class ProcurementServiceImpl implements ProcurementService {
+class DockServiceImpl implements DockService {
     // package-private class, public interface: nobody can bypass the port
 }
 ```
@@ -344,19 +347,19 @@ Three things that are easy to get wrong and cost hours:
 
 ```java
 @RestController
-@RequestMapping("/api/v1/purchase-orders")
+@RequestMapping("/api/v1/appointments")
 @PermissionResource(
-        code = ProcurementResources.PURCHASE_ORDERS,   // hyphens only: [a-z0-9-]{2,64}
-        group = "Procurement", label = "Purchase orders",
-        route = "/procurement/purchase-orders",
-        apiPath = "/api/v1/purchase-orders",
+        code = DockResources.APPOINTMENTS,   // hyphens only: [a-z0-9-]{2,64}
+        group = "Dock", label = "Appointments",
+        route = "/dock/appointments",
+        apiPath = "/api/v1/appointments",
         actions = {Action.VIEW_PAGE, Action.READ, Action.CREATE, Action.APPROVE})
-class PurchaseOrderController {
+class AppointmentController {
 
     @PostMapping("/{id}/approval")
-    @RequiresPermission(resource = ProcurementResources.PURCHASE_ORDERS,
+    @RequiresPermission(resource = DockResources.APPOINTMENTS,
             action = Action.APPROVE, scope = DataScope.WAREHOUSE)
-    @Auditable(action = AuditAction.APPROVE, resourceType = "purchase-order", resourceId = "#id")
+    @Auditable(action = AuditAction.APPROVE, resourceType = "appointment", resourceId = "#id")
     ApiResponse<Void> approve(@PathVariable UUID id) { ... }
 }
 ```

@@ -8,13 +8,14 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * A load with its manifest: the shipments on it, their parcels and which are on the vehicle (kltn-docs 09 §4.1).
+ * A load with its manifest: the shipments on it, their parcels and which are on the vehicle (kltn-docs 09 §4.2).
  *
  * @param expectedPackageCount the sealed parcels of the shipments on the manifest
  * @param loadedPackageCount   of those, scanned onto the vehicle
  * @param version              send it back with the handover
- * @param loadPlanId           FULL_TRUCKLOAD only (SCRUM-392): the plan this load is a vehicle of, with its code, the
- *                             vehicle's seq and type code; the parcels listed are those the plan placed on it
+ * @param loadPlanId           the plan this load is a vehicle of (SCRUM-392), with its code, the vehicle's seq and type
+ *                             code; the parcels listed are those the plan placed on it. Absent only on a load of the
+ *                             parcel shipping that was removed
  * @param bookedAt             when the vehicle was booked (VEHICLE_BOOKED and later); null before or after a booking
  *                             cancellation, whose time and reason are kept in {@code bookingCancelledAt/Reason}
  * @param pendingUnloads       parcels of cancelled orders still on the vehicle: unload them (POST .../unloads) before
@@ -28,55 +29,57 @@ import java.util.UUID;
  *                             off with nothing left to carry - {@code cancelReason} "auto-cancelled: ..."): the
  *                             booking made with the carrier outside the system still exists - cancel it there
  */
-public record LoadResponse(UUID loadId, String code, UUID warehouseId, String mode, String status, UUID carrierId,
+public record LoadResponse(UUID loadId, String code, UUID warehouseId, String status, UUID carrierId,
                            String carrierCode, String carrierName, String vehiclePlate, String driverName,
                            String driverPhone, Instant loadingStartedAt, UUID loadingStartedBy, Instant dispatchedAt,
                            UUID dispatchedBy, String dispatchedByName, String carrierRepresentative,
                            String signatureRef, String handoverNote, Instant cancelledAt, String cancelReason,
-                           int shipmentCount, int expectedPackageCount, int loadedPackageCount, BigDecimal codTotal,
-                           String currency, long version, List<Shipment> shipments, UUID loadPlanId,
+                           int shipmentCount, int expectedPackageCount, int loadedPackageCount, long version,
+                           List<Shipment> shipments, UUID loadPlanId,
                            String loadPlanCode, Integer vehicleSeq, String vehicleTypeCode, Instant bookedAt,
                            UUID bookedBy, Instant bookingCancelledAt, String bookingCancelReason,
                            List<PendingUnload> pendingUnloads, boolean carrierBookingToCancel,
                            String cancelReasonCode,
                            @JsonInclude(JsonInclude.Include.NON_NULL) UUID replacementLoadId,
-                           @JsonInclude(JsonInclude.Include.NON_NULL) String replacementLoadCode) {
+                           @JsonInclude(JsonInclude.Include.NON_NULL) String replacementLoadCode,
+                           String waybillNo, String carrierConnectionType,
+                           @JsonInclude(JsonInclude.Include.NON_NULL) CarrierBooking carrierBooking,
+                           @JsonInclude(JsonInclude.Include.NON_EMPTY) List<HandoverWarning> handoverWarnings) {
+
+    /**
+     * 4B-8 (kltn-docs 08 BR-11, 09 BR-18): an order on the vehicle whose goods may not leave yet, answered when loading
+     * starts - the handover refuses the vehicle until it may.
+     */
+    public record HandoverWarning(UUID orderId, String orderNumber, String reasonCode, java.math.BigDecimal amountDue,
+                                  String currency,
+                                  @JsonInclude(JsonInclude.Include.NON_NULL) Integer deliveryBatchSeq,
+                                  @JsonInclude(JsonInclude.Include.NON_NULL) java.time.LocalDate windowStart) {
+    }
+
+    /**
+     * The load's latest order at an API_BOOKING carrier (3-4): REQUESTED, BOOKED, FAILED, CANCELLED or CANCEL_FAILED
+     * (the carrier would not cancel it after the load was called off - settle it with the carrier).
+     */
+    public record CarrierBooking(String status, String carrierOrderId, String trackingLink,
+                                 java.time.Instant requestedAt, java.time.Instant bookedAt, String lastError) {
+    }
 
     /**
      * A parcel still to take off the vehicle: its order was cancelled (SCRUM-392) or the vehicle was called off under
-     * control (SCRUM-474; then {@code reasonCode} is set). Locked until scanned off. On a transfer plan's vehicle
-     * {@code shipmentId} is absent and {@code transferOrderId} set ({@code shipmentCode} is its number).
+     * control (SCRUM-474; then {@code reasonCode} is set). Locked until scanned off.
      */
     public record PendingUnload(UUID packageId, String labelCode,
                                 @JsonInclude(JsonInclude.Include.NON_NULL) UUID shipmentId, String shipmentCode,
                                 String reason, Instant requestedAt,
-                                @JsonInclude(JsonInclude.Include.NON_NULL) String reasonCode,
-                                @JsonInclude(JsonInclude.Include.NON_NULL) UUID transferOrderId) {
+                                @JsonInclude(JsonInclude.Include.NON_NULL) String reasonCode) {
     }
 
-    /**
-     * @param taskId         the fulfillment task it was packed in: reprint its label at
-     *                       {@code GET /fulfillment/tasks/{taskId}/packages/{packageId}/label} (after LABEL_OUTDATED)
-     * @param labelCodAmount what the shipment's label says the carrier collects
-     * @param codAmount      what the order fixed at the handover; null before it
-     * @param currency       of both amounts
-     * @param transferOrderId SCRUM-287 PR T: the transfer order on a TRANSFER plan's vehicle (then shipmentId, orderId
-     *                       and taskId are null, code is the transfer's number); absent otherwise
-     */
+    /** @param taskId the fulfillment task its cartons were checked and labelled in */
     public record Shipment(UUID shipmentId, String code, UUID orderId, String orderNumber, UUID taskId, String status,
-                           int packageCount, int loadedCount, BigDecimal labelCodAmount, BigDecimal codAmount,
-                           String currency, List<Parcel> packages,
-                           @JsonInclude(JsonInclude.Include.NON_NULL) UUID transferOrderId) {
+                           int packageCount, int loadedCount, List<Parcel> packages) {
     }
 
-    /**
-     * @param kit             the kit it is a part of (SCRUM-287 LP2-6); absent for an ordinary parcel
-     * @param labelOutdated   its label no longer matches the parcel (moved to another shipment, or its n/N changed):
-     *                        scanning it is 409 LABEL_OUTDATED until the label is reprinted
-     * @param labelOutdatedAt since when; null when {@code labelOutdated} is false
-     */
     public record Parcel(UUID packageId, String labelCode, BigDecimal weightKg, boolean loaded, Instant loadedAt,
-                         UUID loadedBy, @JsonInclude(JsonInclude.Include.NON_NULL) KitPartResponse kit,
-                         boolean labelOutdated, Instant labelOutdatedAt) {
+                         UUID loadedBy) {
     }
 }

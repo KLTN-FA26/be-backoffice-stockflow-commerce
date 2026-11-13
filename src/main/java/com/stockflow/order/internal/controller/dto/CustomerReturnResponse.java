@@ -8,8 +8,8 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * One of the signed-in customer's own returns, as the portal shows it: what was asked, approved, received, accepted
- * and how it was made good, the deadline to send goods back, why it was refused. Never who in the shop did what, nor
+ * One of the signed-in customer's own returns, as the portal shows it: what was asked, approved, received and
+ * refunded, the deadline to send goods back, why it was refused. Never who in the shop did what, nor
  * their internal notes - the customer reads the decision, not the desk it came from.
  */
 @Schema(name = "CustomerReturn")
@@ -30,31 +30,25 @@ public record CustomerReturnResponse(
         Instant receivedAt,
         Instant closedAt,
         String currency,
+        @Schema(description = "Paid already and to be refunded, once a second person approved the refund")
         BigDecimal refundedAmount,
-        BigDecimal creditedAmount,
+        @Schema(description = "Taken off what the order's installments still owed, once the refund was approved")
         BigDecimal offsetAmount,
-        UUID replacementOrderId,
-        @Schema(description = "Set once the replacement order was withdrawn and its units credited instead")
-        ReplacementWithdrawn replacementWithdrawn,
         List<Line> lines,
         List<Discrepancy> discrepancies,
         List<Evidence> evidence,
         List<Step> history,
         long version) implements ReturnView {
 
-    /** The replacement order was cancelled and its units credited: set off against what is owed, or kept as credit. */
-    public record ReplacementWithdrawn(Instant withdrawnAt, BigDecimal offsetAmount, BigDecimal creditedAmount) {
-    }
-
     public record Line(UUID id, UUID orderLineId, String sku, int requestedQuantity, Integer approvedQuantity,
-                       Integer receivedQuantity, Integer acceptedQuantity, Integer rejectedQuantity,
-                       int replacementQuantity, int creditQuantity, BigDecimal creditAmount) {
+                       Integer receivedQuantity, int refundQuantity, BigDecimal refundAmount) {
     }
 
     public record Discrepancy(String kind, String sku, int quantity) {
     }
 
-    public record Evidence(UUID id, String stage, String originalName, Instant uploadedAt) {
+    /** A photo of the claim; {@code thumbnailUrl} as on the back-office detail. */
+    public record Evidence(UUID id, String stage, String originalName, Instant uploadedAt, String thumbnailUrl) {
     }
 
     public record Step(String status, Instant occurredAt) {

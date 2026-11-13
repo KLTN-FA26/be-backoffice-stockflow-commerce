@@ -67,23 +67,19 @@ class MediaPersistenceIntegrationTest {
         var file = new StoredFile("design-renders/one.pdf", "one.pdf", "application/pdf", 12, Instant.EPOCH);
         var first = new DesignArtifactJpaEntity(Identifiers.newId(), draftId, file, "a".repeat(64));
         em.persist(first);
-        draft.attachArtifact(first.getId());
-        em.flush();
-        var reviewer = ReferenceRows.user(em);
-        draft.assign(ReferenceRows.user(em), ReferenceRows.user(em), reviewer);
-        draft.review(reviewer, true, "Manual inspection completed");
+        draft.attachArtifact(com.stockflow.design.api.DesignArtifactRole.CUSTOMER_PREVIEW, first.getId());
         em.flush();
         em.refresh(draft);
         var next = new DesignArtifactJpaEntity(Identifiers.newId(), draftId,
                 new StoredFile("design-renders/two.pdf", "two.pdf", "application/pdf", 14, Instant.EPOCH),
                 "b".repeat(64));
         em.persist(next);
-        draft.attachArtifact(next.getId());
+        draft.attachArtifact(com.stockflow.design.api.DesignArtifactRole.CUSTOMER_PREVIEW, next.getId());
         em.flush();
         em.createNativeQuery("set constraints all immediate").executeUpdate();
         assertThat(em.find(DesignArtifactJpaEntity.class, first.getId())).isNotNull();
         assertThat(draft.getCurrentArtifactId()).isEqualTo(next.getId());
-        assertThat(em.createNativeQuery("select preflight_passed from design.design_draft where id = :id")
-                .setParameter("id", draftId).getSingleResult()).isEqualTo(false);
+        assertThat(em.createNativeQuery("select current_artifacts ->> 'CUSTOMER_PREVIEW' from design.design_draft "
+                + "where id = :id").setParameter("id", draftId).getSingleResult()).isEqualTo(next.getId().toString());
     }
 }

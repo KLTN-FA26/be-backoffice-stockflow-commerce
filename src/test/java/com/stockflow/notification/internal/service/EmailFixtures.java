@@ -21,8 +21,15 @@ final class EmailFixtures {
     }
 
     static EmailProperties properties(String replyTo, boolean customerEnabled, int maxAttempts) {
+        return properties(replyTo, customerEnabled, customerEnabled, maxAttempts);
+    }
+
+    /** Customer mail and e-invoice mail switched apart (EINVOICE_EMAIL_ENABLED). */
+    static EmailProperties properties(String replyTo, boolean customerEnabled, boolean einvoiceEnabled,
+                                      int maxAttempts) {
         return new EmailProperties(EmailProvider.RECORDING, FROM, replyTo, Locale.forLanguageTag("vi"), "StockFlow",
-                new EmailProperties.Customer(customerEnabled, maxAttempts, Duration.ofMinutes(1), Duration.ofHours(6)),
+                new EmailProperties.Customer(customerEnabled, maxAttempts, Duration.ofMinutes(1), Duration.ofHours(6),
+                        einvoiceEnabled),
                 new EmailProperties.Resend(null, "https://api.resend.com", null, Duration.ofMinutes(5), 2, 2));
     }
 
@@ -39,7 +46,7 @@ final class EmailFixtures {
 
     static ShipmentStatusChanged shipment(UUID customerId, String status, String failureReason, String carrier) {
         return new ShipmentStatusChanged(UUID.randomUUID(), UUID.randomUUID(), "SO-20261024-0001-S1",
-                UUID.randomUUID(), "SO-20261024-0001", customerId, UUID.randomUUID(), "PARCEL", "READY_TO_DISPATCH",
+                UUID.randomUUID(), "SO-20261024-0001", customerId, UUID.randomUUID(), "READY_TO_DISPATCH",
                 status, failureReason, 3, carrier, "LD-20261024-0001", UUID.randomUUID(),
                 Instant.parse("2026-10-24T07:05:00Z"));
     }

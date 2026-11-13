@@ -41,9 +41,10 @@ public final class SalesRollups {
     }
 
     /**
-     * A return gave money back for goods of an order (SCRUM-260): its credited value and units come off the revenue of
-     * the day that order was placed, as a cancellation's do - so a day's revenue is what was sold that day, less what was
-     * cancelled or credited back for it. Free replacement goods take nothing off: the goods were sold once.
+     * A return gave money back for goods of an order (SCRUM-260; refunds only since team plan 4D-3): the refunded value
+     * and units come off the revenue of the day that order was placed, as a cancellation's do - so a day's revenue is
+     * what was sold that day, less what was cancelled or refunded for it. The withdrawals of replacement orders recorded
+     * before 4D-3 stay as they were taken.
      *
      * @return false if this return's {@code event} was applied before, or it credited nothing
      */
@@ -56,27 +57,10 @@ public final class SalesRollups {
     }
 
     /**
-     * Units production closed out of an order line, completing it short with the customer's agreement (S6): the order is
-     * worth less, so the closed value and units come off the revenue of the day it was placed - as a cancellation's
-     * do - and the order count stays, the sale happened. {@link #cancel} takes out what is left of the order, so a
-     * cancellation after a closure removes it only once.
-     *
-     * <p>A closure that reaches reporting after the order's cancellation takes nothing off: the cancellation took the
-     * whole placement out already. It is still recorded, as the rebuild applies the closures of a day again.</p>
-     *
-     * @return false if this closure was applied before
+     * Applies the closures a day's rebuild kept (see {@link SalesRollupLedger#closuresOf}) after replaying its orders:
+     * the units in-house production completed short (S6) while it existed. No closure is recorded any more - production
+     * left the system - but those recorded before still lowered what their orders were worth.
      */
-    public boolean closed(UUID closureId, OrderContribution taken) {
-        if (!ledger.markClosureApplied(closureId, taken)) {
-            return false;
-        }
-        if (!ledger.cancellationApplied(taken.orderId())) {
-            ledger.applyReturn(taken);
-        }
-        return true;
-    }
-
-    /** Applies the closures a day's rebuild kept (see {@link SalesRollupLedger#closuresOf}) after replaying its orders. */
     public void reapplyClosures(java.time.LocalDate day) {
         for (OrderContribution taken : ledger.closuresOf(day)) {
             ledger.applyReturn(taken);

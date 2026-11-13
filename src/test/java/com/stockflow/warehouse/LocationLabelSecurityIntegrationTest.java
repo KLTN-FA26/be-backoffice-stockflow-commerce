@@ -33,7 +33,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @SecuredIntegrationTest
 class LocationLabelSecurityIntegrationTest {
 
-    private static final String TEST_ROLE = "INVENTORY_PLANNER";
+    private static final String TEST_ROLE = "ACCOUNTANT";
 
     @Autowired MockMvc mvc;
     @MockitoBean JwtDecoder decoder;

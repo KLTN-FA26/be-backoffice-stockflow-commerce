@@ -6,14 +6,11 @@ import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.DataScope;
 import com.stockflow.common.security.Role;
-import com.stockflow.design.api.DesignService;
 import com.stockflow.fulfillment.api.FulfillmentTaskQuery;
 import com.stockflow.fulfillment.internal.domain.PackStatus;
 import com.stockflow.fulfillment.internal.domain.PickStatus;
-import com.stockflow.fulfillment.internal.entity.DesignVerificationJpaEntity;
 import com.stockflow.fulfillment.internal.entity.PackJpaEntity;
 import com.stockflow.fulfillment.internal.entity.PickJpaEntity;
-import com.stockflow.fulfillment.internal.repository.DesignVerificationJpaRepository;
 import com.stockflow.fulfillment.internal.repository.PackJpaRepository;
 import com.stockflow.fulfillment.internal.repository.PickJpaRepository;
 import com.stockflow.order.api.OrderService;
@@ -35,7 +32,6 @@ import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -51,49 +47,36 @@ class FulfillmentServiceImplTest {
 
     private final PickJpaRepository picks = mock(PickJpaRepository.class);
     private final PackJpaRepository packs = mock(PackJpaRepository.class);
-    private final DesignVerificationJpaRepository evidence = mock(DesignVerificationJpaRepository.class);
     private final OrderService orders = mock(OrderService.class);
-    private final DesignService designs = mock(DesignService.class);
     private final IdentityService identities = mock(IdentityService.class);
     private final InventoryService inventory = mock(InventoryService.class);
     private final WarehouseService warehouses = mock(WarehouseService.class);
     private final PickListService pickLists = mock(PickListService.class);
-    private final PackingService packing = mock(PackingService.class);
+    private final CartonCheckService packing = mock(CartonCheckService.class);
     private final Instant now = Instant.parse("2026-09-18T08:00:00Z");
     private final FulfillmentServiceImpl service = new FulfillmentServiceImpl(
-            picks, packs, evidence, orders, designs, identities, inventory, warehouses, pickLists, packing,
+            picks, packs, orders, identities, inventory, warehouses, pickLists, packing,
             Clock.fixed(now, ZoneOffset.UTC));
-    private final List<DesignVerificationJpaEntity> recorded = new ArrayList<>();
-
-    @BeforeEach
-    void retainVerificationEvidence() {
-        when(evidence.save(any())).thenAnswer(call -> {
-            DesignVerificationJpaEntity value = call.getArgument(0);
-            recorded.add(value);
-            return value;
-        });
-        when(evidence.findByPackIdOrderByVerifiedAtDesc(any())).thenAnswer(call -> List.copyOf(recorded));
-    }
 
     /**
-     * G4-5: completing packing is the packing service's (its rules are PackingSessionTest's, its flow the packing
-     * station integration test's); the task service answers with the task, the shipment and the payment warning.
+     * 4C-6: completing packing is the carton check's (its rules are CartonCheckTest's, its flow the check station
+     * integration test's); the task service answers with the task, the shipment and the payment warning.
      */
     @Test
     void completingPackingAnswersWithTheShipmentAndThePaymentWarning() {
         UUID packer = UUID.randomUUID();
         var pick = pickedTask(UUID.randomUUID());
-        var pack = new PackJpaEntity(UUID.randomUUID(), pick.getId(), PackStatus.PACKED, now);
+        var pack = new PackJpaEntity(UUID.randomUUID(), pick.getId(), PackStatus.COMPLETED, now);
         var order = order(pick.getOrderId(), "a".repeat(64));
         var owing = new OrderSummary(order.orderId(), order.orderNumber(), order.customerId(), OrderStatus.PACKED,
-                order.total(), order.lines(), order.placedAt(), null, null, null, null, null, null, null, null, null,
-                null, null, null, null, new OrderSummary.Lifecycle(null, null, null, now, null, null, null, null, null,
-                java.math.BigDecimal.ZERO, order.total().amount(), order.total().amount(), new java.math.BigDecimal("700"),
+                order.total(), order.lines(), order.placedAt(), null, null, null, null, null, null, null, null,
+                null, null, null, new OrderSummary.Lifecycle(null, null, null, now, null, null, null, null, null, order.total().amount(), new java.math.BigDecimal("700"),
                 List.of(), List.of()));
         UUID shipment = UUID.randomUUID();
         when(picks.findById(pick.getId())).thenReturn(Optional.of(pick));
         when(packs.findByPickId(pick.getId())).thenReturn(Optional.of(pack));
-        when(packing.complete(eq(pick.getId()), any(), any())).thenReturn(new PackingService.Completed(shipment, owing));
+        when(packing.complete(eq(pick.getId()), any(), any())).thenReturn(new CartonCheckService.Completed(shipment, owing,
+                new CartonChecks.PaymentDue(new java.math.BigDecimal("700"), "VND")));
 
         var result = service.completePacking(pick.getId(), user(packer, Role.WAREHOUSE_STAFF));
 
@@ -102,33 +85,28 @@ class FulfillmentServiceImplTest {
         assertThat(result.paymentDue().amountDueBeforeHandover()).isEqualByComparingTo("700");
     }
 
+    /** A completion retried on packing finished before any shipment was recorded made none: none in the answer. */
     @Test
-    void aDesignHoldAnswersWithoutAShipment() {
+    void aCompletionThatMadeNoShipmentAnswersWithoutOne() {
         var pick = pickedTask(UUID.randomUUID());
-        var pack = new PackJpaEntity(UUID.randomUUID(), pick.getId(), PackStatus.ON_HOLD, null);
+        var pack = new PackJpaEntity(UUID.randomUUID(), pick.getId(), PackStatus.COMPLETED, now);
         when(picks.findById(pick.getId())).thenReturn(Optional.of(pick));
         when(packs.findByPickId(pick.getId())).thenReturn(Optional.of(pack));
         when(packing.complete(eq(pick.getId()), any(), any()))
-                .thenReturn(new PackingService.Completed(null, order(pick.getOrderId(), "a".repeat(64))));
+                .thenReturn(new CartonCheckService.Completed(null, order(pick.getOrderId(), "a".repeat(64)), null));
 
         var result = service.completePacking(pick.getId(), user(UUID.randomUUID(), Role.WAREHOUSE_MANAGER));
 
-        assertThat(result.packStatus()).isEqualTo("ON_HOLD");
+        assertThat(result.packStatus()).isEqualTo("COMPLETED");
         assertThat(result.shipmentId()).isNull();
         assertThat(result.paymentDue()).isNull();
     }
 
     @Test
-    void onlyAManagerReverifiesAndOnlyWarehouseStaffPack() {
+    void onlyWarehouseStaffPack() {
         var pick = pickedTask(UUID.randomUUID());
-        assertThatThrownBy(() -> service.reverifyDesignIntegrity(pick.getId(), "note",
-                user(UUID.randomUUID(), Role.WAREHOUSE_STAFF))).isInstanceOf(BusinessException.class);
-        // QC-REVERIFY-1022: QC may see a held task but not release the hold.
-        assertThatThrownBy(() -> service.reverifyDesignIntegrity(pick.getId(), "note",
-                user(UUID.randomUUID(), Role.QC_STAFF))).isInstanceOf(BusinessException.class);
-        assertThatThrownBy(() -> service.completePacking(pick.getId(), user(UUID.randomUUID(), Role.QC_STAFF)))
-                .isInstanceOf(BusinessException.class);
-        verify(packing, never()).reverify(any(), any(), any());
+        assertThat(refusal(() -> service.completePacking(pick.getId(), salesperson())).errorCode())
+                .isEqualTo(ErrorCode.FORBIDDEN);
         verify(packing, never()).complete(any(), any(), any());
     }
 
@@ -142,44 +120,30 @@ class FulfillmentServiceImplTest {
 
         var unrelated = user(UUID.randomUUID(), Role.WAREHOUSE_STAFF);
         assertThat(refusal(() -> service.findTask(pick.getId(), unrelated)).errorCode()).isEqualTo(ErrorCode.NOT_FOUND);
-        assertThat(refusal(() -> service.artifactDownload(pick.getId(), UUID.randomUUID(), "PRINT_READY", unrelated))
-                .errorCode()).isEqualTo(ErrorCode.NOT_FOUND);
-        verify(designs, never()).fulfillmentDownload(any(), any(), any());
     }
 
     /**
-     * G4-5 (FE #58): once picking is done the packer - any staff member of the task's warehouse - reads the task and
-     * the locked design files the printed goods are checked against (docs 08 step 2); staff of another warehouse do
-     * not.
+     * G4-5 (FE #58): once picking is done the packer - any staff member of the task's warehouse - reads the task;
+     * staff of another warehouse do not.
      */
     @Test
-    void thePackerOfTheTasksWarehouseReadsItAndItsDesignFilesOthersDoNot() {
+    void thePackerOfTheTasksWarehouseReadsItOthersDoNot() {
         UUID picker = UUID.randomUUID();
         var pick = new PickJpaEntity(UUID.randomUUID(), null, UUID.randomUUID(), "SO-TEST", HCM, PickStatus.PENDING);
         pick.assign(picker, now.minusSeconds(120));
         pick.start(picker, now.minusSeconds(60));
         pick.complete(picker, now.minusSeconds(30));
         var order = order(pick.getOrderId(), "e".repeat(64));
-        var line = order.lines().getFirst();
         when(picks.findById(pick.getId())).thenReturn(Optional.of(pick));
         when(packs.findByPickId(pick.getId())).thenReturn(Optional.of(new PackJpaEntity(UUID.randomUUID(),
-                pick.getId(), PackStatus.PACKING, null)));
+                pick.getId(), PackStatus.IN_PROGRESS, null)));
         when(orders.findById(pick.getOrderId())).thenReturn(Optional.of(order));
-        when(designs.fulfillmentDownload(line.designSnapshotId(), line.designChecksum(),
-                com.stockflow.design.api.DesignArtifactRole.CUSTOMER_PREVIEW)).thenReturn(
-                new com.stockflow.design.api.FulfillmentArtifact(UUID.randomUUID(),
-                        com.stockflow.design.api.DesignArtifactRole.CUSTOMER_PREVIEW, "preview.png", "image/png", 10,
-                        "f".repeat(64), "https://files/preview", now.plusSeconds(300)));
         var packer = staffOf(HCM);
         var elsewhere = staffOf(HN);
 
         assertThat(asScoped(packer, () -> service.findTask(pick.getId(), packer)).taskId()).isEqualTo(pick.getId());
-        assertThat(asScoped(packer, () -> service.artifactDownload(pick.getId(), line.lineId(), "customer_preview",
-                packer)).url()).isEqualTo("https://files/preview");
         assertThat(refusal(() -> asScoped(elsewhere, () -> service.findTask(pick.getId(), elsewhere))).errorCode())
                 .isEqualTo(ErrorCode.OUT_OF_DATA_SCOPE);
-        assertThat(refusal(() -> asScoped(elsewhere, () -> service.artifactDownload(pick.getId(), line.lineId(),
-                "customer_preview", elsewhere))).errorCode()).isEqualTo(ErrorCode.OUT_OF_DATA_SCOPE);
     }
 
     private CurrentUser staffOf(UUID... warehouseIds) {
@@ -188,30 +152,24 @@ class FulfillmentServiceImplTest {
     }
 
     @Test
-    void aCancelledOrderCannotBePickedPackedReverifiedOrDownloaded() {
+    void aCancelledOrderCannotBePicked() {
         UUID assigned = UUID.randomUUID();
         var pick = new PickJpaEntity(UUID.randomUUID(), null, UUID.randomUUID(), "SO-TEST", UUID.randomUUID(), PickStatus.PENDING);
         pick.assign(assigned, now.minusSeconds(120));
         var live = order(pick.getOrderId(), "d".repeat(64));
         var cancelled = new OrderSummary(live.orderId(), live.orderNumber(), live.customerId(), OrderStatus.CANCELLED,
                 live.total(), live.lines(), live.placedAt(), null, null, null, null, null, null, null, null);
-        var pack = new PackJpaEntity(UUID.randomUUID(), pick.getId(), PackStatus.ON_HOLD, null);
+        var pack = new PackJpaEntity(UUID.randomUUID(), pick.getId(), PackStatus.PENDING, null);
         when(picks.lockById(pick.getId())).thenReturn(Optional.of(pick));
         when(picks.findById(pick.getId())).thenReturn(Optional.of(pick));
         when(packs.findByPickId(pick.getId())).thenReturn(Optional.of(pack));
         when(orders.findById(pick.getOrderId())).thenReturn(Optional.of(cancelled));
         var worker = user(assigned, Role.WAREHOUSE_STAFF);
-        var qc = user(UUID.randomUUID(), Role.QC_STAFF);
 
         assertThatThrownBy(() -> service.startPicking(pick.getId(), worker)).isInstanceOf(BusinessException.class);
         assertThatThrownBy(() -> service.completePicking(pick.getId(), worker)).isInstanceOf(BusinessException.class);
-        assertThatThrownBy(() -> service.artifactDownload(pick.getId(), live.lines().getFirst().lineId(), "PRINT_READY", qc))
-                .isInstanceOf(BusinessException.class);
 
         assertThat(pick.getStatus()).isEqualTo(PickStatus.PENDING);
-        verify(designs, never()).fulfillmentDownload(any(), any(), any());
-        verify(orders, never()).putOnDesignHold(any(), any());
-        verify(orders, never()).resolveDesignHold(any(), any(), any());
     }
 
     // ---- SCRUM-466: a task carries its order number and warehouse --------------------------------
@@ -224,7 +182,7 @@ class FulfillmentServiceImplTest {
                 Money.vnd(100_000), Money.vnd(200_000), List.of());
         return new OrderSummary(UUID.randomUUID(), "SO-20261014-0001", UUID.randomUUID(), status,
                 Money.vnd(200_000), List.of(line), now.minusSeconds(600), null, null, null, null, null, null, null,
-                null, null, warehouse, warehouse == null ? null : now.minusSeconds(60));
+                null, warehouse, warehouse == null ? null : now.minusSeconds(60));
     }
 
     private void holdsAt(OrderSummary order, String... locationsAndSkus) {
@@ -234,7 +192,7 @@ class FulfillmentServiceImplTest {
             holds.add(new OrderHold(parts[1], parts[0], 2));
             UUID where = parts[0].startsWith("HN") ? HN : HCM;
             when(warehouses.findLocation(parts[0])).thenReturn(Optional.of(new StorageLocationView(UUID.randomUUID(),
-                    StorageLocationView.Kind.BIN, where, parts[0], StorageLocationView.StorageClass.NORMAL,
+                    StorageLocationView.Kind.BIN, where, parts[0],
                     StorageLocationView.Status.ACTIVE, StorageLocationView.Status.ACTIVE, true)));
         }
         when(inventory.holdsOf(order.orderId())).thenReturn(holds);
@@ -246,8 +204,14 @@ class FulfillmentServiceImplTest {
                 .toList());
     }
 
-    private CurrentUser coordinator() {
-        return new CurrentUser(UUID.randomUUID(), "oc", Set.of(Role.ORDER_COORDINATOR), seeded(Role.ORDER_COORDINATOR), DataScope.ALL,
+    /** A warehouse manager whose data scope is not narrowed to warehouses: what the retired coordinator stood for. */
+    private CurrentUser unlimitedManager() {
+        return new CurrentUser(UUID.randomUUID(), "oc", Set.of(Role.WAREHOUSE_MANAGER), seeded(Role.WAREHOUSE_MANAGER), DataScope.ALL,
+                Set.of(), Set.of());
+    }
+
+    private CurrentUser salesperson() {
+        return new CurrentUser(UUID.randomUUID(), "sales", Set.of(Role.SALES_STAFF), seeded(Role.SALES_STAFF), DataScope.ALL,
                 Set.of(), Set.of());
     }
 
@@ -270,9 +234,9 @@ class FulfillmentServiceImplTest {
         var order = orderIn(OrderStatus.CONFIRMED, null);
         holdsAt(order, "HN-A01-1-A=SOFA-3S-GREY");
         when(orders.findById(order.orderId())).thenReturn(Optional.of(order));
-        when(picks.findByOrderId(order.orderId())).thenReturn(Optional.empty());
+        when(picks.findAllByOrderId(order.orderId())).thenReturn(List.of());
 
-        var thrown = refusal(() -> service.createTask(order.orderId(), UUID.randomUUID(), coordinator()));
+        var thrown = refusal(() -> service.createTask(order.orderId(), UUID.randomUUID(), unlimitedManager()));
 
         assertThat(thrown.errorCode()).isEqualTo(ErrorCode.PICK_TASK_STATE_CONFLICT);
         assertThat(thrown.getMessage()).contains("READY_TO_FULFILL", "CONFIRMED");
@@ -287,12 +251,12 @@ class FulfillmentServiceImplTest {
         holdsAt(order, "HN-A01-1-A=SOFA-3S-GREY", "HN-A01-2-B=SOFA-3S-GREY");
         assignable(HN, picker);
         when(orders.findById(order.orderId())).thenReturn(Optional.of(order));
-        when(picks.findByOrderId(order.orderId())).thenReturn(Optional.empty());
+        when(picks.findAllByOrderId(order.orderId())).thenReturn(List.of());
         when(packs.findByPickId(any())).thenReturn(Optional.of(new PackJpaEntity(UUID.randomUUID(), UUID.randomUUID(),
                 PackStatus.PENDING, null)));
         when(identities.displayNames(any())).thenReturn(java.util.Map.of(picker, "Kho Nam"));
 
-        var task = service.createTask(order.orderId(), picker, coordinator());
+        var task = service.createTask(order.orderId(), picker, unlimitedManager());
 
         assertThat(task.orderNumber()).isEqualTo("SO-20261014-0001");
         assertThat(task.warehouseId()).isEqualTo(HN);
@@ -314,11 +278,11 @@ class FulfillmentServiceImplTest {
         holdsAt(order, "HCM-A01-1-A=SOFA-3S-GREY");
         assignable(HCM, picker);
         when(orders.findById(order.orderId())).thenReturn(Optional.of(order));
-        when(picks.findByOrderId(order.orderId())).thenReturn(Optional.empty());
+        when(picks.findAllByOrderId(order.orderId())).thenReturn(List.of());
         when(packs.findByPickId(any())).thenReturn(Optional.of(new PackJpaEntity(UUID.randomUUID(), UUID.randomUUID(),
                 PackStatus.PENDING, null)));
 
-        assertThat(service.createTask(order.orderId(), picker, coordinator()).warehouseId()).isEqualTo(HCM);
+        assertThat(service.createTask(order.orderId(), picker, unlimitedManager()).warehouseId()).isEqualTo(HCM);
     }
 
     @Test
@@ -328,11 +292,11 @@ class FulfillmentServiceImplTest {
         when(inventory.holdsOf(order.orderId())).thenReturn(List.of());
         assignable(HCM, picker);
         when(orders.findById(order.orderId())).thenReturn(Optional.of(order));
-        when(picks.findByOrderId(order.orderId())).thenReturn(Optional.empty());
+        when(picks.findAllByOrderId(order.orderId())).thenReturn(List.of());
         when(packs.findByPickId(any())).thenReturn(Optional.of(new PackJpaEntity(UUID.randomUUID(), UUID.randomUUID(),
                 PackStatus.PENDING, null)));
 
-        assertThat(service.createTask(order.orderId(), picker, coordinator()).warehouseId()).isEqualTo(HCM);
+        assertThat(service.createTask(order.orderId(), picker, unlimitedManager()).warehouseId()).isEqualTo(HCM);
     }
 
     @Test
@@ -340,9 +304,9 @@ class FulfillmentServiceImplTest {
         var order = orderIn(OrderStatus.READY_TO_FULFILL, HCM);
         holdsAt(order, "HCM-A01-1-A=SOFA-3S-GREY", "HN-B01-1-A=TABLE-OAK-160");
         when(orders.findById(order.orderId())).thenReturn(Optional.of(order));
-        when(picks.findByOrderId(order.orderId())).thenReturn(Optional.empty());
+        when(picks.findAllByOrderId(order.orderId())).thenReturn(List.of());
 
-        var thrown = refusal(() -> service.createTask(order.orderId(), UUID.randomUUID(), coordinator()));
+        var thrown = refusal(() -> service.createTask(order.orderId(), UUID.randomUUID(), unlimitedManager()));
 
         assertThat(thrown.errorCode()).isEqualTo(ErrorCode.FULFILLMENT_HOLDS_OUTSIDE_WAREHOUSE);
         assertThat(thrown.getMessage()).contains("TABLE-OAK-160").doesNotContain("SOFA-3S-GREY");
@@ -355,9 +319,9 @@ class FulfillmentServiceImplTest {
         var order = orderIn(OrderStatus.CONFIRMED, null);
         when(inventory.holdsOf(order.orderId())).thenReturn(List.of());
         when(orders.findById(order.orderId())).thenReturn(Optional.of(order));
-        when(picks.findByOrderId(order.orderId())).thenReturn(Optional.empty());
+        when(picks.findAllByOrderId(order.orderId())).thenReturn(List.of());
 
-        assertThat(refusal(() -> service.createTask(order.orderId(), UUID.randomUUID(), coordinator())).errorCode())
+        assertThat(refusal(() -> service.createTask(order.orderId(), UUID.randomUUID(), unlimitedManager())).errorCode())
                 .isEqualTo(ErrorCode.PICK_TASK_STATE_CONFLICT);
     }
 
@@ -368,9 +332,9 @@ class FulfillmentServiceImplTest {
         holdsAt(order, "HCM-A01-1-A=SOFA-3S-GREY");
         assignable(HCM, UUID.randomUUID());
         when(orders.findById(order.orderId())).thenReturn(Optional.of(order));
-        when(picks.findByOrderId(order.orderId())).thenReturn(Optional.empty());
+        when(picks.findAllByOrderId(order.orderId())).thenReturn(List.of());
 
-        var thrown = refusal(() -> service.createTask(order.orderId(), inHn, coordinator()));
+        var thrown = refusal(() -> service.createTask(order.orderId(), inHn, unlimitedManager()));
 
         assertThat(thrown.errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
         assertThat(thrown.fieldErrors()).singleElement().satisfies(error -> {
@@ -388,7 +352,7 @@ class FulfillmentServiceImplTest {
         holdsAt(order, "HN-A01-1-A=SOFA-3S-GREY");
         assignable(HN, UUID.randomUUID());
         when(orders.findById(order.orderId())).thenReturn(Optional.of(order));
-        when(picks.findByOrderId(order.orderId())).thenReturn(Optional.empty());
+        when(picks.findAllByOrderId(order.orderId())).thenReturn(List.of());
 
         var thrown = refusal(() -> asScoped(managerOf(HCM),
                 () -> service.createTask(order.orderId(), UUID.randomUUID(), managerOf(HCM))));
@@ -404,11 +368,11 @@ class FulfillmentServiceImplTest {
         var existing = new PickJpaEntity(UUID.randomUUID(), null, UUID.randomUUID(), "SO-OLD", HCM, PickStatus.PENDING);
         existing.assign(picker, now);
         assignable(HCM, picker);
-        when(picks.findByOrderId(existing.getOrderId())).thenReturn(Optional.of(existing));
+        when(picks.findAllByOrderId(existing.getOrderId())).thenReturn(List.of(existing));
         when(packs.findByPickId(existing.getId())).thenReturn(Optional.of(new PackJpaEntity(UUID.randomUUID(),
                 existing.getId(), PackStatus.PENDING, null)));
 
-        var task = service.createTask(existing.getOrderId(), picker, coordinator());
+        var task = service.createTask(existing.getOrderId(), picker, unlimitedManager());
 
         assertThat(task.taskId()).isEqualTo(existing.getId());
         assertThat(task.orderNumber()).isEqualTo("SO-OLD");
@@ -431,7 +395,7 @@ class FulfillmentServiceImplTest {
 
     @Test
     void theListRefusesAnUnknownStatus() {
-        var thrown = refusal(() -> service.listTasks(coordinator(), new FulfillmentTaskQuery("DONE", null, null, 0, 20)));
+        var thrown = refusal(() -> service.listTasks(unlimitedManager(), new FulfillmentTaskQuery("DONE", null, null, 0, 20)));
 
         assertThat(thrown.errorCode()).isEqualTo(ErrorCode.UNSUPPORTED_PARAMETER);
         assertThat(thrown.fieldErrors()).singleElement().satisfies(error -> assertThat(error.field()).isEqualTo("status"));
@@ -494,13 +458,13 @@ class FulfillmentServiceImplTest {
                 PackStatus.PENDING, null)));
         assignable(HCM, local);
 
-        var thrown = refusal(() -> service.assign(pick.getId(), stranger, coordinator()));
+        var thrown = refusal(() -> service.assign(pick.getId(), stranger, unlimitedManager()));
         assertThat(thrown.errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
         assertThat(thrown.fieldErrors()).singleElement()
                 .satisfies(error -> assertThat(error.field()).isEqualTo("assignedUserId"));
         assertThat(pick.getAssignedUserId()).isNull();
 
-        assertThat(service.assign(pick.getId(), local, coordinator()).assignedUserId()).isEqualTo(local);
+        assertThat(service.assign(pick.getId(), local, unlimitedManager()).assignedUserId()).isEqualTo(local);
     }
 
     @Test
@@ -509,7 +473,7 @@ class FulfillmentServiceImplTest {
         assignable(HCM, picker);
         when(warehouses.findWarehouse(HCM)).thenReturn(Optional.of(new WarehouseView(HCM, "HCM", "Kho HCM", "x", true)));
 
-        var assignees = service.assignees(HCM, coordinator());
+        var assignees = service.assignees(HCM, unlimitedManager());
 
         assertThat(assignees).singleElement().satisfies(one -> {
             assertThat(one.userId()).isEqualTo(picker);
@@ -519,7 +483,7 @@ class FulfillmentServiceImplTest {
                 .isEqualTo(ErrorCode.OUT_OF_DATA_SCOPE);
         assertThat(refusal(() -> service.assignees(HCM, user(UUID.randomUUID(), Role.WAREHOUSE_STAFF))).errorCode())
                 .isEqualTo(ErrorCode.FORBIDDEN);
-        assertThat(refusal(() -> service.assignees(UUID.randomUUID(), coordinator())).errorCode())
+        assertThat(refusal(() -> service.assignees(UUID.randomUUID(), unlimitedManager())).errorCode())
                 .isEqualTo(ErrorCode.WAREHOUSE_NOT_FOUND);
     }
 
@@ -626,16 +590,324 @@ class FulfillmentServiceImplTest {
                     code.apply(FulfillmentPermissions.TASK_ASSIGNMENT, update),
                     code.apply(FulfillmentPermissions.TASK_OVERSIGHT, read),
                     code.apply(FulfillmentPermissions.PICKING, update), code.apply(FulfillmentPermissions.PACKING, update),
-                    code.apply(FulfillmentPermissions.PACKING, approve),
-                    code.apply(FulfillmentPermissions.DESIGN_REVERIFICATION, read),
-                    code.apply(FulfillmentPermissions.DESIGN_REVERIFICATION, update));
-            case ORDER_COORDINATOR -> Set.of(code.apply(FulfillmentPermissions.PICK_LISTS, read),
-                    code.apply(FulfillmentPermissions.TASK_ASSIGNMENT, create),
-                    code.apply(FulfillmentPermissions.TASK_ASSIGNMENT, update),
-                    code.apply(FulfillmentPermissions.TASK_OVERSIGHT, read));
-            case QC_STAFF -> Set.of(code.apply(FulfillmentPermissions.PICK_LISTS, read),
-                    code.apply(FulfillmentPermissions.DESIGN_REVERIFICATION, read));
+                    code.apply(FulfillmentPermissions.PACKING, approve));
             default -> Set.of();
         };
+    }
+
+    // ---- team plan 4C-5: the destination, the staging area and the move to dispatch --------------
+
+    private StorageLocationView stagingView(UUID warehouse, String code, boolean usable, StorageLocationView.AreaType type) {
+        var status = usable ? StorageLocationView.Status.ACTIVE : StorageLocationView.Status.INACTIVE;
+        return new StorageLocationView(UUID.randomUUID(), StorageLocationView.Kind.AREA, warehouse, code,
+                status, status, usable, type, null);
+    }
+
+    /** A released order of HCM, its holds in HCM, one assignable picker, ready for {@code createTask}. */
+    private OrderSummary releasedOrder(UUID picker) {
+        var order = orderIn(OrderStatus.READY_TO_FULFILL, HCM);
+        holdsAt(order, "HCM-A01-1-A=SOFA-3S-GREY");
+        assignable(HCM, picker);
+        when(orders.findById(order.orderId())).thenReturn(Optional.of(order));
+        when(picks.findAllByOrderId(order.orderId())).thenReturn(List.of());
+        when(packs.findByPickId(any())).thenReturn(Optional.of(new PackJpaEntity(UUID.randomUUID(), UUID.randomUUID(),
+                PackStatus.PENDING, null)));
+        return order;
+    }
+
+    private PickJpaEntity savedByCreateTask() {
+        org.mockito.ArgumentCaptor<PickJpaEntity> saved = org.mockito.ArgumentCaptor.forClass(PickJpaEntity.class);
+        verify(picks).saveAndFlush(saved.capture());
+        return saved.getValue();
+    }
+
+    @Test
+    void aRedeliveryIsReadAgainUnderTheOrdersRowLockBeforeItsTaskIsOpened() {
+        // WF-05 review N4: the unlocked read only says a redelivery may be waiting; the order's row lock is taken and
+        // the picks and the case are read again under it. Cancelled in between, the case gets no task.
+        UUID picker = UUID.randomUUID();
+        var order = releasedOrder(picker);
+        var redelivery = new com.stockflow.order.api.RedeliveryToPick(UUID.randomUUID(), UUID.randomUUID(),
+                Set.of(UUID.randomUUID()), java.util.Map.of());
+        when(orders.redeliveryToPick(eq(order.orderId()), any()))
+                .thenReturn(Optional.of(redelivery)).thenReturn(Optional.empty());
+
+        service.createTask(order.orderId(), picker, unlimitedManager());
+
+        var inOrder = org.mockito.Mockito.inOrder(orders, picks);
+        inOrder.verify(orders).redeliveryToPick(eq(order.orderId()), any());
+        inOrder.verify(orders).lockedStatus(order.orderId());
+        inOrder.verify(picks).findAllByOrderId(order.orderId());
+        inOrder.verify(orders).redeliveryToPick(eq(order.orderId()), any());
+        assertThat(savedByCreateTask().getRedeliveryCaseId()).as("the withdrawn case gets no pick").isNull();
+    }
+
+    @Test
+    void noRedeliveryTakesNoOrderLockBeforeTheUsualPath() {
+        UUID picker = UUID.randomUUID();
+        var order = releasedOrder(picker);
+        when(orders.redeliveryToPick(eq(order.orderId()), any())).thenReturn(Optional.empty());
+
+        service.createTask(order.orderId(), picker, unlimitedManager());
+
+        verify(orders, never()).lockedStatus(any());
+        verify(orders, org.mockito.Mockito.times(1)).redeliveryToPick(eq(order.orderId()), any());
+    }
+
+    @Test
+    void aTaskWithNoDestinationGoesToDispatchWhateverStagingAreaWasSent() {
+        UUID picker = UUID.randomUUID();
+        var order = releasedOrder(picker);
+
+        var task = service.createTask(order.orderId(), picker, null, "HCM-STG01", unlimitedManager());
+
+        assertThat(task.destination()).isEqualTo(com.stockflow.fulfillment.api.PickDestination.DISPATCH);
+        assertThat(task.stagingLocationCode()).isNull();
+        var pick = savedByCreateTask();
+        assertThat(pick.getDestination()).isEqualTo(com.stockflow.fulfillment.api.PickDestination.DISPATCH);
+        assertThat(pick.getStagingLocationCode()).isNull();
+        verify(warehouses, never()).areasOf(any(), any());
+    }
+
+    @Test
+    void aStagingTaskWithNoAreaNamedTakesTheWarehousesOnlyActiveOne() {
+        UUID picker = UUID.randomUUID();
+        var order = releasedOrder(picker);
+        when(warehouses.areasOf(HCM, StorageLocationView.AreaType.STAGING)).thenReturn(List.of(
+                stagingView(HCM, "HCM-STG01", true, StorageLocationView.AreaType.STAGING),
+                stagingView(HCM, "HCM-STG00", false, StorageLocationView.AreaType.STAGING)));
+
+        var task = service.createTask(order.orderId(), picker, com.stockflow.fulfillment.api.PickDestination.STAGING, null,
+                unlimitedManager());
+
+        assertThat(task.destination()).isEqualTo(com.stockflow.fulfillment.api.PickDestination.STAGING);
+        assertThat(task.stagingLocationCode()).isEqualTo("HCM-STG01");
+        assertThat(savedByCreateTask().getStagingLocationCode()).isEqualTo("HCM-STG01");
+    }
+
+    @Test
+    void aStagingTaskNamingAnActiveStagingAreaOfItsWarehouseTakesIt() {
+        UUID picker = UUID.randomUUID();
+        var order = releasedOrder(picker);
+        when(warehouses.findLocation("HCM-STG02")).thenReturn(Optional.of(
+                stagingView(HCM, "HCM-STG02", true, StorageLocationView.AreaType.STAGING)));
+
+        service.createTask(order.orderId(), picker, com.stockflow.fulfillment.api.PickDestination.STAGING, " HCM-STG02 ",
+                unlimitedManager());
+
+        assertThat(savedByCreateTask().getStagingLocationCode()).isEqualTo("HCM-STG02");
+    }
+
+    @Test
+    void aStagingAreaThatIsNotOneOfTheTasksWarehouseIsRefusedBeforeTheOrderMoves() {
+        UUID picker = UUID.randomUUID();
+        var order = releasedOrder(picker);
+        when(warehouses.findLocation("HCM-A01-1-A")).thenReturn(Optional.of(
+                stagingView(HCM, "HCM-A01-1-A", true, null)));
+        when(warehouses.findLocation("HCM-PACK01")).thenReturn(Optional.of(
+                stagingView(HCM, "HCM-PACK01", true, StorageLocationView.AreaType.DISPATCH)));
+        when(warehouses.findLocation("HN-STG01")).thenReturn(Optional.of(
+                stagingView(HN, "HN-STG01", true, StorageLocationView.AreaType.STAGING)));
+        when(warehouses.findLocation("HCM-STG09")).thenReturn(Optional.of(
+                stagingView(HCM, "HCM-STG09", false, StorageLocationView.AreaType.STAGING)));
+        when(warehouses.findLocation("HCM-NOWHERE")).thenReturn(Optional.empty());
+
+        for (String code : List.of("HCM-A01-1-A", "HCM-PACK01", "HN-STG01", "HCM-STG09", "HCM-NOWHERE")) {
+            var thrown = refusal(() -> service.createTask(order.orderId(), picker,
+                    com.stockflow.fulfillment.api.PickDestination.STAGING, code, unlimitedManager()));
+
+            assertThat(thrown.errorCode()).as(code).isEqualTo(ErrorCode.STAGING_AREA_INVALID);
+            assertThat(thrown.fieldErrors()).as(code).singleElement()
+                    .satisfies(error -> assertThat(error.field()).isEqualTo("stagingLocationCode"));
+        }
+        verify(orders, never()).startPicking(any(), any());
+        verify(picks, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void noAreaNamedWhileTheWarehouseHasNoneOrSeveralIsRefused() {
+        UUID picker = UUID.randomUUID();
+        var order = releasedOrder(picker);
+
+        when(warehouses.areasOf(HCM, StorageLocationView.AreaType.STAGING)).thenReturn(List.of());
+        assertThat(refusal(() -> service.createTask(order.orderId(), picker,
+                com.stockflow.fulfillment.api.PickDestination.STAGING, null, unlimitedManager())).errorCode())
+                .as("none").isEqualTo(ErrorCode.STAGING_AREA_INVALID);
+
+        when(warehouses.areasOf(HCM, StorageLocationView.AreaType.STAGING)).thenReturn(List.of(
+                stagingView(HCM, "HCM-STG01", true, StorageLocationView.AreaType.STAGING),
+                stagingView(HCM, "HCM-STG02", true, StorageLocationView.AreaType.STAGING)));
+        var several = refusal(() -> service.createTask(order.orderId(), picker,
+                com.stockflow.fulfillment.api.PickDestination.STAGING, "  ", unlimitedManager()));
+        assertThat(several.errorCode()).as("several").isEqualTo(ErrorCode.STAGING_AREA_INVALID);
+        assertThat(several.fieldErrors()).singleElement()
+                .satisfies(error -> assertThat(error.message()).contains("HCM-STG01").contains("HCM-STG02"));
+        verify(orders, never()).startPicking(any(), any());
+    }
+
+    @Test
+    void theDestinationChangesWhilePendingAndNotAfter() {
+        UUID picker = UUID.randomUUID();
+        var pick = new PickJpaEntity(UUID.randomUUID(), null, UUID.randomUUID(), "SO-D", HCM, PickStatus.PENDING);
+        pick.assign(picker, now);
+        when(picks.lockById(pick.getId())).thenReturn(Optional.of(pick));
+        when(picks.save(any())).thenAnswer(call -> call.getArgument(0));
+        when(packs.findByPickId(pick.getId())).thenReturn(Optional.of(new PackJpaEntity(UUID.randomUUID(), pick.getId(),
+                PackStatus.PENDING, null)));
+        when(warehouses.areasOf(HCM, StorageLocationView.AreaType.STAGING)).thenReturn(List.of(
+                stagingView(HCM, "HCM-STG01", true, StorageLocationView.AreaType.STAGING)));
+
+        var changed = service.changeDestination(pick.getId(), com.stockflow.fulfillment.api.PickDestination.STAGING, null,
+                managerOf(HCM));
+        assertThat(changed.destination()).isEqualTo(com.stockflow.fulfillment.api.PickDestination.STAGING);
+        assertThat(changed.stagingLocationCode()).isEqualTo("HCM-STG01");
+
+        var back = service.changeDestination(pick.getId(), com.stockflow.fulfillment.api.PickDestination.DISPATCH,
+                "HCM-STG01", unlimitedManager());
+        assertThat(back.destination()).isEqualTo(com.stockflow.fulfillment.api.PickDestination.DISPATCH);
+        assertThat(back.stagingLocationCode()).isNull();
+
+        pick.start(picker, now);
+        var late = refusal(() -> service.changeDestination(pick.getId(),
+                com.stockflow.fulfillment.api.PickDestination.STAGING, null, unlimitedManager()));
+        assertThat(late.errorCode()).isEqualTo(ErrorCode.PICK_TASK_STATE_CONFLICT);
+        assertThat(pick.getDestination()).isEqualTo(com.stockflow.fulfillment.api.PickDestination.DISPATCH);
+    }
+
+    @Test
+    void theDestinationIsNotChangedByAPickerOrByAManagerOfAnotherWarehouse() {
+        var pick = new PickJpaEntity(UUID.randomUUID(), null, UUID.randomUUID(), "SO-D", HCM, PickStatus.PENDING);
+        when(picks.lockById(pick.getId())).thenReturn(Optional.of(pick));
+
+        assertThat(refusal(() -> service.changeDestination(pick.getId(),
+                com.stockflow.fulfillment.api.PickDestination.STAGING, null,
+                user(UUID.randomUUID(), Role.WAREHOUSE_STAFF))).errorCode()).isEqualTo(ErrorCode.FORBIDDEN);
+        var other = managerOf(HN);
+        assertThat(refusal(() -> asScoped(other, () -> service.changeDestination(pick.getId(),
+                com.stockflow.fulfillment.api.PickDestination.STAGING, null, other))).errorCode())
+                .isEqualTo(ErrorCode.OUT_OF_DATA_SCOPE);
+        assertThat(pick.getDestination()).isEqualTo(com.stockflow.fulfillment.api.PickDestination.DISPATCH);
+    }
+
+    /** A STAGING task walked to STAGED: its cartons wait in the staging area. */
+    private PickJpaEntity stagedTask(UUID picker) {
+        var pick = new PickJpaEntity(UUID.randomUUID(), null, UUID.randomUUID(), "SO-STG", HCM, PickStatus.PENDING,
+                com.stockflow.fulfillment.api.PickDestination.STAGING, "HCM-STG01");
+        pick.assign(picker, now.minusSeconds(120));
+        pick.start(picker, now.minusSeconds(60));
+        pick.complete(picker, now.minusSeconds(30));
+        assertThat(pick.getStatus()).isEqualTo(PickStatus.STAGED);
+        when(picks.lockById(pick.getId())).thenReturn(Optional.of(pick));
+        when(picks.save(any())).thenAnswer(call -> call.getArgument(0));
+        when(packs.findByPickId(pick.getId())).thenReturn(Optional.of(new PackJpaEntity(UUID.randomUUID(), pick.getId(),
+                PackStatus.PENDING, null)));
+        return pick;
+    }
+
+    @Test
+    void movingAStagedTaskToDispatchDeductsItsLinesAndMakesItPicked() {
+        var pick = stagedTask(UUID.randomUUID());
+        UUID manager = UUID.randomUUID();
+        when(orders.lockedStatus(pick.getOrderId())).thenReturn(Optional.of(OrderStatus.PICKING));
+
+        var task = service.moveToDispatch(pick.getId(), user(manager, Role.WAREHOUSE_MANAGER));
+
+        assertThat(task.pickStatus()).isEqualTo("PICKED");
+        assertThat(task.movedToDispatchAt()).isEqualTo(now);
+        assertThat(pick.getMovedToDispatchBy()).isEqualTo(manager);
+        var order = org.mockito.Mockito.inOrder(picks, orders, pickLists);
+        order.verify(picks).lockById(pick.getId());
+        order.verify(orders, org.mockito.Mockito.atLeastOnce()).lockedStatus(pick.getOrderId());
+        order.verify(pickLists).moveStagedLinesToDispatch(pick, manager);
+        order.verify(picks).save(pick);
+    }
+
+    @Test
+    void movingToDispatchIsRefusedWhileTheOrderIsOnHoldAndTheTaskStaysStaged() {
+        var pick = stagedTask(UUID.randomUUID());
+        when(orders.lockedStatus(pick.getOrderId())).thenReturn(Optional.of(OrderStatus.ON_HOLD));
+
+        assertThat(refusal(() -> service.moveToDispatch(pick.getId(), managerOf(HCM))).errorCode())
+                .isEqualTo(ErrorCode.PICK_ORDER_ON_HOLD);
+
+        assertThat(pick.getStatus()).isEqualTo(PickStatus.STAGED);
+        verify(pickLists, never()).moveStagedLinesToDispatch(any(), any());
+        verify(picks, never()).save(any());
+    }
+
+    @Test
+    void movingToDispatchIsRefusedForACancelledOrdersTask() {
+        var pick = stagedTask(UUID.randomUUID());
+        when(orders.lockedStatus(pick.getOrderId())).thenReturn(Optional.of(OrderStatus.CANCELLED));
+
+        assertThat(refusal(() -> service.moveToDispatch(pick.getId(), managerOf(HCM))).errorCode())
+                .isEqualTo(ErrorCode.PICK_TASK_STATE_CONFLICT);
+        verify(pickLists, never()).moveStagedLinesToDispatch(any(), any());
+    }
+
+    @Test
+    void onlyAStagedTaskMovesToDispatch() {
+        for (PickStatus status : List.of(PickStatus.PENDING, PickStatus.PICKING)) {
+            UUID picker = UUID.randomUUID();
+            var pick = new PickJpaEntity(UUID.randomUUID(), null, UUID.randomUUID(), "SO-X", HCM, PickStatus.PENDING,
+                    com.stockflow.fulfillment.api.PickDestination.STAGING, "HCM-STG01");
+            pick.assign(picker, now);
+            if (status == PickStatus.PICKING) {
+                pick.start(picker, now);
+            }
+            when(picks.lockById(pick.getId())).thenReturn(Optional.of(pick));
+
+            assertThat(refusal(() -> service.moveToDispatch(pick.getId(), managerOf(HCM))).errorCode()).as(status.name())
+                    .isEqualTo(ErrorCode.PICK_TASK_STATE_CONFLICT);
+        }
+        var picked = pickedTask(UUID.randomUUID());
+        when(picks.lockById(picked.getId())).thenReturn(Optional.of(picked));
+        assertThat(refusal(() -> service.moveToDispatch(picked.getId(), managerOf(HCM))).errorCode())
+                .as("a task never staged").isEqualTo(ErrorCode.PICK_TASK_STATE_CONFLICT);
+        verify(pickLists, never()).moveStagedLinesToDispatch(any(), any());
+    }
+
+    @Test
+    void movingAMovedTaskAgainAnswersTheTaskBeforeLookingAtTheOrder() {
+        var pick = stagedTask(UUID.randomUUID());
+        UUID manager = UUID.randomUUID();
+        when(orders.lockedStatus(pick.getOrderId())).thenReturn(Optional.of(OrderStatus.PICKING));
+        service.moveToDispatch(pick.getId(), user(manager, Role.WAREHOUSE_MANAGER));
+        org.mockito.Mockito.clearInvocations(orders, pickLists, picks);
+        when(picks.lockById(pick.getId())).thenReturn(Optional.of(pick));
+
+        var again = service.moveToDispatch(pick.getId(), user(manager, Role.WAREHOUSE_MANAGER));
+
+        assertThat(again.pickStatus()).isEqualTo("PICKED");
+        verify(orders, never()).lockedStatus(any());
+        verify(pickLists, never()).moveStagedLinesToDispatch(any(), any());
+        verify(picks, never()).save(any());
+    }
+
+    @Test
+    void movingToDispatchNeedsTheAssignmentPermissionAndTheTasksWarehouse() {
+        var pick = stagedTask(UUID.randomUUID());
+        var other = managerOf(HN);
+
+        assertThat(refusal(() -> service.moveToDispatch(pick.getId(), user(UUID.randomUUID(), Role.WAREHOUSE_STAFF)))
+                .errorCode()).isEqualTo(ErrorCode.FORBIDDEN);
+        assertThat(refusal(() -> asScoped(other, () -> service.moveToDispatch(pick.getId(), other))).errorCode())
+                .isEqualTo(ErrorCode.OUT_OF_DATA_SCOPE);
+        verify(pickLists, never()).moveStagedLinesToDispatch(any(), any());
+    }
+
+    @Test
+    void completingAStagedTaskAgainIsAnsweredAsItIs() {
+        UUID picker = UUID.randomUUID();
+        var pick = stagedTask(picker);
+        var stagedAt = pick.getStagedAt();
+        org.mockito.Mockito.clearInvocations(picks, pickLists);
+
+        assertThat(service.completePicking(pick.getId(), user(picker, Role.WAREHOUSE_STAFF)).pickStatus())
+                .isEqualTo("STAGED");
+
+        assertThat(pick.getStagedAt()).isEqualTo(stagedAt);
+        verify(picks, never()).save(any());
+        verify(pickLists, never()).requireAllPicked(any(), any());
     }
 }

@@ -10,13 +10,17 @@ package com.stockflow.order.api;
  */
 public enum CancellationReasonCode {
     CUSTOMER_REQUEST,
-    /** The stock hold ran out before the money arrived (kltn-docs 14 BR-07). */
+    /**
+     * The stock hold ran out before the money arrived (kltn-docs 14 BR-07). Written by the system until team plan 5-2,
+     * which stopped that cancellation; kept for those orders, and for Sales cancelling such an order by hand.
+     */
     PAYMENT_NOT_RECEIVED,
     PAYMENT_FAILED,
     OUT_OF_STOCK,
     SUSPECTED_FRAUD,
     /** An order over the customer's credit limit that was not approved (kltn-docs 15 §4.3). */
     CREDIT_REJECTED,
+    /** Still a reason a customer gives: two orders Sales drew up for one need are as possible as two checkouts were. */
     DUPLICATE_ORDER,
     PRODUCTION_ISSUE,
     /**
@@ -24,6 +28,11 @@ public enum CancellationReasonCode {
      * only way such an order is cancelled - it ships goods a return already promised.
      */
     REPLACEMENT_WITHDRAWN,
+    /**
+     * What a failed delivery left undelivered, cancelled by Sales' decision on its delivery failure case (WF-05 fix
+     * plan, section 2): the reason the closure of the rest carries. Never a customer's own reason.
+     */
+    DELIVERY_FAILED,
     /** Needs a note: "other" with no explanation is not a reason. */
     OTHER;
 

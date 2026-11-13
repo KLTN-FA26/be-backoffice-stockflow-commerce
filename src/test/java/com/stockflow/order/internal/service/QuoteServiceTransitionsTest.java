@@ -9,15 +9,11 @@ import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.DataScope;
 import com.stockflow.common.security.Role;
 import com.stockflow.contracts.CustomerActedOnQuote;
-import com.stockflow.customer.api.CommercialTerm;
 import com.stockflow.customer.api.CreditTerms;
 import com.stockflow.customer.api.CustomerService;
 import com.stockflow.customer.api.CustomerSummary;
-import com.stockflow.design.api.DesignService;
 import com.stockflow.order.api.OrderService;
-import com.stockflow.order.api.PaymentTerm;
 import com.stockflow.order.internal.domain.PriceTier;
-import com.stockflow.order.internal.domain.ProductionRecords;
 import com.stockflow.order.internal.domain.Quote;
 import com.stockflow.order.internal.domain.QuoteLine;
 import com.stockflow.order.internal.domain.QuoteRepository;
@@ -52,7 +48,7 @@ import static org.mockito.Mockito.when;
 /**
  * The quote lifecycle of kltn-docs 03 §18 as {@link QuoteService} drives it: Sales sends and cancels, only the
  * customer answers, a stale version is refused, a sent quote past its validity reads as expired (BR-ORD-008), and
- * every transition is written to the history. {@code QuoteServiceTest} covers the sample rule and conversion.
+ * every transition is written to the history. {@code QuoteServiceTest} covers acceptance and conversion.
  */
 class QuoteServiceTransitionsTest {
 
@@ -61,17 +57,21 @@ class QuoteServiceTransitionsTest {
 
     private final QuoteRepository quotes = mock(QuoteRepository.class);
     private final QuoteSearch search = mock(QuoteSearch.class);
-    private final ProductionRecords production = mock(ProductionRecords.class);
     private final CustomerService customers = mock(CustomerService.class);
     private final ProductService products = mock(ProductService.class);
     private final ApplicationEventPublisher events = mock(ApplicationEventPublisher.class);
-    private final QuoteService service = new QuoteService(quotes, search, production, customers,
-            mock(DesignService.class), mock(QuotedOrders.class), mock(OrderService.class), new ObjectMapper(),
-            Clock.fixed(NOW, ZoneOffset.UTC), mock(com.stockflow.catalog.api.CatalogService.class), events, products);
+    private final com.stockflow.product.api.CustomerSkus customerSkus =
+            mock(com.stockflow.product.api.CustomerSkus.class);
+    private final com.stockflow.order.internal.domain.SkuProductionHistory production =
+            mock(com.stockflow.order.internal.domain.SkuProductionHistory.class);
+    private final QuoteService service = new QuoteService(quotes, search, customers,
+            mock(com.stockflow.inventory.api.UomConversionService.class), mock(QuotedOrders.class),
+            mock(OrderService.class), new ObjectMapper(), Clock.fixed(NOW, ZoneOffset.UTC),
+            mock(com.stockflow.catalog.api.CatalogService.class), events, products, customerSkus,
+            mock(com.stockflow.order.internal.domain.TaxRates.class), production);
 
     private final UUID customer = UUID.randomUUID();
     private final UUID portalUser = UUID.randomUUID();
-    private final UUID design = UUID.randomUUID();
     private final UUID salesUser = UUID.randomUUID();
     private final CurrentUser sales = new CurrentUser(salesUser, "sales", Set.of(Role.SALES_STAFF), Set.of(),
             DataScope.ALL, Set.of(), Set.of());
@@ -84,23 +84,27 @@ class QuoteServiceTransitionsTest {
                 NOW);
         when(customers.findById(customer)).thenReturn(Optional.of(summary));
         when(customers.findByUserId(portalUser)).thenReturn(Optional.of(summary));
-        when(customers.creditTerms(customer)).thenReturn(new CreditTerms(customer, true, true, true, false,
-                CommercialTerm.DEPOSIT, new BigDecimal("30"), null, null, "VND", null, null, null, 1));
+        when(customers.creditTerms(customer)).thenReturn(new CreditTerms(customer, true, null, null, "VND", null, null, null, 1));
         when(search.findRow(any())).thenAnswer(call -> Optional.of(new QuoteSearch.Row(call.getArgument(0), "QT-1",
-                customer, QuoteStatus.SENT, 1, PaymentTerm.DEPOSIT, NOW.plusSeconds(3600), NOW, null, NOW, "sales",
+                customer, QuoteStatus.SENT, 1, NOW.plusSeconds(3600), NOW, null, NOW, "sales",
                 VERSION)));
         when(search.history(any())).thenReturn(List.of());
+        // Every SKU here was produced before: these transitions carry no plate fee (QuoteServiceTest covers fees).
+        when(production.producedBefore(org.mockito.ArgumentMatchers.anyCollection()))
+                .thenAnswer(call -> Set.copyOf(call.<java.util.Collection<String>>getArgument(0)));
         when(products.lockedPurchasability(any())).thenReturn(Map.of());
-        when(production.approvedSampleOf(any(), any(), any())).thenReturn(Optional.of(UUID.randomUUID()));
+        when(customerSkus.ownersOf(org.mockito.ArgumentMatchers.anyCollection()))
+                .thenReturn(Map.of("LY12-ACME-01", customer));
     }
 
     private Quote stored(QuoteStatus status, Instant validUntil) {
         boolean answered = status == QuoteStatus.ACCEPTED || status == QuoteStatus.CHANGES_REQUESTED;
-        QuoteLine line = new QuoteLine(UUID.randomUUID(), 1, new Sku("CUP-PP-500"), design, null, 1000,
-                List.of(PriceTier.of(1000, new BigDecimal("2000")), PriceTier.of(5000, new BigDecimal("1800"))),
-                status == QuoteStatus.ACCEPTED ? 1000 : null, status == QuoteStatus.ACCEPTED ? Money.vnd(2000) : null);
+        QuoteLine line = QuoteLine.carton(UUID.randomUUID(), 1, new Sku("LY12-ACME-01"), UUID.randomUUID(), 50, 20,
+                List.of(PriceTier.of(10, new BigDecimal("2000")), PriceTier.of(50, new BigDecimal("1800"))),
+                status == QuoteStatus.ACCEPTED ? 20 : null, status == QuoteStatus.ACCEPTED ? Money.vnd(2000) : null,
+                "STANDARD", new BigDecimal("10"));
         Quote quote = Quote.restore(UUID.randomUUID(), "QT-1", UUID.randomUUID(), customer, status, 1,
-                new Quote.Offer(PaymentTerm.DEPOSIT, new BigDecimal("40"), validUntil, null, List.of(line)),
+                new Quote.Offer(validUntil, null, List.of(line)),
                 status == QuoteStatus.DRAFT ? null : NOW, status == QuoteStatus.DRAFT ? null : salesUser,
                 answered ? NOW : null, answered ? portalUser : null, null, null, null, null);
         when(quotes.findByIdForUpdate(quote.id())).thenReturn(Optional.of(quote));
@@ -133,7 +137,7 @@ class QuoteServiceTransitionsTest {
         ArgumentCaptor<String> snapshot = ArgumentCaptor.forClass(String.class);
         verify(quotes).recordTransition(eq(quote.id()), eq(1), eq(QuoteStatus.DRAFT), eq(QuoteStatus.SENT), eq(null),
                 snapshot.capture(), eq(NOW), eq(salesUser));
-        assertThat(snapshot.getValue()).contains("CUP-PP-500");
+        assertThat(snapshot.getValue()).contains("LY12-ACME-01");
     }
 
     @Test
@@ -150,24 +154,15 @@ class QuoteServiceTransitionsTest {
     @DisplayName("a quote holding a SKU that is no longer active cannot be sent: SKU_NOT_SELLABLE names the line")
     void inactiveSkuBlocksSending() {
         Quote quote = stored(QuoteStatus.DRAFT);
-        when(products.lockedPurchasability(any())).thenReturn(Map.of("CUP-PP-500", Purchasability.PRODUCT_DISCONTINUED));
+        when(products.lockedPurchasability(any())).thenReturn(Map.of("LY12-ACME-01", Purchasability.PRODUCT_DISCONTINUED));
 
         BusinessException thrown = org.assertj.core.api.Assertions.catchThrowableOfType(BusinessException.class,
                 () -> service.send(sales, quote.id(), VERSION));
 
         assertThat(thrown.errorCode()).isEqualTo(ErrorCode.SKU_NOT_SELLABLE);
         assertThat(thrown.fieldErrors()).singleElement()
-                .satisfies(error -> assertThat(error.field()).isEqualTo("lines[0].blankSku"));
+                .satisfies(error -> assertThat(error.field()).isEqualTo("lines[0].sku"));
         assertThat(quote.status()).isEqualTo(QuoteStatus.DRAFT);
-    }
-
-    @Test
-    @DisplayName("a quote is offered only on a payment term the customer's commercial terms allow (15 BR-01)")
-    void termNotAllowedBlocksSending() {
-        Quote quote = stored(QuoteStatus.DRAFT);
-        when(customers.creditTerms(customer)).thenReturn(CreditTerms.prepaidOnly(customer));
-
-        assertThat(code(() -> service.send(sales, quote.id(), VERSION))).isEqualTo(ErrorCode.PAYMENT_TERM_NOT_ALLOWED);
     }
 
     @Test
@@ -189,12 +184,14 @@ class QuoteServiceTransitionsTest {
 
         assertThat(quote.status()).isEqualTo(QuoteStatus.ACCEPTED);
         assertThat(quote.respondedBy()).isEqualTo(portalUser);
-        assertThat(quote.offer().lines().get(0).acceptedQuantity()).isEqualTo(1000);
+        assertThat(quote.offer().lines().get(0).acceptedQuantity()).as("20 cartons, as proposed").isEqualTo(20);
         verify(quotes).recordTransition(eq(quote.id()), eq(1), eq(QuoteStatus.SENT), eq(QuoteStatus.ACCEPTED), eq(null),
                 eq(null), eq(NOW), eq(portalUser));
+        // QuoteStatusChanged (the chat card follows the quote) is published beside the notice to Sales.
         ArgumentCaptor<Object> event = ArgumentCaptor.forClass(Object.class);
-        verify(events).publishEvent(event.capture());
-        assertThat(event.getValue()).isInstanceOfSatisfying(CustomerActedOnQuote.class, acted -> {
+        verify(events, org.mockito.Mockito.atLeastOnce()).publishEvent(event.capture());
+        assertThat(event.getAllValues().stream().filter(CustomerActedOnQuote.class::isInstance).toList()).singleElement()
+                .isInstanceOfSatisfying(CustomerActedOnQuote.class, acted -> {
             assertThat(acted.action()).isEqualTo(CustomerActedOnQuote.Action.ACCEPTED);
             assertThat(acted.salesUserId()).isEqualTo(salesUser);
             assertThat(acted.quoteNumber()).isEqualTo("QT-1");
@@ -214,7 +211,7 @@ class QuoteServiceTransitionsTest {
     }
 
     @Test
-    @DisplayName("a sent quote past its validity is answered QUOTE_EXPIRED, whatever its samples (BR-ORD-008)")
+    @DisplayName("a sent quote past its validity is answered QUOTE_EXPIRED (BR-ORD-008)")
     void expiredQuoteIsNotAccepted() {
         Quote quote = stored(QuoteStatus.SENT, NOW.minusSeconds(1));
 
@@ -254,8 +251,9 @@ class QuoteServiceTransitionsTest {
         verify(quotes).recordTransition(eq(quote.id()), eq(1), eq(QuoteStatus.SENT),
                 eq(QuoteStatus.CHANGES_REQUESTED), eq("lower the price"), eq(null), eq(NOW), eq(portalUser));
         ArgumentCaptor<Object> event = ArgumentCaptor.forClass(Object.class);
-        verify(events).publishEvent(event.capture());
-        assertThat(event.getValue().toString()).doesNotContain("lower the price");
+        verify(events, org.mockito.Mockito.atLeastOnce()).publishEvent(event.capture());
+        assertThat(event.getAllValues()).isNotEmpty()
+                .allSatisfy(published -> assertThat(published.toString()).doesNotContain("lower the price"));
     }
 
     @Test
@@ -304,7 +302,7 @@ class QuoteServiceTransitionsTest {
                 .isEqualTo(ErrorCode.INVALID_QUOTE_TRANSITION);
         assertThat(quote.status()).isEqualTo(QuoteStatus.ACCEPTED);
 
-        when(products.lockedPurchasability(any())).thenReturn(Map.of("CUP-PP-500", Purchasability.PRODUCT_INACTIVE));
+        when(products.lockedPurchasability(any())).thenReturn(Map.of("LY12-ACME-01", Purchasability.PRODUCT_INACTIVE));
         service.cancel(sales, quote.id(), VERSION, "SKU stopped");
 
         assertThat(quote.status()).isEqualTo(QuoteStatus.CANCELLED);
@@ -344,7 +342,7 @@ class QuoteServiceTransitionsTest {
         UUID id = UUID.randomUUID();
         when(search.search(any(), any(org.springframework.data.domain.Pageable.class))).thenReturn(
                 new org.springframework.data.domain.PageImpl<>(List.of(new QuoteSearch.Row(id, "QT-2", customer,
-                        QuoteStatus.SENT, 1, PaymentTerm.DEPOSIT, NOW.minusSeconds(1), NOW.minusSeconds(100), null, NOW,
+                        QuoteStatus.SENT, 1, NOW.minusSeconds(1), NOW.minusSeconds(100), null, NOW,
                         "sales", 3))));
 
         var page = service.list(sales, new Quotes.Criteria(null, List.of(), null, 0, 20, null));

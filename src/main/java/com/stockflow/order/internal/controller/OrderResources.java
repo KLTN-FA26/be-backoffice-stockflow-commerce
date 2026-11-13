@@ -8,10 +8,28 @@ public final class OrderResources {
 
     /**
      * Cancelling someone else's order from the back office (kltn-docs 17 §2, §4.5). Its own resource
-     * so Sales can cancel without also being able to release orders to production, which
-     * {@code sales-orders:APPROVE} guards (SCRUM-256, SCRUM-459).
+     * so Sales can cancel without also being able to release orders, which {@link #RELEASES} guards (SCRUM-256,
+     * SCRUM-459).
      */
     public static final String ORDER_CANCELLATIONS = "sales-order-cancellations";
+
+    /**
+     * Releasing an order to a warehouse (kltn-docs 17 BR-03): the warehouse manager of that warehouse, so it is
+     * checked against the caller's warehouses too. Split out of {@code sales-orders:APPROVE} with {@link #HOLDS}
+     * when the order coordinator role was retired (QD-12, team plan 5-7), so that neither side holds the other's
+     * work. Seeded by V20261115000200; team plan 4B-8 releases by delivery batch with it.
+     */
+    public static final String RELEASES = "sales-order-releases";
+
+    /** Putting an order on hold and resolving the hold (17 §5): Sales' (QD-12). Seeded by V20261115000200. */
+    public static final String HOLDS = "sales-order-holds";
+
+    /**
+     * Fulfillment's resource, declared there: recording that an order without shipments was delivered or was not
+     * answers to the same {@code :APPROVE} as a shipment's outcome (09 BR-02) - the warehouse manager's since team
+     * plan 5-7 (17 §2, BR-27).
+     */
+    public static final String DELIVERY_OUTCOMES = "fulfillment-delivery-outcomes";
 
     /** Orders over their customer's credit limit, waiting for whoever approves credit (SCRUM-427). */
     public static final String CREDIT_HOLDS = "sales-order-credit-holds";
@@ -20,11 +38,17 @@ public final class OrderResources {
     public static final String QUOTES = "sales-quotes";
 
     /**
-     * Turning an accepted quote into its order (decision 2026-10-17): Sales' and the order coordinator's, who does not
-     * edit quotes. Its own resource so neither {@code sales-quotes:UPDATE} (editing) nor {@code sales-orders:CREATE}
-     * (which the portal customer holds) has to stand for it. Seeded by V20261017000300.
+     * Turning an accepted quote into its order (decision 2026-10-17): Sales'. Its own resource so neither
+     * {@code sales-quotes:UPDATE} (editing) nor {@code sales-orders:CREATE} (which the portal customer holds) has to
+     * stand for it. Seeded by V20261017000300.
      */
     public static final String QUOTE_CONVERSIONS = "sales-quote-conversions";
+
+    /**
+     * 4B-4 (kltn-docs 14 §4.3): the sales contract of an order - Sales draws it up, edits, sends and records it signed
+     * (APPROVE); accounting and the Sales Manager read it. Seeded by V20261108002200.
+     */
+    public static final String SALES_CONTRACTS = "sales-contracts";
 
     /**
      * PACK-PARTIAL (lead's decision 2026-10-21): Sales decides whether an order may ship in parts. Its own resource,
@@ -34,12 +58,45 @@ public final class OrderResources {
     public static final String PARTIAL_SHIPMENTS = "sales-order-partial-shipments";
 
     /**
-     * LP-1 (lead's decision 2026-10-22): the Order Coordinator chooses how an order travels - with the release, or
-     * since, until packing starts. Its own resource: {@code sales-orders:APPROVE} releases orders, and a mode other
-     * than the order's at release needs this as well. Seeded by V20261022000800 for ORDER_COORDINATOR and SYSTEM_ADMIN.
+     * 4B-7 (kltn-docs 17 §4.2 steps 2-3): the warehouse an order of a contract ships from, and how much of its stock is
+     * held there - UPDATE for Sales, who chooses it; READ for those who follow the order. Not
+     * {@code sales-orders:UPDATE}, which the portal customer holds for their own orders.
      */
-    public static final String DELIVERY_MODES =
-            com.stockflow.order.internal.service.OrderPermissions.DELIVERY_MODES;
+    public static final String SHIPPING_WAREHOUSES = "sales-order-shipping-warehouses";
+
+    /**
+     * 4A-1 (kltn-docs 17 §4.3): the producer catalogue - kept by the Production Coordinator (00 §2.1, 2026-11-07), read
+     * by the Sales Manager, Sales and the warehouse manager. A new code: the old {@code production-*} codes went with
+     * in-house production (V20261108000100).
+     */
+    public static final String PRODUCERS = "sales-producers";
+
+    /**
+     * 4A-2 (kltn-docs 17 §4.3, BR-23): production orders - the Production Coordinator draws up, edits, submits, cancels
+     * and closes (CREATE, UPDATE); the Sales Manager approves and returns (APPROVE); Sales and the warehouse manager read.
+     */
+    public static final String PRODUCTION_ORDERS = "production-orders";
+
+    /**
+     * 4A-4 (kltn-docs 13 §4.3 step 5, BR-13): the storefront's print samples to approve - the customer reads and
+     * answers their own (scope OWN, the owner checked by the service). The coordinator's side of the rounds is
+     * {@code production-orders:UPDATE}. Seeded by V20261108003100.
+     */
+    public static final String PRODUCTION_SAMPLES = "production-samples";
+
+    /**
+     * 4A-7 (kltn-docs 17 §4.12 step 47): the production schedule - read by the Production Coordinator, Sales, the Sales
+     * Manager and the warehouse manager (their warehouses). Its holders with a business-wide scope are the ones told of
+     * AT_RISK, PRODUCTION_LATE and PO_NEEDED (BR-30).
+     */
+    public static final String PRODUCTION_SCHEDULE = "production-schedule";
+
+    /**
+     * 4A-7 (17 §4.12 step 49): the delay flags of an order, for the order page - Sales, the Sales Manager and the
+     * warehouse manager; its holders who can see the order's shipping warehouse are the ones told of DELIVERY_LATE
+     * (BR-30: not the Production Coordinator).
+     */
+    public static final String DELAY_ALERTS = "delay-alerts";
 
     /**
      * Return requests (SCRUM-243, seeded by V20260903000100, UPDATE added by V20261101020000): CREATE opens one and adds
@@ -48,15 +105,11 @@ public final class OrderResources {
      */
     public static final String RMAS = "sales-rmas";
 
-    /** Counting a returned parcel into quarantine: the warehouse's step (V20261101020000). */
-    public static final String RMA_RECEIPTS = "sales-rma-receipts";
-
-    /** QC's verdict on returned goods and where they go (V20261101020000). */
-    public static final String RMA_INSPECTIONS = "sales-rma-inspections";
-
     /**
-     * How accepted units are made good: UPDATE proposes (Sales, coordinator), APPROVE approves a resolution with money
-     * - four eyes, the Accountant (V20261101020000).
+     * The refund of goods that came back: UPDATE proposes (Sales), APPROVE approves it - four eyes, the
+     * Accountant (V20261101020000). Counting a returned parcel in ({@code sales-rma-receipts}) and QC's verdict
+     * ({@code sales-rma-inspections}) went with team plan 4D-3: goods come back on a return receipt
+     * ({@code procurement-goods-receipts}) and nobody inspects them (V20261114000200).
      */
     public static final String RMA_RESOLUTIONS = "sales-rma-resolutions";
 

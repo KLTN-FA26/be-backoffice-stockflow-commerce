@@ -5,7 +5,6 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 import com.nimbusds.jose.jwk.RSAKey;
-import com.stockflow.catalog.internal.domain.SellingPrice;
 import com.stockflow.catalog.internal.service.CatalogCommerceService;
 import com.stockflow.catalog.internal.service.CatalogProjectionListener;
 import com.stockflow.common.security.ActiveSessionCheck;
@@ -13,7 +12,6 @@ import com.stockflow.common.security.SessionValidator;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.RedisContainer;
 
-import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
@@ -22,7 +20,6 @@ import org.springframework.boot.testcontainers.service.connection.ServiceConnect
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.context.annotation.Primary;
-import org.springframework.core.env.Environment;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.oauth2.core.DelegatingOAuth2TokenValidator;
 import org.springframework.security.oauth2.jwt.*;
@@ -31,8 +28,6 @@ import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 import org.testcontainers.containers.PostgreSQLContainer;
 
-import java.math.BigDecimal;
-import java.sql.DriverManager;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
@@ -40,45 +35,25 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
-/** Real demo migrations, application startup, RSA tokens, filter chain and PostgreSQL. */
+/** Real demo seed, application startup, RSA tokens, filter chain and PostgreSQL, from a blank database. */
 @IntegrationTest
-@Import({CatalogProjectionStartupIntegrationTest.UpgradeDatabase.class, RedisContainer.class})
+@Import({CatalogProjectionStartupIntegrationTest.StartupDatabase.class, RedisContainer.class})
 @AutoConfigureMockMvc
 @TestPropertySource(properties = {"stockflow.security.enabled=true", "stockflow.catalog.projection-retry-ms=3600000"})
 @DirtiesContext
 class CatalogProjectionStartupIntegrationTest {
     @TestConfiguration(proxyBeanMethods = false)
-    static class UpgradeDatabase {
+    static class StartupDatabase {
+        /**
+         * A blank database each run: Spring's own Flyway migrates it, demo seed included, so the projection is built by
+         * ApplicationReadyEvent from rows the application never wrote through its catalog service.
+         */
         @Bean
         @ServiceConnection
-        PostgreSQLContainer<?> postgres(Environment environment) throws Exception {
+        PostgreSQLContainer<?> postgres() {
             var pg = new PostgreSQLContainer<>("postgres:16-alpine");
             pg.start();
-            try {
-                if (!environment.getProperty("stockflow.test.catalog-upgrade", Boolean.class, true))
-                    return pg; // Spring migrates a genuinely blank database, including the real demo seed.
-                Flyway.configure().dataSource(pg.getJdbcUrl(), pg.getUsername(), pg.getPassword())
-                        .locations("classpath:db/migration", "classpath:db/demo")
-                        // Reproduce the previous release: all versioned migrations, no new repeatable seed.
-                        .repeatableSqlMigrationPrefix("OLD_RELEASE_WITHOUT_REPEATABLE_SEEDS")
-                        .target("20261008000200").load().migrate();
-                try (var connection = DriverManager.getConnection(pg.getJdbcUrl(), pg.getUsername(), pg.getPassword());
-                        var sql = connection.createStatement()) {
-                    sql.executeUpdate("""
-                            update product.products set seo_title='Upgrade SEO',seo_description='Upgrade description'
-                            where code='SOFA-3S';
-                            insert into product.products(id,code,name,slug,status) values
-                            (md5('test:private-draft')::uuid,'PRIVATE-DRAFT','Private draft','private-draft','DRAFT');
-                            insert into product.products(id,code,name,slug,status,submitted_by,submitted_at,approved_by,approved_at)
-                            values (md5('test:private-approved')::uuid,'PRIVATE-APPROVED','Unpublished','private-approved','APPROVED',
-                                md5('demo:user:editor')::uuid,now(),md5('demo:user:approver')::uuid,now());
-                            """);
-                }
-                return pg;
-            } catch (Exception e) {
-                pg.stop();
-                throw e;
-            }
+            return pg;
         }
 
         @Bean
@@ -97,7 +72,6 @@ class CatalogProjectionStartupIntegrationTest {
     @Autowired CatalogProjectionListener listener;
     @Autowired CatalogCommerceService commerce;
     @Autowired org.springframework.transaction.support.TransactionTemplate tx;
-    @Autowired Environment environment;
 
     String authorization() {
         return authorization("SYSTEM_ADMIN");
@@ -112,35 +86,33 @@ class CatalogProjectionStartupIntegrationTest {
     }
 
     @Test
-    void upgradeAndStartupRebuildWithoutRepublishAndRemainSafeOnRestart() throws Exception {
+    void startupRebuildsWithoutRepublishAndStaysSafeOnRestart() throws Exception {
         // No manual project/publish call before these assertions: ApplicationReadyEvent did the backfill.
         String auth = authorization();
-        String initialSeo = environment.getProperty("stockflow.test.catalog-upgrade", Boolean.class, true)
-                ? "Upgrade SEO" : null;
+        String initialSeo = null; // the demo products carry no SEO title
         mvc.perform(get("/api/v1/catalog/products")).andExpect(status().isUnauthorized());
         mvc.perform(get("/api/v1/catalog/products").header("Authorization", auth))
-                .andExpect(status().isOk()).andExpect(jsonPath("$.data.totalElements").value(2))
-                .andExpect(jsonPath("$.data.items.length()").value(2));
-        assertSofa(auth, initialSeo, 12500000);
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.totalElements").value(3))
+                .andExpect(jsonPath("$.data.items.length()").value(3));
+        assertSofa(auth, initialSeo);
         mvc.perform(get("/api/v1/catalog/products/ban-an-go-soi").header("Authorization", auth))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.variants[0].sku").value("TABLE-OAK-160"))
-                .andExpect(jsonPath("$.data.variants[0].price").value(8000000));
-        for (String role : List.of("ECOMMERCE_ADMIN", "SALES_STAFF", "WAREHOUSE_STAFF",
-                "WAREHOUSE_MANAGER", "INVENTORY_PLANNER")) {
+                .andExpect(jsonPath("$.data.variants[0].price").doesNotExist());
+        for (String role : List.of("SALES_MANAGER", "SALES_STAFF", "WAREHOUSE_STAFF",
+                "WAREHOUSE_MANAGER")) {
             String signedIn = authorization(role);
             mvc.perform(get("/api/v1/catalog/products").header("Authorization", signedIn))
-                    .andExpect(status().isOk()).andExpect(jsonPath("$.data.items.length()").value(2));
-            assertSofa(signedIn, initialSeo, 12500000);
+                    .andExpect(status().isOk()).andExpect(jsonPath("$.data.items.length()").value(3));
+            assertSofa(signedIn, initialSeo);
         }
         mvc.perform(get("/api/v1/catalog/products/private-draft").header("Authorization", auth))
                 .andExpect(status().isNotFound());
         mvc.perform(get("/api/v1/catalog/products/private-approved").header("Authorization", auth))
                 .andExpect(status().isNotFound());
-        assertThat(jdbc.queryForObject("select count(*) from catalog.product_listing", Long.class)).isEqualTo(2);
-        assertThat(jdbc.queryForObject("select count(*) from catalog.catalog_entry", Long.class)).isEqualTo(2);
+        assertThat(jdbc.queryForObject("select count(*) from catalog.product_listing", Long.class)).isEqualTo(3);
+        assertThat(jdbc.queryForObject("select count(*) from catalog.catalog_entry", Long.class)).isEqualTo(3);
 
         var source = jdbc.queryForList("select * from product.products order by id");
-        var prices = jdbc.queryForList("select * from catalog.pricing_rule order by id");
         var listings = jdbc.queryForList("select * from catalog.product_listing order by product_id");
         var entries = jdbc.queryForList("select * from catalog.catalog_entry order by sku");
         listener.rebuildPublished();
@@ -177,25 +149,23 @@ class CatalogProjectionStartupIntegrationTest {
             for (var result : work) assertThat(result.get(30, TimeUnit.SECONDS)).isTrue();
         }
         assertThat(jdbc.queryForList("select * from product.products order by id")).isEqualTo(source);
-        assertThat(jdbc.queryForList("select * from catalog.pricing_rule order by id")).isEqualTo(prices);
         assertThat(jdbc.queryForList("select * from catalog.product_listing order by product_id")).isEqualTo(listings);
-        assertThat(jdbc.queryForObject("select count(*) from catalog.catalog_entry", Long.class)).isEqualTo(2);
-        assertSofa(auth, initialSeo, 12500000);
+        assertThat(jdbc.queryForObject("select count(*) from catalog.catalog_entry", Long.class)).isEqualTo(3);
+        assertSofa(auth, initialSeo);
 
         // Partial projection loss at the same revision must also be detected.
         tx.executeWithoutResult(s -> jdbc.update("delete from catalog.catalog_entry where sku='SOFA-3S-GREY'"));
         listener.retry();
-        assertSofa(auth, initialSeo, 12500000);
-        assertThat(jdbc.queryForObject("select count(*) from catalog.catalog_entry", Long.class)).isEqualTo(2);
+        assertSofa(auth, initialSeo);
+        assertThat(jdbc.queryForObject("select count(*) from catalog.catalog_entry", Long.class)).isEqualTo(3);
 
         tx.executeWithoutResult(s -> {
             jdbc.update("delete from catalog.catalog_entry where sku='SOFA-3S-GREY'");
             jdbc.update("delete from catalog.product_listing where slug='sofa-3-cho'");
         });
         listener.retry();
-        assertSofa(auth, initialSeo, 12500000);
+        assertSofa(auth, initialSeo);
         assertThat(jdbc.queryForList("select * from product.products order by id")).isEqualTo(source);
-        assertThat(jdbc.queryForList("select * from catalog.pricing_rule order by id")).isEqualTo(prices);
 
         UUID sofa = jdbc.queryForObject("select id from product.products where code='SOFA-3S'", UUID.class);
         commerce.unpublish(sofa);
@@ -205,19 +175,19 @@ class CatalogProjectionStartupIntegrationTest {
         commerce.publish(sofa);
         var listing = commerce.get(sofa);
         commerce.edit(sofa, listing.revision(), "sofa-3-cho", "New source SEO", "New source description");
-        commerce.price(sofa, "SOFA-3S-GREY", commerce.get(sofa).revision(),
-                new SellingPrice(new BigDecimal("13000000"), "VND"), "test");
         listener.rebuildPublished();
-        assertSofa(auth, "New source SEO", 13000000);
+        assertSofa(auth, "New source SEO");
         assertThat(jdbc.queryForObject("select slug from product.products where id=?", String.class, sofa))
                 .isEqualTo("sofa-3-cho");
     }
 
-    private void assertSofa(String auth, String seo, int price) throws Exception {
+    /** The sofa's page: no price and no stock indicator on its variant (kltn-docs 13 BR-04, BR-11; 5-3). */
+    private void assertSofa(String auth, String seo) throws Exception {
         var result = mvc.perform(get("/api/v1/catalog/products/sofa-3-cho").header("Authorization", auth))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.slug").value("sofa-3-cho"))
                 .andExpect(jsonPath("$.data.variants[0].sku").value("SOFA-3S-GREY"))
-                .andExpect(jsonPath("$.data.variants[0].price").value(price));
+                .andExpect(jsonPath("$.data.variants[0].price").doesNotExist())
+                .andExpect(jsonPath("$.data.variants[0].availability").doesNotExist());
         if (seo == null) result.andExpect(jsonPath("$.data.seoTitle").doesNotExist());
         else result.andExpect(jsonPath("$.data.seoTitle").value(seo));
     }

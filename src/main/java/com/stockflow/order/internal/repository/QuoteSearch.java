@@ -1,6 +1,5 @@
 package com.stockflow.order.internal.repository;
 
-import com.stockflow.order.api.PaymentTerm;
 import com.stockflow.order.internal.domain.QuoteStatus;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -16,12 +15,15 @@ public interface QuoteSearch {
      * @param customerId          forced to the caller's own customer for a portal user
      * @param seenByCustomerOnly  true for a portal user: drafts and quotes cancelled before sending are
      *                            Sales' working copies and are not shown; one cancelled after it was sent is
+     * @param now                 the moment the statuses are read at: a SENT quote whose validity ended by then is
+     *                            EXPIRED for the filter, as every read reports it, before the sweep writes it down
      */
-    record Criteria(UUID customerId, List<QuoteStatus> statuses, String number, boolean seenByCustomerOnly) {
+    record Criteria(UUID customerId, List<QuoteStatus> statuses, String number, boolean seenByCustomerOnly,
+                    Instant now) {
     }
 
     record Row(UUID id, String quoteNumber, UUID customerId, QuoteStatus status, int revision,
-               PaymentTerm paymentTerm, Instant validUntil, Instant sentAt, UUID convertedOrderId,
+               Instant validUntil, Instant sentAt, UUID convertedOrderId,
                Instant createdAt, String createdBy, long version) {
     }
 

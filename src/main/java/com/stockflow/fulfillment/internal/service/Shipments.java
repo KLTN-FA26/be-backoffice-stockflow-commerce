@@ -9,30 +9,28 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * Shipments as the back office sees them (G4-2a; kltn-docs 09 §5): the ones waiting at dispatch, the carrier chosen
- * for them, and - once handed over - the outcome staff record when the carrier reports back (§4.3, BR-02): delivered,
- * not delivered (with a reason), back at the warehouse. Each outcome tells the order in the same transaction, which
- * bills it (a credit order's receivable, a deposit order's carrier-collected COD) and moves the order (BR-05).
+ * Shipments as the back office sees them (G4-2a; kltn-docs 09 §5): the ones waiting at dispatch for a load plan, and -
+ * once handed over with their vehicle's carrier - the outcome staff record when the carrier reports back (§4.3, BR-02):
+ * delivered, not delivered (with a reason), back at the warehouse. Each outcome tells the order in the same
+ * transaction, which bills it (a credit order's receivable) and moves the order (BR-05). Nothing is collected on
+ * delivery: there is no COD (09 BR-08).
  *
  * <p>Inside {@code internal}: only this module's web layer calls it. Every call is limited to the caller's warehouses.</p>
  */
 public interface Shipments {
 
     /**
-     * @param taskId     the fulfillment task it was packed in (where its label is reprinted); null for none
-     * @param loadCode   the open or dispatched load it is on; null when on none
-     * @param codAmount  what the carrier collects: the label's figure until the handover fixes it (09 BR-04)
-     * @param currency   of {@code codAmount}: the order's
+     * @param taskId    the fulfillment task it was packed in (where its label is reprinted); null for none
+     * @param carrierId the carrier it was handed to; null before the handover
+     * @param loadCode  the open or dispatched load it is on; null when on none
      */
     record ShipmentRow(UUID shipmentId, String code, UUID orderId, String orderNumber, UUID taskId, UUID warehouseId,
-                       String status, String deliveryMode, int packageCount, BigDecimal codAmount, String currency,
-                       UUID carrierId, String carrierName,
+                       String status, int packageCount, UUID carrierId, String carrierName,
                        UUID loadId, String loadCode, boolean partial, Instant readyAt, Instant handedOverAt,
                        Instant outcomeAt, String failureReason, boolean wholeOrderHandover, long version) { }
 
     record Parcel(UUID packageId, String labelCode, String status, BigDecimal weightKg, BigDecimal lengthCm,
-                  BigDecimal widthCm, BigDecimal heightCm, com.stockflow.fulfillment.internal.domain.KitPart kit,
-                  Instant labelOutdatedAt) { }
+                  BigDecimal widthCm, BigDecimal heightCm) { }
 
     /** One step of the timeline, with who recorded it (09 BR-02). */
     record Step(String status, Instant occurredAt, UUID recordedBy, String recordedByName, String note) { }
@@ -55,15 +53,6 @@ public interface Shipments {
     ShipmentDetail get(UUID shipmentId);
 
     /**
-     * The carrier a shipment waiting for dispatch will go with (09 §4.1 step 2); null clears it. Not while it is on a
-     * load: take it off first.
-     *
-     * @throws com.stockflow.common.error.BusinessException {@code CARRIER_NOT_FOUND}, {@code CARRIER_INACTIVE},
-     *         {@code SHIPMENT_STATE_CONFLICT}, {@code SHIPMENT_ON_ANOTHER_LOAD}
-     */
-    ShipmentDetail assignCarrier(UUID shipmentId, UUID carrierId, CurrentUser actor);
-
-    /**
      * What the carrier reported (09 §4.3): HANDED_OVER → DELIVERED / DELIVERY_FAILED; DELIVERY_FAILED → DELIVERED (a
      * retry) / RETURNED. The same outcome again changes nothing.
      *
@@ -71,4 +60,23 @@ public interface Shipments {
      *         {@code VALIDATION_FAILED} (no reason, OTHER without a note); {@code SHIPMENT_NOT_FOUND}
      */
     ShipmentDetail recordOutcome(UUID shipmentId, Outcome outcome, CurrentUser actor);
+
+    /**
+     * What the warehouse manager corrects (09 §4.3 step 5, E17).
+     *
+     * @param outcome       DELIVERED or DELIVERY_FAILED: what the shipment really came to
+     * @param failureReason required with DELIVERY_FAILED
+     * @param note          required with OTHER
+     * @param reason        why the carrier's report was wrong; required
+     */
+    record Correction(String outcome, String failureReason, String note, String reason) { }
+
+    /**
+     * Corrects an outcome the carrier reported wrongly: DELIVERED ↔ DELIVERY_FAILED while the order is not completed,
+     * with a reason; the order follows, and the shipment takes no carrier report for its outcome any more (E17).
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code SHIPMENT_NOT_FOUND}; {@code OUT_OF_DATA_SCOPE};
+     *         {@code SHIPMENT_STATE_CONFLICT}; {@code ORDER_DELIVERY_NOT_CORRECTABLE}; {@code VALIDATION_FAILED}
+     */
+    ShipmentDetail correctOutcome(UUID shipmentId, Correction correction, CurrentUser actor);
 }

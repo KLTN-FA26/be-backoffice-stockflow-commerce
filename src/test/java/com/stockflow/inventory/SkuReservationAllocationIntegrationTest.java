@@ -6,11 +6,11 @@ import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.inventory.api.AllocateStockCommand;
 import com.stockflow.inventory.api.AllocateStockResult;
+import com.stockflow.inventory.api.HoldStockCommand;
+import com.stockflow.inventory.api.HoldStockResult;
 import com.stockflow.inventory.api.HoldView;
 import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.api.ReallocateStockCommand;
-import com.stockflow.inventory.api.ReserveProductionStockCommand;
-import com.stockflow.inventory.api.ReserveStockCommand;
 import com.stockflow.inventory.api.StockAvailability;
 import com.stockflow.inventory.api.StockReservation;
 import com.stockflow.support.DemoData;
@@ -25,7 +25,6 @@ import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.support.TransactionTemplate;
 
-import java.sql.Timestamp;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
@@ -48,20 +47,20 @@ import static org.assertj.core.api.Assertions.catchThrowable;
 
 /**
  * SCRUM-152 against a real database: checkout reserves quantity of a SKU on no location; releasing the order to a
- * warehouse allocates it to pickable bins of that warehouse by BR-STK-006 (earliest expiry, then the earliest real
- * receipt time), never on expired stock, a non-pickable area or another warehouse; the SKU never promises more
+ * warehouse allocates it to pickable bins of that warehouse FIFO, by the earliest real receipt time (kltn-docs 01
+ * BR-17, 07 BR-03), never on a non-pickable area or another warehouse; the SKU never promises more
  * than it has, under concurrency too, and the database refuses what the application would not.
  *
- * <p>Each test owns a fresh SKU with this stock (today = the business date):</p>
+ * <p>Each test owns a fresh SKU with this stock (today = the business date), all of it in sealed cartons of one unit
+ * each, so an allocation takes one whole carton per unit (team plan 4C-2: whole cartons only):</p>
  * <pre>
- *   HCM-A01-1-A  bin   5  expires today+30   received 2026-01-01
- *   HCM-A01-1-B  bin   5  expires today+10   received 2026-02-01   (earliest expiry)
- *   HCM-A01-2-A  bin   5  no expiry          received 2025-12-01
- *   HCM-A02-2-A  bin   2  no expiry          received 2025-11-01   (oldest receipt)
- *   HCM-RCV01    area  5  expires today+1    not pickable: never allocated, though sellable
- *   HCM-A02-1-A  bin   4  expired yesterday  never promised, never allocated
+ *   HCM-A01-1-B  bin   5  received 2025-09-01   (oldest receipt)
+ *   HCM-A01-1-A  bin   5  received 2025-10-01
+ *   HCM-A02-2-A  bin   2  received 2025-11-01
+ *   HCM-A01-2-A  bin   5  received 2025-12-01
+ *   HCM-RCV01    area  5  received 2026-03-01   not pickable: never allocated, so never promised either
  * </pre>
- * Available to promise is therefore 22.
+ * Available to promise is therefore 17: only what a release could allocate is promised (review of 4C-2).
  */
 @IntegrationTest
 @Import({PostgresContainer.class, com.stockflow.support.RecordedEvents.class})
@@ -74,10 +73,10 @@ class SkuReservationAllocationIntegrationTest {
     @Autowired JdbcTemplate jdbc;
     @Autowired TransactionTemplate tx;
     @Autowired jakarta.persistence.EntityManager entityManager;
-    @Autowired com.stockflow.inventory.internal.service.TransferOrders transfers;
 
     private String sku;
-    private final Map<String, UUID> rows = new java.util.HashMap<>();
+    /** The stock rows (one per carton) at each location. */
+    private final Map<String, List<UUID>> rows = new java.util.HashMap<>();
     private LocalDate today;
 
     @BeforeEach
@@ -90,23 +89,35 @@ class SkuReservationAllocationIntegrationTest {
                     "Allocation fixture", sku.toLowerCase(Locale.ROOT));
             jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature)"
                     + " values (?,?,?,'Allocation fixture','')", Identifiers.newId(), product, sku);
-            row("HCM-A01-1-A", 5, today.plusDays(30), "2026-01-01T00:00:00Z");
-            row("HCM-A01-1-B", 5, today.plusDays(10), "2026-02-01T00:00:00Z");
-            row("HCM-A01-2-A", 5, null, "2025-12-01T00:00:00Z");
-            row("HCM-A02-2-A", 2, null, "2025-11-01T00:00:00Z");
-            row("HCM-RCV01", 5, today.plusDays(1), "2026-03-01T00:00:00Z");
-            row("HCM-A02-1-A", 4, today.minusDays(1), "2025-10-01T00:00:00Z");
+            row("HCM-A01-1-A", 5, "2025-10-01T00:00:00Z");
+            row("HCM-A01-1-B", 5, "2025-09-01T00:00:00Z");
+            row("HCM-A01-2-A", 5, "2025-12-01T00:00:00Z");
+            row("HCM-A02-2-A", 2, "2025-11-01T00:00:00Z");
+            row("HCM-RCV01", 5, "2026-03-01T00:00:00Z");
         });
     }
 
-    private void row(String location, int onHand, LocalDate expiry, String receivedAt) {
-        UUID id = Identifiers.newId();
-        rows.put(location, id);
-        jdbc.update("""
-                INSERT INTO inventory.stock_item (id, sku, location_code, expiry_date, on_hand, reserved, status,
-                                                  received_at, version, created_at)
-                VALUES (?, ?, ?, ?, ?, 0, 'AVAILABLE', ?, 0, NOW())""",
-                id, sku, location, expiry, onHand, Timestamp.from(Instant.parse(receivedAt)));
+    /** {@code onHand} sealed cartons of one unit at {@code location}. */
+    private void row(String location, int onHand, String receivedAt) {
+        rows.put(location, com.stockflow.support.CartonRows.stock(jdbc, sku, location, onHand, 1, null, Instant.parse(receivedAt), "AVAILABLE").stream()
+                .map(com.stockflow.support.CartonRows.Carton::stockItemId).toList());
+    }
+
+    private static List<String> times(int count, String location) {
+        return java.util.Collections.nCopies(count, location);
+    }
+
+    private static List<String> concat(List<String> a, List<String> b, List<String> c) {
+        List<String> all = new ArrayList<>(a);
+        all.addAll(b);
+        all.addAll(c);
+        return all;
+    }
+
+    /** The carton the allocation holds. */
+    private UUID cartonOf(StockReservation allocation) {
+        return jdbc.queryForObject("SELECT stock_package_id FROM inventory.stock_item WHERE id = ?", UUID.class,
+                allocation.stockItemId());
     }
 
     private UUID order() {
@@ -120,15 +131,29 @@ class SkuReservationAllocationIntegrationTest {
         return order;
     }
 
-    private StockReservation reserve(UUID order, int quantity) {
+    /** A SKU hold Sales took for the order at HCM (4B-7): its reservation id. */
+    private record Hold(UUID reservationId) {
+    }
+
+    private Hold reserve(UUID order, int quantity) {
         return reserve(order, UUID.randomUUID(), quantity);
     }
 
-    private StockReservation reserve(UUID order, UUID request, int quantity) {
+    /** {@code quantity} units held at HCM for the order; fails the test when fewer could be. */
+    private Hold reserve(UUID order, UUID request, int quantity) {
+        HoldStockResult held = hold(order, request, quantity);
+        assertThat(held.cartonsHeld()).as("%d of %s held", quantity, sku).isOne();
+        return new Hold(held.reservationIds().getFirst());
+    }
+
+    /**
+     * The hold as asked: {@code quantity} units as one block, or nothing when HCM has fewer to promise - a shortage
+     * holds nothing (4B-7: held later, when stock arrives), it is not refused.
+     */
+    private HoldStockResult hold(UUID order, UUID request, int quantity) {
         return tx.execute(s -> {
             inventory.prepareReservation(Set.of(new Sku(sku)));
-            return inventory.reserve(new ReserveStockCommand(request, new Sku(sku), quantity, order))
-                    .reservations().get(0);
+            return inventory.holdAtWarehouse(new HoldStockCommand(request, order, new Sku(sku), "HCM", 1, quantity));
         });
     }
 
@@ -141,8 +166,8 @@ class SkuReservationAllocationIntegrationTest {
     }
 
     private int reservedOn(String location) {
-        return jdbc.queryForObject("SELECT reserved FROM inventory.stock_item WHERE id = ?", Integer.class,
-                rows.get(location));
+        return jdbc.queryForObject("SELECT sum(reserved) FROM inventory.stock_item WHERE sku = ? AND location_code = ?",
+                Integer.class, sku, location);
     }
 
     private int reservedEverywhere() {
@@ -159,113 +184,107 @@ class SkuReservationAllocationIntegrationTest {
     }
 
     @Test
-    @DisplayName("checkout holds the SKU on no location: ATP falls, no stock row is held, a replay is the same hold")
-    void checkoutReservesTheSkuOnly() {
-        assertThat(atp()).isEqualTo(22);
+    @DisplayName("a hold takes the SKU at a warehouse on no location: ATP falls, no stock row is held, no deadline, "
+            + "a replay is the same hold")
+    void aHoldReservesTheSkuOnly() {
+        assertThat(atp()).isEqualTo(17);
         UUID order = order();
         UUID request = UUID.randomUUID();
-        StockReservation held = reserve(order, request, 7);
+        Hold held = reserve(order, request, 7);
 
-        assertThat(held.stockItemId()).isNull();
-        assertThat(held.locationCode()).isNull();
-        assertThat(held.quantity()).isEqualTo(7);
-        assertThat(atp()).isEqualTo(15);
+        assertThat(atp()).isEqualTo(10);
         assertThat(reservedEverywhere()).isZero();
         assertThat(jdbc.queryForMap("""
-                SELECT stock_item_id, sku, status, expires_at IS NOT NULL AS deadline FROM inventory.stock_reservation
-                 WHERE id = ?""", held.reservationId()))
+                SELECT stock_item_id, sku, status, quantity, warehouse_code, expires_at IS NOT NULL AS deadline
+                  FROM inventory.stock_reservation WHERE id = ?""", held.reservationId()))
                 .containsEntry("stock_item_id", null).containsEntry("sku", sku).containsEntry("status", "HELD")
-                .containsEntry("deadline", true);
+                .containsEntry("quantity", 7).containsEntry("warehouse_code", "HCM").containsEntry("deadline", false);
 
         assertThat(reserve(order, request, 7).reservationId()).isEqualTo(held.reservationId());
-        assertThat(atp()).isEqualTo(15);
+        assertThat(atp()).isEqualTo(10);
         assertThat(inventory.holdsOf(order)).singleElement()
                 .satisfies(hold -> assertThat(hold.locationCode()).isNull());
         assertThat(inventory.holds(List.of(held.reservationId()))).singleElement()
                 .satisfies(view -> assertThat(view.status()).isEqualTo(HoldView.Status.HELD));
-        assertThat(code(catchThrowable(() -> reserve(order(), 16)))).isEqualTo(ErrorCode.INSUFFICIENT_STOCK);
+        assertThat(hold(order(), UUID.randomUUID(), 16).cartonsHeld()).as("10 left to promise: nothing held")
+                .isZero();
+        assertThat(atp()).isEqualTo(10);
     }
 
     @Test
-    @DisplayName("release allocates FEFO on pickable bins: earliest expiry, then the oldest receipt; never an area")
-    void allocationFollowsFefoThenFifoOnPickableBins() {
+    @DisplayName("release allocates whole cartons FIFO on pickable bins: the oldest receipt first; never an area")
+    void allocationFollowsFifoOnPickableBins() {
         UUID order = order();
-        StockReservation soft = reserve(order, 12);
+        Hold soft = reserve(order, 12);
         int atpBefore = atp();
 
         AllocateStockResult result = allocate(order, "hcm");
 
         assertThat(result.allocations()).singleElement().satisfies(allocation -> {
             assertThat(allocation.reservationId()).isEqualTo(soft.reservationId());
-            assertThat(allocation.holds()).extracting(StockReservation::locationCode, StockReservation::quantity)
-                    .containsExactly(org.assertj.core.groups.Tuple.tuple("HCM-A01-1-B", 5),
-                            org.assertj.core.groups.Tuple.tuple("HCM-A01-1-A", 5),
-                            org.assertj.core.groups.Tuple.tuple("HCM-A02-2-A", 2));
+            // One hold per carton, of one unit each.
+            assertThat(allocation.holds()).extracting(StockReservation::locationCode).containsExactlyElementsOf(
+                    concat(times(5, "HCM-A01-1-B"), times(5, "HCM-A01-1-A"), times(2, "HCM-A02-2-A")));
+            assertThat(allocation.holds()).extracting(StockReservation::quantity).containsOnly(1);
         });
         assertThat(reservedOn("HCM-A01-1-B")).isEqualTo(5);
         assertThat(reservedOn("HCM-A01-1-A")).isEqualTo(5);
         assertThat(reservedOn("HCM-A02-2-A")).isEqualTo(2);
         assertThat(reservedOn("HCM-A01-2-A")).isZero();
         assertThat(reservedOn("HCM-RCV01")).as("not pickable").isZero();
-        assertThat(reservedOn("HCM-A02-1-A")).as("expired").isZero();
         assertThat(status(soft.reservationId())).isEqualTo("ALLOCATED");
         assertThat(atp()).as("an allocation moves units from reserved to held, it does not promise more").isEqualTo(atpBefore);
         assertThat(jdbc.queryForList("""
                 SELECT allocated_from_id::text || ':' || (expires_at IS NULL) FROM inventory.stock_reservation
                  WHERE allocated_from_id IS NOT NULL AND order_id = ?""", String.class, order))
-                .hasSize(3).containsOnly(soft.reservationId() + ":true");
+                .hasSize(12).containsOnly(soft.reservationId() + ":true");
 
         assertThat(recorded.matching(com.stockflow.contracts.StockAllocated.class, e -> e.orderId().equals(order)))
-                .as("one StockAllocated per bin and lot")
-                .extracting(com.stockflow.contracts.StockAllocated::locationCode,
-                        com.stockflow.contracts.StockAllocated::quantity)
-                .containsExactlyInAnyOrder(org.assertj.core.groups.Tuple.tuple("HCM-A01-1-B", 5),
-                        org.assertj.core.groups.Tuple.tuple("HCM-A01-1-A", 5),
-                        org.assertj.core.groups.Tuple.tuple("HCM-A02-2-A", 2));
+                .as("one StockAllocated per carton")
+                .extracting(com.stockflow.contracts.StockAllocated::locationCode)
+                .containsExactlyInAnyOrderElementsOf(
+                        concat(times(5, "HCM-A01-1-B"), times(5, "HCM-A01-1-A"), times(2, "HCM-A02-2-A")));
         assertThat(allocate(order, "HCM").allocations()).as("allocating again changes nothing").isEmpty();
         assertThat(reservedEverywhere()).isEqualTo(12);
-        // SCRUM-476: Inventory Level shows the 12 allocated units apart from the other holds, ATP unchanged.
+        // SCRUM-476: Inventory Level shows the 12 allocated units apart from the other holds; ATP is what is left to
+        // allocate on pickable bins, 17 - 12 (review C4 P-1: HCM-RCV01's 5 are on hand, never promised).
         assertThat(inventory.levelsOf(new Sku(sku)))
-                .containsExactly(new com.stockflow.inventory.api.StockLevel(sku, "HCM", 26, 22, 0, 12, 10));
+                .containsExactly(new com.stockflow.inventory.api.StockLevel(sku, "HCM", 22, 22, 0, 12, 5));
+    }
+
+    @Test
+    @DisplayName("review C4 P-1: stock in receiving and staging areas is on hand but promised by no warehouse either")
+    void areaStockIsNotPromisedAtItsWarehouse() {
+        tx.executeWithoutResult(s -> row("HCM-STG01", 3, "2025-08-01T00:00:00Z"));
+
+        assertThat(atp()).as("system-wide: the 17 cartons on pickable bins").isEqualTo(17);
+        assertThat(inventory.availableToPromiseByWarehouse(new Sku(sku))).as("HCM promises the same 17, not the 5 in "
+                + "HCM-RCV01 nor the 3 in HCM-STG01").containsEntry("HCM", 17);
+        assertThat(hold(order(), UUID.randomUUID(), 18).cartonsHeld()).as("18 is more than HCM promises").isZero();
+        reserve(order(), 17);
+        assertThat(inventory.availableToPromiseByWarehouse(new Sku(sku))).containsEntry("HCM", 0);
+        assertThat(atp()).isZero();
     }
 
     @Test
     @DisplayName("a warehouse that cannot cover the order allocates nothing and leaves the reservation held")
     void allocationIsAllOrNothing() {
         UUID order = order();
-        StockReservation soft = reserve(order, 13);   // 17 pickable in HCM: enough; but not 18
-        UUID tooMuch = order();
-        StockReservation big = reserve(tooMuch, 9);   // ATP 22 - 13 = 9; together 22 > 17 pickable
+        Hold soft = reserve(order, 13);   // 17 pickable in HCM: enough
+        UUID other = order();
+        Hold rest = reserve(other, 4);    // ATP 17 - 13 = 4: the area's cartons are not promised
+        assertThat(hold(order(), UUID.randomUUID(), 1).cartonsHeld()).as("nothing left to promise").isZero();
 
         assertThat(allocate(order, "HCM").allocations()).hasSize(1);
-        assertThat(code(catchThrowable(() -> allocate(tooMuch, "HCM")))).isEqualTo(ErrorCode.INSUFFICIENT_STOCK);
-        assertThat(status(big.reservationId())).isEqualTo("HELD");
-        assertThat(code(catchThrowable(() -> allocate(tooMuch, "ZZZ")))).isEqualTo(ErrorCode.INSUFFICIENT_STOCK);
+        assertThat(code(catchThrowable(() -> allocate(other, "ZZZ")))).as("held at HCM: allocated there or not at all")
+                .isEqualTo(ErrorCode.RESERVATION_WAREHOUSE_MISMATCH);
+        assertThat(status(rest.reservationId())).isEqualTo("HELD");
         assertThat(reservedEverywhere()).isEqualTo(13);
         assertThat(status(soft.reservationId())).isEqualTo("ALLOCATED");
     }
 
     @Test
-    @DisplayName("a release after one line's reservation lapsed allocates nothing, rather than the other lines alone")
-    void aLapsedReservationStopsTheAllocation() {
-        UUID order = order();
-        StockReservation kept = reserve(order, 2);
-        StockReservation lapsed = reserve(order, 3);
-        tx.executeWithoutResult(s -> inventory.release(lapsed.reservationId(), "MANUAL_OVERRIDE"));
-
-        assertThat(code(catchThrowable(() -> allocate(order, "HCM")))).isEqualTo(ErrorCode.RESERVATION_NOT_ACTIVE);
-        assertThat(status(kept.reservationId())).isEqualTo("HELD");
-        assertThat(reservedEverywhere()).isZero();
-
-        UUID none = order();
-        StockReservation only = reserve(none, 1);
-        tx.executeWithoutResult(s -> inventory.release(only.reservationId(), "MANUAL_OVERRIDE"));
-        assertThat(code(catchThrowable(() -> allocate(none, "HCM")))).as("nothing left to allocate either")
-                .isEqualTo(ErrorCode.RESERVATION_NOT_ACTIVE);
-    }
-
-    @Test
-    @DisplayName("concurrent checkouts never promise more than the SKU has")
+    @DisplayName("concurrent holds never promise more than the SKU has")
     void noOversellUnderConcurrency() throws Exception {
         int threads = 8;
         List<UUID> orders = new ArrayList<>();
@@ -279,13 +298,7 @@ class SkuReservationAllocationIntegrationTest {
             for (UUID order : orders) {
                 Callable<Boolean> checkout = () -> {
                     start.await();
-                    try {
-                        reserve(order, 4);
-                        return true;
-                    } catch (BusinessException refused) {
-                        assertThat(refused.errorCode()).isEqualTo(ErrorCode.INSUFFICIENT_STOCK);
-                        return false;
-                    }
+                    return hold(order, UUID.randomUUID(), 4).cartonsHeld() == 1;
                 };
                 results.add(pool.submit(checkout));
             }
@@ -294,14 +307,14 @@ class SkuReservationAllocationIntegrationTest {
             for (Future<Boolean> result : results) {
                 succeeded += result.get() ? 1 : 0;
             }
-            assertThat(succeeded).isEqualTo(5);   // 5 x 4 = 20 <= 22 < 24
+            assertThat(succeeded).isEqualTo(4);   // 4 x 4 = 16 <= 17 < 20
         } finally {
             pool.shutdownNow();
         }
-        assertThat(atp()).isEqualTo(2);
+        assertThat(atp()).isEqualTo(1);
         assertThat(jdbc.queryForObject("""
                 SELECT sum(quantity) FROM inventory.stock_reservation
-                 WHERE sku = ? AND stock_item_id IS NULL AND status = 'HELD'""", Integer.class, sku)).isEqualTo(20);
+                 WHERE sku = ? AND stock_item_id IS NULL AND status = 'HELD'""", Integer.class, sku)).isEqualTo(16);
     }
 
     @Test
@@ -320,13 +333,13 @@ class SkuReservationAllocationIntegrationTest {
                 INSERT INTO inventory.stock_reservation (id, stock_item_id, sku, order_id, root_request_id, request_id,
                                                          quantity, reserved_at, status, closed_at)
                 VALUES (?, ?, ?, ?, ?, ?, 1, NOW(), 'ALLOCATED', NOW())""", Identifiers.newId(),
-                rows.get("HCM-A01-1-A"), sku, order, UUID.randomUUID(), UUID.randomUUID())))
+                rows.get("HCM-A01-1-A").get(0), sku, order, UUID.randomUUID(), UUID.randomUUID())))
                 .isInstanceOf(DataIntegrityViolationException.class);
         assertThatThrownBy(() -> tx.executeWithoutResult(s -> jdbc.update("""
                 INSERT INTO inventory.stock_reservation (id, stock_item_id, sku, order_id, root_request_id, request_id,
                                                          quantity, reserved_at, status)
                 VALUES (?, ?, 'SOFA-3S-GREY', ?, ?, ?, 1, NOW(), 'HELD')""", Identifiers.newId(),
-                rows.get("HCM-A01-1-A"), order, UUID.randomUUID(), UUID.randomUUID())))
+                rows.get("HCM-A01-1-A").get(0), order, UUID.randomUUID(), UUID.randomUUID())))
                 .as("a hold on a stock row holds that row's SKU").isInstanceOf(DataIntegrityViolationException.class);
     }
 
@@ -334,43 +347,28 @@ class SkuReservationAllocationIntegrationTest {
     @DisplayName("cancelling before allocation releases the SKU; after, the allocations; ATP comes back either way")
     void cancellationBeforeAndAfterAllocation() {
         UUID early = order();
-        StockReservation soft = reserve(early, 3);
+        Hold soft = reserve(early, 3);
         tx.executeWithoutResult(s -> inventory.release(soft.reservationId(), "ORDER_CANCELLED"));
         assertThat(status(soft.reservationId())).isEqualTo("RELEASED");
-        assertThat(atp()).isEqualTo(22);
+        assertThat(atp()).isEqualTo(17);
 
         UUID late = order();
-        StockReservation released = reserve(late, 6);
+        Hold released = reserve(late, 6);
         List<UUID> allocations = allocate(late, "HCM").allocations().get(0).holdIds();
         allocations.forEach(id -> tx.executeWithoutResult(s -> inventory.release(id, "ORDER_CANCELLED")));
         assertThat(allocations).allSatisfy(id -> assertThat(status(id)).isEqualTo("RELEASED"));
         assertThat(status(released.reservationId())).as("the reservation it came from stays ALLOCATED").isEqualTo("ALLOCATED");
         tx.executeWithoutResult(s -> inventory.release(released.reservationId(), "ORDER_CANCELLED"));   // a no-op
         assertThat(reservedEverywhere()).isZero();
-        assertThat(atp()).isEqualTo(22);
+        assertThat(atp()).isEqualTo(17);
     }
 
     @Test
-    @DisplayName("payment pins a SKU reservation, a refused credit re-arms it; allocations never expire")
-    void pinAndRearm() {
-        UUID order = order();
-        StockReservation soft = reserve(order, 2);
-        assertThat((Integer) tx.execute(s -> inventory.pinReservations(order))).isEqualTo(1);
-        assertThat(jdbc.queryForObject("SELECT expires_at IS NULL FROM inventory.stock_reservation WHERE id = ?",
-                Boolean.class, soft.reservationId())).isTrue();
-        assertThat((Integer) tx.execute(s -> inventory.rearmReservations(order))).isEqualTo(1);
-        assertThat(jdbc.queryForObject("SELECT expires_at IS NOT NULL FROM inventory.stock_reservation WHERE id = ?",
-                Boolean.class, soft.reservationId())).isTrue();
-
-        allocate(order, "HCM");
-        assertThat((Integer) tx.execute(s -> inventory.rearmReservations(order))).as("allocations stay pinned").isZero();
-    }
-
-    @Test
-    @DisplayName("a short pick is reallocated FEFO elsewhere in the warehouse, never on the short bin")
+    @DisplayName("a short pick's carton is reallocated as the next carton in FIFO order, its own bin's included, never"
+            + " the short carton itself (07 BR-09)")
     void reallocationAfterAShortPick() {
         UUID order = order();
-        StockReservation soft = reserve(order, 4);
+        Hold soft = reserve(order, 4);
         StockReservation first = allocate(order, "HCM").allocations().get(0).holds().get(0);
         assertThat(first.locationCode()).isEqualTo("HCM-A01-1-B");
 
@@ -379,7 +377,12 @@ class SkuReservationAllocationIntegrationTest {
                 new ReallocateStockCommand(order, first.reservationId(), request)));
 
         assertThat(again).extracting(StockReservation::locationCode, StockReservation::quantity)
-                .containsExactly(org.assertj.core.groups.Tuple.tuple("HCM-A01-1-A", 4));
+                .as("the short carton's unit, as the bin's free carton: only the short one is in doubt")
+                .containsExactly(org.assertj.core.groups.Tuple.tuple("HCM-A01-1-B", 1));
+        assertThat(jdbc.queryForObject("SELECT stock_item_id FROM inventory.stock_reservation WHERE id = ?", UUID.class,
+                again.get(0).reservationId())).isNotEqualTo(jdbc.queryForObject(
+                "SELECT stock_item_id FROM inventory.stock_reservation WHERE id = ?", UUID.class,
+                first.reservationId()));
         assertThat(jdbc.queryForObject("SELECT status || ':' || release_reason FROM inventory.stock_reservation WHERE id = ?",
                 String.class, first.reservationId())).isEqualTo("RELEASED:SHORT_PICKED");
         assertThat(jdbc.queryForObject("SELECT allocated_from_id FROM inventory.stock_reservation WHERE id = ?",
@@ -395,18 +398,18 @@ class SkuReservationAllocationIntegrationTest {
     }
 
     @Test
-    @DisplayName("a short pick opens one blind recount of the bin, SKU and lot; the counter does not see the books")
+    @DisplayName("a short pick opens one blind recount of the carton; the counter does not see the books")
     void shortPickOpensOneBlindRecount() {
         UUID order = order();
         reserve(order, 4);
         StockReservation allocation = allocate(order, "HCM").allocations().get(0).holds().get(0);
 
-        var first = tx.execute(s -> consumption.requestRecount(allocation.reservationId(), UUID.randomUUID(), 1));
+        var first = tx.execute(s -> consumption.requestRecount(allocation.reservationId(), UUID.randomUUID(), 0));
         var again = tx.execute(s -> consumption.requestRecount(allocation.reservationId(), UUID.randomUUID(), 0));
 
         assertThat(first.created()).isTrue();
         assertThat(first.countNumber()).startsWith("CC-");
-        assertThat(again.created()).as("one open recount per bin, SKU and lot").isFalse();
+        assertThat(again.created()).as("one open recount per carton").isFalse();
         assertThat(again.cycleCountId()).isEqualTo(first.cycleCountId());
         var listed = cycleCounts.list("planned", DemoData.WAREHOUSE_HCM, false, 0, 200).items().stream()
                 .filter(c -> c.id().equals(first.cycleCountId())).findFirst().orElseThrow();
@@ -423,11 +426,13 @@ class SkuReservationAllocationIntegrationTest {
         assertThat(counter.lines()).singleElement().satisfies(line -> {
             assertThat(line.locationCode()).isEqualTo(allocation.locationCode());
             assertThat(line.sku()).isEqualTo(sku);
-            assertThat(line.expectedQty()).as("blind").isNull();
+            assertThat(line.stockPackageId()).as("a row of a carton is counted as that carton")
+                    .isEqualTo(cartonOf(allocation));
+            assertThat(line.booked()).as("blind").isNull();
         });
         var manager = cycleCounts.get(first.cycleCountId(), true);
-        assertThat(manager.lines().get(0).expectedQty()).as("the books, for who decides").isEqualTo(5);
-        assertThat(manager.note()).contains("found 1");
+        assertThat(manager.lines().get(0).booked()).as("the carton's books, for who decides").isTrue();
+        assertThat(manager.note()).contains("found 0");
         assertThat(counter.note()).as("what the picker found would anchor the count too").isNull();
         assertThat(jdbc.queryForList("""
                 SELECT p.code FROM identity.role_permission rp JOIN identity.app_role ro ON ro.id = rp.role_id
@@ -436,20 +441,20 @@ class SkuReservationAllocationIntegrationTest {
                 .as("docs 04c F-CNT: the warehouse staff count").containsExactlyInAnyOrder(
                         "inventory-cycle-counts:VIEW_PAGE", "inventory-cycle-counts:READ", "inventory-cycle-counts:UPDATE");
 
-        // The short bin's free unit is in doubt: not promised, not allocated, until the count is called off.
+        // The recount doubts the short carton only, and the order holds it whole: nothing free is in doubt, and the
+        // bin's other carton stays sellable.
         assertThat(allocation.locationCode()).isEqualTo("HCM-A01-1-B");
-        assertThat(atp()).as("22 - 4 reserved - 1 free in doubt at HCM-A01-1-B").isEqualTo(17);
+        assertThat(atp()).as("17 - 4 reserved; the doubted carton has no free unit").isEqualTo(13);
         UUID next = order();
         reserve(next, 1);
-        assertThat(allocate(next, "HCM").allocations().get(0).holds()).extracting(StockReservation::locationCode)
-                .as("FEFO would take HCM-A01-1-B first").containsExactly("HCM-A01-1-A");
-        assertThat(inventory.availabilityOf(new Sku(sku))).extracting(StockAvailability::locationCode)
-                .doesNotContain("HCM-A01-1-B");
+        StockReservation nextHold = allocate(next, "HCM").allocations().get(0).holds().get(0);
+        assertThat(nextHold.locationCode()).as("FIFO: the bin's last free carton").isEqualTo("HCM-A01-1-B");
+        assertThat(nextHold.stockItemId()).isNotEqualTo(allocation.stockItemId());
 
         var cancelled = tx.execute(s -> cycleCounts.cancel(first.cycleCountId(), "Bin checked by hand", "manager"));
         assertThat(cancelled.status()).isEqualTo("CANCELLED");
         assertThat(cancelled.note()).endsWith("Cancelled: Bin checked by hand");
-        assertThat(atp()).as("sellable again: 22 - 4 - 1 reserved by the next order").isEqualTo(17);
+        assertThat(atp()).as("sellable again: 17 - 4 - 1 reserved by the next order").isEqualTo(12);
         assertThat(tx.execute(s -> cycleCounts.cancel(first.cycleCountId(), "again", "manager")).status())
                 .as("a no-op").isEqualTo("CANCELLED");
         tx.executeWithoutResult(s -> jdbc.update("UPDATE inventory.cycle_count SET status = 'COMPLETED',"
@@ -483,8 +488,8 @@ class SkuReservationAllocationIntegrationTest {
     }
 
     @Test
-    @DisplayName("a short pick on a slot whose MANUAL count's shortage waits for approval reuses that count; the "
-            + "bin's free units are frozen by the pending shortage")
+    @DisplayName("a short pick on a carton whose MANUAL count's shortage waits for approval reuses that count; a "
+            + "free carton counted short is frozen by its pending shortage")
     void shortPickOnAPendingManualShortageReusesItsCount() {
         UUID counter = tx.execute(s -> com.stockflow.support.ReferenceRows.user(entityManager));
         UUID order = order();
@@ -492,26 +497,39 @@ class SkuReservationAllocationIntegrationTest {
         StockReservation allocation = allocate(order, "HCM").allocations().get(0).holds().get(0);
         assertThat(allocation.locationCode()).isEqualTo("HCM-A01-1-B");
         var manual = planBin("HCM-A01-1-B");
-        cycleCounts.count(manual.id(), manual.lines().get(0).id(), 4, null, counter, false);
+        // The bin's five cartons are five lines: the allocated carton and the bin's one free carton are found missing.
+        UUID shortCarton = cartonOf(allocation);
+        UUID freeCarton = jdbc.queryForObject("""
+                SELECT stock_package_id FROM inventory.stock_item
+                 WHERE sku = ? AND location_code = 'HCM-A01-1-B' AND reserved = 0""", UUID.class, sku);
+        // Every line is counted before the count is submitted: those two at 0, the bin's other cartons as they are.
+        for (var line : manual.lines()) {
+            boolean missing = shortCarton.equals(line.stockPackageId()) || freeCarton.equals(line.stockPackageId());
+            cycleCounts.count(manual.id(), line.id(), !missing, counter, false);
+        }
         cycleCounts.submit(manual.id(), counter, false);
-        assertThat(jdbc.queryForObject("""
+        assertThat(jdbc.queryForList("""
                 SELECT quantity_delta FROM inventory.stock_adjustment WHERE sku = ? AND status = 'PENDING_APPROVAL'
-                   AND reason_code = 'COUNT_VARIANCE'""", Integer.class, sku)).isEqualTo(-1);
-        assertThat(atp()).as("22 - 4 reserved - the 1 free unit a pending shortage doubts").isEqualTo(17);
+                   AND reason_code = 'COUNT_VARIANCE'""", Integer.class, sku)).containsExactly(-1, -1);
+        assertThat(atp()).as("17 - 4 reserved - the free carton a pending shortage doubts").isEqualTo(12);
 
         var recount = tx.execute(s -> consumption.requestRecount(allocation.reservationId(), UUID.randomUUID(), 3));
 
-        assertThat(recount.created()).as("the slot is busy: its variance waits for approval").isFalse();
+        assertThat(recount.created()).as("the carton is busy: its variance waits for approval").isFalse();
         assertThat(recount.cycleCountId()).isEqualTo(manual.id());
         assertThat(recount.countNumber()).isEqualTo(manual.number());
         assertThat(countsOf("SHORT_PICK")).as("no second count of the same stock").isZero();
-        assertThat(atp()).as("still frozen").isEqualTo(17);
-        assertThat(inventory.availabilityOf(new Sku(sku))).extracting(StockAvailability::locationCode)
-                .doesNotContain("HCM-A01-1-B");
+        assertThat(atp()).as("still frozen").isEqualTo(12);
+        // A carton a row: the bin's held cartons are listed with nothing available, and its free one not at all.
+        assertThat(inventory.availabilityOf(new Sku(sku))).filteredOn(a -> "HCM-A01-1-B".equals(a.locationCode()))
+                .as("its one free carton is frozen").extracting(StockAvailability::available).containsOnly(0);
+        assertThat(inventory.availabilityOf(new Sku(sku))).extracting(StockAvailability::stockItemId)
+                .as("the frozen carton is not offered").doesNotContain(jdbc.queryForObject(
+                        "SELECT id FROM inventory.stock_item WHERE stock_package_id = ?", UUID.class, freeCarton));
     }
 
     @Test
-    @DisplayName("a short pick on a slot an open MANUAL count holds reuses that count; the slot stays sellable until "
+    @DisplayName("a short pick on a carton an open MANUAL count holds reuses that count; the slot stays sellable until "
             + "the count is submitted (the accepted window)")
     void shortPickOnAnOpenManualCountReusesIt() {
         UUID order = order();
@@ -524,42 +542,6 @@ class SkuReservationAllocationIntegrationTest {
         assertThat(recount.created()).isFalse();
         assertThat(recount.cycleCountId()).isEqualTo(manual.id());
         assertThat(countsOf("SHORT_PICK")).isZero();
-        assertThat(atp()).as("a MANUAL count freezes nothing while open: 22 - 4 reserved").isEqualTo(18);
-    }
-
-    @Test
-    @DisplayName("a production hold cannot take the units checkout reservations promised")
-    void productionHoldsRespectSkuReservations() {
-        reserve(order(), 20);
-        assertThat(atp()).isEqualTo(2);
-        UUID productionOrder = Identifiers.newId();
-        assertThat(code(catchThrowable(() -> tx.execute(s -> inventory.reserveForProduction(
-                new ReserveProductionStockCommand(UUID.randomUUID(), new Sku(sku), 3, productionOrder, "HCM"))))))
-                .isEqualTo(ErrorCode.INSUFFICIENT_STOCK);
-        assertThat(reservedEverywhere()).isZero();
-    }
-
-    @Test
-    @DisplayName("issue 207, doc 10 step 2: a transfer is created only for what is left after checkout reservations")
-    void transfersRespectSkuReservations() {
-        UUID hcm = jdbc.queryForObject("SELECT id FROM warehouse.warehouse WHERE prefix = 'HCM'", UUID.class);
-        UUID destination = Identifiers.newId();
-        tx.executeWithoutResult(s -> jdbc.update("""
-                INSERT INTO warehouse.warehouse (id, name, status, prefix, address, map_unit, map_width, map_height,
-                                                 version, created_at)
-                VALUES (?, 'Transfer destination', 'ACTIVE', ?, 'Test address', 'M', 50, 50, 0, NOW())""",
-                destination, "T" + UUID.randomUUID().toString().substring(0, 6).toUpperCase(Locale.ROOT)));
-        reserve(order(), 20);   // 22 sellable in HCM, 2 left once the promise is counted
-        java.util.function.IntFunction<com.stockflow.inventory.internal.service.TransferOrders.Transfer> transfer =
-                quantity -> transfers.create(new com.stockflow.inventory.internal.service.TransferOrders.Create(hcm,
-                        destination, com.stockflow.inventory.internal.domain.TransferReason.REBALANCING, null,
-                        List.of(new com.stockflow.inventory.internal.service.TransferOrders.NewLine(sku, null, quantity)),
-                        com.stockflow.inventory.api.TransferDeliveryMode.PARCEL));
-
-        assertThat(code(catchThrowable(() -> transfer.apply(3)))).isEqualTo(ErrorCode.INSUFFICIENT_STOCK);
-        assertThat(jdbc.queryForObject("""
-                SELECT count(*) FROM inventory.transfer_order_line WHERE sku = ?""", Integer.class, sku)).isZero();
-        assertThat(transfer.apply(2).status())
-                .isEqualTo(com.stockflow.inventory.internal.domain.TransferStatus.DRAFT);
+        assertThat(atp()).as("a MANUAL count freezes nothing while open: 17 - 4 reserved").isEqualTo(13);
     }
 }

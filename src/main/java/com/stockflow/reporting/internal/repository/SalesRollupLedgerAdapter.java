@@ -106,16 +106,18 @@ public class SalesRollupLedgerAdapter implements SalesRollupLedger {
                         .addValue("sku", line.sku())
                         .addValue("period", BusinessDay.period(contribution.day()))
                         .addValue("quantity", line.quantity() * sign)
-                        .addValue("revenue", line.revenue().multiply(BigDecimal.valueOf(sign))))
+                        .addValue("revenue", line.revenue().multiply(BigDecimal.valueOf(sign)))
+                        .addValue("cartons", line.cartons() * sign))
                 .toArray(SqlParameterSource[]::new);
         if (sign > 0) {
             jdbc.batchUpdate("""
                     INSERT INTO reporting.product_sales_summary
-                        (id, sku, period, quantity_sold, revenue, version, created_at)
-                    VALUES (:id, :sku, :period, :quantity, :revenue, 0, NOW())
+                        (id, sku, period, quantity_sold, revenue, cartons_sold, version, created_at)
+                    VALUES (:id, :sku, :period, :quantity, :revenue, :cartons, 0, NOW())
                     ON CONFLICT (sku, period) DO UPDATE SET
                         quantity_sold = reporting.product_sales_summary.quantity_sold + EXCLUDED.quantity_sold,
                         revenue = reporting.product_sales_summary.revenue + EXCLUDED.revenue,
+                        cartons_sold = reporting.product_sales_summary.cartons_sold + EXCLUDED.cartons_sold,
                         version = reporting.product_sales_summary.version + 1,
                         last_modified_at = NOW()""", rows);
             return;
@@ -123,6 +125,7 @@ public class SalesRollupLedgerAdapter implements SalesRollupLedger {
         int[] updated = jdbc.batchUpdate("""
                 UPDATE reporting.product_sales_summary SET
                     quantity_sold = quantity_sold + :quantity, revenue = revenue + :revenue,
+                    cartons_sold = cartons_sold + :cartons,
                     version = version + 1, last_modified_at = NOW()
                 WHERE sku = :sku AND period = :period""", rows);
         for (int count : updated) {
@@ -190,20 +193,6 @@ public class SalesRollupLedgerAdapter implements SalesRollupLedger {
                 (rs, row) -> new OrderContribution(rs.getObject("order_id", UUID.class),
                         rs.getDate("placed_day").toLocalDate(), rs.getString("currency"), rs.getBigDecimal("total"),
                         read(rs.getString("lines"))));
-    }
-
-    @Override
-    public boolean markClosureApplied(UUID closureId, OrderContribution taken) {
-        return jdbc.update("INSERT INTO reporting.processed_order_closures (closure_id, order_id, placed_day, currency,"
-                        + " total, lines, processed_at)"
-                        + " VALUES (:closureId, :orderId, :day, :currency, :total, CAST(:lines AS jsonb), NOW())"
-                        + " ON CONFLICT (closure_id) DO NOTHING",
-                new MapSqlParameterSource("closureId", closureId)
-                        .addValue("orderId", taken.orderId())
-                        .addValue("day", Date.valueOf(taken.day()))
-                        .addValue("currency", taken.currency())
-                        .addValue("total", taken.total())
-                        .addValue("lines", write(taken.lines()))) == 1;
     }
 
     @Override

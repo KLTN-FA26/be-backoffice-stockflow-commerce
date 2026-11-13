@@ -1,7 +1,6 @@
 package com.stockflow.warehouse.internal.entity;
 
 import com.stockflow.warehouse.internal.domain.BinType;
-import com.stockflow.warehouse.internal.domain.StorageClass;
 import jakarta.persistence.CascadeType;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
@@ -25,8 +24,8 @@ import java.util.UUID;
  *
  * <p>{@code code} is local - unique within its level, what an admin types and the map shows. What
  * stock, scanners and other modules see is the bin's {@link StorageLocationJpaEntity}: its global
- * {@code locationCode} ({@code prefix-shelf-level-bin}), status, storage class and capacity live
- * there, not here. Every bin owns exactly one location, of kind {@code BIN}, in its own warehouse,
+ * {@code locationCode} ({@code prefix-shelf-level-bin}), status and load limit live there, not
+ * here; its volume is computed from this bin's width and length and its level's clear height. Every bin owns exactly one location, of kind {@code BIN}, in its own warehouse,
  * with the code assembled from this bin's path - the database checks all of it
  * ({@code tg_bin_location}).</p>
  *
@@ -88,20 +87,12 @@ public class BinJpaEntity {
     @Column(name = "type", nullable = false, length = 32)
     private BinType type;
 
-    /**
-     * {@code null} = the shelf's default storage class applies. The class actually in force is
-     * stored on the location ({@link StorageLocationJpaEntity#getStorageClass()}).
-     */
-    @Enumerated(EnumType.STRING)
-    @Column(name = "storage_class_override", length = 32)
-    private StorageClass storageClassOverride;
-
     protected BinJpaEntity() {
     }
 
     public BinJpaEntity(UUID id, StorageLocationJpaEntity location, String code, String description,
                         BigDecimal x, BigDecimal y, BigDecimal width, BigDecimal length,
-                        int rotation, BinType type, StorageClass storageClassOverride) {
+                        int rotation, BinType type) {
         this.id = id;
         this.location = location;
         this.code = code;
@@ -112,12 +103,11 @@ public class BinJpaEntity {
         this.length = length;
         this.rotation = rotation;
         this.type = type;
-        this.storageClassOverride = storageClassOverride;
     }
 
     /** Everything about a bin that may change; level, location and code never do (BR-13). */
     public void apply(String description, BigDecimal x, BigDecimal y, BigDecimal width, BigDecimal length,
-                      int rotation, BinType type, StorageClass storageClassOverride) {
+                      int rotation, BinType type) {
         this.description = description;
         this.x = x;
         this.y = y;
@@ -125,7 +115,6 @@ public class BinJpaEntity {
         this.length = length;
         this.rotation = rotation;
         this.type = type;
-        this.storageClassOverride = storageClassOverride;
     }
 
     void attachTo(ShelfLevelJpaEntity parent) {
@@ -142,5 +131,4 @@ public class BinJpaEntity {
     public BigDecimal getLength() { return length; }
     public int getRotation() { return rotation; }
     public BinType getType() { return type; }
-    public StorageClass getStorageClassOverride() { return storageClassOverride; }
 }

@@ -3,24 +3,9 @@ package com.stockflow.inventory.api;
 import java.util.UUID;
 
 /**
- * What receiving must ask of a SKU (docs 01): whether a lot number and an expiry date are
- * mandatory (BR-03), whether it goes through the QC area on the way in (the 3-step flow), and, for an
- * expiry-tracked SKU, the longest shelf life an expiry date may claim at entry (BR-RCP-004).
- *
- * <p>{@code maxShelfLifeDays} is null when no maximum is configured: the expiry date then has no upper bound.</p>
+ * The inventory item a receipt line or a return names: its id and SKU. There is nothing more to ask of it: every SKU is
+ * lot-tracked, so every line needs a lot number (kltn-docs 01 BR-17, 03 BR-03; team plan 5-5 removed the per-item
+ * flag); and there is no expiry, since cups and packaging have none (01 BR-17, 03 BR-06).
  */
-public record InventoryItemPolicy(
-        UUID inventoryItemId,
-        String sku,
-        boolean lotTracked,
-        boolean expiryTracked,
-        boolean qcRequired,
-        Integer maxShelfLifeDays
-) {
-
-    /** A policy with no maximum shelf life. */
-    public InventoryItemPolicy(UUID inventoryItemId, String sku, boolean lotTracked, boolean expiryTracked,
-                               boolean qcRequired) {
-        this(inventoryItemId, sku, lotTracked, expiryTracked, qcRequired, null);
-    }
+public record InventoryItemPolicy(UUID inventoryItemId, String sku) {
 }

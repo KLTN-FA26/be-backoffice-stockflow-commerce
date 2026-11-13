@@ -8,7 +8,6 @@ import com.stockflow.contracts.ReturnApproved;
 import com.stockflow.contracts.ReturnClosed;
 import com.stockflow.contracts.ReturnReceived;
 import com.stockflow.contracts.ReturnRejected;
-import com.stockflow.contracts.ReturnReplacementWithdrawn;
 import com.stockflow.contracts.ReturnRequested;
 import com.stockflow.contracts.ReturnResolved;
 import com.stockflow.contracts.ShipmentStatusChanged;
@@ -63,7 +62,7 @@ class CustomerEmailComposer {
     static final String RETURN_RESOLVED = "return.resolved";
     static final String RETURN_CANCELLED = "return.cancelled";
     static final String RETURN_EXPIRED = "return.expired";
-    static final String RETURN_WITHDRAWN = "return.withdrawn";
+    static final String CHAT_REPLY = "chat.reply";
 
     static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Ho_Chi_Minh");
 
@@ -89,10 +88,11 @@ class CustomerEmailComposer {
                 event.customerId() == null ? event.contactEmail() : null,
                 addressee -> {
                     ResourceBundle m = bundle();
-                    List<Fact> facts = List.of(
-                            new Fact(m.getString("email.customer.fact.order"), event.orderNumber()),
-                            new Fact(m.getString("email.customer.fact.total"),
-                                    money(event.totalAmount(), event.currency())));
+                    List<Fact> facts = new ArrayList<>();
+                    facts.add(new Fact(m.getString("email.customer.fact.order"), event.orderNumber()));
+                    facts.addAll(charges(m, event));
+                    facts.add(new Fact(m.getString("email.customer.fact.total"),
+                            money(event.totalAmount(), event.currency())));
                     return content(m, ORDER_PLACED, addressee, event.orderNumber(), facts,
                             orderLines(m, event.lines(), event.currency()));
                 }));
@@ -167,6 +167,10 @@ class CustomerEmailComposer {
 
     /** kltn-docs 17 §4.5: the order is cancelled; what is refunded and what fee is still owed (Q6a), if any. */
     Optional<CustomerMessage> orderCancelled(OrderCancelled event) {
+        if ("DRAFT".equals(event.previousStatus())) {
+            // 4B-5 (17 §5.2): an order cancelled while it was drafted was never the customer's to see.
+            return Optional.empty();
+        }
         return Optional.of(new CustomerMessage(ORDER_CANCELLED, event.orderId().toString(), event.customerId(), null,
                 addressee -> {
                     ResourceBundle m = bundle();
@@ -188,6 +192,24 @@ class CustomerEmailComposer {
      * Part of a partly fulfilled order closed (decision G4-Q3): which lines will not come, what is refunded and what
      * fee is owed. One message per closure, so a second closure of the same order is told too.
      */
+    /**
+     * kltn-docs 16 §4.1 step 3: Sales answered while the customer had no chat open. Once per conversation per notice
+     * period - the period names the message - and never what Sales wrote: the customer reads it in the conversation.
+     */
+    Optional<CustomerMessage> chatReplied(com.stockflow.contracts.CustomerChatReplied event) {
+        String source = event.conversationId() + "@" + (event.periodStart() == null ? 0
+                : event.periodStart().getEpochSecond());
+        return Optional.of(new CustomerMessage(CHAT_REPLY, source, event.customerId(), null,
+                addressee -> {
+                    ResourceBundle m = bundle();
+                    List<Fact> facts = new ArrayList<>();
+                    if (event.repliedAt() != null) {
+                        facts.add(new Fact(m.getString("email.chat.reply.at"), WHEN.format(event.repliedAt())));
+                    }
+                    return content(m, CHAT_REPLY, addressee, null, facts, null);
+                }));
+    }
+
     Optional<CustomerMessage> remainderClosed(OrderRemainderClosed event) {
         String source = event.closureId() != null ? event.closureId().toString()
                 : event.orderId() + "@" + (event.closedAt() == null ? "" : event.closedAt().toEpochMilli());
@@ -291,8 +313,9 @@ class CustomerEmailComposer {
     }
 
     /**
-     * A parcel is in; QC comes next. A parcel that does not match the approval is said to be followed up. One message
-     * per parcel when the goods come in several: the second is a message of its own, not a repeat of the first.
+     * The goods are back on their return receipt (team plan 4D-3); the refund comes next. Goods that do not match the
+     * approval are said to be followed up. A return comes back on one receipt; events published per parcel before keep
+     * one message per parcel, the second a message of its own, not a repeat of the first.
      */
     Optional<CustomerMessage> returnReceived(ReturnReceived event) {
         int parcel = event.parcelNumber();
@@ -321,8 +344,9 @@ class CustomerEmailComposer {
     }
 
     /**
-     * Settled: the replacement order, the amount taken off what the customer owes, refunded and kept as credit - each
-     * only when there is one - and the adjustment invoice a Vietnamese buyer needs for its books when one is due.
+     * Refunded (team plan 4D-3): what was taken off what the customer owes on the order and what is to be refunded -
+     * each only when there is one - and the adjustment invoice a Vietnamese buyer needs for its books when one is due.
+     * A return is refunded only: nothing is replaced or kept as credit any more.
      */
     Optional<CustomerMessage> returnResolved(ReturnResolved event) {
         return Optional.of(new CustomerMessage(RETURN_RESOLVED, event.returnRequestId().toString(),
@@ -331,11 +355,6 @@ class CustomerEmailComposer {
                     ResourceBundle m = bundle();
                     List<Fact> facts = returnFacts(m, event.rmaNumber(), event.orderNumber());
                     List<String> outro = new ArrayList<>();
-                    if (filled(event.replacementOrderNumber())) {
-                        facts.add(new Fact(m.getString("email.customer.fact.replacement-order"),
-                                event.replacementOrderNumber()));
-                        outro.add(m.getString("email.return.resolved.replacement"));
-                    }
                     if (positive(event.offsetAmount())) {
                         facts.add(new Fact(m.getString("email.customer.fact.offset"),
                                 money(event.offsetAmount(), event.currency())));
@@ -346,20 +365,13 @@ class CustomerEmailComposer {
                                 money(event.refundedAmount(), event.currency())));
                         outro.add(m.getString("email.customer.refund"));
                     }
-                    if (positive(event.creditedAmount())) {
-                        facts.add(new Fact(m.getString("email.customer.fact.credit"),
-                                money(event.creditedAmount(), event.currency())));
-                        outro.add(m.getString("email.return.resolved.credit"));
-                    }
                     if (event.vatAdjustmentRequired()) {
                         outro.add(m.getString("email.return.resolved.vat-adjustment"));
                     }
                     Table lines = table(m, event.lines(),
-                            List.of("email.customer.table.sku", "email.customer.table.accepted-quantity",
-                                    "email.customer.table.replacement-quantity",
-                                    "email.customer.table.credit-quantity"),
+                            List.of("email.customer.table.sku", "email.customer.table.received-quantity",
+                                    "email.customer.table.refund-quantity"),
                             line -> List.of(text(line.sku()), Integer.toString(line.acceptedQuantity()),
-                                    Integer.toString(line.replacementQuantity()),
                                     Integer.toString(line.creditQuantity())));
                     return content(m, RETURN_RESOLVED, addressee, event.rmaNumber(), facts, lines, outro);
                 }));
@@ -388,33 +400,6 @@ class CustomerEmailComposer {
                                 : "email.return.cancelled.by-staff"));
                     }
                     return content(m, code, addressee, event.rmaNumber(), facts, null, outro);
-                }));
-    }
-
-    /**
-     * The replacement order will not ship after all - the customer asked for the money, or the goods cannot be made
-     * again - and its units are credited instead: what was set off against what the customer owes, what is kept as
-     * their credit.
-     */
-    Optional<CustomerMessage> returnReplacementWithdrawn(ReturnReplacementWithdrawn event) {
-        return Optional.of(new CustomerMessage(RETURN_WITHDRAWN, event.returnRequestId().toString(),
-                event.customerId(), null,
-                addressee -> {
-                    ResourceBundle m = bundle();
-                    List<Fact> facts = returnFacts(m, event.rmaNumber(), event.orderNumber());
-                    List<String> outro = new ArrayList<>();
-                    if (positive(event.offsetAmount())) {
-                        facts.add(new Fact(m.getString("email.customer.fact.offset"),
-                                money(event.offsetAmount(), event.currency())));
-                        outro.add(m.getString("email.return.resolved.offset"));
-                    }
-                    if (positive(event.creditedAmount())) {
-                        facts.add(new Fact(m.getString("email.customer.fact.credit"),
-                                money(event.creditedAmount(), event.currency())));
-                        outro.add(m.getString("email.return.resolved.credit"));
-                    }
-                    outro.add(m.getString("email.return.resolved.vat-adjustment"));
-                    return content(m, RETURN_WITHDRAWN, addressee, event.rmaNumber(), facts, null, outro);
                 }));
     }
 
@@ -448,8 +433,11 @@ class CustomerEmailComposer {
         return content(m, code, addressee, documentNumber, facts, table, List.of());
     }
 
-    /** {@code documentNumber} goes into the subject and the intro: the order's, or the return's (RMA) number. */
-    private EmailContent content(ResourceBundle m, String code, String addressee, String documentNumber,
+    /**
+     * {@code documentNumber} goes into the subject and the intro: the order's, the return's (RMA) or the invoice's
+     * number. Package-private: {@link EInvoiceEmailComposer} words its message the same way.
+     */
+    EmailContent content(ResourceBundle m, String code, String addressee, String documentNumber,
                                  List<Fact> facts, Table table, List<String> extraOutro) {
         String number = documentNumber == null ? "" : documentNumber;
         String intro = m.getString("email." + code + ".intro").formatted(number);
@@ -486,6 +474,31 @@ class CustomerEmailComposer {
             outro.add(m.getString("email.customer.owed"));
         }
         return outro;
+    }
+
+    /**
+     * 4B-3 (kltn-docs 14 BR-09): the lines are listed before tax, so an order with VAT or fee lines says what comes
+     * between them and its total - the fee lines and the VAT - for the e-mail to add up. Nothing for an order without
+     * either, or an event published before the split.
+     */
+    private static List<Fact> charges(ResourceBundle m, OrderPlaced event) {
+        if (event.netAmount() == null || event.taxAmount() == null || event.lines() == null) {
+            return List.of();
+        }
+        BigDecimal goods = event.lines().stream().filter(line -> line.unitPrice() != null)
+                .map(line -> line.unitPrice().multiply(BigDecimal.valueOf(line.quantity())))
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        BigDecimal fees = event.netAmount().subtract(goods);
+        if (event.taxAmount().signum() == 0 && fees.signum() == 0) {
+            return List.of();
+        }
+        List<Fact> facts = new ArrayList<>();
+        if (fees.signum() > 0) {
+            facts.add(new Fact(m.getString("email.customer.fact.fees"), money(fees, event.currency())));
+        }
+        facts.add(new Fact(m.getString("email.customer.fact.net"), money(event.netAmount(), event.currency())));
+        facts.add(new Fact(m.getString("email.customer.fact.tax"), money(event.taxAmount(), event.currency())));
+        return facts;
     }
 
     private static Table orderLines(ResourceBundle m, List<OrderPlaced.OrderLine> lines, String currency) {
@@ -526,7 +539,7 @@ class CustomerEmailComposer {
         return Optional.of(m.getString(prefix + code));
     }
 
-    private ResourceBundle bundle() {
+    ResourceBundle bundle() {
         return ResourceBundle.getBundle("i18n.messages", properties.locale());
     }
 

@@ -1,7 +1,6 @@
 package com.stockflow.warehouse.internal.controller.dto;
 
 import com.stockflow.warehouse.internal.domain.LocationStatus;
-import com.stockflow.warehouse.internal.domain.StorageClass;
 import com.stockflow.warehouse.internal.domain.StorageLocationKind;
 import io.swagger.v3.oas.annotations.media.Schema;
 
@@ -13,6 +12,6 @@ import java.util.UUID;
  */
 @Schema(name = "StorageLocation", description = "A storage location; check usable, not status")
 public record StorageLocationResponse(UUID id, StorageLocationKind kind, UUID warehouseId, String locationCode,
-                                      StorageClass storageClass, LocationStatus status,
+                                      LocationStatus status,
                                       LocationStatus effectiveStatus, boolean usable) {
 }

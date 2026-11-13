@@ -2,7 +2,6 @@ package com.stockflow.warehouse.internal.controller.dto;
 
 import com.stockflow.warehouse.internal.domain.AreaType;
 import com.stockflow.warehouse.internal.domain.LocationStatus;
-import com.stockflow.warehouse.internal.domain.StorageClass;
 import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Digits;
@@ -26,15 +25,11 @@ public final class AreaRequests {
 
     /**
      * The area's storage location. Required for every type but {@code NON_STORAGE}, for which it is
-     * ignored (the domain answers {@code 400} when a storage type comes without it).
-     *
-     * @param storageClass {@code null} = {@code NORMAL} (issue #18 D9)
+     * ignored (the domain answers {@code 400} when a storage type comes without it). No capacity: a location's
+     * volume is computed, never typed in (kltn-docs 06 BR-19).
      */
     @Schema(name = "AreaLocationRequest")
     public record Location(
-            @Schema(description = "null = NORMAL")
-            StorageClass storageClass,
-            @Positive Integer capacityUnits,
             @Positive @Digits(integer = 7, fraction = 3) BigDecimal maxWeight,
             boolean pickable,
             boolean putawayTarget
@@ -55,9 +50,7 @@ public final class AreaRequests {
     }
 
     /**
-     * A full replacement, like every {@code PUT}: a {@code location} without {@code storageClass}
-     * sets it back to {@code NORMAL}, so send the current one to keep it. {@code NON_STORAGE} to a
-     * storage type creates the location; the other way is refused
+     * A full replacement, like every {@code PUT}. {@code NON_STORAGE} to a storage type creates the location; the other way is refused
      * ({@code 409 AREA_TYPE_CHANGE_NOT_ALLOWED}, issue #18 D10).
      *
      * @param version the version the edit was based on, from the last read

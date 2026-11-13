@@ -41,13 +41,10 @@ class WarehouseScopeTest {
         WithCurrentUser.run(clerkOf(HCM, "HCM"), () -> {
             WarehouseScope.requireLocation("HCM-A01-2-03");
             WarehouseScope.requireWarehouse(HCM);
-            WarehouseScope.requireEither(HN, HCM);
             assertThatThrownBy(() -> WarehouseScope.requireLocation("HN-RCV01"))
                     .isInstanceOfSatisfying(BusinessException.class,
                             e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.OUT_OF_DATA_SCOPE));
             assertThatThrownBy(() -> WarehouseScope.requireWarehouse(HN)).isInstanceOf(BusinessException.class);
-            assertThatThrownBy(() -> WarehouseScope.requireEither(HN, UUID.randomUUID()))
-                    .isInstanceOf(BusinessException.class);
         });
     }
 
@@ -60,9 +57,9 @@ class WarehouseScopeTest {
 
     @Test
     void aWarehouseSensitiveEndpointDoesNotCutAnUnlimitedCallerDown() {
-        CurrentUser planner = new CurrentUser(UUID.randomUUID(), "planner", Set.of(Role.INVENTORY_PLANNER),
+        CurrentUser admin = new CurrentUser(UUID.randomUUID(), "admin", Set.of(Role.SYSTEM_ADMIN),
                 Set.of(), DataScope.ALL, Set.of(), Set.of());
-        WithCurrentUser.run(planner, DataScope.WAREHOUSE, () -> {
+        WithCurrentUser.run(admin, DataScope.WAREHOUSE, () -> {
             assertThat(WarehouseScope.restriction()).isEmpty();
             WarehouseScope.requireLocation("HN-RCV01");
         });

@@ -73,7 +73,7 @@ class ResendEmailTransportTest {
 
     static EmailProperties properties(String from, String key, int requestsPerSecond) {
         return new EmailProperties(EmailProvider.RESEND, from, null, Locale.forLanguageTag("vi"), "StockFlow",
-                new EmailProperties.Customer(true, 10, Duration.ofMinutes(1), Duration.ofHours(6)),
+                new EmailProperties.Customer(true, 10, Duration.ofMinutes(1), Duration.ofHours(6), true),
                 new EmailProperties.Resend(key, BASE, null, Duration.ofMinutes(5), requestsPerSecond, 4));
     }
 

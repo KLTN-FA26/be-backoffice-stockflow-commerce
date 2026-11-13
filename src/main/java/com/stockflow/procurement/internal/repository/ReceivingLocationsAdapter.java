@@ -56,19 +56,6 @@ class ReceivingLocationsAdapter implements ReceivingLocations {
                 .collect(Collectors.toMap(ReceivingLocation::id, Function.identity()));
     }
 
-    @Override
-    public boolean hasArea(UUID warehouseId, String areaType) {
-        return !entityManager.createNativeQuery("""
-                        SELECT 1 FROM warehouse.area
-                         WHERE warehouse_id = :warehouse AND type = :type AND location_id IS NOT NULL
-                           AND status = 'ACTIVE'""")
-                .setParameter("warehouse", warehouseId)
-                .setParameter("type", areaType)
-                .setMaxResults(1)
-                .getResultList()
-                .isEmpty();
-    }
-
     private static ReceivingLocation toLocation(Object[] row) {
         return new ReceivingLocation((UUID) row[0], (String) row[1], (UUID) row[2], (String) row[3]);
     }

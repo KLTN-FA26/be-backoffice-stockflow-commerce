@@ -37,7 +37,7 @@ import java.util.UUID;
 
 /**
  * Load planning of full-truckload shipping (SCRUM-287 PR D / SCRUM-391; kltn-docs 09 §4.2, §5, BR-09..BR-15).
- * {@code fulfillment-load-plans}: READ to look (the order coordinator too), CREATE to start a plan, UPDATE for every
+ * {@code fulfillment-load-plans}: READ to look, CREATE to start a plan, UPDATE for every
  * step after - seeded for warehouse staff (09 §2 Dispatch Staff) and the warehouse manager. Every call is limited to the
  * caller's warehouses. Each change sends the plan's {@code expectedVersion}; another one is 409 OPTIMISTIC_LOCK.
  *
@@ -58,7 +58,7 @@ class LoadPlanController {
     @GetMapping("/load-plan-candidates")
     @Operation(summary = "Full-truckload shipments of the warehouse waiting for dispatch, whole, with the packages no "
             + "other live plan holds (sizes in mm, weight, rotatable, kit); loadPlanId counts that plan's own as free. "
-            + "sourceType=TRANSFER: the packed full-truckload transfer orders leaving from it, whole (SCRUM-287 PR T)")
+            + "sourceType may only be ORDER (or left out)")
     @RequiresPermission(resource = FulfillmentResources.LOAD_PLANS, action = Action.READ)
     public ApiResponse<List<LoadPlans.CandidateShipment>> candidates(@RequestParam UUID warehouseId,
                                                                      @RequestParam(required = false) UUID loadPlanId,
@@ -69,16 +69,16 @@ class LoadPlanController {
     @PostMapping("/load-plans")
     @ResponseStatus(HttpStatus.CREATED)
     @Operation(summary = "Start a load plan (DRAFT), optionally with its shipments, vehicle types and mode; "
-            + "idempotent by requestId. sourceType TRANSFER takes one packed transfer order (transferOrderIds). 409 "
-            + "LOAD_PLAN_PACKAGE_TAKEN, SHIPMENT_STATE_CONFLICT, SHIPMENT_NOT_FOR_LOAD, VEHICLE_TYPE_INACTIVE, "
-            + "LOAD_PLAN_SOURCE_MISMATCH, TRANSFER_NOT_PACKED; 422 LOAD_PLAN_PACKAGE_UNMEASURED")
+            + "idempotent by requestId; sourceType may only be ORDER (or left out). 409 "
+            + "LOAD_PLAN_PACKAGE_TAKEN, SHIPMENT_STATE_CONFLICT, SHIPMENT_NOT_FOR_LOAD, VEHICLE_TYPE_INACTIVE; "
+            + "422 LOAD_PLAN_PACKAGE_UNMEASURED")
     @RequiresPermission(resource = FulfillmentResources.LOAD_PLANS, action = Action.CREATE)
     @Auditable(action = AuditAction.CREATE, resourceType = "load-plan", resourceId = "#result?.data()?.loadPlanId()")
     public ApiResponse<LoadPlans.PlanDetail> create(@Valid @RequestBody CreateLoadPlanRequest request,
                                                     @AuthenticatedUser CurrentUser actor) {
         return ApiResponse.ok(loadPlans.create(new LoadPlans.CreatePlan(request.requestId(), request.warehouseId(),
                 request.shipmentIds(), request.vehicleTypeIds(), request.selectionMode(), request.note(),
-                request.sourceType(), request.transferOrderIds()), actor));
+                request.sourceType()), actor));
     }
 
     @GetMapping("/load-plans")
@@ -108,8 +108,7 @@ class LoadPlanController {
     public ApiResponse<LoadPlans.PlanDetail> setInputs(@PathVariable UUID loadPlanId,
             @Valid @RequestBody LoadPlanInputsRequest request, @AuthenticatedUser CurrentUser actor) {
         return ApiResponse.ok(loadPlans.setInputs(loadPlanId, new LoadPlans.Inputs(request.expectedVersion(),
-                request.shipmentIds(), request.vehicleTypeIds(), request.selectionMode(), request.transferOrderIds()),
-                actor));
+                request.shipmentIds(), request.vehicleTypeIds(), request.selectionMode()), actor));
     }
 
     @PostMapping("/load-plans/{loadPlanId}/calculation")

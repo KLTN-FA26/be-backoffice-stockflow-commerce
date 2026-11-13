@@ -10,7 +10,6 @@ import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.DataScope;
 import com.stockflow.common.security.PermissionResource;
 import com.stockflow.common.security.RequiresPermission;
-import com.stockflow.customer.api.CommercialTerm;
 import com.stockflow.customer.api.CustomerService;
 import com.stockflow.order.internal.controller.dto.CreditDecisionRequest;
 import com.stockflow.order.internal.controller.dto.CreditHoldResponse;
@@ -29,13 +28,12 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
-import java.util.Arrays;
 import java.util.UUID;
 
 /**
- * Credit at the order (SCRUM-427, SCRUM-193; kltn-docs 15 §4.3, BR-01, BR-03): what a customer may be
- * sold on and the credit left, and the queue of orders over the limit that whoever approves credit
- * confirms or refuses.
+ * Credit at the order (SCRUM-427, SCRUM-193; kltn-docs 15 §4.3, BR-10, BR-11; 18 §2): a customer's credit and what is
+ * left of it - for Sales, and for the customer on the portal - and the queue of orders held for credit at their
+ * contract's signature that accounting confirms or refuses.
  */
 @RestController
 @RequestMapping("/api/v1/orders")
@@ -59,10 +57,14 @@ class CreditHoldController {
         this.checks = checks;
     }
 
-    @GetMapping("/payment-terms")
-    @Operation(summary = "The signed-in customer's payment terms and credit left, for the checkout")
-    @RequiresPermission(resource = OrderResources.ORDERS, action = Action.CREATE, scope = DataScope.OWN)
-    public ApiResponse<CreditPositionResponse> myTerms(@AuthenticatedUser CurrentUser user) {
+    /**
+     * The signed-in customer's own credit (15 §2, 18 §2: "vị thế tín dụng"). Replaces {@code GET /payment-terms}
+     * (4B-10): there are no payment terms to offer, only the credit left.
+     */
+    @GetMapping("/credit-position/me")
+    @Operation(summary = "The signed-in customer's credit limit, what they owe after delivery and what is left")
+    @RequiresPermission(resource = OrderResources.ORDERS, action = Action.READ, scope = DataScope.OWN)
+    public ApiResponse<CreditPositionResponse> myCredit(@AuthenticatedUser CurrentUser user) {
         UUID customerId = customers.findByUserId(user.userId())
                 .orElseThrow(() -> new BusinessException(ErrorCode.CUSTOMER_NOT_FOUND))
                 .customerId();
@@ -70,7 +72,7 @@ class CreditHoldController {
     }
 
     @GetMapping("/credit-position/{customerId}")
-    @Operation(summary = "A customer's payment terms, what they owe on credit and what is left")
+    @Operation(summary = "A customer's credit limit, what they owe after delivery and what is left")
     @RequiresPermission(resource = "customer-credit-profiles", action = Action.READ, scope = DataScope.ALL)
     public ApiResponse<CreditPositionResponse> position(@PathVariable UUID customerId) {
         return ApiResponse.ok(toResponse(credit.position(customerId)));
@@ -100,22 +102,17 @@ class CreditHoldController {
     }
 
     @PostMapping("/{orderId}/credit-rejection")
-    @Operation(summary = "Refuse: cancel the order, or switch it to prepaid or deposit terms the customer may use")
+    @Operation(summary = "Refuse: the order is cancelled (CREDIT_REJECTED); the decision is recorded with its reason")
     @RequiresPermission(resource = OrderResources.CREDIT_HOLDS, action = Action.APPROVE, scope = DataScope.ALL)
     public ApiResponse<OrderResponse> refuse(@PathVariable UUID orderId,
                                              @Valid @RequestBody CreditRefusalRequest request,
                                              @AuthenticatedUser CurrentUser user) {
-        return ApiResponse.ok(OrderWebMapper.toResponse(credit.refuse(orderId, request.action(),
-                request.depositPercent(), request.note(), user.userId())));
+        return ApiResponse.ok(OrderWebMapper.toResponse(credit.refuse(orderId, request.note(), user.userId())));
     }
 
     private static CreditPositionResponse toResponse(CreditHoldService.CreditPosition p) {
         var t = p.terms();
-        return new CreditPositionResponse(t.customerId(),
-                Arrays.stream(CommercialTerm.values()).filter(t::allows).map(Enum::name).toList(),
-                t.defaultTerm().name(), t.depositPercent(), t.creditLimit(), t.creditTermDays(), p.exposure(),
-                p.available(), t.currency(), p.hasOverdue(),
-                t.depositBalancePolicy() == null ? null : t.depositBalancePolicy().name(), p.overdueAmount(),
-                p.oldestOverdueDueDate(), p.allowedBalancePolicies().stream().map(Enum::name).toList());
+        return new CreditPositionResponse(t.customerId(), t.creditLimit(), t.creditTermDays(), p.exposure(),
+                p.available(), t.currency(), p.hasOverdue(), p.overdueAmount(), p.oldestOverdueDueDate());
     }
 }

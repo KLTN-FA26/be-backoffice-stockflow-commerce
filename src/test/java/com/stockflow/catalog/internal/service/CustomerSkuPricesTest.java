@@ -1,0 +1,74 @@
+package com.stockflow.catalog.internal.service;
+
+import com.stockflow.catalog.api.PriceSchedule;
+import com.stockflow.catalog.internal.domain.CustomerPrice;
+import com.stockflow.catalog.internal.domain.CustomerPriceRepository;
+import com.stockflow.catalog.internal.repository.ListingRepository;
+import com.stockflow.customer.api.CustomerService;
+import com.stockflow.customer.api.CustomerSummary;
+import com.stockflow.product.api.CustomerSkus;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+
+import java.math.BigDecimal;
+import java.time.Instant;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.UUID;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.anyCollection;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
+
+/**
+ * 4B-2 and 5-3 (kltn-docs 13 BR-04, BR-05, BR-10; 14 BR-01, BR-08): a price of the customer's own on one of its own SKUs
+ * counts cartons and is internal; it is the only price there is - no base, no group price. A quote starts from it; a
+ * SKU the customer has none of its own on has no price at all. Checkout, which read one in units, went with 5-2.
+ */
+class CustomerSkuPricesTest {
+
+    private static final String OWN = "LY12-ACME-01";
+    private static final String STOCK = "SOFA-3S-GREY";
+    private static final String UNPRICED = "TABLE-OAK-160";
+
+    private final CustomerPriceRepository prices = mock(CustomerPriceRepository.class);
+    private final ListingRepository listings = mock(ListingRepository.class);
+    private final CustomerService customers = mock(CustomerService.class);
+    private final CustomerSkus customerSkus = mock(CustomerSkus.class);
+    private final PriceResolver resolver = new PriceResolver(prices, customers);
+    private final UUID customer = UUID.randomUUID();
+    private final UUID user = UUID.randomUUID();
+    private final CustomerSummary summary = new CustomerSummary(customer, user, "A", "a@x.vn", null, null, null,
+            "ACTIVE", 0, Instant.now());
+
+    @BeforeEach
+    void stubs() {
+        when(customers.findById(customer)).thenReturn(Optional.of(summary));
+        when(customerSkus.ownerOf(OWN)).thenReturn(Optional.of(customer));
+        when(customerSkus.ownerOf(STOCK)).thenReturn(Optional.empty());
+        when(customerSkus.ownerOf(UNPRICED)).thenReturn(Optional.empty());
+        when(customerSkus.ownersOf(anyCollection())).thenAnswer(call -> ((java.util.Collection<?>) call.getArgument(0))
+                .contains(OWN) ? Map.of(OWN, customer) : Map.of());
+        when(prices.find(customer, OWN)).thenReturn(Optional.of(new CustomerPrice(UUID.randomUUID(), customer, OWN,
+                List.of(new CustomerPrice.Tier(10, new BigDecimal("1800"))), null, 0)));
+        when(prices.find(customer, STOCK)).thenReturn(Optional.of(new CustomerPrice(UUID.randomUUID(), customer, STOCK,
+                List.of(new CustomerPrice.Tier(1, new BigDecimal("11000000")),
+                        new CustomerPrice.Tier(5, new BigDecimal("10500000"))), null, 0)));
+        when(prices.find(customer, UNPRICED)).thenReturn(Optional.empty());
+    }
+
+    @Test
+    @DisplayName("a quote starts from the customer's own price, its tiers as given; a SKU without one has no price at all")
+    void aQuoteReadsTheCustomersOwnPriceOnly() {
+        PriceSchedule own = resolver.own(summary, OWN).orElseThrow();
+
+        assertThat(own.tiers()).singleElement().satisfies(tier -> {
+            assertThat(tier.minQuantity()).isEqualTo(10);
+            assertThat(tier.unitPrice().amount()).isEqualByComparingTo("1800");
+        });
+        assertThat(resolver.own(summary, UNPRICED)).isEmpty();
+    }
+}

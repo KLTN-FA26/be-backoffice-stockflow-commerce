@@ -1,15 +1,8 @@
 package com.stockflow.order;
 
-import com.stockflow.common.domain.Money;
-import com.stockflow.common.domain.Sku;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.security.DataScope;
-import com.stockflow.contracts.PaymentCaptured;
-import com.stockflow.contracts.PaymentMethod;
-import com.stockflow.customer.api.CommercialTerm;
-import com.stockflow.customer.api.CustomerService;
-import com.stockflow.customer.api.SaveCreditTermsCommand;
 import com.stockflow.order.api.CancellationOutcome;
 import com.stockflow.order.api.CancellationReasonCode;
 import com.stockflow.order.api.DeliveryFailureReason;
@@ -18,16 +11,13 @@ import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.OrderStatusChange;
 import com.stockflow.order.api.OrderSummary;
-import com.stockflow.order.api.PaymentTerm;
-import com.stockflow.order.api.PlaceOrderCommand;
 import com.stockflow.order.api.ShipmentHandover;
 import com.stockflow.order.internal.service.CancellationRequestService;
-import com.stockflow.order.internal.service.CreditHoldService;
 import com.stockflow.order.internal.service.CustomerOrders;
 import com.stockflow.order.internal.service.OrderReleases;
 import com.stockflow.order.internal.service.OrderSettlementService;
-import com.stockflow.payment.internal.service.ReceivableService;
-import com.stockflow.support.Await;
+import com.stockflow.support.ConfirmedOrders;
+import com.stockflow.support.CustomerSkuRows;
 import com.stockflow.support.DemoData;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
@@ -40,19 +30,18 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Import;
+import org.springframework.test.context.TestPropertySource;
 import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.support.TransactionTemplate;
 
-import java.math.BigDecimal;
 import java.time.Duration;
-import java.time.LocalDate;
-import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
@@ -65,45 +54,45 @@ import static org.assertj.core.api.Assertions.catchThrowable;
 
 /**
  * G3-2 (SCRUM-239/246/247) against a real database: the whole lifecycle through {@code OrderService} - the in-process
- * API fulfillment calls (A1) - with the transition trigger, the history rows, receivables per shipment, the credit
- * exposure of split orders, the remainder refund, cancellation requests after a partial shipment, the customer's view
- * of a request, and concurrent transitions under the row lock.
+ * API fulfillment calls (A1) - with the transition trigger, the history rows, closing the remainder of a split order,
+ * cancellation requests after a partial shipment, the customer's view of a request, and concurrent transitions under
+ * the row lock. Every order is a contract's, confirmed by its installment on signing ({@link ConfirmedOrders}); what
+ * the money does after a delivery is the payment module's tests (4B-10 removed the ledger and the billing that went
+ * with it).
  */
 @IntegrationTest
 @Import(PostgresContainer.class)
+@TestPropertySource(properties = "stockflow.upload-inspection.enabled=false")
 class OrderLifecycleIntegrationTest {
 
-    private static final Sku SOFA = new Sku("SOFA-3S-GREY");
     private static final long PRICE = 1_000_000;
-    private static final Duration ASYNC = Duration.ofSeconds(15);
 
     @Autowired OrderService orders;
     @Autowired OrderReleases releases;
-    @Autowired CustomerService customers;
-    @Autowired CreditHoldService credit;
+    @Autowired com.stockflow.customer.api.CustomerService customers;
     @Autowired CancellationRequestService cancellationRequests;
     @Autowired CustomerOrders customerOrders;
-    @Autowired ReceivableService receivables;
     @Autowired OrderSettlementService settlements;
-    @Autowired com.stockflow.payment.internal.domain.CancelledOrderSettlement remainderRefunds;
+    @Autowired com.stockflow.invoicing.internal.service.EInvoiceIssuance einvoices;
     @Autowired com.stockflow.inventory.api.InventoryService inventory;
-    @Autowired ApplicationEventPublisher publisher;
     @Autowired TransactionTemplate tx;
     @Autowired JdbcTemplate jdbc;
     @Autowired EntityManager entityManager;
+    @Autowired ApplicationContext context;
 
     private UUID customer;
+    private String sku;
+    private ConfirmedOrders confirmedOrders;
     private UUID staff;
     private final List<UUID> placed = Collections.synchronizedList(new ArrayList<>());
 
     @BeforeEach
-    void customerWithEveryTerm() {
+    void customerWithItsOwnSku() {
+        confirmedOrders = new ConfirmedOrders(context);
         customer = tx.execute(s -> ReferenceRows.customer(entityManager));
         staff = tx.execute(s -> ReferenceRows.user(entityManager));
-        // G2-3: the carrier collects a deposit order's balance, so a deposit order leaves with its deposit only.
-        customers.saveCreditTerms(new SaveCreditTermsCommand(customer, true, true, true, CommercialTerm.CREDIT,
-                new BigDecimal("30"), new BigDecimal("10000000"), 30, "test terms", staff, null,
-                com.stockflow.customer.api.DepositBalancePolicy.ON_DELIVERY));
+        // A contract's lines are only ever the customer's own SKUs, in cartons (14 BR-04, BR-08).
+        sku = CustomerSkuRows.issue(jdbc, tx, entityManager, customer, 50).sku();
     }
 
     @AfterEach
@@ -123,34 +112,30 @@ class OrderLifecycleIntegrationTest {
 
     // ---------------------------------------------------------------------------------------------------- helpers
 
-    private OrderSummary place(PaymentTerm term, int units) {
-        OrderSummary order = orders.placeOrder(new PlaceOrderCommand(UUID.randomUUID(), customer, null, null, false,
-                List.of(new PlaceOrderCommand.Line(SOFA, units, Money.vnd(PRICE), null)), term,
-                term == PaymentTerm.DEPOSIT ? new BigDecimal("30") : null));
+    /** A CONFIRMED order of {@code units} pieces, at least two: one carton of them (14 BR-08), its stock in HCM. */
+    private OrderSummary place(int units) {
+        CustomerSkuRows.stock(jdbc, tx, sku, units);
+        UUID orderId = confirmedOrders.confirmed(customer,
+                ConfirmedOrders.Line.units(sku, units, PRICE)).orderId();
         // Split shipments throughout: Sales allowed them on the order (PACK-PARTIAL, lead's decision 2026-10-21).
         tx.executeWithoutResult(s -> jdbc.update(
-                "UPDATE ordering.customer_order SET allow_partial_shipment = TRUE WHERE id = ?", order.orderId()));
-        placed.add(order.orderId());
-        return order;
+                "UPDATE ordering.customer_order SET allow_partial_shipment = TRUE WHERE id = ?", orderId));
+        placed.add(orderId);
+        return orders.findById(orderId).orElseThrow();
     }
 
-    private void pay(OrderSummary order, long amount) {
-        tx.executeWithoutResult(s -> publisher.publishEvent(new PaymentCaptured(order.orderId(), UUID.randomUUID(),
-                BigDecimal.valueOf(amount), "VND", PaymentMethod.BANK_TRANSFER)));
+    private OrderStatus statusOf(UUID orderId) {
+        return orders.findById(orderId).orElseThrow().status();
     }
 
     private OrderStatus statusOf(OrderSummary order) {
         return orders.findById(order.orderId()).orElseThrow().status();
     }
 
-    /** Placed, paid as its terms want, released and picking. */
-    private OrderSummary picking(PaymentTerm term, int units) {
-        OrderSummary order = place(term, units);
-        if (term != PaymentTerm.CREDIT) {
-            pay(order, term == PaymentTerm.PREPAID ? units * PRICE : units * PRICE * 30 / 100);
-            Await.until("confirmed", ASYNC, () -> statusOf(order) == OrderStatus.CONFIRMED);
-        }
-        releases.release(order.orderId(), DemoData.WAREHOUSE_HCM, staff);
+    /** Confirmed, released and picking. */
+    private OrderSummary picking(int units) {
+        OrderSummary order = place(units);
+        confirmedOrders.release(order.orderId(), DemoData.WAREHOUSE_HCM, staff);
         return orders.startPicking(order.orderId(), staff);
     }
 
@@ -165,23 +150,23 @@ class OrderLifecycleIntegrationTest {
         return ((BusinessException) thrown).errorCode();
     }
 
-    private List<String> receivablesOf(OrderSummary order) {
-        return jdbc.queryForList("""
-                SELECT amount::bigint || ' ' || (shipment_id IS NOT NULL) FROM payment.receivable
-                 WHERE order_id = ? ORDER BY issued_at, amount""", String.class, order.orderId());
-    }
-
-    private BigDecimal exposure() {
-        return credit.position(customer).exposure();
-    }
-
     // ------------------------------------------------------------------------------------------------------ tests
 
     @Test
     @DisplayName("prepaid, end to end: hold and resolve, split handover, one failed then redelivered, completed, closed; "
             + "the history names who and why")
     void prepaidEndToEnd() {
-        OrderSummary order = picking(PaymentTerm.PREPAID, 4);
+        // The buyer an e-invoice is issued to: a tax code and the e-mail its invoices go to (21 BR-06).
+        tx.executeWithoutResult(s -> {
+            jdbc.update("UPDATE customer.customer SET tax_code = ? WHERE id = ?", "03" + (10_000_000
+                    + java.util.concurrent.ThreadLocalRandom.current().nextInt(89_999_999)), customer);
+            jdbc.update("INSERT INTO customer.customer_legal_profile (id, customer_id, registered_address, "
+                    + "representative_name, representative_title, invoice_email, version, created_at) "
+                    + "VALUES (gen_random_uuid(), ?, '1 Le Loi, TP HCM', 'Tran Van A', 'Director', ?, 0, NOW()) "
+                    + "ON CONFLICT (customer_id) DO UPDATE SET invoice_email = EXCLUDED.invoice_email", customer,
+                    "ke.toan@" + customer + ".example.com");
+        });
+        OrderSummary order = picking(4);
         assertThat(order.status()).isEqualTo(OrderStatus.PICKING);
 
         assertThat(orders.putOnHold(order.orderId(), HoldReason.ADDRESS, "sai phường", staff).status())
@@ -220,7 +205,20 @@ class OrderLifecycleIntegrationTest {
         assertThat(settlements.complete(order.orderId())).as("inside the return window").isFalse();
         tx.executeWithoutResult(s -> jdbc.update("UPDATE ordering.customer_order SET delivered_at = NOW() - interval '8 days' "
                 + "WHERE id = ?", order.orderId()));
-        assertThat(settlements.completionCandidates(1000)).contains(order.orderId());
+        assertThat(settlements.completionCandidates(0, 1000)).contains(order.orderId());
+        // WF-05 plan 4, condition 5: both deliveries were drawn up as drafts (after commit); until the accountant
+        // issues them the order stays DELIVERED.
+        com.stockflow.support.Await.until("the drafts of both deliveries", Duration.ofSeconds(20),
+                () -> jdbc.queryForObject("SELECT count(*) FROM invoicing.einvoice WHERE order_id = ? AND status = "
+                        + "'DRAFT'", Long.class, order.orderId()) == 2);
+        assertThat(settlements.complete(order.orderId())).as("its deliveries are not invoiced yet").isFalse();
+        assertThat(statusOf(order)).isEqualTo(OrderStatus.DELIVERED);
+        jdbc.queryForList("SELECT id FROM invoicing.einvoice WHERE order_id = ?", UUID.class, order.orderId())
+                .forEach(invoice -> einvoices.issue(invoice, null, staff));
+        // Issuing returns SUBMITTING; the provider is called on another thread (WF-05 E3).
+        com.stockflow.support.Await.until("both invoices issued", Duration.ofSeconds(20),
+                () -> jdbc.queryForObject("SELECT count(*) FROM invoicing.einvoice WHERE order_id = ? AND status = "
+                        + "'ISSUED'", Long.class, order.orderId()) == 2);
         assertThat(settlements.complete(order.orderId())).isTrue();
         assertThat(statusOf(order)).isEqualTo(OrderStatus.COMPLETED);
         tx.executeWithoutResult(s -> jdbc.update("UPDATE ordering.customer_order SET completed_at = NOW() - interval '31 days' "
@@ -229,59 +227,89 @@ class OrderLifecycleIntegrationTest {
         assertThat(statusOf(order)).isEqualTo(OrderStatus.CLOSED);
 
         List<OrderStatusChange> history = orders.history(order.orderId());
-        assertThat(history).extracting(OrderStatusChange::to).containsExactly(OrderStatus.PENDING_PAYMENT,
-                OrderStatus.CONFIRMED, OrderStatus.READY_TO_FULFILL, OrderStatus.PICKING, OrderStatus.ON_HOLD,
+        assertThat(history).extracting(OrderStatusChange::to).containsExactly(OrderStatus.DRAFT,
+                OrderStatus.PENDING_CONTRACT, OrderStatus.PENDING_PAYMENT, OrderStatus.CONFIRMED, OrderStatus.READY_TO_FULFILL, OrderStatus.PICKING, OrderStatus.ON_HOLD,
                 OrderStatus.PICKING, OrderStatus.PARTIALLY_FULFILLED, OrderStatus.PACKED, OrderStatus.SHIPPED,
                 OrderStatus.DELIVERY_FAILED, OrderStatus.DELIVERED, OrderStatus.COMPLETED, OrderStatus.CLOSED);
-        assertThat(history.get(4).reason()).isEqualTo("ADDRESS: sai phường");
-        assertThat(history.get(4).actorId()).isEqualTo(staff);
-        assertThat(history.get(5).reason()).isEqualTo("HOLD_RESOLVED_ADDRESS: khách đã xác nhận");
-        assertThat(history.get(9).reason()).isEqualTo("CUSTOMER_ABSENT");
-        assertThat(history.get(12).actorId()).as("closed by the system").isNull();
+        // The first two entries are the contract's: the order drafted, then waiting for its contract.
+        assertThat(history.get(6).reason()).isEqualTo("ADDRESS: sai phường");
+        assertThat(history.get(6).actorId()).isEqualTo(staff);
+        assertThat(history.get(7).reason()).isEqualTo("HOLD_RESOLVED_ADDRESS: khách đã xác nhận");
+        assertThat(history.get(11).reason()).isEqualTo("CUSTOMER_ABSENT");
+        assertThat(history.get(14).actorId()).as("closed by the system").isNull();
         assertThat(jdbc.queryForObject("SELECT count(*) FROM ordering.order_hold WHERE order_id = ? AND reason = 'ADDRESS' "
                 + "AND note = 'sai phường' AND raised_by = ? AND resolved_at IS NOT NULL", Long.class, order.orderId(), staff))
                 .isEqualTo(1);
     }
 
     @Test
-    @DisplayName("credit, split: one receivable per delivered shipment; the exposure counts the order once and falls "
-            + "with every payment; closing the rest frees the limit")
-    void creditSplitReceivablesAndExposure() {
-        BigDecimal before = exposure();
-        OrderSummary order = picking(PaymentTerm.CREDIT, 4);
-        assertThat(exposure().subtract(before)).isEqualByComparingTo("4000000");
+    @DisplayName("4B-10 (17 §4.6 step 21): a contract order completes only once its installments are paid - the settlement "
+            + "leaves it DELIVERED while one owes, the receipt lets it complete (it never completed before: its paid "
+            + "amount stayed 0); its contract goes SIGNED -> COMPLETED in the same transaction (14 §5.2), on the real "
+            + "rows, and is final")
+    void completesOnlyOncePaid() {
+        // Everything after delivery, on the customer's credit: a limit above zero (15 BR-12).
+        customers.saveCreditTerms(new com.stockflow.customer.api.SaveCreditTermsCommand(customer,
+                new java.math.BigDecimal("50000000"), 30, "test terms", staff, null));
+        CustomerSkuRows.stock(jdbc, tx, sku, 2);
+        UUID orderId = confirmedOrders.signed(customer, List.of(new com.stockflow.order.internal.service.SalesContracts
+                .Installment("After delivery", "AFTER_DELIVERY", null, new java.math.BigDecimal("100"), 30, null)),
+                ConfirmedOrders.Line.units(sku, 2, PRICE)).orderId();
+        placed.add(orderId);
+        assertThat(statusOf(orderId)).isEqualTo(OrderStatus.CONFIRMED);
+        confirmedOrders.release(orderId, DemoData.WAREHOUSE_HCM, staff);
+        orders.startPicking(orderId, staff);
+        orders.markPacked(orderId, staff);
+        orders.markShipped(orderId, null, staff);
+        assertThat(orders.recordDelivery(orderId, staff).status()).isEqualTo(OrderStatus.DELIVERED);
+        tx.executeWithoutResult(s -> jdbc.update(
+                "UPDATE ordering.customer_order SET delivered_at = NOW() - interval '8 days' WHERE id = ?", orderId));
 
-        UUID s1 = UUID.randomUUID();
-        orders.recordHandover(order.orderId(), handover(order, s1, 2));
-        assertThat(statusOf(order)).isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
-        assertThat(exposure().subtract(before)).isEqualByComparingTo("4000000");
+        assertThat(settlements.completionCandidates(0, 1000)).as("the query cannot tell who owes (payment's to say)")
+                .contains(orderId);
+        assertThat(settlements.complete(orderId)).as("the installment after delivery is unpaid").isFalse();
+        assertThat(statusOf(orderId)).isEqualTo(OrderStatus.DELIVERED);
+        assertThat(contractOf(orderId)).as("the contract waits with its order").containsEntry("status", "SIGNED")
+                .containsEntry("completed", false);
 
-        orders.recordShipmentDelivered(order.orderId(), s1, staff);
-        Await.until("receivable of the first shipment", ASYNC, () -> receivablesOf(order).size() == 1);
-        assertThat(receivablesOf(order)).containsExactly("2000000 true");
-        assertThat(exposure().subtract(before)).as("2M billed + 2M still to bill, not 6M").isEqualByComparingTo("4000000");
+        // Reached by the delivery (payment reads OrderDelivered after commit); the customer pays it.
+        UUID installment = jdbc.queryForObject("SELECT id FROM payment.installment WHERE order_id = ?", UUID.class,
+                orderId);
+        com.stockflow.support.Await.until("the installment reached", Duration.ofSeconds(15), () -> "DUE".equals(
+                jdbc.queryForObject("SELECT status FROM payment.installment WHERE id = ?", String.class, installment)));
+        confirmedOrders.pay(customer, installment, jdbc.queryForObject(
+                "SELECT amount FROM payment.installment WHERE id = ?", java.math.BigDecimal.class, installment));
 
-        receivables.recordTransfer(new ReceivableService.RecordTransferCommand(customer,
-                "FT-" + UUID.randomUUID().toString().substring(0, 8), new BigDecimal("2000000"), "VND",
-                LocalDate.now(ZoneId.of("Asia/Ho_Chi_Minh")), List.of(), null, staff));
-        Await.until("the order learnt of the payment", ASYNC, () -> orders.findById(order.orderId()).orElseThrow()
-                .payment().paidAmount().compareTo(new BigDecimal("2000000")) == 0);
-        assertThat(exposure().subtract(before)).isEqualByComparingTo("2000000");
+        assertThat(settlements.complete(orderId)).as("paid in full").isTrue();
+        assertThat(statusOf(orderId)).isEqualTo(OrderStatus.COMPLETED);
+        // WF-05 fix plan, sections 4 and 7: the contract completed with the order - read from the table, not a mock.
+        assertThat(contractOf(orderId)).containsEntry("status", "COMPLETED").containsEntry("completed", true);
+        assertThat(jdbc.queryForObject("SELECT c.completed_at = o.completed_at FROM ordering.sales_contract c JOIN "
+                + "ordering.customer_order o ON o.id = c.order_id WHERE o.id = ?", Boolean.class, orderId))
+                .as("one moment, one transaction").isTrue();
+        assertThat(settlements.complete(orderId)).as("completed once").isFalse();
+        // COMPLETED is the end of a contract (tg_sales_contract_transition): the table refuses to reopen it, or to
+        // take back when it completed.
+        assertThat(catchThrowable(() -> tx.executeWithoutResult(s -> jdbc.update(
+                "UPDATE ordering.sales_contract SET status = 'SIGNED', completed_at = NULL WHERE order_id = ?", orderId))))
+                .isInstanceOf(DataAccessException.class);
+        assertThat(catchThrowable(() -> tx.executeWithoutResult(s -> jdbc.update(
+                "UPDATE ordering.sales_contract SET completed_at = NULL WHERE order_id = ?", orderId))))
+                .isInstanceOf(DataAccessException.class);
+        assertThat(contractOf(orderId)).containsEntry("status", "COMPLETED");
+    }
 
-        OrderSummary closed = orders.closeRemainder(order.orderId(), CancellationReasonCode.OUT_OF_STOCK, null, staff);
-        assertThat(closed.status()).as("every shipment delivered, the rest closed").isEqualTo(OrderStatus.DELIVERED);
-        assertThat(closed.lifecycle().effectiveTotal()).isEqualByComparingTo("2000000");
-        assertThat(closed.lifecycle().amountDue()).isZero();
-        assertThat(exposure().subtract(before)).isEqualByComparingTo("0");
-        assertThat(jdbc.queryForObject("SELECT count(*) FROM inventory.stock_reservation WHERE order_id = ? AND status = 'HELD'",
-                Long.class, order.orderId())).as("the closed units' holds were released").isZero();
+    /** The order's live contract as the table has it. */
+    private Map<String, Object> contractOf(UUID orderId) {
+        return jdbc.queryForMap("SELECT status, completed_at IS NOT NULL AS completed FROM ordering.sales_contract "
+                + "WHERE order_id = ? AND status <> 'CANCELLED'", orderId);
     }
 
     @Test
-    @DisplayName("credit, split: one shipment delivered, the other failed and returned - partial, only the delivered "
-            + "part billed; the rest closed - DELIVERED")
-    void creditOneDeliveredOneReturned() {
-        OrderSummary order = picking(PaymentTerm.CREDIT, 3);
+    @DisplayName("split: one shipment delivered, the other failed and returned - ON_HOLD for the failed delivery, "
+            + "its hold on record, neither resolved with a note nor closed past it")
+    void oneDeliveredOneReturned() {
+        OrderSummary order = picking(3);
         orders.markPacked(order.orderId(), staff);
         UUID s1 = UUID.randomUUID();
         UUID s2 = UUID.randomUUID();
@@ -289,35 +317,26 @@ class OrderLifecycleIntegrationTest {
         orders.recordHandover(order.orderId(), handover(order, s2, 1));
         orders.recordShipmentDelivered(order.orderId(), s1, staff);
         orders.recordShipmentDeliveryFailed(order.orderId(), s2, DeliveryFailureReason.DAMAGED, "vỡ thùng", staff);
-        assertThat(orders.recordShipmentReturned(order.orderId(), s2, staff).status())
-                .isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
-        Await.until("receivable", ASYNC, () -> !receivablesOf(order).isEmpty());
-        assertThat(receivablesOf(order)).containsExactly("2000000 true");
-        assertThat(orders.closeRemainder(order.orderId(), CancellationReasonCode.OTHER, "khách không lấy lại", staff)
-                .status()).isEqualTo(OrderStatus.DELIVERED);
-    }
-
-    @Test
-    @DisplayName("deposit (carrier collects) + partial shipment: the deposit covers it, nothing billed; the rest closed: "
-            + "what was received above the goods is the refund asked")
-    void depositPartialShipment() {
-        OrderSummary order = picking(PaymentTerm.DEPOSIT, 4);   // 1.2M deposit of 4M
-        UUID s1 = UUID.randomUUID();
-        orders.recordHandover(order.orderId(), handover(order, s1, 1));
-        orders.recordShipmentDelivered(order.orderId(), s1, staff);
-        OrderSummary closed = orders.closeRemainder(order.orderId(), CancellationReasonCode.CUSTOMER_REQUEST, null, staff);
-        assertThat(closed.status()).isEqualTo(OrderStatus.DELIVERED);
-        assertThat(closed.lifecycle().effectiveTotal()).isEqualByComparingTo("1000000");
-        assertThat(jdbc.queryForObject("SELECT remainder_refund_amount::bigint FROM ordering.customer_order WHERE id = ?",
-                Long.class, order.orderId())).isEqualTo(200_000L);
-        assertThat(receivablesOf(order)).isEmpty();
+        OrderSummary held = orders.recordShipmentReturned(order.orderId(), s2, staff);
+        assertThat(held.status()).as("WF-05: the order waits for Sales").isEqualTo(OrderStatus.ON_HOLD);
+        assertThat(held.lifecycle().holdReason()).isEqualTo(HoldReason.DELIVERY_FAILED);
+        assertThat(held.lifecycle().statusBeforeHold()).isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
+        assertThat(jdbc.queryForList("SELECT reason FROM ordering.order_hold WHERE order_id = ? AND resolved_at IS NULL",
+                String.class, order.orderId())).containsExactly("DELIVERY_FAILED");
+        assertThat(code(catchThrowable(() -> orders.resolveHold(order.orderId(), "a note is not a decision", staff))))
+                .isEqualTo(ErrorCode.ORDER_DELIVERY_FAILURE_USE_DECISION);
+        assertThat(code(catchThrowable(() -> orders.closeRemainder(order.orderId(), CancellationReasonCode.OTHER,
+                "khách không lấy lại", staff)))).isEqualTo(ErrorCode.ORDER_INVALID_TRANSITION);
+        // The decision itself - deliver again, or cancel what was not delivered - is the delivery failure case's
+        // (FtlDispatchIntegrationTest#aFailedDelivery...): it needs the goods received back.
+        assertThat(statusOf(order.orderId())).isEqualTo(OrderStatus.ON_HOLD);
     }
 
     @Test
     @DisplayName("a cancellation request made while picking closes as EXPIRED once part is handed over (E2E QA "
             + "2026-10-21: it stayed pending for good); the customer sees the request and why it closed")
     void cancellationRequestAfterPartialShipment() {
-        OrderSummary order = picking(PaymentTerm.PREPAID, 2);
+        OrderSummary order = picking(2);
         CancellationOutcome asked = orders.cancelOwn(order.orderId(), customer, CancellationReasonCode.CUSTOMER_REQUEST,
                 "đổi ý", staff);
         assertThat(asked.result()).isEqualTo(CancellationOutcome.Result.REQUESTED);
@@ -347,19 +366,18 @@ class OrderLifecycleIntegrationTest {
         assertThat(code(catchThrowable(() -> orders.cancelOwn(order.orderId(), customer,
                 CancellationReasonCode.CUSTOMER_REQUEST, null, staff)))).isEqualTo(ErrorCode.ORDER_NOT_CANCELLABLE);
         assertThat(customerOrders.myOrder(customer, order.orderId()).allowedActions())
-                .isEqualTo(new CustomerOrders.AllowedActions(false, false, false));
+                .isEqualTo(new CustomerOrders.AllowedActions(false, false));
     }
 
     @Test
-    @DisplayName("hold while partly shipped: deliveries are still recorded and billed; handover waits; resolved, partial")
+    @DisplayName("hold while partly shipped: deliveries are still recorded; handover waits; resolved, partial")
     void holdWhilePartlyShipped() {
-        OrderSummary order = picking(PaymentTerm.CREDIT, 3);
+        OrderSummary order = picking(3);
         UUID s1 = UUID.randomUUID();
         orders.recordHandover(order.orderId(), handover(order, s1, 1));
         assertThat(orders.putOnHold(order.orderId(), HoldReason.INVENTORY, "thiếu 2 bộ", staff).lifecycle()
                 .statusBeforeHold()).isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
         assertThat(orders.recordShipmentDelivered(order.orderId(), s1, staff).status()).isEqualTo(OrderStatus.ON_HOLD);
-        Await.until("receivable while held", ASYNC, () -> !receivablesOf(order).isEmpty());
         assertThat(code(catchThrowable(() -> orders.recordHandover(order.orderId(), handover(order, UUID.randomUUID(), 2)))))
                 .isEqualTo(ErrorCode.ORDER_INVALID_TRANSITION);
         assertThat(code(catchThrowable(() -> orders.closeRemainder(order.orderId(), CancellationReasonCode.OUT_OF_STOCK,
@@ -369,9 +387,9 @@ class OrderLifecycleIntegrationTest {
     }
 
     @Test
-    @DisplayName("whole order without shipments: shipped, failed, delivered over the old endpoint path; credit receivable")
+    @DisplayName("whole order without shipments: shipped, failed, delivered over the old endpoint path")
     void wholeOrderWithoutShipments() {
-        OrderSummary order = picking(PaymentTerm.CREDIT, 1);
+        OrderSummary order = picking(2);
         orders.markPacked(order.orderId(), staff);
         orders.markShipped(order.orderId(), null, staff);
         assertThat(code(catchThrowable(() -> orders.putOnHold(order.orderId(), HoldReason.ADDRESS, null, staff))))
@@ -380,14 +398,12 @@ class OrderLifecycleIntegrationTest {
                 .lifecycle().deliveryFailureReason()).isEqualTo(DeliveryFailureReason.WRONG_ADDRESS);
         assertThat(orders.recordDelivery(order.orderId(), staff).status()).isEqualTo(OrderStatus.DELIVERED);
         assertThat(orders.recordDelivery(order.orderId(), staff).status()).as("idempotent").isEqualTo(OrderStatus.DELIVERED);
-        Await.until("receivable", ASYNC, () -> !receivablesOf(order).isEmpty());
-        assertThat(receivablesOf(order)).containsExactly("1000000 false");
     }
 
     @Test
     @DisplayName("the database refuses a jump the state machine does not have, and holds the same edges")
     void triggerRefusesJumps() {
-        OrderSummary order = place(PaymentTerm.CREDIT, 1);
+        OrderSummary order = place(2);
         Throwable jump = catchThrowable(() -> tx.executeWithoutResult(s -> jdbc.update(
                 "UPDATE ordering.customer_order SET status = 'SHIPPED', shipped_at = NOW() WHERE id = ?", order.orderId())));
         assertThat(jump).isInstanceOf(DataAccessException.class).hasMessageContaining("cannot move from CONFIRMED to SHIPPED");
@@ -399,14 +415,14 @@ class OrderLifecycleIntegrationTest {
     @DisplayName("concurrent transitions are serialised by the row lock: two holds, one wins; pack against cancel, "
             + "one wins; the same handover twice, one shipment")
     void concurrentTransitions() throws Exception {
-        OrderSummary holdRace = picking(PaymentTerm.PREPAID, 1);
+        OrderSummary holdRace = picking(2);
         List<Object> holds = race(() -> orders.putOnHold(holdRace.orderId(), HoldReason.FRAUD, null, staff),
                 () -> orders.putOnHold(holdRace.orderId(), HoldReason.PAYMENT, null, staff));
         assertThat(holds).filteredOn(OrderSummary.class::isInstance).hasSize(1);
         assertThat(holds).filteredOn(BusinessException.class::isInstance).singleElement()
                 .satisfies(e -> assertThat(code((Throwable) e)).isEqualTo(ErrorCode.ORDER_INVALID_TRANSITION));
 
-        OrderSummary packRace = picking(PaymentTerm.PREPAID, 1);
+        OrderSummary packRace = picking(2);
         List<Object> packOrCancel = race(() -> orders.markPacked(packRace.orderId(), staff),
                 () -> WithCurrentUser.call(TestUsers.admin(), DataScope.ALL, () -> orders.cancel(packRace.orderId(),
                         new com.stockflow.order.api.CancelOrderCommand(CancellationReasonCode.OUT_OF_STOCK, null, null,
@@ -417,7 +433,7 @@ class OrderLifecycleIntegrationTest {
                         ErrorCode.ORDER_NOT_CANCELLABLE));
         assertThat(statusOf(packRace)).isIn(OrderStatus.PACKED, OrderStatus.CANCELLED);
 
-        OrderSummary handoverRace = picking(PaymentTerm.PREPAID, 2);
+        OrderSummary handoverRace = picking(2);
         UUID shipment = UUID.randomUUID();
         List<Object> handovers = race(() -> orders.recordHandover(handoverRace.orderId(), handover(handoverRace, shipment, 1)),
                 () -> orders.recordHandover(handoverRace.orderId(), handover(handoverRace, shipment, 1)));
@@ -426,78 +442,11 @@ class OrderLifecycleIntegrationTest {
                 handoverRace.orderId())).isEqualTo(1);
     }
 
-    // ------------------------------------------------------------------------------- review of G3-2 (money, holds)
-
-    /** Money received outside any receivable, as a captured {@code payment.payment} the refund process can draw on. */
-    private void capturedPayment(OrderSummary order, long amount) {
-        UUID payment = UUID.randomUUID();
-        tx.executeWithoutResult(s -> jdbc.update("""
-                INSERT INTO payment.payment (id, order_id, amount, currency, method, status, captured_at, created_at)
-                VALUES (?, ?, ?, 'VND', 'BANK_TRANSFER', 'CAPTURED', NOW(), NOW())""", payment, order.orderId(), amount));
-        tx.executeWithoutResult(s -> publisher.publishEvent(new PaymentCaptured(order.orderId(), payment,
-                BigDecimal.valueOf(amount), "VND", PaymentMethod.BANK_TRANSFER)));
-    }
-
-    private List<String> refundsOf(OrderSummary order) {
-        return jdbc.queryForList("""
-                SELECT amount::bigint || ' ' || source FROM payment.refund WHERE order_id = ? ORDER BY created_at, amount""",
-                String.class, order.orderId());
-    }
-
     @Test
-    @DisplayName("credit, paid ahead 3M: shipment A (2M) delivered bills nothing, B comes back, the rest is closed: "
-            + "no receivable, 1M refunded - the customer pays 2M for 2M")
-    void creditPaidAheadNeverOverBills() {
-        OrderSummary order = picking(PaymentTerm.CREDIT, 4);
-        capturedPayment(order, 3 * PRICE);
-        Await.until("paid ahead counted", ASYNC, () -> orders.findById(order.orderId()).orElseThrow().payment()
-                .paidAmount().compareTo(BigDecimal.valueOf(3 * PRICE)) == 0);
-        UUID a = UUID.randomUUID();
-        UUID b = UUID.randomUUID();
-        orders.recordHandover(order.orderId(), handover(order, a, 2));
-        orders.markPacked(order.orderId(), staff);
-        orders.recordHandover(order.orderId(), handover(order, b, 2));
-        assertThat(orders.recordShipmentDelivered(order.orderId(), a, staff).lifecycle().billedAmount()).isZero();
-        orders.recordShipmentDeliveryFailed(order.orderId(), b, DeliveryFailureReason.REFUSED, null, staff);
-        orders.recordShipmentReturned(order.orderId(), b, staff);
-        OrderSummary closed = orders.closeRemainder(order.orderId(), CancellationReasonCode.CUSTOMER_REQUEST, null, staff);
-        assertThat(closed.status()).isEqualTo(OrderStatus.DELIVERED);
-        Await.until("refund asked", ASYNC, () -> !refundsOf(order).isEmpty());
-        assertThat(refundsOf(order)).containsExactly("1000000 ORDER_REMAINDER_CLOSED");
-        assertThat(receivablesOf(order)).isEmpty();
-    }
-
-    @Test
-    @DisplayName("deposit 30%, carrier collects: A delivered bills its COD (2M less the 1.2M deposit) to the carrier, B "
-            + "back, the rest closed: the balance of A is due, nothing refunded")
-    void depositDeliveredAndReturned() {
-        OrderSummary order = picking(PaymentTerm.DEPOSIT, 4);       // 1.2M received
-        UUID a = UUID.randomUUID();
-        UUID b = UUID.randomUUID();
-        orders.recordHandover(order.orderId(), handover(order, a, 2));
-        orders.markPacked(order.orderId(), staff);
-        orders.recordHandover(order.orderId(), handover(order, b, 2));
-        orders.recordShipmentDelivered(order.orderId(), a, staff);
-        orders.recordShipmentDeliveryFailed(order.orderId(), b, DeliveryFailureReason.REFUSED, null, staff);
-        orders.recordShipmentReturned(order.orderId(), b, staff);
-        OrderSummary closed = orders.closeRemainder(order.orderId(), CancellationReasonCode.CUSTOMER_REQUEST, null, staff);
-        assertThat(closed.lifecycle().amountDue()).isEqualByComparingTo("800000");
-        assertThat(jdbc.queryForObject("SELECT remainder_refund_amount::bigint FROM ordering.customer_order WHERE id = ?",
-                Long.class, order.orderId())).isZero();
-        Await.until("carrier receivable", ASYNC, () -> !receivablesOf(order).isEmpty());
-        assertThat(receivablesOf(order)).containsExactly("800000 true");
-        assertThat(jdbc.queryForObject("SELECT collector || ' ' || kind FROM payment.receivable WHERE order_id = ?",
-                String.class, order.orderId())).isEqualTo("CARRIER DEPOSIT_BALANCE");
-    }
-
-    @Test
-    @DisplayName("two closures of one order each ask their refund; a redelivered closure asks nothing again")
+    @DisplayName("a closure of one order leaves it SHIPPED; its last shipment then fails and comes back: held for the "
+            + "failed delivery from DELIVERY_FAILED, and closing again is Sales' decision on that")
     void secondClosureIsNotLost() {
-        OrderSummary order = place(PaymentTerm.PREPAID, 4);
-        capturedPayment(order, 4 * PRICE);
-        Await.until("confirmed", ASYNC, () -> statusOf(order) == OrderStatus.CONFIRMED);
-        releases.release(order.orderId(), DemoData.WAREHOUSE_HCM, staff);
-        orders.startPicking(order.orderId(), staff);
+        OrderSummary order = picking(4);
         UUID a = UUID.randomUUID();
         UUID b = UUID.randomUUID();
         orders.recordHandover(order.orderId(), handover(order, a, 1));
@@ -505,38 +454,16 @@ class OrderLifecycleIntegrationTest {
         orders.recordShipmentDelivered(order.orderId(), a, staff);
         assertThat(orders.closeRemainder(order.orderId(), CancellationReasonCode.OUT_OF_STOCK, null, staff).status())
                 .isEqualTo(OrderStatus.SHIPPED);
-        Await.until("first refund", ASYNC, () -> refundsOf(order).size() == 1);
         orders.recordShipmentDeliveryFailed(order.orderId(), b, DeliveryFailureReason.LOST, null, staff);
         assertThat(orders.recordShipmentReturned(order.orderId(), b, staff).status())
-                .isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
-        assertThat(orders.closeRemainder(order.orderId(), CancellationReasonCode.OTHER, "hàng thất lạc", staff)
-                .status()).isEqualTo(OrderStatus.DELIVERED);
-        Await.until("second refund", ASYNC, () -> refundsOf(order).size() == 2);
-        assertThat(refundsOf(order)).containsExactlyInAnyOrder("2000000 ORDER_REMAINDER_CLOSED",
-                "1000000 ORDER_REMAINDER_CLOSED");
-        UUID firstClosure = jdbc.queryForObject("SELECT remainder_closure_id FROM payment.refund WHERE order_id = ? "
-                + "AND amount = 2000000", UUID.class, order.orderId());
-        BigDecimal unplaced = tx.execute(s -> remainderRefunds.requestRemainderRefunds(order.orderId(), firstClosure,
-                new BigDecimal("2000000"), "VND", "redelivered"));
-        assertThat(unplaced).isZero();
-        assertThat(refundsOf(order)).hasSize(2);
-    }
-
-    @Test
-    @DisplayName("a design hold is QC's: the coordinator cannot resolve it, and a mismatch on an order held for "
-            + "another reason is refused (the packing completion rolls back)")
-    void designHoldBelongsToQc() {
-        OrderSummary order = picking(PaymentTerm.PREPAID, 1);
-        orders.putOnDesignHold(order.orderId(), "DESIGN_MISMATCH");
-        assertThat(code(catchThrowable(() -> orders.resolveHold(order.orderId(), "ok", staff))))
-                .isEqualTo(ErrorCode.ORDER_DESIGN_HOLD_USE_REVERIFICATION);
-        orders.resolveDesignHold(order.orderId(), staff, "QC: khớp checksum");
-        assertThat(statusOf(order)).isEqualTo(OrderStatus.PICKING);
-        orders.resolveDesignHold(order.orderId(), staff, "QC again");   // not held: nothing to do, no error
-        orders.putOnHold(order.orderId(), HoldReason.ADDRESS, "sai phường", staff);
-        assertThat(code(catchThrowable(() -> orders.putOnDesignHold(order.orderId(), "DESIGN_MISMATCH"))))
+                .as("held from DELIVERY_FAILED: the new edge, checked by tg_order_status_transition")
+                .isEqualTo(OrderStatus.ON_HOLD);
+        assertThat(code(catchThrowable(() -> orders.closeRemainder(order.orderId(), CancellationReasonCode.OTHER,
+                "hàng thất lạc", staff)))).as("the second closure is Sales' decision on the failed delivery now")
                 .isEqualTo(ErrorCode.ORDER_INVALID_TRANSITION);
-        assertThat(orders.findById(order.orderId()).orElseThrow().lifecycle().holdReason()).isEqualTo(HoldReason.ADDRESS);
+        assertThat(jdbc.queryForObject("SELECT cancelled_quantity FROM ordering.order_line WHERE order_id = ?",
+                Integer.class, order.orderId())).as("two pieces closed by the first closure; the one that came back waits")
+                .isEqualTo(2);
     }
 
     /** Both calls released at once, each in its own transaction; what each returned or threw. */

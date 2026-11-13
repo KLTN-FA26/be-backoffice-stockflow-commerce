@@ -38,4 +38,14 @@ class CustomerDirectoryAdapter implements CustomerDirectory {
         return customers.findById(customerId)
                 .map(customer -> new CustomerContact(customer.id(), customer.fullName(), customer.email()));
     }
+
+    /** The account the customer signs in to the portal with, once it exists (an invitation activated). */
+    @Override
+    @Transactional(readOnly = true)
+    public Optional<UUID> portalAccount(UUID customerId) {
+        if (customerId == null) {
+            return Optional.empty();
+        }
+        return customers.findById(customerId).map(customer -> customer.userId());
+    }
 }

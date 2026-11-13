@@ -1,11 +1,10 @@
 package com.stockflow.fulfillment;
 
-import com.stockflow.common.domain.Sku;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.inventory.api.AllocateStockCommand;
 import com.stockflow.inventory.api.InventoryService;
-import com.stockflow.inventory.api.ReserveStockCommand;
 import com.stockflow.support.DemoData;
+import com.stockflow.support.Holds;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
 import org.junit.jupiter.api.BeforeEach;
@@ -28,21 +27,12 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * V20261028003000 (SCRUM-473 picking by carton): a pick line names the carton of the hold it consumes - that carton's
- * LPN exactly, and none for a hold on loose units - and lines planned before the migration are given theirs.
+ * LPN exactly. A hold on loose units (which named no carton)
+ * cannot exist since review C4 M-5 ({@code ck_stock_item_whole_cartons}): its case went with it.
  */
 @IntegrationTest
 @Import(PostgresContainer.class)
 class PickLineCartonMigrationTest {
-
-    /** The migration's backfill, verbatim: kept in step with V20261028003000 by hand. */
-    private static final String BACKFILL = """
-            UPDATE fulfillment.pick_line l
-               SET lpn = p.lpn
-              FROM inventory.stock_reservation r
-              JOIN inventory.stock_item s ON s.id = r.stock_item_id
-              JOIN inventory.stock_package p ON p.id = s.stock_package_id
-             WHERE r.id = l.reservation_id
-               AND l.lpn IS NULL""";
 
     private static final String SHELF = "HCM-A01-1-B";
     private static final Instant RECEIVED = Instant.parse("2026-01-02T00:00:00Z");
@@ -77,8 +67,8 @@ class PickLineCartonMigrationTest {
                     + " values (?, ?, 'CARTON', 10)", unit, item);
             jdbc.update("""
                     INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount,
-                        currency, placed_at, version, created_at, paid_amount, paid_in_full_at)
-                    VALUES (?, ?, ?, ?, 'CONFIRMED', 1, 'VND', NOW(), 0, NOW(), 1, NOW())""", order, number,
+                        currency, placed_at, version, created_at, contract_signed_at)
+                    VALUES (?, ?, ?, ?, 'CONFIRMED', 1, 'VND', NOW(), 0, NOW(), NOW())""", order, number,
                     DemoData.CUSTOMER_ID, UUID.randomUUID());
             jdbc.update("INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency) "
                     + "VALUES (?, ?, ?, 20, 1000, 'VND')", orderLine, order, sku);
@@ -102,21 +92,19 @@ class PickLineCartonMigrationTest {
         return lpn;
     }
 
-    private void loose(int quantity) {
-        tx.executeWithoutResult(s -> stockRow(quantity, null));
-    }
-
-    private void stockRow(int onHand, UUID carton) {
+    private UUID stockRow(int onHand, UUID carton) {
+        UUID id = Identifiers.newId();
         jdbc.update("""
-                insert into inventory.stock_item (id, sku, location_code, received_at, on_hand, reserved, status,
-                    version, created_at, stock_package_id) values (?, ?, ?, ?, ?, 0, 'AVAILABLE', 0, now(), ?)""",
-                Identifiers.newId(), sku, SHELF, java.sql.Timestamp.from(RECEIVED), onHand, carton);
+                insert into inventory.stock_item (id, sku, location_code, lot_number, received_at, on_hand, reserved, status,
+                    version, created_at, stock_package_id) values (?, ?, ?, 'UNTRACED', ?, ?, 0, 'AVAILABLE', 0, now(), ?)""",
+                id, sku, SHELF, java.sql.Timestamp.from(RECEIVED), onHand, carton);
+        return id;
     }
 
-    /** Reserves and allocates {@code quantity} for the order; returns the one hold it made. */
+    /** Reserves and allocates {@code quantity} for the order - one whole carton; returns the one hold it made. */
     private UUID hold(int quantity) {
         List<UUID> holds = tx.execute(s -> {
-            inventory.reserve(new ReserveStockCommand(UUID.randomUUID(), new Sku(sku), quantity, order));
+            Holds.units(inventory, order, sku, "HCM", quantity);
             return inventory.allocate(new AllocateStockCommand(order, "HCM")).allocations().stream()
                     .flatMap(allocation -> allocation.holdIds().stream()).toList();
         });
@@ -160,20 +148,10 @@ class PickLineCartonMigrationTest {
     }
 
     @Test
-    @DisplayName("a hold on loose units names no carton")
-    void lpnOnALooseHoldIsRefused() {
-        String lpn = carton("A");
-        loose(5);
-        UUID reservation = hold(3);
-
-        assertThatThrownBy(() -> line(reservation, lpn, false)).isInstanceOf(DataAccessException.class);
-    }
-
-    @Test
     @DisplayName("a line on a carton hold must name the carton")
     void lineOnACartonHoldWithoutLpnIsRefused() {
         carton("A");
-        UUID reservation = hold(4);
+        UUID reservation = hold(10);
 
         assertThatThrownBy(() -> line(reservation, null, false)).isInstanceOf(DataAccessException.class);
     }
@@ -181,29 +159,25 @@ class PickLineCartonMigrationTest {
     @Test
     @DisplayName("a whole-carton line names its carton")
     void wholeCartonNeedsAnLpn() {
-        loose(5);
-        UUID reservation = hold(5);
+        carton("A");
+        // The order's SKU reservation, not yet allocated: it names no stock row, so the carton trigger expects no LPN
+        // and leaves the whole-carton rule to answer.
+        UUID reservation = tx.execute(s -> Holds.units(inventory, order, sku, "HCM", 10));
 
+        // Since V20261113000400 any line without an LPN is refused first, by ck_pick_line_lpn (rule 3 of 4C-4).
         assertThatThrownBy(() -> line(reservation, null, true)).isInstanceOf(DataAccessException.class)
-                .hasMessageContaining("ck_pick_line_whole_carton");
-    }
-
-    @Test
-    @DisplayName("lines planned before the migration are given the LPN of their hold's carton")
-    void backfillNamesTheCartonOfExistingLines() {
-        String lpn = carton("A");
-        UUID reservation = hold(10);
-        tx.executeWithoutResult(s -> {
-            jdbc.execute("ALTER TABLE fulfillment.pick_line DISABLE TRIGGER tg_pick_line_carton");
-            line(reservation, null, false);
-            // The line's deferred keys (fk_pick_line_damage_report, SCRUM-277) are checked now: PostgreSQL refuses an
-            // ALTER TABLE while a trigger event of the table is still pending.
-            jdbc.execute("SET CONSTRAINTS ALL IMMEDIATE");
-            jdbc.execute("ALTER TABLE fulfillment.pick_line ENABLE TRIGGER tg_pick_line_carton");
-            jdbc.update(BACKFILL);
-        });
-
-        assertThat(jdbc.queryForObject("select lpn from fulfillment.pick_line where reservation_id = ?",
-                String.class, reservation)).isEqualTo(lpn);
+                .hasMessageContaining("ck_pick_line_lpn");
+        // With the lpn rule lifted for this transaction alone, a whole-carton line still cannot be written without a carton
+        // (no line may name none since V20261114000400 removed the damage reports' carton-less line).
+        assertThatThrownBy(() -> tx.executeWithoutResult(s -> {
+            jdbc.execute("ALTER TABLE fulfillment.pick_line DROP CONSTRAINT ck_pick_line_lpn");
+            jdbc.update("""
+                    INSERT INTO fulfillment.pick_line (id, pick_id, order_line_id, reservation_id, sku, location_code,
+                        sequence_no, allocated_qty, lpn, whole_carton)
+                    VALUES (?, ?, ?, ?, ?, ?, 1, 1, NULL, TRUE)""",
+                    Identifiers.newId(), pick, orderLine, reservation, sku, SHELF);
+        })).isInstanceOf(DataAccessException.class).hasMessageContaining("ck_pick_line_whole_carton");
+        assertThat(jdbc.queryForObject("select count(*) from pg_constraint where conname = 'ck_pick_line_lpn'",
+                Integer.class)).as("the lifted rule is back: the transaction rolled back").isOne();
     }
 }

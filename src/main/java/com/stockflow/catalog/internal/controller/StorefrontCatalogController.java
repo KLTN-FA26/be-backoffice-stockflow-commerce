@@ -2,6 +2,7 @@ package com.stockflow.catalog.internal.controller;
 
 import com.stockflow.catalog.internal.controller.dto.*;
 import com.stockflow.catalog.internal.service.CatalogCommerceService;
+import com.stockflow.catalog.internal.service.CatalogCustomizationService;
 import com.stockflow.catalog.internal.service.CatalogSearchService;
 import com.stockflow.common.api.ApiResponse;
 import com.stockflow.common.api.PageResponse;
@@ -18,18 +19,24 @@ class StorefrontCatalogController {
     private final CatalogCommerceService service;
     private final CatalogSearchService search;
     private final CatalogCommerceWebMapper mapper;
+    private final CatalogCustomizationService customizations;
+    private final CatalogCustomizationWebMapper customizationMapper;
 
     StorefrontCatalogController(
-            CatalogCommerceService service, CatalogSearchService search, CatalogCommerceWebMapper mapper) {
+            CatalogCommerceService service, CatalogSearchService search, CatalogCommerceWebMapper mapper,
+            CatalogCustomizationService customizations, CatalogCustomizationWebMapper customizationMapper) {
         this.service = service;
         this.search = search;
         this.mapper = mapper;
+        this.customizations = customizations;
+        this.customizationMapper = customizationMapper;
     }
 
     /**
      * The published catalogue, searched when {@code q} is given (SCRUM-170/181/182). {@code sort} is
      * {@code relevance} (default with {@code q}), {@code newest} (default without) or {@code title};
-     * anything else, price included until SCRUM-428, is {@code UNSUPPORTED_PARAMETER}. No-store: the
+     * anything else, price included (the storefront shows no price, kltn-docs 13 BR-04), is
+     * {@code UNSUPPORTED_PARAMETER}. No-store: the
      * answer sits behind a token and the in-stock order follows live stock. {@code category} (a slug from
      * {@code /api/v1/catalog/categories}) narrows the listing to that category and every category under it
      * (SCRUM-171); an unknown or hidden one is {@code CATEGORY_NOT_FOUND}.
@@ -52,6 +59,19 @@ class StorefrontCatalogController {
         return ResponseEntity.ok()
                 .cacheControl(CacheControl.noStore())
                 .body(ApiResponse.ok(mapper.toResponse(service.detail(slug))));
+    }
+
+    /**
+     * What a customer may design on (the storefront's P2, kltn-docs 13 BR-14): the active template of each ACTIVE
+     * variant, print areas computed from its model. A product that is not published is 404; one that is not
+     * CUSTOMIZABLE is 409 {@code PRODUCT_NOT_CUSTOMIZABLE}. No-store: a template changes when the Sales Manager edits it.
+     */
+    @GetMapping("/{slug}/customization")
+    @Operation(summary = "The customization templates a customer may design on")
+    public ResponseEntity<ApiResponse<CatalogCustomizationResponse>> customization(@PathVariable String slug) {
+        return ResponseEntity.ok()
+                .cacheControl(CacheControl.noStore())
+                .body(ApiResponse.ok(customizationMapper.toResponse(customizations.customization(slug))));
     }
 
     @GetMapping("/{slug}/gallery")

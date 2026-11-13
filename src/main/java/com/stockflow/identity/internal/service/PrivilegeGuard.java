@@ -18,7 +18,7 @@ import java.util.stream.Collectors;
  * "You can only hand out what you hold" (SCRUM-456).
  *
  * <p>Before this, holding {@code identity-users:UPDATE} was enough to give yourself SYSTEM_ADMIN,
- * and holding {@code identity-rbac:APPROVE} (ECOMMERCE_ADMIN, by seed) was enough to tick any
+ * and holding {@code identity-rbac:APPROVE} (SALES_MANAGER, by seed) was enough to tick any
  * permission onto your own role. One rule closes both, and every future variant of them:</p>
  *
  * <ul>

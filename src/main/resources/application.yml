@@ -179,6 +179,9 @@ spring:
 
   task:
     execution:
+      # FORCE: build applicationTaskExecutor even though the STOMP broker (sales chat) brings executors of its own;
+      # by default Boot backs off when any Executor bean exists, and @Async would lose its executor (AsyncConfig).
+      mode: force
       pool:
         core-size: 8
         max-size: 32
@@ -353,26 +356,12 @@ stockflow:
     connect-timeout: PT3S
     read-timeout: PT10S
 
-  procurement:
-    buyer:
-      company-name: ${PO_BUYER_COMPANY_NAME:}
-      company-address: ${PO_BUYER_COMPANY_ADDRESS:}
-      contact-name: ${PO_BUYER_CONTACT_NAME:}
-      phone: ${PO_BUYER_PHONE:}
-      email: ${PO_BUYER_EMAIL:}
-      receiving-address: ${PO_RECEIVING_ADDRESS:}
-    # Three-way match of supplier invoices (SCRUM-309, BR-INV-002): an invoice's unit price may stray this far, in
-    # percent either way, from the purchase order's net price before the match calls it a variance. Quantities have no
-    # tolerance: an invoice bills no more than was received and passed QC (kltn-docs 04 BR-02).
-    invoice-match:
-      price-tolerance-percent: ${INVOICE_PRICE_TOLERANCE_PERCENT:2}
-
   notification:
-    # Exact HTTPS hosts owned by trusted suppliers; blank disables API delivery (email still works).
-    supplier-api-allowed-hosts: ${SUPPLIER_API_ALLOWED_HOSTS:}
-    po-retry-interval: PT1M
+    # How often messages to producers about their production orders that failed are tried again (4A-3).
+    production-order-retry-interval: PT1M
     # -------------------------------------------------------------------------
-    # E-mail (SCRUM-352). Every message - supplier POs, staff notices, the portal invitation, customer order mail -
+    # E-mail (SCRUM-352). Every message - producers' production orders, staff notices, the portal invitation,
+    # customer order mail -
     # goes through one transport. resend: Resend's HTTP API (the dev and prod profiles' default); smtp: spring.mail
     # above (Mailpit locally); recording: kept in memory, never sent (the test profile). See EmailProperties.
     # -------------------------------------------------------------------------
@@ -385,8 +374,16 @@ stockflow:
       locale: vi
       sender-name: ${EMAIL_SENDER_NAME:StockFlow}
       customer:
-        # Off sends no customer order mail (recorded as skipped) and leaves staff and supplier mail alone.
-        enabled: ${CUSTOMER_EMAIL_ENABLED:true}
+        # Off sends no customer order mail (recorded as skipped) and leaves staff and producer mail alone. Off by
+        # default: the business documents put e-mail to customers in a later phase (kltn-docs 00 §6, A10) and keep
+        # only the in-app inbox for now, while the order and return mail here still describes flows they dropped
+        # (guest orders, free replacement orders). The portal invitation is not customer order mail and still goes.
+        enabled: ${CUSTOMER_EMAIL_ENABLED:false}
+        # E-invoice mail to the buyer (an invoice issued, with its PDF and XML; an error notice): its own switch, ON by
+        # default in every profile. An issued invoice is a legal record the seller must send the buyer in the way they
+        # agreed (NĐ 254/2026/NĐ-CP Điều 12 khoản 3) - the e-mail the invoice names, and the portal - so it does not
+        # wait for the order mail's later phase. Turn it off only on a server that must never write to real buyers.
+        einvoice-enabled: ${EINVOICE_EMAIL_ENABLED:true}
         max-attempts: 10
         first-retry-delay: PT1M
         max-retry-delay: PT6H
@@ -408,14 +405,6 @@ stockflow:
     inbox-purge-cron: "0 45 3 * * *"
     # Language of system-generated inbox messages (the bundle i18n/messages_<locale>.properties).
     inbox-locale: vi
-    # Stock alerts: who is told, by staff role. The scope (all warehouses, or the ones a person is assigned to) and the
-    # exclusion of customers are applied by IdentityService.notificationRecipients.
-    inventory-alert:
-      stock-level-roles: INVENTORY_PLANNER,SYSTEM_ADMIN
-      expiry-roles: WAREHOUSE_MANAGER,INVENTORY_PLANNER,SYSTEM_ADMIN
-    # Open question Q3: also e-mail the same text to the people newly told in-app. Off until an SMTP server is configured.
-    inventory-alert-email:
-      enabled: false
 
   # ---------------------------------------------------------------------------
   # File storage. 's3' talks to MinIO locally and to S3 in a deployment - the same code path.
@@ -430,16 +419,64 @@ stockflow:
     # MinIO needs path-style addressing; real S3 uses virtual-host style. Wrong value produces a
     # DNS failure that looks nothing like a configuration problem.
     path-style: true
-    # Static keys only for MinIO. Left blank against real S3 so the SDK's default provider chain
-    # picks up the instance role - long-lived keys in a properties file are how credentials leak.
+    # Static keys for MinIO, or for real S3 from a machine with no AWS role (the VPS: an IAM user with
+    # only infra/aws's application policy). Blank on AWS compute so the default provider chain picks
+    # up the instance role. Never committed for a real account: long-lived keys leak from files.
     access-key: ${MINIO_ACCESS_KEY:stockflow}
     secret-key: ${MINIO_SECRET_KEY:stockflow123}
     presigned-url-ttl: PT10M        # a signed URL is a credential with no revocation; keep it short
+    # S3 Object Lock on business records (ObjectLockProperties): a confirmed design's files, a sales
+    # contract and an issued e-invoice's XML and PDF cannot be deleted or overwritten for these periods. Needs a
+    # bucket with Object Lock (infra/aws); MinIO in development has none, so it is off unless the deployment turns it
+    # on - and while it is off, nothing below is used. The design and contract periods are placeholders until the
+    # business confirms them against the law that applies.
+    object-lock:
+      enabled: false
+      # The mode of design and contract locks.
+      mode: GOVERNANCE
+      confirmed-design: P1095D
+      sales-contract: P3650D    # a sales contract as sent and as signed (4B-4)
+      # An issued e-invoice's XML and PDF: locked until the end of the tenth year after the year of issue, plus a
+      # day - accounting records are kept ten years from the end of the accounting year (Luat Ke toan 2015 Dieu 41;
+      # ND 174/2016 Dieu 12), not from the day of issue. A Period, counted from 1 January after the year of issue.
+      einvoice: P10Y
+      # COMPLIANCE whatever `mode` says: nobody, not even the account root, can lift it. GOVERNANCE only on a test
+      # bucket, whose invoices are not records and must stay deletable.
+      einvoice-mode: ${S3_OBJECT_LOCK_EINVOICE_MODE:COMPLIANCE}
+    # Browser uploads straight to the object store (StagedUploads, docs/direct-uploads-fe-contract.md).
+    staged-upload:
+      url-ttl: PT15M            # the signed PUT; S3 checks it when the upload starts, not when it ends
+      session-ttl: PT1H         # how long an upload may wait to be attached; incoming/ expires after a day
+      per-user-per-hour: 120    # slots one user may take in an hour
+    # Files no record names any more (OrphanedFileSweeper): nightly, report-only until delete is turned on.
+    # Published product images, exports and the quarantine prefix are never swept.
+    orphan-sweep:
+      cron: "0 30 3 * * *"
+      delete: false
+      grace: P7D                # older than any transaction; a file still being attached is never touched
+      batch: 500
+
+  # ClamAV (docker-compose.media.yml). Off only in the local profile and on the VPS (deploy/), whose
+  # 4 GB cannot hold it; an upload is refused when the scanner is on and unreachable.
+  upload-inspection:
+    # Scans in flight per instance. One over waits for a slot up to acquire-timeout, then gets 429.
+    max-concurrent: 4
+    acquire-timeout: PT15S
+
+  # The PDF/X output intent stamped into an approved print file (PrintOutputIntentProperties). Blank profile =
+  # the interim sRGB intent until the printer's ICC profile is chosen (open question B35); then e.g.
+  # profile: file:/etc/stockflow/ISOcoated_v2_eci.icc, output-condition-identifier: FOGRA39.
+  design:
+    print:
+      output-intent:
+        profile: ${DESIGN_PRINT_ICC_PROFILE:}
+        output-condition-identifier: ${DESIGN_PRINT_OUTPUT_CONDITION:}
+        info: ${DESIGN_PRINT_OUTPUT_INFO:}
 
   catalog:
     availability:
-      # At or under this many units the catalog shows "low stock" (docs 13 §4.2, an assumption
-      # the docs leave open). 0 never warns.
+      # At or under this many cartons a customer's own SKU shows "low stock" (kltn-docs 13 §4.4 step 4,
+      # open-questions D28: 5 cartons). 0 never warns.
       low-stock-threshold: ${CATALOG_LOW_STOCK_THRESHOLD:5}
       # SKUs one availability call may ask about: a page's worth, not the whole catalogue.
       max-skus-per-request: 50
@@ -462,23 +499,47 @@ stockflow:
   web:
     request-log:
       enabled: true
+    # Per-route caps on a request body (RequestBodyLimitFilter), enforced before the idempotency filter or Jackson
+    # reads it. A customer's design document is at most 1,000,000 bytes once canonical (kltn-docs 12; the service and
+    # design.design_document check that exactly); the body also carries the version and the envelope around it, and
+    # whitespace a client may send, so the cap leaves 64 KiB over.
+    body-limits:
+      - method: PUT
+        pattern: /api/v1/designs/{id}/document
+        max-bytes: 1065536
+      # A clone carries a whole layout too (FE request 2026-11-13 E-3), plus the target's SKU.
+      - method: POST
+        pattern: /api/v1/designs/{id}/clones
+        max-bytes: 1065536
 
   inventory:
-    # How often the sweeper looks for holds that outlived their expiry. ISO-8601 duration.
-    reservation-sweep-interval: PT1M
-    # A lot that expires within this many days of the day it is received, or of today, is "near expiry"
-    # (docs 03 BR-06; plan G5a-3 §6 #11): goods receipts warn, the expiry alerts use the same window.
-    expiry-warning-days: 30
     # Most lines one planned cycle count may hold (SCRUM-146); a wider scope is refused so the count stays countable.
     cycle-count-max-lines: 500
-    # Stock alerts (SCRUM-147). The drain evaluates the SKUs whose stock changed (a trigger on stock_item queues them).
-    alert-drain-interval: PT30S
-    alert-drain-initial-delay: PT30S
-    # A condition that clears and returns inside this window reopens its alert row but is not announced again.
-    alert-reopen-cooldown: PT6H
-    # Nightly net under the drain (01:30) and the expiry sweep that moves expired stock to EXPIRED (02:00), business time.
-    alert-reconcile-cron: "0 30 1 * * *"
-    expiry-sweep-cron: "0 0 2 * * *"
+
+  chat:
+    # Sales chat (kltn-docs 16), the owner's decisions of 2026-11-13 - ChatProperties holds the same defaults.
+    # Business hours the chat's clocks count in (16 §4.1 step 3): 08:00-17:30, Monday to Saturday, Vietnam time.
+    business-zone: ${CHAT_BUSINESS_ZONE:Asia/Ho_Chi_Minh}
+    business-days: ${CHAT_BUSINESS_DAYS:MONDAY,TUESDAY,WEDNESDAY,THURSDAY,FRIDAY,SATURDAY}
+    business-opens: ${CHAT_BUSINESS_OPENS:08:00}
+    business-closes: ${CHAT_BUSINESS_CLOSES:17:30}
+    # BR-09: the first answer is due this long after the customer asks, in business time.
+    first-response-target: ${CHAT_FIRST_RESPONSE_TARGET:PT15M}
+    # BR-09: a conversation is to be resolved this many working days (of the hours above) after the customer asks -
+    # or reopens it; past that the chat supervisors are told once. Days only (P2D or 2d).
+    resolution-target: ${CHAT_RESOLUTION_TARGET:P2D}
+    # 16 §5: a conversation waiting on a silent customer this long is auto-closed; a resolved or auto-closed one
+    # reopens on the customer's word for this long, then is closed for good.
+    auto-close-after: ${CHAT_AUTO_CLOSE_AFTER:P7D}
+    reopen-window: ${CHAT_REOPEN_WINDOW:P14D}
+    # Its author may edit or delete a message this long after sending it.
+    edit-window: ${CHAT_EDIT_WINDOW:PT5M}
+    # An offline customer is told of Sales' replies at most once per conversation per period.
+    customer-notice-period: ${CHAT_CUSTOMER_NOTICE_PERIOD:PT1H}
+    # How long a quote drawn up from a quote request card is valid until Sales change it.
+    draft-quote-validity: ${CHAT_DRAFT_QUOTE_VALIDITY:P14D}
+    # How often the SLA, auto-close and close jobs run.
+    sla-job-interval: ${CHAT_SLA_JOB_INTERVAL:PT1M}
 
   payment:
     # The company's bank account a customer transfers to (SCRUM-193, kltn-docs 15 §4.1 step 1). Blank here on purpose and
@@ -488,6 +549,76 @@ stockflow:
       bank-name: ${COMPANY_BANK_NAME:}
       account-number: ${COMPANY_BANK_ACCOUNT_NUMBER:}
       account-name: ${COMPANY_BANK_ACCOUNT_NAME:}
+      # The bank's six-digit NAPAS BIN: the chat's transfer card (kltn-docs 16 BR-06) draws a VietQR code with it. Without
+      # it the card shows the account, with no QR code.
+      bank-bin: ${COMPANY_BANK_BIN:}
+
+  # The seller a sales contract names (4B-4, kltn-docs 14 §4.3 step 11) and an e-invoice is issued by (WF-05 E1/E2).
+  # Blank here on purpose: local, dev and test carry a demo one, and in the prod profile the application refuses
+  # to start until all five are set (SellerProfileRequirement), so no contract or invoice names a made-up company.
+  seller:
+    name: ${SELLER_NAME:}
+    tax-code: ${SELLER_TAX_CODE:}
+    address: ${SELLER_ADDRESS:}
+    representative: ${SELLER_REPRESENTATIVE:}
+    representative-title: ${SELLER_REPRESENTATIVE_TITLE:}
+  invoicing:
+    # E-invoices (WF-05 E2). Which provider issues and whether complete drafts are issued automatically are data
+    # (invoicing.einvoice_provider_config), changed at runtime by the administrator - not here.
+    # How often invoices waiting for the provider's answer are asked about, and complete drafts issued when automatic
+    # issuing is on.
+    reconcile-interval: ${EINVOICE_RECONCILE_INTERVAL:PT30S}
+    # How often drafts close to their deadline are looked for, and how long before it the accountants are told. An
+    # invoice is signed and sent no later than the working day after its date (ND 254/2026 Phu luc diem 7).
+    deadline-sweep-interval: ${EINVOICE_DEADLINE_SWEEP_INTERVAL:PT15M}
+    due-warning-lead: ${EINVOICE_DUE_WARNING_LEAD:P1D}
+    # How long an invoice may wait for the provider's answer before the accountants are told it is stuck (the same
+    # sweep). The reconciliation keeps asking either way.
+    stuck-after: ${EINVOICE_STUCK_AFTER:PT30M}
+    sandbox:
+      # How long the sandbox provider takes to "sign and get the tax authority's code" before a result is there.
+      processing-delay: ${EINVOICE_SANDBOX_PROCESSING_DELAY:PT5S}
+      # Buyer tax codes the sandbox refuses as wrong, to rehearse a rejection.
+      rejected-tax-codes: ${EINVOICE_SANDBOX_REJECTED_TAX_CODES:0000000001}
+    viettel:
+      # Viettel SInvoice (WF-05 E3). Not in use until an administrator stores its account and switches to it
+      # (PUT /api/v1/einvoice-settings/providers/VIETTEL_SINVOICE/account, then .../activation); the account's password
+      # is sealed with STOCKFLOW_SECRETS_KEY and is not configuration. Viettel's public description names one API host;
+      # a test account is used against it, so the sandbox address differs only if Viettel gives another.
+      production-url: ${EINVOICE_VIETTEL_PRODUCTION_URL:https://api-vinvoice.viettel.vn}
+      sandbox-url: ${EINVOICE_VIETTEL_SANDBOX_URL:https://api-vinvoice.viettel.vn}
+      # Viettel asks for at least 90 seconds before a transaction is sent again, and does not stop two submissions of
+      # one transaction that overlap: the answer is waited for longer than that, and a transaction a look-up does not
+      # find is not submitted again inside the quiet period since it was last sent, nor after Viettel has forgotten its
+      # id (three days after it was first sent). One call is up to four round trips (log-in and request, both again on
+      # a 401): 4 x (connect-timeout + read-timeout) must stay below the quiet period and the 15-minute provider lease,
+      # or the application does not start.
+      read-timeout: ${EINVOICE_VIETTEL_READ_TIMEOUT:PT95S}
+      resubmit-quiet-period: ${EINVOICE_VIETTEL_RESUBMIT_QUIET_PERIOD:PT7M}
+      resubmit-window: ${EINVOICE_VIETTEL_RESUBMIT_WINDOW:P3D}
+      file-pause: ${EINVOICE_VIETTEL_FILE_PAUSE:PT2S}
+      payment-status-paid: ${EINVOICE_VIETTEL_PAYMENT_STATUS_PAID:true}
+    corrections:
+      # Whether a 04/SS-HDDT notice may also be recorded for an invoice that was adjusted or replaced. TT 91/2026
+      # Dieu 10 khoan 1 diem b does not ask for one and it is not verified whether a provider sends it by itself
+      # (E0 row 2): off until the provider or the tax authority says otherwise. A wrong buyer name or address
+      # (diem a) is always notified, whatever this says.
+      error-notice-with-correction: ${EINVOICE_ERROR_NOTICE_WITH_CORRECTION:false}
+  order:
+    contract:
+      # Print-sample rounds a new contract offers without charge (14 BR-18, decided 2026-11-05); Sales may change it.
+      free-sample-rounds: ${CONTRACT_FREE_SAMPLE_ROUNDS:2}
+    production-order:
+      # How long the links e-mailed to a producer - its production order slip and print files - work (4A-3). Every use
+      # is checked again (the production order still open, the file still the approved one) and gets a presigned URL
+      # of minutes, so this may cover a production run; a later message (the approved sample) carries fresh links.
+      file-links-valid-for: ${PRODUCTION_ORDER_FILE_LINKS_VALID_FOR:P30D}
+    follow-up:
+      # When the salesperson who sent a contract is told, once, in the inbox (14 §6): the customer has not signed it, or
+      # has signed and not paid the installment due on signing. Nothing is cancelled for them; Sales decides.
+      unsigned-contract-after: ${SALES_FOLLOW_UP_UNSIGNED_CONTRACT_AFTER:P3D}
+      unpaid-order-after: ${SALES_FOLLOW_UP_UNPAID_ORDER_AFTER:P3D}
+      interval: ${SALES_FOLLOW_UP_INTERVAL:PT1H}
 
   customer:
     # Where the portal invitation e-mail sends the customer's contact (SCRUM-450); the token is
@@ -514,6 +645,28 @@ stockflow:
       # machine cannot hang a request; when it passes, the planner returns the best plan found so far, flagged
       # budgetExhausted (LoadPlanRequest.wallLimit).
       solver-wall-limit: PT12S
+    ahamove:
+      # Ahamove's partner API v3 (3-4). Which one a carrier calls is its own setting (STAGING / PRODUCTION), as are its
+      # account and key (sealed on the carrier).
+      staging-url: ${AHAMOVE_STAGING_URL:https://partner-apistg.ahamove.com}
+      production-url: ${AHAMOVE_PRODUCTION_URL:https://partner-api.ahamove.com}
+      # The reason sent when an order is cancelled. Ahamove accepts only reasons from its own list of user reasons.
+      cancel-comment: ${AHAMOVE_CANCEL_COMMENT:Khách hàng muốn hủy đơn}
+      # Ahamove does not sign its callbacks: a fixed header value is all that tells it from anyone who learnt the
+      # value. So (WF-05 fix plan item 6):
+      webhook:
+        # A final outcome (a drop-off delivered or failed, the order cancelled, completed or returned) is applied only
+        # once GET /v3/orders/{id} gives the same; otherwise the event is UNVERIFIED, on the manager's error list.
+        verify-outcomes: ${AHAMOVE_WEBHOOK_VERIFY_OUTCOMES:true}
+        # A report the carrier dates longer ago than this is logged STALE and not applied.
+        max-age: ${AHAMOVE_WEBHOOK_MAX_AGE:PT24H}
+        # A report dated later than now by more than this goes to the error list: applied, it would make every true
+        # report after it look outdated.
+        max-future: ${AHAMOVE_WEBHOOK_MAX_FUTURE:PT5M}
+        # Optional: the addresses and CIDR blocks callbacks may come from, comma-separated; empty allows any. Behind a
+        # reverse proxy the address seen is the proxy's unless forwarded headers are trusted (server.forward-headers-
+        # strategy), so set this only together with that.
+        allowed-ips: ${AHAMOVE_WEBHOOK_ALLOWED_IPS:}
 
   security:
     # Turns on the resource-server filter chain AND RequiresPermissionAspect. Both are behind the
@@ -534,6 +687,20 @@ stockflow:
       # cannot be read or parsed stops the application at startup.
       key-path: ${JWT_PRIVATE_KEY_PATH:}
       private-key: ${JWT_PRIVATE_KEY:}
+    links:
+      # Links a partner opens without signing in, for a limited time (SignedLinks; 4A-3: a producer's links to its
+      # production order slip and print files). key: the HMAC key, base64 of at least 32 bytes (openssl rand -base64 32);
+      # required once base-url is set (the application refuses to start without it, unless process-key-allowed, which
+      # only the local profile sets). base-url: where the application is reached from outside, every link starts with
+      # it; blank makes no link and the mail says the coordinator sends the files.
+      key: ${STOCKFLOW_LINKS_KEY:}
+      base-url: ${STOCKFLOW_PUBLIC_BASE_URL:}
+    secrets:
+      # The AES-256 key stored secrets are sealed with (SecretCipher): a carrier's API key, webhook secret and webhook
+      # header credential (kltn-docs 09 §4.1). Base64 of exactly 32 bytes: openssl rand -base64 32. Blank: the
+      # application starts, and saving such a secret answers 503 SECRETS_UNAVAILABLE. A malformed key stops the
+      # application at startup. Changing it makes every secret sealed with the old key unreadable - enter them again.
+      key: ${STOCKFLOW_SECRETS_KEY:}
     cors:
       # Browser origins that may call the API (CorsProperties). Patterns: a port or a subdomain may
       # be '*', the host itself may not. A deployment overrides this with

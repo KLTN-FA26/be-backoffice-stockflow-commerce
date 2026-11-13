@@ -30,7 +30,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 /**
  * Returns (SCRUM-243) through the real filter chain, permission aspect and data scope: the portal customer reaches
  * only their own orders and returns, the back-office list is staff's, and each step is held by the role whose step it
- * is (03 §12) - Sales review, the warehouse counts, the Accountant approves money.
+ * is (03 §12; 4D-3) - Sales review and propose the refund, the Accountant approves it; the warehouse counts the goods
+ * on a return receipt, not on the return, and there is no inspection.
  */
 @SecuredIntegrationTest
 class ReturnRequestHttpTest {
@@ -68,13 +69,14 @@ class ReturnRequestHttpTest {
         tx.executeWithoutResult(s -> {
             jdbc.update("""
                     INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount,
-                        currency, placed_at, payment_term, paid_amount, paid_in_full_at, warehouse_id, released_at,
-                        released_by, packed_at, shipped_at, delivered_at, version, created_at)
-                    VALUES (?, ?, ?, ?, 'DELIVERED', 3000000, 'VND', NOW() - interval '5 days', 'PREPAID', 3000000,
-                        NOW() - interval '5 days', ?, NOW() - interval '4 days', ?, NOW() - interval '3 days',
-                        NOW() - interval '2 days', NOW() - interval '1 day', 0, NOW())""",
+                        currency, placed_at, warehouse_id, released_at,
+                        released_by, packed_at, shipped_at, delivered_at, version, created_at, contract_signed_at,
+                        shipping_warehouse_id, shipping_warehouse_chosen_at, shipping_warehouse_chosen_by)
+                    VALUES (?, ?, ?, ?, 'DELIVERED', 3000000, 'VND', NOW() - interval '5 days', ?, NOW() - interval '4 days', ?, NOW() - interval '3 days',
+                        NOW() - interval '2 days', NOW() - interval '1 day', 0, NOW(), NOW() - interval '6 days', ?,
+                        NOW() - interval '6 days', ?)""",
                     orderOfA, "SO-20261023-%06d".formatted(ThreadLocalRandom.current().nextInt(100_000, 999_999)),
-                    customerA, UUID.randomUUID(), DemoData.WAREHOUSE_HCM, staff);
+                    customerA, UUID.randomUUID(), DemoData.WAREHOUSE_HCM, staff, DemoData.WAREHOUSE_HCM, staff);
             jdbc.update("""
                     INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency)
                     VALUES (?, ?, 'SOFA-3S-GREY', 3, 1000000, 'VND')""", lineOfA, orderOfA);
@@ -107,6 +109,33 @@ class ReturnRequestHttpTest {
     }
 
     @Test
+    @DisplayName("a photo uploaded straight to storage: the owner's slot gets as far as signing, another customer's is "
+            + "404, an invalid declaration 400, and an upload id nobody was given 404")
+    void photoUploads() throws Exception {
+        String returnId = open();
+        String declaration = """
+                {"fileName":"crack.png","contentType":"image/png","sizeBytes":1024,"sha256":"%s"}""".formatted("a".repeat(64));
+        // The test profile stores files on the local filesystem, which signs no browser upload: 503, as for downloads.
+        http.asCustomer(userA, post("/api/v1/returns/" + returnId + "/evidence/uploads")
+                        .contentType(MediaType.APPLICATION_JSON).content(declaration))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.errorCode").value("STORAGE_ERROR"));
+        http.asCustomer(userB, post("/api/v1/returns/" + returnId + "/evidence/uploads")
+                        .contentType(MediaType.APPLICATION_JSON).content(declaration))
+                .andExpect(status().isNotFound());
+        http.asCustomer(userA, post("/api/v1/returns/" + returnId + "/evidence/uploads")
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"fileName\":\"x.png\"}"))
+                .andExpect(status().isBadRequest());
+        http.asCustomer(userA, post("/api/v1/returns/" + returnId + "/evidence")
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"uploadId\":\"" + UUID.randomUUID() + "\"}"))
+                .andExpect(status().isNotFound());
+        // The goods are photographed on their return receipt (4D-3): the return keeps no slot for them.
+        http.asCustomer(userA, post("/api/v1/returns/" + returnId + "/receipt-evidence/uploads")
+                        .contentType(MediaType.APPLICATION_JSON).content(declaration))
+                .andExpect(status().is4xxClientError());
+    }
+
+    @Test
     @DisplayName("the customer opens a return on their own order, sees it in their list; another customer gets 404 for "
             + "the order and the return; the back-office list is not theirs (403)")
     void portalScope() throws Exception {
@@ -134,25 +163,43 @@ class ReturnRequestHttpTest {
     }
 
     @Test
-    @DisplayName("each step is its role's: Sales review (a photo first), the warehouse cannot approve, the Accountant "
-            + "cannot propose, QC cannot count a parcel")
+    @DisplayName("each step is its role's: Sales review (a photo first) and propose, the warehouse cannot approve or "
+            + "propose, the Accountant approves the refund but cannot propose it, Sales cannot approve it; the QC-era "
+            + "receipt and inspection steps are gone")
     void stepsByRole() throws Exception {
         String returnId = open();
+        String proposal = "{\"lines\":[{\"lineId\":\"" + UUID.randomUUID() + "\",\"quantity\":1}],\"note\":\"x\"}";
         http.asRole(Role.WAREHOUSE_STAFF, staff, post("/api/v1/returns/" + returnId + "/approval"))
                 .andExpect(status().isForbidden());
         http.asRole(Role.SALES_STAFF, staff, post("/api/v1/returns/" + returnId + "/approval"))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("RETURN_EVIDENCE_REQUIRED"));
         http.asRole(Role.ACCOUNTANT, staff, post("/api/v1/returns/" + returnId + "/resolution")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"lines\":[{\"lineId\":\"" + UUID.randomUUID() + "\",\"replacementQuantity\":0,"
-                                + "\"creditQuantity\":1}],\"moneyMode\":\"REFUND\"}"))
+                        .contentType(MediaType.APPLICATION_JSON).content(proposal))
                 .andExpect(status().isForbidden());
-        http.asRole(Role.QC_STAFF, staff, post("/api/v1/returns/" + returnId + "/receipt")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"lines\":[{\"lineId\":\"" + UUID.randomUUID() + "\",\"quantity\":1}],"
-                                + "\"version\":0}"))
+        http.asRole(Role.WAREHOUSE_STAFF, staff, post("/api/v1/returns/" + returnId + "/resolution")
+                        .contentType(MediaType.APPLICATION_JSON).content(proposal))
                 .andExpect(status().isForbidden());
+        http.asRole(Role.SALES_STAFF, staff, post("/api/v1/returns/" + returnId + "/settlement-approval"))
+                .andExpect(status().isForbidden());
+        http.asRole(Role.SALES_STAFF, staff, post("/api/v1/returns/" + returnId + "/settlement-rejection")
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"reason\":\"x\"}"))
+                .andExpect(status().isForbidden());
+        // Held but too early: nothing has come back, so there is nothing to refund. (The order is a signed contract's -
+        // contract_signed_at - or the proposal would be refused before that, RETURN_REFUND_NO_INSTALLMENTS, review M-4.)
+        http.asRole(Role.SALES_STAFF, staff, post("/api/v1/returns/" + returnId + "/resolution")
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"note\":\"x\"}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("RETURN_INVALID_TRANSITION"));
+        http.asRole(Role.ACCOUNTANT, staff, post("/api/v1/returns/" + returnId + "/settlement-approval"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("RETURN_INVALID_TRANSITION"));
+        // The warehouse's parcel count and the inspection went with 4D-3.
+        for (String gone : new String[] {"/receipt", "/inspection"}) {
+            http.asRole(Role.WAREHOUSE_MANAGER, staff, post("/api/v1/returns/" + returnId + gone)
+                            .contentType(MediaType.APPLICATION_JSON).content("{\"lines\":[],\"version\":0}"))
+                    .andExpect(status().is4xxClientError());
+        }
         http.asRole(Role.WAREHOUSE_STAFF, staff, get("/api/v1/returns/" + returnId))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.history[0].to").value("REQUESTED"));
@@ -164,8 +211,8 @@ class ReturnRequestHttpTest {
     }
 
     @Test
-    @DisplayName("the warehouse's and QC's photos go through their own endpoints, each held by that step's permission "
-            + "and the order's warehouse; a clerk of no warehouse neither lists nor reads the return")
+    @DisplayName("only the claim's photos are the return's: the warehouse's and the inspector's endpoints are gone (their "
+            + "photos are on the return receipt, 4D-3); a clerk of no warehouse neither lists nor reads the return")
     void staffPhotosAndWarehouses() throws Exception {
         String returnId = open();
         UUID unassigned = tx.execute(s -> ReferenceRows.user(entityManager));
@@ -174,24 +221,10 @@ class ReturnRequestHttpTest {
                         .param("stage", "RECEIPT"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.errorCode").value("VALIDATION_FAILED"));
-        http.asRole(Role.SALES_STAFF, staff, multipart("/api/v1/returns/" + returnId + "/receipt-evidence")
-                        .file(photo()))
-                .andExpect(status().isForbidden());
-        http.asRole(Role.WAREHOUSE_STAFF, staff, multipart("/api/v1/returns/" + returnId + "/inspection-evidence")
-                        .file(photo()))
-                .andExpect(status().isForbidden());
-        http.asRole(Role.WAREHOUSE_STAFF, unassigned, multipart("/api/v1/returns/" + returnId + "/receipt-evidence")
-                        .file(photo()))
-                .andExpect(status().isForbidden());
-        // Held and in scope: what stops them now is the return's state - nothing has come back yet.
-        http.asRole(Role.WAREHOUSE_STAFF, staff, multipart("/api/v1/returns/" + returnId + "/receipt-evidence")
-                        .file(photo()))
-                .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.errorCode").value("RETURN_INVALID_TRANSITION"));
-        http.asRole(Role.QC_STAFF, staff, multipart("/api/v1/returns/" + returnId + "/inspection-evidence")
-                        .file(photo()))
-                .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.errorCode").value("RETURN_INVALID_TRANSITION"));
+        for (String gone : new String[] {"/receipt-evidence", "/inspection-evidence"}) {
+            http.asRole(Role.WAREHOUSE_STAFF, staff, multipart("/api/v1/returns/" + returnId + gone).file(photo()))
+                    .andExpect(status().is4xxClientError());
+        }
 
         http.asRole(Role.WAREHOUSE_STAFF, staff, get("/api/v1/returns").param("orderId", orderOfA.toString()))
                 .andExpect(status().isOk())

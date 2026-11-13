@@ -43,7 +43,7 @@ public interface StockPackageRepository {
     /**
      * What each of these stock packages still has waiting for putaway: the sum of its {@code INBOUND} rows only. A
      * package with no such row is absent. Putaway tasks are sized from this, not from {@link #onHandOf}, so a carton
-     * whose units are already available (or held by QC) never opens a task.
+     * whose units are already available (or quarantined) never opens a task.
      */
     Map<StockPackageId, Integer> inboundOnHandOf(Collection<StockPackageId> ids);
 
@@ -55,4 +55,11 @@ public interface StockPackageRepository {
      * back are lost (a gap).
      */
     List<String> nextLpns(LocalDate day, int count);
+
+    /**
+     * How many units one carton of {@code sku} holds: the factor of its carton unit - its one active packing unit, or
+     * the default shipping one among several, as V20261111000110 chose it when it boxed the stock. Empty when it has
+     * no such unit (it then has no stock in cartons either).
+     */
+    java.util.OptionalInt cartonFactorOf(String sku);
 }

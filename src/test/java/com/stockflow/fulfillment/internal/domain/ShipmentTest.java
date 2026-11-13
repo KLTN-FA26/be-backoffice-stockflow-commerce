@@ -7,7 +7,6 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 
-import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.EnumSet;
 import java.util.UUID;
@@ -27,7 +26,7 @@ class ShipmentTest {
 
     private static Shipment ready() {
         return Shipment.ready(UUID.randomUUID(), "SO-1-S1", UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(),
-                null, DeliveryMode.PARCEL, 2, new BigDecimal("1500000"), null, PACKER, NOW);
+                null, 2, null, PACKER, NOW);
     }
 
     @Test
@@ -41,19 +40,18 @@ class ShipmentTest {
             assertThat(step.by()).isEqualTo(PACKER);
         });
         Shipment partial = Shipment.ready(UUID.randomUUID(), "SO-1-S2", UUID.randomUUID(), null, UUID.randomUUID(),
-                null, null, 1, null, "stock lines first", PACKER, NOW);
+                null, 1, "stock lines first", PACKER, NOW);
         assertThat(partial.partial()).isTrue();
-        assertThat(partial.codAmount()).isZero();
         assertThatThrownBy(() -> Shipment.ready(UUID.randomUUID(), "X", UUID.randomUUID(), null, UUID.randomUUID(),
-                null, null, 0, null, null, PACKER, NOW)).isInstanceOf(IllegalArgumentException.class);
+                null, 0, null, PACKER, NOW)).isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
     @DisplayName("handed over, failed, delivered on a retry; the failure reason stays; repeats change nothing")
     void happyPathAndRetry() {
         Shipment shipment = ready();
-        assertThat(shipment.handOver(LOAD, CARRIER, null, false, PACKER, NOW)).isTrue();
-        assertThat(shipment.handOver(LOAD, CARRIER, null, false, PACKER, NOW)).isFalse();
+        assertThat(shipment.handOver(LOAD, CARRIER, false, PACKER, NOW)).isTrue();
+        assertThat(shipment.handOver(LOAD, CARRIER, false, PACKER, NOW)).isFalse();
         assertThat(shipment.recordFailed(DeliveryFailureReason.CUSTOMER_ABSENT, null, COORDINATOR, NOW)).isTrue();
         assertThat(shipment.recordDelivered(COORDINATOR, NOW.plusSeconds(3600))).isTrue();
         Shipment.Snapshot s = shipment.snapshot();
@@ -69,7 +67,7 @@ class ShipmentTest {
     @DisplayName("failed then returned; OTHER needs a note; an outcome needs who recorded it")
     void returnedAndRules() {
         Shipment shipment = ready();
-        shipment.handOver(LOAD, CARRIER, null, false, PACKER, NOW);
+        shipment.handOver(LOAD, CARRIER, false, PACKER, NOW);
         assertThat(((BusinessException) catchThrowable(() -> shipment.recordFailed(DeliveryFailureReason.OTHER, " ",
                 COORDINATOR, NOW))).errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
         assertThatThrownBy(() -> shipment.recordDelivered(null, NOW)).isInstanceOf(NullPointerException.class);
@@ -87,7 +85,7 @@ class ShipmentTest {
         assertThat(waiting.cancel("again", null, NOW)).isFalse();
         assertThat(waiting.snapshot().cancelledAt()).isEqualTo(NOW);
         Shipment gone = ready();
-        gone.handOver(LOAD, CARRIER, null, false, PACKER, NOW);
+        gone.handOver(LOAD, CARRIER, false, PACKER, NOW);
         assertThat(((BusinessException) catchThrowable(() -> gone.cancel("too late", null, NOW))).errorCode())
                 .isEqualTo(ErrorCode.SHIPMENT_STATE_CONFLICT);
     }
@@ -114,67 +112,37 @@ class ShipmentTest {
         assertThat(((BusinessException) catchThrowable(() -> waiting.recordDelivered(COORDINATOR, NOW))).errorCode())
                 .isEqualTo(ErrorCode.SHIPMENT_STATE_CONFLICT);
         Shipment delivered = ready();
-        delivered.handOver(LOAD, CARRIER, null, false, PACKER, NOW);
+        delivered.handOver(LOAD, CARRIER, false, PACKER, NOW);
         delivered.recordDelivered(COORDINATOR, NOW);
         assertThat(((BusinessException) catchThrowable(() -> delivered.recordFailed(DeliveryFailureReason.LOST, null,
                 COORDINATOR, NOW))).errorCode()).isEqualTo(ErrorCode.SHIPMENT_STATE_CONFLICT);
     }
 
     @Test
-    @DisplayName("G4-2a: handed over on a load with its carrier and the COD the order fixed - refused (LABEL_OUTDATED) "
-            + "while its label shows another figure, accepted once the label is reprinted (09 BR-04)")
-    void handedOverWithItsLoadCarrierAndCod() {
+    @DisplayName("handed over on a load's manifest to the carrier its vehicle was booked with; the whole-order flag "
+            + "stays; one timeline step; again changes nothing")
+    void handedOverWithItsLoadAndCarrier() {
         Shipment shipment = ready();
         shipment.pullRecorded();
-        Throwable outdated = catchThrowable(() -> shipment.handOver(LOAD, CARRIER, new BigDecimal("900000"), false,
-                PACKER, NOW));
-        assertThat(((BusinessException) outdated).errorCode()).isEqualTo(ErrorCode.LABEL_OUTDATED);
-        assertThat(outdated.getMessage()).contains("SO-1-S1", "1500000", "900000");
-        assertThat(shipment.status()).isEqualTo(ShipmentStatus.READY_TO_DISPATCH);
-        assertThat(shipment.labelPrinted(new BigDecimal("900000"), NOW)).isTrue();
-        assertThat(shipment.labelPrinted(new BigDecimal("900000"), NOW)).isFalse();
-        assertThat(shipment.handOver(LOAD, CARRIER, new BigDecimal("900000"), true, PACKER, NOW)).isTrue();
-        assertThat(shipment.codAmount()).isEqualByComparingTo("900000");
+        assertThat(shipment.handOver(LOAD, CARRIER, true, PACKER, NOW)).isTrue();
+        assertThat(shipment.handOver(LOAD, CARRIER, true, PACKER, NOW)).isFalse();
+        assertThat(shipment.status()).isEqualTo(ShipmentStatus.HANDED_OVER);
         assertThat(shipment.loadId()).isEqualTo(LOAD);
         assertThat(shipment.carrierId()).isEqualTo(CARRIER);
         assertThat(shipment.wholeOrderHandover()).isTrue();
-        assertThat(shipment.labelPrinted(BigDecimal.ONE, NOW)).as("a label printed after it left changes nothing")
-                .isFalse();
+        assertThat(shipment.snapshot().handedOverBy()).isEqualTo(PACKER);
         assertThat(shipment.pullRecorded()).singleElement()
                 .satisfies(step -> assertThat(step.status()).isEqualTo(ShipmentStatus.HANDED_OVER));
-        assertThatThrownBy(() -> shipment.assignCarrier(UUID.randomUUID()))
-                .isInstanceOf(BusinessException.class).extracting(e -> ((BusinessException) e).errorCode())
-                .isEqualTo(ErrorCode.SHIPMENT_STATE_CONFLICT);
     }
 
     @Test
-    @DisplayName("G4-2a: a shipment chosen for one carrier is not handed to another; a full truckload carries no COD")
-    void carrierAndFullTruckloadRules() {
-        Shipment shipment = ready();
-        UUID chosen = UUID.randomUUID();
-        assertThat(shipment.assignCarrier(chosen)).isTrue();
-        assertThat(shipment.assignCarrier(chosen)).isFalse();
-        assertThat(((BusinessException) catchThrowable(() -> shipment.handOver(LOAD, CARRIER, null, false, PACKER, NOW)))
-                .errorCode()).isEqualTo(ErrorCode.SHIPMENT_OTHER_CARRIER);
-        assertThatThrownBy(() -> Shipment.ready(UUID.randomUUID(), "SO-1-S3", UUID.randomUUID(), null,
-                UUID.randomUUID(), null, DeliveryMode.FULL_TRUCKLOAD, 1, BigDecimal.TEN, null, PACKER, NOW))
-                .isInstanceOf(IllegalArgumentException.class);
-        Shipment truck = Shipment.ready(UUID.randomUUID(), "SO-1-S4", UUID.randomUUID(), null, UUID.randomUUID(),
-                null, DeliveryMode.FULL_TRUCKLOAD, 1, null, null, PACKER, NOW);
-        assertThat(((BusinessException) catchThrowable(() -> truck.handOver(LOAD, CARRIER, BigDecimal.ONE, false,
-                PACKER, NOW))).errorCode()).isEqualTo(ErrorCode.SHIPMENT_STATE_CONFLICT);
-        assertThat(truck.handOver(LOAD, CARRIER, BigDecimal.ZERO, false, PACKER, NOW)).isTrue();
-    }
-
-    @Test
-    @org.junit.jupiter.api.DisplayName("SCRUM-392: a full truckload waiting for dispatch splits its left-behind parcels "
-            + "off into a new partial shipment of the same order and pack; a parcel shipment or one handed over does "
-            + "not split")
+    @org.junit.jupiter.api.DisplayName("SCRUM-392: a shipment waiting for dispatch splits its left-behind parcels off "
+            + "into a new partial shipment of the same order and pack; one handed over does not split")
     void splitOff() {
         UUID order = UUID.randomUUID();
         UUID pack = UUID.randomUUID();
         Shipment ftl = Shipment.ready(UUID.randomUUID(), "SO-9-S1", order, pack, UUID.randomUUID(), UUID.randomUUID(),
-                DeliveryMode.FULL_TRUCKLOAD, 3, java.math.BigDecimal.ZERO, null, PACKER, NOW);
+                3, null, PACKER, NOW);
         ftl.pullRecorded();
         Shipment rest = ftl.splitOff(UUID.randomUUID(), "SO-9-S2", UUID.randomUUID(), 1, 2, "left behind", PACKER, NOW);
         assertThat(ftl.packageCount()).isEqualTo(2);
@@ -182,13 +150,14 @@ class ShipmentTest {
         assertThat(rest.status()).isEqualTo(ShipmentStatus.READY_TO_DISPATCH);
         assertThat(rest.orderId()).isEqualTo(order);
         assertThat(rest.partial()).isTrue();
-        assertThat(rest.deliveryMode()).isEqualTo(DeliveryMode.FULL_TRUCKLOAD);
         assertThat(rest.snapshot().packId()).isEqualTo(pack);
         assertThat(rest.pullRecorded()).singleElement().satisfies(step -> assertThat(step.status())
                 .isEqualTo(ShipmentStatus.READY_TO_DISPATCH));
-        Throwable parcel = catchThrowable(() -> ready().splitOff(UUID.randomUUID(), "X", UUID.randomUUID(), 1, 1, null,
+        Shipment gone = ready();
+        gone.handOver(LOAD, CARRIER, false, PACKER, NOW);
+        Throwable left = catchThrowable(() -> gone.splitOff(UUID.randomUUID(), "X", UUID.randomUUID(), 1, 1, null,
                 PACKER, NOW));
-        assertThat(parcel).isInstanceOf(com.stockflow.common.error.BusinessException.class);
+        assertThat(((BusinessException) left).errorCode()).isEqualTo(ErrorCode.SHIPMENT_STATE_CONFLICT);
         assertThatThrownBy(() -> ftl.splitOff(UUID.randomUUID(), "X", UUID.randomUUID(), 1, 0, null, PACKER, NOW))
                 .isInstanceOf(IllegalArgumentException.class);
     }

@@ -2,12 +2,11 @@ package com.stockflow.inventory.internal.controller;
 
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.security.Role;
-import com.stockflow.procurement.internal.service.GoodsReceipts;
-import com.stockflow.procurement.internal.service.GoodsReceipts.NewPackage;
 import com.jayway.jsonpath.JsonPath;
 import com.stockflow.support.Await;
 import com.stockflow.support.ReferenceRows;
-import com.stockflow.support.SecuredIntegrationTest;
+import com.stockflow.support.ProductionReceivables;
+import com.stockflow.support.SecuredProductionReceiptTest;
 import com.stockflow.support.SecuredMvc;
 import com.stockflow.warehouse.api.PutawayTasks;
 import jakarta.persistence.EntityManager;
@@ -24,7 +23,6 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.Duration;
-import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
 
@@ -36,9 +34,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 /**
  * SCRUM-92 reading putaway tasks through the real filter chain, permission aspect and data scope. A two-step receipt
- * line of 40 units - cartons of 20 and 15, 5 loose - is confirmed, and the asynchronous creator opens its tasks.
+ * line of 40 units - two cartons of 20, every unit in a carton since team plan 4C-2 - is confirmed, and the
+ * asynchronous creator opens a task per carton.
  */
-@SecuredIntegrationTest
+@SecuredProductionReceiptTest
 class PutawayHttpTest {
 
     private static final String RECEIVING = "HCM-RCV01";
@@ -46,7 +45,7 @@ class PutawayHttpTest {
 
     @Autowired MockMvc mockMvc;
     @MockitoBean JwtDecoder decoder;
-    @Autowired GoodsReceipts receipts;
+    @Autowired ProductionReceivables receivables;
     @Autowired PutawayTasks putawayTasks;
     @Autowired JdbcTemplate jdbc;
     @Autowired TransactionTemplate tx;
@@ -56,7 +55,6 @@ class PutawayHttpTest {
     private UUID clerk;
     private UUID receiptId;
     private UUID cartonTask;
-    private UUID looseTask;
 
     @BeforeEach
     void setUp() {
@@ -65,60 +63,20 @@ class PutawayHttpTest {
         Received received = receive();
         receiptId = received.receiptId();
         cartonTask = received.cartonTask();
-        looseTask = received.looseTask();
     }
 
     /** What one confirmed receipt of the fixture opened. */
-    private record Received(UUID receiptId, UUID cartonTask, UUID looseTask) {
+    private record Received(UUID receiptId, UUID cartonTask) {
     }
 
-    /** A confirmed two-step receipt line into HCM: two cartons and a loose remainder, with their tasks opened. */
+    /** A confirmed two-step receipt line into HCM: two cartons, with their tasks opened. */
     private Received receive() {
-        String sku = "PH-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(Locale.ROOT);
-        UUID po = Identifiers.newId();
-        UUID revision = Identifiers.newId();
-        UUID poLine = Identifiers.newId();
-        tx.executeWithoutResult(s -> {
-            UUID product = Identifiers.newId();
-            jdbc.update("insert into product.products(id,code,name,slug) values (?,?,?,?)", product, sku,
-                    "Putaway read fixture", sku.toLowerCase(Locale.ROOT));
-            jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature) values (?,?,?,?,'')",
-                    Identifiers.newId(), product, sku, "Putaway read fixture");
-            UUID item = jdbc.queryForObject("select id from inventory.inventory_items where sku = ?", UUID.class, sku);
-            // BR-03: tg_goods_receipt_lines_item refuses a receipt line for an item with no weight or dimensions.
-            jdbc.update("update inventory.inventory_items set weight_kg = 0.5, length_cm = 10, width_cm = 8, height_cm = 6,"
-                    + " qc_required = false where id = ?", item);
-            jdbc.update("insert into inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)"
-                    + " values (?, ?, 'CARTON', 1000)", Identifiers.newId(), item);
-
-            UUID submitter = ReferenceRows.user(entityManager);
-            UUID approver = ReferenceRows.user(entityManager);   // four eyes (ck_purchase_orders_four_eyes)
-            jdbc.update("""
-                    INSERT INTO procurement.purchase_orders (id, po_number, status, supplier_id, warehouse_id, currency,
-                        order_date, submitted_at, submitted_by, approved_at, approved_by, confirmed_at, confirmed_by,
-                        active_revision_id, version, created_at)
-                    SELECT ?, ?, 'CONFIRMED', s.id, ?, 'VND', CURRENT_DATE, NOW(), ?, NOW(), ?, NOW(), ?, ?, 0, NOW()
-                      FROM procurement.suppliers s WHERE s.code = 'GOVIET'""",
-                    po, "PO-PH-" + po.toString().substring(24), WAREHOUSE_HCM, submitter, approver, approver, revision);
-            jdbc.update("""
-                    INSERT INTO procurement.purchase_order_revisions (id, po_id, revision_no, kind, snapshot_header,
-                        changed_by, version, created_at) VALUES (?, ?, 0, 'INITIAL', '{}'::jsonb, ?, 0, NOW())""",
-                    revision, po, submitter);
-            jdbc.update("""
-                    INSERT INTO procurement.purchase_order_lines (id, po_id, po_revision_id, line_no, inventory_item_id,
-                        ordered_qty, unit_price, version, created_at) VALUES (?, ?, ?, 1, ?, 2000, 1000, 0, NOW())""",
-                    poLine, po, revision, item);
-        });
-        UUID receiptId = receipts.create(new GoodsReceipts.Create(po, "DN-PH", null), clerk).id();
-        receipts.replaceLines(receiptId, List.of(new GoodsReceipts.NewLine(poLine, 40, null, null, RECEIVING, null,
-                "CARTON", List.of(new NewPackage(null, 20), new NewPackage(null, 15)))));
-        receipts.confirm(receiptId, clerk);
-        Await.until("three putaway tasks", Duration.ofSeconds(20),
-                () -> putawayTasks.tasksOfReceipt(receiptId).size() >= 3);
+        ProductionReceivables.Receivable goods = receivables.sent(WAREHOUSE_HCM, 2, 20);
+        UUID receiptId = receivables.onTheDock(goods, RECEIVING, 2, clerk).receiptId();
+        Await.until("two putaway tasks", Duration.ofSeconds(20),
+                () -> putawayTasks.tasksOfReceipt(receiptId).size() >= 2);
         return new Received(receiptId, putawayTasks.tasksOfReceipt(receiptId).stream()
-                .filter(t -> t.stockPackageId() != null && t.quantity() == 20).findFirst().orElseThrow().id(),
-                putawayTasks.tasksOfReceipt(receiptId).stream().filter(t -> t.stockPackageId() == null)
-                        .findFirst().orElseThrow().id());
+                .filter(t -> t.stockPackageId() != null).findFirst().orElseThrow().id());
     }
 
     /** A real account with this role, assigned to these warehouses. */
@@ -162,21 +120,11 @@ class PutawayHttpTest {
     }
 
     @Test
-    @DisplayName("a loose task is read from where its units wait, with no LPN")
-    void looseTaskHasNoLpn() throws Exception {
-        mvc.asRole(Role.WAREHOUSE_STAFF, clerk, get(TASKS + "/" + looseTask))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.quantity").value(5))
-                .andExpect(jsonPath("$.data.sourceLocationCode").value(RECEIVING))
-                .andExpect(jsonPath("$.data.lpn").doesNotExist());
-    }
-
-    @Test
     @DisplayName("a receipt's tasks are listed without suggestions, and a status filter narrows them")
     void listByReceipt() throws Exception {
         mvc.asRole(Role.WAREHOUSE_STAFF, clerk, get(TASKS).param("receiptId", receiptId.toString()))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.totalElements").value(3))
+                .andExpect(jsonPath("$.data.totalElements").value(2))
                 .andExpect(jsonPath("$.data.items[0].suggestions.length()").value(0));
         mvc.asRole(Role.WAREHOUSE_STAFF, clerk, get(TASKS).param("receiptId", receiptId.toString())
                         .param("status", "DONE"))
@@ -194,15 +142,15 @@ class PutawayHttpTest {
     }
 
     @Test
-    @DisplayName("the warehouse list resolves the sources of loose tasks of several receipts in one batch")
-    void listByWarehouseResolvesLooseTasksOfTwoReceipts() throws Exception {
+    @DisplayName("the warehouse list resolves the sources and cartons of tasks of several receipts in one batch")
+    void listByWarehouseResolvesTasksOfTwoReceipts() throws Exception {
         Received second = receive();
         mvc.asRole(Role.WAREHOUSE_STAFF, clerk, get(TASKS).param("warehouseId", WAREHOUSE_HCM.toString())
                         .param("size", "200"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.items[?(@.id == '" + looseTask + "')].sourceLocationCode")
+                .andExpect(jsonPath("$.data.items[?(@.id == '" + cartonTask + "')].sourceLocationCode")
                         .value(Matchers.contains(RECEIVING)))
-                .andExpect(jsonPath("$.data.items[?(@.id == '" + second.looseTask() + "')].sourceLocationCode")
+                .andExpect(jsonPath("$.data.items[?(@.id == '" + second.cartonTask() + "')].sourceLocationCode")
                         .value(Matchers.contains(RECEIVING)))
                 .andExpect(jsonPath("$.data.items[?(@.id == '" + second.cartonTask() + "')].lpn")
                         .value(Matchers.contains(Matchers.notNullValue())));
@@ -262,8 +210,8 @@ class PutawayHttpTest {
     @DisplayName("a role without UPDATE on putaway tasks: 403")
     void readOnlyRoleGets403() throws Exception {
         String[] scan = scanOfCartonTask();
-        UUID qc = staff("QC_STAFF", WAREHOUSE_HCM);
-        mvc.asRole(Role.QC_STAFF, qc, post(TASKS + "/" + cartonTask + "/confirmations")
+        UUID accountant = staff("ACCOUNTANT", WAREHOUSE_HCM);
+        mvc.asRole(Role.ACCOUNTANT, accountant, post(TASKS + "/" + cartonTask + "/confirmations")
                         .contentType(MediaType.APPLICATION_JSON).content(body(scan[0], scan[1])))
                 .andExpect(status().isForbidden());
     }

@@ -18,13 +18,12 @@ import java.util.UUID;
  * G4-Q3, split shipments allowed). An entity inside the aggregate; fulfillment owns the shipment itself and tells the
  * order of its handover and its outcome in the same transaction (architecture decision A1).
  *
- * <p>{@code amount} is the goods' value at the order's prices, fixed at the handover. {@code billedAmount} is what its
- * delivery billed a credit order (a receivable): at most {@code amount}, less when money the customer paid ahead
- * covers part of it. Returned goods are never billed.</p>
+ * <p>{@code amount} is the goods' value at the order's prices, fixed at the handover. A delivery bills nothing: the
+ * customer pays the contract's installments (kltn-docs 15), and what a delivery billed under the money ledger went with
+ * it (4B-10, column dropped by 4B-11).</p>
  *
- * <p>G2-3: {@code codAmount} is what the carrier collects on delivering it, for a deposit order whose balance the
- * carrier collects (ON_DELIVERY): fixed at the handover (it is printed on the label and the manifest, kltn-docs 15
- * BR-08, 09 BR-04) and billed at delivery as a carrier-collected receivable.</p>
+ * <p>Nothing is collected on delivery (kltn-docs 09 BR-08): the carrier carries the goods, the customer pays by
+ * transfer.</p>
  */
 public final class OrderShipment {
 
@@ -38,30 +37,25 @@ public final class OrderShipment {
     private UUID outcomeBy;
     private DeliveryFailureReason failureReason;
     private String failureNote;
-    private BigDecimal billedAmount;
-    private final BigDecimal codAmount;
-    /** G4-2a: number, parcels, carrier and mode, as the customer reads them; null on shipments recorded before. */
+    /** G4-2a: number, parcels and carrier, as the customer reads them; null on shipments recorded before. */
     private final com.stockflow.order.api.ShipmentHandover.Carriage carriage;
+    /**
+     * 4B-8 (17 BR-29): the delivery batch whose cartons it carried; null for an order without a delivery schedule, or a
+     * shipment handed over before batches were released one by one.
+     */
+    private UUID deliveryBatchId;
 
     public OrderShipment(UUID id, Map<UUID, Integer> quantities, BigDecimal amount, Instant handedOverAt,
                          UUID handedOverBy, OrderShipmentStatus status, Instant outcomeAt, UUID outcomeBy,
-                         DeliveryFailureReason failureReason, String failureNote, BigDecimal billedAmount) {
+                         DeliveryFailureReason failureReason, String failureNote) {
         this(id, quantities, amount, handedOverAt, handedOverBy, status, outcomeAt, outcomeBy, failureReason,
-                failureNote, billedAmount, null);
+                failureNote, null);
     }
 
     public OrderShipment(UUID id, Map<UUID, Integer> quantities, BigDecimal amount, Instant handedOverAt,
                          UUID handedOverBy, OrderShipmentStatus status, Instant outcomeAt, UUID outcomeBy,
-                         DeliveryFailureReason failureReason, String failureNote, BigDecimal billedAmount,
-                         BigDecimal codAmount) {
-        this(id, quantities, amount, handedOverAt, handedOverBy, status, outcomeAt, outcomeBy, failureReason,
-                failureNote, billedAmount, codAmount, null);
-    }
-
-    public OrderShipment(UUID id, Map<UUID, Integer> quantities, BigDecimal amount, Instant handedOverAt,
-                         UUID handedOverBy, OrderShipmentStatus status, Instant outcomeAt, UUID outcomeBy,
-                         DeliveryFailureReason failureReason, String failureNote, BigDecimal billedAmount,
-                         BigDecimal codAmount, com.stockflow.order.api.ShipmentHandover.Carriage carriage) {
+                         DeliveryFailureReason failureReason, String failureNote,
+                         com.stockflow.order.api.ShipmentHandover.Carriage carriage) {
         this.carriage = carriage;
         this.id = Objects.requireNonNull(id, "id");
         this.quantities = Collections.unmodifiableMap(new LinkedHashMap<>(quantities));
@@ -73,28 +67,30 @@ public final class OrderShipment {
         this.outcomeBy = outcomeBy;
         this.failureReason = failureReason;
         this.failureNote = failureNote;
-        this.billedAmount = billedAmount == null ? BigDecimal.ZERO : billedAmount;
-        this.codAmount = codAmount == null ? BigDecimal.ZERO : codAmount;
-        if (this.codAmount.signum() < 0 || this.codAmount.compareTo(amount) > 0) {
-            throw new IllegalArgumentException("A shipment's COD lies between 0 and its value");
-        }
     }
 
     static OrderShipment handedOver(UUID id, Map<UUID, Integer> quantities, BigDecimal amount, Instant at, UUID by,
-                                    BigDecimal codAmount, com.stockflow.order.api.ShipmentHandover.Carriage carriage) {
-        return new OrderShipment(id, quantities, amount, at, by, OrderShipmentStatus.HANDED_OVER, null, null, null,
-                null, BigDecimal.ZERO, codAmount, carriage);
+                                    com.stockflow.order.api.ShipmentHandover.Carriage carriage, UUID deliveryBatchId) {
+        OrderShipment shipment = new OrderShipment(id, quantities, amount, at, by, OrderShipmentStatus.HANDED_OVER,
+                null, null, null, null, carriage);
+        shipment.deliveryBatchId = deliveryBatchId;
+        return shipment;
+    }
+
+    /** Rehydration of the batch it carried (4B-8). */
+    public OrderShipment restoreDeliveryBatch(UUID batchId) {
+        this.deliveryBatchId = batchId;
+        return this;
     }
 
     /** @return false when it already was delivered */
-    boolean delivered(Instant at, UUID by, BigDecimal billed) {
+    boolean delivered(Instant at, UUID by) {
         if (status == OrderShipmentStatus.DELIVERED) {
             return false;
         }
         move(OrderShipmentStatus.DELIVERED);
         this.outcomeAt = at;
         this.outcomeBy = by;
-        this.billedAmount = billed;
         return true;
     }
 
@@ -104,6 +100,28 @@ public final class OrderShipment {
             return false;
         }
         move(OrderShipmentStatus.DELIVERY_FAILED);
+        this.failureReason = Objects.requireNonNull(reason, "reason");
+        this.failureNote = note;
+        this.outcomeAt = at;
+        this.outcomeBy = by;
+        return true;
+    }
+
+    /**
+     * A delivery the carrier reported wrongly, corrected by the warehouse manager (09 §4.3 step 5, E17): DELIVERED →
+     * DELIVERY_FAILED.
+     *
+     * @return false when it already failed
+     */
+    boolean correctedToFailed(DeliveryFailureReason reason, String note, Instant at, UUID by) {
+        if (status == OrderShipmentStatus.DELIVERY_FAILED) {
+            return false;
+        }
+        if (status != OrderShipmentStatus.DELIVERED) {
+            throw new BusinessException(ErrorCode.ORDER_SHIPMENT_INVALID_TRANSITION,
+                    "Shipment %s is %s: only a delivery is corrected to a failure".formatted(id, status));
+        }
+        this.status = OrderShipmentStatus.DELIVERY_FAILED;
         this.failureReason = Objects.requireNonNull(reason, "reason");
         this.failureNote = note;
         this.outcomeAt = at;
@@ -149,7 +167,6 @@ public final class OrderShipment {
     public UUID outcomeBy() { return outcomeBy; }
     public DeliveryFailureReason failureReason() { return failureReason; }
     public String failureNote() { return failureNote; }
-    public BigDecimal billedAmount() { return billedAmount; }
-    public BigDecimal codAmount() { return codAmount; }
     public com.stockflow.order.api.ShipmentHandover.Carriage carriage() { return carriage; }
+    public UUID deliveryBatchId() { return deliveryBatchId; }
 }

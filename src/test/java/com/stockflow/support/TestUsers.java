@@ -36,7 +36,7 @@ public final class TestUsers {
 
     /** A user with ALL scope and no permissions — the starting point for "may they?" tests. */
     public static CurrentUser admin() {
-        return builder().role(Role.ECOMMERCE_ADMIN).scope(DataScope.ALL).build();
+        return builder().role(Role.SALES_MANAGER).scope(DataScope.ALL).build();
     }
 
     /** A customer: OWN scope, so they see only their own rows. */

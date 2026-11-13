@@ -15,8 +15,7 @@ import java.util.UUID;
  * by id when they already hold one, by code when a person scanned or typed it.</p>
  *
  * <p>A cycle count (SCRUM-162) asks two more: the shelves of a zone, to plan a count by zone, and locations by code
- * whatever their status, to tell bins from areas without dropping a blocked bin that still holds stock to count. A
- * subcontractor's location (created on first use) and the areas of a type serve the print shop.</p>
+ * whatever their status, to tell bins from areas without dropping a blocked bin that still holds stock to count.</p>
  *
  * <p>Administering the map - warehouses, zones, shelves, areas, boundaries - is used by this
  * module's own controllers only and lives on the internal {@code WarehouseLayoutService} and its
@@ -38,26 +37,32 @@ public interface WarehouseService {
     /** @return empty when no location has this id */
     Optional<StorageLocationView> findLocation(UUID locationId);
 
-    /**
-     * The location of the blanks this warehouse has sent to one print subcontractor (decision Q7, SCRUM-441): one
-     * per subcontractor and sending warehouse, code {@code <prefix>-SUB-<supplier code>}, created the first time it
-     * is asked for and returned as it is afterwards. Not on the map, not pickable, not a putaway target.
-     */
-    StorageLocationView subcontractorLocation(UUID warehouseId, UUID supplierId, String supplierCode);
-
-    /** The storage areas of {@code type} in a warehouse, by location code (the print shop finds its packing area). */
+    /** The storage areas of {@code type} in a warehouse, by location code. */
     java.util.List<StorageLocationView> areasOf(UUID warehouseId, StorageLocationView.AreaType type);
+
+    /**
+     * The location codes of every storage area of {@code type}, in every warehouse, whatever their status. Inventory
+     * leaves the stock standing in a {@code STAGING} area out of available to promise with these (kltn-docs 20 BR-20):
+     * staging areas are a handful of locations, so the set is small, and asking for it beats a cross-schema join.
+     */
+    java.util.Set<String> areaLocationCodes(StorageLocationView.AreaType type);
 
     /**
      * The locations among {@code locationCodes} a picker may take stock from right now: flagged pickable
      * ({@code is_pickable}, module 06 BR-12) and usable, i.e. their effective status is ACTIVE. Each maps to its
      * warehouse. A code that is unknown, not pickable or not usable is absent. Allocation (SCRUM-152) chooses bins
-     * from these only, so an order is never allocated stock in a receiving area, a QC area or a blocked bin.
+     * from these only, so an order is never allocated stock in a receiving area, a quarantine area or a blocked bin.
      */
     java.util.Map<String, UUID> pickableLocations(java.util.Collection<String> locationCodes);
 
-    /** @return empty when no warehouse has this id; a purchase order receives into one (SCRUM-390) */
+    /** @return empty when no warehouse has this id; a goods receipt receives into one (SCRUM-390) */
     Optional<WarehouseView> findWarehouse(UUID warehouseId);
+
+    /**
+     * 4B-7 (kltn-docs 17 §4.2 step 2): every ACTIVE warehouse, by code - the warehouses an order may ship from, which
+     * Sales chooses among.
+     */
+    java.util.List<WarehouseView> activeWarehouses();
 
     /**
      * The own codes of the shelves in a zone ({@code A01}, not {@code HCM-A01}), sorted. A cycle count planned by
@@ -81,21 +86,20 @@ public interface WarehouseService {
     java.util.List<StorageLocationView> findLocations(java.util.Collection<String> locationCodes);
 
     /**
-     * The bins a putaway of stock of {@code storageClass} may go to in a warehouse (SCRUM-92): bins flagged as putaway
-     * targets whose bin, shelf and warehouse are all ACTIVE (the same rule as {@link StorageLocationView#usable()}), never an area, by location
-     * code. Capacity and weight are the bin's own limits; null where none is set.
+     * The bins a putaway may go to in a warehouse (SCRUM-92): bins flagged as putaway targets whose bin, shelf and
+     * warehouse are all ACTIVE (the same rule as {@link StorageLocationView#usable()}), never an area, by location
+     * code, each with its size and load limit. There is no storage class any more (kltn-docs 06, decided
+     * 2026-11-05): which bins a carton fits is the caller's to decide from the carton's dimensions.
      *
      * @return empty for an unknown warehouse or when no bin qualifies
      */
-    java.util.List<PutawayCandidate> putawayCandidates(UUID warehouseId, StorageLocationView.StorageClass storageClass);
+    java.util.List<PutawayCandidate> putawayCandidates(UUID warehouseId);
 
     /**
      * One location judged by the rule of {@link #putawayCandidates}, for a bin the clerk chose by hand: one indexed
      * read instead of the warehouse's whole list.
      *
-     * @return empty when {@code locationCode} is not a putaway candidate of {@code storageClass} in the warehouse
+     * @return empty when {@code locationCode} is not a putaway candidate in the warehouse
      */
-    java.util.Optional<PutawayCandidate> putawayCandidate(UUID warehouseId,
-                                                         StorageLocationView.StorageClass storageClass,
-                                                         String locationCode);
+    java.util.Optional<PutawayCandidate> putawayCandidate(UUID warehouseId, String locationCode);
 }

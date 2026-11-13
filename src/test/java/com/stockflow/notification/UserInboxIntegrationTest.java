@@ -64,19 +64,19 @@ class UserInboxIntegrationTest {
     @Autowired Inbox inbox;
     @Autowired UserInbox userInbox;
 
-    private UUID planner;
+    private UUID salesManager;
     private UUID clerk;
     private UUID customer;
-    private String plannerToken;
+    private String salesManagerToken;
     private String clerkToken;
     private String customerToken;
 
     @BeforeEach
     void setUp() {
-        planner = account("INVENTORY_PLANNER");
+        salesManager = account("SALES_MANAGER");
         clerk = account("WAREHOUSE_STAFF");
         customer = account("CUSTOMER");
-        plannerToken = token(planner, "INVENTORY_PLANNER");
+        salesManagerToken = token(salesManager, "SALES_MANAGER");
         clerkToken = token(clerk, "WAREHOUSE_STAFF");
         customerToken = token(customer, "CUSTOMER");
     }
@@ -144,22 +144,22 @@ class UserInboxIntegrationTest {
     void postsOneRowPerRecipientAndTheSameKeyOnlyOnce() {
         InboxMessage first = message("3 lots near expiry", "EXPIRING:HCM:day1");
 
-        assertThat(posted(List.of(planner, clerk), first)).isEqualTo(2);
-        assertThat(rows(planner)).isEqualTo(1);
+        assertThat(posted(List.of(salesManager, clerk), first)).isEqualTo(2);
+        assertThat(rows(salesManager)).isEqualTo(1);
         assertThat(rows(clerk)).isEqualTo(1);
 
         // Same key again, even with other words: the first message stands (once per day, once per episode).
-        assertThat(posted(List.of(planner, clerk), message("4 lots near expiry", "EXPIRING:HCM:day1")))
+        assertThat(posted(List.of(salesManager, clerk), message("4 lots near expiry", "EXPIRING:HCM:day1")))
                 .isZero();
-        assertThat(rows(planner)).isEqualTo(1);
+        assertThat(rows(salesManager)).isEqualTo(1);
         assertThat(jdbc.queryForObject("SELECT title FROM notification.user_notification WHERE recipient_id = ?",
-                String.class, planner)).isEqualTo("3 lots near expiry");
+                String.class, salesManager)).isEqualTo("3 lots near expiry");
 
         // Another key is another message; a recipient that already has the key is skipped, a new one gets it.
-        assertThat(posted(List.of(planner), message("5 lots near expiry", "EXPIRING:HCM:day2")))
+        assertThat(posted(List.of(salesManager), message("5 lots near expiry", "EXPIRING:HCM:day2")))
                 .isEqualTo(1);
-        assertThat(posted(List.of(planner, customer), first)).isEqualTo(1);
-        assertThat(rows(planner)).isEqualTo(2);
+        assertThat(posted(List.of(salesManager, customer), first)).isEqualTo(1);
+        assertThat(rows(salesManager)).isEqualTo(2);
         assertThat(rows(customer)).isEqualTo(1);
     }
 
@@ -167,9 +167,9 @@ class UserInboxIntegrationTest {
     void theSameKeyForTwoRecipientsIsTwoMessages() {
         InboxMessage m = message("Low stock", "REORDER:ALL:day1");
 
-        tx.executeWithoutResult(s -> inbox.post(Arrays.asList(planner, null, planner, clerk), m));
+        tx.executeWithoutResult(s -> inbox.post(Arrays.asList(salesManager, null, salesManager, clerk), m));
 
-        assertThat(rows(planner)).isEqualTo(1);
+        assertThat(rows(salesManager)).isEqualTo(1);
         assertThat(rows(clerk)).isEqualTo(1);
     }
 
@@ -180,7 +180,7 @@ class UserInboxIntegrationTest {
         try {
             List<Callable<Integer>> posts = new ArrayList<>();
             for (int i = 0; i < 8; i++) {
-                posts.add(() -> tx.execute(s -> inbox.post(List.of(planner), m)));
+                posts.add(() -> tx.execute(s -> inbox.post(List.of(salesManager), m)));
             }
             int created = 0;
             for (Future<Integer> f : pool.invokeAll(posts)) {
@@ -198,7 +198,7 @@ class UserInboxIntegrationTest {
     void anUnknownRecipientFailsTheWholePostAndLeavesNothing() {
         InboxMessage m = message("Unknown", "UNKNOWN:" + UUID.randomUUID());
 
-        assertThatThrownBy(() -> tx.executeWithoutResult(s -> inbox.post(List.of(planner, UUID.randomUUID()), m)))
+        assertThatThrownBy(() -> tx.executeWithoutResult(s -> inbox.post(List.of(salesManager, UUID.randomUUID()), m)))
                 .isInstanceOf(DataIntegrityViolationException.class);
 
         assertThat(jdbc.queryForObject("SELECT count(*) FROM notification.user_notification WHERE dedupe_key = ?",
@@ -210,7 +210,7 @@ class UserInboxIntegrationTest {
         InboxMessage m = message("Rolled back", "TX:" + UUID.randomUUID());
 
         tx.executeWithoutResult(s -> {
-            inbox.post(List.of(planner), m);
+            inbox.post(List.of(salesManager), m);
             s.setRollbackOnly();
         });
 
@@ -222,11 +222,11 @@ class UserInboxIntegrationTest {
 
     @Test
     void readsOwnMessagesNewestFirstWithoutInternals() throws Exception {
-        row(planner, "oldest", 3, null);
-        row(planner, "middle", 2, 1);
-        row(planner, "newest", 1, null);
+        row(salesManager, "oldest", 3, null);
+        row(salesManager, "middle", 2, 1);
+        row(salesManager, "newest", 1, null);
 
-        list(plannerToken, "").andExpect(status().isOk())
+        list(salesManagerToken, "").andExpect(status().isOk())
                 .andExpect(jsonPath("$.success").value(true))
                 .andExpect(jsonPath("$.data.items.length()").value(3))
                 .andExpect(jsonPath("$.data.items[0].title").value("newest"))
@@ -246,11 +246,11 @@ class UserInboxIntegrationTest {
 
     @Test
     void unreadOnlyKeepsTheBadgeOfTheWholeInbox() throws Exception {
-        row(planner, "unread 1", 3, null);
-        row(planner, "read", 2, 1);
-        row(planner, "unread 2", 1, null);
+        row(salesManager, "unread 1", 3, null);
+        row(salesManager, "read", 2, 1);
+        row(salesManager, "unread 2", 1, null);
 
-        list(plannerToken, "?unreadOnly=true").andExpect(status().isOk())
+        list(salesManagerToken, "?unreadOnly=true").andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.items.length()").value(2))
                 .andExpect(jsonPath("$.data.totalElements").value(2))
                 .andExpect(jsonPath("$.data.unreadCount").value(2))
@@ -261,26 +261,26 @@ class UserInboxIntegrationTest {
     @Test
     void pagesWithoutRepeatingOrSkippingARow() throws Exception {
         for (int i = 5; i >= 1; i--) {
-            row(planner, "m" + i, i, null);   // m1 is the newest
+            row(salesManager, "m" + i, i, null);   // m1 is the newest
         }
 
-        list(plannerToken, "?page=0&size=2").andExpect(status().isOk())
+        list(salesManagerToken, "?page=0&size=2").andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.items[0].title").value("m1"))
                 .andExpect(jsonPath("$.data.items[1].title").value("m2"))
                 .andExpect(jsonPath("$.data.totalElements").value(5))
                 .andExpect(jsonPath("$.data.totalPages").value(3))
                 .andExpect(jsonPath("$.data.hasNext").value(true))
                 .andExpect(jsonPath("$.data.hasPrevious").value(false));
-        list(plannerToken, "?page=1&size=2").andExpect(status().isOk())
+        list(salesManagerToken, "?page=1&size=2").andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.items[0].title").value("m3"))
                 .andExpect(jsonPath("$.data.items[1].title").value("m4"))
                 .andExpect(jsonPath("$.data.hasNext").value(true))
                 .andExpect(jsonPath("$.data.hasPrevious").value(true));
-        list(plannerToken, "?page=2&size=2").andExpect(status().isOk())
+        list(salesManagerToken, "?page=2&size=2").andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.items.length()").value(1))
                 .andExpect(jsonPath("$.data.items[0].title").value("m5"))
                 .andExpect(jsonPath("$.data.hasNext").value(false));
-        list(plannerToken, "?page=3&size=2").andExpect(status().isOk())
+        list(salesManagerToken, "?page=3&size=2").andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.items.length()").value(0))
                 .andExpect(jsonPath("$.data.totalElements").value(5));
     }
@@ -288,10 +288,10 @@ class UserInboxIntegrationTest {
     @Test
     void refusesPagingOutOfRange() throws Exception {
         for (String query : new String[] {"?page=-1", "?size=0", "?size=201", "?size=-3"}) {
-            list(plannerToken, query).andExpect(status().isBadRequest())
+            list(salesManagerToken, query).andExpect(status().isBadRequest())
                     .andExpect(jsonPath("$.errorCode").value("UNSUPPORTED_PARAMETER"));
         }
-        list(plannerToken, "?size=abc").andExpect(status().isBadRequest());
+        list(salesManagerToken, "?size=abc").andExpect(status().isBadRequest());
     }
 
     @Test
@@ -306,12 +306,12 @@ class UserInboxIntegrationTest {
 
     @Test
     void unreadCountCountsOnlyTheCallersUnreadMessages() throws Exception {
-        row(planner, "a", 2, null);
-        row(planner, "b", 1, null);
-        row(planner, "c", 1, 0);
+        row(salesManager, "a", 2, null);
+        row(salesManager, "b", 1, null);
+        row(salesManager, "c", 1, 0);
         row(clerk, "someone else's", 1, null);
 
-        mvc.perform(get(ME + "/unread-count").header("Authorization", plannerToken)).andExpect(status().isOk())
+        mvc.perform(get(ME + "/unread-count").header("Authorization", salesManagerToken)).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.unreadCount").value(2));
     }
 
@@ -319,30 +319,30 @@ class UserInboxIntegrationTest {
 
     @Test
     void marksOneReadAndAgainWithoutChangingWhenItWasRead() throws Exception {
-        UUID id = row(planner, "to read", 1, null);
+        UUID id = row(salesManager, "to read", 1, null);
         assertThat(isRead(id)).isFalse();
 
-        markRead(plannerToken, id).andExpect(status().isNoContent());
+        markRead(salesManagerToken, id).andExpect(status().isNoContent());
         assertThat(isRead(id)).isTrue();
         var firstRead = jdbc.queryForObject("SELECT read_at FROM notification.user_notification WHERE id = ?",
                 java.sql.Timestamp.class, id);
 
-        markRead(plannerToken, id).andExpect(status().isNoContent());
+        markRead(salesManagerToken, id).andExpect(status().isNoContent());
         assertThat(jdbc.queryForObject("SELECT read_at FROM notification.user_notification WHERE id = ?",
                 java.sql.Timestamp.class, id)).isEqualTo(firstRead);
-        list(plannerToken, "?unreadOnly=true").andExpect(jsonPath("$.data.items.length()").value(0));
+        list(salesManagerToken, "?unreadOnly=true").andExpect(jsonPath("$.data.items.length()").value(0));
     }
 
     @Test
     void anotherUsersMessageIsNotFoundAndStaysUnread() throws Exception {
-        UUID plannersMessage = row(planner, "private", 1, null);
+        UUID plannersMessage = row(salesManager, "private", 1, null);
 
         // A staff member and a customer both get the same 404 as for an id that does not exist.
         markRead(clerkToken, plannersMessage).andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.errorCode").value("NOTIFICATION_NOT_FOUND"));
         markRead(customerToken, plannersMessage).andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.errorCode").value("NOTIFICATION_NOT_FOUND"));
-        markRead(plannerToken, UUID.randomUUID()).andExpect(status().isNotFound())
+        markRead(salesManagerToken, UUID.randomUUID()).andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.errorCode").value("NOTIFICATION_NOT_FOUND"));
 
         assertThat(isRead(plannersMessage)).isFalse();
@@ -350,20 +350,20 @@ class UserInboxIntegrationTest {
 
     @Test
     void marksAllReadOnlyForTheCaller() throws Exception {
-        UUID a = row(planner, "a", 3, null);
-        UUID b = row(planner, "b", 2, null);
-        row(planner, "already read", 2, 1);
+        UUID a = row(salesManager, "a", 3, null);
+        UUID b = row(salesManager, "b", 2, null);
+        row(salesManager, "already read", 2, 1);
         UUID clerksMessage = row(clerk, "clerk's", 1, null);
         UUID customersMessage = row(customer, "customer's", 1, null);
 
-        mvc.perform(post(ME + "/read-all").header("Authorization", plannerToken)).andExpect(status().isOk())
+        mvc.perform(post(ME + "/read-all").header("Authorization", salesManagerToken)).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.updated").value(2));
 
         assertThat(isRead(a)).isTrue();
         assertThat(isRead(b)).isTrue();
         assertThat(isRead(clerksMessage)).isFalse();
         assertThat(isRead(customersMessage)).isFalse();
-        mvc.perform(post(ME + "/read-all").header("Authorization", plannerToken)).andExpect(status().isOk())
+        mvc.perform(post(ME + "/read-all").header("Authorization", salesManagerToken)).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.updated").value(0));
     }
 
@@ -371,17 +371,17 @@ class UserInboxIntegrationTest {
 
     @Test
     void aStaffMemberAndACustomerEachSeeOnlyTheirOwn() throws Exception {
-        inbox.post(List.of(planner), message("planner only", "ISO:planner:" + UUID.randomUUID()));
+        inbox.post(List.of(salesManager), message("salesManager only", "ISO:salesManager:" + UUID.randomUUID()));
         tx.executeWithoutResult(s -> {
-            inbox.post(List.of(planner), message("planner only", "ISO:planner:" + UUID.randomUUID()));
+            inbox.post(List.of(salesManager), message("salesManager only", "ISO:salesManager:" + UUID.randomUUID()));
             inbox.post(List.of(clerk), message("clerk only", "ISO:clerk:" + UUID.randomUUID()));
             inbox.post(List.of(customer), message("customer only", "ISO:customer:" + UUID.randomUUID()));
         });
 
-        list(plannerToken, "").andExpect(status().isOk())
+        list(salesManagerToken, "").andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.totalElements").value(2))
                 .andExpect(jsonPath("$.data.items[*].title").value(org.hamcrest.Matchers.everyItem(
-                        org.hamcrest.Matchers.is("planner only"))));
+                        org.hamcrest.Matchers.is("salesManager only"))));
         list(clerkToken, "").andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.totalElements").value(1))
                 .andExpect(jsonPath("$.data.items[0].title").value("clerk only"));
@@ -393,10 +393,10 @@ class UserInboxIntegrationTest {
 
     @Test
     void theCallerIsTheTokensSubjectNeverARequestParameter() throws Exception {
-        row(planner, "planner's", 1, null);
+        row(salesManager, "salesManager's", 1, null);
 
         // There is no way to ask for another user's inbox: unknown parameters are ignored, not honoured.
-        mvc.perform(get(ME + "?recipientId=" + planner + "&userId=" + planner).header("Authorization", clerkToken))
+        mvc.perform(get(ME + "?recipientId=" + salesManager + "&userId=" + salesManager).header("Authorization", clerkToken))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.totalElements").value(0));
     }
 
@@ -404,10 +404,13 @@ class UserInboxIntegrationTest {
 
     @Test
     void everyRoleThatCanSignInHasTheBell() {
-        // 11 staff roles (V20261014000400) + CUSTOMER (V20260903000100), each with VIEW_PAGE, READ and UPDATE.
-        List<String> roles = List.of("WAREHOUSE_STAFF", "WAREHOUSE_MANAGER", "INVENTORY_PLANNER", "QC_STAFF",
-                "SALES_STAFF", "ORDER_COORDINATOR", "ECOMMERCE_ADMIN", "PROCUREMENT_STAFF", "ACCOUNTANT",
-                "PRODUCTION_STAFF", "SYSTEM_ADMIN", "CUSTOMER");
+        // The staff roles (V20261014000400; PRODUCTION_STAFF gone with V20261108000100, QC_STAFF with V20261108000200,
+        // INVENTORY_PLANNER and ORDER_COORDINATOR with V20261115000200, PROCUREMENT_STAFF with V20261115000300)
+        // + CUSTOMER (V20260903000100),
+        // each with VIEW_PAGE, READ and UPDATE.
+        List<String> roles = List.of("WAREHOUSE_STAFF", "WAREHOUSE_MANAGER",
+                "SALES_STAFF", "SALES_MANAGER", "ACCOUNTANT",
+                "SYSTEM_ADMIN", "CUSTOMER");
         for (String role : roles) {
             assertThat(jdbc.queryForList("""
                     SELECT p.action FROM identity.role_permission rp
@@ -420,9 +423,9 @@ class UserInboxIntegrationTest {
 
     @Test
     void everyStaffRoleAndTheCustomerCanOpenTheirOwnInbox() throws Exception {
-        for (String role : List.of("WAREHOUSE_STAFF", "WAREHOUSE_MANAGER", "INVENTORY_PLANNER", "QC_STAFF",
-                "SALES_STAFF", "ORDER_COORDINATOR", "ECOMMERCE_ADMIN", "PROCUREMENT_STAFF", "ACCOUNTANT",
-                "PRODUCTION_STAFF", "SYSTEM_ADMIN", "CUSTOMER")) {
+        for (String role : List.of("WAREHOUSE_STAFF", "WAREHOUSE_MANAGER",
+                "SALES_STAFF", "SALES_MANAGER", "ACCOUNTANT",
+                "SYSTEM_ADMIN", "CUSTOMER")) {
             String bearer = token(account(role), role);
             list(bearer, "").andExpect(status().isOk());
             mvc.perform(post(ME + "/read-all").header("Authorization", bearer)).andExpect(status().isOk());
@@ -436,7 +439,7 @@ class UserInboxIntegrationTest {
                 VALUES (?, 'IT_NO_BELL', 'No bell', 'Holds no permission', 0, NOW())
                 ON CONFLICT (code) DO NOTHING""", Identifiers.newId()));
         String bearer = token(account("IT_NO_BELL"), "IT_NO_BELL");
-        UUID id = row(planner, "x", 1, null);
+        UUID id = row(salesManager, "x", 1, null);
 
         list(bearer, "").andExpect(status().isForbidden()).andExpect(jsonPath("$.errorCode").value("FORBIDDEN"));
         mvc.perform(get(ME + "/unread-count").header("Authorization", bearer)).andExpect(status().isForbidden());
@@ -452,10 +455,10 @@ class UserInboxIntegrationTest {
 
     @Test
     void purgesReadMessagesOlderThanNinetyDaysAndNothingElse() {
-        UUID oldRead = row(planner, "old read", 120, 100);
-        UUID boundaryRead = row(planner, "read 89 days ago", 120, 89);
-        UUID recentRead = row(planner, "recent read", 5, 1);
-        UUID oldUnread = row(planner, "old unread", 400, null);
+        UUID oldRead = row(salesManager, "old read", 120, 100);
+        UUID boundaryRead = row(salesManager, "read 89 days ago", 120, 89);
+        UUID recentRead = row(salesManager, "recent read", 5, 1);
+        UUID oldUnread = row(salesManager, "old unread", 400, null);
         UUID otherUsersOldRead = row(clerk, "clerk old read", 200, 95);
 
         assertThat(userInbox.purgeRead()).isGreaterThanOrEqualTo(2);

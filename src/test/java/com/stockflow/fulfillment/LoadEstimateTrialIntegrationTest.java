@@ -55,7 +55,7 @@ class LoadEstimateTrialIntegrationTest {
     @BeforeEach
     void setUp() {
         http = new SecuredMvc(mvc, decoder);
-        coordinator = user("ORDER_COORDINATOR");
+        coordinator = user("SALES_STAFF");
         staff = user("WAREHOUSE_STAFF");
         container = tx.execute(s -> vehicleType("ACTIVE", "26500"));
     }
@@ -109,7 +109,7 @@ class LoadEstimateTrialIntegrationTest {
         long audits = rows("platform.audit_log");
         long events = rows("event_publication");
 
-        JsonNode answer = json.readTree(trial(Role.ORDER_COORDINATOR, coordinator,
+        JsonNode answer = json.readTree(trial(Role.SALES_STAFF, coordinator,
                 body(line(600, 400, 300, 40) + "," + line(500, 500, 500, 10), container))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.trial").value(true))
@@ -146,10 +146,10 @@ class LoadEstimateTrialIntegrationTest {
     @Test
     @DisplayName("the carton cap of an estimate: 3 001 boxes is 422 LOAD_ESTIMATE_TOO_MANY_CARTONS")
     void cartonCapIsEnforced() throws Exception {
-        trial(Role.ORDER_COORDINATOR, coordinator, body(line(100, 100, 100, 3_001), container))
+        trial(Role.SALES_STAFF, coordinator, body(line(100, 100, 100, 3_001), container))
                 .andExpect(status().isUnprocessableEntity())
                 .andExpect(jsonPath("$.errorCode").value("LOAD_ESTIMATE_TOO_MANY_CARTONS"));
-        trial(Role.ORDER_COORDINATOR, coordinator,
+        trial(Role.SALES_STAFF, coordinator,
                 body(line(100, 100, 100, 2_000) + "," + line(110, 100, 100, 1_001), container))
                 .andExpect(status().isUnprocessableEntity())
                 .andExpect(jsonPath("$.errorCode").value("LOAD_ESTIMATE_TOO_MANY_CARTONS"));
@@ -158,21 +158,21 @@ class LoadEstimateTrialIntegrationTest {
     @Test
     @DisplayName("validation: no lines, a size or quantity that is not positive, an unknown mode: 400 with the field")
     void validationErrors() throws Exception {
-        trial(Role.ORDER_COORDINATOR, coordinator, "{\"lines\":[]}").andExpect(status().isBadRequest())
+        trial(Role.SALES_STAFF, coordinator, "{\"lines\":[]}").andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.errorCode").value("VALIDATION_FAILED"))
                 .andExpect(jsonPath("$.fieldErrors[0].field").value("lines"));
-        trial(Role.ORDER_COORDINATOR, coordinator, "{}").andExpect(status().isBadRequest())
+        trial(Role.SALES_STAFF, coordinator, "{}").andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.errorCode").value("VALIDATION_FAILED"));
-        trial(Role.ORDER_COORDINATOR, coordinator, body(line(0, 400, 300, 1), container))
+        trial(Role.SALES_STAFF, coordinator, body(line(0, 400, 300, 1), container))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.fieldErrors[0].field").value("lines[0].lengthMm"));
-        trial(Role.ORDER_COORDINATOR, coordinator, body(line(600, 400, 300, 0), container))
+        trial(Role.SALES_STAFF, coordinator, body(line(600, 400, 300, 0), container))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.fieldErrors[0].field").value("lines[0].quantity"));
-        trial(Role.ORDER_COORDINATOR, coordinator, body(line(600, 100_001, 300, 1), container))
+        trial(Role.SALES_STAFF, coordinator, body(line(600, 100_001, 300, 1), container))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.fieldErrors[0].field").value("lines[0].widthMm"));
-        trial(Role.ORDER_COORDINATOR, coordinator, """
+        trial(Role.SALES_STAFF, coordinator, """
                 {"lines":[%s],"selectionMode":"NOPE"}""".formatted(line(600, 400, 300, 1)))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.fieldErrors[0].field").value("selectionMode"));
@@ -182,10 +182,10 @@ class LoadEstimateTrialIntegrationTest {
     @DisplayName("an inactive vehicle type is 409, an unknown one 404, as for an estimate")
     void vehicleTypeErrors() throws Exception {
         UUID inactive = tx.execute(s -> vehicleType("INACTIVE", "26500"));
-        trial(Role.ORDER_COORDINATOR, coordinator, body(line(600, 400, 300, 1), inactive))
+        trial(Role.SALES_STAFF, coordinator, body(line(600, 400, 300, 1), inactive))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("VEHICLE_TYPE_INACTIVE"));
-        trial(Role.ORDER_COORDINATOR, coordinator, body(line(600, 400, 300, 1), UUID.randomUUID()))
+        trial(Role.SALES_STAFF, coordinator, body(line(600, 400, 300, 1), UUID.randomUUID()))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.errorCode").value("VEHICLE_TYPE_NOT_FOUND"));
     }
@@ -196,14 +196,14 @@ class LoadEstimateTrialIntegrationTest {
         // A payload of 5 g: 30 boxes of the 1 g placeholder weigh 30 g.
         UUID featherweight = tx.execute(s -> vehicleType("ACTIVE", "0.005"));
 
-        JsonNode answer = json.readTree(trial(Role.ORDER_COORDINATOR, coordinator,
+        JsonNode answer = json.readTree(trial(Role.SALES_STAFF, coordinator,
                 body(line(600, 400, 300, 30), featherweight)).andExpect(status().isOk())
                 .andReturn().getResponse().getContentAsString()).get("data");
         assertThat(answer.path("unplaced")).isEmpty();
         assertThat(answer.path("vehicles").get(0).path("boxes")).hasSize(30);
 
         // A box longer than the vehicle is reported, not loaded.
-        JsonNode tooLong = json.readTree(trial(Role.ORDER_COORDINATOR, coordinator,
+        JsonNode tooLong = json.readTree(trial(Role.SALES_STAFF, coordinator,
                 body(line(13_000, 400, 300, 2), featherweight)).andExpect(status().isOk())
                 .andReturn().getResponse().getContentAsString()).get("data");
         assertThat(tooLong.path("vehicles")).isEmpty();

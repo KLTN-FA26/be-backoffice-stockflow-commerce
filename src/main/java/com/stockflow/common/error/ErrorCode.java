@@ -12,38 +12,22 @@ package com.stockflow.common.error;
  */
 public enum ErrorCode {
     // ---- 400: the request itself is wrong; retrying it unchanged will not help
-    PO_DELIVERY_DATE_REQUIRED("A delivery date is required before sending", 400),
-    PO_REASON_REQUIRED("A reason of 1..1000 characters is required", 400),
-    PO_SUPPLIER_RESPONSE_INVALID("Supplier response must be CONFIRMED or REJECTED", 400),
-    PO_LINE_DESCRIPTION_REQUIRED("A product description is required for each purchase order line", 400),
-    SUPPLIER_DELIVERY_CONTACT_INVALID("Supplier delivery contact is invalid or not allowed", 400),
-    SUPPLIER_PROFILE_INVALID("Invalid supplier profile or commercial terms", 400),
-    // Supplier catalog field codes (SCRUM-77): each names one rule on one input of the catalog form, so
-    // the field error is translated by its own code. The response's errorCode stays VALIDATION_FAILED.
-    SUPPLIER_ITEM_SKU_INVALID("The SKU is not a well-formed SKU code", 400),
-    SUPPLIER_ITEM_SUPPLIER_SKU_CODE_TOO_LONG("The supplier SKU code must be at most 50 characters", 400),
-    SUPPLIER_ITEM_PRICE_INVALID("The price must be above zero, at most 9,999,999,999,999,999.99, and have no more"
-            + " decimals than the supplier's currency allows", 400),
-    SUPPLIER_ITEM_MOQ_INVALID("The minimum order quantity must be at least 1", 400),
-    SUPPLIER_ITEM_PACK_SIZE_INVALID("The pack size must be at least 1", 400),
-    SUPPLIER_ITEM_MOQ_NOT_PACK_MULTIPLE("The minimum order quantity must be a multiple of the pack size", 400),
-    SUPPLIER_ITEM_LEAD_TIME_INVALID("The lead time must be between 0 and 365 days", 400),
     VALIDATION_FAILED("Invalid request data", 400),
-    INVENTORY_POLICY_INVALID("Invalid SKU inventory policy", 400),
-    /** A field-error code on {@link #INVENTORY_POLICY_INVALID}: {@code maxQty} sits below the reorder point or the safety stock. */
-    INVENTORY_MAX_QTY_BELOW_THRESHOLD(
-            "The order-up-to level must not be below the reorder point or the safety stock", 400),
-    INVENTORY_POLICY_STOCK_CONFLICT("Existing stock is incompatible with this policy", 409),
+    /** A customization template's model, limits or print areas cannot be printed as given (kltn-docs 01 BR-21). */
+    PRINT_CONFIG_INVALID("The customization template is not valid", 400),
+    /**
+     * Stock that cannot be used as asked: blocked or expired stock to ship, several layers where one is meant, a
+     * layer the fixed stock policy refuses to raise. The name is from the configurable policy team plan 5-5 removed
+     * (with {@code INVENTORY_POLICY_INVALID} and {@code COUNT_POLICY_CONFLICT}); kept, since clients match on it.
+     */
+    INVENTORY_POLICY_STOCK_CONFLICT("This stock cannot be used this way; reconcile it first", 409),
     CATALOG_SLUG_EXISTS("This storefront URL is already reserved", 409),
     CATALOG_LISTING_REQUIRED("Configure the storefront listing before publishing", 409),
-    /** Publishing, and since SCRUM-461 a purchase order line too (the field error carries this code): the product is not approved. */
+    /** Publishing, or a quote or order line (the field error carries this code): the product is not approved. */
     PRODUCT_NOT_APPROVED("The product is not approved", 409),
     PRODUCT_CATEGORY_REQUIRED("A valid product category is required", 409),
     PRODUCT_SKU_REQUIRED("At least one sellable SKU is required", 409),
     PRODUCT_GALLERY_REQUIRED("An approved non-empty product gallery is required", 409),
-    PRODUCT_NOT_PURCHASABLE("This product is not currently available for purchase", 409),
-    /** SCRUM-461, kltn-docs 02 BR-01: a new purchase order line takes only an active SKU. {@code fieldErrors[]} names each line. */
-    SKU_NOT_PURCHASABLE("The SKU is not active for purchasing", 409),
     /** Review of #109, item 6: a quote, its acceptance or its order, or a new sample, on a SKU no longer ACTIVE. */
     SKU_NOT_SELLABLE("The SKU is no longer active; change the line to an active SKU", 409),
     /** SCRUM-461, kltn-docs 01 §3: a product is identified by its brand too, so it is chosen before approval. */
@@ -56,17 +40,12 @@ public enum ErrorCode {
     CATEGORY_INACTIVE("This category is inactive and cannot be chosen for a product", 409),
     /** SCRUM-461, kltn-docs 01 BR-02: only a draft is deleted. */
     PRODUCT_NOT_DELETABLE("Only a draft product can be deleted", 409),
-    /** SCRUM-461: stock, a purchase order, an order or a design already points at the product. */
-    PRODUCT_IN_USE("The product is referenced by stock, purchasing, orders or designs", 409),
+    /** SCRUM-461: stock, a production order, an order or a design already points at the product. */
+    PRODUCT_IN_USE("The product is referenced by stock, production orders, orders or designs", 409),
     PRICE_NOT_AVAILABLE("No selling price is available for this SKU", 409),
-    /** kltn-docs 13 BR-05: the first tier of a customer's own price is its minimum order quantity. */
-    /** Direct checkout never falls back to another price below the list's first tier (P4): Sales quotes it. */
-    CUSTOMER_PRICE_BELOW_MOQ("The quantity is below this customer's price list minimum for the SKU; ask Sales for a quote", 409),
     CUSTOMER_PRICE_NOT_FOUND("This customer has no own price for the SKU", 404),
     /** P7: a customer group (customer.segment) that does not exist. */
     SEGMENT_NOT_FOUND("Customer group not found", 404),
-    SEGMENT_PRICE_NOT_FOUND("This customer group has no price for the SKU", 404),
-    CATALOG_PRICE_AMBIGUOUS("More than one selling price has the same priority", 409),
     MALFORMED_REQUEST("The request body could not be read", 400),
     /** SCRUM-243: the units of a return do not add up (received, accepted and rejected, where they went, how made good). */
     RETURN_QUANTITIES_INVALID("The quantities of this return do not add up", 400),
@@ -88,13 +67,12 @@ public enum ErrorCode {
     NOT_FOUND("Resource not found", 404),
     ROLE_NOT_FOUND("Role not found", 404),
     USER_NOT_FOUND("User not found", 404),
-    SUPPLIER_NOT_FOUND("Supplier not found", 404),
-    SUPPLIER_ITEM_NOT_FOUND("Supplier item not found", 404),
-    PURCHASE_ORDER_NOT_FOUND("Purchase order not found", 404),
     PRODUCT_NOT_FOUND("Product not found", 404),
     CATEGORY_NOT_FOUND("Category not found", 404),
     BRAND_NOT_FOUND("Brand not found", 404),
     VARIANT_NOT_FOUND("Variant not found", 404),
+    /** A customization template that does not exist, or not on this variant (kltn-docs 01 §4.10). */
+    PRINT_CONFIG_NOT_FOUND("Customization template not found", 404),
     ATTRIBUTE_NOT_FOUND("Attribute not found", 404),
     ATTRIBUTE_VALUE_NOT_FOUND("Attribute value not found", 404),
     MEDIA_NOT_FOUND("Media not found", 404),
@@ -105,11 +83,8 @@ public enum ErrorCode {
     PACKAGE_NOT_FOUND("Package not found", 404),
     SHIPMENT_NOT_FOUND("Shipment not found", 404),
     GOODS_RECEIPT_NOT_FOUND("Goods receipt not found", 404),
-    SUPPLIER_INVOICE_NOT_FOUND("Supplier invoice not found", 404),
     /** Also the answer for a message of another user: an inbox id is only meaningful to its recipient. */
     NOTIFICATION_NOT_FOUND("Notification not found", 404),
-    /** An alert of a warehouse outside the caller's scope is {@code OUT_OF_DATA_SCOPE}, not this. */
-    ALERT_NOT_FOUND("Stock alert not found", 404),
     /** Also the answer for a zone of another warehouse: a zone id is only meaningful in its own. */
     ZONE_NOT_FOUND("Zone not found", 404),
     SHELF_NOT_FOUND("Shelf not found", 404),
@@ -124,14 +99,10 @@ public enum ErrorCode {
     /** No stock package (carton) with this id or LPN (SCRUM-473). */
     STOCK_PACKAGE_NOT_FOUND("No such stock package", 404),
     STOCK_ADJUSTMENT_NOT_FOUND("Stock adjustment not found", 404),
-    /** SCRUM-475: no damage report with this id, or not in the caller's warehouses. */
-    DAMAGE_REPORT_NOT_FOUND("Damage report not found", 404),
     CANCELLATION_REQUEST_NOT_FOUND("Cancellation request not found", 404),
     /** SCRUM-243: no return request by that id - or not the caller's own, which is not revealed. */
     RETURN_REQUEST_NOT_FOUND("Return request not found", 404),
-    RECEIVABLE_NOT_FOUND("Receivable not found", 404),
     RESERVATION_NOT_FOUND("Stock reservation not found", 404),
-    TRANSFER_ORDER_NOT_FOUND("Transfer order not found", 404),
     /** The SKU has no inventory item yet: its logistics data must be completed first (docs 01 BR-03). */
     INVENTORY_ITEM_NOT_FOUND("No inventory item for this SKU", 404),
     /** No such unit of measure on this SKU's inventory item (docs 01 UoM conversion). */
@@ -166,27 +137,41 @@ public enum ErrorCode {
 
     /** The new password is the same as the current one. */
     PASSWORD_UNCHANGED("The new password must differ from the current one", 400),
-    /** BR-STK-003: damaged stock is reported with at least one photo. */
-    DAMAGE_PHOTO_REQUIRED("Damaged stock is reported with at least one photo", 400),
     /** SCRUM-427: commercial terms that contradict themselves (kltn-docs 18 §3). */
     CREDIT_PROFILE_INVALID("These commercial terms are inconsistent", 400),
-    /** An assisted design names a customer and an owner account; the owner must be that customer's own login. */
-    DESIGN_OWNER_CUSTOMER_MISMATCH("The design owner does not belong to this customer", 400),
 
     // ---- 409: the request is fine, the current state is not
-    PO_COMMUNICATION_NOT_CONFIGURED("Buyer contact and receiving address must be configured before sending", 409),
     CONFLICT("Conflicting state", 409),
-    /** SCRUM-78: the envelope of a purchase order whose lines break the supplier's catalog; each line carries its own field code. */
-    SUPPLIER_TERMS_VIOLATED("One or more lines do not meet the supplier's catalog terms", 409),
-    SUPPLIER_ITEM_NOT_LISTED("This supplier does not list this SKU", 409),
-    PO_LINE_BELOW_MOQ("The quantity is below the supplier's minimum order quantity", 409),
-    PO_LINE_NOT_PACK_MULTIPLE("The quantity must be a multiple of the supplier's pack size", 409),
-    /** A line entered in a packing unit is a whole number of that unit (BR-09, V20261020000400). */
-    PO_LINE_UNIT_NOT_MULTIPLE("The quantity must be a whole number of the line's unit", 409),
-    PO_LINE_UNIT_INVALID("The unit is retired; order in an active unit", 409),
-    PO_LINE_PRICE_REQUIRED("A unit price is required: the catalog price is in another currency", 409),
-    CHECKOUT_PRICE_CHANGED("The selling price changed; review the basket and confirm again", 409),
-    COUNT_POLICY_CONFLICT("Reconcile the active count and SKU tracking policy before proceeding",409),
+    /** kltn-docs 16 §5: the conversation cannot move to that status from where it is, or not by this caller. */
+    CHAT_TRANSITION_NOT_ALLOWED("The conversation cannot move to that status now", 409),
+    /**
+     * The conversation is closed, or resolved past its reopen window: nothing more is written in it. The customer
+     * reopens, which starts a new conversation continuing it (16 §5).
+     */
+    CHAT_CONVERSATION_ENDED("The conversation has ended; start a new one", 409),
+    /** 16 edge case "nhiều agent cùng mở": only the agent in charge (or a chat supervisor) answers the customer. */
+    CHAT_NOT_ASSIGNEE("Only the agent in charge of the conversation can do this", 409),
+    /** Claiming a conversation another agent already has. */
+    CHAT_ALREADY_ASSIGNED("Another agent already has this conversation", 409),
+    /** The account a conversation was to be handed to does not answer customers (chat-conversations:UPDATE, staff). */
+    CHAT_AGENT_NOT_AVAILABLE("This person cannot take chat conversations", 409),
+    /** A retried send named the client id of an earlier message with something else in it. */
+    CHAT_CLIENT_MESSAGE_ID_REUSED("This client message id was already used for another message", 409),
+    /** 16 package 3: a card, a system line, someone else's message or a deleted one is not edited or deleted. */
+    CHAT_MESSAGE_NOT_EDITABLE("This message cannot be changed", 409),
+    /** A message is edited or deleted by its author within the edit window (5 minutes) of sending it. */
+    CHAT_EDIT_WINDOW_PASSED("The time to change this message has passed", 409),
+    /** CSAT: a conversation is rated while it is resolved. */
+    CHAT_CSAT_NOT_OPEN("This conversation cannot be rated now", 409),
+    /** CSAT: a conversation is rated once. */
+    CHAT_CSAT_ALREADY_GIVEN("This conversation was already rated", 409),
+    /**
+     * A card's action that is not open to the caller or to the card now: the customer's action taken by staff (16 BR-10,
+     * BR-11), a card that is no longer open, an action the card's kind does not have.
+     */
+    CHAT_CARD_ACTION_NOT_ALLOWED("This action is not available on this card", 409),
+    /** 16 BR-11: a quote is drawn up from a quote request only once its design is approved. */
+    CHAT_DESIGN_NOT_APPROVED("The design is not approved yet; a quote follows its approval", 409),
     /** The inventory item already has a unit with this code (its base unit included). */
     UOM_CONVERSION_DUPLICATE("This SKU already has a unit of measure with this code", 409),
     /**
@@ -196,9 +181,8 @@ public enum ErrorCode {
     UOM_CONVERSION_IN_USE("This unit of measure is the base unit, is still sold in, or is used by a document", 409),
     /** The variant already sells in this unit. */
     SALES_UNIT_DUPLICATE("The variant already sells in this unit", 409),
-    DESIGN_QUOTE_REQUIRED("An accepted design quote matching this order line is required",409),
     INSUFFICIENT_STOCK("Not enough available stock", 409),
-    /** The destination already holds this SKU and lot in another status (QC state does not merge). */
+    /** The destination already holds this SKU and lot in another status (stock of two statuses does not merge). */
     STOCK_STATUS_MISMATCH("The destination holds this lot in a different status", 409),
     /** The location exists, but it, its shelf or its warehouse is BLOCKED, in MAINTENANCE or INACTIVE (issue #67). */
     LOCATION_NOT_USABLE("This location cannot take stock right now", 409),
@@ -212,78 +196,39 @@ public enum ErrorCode {
     STOCK_PACKAGE_LABELS_EMPTY("Choose a receipt line or the cartons to print", 422),
     /** More carton labels than one print request renders (SCRUM-473). */
     STOCK_PACKAGE_LABELS_TOO_MANY("At most 500 carton labels at a time", 422),
-    /** Docs 11 BR-01: stock changes warehouse only through a transfer order (SCRUM-459). */
-    MOVE_ACROSS_WAREHOUSES("Stock moves to another warehouse only through a transfer order", 409),
+    /**
+     * Docs 11 BR-01: a move stays inside one warehouse (SCRUM-459). Stock never changes warehouse: transfers between
+     * warehouses were removed, a Production Order delivers straight to the warehouse that ships (kltn-docs 17).
+     */
+    MOVE_ACROSS_WAREHOUSES("Stock moves only between locations of one warehouse", 409),
     /**
      * Four eyes: whoever asked for a stock adjustment may not decide it - nor, for a {@code COUNT_VARIANCE}, whoever
      * counted the line it came from.
      */
     ADJUSTMENT_SELF_APPROVAL("A stock adjustment cannot be decided by the person who requested it", 409),
     INVALID_ADJUSTMENT_TRANSITION("This stock adjustment has already been decided", 409),
-    INVALID_TRANSFER_TRANSITION("This transfer order cannot move to that status right now", 409),
     /** The life of a stock package (V20261020000100): RECEIVING → IN_STOCK | VOID, IN_STOCK → CONSUMED | LOST, LOST → IN_STOCK. */
     INVALID_STOCK_PACKAGE_TRANSITION("This stock package cannot do that in its current status", 409),
-    /** Four eyes on a transfer above the approval threshold. */
-    TRANSFER_SELF_APPROVAL("A transfer order cannot be decided by the person who submitted it", 409),
-    /** BR-01 (docs 03): goods are received only against a CONFIRMED or PARTIALLY_RECEIVED purchase order. */
-    PURCHASE_ORDER_NOT_RECEIVABLE("Goods cannot be received against this purchase order now", 409),
     INVALID_RECEIPT_TRANSITION("This goods receipt cannot move to that status right now", 409),
-    /**
-     * SCRUM-477, four eyes (BR-RCP-001): whoever counted a receipt, or asked for its approval, may not decide it.
-     */
-    RECEIPT_SELF_APPROVAL("A goods receipt cannot be decided by the person who counted it or asked for its approval", 409),
-    /** SCRUM-478, BR-RCP-002: a receipt without a purchase order needs a reason. */
-    BLIND_RECEIPT_REASON_REQUIRED("A receipt without a purchase order needs a reason", 400),
-    /** SCRUM-478, owner decision NOPO-ATTACH: the purchase order attached to a receipt without one is the supplier's. */
-    RECEIPT_REFERENCE_SUPPLIER_MISMATCH("The purchase order is not the receipt's supplier's", 409),
-    /** SCRUM-477: approving a receipt, or rejecting its excess, needs a reason. */
-    RECEIPT_APPROVAL_REASON_REQUIRED("Deciding on a goods receipt needs a reason", 400),
-    /** SCRUM-308, BR-INV-001: the supplier already has an invoice with this number (case aside): paying it twice. */
-    SUPPLIER_INVOICE_NUMBER_TAKEN("The supplier already has an invoice with this number", 409),
-    /** SCRUM-308/309: changed, matched or voided in a status that does not allow it. */
-    SUPPLIER_INVOICE_INVALID_TRANSITION("This supplier invoice cannot do that in its current status", 409),
-    /**
-     * SCRUM-308: a line bills a PO line that does not exist or is not the supplier's (or not the invoice's order), or
-     * names a receipt line of another PO line.
-     */
-    SUPPLIER_INVOICE_LINE_INVALID("An invoice line does not bill a purchase order line of this supplier", 422),
-    /** SCRUM-308: the invoice is not in the currency of the orders it bills. */
-    SUPPLIER_INVOICE_CURRENCY_MISMATCH("The invoice is not in the currency of the purchase orders it bills", 422),
-    /** SCRUM-308: the order was never approved, or was cancelled - there is nothing to bill on it. */
-    PURCHASE_ORDER_NOT_INVOICEABLE("This purchase order cannot be invoiced in its current status", 409),
-    /**
-     * BR-02: the PO line would be received beyond the supplier's over-receipt tolerance. Since SCRUM-477 a count beyond
-     * it is no longer refused - the receipt waits for the warehouse manager - so the service does not answer with
-     * this; it stays for clients that still map it, and for the database trigger's own refusal.
-     */
-    OVER_RECEIPT_TOLERANCE("The quantity exceeds what the purchase order line allows", 409),
-    /** The location exists but is not the kind of area this step needs (RECEIVING, QUALITY_CONTROL,
-     *  QUARANTINE), or is in another warehouse. */
+    /** The location exists but is not the kind of area this step needs (RECEIVING, QUARANTINE), or is in another
+     *  warehouse. */
     LOCATION_AREA_MISMATCH("The location is not an area of the right kind in this warehouse", 409),
-    /** BR-03: a lot-tracked or expiry-tracked item was received without its lot or expiry date, or an
-     *  untracked one with a lot. */
-    RECEIPT_LOT_DATA_INVALID("Lot or expiry data does not match how the item is tracked", 409),
-    /** BR-08: accepted + quarantined + rejected must add up to what was moved to the QC area. */
-    QC_QUANTITY_MISMATCH("The QC quantities do not add up to the quantity inspected", 409),
-    /** A line needs QC and the warehouse has no QUALITY_CONTROL area to send it to (docs 03 edge case). */
-    QC_AREA_MISSING("This warehouse has no QC area yet for the items that need QC", 409),
-    /** Two receipt lines for the same PO line and lot (uk_goods_receipt_lines_lot). */
-    DUPLICATE_RECEIPT_LINE("The same purchase order line and lot appear twice on this receipt", 409),
-    RECEIPT_LINE_NOT_ON_PO("This line is not a line of the receipt's purchase order", 409),
+    /** BR-03: a receipt line without its lot - every SKU is lot-tracked (kltn-docs 01 BR-17, team plan 5-5). */
+    RECEIPT_LOT_DATA_INVALID("Every receipt line needs a lot number", 409),
+    /** Two receipt lines for the same production order line (uk_goods_receipt_lines_production_order_line). */
+    DUPLICATE_RECEIPT_LINE("The same production order line appears twice on this receipt", 409),
     /**
      * SCRUM-473: a receipt line that has ever had labelled cartons - VOID ones too, which still point at it
-     * ({@code fk_stock_package_receipt_line}) - keeps its PO line and lot and cannot be removed from the draft, and
-     * its unit cannot change while it keeps cartons in the old one. A lot or PO line on such a line is corrected by
-     * cancelling the receipt and counting it again.
+     * ({@code fk_stock_package_receipt_line}) - cannot be removed from the draft, and its unit cannot change while it
+     * keeps cartons in the old one. Such a line is dropped by cancelling the receipt and counting it again.
      */
     RECEIPT_LINE_HAS_PACKAGES("This receipt line has labelled cartons", 409),
     /** SCRUM-473: the cartons counted on a receipt line hold more units than the line received. */
     RECEIPT_PACKAGES_EXCEED_LINE("The cartons hold more than the receipt line", 422),
-    /**
-     * SCRUM-473 decision D5: a SUBCONTRACT order's goods are held for their production order one row per receipt
-     * line, so they are not received into cartons.
-     */
-    RECEIPT_PACKAGES_NOT_SUPPORTED("Cartons are not labelled on a subcontract receipt", 409),
+    /** Kltn-docs 03 BR-12: every unit received is in a carton; units outside one are not received. */
+    RECEIPT_LINE_NOT_IN_CARTONS("Every unit of a receipt line must be in a carton", 422),
+    /** Kltn-docs 03 BR-13: a carton holds the SKU's standard count; one of another count is not received. */
+    RECEIPT_PACKAGE_NOT_STANDARD("A carton must hold the SKU's standard count", 422),
     /** SCRUM-92: no putaway task with this id. */
     PUTAWAY_TASK_NOT_FOUND("Putaway task not found", 404),
     /** SCRUM-92: the task has been put away completely; nothing is left to move. */
@@ -294,96 +239,245 @@ public enum ErrorCode {
     PUTAWAY_LPN_MISMATCH("The scanned carton is not the one this putaway task is for", 409),
     /** SCRUM-92: the chosen target is a storage area; goods are put away into bins. */
     PUTAWAY_TARGET_NOT_BIN("Goods are put away into a bin, not a storage area", 422),
-    /** SCRUM-92: the bin's storage class is not the one the item must be kept in. */
-    LOCATION_STORAGE_CLASS_MISMATCH("The storage class of this bin does not fit the item", 409),
-    /** SCRUM-92: the putaway would take the bin past its capacity in units or its weight limit. */
-    LOCATION_CAPACITY_EXCEEDED("This bin cannot take that many units or that much weight", 409),
+    /** SCRUM-92, kltn-docs 05 BR-03: the putaway would take the bin past its computed volume or its weight limit. */
+    LOCATION_CAPACITY_EXCEEDED("This bin has no room left for this carton", 409),
+    /**
+     * kltn-docs 06 BR-01, 11 BR-10: a carton does not fit the bin dimension by dimension, even turned on the
+     * horizontal when its item allows. Every move of a carton into a bin is refused for it: putaway, put-back, a move.
+     */
+    CARTON_DOES_NOT_FIT_BIN("This carton does not fit the bin", 422),
+    /**
+     * kltn-docs 06 BR-23: resizing a bin, a level's clear height or a carton unit would leave a carton standing where it
+     * no longer fits, or a bin holding more volume than it has. The details list the bins and cartons; move them first.
+     */
+    CARTONS_WOULD_NOT_FIT("This change would leave cartons that no longer fit where they stand", 409),
+    /** kltn-docs 05 BR-13: a carton goes to the OVERFLOW area only when no bin of its warehouse takes it. */
+    PUTAWAY_OVERFLOW_NOT_ALLOWED("A bin can still take this carton; put it away into a bin", 409),
+    /** Kltn-docs 05 §4.5: no putaway trip with this id. */
+    PUTAWAY_TRIP_NOT_FOUND("Putaway trip not found", 404),
+    /** Kltn-docs 05 BR-15: a clerk has one open putaway trip (LOADING or IN_PROGRESS) at a time. */
+    PUTAWAY_TRIP_ALREADY_OPEN("You already have a putaway trip open", 409),
+    /** Kltn-docs 05 §5: the trip is not in the status this step needs (loading a cart that left, closing a closed one). */
+    PUTAWAY_TRIP_INVALID_STATE("This putaway trip is not in a state that allows this", 409),
+    /** Kltn-docs 05 §5: a trip sets off with at least one carton on the cart. */
+    PUTAWAY_TRIP_EMPTY("The cart has no carton; scan cartons onto it first", 422),
+    /** Kltn-docs 05 BR-15: a carton is on one open cart at most; this one is on somebody else's. */
+    PUTAWAY_TASK_ON_ANOTHER_TRIP("This carton is on the cart of another putaway trip", 409),
+    /** Kltn-docs 05 §4.5: the scanned carton is not on this trip's cart. */
+    PUTAWAY_CARTON_NOT_ON_TRIP("This carton is not on the cart of this putaway trip", 409),
+    /** Kltn-docs 05 §4.5 step 17: a trip is worked and closed by its own clerk; a warehouse manager may close it. */
+    PUTAWAY_TRIP_NOT_YOURS("This putaway trip belongs to another clerk", 403),
     /**
      * SCRUM-473: a line with cartons names the active packing unit they are in; a loose line counts in the base unit
      * and claims no packing unit it holds no carton of.
      */
     RECEIPT_LINE_UNIT_INVALID("A receipt line counts in its item's base unit, or in an active packing unit it has cartons of", 422),
-    /** The PO line is closed, cancelled or fully received: nothing more is received against it. */
-    PO_LINE_NOT_OPEN("This purchase order line is no longer open for receiving", 409),
-    /** One stock row per SKU, location and lot: quarantined and rejected goods need two areas. */
-    QC_LOCATIONS_MUST_DIFFER("Quarantined and rejected goods go to two different quarantine areas", 409),
-    QC_REASON_REQUIRED("Quarantined or rejected goods need a reason (BR-08)", 400),
-    QC_TARGET_LOCATION_REQUIRED("Quarantined or rejected goods need the quarantine area they go to", 400),
     RECEIPT_LINE_NOT_FOUND("This receipt has no such line", 404),
-    /** SCRUM-434: a SUBCONTRACT purchase order goes only to a supplier flagged print subcontractor. */
-    SUPPLIER_NOT_SUBCONTRACTOR("This supplier is not a print subcontractor", 409),
-    /** BR-PRD-08: a new design goes to print only after the customer approved its sample. */
-    DESIGN_SAMPLE_NOT_APPROVED("A design on this order has no approved sample yet", 409),
-    /** SCRUM-394: a sample round moves only along 03-state-machines §17. */
-    INVALID_SAMPLE_REQUEST_TRANSITION("This sample request cannot move to that status right now", 409),
+    /** Photos of a delivery or of one of its lines: a bounded set, not an album. */
+    GOODS_RECEIPT_PHOTO_LIMIT_REACHED("This receipt has as many photos here as it may hold", 409),
     /** BR-ORD-007 / BR-CUS-003: new work (a sample round, a quote, an order) is only for an ACTIVE customer. */
     CUSTOMER_NOT_ACTIVE("This customer is not active and cannot take on new work", 409),
-    /** SCRUM-394: a sample linked to a quote prints a design and blank of that quote, for its customer. */
-    SAMPLE_QUOTE_MISMATCH("The quote is not for this customer, design and blank", 409),
     /** SCRUM-394: a sample is linked only to a quote still being negotiated. */
     QUOTE_NOT_OPEN("The quote is no longer open", 409),
-    /** SCRUM-394: a round that ended in CHANGES_REQUESTED is followed by exactly one next round. */
-    SAMPLE_NEXT_ROUND_EXISTS("The next round of this sample request has already been started", 409),
-    /** SCRUM-396..401: a production order moves only along 03-state-machines §16. */
-    INVALID_PRODUCTION_TRANSITION("This production order cannot move to that status right now", 409),
-    /** BR-PRD-02: the print file no longer matches the design the order locked. */
-    PRINT_FILE_MISMATCH("The print file does not match the locked design", 409),
-    /** SCRUM-397: a hold issued to production is live, its owner's, and no longer waits for payment. */
-    RESERVATION_NOT_ISSUABLE("This stock hold cannot be issued", 409),
-    /** BR-PRD-03: never more blanks than the production order still needs. */
-    ISSUE_EXCEEDS_REQUIREMENT("More blanks than the production order still needs", 409),
-    /** Review of #109: goods past their expiry cannot move to a new location; they are written off (EXPIRED). */
-    STOCK_EXPIRED("This stock is past its expiry date and can only be written off", 409),
-    /**
-     * SCRUM-475: more units reported damaged than the stock row has free. Held units are reported where they are
-     * taken - a picker's damage report (SCRUM-277) - so their order learns of it in the same transaction.
-     */
-    DAMAGE_EXCEEDS_FREE_STOCK("More units reported damaged than this stock has free", 409),
-    /** SCRUM-475: the warehouse has no usable quarantine area that can take these damaged goods. */
-    DAMAGE_AREA_MISSING("This warehouse has no quarantine area that can take these damaged goods", 409),
-    /** SCRUM-475, four eyes: whoever reported damaged stock does not decide what happens to it. */
-    DAMAGE_SELF_DISPOSITION("A damage report cannot be decided by the person who reported it", 409),
-    /** SCRUM-475: a decision covers no more units than the damage report still has waiting. */
-    DAMAGE_DISPOSITION_EXCEEDS_PENDING("More units than this damage report still has waiting for a decision", 409),
-    /** SCRUM-277: damaged units an order still holds (its pick line is short) wait for the order to be reallocated. */
-    DAMAGED_STOCK_HELD("These damaged units are still allocated to an order; reallocate its short pick line first", 409),
-    /** A hand-over to the supplier names a RETURN_TO_SUPPLIER decision whose goods have not left yet. */
-    DAMAGE_RETURN_NOT_SHIPPABLE("Only goods decided for the supplier are handed to it, and once", 409),
-    /** SCRUM-475: restored goods go back onto an active bin of the warehouse they were damaged in. */
-    DAMAGE_RESTORE_LOCATION_INVALID("Restored goods go back onto an active bin of the same warehouse", 409),
-    /** SCRUM-409: the location scanned at a blank issue is not where the hold's goods are. */
-    ISSUE_LOCATION_MISMATCH("The scanned location is not where this hold's blanks are", 409),
-    /** SCRUM-409: the SKU or barcode scanned at a blank issue is not the hold's. */
-    ISSUE_ITEM_MISMATCH("The scanned item is not this hold's SKU", 409),
-    /** BR-PRD-01: a source already has a production order, and it describes different work. */
-    PRODUCTION_SOURCE_CONFLICT("A production order already exists for this source with different content", 409),
     /** SCRUM-448: a quote moves only along 03-state-machines §18. */
     INVALID_QUOTE_TRANSITION("This quote cannot move to that status right now", 409),
     /** BR-ORD-008: a quote is answered only within its validity. */
     QUOTE_EXPIRED("This quote is no longer valid", 409),
     /** BR-ORD-007: a quoted line is ordered at or above its minimum order quantity. */
     QUOTE_BELOW_MOQ("The quantity is below the minimum order quantity of the quote", 409),
-    /** Reorder: only an order placed from a quote is re-quoted; a price-list order is simply placed again. */
-    /** R1: a reorder line the price list cannot price waits for Sales; nothing is sent or accepted unpriced. */
+    /**
+     * R1: a line drafted without a price - only a reorder drafted before team plan 5-2 has one - waits for Sales;
+     * nothing is sent or accepted unpriced.
+     */
     QUOTE_NOT_PRICED("A line of this quote has no price yet; Sales enters it before the quote is sent", 409),
-    ORDER_NOT_QUOTED("This order was not placed from a quote; order it again at the current price", 409),
-    /** BR-PRD-09: a deposit order goes to production only once the deposit has arrived. */
-    ORDER_DEPOSIT_NOT_RECEIVED("The deposit for this order has not arrived yet", 409),
-    /** SCRUM-460: from IN_PRODUCTION on, a customer asks and Sales or the coordinator decides. */
+    /** 4B-2, QD-16: a quote drafted on blanks and designs before the customer's own SKUs is kept to read. */
+    QUOTE_LINES_LEGACY("This quote was drafted on blanks and designs; quote the customer's own SKUs instead", 409),
+    /** 4B-3 (kltn-docs 14 §4.1 step 3, BR-21): a line's VAT follows its product's tax class, which is not set yet. */
+    QUOTE_TAX_CLASS_MISSING("A product on this quote has no tax class; set it before the quote is sent", 409),
+    /** 4B-3 (kltn-docs 14 BR-17): a SKU produced for the first time is sent with its plate fee. */
+    QUOTE_PLATE_FEE_MISSING("A SKU on this quote is produced for the first time and has no plate fee; edit the quote",
+            409),
+    /** 4B-4 (kltn-docs 14 §4.3): the order has no live sales contract, or no contract by that id. */
+    SALES_CONTRACT_NOT_FOUND("No sales contract for this order", 404),
+    /** 4B-4 (14 BR-12): one live contract per order. */
+    SALES_CONTRACT_EXISTS("This order already has a sales contract in force; cancel it to draw up another", 409),
+    /** 4B-4 (14 §4.3 step 11). */
+    SALES_CONTRACT_ORDER_NOT_DRAFT("A sales contract is drawn up, edited and sent for a draft order", 409),
+    /** 4B-4 (14 BR-23): the delivery schedule counts cartons. */
+    SALES_CONTRACT_ORDER_NOT_CARTONS("A sales contract schedules cartons of the customer's own SKUs; this order has lines not ordered in cartons", 409),
+    /** 4B-4 (14 §5.2, BR-14): the contract's state machine. */
+    SALES_CONTRACT_STATUS_INVALID("The sales contract is not in a status that allows this", 409),
+    /** 4B-4 (14 BR-23): batches, windows and cartons; the field errors name each rule broken. */
+    DELIVERY_SCHEDULE_INVALID("The delivery schedule breaks a rule of the contract", 409),
+    /** 4B-4 (14 BR-13): installments adding up to the total with tax; the field errors name each rule broken. */
+    PAYMENT_PLAN_INVALID("The payment plan breaks a rule of the contract", 409),
+    /** 4B-4 (18 BR-05). */
+    CUSTOMER_LEGAL_PROFILE_MISSING("The customer's registered address and legal representative are recorded before a contract is drawn up", 409),
+    /** 4B-4 (18 §3): the legal profile read before it was recorded. */
+    LEGAL_PROFILE_NOT_FOUND("The customer's legal profile is not recorded yet", 404),
+    /** 4A-2: no production order with that id (for a warehouse-bound caller: none received at their warehouses). */
+    PRODUCTION_ORDER_NOT_FOUND("Production order not found", 404),
+    /** 4A-2 (17 §5.3): the production order's status does not allow this. */
+    PRODUCTION_ORDER_STATUS_INVALID("The production order is not in a status that allows this", 409),
+    /** 4A-2 (17 BR-23): the one who drew a production order up does not approve it. */
+    PRODUCTION_ORDER_SELF_APPROVAL("A production order is approved by someone who did not draw it up", 409),
+    /** 4A-2 (17 BR-05): production orders come from a confirmed order of a contract with a shipping warehouse. */
+    PRODUCTION_ORDER_NOT_ALLOWED("A production order is drawn up for a confirmed order of a contract", 409),
+    /** 4A-2 (17 BR-05): the delivery batch lacks nothing - held, or on its way. */
+    PRODUCTION_ORDER_NOTHING_SHORT("The delivery batch lacks nothing to produce", 409),
+    /** 4A-2: a line makes no more than its delivery batch lacks. */
+    PRODUCTION_ORDER_EXCEEDS_SHORTAGE("A line makes more cartons than the delivery batch lacks", 409),
+    /**
+     * 4A-5 (kltn-docs 03 BR-01, BR-15): goods are received against a production order IN_PRODUCTION or
+     * PARTIALLY_RECEIVED - or SENT / ACCEPTED when no print sample is to be approved first - and nothing else.
+     */
+    PRODUCTION_ORDER_NOT_RECEIVABLE("Goods cannot be received against this production order now", 409),
+    /** 4A-5 (03 BR-02): the cartons on the receipts not cancelled, drafts included, never exceed what the line orders. */
+    RECEIPT_EXCEEDS_PRODUCTION_ORDER("More cartons than the production order line orders", 409),
+    /** 4A-5 (03 edge cases): a production order with a draft receipt is neither cancelled nor closed. */
+    PRODUCTION_ORDER_HAS_DRAFT_RECEIPTS("A receipt against this production order is still a draft; confirm or cancel it first", 409),
+    /** 4A-5 (03 §4.1 step 2): a receipt line counts a line of the receipt's production order. */
+    RECEIPT_LINE_NOT_ON_PRODUCTION_ORDER("This line is not a line of the receipt's production order", 409),
+    /** 4A-5 (03 BR-12, BR-13): every carton received holds exactly the SKU's standard count. */
+    RECEIPT_CARTON_NOT_STANDARD("A carton received holds exactly the standard count of its SKU", 422),
+    /**
+     * 4A-4 (17 BR-24): with a print sample to approve, mass printing starts when the customer approves it - not when the
+     * coordinator records it.
+     */
+    PRODUCTION_ORDER_SAMPLE_REQUIRED("The customer approves this production order's print sample before mass printing", 409),
+    /** 4A-4 (17 BR-24): a production order without a print sample to approve has no sample rounds. */
+    PRODUCTION_ORDER_SAMPLE_NOT_REQUIRED("This production order has no print sample to approve", 409),
+    /**
+     * 4A-4 (17 §4.3 step 9): a new round follows the customer's reprint request of the round before; one round waits
+     * for the customer at a time.
+     */
+    SAMPLE_ROUND_NOT_OPENABLE("A new print sample round follows the customer's request to print it again", 409),
+    /** 4A-4 (13 BR-13): no such round - or, for a customer, none of their own production orders'. */
+    SAMPLE_ROUND_NOT_FOUND("Print sample round not found", 404),
+    /** 4A-4 (13 BR-13): a round takes one answer, on the storefront or through the chat card, and keeps it. */
+    SAMPLE_ROUND_ANSWERED("This print sample round has been answered already", 409),
+    /** 4A-2: an INACTIVE producer takes no new production order. */
+    PRODUCER_INACTIVE("This producer takes no new production order", 409),
+    /** 4A-2 (17 BR-05): the print files changed since the design was approved. */
+    PRINT_FILE_MISMATCH("The print files no longer match the approved design", 409),
+    /** 4A-1: no producer with that id. */
+    PRODUCER_NOT_FOUND("Producer not found", 404),
+    /** 4A-1: a producer's code identifies it for good. */
+    PRODUCER_CODE_TAKEN("A producer has this code already", 409),
+    /** 4A-3: a link to a production order's files that was not made by this system, or names something else. */
+    PRODUCTION_ORDER_LINK_INVALID("This link is not valid", 403),
+    /** 4A-3: a link to a production order's files that has expired, or whose production order is no longer open. */
+    PRODUCTION_ORDER_LINK_EXPIRED("This link has expired, or its production order is no longer open", 410),
+    /** 4A-3: a production order sent before slips were kept, or not sent yet. */
+    PRODUCTION_ORDER_SLIP_NOT_FOUND("The production order has no slip", 404),
+    /** 4A-3: the digest the store keeps for the slip is no longer the one recorded when it was sent. */
+    PRODUCTION_ORDER_SLIP_MISMATCH("The stored slip no longer matches what was sent", 409),
+    /** 4A-3: a production order's message to its producer cannot go again now (not open, not e-mailed, on its way). */
+    PRODUCTION_ORDER_RESEND_NOT_ALLOWED("The production order's message cannot be sent to its producer again now", 409),
+    /** 4B-7 (17 §4.2 step 2): only a CONFIRMED order of a contract gets a shipping warehouse. */
+    ORDER_SHIPPING_WAREHOUSE_NOT_ALLOWED("The shipping warehouse is chosen for a confirmed order of a contract", 409),
+    /** 4B-7 (17 BR-22): the shipping warehouse changes only while nothing is held for the order. */
+    ORDER_SHIPPING_WAREHOUSE_LOCKED("Stock is held at the order's shipping warehouse; it can no longer change", 409),
+    /** 4B-7 (17 BR-22): an order of a contract is released from its shipping warehouse only. */
+    ORDER_SHIPPING_WAREHOUSE_MISMATCH("The order ships from another warehouse", 409),
+    /** 4B-5: an order confirmed by its contract holds no stock until its shipping warehouse is chosen (4B-7). */
+    ORDER_STOCK_NOT_HELD("This order holds no stock yet; its shipping warehouse is chosen and its stock held first", 409),
+    /** 4B-8: no delivery batch with that id on the order's signed contract. */
+    DELIVERY_BATCH_NOT_FOUND("Delivery batch not found on this order", 404),
+    /**
+     * 4B-8 (17 BR-29): delivery batches are released one at a time, in schedule order, each once the one before it was
+     * handed over; the one named is not the next.
+     */
+    DELIVERY_BATCH_NOT_NEXT("This is not the order's next delivery batch to release", 409),
+    /** 4B-8 (09 BR-04, 17 BR-29): a batch's goods leave from the first day of its delivery window. */
+    DELIVERY_BATCH_WINDOW_NOT_OPEN("This delivery batch's window has not opened yet", 409),
+    /** 4B-8 (17 BR-28): a window moves only while no carton of the batch was handed over. */
+    DELIVERY_BATCH_WINDOW_LOCKED("Goods of this delivery batch were handed over; its window no longer moves", 409),
+    /**
+     * 4B-8 (09 BR-18): the vehicle is not handed over at all while an order on it may not let goods leave;
+     * {@code details} lists each order, why, and what it still owes.
+     */
+    LOAD_HANDOVER_BLOCKED("Some orders on this vehicle may not be handed over yet", 409),
+    /** WF-05 E2: no e-invoice with that id. */
+    EINVOICE_NOT_FOUND("E-invoice not found", 404),
+    /** F-13: also the answer for another customer's conversation - a conversation id means something to its customer only. */
+    CHAT_CONVERSATION_NOT_FOUND("Conversation not found", 404),
+    /**
+     * kltn-docs 16 BR-02: the document a conversation was to be about does not exist, or is not the conversation's
+     * customer's - one answer for both, so the chat cannot be used to learn which documents exist.
+     */
+    CHAT_CONTEXT_NOT_FOUND("The document to talk about was not found", 404),
+    CHAT_MESSAGE_NOT_FOUND("Message not found", 404),
+    /** A saved reply that does not exist, is archived, or is another agent's own. */
+    CHAT_CANNED_RESPONSE_NOT_FOUND("Saved reply not found", 404),
+    /** WF-05 E2 (kltn-docs 21 §5.1): the e-invoice's status does not allow this - an issued invoice above all, which is never cancelled or changed (TT 91 Điều 10). */
+    EINVOICE_INVALID_TRANSITION("The e-invoice's status does not allow this", 409),
+    /** WF-05 E2 (21 BR-03): only a draft e-invoice is corrected. */
+    EINVOICE_NOT_DRAFT("Only a draft e-invoice can be changed", 409),
+    /** WF-05 E2 (21 BR-06; NĐ 254 Phụ lục điểm 4.b): the buyer's name, tax code or address is missing, so the invoice is not issued. */
+    EINVOICE_BUYER_PROFILE_INCOMPLETE("The buyer's name, tax code and address are needed before the invoice is issued", 409),
+    /** WF-05 E2 (21 BR-01): the shipment is not delivered, or delivered nothing an invoice can carry. */
+    EINVOICE_NOT_INVOICEABLE("This shipment cannot be invoiced: it is not delivered", 409),
+    /**
+     * WF-05 E2 (NĐ 254 Điều 9 khoản 1; WF05-E0 L6): the delivered shipment has no delivery time, and the invoice is
+     * dated by it - never by today. A code of its own because it reaches the accountants as the cause of an
+     * {@code EInvoiceDraftFailed}, and it tells them what to correct.
+     */
+    EINVOICE_DELIVERY_TIME_MISSING("The delivery has no delivery time to date its invoice by; record it first", 409),
+    /** WF-05 E2 (TT 91 Điều 4): no invoice series is in use at the provider for the invoice's year. */
+    EINVOICE_SERIES_NOT_CONFIGURED("No invoice series is configured for the invoice's year", 409),
+    /**
+     * WF-05 E2 (NĐ 254 Phụ lục điểm 2; TT 91 Điều 10 khoản 6a): an invoice of the same year dated earlier is still to be
+     * issued; issuing this one first would give it the lower number, and numbers would run against the dates.
+     */
+    EINVOICE_OLDER_DRAFT_PENDING("An invoice dated earlier is still to be issued; issue that one first, or void it", 409),
+    /** WF-05 E2: the e-invoice is not issued, so it has no XML or PDF yet. */
+    EINVOICE_NOT_ISSUED("The e-invoice is not issued yet", 409),
+    /** WF-05 E2: the e-invoice provider is not configured, or did not answer; nothing is known about the transaction until it is asked again. */
+    EINVOICE_PROVIDER_UNAVAILABLE("The e-invoice provider is not available right now; the invoice will be checked again", 503),
+    /** WF-05 E3: a real e-invoice provider is put in use only once its account is stored. */
+    EINVOICE_PROVIDER_ACCOUNT_INCOMPLETE("The e-invoice provider's account is not stored yet", 409),
+    /** WF-05 E3: an invoice at the provider is sent as a new transaction only when the provider no longer remembers the old one and confirms it holds no such invoice. */
+    EINVOICE_RESUBMISSION_REFUSED("The e-invoice cannot be sent as a new transaction: the provider may hold it", 409),
+    /** WF-05 E3+E4: the provider in use writes every invoice as an original, so a correction sent to it would be a second invoice. */
+    EINVOICE_PROVIDER_CANNOT_CORRECT("The e-invoice provider in use cannot issue adjustments or replacements yet; the correction is kept as a draft", 409),
+    /** WF-05 E4 (TT 91 Điều 10): only an issued invoice still in force is adjusted, replaced or notified as drawn up wrongly. */
+    EINVOICE_NOT_IN_FORCE("Only an issued e-invoice that is still in force can be corrected", 409),
+    /** WF-05 E4 (TT 91 Điều 10 khoản 6 điểm a): an invoice already adjusted is adjusted again, one replaced is replaced again. */
+    EINVOICE_CORRECTION_FORM_FIXED("This e-invoice is already being corrected in the other form; the form first used is kept", 409),
+    /** WF-05 E4: the correction asked for is not one the law gives for this invoice (an adjustment of an adjustment, a return that adds, an agreement where none is asked). */
+    EINVOICE_CORRECTION_NOT_APPLICABLE("This correction does not apply to this e-invoice", 409),
+    /** WF-05 E4 (TT 91 Điều 10 khoản 1 điểm b): the correction of an error is not sent without the written agreement with the buyer. */
+    EINVOICE_AGREEMENT_REQUIRED("The written agreement with the buyer - its file, number and date - is needed before the correction is issued", 409),
+    /** WF-05 E4: adjustments may not reduce an invoice below nothing. */
+    EINVOICE_ADJUSTMENT_EXCEEDS_INVOICE("The adjustment would reduce the e-invoice by more than it holds", 409),
+    /** WF-05 E4: no such 04/SS-HĐĐT notice on this invoice. */
+    EINVOICE_ERROR_NOTICE_NOT_FOUND("Notice of an e-invoice drawn up wrongly not found", 404),
+    /** WF-05 E4: a notice of this invoice is still on its way, or the notice asked about is already answered. */
+    EINVOICE_ERROR_NOTICE_NOT_SENDABLE("This notice cannot be recorded or sent now: another one of the invoice is still open, or it is already answered", 409),
+    /** 4B-4, WF-05 E2: stockflow.seller.* is blank in this deployment; no contract or invoice names a seller. */
+    SELLER_PROFILE_UNAVAILABLE("The seller's company details are not configured; contracts and invoices cannot be drawn up", 503),
+    /**
+     * 4B-2 (kltn-docs 14 BR-04, 13 BR-02): a quote line, an order line placed from one, or a customer price names one
+     * of the customer's own SKUs - not a stock variant or a blank. Another customer's SKU answers VARIANT_NOT_FOUND.
+     */
+    CUSTOMER_SKU_REQUIRED("Only the customer's own SKUs are quoted and priced for them", 409),
+    /** 4B-2 (kltn-docs 01 BR-03, BR-11): a SKU is sold in cartons, and this one has no single carton unit. */
+    CARTON_SPEC_MISSING("This SKU has no carton specification; it is sold in cartons", 409),
+    /**
+     * A legacy print line - a blank with a design snapshot, placed before lines named the customer's own SKU (4B-2) -
+     * names the blank its design is printed on, whose printed goods were never received into stock: releasing would
+     * allocate, pick and ship plain blanks. A line of the customer's own SKU is not refused: its goods arrive printed,
+     * received against a production order, as stock (4A-6, team plan QD-16).
+     */
+    ORDER_PRINT_GOODS_NOT_RECEIVED("This order has printed goods that are not in stock yet; it is released once they "
+            + "are received from the producer", 409),
+    /** SCRUM-460: once released, a customer asks and Sales decides. */
     ORDER_NOT_CANCELLABLE("This order can no longer be cancelled; raise a return instead", 409),
     /** Audit of #109 (decision 2026-10-17): before printing a cancellation is refunded in full - nothing is kept. */
     CANCELLATION_FEE_BEFORE_PRINTING("Printing has not started: the order is refunded in full, no fee is kept", 409),
     /** Work for an order that has been cancelled (printing started, a package completed) is refused. */
     ORDER_CANCELLED("This order is cancelled", 409),
-    /**
-     * Review 2026-10-25 of S6: production completes a print line short only within what the customer agreed with Sales,
-     * recorded on the order line.
-     */
-    PRODUCTION_SHORTFALL_NOT_AGREED("The customer has not agreed to go without these units: Sales records it on the "
-            + "order first", 409),
-    /** The same review: who recorded the customer's agreement does not also close the shortfall (four eyes). */
-    PRODUCTION_SHORTFALL_SELF_APPROVAL("The customer's agreement was recorded by you: someone else completes the job "
-            + "short", 409),
     /** Decision 2026-10-17: once printing started, only staff cancel an order (fee, blanks, printed goods). */
     CANCELLATION_NEEDS_STAFF("Printing has started: staff decide this order's cancellation", 409),
     ORDER_CANCELLATION_REQUEST_PENDING("A cancellation request for this order is already waiting for a decision", 409),
@@ -408,37 +502,21 @@ public enum ErrorCode {
     /** A defect is approved on evidence: at least one photo of the problem. */
     RETURN_EVIDENCE_REQUIRED("Add at least one photo of the problem before the return is approved", 409),
     RETURN_EVIDENCE_LIMIT_REACHED("This return has as many photos as it may hold", 409),
-    /** Goods worth more than the no-return threshold must come back before anything is credited. */
-    RETURN_GOODS_REQUIRED("Goods of this value must be sent back before the return is decided", 409),
-    /** OQ-12 / BR-RMA-002: printed goods never go back on sale; only stock items that pass QC do. */
-    RETURN_RESTOCK_NOT_ALLOWED("Only plain stock goes back on sale; custom-printed goods never do", 409),
+    /** Kltn-docs 17 BR-18 (team plan 4D-3): the goods of an approved return always come back on a return receipt. */
+    RETURN_GOODS_REQUIRED("The goods of this return must be sent back before it is refunded", 409),
     /**
-     * Four eyes on anything of value (BR-PAY-003 without approver limits): a claim Sales opened, a resolution, the
-     * withdrawal of a replacement - each approved by someone else than who opened or proposed it.
+     * Four eyes on anything of value (BR-PAY-003 without approver limits): a claim Sales opened, and a refund - each
+     * approved by someone else than who opened or proposed it.
      */
     RETURN_SELF_APPROVAL("A return cannot be approved by the person who opened or proposed it", 409),
-    /** Rejected units are still the customer's: scrapped only when the customer agreed, and the consent is recorded. */
-    RETURN_DISPOSAL_CONSENT_REQUIRED("Rejected goods belong to the customer: send them back, or record the customer's "
-            + "consent to scrap them", 409),
-    /** Goods back on sale go to a usable bin of the warehouse that received them, where they can be picked. */
-    RETURN_RESTOCK_LOCATION_INVALID("Returned goods go back on sale at a usable bin of the same warehouse", 409),
-    /** A free replacement order is cancelled only by withdrawing it through its return, which credits the units. */
-    RETURN_REPLACEMENT_ORDER_LOCKED("A replacement order is cancelled through its return, which credits the units "
-            + "instead", 409),
-    /** The replacement order already left for picking or shipping: it can no longer be withdrawn. */
-    RETURN_REPLACEMENT_NOT_WITHDRAWABLE("This replacement order can no longer be withdrawn", 409),
-    /** Approved units have not arrived yet: QC waits, or says no more parcels are coming. */
-    RETURN_PARCELS_OUTSTANDING("Approved units of this return have not arrived yet", 409),
-    /** The order received less money than the refund asks; credit the rest instead. */
-    RETURN_REFUND_EXCEEDS_PAID("The refund is more than the order has received", 409),
-    /** A customer with overdue receivables is credited, never paid out in cash. */
-    RETURN_REFUND_CUSTOMER_OVERDUE("The customer has overdue receivables: credit the return against them instead of "
-            + "refunding cash", 409),
-    /** BR-CUS-003: a customer who is not ACTIVE opens no return themselves and gets no new (replacement) order. */
+    /** BR-CUS-003: a customer who is not ACTIVE opens no return themselves. */
     RETURN_CUSTOMER_NOT_ACTIVE("The customer account is not active", 409),
-    /** Returned goods are received into a quarantine or QC area, never straight onto a bin (OQ-12). */
-    RETURN_RECEIVING_LOCATION_INVALID("Returned goods are received into a quarantine or QC area of the warehouse", 409),
-    PAYMENT_TERM_NOT_ALLOWED("This payment term is not available for this order", 409),
+    /**
+     * Team plan 4D-3 (kltn-docs 15 §4.5): a return is refunded against the order's installments; an order paid any
+     * other way (a checkout order of before contracts) has none, and its return is refunded outside the system.
+     */
+    RETURN_REFUND_NO_INSTALLMENTS("This order is not paid through a contract's installments; refund it outside the "
+            + "system", 409),
     /** SCRUM-427: credit approval or refusal on an order that is not waiting for one. */
     ORDER_NOT_ON_CREDIT_HOLD("This order is not waiting for a credit decision", 409),
     /** G3-2 (SCRUM-246/247): the order's lifecycle has no edge from its status to the one asked for. */
@@ -447,8 +525,24 @@ public enum ErrorCode {
     ORDER_NOT_ON_HOLD("This order is not on hold", 409),
     /** G3-2: a credit hold is decided through credit approval, not resolved like the others. */
     ORDER_CREDIT_HOLD_USE_APPROVAL("A credit hold is decided through credit approval", 409),
-    /** G3-2 review: a design-mismatch hold is resolved by QC reverifying the package, which releases both. */
-    ORDER_DESIGN_HOLD_USE_REVERIFICATION("A design hold is resolved by reverifying the package", 409),
+    /**
+     * WF-05 fix plan, section 2: a hold for a failed delivery is lifted by deciding its delivery failure case - deliver
+     * again, or cancel what was not delivered - not resolved with a note.
+     */
+    ORDER_DELIVERY_FAILURE_USE_DECISION("This order is held for a failed delivery; decide to deliver again or to "
+            + "cancel what was not delivered", 409),
+    /** WF-05 fix plan, section 2: no delivery failure case of that id on that order. */
+    DELIVERY_FAILURE_CASE_NOT_FOUND("Delivery failure case not found", 404),
+    /** WF-05 fix plan, section 2: the case is not where that step starts from (decided already, not released, ...). */
+    DELIVERY_FAILURE_INVALID_TRANSITION("This delivery failure case cannot take that step now", 409),
+    /**
+     * WF-05 review N1: cancelling what a failed delivery left undelivered on an order that still owes units but is
+     * neither held for the failed delivery nor partly fulfilled - on hold for another reason, or packed. Closing it
+     * there would cancel the case and leave its units owed with nothing to deliver them; resolve the hold, or let what
+     * is packed leave, first.
+     */
+    DELIVERY_FAILURE_REST_NOT_CLOSABLE("What this order has not delivered cannot be closed now: resolve its other "
+            + "hold first, or wait until what is packed has left", 409),
     /** G4-Q5: an order with shipments records its delivery outcome per shipment, not for the whole order. */
     ORDER_DELIVERY_VIA_SHIPMENT("This order's delivery is recorded per shipment", 409),
     /** G3-Q4: money due before the goods leave has not all arrived; the handover waits for it. */
@@ -461,69 +555,59 @@ public enum ErrorCode {
     ORDER_SHIPMENT_QUANTITY_EXCEEDED("More than this order line has left to ship", 409),
     /** G3-2: a shipment outcome its status does not allow (kltn-docs 09 §5). */
     ORDER_SHIPMENT_INVALID_TRANSITION("This shipment cannot move to that status now", 409),
-    /** SCRUM-431, kltn-docs 15 BR-07: one bank statement line is recorded once. */
-    TRANSFER_REFERENCE_ALREADY_RECORDED("This transfer was already recorded", 409),
-    ALLOCATION_CUSTOMER_MISMATCH("This receivable or order belongs to another customer", 409),
     /** SCRUM-431, kltn-docs 15 §4.3 step 4: an overdue customer gets no new credit until they pay. */
     CUSTOMER_CREDIT_OVERDUE("The customer has overdue receivables", 409),
-    /** G2-3 (the money ledger): no recorded transfer by that id. */
-    TRANSFER_NOT_FOUND("Transfer not found", 404),
-    /** G2-3: no allocation by that id on this transfer. */
-    ALLOCATION_NOT_FOUND("Allocation not found", 404),
-    /** G2-3: more than the transfer still has unallocated (15 BR-05: money is never spent twice). */
-    ALLOCATION_EXCEEDS_TRANSFER("More than this transfer has left to allocate", 409),
-    /** G2-3: more than the order may still take - its value less what it holds, owes on receivables or pays the carrier. */
-    ALLOCATION_EXCEEDS_AMOUNT_DUE("More than this order still has to be paid", 409),
-    /** G2-3, 15 edge "tiền về sau khi đơn đã huỷ": the money stays the customer's credit, for another order or a refund. */
-    ALLOCATION_ORDER_CANCELLED("This order is cancelled: keep the money as the customer's credit or refund it", 409),
-    /** G2-3: a draft, settled or credit order takes no money by allocation (a credit order is paid on its receivables). */
-    ALLOCATION_ORDER_NOT_PAYABLE("This order does not take a payment now", 409),
-    /** G2-3, 15 BR-06: an allocation is reversed once, and a reversal is not reversed. */
-    ALLOCATION_ALREADY_REVERSED("This allocation was already reversed", 409),
-    /** G2-3: taking the money back would leave a confirmed order unpaid; the accountant must agree to hold it. */
-    PAYMENT_REVERSAL_NEEDS_HOLD("Taking this money back leaves a confirmed order unpaid: confirm putting it on hold", 409),
-    /** G2-3: money already refunded, or the order settled, closed or cancelled: the reversal would rewrite history. */
-    PAYMENT_REVERSAL_NOT_ALLOWED("This payment can no longer be taken back", 409),
+    /** 4B-6: no installment with that id (for a customer: none of theirs). */
+    INSTALLMENT_NOT_FOUND("Installment not found", 404),
+    /** 4B-6, 15 BR-05: a paid or cancelled installment takes no more money. */
+    INSTALLMENT_NOT_PAYABLE("This installment is paid or cancelled; it takes no more money", 409),
+    /** 4B-6, 15 BR-05: a receipt pays installments of its own customer only. */
+    INSTALLMENT_CUSTOMER_MISMATCH("This installment belongs to another customer", 409),
     /**
-     * SCRUM-190 (kltn-docs 14 edge case "trùng đơn"): the same customer placed an order with the same lines recently.
-     * Nothing is created; {@code details} names that order ({@code orderId}, {@code orderNumber}, {@code placedAt}) and
-     * the client asks the customer, then resends with {@code confirmDuplicate: true}.
+     * WF-05 fix plan, section 8: OVERDUE is no longer a status any installment is in - overdue is the flag
+     * {@code overdue=true}. A filter on the old status would answer an empty list, which reads as "nothing overdue".
      */
-    DUPLICATE_ORDER_SUSPECTED("An order with the same items was placed recently; confirm to place another", 409),
-    /** G2-3 (15 §4.2 step 3): the customer's terms do not let the balance be collected that way. */
-    BALANCE_POLICY_NOT_ALLOWED("This customer may not use that way of paying the balance", 409),
-    /**
-     * BALCREDIT (lead's decision 2026-10-21): a deposit order's balance on credit would take the customer past their
-     * credit limit, or they are overdue. Refused at placement, never held: Sales changes the terms.
-     */
-    BALANCE_CREDIT_LIMIT_EXCEEDED("The balance on credit would exceed the customer's credit limit", 409),
+    INSTALLMENT_OVERDUE_IS_A_FLAG("Overdue is not an installment status; filter with overdue=true", 400),
+    /** 4B-6: no payment receipt with that id. */
+    PAYMENT_RECEIPT_NOT_FOUND("Payment receipt not found", 404),
+    /** 4B-6, 15 BR-03: one bank statement line, one live receipt. */
+    PAYMENT_RECEIPT_REFERENCE_IN_USE("This bank statement line is already recorded", 409),
+    /** 4B-6, 15 BR-05: a line pays no more than its installment still owes; nothing is left over. */
+    PAYMENT_RECEIPT_EXCEEDS_OUTSTANDING("A line pays more than its installment still owes", 409),
+    /** 4B-6, 15 BR-04: a receipt is voided once. */
+    PAYMENT_RECEIPT_ALREADY_VOIDED("This payment receipt is already voided", 409),
+    /** 4B-6, 15 §4.4 step 13: the order is cancelled, completed, closed, being returned or refunded. */
+    PAYMENT_RECEIPT_VOID_NOT_ALLOWED("This payment receipt can no longer be voided", 409),
+    /** 4B-6, 15 BR-13: the void leaves a confirmed order short of its installment on signing; the accountant agrees to hold it. */
+    PAYMENT_RECEIPT_VOID_NEEDS_HOLD("Voiding this receipt leaves a confirmed order unpaid: confirm putting it on hold",
+            409),
+    /** 4B-9, 15 BR-14: a refund recorded is never more than what the order still has to refund. */
+    REFUND_EXCEEDS_REFUNDABLE("This refund is more than the order still has to refund", 409),
+    /** 4B-9: no refund record with that id. */
+    REFUND_RECORD_NOT_FOUND("Refund record not found", 404),
+    /** 4B-9, 15 §4.5 step 16: a refund record is voided once. */
+    REFUND_RECORD_ALREADY_VOIDED("This refund record is already voided", 409),
+    /** 4B-9: one outgoing bank statement line, one live refund record. */
+    REFUND_REFERENCE_IN_USE("This bank statement line is already recorded as a refund", 409),
     /** PACK-PARTIAL (lead's decision 2026-10-21): the order does not allow a partial shipment; Sales decides. */
     ORDER_PARTIAL_SHIPMENT_NOT_ALLOWED("This order does not allow partial shipments", 409),
     /** PACK-PARTIAL: whether the order may ship in parts can no longer change once everything left or it is closed. */
     ORDER_PARTIAL_SHIPMENT_LOCKED("Partial shipment can no longer be changed on this order", 409),
-    /** LP-1 (lead's decision 2026-10-22): the delivery mode is locked once packing of the order started. */
-    DELIVERY_MODE_LOCKED("The delivery mode can no longer be changed on this order", 409),
-    /**
-     * LP-2 (lead's decision 2026-10-22): a full truckload is never paid by a carrier collecting on delivery
-     * ({@code ck_shipment_ftl_no_cod}); Sales changes the balance policy, or the order stays a parcel shipment.
-     */
-    DELIVERY_MODE_FTL_NO_COD("A full-truckload order cannot have its balance collected on delivery", 409),
-    /** G2-3: a carrier remittance names a receivable the customer pays themselves. */
-    RECEIVABLE_NOT_CARRIER_COLLECTED("This receivable is not collected by a carrier", 409),
-    /** G2-3: the customer paid this balance to the carrier; record the carrier's remittance instead. */
-    RECEIVABLE_CARRIER_COLLECTED("The carrier collects this amount; record the carrier's remittance instead", 409),
-    /** G2-3: nothing is outstanding on this receivable; money for it again would be collected twice. */
-    RECEIVABLE_SETTLED("This receivable is paid in full", 409),
     /** SCRUM-466: a task is picked in one warehouse; the order's stock is held in more than one, or elsewhere. */
     FULFILLMENT_HOLDS_OUTSIDE_WAREHOUSE("Stock held for this order is in another warehouse", 409),
     /** SCRUM-267 (docs 07 step 6): the bin scanned is not the one this pick line takes its goods from. */
     PICK_LOCATION_MISMATCH("The scanned location is not this line's", 409),
-    /** SCRUM-274: the code scanned is neither this line's SKU nor its barcode. */
-    PICK_ITEM_MISMATCH("The scanned item is not this line's SKU", 409),
-    /** Docs 07 BR-04: never more than the line's allocation; more needs a re-allocation. */
-    PICK_QUANTITY_EXCEEDS_ALLOCATION("More than allocated to this line", 409),
-    /** Fewer than allocated: a short pick, reported through the short-pick flow (SCRUM-268). */
-    PICK_QUANTITY_SHORT("Fewer than allocated - report a short pick", 409),
+    /**
+     * Kltn-docs 07 BR-10 (team plan 4C-4): the code scanned is not this line's carton LPN - a SKU, a barcode or another
+     * carton is refused, to pick a line or to put it back. No quantity is scanned any more (BR-04), so the former
+     * PICK_QUANTITY_EXCEEDS_ALLOCATION and PICK_QUANTITY_SHORT are gone.
+     */
+    PICK_ITEM_MISMATCH("The scanned code is not this line's carton LPN", 409),
+    /**
+     * Team plan 4C-4 (kltn-docs 07 BR-04, BR-10): the stock held for a pick line is in no carton, so no LPN could
+     * confirm it. A guard: allocation takes whole cartons only, so nothing should reach it.
+     */
+    PICK_HOLD_NOT_IN_CARTON("The stock held for this line is in no carton; reallocate it to whole cartons", 409),
     PICK_LINE_NOT_OPEN("This line is no longer open", 409),
     /** A cycle count already completed or cancelled. */
     CYCLE_COUNT_NOT_OPEN("This cycle count is no longer open", 409),
@@ -554,57 +638,96 @@ public enum ErrorCode {
     STOCK_PACKAGE_WRONG_LOCATION("The carton is not at this location", 422),
     /** A carton counted above its received quantity. */
     STOCK_PACKAGE_OVERFILLED("A carton cannot hold more than it was received with", 422),
+    /**
+     * Kltn-docs 11 BR-05: a carton held or allocated for an order is not moved by hand; its picker would find it gone.
+     * Nor written off by hand (20 §4.3, team plan 4C-3): the order's hold is released or reallocated first.
+     */
+    STOCK_PACKAGE_HELD("The carton is held for an order and cannot be moved or written off by hand", 409),
+    /** Team plan 4C-2 (07 BR-03, 11 BR-04): stock leaves a carton whole; nothing takes part of one. */
+    STOCK_PACKAGE_TAKEN_WHOLE("A carton is taken whole; part of it cannot be taken", 409),
+    /**
+     * Team plan 4C-2, review M-5 (kltn-docs 20 BR-14): stock is kept in whole cartons, so units are never added to a row
+     * in no carton. A carton found is restocked through a count (by its LPN), never as loose units.
+     */
+    STOCK_NOT_IN_CARTON("Stock is kept in whole cartons; adjust a carton by its LPN", 422),
+    /**
+     * Review P-2 (kltn-docs 20 BR-04): a carton is adjusted by hand for DAMAGED, LOST, FOUND, DATA_CORRECTION or OTHER;
+     * SCRAP and SAMPLE wrote down loose units. tg_stock_adjustment_whole_carton states it in the table.
+     */
+    STOCK_ADJUSTMENT_REASON_NOT_FOR_CARTON("A carton is adjusted for DAMAGED, LOST, FOUND, DATA_CORRECTION or OTHER", 422),
+    /** Team plan 4D-1 (kltn-docs 20 §4.8): the carton is quarantined already. */
+    STOCK_PACKAGE_QUARANTINED("The carton is already in quarantine", 409),
+    /** Team plan 4D-1 (kltn-docs 05 BR-01, BR-14): only a quarantined carton is released to a putaway task. */
+    STOCK_PACKAGE_NOT_QUARANTINED("The carton is not in quarantine", 409),
+    /**
+     * Team plan 4D-1 (kltn-docs 20 §4.8 step 3): a carton is released or written off, not both - one has an open
+     * putaway task, or a write-off of it awaits approval, or it is not yet given the putaway task of its receipt.
+     */
+    STOCK_PACKAGE_DECISION_PENDING("A decision about this carton is already under way", 409),
+    /** Team plan 4D-2 (kltn-docs 09 BR-06): a return receipt is opened for a shipment the carrier brought back. */
+    SHIPMENT_NOT_RETURNED("The shipment has not come back to the warehouse", 409),
+    /** Team plan 4D-2 (kltn-docs 17 §4.10): a return receipt is opened for a return request approved and awaiting its goods. */
+    RETURN_NOT_AWAITING_GOODS("This return request is not waiting for its goods", 409),
+    /** Team plan 4D-2: goods come back once - one return receipt not cancelled per shipment and per return request. */
+    RETURN_RECEIPT_ALREADY_OPEN("A return receipt for these goods already exists", 409),
+    /** Team plan 4D-2 (kltn-docs 03 BR-14): a return receipt takes only cartons of its shipment or order. */
+    RETURN_CARTON_NOT_OF_SOURCE("This carton did not leave on the shipment or order the receipt is for", 409),
+    /** Team plan 4D-2 (kltn-docs 03 §4.2 step 10): a carton still in the warehouse has not come back. */
+    RETURN_CARTON_IN_WAREHOUSE("This carton is in the warehouse; it has not come back", 409),
+    /** Team plan 4C-3 (20 §4.3, BR-05): one adjustment of a carton waits for approval at a time. */
+    STOCK_PACKAGE_ADJUSTMENT_PENDING("Another adjustment of this carton is waiting for approval", 409),
     /** Docs 07 step 9: a pick task closes only when every line is picked. */
     PICK_LINES_INCOMPLETE("Some lines are not picked yet", 409),
     PICK_TASK_STATE_CONFLICT("The task cannot do that in its current status", 409),
     /** The hold behind a pick line was released, expired or already consumed: nothing is deducted. */
     RESERVATION_NOT_ACTIVE("The stock hold is no longer active", 409),
-    /** A production order's hold, or goods in the print shop: production closes them, not a pick (review of #109). */
-    PRODUCTION_HOLD_NOT_PICKABLE("This stock hold belongs to production and cannot be picked", 409),
+    /** 4B-7 (20 BR-17): a hold at the order's shipping warehouse is allocated there only. */
+    RESERVATION_WAREHOUSE_MISMATCH("The stock is held at another warehouse", 409),
+    RESERVATION_NOT_WHOLE_CARTONS("A stock reservation is a whole number of the SKU's cartons", 422),
+    /**
+     * A hold that is not an order's goods on a shelf - one on a legacy print-shop row (IN_PRODUCTION):
+     * a pick does not close it (review of #109). The code keeps its name for clients that read it.
+     */
+    PRODUCTION_HOLD_NOT_PICKABLE("This stock hold is not an order's goods on a shelf and cannot be picked", 409),
     /** Docs 07 BR-05: only goods picked for an order cancelled afterwards go back to a bin. */
     PUT_BACK_NOT_REQUIRED("Nothing on this line needs putting back", 409),
     PUT_BACK_LOCATION_INVALID("Put back onto an active bin of the task's warehouse", 409),
+    /**
+     * Kltn-docs 11 BR-09, 20 BR-20 (team plan 4C-5): a staging area holds cartons picked for an order; stock enters it
+     * only by picking, and leaves it only when the task moves to dispatch or by the put-back - never by hand.
+     */
+    STAGING_MOVE_NOT_ALLOWED("Stock enters a staging area only by picking, and leaves it by dispatch or put-back", 409),
+    /** Kltn-docs 07 §3 (4C-5): a STAGING task names an active staging area of its own warehouse. */
+    STAGING_AREA_INVALID("Choose an active staging area of the task's warehouse", 422),
+    /**
+     * Kltn-docs 07 §4.3 step 8 and its edge case of an order on hold while its task is STAGED (4C-5): the order keeps
+     * its cartons in the staging area; the task moves to dispatch once the hold is resolved.
+     */
+    PICK_ORDER_ON_HOLD("The order is on hold; its cartons stay in the staging area until the hold is resolved", 409),
     /** G4-5 (docs 08 step 1): packing starts once picking is complete. */
     PACKING_NOT_READY("Picking must finish before packing starts", 409),
     /** G4-5: another packer took this order at the packing table; a warehouse manager may step in. */
     PACKING_TAKEN("Another packer is packing this order", 409),
     PACK_STATE_CONFLICT("Packing cannot do that in its current status", 409),
-    /** Docs 08 step 2, BR-01: the scanned item is not on the order (a wrong item). */
-    PACK_ITEM_NOT_IN_ORDER("This item is not in the order", 409),
     /** The scanned code is on two lines of the order (a plain and a printed cup of one SKU): name the line. */
-    /** G4-5: a scan id already recorded on another package or task: the client reused it; send a new one. */
-    PACK_SCAN_ID_CONFLICT("This scan id was already used for another package", 409),
-    PACK_SCAN_AMBIGUOUS("This item is on several lines of the order: name the line", 409),
-    /** Docs 08 BR-01: an over-scan, more than the order line still wants. */
-    PACK_QUANTITY_EXCEEDS_ORDER("More than the order line still wants", 409),
-    /** More than was picked (or produced) for the line: the rest has not reached packing. */
-    PACK_QUANTITY_EXCEEDS_PICKED("More than reached packing for this line", 409),
-    /** R8: units reported damaged at packing are still in a parcel; they are taken out of it first. */
-    PACK_DAMAGED_UNITS_PACKED("Those units are in a parcel: take them out before reporting them damaged", 409),
-    /** Docs 08 BR-01: the lot scanned was not picked for this line, or more of it than was picked. */
-    PACK_LOT_MISMATCH("This lot was not picked for this line", 409),
-    /** Docs 08 step 2: the serial scanned was not picked for this line, or is packed already. */
-    PACK_SERIAL_MISMATCH("This serial number was not picked for this line, or is packed already", 409),
-    PACKAGE_SEALED("The package is already sealed", 409),
-    PACKAGE_EMPTY("The package has nothing in it", 409),
-    /** Docs 08 BR-03, 09 BR-01: a package with goods in it is weighed, measured and sealed before it ships. */
-    PACKAGE_NOT_SEALED("A package is still open: seal it or take it apart", 409),
     PACKAGE_SHIPPED("The package is in a shipment already", 409),
     /** Docs 08 BR-01: everything the order still wants must be packed, or a partial shipment asked for. */
     PACKING_INCOMPLETE("Not everything is packed yet", 409),
     /** PACK-PARTIAL (lead's decision 2026-10-21): the order does not allow a partial shipment; Sales decides. */
     PACK_PARTIAL_NOT_ALLOWED("Partial shipments are not allowed", 409),
     PACK_NOTHING_TO_SHIP("No sealed package is waiting to ship", 409),
-    /** SCRUM-287 LP2-6: a kit ("bộ") ships whole - a part of it is not sealed, or part 1 holds no unit yet. */
-    KIT_INCOMPLETE("A kit has parts that are not sealed yet", 409),
-    /** LP2-5: a kit has as many parts as its item ships boxes ({@code package_count}); one box is no kit. */
-    KIT_PART_COUNT_MISMATCH("The kit's parts do not match how many boxes the item ships as", 422),
-    /** LP2-6: only part 1 of a kit holds goods, and one unit of its item. */
-    KIT_CONTENTS_INVALID("Only part 1 of a kit holds goods: one unit of its item", 409),
-    /** LP2-6 (review of #155): part 1 of a kit takes the item of the line the kit was opened for, no other. */
-    KIT_ITEM_MISMATCH("This kit was opened for another item", 422),
-    /** KIT-FORCE (lead's decision 2026-10-22): an item that ships as several boxes goes in an ordinary package only with a reason. */
-    KIT_OVERRIDE_REASON_REQUIRED("This item ships as a kit: give a reason to pack it in an ordinary package", 422),
+    /**
+     * Kltn-docs 08 §4.2 step 3, BR-05 (team plan 4C-6): the scanned LPN is not a carton picked for this task - another
+     * order's, one never picked, or an unreadable code. Refused; the warehouse manager checks the picking and the stock.
+     */
+    CARTON_NOT_IN_TASK("This carton was not picked for this order's task", 409),
+    /** Kltn-docs 08 BR-08 (4C-6): a shipping label prints only for a carton whose LPN was scanned at the check. */
+    CARTON_NOT_CHECKED("Only a checked carton gets a shipping label", 409),
+    /**
+     * Kltn-docs 08 BR-07 (4C-6): the SKU's carton spec declares no size or full weight, so no shipping label prints and
+     * the check cannot complete until the warehouse manager completes it on the item.
+     */
+    CARTON_SPEC_UNMEASURED("The SKU's carton spec has no size or weight: no shipping label can print", 422),
     /** Docs 09 §5: the shipment's status does not allow the step. */
     SHIPMENT_STATE_CONFLICT("The shipment cannot do that in its current status", 409),
     // ---- G4-2a loading and handover (kltn-docs 09 §4.1, §5): 404 / 400 / 409 kept together with the flow
@@ -615,6 +738,8 @@ public enum ErrorCode {
     HANDOVER_NOT_SIGNED("Both sides must sign the manifest", 400),
     CARRIER_CODE_EXISTS("Carrier code already exists", 409),
     CARRIER_INACTIVE("This carrier is no longer in use", 409),
+    /** 3-1: service codes are kept only for a carrier the system books with through its API (kltn-docs 09 §4.1). */
+    CARRIER_NOT_API_BOOKING("This carrier is not booked through an API", 409),
     /** SCRUM-287 load planning: the vehicle-type catalogue (kltn-docs 09 §3). */
     VEHICLE_TYPE_NOT_FOUND("Vehicle type not found", 404),
     VEHICLE_TYPE_CODE_EXISTS("Vehicle type code already exists", 409),
@@ -651,26 +776,10 @@ public enum ErrorCode {
      */
     LOAD_PLAN_CONTROLLED_CANCELLED("A vehicle of this load plan was called off under control: the plan can no longer be "
             + "reopened or cancelled the normal way", 409),
-    /** SCRUM-287 PR T (LP2-8): only a transfer that travels as a full truckload is packed for a load plan. */
-    TRANSFER_NOT_FULL_TRUCKLOAD("This transfer order does not travel as a full truckload", 409),
-    /** Docs 10 BR-04: goods of the transfer left on a load plan's vehicle; its picking is no longer cancelled. */
-    TRANSFER_GOODS_LEFT("Goods of this transfer order already left the source warehouse", 409),
-    /** SCRUM-287 PR T: a transfer packed for a load plan is dispatched by the plan's last vehicle, not by hand. */
-    TRANSFER_DISPATCH_BY_LOAD_PLAN("This transfer order is dispatched by its load plan's last vehicle", 409),
-    /** Docs 09 BR-09 / LP2-1: only a packed transfer goes into a load plan. */
-    TRANSFER_NOT_PACKED("This transfer order is not packed for dispatch", 409),
-    /** Docs 09 §4.2 step 1 / 10 step 5: a transfer leaves whole with its load plan; nothing of it stays behind. */
-    TRANSFER_SHIPS_WHOLE("A transfer order leaves whole with its load plan", 409),
-    /** Docs 09 §3 LoadPlan.source_type: a plan holds customer orders' shipments or one transfer order, not both. */
-    LOAD_PLAN_SOURCE_MISMATCH("This load plan holds another kind of source", 409),
-    /** LP2-8: the stock carton is not an unopened carton of this transfer's goods at the source warehouse. */
-    STOCK_CARTON_NOT_SHIPPABLE("This stock carton cannot ship as it is", 409),
     /** Docs 09 BR-10 / BR-11: a placement breaks a loading rule; the field errors name each package and rule. */
     PLACEMENT_RULE_VIOLATION("A placement breaks a loading rule", 422),
     /** Docs 09 edge "bỏ kiện & tính lại": parcels were taken out of a vehicle; recalculate it before confirming. */
     LOAD_PLAN_NEEDS_RECALCULATION("A vehicle of this load plan lost parcels and must be recalculated first", 409),
-    /** A load of a load plan's vehicle changes only through its plan (reopen, cancel, recalculate). */
-    LOAD_MANAGED_BY_PLAN("This load belongs to a load plan; change it through the plan", 409),
     /** Docs 09 BR-09: a parcel in a load plan is not voided, re-opened or re-measured. */
     PACKAGE_IN_LOAD_PLAN("This package is in a load plan; take it out of the plan first", 409),
     /** Docs 09 edge: a parcel of another shipment, warehouse or load scanned by mistake; the message names where it belongs. */
@@ -678,32 +787,65 @@ public enum ErrorCode {
     PACKAGE_ALREADY_LOADED("This package is already on another load", 409),
     /** Docs 09 BR-01: not sealed, in no shipment, or its shipment no longer waits for dispatch (cancelled, left). */
     PACKAGE_NOT_READY("The package is not ready to hand over", 409),
-    PACKAGE_OTHER_CARRIER("This package goes with another carrier", 409),
-    /** Docs 09 BR-08: a full truckload is loaded from its load plan, not onto a parcel load. */
-    PACKAGE_REQUIRES_LOAD_PLAN("Full-truckload packages go through a load plan", 409),
     SHIPMENT_NOT_FOR_LOAD("This shipment does not leave on this load", 409),
-    SHIPMENT_OTHER_CARRIER("This shipment goes with another carrier", 409),
     SHIPMENT_ON_ANOTHER_LOAD("This shipment is on another load", 409),
     /** Docs 09 BR-03: a shipment leaves with all its parcels; take it off the manifest to let the rest go. */
     LOAD_NOT_FULLY_LOADED("Some packages on the manifest are not scanned yet", 409),
     LOAD_EMPTY("Nothing is on this load's manifest", 409),
-    /** Docs 09 BR-04: the COD the order fixes at the handover is not the one on the parcels' label: reprint it. */
-    LABEL_OUTDATED("The package label shows another COD amount than the order now fixes; reprint it", 409),
+    /** 3-2 (kltn-docs 09 BR-23): the driver signs only once the load carries the carrier's waybill number. */
+    LOAD_WAYBILL_MISSING("Record the carrier's waybill number before the handover", 409),
+    /** 3-2 (09 BR-23, E19): a waybill number is unique within its carrier among loads not cancelled. */
+    WAYBILL_DUPLICATE("Another load of this carrier has this waybill number", 409),
+    /** 3-2 (09 §4.4 (4)): an API_BOOKING carrier's number comes from its booking API, never typed or imported. */
+    WAYBILL_FROM_CARRIER_API("This carrier's waybill number comes from its booking", 409),
+    /** 3-2 (09 BR-29): an API_BOOKING carrier is booked through its API, never by hand. */
+    CARRIER_BOOKS_THROUGH_API("This carrier is booked through its API", 409),
+    /** 3-4 (09 BR-29): the carrier's API refused the order; the message carries the carrier's reason. */
+    CARRIER_BOOKING_FAILED("The carrier refused the booking", 422),
+    /** 3-4: the carrier has no pickup point at the load's warehouse. */
+    CARRIER_PICKUP_NOT_CONFIGURED("The carrier has no pickup point at this warehouse", 422),
+    /** 3-4: no service code for the load's vehicle type in the pickup's province. */
+    CARRIER_SERVICE_NOT_CONFIGURED("The carrier has no service for this vehicle type here", 422),
+    /** 3-4 (09 E24): a drop-off lies outside the province the carrier picks up in. */
+    CARRIER_STOP_OUT_OF_AREA("A drop-off lies outside the carrier's service area", 422),
+    /** 3-4: the load is being booked, or is booked, with a carrier's API already. */
+    CARRIER_BOOKING_IN_PROGRESS("This load is already being booked with the carrier", 409),
+    /** 3-4 (09 BR-29): the carrier would not cancel the order (the driver picked up): settle it with the carrier. */
+    CARRIER_CANCEL_REFUSED("The carrier did not cancel the order", 409),
+    /** 3-5 (09 §4.5): no such call to a carrier's webhook. */
+    CARRIER_EVENT_NOT_FOUND("Carrier event not found", 404),
+    /** 3-5 (09 §4.5 step 8): only an open error-list event is resolved, once, and not while it is being handled. */
+    CARRIER_EVENT_NOT_RESOLVABLE("This carrier event cannot be resolved", 409),
+    /**
+     * 3-6 (09 §4.3 step 5, E17): a delivery is corrected while its order is not completed, and only one that billed
+     * nothing (a billed delivery's receivable is taken back by the instalments, not here).
+     */
+    ORDER_DELIVERY_NOT_CORRECTABLE("This delivery can no longer be corrected", 409),
+    /**
+     * 4B-1 (18 BR-03, 14 BR-13): an instalment after delivery needs the customer's credit approved by accounting with a
+     * limit above 0 - and that credit is not taken away while the default schedule still uses it.
+     */
+    PAYMENT_SCHEDULE_NEEDS_CREDIT("Paying after delivery needs credit approved by accounting", 409),
+    /** 3-3 (09 §4.4): the file is not the system's template table; the message says why. */
+    WAYBILL_IMPORT_INVALID_FILE("This file cannot be read as the waybill import template", 400),
+    WAYBILL_IMPORT_NOT_FOUND("Waybill import not found", 404),
+    /** WF-05 fix plan item 5: the file is not the delivery-outcome template's table; the message says why. */
+    DELIVERY_OUTCOME_IMPORT_INVALID_FILE("This file cannot be read as the delivery outcome template", 400),
+    DELIVERY_OUTCOME_IMPORT_NOT_FOUND("Delivery outcome import not found", 404),
+    /** WF-05 fix plan item 6: promoting or dropping a second webhook credential a carrier does not have. */
+    CARRIER_CREDENTIAL_ROTATION_NOT_STARTED("This carrier has no second webhook credential", 409),
     LOAD_SCAN_ID_CONFLICT("This scan id was already used for another package or load", 409),
     /** SCRUM-392: parcels of a cancelled order are still on the vehicle; unload them before it is handed over. */
     LOAD_UNLOAD_PENDING("Parcels of a cancelled order are still on this vehicle; unload them first", 409),
     /**
      * SCRUM-474 UNLOAD-DESIGN point 4: a parcel of a vehicle called off is locked - not scanned onto a load, not planned,
-     * not voided with its transfer's picking - until it is scanned off (or confirmed off by a warehouse manager).
+     * not voided - until it is scanned off (or confirmed off by a warehouse manager).
      */
     PACKAGE_UNLOAD_PENDING("This package is still to be unloaded from a vehicle that was called off; scan it off first",
             409),
     /** SCRUM-474 UNLOAD-DESIGN point 3: a vehicle of the plan already left; cancel the remaining vehicles one by one. */
     LOAD_PLAN_VEHICLE_DISPATCHED("A vehicle of this load plan already left the warehouse; cancel its remaining "
             + "vehicles one by one", 409),
-    /** SCRUM-474 UNLOAD-DESIGN point 10: a transfer's picking is not cancelled while a vehicle of its plan is loading. */
-    TRANSFER_LOADING_IN_PROGRESS("A vehicle of this transfer order's load plan is being loaded: run the controlled "
-            + "cancel of the load plan first, then cancel the picking", 409),
     /**
      * SCRUM-474 UNLOAD-DROP: a vehicle is dropped from its plan only when the plan's other vehicles all left (and at
      * least one did); before that it is booked, loaded or called off like the others.
@@ -711,25 +853,65 @@ public enum ErrorCode {
     LOAD_PLAN_OTHER_VEHICLES_NOT_LEFT("Another vehicle of this load plan has not left yet: a vehicle is dropped from "
             + "the plan only once every other vehicle left", 409),
     /**
-     * SCRUM-474 UNLOAD-DROP: the vehicle carries parcels of a shipment, a transfer order, or an order that may not ship in
-     * parts, whose other parcels are on a vehicle that already left: they cannot be left behind for a new plan.
+     * SCRUM-474 UNLOAD-DROP: the vehicle carries parcels of a shipment, or of an order that may not ship in parts,
+     * whose other parcels are on a vehicle that already left: they cannot be left behind for a new plan.
      */
-    LOAD_PLAN_VEHICLE_SHARES_ORDER("This vehicle carries parcels of an order or transfer that also left on another "
+    LOAD_PLAN_VEHICLE_SHARES_ORDER("This vehicle carries parcels of an order that also left on another "
             + "vehicle: it cannot be dropped from the plan", 409),
     OPTIMISTIC_LOCK("The record changed meanwhile, please retry", 409),
     /** Two writers reached the same row; the loser waited for the lock and gave up. Retryable. */
     LOCK_TIMEOUT("The record is busy, please retry", 409),
     DUPLICATE_KEY("A record with these values already exists", 409),
+    /** Customization templates hang off variants of CUSTOMIZABLE products only (kltn-docs 01 BR-19, 13 BR-14). */
+    PRODUCT_NOT_CUSTOMIZABLE("This product cannot be customized", 409),
+    /** A template code is unique per variant. */
+    PRINT_CONFIG_CODE_TAKEN("This variant already has a template with this code", 409),
+    /**
+     * A template's 3D surfaces name a print area its model does not have, name one twice, or give a mesh name that is
+     * empty or longer than 100 characters; {@code fieldErrors} names each entry at fault (FE request 2026-11-13 B-2).
+     */
+    PRINT_CONFIG_SURFACES_INVALID("The 3D model's surfaces do not match the template's print areas", 422),
+    /** A customer SKU is issued only from an ordinary ACTIVE variant of an approved or published product (B20). */
+    CUSTOMER_SKU_SOURCE_UNAVAILABLE("This variant cannot have customer SKUs now", 409),
+    /** A customer holds at most 50 drafts at once (kltn-docs 12 B37); deleting one makes room. */
+    DESIGN_DRAFT_LIMIT_REACHED("You already have the most drafts allowed; delete one first", 409),
+    /** Only a draft is renamed, laid out or deleted (kltn-docs 12 BR-07, BR-08, BR-16). */
+    DESIGN_NOT_DRAFT("Only a draft design can be changed", 409),
+    /**
+     * The files submitted with a design must be rendered from the layout as it is now (kltn-docs 12 BR-10): one is
+     * missing or names another layout. {@code details.roles} lists them.
+     */
+    DESIGN_FILES_OUTDATED("Render the design's files again from its current layout", 409),
+    /**
+     * The print file of a design being approved is not what the press needs: not a PDF, or not one page per print
+     * area of the bleed box's size (kltn-docs 12 BR-09: the approval is refused and the design stays pending).
+     */
+    DESIGN_PRINT_FILE_INVALID("The design's print file does not fit its template", 409),
+    /** A design holds at most 100 images (Design Studio plan 2F-4). */
+    DESIGN_ASSET_LIMIT_REACHED("This design already has the most images allowed", 409),
+    /**
+     * A quote is asked on an approved design on its own; a draft asks with its submission (kltn-docs 12 §4.8).
+     */
+    DESIGN_NOT_APPROVED("This design is not approved", 409),
+    /** A closed design project takes no design, batch or quote request; it never reopens (kltn-docs 12 BR-22, B42). */
+    DESIGN_PROJECT_ARCHIVED("This design project is closed", 409),
+    /** A design project holds at most 20 designs, archived ones not counted (kltn-docs 12 B42). */
+    DESIGN_PROJECT_FULL("This design project already has the most designs allowed", 409),
+    /** A design project's library holds at most 30 files (kltn-docs 12 B43). */
+    DESIGN_PROJECT_LIBRARY_FULL("This design project's library already has the most files allowed", 409),
+    /** A design project closes only once none of its designs waits for review (kltn-docs 12 BR-22). */
+    DESIGN_PROJECT_HAS_PENDING("A design of this project waits for review", 409),
+    /** A design belongs to one project at most (kltn-docs 12 BR-17). */
+    DESIGN_IN_ANOTHER_PROJECT("This design belongs to another project", 409),
+    /** A design waiting for review neither leaves its project nor moves to another (kltn-docs 12 BR-17). */
+    DESIGN_PENDING_IN_PROJECT("A design waiting for review stays in its project", 409),
+    /**
+     * A design is cloned only onto another ACTIVE variant of its own product (FE request 2026-11-13 E-3; BR-01, BR-02):
+     * not onto its own variant, nor one of another product, nor one that cannot be designed on.
+     */
+    DESIGN_CLONE_TARGET_INVALID("This design cannot be cloned onto that variant", 409),
     /** The same idempotency key is still being processed. The client should poll, not retry blindly. */
     IDEMPOTENT_REQUEST_IN_PROGRESS("An identical request is still being processed", 409),
-    /** BR-PO: a new PO cannot be raised against a supplier that is not ACTIVE. */
-    SUPPLIER_INACTIVE("This supplier cannot receive new purchase orders", 409),
-    SUPPLIER_HAS_OPEN_PURCHASE_ORDERS("Supplier has open purchase orders", 409),
-    SUPPLIER_CODE_ALREADY_EXISTS("A supplier with this code already exists", 409),
-    SUPPLIER_TAX_CODE_ALREADY_EXISTS("A supplier with this tax code already exists", 409),
-    SUPPLIER_ITEM_DUPLICATE("This supplier already lists this SKU", 409),
-    SUPPLIER_ITEM_IN_USE("An open purchase order still orders this SKU from this supplier", 409),
-    INVALID_SUPPLIER_CONFIRMATION("This supplier confirmation cannot be recorded", 409),
     PRODUCT_CODE_ALREADY_EXISTS("A product with this code already exists", 409),
     BRAND_CODE_ALREADY_EXISTS("A brand with this code or slug already exists", 409),
     CATEGORY_CODE_ALREADY_EXISTS("A category with this code or slug already exists", 409),
@@ -743,13 +925,6 @@ public enum ErrorCode {
     PRODUCT_AXES_LOCKED("Variant axes can only change while the product is a draft", 409),
     VARIANT_OPTIONS_INVALID("The options do not name one value per axis of this product", 400),
     VARIANT_MATRIX_TOO_LARGE("Too many variants for one generation", 400),
-    /**
-     * kltn-docs 02 §4 step 7 (owner decision SCRUM-124): the approver's approval limit - the highest of their roles'
-     * {@code procurement.approval_limits} in the order's currency - is below the order's total after tax. A business
-     * rule on a request that is otherwise allowed, hence 409 and not 403 (403 means a missing permission): the order
-     * waits for someone whose limit covers it. Never raised for an approver with no limit configured (PO-NOLIMIT).
-     */
-    PO_APPROVAL_LIMIT_EXCEEDED("The purchase order total is above your approval limit", 409),
     SELF_APPROVAL_NOT_ALLOWED("A product cannot be approved by the person who submitted it", 409),
     CUSTOMER_EMAIL_ALREADY_EXISTS("A customer account with this email already exists", 409),
     /** kltn-docs 18 BR-01: one pending or active customer per tax code. */
@@ -765,21 +940,6 @@ public enum ErrorCode {
     PORTAL_INVITATION_INVALID("This portal invitation is invalid or no longer available", 400),
     /** Resending would reset a password the customer already chose. */
     PORTAL_ACCOUNT_ALREADY_ACTIVE("This customer has already activated their portal account", 409),
-    /** Guest checkout is permanently disabled by the B2B-only decision. */
-    GUEST_CHECKOUT_DISABLED("Guest checkout is not available", 403),
-    INVALID_PURCHASE_ORDER_TRANSITION("This purchase order cannot move to that status right now", 409),
-    /** Only a DRAFT standard order is edited in place; afterwards changes go through a revision (BR-02, BR-10). */
-    PURCHASE_ORDER_NOT_EDITABLE("Only a draft standard purchase order can be edited", 409),
-    /** An approved or confirmed standard order is changed by an amendment, and only while nothing was received (SCRUM-117). */
-    PO_AMENDMENT_NOT_ALLOWED("This purchase order cannot be amended now", 409),
-    /** One amendment waits for a decision at a time; the next is requested after it is approved, rejected or withdrawn. */
-    PO_AMENDMENT_ALREADY_PENDING("An amendment of this purchase order already waits for a decision", 409),
-    PO_AMENDMENT_NOT_PENDING("No amendment of this purchase order waits for a decision", 409),
-    PO_AMENDMENT_NO_CHANGE("The amendment changes nothing", 400),
-    /** Only a DRAFT transfer is edited; a rejected one is back in DRAFT for that (docs 10 §5). */
-    TRANSFER_ORDER_NOT_EDITABLE("Only a draft transfer order can be edited", 409),
-    /** The warehouse exists but is not ACTIVE: nothing new is received into or sent from it (SCRUM-390). */
-    WAREHOUSE_INACTIVE("This warehouse is not active", 409),
     /** The prefix starts every location code of the warehouse, so it is unique system-wide. */
     WAREHOUSE_PREFIX_ALREADY_EXISTS("A warehouse with this prefix already exists", 409),
     ZONE_NAME_ALREADY_EXISTS("This warehouse already has a zone with this name", 409),
@@ -821,7 +981,6 @@ public enum ErrorCode {
     INVALID_USER_STATUS_TRANSITION("This account cannot move to that status", 409),
     /** The administrator asked for a status the account already has (lock a locked account, enable an active one). */
     USER_STATUS_UNCHANGED("The account is already in this status", 409),
-    INVALID_ALERT_TRANSITION("This alert cannot be acknowledged in its current state", 409),
     /** User management acts on staff accounts; customer accounts belong to the customer screens. */
     STAFF_ACCOUNT_REQUIRED("Customer accounts are managed from the customer screens", 409),
 
@@ -829,11 +988,23 @@ public enum ErrorCode {
     PAYLOAD_TOO_LARGE("The uploaded file is too large", 413),
     /** A provider webhook larger than any real delivery report: read no further (SCRUM-352). */
     WEBHOOK_PAYLOAD_TOO_LARGE("The webhook body is too large", 413),
+    /** A JSON body over its route's cap (stockflow.web.body-limits): a design document past 1,000,000 bytes. */
+    REQUEST_BODY_TOO_LARGE("The request body is too large", 413),
     UNSUPPORTED_MEDIA_TYPE("This file type is not accepted", 415),
 
     // ---- 422: understood, but semantically refused
     /** The key was reused for a DIFFERENT request. Replaying the stored response would be a lie. */
     IDEMPOTENCY_KEY_REUSED("This idempotency key was already used for a different request", 422),
+    /**
+     * The server's preflight refused a submitted design (kltn-docs 12 BR-05); it stays a draft.
+     * {@code details.issues} lists each finding as {@code {rule, surfaceCode?, elementId?, message}}.
+     */
+    DESIGN_PREFLIGHT_FAILED("The design did not pass the print checks", 422),
+    /**
+     * A batch is submitted whole or not at all (kltn-docs 12 BR-19): {@code details.designs} lists each design that
+     * did not pass, with its {@code issues} or the {@code roles} of files to render again.
+     */
+    DESIGN_BATCH_PREFLIGHT_FAILED("Some designs did not pass the print checks; none was submitted", 422),
 
     // ---- 429
     RATE_LIMITED("Too many requests", 429),
@@ -849,6 +1020,8 @@ public enum ErrorCode {
     TRANSFER_INSTRUCTIONS_UNAVAILABLE("Transfer details cannot be shown right now", 503),
     /** No webhook signing secret is configured, so no webhook can be verified; the provider retries later. */
     WEBHOOK_UNAVAILABLE("Webhooks are not accepted right now", 503),
+    /** No key to seal stored secrets with is configured (stockflow.security.secrets.key), so none can be saved. */
+    SECRETS_UNAVAILABLE("Secrets cannot be saved right now", 503),
     /** The caller's permissions could not be looked up (ADR-0008). The token itself may be fine,
      *  which is why this is a 503 and not a 401 that would sign the user out. */
     AUTHORIZATION_UNAVAILABLE("Permissions cannot be checked right now, please retry", 503);

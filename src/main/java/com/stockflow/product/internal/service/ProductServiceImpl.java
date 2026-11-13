@@ -67,9 +67,9 @@ import java.util.stream.IntStream;
  * locks the product row first and checks the version the caller read, so two people acting on one
  * screen cannot both win.</p>
  *
- * <p>What other modules hold against the product's SKUs (open purchase order lines, order lines not yet
+ * <p>What other modules hold against the product's SKUs (open production order lines, order lines not yet
  * shipped) is asked of every {@link SkuReferenceProbe} Spring hands in. The product module cannot call
- * procurement or order itself: {@code catalog} depends on it and {@code order} on {@code catalog}, so the
+ * order itself: {@code catalog} depends on it and {@code order} on {@code catalog}, so the
  * call would be a cycle.</p>
  */
 @Service
@@ -126,6 +126,18 @@ class ProductServiceImpl implements ProductService {
         return products.nameForSku(sku);
     }
 
+    @Override
+    @Transactional(readOnly = true)
+    public java.util.Map<String, com.stockflow.product.api.TaxClass> taxClassesOf(java.util.Collection<String> skus) {
+        return products.taxClassesOf(skus);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public java.util.Map<String, String> variantNamesOf(java.util.Collection<String> skus) {
+        return products.variantNamesOf(skus);
+    }
+
     /**
      * A draft product and its variants; each variant creates its SKU's inventory item (trigger), where
      * its logistics are then filled in.
@@ -156,7 +168,7 @@ class ProductServiceImpl implements ProductService {
         }
         Product product = Product.draft(command.code(), command.name(), command.nameEn(), command.brandId(),
                 command.categoryId(), command.shortDescription(), command.description(), command.descriptionEn(),
-                command.taxClass(), command.kind());
+                command.taxClass());
         products.save(product);
         UUID productId = product.id().value();
         history.record(productId, ProductChangeType.CREATED, null, null, ProductStatus.DRAFT.name(), null, List.of());
@@ -206,7 +218,7 @@ class ProductServiceImpl implements ProductService {
         requireReferences(command.brandId(), command.categoryId(), product.brandId(), product.categoryId());
         List<String> changed = product.updateDetails(command.name(), command.nameEn(), command.brandId(),
                 command.categoryId(), command.shortDescription(), command.description(), command.descriptionEn(),
-                command.taxClass(), command.kind());
+                command.taxClass());
         products.save(product);
         if (!changed.isEmpty()) {
             history.record(command.productId(), ProductChangeType.UPDATED, null, null, null, null, changed);
@@ -264,8 +276,8 @@ class ProductServiceImpl implements ProductService {
      * refuses a status that cannot be discontinued, or a blank reason, before anything else changes); what
      * the other modules still hold is read; every variant is made OBSOLETE; the history gets the variants'
      * moves and then the discontinuation, so it reads newest-first the way it happened. The warnings never
-     * stop it. A purchase order created at the same moment is turned away by {@link #purchasability} once
-     * this commits.</p>
+     * stop it. A quote or an order line taking the SKU at the same moment is turned away by
+     * {@link #lockedPurchasability} once this commits.</p>
      */
     @Override
     @Auditable(action = AuditAction.TRANSITION, resourceType = "product", resourceId = "#productId")
@@ -310,7 +322,7 @@ class ProductServiceImpl implements ProductService {
     /**
      * {@inheritDoc}
      *
-     * <p>Refused while a purchase order line or an order line that is still open points at one of its SKUs,
+     * <p>Refused while a production order line or an order line that is still open points at one of its SKUs,
      * then while a SKU's inventory item is used by any document ({@code InventoryService.skusInUse}: stock, the
      * ledger, warehouse tasks, a price, procurement), and then by the foreign keys for everything else (order and
      * cart lines, designs, a storefront listing): that is the last line of defence, and it is a 409
@@ -386,7 +398,7 @@ class ProductServiceImpl implements ProductService {
 
     /**
      * What each probe found, at most {@link OpenReferences#LIMIT} in all: taken from the probes in turn, so a
-     * product with hundreds of purchase order lines still shows the order lines it has too. Each probe is
+     * product with hundreds of production order lines still shows the order lines it has too. Each probe is
      * asked for one more than the limit to know whether the list was cut.
      */
     private OpenReferences referencesOf(Collection<String> skus) {
@@ -413,8 +425,8 @@ class ProductServiceImpl implements ProductService {
         Set<String> warnings = new LinkedHashSet<>();
         Stream.of(SkuReference.Kind.values()).forEach(kind -> {
             if (open.references().stream().anyMatch(r -> r.kind() == kind)) {
-                warnings.add(kind == SkuReference.Kind.PURCHASE_ORDER_LINE
-                        ? ProductDiscontinuation.OPEN_PURCHASE_ORDER_LINES
+                warnings.add(kind == SkuReference.Kind.PRODUCTION_ORDER_LINE
+                        ? ProductDiscontinuation.OPEN_PRODUCTION_ORDER_LINES
                         : ProductDiscontinuation.UNSHIPPED_ORDER_LINES);
             }
         });

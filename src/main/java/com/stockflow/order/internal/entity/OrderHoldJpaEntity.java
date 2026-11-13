@@ -7,7 +7,10 @@ import jakarta.persistence.Table;
 import java.time.Instant;
 import java.util.UUID;
 
-/** Exception evidence is closed, never deleted, when integrity is restored. */
+/**
+ * Exception evidence is closed, never deleted, when integrity is restored. The one exception: V20261108000500 archived and
+ * removed the open DESIGN_MISMATCH holds when the design check left packing, as nobody resolved them.
+ */
 @Entity
 @Table(name = "order_hold", schema = "ordering")
 public class OrderHoldJpaEntity extends BaseEntity {

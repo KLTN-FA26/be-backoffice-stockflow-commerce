@@ -23,23 +23,12 @@ class OrderReservationService implements OrderReservations {
     private static final Logger log = LoggerFactory.getLogger(OrderReservationService.class);
 
     private final OrderRepository orders;
+    private final com.stockflow.order.internal.domain.DeliveryBatchRecords batchRecords;
 
-    OrderReservationService(OrderRepository orders) {
+    OrderReservationService(OrderRepository orders,
+                            com.stockflow.order.internal.domain.DeliveryBatchRecords batchRecords) {
         this.orders = orders;
-    }
-
-    @Override
-    public void addProductionHolds(UUID orderId, UUID orderLineId, Collection<UUID> reservationIds) {
-        if (reservationIds == null || reservationIds.isEmpty()) {
-            return;
-        }
-        Order order = orders.findByIdForUpdate(new OrderId(orderId))
-                .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No order with id " + orderId));
-        if (order.addProductionHolds(orderLineId, List.copyOf(reservationIds))) {
-            orders.save(order);
-            log.info("Order {} line {} holds {} more reservation(s) from production", order.orderNumber(),
-                    orderLineId, reservationIds.size());
-        }
+        this.batchRecords = batchRecords;
     }
 
     @Override
@@ -48,6 +37,8 @@ class OrderReservationService implements OrderReservations {
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No order with id " + orderId));
         if (order.replaceReservation(reservationId, List.copyOf(replacements))) {
             orders.save(order);
+            // 4B-8: a reallocated hold still stands for its delivery batch.
+            batchRecords.carry(reservationId, replacements);
             log.info("Order {}: hold {} reallocated to {} hold(s)", order.orderNumber(), reservationId,
                     replacements.size());
         }

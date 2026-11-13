@@ -4,14 +4,12 @@ import com.stockflow.common.audit.AuditAction;
 import com.stockflow.common.audit.Auditable;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
-import com.stockflow.customer.api.CommercialTerm;
 import com.stockflow.customer.api.CreditTerms;
 import com.stockflow.customer.api.CustomerService;
 import com.stockflow.order.api.CancelOrderCommand;
 import com.stockflow.order.api.CancellationReasonCode;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderSummary;
-import com.stockflow.order.api.PaymentTerm;
 import com.stockflow.order.internal.domain.CreditChecks;
 import com.stockflow.order.internal.domain.Order;
 import com.stockflow.order.internal.domain.OrderId;
@@ -28,12 +26,12 @@ import java.time.Instant;
 import java.util.UUID;
 
 /**
- * Orders over their customer's credit limit, and what the customer may be sold on (SCRUM-427,
- * kltn-docs 15 §4.3 and BR-03, 18 BR-02).
+ * Orders held for credit when their contract was signed, and a customer's credit position (SCRUM-427; kltn-docs 15
+ * §4.3, BR-10, BR-11; 18 BR-02).
  *
- * <p>Whoever approves credit confirms a held order, or refuses it: the order is then cancelled, or
- * switched to prepaid or deposit terms the customer is allowed and waits for payment. Either way the
- * decision is recorded with who made it and why ({@code order_credit_check}).</p>
+ * <p>Accounting confirms a held order, or refuses it: the order is then cancelled ({@code CREDIT_REJECTED}). Either way
+ * the decision is recorded with who made it and why ({@code order_credit_check}). Until 4B-10 a refusal could also
+ * switch a checkout order to prepaid or deposit terms; orders have no payment terms of their own any more.</p>
  */
 @Service
 @Transactional
@@ -41,13 +39,9 @@ public class CreditHoldService {
 
     private static final Logger log = LoggerFactory.getLogger(CreditHoldService.class);
 
-    /** What a refusal does with the order. */
-    public enum RefusalAction { CANCEL, SWITCH_TO_PREPAID, SWITCH_TO_DEPOSIT }
-
-    /** The terms a customer may use and the credit left, for the checkout and the back office. */
+    /** The customer's credit, what they owe after delivery and what is left, for Sales and the customer. */
     public record CreditPosition(CreditTerms terms, BigDecimal exposure, BigDecimal available, boolean hasOverdue,
-                                 BigDecimal overdueAmount, java.time.LocalDate oldestOverdueDueDate,
-                                 java.util.List<com.stockflow.order.api.BalancePolicy> allowedBalancePolicies) {
+                                 BigDecimal overdueAmount, java.time.LocalDate oldestOverdueDueDate) {
     }
 
     private final OrderRepository repository;
@@ -58,15 +52,16 @@ public class CreditHoldService {
     private final OrderHoldJpaRepository holds;
     private final CustomerService customers;
     private final com.stockflow.order.internal.repository.CreditHoldSearch search;
-    private final com.stockflow.inventory.api.InventoryService inventory;
     private final com.stockflow.payment.api.PaymentService paymentService;
     private final Clock clock;
+    private final com.stockflow.order.internal.domain.SalesContractRepository contracts;
 
     CreditHoldService(OrderRepository repository, OrderServiceImpl orders, OrderService orderService,
                       OrderEventPublisher events, CreditChecks creditChecks, OrderHoldJpaRepository holds,
                       CustomerService customers, com.stockflow.order.internal.repository.CreditHoldSearch search,
-                      com.stockflow.inventory.api.InventoryService inventory,
-                      com.stockflow.payment.api.PaymentService paymentService, Clock clock) {
+                      com.stockflow.payment.api.PaymentService paymentService, Clock clock,
+                      com.stockflow.order.internal.domain.SalesContractRepository contracts) {
+        this.contracts = contracts;
         this.repository = repository;
         this.orders = orders;
         this.orderService = orderService;
@@ -75,21 +70,24 @@ public class CreditHoldService {
         this.holds = holds;
         this.customers = customers;
         this.search = search;
-        this.inventory = inventory;
         this.paymentService = paymentService;
         this.clock = clock;
     }
 
-    /** The customer's terms, what they owe on credit and what is left of the limit (null without credit). */
+    /**
+     * The customer's credit, what they owe after delivery and what is left of the limit (null without credit). The
+     * exposure is every signed contract's installments paid after delivery and the cancellation fee items not paid
+     * (15 BR-10, 4B-6) - one held for credit too: it is signed, and what it would add is what accounting decides on.
+     */
     @Transactional(readOnly = true)
     public CreditPosition position(UUID customerId) {
         CreditTerms terms = customers.creditTerms(customerId);
-        var receivables = paymentService.creditPosition(customerId);
-        BigDecimal exposure = creditChecks.undeliveredCreditExposure(customerId, null)
-                .add(receivables.outstandingReceivables());
-        BigDecimal available = terms.allowCredit() ? terms.creditLimit().subtract(exposure).max(BigDecimal.ZERO) : null;
-        return new CreditPosition(terms, exposure, available, receivables.hasOverdue(), receivables.overdueAmount(),
-                receivables.oldestOverdueDueDate(), OrderServiceImpl.allowedBalancePolicies(terms));
+        var owed = paymentService.creditPosition(customerId);
+        BigDecimal exposure = owed.outstandingReceivables();
+        BigDecimal available = terms.creditLimit() == null ? null
+                : terms.creditLimit().subtract(exposure).max(BigDecimal.ZERO);
+        return new CreditPosition(terms, exposure, available, owed.hasOverdue(), owed.overdueAmount(),
+                owed.oldestOverdueDueDate());
     }
 
     @Transactional(readOnly = true)
@@ -102,7 +100,10 @@ public class CreditHoldService {
     public OrderSummary approve(UUID orderId, String note, UUID by) {
         requireNote(note);
         Order order = lockHeld(orderId);
-        order.approveCredit(by, clock.instant());
+        // 14 §5.3: an order held when its contract was signed still waits for the installment on signing - unless the
+        // customer paid it while the order was held (4B-6: the installments say).
+        order.approveCredit(by, clock.instant(), signedContract(order).isPresent()
+                && !paymentService.installmentStanding(orderId).onSigningPaid());
         decide(order, CreditChecks.Outcome.APPROVED, note, by);
         repository.save(order);
         events.publishEventsOf(order);
@@ -110,48 +111,24 @@ public class CreditHoldService {
         return orderService.findById(orderId).orElseThrow();
     }
 
+    /**
+     * Refused (15 §4.3 step 10): the order is cancelled ({@code CREDIT_REJECTED}), and the money its installments
+     * collected is settled with the cancellation (4B-9).
+     */
     @Auditable(action = AuditAction.REJECT, resourceType = "order-credit-hold", resourceId = "#orderId")
-    public OrderSummary refuse(UUID orderId, RefusalAction action, BigDecimal depositPercent, String note, UUID by) {
+    public OrderSummary refuse(UUID orderId, String note, UUID by) {
         requireNote(note);
         Order order = lockHeld(orderId);
-        if (action == RefusalAction.CANCEL) {
-            decide(order, CreditChecks.Outcome.REJECTED, note, by);
-            orders.cancelLoaded(order, new CancelOrderCommand(CancellationReasonCode.CREDIT_REJECTED, note, null, by));
-        } else {
-            CreditTerms terms = customers.creditTerms(order.customerId());
-            PaymentTerm term = action == RefusalAction.SWITCH_TO_PREPAID ? PaymentTerm.PREPAID : PaymentTerm.DEPOSIT;
-            if (!terms.allows(CommercialTerm.valueOf(term.name()))) {
-                throw new BusinessException(ErrorCode.PAYMENT_TERM_NOT_ALLOWED,
-                        "Customer %s may not be sold on %s terms".formatted(order.customerId(), term));
-            }
-            com.stockflow.order.api.BalancePolicy policy = OrderServiceImpl.balancePolicyFor(term, null, terms);
-            String recorded = note;
-            if (policy == com.stockflow.order.api.BalancePolicy.ON_DELIVERY
-                    && order.deliveryMode() == com.stockflow.order.api.DeliveryMode.FULL_TRUCKLOAD) {
-                // LP-2 (review of #157): the customer's default would have the carrier collect the balance, which a
-                // full truckload never does. The default gives way, as ON_CREDIT does below: paid before delivery,
-                // and said so in the decision's note. Only a policy staff choose explicitly is refused (409).
-                policy = com.stockflow.order.api.BalancePolicy.BEFORE_DELIVERY;
-                String why = " [balance before delivery: full-truckload order, the customer's ON_DELIVERY default "
-                        + "does not apply (LP-2)]";
-                String told = note.trim();
-                // The note columns hold 1000; the hold's carries "REJECTED: " in front.
-                int room = 980 - why.length();
-                recorded = (told.length() > room ? told.substring(0, room) : told) + why;
-            }
-            order.switchTermsAfterCreditRefusal(term,
-                    term == PaymentTerm.DEPOSIT && depositPercent == null ? terms.depositPercent() : depositPercent,
-                    // Credit was just refused: a balance on credit (BALCREDIT) is not the way out, it is paid first.
-                    policy == com.stockflow.order.api.BalancePolicy.ON_CREDIT
-                            ? com.stockflow.order.api.BalancePolicy.BEFORE_DELIVERY : policy);
-            decide(order, CreditChecks.Outcome.REJECTED, recorded, by);
-            // Waiting for payment again: its holds get a deadline, as at checkout (kltn-docs 14 BR-07).
-            inventory.rearmReservations(orderId);
-            repository.save(order);
-            events.publishEventsOf(order);
-        }
-        log.info("Credit refused for order {} by {}: {}", order.orderNumber(), by, action);
+        decide(order, CreditChecks.Outcome.REJECTED, note, by);
+        orders.cancelLoaded(order, new CancelOrderCommand(CancellationReasonCode.CREDIT_REJECTED, note, null, by));
+        log.info("Credit refused for order {} by {}", order.orderNumber(), by);
         return orderService.findById(orderId).orElseThrow();
+    }
+
+    /** The order's signed contract (4B-5): an order held at signing is decided against it. */
+    private java.util.Optional<com.stockflow.order.internal.domain.SalesContract> signedContract(Order order) {
+        return contracts.findLiveByOrderId(order.id().value())
+                .filter(c -> c.status() == com.stockflow.order.internal.domain.SalesContractStatus.SIGNED);
     }
 
     private Order lockHeld(UUID orderId) {

@@ -3,8 +3,6 @@ package com.stockflow.customer;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.stockflow.catalog.api.CatalogService;
-import com.stockflow.catalog.api.PriceSchedule;
-import com.stockflow.catalog.internal.service.SegmentPriceService;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
@@ -29,7 +27,6 @@ import org.springframework.test.web.servlet.ResultActions;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 import org.springframework.transaction.support.TransactionTemplate;
 
-import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -70,7 +67,6 @@ class CustomerSegmentIntegrationTest {
     @Autowired TransactionTemplate tx;
     @Autowired EntityManager entityManager;
     @Autowired CustomerSegmentService segments;
-    @Autowired SegmentPriceService groupPrices;
     @Autowired CatalogService catalog;
 
     private String token(String role) {
@@ -112,7 +108,7 @@ class CustomerSegmentIntegrationTest {
 
     @Test
     void theAdminManagesGroupsSalesReadsAndAGroupPricesItsCustomers() throws Exception {
-        String admin = token("ECOMMERCE_ADMIN");
+        String admin = token("SALES_MANAGER");
         String sales = token("SALES_STAFF");
         String suffix = UUID.randomUUID().toString().substring(24).toUpperCase();
         Map<String, Object> group = Map.of("code", " dai-ly-" + suffix.toLowerCase() + " ", "name", "Đại lý cấp 1");
@@ -122,7 +118,7 @@ class CustomerSegmentIntegrationTest {
         send(get(SEGMENTS), token("WAREHOUSE_STAFF"), null).andExpect(status().isForbidden());
         send(get(SEGMENTS), token("CUSTOMER"), null).andExpect(status().isForbidden());
         send(post(SEGMENTS), sales, group).andExpect(status().isForbidden());
-        send(post(SEGMENTS), token("ORDER_COORDINATOR"), group).andExpect(status().isForbidden());
+        send(post(SEGMENTS), token("WAREHOUSE_MANAGER"), group).andExpect(status().isForbidden());
 
         // Input is checked; the code is canonical and unique.
         send(post(SEGMENTS), admin, Map.of("code", "Đại lý", "name", "X")).andExpect(status().isBadRequest())
@@ -135,10 +131,9 @@ class CustomerSegmentIntegrationTest {
         send(post(SEGMENTS), token("SYSTEM_ADMIN"), Map.of("code", "dai-ly-" + suffix, "name", "Again"))
                 .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("CONFLICT"));
 
-        // Sales and the coordinator read.
+        // Sales reads.
         send(get(SEGMENTS + "/" + segmentId), sales, null).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.name").value("Đại lý cấp 1"));
-        send(get(SEGMENTS), token("ORDER_COORDINATOR"), null).andExpect(status().isOk());
         send(get(SEGMENTS + "/" + UUID.randomUUID()), sales, null).andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.errorCode").value("SEGMENT_NOT_FOUND"));
 
@@ -169,14 +164,10 @@ class CustomerSegmentIntegrationTest {
                 .andExpect(jsonPath("$.data.items[0].customerId").value(customerId.toString()))
                 .andExpect(jsonPath("$.data.items.length()").value(1));
 
-        // The group now prices the customer (own → group → base); out of the group, the base price again.
-        groupPrices.create(segmentId, SKU, new BigDecimal("11000000"));
-        PriceSchedule grouped = catalog.priceSchedule(customerId, SKU);
-        assertThat(grouped.source()).isEqualTo(PriceSchedule.PriceSource.SEGMENT);
-        assertThat(grouped.tiers().getFirst().unitPrice().amount()).isEqualByComparingTo("11000000");
+        // A group prices nothing (kltn-docs 13 BR-04, 5-3): in it or out of it, the customer has no price but its own.
+        assertThat(catalog.customerPrice(customerId, SKU)).isEmpty();
         send(put(assign), token("SYSTEM_ADMIN"), assignment(null, version(customerId))).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.segmentId").doesNotExist());
-        assertThat(catalog.priceSchedule(customerId, SKU).source()).isEqualTo(PriceSchedule.PriceSource.BASE);
 
         // Audited.
         assertThat(jdbc.queryForObject("""

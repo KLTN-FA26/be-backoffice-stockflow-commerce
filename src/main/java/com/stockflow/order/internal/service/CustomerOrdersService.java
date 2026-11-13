@@ -10,7 +10,6 @@ import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.OrderStatusChange;
 import com.stockflow.order.api.OrderSummary;
 import com.stockflow.order.internal.domain.CreditChecks;
-import com.stockflow.order.internal.domain.ProductionRecords;
 import com.stockflow.order.internal.repository.OrderSearchRepository;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
@@ -41,7 +40,10 @@ class CustomerOrdersService implements CustomerOrders {
     private static final SortWhitelist SORT = SortWhitelist.of("placedAt", "orderNumber", "totalAmount")
             .withDefault("placedAt", Sort.Direction.DESC);
 
-    /** Statuses from which the goods are released to the warehouse or beyond: printing, if any, is over. */
+    /**
+     * Statuses from which the goods are released to the warehouse or beyond. Printing is done outside the system before
+     * the goods are received (kltn-docs 07/11), so a released order's print lines are made.
+     */
     private static final Set<OrderStatus> PAST_PRODUCTION = java.util.EnumSet.of(OrderStatus.READY_TO_FULFILL,
             OrderStatus.PICKING, OrderStatus.PARTIALLY_FULFILLED, OrderStatus.PACKED, OrderStatus.SHIPPED,
             OrderStatus.DELIVERY_FAILED, OrderStatus.DELIVERED, OrderStatus.RETURN_REQUESTED, OrderStatus.RETURNED,
@@ -52,23 +54,14 @@ class CustomerOrdersService implements CustomerOrders {
 
     private final OrderSearchRepository search;
     private final OrderService orders;
-    private final ProductionRecords productionRecords;
     private final CreditChecks creditChecks;
     private final com.stockflow.order.internal.domain.CancellationRequestRepository cancellationRequests;
-    private final com.stockflow.order.internal.domain.QuoteRepository quotes;
-    private final com.stockflow.catalog.api.CatalogService catalog;
 
-    CustomerOrdersService(OrderSearchRepository search, OrderService orders, ProductionRecords productionRecords,
-                          CreditChecks creditChecks,
-                          com.stockflow.order.internal.domain.CancellationRequestRepository cancellationRequests,
-                          com.stockflow.order.internal.domain.QuoteRepository quotes,
-                          com.stockflow.catalog.api.CatalogService catalog) {
-        this.catalog = catalog;
+    CustomerOrdersService(OrderSearchRepository search, OrderService orders, CreditChecks creditChecks,
+                          com.stockflow.order.internal.domain.CancellationRequestRepository cancellationRequests) {
         this.cancellationRequests = cancellationRequests;
-        this.quotes = quotes;
         this.search = search;
         this.orders = orders;
-        this.productionRecords = productionRecords;
         this.creditChecks = creditChecks;
     }
 
@@ -77,7 +70,13 @@ class CustomerOrdersService implements CustomerOrders {
         if (query.placedFrom() != null && query.placedTo() != null && query.placedTo().isBefore(query.placedFrom())) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "placedTo is before placedFrom");
         }
-        var criteria = new OrderSearchRepository.Criteria(query.search(), query.statuses(), customerId,
+        List<OrderStatus> shown = visible(query.statuses());
+        if (shown.isEmpty()) {
+            // Only DRAFT asked for: nothing the customer may see - and an empty filter would read as "every status".
+            return Pages.toResponse(org.springframework.data.domain.Page.<Card>empty(
+                    Pages.of(query.page(), query.size())));
+        }
+        var criteria = new OrderSearchRepository.Criteria(query.search(), shown, customerId,
                 query.placedFrom() == null ? null : query.placedFrom().atStartOfDay(BUSINESS_ZONE).toInstant(),
                 query.placedTo() == null ? null : query.placedTo().plusDays(1).atStartOfDay(BUSINESS_ZONE).toInstant());
         var page = search.search(criteria, Pages.of(query.page(), query.size(), SORT.parse(query.sort())));
@@ -95,39 +94,29 @@ class CustomerOrdersService implements CustomerOrders {
     public Detail myOrder(UUID customerId, UUID orderId) {
         OrderSummary summary = orders.findById(orderId)
                 .filter(order -> customerId.equals(order.customerId()))
+                // 17 §5.2: a DRAFT order - its contract still being drawn up - is not the customer's to see.
+                .filter(order -> order.status() != OrderStatus.DRAFT)
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No order with id " + orderId));
-        Map<UUID, Integer> produced = summary.lines().stream().anyMatch(line -> line.designSnapshotId() != null)
-                ? productionRecords.producedByLine(orderId)
-                : Map.of();
-        // Where each stock SKU is on sale today, for a portal that puts the order back in a basket (SCRUM-190).
-        // Design lines are not reordered this way (a new quote asks for them), so they are not looked up.
-        var listings = catalog.listings(summary.lines().stream().filter(line -> line.designSnapshotId() == null)
-                .map(line -> line.sku()).collect(java.util.stream.Collectors.toSet()));
         List<Line> lines = summary.lines().stream()
-                .map(line -> {
-                    var listing = listings.get(line.sku());
-                    return new Line(line.lineId(), line.sku(), line.quantity(), line.unitPrice().amount(),
-                            line.lineTotal().amount(), line.designSnapshotId(),
-                            production(line, summary.status(), produced),
-                            listing == null ? null : listing.slug(), listing == null ? null : listing.title(),
-                            listing == null ? null : listing.imageUrl());
-                })
+                .map(line -> new Line(line.lineId(), line.sku(), line.quantity(), line.unitPrice().amount(),
+                        line.lineTotal().amount(), line.designSnapshotId(), production(line, summary.status()),
+                        line.cartons(), line.unitsPerCarton(), line.taxRate(),
+                        line.taxAmount() == null ? null : line.taxAmount().amount()))
                 .toList();
         Optional<CreditChecks.Check> latestCheck = summary.status() == OrderStatus.ON_HOLD
                 ? creditChecks.latest(orderId)
                 : Optional.empty();
         return new Detail(summary.orderId(), summary.orderNumber(), summary.status(),
                 statusGroup(summary.status(), summary.lifecycle()),
-                holdReasonPublic(summary.status(), latestCheck), summary.paymentTerm(), summary.total().amount(),
+                holdReasonPublic(summary.status(), latestCheck), summary.total().amount(),
                 summary.total().currency().getCurrencyCode(), summary.placedAt(), summary.shippingAddress(),
-                payment(summary), lines, timeline(summary, orders.history(orderId)),
+                lines, timeline(summary, orders.history(orderId)),
                 deliveryState(summary.status(), summary.lifecycle()), allowedActions(summary),
                 cancellationRequests.latestOf(orderId)
                         .map(r -> new CancellationRequestView(r.status().name(), r.reasonCode(), r.note(),
                                 r.requestedAt(), r.decidedAt(), r.decisionNote()))
                         .orElse(null),
-                shipments(summary),
-                summary.lifecycle() == null ? null : summary.lifecycle().deliveryMode().name());
+                shipments(summary), charges(summary));
     }
 
     /**
@@ -144,7 +133,7 @@ class CustomerOrdersService implements CustomerOrders {
         if (lifecycle.shipments().isEmpty()) {
             com.stockflow.order.api.OrderShipmentStatus whole = wholeOrderShipmentStatus(summary.status());
             return whole == null || lifecycle.shippedAt() == null ? List.of()
-                    : List.of(new Shipment(null, whole, 0, null, null, lifecycle.shippedAt(),
+                    : List.of(new Shipment(null, whole, 0, null, lifecycle.shippedAt(),
                     whole == com.stockflow.order.api.OrderShipmentStatus.HANDED_OVER ? null
                             : whole == com.stockflow.order.api.OrderShipmentStatus.DELIVERED ? lifecycle.deliveredAt()
                             : null,
@@ -156,8 +145,7 @@ class CustomerOrdersService implements CustomerOrders {
                     var carriage = s.carriage();
                     return new Shipment(carriage == null ? null : carriage.shipmentCode(), s.status(),
                             carriage == null ? 0 : carriage.packageCount(),
-                            carriage == null ? null : carriage.carrierName(),
-                            carriage == null ? null : carriage.deliveryMode(), s.handedOverAt(), s.outcomeAt(),
+                            carriage == null ? null : carriage.carrierName(), s.handedOverAt(), s.outcomeAt(),
                             s.failureReason());
                 })
                 .toList();
@@ -166,32 +154,41 @@ class CustomerOrdersService implements CustomerOrders {
     /**
      * G3-2: what the portal may offer, from the same rules the order applies - so the portal stops keeping its own
      * list of cancellable statuses. A customer cancels at once until the order is released; after that, up to the
-     * first completed package, asks (one request at a time); reorders an order that came from a quote.
+     * first labelled carton (08 BR-04), asks (one request at a time).
      */
     private AllowedActions allowedActions(OrderSummary summary) {
         OrderStatus status = summary.status();
         boolean cancel = status.customerMayCancelDirectly();
         var lifecycle = summary.lifecycle();
-        // Review of #150: stock packed ahead of the prints, nothing handed over, is still cancelled (Order#packedForGood).
-        boolean printing = status == OrderStatus.IN_PRODUCTION || lifecycle != null
-                && status == OrderStatus.ON_HOLD && lifecycle.statusBeforeHold() == OrderStatus.IN_PRODUCTION;
-        boolean packed = lifecycle != null && lifecycle.packedAt() != null
-                && !(printing && lifecycle.shipments().isEmpty() && lifecycle.goodsLeftAt() == null);
+        boolean packed = lifecycle != null && lifecycle.packedForGood();
         boolean request = !cancel && !packed && status.canTransitionTo(OrderStatus.CANCELLED)
                 && !cancellationRequests.hasPending(summary.orderId());
-        return new AllowedActions(cancel, request, quotes.findByConvertedOrderId(summary.orderId()).isPresent());
+        return new AllowedActions(cancel, request);
     }
 
     static StatusGroup statusGroup(OrderStatus status) {
         return statusGroup(status, null);
     }
 
+    /**
+     * The statuses a customer's list may show (17 §5.2): those asked for, or every one, but never DRAFT - an order whose
+     * contract is still being drawn up is Sales' work, not yet the customer's.
+     */
+    private static List<OrderStatus> visible(List<OrderStatus> asked) {
+        List<OrderStatus> from = asked == null || asked.isEmpty() ? List.of(OrderStatus.values()) : asked;
+        return from.stream().filter(status -> status != OrderStatus.DRAFT).distinct().toList();
+    }
+
     /** {@code lifecycle} tells a CLOSED order that was refunded from one that was completed; null reads as completed. */
     static StatusGroup statusGroup(OrderStatus status, OrderSummary.Lifecycle lifecycle) {
         return switch (status) {
+            // A DRAFT order is not the customer's to see (17 §5.2): the reads leave it out; were one read, it waits.
             case DRAFT, PENDING_PAYMENT -> StatusGroup.AWAITING_PAYMENT;
+            case PENDING_CONTRACT -> StatusGroup.AWAITING_CONTRACT;
             case ON_HOLD -> StatusGroup.UNDER_REVIEW;
             case CONFIRMED -> StatusGroup.CONFIRMED;
+            // 17 §5.2: "Đang chờ hàng".
+            case AWAITING_STOCK -> StatusGroup.AWAITING_STOCK;
             case IN_PRODUCTION -> StatusGroup.IN_PRODUCTION;
             case READY_TO_FULFILL, PICKING, PARTIALLY_FULFILLED, PACKED -> StatusGroup.PREPARING;
             case SHIPPED, DELIVERY_FAILED -> StatusGroup.SHIPPING;
@@ -243,31 +240,26 @@ class CustomerOrdersService implements CustomerOrders {
             case CLOSED -> statusGroup(status, lifecycle) == StatusGroup.RETURNED ? DeliveryState.RETURNED
                     : DeliveryState.DELIVERED;
             case RETURNED, REFUNDED, PARTIALLY_REFUNDED -> DeliveryState.RETURNED;
-            case DRAFT, PENDING_PAYMENT, CONFIRMED, IN_PRODUCTION, READY_TO_FULFILL, PICKING, CANCELLED ->
-                    DeliveryState.NOT_SHIPPED;
+            case DRAFT, PENDING_CONTRACT, PENDING_PAYMENT, CONFIRMED, AWAITING_STOCK, IN_PRODUCTION, READY_TO_FULFILL,
+                 PICKING, CANCELLED -> DeliveryState.NOT_SHIPPED;
         };
     }
 
     /**
-     * @param producedByLine good units per line, from {@code ProductionRecords.producedByLine}, read once
-     *                       for the order
+     * Where a print line's goods stand, from the order's status alone: printing is done outside the system, so the
+     * goods of a released order are made - all of the line's units - and nothing is made before release.
      */
-    static Production production(OrderSummary.LineSummary line, OrderStatus orderStatus,
-                                 Map<UUID, Integer> producedByLine) {
+    static Production production(OrderSummary.LineSummary line, OrderStatus orderStatus) {
         if (line.designSnapshotId() == null) {
             return new Production(ProductionState.NOT_REQUIRED, 0);
         }
-        int produced = producedByLine.getOrDefault(line.lineId(), 0);
         if (orderStatus == OrderStatus.CANCELLED) {
-            return new Production(ProductionState.CANCELLED, produced);
+            return new Production(ProductionState.CANCELLED, 0);
         }
-        if (produced >= line.quantity() || PAST_PRODUCTION.contains(orderStatus)) {
-            return new Production(ProductionState.DONE, produced);
+        if (PAST_PRODUCTION.contains(orderStatus)) {
+            return new Production(ProductionState.DONE, line.quantity());
         }
-        if (orderStatus == OrderStatus.IN_PRODUCTION) {
-            return new Production(ProductionState.IN_PROGRESS, produced);
-        }
-        return new Production(ProductionState.NOT_STARTED, produced);
+        return new Production(ProductionState.NOT_STARTED, 0);
     }
 
     /**
@@ -294,7 +286,9 @@ class CustomerOrdersService implements CustomerOrders {
     static List<TimelineEntry> timeline(OrderSummary summary, List<OrderStatusChange> history) {
         List<TimelineEntry> entries = new ArrayList<>();
         for (OrderStatusChange change : history) {
-            if (change.to() == null) {
+            // A step into DRAFT - the order made from the quote, or its contract withdrawn - is Sales' drafting, not a
+            // step the customer reads (17 §5.2).
+            if (change.to() == null || change.to() == OrderStatus.DRAFT) {
                 continue;
             }
             var reasonCode = change.to() == OrderStatus.CANCELLED && summary.cancellation() != null
@@ -308,10 +302,16 @@ class CustomerOrdersService implements CustomerOrders {
         return List.copyOf(entries);
     }
 
-    private static Payment payment(OrderSummary summary) {
-        var payment = summary.payment();
-        return payment == null ? null
-                : new Payment(payment.status(), payment.paidAmount(), payment.depositRequired(),
-                        payment.creditTermDays());
+    /** Before tax, the VAT and the fee lines; an order placed without VAT is all before tax, with no fee lines. */
+    private static CustomerOrders.Charges charges(OrderSummary summary) {
+        if (summary.charges() == null) {
+            return new CustomerOrders.Charges(summary.total().amount(), java.math.BigDecimal.ZERO, List.of());
+        }
+        OrderSummary.Charges charges = summary.charges();
+        return new CustomerOrders.Charges(charges.netTotal().amount(), charges.taxTotal().amount(),
+                charges.fees() == null ? List.of() : charges.fees().stream()
+                        .map(fee -> new CustomerOrders.Fee(fee.kind().name(), fee.sku(), fee.amount().amount(),
+                                fee.taxRate(), fee.taxAmount().amount()))
+                        .toList());
     }
 }
