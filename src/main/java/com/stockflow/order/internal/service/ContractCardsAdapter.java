@@ -26,7 +26,8 @@ class ContractCardsAdapter implements ContractCards {
         if (orderId == null || contractId == null) {
             return Optional.empty();
         }
-        return contracts.history(orderId).stream().filter(c -> c.id().equals(contractId)).findFirst()
+        // Unscoped: the card is drawn from an event listener, where no data scope is in force.
+        return contracts.historyForSystem(orderId).stream().filter(c -> c.id().equals(contractId)).findFirst()
                 .map(ContractCardsAdapter::card);
     }
 

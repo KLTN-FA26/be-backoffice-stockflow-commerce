@@ -160,6 +160,14 @@ class SalesContractService implements SalesContracts {
     }
 
     @Override
+    @Transactional(readOnly = true)
+    public List<ContractView> historyForSystem(UUID orderId) {
+        Order order = orders.findById(new OrderId(orderId))
+                .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No order " + orderId));
+        return contracts.findByOrderId(orderId).stream().map(contract -> view(contract, order, null)).toList();
+    }
+
+    @Override
     @Auditable(action = AuditAction.UPDATE, resourceType = "sales-contract", resourceId = "#result?.id()",
             details = "{orderId: #orderId}")
     public ContractView edit(CurrentUser user, UUID orderId, long version, Draft draft) {

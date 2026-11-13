@@ -98,6 +98,12 @@ public interface SalesContracts {
     /** Every contract the order had, the cancelled ones too, newest first. */
     List<ContractView> history(UUID orderId);
 
+    /**
+     * {@link #history} for the system itself, outside any request: the chat's contract card follows the contract from
+     * an event listener, where no caller and so no data scope exists. Never for an endpoint.
+     */
+    List<ContractView> historyForSystem(UUID orderId);
+
     /** A draft revised against the version read (14 §4.3 step 16). */
     ContractView edit(CurrentUser user, UUID orderId, long version, Draft draft);
 
