@@ -16,4 +16,7 @@ public interface DesignProjectAssetJpaRepository extends BaseJpaRepository<Desig
     long countByProjectId(UUID projectId);
 
     Optional<DesignProjectAssetJpaEntity> findByIdAndProjectId(UUID id, UUID projectId);
+
+    /** The file a request with this key already made in this library: what a retry of it is answered with. */
+    Optional<DesignProjectAssetJpaEntity> findByProjectIdAndUploadKey(UUID projectId, String uploadKey);
 }

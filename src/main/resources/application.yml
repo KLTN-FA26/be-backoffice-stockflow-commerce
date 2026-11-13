@@ -480,6 +480,10 @@ stockflow:
       - method: PUT
         pattern: /api/v1/designs/{id}/document
         max-bytes: 1065536
+      # A clone carries a whole layout too (FE request 2026-11-13 E-3), plus the target's SKU.
+      - method: POST
+        pattern: /api/v1/designs/{id}/clones
+        max-bytes: 1065536
 
   inventory:
     # Most lines one planned cycle count may hold (SCRUM-146); a wider scope is refused so the count stays countable.
