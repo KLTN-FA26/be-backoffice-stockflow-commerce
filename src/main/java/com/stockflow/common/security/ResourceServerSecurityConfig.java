@@ -173,6 +173,10 @@ public class ResourceServerSecurityConfig {
                         // Both remain anonymous, as does the existing product-media surface.
                         .requestMatchers("/api/v1/identity/auth/login", "/oauth2/jwks",
                                 "/api/v1/public/products/**").permitAll()
+                        // The STOMP handshake (sales chat): a browser cannot put a bearer token on a WebSocket
+                        // upgrade, so the token comes in the STOMP CONNECT frame and StompAuthenticationInterceptor
+                        // checks it there; nothing is served before it. GET only: the upgrade is a GET.
+                        .requestMatchers(HttpMethod.GET, "/ws", "/ws/**").permitAll()
                         // A Sales-invited contact has no password yet; the invitation token in the
                         // body is the credential (SCRUM-450). POST only: nothing else lives there.
                         .requestMatchers(HttpMethod.POST, "/api/v1/customers/portal-activation").permitAll()

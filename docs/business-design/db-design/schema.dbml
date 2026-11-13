@@ -685,6 +685,8 @@ Enum design.design_project_event_event {
   PROJECT_CREATED
   ASSET_ADDED
   ASSET_REMOVED
+  TEXT_ADDED
+  TEXT_REMOVED
   BATCH_PREFLIGHT_FAILED
   BATCH_SUBMITTED
   BATCH_CLOSED
@@ -951,16 +953,109 @@ Enum fulfillment.waybill_import_row_outcome {
   ERROR
 }
 
+Enum chat.conversation_opened_by_type {
+  CUSTOMER
+  AGENT
+  SYSTEM
+}
+
 Enum chat.conversation_status {
-  OPEN
+  NEW
+  QUEUED
   ASSIGNED
+  ACTIVE
+  WAITING_ON_CUSTOMER
+  WAITING_ON_INTERNAL
+  ESCALATED
+  RESOLVED
+  REOPENED
+  AUTO_CLOSED
   CLOSED
+}
+
+Enum chat.conversation_context_kind {
+  PRODUCT
+  CUSTOMER_SKU
+  DESIGN
+  DESIGN_PROJECT
+  QUOTE
+  ORDER
+  CONTRACT
+  PRODUCTION_ORDER
+  EINVOICE
+}
+
+Enum chat.conversation_event_type {
+  OPENED
+  CONTINUED
+  CONTEXT_ATTACHED
+  QUEUED
+  CLAIMED
+  ASSIGNED
+  TRANSFERRED
+  STATUS_CHANGED
+  FIRST_RESPONSE
+  INTERNAL_NOTE
+  MESSAGE_EDITED
+  MESSAGE_DELETED
+  CARD_SENT
+  CARD_ACTION
+  CARD_STATE_CHANGED
+  CSAT_SUBMITTED
+  MERGED
+  FIRST_RESPONSE_OVERDUE
+  RESOLUTION_OVERDUE
+}
+
+Enum chat.message_card_kind {
+  QUOTE_REQUEST
+  QUOTE
+  CONTRACT
+  PAYMENT_INFO
+  PAYMENT_REMINDER
+  SAMPLE_APPROVAL
+  INVOICE
+  ORDER_STATUS
+  PRODUCTION_PROGRESS
+  CSAT_SURVEY
+}
+
+Enum chat.message_card_state {
+  OPEN
+  ACTED
+  SUPERSEDED
+  EXPIRED
+  CANCELLED
+  CLOSED
+}
+
+Enum chat.message_kind {
+  TEXT
+  ATTACHMENT
+  CARD
+  SYSTEM
+  INTERNAL_NOTE
 }
 
 Enum chat.message_sender_type {
   CUSTOMER
   AGENT
   SYSTEM
+}
+
+Enum chat.message_visibility {
+  CUSTOMER
+  STAFF
+}
+
+Enum chat.message_attachment_message_kind {
+  ATTACHMENT
+  INTERNAL_NOTE
+}
+
+Enum chat.participant_read_reader_type {
+  CUSTOMER
+  STAFF
 }
 
 Enum notification.delivery_log_channel {
@@ -1196,6 +1291,10 @@ Table product.customization_templates [headercolor: #2E86AB] {
   reference_file_key     varchar(500)
   reference_file_name    varchar(255)
   reference_content_type varchar(100)
+  model_file_key         varchar(500)
+  model_file_name        varchar(255)
+  model_file_checksum    varchar(64)
+  model_surfaces_json    jsonb [not null, default: `'[]'::jsonb`]
   indexes {
     (variant_id, code) [unique]
   }
@@ -3348,6 +3447,7 @@ Table design.design_project_asset [headercolor: #AA4A9E] {
   created_by       varchar(100)
   last_modified_at timestamptz
   last_modified_by varchar(100)
+  upload_key       varchar(300)
 }
 
 Table design.design_project_event [headercolor: #AA4A9E] {
@@ -3382,6 +3482,18 @@ Table design.design_project_quote_request_line [headercolor: #AA4A9E] {
   indexes {
     (request_id, draft_id) [pk]
   }
+}
+
+Table design.design_project_text [headercolor: #AA4A9E] {
+  id               uuid [pk]
+  project_id       uuid [not null]
+  text             varchar(500) [not null]
+  style            jsonb [not null]
+  version          bigint [not null, default: 0]
+  created_at       timestamptz [not null]
+  created_by       varchar(100)
+  last_modified_at timestamptz
+  last_modified_by varchar(100)
 }
 
 Table design.design_quote_request [headercolor: #AA4A9E] {
@@ -4268,32 +4380,183 @@ Table catalog.product_listing [headercolor: #1B998B] {
 // SCHEMA: chat
 // =============================================================================
 
-Table chat.conversation [headercolor: #4C93A8] {
-  id                uuid [pk]
-  customer_id       uuid [not null]
-  order_id          uuid
-  subject           varchar(300)
-  status            chat.conversation_status [not null]
-  assigned_agent_id uuid
-  version           bigint [not null, default: 0]
-  created_at        timestamptz [not null]
-  created_by        varchar(100)
-  last_modified_at  timestamptz
-  last_modified_by  varchar(100)
-}
-
-Table chat.message [headercolor: #4C93A8] {
+Table chat.canned_response [headercolor: #4C93A8] {
   id               uuid [pk]
-  conversation_id  uuid [not null]
-  sender_type      chat.message_sender_type [not null]
-  sender_id        uuid
+  owner_id         uuid
+  title            varchar(200) [not null]
   body             varchar(4000) [not null]
-  sent_at          timestamptz [not null]
+  shortcut         varchar(32)
+  category         varchar(64)
+  archived_at      timestamptz
   version          bigint [not null, default: 0]
   created_at       timestamptz [not null]
   created_by       varchar(100)
   last_modified_at timestamptz
   last_modified_by varchar(100)
+}
+
+Table chat.conversation [headercolor: #4C93A8] {
+  id                        uuid [pk]
+  customer_id               uuid [not null]
+  order_id                  uuid
+  subject                   varchar(300)
+  status                    chat.conversation_status [not null]
+  assigned_agent_id         uuid
+  version                   bigint [not null, default: 0]
+  created_at                timestamptz [not null]
+  created_by                varchar(100)
+  last_modified_at          timestamptz
+  last_modified_by          varchar(100)
+  opened_by_type            chat.conversation_opened_by_type [not null]
+  opened_by                 uuid
+  assigned_at               timestamptz
+  status_changed_at         timestamptz [not null]
+  first_response_due_at     timestamptz
+  first_responded_at        timestamptz
+  first_response_alerted_at timestamptz
+  resolution_due_at         timestamptz
+  resolution_alerted_at     timestamptz
+  escalation_reason         varchar(1000)
+  escalated_to_id           uuid
+  resolved_at               timestamptz
+  resolved_by               uuid
+  auto_closed_at            timestamptz
+  closed_at                 timestamptz
+  reopen_until              timestamptz
+  last_customer_message_at  timestamptz
+  last_message_at           timestamptz
+  last_message_seq          bigint [not null, default: 0]
+  csat_score                smallint
+  csat_comment              varchar(2000)
+  csat_submitted_at         timestamptz
+  continued_from_id         uuid
+  merged_into_id            uuid
+}
+
+Table chat.conversation_context [headercolor: #4C93A8] {
+  id                  uuid [pk]
+  conversation_id     uuid [not null]
+  kind                chat.conversation_context_kind [not null]
+  product_id          uuid
+  variant_id          uuid
+  design_id           uuid
+  design_project_id   uuid
+  quote_id            uuid
+  order_id            uuid
+  contract_id         uuid
+  production_order_id uuid
+  einvoice_id         uuid
+  is_primary          boolean [not null, default: false]
+  attached_by         uuid
+  attached_at         timestamptz [not null]
+  version             bigint [not null, default: 0]
+  created_at          timestamptz [not null]
+  created_by          varchar(100)
+  last_modified_at    timestamptz
+  last_modified_by    varchar(100)
+  indexes {
+    (id, conversation_id) [unique]
+  }
+}
+
+Table chat.conversation_event [headercolor: #4C93A8] {
+  id               uuid [pk]
+  conversation_id  uuid [not null]
+  type             chat.conversation_event_type [not null]
+  actor_type       varchar(16) [not null]
+  actor_id         uuid
+  occurred_at      timestamptz [not null]
+  from_status      varchar(32)
+  to_status        varchar(32)
+  context_id       uuid
+  message_id       uuid
+  target_user_id   uuid
+  note             varchar(1000)
+  detail           jsonb
+  version          bigint [not null, default: 0]
+  created_at       timestamptz [not null]
+  created_by       varchar(100)
+  last_modified_at timestamptz
+  last_modified_by varchar(100)
+}
+
+Table chat.message [headercolor: #4C93A8] {
+  id                uuid [pk]
+  conversation_id   uuid [not null]
+  sender_type       chat.message_sender_type [not null]
+  sender_id         uuid
+  body              varchar(4000)
+  sent_at           timestamptz [not null]
+  version           bigint [not null, default: 0]
+  created_at        timestamptz [not null]
+  created_by        varchar(100)
+  last_modified_at  timestamptz
+  last_modified_by  varchar(100)
+  seq               bigint [not null]
+  kind              chat.message_kind [not null, default: 'TEXT']
+  visibility        chat.message_visibility [not null, default: 'CUSTOMER']
+  client_message_id varchar(64)
+  context_id        uuid
+  card_kind         chat.message_card_kind
+  card_payload      jsonb
+  card_state        chat.message_card_state
+  card_updated_at   timestamptz
+  edited_at         timestamptz
+  deleted_at        timestamptz
+  deleted_by        uuid
+  indexes {
+    (conversation_id, seq) [unique]
+    (id, kind) [unique]
+    (id, conversation_id) [unique]
+  }
+}
+
+Table chat.message_attachment [headercolor: #4C93A8] {
+  id               uuid [pk]
+  message_id       uuid [not null]
+  message_kind     chat.message_attachment_message_kind [not null, default: 'ATTACHMENT']
+  file_key         varchar(512) [not null, unique]
+  original_name    varchar(255)
+  content_type     varchar(100) [not null]
+  size_bytes       bigint [not null]
+  sha256           varchar(64) [not null]
+  width            int
+  height           int
+  uploaded_by      uuid [not null]
+  version          bigint [not null, default: 0]
+  created_at       timestamptz [not null]
+  created_by       varchar(100)
+  last_modified_at timestamptz
+  last_modified_by varchar(100)
+}
+
+Table chat.message_mention [headercolor: #4C93A8] {
+  id           uuid [pk]
+  message_id   uuid [not null]
+  message_kind varchar(16) [not null, default: 'INTERNAL_NOTE']
+  user_id      uuid [not null]
+  created_at   timestamptz [not null]
+  indexes {
+    (message_id, user_id) [unique]
+  }
+}
+
+Table chat.participant_read [headercolor: #4C93A8] {
+  id                   uuid [pk]
+  conversation_id      uuid [not null]
+  user_id              uuid [not null]
+  reader_type          chat.participant_read_reader_type [not null]
+  last_read_seq        bigint [not null, default: 0]
+  last_read_message_id uuid
+  last_read_at         timestamptz
+  version              bigint [not null, default: 0]
+  created_at           timestamptz [not null]
+  created_by           varchar(100)
+  last_modified_at     timestamptz
+  last_modified_by     varchar(100)
+  indexes {
+    (conversation_id, user_id) [unique]
+  }
 }
 
 // =============================================================================
@@ -4994,6 +5257,7 @@ Ref: design.design_project_quote_request.project_id > design.design_project.id
 Ref: design.design_project_quote_request.requested_by > identity.app_user.id
 Ref: design.design_project_quote_request_line.draft_id > design.design_draft.id
 Ref: design.design_project_quote_request_line.request_id > design.design_project_quote_request.id
+Ref: design.design_project_text.project_id > design.design_project.id
 Ref: design.design_quote_request.closed_by > identity.app_user.id
 Ref: design.design_quote_request.draft_id > design.design_draft.id
 Ref: design.design_quote_request.requested_by > identity.app_user.id
@@ -5121,10 +5385,42 @@ Ref: catalog.customer_price.customer_id > customer.customer.id [delete: cascade]
 Ref: catalog.customer_price.sku > product.variants.sku [delete: restrict]
 Ref: catalog.customer_price_tier.customer_price_id > catalog.customer_price.id [delete: cascade]
 Ref: catalog.product_listing.product_id > product.products.id
+Ref: chat.canned_response.owner_id > identity.app_user.id
 Ref: chat.conversation.assigned_agent_id > identity.app_user.id
+Ref: chat.conversation.continued_from_id > chat.conversation.id [delete: restrict]
 Ref: chat.conversation.customer_id > customer.customer.id [delete: restrict]
+Ref: chat.conversation.escalated_to_id > identity.app_user.id
+Ref: chat.conversation.merged_into_id > chat.conversation.id [delete: restrict]
+Ref: chat.conversation.opened_by > identity.app_user.id
 Ref: chat.conversation.order_id > ordering.customer_order.id [delete: restrict]
+Ref: chat.conversation.resolved_by > identity.app_user.id
+Ref: chat.conversation_context.attached_by > identity.app_user.id
+Ref: chat.conversation_context.contract_id > ordering.sales_contract.id [delete: restrict]
+Ref: chat.conversation_context.conversation_id > chat.conversation.id [delete: restrict]
+Ref: chat.conversation_context.design_id > design.design_draft.id [delete: restrict]
+Ref: chat.conversation_context.design_project_id > design.design_project.id [delete: restrict]
+Ref: chat.conversation_context.einvoice_id > invoicing.einvoice.id [delete: restrict]
+Ref: chat.conversation_context.order_id > ordering.customer_order.id [delete: restrict]
+Ref: chat.conversation_context.product_id > product.products.id [delete: restrict]
+Ref: chat.conversation_context.production_order_id > ordering.production_order.id [delete: restrict]
+Ref: chat.conversation_context.quote_id > ordering.quote.id [delete: restrict]
+Ref: chat.conversation_context.variant_id > product.variants.id [delete: restrict]
+Ref: chat.conversation_event.actor_id > identity.app_user.id
+Ref: chat.conversation_event.(context_id, conversation_id) > chat.conversation_context.(id, conversation_id) [delete: restrict]
+Ref: chat.conversation_event.conversation_id > chat.conversation.id [delete: restrict]
+Ref: chat.conversation_event.(message_id, conversation_id) > chat.message.(id, conversation_id) [delete: restrict]
+Ref: chat.conversation_event.target_user_id > identity.app_user.id
+Ref: chat.message.(context_id, conversation_id) > chat.conversation_context.(id, conversation_id) [delete: restrict]
 Ref: chat.message.conversation_id > chat.conversation.id [delete: cascade]
+Ref: chat.message.deleted_by > identity.app_user.id
+Ref: chat.message.sender_id > identity.app_user.id
+Ref: chat.message_attachment.(message_id, message_kind) > chat.message.(id, kind) [delete: restrict]
+Ref: chat.message_attachment.uploaded_by > identity.app_user.id
+Ref: chat.message_mention.(message_id, message_kind) > chat.message.(id, kind) [delete: cascade]
+Ref: chat.message_mention.user_id > identity.app_user.id
+Ref: chat.participant_read.conversation_id > chat.conversation.id [delete: restrict]
+Ref: chat.participant_read.(last_read_message_id, conversation_id) > chat.message.(id, conversation_id) [delete: restrict]
+Ref: chat.participant_read.user_id > identity.app_user.id
 Ref: notification.preference.user_id > identity.app_user.id [delete: cascade]
 Ref: notification.user_notification.recipient_id > identity.app_user.id [delete: cascade]
 Ref: reporting.product_sales_summary.sku > product.variants.sku [delete: restrict]
@@ -5291,6 +5587,7 @@ TableGroup design_group [color: #AA4A9E] {
   design.design_project_event
   design.design_project_quote_request
   design.design_project_quote_request_line
+  design.design_project_text
   design.design_quote_request
   design.design_review_round
   design.design_review_round_design
@@ -5341,8 +5638,14 @@ TableGroup catalog_group [color: #1B998B] {
 }
 
 TableGroup chat_group [color: #4C93A8] {
+  chat.canned_response
   chat.conversation
+  chat.conversation_context
+  chat.conversation_event
   chat.message
+  chat.message_attachment
+  chat.message_mention
+  chat.participant_read
 }
 
 TableGroup notification_group [color: #A6763F] {

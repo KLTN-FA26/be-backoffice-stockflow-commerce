@@ -1,0 +1,295 @@
+package com.stockflow.chat.internal.service;
+
+import com.stockflow.chat.internal.domain.Actor;
+import com.stockflow.chat.internal.domain.Audience;
+import com.stockflow.chat.internal.domain.ChatMessage;
+import com.stockflow.chat.internal.domain.ContextRef;
+import com.stockflow.chat.internal.domain.Conversation;
+import com.stockflow.chat.internal.domain.ConversationContext;
+import com.stockflow.chat.internal.domain.ConversationEventType;
+import com.stockflow.chat.internal.domain.ConversationRepository;
+import com.stockflow.chat.internal.domain.ConversationStatus;
+import com.stockflow.chat.internal.domain.InboxFilter;
+import com.stockflow.chat.internal.domain.Slice;
+import com.stockflow.common.api.PageResponse;
+import com.stockflow.common.error.BusinessException;
+import com.stockflow.common.error.ErrorCode;
+import com.stockflow.common.id.Identifiers;
+import com.stockflow.common.security.CurrentUser;
+import com.stockflow.customer.api.CustomerService;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.time.Clock;
+import java.util.Comparator;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
+
+/**
+ * The staff's side of the chat in the back office (kltn-docs 16 §4): the queue, a conversation with the customer beside
+ * it, answering, internal notes, taking and handing conversations on, and the moves of 16 §5.
+ *
+ * <p>Every method starts with {@link ChatCallers#staff}, which refuses a portal account before anything is read or
+ * validated: the CUSTOMER role holds the same {@code chat-conversations} permission for its own side. Any staff member
+ * with the permission may look at any conversation ("người khác ở chế độ xem"); only the agent in charge, or a chat
+ * supervisor, answers the customer and moves it along - the aggregate's rule.</p>
+ */
+@Service
+@Transactional
+public class StaffChatService {
+
+    private static final int MAX_MENTIONS = 20;
+
+    private final ChatCallers callers;
+    private final ConversationRepository conversations;
+    private final ConversationWriter writer;
+    private final ChatReading reading;
+    private final ContextResolver contexts;
+    private final AgentDirectory agents;
+    private final ChatPresence presence;
+    private final ChatViews views;
+    private final CustomerService customers;
+    private final ChatBroadcaster broadcaster;
+    private final ChatProperties properties;
+    private final Clock clock;
+
+    public StaffChatService(ChatCallers callers, ConversationRepository conversations, ConversationWriter writer,
+                            ChatReading reading, ContextResolver contexts, AgentDirectory agents,
+                            ChatPresence presence, ChatViews views, CustomerService customers,
+                            ChatBroadcaster broadcaster, ChatProperties properties, Clock clock) {
+        this.callers = callers;
+        this.conversations = conversations;
+        this.writer = writer;
+        this.reading = reading;
+        this.contexts = contexts;
+        this.agents = agents;
+        this.presence = presence;
+        this.views = views;
+        this.customers = customers;
+        this.broadcaster = broadcaster;
+        this.properties = properties;
+        this.clock = clock;
+    }
+
+    /**
+     * What the queue is asked for.
+     *
+     * @param mine       only the caller's own conversations
+     * @param unassigned only those nobody has
+     * @param overdue    only those whose first answer is late (BR-09)
+     */
+    public record InboxQuery(Set<ConversationStatus> statuses, boolean mine, boolean unassigned, boolean overdue,
+                             UUID customerId, ContextRef about, int page, Integer size) {
+    }
+
+    /** The queue: overdue first answers first (BR-09), then the most recently active. */
+    @Transactional(readOnly = true)
+    public PageResponse<ChatConversationView> inbox(CurrentUser user, InboxQuery query) {
+        Actor staff = callers.staff(user);
+        int size = properties.pageSize(query.size(), 20);
+        int page = Math.max(0, query.page());
+        Slice<Conversation> slice = conversations.inbox(new InboxFilter(query.statuses(),
+                query.mine() ? user.userId() : null, query.unassigned(), query.overdue(), query.customerId(),
+                query.about()), clock.instant(), page, size);
+        return PageResponse.of(views.rows(slice.items(), user.userId(), staff), page, size, slice.total());
+    }
+
+    /**
+     * Sales open a conversation with a customer themselves (16 §4.1 step 1), about a document of that customer
+     * (BR-02), and have it: it is assigned to the opener when they answer customers.
+     */
+    public ChatConversationView open(CurrentUser user, UUID customerId, String subject, ContextRef about,
+                                     String text, String clientMessageId) {
+        Actor staff = callers.staff(user);
+        if (customerId == null || customers.findById(customerId).isEmpty()) {
+            throw new BusinessException(ErrorCode.CUSTOMER_NOT_FOUND);
+        }
+        List<ContextResolver.Resolved> resolved = about == null ? List.of()
+                : List.of(contexts.requireOwnedBy(about, customerId, false));
+        UUID assignTo = agents.answersCustomers(staff.userId()) ? staff.userId() : null;
+        Conversation c = writer.open(customerId, subject, staff, resolved, assignTo, null);
+        if (text != null && !text.isBlank()) {
+            reply(c, staff, text, clientMessageId, null);
+        }
+        return views.detail(c, user.userId(), staff);
+    }
+
+    @Transactional(readOnly = true)
+    public ChatConversationView get(CurrentUser user, UUID conversationId) {
+        Actor staff = callers.staff(user);
+        return views.detail(find(conversationId), user.userId(), staff);
+    }
+
+    /** Messages for the staff: internal notes included. */
+    @Transactional(readOnly = true)
+    public ChatMessagePage messages(CurrentUser user, UUID conversationId, Long before, Long since, Integer limit) {
+        callers.staff(user);
+        return reading.page(find(conversationId), Audience.STAFF, before, since, limit);
+    }
+
+    /**
+     * A text to the customer, by the agent in charge or a supervisor; the first one stops the first-response clock.
+     *
+     * @param contextId the conversation's context the answer is about; null for none in particular
+     */
+    public ChatMessageView reply(CurrentUser user, UUID conversationId, String text, String clientMessageId,
+                                 UUID contextId) {
+        Actor staff = callers.staff(user);
+        Conversation c = writer.lock(conversationId);
+        return views.message(reply(c, staff, text, clientMessageId, contextId).message());
+    }
+
+    /**
+     * An internal note (16 BR-07: never shown to the customer), naming the colleagues it asks (16 §4.6 step 16: the
+     * accountant, the warehouse manager...). Any staff member may write one, at any time; each one mentioned is told.
+     */
+    public ChatMessageView note(CurrentUser user, UUID conversationId, String text, List<UUID> mentions,
+                                String clientMessageId, UUID contextId) {
+        Actor staff = callers.staff(user);
+        Set<UUID> named = mentioned(mentions);
+        Conversation c = writer.lock(conversationId);
+        UUID about = requireContext(c, contextId);
+        ConversationWriter.Posted posted = writer.post(c, staff, clientMessageId, text,
+                conversation -> conversation.acceptInternalNote(staff, clock.instant()),
+                seq -> ChatMessage.internalNote(Identifiers.newId(), c.id(), seq, staff, text, named,
+                        CustomerChatService.blankToNull(clientMessageId), about, clock.instant()));
+        ChatMessageView view = views.message(posted.message());
+        if (!posted.replayed()) {
+            c.logMessageAction(ConversationEventType.INTERNAL_NOTE, staff, posted.message().id(), about, null,
+                    named.isEmpty() ? null : "{\"mentions\":" + named.stream().map(id -> "\"" + id + "\"").toList()
+                            + "}", clock.instant());
+            conversations.append(c.pullLog());
+            named.stream().filter(id -> !id.equals(staff.userId())).forEach(id -> broadcaster.toUser(id,
+                    new ChatEvent(ChatEvent.MESSAGE_CREATED, c.id(), view, clock.instant())));
+        }
+        return view;
+    }
+
+    /** The caller takes a conversation nobody has (16 §4.1 step 2). */
+    public ChatConversationView claim(CurrentUser user, UUID conversationId) {
+        Actor staff = callers.staff(user);
+        Conversation c = writer.lock(conversationId);
+        UUID before = c.assignedAgentId();
+        c.claim(staff, clock.instant());
+        writer.save(c, before);
+        return views.detail(c, user.userId(), staff);
+    }
+
+    /**
+     * Hands the conversation to {@code agentId}: a supervisor assigning one from the queue, or the agent in charge (or
+     * a supervisor) transferring it - with its contexts, notes and history, which are the conversation's.
+     *
+     * @throws BusinessException {@code CHAT_AGENT_NOT_AVAILABLE} when {@code agentId} does not answer customers
+     */
+    public ChatConversationView assign(CurrentUser user, UUID conversationId, UUID agentId, String note) {
+        Actor staff = callers.staff(user);
+        if (!agents.answersCustomers(agentId)) {
+            throw new BusinessException(ErrorCode.CHAT_AGENT_NOT_AVAILABLE);
+        }
+        Conversation c = writer.lock(conversationId);
+        UUID before = c.assignedAgentId();
+        c.handTo(staff, agentId, CustomerChatService.blankToNull(note), clock.instant());
+        writer.save(c, before);
+        return views.detail(c, user.userId(), staff);
+    }
+
+    /** A move of 16 §5 asked by the agent in charge or a supervisor: waiting, escalating (with why), resolving. */
+    public ChatConversationView changeStatus(CurrentUser user, UUID conversationId, ConversationStatus target,
+                                             String reason) {
+        Actor staff = callers.staff(user);
+        Conversation c = writer.lock(conversationId);
+        c.changeStatus(staff, target, reason, clock.instant(), properties.reopenWindow());
+        writer.save(c, c.assignedAgentId());
+        return views.detail(c, user.userId(), staff);
+    }
+
+    /**
+     * Sales attach a document of the conversation's customer to it (BR-02: never another customer's). Attaching one
+     * already there changes nothing.
+     */
+    public ChatConversationView attachContext(CurrentUser user, UUID conversationId, ContextRef ref) {
+        Actor staff = callers.staff(user);
+        if (ref == null) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Name the document: a kind and an id");
+        }
+        Conversation c = writer.lock(conversationId);
+        contexts.requireOwnedBy(ref, c.customerId(), false);
+        if (conversations.findContext(c.id(), ref).isEmpty()) {
+            boolean first = conversations.contextsOf(c.id()).isEmpty();
+            ConversationContext attached = conversations.attach(new ConversationContext(Identifiers.newId(), c.id(),
+                    ref, first, staff.userId(), clock.instant()));
+            c.contextAttached(staff, attached.id(), clock.instant());
+            writer.save(c, c.assignedAgentId());
+        }
+        return views.detail(c, user.userId(), staff);
+    }
+
+    public ChatReadMarkerView markRead(CurrentUser user, UUID conversationId, Long seq) {
+        Actor staff = callers.staff(user);
+        return reading.markRead(writer.lock(conversationId), staff, seq);
+    }
+
+    /** The conversation's log (16 BR-01), the oldest first. */
+    @Transactional(readOnly = true)
+    public List<ChatLogEntryView> log(CurrentUser user, UUID conversationId) {
+        callers.staff(user);
+        return views.log(conversations.logOf(find(conversationId).id()));
+    }
+
+    /** Who answers customers, by name, the online ones first: the assign and transfer dialog. */
+    @Transactional(readOnly = true)
+    public List<ChatAgentView> agents(CurrentUser user) {
+        callers.staff(user);
+        Set<UUID> ids = agents.agents();
+        Map<UUID, String> names = agents.names(ids);
+        return ids.stream().map(id -> new ChatAgentView(id, names.get(id), presence.isOnline(id)))
+                .sorted(Comparator.comparing(ChatAgentView::online).reversed()
+                        .thenComparing(agent -> agent.name() == null ? "" : agent.name()))
+                .toList();
+    }
+
+    private ConversationWriter.Posted reply(Conversation c, Actor staff, String text, String clientMessageId,
+                                            UUID contextId) {
+        UUID about = requireContext(c, contextId);
+        return writer.post(c, staff, clientMessageId, text,
+                conversation -> conversation.acceptAgentMessage(staff, clock.instant()),
+                seq -> ChatMessage.text(Identifiers.newId(), c.id(), seq, staff, text,
+                        CustomerChatService.blankToNull(clientMessageId), about, clock.instant()));
+    }
+
+    /** A context id named by a message must be one of this conversation's. */
+    private UUID requireContext(Conversation c, UUID contextId) {
+        if (contextId == null) {
+            return null;
+        }
+        return conversations.findContext(c.id(), contextId).map(ConversationContext::id)
+                .orElseThrow(() -> new BusinessException(ErrorCode.CHAT_CONTEXT_NOT_FOUND));
+    }
+
+    /** The staff a note mentions: existing accounts, none of them a customer's portal account. */
+    private Set<UUID> mentioned(List<UUID> mentions) {
+        if (mentions == null || mentions.isEmpty()) {
+            return Set.of();
+        }
+        Set<UUID> named = new LinkedHashSet<>(mentions);
+        named.remove(null);
+        if (named.size() > MAX_MENTIONS) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A note mentions at most " + MAX_MENTIONS);
+        }
+        Map<UUID, String> known = agents.names(named);
+        for (UUID id : named) {
+            if (!known.containsKey(id) || customers.findByUserId(id).isPresent()) {
+                throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Only staff are mentioned in a note");
+            }
+        }
+        return Set.copyOf(named);
+    }
+
+    private Conversation find(UUID conversationId) {
+        return conversations.findById(conversationId)
+                .orElseThrow(() -> new BusinessException(ErrorCode.CHAT_CONVERSATION_NOT_FOUND));
+    }
+}
