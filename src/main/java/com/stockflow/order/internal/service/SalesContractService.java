@@ -215,6 +215,7 @@ class SalesContractService implements SalesContracts {
                 orders.save(order);
                 prepared.adopt();
                 files.retainAfterCommit(stored.key(), RecordRetention.SALES_CONTRACT);
+                statusChanged(saved, order, user.userId(), now);
                 log.info("Sales contract {} of order {} sent", saved.contractNumber(), order.orderNumber());
                 return view(saved, order, creditWarning(order, saved));
             });
@@ -267,6 +268,7 @@ class SalesContractService implements SalesContracts {
                 placeSigned(order, saved, user.userId(), now);
                 prepared.adopt();
                 files.retainAfterCommit(stored.key(), RecordRetention.SALES_CONTRACT);
+                statusChanged(saved, order, user.userId(), now);
                 log.info("Sales contract {} of order {} signed on {}; the order is {}", saved.contractNumber(),
                         order.orderNumber(), signedOn, order.status());
                 return view(saved, order, null);
@@ -294,6 +296,7 @@ class SalesContractService implements SalesContracts {
                 cancellationRequests.save(request);
             });
         }
+        statusChanged(saved, order, user.userId(), now);
         log.info("Sales contract {} of order {} cancelled", saved.contractNumber(), order.orderNumber());
         return view(saved, order, null);
     }
@@ -346,6 +349,15 @@ class SalesContractService implements SalesContracts {
         return contract.signedFileKey() != null
                 ? files.downloadLink(contract.signedFileKey(), contract.signedFileName())
                 : files.downloadLink(contract.sentDocumentKey(), contract.contractNumber() + ".pdf");
+    }
+
+    /**
+     * Tells the modules that follow contracts - the chat's contract card (kltn-docs 16 §4.3 step 8) - that it was sent,
+     * signed or cancelled. Published in the step's transaction, delivered after commit.
+     */
+    private void statusChanged(SalesContract contract, Order order, UUID by, Instant at) {
+        events.publish(new com.stockflow.contracts.SalesContractStatusChanged(contract.id(), contract.contractNumber(),
+                order.id().value(), order.orderNumber().value(), order.customerId(), contract.status().name(), by, at));
     }
 
     // ---- loading ---------------------------------------------------------------------------------------------------

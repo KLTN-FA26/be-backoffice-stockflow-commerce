@@ -516,6 +516,28 @@ stockflow:
     # Most lines one planned cycle count may hold (SCRUM-146); a wider scope is refused so the count stays countable.
     cycle-count-max-lines: 500
 
+  chat:
+    # Sales chat (kltn-docs 16), the owner's decisions of 2026-11-13 - ChatProperties holds the same defaults.
+    # Business hours the chat's clocks count in (16 §4.1 step 3): 08:00-17:30, Monday to Saturday, Vietnam time.
+    business-zone: ${CHAT_BUSINESS_ZONE:Asia/Ho_Chi_Minh}
+    business-days: ${CHAT_BUSINESS_DAYS:MONDAY,TUESDAY,WEDNESDAY,THURSDAY,FRIDAY,SATURDAY}
+    business-opens: ${CHAT_BUSINESS_OPENS:08:00}
+    business-closes: ${CHAT_BUSINESS_CLOSES:17:30}
+    # BR-09: the first answer is due this long after the customer asks, in business time.
+    first-response-target: ${CHAT_FIRST_RESPONSE_TARGET:PT15M}
+    # 16 §5: a conversation waiting on a silent customer this long is auto-closed; a resolved or auto-closed one
+    # reopens on the customer's word for this long, then is closed for good.
+    auto-close-after: ${CHAT_AUTO_CLOSE_AFTER:P7D}
+    reopen-window: ${CHAT_REOPEN_WINDOW:P14D}
+    # Its author may edit or delete a message this long after sending it.
+    edit-window: ${CHAT_EDIT_WINDOW:PT5M}
+    # An offline customer is told of Sales' replies at most once per conversation per period.
+    customer-notice-period: ${CHAT_CUSTOMER_NOTICE_PERIOD:PT1H}
+    # How long a quote drawn up from a quote request card is valid until Sales change it.
+    draft-quote-validity: ${CHAT_DRAFT_QUOTE_VALIDITY:P14D}
+    # How often the SLA, auto-close and close jobs run.
+    sla-job-interval: ${CHAT_SLA_JOB_INTERVAL:PT1M}
+
   payment:
     # The company's bank account a customer transfers to (SCRUM-193, kltn-docs 15 §4.1 step 1). Blank here on purpose and
     # in prod: GET /orders/me/{id}/transfer-instructions answers 503 TRANSFER_INSTRUCTIONS_UNAVAILABLE until all three
@@ -524,6 +546,9 @@ stockflow:
       bank-name: ${COMPANY_BANK_NAME:}
       account-number: ${COMPANY_BANK_ACCOUNT_NUMBER:}
       account-name: ${COMPANY_BANK_ACCOUNT_NAME:}
+      # The bank's six-digit NAPAS BIN: the chat's transfer card (kltn-docs 16 BR-06) draws a VietQR code with it. Without
+      # it the card shows the account, with no QR code.
+      bank-bin: ${COMPANY_BANK_BIN:}
 
   # The seller a sales contract names (4B-4, kltn-docs 14 §4.3 step 11) and an e-invoice is issued by (WF-05 E1/E2).
   # Blank here on purpose: local, dev and test carry a demo one, and in the prod profile the application refuses

@@ -3,9 +3,10 @@
  *
  * <p>WBS 3.16 · database schema {@code chat}</p>
  *
- * <p><b>May depend on:</b> customer, order, design, identity, payment, product, invoicing - each through its
- * {@code api} only: the customer and their documents (a conversation's contexts, 16 BR-02, and the customer panel
- * beside a conversation), the staff who answer customers. None of them depends on the chat, so no cycle. Plus
+ * <p><b>May depend on:</b> customer, order, design, identity, payment, product, invoicing, notification - each
+ * through its {@code api} only: the customer and their documents (a conversation's contexts, 16 BR-02, and the
+ * customer panel beside a conversation), the documents' own operations its cards call (16 BR-03), the staff who answer
+ * customers, and the bell that tells an offline customer of a reply and the supervisors of a late one. None of them depends on the chat, so no cycle. Plus
  * {@code common} and {@code contracts}, which are available to every module.</p>
  *
  * <p>The module has two packages and the split is the whole point:</p>
@@ -17,5 +18,5 @@
  * </ul>
  */
 @org.springframework.modulith.ApplicationModule(allowedDependencies = {"customer :: api", "order :: api", "design :: api",
-        "identity :: api", "payment :: api", "product :: api", "invoicing :: api"})
+        "identity :: api", "payment :: api", "product :: api", "invoicing :: api", "notification :: api"})
 package com.stockflow.chat;

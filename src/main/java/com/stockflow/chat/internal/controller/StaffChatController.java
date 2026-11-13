@@ -127,13 +127,14 @@ class StaffChatController {
     @PostMapping("/conversations/{conversationId}/messages")
     @ResponseStatus(HttpStatus.CREATED)
     @Operation(summary = "Answer the customer (the agent in charge or a supervisor: else 409 CHAT_NOT_ASSIGNEE); the "
-            + "first answer stops the first-response clock")
+            + "first answer stops the first-response clock. With cannedResponseId, that saved reply is sent, its "
+            + "variables filled in by the server (needs chat-canned-responses:READ)")
     @RequiresPermission(resource = ChatResources.CONVERSATIONS, action = Action.UPDATE)
     @RateLimit(limit = 120, perSeconds = 60, key = RateLimit.Key.USER, bucket = "chat-messages")
     public ApiResponse<ChatMessageView> reply(@PathVariable UUID conversationId, @AuthenticatedUser CurrentUser user,
                                               @RequestBody ChatRequests.SendMessage request) {
         return ApiResponse.ok(chat.reply(user, conversationId, request.text(), request.clientMessageId(),
-                request.contextId()));
+                request.contextId(), request.cannedResponseId()));
     }
 
     @PostMapping("/conversations/{conversationId}/notes")

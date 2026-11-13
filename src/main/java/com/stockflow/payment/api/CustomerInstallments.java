@@ -26,4 +26,21 @@ public interface CustomerInstallments {
 
     /** The customer's open instalments, the earliest due first (those with no due date last), at most {@code limit}. */
     List<OpenInstallment> openOf(UUID customerId, int limit);
+
+    /**
+     * How one instalment is paid by transfer, as the chat's transfer card shows it (kltn-docs 16 §4.4, BR-06): what it
+     * still owes and what the transfer says. The account itself is {@link PaymentService#companyBankAccount}.
+     *
+     * @param outstanding       what is left to pay; zero once paid
+     * @param status            {@code NOT_DUE}, {@code DUE}, {@code PARTIALLY_PAID}, {@code PAID} or {@code CANCELLED}
+     * @param transferReference what the customer writes in the transfer: the contract's number and the instalment's
+     *                          ({@code HD-... DOT1}), how accounting matches the money to it
+     */
+    record Transfer(UUID installmentId, UUID customerId, UUID contractId, String contractNumber, UUID orderId,
+                    String orderNumber, int seq, String name, BigDecimal amount, BigDecimal outstanding,
+                    String currency, LocalDate dueDate, String status, boolean overdue, String transferReference) {
+    }
+
+    /** One instalment's transfer details, whatever its status; empty when there is no such instalment. */
+    java.util.Optional<Transfer> transfer(UUID installmentId);
 }

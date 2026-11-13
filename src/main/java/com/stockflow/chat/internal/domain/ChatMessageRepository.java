@@ -40,4 +40,33 @@ public interface ChatMessageRepository {
 
     /** How many messages of each conversation {@code readerId} has not read: seen by them, sent by someone else. */
     Map<UUID, Long> unread(Collection<UUID> conversationIds, UUID readerId, Audience audience);
+
+    /**
+     * The badge of a reader: in how many conversations, and how many messages, they have not read. For a customer
+     * ({@code customerId} set), their conversations; for the staff ({@code assignedTo} set), those in their charge.
+     */
+    UnreadTotal unreadTotal(UUID readerId, Audience audience, UUID customerId, UUID assignedTo);
+
+    /** A badge: conversations with something unread, and the messages unread in them. */
+    record UnreadTotal(long conversations, long messages) {
+    }
+
+    /** The cards of {@code kind} about a document, in any conversation, the newest first. */
+    List<ChatMessage> cardsAbout(ContextRef about, CardKind kind);
+
+    /** The cards of {@code kinds} still OPEN in the customer's conversations, the newest first. */
+    List<ChatMessage> openCardsOf(UUID customerId, Collection<CardKind> kinds);
+
+    /** The cards of {@code kind} still OPEN in one conversation. */
+    List<ChatMessage> openCardsIn(UUID conversationId, CardKind kind);
+
+    /**
+     * Messages whose text matches {@code query} (16 package 3 search for the staff: full-text, accents ignored, and
+     * a plain substring for a word typed in part), deleted ones never, the newest first.
+     *
+     * @param customerId     only this customer's conversations; null for every customer
+     * @param conversationId only this conversation; null for any
+     */
+    Slice<ChatMessage> search(String query, Audience audience, UUID customerId, UUID conversationId, int page,
+                              int size);
 }

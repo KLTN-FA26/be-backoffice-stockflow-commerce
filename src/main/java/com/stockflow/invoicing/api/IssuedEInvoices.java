@@ -19,4 +19,22 @@ public interface IssuedEInvoices {
     }
 
     Optional<IssuedEInvoice> find(UUID einvoiceId);
+
+    /**
+     * An issued invoice as the chat's invoice card shows it (kltn-docs 16 §4.6 step 15: number, symbol, date, total with
+     * tax, the XML and PDF to download - through {@code GET /api/v1/einvoices/me/{id}/files/{XML|PDF}}).
+     *
+     * @param templateCode   the form's template digit (1: a VAT invoice)
+     * @param symbol         the invoice's symbol, e.g. {@code C26TAA}
+     * @param invoiceNumber  the number the provider gave it
+     * @param hasXml         whether its XML is kept; likewise {@code hasPdf}
+     */
+    record Card(UUID id, UUID customerId, String code, String status, UUID orderId, String orderNumber,
+                String templateCode, String symbol, Integer invoiceNumber, java.time.LocalDate issueDate,
+                String currency, java.math.BigDecimal subtotal, java.math.BigDecimal taxTotal,
+                java.math.BigDecimal grandTotal, boolean hasXml, boolean hasPdf) {
+    }
+
+    /** An issued (or replaced) invoice's card; empty for a draft, a refused one or none. */
+    Optional<Card> card(UUID einvoiceId);
 }

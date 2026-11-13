@@ -221,6 +221,100 @@ class ConversationRepositoryAdapter implements ConversationRepository {
                 .toList();
     }
 
+    @Override
+    public Optional<Conversation> newestOpenOf(UUID customerId) {
+        @SuppressWarnings("unchecked")
+        List<UUID> found = entityManager.createNativeQuery("select c.id from chat.conversation c where c.customer_id ="
+                        + " :customer and c.status not in " + ENDED
+                        + " order by coalesce(c.last_message_at, c.created_at) desc, c.id desc limit 1")
+                .setParameter("customer", customerId).getResultList();
+        return found.stream().findFirst().flatMap(this::findById);
+    }
+
+    /** One row per agent, at their latest conversation with the customer. */
+    @Override
+    public List<UUID> recentAgentsOf(UUID customerId, UUID except, int limit) {
+        @SuppressWarnings("unchecked")
+        List<UUID> agents = entityManager.createNativeQuery("""
+                        select a.agent from (select c.assigned_agent_id as agent,
+                                                    max(coalesce(c.last_message_at, c.created_at)) as last_at
+                                               from chat.conversation c
+                                              where c.customer_id = :customer and c.assigned_agent_id is not null
+                                                and c.id <> :except
+                                              group by c.assigned_agent_id) a
+                         order by a.last_at desc limit :limit""")
+                .setParameter("customer", customerId).setParameter("except", except == null ? new UUID(0L, 0L) : except)
+                .setParameter("limit", limit).getResultList();
+        return agents;
+    }
+
+    @Override
+    public List<UUID> firstResponseOverdueUnalerted(Instant now, int limit) {
+        return ids("""
+                select c.id from chat.conversation c
+                 where c.first_responded_at is null and c.first_response_alerted_at is null
+                   and c.first_response_due_at < :at and c.status not in""" + " " + ENDED + """
+                 order by c.first_response_due_at, c.id limit :limit""", now, limit);
+    }
+
+    @Override
+    public List<UUID> waitingOnCustomerSince(Instant silentSince, int limit) {
+        return ids("""
+                select c.id from chat.conversation c
+                 where c.status = 'WAITING_ON_CUSTOMER' and c.status_changed_at < :at
+                 order by c.status_changed_at, c.id limit :limit""", silentSince, limit);
+    }
+
+    @Override
+    public List<UUID> pastReopenWindow(Instant now, int limit) {
+        return ids("""
+                select c.id from chat.conversation c
+                 where c.status in ('RESOLVED', 'AUTO_CLOSED') and c.reopen_until <= :at
+                 order by c.reopen_until, c.id limit :limit""", now, limit);
+    }
+
+    @Override
+    public List<ConversationFacts> openedBetween(Instant from, Instant to, UUID agentId, int limit) {
+        Query query = entityManager.createNativeQuery("""
+                        select c.id, c.assigned_agent_id, c.created_at, c.first_responded_at,
+                               c.first_response_alerted_at, c.resolved_at, c.csat_score
+                          from chat.conversation c
+                         where c.created_at >= :from and c.created_at < :to""" + (agentId == null ? ""
+                        : " and c.assigned_agent_id = :agent") + " order by c.created_at, c.id limit :limit")
+                .setParameter("from", from).setParameter("to", to).setParameter("limit", limit);
+        if (agentId != null) {
+            query.setParameter("agent", agentId);
+        }
+        @SuppressWarnings("unchecked")
+        List<Object[]> rows = query.getResultList();
+        return rows.stream().map(r -> new ConversationFacts((UUID) r[0], (UUID) r[1], instant(r[2]), instant(r[3]),
+                instant(r[4]), instant(r[5]), r[6] == null ? null : ((Number) r[6]).intValue())).toList();
+    }
+
+    private List<UUID> ids(String sql, Instant at, int limit) {
+        @SuppressWarnings("unchecked")
+        List<UUID> found = entityManager.createNativeQuery(sql).setParameter("at", at).setParameter("limit", limit)
+                .getResultList();
+        return found;
+    }
+
+    /** A timestamptz column as the native query hands it back (Instant, OffsetDateTime or Timestamp by driver). */
+    private static Instant instant(Object value) {
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof Instant instant) {
+            return instant;
+        }
+        if (value instanceof java.time.OffsetDateTime offset) {
+            return offset.toInstant();
+        }
+        if (value instanceof java.sql.Timestamp timestamp) {
+            return timestamp.toInstant();
+        }
+        throw new IllegalStateException("Not a timestamp: " + value.getClass());
+    }
+
     private void about(StringBuilder where, Map<String, Object> params, ContextRef about) {
         if (about != null) {
             where.append(ABOUT);

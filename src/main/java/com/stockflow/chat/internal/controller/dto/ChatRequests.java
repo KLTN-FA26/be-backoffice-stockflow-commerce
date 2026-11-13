@@ -43,8 +43,38 @@ public final class ChatRequests {
      * @param clientMessageId the client's own id of the message (letters, digits, {@code . _ : -}, up to 64): a retried
      *                        send with the same id is the same message. A UUID is a good choice.
      * @param contextId       staff only: the conversation's context the answer is about
+     * @param cannedResponseId staff only: send this saved reply, its variables filled in by the server, instead of text
      */
-    public record SendMessage(String text, String clientMessageId, UUID contextId) {
+    public record SendMessage(String text, String clientMessageId, UUID contextId, UUID cannedResponseId) {
+    }
+
+    /** A message's new text (its author, within the edit window). */
+    public record EditMessage(String text) {
+    }
+
+    /**
+     * An action on a card: {@code ACCEPT} (version, cartons per quote line id), {@code REQUEST_CHANGES} (note),
+     * {@code APPROVE}, {@code REQUEST_REPRINT} (note, required), {@code RATE} (score 1-5, comment) for the customer;
+     * {@code CREATE_QUOTE} for Sales.
+     */
+    public record CardAction(String action, Long version, java.util.Map<UUID, Integer> cartons, String note,
+                             Integer score, String comment) {
+    }
+
+    /** Sales send the transfer details of one installment of the customer's; {@code reminder} for an overdue one. */
+    public record TransferDetails(UUID installmentId, Boolean reminder) {
+    }
+
+    /** The customer's rating of a resolved conversation: 1 to 5 stars, an optional comment. */
+    public record Rate(Integer score, String comment) {
+    }
+
+    /**
+     * A saved reply. {@code shared}: for every agent (a chat supervisor's to write); {@code version}: the one read, on
+     * an update.
+     */
+    public record CannedResponse(String title, String body, String shortcut, String category, Boolean shared,
+                                 Long version) {
     }
 
     /** An internal note, naming the staff it mentions. */

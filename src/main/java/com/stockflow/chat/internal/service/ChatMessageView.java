@@ -26,8 +26,15 @@ public record ChatMessageView(UUID id, UUID conversationId, long seq, MessageKin
                               String clientMessageId, UUID contextId, Card card, List<Attachment> attachments,
                               Set<UUID> mentions, Instant sentAt, Instant editedAt, boolean deleted) {
 
-    /** A card (package 3): its kind, its state and its data, as the card's kind shapes it. */
-    public record Card(CardKind kind, CardState state, JsonNode payload, Instant updatedAt) {
+    /**
+     * A card: its kind, its state and its data, as the card's kind shapes it (docs/chat-fe-contract.md).
+     *
+     * @param customerActions what the customer may do on it now ({@code ACCEPT}, {@code REQUEST_CHANGES},
+     *                        {@code APPROVE}, {@code REQUEST_REPRINT}, {@code RATE}); empty once it is not open
+     * @param staffActions    what Sales may do on it now ({@code CREATE_QUOTE})
+     */
+    public record Card(CardKind kind, CardState state, JsonNode payload, Instant updatedAt,
+                       List<String> customerActions, List<String> staffActions) {
     }
 
     /** A file of the message; its link is asked for separately (a short-lived signed URL). */

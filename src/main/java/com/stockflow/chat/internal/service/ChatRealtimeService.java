@@ -90,6 +90,10 @@ public class ChatRealtimeService {
 
     /** A socket opened: an agent's first one puts them online. */
     public void connected(CurrentUser user, String sessionId) {
+        if (!ScopeGuards.isBackOffice(user)) {
+            presence.customerConnected(user.userId(), sessionId);
+            return;
+        }
         if (mayFollowInbox(user) && presence.connected(user.userId(), sessionId)) {
             broadcaster.presence(new ChatEvent(ChatEvent.PRESENCE, null,
                     new ChatEvent.Presence(user.userId(), true), clock.instant()));

@@ -14,8 +14,11 @@ import com.stockflow.payment.internal.domain.InstallmentBook;
 import com.stockflow.payment.internal.domain.InstallmentMilestone;
 import com.stockflow.payment.internal.domain.InstallmentStatus;
 import com.stockflow.payment.internal.repository.InstallmentSearch;
+import com.stockflow.contracts.InstallmentDue;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -76,14 +79,23 @@ public class InstallmentService {
     private final InstallmentOrders orders;
     private final CompanyBankProperties bank;
     private final Clock clock;
+    private final ApplicationEventPublisher events;
 
+    @Autowired
     InstallmentService(InstallmentBook book, InstallmentSearch search, InstallmentOrders orders, CompanyBankProperties bank,
-                       Clock clock) {
+                       Clock clock, ApplicationEventPublisher events) {
         this.book = book;
         this.search = search;
         this.orders = orders;
         this.bank = bank;
         this.clock = clock;
+        this.events = events;
+    }
+
+    /** Without anyone told that an installment fell due: the unit tests that drive the arithmetic alone. */
+    InstallmentService(InstallmentBook book, InstallmentSearch search, InstallmentOrders orders, CompanyBankProperties bank,
+                       Clock clock) {
+        this(book, search, orders, bank, clock, event -> { });
     }
 
     /** {@link com.stockflow.payment.api.PaymentService#openInstallments}. */
@@ -98,10 +110,12 @@ public class InstallmentService {
                     planned.seq(), planned.name(), InstallmentMilestone.valueOf(planned.milestone()),
                     planned.deliveryBatchId(), planned.deliveryBatchSeq(), planned.amount(), contract.currency(),
                     planned.dueDays());
-            if (installment.milestone() == InstallmentMilestone.ON_SIGNING) {
-                installment.reach(contract.signedAt(), signedOn);
-            }
+            boolean due = installment.milestone() == InstallmentMilestone.ON_SIGNING
+                    && installment.reach(contract.signedAt(), signedOn);
             book.save(installment);
+            if (due) {
+                fellDue(installment);
+            }
         }
         log.info("Contract {} of order {}: {} installment(s) opened", contract.contractNumber(), contract.orderNumber(),
                 contract.installments().size());
@@ -124,6 +138,7 @@ public class InstallmentService {
                             || deliveryBatchId.equals(installment.deliveryBatchId()))
                     && installment.reach(at, day)) {
                 book.save(installment);
+                fellDue(installment);
                 log.info("Installment {} of contract {} is due (BEFORE_DELIVERY{})", installment.seq(),
                         installment.contractNumber(), deliveryBatchId == null ? "" : ", its delivery batch released");
             }
@@ -169,6 +184,7 @@ public class InstallmentService {
                     : batches.getOrDefault(installment.deliveryBatchId(), whole);
             if (from != null && installment.reach(from, LocalDate.ofInstant(from, BUSINESS_ZONE))) {
                 book.save(installment);
+                fellDue(installment);
                 log.info("Installment {} of contract {} is due (AFTER_DELIVERY) by {}", installment.seq(),
                         installment.contractNumber(), installment.dueDate());
             }
@@ -180,6 +196,7 @@ public class InstallmentService {
         for (Installment installment : book.lockOfOrder(orderId)) {
             if (installment.milestone() == milestone && installment.reach(at, day)) {
                 book.save(installment);
+                fellDue(installment);
                 log.info("Installment {} of contract {} is due ({}){}", installment.seq(),
                         installment.contractNumber(), milestone,
                         installment.dueDate() == null ? "" : " by " + installment.dueDate());
@@ -222,9 +239,21 @@ public class InstallmentService {
         Installment fee = Installment.openDeliveryFailureFee(first, seq, command.label(), amount,
                 command.chargedAt(), LocalDate.ofInstant(command.chargedAt(), BUSINESS_ZONE));
         book.save(fee);
+        fellDue(fee);
         log.info("Contract {}: failed trip charged {} {} on fee item {} ({})", first.contractNumber(),
                 amount.toPlainString(), first.currency(), seq, command.label());
         return Optional.of(fee.id());
+    }
+
+    /**
+     * Tells the modules that follow installments - the chat's transfer card (kltn-docs 16 §4.4 step 9, BR-06) - that
+     * one fell due. Published in the transaction that reached its milestone, delivered after commit; the amount it still
+     * owes is read when the card is drawn.
+     */
+    private void fellDue(Installment installment) {
+        events.publishEvent(new InstallmentDue(installment.id(), installment.contractId(),
+                installment.contractNumber(), installment.orderId(), installment.customerId(), installment.seq(),
+                installment.dueDate(), installment.reachedAt()));
     }
 
     /**

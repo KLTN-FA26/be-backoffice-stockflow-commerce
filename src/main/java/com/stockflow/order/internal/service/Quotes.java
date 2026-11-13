@@ -44,8 +44,18 @@ public interface Quotes {
      * @param sku     one of the customer's own SKUs
      * @param cartons cartons proposed; the customer may accept another number at or above the MOQ
      * @param tiers   empty to start from the customer's own price for the SKU (13 BR-05)
+     * @param unpricedWithoutOwnPrice with no tiers and no own price at these cartons, leave the line unpriced instead of
+     *                refusing it: a draft the system prefills from a customer's quote request (kltn-docs 16 §4.2, 14
+     *                BR-22) is Sales' to finish, and a missing price must not stop it from being drawn up
      */
-    record Line(String sku, int cartons, List<Tier> tiers) {
+    record Line(String sku, int cartons, List<Tier> tiers, boolean unpricedWithoutOwnPrice) {
+
+        /**
+         * A line Sales writes: without tiers it starts from the customer's own price, and is refused when there is none.
+         */
+        public Line(String sku, int cartons, List<Tier> tiers) {
+            this(sku, cartons, tiers, false);
+        }
     }
 
     /**

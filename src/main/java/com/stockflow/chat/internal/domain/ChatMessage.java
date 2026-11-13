@@ -98,7 +98,7 @@ public record ChatMessage(UUID id, UUID conversationId, long seq, MessageKind ki
                                    String clientMessageId, UUID contextId, Instant now) {
         requirePerson(sender);
         return new ChatMessage(id, conversationId, seq, MessageKind.TEXT, Visibility.CUSTOMER, sender.type(),
-                sender.userId(), requireText(body), clientMessageId, contextId, null, now, null, null, null, Set.of(),
+                sender.userId(), written(body), clientMessageId, contextId, null, now, null, null, null, Set.of(),
                 List.of());
     }
 
@@ -109,7 +109,7 @@ public record ChatMessage(UUID id, UUID conversationId, long seq, MessageKind ki
             throw new BusinessException(ErrorCode.FORBIDDEN, "Only the staff write internal notes");
         }
         return new ChatMessage(id, conversationId, seq, MessageKind.INTERNAL_NOTE, Visibility.STAFF, SenderType.AGENT,
-                author.userId(), requireText(body), clientMessageId, contextId, null, now, null, null, null, mentions,
+                author.userId(), written(body), clientMessageId, contextId, null, now, null, null, null, mentions,
                 List.of());
     }
 
@@ -120,7 +120,7 @@ public record ChatMessage(UUID id, UUID conversationId, long seq, MessageKind ki
         if (files == null || files.isEmpty()) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "An attachment message carries a file");
         }
-        String text = caption == null || caption.isBlank() ? null : requireText(caption);
+        String text = caption == null || caption.isBlank() ? null : written(caption);
         return new ChatMessage(id, conversationId, seq, MessageKind.ATTACHMENT, Visibility.CUSTOMER, sender.type(),
                 sender.userId(), text, clientMessageId, null, null, now, null, null, null, Set.of(), files);
     }
@@ -164,6 +164,54 @@ public record ChatMessage(UUID id, UUID conversationId, long seq, MessageKind ki
                 contextId, next, sentAt, editedAt, deletedAt, deletedBy, mentions, attachments);
     }
 
+    /**
+     * Its author corrects what they wrote, within {@code window} of sending it (decided 2026-11-13: 5 minutes). Only a
+     * text or a note: a card is drawn from a document and changes with it (BR-03), a system line is the system's, and a
+     * file is deleted rather than edited. The new text is masked as the first was (BR-08).
+     *
+     * @throws BusinessException {@code CHAT_MESSAGE_NOT_EDITABLE}; {@code CHAT_EDIT_WINDOW_PASSED}
+     */
+    public ChatMessage edit(Actor by, String text, Instant now, java.time.Duration window) {
+        if (kind != MessageKind.TEXT && kind != MessageKind.INTERNAL_NOTE) {
+            throw new BusinessException(ErrorCode.CHAT_MESSAGE_NOT_EDITABLE, "Only a text or a note is edited");
+        }
+        requireAuthorInWindow(by, now, window);
+        String next = written(text);
+        if (next.equals(body)) {
+            return this;
+        }
+        return new ChatMessage(id, conversationId, seq, kind, visibility, senderType, senderId, next, clientMessageId,
+                contextId, card, sentAt, now, deletedAt, deletedBy, mentions, attachments);
+    }
+
+    /**
+     * Its author takes it back, within {@code window} of sending it: soft-deleted - the row stays, for the log of BR-01
+     * and the read markers that point at it, and every reader is shown "deleted" in its place. A text, a note or a file;
+     * never a card or a system line.
+     *
+     * @throws BusinessException {@code CHAT_MESSAGE_NOT_EDITABLE}; {@code CHAT_EDIT_WINDOW_PASSED}
+     */
+    public ChatMessage delete(Actor by, Instant now, java.time.Duration window) {
+        if (kind == MessageKind.CARD || kind == MessageKind.SYSTEM) {
+            throw new BusinessException(ErrorCode.CHAT_MESSAGE_NOT_EDITABLE, "A card or a system line is not deleted");
+        }
+        requireAuthorInWindow(by, now, window);
+        return new ChatMessage(id, conversationId, seq, kind, visibility, senderType, senderId, body, clientMessageId,
+                contextId, card, sentAt, editedAt, now, by.userId(), mentions, attachments);
+    }
+
+    private void requireAuthorInWindow(Actor by, Instant now, java.time.Duration window) {
+        if (deletedAt != null) {
+            throw new BusinessException(ErrorCode.CHAT_MESSAGE_NOT_EDITABLE, "The message was deleted");
+        }
+        if (by.type() != senderType || !Objects.equals(by.userId(), senderId)) {
+            throw new BusinessException(ErrorCode.CHAT_MESSAGE_NOT_EDITABLE, "Only its author changes a message");
+        }
+        if (now.isAfter(sentAt.plus(window))) {
+            throw new BusinessException(ErrorCode.CHAT_EDIT_WINDOW_PASSED);
+        }
+    }
+
     /** Whether {@code audience} may see this message at all. */
     public boolean visibleTo(Audience audience) {
         return audience.sees(visibility);
@@ -171,13 +219,18 @@ public record ChatMessage(UUID id, UUID conversationId, long seq, MessageKind ki
 
     /** Whether a retried send carrying {@code text} is this message again, rather than a different one. */
     public boolean sameText(String text) {
-        return Objects.equals(body, text == null ? null : text.strip());
+        return Objects.equals(body, text == null ? null : SensitiveData.mask(text.strip()));
     }
 
     private static void requirePerson(Actor sender) {
         if (sender.type() == SenderType.SYSTEM) {
             throw new IllegalArgumentException("The system writes system lines and cards");
         }
+    }
+
+    /** What a person wrote, as it is stored: required, bounded, and masked (BR-08) before it is ever saved. */
+    private static String written(String body) {
+        return SensitiveData.mask(requireText(body));
     }
 
     private static String requireText(String body) {

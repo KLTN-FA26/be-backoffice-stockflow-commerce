@@ -161,6 +161,12 @@ public class DesignProjectQuoteRequestService {
         return views(List.of(request)).getFirst();
     }
 
+    /** One request as read, whoever asks: the chat's quote request card of several lines (16 §4.2). */
+    @Transactional(readOnly = true)
+    public java.util.Optional<ProjectQuoteRequestView> find(UUID requestId) {
+        return requests.findById(requestId).map(request -> views(List.of(request)).getFirst());
+    }
+
     /** The project's quote requests, the newest first, to its owner. */
     @Transactional(readOnly = true)
     public List<ProjectQuoteRequestView> ofProject(UUID projectId, UUID actor) {

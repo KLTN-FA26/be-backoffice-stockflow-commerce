@@ -1,6 +1,9 @@
 package com.stockflow.chat.internal.service;
 
 import com.stockflow.chat.internal.domain.Audience;
+import com.stockflow.chat.internal.domain.CardKind;
+import com.stockflow.chat.internal.domain.CardState;
+import com.stockflow.chat.internal.domain.ChatMessageRepository;
 import com.stockflow.chat.internal.domain.ChatMessage;
 import com.stockflow.chat.internal.domain.ContextKind;
 import com.stockflow.chat.internal.domain.ContextRef;
@@ -40,10 +43,17 @@ public class CustomerChatService {
     private final ContextResolver contexts;
     private final ChatViews views;
     private final ChatProperties properties;
+    private final ChatMessageRepository messages;
+    private final ChatCards cards;
+    private final ChatCardActions actions;
 
     public CustomerChatService(ChatCallers callers, ConversationRepository conversations,
                                ConversationWriter writer, ChatReading reading,
-                               ContextResolver contexts, ChatViews views, ChatProperties properties) {
+                               ContextResolver contexts, ChatViews views, ChatProperties properties,
+                               ChatMessageRepository messages, ChatCards cards, ChatCardActions actions) {
+        this.messages = messages;
+        this.cards = cards;
+        this.actions = actions;
         this.callers = callers;
         this.conversations = conversations;
         this.writer = writer;
@@ -145,10 +155,37 @@ public class CustomerChatService {
         return views.detail(c, user.userId(), null);
     }
 
+    /**
+     * The customer rates a resolved conversation (CSAT, 16 §4.6 step 18): 1 to 5 stars and an optional comment, once.
+     * The survey card, if one is open, shows the rating.
+     *
+     * @throws BusinessException {@code CHAT_CSAT_NOT_OPEN}; {@code CHAT_CSAT_ALREADY_GIVEN}
+     */
+    public ChatConversationView rate(CurrentUser user, UUID conversationId, Integer score, String comment) {
+        ChatCallers.CustomerCaller caller = callers.customer(user);
+        Conversation c = writer.lockOwn(conversationId, caller.customerId());
+        int stars = score == null ? 0 : score;
+        actions.rate(c, caller.actor(), stars, comment);
+        for (ChatMessage survey : messages.openCardsIn(c.id(), CardKind.CSAT_SURVEY)) {
+            cards.update(survey.id(), CardState.ACTED, ((com.fasterxml.jackson.databind.node.ObjectNode) cards
+                    .readPayload(survey.card().payloadJson())).put("score", stars), caller.actor(),
+                    CardActions.RATE, "{\"score\":" + stars + "}");
+        }
+        return views.detail(writer.lockOwn(conversationId, caller.customerId()), user.userId(), null);
+    }
+
+    /** The customer's badge: conversations with something unread, and the messages unread in them. */
+    @Transactional(readOnly = true)
+    public ChatMessageRepository.UnreadTotal unread(CurrentUser user) {
+        ChatCallers.CustomerCaller caller = callers.customer(user);
+        return messages.unreadTotal(user.userId(), Audience.CUSTOMER, caller.customerId(), null);
+    }
+
     private ConversationWriter.Posted postText(Conversation c, ChatCallers.CustomerCaller caller, String text,
                                                String clientMessageId) {
         return writer.post(c, caller.actor(), clientMessageId, text,
-                conversation -> conversation.acceptCustomerMessage(caller.actor(), writer.now()),
+                conversation -> conversation.acceptCustomerMessage(caller.actor(), writer.now(),
+                        writer.firstResponseDue(writer.now())),
                 seq -> ChatMessage.text(Identifiers.newId(), c.id(), seq, caller.actor(), text,
                         blankToNull(clientMessageId), null, writer.now()));
     }

@@ -2,6 +2,9 @@ package com.stockflow.chat.internal.service;
 
 import com.stockflow.chat.internal.domain.Actor;
 import com.stockflow.chat.internal.domain.Audience;
+import com.stockflow.chat.internal.domain.CardKind;
+import com.stockflow.chat.internal.domain.CardState;
+import com.stockflow.chat.internal.domain.ChatMessageRepository;
 import com.stockflow.chat.internal.domain.ChatMessage;
 import com.stockflow.chat.internal.domain.ContextRef;
 import com.stockflow.chat.internal.domain.Conversation;
@@ -17,6 +20,7 @@ import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.security.CurrentUser;
 import com.stockflow.customer.api.CustomerService;
+import com.stockflow.payment.api.PaymentService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -54,12 +58,22 @@ public class StaffChatService {
     private final CustomerService customers;
     private final ChatBroadcaster broadcaster;
     private final ChatProperties properties;
+    private final ChatCards cards;
+    private final ChatMessageRepository messages;
+    private final CannedResponses canned;
+    private final PaymentService payments;
     private final Clock clock;
 
     public StaffChatService(ChatCallers callers, ConversationRepository conversations, ConversationWriter writer,
                             ChatReading reading, ContextResolver contexts, AgentDirectory agents,
                             ChatPresence presence, ChatViews views, CustomerService customers,
-                            ChatBroadcaster broadcaster, ChatProperties properties, Clock clock) {
+                            ChatBroadcaster broadcaster, ChatProperties properties, ChatCards cards,
+                            ChatMessageRepository messages, CannedResponses canned, PaymentService payments,
+                            Clock clock) {
+        this.cards = cards;
+        this.messages = messages;
+        this.canned = canned;
+        this.payments = payments;
         this.callers = callers;
         this.conversations = conversations;
         this.writer = writer;
@@ -137,9 +151,23 @@ public class StaffChatService {
      */
     public ChatMessageView reply(CurrentUser user, UUID conversationId, String text, String clientMessageId,
                                  UUID contextId) {
+        return reply(user, conversationId, text, clientMessageId, contextId, null);
+    }
+
+    /**
+     * {@link #reply(CurrentUser, UUID, String, String, UUID)}, or a saved reply sent with its variables filled from
+     * this conversation ({@code cannedResponseId}; {@code text} is then left out).
+     */
+    public ChatMessageView reply(CurrentUser user, UUID conversationId, String text, String clientMessageId,
+                                 UUID contextId, UUID cannedResponseId) {
         Actor staff = callers.staff(user);
         Conversation c = writer.lock(conversationId);
-        return views.message(reply(c, staff, text, clientMessageId, contextId).message());
+        String said = text;
+        if (cannedResponseId != null) {
+            user.require(ChatCallers.CANNED_RESPONSES, com.stockflow.common.security.Action.READ);
+            said = canned.render(staff, cannedResponseId, c);
+        }
+        return views.message(reply(c, staff, said, clientMessageId, contextId).message());
     }
 
     /**
@@ -203,6 +231,9 @@ public class StaffChatService {
         Conversation c = writer.lock(conversationId);
         c.changeStatus(staff, target, reason, clock.instant(), properties.reopenWindow());
         writer.save(c, c.assignedAgentId());
+        if (target == ConversationStatus.RESOLVED && c.csatSubmittedAt() == null) {
+            askForRating(c);
+        }
         return views.detail(c, user.userId(), staff);
     }
 
@@ -239,6 +270,24 @@ public class StaffChatService {
         return views.log(conversations.logOf(find(conversationId).id()));
     }
 
+    /**
+     * The agent's badge: in the conversations in their charge, how many have something unread and how many messages;
+     * and how many wait in the queue for someone to take them.
+     */
+    @Transactional(readOnly = true)
+    public StaffUnread unread(CurrentUser user) {
+        callers.staff(user);
+        ChatMessageRepository.UnreadTotal mine = messages.unreadTotal(user.userId(), Audience.STAFF, null,
+                user.userId());
+        long queued = conversations.inbox(new InboxFilter(java.util.Set.of(ConversationStatus.NEW,
+                ConversationStatus.QUEUED), null, true, false, null, null), clock.instant(), 0, 1).total();
+        return new StaffUnread(mine.conversations(), mine.messages(), queued);
+    }
+
+    /** The staff badge: unread in the caller's conversations, and the unassigned queue. */
+    public record StaffUnread(long conversations, long messages, long queued) {
+    }
+
     /** Who answers customers, by name, the online ones first: the assign and transfer dialog. */
     @Transactional(readOnly = true)
     public List<ChatAgentView> agents(CurrentUser user) {
@@ -251,8 +300,41 @@ public class StaffChatService {
                 .toList();
     }
 
+    /**
+     * The CSAT survey card of a resolved conversation (16 §4.6 step 18), replacing one an earlier resolution left
+     * unanswered; the customer rates on it, once ({@link ChatCardActions}).
+     */
+    private void askForRating(Conversation c) {
+        for (ChatMessage open : messages.openCardsIn(c.id(), CardKind.CSAT_SURVEY)) {
+            cards.update(open.id(), CardState.SUPERSEDED, null, Actor.system(), null, null);
+        }
+        com.fasterxml.jackson.databind.node.ObjectNode payload = com.fasterxml.jackson.databind.node.JsonNodeFactory
+                .instance.objectNode().put("conversationId", c.id().toString()).put("scale", 5);
+        cards.postInto(c, null, CardKind.CSAT_SURVEY, payload, "Anh/chị hài lòng với hỗ trợ lần này chứ?",
+                Actor.system());
+    }
+
+    /**
+     * BR-06: an account number reaches the customer only on the system's transfer card. A reply that spells out the
+     * company's own account is refused - the agent sends the card instead
+     * ({@code POST .../cards/transfer-details}), which carries the right account, amount and content.
+     */
+    private void refuseTypedAccount(String text) {
+        if (text == null) {
+            return;
+        }
+        String digits = text.replaceAll("[\\s.-]", "");
+        payments.companyBankAccount().map(account -> account.accountNumber().replaceAll("\\s", ""))
+                .filter(account -> account.length() >= 6 && digits.contains(account))
+                .ifPresent(account -> {
+                    throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Send the transfer details card instead"
+                            + " of typing the account number (16 BR-06)");
+                });
+    }
+
     private ConversationWriter.Posted reply(Conversation c, Actor staff, String text, String clientMessageId,
                                             UUID contextId) {
+        refuseTypedAccount(text);
         UUID about = requireContext(c, contextId);
         return writer.post(c, staff, clientMessageId, text,
                 conversation -> conversation.acceptAgentMessage(staff, clock.instant()),

@@ -154,7 +154,7 @@ class QuoteService implements Quotes {
         requireActiveSkus(null, offer);
         Quote quote = Quote.draft(Identifiers.newId(), quotes.nextNumber(today()), command.requestId(), customerId, offer);
         quotes.save(quote);
-        quotes.recordTransition(quote.id(), 1, null, QuoteStatus.DRAFT, null, null, clock.instant(), user.userId());
+        transition(quote,1, null, QuoteStatus.DRAFT, null, null, clock.instant(), user.userId());
         log.info("Quote {} drafted for customer {} ({} line(s))", quote.quoteNumber(), customerId, offer.lines().size());
         return view(quote);
     }
@@ -203,7 +203,7 @@ class QuoteService implements Quotes {
         QuoteStatus from = quote.status();
         quote.send(user.userId(), clock.instant());
         quotes.save(quote);
-        quotes.recordTransition(quote.id(), quote.revision(), from, QuoteStatus.SENT, null, offerJson(quote),
+        transition(quote,quote.revision(), from, QuoteStatus.SENT, null, offerJson(quote),
                 quote.sentAt(), user.userId());
         log.info("Quote {} revision {} sent", quote.quoteNumber(), quote.revision());
         return view(quote);
@@ -224,7 +224,7 @@ class QuoteService implements Quotes {
         QuoteStatus from = quote.status();
         quote.accept(acceptance.cartons(), user.userId(), now);
         quotes.save(quote);
-        quotes.recordTransition(quote.id(), quote.revision(), from, QuoteStatus.ACCEPTED, null, null, now,
+        transition(quote,quote.revision(), from, QuoteStatus.ACCEPTED, null, null, now,
                 user.userId());
         notifySales(quote, CustomerActedOnQuote.Action.ACCEPTED, quote.sentBy(), now);
         log.info("Quote {} accepted", quote.quoteNumber());
@@ -239,7 +239,7 @@ class QuoteService implements Quotes {
         QuoteStatus from = quote.status();
         quote.requestChanges(feedback, user.userId(), clock.instant());
         quotes.save(quote);
-        quotes.recordTransition(quote.id(), quote.revision(), from, QuoteStatus.CHANGES_REQUESTED,
+        transition(quote,quote.revision(), from, QuoteStatus.CHANGES_REQUESTED,
                 quote.customerFeedback(), null, quote.respondedAt(), user.userId());
         // The feedback stays on the quote: the event carries facts, not what the customer typed (B-4).
         notifySales(quote, CustomerActedOnQuote.Action.CHANGES_REQUESTED, quote.sentBy(),
@@ -318,7 +318,7 @@ class QuoteService implements Quotes {
         Instant now = clock.instant();
         quote.convert(order.orderId(), now);
         quotes.save(quote);
-        quotes.recordTransition(quote.id(), quote.revision(), QuoteStatus.ACCEPTED, QuoteStatus.CONVERTED,
+        transition(quote,quote.revision(), QuoteStatus.ACCEPTED, QuoteStatus.CONVERTED,
                 order.orderNumber(), null, now, user.userId());
         log.info("Quote {} converted into order {} ({})", quote.quoteNumber(), order.orderNumber(), order.status());
         return view(quote);
@@ -332,7 +332,7 @@ class QuoteService implements Quotes {
             Quote quote = quotes.findByIdForUpdate(id).orElse(null);
             if (quote != null && quote.expire(now)) {
                 quotes.save(quote);
-                quotes.recordTransition(quote.id(), quote.revision(), QuoteStatus.SENT, QuoteStatus.EXPIRED, null,
+                transition(quote,quote.revision(), QuoteStatus.SENT, QuoteStatus.EXPIRED, null,
                         null, now, null);
                 expired++;
             }
@@ -348,7 +348,7 @@ class QuoteService implements Quotes {
         change.accept(quote);
         quotes.save(quote);
         if (quote.status() != from) {
-            quotes.recordTransition(quote.id(), quote.revision(), from, quote.status(), reason, null, clock.instant(),
+            transition(quote,quote.revision(), from, quote.status(), reason, null, clock.instant(),
                     user.userId());
         }
         log.debug("Quote {} {} -> {} (revision {} -> {})", quote.quoteNumber(), from, quote.status(), revision,
@@ -498,9 +498,10 @@ class QuoteService implements Quotes {
         for (Line line : draft.lines()) {
             Sku sku = new Sku(line.sku());
             UomConversion carton = cartonUnits.get(sku.code());
-            List<PriceTier> tiers = line.tiers() == null || line.tiers().isEmpty()
-                    ? defaultTiers(customerId, sku, cartonsBySku.get(sku.code()))
-                    : line.tiers().stream().map(t -> PriceTier.of(t.minQuantity(), t.unitPrice())).toList();
+            List<PriceTier> tiers = line.tiers() != null && !line.tiers().isEmpty()
+                    ? line.tiers().stream().map(t -> PriceTier.of(t.minQuantity(), t.unitPrice())).toList()
+                    : line.unpricedWithoutOwnPrice() ? ownTiersOrNone(customerId, sku, cartonsBySku.get(sku.code()))
+                    : defaultTiers(customerId, sku, cartonsBySku.get(sku.code()));
             String taxClass = classes.containsKey(sku.code()) ? classes.get(sku.code()).name() : null;
             lines.add(QuoteLine.carton(Identifiers.newId(), lineNo++, sku, carton.id(), carton.factor(), line.cartons(),
                     tiers, null, null, taxClass, taxClass == null ? null : rates.get(taxClass)));
@@ -669,6 +670,14 @@ class QuoteService implements Quotes {
      * tiers - the first tier's price is never applied to fewer cartons, and the refusal says so instead of reading as a
      * quote MOQ the customer never saw (user decision P4).</p>
      */
+    /** The customer's own tiers when they apply at {@code cartons}; none - a line for Sales to price - otherwise. */
+    private List<PriceTier> ownTiersOrNone(UUID customerId, Sku sku, int cartons) {
+        return ownPrice(customerId, sku.code()).filter(schedule -> cartons >= schedule.moq())
+                .map(schedule -> schedule.tiers().stream()
+                        .map(t -> PriceTier.of(t.minQuantity(), t.unitPrice().amount())).toList())
+                .orElse(List.of());
+    }
+
     private List<PriceTier> defaultTiers(UUID customerId, Sku sku, int cartons) {
         PriceSchedule schedule = ownPrice(customerId, sku.code()).orElseThrow(() -> new BusinessException(
                 ErrorCode.VALIDATION_FAILED, "The customer has no price of its own for " + sku.code()
@@ -691,6 +700,18 @@ class QuoteService implements Quotes {
     private void notifySales(Quote quote, CustomerActedOnQuote.Action action, UUID salesUserId, Instant at) {
         events.publishEvent(new CustomerActedOnQuote(quote.id(), quote.quoteNumber(), quote.customerId(), action,
                 salesUserId, at));
+    }
+
+    /**
+     * Records a move of the quote in its history and tells the modules that follow quotes - the chat's quote card above
+     * all (kltn-docs 16 §4.3 step 7: the card shows the quote as it is, wherever the customer acted). One place for both,
+     * so no move is recorded without being told. Published in this transaction, delivered after commit.
+     */
+    private void transition(Quote quote, int revision, QuoteStatus from, QuoteStatus to, String reason, String offer,
+                            Instant at, UUID by) {
+        quotes.recordTransition(quote.id(), revision, from, to, reason, offer, at, by);
+        events.publishEvent(new com.stockflow.contracts.QuoteStatusChanged(quote.id(), quote.quoteNumber(),
+                quote.customerId(), revision, from == null ? null : from.name(), to.name(), by, at));
     }
 
     /** Derived from the quote, so every conversion attempt of one quote names the same order request. */

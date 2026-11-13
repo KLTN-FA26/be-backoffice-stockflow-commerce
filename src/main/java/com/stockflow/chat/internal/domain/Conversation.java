@@ -27,6 +27,9 @@ import java.util.UUID;
  */
 public final class Conversation extends AggregateRoot {
 
+    /** {@code chat.conversation.csat_comment}. */
+    public static final int MAX_CSAT_COMMENT = 2000;
+
     /** Everything the aggregate holds, for the repository to store and restore. */
     public record Snapshot(UUID id, UUID customerId, UUID orderId, String subject, ConversationStatus status,
                            SenderType openedByType, UUID openedBy, UUID assignedAgentId, Instant assignedAt,
@@ -124,6 +127,17 @@ public final class Conversation extends AggregateRoot {
      */
     public static Conversation open(UUID id, UUID customerId, String subject, UUID orderId, Actor opener,
                                     UUID continuedFromId, Instant now, Duration firstResponseTarget) {
+        return open(id, customerId, subject, orderId, opener, continuedFromId, now, now.plus(firstResponseTarget));
+    }
+
+    /**
+     * A new conversation whose first answer is due at {@code firstResponseDueAt} - worked out in business hours by the
+     * caller (16 §4.1 step 3) - or not due at all yet: a conversation the system opens to carry a card nobody asked a
+     * question about (an invoice issued, a parcel shipped) starts its clock when the customer first writes
+     * ({@link #acceptCustomerMessage(Actor, Instant, Instant)}), so it is never "overdue" for an answer to nothing.
+     */
+    public static Conversation open(UUID id, UUID customerId, String subject, UUID orderId, Actor opener,
+                                    UUID continuedFromId, Instant now, Instant firstResponseDueAt) {
         if (opener.isCustomer() || opener.isStaff()) {
             Objects.requireNonNull(opener.userId(), "opener");
         }
@@ -132,7 +146,7 @@ public final class Conversation extends AggregateRoot {
             title = title.substring(0, 300);
         }
         Conversation c = new Conversation(new Snapshot(id, customerId, orderId, title, ConversationStatus.NEW,
-                opener.type(), opener.userId(), null, null, now, now.plus(firstResponseTarget), null, null, null, null,
+                opener.type(), opener.userId(), null, null, now, firstResponseDueAt, null, null, null, null,
                 null, null, null, null, null, null, null, null, null, 0, null, null, null, continuedFromId, null, now,
                 0));
         c.record(continuedFromId == null ? ConversationEventType.OPENED : ConversationEventType.CONTINUED, opener, now,
@@ -218,6 +232,14 @@ public final class Conversation extends AggregateRoot {
      *                           customer starts a new conversation that continues it
      */
     public long acceptCustomerMessage(Actor customer, Instant now) {
+        return acceptCustomerMessage(customer, now, null);
+    }
+
+    /**
+     * {@link #acceptCustomerMessage(Actor, Instant)}, starting the first-response clock at {@code dueIfNotRunning} when
+     * none runs yet: a conversation the system opened for a card waits for nobody until the customer asks something.
+     */
+    public long acceptCustomerMessage(Actor customer, Instant now, Instant dueIfNotRunning) {
         if (!customer.isCustomer()) {
             throw new IllegalArgumentException("Not the customer");
         }
@@ -232,6 +254,9 @@ public final class Conversation extends AggregateRoot {
             move(ConversationStatus.ACTIVE, customer, now, "The customer answered");
         }
         lastCustomerMessageAt = now;
+        if (firstRespondedAt == null && firstResponseDueAt == null && dueIfNotRunning != null) {
+            firstResponseDueAt = dueIfNotRunning;
+        }
         return next(now);
     }
 
@@ -380,6 +405,68 @@ public final class Conversation extends AggregateRoot {
         return status == ConversationStatus.CLOSED || (status.isEnded() && !reopensAt(now));
     }
 
+    /**
+     * The first answer is late and the supervisors have not been told yet (BR-09, the SLA job): marks them told and
+     * logs FIRST_RESPONSE_OVERDUE, once - the job runs every minute, the alert goes out once per conversation.
+     *
+     * @return whether they are to be told now
+     */
+    public boolean alertFirstResponseOverdue(Instant now) {
+        if (!firstResponseOverdueAt(now) || firstResponseAlertedAt != null) {
+            return false;
+        }
+        firstResponseAlertedAt = now;
+        record(ConversationEventType.FIRST_RESPONSE_OVERDUE, Actor.system(), now, null, assignedAgentId, null,
+                "{\"dueAt\":\"" + firstResponseDueAt + "\"}");
+        return true;
+    }
+
+    /**
+     * The customer rates how the conversation went (16 §4.6 step 18, BR-09 CSAT; decided 2026-11-13: 1 to 5 stars and an
+     * optional comment), once, while it is resolved: a rating asked of a conversation still going on would rate half of
+     * it, and a second rating would let one conversation count twice.
+     *
+     * @throws BusinessException {@code CHAT_CSAT_NOT_OPEN} unless it is resolved; {@code CHAT_CSAT_ALREADY_GIVEN};
+     *                           {@code VALIDATION_FAILED} for a score outside 1-5
+     */
+    public void rate(Actor customer, int score, String comment, Instant now) {
+        if (!customer.isCustomer()) {
+            throw new BusinessException(ErrorCode.FORBIDDEN, "Only the customer rates the conversation");
+        }
+        if (csatSubmittedAt != null) {
+            throw new BusinessException(ErrorCode.CHAT_CSAT_ALREADY_GIVEN);
+        }
+        if (status != ConversationStatus.RESOLVED) {
+            throw new BusinessException(ErrorCode.CHAT_CSAT_NOT_OPEN);
+        }
+        if (score < 1 || score > 5) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A rating is 1 to 5 stars");
+        }
+        String said = comment == null || comment.isBlank() ? null : SensitiveData.mask(comment.strip());
+        if (said != null && said.length() > MAX_CSAT_COMMENT) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "A comment is at most " + MAX_CSAT_COMMENT + " characters");
+        }
+        csatScore = score;
+        csatComment = said;
+        csatSubmittedAt = now;
+        record(ConversationEventType.CSAT_SUBMITTED, customer, now, null, null, null, "{\"score\":" + score + "}");
+    }
+
+    /**
+     * Whether {@code agent} may act for the conversation towards the customer - draw up a quote from its card, send
+     * transfer details: the same rule as answering ({@link #acceptAgentMessage}), the agent in charge or a supervisor.
+     *
+     * @throws BusinessException {@code CHAT_NOT_ASSIGNEE}; {@code CHAT_CONVERSATION_ENDED} for a closed one
+     */
+    public void requireInCharge(Actor agent, boolean evenIfEnded) {
+        requireStaff(agent);
+        if (status == ConversationStatus.CLOSED || (!evenIfEnded && status.isEnded())) {
+            throw new BusinessException(ErrorCode.CHAT_CONVERSATION_ENDED);
+        }
+        requireInCharge(agent);
+    }
+
     /** Whether the first answer is late: none came, and it was due before {@code now} (BR-09). */
     public boolean firstResponseOverdueAt(Instant now) {
         return firstRespondedAt == null && firstResponseDueAt != null && !status.isEnded()
@@ -458,6 +545,14 @@ public final class Conversation extends AggregateRoot {
         }
     }
 
+    public Instant lastCustomerMessageAt() { return lastCustomerMessageAt; }
+    public Instant statusChangedAt() { return statusChangedAt; }
+    public Instant firstResponseAlertedAt() { return firstResponseAlertedAt; }
+    public Instant resolvedAt() { return resolvedAt; }
+    public Integer csatScore() { return csatScore; }
+    public String csatComment() { return csatComment; }
+    public Instant csatSubmittedAt() { return csatSubmittedAt; }
+    public SenderType openedByType() { return openedByType; }
     public UUID id() { return id; }
     public UUID customerId() { return customerId; }
     public UUID orderId() { return orderId; }

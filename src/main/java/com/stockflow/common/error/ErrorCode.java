@@ -157,6 +157,21 @@ public enum ErrorCode {
     CHAT_AGENT_NOT_AVAILABLE("This person cannot take chat conversations", 409),
     /** A retried send named the client id of an earlier message with something else in it. */
     CHAT_CLIENT_MESSAGE_ID_REUSED("This client message id was already used for another message", 409),
+    /** 16 package 3: a card, a system line, someone else's message or a deleted one is not edited or deleted. */
+    CHAT_MESSAGE_NOT_EDITABLE("This message cannot be changed", 409),
+    /** A message is edited or deleted by its author within the edit window (5 minutes) of sending it. */
+    CHAT_EDIT_WINDOW_PASSED("The time to change this message has passed", 409),
+    /** CSAT: a conversation is rated while it is resolved. */
+    CHAT_CSAT_NOT_OPEN("This conversation cannot be rated now", 409),
+    /** CSAT: a conversation is rated once. */
+    CHAT_CSAT_ALREADY_GIVEN("This conversation was already rated", 409),
+    /**
+     * A card's action that is not open to the caller or to the card now: the customer's action taken by staff (16 BR-10,
+     * BR-11), a card that is no longer open, an action the card's kind does not have.
+     */
+    CHAT_CARD_ACTION_NOT_ALLOWED("This action is not available on this card", 409),
+    /** 16 BR-11: a quote is drawn up from a quote request only once its design is approved. */
+    CHAT_DESIGN_NOT_APPROVED("The design is not approved yet; a quote follows its approval", 409),
     /** The inventory item already has a unit with this code (its base unit included). */
     UOM_CONVERSION_DUPLICATE("This SKU already has a unit of measure with this code", 409),
     /**
@@ -393,6 +408,8 @@ public enum ErrorCode {
      */
     CHAT_CONTEXT_NOT_FOUND("The document to talk about was not found", 404),
     CHAT_MESSAGE_NOT_FOUND("Message not found", 404),
+    /** A saved reply that does not exist, is archived, or is another agent's own. */
+    CHAT_CANNED_RESPONSE_NOT_FOUND("Saved reply not found", 404),
     /** WF-05 E2 (kltn-docs 21 §5.1): the e-invoice's status does not allow this - an issued invoice above all, which is never cancelled or changed (TT 91 Điều 10). */
     EINVOICE_INVALID_TRANSITION("The e-invoice's status does not allow this", 409),
     /** WF-05 E2 (21 BR-03): only a draft e-invoice is corrected. */

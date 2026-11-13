@@ -4,8 +4,11 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.stockflow.chat.internal.domain.Audience;
+import com.stockflow.chat.internal.domain.CardKind;
 import com.stockflow.chat.internal.domain.ChatMessage;
 import com.stockflow.chat.internal.domain.ChatMessageRepository;
+import com.stockflow.chat.internal.domain.ContextRef;
+import com.stockflow.chat.internal.domain.Slice;
 import com.stockflow.chat.internal.entity.MessageAttachmentJpaEntity;
 import com.stockflow.chat.internal.entity.MessageJpaEntity;
 import com.stockflow.common.id.Identifiers;
@@ -143,6 +146,114 @@ class ChatMessageRepositoryAdapter implements ChatMessageRepository {
         Map<UUID, Long> counts = new HashMap<>();
         rows.forEach(row -> counts.put((UUID) row[0], ((Number) row[1]).longValue()));
         return counts;
+    }
+
+    @Override
+    public UnreadTotal unreadTotal(UUID readerId, Audience audience, UUID customerId, UUID assignedTo) {
+        String whose = customerId != null ? "c.customer_id = :whose" : "c.assigned_agent_id = :whose";
+        Object[] row = (Object[]) entityManager.createNativeQuery("""
+                        select count(distinct m.conversation_id), count(*) from chat.message m
+                          join chat.conversation c on c.id = m.conversation_id
+                          left join chat.participant_read r on r.conversation_id = m.conversation_id
+                                                           and r.user_id = :reader
+                         where\s""" + whose + """
+                            and m.visibility in (:visible) and m.deleted_at is null
+                           and m.seq > coalesce(r.last_read_seq, 0)
+                           and (m.sender_id is null or m.sender_id <> :reader)""")
+                .setParameter("whose", customerId != null ? customerId : assignedTo)
+                .setParameter("reader", readerId).setParameter("visible", names(audience)).getSingleResult();
+        return new UnreadTotal(((Number) row[0]).longValue(), ((Number) row[1]).longValue());
+    }
+
+    /** Cards are found through the context they were posted with: the document is the context's foreign key. */
+    @Override
+    public List<ChatMessage> cardsAbout(ContextRef about, CardKind kind) {
+        @SuppressWarnings("unchecked")
+        List<UUID> ids = entityManager.createNativeQuery("""
+                        select m.id from chat.message m
+                          join chat.conversation_context x on x.id = m.context_id
+                         where m.card_kind = :kind and x.kind = :aboutKind
+                           and coalesce(x.product_id, x.variant_id, x.design_id, x.design_project_id, x.quote_id,
+                                        x.order_id, x.contract_id, x.production_order_id, x.einvoice_id) = :aboutId
+                         order by m.sent_at desc, m.id desc""")
+                .setParameter("kind", kind.name()).setParameter("aboutKind", about.kind().name())
+                .setParameter("aboutId", about.id()).getResultList();
+        return ordered(ids);
+    }
+
+    @Override
+    public List<ChatMessage> openCardsOf(UUID customerId, Collection<CardKind> kinds) {
+        if (kinds.isEmpty()) {
+            return List.of();
+        }
+        @SuppressWarnings("unchecked")
+        List<UUID> ids = entityManager.createNativeQuery("""
+                        select m.id from chat.message m join chat.conversation c on c.id = m.conversation_id
+                         where c.customer_id = :customer and m.card_state = 'OPEN' and m.card_kind in (:kinds)
+                         order by m.sent_at desc, m.id desc""")
+                .setParameter("customer", customerId)
+                .setParameter("kinds", kinds.stream().map(Enum::name).toList()).getResultList();
+        return ordered(ids);
+    }
+
+    @Override
+    public List<ChatMessage> openCardsIn(UUID conversationId, CardKind kind) {
+        @SuppressWarnings("unchecked")
+        List<UUID> ids = entityManager.createNativeQuery("""
+                        select m.id from chat.message m
+                         where m.conversation_id = :conversation and m.card_state = 'OPEN' and m.card_kind = :kind
+                         order by m.seq desc""")
+                .setParameter("conversation", conversationId).setParameter("kind", kind.name()).getResultList();
+        return ordered(ids);
+    }
+
+    /**
+     * Full text with {@code unaccent} on both sides, so "bao gia" finds "báo giá" (Vietnamese is typed with and without
+     * its marks), in the {@code simple} configuration - Postgres has no Vietnamese dictionary, and a syllable language
+     * needs no stemming; plus a substring match for a word typed in part. Read as the audience may see: a note is the
+     * staff's only (BR-07).
+     */
+    @Override
+    public Slice<ChatMessage> search(String query, Audience audience, UUID customerId, UUID conversationId,
+                                     int page, int size) {
+        StringBuilder where = new StringBuilder(" ").append("""
+                where m.deleted_at is null and m.body is not null and m.visibility in (:visible)
+                   and (to_tsvector('simple', public.unaccent(m.body)) @@ plainto_tsquery('simple', public.unaccent(:q))
+                        or lower(public.unaccent(m.body)) like lower(public.unaccent(:like)) escape '\\')""");
+        Map<String, Object> params = new HashMap<>();
+        params.put("visible", names(audience));
+        params.put("q", query);
+        params.put("like", "%" + query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%");
+        if (customerId != null) {
+            where.append(" and c.customer_id = :customer");
+            params.put("customer", customerId);
+        }
+        if (conversationId != null) {
+            where.append(" and m.conversation_id = :conversation");
+            params.put("conversation", conversationId);
+        }
+        String from = " from chat.message m join chat.conversation c on c.id = m.conversation_id";
+        jakarta.persistence.Query select = entityManager.createNativeQuery("select m.id" + from + where
+                + " order by m.sent_at desc, m.id desc limit :size offset :offset");
+        jakarta.persistence.Query count = entityManager.createNativeQuery("select count(*)" + from + where);
+        params.forEach((name, value) -> {
+            select.setParameter(name, value);
+            count.setParameter(name, value);
+        });
+        select.setParameter("size", size).setParameter("offset", (long) page * size);
+        @SuppressWarnings("unchecked")
+        List<UUID> ids = select.getResultList();
+        return new Slice<>(ordered(ids), ((Number) count.getSingleResult()).longValue());
+    }
+
+    /** The messages of {@code ids}, in that order. */
+    private List<ChatMessage> ordered(List<UUID> ids) {
+        if (ids.isEmpty()) {
+            return List.of();
+        }
+        Map<UUID, ChatMessage> byId = toDomain(messages.findAllById(ids)).stream()
+                .collect(Collectors.toMap(ChatMessage::id, m -> m));
+        return ids.stream().map(byId::get).filter(java.util.Objects::nonNull).toList();
     }
 
     private static List<String> names(Audience audience) {

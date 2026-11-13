@@ -36,6 +36,7 @@ stockflow:
       bank-name: ${COMPANY_BANK_NAME:DEMO BANK (not a real bank)}
       account-number: ${COMPANY_BANK_ACCOUNT_NUMBER:0000000000}
       account-name: ${COMPANY_BANK_ACCOUNT_NAME:DEMO STOCKFLOW CO LTD}
+      bank-bin: ${COMPANY_BANK_BIN:970000}   # not a bank's BIN: the demo VietQR code names no real bank
   # Obviously not a real company (4B-4, WF-05 E1): demo values so a contract and an invoice can be drawn up here.
   seller:
     name: ${SELLER_NAME:DEMO STOCKFLOW CO LTD}
