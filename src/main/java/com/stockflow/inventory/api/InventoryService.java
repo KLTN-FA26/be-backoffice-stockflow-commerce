@@ -117,6 +117,21 @@ public interface InventoryService {
      */
     List<StockReservation> reallocate(ReallocateStockCommand command);
 
+    /**
+     * A carton removed at the check station (kltn-docs 08 §4.2 step 4: damaged, it goes to quarantine) is a shortage of
+     * its order line, handled as a short pick (07 §4.4 step 10): the same quantity is allocated again in the same
+     * warehouse, as whole cartons in the SKU's removal order, from any pickable carton but that one. Unlike
+     * {@link #reallocate}, the hold - CONSUMED, its carton picked and deducted - is left as it is: the carton goes back
+     * into stock, in a quarantine area, through it. Joins the caller's transaction. Idempotent on the command's request
+     * id, whatever became of what it allocated (picked since, or released).
+     *
+     * @return the new allocations, in pick order; on a replay, what the request made
+     * @throws com.stockflow.common.error.BusinessException {@code RESERVATION_NOT_FOUND} (unknown, or another
+     *         order's), {@code RESERVATION_NOT_ACTIVE} unless the hold is CONSUMED, {@code INSUFFICIENT_STOCK}
+     *         (nothing changes)
+     */
+    List<StockReservation> reallocateRemoved(ReallocateStockCommand command);
+
     /** Release a reservation — the order cancelled or closed, or a hold released by hand. */
     void release(UUID reservationId, String reason);
 

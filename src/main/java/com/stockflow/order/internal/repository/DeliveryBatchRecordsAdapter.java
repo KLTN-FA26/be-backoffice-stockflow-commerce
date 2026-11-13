@@ -17,7 +17,8 @@ import java.util.UUID;
 /**
  * Native SQL on {@code ordering.delivery_batch_hold}, {@code delivery_batch_release} and
  * {@code delivery_batch_window_change}, as {@code SettlementCandidatesAdapter}: plain rows written once, no entity
- * lifecycle to gain from JPA. The tables' triggers check every row against the order's signed contract.
+ * lifecycle to gain from JPA. The tables' triggers check every row against the order's signed contract. A hold's row is
+ * deleted only when its carton is removed at the check station ({@link #forget}): the batch lacks it again.
  */
 @Repository
 class DeliveryBatchRecordsAdapter implements DeliveryBatchRecords {
@@ -62,6 +63,13 @@ class DeliveryBatchRecordsAdapter implements DeliveryBatchRecords {
                             ON CONFLICT (reservation_id) DO NOTHING""")
                     .setParameter("replacement", replacement).setParameter("replaced", replaced).executeUpdate();
         }
+    }
+
+    @Override
+    public boolean forget(UUID orderId, UUID reservationId) {
+        return entityManager.createNativeQuery("""
+                        DELETE FROM ordering.delivery_batch_hold WHERE reservation_id = :reservation AND order_id = :order""")
+                .setParameter("reservation", reservationId).setParameter("order", orderId).executeUpdate() > 0;
     }
 
     @Override

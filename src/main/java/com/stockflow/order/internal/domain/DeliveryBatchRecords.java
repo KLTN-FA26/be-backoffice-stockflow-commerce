@@ -43,6 +43,14 @@ public interface DeliveryBatchRecords {
      */
     void carry(UUID replaced, Collection<UUID> replacements);
 
+    /**
+     * The hold no longer stands for its batch: its carton was removed from the order at the check station (08 §4.2
+     * step 4), so the batch lacks it again.
+     *
+     * @return whether the hold stood for a batch of the order
+     */
+    boolean forget(UUID orderId, UUID reservationId);
+
     /** In schedule order. */
     List<Release> releasesOf(UUID orderId);
 
