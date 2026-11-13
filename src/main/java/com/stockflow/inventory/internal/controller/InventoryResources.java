@@ -30,6 +30,9 @@ public final class InventoryResources {
     /** Seeded by V20260903000100; putaway tasks (SCRUM-92) are served here, though the resource is the warehouse's. */
     public static final String PUTAWAY_TASKS = "warehouse-putaway-tasks";
 
+    /** Seeded by V20261118000100; putaway trips (kltn-docs 05 section 4.5), served here like the tasks. */
+    public static final String PUTAWAY_TRIPS = "warehouse-putaway-trips";
+
     private InventoryResources() {
     }
 }
