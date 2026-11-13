@@ -53,10 +53,12 @@ public class DesignArtifactService {
     private final TransactionOperations tx;
     private final DesignPreflight designPreflight;
     private final com.stockflow.product.api.PrintConfigs printConfigs;
+    private final DesignServiceImpl integrity;
 
     public DesignArtifactService(DesignArtifactRepository designs, FileTransfers files, StagedUploads staged,
                                  TransactionOperations tx, DesignPreflight designPreflight,
-                                 com.stockflow.product.api.PrintConfigs printConfigs) {
+                                 com.stockflow.product.api.PrintConfigs printConfigs, DesignServiceImpl integrity) {
+        this.integrity = integrity;
         this.designPreflight = designPreflight;
         this.printConfigs = printConfigs;
         this.designs = designs;
@@ -191,7 +193,11 @@ public class DesignArtifactService {
         return designs.findArtifacts(designId);
     }
 
-    /** A link that saves the file under its original name; audited, as the design leaves the system. */
+    /**
+     * A link that saves the file under its original name; audited, as the design leaves the system. A file of the
+     * design's approved bundle is handed out only while it is still what was approved (BR-10): {@code CONFLICT}
+     * otherwise.
+     */
     @Transactional(readOnly = true)
     @Auditable(action = AuditAction.EXPORT, resourceType = "design-artifact", resourceId = "#artifactId",
             details = "{designId: #designId}")
@@ -206,6 +212,7 @@ public class DesignArtifactService {
     public DownloadLink downloadLink(UUID designId, UUID artifactId, UUID userId, DesignReadRights rights) {
         var artifact = list(designId, userId, rights).stream().filter(file -> file.id().equals(artifactId))
                 .findFirst().orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
+        integrity.requireApprovedFileIntact(designId, artifactId);
         return files.downloadLink(artifact.file().key(), artifact.file().originalName());
     }
 
