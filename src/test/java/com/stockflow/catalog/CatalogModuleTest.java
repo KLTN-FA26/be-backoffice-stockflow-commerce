@@ -32,6 +32,7 @@ class CatalogModuleTest {
     @MockitoBean com.stockflow.identity.api.IdentityService identityServiceMock;
     @MockitoBean com.stockflow.warehouse.api.WarehouseService warehouseServiceMock;
     @MockitoBean com.stockflow.warehouse.api.PutawayTasks putawayTasksMock;
+    @MockitoBean com.stockflow.warehouse.api.PutawayTrips putawayTripsMock;
     // customer (bootstrapped) invites portal accounts and mails the invitation (SCRUM-429): its ports, not the modules.
     @MockitoBean com.stockflow.identity.api.PortalAccountService portalAccountServiceMock;
     @MockitoBean com.stockflow.notification.api.NotificationService notificationServiceMock;
