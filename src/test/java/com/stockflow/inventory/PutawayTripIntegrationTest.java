@@ -127,21 +127,25 @@ class PutawayTripIntegrationTest {
      * (shelf x + half the bin's width, 31.2).
      */
     private String bin(String name, String width, String length) {
+        return binAt(name, width, length, 5 + 12 * shelfX++, 30);
+    }
+
+    /** {@link #bin} with its shelf at ({@code x}, {@code y}): the clerk stands at (x + half the bin's width, y + 1.2). */
+    private String binAt(String name, String width, String length, int x, int y) {
         String code = prefix + "-" + name + "-1-A";
         tx.executeWithoutResult(s -> {
             UUID zone = Identifiers.newId();
             UUID shelf = Identifiers.newId();
             UUID level = Identifiers.newId();
             UUID location = Identifiers.newId();
-            int x = 5 + 12 * shelfX++;
             jdbc.update("INSERT INTO warehouse.zone (id, warehouse_id, name, color) VALUES (?, ?, ?, '#4F81BD')",
                     zone, warehouse, "Zone " + name);
             jdbc.update("""
                     INSERT INTO warehouse.shelf (id, warehouse_id, zone_id, code, name, x, y, width, length, rotation,
                                                  is_obstacle, pick_north, pick_east, pick_south, pick_west,
                                                  status)
-                    VALUES (?, ?, ?, ?, 'Shelf', ?, 30, 10, 1.2, 0, TRUE, FALSE, FALSE, TRUE, FALSE,
-                            'ACTIVE')""", shelf, warehouse, zone, name, x);
+                    VALUES (?, ?, ?, ?, 'Shelf', ?, ?, 10, 1.2, 0, TRUE, FALSE, FALSE, TRUE, FALSE,
+                            'ACTIVE')""", shelf, warehouse, zone, name, x, y);
             jdbc.update("""
                     INSERT INTO warehouse.shelf_level (id, shelf_id, level_index, elevation, usable_height, max_weight)
                     VALUES (?, ?, 1, 0, 0.3, 500)""", level, shelf);
@@ -292,6 +296,28 @@ class PutawayTripIntegrationTest {
             assertThat(stop.locationCode()).isEqualTo(a01);
             assertThat(stop.lpns()).containsExactlyInAnyOrder(lpn1, lpn2, lpn3);
         });
+    }
+
+    @Test
+    @DisplayName("BR-17: after a carton is put away the next stop is the nearest to where the clerk stands, not to "
+            + "the area the cart left from")
+    void theRouteGoesOnFromTheLastStop() {
+        // Stand points: A (5.2, 11.2), B (5.2, 21.2), C (17.2, 6.2); the cart leaves from (3.5, 3.5).
+        // From the start: A 9.4, C 16.4, B 19.4. From A: B 10, C 17. So A, B, C - and after A still B before C,
+        // although C is the nearer of the two to the start.
+        String a = binAt("A01", "0.4", "0.5", 5, 10);
+        String b = binAt("B01", "0.4", "0.5", 5, 20);
+        String c = binAt("C01", "0.4", "0.5", 17, 5);
+
+        TripView trip = onItsWay(clerk, lpn1, lpn2, lpn3);
+        assertThat(trip.stops()).extracting(StopView::locationCode).containsExactly(a, b, c);
+
+        TripView afterA = trips.place(trip.id(), a, lpnAssigned(trip, a), clerk);
+
+        assertThat(afterA.stops()).extracting(StopView::locationCode).containsExactly(b, c);
+        assertThat(carton(afterA, lpnAssigned(trip, b)).stopSequence()).isEqualTo(1);
+        assertThat(carton(afterA, lpnAssigned(trip, c)).stopSequence()).isEqualTo(2);
+        assertThat(afterA.startLocationCode()).as("where the trip set off from does not move").isEqualTo(receiving);
     }
 
     @Test

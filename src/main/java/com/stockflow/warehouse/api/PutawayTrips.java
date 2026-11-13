@@ -58,7 +58,7 @@ public interface PutawayTrips {
      */
     PutawayTripView start(UUID tripId, Map<UUID, UUID> assignedLocationByTask, UUID startLocationId);
 
-    /** A carton on its way gets another bin; the old hold ends, the route is ordered again. */
+    /** A carton on its way gets another bin; the old hold ends, the route is ordered again from where the clerk is. */
     PutawayTripView reassign(UUID tripId, UUID putawayTaskId, UUID locationId);
 
     /**

@@ -21,10 +21,13 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
@@ -36,6 +39,10 @@ import java.util.UUID;
  * <p>The route is ordered here because the map is this module's: the caller chooses a bin for each carton, this class
  * turns the bins into stops ({@link PutawayRoute}) and numbers them. The stand points are read from the map each time
  * and never stored (kltn-docs 06 §4.4 step 6).</p>
+ *
+ * <p>The stops still to visit are ordered from where the clerk is ({@link #origins}): the area the cart left from
+ * until a carton is put away, the place of the last carton put away after that. Ordering them from the start area
+ * every time would send a clerk standing at the first stop to whatever is nearest to the door they left behind.</p>
  *
  * <p>Package-private class, public interface: other modules inject it by the interface.</p>
  */
@@ -118,8 +125,8 @@ class PutawayTripsImpl implements PutawayTrips {
     @Override
     public PutawayTripView start(UUID tripId, Map<UUID, UUID> assignedLocationByTask, UUID startLocationId) {
         PutawayTrip trip = locked(tripId);
-        trip.start(assignedLocationByTask, stopNumbers(assignedLocationByTask, startLocationId), startLocationId,
-                clock.instant());
+        trip.start(assignedLocationByTask, stopNumbers(assignedLocationByTask, Arrays.asList(startLocationId)),
+                startLocationId, clock.instant());
         return toView(trips.save(trip));
     }
 
@@ -171,18 +178,35 @@ class PutawayTripsImpl implements PutawayTrips {
                 ErrorCode.PUTAWAY_TRIP_NOT_FOUND, "Putaway trip " + tripId + " not found"));
     }
 
-    /** The stops of the cartons still on the cart, ordered again from the start area. */
+    /** The stops of the cartons still on the cart, ordered again from where the clerk is. */
     private void renumber(PutawayTrip trip) {
         Map<UUID, UUID> assigned = new HashMap<>();
         trip.items().stream()
                 .filter(item -> item.status() == PutawayTripItemStatus.ON_CART && item.assignedLocationId() != null)
                 .forEach(item -> assigned.put(item.taskId(), item.assignedLocationId()));
-        trip.renumberStops(stopNumbers(assigned, trip.startLocationId()));
+        trip.renumberStops(stopNumbers(assigned, origins(trip)));
     }
 
-    /** The stop number of each task: nearest neighbour from the start area, cartons for one bin sharing a stop. */
-    private Map<UUID, Integer> stopNumbers(Map<UUID, UUID> assignedLocationByTask, UUID startLocationId) {
-        List<PutawayRoute.Stop> route = route(new LinkedHashSet<>(assignedLocationByTask.values()), startLocationId);
+    /**
+     * Where the stops still to visit are measured from, best first: the location the last carton of the trip was
+     * really put into - the task's, which may be another bin than the one assigned (05 BR-07) - then the area the
+     * cart left from. The second is there for a first one the map cannot place.
+     */
+    private List<UUID> origins(PutawayTrip trip) {
+        List<UUID> origins = new ArrayList<>();
+        trip.items().stream()
+                .filter(item -> item.status() == PutawayTripItemStatus.PLACED && item.placedAt() != null)
+                .max(Comparator.comparing(PutawayTrip.Item::placedAt).thenComparing(PutawayTrip.Item::id))
+                .flatMap(item -> tasks.findById(item.taskId()))
+                .map(PutawayTask::targetLocationId)
+                .ifPresent(origins::add);
+        origins.add(trip.startLocationId());
+        return origins;
+    }
+
+    /** The stop number of each task: nearest neighbour from the origin, cartons for one bin sharing a stop. */
+    private Map<UUID, Integer> stopNumbers(Map<UUID, UUID> assignedLocationByTask, List<UUID> origins) {
+        List<PutawayRoute.Stop> route = route(new LinkedHashSet<>(assignedLocationByTask.values()), origins);
         Map<UUID, Integer> numberOfLocation = new HashMap<>();
         for (int i = 0; i < route.size(); i++) {
             numberOfLocation.put(route.get(i).locationId(), i + 1);
@@ -196,15 +220,18 @@ class PutawayTripsImpl implements PutawayTrips {
         return stopByTask;
     }
 
-    private List<PutawayRoute.Stop> route(Set<UUID> locationIds, UUID startLocationId) {
+    /**
+     * @param origins where the route may start, best first (nulls allowed): the first one the map can place is used;
+     *                with none, the route begins at the first stop by code
+     */
+    private List<PutawayRoute.Stop> route(Set<UUID> locationIds, List<UUID> origins) {
         locationIds.remove(null);
         Set<UUID> wanted = new LinkedHashSet<>(locationIds);
-        if (startLocationId != null) {
-            wanted.add(startLocationId);
-        }
+        origins.stream().filter(Objects::nonNull).forEach(wanted::add);
         Map<UUID, PutawayRoute.Stop> known = stopReader.stopsOf(wanted);
-        PutawayRoute.Point start = startLocationId == null || !known.containsKey(startLocationId) ? null
-                : known.get(startLocationId).point();
+        PutawayRoute.Point start = origins.stream().filter(Objects::nonNull).map(known::get)
+                .filter(stop -> stop != null && stop.point() != null)
+                .map(PutawayRoute.Stop::point).findFirst().orElse(null);
         List<PutawayRoute.Stop> stops = new ArrayList<>();
         for (UUID location : locationIds) {
             // A location the map does not know still gets a stop: after every one it can place.
@@ -225,7 +252,7 @@ class PutawayTripsImpl implements PutawayTrips {
             trip.items().stream()
                     .filter(item -> item.status() == PutawayTripItemStatus.ON_CART && item.assignedLocationId() != null)
                     .forEach(item -> remaining.add(item.assignedLocationId()));
-            List<PutawayRoute.Stop> route = route(remaining, trip.startLocationId());
+            List<PutawayRoute.Stop> route = route(remaining, origins(trip));
             List<PutawayTripView.Stop> numbered = new ArrayList<>();
             for (int i = 0; i < route.size(); i++) {
                 PutawayRoute.Stop stop = route.get(i);
