@@ -29,6 +29,11 @@ EXCEPTION WHEN OTHERS THEN
     RAISE EXCEPTION 'FAIL  %: %', label, SQLERRM;
 END $$;
 
+-- The demo customer starts without credit here: db/demo's WF-02 seed (V20261124000600) gives it a profile for the
+-- demo, and a customer has one profile at most, so each check below would hit uk_credit_profile_customer first and
+-- pass or fail for that reason instead of its own. Removed inside this rolled-back transaction only.
+DELETE FROM customer.credit_profile WHERE customer_id = 'c0000000-0000-4000-8000-000000000001';
+
 \echo '--- credit terms (customer.credit_profile): a limit and the days to pay, or neither (4B-10, 4B-11)'
 SELECT pg_temp.expect_fail('K1 a limit without days to pay', $q$
     INSERT INTO customer.credit_profile (id, customer_id, credit_limit, approved_by, approved_at)
