@@ -92,8 +92,8 @@ class CatalogProjectionStartupIntegrationTest {
         String initialSeo = null; // the demo products carry no SEO title
         mvc.perform(get("/api/v1/catalog/products")).andExpect(status().isUnauthorized());
         mvc.perform(get("/api/v1/catalog/products").header("Authorization", auth))
-                .andExpect(status().isOk()).andExpect(jsonPath("$.data.totalElements").value(2))
-                .andExpect(jsonPath("$.data.items.length()").value(2));
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.totalElements").value(3))
+                .andExpect(jsonPath("$.data.items.length()").value(3));
         assertSofa(auth, initialSeo);
         mvc.perform(get("/api/v1/catalog/products/ban-an-go-soi").header("Authorization", auth))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.variants[0].sku").value("TABLE-OAK-160"))
@@ -102,15 +102,15 @@ class CatalogProjectionStartupIntegrationTest {
                 "WAREHOUSE_MANAGER")) {
             String signedIn = authorization(role);
             mvc.perform(get("/api/v1/catalog/products").header("Authorization", signedIn))
-                    .andExpect(status().isOk()).andExpect(jsonPath("$.data.items.length()").value(2));
+                    .andExpect(status().isOk()).andExpect(jsonPath("$.data.items.length()").value(3));
             assertSofa(signedIn, initialSeo);
         }
         mvc.perform(get("/api/v1/catalog/products/private-draft").header("Authorization", auth))
                 .andExpect(status().isNotFound());
         mvc.perform(get("/api/v1/catalog/products/private-approved").header("Authorization", auth))
                 .andExpect(status().isNotFound());
-        assertThat(jdbc.queryForObject("select count(*) from catalog.product_listing", Long.class)).isEqualTo(2);
-        assertThat(jdbc.queryForObject("select count(*) from catalog.catalog_entry", Long.class)).isEqualTo(2);
+        assertThat(jdbc.queryForObject("select count(*) from catalog.product_listing", Long.class)).isEqualTo(3);
+        assertThat(jdbc.queryForObject("select count(*) from catalog.catalog_entry", Long.class)).isEqualTo(3);
 
         var source = jdbc.queryForList("select * from product.products order by id");
         var listings = jdbc.queryForList("select * from catalog.product_listing order by product_id");
@@ -150,14 +150,14 @@ class CatalogProjectionStartupIntegrationTest {
         }
         assertThat(jdbc.queryForList("select * from product.products order by id")).isEqualTo(source);
         assertThat(jdbc.queryForList("select * from catalog.product_listing order by product_id")).isEqualTo(listings);
-        assertThat(jdbc.queryForObject("select count(*) from catalog.catalog_entry", Long.class)).isEqualTo(2);
+        assertThat(jdbc.queryForObject("select count(*) from catalog.catalog_entry", Long.class)).isEqualTo(3);
         assertSofa(auth, initialSeo);
 
         // Partial projection loss at the same revision must also be detected.
         tx.executeWithoutResult(s -> jdbc.update("delete from catalog.catalog_entry where sku='SOFA-3S-GREY'"));
         listener.retry();
         assertSofa(auth, initialSeo);
-        assertThat(jdbc.queryForObject("select count(*) from catalog.catalog_entry", Long.class)).isEqualTo(2);
+        assertThat(jdbc.queryForObject("select count(*) from catalog.catalog_entry", Long.class)).isEqualTo(3);
 
         tx.executeWithoutResult(s -> {
             jdbc.update("delete from catalog.catalog_entry where sku='SOFA-3S-GREY'");

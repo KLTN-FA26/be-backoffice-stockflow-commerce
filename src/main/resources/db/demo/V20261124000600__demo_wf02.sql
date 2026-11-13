@@ -108,6 +108,25 @@ VALUES (md5('demo:wf02:variant:LY-GIAY-DEMO-12OZ')::uuid, md5('demo:wf02:product
         'LY-GIAY-DEMO-12OZ', 'Ly giấy 2 lớp in logo - 12 oz', 'ACTIVE', TRUE, 'DUNG_TICH=12OZ', 0, 0,
         NOW() - INTERVAL '28 days', 'flyway');
 
+-- The catalog shows a published product only with a category and an image approved by someone other than its
+-- uploader (CatalogProjectionService, ProductPublicationAdapter.approvedMedia):
+-- without them the cup would stay out of the storefront and the projection would retry it forever.
+INSERT INTO product.categories (id, parent_id, code, name, slug, path, depth, sort_order, is_active, version,
+                                created_at, created_by)
+VALUES (md5('demo:wf02:category:LY_GIAY')::uuid, NULL, 'LY_GIAY', 'Ly giấy in logo', 'ly-giay-in-logo', '/LY_GIAY',
+        0, 0, TRUE, 0, NOW() - INTERVAL '28 days', 'flyway');
+
+INSERT INTO product.product_categories (id, product_id, category_id, is_primary, version, created_at, created_by)
+VALUES (md5('demo:wf02:product-category:LY-GIAY-DEMO')::uuid, md5('demo:wf02:product:LY-GIAY-DEMO')::uuid,
+        md5('demo:wf02:category:LY_GIAY')::uuid, TRUE, 0, NOW() - INTERVAL '28 days', 'flyway');
+
+INSERT INTO product.media (id, variant_id, kind, url, renditions, alt_text, sort_order, is_primary, is_published,
+                           published_at, published_by, version, created_at, created_by)
+VALUES (md5('demo:wf02:media:LY-GIAY-DEMO-12OZ')::uuid, md5('demo:wf02:variant:LY-GIAY-DEMO-12OZ')::uuid, 'IMAGE',
+        'https://placehold.co/800x600?text=LY-GIAY-DEMO-12OZ', '[]', 'Ly giấy 2 lớp in logo 12 oz', 0, TRUE, TRUE,
+        NOW() - INTERVAL '27 days', '78608dc8-b899-0fc5-96b0-d181d2488ae8', 0, NOW() - INTERVAL '28 days',
+        'flyway');
+
 INSERT INTO product.customization_templates (id, variant_id, code, name, min_dpi, color_mode, allowed_file_formats,
                                              max_file_size_mb, max_colors, is_active, model_params_json, version,
                                              created_at, created_by)
