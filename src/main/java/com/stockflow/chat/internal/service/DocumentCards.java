@@ -109,21 +109,48 @@ public class DocumentCards {
     public void projectQuoteRequested(UUID requestId) {
         quoteRequests.projectRequest(requestId).ifPresent(request -> {
             ContextRef project = new ContextRef(ContextKind.DESIGN_PROJECT, request.projectId());
-            if (card(project, CardKind.QUOTE_REQUEST, "requestId", requestId).isPresent()
-                    || !owned(project, request.customerId())) {
+            Optional<ChatMessage> existing = card(project, CardKind.QUOTE_REQUEST, "requestId", requestId);
+            if (existing.isPresent()) {
+                // The customer changed the open request (other designs, cartons, day): the same card shows it.
+                refreshProjectCard(existing.get(), request);
                 return;
             }
-            ObjectNode payload = json.createObjectNode();
-            payload.put("scope", "PROJECT");
-            payload.put("requestId", request.id().toString());
-            payload.put("projectId", request.projectId().toString());
-            payload.put("projectName", request.projectName());
-            payload.putPOJO("desiredDeliveryDate", request.desiredDeliveryDate());
-            payload.putPOJO("requestedAt", request.requestedAt());
-            payload.set("lines", json.valueToTree(request.lines()));
+            if (!owned(project, request.customerId())) {
+                return;
+            }
             cards.post(new ChatCards.NewCard(request.customerId(), project, List.of(), CardKind.QUOTE_REQUEST,
-                    payload, "Yêu cầu báo giá cả dự án: " + request.projectName(), null, true));
+                    projectRequestPayload(request), "Yêu cầu báo giá cả dự án: " + request.projectName(), null, true));
         });
+    }
+
+    /** Sales closed a project's quote request: its card closes, as a single design's does. */
+    public void projectQuoteRequestClosed(UUID requestId) {
+        quoteRequests.projectRequest(requestId).ifPresent(request -> card(
+                new ContextRef(ContextKind.DESIGN_PROJECT, request.projectId()), CardKind.QUOTE_REQUEST, "requestId",
+                requestId).ifPresent(card -> refreshProjectCard(card, request)));
+    }
+
+    private void refreshProjectCard(ChatMessage card, QuoteRequests.ProjectRequest request) {
+        if (card.card().state() == CardState.SUPERSEDED) {
+            return;
+        }
+        JsonNode payload = keepQuote(card, projectRequestPayload(request));
+        CardState state = card.card().state() == CardState.OPEN && "CLOSED".equals(request.status())
+                ? CardState.CLOSED : null;
+        cards.update(card.id(), state, payload, Actor.system(), null, null);
+    }
+
+    private ObjectNode projectRequestPayload(QuoteRequests.ProjectRequest request) {
+        ObjectNode payload = json.createObjectNode();
+        payload.put("scope", "PROJECT");
+        payload.put("requestId", request.id().toString());
+        payload.put("projectId", request.projectId().toString());
+        payload.put("projectName", request.projectName());
+        payload.put("status", request.status());
+        payload.putPOJO("desiredDeliveryDate", request.desiredDeliveryDate());
+        payload.putPOJO("requestedAt", request.requestedAt());
+        payload.set("lines", json.valueToTree(request.lines()));
+        return payload;
     }
 
     /**

@@ -59,6 +59,7 @@ class DocumentCardsTest {
     private final ContextResolver contexts = mock(ContextResolver.class);
     private final ContractCards contracts = mock(ContractCards.class);
     private final IssuedEInvoices einvoices = mock(IssuedEInvoices.class);
+    private final QuoteRequests quoteRequests = mock(QuoteRequests.class);
     private DocumentCards documents;
 
     private final UUID customer = UUID.randomUUID();
@@ -66,7 +67,7 @@ class DocumentCardsTest {
 
     @BeforeEach
     void setUp() {
-        documents = new DocumentCards(cards, messages, contexts, mock(QuoteRequests.class), mock(QuoteCards.class),
+        documents = new DocumentCards(cards, messages, contexts, quoteRequests, mock(QuoteCards.class),
                 contracts, mock(SampleRoundCards.class), mock(CustomerInstallments.class), mock(PaymentService.class),
                 einvoices, json);
         when(contexts.find(any())).thenAnswer(call -> Optional.of(new ContextResolver.Resolved(call.getArgument(0),
@@ -126,6 +127,29 @@ class DocumentCardsTest {
                 .thenReturn(List.of(card(CardKind.INVOICE, "{}")));
         documents.einvoiceIssued(issued);
         verify(cards).post(any());
+    }
+
+    @Test
+    @DisplayName("QUOTE_REQUEST of a project: a changed open request refreshes its card; closed by Sales, the card closes")
+    void projectQuoteRequestCard() {
+        UUID request = UUID.randomUUID();
+        UUID project = UUID.randomUUID();
+        QuoteRequests.ProjectLine line = new QuoteRequests.ProjectLine(UUID.randomUUID(), "Ly 12oz", "APPROVED",
+                "SKU-1", 30);
+        when(quoteRequests.projectRequest(request)).thenReturn(Optional.of(new QuoteRequests.ProjectRequest(request,
+                project, "Du an A", customer, LocalDate.of(2026, 12, 1), Instant.now(), "OPEN", List.of(line))));
+        ChatMessage card = card(CardKind.QUOTE_REQUEST, "{\"requestId\":\"" + request + "\"}");
+        when(messages.cardsAbout(new ContextRef(ContextKind.DESIGN_PROJECT, project), CardKind.QUOTE_REQUEST))
+                .thenReturn(List.of(card));
+
+        documents.projectQuoteRequested(request);
+        verify(cards, never()).post(any());
+        verify(cards).update(eq(card.id()), isNull(), any(), eq(Actor.system()), isNull(), isNull());
+
+        when(quoteRequests.projectRequest(request)).thenReturn(Optional.of(new QuoteRequests.ProjectRequest(request,
+                project, "Du an A", customer, LocalDate.of(2026, 12, 1), Instant.now(), "CLOSED", List.of(line))));
+        documents.projectQuoteRequestClosed(request);
+        verify(cards).update(eq(card.id()), eq(CardState.CLOSED), any(), eq(Actor.system()), isNull(), isNull());
     }
 
     @Test

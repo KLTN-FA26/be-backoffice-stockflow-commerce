@@ -209,12 +209,16 @@ public class DesignProjectQuoteRequestService {
         UUID projectId = requests.findById(requestId).map(DesignProjectQuoteRequestJpaEntity::getProjectId)
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
         // The project's lock first, as an ask takes it: no ask slips in between reading the request and closing it.
-        projects.lockById(projectId).orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
+        var project = projects.lockById(projectId).orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
         DesignProjectQuoteRequestJpaEntity request = requests.lockById(requestId)
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
         if (request.getStatus() == QuoteRequestStatus.OPEN) {
-            request.close(clock.instant(), actor);
+            Instant now = clock.instant();
+            request.close(now, actor);
             request = requests.saveAndFlush(request);
+            // Only on the move itself: closing a closed request changes nothing and tells nobody.
+            events.publishEvent(new com.stockflow.contracts.DesignProjectQuoteRequestClosed(request.getId(), projectId,
+                    project.getCustomerId(), actor, now));
         }
         return views(List.of(request)).getFirst();
     }

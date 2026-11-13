@@ -34,7 +34,7 @@ class QuoteRequestsAdapter implements QuoteRequests {
             return Optional.empty();
         }
         return projectRequests.find(requestId).map(v -> new ProjectRequest(v.id(), v.projectId(), v.projectName(),
-                v.customerId(), v.desiredDeliveryDate(), v.requestedAt(), v.lines().stream()
+                v.customerId(), v.desiredDeliveryDate(), v.requestedAt(), v.status().name(), v.lines().stream()
                 .map(l -> new ProjectLine(l.designId(), l.designName(), l.designStatus().name(), l.customerSku(),
                         l.cartons())).toList()));
     }

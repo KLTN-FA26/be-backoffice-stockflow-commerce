@@ -30,9 +30,13 @@ public interface QuoteRequests {
     record ProjectLine(UUID designId, String designName, String designStatus, String customerSku, int cartons) {
     }
 
-    /** A request over several approved designs of a project, one delivery date for all. */
+    /**
+     * A request over several approved designs of a project, one delivery date for all.
+     *
+     * @param status OPEN or CLOSED (answered by Sales)
+     */
     record ProjectRequest(UUID id, UUID projectId, String projectName, UUID customerId, LocalDate desiredDeliveryDate,
-                          Instant requestedAt, List<ProjectLine> lines) {
+                          Instant requestedAt, String status, List<ProjectLine> lines) {
     }
 
     Optional<DesignRequest> designRequest(UUID requestId);
