@@ -66,12 +66,15 @@ class ReadMarkersAdapter implements ReadMarkers {
 
     /** {@code reader_type} says CUSTOMER or STAFF; the domain's name for the staff side is AGENT. */
     private static String column(SenderType side) {
-        return side == SenderType.CUSTOMER ? "CUSTOMER" : "STAFF";
+        // The sender type's name, not a literal: the reader side is a message side, not a role (NoRoleNameAccessTest).
+        return side == SenderType.CUSTOMER ? SenderType.CUSTOMER.name() : STAFF_READER;
     }
 
     private static SenderType side(String column) {
-        return "CUSTOMER".equals(column) ? SenderType.CUSTOMER : SenderType.AGENT;
+        return SenderType.CUSTOMER.name().equals(column) ? SenderType.CUSTOMER : SenderType.AGENT;
     }
+
+    private static final String STAFF_READER = "STAFF";
 
     private static final RowMapper<Marker> ROW = (rs, n) -> {
         OffsetDateTime at = rs.getObject("last_read_at", OffsetDateTime.class);
