@@ -1,6 +1,7 @@
 package com.stockflow.order.internal.domain;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.util.Map;
 
 /**
@@ -14,4 +15,11 @@ public interface TaxRates {
 
     /** Every class and its rate, a percentage. */
     Map<String, BigDecimal> all();
+
+    /**
+     * Every class and the rate in force for it on {@code day} (WF-05 E2): the rate of a period covering the day
+     * ({@code ordering.tax_rate_period}, a temporary reduction), else the class's own. What an e-invoice of goods
+     * delivered that day carries.
+     */
+    Map<String, BigDecimal> onDay(LocalDate day);
 }

@@ -350,6 +350,40 @@ propose a refund per line, a second person approves, and `PaymentService.settleR
 transaction as an `order_settlement` of kind `GOODS_RETURNED`; the accountant records refunds (4B-9), and each record
 publishes `OrderRefundRecorded`.
 
+### A shipment that comes back - delivery failure cases (WF-05 fix plan, sections 2-3)
+
+A shipment the carrier brings back no longer moves its order to RETURNED / PARTIALLY_FULFILLED by itself:
+`Order.recordShipmentReturned` puts the order `ON_HOLD` for `HoldReason.DELIVERY_FAILED`, held from
+PARTIALLY_FULFILLED (edges `SHIPPED>ON_HOLD`, `DELIVERY_FAILED>ON_HOLD`). `resolveHold` refuses that hold
+(`ORDER_DELIVERY_FAILURE_USE_DECISION`): only Sales' decision on the case lifts it.
+
+```
+carrier reports it back → shipment RETURNED → order ON_HOLD (DELIVERY_FAILED)
+return receipt confirmed → ReturnedGoodsReceived → ReturnRequestService.goodsReceived (no return request named)
+                         → DeliveryFailureService.goodsReceived: case OPEN (ordering.delivery_failure_case)
+Sales: POST /orders/{id}/delivery-failures/{caseId}/redelivery    (sales-order-holds:UPDATE)
+       POST /orders/{id}/delivery-failures/{caseId}/cancellation  (sales-order-cancellations:UPDATE)
+```
+
+- **Redelivery.** REFUSED / WRONG_ADDRESS must charge the failed trip: `PaymentService.chargeFailedDelivery` opens a
+  fee item (`InstallmentMilestone.FAILED_TRIP_FEE`: an installment with no plan row, like `CANCELLATION_FEE`); any
+  other reason charges nothing (`carrier_claim`). The order goes back to PARTIALLY_FULFILLED. The goods are held for
+  the order again as they leave quarantine (`QuarantineStockReleased` → `ShippingWarehouseService.holdReturnedGoods`,
+  before any other order is topped up, decided or not). The holds are SKU reservations recorded in
+  `delivery_failure_case_hold`, so "the very cartons" holds only while no other carton of that SKU is free.
+  `OrderReleaseService.release` releases a waiting redelivery before any batch; `createTask` opens a second pick
+  (`fulfillment.pick.redelivery_case_id`); the handover (`ShipmentHandover.redeliveryCaseId`) closes the case, and the
+  new shipment carries the batch again.
+- **Cancellation.** `OrderServiceImpl.closeUndelivered`: the hold lifted and the rest closed through the closure of
+  the rest (4B-9) with the agreed fee - allowed once goods of the order came back, not only once printing started.
+  Nothing delivered → RETURNED, then REFUNDED / PARTIALLY_REFUNDED once the refunds are made
+  (`DeliveryFailureService.followRefunds`: on `OrderRefundRecorded`, and nightly in `OrderSettlementJob`).
+
+Lock order: order row → (installments) → SKU advisory locks. A case is written only under its order's lock.
+
+An installment has no OVERDUE status any more (WF-05 fix plan, section 8): overdue is `Installment.overdue(today)` /
+`payment.installment_is_overdue`, worked out from the due day; there is no nightly overdue job.
+
 ---
 
 ## 5. Known traps — do not reintroduce these

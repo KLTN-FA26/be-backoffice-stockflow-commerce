@@ -13,6 +13,13 @@ public final class CustomerResources {
     /** Customer groups and who is in them (P7): Sales Manager manages, Sales reads (V20261017000600). */
     public static final String SEGMENTS = "customer-segments";
 
+    /**
+     * WF-05 E1: a customer's legal profile - what a contract and an e-invoice name the buyer by. A resource of its own,
+     * not {@code customer-customers}: the accountant corrects an invoice e-mail without being able to edit customers,
+     * and a portal customer, who holds {@code customer-customers:UPDATE} for its own record, holds none of it.
+     */
+    public static final String LEGAL_PROFILES = "customer-legal-profiles";
+
     private CustomerResources() {
     }
 }

@@ -67,6 +67,18 @@ public interface PaymentService {
      */
     java.util.Optional<OrderSettlementResult> settleReturn(SettleReturnCommand command);
 
+    /**
+     * WF-05 fix plan, section 2 (09 §4.3): the customer made a trip fail - refused the goods, or gave a wrong address -
+     * and the goods are delivered again. The trip is charged to them as a fee item of the order's contract: an
+     * installment with no plan row, due from that day, paid by receipt like any other and never refunded or lowered by
+     * a closure. In the caller's transaction, after the order's lock (orders, then installments).
+     *
+     * @return the fee item's id; empty for an order without installments (no signed contract) - nothing to charge it on
+     * @throws com.stockflow.common.error.BusinessException {@code VALIDATION_FAILED} for an amount not more than zero
+     *         or not in whole units of the currency
+     */
+    java.util.Optional<UUID> chargeFailedDelivery(ChargeFailedDeliveryCommand command);
+
     /** 4D-3 (15 §5.3): what the order's settlements made refundable and what was refunded; zero for none. */
     RefundProgress refundProgress(UUID orderId);
 

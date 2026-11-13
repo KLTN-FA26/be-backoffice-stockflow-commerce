@@ -21,10 +21,11 @@ import java.util.UUID;
  * {@link InstallmentMilestone#CANCELLATION_FEE}): 15 §5.1 gives it the same lifecycle starting from DUE, so receipts,
  * the nightly overdue sweep and the credit check (BR-10) take it as they take any installment. It names no plan row.</p>
  *
- * <p>The status always says what the money and the milestone say ({@code ck_installment_status_facts}); OVERDUE is the
- * one status a payment does not lift short of the full amount (§5.1: "giữ Overdue cho tới khi trả đủ"), because being
- * overdue is what the next credit check needs to know (BR-11). What a closure took off counts as settled: paid in part
- * and the rest taken off, it is PAID; taken off whole with nothing paid, it is no longer owed - CANCELLED.</p>
+ * <p>The status always says what the money and the milestone say ({@code ck_installment_status_facts}). Being overdue
+ * is not a status but a flag worked out from the due day ({@link #overdue}; WF-05 fix plan, section 8): what the next
+ * credit check needs to know (BR-11) is read the same way, so an overdue installment paid in part reads PARTIALLY_PAID
+ * and is still overdue for what is left. What a closure took off counts as settled: paid in part and the rest taken
+ * off, it is PAID; taken off whole with nothing paid, it is no longer owed - CANCELLED.</p>
  */
 public final class Installment {
 
@@ -77,8 +78,8 @@ public final class Installment {
         this.contractId = Objects.requireNonNull(contractId, "contractId");
         this.milestone = Objects.requireNonNull(milestone, "milestone");
         // ck_installment_fee_item: a fee item names no plan row, every other installment names its own.
-        if ((milestone == InstallmentMilestone.CANCELLATION_FEE) != (contractInstallmentId == null)) {
-            throw new IllegalArgumentException("Only a cancellation fee item has no plan row");
+        if (milestone.feeItem() != (contractInstallmentId == null)) {
+            throw new IllegalArgumentException("Only a fee item has no plan row");
         }
         this.contractInstallmentId = contractInstallmentId;
         this.orderId = Objects.requireNonNull(orderId, "orderId");
@@ -100,6 +101,10 @@ public final class Installment {
         this.paidAt = paidAt;
         this.cancelledAt = cancelledAt;
         this.version = version;
+        // ck_installment_status: overdue is a flag, never a stored status (V20261121000100).
+        if (status == InstallmentStatus.OVERDUE) {
+            throw new IllegalArgumentException("OVERDUE is historical: an installment is overdue by its due day");
+        }
         if (amount.signum() <= 0) {
             throw new IllegalArgumentException("An installment is owed money");
         }
@@ -125,12 +130,28 @@ public final class Installment {
     /**
      * The cancellation fee item (15 §4.6 step 18, §5.1): the part of a fee the money collected did not cover, which the
      * customer pays by receipt like an installment. Due at once, by the day it is opened (§5.1: "đến hạn ngay ngày huỷ /
-     * ngày đóng phần còn lại"), so the nightly sweep makes it OVERDUE the next day it is still unpaid.
+     * ngày đóng phần còn lại"), so it is {@link #overdue} from the next day it is still unpaid.
      *
      * @param seq {@link #FIRST_FEE_SEQ} for the contract's first fee item, then on
      */
     public static Installment openFee(Installment ofContract, int seq, String name, BigDecimal owed, Instant at,
                                       LocalDate day) {
+        return openFee(InstallmentMilestone.CANCELLATION_FEE, ofContract, seq, name, owed, at, day);
+    }
+
+    /**
+     * The fee item of a failed trip (WF-05 fix plan, section 2): what the customer pays for a delivery they refused or
+     * misaddressed, once Sales decide to deliver again. As the cancellation fee item: due at once, numbered after the
+     * plan, never lowered by a closure and never cancelled - the trip failed whatever becomes of the order. Due at once
+     * is deliberate and an open question for the owner (see {@code InstallmentService.chargeFailedDelivery}).
+     */
+    public static Installment openDeliveryFailureFee(Installment ofContract, int seq, String name, BigDecimal owed,
+                                                     Instant at, LocalDate day) {
+        return openFee(InstallmentMilestone.FAILED_TRIP_FEE, ofContract, seq, name, owed, at, day);
+    }
+
+    private static Installment openFee(InstallmentMilestone kind, Installment ofContract, int seq, String name,
+                                       BigDecimal owed, Instant at, LocalDate day) {
         Objects.requireNonNull(ofContract, "ofContract");
         if (seq < FIRST_FEE_SEQ || seq > LAST_FEE_SEQ) {
             throw new IllegalArgumentException("A fee item is numbered %d to %d, not %d"
@@ -138,7 +159,7 @@ public final class Installment {
         }
         Installment fee = new Installment(Identifiers.newId(), ofContract.contractId, null, ofContract.orderId,
                 ofContract.customerId, ofContract.contractNumber, ofContract.orderNumber, seq, name,
-                InstallmentMilestone.CANCELLATION_FEE, null, null, owed, BigDecimal.ZERO, ofContract.currency, 0, null,
+                kind, null, null, owed, BigDecimal.ZERO, ofContract.currency, 0, null,
                 null, InstallmentStatus.NOT_DUE, null, null, 0L);
         fee.reach(at, day);
         return fee;
@@ -167,8 +188,8 @@ public final class Installment {
 
     /**
      * A receipt line pays {@code money} of it (15 §4.2 step 6-7): never more than it still owes (BR-05: nothing is left
-     * over), never once it is paid in full or cancelled. Paid in full it is PAID; short of that it is PARTIALLY_PAID,
-     * unless it is OVERDUE, which it stays until paid in full.
+     * over), never once it is paid in full or cancelled. Paid in full it is PAID; short of that it is PARTIALLY_PAID -
+     * past its due day too: it is then {@link #overdue} for what is left, which the status no longer hides.
      *
      * @throws BusinessException {@code INSTALLMENT_NOT_PAYABLE}; {@code PAYMENT_RECEIPT_EXCEEDS_OUTSTANDING}
      */
@@ -190,16 +211,17 @@ public final class Installment {
         if (paidAmount.add(reducedAmount).compareTo(amount) == 0) {
             this.status = InstallmentStatus.PAID;
             this.paidAt = Objects.requireNonNull(at, "at");
-        } else if (status != InstallmentStatus.OVERDUE) {
+        } else {
             this.status = InstallmentStatus.PARTIALLY_PAID;
         }
     }
 
     /**
      * A receipt that paid {@code money} of it was voided (15 §4.4 step 12): the money no longer counts, and the status
-     * says again what is left - OVERDUE when its due day is past, else PARTIALLY_PAID, DUE or NOT_DUE.
+     * says again what is left - PARTIALLY_PAID, DUE or NOT_DUE. Whether it is overdue again is the due day's to say
+     * ({@link #overdue}), not this method's.
      */
-    public void unpay(BigDecimal money, LocalDate today) {
+    public void unpay(BigDecimal money) {
         Objects.requireNonNull(money, "money");
         if (status == InstallmentStatus.CANCELLED) {
             throw new IllegalStateException("Installment %d of contract %s is cancelled; its receipts stay"
@@ -211,9 +233,7 @@ public final class Installment {
         }
         this.paidAmount = paidAmount.subtract(money);
         this.paidAt = null;
-        if (dueDate != null && dueDate.isBefore(today)) {
-            this.status = InstallmentStatus.OVERDUE;
-        } else if (paidAmount.signum() > 0) {
+        if (paidAmount.signum() > 0) {
             this.status = InstallmentStatus.PARTIALLY_PAID;
         } else {
             this.status = reachedAt != null ? InstallmentStatus.DUE : InstallmentStatus.NOT_DUE;
@@ -264,6 +284,17 @@ public final class Installment {
         }
     }
 
+    /**
+     * Whether it is overdue on {@code today} (15 §4.1 step 4, §4.3 step 9; WF-05 fix plan, section 8): its due day is
+     * past and it still owes. Worked out, never stored: an installment paid before delivery has no due day and is never
+     * overdue, one paid in full or cancelled owes nothing. The credit check ({@code InstallmentBook.overdue}) and
+     * {@code payment.installment_is_overdue} in the database say the same.
+     */
+    public boolean overdue(LocalDate today) {
+        Objects.requireNonNull(today, "today");
+        return dueDate != null && dueDate.isBefore(today) && status.takesMoney();
+    }
+
     /** What it still owes: its amount less what was paid and taken off; zero once paid or cancelled. */
     public BigDecimal outstanding() {
         return status == InstallmentStatus.CANCELLED ? BigDecimal.ZERO
@@ -275,9 +306,12 @@ public final class Installment {
         return amount.subtract(reducedAmount);
     }
 
-    /** A cancellation fee item rather than a row of the contract's plan (15 §4.6 step 18). */
+    /**
+     * A fee item rather than a row of the contract's plan: a cancellation fee (15 §4.6 step 18) or the fee of a failed
+     * trip. Its money is the fee's alone - no settlement counts it as collected for goods, and it is never refunded.
+     */
     public boolean isFeeItem() {
-        return milestone == InstallmentMilestone.CANCELLATION_FEE;
+        return milestone.feeItem();
     }
 
     public boolean reached() { return reachedAt != null; }

@@ -28,7 +28,7 @@ class PaymentServiceImplTest {
     @DisplayName("4B-6 (15 BR-10): the installments paid after delivery count, not yet due too; one overdue counts")
     void creditPositionCountsInstallments() {
         when(installments.afterDeliveryUnpaid(id)).thenReturn(new BigDecimal("6000000"));
-        when(installments.overdue(id)).thenReturn(new InstallmentBook.Overdue(new BigDecimal("2000000"),
+        when(installments.overdue(org.mockito.ArgumentMatchers.eq(id), org.mockito.ArgumentMatchers.any())).thenReturn(new InstallmentBook.Overdue(new BigDecimal("2000000"),
                 LocalDate.of(2026, 10, 15)));
 
         CreditPosition position = service.creditPosition(id);
@@ -43,7 +43,7 @@ class PaymentServiceImplTest {
     @DisplayName("credit position of a customer with nothing owed: zero and not overdue")
     void creditPositionNoDebt() {
         when(installments.afterDeliveryUnpaid(id)).thenReturn(BigDecimal.ZERO);
-        when(installments.overdue(id)).thenReturn(new InstallmentBook.Overdue(BigDecimal.ZERO, null));
+        when(installments.overdue(org.mockito.ArgumentMatchers.eq(id), org.mockito.ArgumentMatchers.any())).thenReturn(new InstallmentBook.Overdue(BigDecimal.ZERO, null));
 
         CreditPosition position = service.creditPosition(id);
 
@@ -57,7 +57,7 @@ class PaymentServiceImplTest {
     @DisplayName("owed but nothing overdue: the amount counts, the flag stays off")
     void owedNotOverdue() {
         when(installments.afterDeliveryUnpaid(id)).thenReturn(new BigDecimal("3000000"));
-        when(installments.overdue(id)).thenReturn(new InstallmentBook.Overdue(BigDecimal.ZERO, null));
+        when(installments.overdue(org.mockito.ArgumentMatchers.eq(id), org.mockito.ArgumentMatchers.any())).thenReturn(new InstallmentBook.Overdue(BigDecimal.ZERO, null));
 
         CreditPosition position = service.creditPosition(id);
 

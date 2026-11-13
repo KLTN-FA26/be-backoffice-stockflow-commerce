@@ -20,6 +20,7 @@ import com.stockflow.common.storage.StagedUploads;
 import com.stockflow.common.storage.StoredFile;
 import com.stockflow.fulfillment.internal.domain.CarrierConnectionType;
 import com.stockflow.fulfillment.internal.domain.DispatchLoad;
+import com.stockflow.fulfillment.internal.domain.ImportCsv;
 import com.stockflow.fulfillment.internal.domain.WaybillImportCheck;
 import com.stockflow.fulfillment.internal.domain.WaybillImportFile;
 import com.stockflow.fulfillment.internal.entity.CarrierJpaEntity;
@@ -286,7 +287,7 @@ class WaybillImportService implements WaybillImports {
     private static List<WaybillImportFile.Row> parse(byte[] file) {
         try {
             return WaybillImportFile.parse(file);
-        } catch (WaybillImportFile.Malformed malformed) {
+        } catch (ImportCsv.Malformed malformed) {
             throw new BusinessException(ErrorCode.WAYBILL_IMPORT_INVALID_FILE, malformed.getMessage());
         }
     }

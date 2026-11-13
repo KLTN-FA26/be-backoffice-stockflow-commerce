@@ -34,7 +34,8 @@ class StockMovementLogAdapter implements StockMovementLog, StockLedgerSearch {
                 m.from() == null ? null : m.status(), m.to() == null ? null : m.toStatus(),
                 m.referenceType(), m.referenceId(), m.reason(), m.actorId(), m.occurredAt(), m.lotId(), m.orderId(),
                 m.fromStockPackage() == null ? null : m.fromStockPackage().value(),
-                m.toStockPackage() == null ? null : m.toStockPackage().value()));
+                m.toStockPackage() == null ? null : m.toStockPackage().value())
+                .askedBy(m.requestedBy(), m.countedBy()));
     }
 
     @Override
@@ -124,6 +125,7 @@ class StockMovementLogAdapter implements StockMovementLog, StockLedgerSearch {
                 e.getFromStockPackageId() == null ? null
                         : new com.stockflow.inventory.internal.domain.StockPackageId(e.getFromStockPackageId()),
                 e.getToStockPackageId() == null ? null
-                        : new com.stockflow.inventory.internal.domain.StockPackageId(e.getToStockPackageId()));
+                        : new com.stockflow.inventory.internal.domain.StockPackageId(e.getToStockPackageId()),
+                e.getRequestedBy(), e.getCountedBy());
     }
 }

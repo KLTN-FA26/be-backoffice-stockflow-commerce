@@ -85,6 +85,7 @@ com.stockflow
 ├── warehouse/       Warehouses, zones, bins, capacity                → schema warehouse
 ├── order/           Quotes, contracts, orders, production orders, returns → schema ordering
 ├── payment/         Contract installments, receipts, settlements, refunds → schema payment
+├── invoicing/       VAT e-invoices per delivery, provider port, sandbox   → schema invoicing
 ├── fulfillment/     Picking, staging, carton check, load plans, carriers → schema fulfillment
 ├── procurement/     Goods receipts (production orders, returns)      → schema procurement
 ├── design/          Design studio, templates, snapshots, print jobs  → schema design

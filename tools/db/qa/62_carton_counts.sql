@@ -361,6 +361,57 @@ SELECT pg_temp.expect_ok('CX4 another count is not full', $q$
     INSERT INTO inventory.cycle_count_line (id, cycle_count_id, location_code, sku, expected_qty, stock_package_id)
     VALUES (gen_random_uuid(), md5('qa62:small')::uuid, 'HCM-A02-1-B', 'SOFA-3S-GREY', 0, md5('qa62:m:501')::uuid) $q$);
 
+\echo '--- the counter of a count''s variance does not decide it, and the ledger names the people (V20261121000200)'
+INSERT INTO identity.app_user (id, username, email, status, version, created_at)
+VALUES (md5('qa62:counter')::uuid, 'qa62.counter', 'qa62.counter@example.com', 'ACTIVE', 0, NOW());
+SELECT pg_temp.expect_fail('CD1 a counter on an adjustment nobody counted (asked by hand)', $q$
+    INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, quantity_delta, reason_code,
+                                            requested_by, stock_package_id, counted_by)
+    VALUES (gen_random_uuid(), 'ADJ-QA62-C1', 'HCM-A01-1-A', 'SOFA-3S-GREY', -4, 'DAMAGED',
+            md5('demo:user:editor')::uuid, md5('qa62:a')::uuid, md5('qa62:counter')::uuid) $q$);
+SELECT pg_temp.expect_ok('CD2 a count''s variance keeps who counted its line', $q$
+    INSERT INTO inventory.stock_adjustment (id, adjustment_number, location_code, sku, quantity_delta, reason_code,
+                                            cycle_count_line_id, requested_by, stock_package_id, counted_by)
+    VALUES (md5('qa62:adj:cv')::uuid, 'ADJ-QA62-C2', 'HCM-A01-1-A', 'SOFA-3S-GREY', -4, 'COUNT_VARIANCE',
+            md5('qa62:ccl:a')::uuid, md5('demo:user:editor')::uuid, md5('qa62:a')::uuid, md5('qa62:counter')::uuid) $q$);
+SELECT pg_temp.expect_fail('CD3 rejected by the person who counted the line', $q$
+    UPDATE inventory.stock_adjustment SET status = 'REJECTED', decided_by = md5('qa62:counter')::uuid,
+           decided_at = NOW(), rejection_reason = 'Counted it myself' WHERE id = md5('qa62:adj:cv')::uuid $q$);
+SELECT pg_temp.expect_fail('CD4 approved by the person who counted the line', $q$
+    UPDATE inventory.stock_adjustment SET status = 'POSTED', decided_by = md5('qa62:counter')::uuid,
+           decided_at = NOW(), posted_at = NOW() WHERE id = md5('qa62:adj:cv')::uuid $q$);
+SELECT pg_temp.expect_fail('CD5 a ledger line of that adjustment naming another requester', $q$
+    INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, quantity, from_status,
+                                          reference_type, reference_id, actor_id, occurred_at, from_stock_package_id,
+                                          requested_by, counted_by)
+    VALUES (gen_random_uuid(), 'ADJUSTMENT', 'SOFA-3S-GREY', 'HCM-A01-1-A', 4, 'AVAILABLE', 'STOCK_ADJUSTMENT',
+            md5('qa62:adj:cv')::uuid, md5('demo:user:approver')::uuid, NOW(), md5('qa62:a')::uuid,
+            md5('demo:user:approver')::uuid, md5('qa62:counter')::uuid) $q$);
+SELECT pg_temp.expect_fail('CD6 a ledger line of that adjustment naming nobody', $q$
+    INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, quantity, from_status,
+                                          reference_type, reference_id, actor_id, occurred_at, from_stock_package_id)
+    VALUES (gen_random_uuid(), 'ADJUSTMENT', 'SOFA-3S-GREY', 'HCM-A01-1-A', 4, 'AVAILABLE', 'STOCK_ADJUSTMENT',
+            md5('qa62:adj:cv')::uuid, md5('demo:user:approver')::uuid, NOW(), md5('qa62:a')::uuid) $q$);
+SELECT pg_temp.expect_ok('CD7 approved by a third person, its ledger line naming requester and counter', $q$
+    UPDATE inventory.stock_adjustment SET status = 'POSTED', decided_by = md5('demo:user:approver')::uuid,
+           decided_at = NOW(), posted_at = NOW() WHERE id = md5('qa62:adj:cv')::uuid;
+    INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, quantity, from_status,
+                                          reference_type, reference_id, actor_id, occurred_at, from_stock_package_id,
+                                          requested_by, counted_by)
+    VALUES (md5('qa62:mv:cv')::uuid, 'ADJUSTMENT', 'SOFA-3S-GREY', 'HCM-A01-1-A', 4, 'AVAILABLE', 'STOCK_ADJUSTMENT',
+            md5('qa62:adj:cv')::uuid, md5('demo:user:approver')::uuid, NOW(), md5('qa62:a')::uuid,
+            md5('demo:user:editor')::uuid, md5('qa62:counter')::uuid) $q$);
+SELECT pg_temp.expect_fail('CD8 who asked, named on a line that posts no adjustment', $q$
+    INSERT INTO inventory.stock_movement (id, movement_type, sku, from_location_code, quantity, from_status,
+                                          reference_type, reference_id, actor_id, occurred_at, from_stock_package_id,
+                                          requested_by)
+    VALUES (gen_random_uuid(), 'PICK', 'SOFA-3S-GREY', 'HCM-A01-1-A', 4, 'AVAILABLE', 'PICK_LINE', gen_random_uuid(),
+            md5('demo:user:approver')::uuid, NOW(), md5('qa62:a')::uuid, md5('demo:user:editor')::uuid) $q$);
+SELECT pg_temp.expect_true('CD9 the two CHECKs and the trigger are in place',
+    (SELECT count(*) FROM pg_constraint WHERE conname IN ('ck_stock_adjustment_counter_not_decider',
+        'ck_stock_adjustment_counted_by_count', 'ck_stock_movement_adjustment_people')) = 3
+    AND EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'tg_stock_movement_adjustment_people' AND NOT tgisinternal));
+
 \echo '--- what the migration kept'
 SELECT pg_temp.expect_true('CM2 the new triggers and checks are in place',
     (SELECT count(*) FROM pg_trigger WHERE tgname IN ('tg_cycle_count_line_carton', 'tg_stock_adjustment_whole_carton')

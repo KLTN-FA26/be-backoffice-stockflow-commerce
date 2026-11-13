@@ -87,4 +87,62 @@ class CustomerLegalProfileIntegrationTest {
         assertThat(customers.changeHistory(customerId)).filteredOn(e -> e.field().equals("REGISTERED_ADDRESS"))
                 .as("unchanged the second time: not recorded again").hasSize(1);
     }
+
+    @Test
+    @DisplayName("WF-05 E1: the invoice e-mail defaults to the contact address, the bank account is all or nothing, "
+            + "and every change of either is kept")
+    void invoiceEmailAndBankAccount() {
+        UUID accountant = tx.execute(s -> ReferenceRows.user(entityManager));
+        UUID customerId = Identifiers.newId();
+        String contact = "Invoice-" + customerId + "@Example.com";
+        tx.executeWithoutResult(s -> jdbc.update("INSERT INTO customer.customer (id, full_name, email, status, "
+                + "version, created_at) VALUES (?, 'Cong ty Hoa Don', ?, 'ACTIVE', 0, NOW())", customerId, contact));
+
+        CustomerLegalProfile first = service.save(new CustomerLegalProfileService.Save(customerId, "1 Le Loi, TP HCM",
+                "Tran Van A", "Director", null, null, null, accountant));
+        assertThat(first.invoiceEmail()).as("18 §3: its default is the contact e-mail, lower-cased")
+                .isEqualTo(contact.toLowerCase(java.util.Locale.ROOT));
+        assertThat(first.bankAccount()).isNull();
+
+        for (String wrong : new String[] {"ke.toan", "ke toan@example.com", "a@b", "a@b.vn@c.vn"}) {
+            assertThatThrownBy(() -> service.save(new CustomerLegalProfileService.Save(customerId, "1 Le Loi, TP HCM",
+                    "Tran Van A", "Director", wrong, null, first.version(), accountant)))
+                    .as("not an address: %s", wrong)
+                    .extracting(CustomerLegalProfileIntegrationTest::code).isEqualTo(ErrorCode.VALIDATION_FAILED);
+        }
+        assertThatThrownBy(() -> service.save(new CustomerLegalProfileService.Save(customerId, "1 Le Loi, TP HCM",
+                "Tran Van A", "Director", null, new CustomerLegalProfile.BankAccount("0123 456 789", "Vietcombank", " "),
+                first.version(), accountant)))
+                .as("a bank account names its holder")
+                .extracting(CustomerLegalProfileIntegrationTest::code).isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThatThrownBy(() -> service.save(new CustomerLegalProfileService.Save(customerId, "1 Le Loi, TP HCM",
+                "Tran Van A", "Director", null, new CustomerLegalProfile.BankAccount("12#", "Vietcombank", "CONG TY"),
+                first.version(), accountant)))
+                .as("an account number is digits and letters")
+                .extracting(CustomerLegalProfileIntegrationTest::code).isEqualTo(ErrorCode.VALIDATION_FAILED);
+
+        CustomerLegalProfile changed = service.save(new CustomerLegalProfileService.Save(customerId, "1 Le Loi, TP HCM",
+                "Tran Van A", "Director", " Ke.Toan@hoadon.example.com ",
+                new CustomerLegalProfile.BankAccount("0123 456 789", " Vietcombank ", "CONG TY HOA DON"),
+                first.version(), accountant));
+        assertThat(changed.invoiceEmail()).isEqualTo("ke.toan@hoadon.example.com");
+        assertThat(changed.bankAccount()).isEqualTo(
+                new CustomerLegalProfile.BankAccount("0123456789", "Vietcombank", "CONG TY HOA DON"));
+        assertThat(profiles.legalProfile(customerId)).as("read through customer :: api").contains(changed);
+
+        CustomerLegalProfile cleared = service.save(new CustomerLegalProfileService.Save(customerId, "1 Le Loi, TP HCM",
+                "Tran Van A", "Director", "ke.toan@hoadon.example.com", null, changed.version(), accountant));
+        assertThat(cleared.bankAccount()).as("written whole: no account given, none kept").isNull();
+
+        assertThat(customers.changeHistory(customerId)).extracting(CustomerChangeEntry::field,
+                CustomerChangeEntry::oldValue, CustomerChangeEntry::newValue).contains(
+                org.assertj.core.groups.Tuple.tuple("INVOICE_EMAIL", null, contact.toLowerCase(java.util.Locale.ROOT)),
+                org.assertj.core.groups.Tuple.tuple("INVOICE_EMAIL", contact.toLowerCase(java.util.Locale.ROOT),
+                        "ke.toan@hoadon.example.com"),
+                org.assertj.core.groups.Tuple.tuple("BANK_ACCOUNT", null, "0123456789 | Vietcombank | CONG TY HOA DON"),
+                org.assertj.core.groups.Tuple.tuple("BANK_ACCOUNT", "0123456789 | Vietcombank | CONG TY HOA DON", null));
+        assertThat(customers.changeHistory(customerId)).filteredOn(e -> e.field().equals("INVOICE_EMAIL"))
+                .as("unchanged the third time: not recorded again").hasSize(2);
+        assertThat(customers.changeHistory(customerId)).allSatisfy(e -> assertThat(e.changedBy()).isEqualTo(accountant));
+    }
 }

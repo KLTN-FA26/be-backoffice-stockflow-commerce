@@ -47,7 +47,7 @@ class CancelOwnOrderTest {
     private final OrderServiceImpl service = new OrderServiceImpl(repository, mock(OrderSearchRepository.class),
             mock(InventoryService.class), mock(OrderEventPublisher.class), Clock.systemUTC(),
             mock(DesignService.class), mock(OrderHoldJpaRepository.class), mock(CustomerService.class), requests,
-                mock(com.stockflow.payment.api.PaymentService.class), org.mockito.Mockito.mock(com.stockflow.product.api.CustomerSkus.class), org.mockito.Mockito.mock(com.stockflow.order.internal.domain.SalesContractRepository.class), org.mockito.Mockito.mock(com.stockflow.order.internal.service.DeliveryBatchService.class), org.mockito.Mockito.mock(com.stockflow.order.internal.domain.DeliveryBatchRecords.class));
+                mock(com.stockflow.payment.api.PaymentService.class), org.mockito.Mockito.mock(com.stockflow.product.api.CustomerSkus.class), org.mockito.Mockito.mock(com.stockflow.order.internal.domain.SalesContractRepository.class), org.mockito.Mockito.mock(com.stockflow.order.internal.service.DeliveryBatchService.class), org.mockito.Mockito.mock(com.stockflow.order.internal.domain.DeliveryBatchRecords.class), org.mockito.Mockito.mock(com.stockflow.order.internal.domain.DeliveryFailureCases.class));
 
     /** A placed order of a signed contract waiting for its first installment - what the customer sees (a DRAFT order is not theirs, 17 §5.2). */
     private Order orderOf(UUID customerId) {

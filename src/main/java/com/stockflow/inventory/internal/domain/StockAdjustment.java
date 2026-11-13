@@ -59,6 +59,13 @@ public final class StockAdjustment extends AggregateRoot {
     private StockPackageId stockPackageId;
     /** The cycle count line whose variance this is (SCRUM-164); null for an adjustment a person typed in. */
     private UUID cycleCountLineId;
+    /**
+     * Who entered the figure of that count line (WF-05 fix plan, section 8); null for an adjustment a person typed in,
+     * or a line nobody counted. Kept on the adjustment rather than read from the line when it is decided, so the rule
+     * "the counter does not decide" is a fact of this row - {@code ck_stock_adjustment_counter_not_decider} states it
+     * again in the table - and the ledger line of its posting can name the counter.
+     */
+    private UUID countedBy;
 
     public StockAdjustment(UUID id, String number, LocationId location, Sku sku, String lotNumber,
                            int quantityDelta, AdjustmentReason reason, String note, UUID requestedBy,
@@ -139,6 +146,20 @@ public final class StockAdjustment extends AggregateRoot {
     public UUID cycleCountLineId() { return cycleCountLineId; }
 
     /**
+     * The person who counted the line this variance comes from (set once, when asked for). Only a count's variance has
+     * a counter ({@code ck_stock_adjustment_counted_by_count}).
+     */
+    public StockAdjustment countedBy(UUID countedBy) {
+        if (countedBy != null && cycleCountLineId == null) {
+            throw new IllegalArgumentException("Only the variance of a count line has a counter");
+        }
+        this.countedBy = countedBy;
+        return this;
+    }
+
+    public UUID countedBy() { return countedBy; }
+
+    /**
      * A carton written off whole, or a LOST carton restocked whole (kltn-docs 20 §4.3; team plan 4C-3): the delta is
      * its standard count either way, the reason one of BR-04's, the location the carton's.
      * {@code tg_stock_adjustment_whole_carton} says it again.
@@ -207,13 +228,17 @@ public final class StockAdjustment extends AggregateRoot {
      * figure and its approval are two people, whoever requested the adjustment (the submitter). Checked before any
      * stock is looked at, after the adjustment is known to be still pending.
      *
-     * @param countedBy who entered the line's figure; null when the line was never counted (no one to refuse)
+     * <p>The counter is the one kept on the adjustment; {@code lineCounter} is what the count line says, used only
+     * for an adjustment asked before the counter was kept on it.</p>
+     *
+     * @param lineCounter who entered the line's figure; null when the line was never counted (no one to refuse)
      * @throws BusinessException {@code ADJUSTMENT_SELF_APPROVAL}; {@code INVALID_ADJUSTMENT_TRANSITION} when decided
      */
-    public void requireNotCountedBy(UUID decider, UUID countedBy) {
+    public void requireNotCountedBy(UUID decider, UUID lineCounter) {
         requirePending();
         Objects.requireNonNull(decider, "decider");
-        if (countedBy != null && countedBy.equals(decider)) {
+        UUID counter = countedBy != null ? countedBy : lineCounter;
+        if (counter != null && counter.equals(decider)) {
             throw new BusinessException(ErrorCode.ADJUSTMENT_SELF_APPROVAL,
                     "Adjustment %s cannot be decided by the person who counted the line it comes from".formatted(number));
         }
@@ -225,6 +250,15 @@ public final class StockAdjustment extends AggregateRoot {
         if (approverId.equals(requestedBy)) {
             throw new BusinessException(ErrorCode.ADJUSTMENT_SELF_APPROVAL,
                     "Adjustment %s cannot be approved by the person who requested it".formatted(number));
+        }
+        requireNotTheCounter(approverId);
+    }
+
+    /** ck_stock_adjustment_counter_not_decider: whoever counted the line neither approves nor rejects its variance. */
+    private void requireNotTheCounter(UUID decider) {
+        if (decider.equals(countedBy)) {
+            throw new BusinessException(ErrorCode.ADJUSTMENT_SELF_APPROVAL,
+                    "Adjustment %s cannot be decided by the person who counted the line it comes from".formatted(number));
         }
     }
 
@@ -245,6 +279,7 @@ public final class StockAdjustment extends AggregateRoot {
             throw new BusinessException(ErrorCode.ADJUSTMENT_SELF_APPROVAL,
                     "Adjustment %s cannot be decided by the person who requested it".formatted(number));
         }
+        requireNotTheCounter(approverId);
         this.status = AdjustmentStatus.REJECTED;
         this.decidedBy = approverId;
         this.decidedAt = now;

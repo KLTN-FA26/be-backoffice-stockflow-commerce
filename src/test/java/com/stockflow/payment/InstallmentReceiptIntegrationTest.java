@@ -577,7 +577,8 @@ class InstallmentReceiptIntegrationTest {
     }
 
     @Test
-    @DisplayName("15 §4.1 step 4: past its due day the installment is OVERDUE until paid in full")
+    @DisplayName("15 §4.1 step 4: past its due day the installment is overdue - a flag, with no nightly job - until "
+            + "paid in full; its status keeps saying the money")
     void overdue() {
         UUID orderId = draftOrder();
         SalesContracts.ContractView sent = sent(orderId, List.of(share("Deposit", "ON_SIGNING", "30", 2),
@@ -594,34 +595,41 @@ class InstallmentReceiptIntegrationTest {
         Signed signed = sign(orderId, sent, today.minusDays(5));
         UUID onSigning = signed.seq(1);
         assertThat(installment(onSigning).dueDate()).isEqualTo(today.minusDays(3));
+        // Overdue at once, by its due day: no sweep has to run first (WF-05 fix plan, section 8).
         assertThat(installment(onSigning).status()).isEqualTo(InstallmentStatus.DUE);
-        assertThat(payments.creditPosition(customerId).hasOverdue()).isFalse();
-
-        assertThat(installments.markOverdue()).isPositive();
-        assertThat(installment(onSigning).status()).isEqualTo(InstallmentStatus.OVERDUE);
-        assertThat(installment(signed.seq(2)).status()).as("no due day, never overdue")
-                .isEqualTo(InstallmentStatus.NOT_DUE);
+        assertThat(installment(onSigning).overdue(today)).isTrue();
+        assertThat(installment(signed.seq(2)).overdue(today)).as("no due day, never overdue").isFalse();
+        assertThat(jdbc.queryForObject("SELECT payment.installment_is_overdue(due_date, status) FROM "
+                + "payment.installment WHERE id = ?", Boolean.class, onSigning)).as("the database says the same").isTrue();
+        assertThat(installments.installments(customerId, null, null, null, null, null, true, 0, 20, null).items())
+                .as("the aged-receivables reading filters by the flag").extracting(Installment::id)
+                .containsExactly(onSigning);
+        assertThat(installments.installments(customerId, null, null, null, null, null, false, 0, 20, null).items())
+                .extracting(Installment::id).containsExactly(signed.seq(2));
         CreditPosition position = payments.creditPosition(customerId);
         assertThat(position.hasOverdue()).as("BR-11: the next credit check sees it").isTrue();
         assertThat(position.overdueAmount()).isEqualByComparingTo(dong(660_000));
         assertThat(position.oldestOverdueDueDate()).isEqualTo(today.minusDays(3));
 
-        // Part of it paid: still OVERDUE, for what is left.
+        // Part of it paid: PARTIALLY_PAID - the status no longer hides the money - and still overdue for what is left.
         PaymentReceipt partial = pay(line(onSigning, 100_000));
-        assertThat(installment(onSigning).status()).isEqualTo(InstallmentStatus.OVERDUE);
+        assertThat(installment(onSigning).status()).isEqualTo(InstallmentStatus.PARTIALLY_PAID);
+        assertThat(installment(onSigning).overdue(today)).isTrue();
         assertThat(installment(onSigning).paidAmount()).isEqualByComparingTo(dong(100_000));
         assertThat(payments.creditPosition(customerId).overdueAmount()).isEqualByComparingTo(dong(560_000));
         awaitListeners(partial.id());
         assertThat(status(orderId)).isEqualTo(OrderStatus.PENDING_PAYMENT);
 
-        // That receipt voided: past its due day, it is OVERDUE again, not DUE.
+        // That receipt voided: DUE again, and overdue as before.
         voidReceipt(partial.id(), "Recorded against the wrong contract", false);
-        assertThat(installment(onSigning).status()).isEqualTo(InstallmentStatus.OVERDUE);
+        assertThat(installment(onSigning).status()).isEqualTo(InstallmentStatus.DUE);
+        assertThat(installment(onSigning).overdue(today)).isTrue();
         assertThat(installment(onSigning).paidAmount()).isEqualByComparingTo(BigDecimal.ZERO);
 
         // Paid in full: PAID, nothing overdue, and the order confirmed.
         pay(line(onSigning, 660_000));
         assertThat(installment(onSigning).status()).isEqualTo(InstallmentStatus.PAID);
+        assertThat(installment(onSigning).overdue(today)).isFalse();
         assertThat(payments.creditPosition(customerId).hasOverdue()).isFalse();
         awaitStatus(orderId, OrderStatus.CONFIRMED);
     }

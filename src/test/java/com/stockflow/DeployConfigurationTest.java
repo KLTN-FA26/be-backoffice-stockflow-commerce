@@ -44,4 +44,22 @@ class DeployConfigurationTest {
                 .contains("from: ${RESEND_FROM:${MAIL_FROM:}}");
         assertThat(compose).as("so does the deployed server").contains("EMAIL_PROVIDER: ${EMAIL_PROVIDER:-smtp}");
     }
+
+    @Test
+    @DisplayName("WF-05 E1: the five SELLER_* variables reach the server, with a fallback that keeps a dev server working")
+    void theSellerReachesTheServer() throws Exception {
+        String compose = Files.readString(Path.of("deploy/docker-compose.yml"), StandardCharsets.UTF_8);
+        String example = Files.readString(Path.of("deploy/.env.example"), StandardCharsets.UTF_8);
+        String application = Files.readString(Path.of("src/main/resources/application.yml"), StandardCharsets.UTF_8);
+
+        for (String variable : java.util.List.of("SELLER_NAME", "SELLER_TAX_CODE", "SELLER_ADDRESS",
+                "SELLER_REPRESENTATIVE", "SELLER_REPRESENTATIVE_TITLE")) {
+            assertThat(application).as("the application reads %s, blank by default", variable)
+                    .contains("${" + variable + ":}");
+            // ":-" and a value: a blank in the server's .env must not reach the application as an empty seller.
+            assertThat(compose).as("compose passes %s", variable).containsPattern(variable + ": \\$\\{" + variable
+                    + ":-[^}]+}");
+            assertThat(example).as(".env.example lists %s", variable).contains("\n" + variable + "=");
+        }
+    }
 }

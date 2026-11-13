@@ -2,6 +2,8 @@ package com.stockflow.notification.internal.service;
 
 import com.stockflow.common.events.PendingPublicationReader;
 import com.stockflow.common.events.PendingPublicationReader.PendingPublication;
+import com.stockflow.contracts.EInvoiceErrorNoticeRecorded;
+import com.stockflow.contracts.EInvoiceIssued;
 import com.stockflow.contracts.OrderCancelled;
 import com.stockflow.contracts.OrderDelivered;
 import com.stockflow.contracts.OrderPlaced;
@@ -39,7 +41,10 @@ import java.util.function.Function;
  * Sends again the customer messages whose last attempt failed in a way worth retrying, once their back-off has passed.
  *
  * <p>The same shape as {@link ProductionOrderMailRetry} (and the purchase order retry before it, 4A-8): the
- * incomplete publications of {@link OrderNotificationListener}'s and {@link ReturnNotificationListener}'s handlers are read a bounded page at a time ({@link PendingPublicationReader}) and
+ * incomplete publications of {@link OrderNotificationListener}'s, {@link ReturnNotificationListener}'s and
+ * {@link EInvoiceIssuedNotificationListener}'s and {@link EInvoiceErrorNoticeNotificationListener}'s handlers are
+ * read a bounded page at a time
+ * ({@link PendingPublicationReader}) and
  * handed to the listener's proxy, which delivers them on its own threads and, on success, lets Spring Modulith mark
  * them complete. No second queue, no republishing to other listeners.</p>
  *
@@ -73,7 +78,9 @@ class CustomerEmailRetry {
 
     CustomerEmailRetry(PendingPublicationReader publications, EventSerializer serializer,
                        OrderNotificationListener orders, ReturnNotificationListener returns,
-                       CustomerEmailComposer composer, CustomerEmailLog deliveries, Clock clock) {
+                       CustomerEmailComposer composer, EInvoiceIssuedNotificationListener einvoices,
+                       EInvoiceEmailComposer einvoiceComposer, EInvoiceErrorNoticeNotificationListener errorNotices,
+                       CustomerEmailLog deliveries, Clock clock) {
         this.publications = publications;
         this.serializer = serializer;
         this.deliveries = deliveries;
@@ -91,7 +98,13 @@ class CustomerEmailRetry {
                 route(rma, ReturnRejected.class, composer::returnRejected, returns::on),
                 route(rma, ReturnReceived.class, composer::returnReceived, returns::on),
                 route(rma, ReturnResolved.class, composer::returnResolved, returns::on),
-                route(rma, ReturnClosed.class, composer::returnClosed, returns::on));
+                route(rma, ReturnClosed.class, composer::returnClosed, returns::on),
+                // WF-05 E5: the issued e-invoice's mail, with its files; asking for its message reads nothing.
+                route(EInvoiceIssuedNotificationListener.class, EInvoiceIssued.class, einvoiceComposer::issued,
+                        einvoices::on),
+                // The 04/SS notice told to the buyer: no file, asking for its message reads nothing either.
+                route(EInvoiceErrorNoticeNotificationListener.class, EInvoiceErrorNoticeRecorded.class,
+                        einvoiceComposer::errorNoticeRecorded, errorNotices::on));
     }
 
     /**

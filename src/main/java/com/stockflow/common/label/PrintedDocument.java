@@ -1,7 +1,5 @@
-package com.stockflow.order.internal.service;
+package com.stockflow.common.label;
 
-import com.stockflow.common.label.LabelDrawing;
-import com.stockflow.common.label.LabelFonts;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.pdmodel.PDPage;
 import org.apache.pdfbox.pdmodel.PDPageContentStream;
@@ -21,32 +19,33 @@ import java.util.List;
 import java.util.Locale;
 
 /**
- * The A4 layout of the order module's documents - the sales contract (4B-4) and the production order slip (4A-3): lines
- * of text flowing down as many pages as they need, each wrapped at the page's width, in the Noto Sans the labels use,
- * which has the Vietnamese glyphs. One layout, so a change of margin or spacing reaches both documents.
+ * The A4 layout of the documents the system draws - the sales contract (4B-4), the production order slip (4A-3) and the
+ * sandbox e-invoice (WF-05 E2): lines of text flowing down as many pages as they need, each wrapped at the page's width,
+ * in the Noto Sans the labels use, which has the Vietnamese glyphs. One layout, so a change of margin or spacing reaches
+ * every document; it lives beside the label primitives because two modules draw with it.
  *
  * <p>A document that names a code a scanner reads - the production order's, the lot its goods are received under -
  * carries it at the top of its first page as a Code 128 barcode and a QR code, drawn by the label primitives
  * ({@link LabelDrawing}) so the scanners tuned on labels read it too.</p>
  */
-final class PrintedDocument {
+public final class PrintedDocument {
 
-    enum Style { TITLE, HEADING, BOLD, TEXT }
+    public enum Style { TITLE, HEADING, BOLD, TEXT }
 
-    record Line(Style style, String text) {
-        static Line title(String text) {
+    public record Line(Style style, String text) {
+        public static Line title(String text) {
             return new Line(Style.TITLE, text);
         }
 
-        static Line heading(String text) {
+        public static Line heading(String text) {
             return new Line(Style.HEADING, text);
         }
 
-        static Line bold(String text) {
+        public static Line bold(String text) {
             return new Line(Style.BOLD, text);
         }
 
-        static Line text(String text) {
+        public static Line text(String text) {
             return new Line(Style.TEXT, text);
         }
     }
@@ -70,7 +69,7 @@ final class PrintedDocument {
      * @param code drawn as a barcode and a QR code at the top of the first page, or null for none; [A-Z0-9-] only, as
      *             every label code is
      */
-    static byte[] draw(LabelFonts fonts, List<Line> lines, String title, String code) {
+    public static byte[] draw(LabelFonts fonts, List<Line> lines, String title, String code) {
         try (PDDocument document = new PDDocument()) {
             PDFont bold = PDType0Font.load(document, new ByteArrayInputStream(fonts.bold()), true);
             PDFont regular = PDType0Font.load(document, new ByteArrayInputStream(fonts.regular()), true);
@@ -166,7 +165,7 @@ final class PrintedDocument {
     }
 
     /** Whole units grouped with dots as Vietnamese documents write them: 1.234.567 VND. */
-    static String money(BigDecimal amount, String currency) {
+    public static String money(BigDecimal amount, String currency) {
         DecimalFormatSymbols symbols = new DecimalFormatSymbols(Locale.ROOT);
         symbols.setGroupingSeparator('.');
         DecimalFormat format = new DecimalFormat("#,##0", symbols);
