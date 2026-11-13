@@ -240,9 +240,13 @@ public final class PickList {
      * @throws BusinessException {@code PICK_LINES_INCOMPLETE}, naming how many lines are still open
      */
     public void requireAllPicked() {
-        // A CANCELLED line of a live task is a short line whose allocation was moved: its new lines count instead.
+        // A CANCELLED line of a live task is a short line whose allocation was moved: its new lines count instead. A
+        // PUT_BACK line of a live task was picked, and its carton left the order at the check station - damaged, to
+        // quarantine (08 §4.2 step 4), or no longer wanted once the rest was closed, onto a bin: it is done, and a
+        // replacement picked in a top-up counts instead.
         long open = lines.stream().filter(line -> line.status() != PickLineStatus.PICKED
-                && line.status() != PickLineStatus.STAGED && line.status() != PickLineStatus.CANCELLED).count();
+                && line.status() != PickLineStatus.STAGED && line.status() != PickLineStatus.CANCELLED
+                && line.status() != PickLineStatus.PUT_BACK).count();
         if (open > 0) {
             throw new BusinessException(ErrorCode.PICK_LINES_INCOMPLETE,
                     "%d of %d lines are not picked yet".formatted(open, lines.size()));

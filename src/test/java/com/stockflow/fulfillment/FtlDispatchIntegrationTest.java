@@ -1956,6 +1956,192 @@ class FtlDispatchIntegrationTest {
                 .satisfies(s -> assertThat(s.shipmentId()).isEqualTo(shipment));
     }
 
+    // ---- BE-3: a carton removed at the check station is a shortage, replaced as a short pick is reallocated -------
+
+    /** The pick line of a carton the task picked, by its LPN. */
+    private UUID lineOf(UUID task, String lpn) {
+        return jdbc.queryForObject("SELECT id FROM fulfillment.pick_line WHERE pick_id = ? AND lpn = ?", UUID.class,
+                task, lpn);
+    }
+
+    /** The order's cartons its delivery batches count: holds of a batch on a carton, picked or not. */
+    private int batchHolds(OrderSummary order) {
+        return jdbc.queryForObject("""
+                SELECT count(*) FROM ordering.delivery_batch_hold h
+                  JOIN inventory.stock_reservation r ON r.id = h.reservation_id
+                 WHERE h.order_id = ? AND r.status IN ('HELD', 'CONSUMED')""", Integer.class, order.orderId());
+    }
+
+    private ResultActions reallocate(UUID task, UUID line) throws Exception {
+        return oc(post(BASE + "/tasks/" + task + "/pick-lines/" + line + "/reallocation"));
+    }
+
+    /** The task's OPEN lines picked to dispatch and the picking completed: the task PICKED again. */
+    private void pickOpenLines(UUID task) throws Exception {
+        for (Map<String, Object> line : jdbc.queryForList("SELECT id, location_code, lpn FROM fulfillment.pick_line "
+                + "WHERE pick_id = ? AND status = 'OPEN'", task)) {
+            packer(body(post(BASE + "/tasks/" + task + "/pick-lines/" + line.get("id") + "/confirmation"),
+                    "{\"locationCode\":\"" + line.get("location_code") + "\",\"lpn\":\"" + line.get("lpn") + "\"}"))
+                    .andExpect(status().isOk());
+        }
+        packer(post(BASE + "/tasks/" + task + "/picking-completion")).andExpect(status().isOk());
+    }
+
+    /**
+     * X02 steps 1-3 over HTTP: two cartons picked, one removed at the check station as damaged, the other labelled and
+     * completed in part (Sales allows partial delivery), that shipment handed over, the damaged carton put back into the
+     * quarantine area. Returns the task, the removed carton's line and LPN.
+     */
+    private Object[] removedAndPartShipped(OrderSummary order) throws Exception {
+        allowPartial(order, true);
+        UUID task = picked(order);
+        CartonStationSupport.startAndScanAll(this::packer, jdbc, task);
+        String damaged = CartonStationSupport.pickedLpns(jdbc, task).get(1);
+        UUID removed = lineOf(task, damaged);
+        assertThat(batchHolds(order)).isEqualTo(2);
+        CartonStationSupport.post(this::packer, BASE + "/tasks/" + task + "/cartons/" + damaged + "/removal",
+                "{\"note\":\"móp góc\"}").andExpect(status().isOk());
+        assertThat(batchHolds(order)).as("17 §5.5: the batch no longer counts the removed carton - it lacks it again")
+                .isEqualTo(1);
+        CartonStationSupport.labelAll(this::packer, task);
+        UUID part = UUID.fromString(CartonStationSupport.completeOnly(this::packer, json, task,
+                "{\"partial\":true,\"note\":\"1 thùng móp, giao sau\"}").path("shipmentId").asText());
+        String load = loadOf(confirmed(List.of(part), truck5t), 1);
+        loadAll(load, ghn);
+        handOver(load).andExpect(status().isOk());
+        assertThat(shipmentStatus(part)).isEqualTo("HANDED_OVER");
+        assertThat(orders.findById(order.orderId()).orElseThrow().status()).isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
+        // 08 §4.2 step 4: the damaged carton goes whole into the quarantine area, through the put-back queue.
+        packer(body(post(BASE + "/tasks/" + task + "/pick-lines/" + removed + "/put-back"),
+                "{\"locationCode\":\"HCM-QC01\",\"lpn\":\"" + damaged + "\"}")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("PUT_BACK"));
+        return new Object[] {task, removed, damaged};
+    }
+
+    /** X02 step 4 after the replacement's lines exist: picked, checked in the same session, handed over: SHIPPED. */
+    private void replacementShipped(OrderSummary order, UUID task, String damaged) throws Exception {
+        assertThat(jdbc.queryForObject("SELECT status FROM fulfillment.pick WHERE id = ?", String.class, task))
+                .as("07 §4.3 step 7: the PICKED task picks again").isEqualTo("PICKING");
+        pickOpenLines(task);
+        CartonStationSupport.startAndScanAll(this::packer, jdbc, task);
+        CartonStationSupport.labelAll(this::packer, task);
+        UUID rest = UUID.fromString(CartonStationSupport.completeOnly(this::packer, json, task, "{}")
+                .path("shipmentId").asText());
+        assertThat(jdbc.queryForObject("SELECT status FROM fulfillment.pack WHERE pick_id = ?", String.class, task))
+                .as("the same session, completed in full now").isEqualTo("COMPLETED");
+        assertThat(jdbc.queryForList("SELECT p.lpn FROM fulfillment.package p WHERE p.shipment_id = ?", String.class,
+                rest)).singleElement().isNotEqualTo(damaged);
+        assertThat(orders.findById(order.orderId()).orElseThrow().status())
+                .as("WF4-PF-NEXT: a part was handed over already, so the rest packed keeps it PARTIALLY_FULFILLED")
+                .isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
+        String load = loadOf(confirmed(List.of(rest), truck5t), 1);
+        loadAll(load, ghn);
+        handOver(load).andExpect(status().isOk());
+        OrderSummary after = orders.findById(order.orderId()).orElseThrow();
+        assertThat(after.status()).as("every carton of the order handed over").isEqualTo(OrderStatus.SHIPPED);
+        assertThat(after.lifecycle().shipments()).hasSize(2);
+        assertThat(jdbc.queryForMap("SELECT location_code, status FROM inventory.stock_package WHERE lpn = ?", damaged))
+                .as("the damaged carton stays in quarantine").containsEntry("location_code", "HCM-QC01")
+                .containsEntry("status", "IN_STOCK");
+    }
+
+    @Test
+    @DisplayName("BE-3 / WF4-X02 step 4 (08 §4.2 step 4, 07 §4.3-§4.4): a carton removed at the check station is a "
+            + "shortage of its batch; the part ships first; the warehouse manager reallocates the removed line - a "
+            + "replacement carton (never the damaged one) joins the task as a top-up, is picked, checked in the same "
+            + "session, completed in full and handed over on a later load: the order SHIPPED")
+    void removedCartonIsReplacedAndShipsOnALaterLoad() throws Exception {
+        OrderSummary order = ftlOrder(2);
+        CustomerSkuRows.stock(jdbc, tx, sofaOf(DemoData.CUSTOMER_ID).sku(), 2);
+        Object[] x = removedAndPartShipped(order);
+        UUID task = (UUID) x[0];
+        UUID removed = (UUID) x[1];
+        String damaged = (String) x[2];
+
+        // A picker does not reallocate: the warehouse manager does (fulfillment-task-assignment:UPDATE).
+        packer(post(BASE + "/tasks/" + task + "/pick-lines/" + removed + "/reallocation"))
+                .andExpect(status().isForbidden());
+        JsonNode lines = data(reallocate(task, removed).andExpect(status().isOk()));
+        assertThat(lines).hasSize(1);
+        assertThat(lines.get(0).path("status").asText()).isEqualTo("OPEN");
+        assertThat(lines.get(0).path("lpn").asText()).isNotEqualTo(damaged);
+        assertThat(batchHolds(order)).as("the replacement stands for the batch").isEqualTo(2);
+        assertThat(orders.findById(order.orderId()).orElseThrow().status()).isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
+        reallocate(task, removed).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("PICK_LINE_NOT_OPEN"));
+        // The top-up of the task finds nothing more to add.
+        assertThat(data(oc(post(BASE + "/tasks/" + task + "/top-up")).andExpect(status().isOk()))).isEmpty();
+
+        replacementShipped(order, task, damaged);
+    }
+
+    @Test
+    @DisplayName("BE-3 (07 §4.4 step 11): no whole carton to replace a removed one - 409 INSUFFICIENT_STOCK, the order "
+            + "held INVENTORY for Sales to decide, the batch short of it; stock arrives, the reallocation succeeds, the "
+            + "order resumes PARTIALLY_FULFILLED and the replacement ships: SHIPPED")
+    void removedCartonWithoutStockHoldsTheOrder() throws Exception {
+        OrderSummary order = ftlOrder(2);
+        Object[] x = removedAndPartShipped(order);
+        UUID task = (UUID) x[0];
+        UUID removed = (UUID) x[1];
+        String damaged = (String) x[2];
+
+        reallocate(task, removed).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("INSUFFICIENT_STOCK"));
+        OrderSummary held = orders.findById(order.orderId()).orElseThrow();
+        assertThat(held.status()).isEqualTo(OrderStatus.ON_HOLD);
+        assertThat(held.lifecycle().holdReason()).isEqualTo(HoldReason.INVENTORY);
+        assertThat(batchHolds(order)).as("nothing allocated; the batch still lacks the carton").isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM fulfillment.pick_line WHERE pick_id = ?", Integer.class,
+                task)).isEqualTo(2);
+        // Refused again: still held, once.
+        reallocate(task, removed).andExpect(status().isConflict());
+        assertThat(orders.findById(order.orderId()).orElseThrow().status()).isEqualTo(OrderStatus.ON_HOLD);
+
+        // The goods arrive (a production order's receipt, say): the reallocation now replaces it, and the hold resolves.
+        CustomerSkuRows.stock(jdbc, tx, sofaOf(DemoData.CUSTOMER_ID).sku(), 2);
+        assertThat(data(reallocate(task, removed).andExpect(status().isOk()))).hasSize(1);
+        assertThat(orders.findById(order.orderId()).orElseThrow().status())
+                .as("back where it was before the hold").isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
+
+        replacementShipped(order, task, damaged);
+    }
+
+    @Test
+    @DisplayName("BE-3 (08 §4.2 step 4): partial delivery not allowed - the removed carton is replaced before the check "
+            + "completes: the station waits while the replacement is picked, then the same session completes in full, "
+            + "the order PACKED")
+    void removedCartonIsReplacedBeforeTheCheckCompletes() throws Exception {
+        OrderSummary order = ftlOrder(2);
+        CustomerSkuRows.stock(jdbc, tx, sofaOf(DemoData.CUSTOMER_ID).sku(), 2);
+        UUID task = picked(order);
+        CartonStationSupport.startAndScanAll(this::packer, jdbc, task);
+        String damaged = CartonStationSupport.pickedLpns(jdbc, task).get(0);
+        UUID removed = lineOf(task, damaged);
+        CartonStationSupport.post(this::packer, BASE + "/tasks/" + task + "/cartons/" + damaged + "/removal",
+                "{\"note\":\"ướt\"}").andExpect(status().isOk());
+        assertThat(data(reallocate(task, removed).andExpect(status().isOk()))).hasSize(1);
+        CartonStationSupport.post(this::packer, BASE + "/tasks/" + task + "/carton-labels", null)
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("PACKING_NOT_READY"));
+        assertThat(orders.findById(order.orderId()).orElseThrow().status()).isEqualTo(OrderStatus.PICKING);
+
+        pickOpenLines(task);
+        for (String lpn : CartonStationSupport.pickedLpns(jdbc, task)) {
+            if (!lpn.equals(damaged)) {
+                CartonStationSupport.post(this::packer, BASE + "/tasks/" + task + "/carton-checks",
+                        "{\"lpn\":\"" + lpn + "\"}").andExpect(status().isOk());
+            }
+        }
+        CartonStationSupport.labelAll(this::packer, task);
+        UUID shipment = UUID.fromString(CartonStationSupport.completeOnly(this::packer, json, task, "{}")
+                .path("shipmentId").asText());
+        assertThat(jdbc.queryForObject("SELECT package_count FROM fulfillment.shipment WHERE id = ?", Integer.class,
+                shipment)).isEqualTo(2);
+        assertThat(orders.findById(order.orderId()).orElseThrow().status()).isEqualTo(OrderStatus.PACKED);
+        assertThat(jdbc.queryForObject("SELECT status FROM fulfillment.pack WHERE pick_id = ?", String.class, task))
+                .isEqualTo("COMPLETED");
+    }
+
     @Test
     @DisplayName("WF4-CLOSE-REST (17 §4.8 step 33, owner decision 2026-11-13): completed in part, the checked part waiting "
             + "at dispatch - Sales closes the rest: 200, only the carton neither handed over nor labelled is closed and "

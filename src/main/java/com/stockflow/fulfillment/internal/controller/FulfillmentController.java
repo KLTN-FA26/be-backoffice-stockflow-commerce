@@ -49,11 +49,14 @@ class FulfillmentController {
     private final FulfillmentService fulfillment;
     private final PickLists pickLists;
     private final FulfillmentWebMapper mapper;
+    private final com.stockflow.fulfillment.internal.service.ShortageReallocation shortages;
 
-    FulfillmentController(FulfillmentService fulfillment, PickLists pickLists, FulfillmentWebMapper mapper) {
+    FulfillmentController(FulfillmentService fulfillment, PickLists pickLists, FulfillmentWebMapper mapper,
+                          com.stockflow.fulfillment.internal.service.ShortageReallocation shortages) {
         this.fulfillment = fulfillment;
         this.pickLists = pickLists;
         this.mapper = mapper;
+        this.shortages = shortages;
     }
 
     @PostMapping("/tasks")
@@ -249,13 +252,18 @@ class FulfillmentController {
      * bins of the warehouse, FIFO, never the short one; the answer is the new lines to pick. The order resumes
      * once no line is SHORT. Too little stock is 409 {@code INSUFFICIENT_STOCK} and nothing changes. A decision of
      * whoever assigns the work (the warehouse manager), not of the picker.
+     *
+     * <p>The same for a line whose carton the check station removed as damaged (08 §4.2 step 4, handled as a short
+     * pick): a replacement carton is allocated and joins the task as a top-up (07 §4.3 step 7), to be picked, checked
+     * in the same session and handed over. Too little stock is 409 {@code INSUFFICIENT_STOCK}, and the order is then
+     * held {@code INVENTORY} for Sales to decide (07 §4.4 step 11).</p>
      */
     @PostMapping("/tasks/{taskId}/pick-lines/{lineId}/reallocation")
     @RequiresPermission(resource = FulfillmentResources.TASK_ASSIGNMENT, action = Action.UPDATE)
     @Auditable(action = AuditAction.TRANSITION, resourceType = "fulfillment-task", resourceId = "#taskId")
     public ApiResponse<List<PickLineResponse>> reallocateShort(@PathVariable UUID taskId, @PathVariable UUID lineId,
             @AuthenticatedUser CurrentUser actor) {
-        return ApiResponse.ok(pickLists.reallocateShort(taskId, lineId, actor).stream().map(mapper::toResponse)
+        return ApiResponse.ok(shortages.reallocate(taskId, lineId, actor).stream().map(mapper::toResponse)
                 .toList());
     }
 

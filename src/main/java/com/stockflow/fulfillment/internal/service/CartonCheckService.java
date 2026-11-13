@@ -105,14 +105,21 @@ class CartonCheckService implements CartonChecks {
     private final PlanVehicles planVehicles;
     /** The units labelled and not handed over, which the closure of an order's rest keeps (WF4-CLOSE-REST). */
     private final LabelledCartons labelledCartons;
+    /** A removed carton's line, for its hold; the hold then leaves its delivery batch (08 §4.2 step 4). */
+    private final com.stockflow.fulfillment.internal.repository.PickLineJpaRepository pickLines;
+    private final com.stockflow.order.api.OrderReservations orderReservations;
 
     @SuppressWarnings("java:S107")
     CartonCheckService(PickJpaRepository picks, PackJpaRepository packs, PackageJpaRepository packages,
                        ShipmentJpaRepository shipments, CartonCheckStore store, OrderService orders,
                        CartonMeasures measures, PaymentService payments, IdentityService identities,
                        WarehouseService warehouses, ShipmentTimeline timeline, Clock clock,
-                       LoadPlanReleases loadPlans, PlanVehicles planVehicles, LabelledCartons labelledCartons) {
+                       LoadPlanReleases loadPlans, PlanVehicles planVehicles, LabelledCartons labelledCartons,
+                       com.stockflow.fulfillment.internal.repository.PickLineJpaRepository pickLines,
+                       com.stockflow.order.api.OrderReservations orderReservations) {
         this.labelledCartons = labelledCartons;
+        this.pickLines = pickLines;
+        this.orderReservations = orderReservations;
         this.loadPlans = loadPlans;
         this.planVehicles = planVehicles;
         this.picks = picks;
@@ -274,6 +281,10 @@ class CartonCheckService implements CartonChecks {
         check.requireWorkable(actor.userId(), isManager(actor));
         CartonCheck.Carton removed = check.remove(lpn, note, actor.userId(), clock.instant());
         store.save(check, ctx.pack());
+        // 08 §4.2 step 4: the line lacks this carton now, handled as a shortage (07 §4.4) - its delivery batch no longer
+        // counts the hold (17 §5.5), and the warehouse manager replaces it by reallocating the line. Idempotent.
+        pickLines.findById(removed.pickLineId()).map(line -> line.getReservationId()).ifPresent(hold ->
+                orderReservations.cartonRemoved(ctx.order().orderId(), hold));
         log.info("Order {}: carton {} removed as damaged; it waits in the put-back queue for quarantine",
                 ctx.pick().getOrderNumber(), removed.lpn());
         return view(ctx, check);

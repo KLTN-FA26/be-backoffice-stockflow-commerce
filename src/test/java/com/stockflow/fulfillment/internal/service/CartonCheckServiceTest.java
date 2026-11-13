@@ -81,9 +81,13 @@ class CartonCheckServiceTest {
             mock(PackageJpaRepository.class), planMembers,
             mock(com.stockflow.fulfillment.internal.repository.DispatchLoadPackageJpaRepository.class), 6000);
     private final LabelledCartons labelledCartons = mock(LabelledCartons.class);
+    private final com.stockflow.fulfillment.internal.repository.PickLineJpaRepository pickLines =
+            mock(com.stockflow.fulfillment.internal.repository.PickLineJpaRepository.class);
+    private final com.stockflow.order.api.OrderReservations orderReservations =
+            mock(com.stockflow.order.api.OrderReservations.class);
     private final CartonCheckService service = new CartonCheckService(picks, packs, mock(PackageJpaRepository.class),
             shipments, store, orders, measures, payments, identities, mock(WarehouseService.class), timeline,
-            Clock.fixed(NOW, ZoneOffset.UTC), loadPlans, planVehicles, labelledCartons);
+            Clock.fixed(NOW, ZoneOffset.UTC), loadPlans, planVehicles, labelledCartons, pickLines, orderReservations);
 
     private final UUID worker = UUID.randomUUID();
     private final UUID otherWorker = UUID.randomUUID();
@@ -94,6 +98,8 @@ class CartonCheckServiceTest {
 
     private final UUID orderId = UUID.randomUUID();
     private final UUID lineId = UUID.randomUUID();
+    /** The pick line that took LPN-2. */
+    private final UUID secondPickLine = UUID.randomUUID();
     private PickJpaEntity pick;
     private PackJpaEntity pack;
     private CartonCheck check;
@@ -117,7 +123,7 @@ class CartonCheckServiceTest {
         when(store.load(any(), any(), any())).thenReturn(check);
         when(store.pickedCartons(pick.getId())).thenReturn(List.of(
                 new CartonCheck.PickedCarton(UUID.randomUUID(), "LPN-1", lineId, "SKU-A", null, 10),
-                new CartonCheck.PickedCarton(UUID.randomUUID(), "LPN-2", lineId, "SKU-A", null, 10)));
+                new CartonCheck.PickedCarton(secondPickLine, "LPN-2", lineId, "SKU-A", null, 10)));
         orderIs(order(OrderStatus.PICKING, BigDecimal.ZERO));
         when(itemControls.cartonSpec(new Sku("SKU-A"))).thenReturn(Optional.of(new CartonSpec("SKU-A", "CARTON", 10,
                 new BigDecimal("60"), new BigDecimal("40"), new BigDecimal("40"), new BigDecimal("12"), true)));
@@ -348,6 +354,26 @@ class CartonCheckServiceTest {
             verify(orders, never()).markPacked(any(), any());
             verify(orders, never()).recordPacked(any());
             assertThat(check.status()).isEqualTo(PackStatus.IN_PROGRESS);
+        }
+    }
+
+    @Nested
+    @DisplayName("removing a damaged carton (08 §4.2 step 4: handled as a shortage)")
+    class Removing {
+
+        @Test
+        @DisplayName("the carton is REMOVED and its hold no longer stands for the order's delivery batch")
+        void theBatchLacksIt() {
+            UUID hold = UUID.randomUUID();
+            var line = new com.stockflow.fulfillment.internal.entity.PickLineJpaEntity(secondPickLine, pick.getId(),
+                    lineId, hold, "SKU-A", "HCM-A-01", null, 2, 10, "LPN-2", true);
+            when(pickLines.findById(secondPickLine)).thenReturn(Optional.of(line));
+            started();
+
+            service.remove(pick.getId(), "LPN-2", "wet", actor);
+
+            assertThat(check.carton("LPN-2").orElseThrow().status()).isEqualTo(PackageStatus.REMOVED);
+            verify(orderReservations).cartonRemoved(orderId, hold);
         }
     }
 

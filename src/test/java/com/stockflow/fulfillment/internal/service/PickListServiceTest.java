@@ -559,6 +559,153 @@ class PickListServiceTest {
     }
 
     @Nested
+    @DisplayName("replacing a carton removed at the check station (08 §4.2 step 4, 07 §4.4 step 10)")
+    class ReplacingARemovedCarton {
+
+        private final UUID orderLine = UUID.randomUUID();
+        private final UUID removedHold = UUID.randomUUID();
+        private final UUID keptHold = UUID.randomUUID();
+        private final UUID newHold = UUID.randomUUID();
+        private PickLineJpaEntity removed;
+        private com.stockflow.fulfillment.internal.entity.PackJpaEntity pack;
+
+        /** Two cartons of 5 picked for a line of 10; the station removed the first as damaged; its check goes on. */
+        @BeforeEach
+        void aCartonRemovedAtTheStation() {
+            removed = pickedLine(removedHold, "LPN-DAMAGED");
+            pickedLine(keptHold, "LPN-GOOD");
+            task.complete(picker, NOW);
+            pack = new com.stockflow.fulfillment.internal.entity.PackJpaEntity(UUID.randomUUID(), task.getId(),
+                    com.stockflow.fulfillment.internal.domain.PackStatus.IN_PROGRESS, null);
+            when(packs.findByPickId(task.getId())).thenAnswer(call -> Optional.of(pack));
+            var carton = com.stockflow.fulfillment.internal.entity.PackageJpaEntity.carton(UUID.randomUUID(),
+                    pack.getId(), 1, "SO-0001-C1", removed.getId(), "LPN-DAMAGED");
+            carton.applyCarton(com.stockflow.fulfillment.internal.domain.PackageStatus.REMOVED, NOW, picker, null,
+                    null, 0, null, null, null, null, null, true, null, NOW, picker,
+                    com.stockflow.fulfillment.internal.domain.CartonCheck.RemovalReason.DAMAGED, "wet");
+            when(packages.findByPickLineIdIn(any())).thenReturn(List.of(carton));
+            orderIs(OrderStatus.PARTIALLY_FULFILLED, null);
+        }
+
+        private PickLineJpaEntity pickedLine(UUID hold, String lpn) {
+            PickLineJpaEntity row = new PickLineJpaEntity(UUID.randomUUID(), task.getId(), orderLine, hold, "SKU-A",
+                    "HCM-A-01", "LOT-1", stored.size() + 1, 5, lpn, true);
+            row.apply(5, PickLineStatus.PICKED, picker, NOW, NOW, "HCM-A-01", lpn, 0, null, null, null);
+            stored.add(row);
+            return row;
+        }
+
+        /** The order line holds both picked cartons' holds and, once replaced, the replacement's. */
+        private void orderIs(OrderStatus status, HoldReason hold) {
+            when(orders.findById(task.getOrderId())).thenReturn(Optional.of(FulfillmentFixtures.orderWith(
+                    task.getOrderId(), status, List.of(new OrderSummary.LineSummary(orderLine, "SKU-A", 10,
+                            com.stockflow.common.domain.Money.vnd(10_000), com.stockflow.common.domain.Money.vnd(100_000),
+                            List.of(removedHold, keptHold, newHold))), hold)));
+        }
+
+        private void inventoryReplacesIt() {
+            when(inventory.reallocateRemoved(any())).thenReturn(List.of(new StockReservation(newHold,
+                    UUID.randomUUID(), "HCM-B-01", "LOT-2", 5)));
+            when(inventory.holds(any())).thenReturn(List.of(
+                    new HoldView(removedHold, "SKU-A", "HCM-A-01", "LOT-1", 5, HoldView.Status.CONSUMED, null,
+                            "LPN-DAMAGED", true),
+                    new HoldView(keptHold, "SKU-A", "HCM-A-01", "LOT-1", 5, HoldView.Status.CONSUMED, null,
+                            "LPN-GOOD", true),
+                    new HoldView(newHold, "SKU-A", "HCM-B-01", "LOT-2", 5, HoldView.Status.HELD, null, "LPN-NEW",
+                            true)));
+            when(warehouses.findLocation(org.mockito.ArgumentMatchers.anyString())).thenReturn(Optional.of(new StorageLocationView(UUID.randomUUID(),
+                    StorageLocationView.Kind.BIN, WAREHOUSE, "HCM-B-01", null, null, true)));
+        }
+
+        @Test
+        @DisplayName("a replacement is allocated for the removed carton's hold, held for the line, and joins the task as "
+                + "a top-up: the PICKED task picks again; the removed line stays as it is")
+        void replaced() {
+            inventoryReplacesIt();
+
+            var added = service.reallocateShort(task.getId(), removed.getId(), actor);
+
+            assertThat(added).singleElement().satisfies(v -> {
+                assertThat(v.lpn()).isEqualTo("LPN-NEW");
+                assertThat(v.status()).isEqualTo("OPEN");
+                assertThat(v.orderLineId()).isEqualTo(orderLine);
+                assertThat(v.sequenceNo()).isEqualTo(3);
+            });
+            ArgumentCaptor<com.stockflow.inventory.api.ReallocateStockCommand> command =
+                    ArgumentCaptor.forClass(com.stockflow.inventory.api.ReallocateStockCommand.class);
+            verify(inventory).reallocateRemoved(command.capture());
+            assertThat(command.getValue().reservationId()).isEqualTo(removedHold);
+            verify(inventory, never()).reallocate(any());
+            verify(orderReservations).holdReplacement(task.getOrderId(), orderLine, null, List.of(newHold));
+            assertThat(task.getStatus()).isEqualTo(PickStatus.PICKING);
+            assertThat(removed.getStatus()).isEqualTo(PickLineStatus.PICKED);
+        }
+
+        @Test
+        @DisplayName("a line that lacks nothing more - replaced already - is PICK_LINE_NOT_OPEN, nothing allocated")
+        void replacedAlready() {
+            PickLineJpaEntity replacement = new PickLineJpaEntity(UUID.randomUUID(), task.getId(), orderLine, newHold,
+                    "SKU-A", "HCM-B-01", "LOT-2", 3, 5, "LPN-NEW", true);
+            stored.add(replacement);
+
+            assertThat(refusal(() -> service.reallocateShort(task.getId(), removed.getId(), actor)).errorCode())
+                    .isEqualTo(ErrorCode.PICK_LINE_NOT_OPEN);
+            verify(inventory, never()).reallocateRemoved(any());
+        }
+
+        @Test
+        @DisplayName("once the task's check is complete nothing joins it: PICK_TASK_STATE_CONFLICT")
+        void checkComplete() {
+            pack = new com.stockflow.fulfillment.internal.entity.PackJpaEntity(pack.getId(), task.getId(),
+                    com.stockflow.fulfillment.internal.domain.PackStatus.COMPLETED, NOW);
+
+            assertThat(refusal(() -> service.reallocateShort(task.getId(), removed.getId(), actor)).errorCode())
+                    .isEqualTo(ErrorCode.PICK_TASK_STATE_CONFLICT);
+            verify(inventory, never()).reallocateRemoved(any());
+        }
+
+        @Test
+        @DisplayName("an order held INVENTORY resumes once the removed carton is replaced and no line is SHORT")
+        void resumes() {
+            inventoryReplacesIt();
+            orderIs(OrderStatus.ON_HOLD, HoldReason.INVENTORY);
+            // The replacement's line, as the store reads it once written.
+            when(pickLines.saveAll(any())).thenAnswer(call -> {
+                Iterable<PickLineJpaEntity> rows = call.getArgument(0);
+                rows.forEach(stored::add);
+                return call.getArgument(0);
+            });
+
+            service.reallocateShort(task.getId(), removed.getId(), actor);
+
+            verify(orders).resolveHold(eq(task.getOrderId()), any(), eq(picker));
+            verify(orders, never()).startPicking(any(), any());
+        }
+
+        @Test
+        @DisplayName("no stock to replace it (07 §4.4 step 11): the order is held INVENTORY; held already, it is left")
+        void holdsWithoutStock() {
+            service.holdForUnreplacedCarton(task.getId(), removed.getId(), actor);
+
+            verify(orders).putOnHold(eq(task.getOrderId()), eq(HoldReason.INVENTORY), any(), eq(picker));
+
+            orderIs(OrderStatus.ON_HOLD, HoldReason.INVENTORY);
+            service.holdForUnreplacedCarton(task.getId(), removed.getId(), actor);
+            verify(orders, org.mockito.Mockito.times(1)).putOnHold(any(), any(), any(), any());
+        }
+
+        @Test
+        @DisplayName("a line whose carton was not removed does not hold the order")
+        void onlyARemovedCarton() {
+            UUID kept = stored.get(1).getId();
+
+            service.holdForUnreplacedCarton(task.getId(), kept, actor);
+
+            verify(orders, never()).putOnHold(any(), any(), any(), any());
+        }
+    }
+
+    @Nested
     @DisplayName("reallocating a short line (X-SHORT, step 03)")
     class Reallocating {
 

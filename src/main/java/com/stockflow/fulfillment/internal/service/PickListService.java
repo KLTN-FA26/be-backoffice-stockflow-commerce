@@ -405,10 +405,15 @@ class PickListService implements PickLists {
         PickList list = toList(pick, stored);
         PickLine shortLine = list.line(lineId).orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND,
                 "Task %s has no pick line %s".formatted(taskId, lineId)));
+        if (shortLine.status() != PickLineStatus.SHORT && removedDamaged(List.of(lineId)).contains(lineId)) {
+            // 08 §4.2 step 4: a carton removed at the check station is a shortage of its line, handled as a short pick.
+            return replaceRemoved(pick, shortLine, actor);
+        }
         // Every SHORT line has an allocation: one reported short names its carton.
         if (shortLine.status() != PickLineStatus.SHORT) {
             throw new BusinessException(ErrorCode.PICK_LINE_NOT_OPEN,
-                    "Only a SHORT line is reallocated; it is " + shortLine.status());
+                    "Only a SHORT line, or one whose carton was removed at the check station, is reallocated; it is "
+                            + shortLine.status());
         }
         // Pick, then order, then stock rows. A cancellation locks the order before the stock rows it releases; taking
         // the order only at the end (replaceHold) would wait on it while holding those rows.
@@ -442,12 +447,146 @@ class PickListService implements PickLists {
             pick.reopen();
             picks.save(pick);
         }
-        if (!list.hasShortLines()) {
+        if (!list.hasShortLines() && !lacksRemovedCartons(pick)) {
             resumeAfterInventory(pick.getOrderId(), actor.userId(), "Short pick reallocated: line %s".formatted(lineId));
         }
         log.info("Short line {} of task {} reallocated to {} new line(s)", lineId, taskId, added.size());
         Map<String, String> barcodes = barcodesOf(List.of(shortLine.sku()));
         return added.stream().map(line -> view(taskId, line, barcodes.get(line.sku()))).toList();
+    }
+
+    /**
+     * A carton removed at the check station as damaged (08 §4.2 step 4) is replaced as a short pick is reallocated (07
+     * §4.4 step 10): inventory allocates as many whole cartons from other pickable bins of the warehouse, FIFO, never the
+     * removed one ({@code InventoryService#reallocateRemoved}); the order line holds them for the task's delivery batch,
+     * and they become lines of the same task through the top-up ({@link #planLines}, 07 §4.3 step 7) - a PICKED task
+     * goes back to PICKING, and the check session takes the replacement when it is picked. The removed line stays as it
+     * is: its carton goes to quarantine through the put-back queue. An order held {@code INVENTORY} resumes once no line
+     * is SHORT and no removed carton lacks a replacement. Locks: the pick, the order, then the stock rows.
+     */
+    private List<PickLineView> replaceRemoved(PickJpaEntity pick, PickLine removed, CurrentUser actor) {
+        requireOpenForMore(pick);
+        orders.lockedStatus(pick.getOrderId());
+        OrderSummary order = orders.findById(pick.getOrderId()).orElseThrow();
+        List<PickLineJpaEntity> stored = pickLines.findByPickIdOrderBySequenceNoAscIdAsc(pick.getId());
+        PickList list = toList(pick, stored);
+        UUID requestId = UUID.nameUUIDFromBytes(("replace-removed:" + removed.id())
+                .getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        Set<UUID> planned = list.lines().stream().map(PickLine::reservationId).filter(java.util.Objects::nonNull)
+                .collect(Collectors.toSet());
+        int lacking = lacking(pick, order, list).getOrDefault(removed.orderLineId(), 0);
+        if (lacking < removed.allocatedQty()) {
+            throw new BusinessException(ErrorCode.PICK_LINE_NOT_OPEN, ("Carton %s was replaced already: line %s of "
+                    + "order %s lacks nothing more").formatted(removed.lpn(), removed.sku(), pick.getOrderNumber()));
+        }
+        List<UUID> allocated = inventory.reallocateRemoved(new ReallocateStockCommand(pick.getOrderId(),
+                requireHold(removed, "replaced"), requestId)).stream().map(StockReservation::reservationId).toList();
+        if (planned.containsAll(allocated)) {
+            // The same request again: its replacement has its lines already.
+            Map<String, String> barcodes = barcodesOf(List.of(removed.sku()));
+            return list.lines().stream().filter(line -> allocated.contains(line.reservationId()))
+                    .map(line -> view(pick.getId(), line, barcodes.get(line.sku()))).toList();
+        }
+        orderReservations.holdReplacement(pick.getOrderId(), removed.orderLineId(), pick.getDeliveryBatchId(),
+                allocated);
+        List<PickLine> added = planLines(pick, orders.findById(pick.getOrderId()).orElseThrow());
+        if (!list.hasShortLines() && !lacksRemovedCartons(pick)) {
+            resumeAfterInventory(pick.getOrderId(), actor.userId(), "Removed carton %s replaced".formatted(removed.lpn()));
+        }
+        if (!added.isEmpty() && orders.findById(pick.getOrderId()).orElseThrow().status()
+                != com.stockflow.order.api.OrderStatus.ON_HOLD) {
+            // 07 §4.3 step 7, as a top-up: the order is picking again with its task (an order already picking, packed
+            // or partly shipped is left as it is).
+            orders.startPicking(pick.getOrderId(), actor.userId());
+        }
+        log.info("Removed carton {} of task {} replaced: {} new line(s)", removed.lpn(), pick.getId(), added.size());
+        Map<String, String> barcodes = barcodesOf(added.stream().map(PickLine::sku).toList());
+        return added.stream().map(line -> view(pick.getId(), line, barcodes.get(line.sku()))).toList();
+    }
+
+    @Override
+    public void holdForUnreplacedCarton(UUID taskId, UUID lineId, CurrentUser actor) {
+        PickJpaEntity pick = lockPick(taskId);
+        WarehouseScope.requireWarehouse(pick.getWarehouseId());
+        OrderSummary order = TaskAccess.orderInFulfilment(orders, pick);
+        if (!removedDamaged(List.of(lineId)).contains(lineId)) {
+            return;
+        }
+        PickList list = toList(pick, pickLines.findByPickIdOrderBySequenceNoAscIdAsc(pick.getId()));
+        PickLine removed = list.line(lineId).orElseThrow();
+        if (lacking(pick, order, list).getOrDefault(removed.orderLineId(), 0) < removed.allocatedQty()) {
+            return;
+        }
+        // 07 §4.4 step 11: the shortage cannot be reallocated - the order stops (INVENTORY), and the warehouse manager
+        // tells Sales, who decides (17: wait for production, agree fewer cartons, deliver in part and close the rest,
+        // or cancel).
+        holdForInventory(pick.getOrderId(), actor.userId(), ("Carton %s (%d x %s) removed at the check station: no "
+                + "whole carton in the warehouse to replace it").formatted(removed.lpn(), removed.allocatedQty(),
+                removed.sku()));
+        log.info("Order {} held INVENTORY: removed carton {} has no replacement in stock", pick.getOrderNumber(),
+                removed.lpn());
+    }
+
+    /**
+     * Per order line, the units the task still lacks: what it wants of the line (the station's count, 08 §4.4 step 8.3:
+     * its delivery batch's units, or the line's quantity less what was closed) less the cartons its lines take - open,
+     * staged, picked or short (a short line is its reallocation's business) - but neither a superseded line nor one
+     * whose carton the check station removed.
+     */
+    private Map<UUID, Integer> lacking(PickJpaEntity pick, OrderSummary order, PickList list) {
+        Set<UUID> removed = removedDamaged(list.lines().stream().map(PickLine::id).toList());
+        Map<UUID, Integer> wanted = new HashMap<>();
+        Map<UUID, Integer> batch = pick.getDeliveryBatchId() == null ? null
+                : orders.batchUnits(order.orderId(), pick.getDeliveryBatchId());
+        Map<UUID, Integer> closed = new HashMap<>();
+        if (order.lifecycle() != null) {
+            order.lifecycle().lines().forEach(p -> closed.put(p.lineId(), p.cancelledQuantity()));
+        }
+        order.lines().forEach(line -> wanted.put(line.lineId(), batch != null ? batch.getOrDefault(line.lineId(), 0)
+                : Math.max(0, line.quantity() - closed.getOrDefault(line.lineId(), 0))));
+        for (PickLine line : list.lines()) {
+            boolean takes = switch (line.status()) {
+                case OPEN, STAGED, SHORT -> true;
+                case PICKED -> !removed.contains(line.id());
+                case CANCELLED, PUT_BACK -> false;
+            };
+            if (takes) {
+                wanted.computeIfPresent(line.orderLineId(), (id, units) -> units - line.allocatedQty());
+            }
+        }
+        Map<UUID, Integer> lacking = new HashMap<>();
+        wanted.forEach((line, units) -> lacking.put(line, Math.max(0, units)));
+        return lacking;
+    }
+
+    /** Whether a line of the order whose carton the check station removed still lacks a replacement in the task. */
+    private boolean lacksRemovedCartons(PickJpaEntity pick) {
+        PickList list = toList(pick, pickLines.findByPickIdOrderBySequenceNoAscIdAsc(pick.getId()));
+        Set<UUID> removed = removedDamaged(list.lines().stream().map(PickLine::id).toList());
+        if (removed.isEmpty()) {
+            return false;
+        }
+        Map<UUID, Integer> lacking = lacking(pick, orders.findById(pick.getOrderId()).orElseThrow(), list);
+        return list.lines().stream().filter(line -> removed.contains(line.id()))
+                .anyMatch(line -> lacking.getOrDefault(line.orderLineId(), 0) > 0);
+    }
+
+    /**
+     * Lines join the task only while its check is not complete (review L1 of the top-up): once it is, its cartons left
+     * with a shipment, and the rest of the order is a new delivery round.
+     */
+    private void requireOpenForMore(PickJpaEntity pick) {
+        if (pick.getStatus() == PickStatus.CANCELLED) {
+            throw new BusinessException(ErrorCode.PICK_TASK_STATE_CONFLICT, "The task was cancelled with its order");
+        }
+        packs.findByPickId(pick.getId())
+                .filter(pack -> pack.getStatus() != com.stockflow.fulfillment.internal.domain.PackStatus.PENDING
+                        && pack.getStatus() != com.stockflow.fulfillment.internal.domain.PackStatus.IN_PROGRESS)
+                .ifPresent(pack -> {
+                    throw new BusinessException(ErrorCode.PICK_TASK_STATE_CONFLICT, ("Packing of task %s is %s; its "
+                            + "cartons left with a shipment, so nothing is added to it").formatted(pick.getId(),
+                            pack.getStatus()));
+                });
     }
 
     /**
@@ -460,21 +599,11 @@ class PickListService implements PickLists {
     public List<PickLineView> topUp(UUID taskId, CurrentUser actor) {
         PickJpaEntity pick = lockPick(taskId);
         WarehouseScope.requireWarehouse(pick.getWarehouseId());
-        if (pick.getStatus() == PickStatus.CANCELLED) {
-            throw new BusinessException(ErrorCode.PICK_TASK_STATE_CONFLICT, "The task was cancelled with its order");
-        }
         // Review L1: a task whose packing is complete has handed its cartons on (a shipment); reopening its picking
         // would leave the pack finished under a task picking again. The rest of such an order is a new delivery round,
         // which docs 07 §4.1 step 2 gives a task of its own (4C-6 / the delivery schedule) - and an order has one task
         // here (fulfillment.pick.order_id is unique), so it is refused rather than opened as a second task.
-        packs.findByPickId(pick.getId())
-                .filter(pack -> pack.getStatus() != com.stockflow.fulfillment.internal.domain.PackStatus.PENDING
-                        && pack.getStatus() != com.stockflow.fulfillment.internal.domain.PackStatus.IN_PROGRESS)
-                .ifPresent(pack -> {
-                    throw new BusinessException(ErrorCode.PICK_TASK_STATE_CONFLICT, ("Packing of task %s is %s; its "
-                            + "cartons left with a shipment, so nothing is added to it").formatted(taskId,
-                            pack.getStatus()));
-                });
+        requireOpenForMore(pick);
         OrderSummary order = TaskAccess.orderInFulfilment(orders, pick);
         List<PickLine> added = planLines(pick, order);
         if (!added.isEmpty() && order.status() != com.stockflow.order.api.OrderStatus.ON_HOLD) {

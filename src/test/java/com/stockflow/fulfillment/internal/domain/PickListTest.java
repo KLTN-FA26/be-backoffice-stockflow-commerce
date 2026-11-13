@@ -328,6 +328,20 @@ class PickListTest {
         void noLines() {
             picking().requireAllPicked();
         }
+
+        @Test
+        @DisplayName("a line put back - its carton removed as damaged at the check station and gone to quarantine - is "
+                + "done: the task picking its replacement completes (08 §4.2 step 4, 07 §4.3 step 7)")
+        void aRemovedCartonPutBack() {
+            PickLine removed = open("SOFA-3S-GREY", "HCM-A01-2-B", 1, LPN);
+            var list = picking(removed);
+            list.confirm(removed.id(), "HCM-A01-2-B", LPN, PICKER, NOW);
+            list.putBack(removed.id(), LPN, new PickList.PutBackTarget("HCM-QC01", HCM, false, true, true), true,
+                    PICKER, NOW);
+            assertThat(removed.status()).isEqualTo(PickLineStatus.PUT_BACK);
+
+            list.requireAllPicked();
+        }
     }
 
     @Nested
