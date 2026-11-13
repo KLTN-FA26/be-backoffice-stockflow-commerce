@@ -148,14 +148,14 @@ class SalesContractService implements SalesContracts {
     @Override
     @Transactional(readOnly = true)
     public ContractView get(UUID orderId) {
-        Order order = readOrder(orderId);
+        Order order = readInScope(orderId);
         return view(live(order), order, null);
     }
 
     @Override
     @Transactional(readOnly = true)
     public List<ContractView> history(UUID orderId) {
-        Order order = readOrder(orderId);
+        Order order = readInScope(orderId);
         return contracts.findByOrderId(orderId).stream().map(contract -> view(contract, order, null)).toList();
     }
 
@@ -164,7 +164,10 @@ class SalesContractService implements SalesContracts {
             details = "{orderId: #orderId}")
     public ContractView edit(CurrentUser user, UUID orderId, long version, Draft draft) {
         Order order = lockInScope(orderId);
-        SalesContract contract = live(order, version);
+        SalesContract contract = live(order);
+        // The state first (BR-14): a sent contract is not edited, whatever the schedule or plan sent with the edit.
+        contract.requireRevisable(order);
+        requireVersion(contract, version);
         Draft given = draft == null ? new Draft(null, null, null) : draft;
         List<DeliveryBatch> schedule = given.deliverySchedule() == null ? contract.schedule()
                 : ContractTerms.schedule(order, batches(given.deliverySchedule()));
@@ -223,8 +226,23 @@ class SalesContractService implements SalesContracts {
 
     @Override
     @Transactional(readOnly = true)
+    public PlanSuggestion suggestPaymentPlan(UUID orderId) {
+        Order order = readInScope(orderId);
+        SalesContract contract = live(order);
+        contract.requireRevisable(order);
+        CreditTerms credit = customers.creditTerms(order.customerId());
+        List<PlannedInstallment> plan = ContractTerms.plan(order, contract.schedule().size(),
+                ContractTerms.suggestTied(order, contract.schedule(), contract.plan().stream()
+                        .map(SalesContractService::entry).toList()),
+                creditApproved(credit), credit == null ? null : credit.creditTermDays());
+        return new PlanSuggestion(contract.id(), contract.version(), order.total().amount(),
+                plan.stream().map(SalesContractService::installmentView).toList());
+    }
+
+    @Override
+    @Transactional(readOnly = true)
     public UploadSlot beginSignedFileUpload(CurrentUser user, UUID orderId, UploadSlotRequest request) {
-        live(readOrder(orderId)).requireSignable();
+        live(readInScope(orderId)).requireSignable();
         return staged.begin(FileCategory.DOCUMENT, user.userId(), request);
     }
 
@@ -301,14 +319,14 @@ class SalesContractService implements SalesContracts {
     @Override
     @Transactional(readOnly = true)
     public byte[] preview(UUID orderId) {
-        Order order = readOrder(orderId);
+        Order order = readInScope(orderId);
         return document.render(facts(live(order), order));
     }
 
     @Override
     @Transactional(readOnly = true)
     public DownloadLink sentDocument(UUID orderId) {
-        SalesContract contract = live(readOrder(orderId));
+        SalesContract contract = live(readInScope(orderId));
         if (contract.sentDocumentKey() == null) {
             throw new BusinessException(ErrorCode.SALES_CONTRACT_STATUS_INVALID, "Contract %s was not sent yet"
                     .formatted(contract.contractNumber()));
@@ -319,7 +337,7 @@ class SalesContractService implements SalesContracts {
     @Override
     @Transactional(readOnly = true)
     public DownloadLink signedFile(UUID orderId) {
-        SalesContract contract = live(readOrder(orderId));
+        SalesContract contract = live(readInScope(orderId));
         if (contract.signedFileKey() == null) {
             throw new BusinessException(ErrorCode.SALES_CONTRACT_STATUS_INVALID, "Contract %s is not signed"
                     .formatted(contract.contractNumber()));
@@ -351,11 +369,21 @@ class SalesContractService implements SalesContracts {
     // ---- loading ---------------------------------------------------------------------------------------------------
 
     /**
-     * The order, read unscoped as the back office reads an order ({@code GET /orders/{id}}) - for reading only: every
-     * change goes through {@link #lockInScope}.
+     * The order, read unscoped - only inside the signing path, whose change goes through {@link #lockInScope} right
+     * after: the replay lookup of an upload already made, and the check before the signed file is stored.
      */
     private Order readOrder(UUID orderId) {
         return orders.findById(new OrderId(orderId))
+                .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No order " + orderId));
+    }
+
+    /**
+     * The order as the caller's data scope sees it, for a read (out of scope reads as absent, 404): a contract carries
+     * the customer's legal details and prices, so it is read under the same scope it is changed under - not unscoped as
+     * the order's own summary is.
+     */
+    private Order readInScope(UUID orderId) {
+        return orders.findByIdInScopeForReading(new OrderId(orderId))
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No order " + orderId));
     }
 
@@ -381,11 +409,15 @@ class SalesContractService implements SalesContracts {
 
     private SalesContract live(Order order, long version) {
         SalesContract contract = live(order);
+        requireVersion(contract, version);
+        return contract;
+    }
+
+    private static void requireVersion(SalesContract contract, long version) {
         if (contract.version() != version) {
             throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK, "Contract %s changed since it was read"
                     .formatted(contract.contractNumber()));
         }
-        return contract;
     }
 
     /** A sent contract, for the customer: a draft is Sales' work in progress and reads as absent. */
@@ -573,8 +605,7 @@ class SalesContractService implements SalesContracts {
                             line.cartons(), orderLine == null || orderLine.unitsPerCarton() == null ? 0
                             : line.cartons() * orderLine.unitsPerCarton());
                 }).toList())).toList();
-        List<InstallmentView> plan = contract.plan().stream().map(i -> new InstallmentView(i.seq(), i.name(),
-                i.milestone().name(), i.percent(), i.amount().amount(), i.dueDays(), i.deliveryBatchSeq())).toList();
+        List<InstallmentView> plan = contract.plan().stream().map(SalesContractService::installmentView).toList();
         return new ContractView(contract.id(), contract.contractNumber(), contract.orderId(),
                 order.orderNumber().value(), contract.status().name(), party(contract.seller()),
                 party(contract.buyer()), contract.freeSampleRounds(), new Totals(order.netTotal().amount(),
@@ -582,6 +613,11 @@ class SalesContractService implements SalesContracts {
                 schedule, plan, contract.sentAt(), contract.sentBy(), contract.signedOn(), contract.signedFileName(),
                 contract.signedAt(), contract.signedBy(), contract.cancelledAt(), contract.cancelledBy(),
                 contract.cancellationReason(), contract.completedAt(), contract.version(), warning);
+    }
+
+    private static InstallmentView installmentView(PlannedInstallment i) {
+        return new InstallmentView(i.seq(), i.name(), i.milestone().name(), i.percent(), i.amount().amount(),
+                i.dueDays(), i.deliveryBatchSeq());
     }
 
     private static Party party(ContractParty party) {

@@ -173,9 +173,12 @@ public final class ContractTerms {
 
     /**
      * The payment plan Sales entered, numbered 1..n in the order given (BR-13, 15 BR-18): at least one installment, each
-     * with a name, a milestone and an amount or a share of the order's total with tax; a share is rounded to the dong,
-     * and when every installment is a share adding up to 100 the last takes what the rounding left. The amounts add up
-     * to the total. Only BEFORE_DELIVERY / AFTER_DELIVERY name a delivery batch, one of the schedule's.
+     * with a name, a milestone and an amount or a share of the order's total with tax; a share is rounded to the dong.
+     * The amounts add up to the total; when they miss it only by what rounding the shares can leave - half a dong each,
+     * so at most {@code shares / 2} dong - the last installment takes the difference (14 §4.3 step 12, §6 "Tổng các đợt
+     * lệch tổng tiền đơn (do làm tròn %)"), whether the plan is all shares or mixes shares with amounts. A plan of
+     * amounts only is never adjusted: an amount is what Sales typed. Only BEFORE_DELIVERY / AFTER_DELIVERY name a
+     * delivery batch, one of the schedule's.
      *
      * @param batches        how many delivery batches the schedule has
      * @param creditApproved whether accounting approved credit for the customer: AFTER_DELIVERY needs it (15 BR-12)
@@ -191,8 +194,7 @@ public final class ContractTerms {
         }
         List<FieldError> errors = new ArrayList<>();
         List<Money> amounts = new ArrayList<>();
-        boolean allShares = true;
-        BigDecimal shares = BigDecimal.ZERO;
+        int shares = 0;
         boolean afterDelivery = false;
         for (int i = 0; i < entries.size(); i++) {
             InstallmentEntry entry = entries.get(i);
@@ -228,11 +230,9 @@ public final class ContractTerms {
             if ((entry.amount() == null) == (entry.percent() == null)) {
                 errors.add(new FieldError(field, "an amount or a share of the total, one of the two", "BR-13"));
                 amounts.add(null);
-                allShares = false;
                 continue;
             }
             if (entry.amount() != null) {
-                allShares = false;
                 if (entry.amount().signum() <= 0 || entry.amount().stripTrailingZeros().scale() > 0) {
                     errors.add(new FieldError(field + ".amount", "whole dong, more than 0", "BR-13"));
                     amounts.add(null);
@@ -245,7 +245,7 @@ public final class ContractTerms {
                         "BR-13"));
                 amounts.add(null);
             } else {
-                shares = shares.add(entry.percent());
+                shares++;
                 amounts.add(new Money(total.amount().multiply(entry.percent())
                         .divide(HUNDRED, 0, RoundingMode.HALF_UP), total.currency()));
             }
@@ -255,14 +255,19 @@ public final class ContractTerms {
                     + "delivery is credit, and accounting has approved none for this customer").formatted(
                     order.orderNumber()));
         }
-        if (errors.isEmpty() && allShares && shares.compareTo(HUNDRED) == 0) {
-            // 14 §4.3 step 12: shares rounded to the dong, what is left on the last.
-            Money others = amounts.subList(0, amounts.size() - 1).stream().reduce(Money.zero(total.currency()),
-                    Money::plus);
-            amounts.set(amounts.size() - 1, total.minus(others));
-            if (amounts.getLast().amount().signum() <= 0) {
-                errors.add(new FieldError("paymentPlan[" + (amounts.size() - 1) + "].percent",
-                        "leaves nothing for the last installment", "BR-13"));
+        if (errors.isEmpty() && shares > 0) {
+            // 14 §4.3 step 12: shares rounded to the dong, what the rounding left on the last. Each share is off by at
+            // most half a dong, so a plan meant to add up misses by no more than shares / 2; one further off is wrong,
+            // and refused below with what it adds up to.
+            Money planned = amounts.stream().reduce(Money.zero(total.currency()), Money::plus);
+            BigDecimal off = total.amount().subtract(planned.amount());
+            if (off.signum() != 0 && off.abs().compareTo(BigDecimal.valueOf(shares / 2)) <= 0) {
+                int last = amounts.size() - 1;
+                amounts.set(last, new Money(amounts.get(last).amount().add(off), total.currency()));
+                if (amounts.get(last).amount().signum() <= 0) {
+                    errors.add(new FieldError("paymentPlan[" + last + "]", "leaves nothing for the last installment",
+                            "BR-13"));
+                }
             }
         }
         if (errors.isEmpty()) {
@@ -312,6 +317,77 @@ public final class ContractTerms {
             values.put(batch.seq(), value);
         }
         return values;
+    }
+
+    /**
+     * The plan again, each installment tied to a delivery batch at the amount that batch suggests (14 §4.3 step 12,
+     * BR-13; DS-02b): after the batches changed, an installment Sales tied to batch 2 would otherwise still ask what the
+     * old batch 2 was worth. What the untied installments take - amounts as typed, shares of the total - stays; the rest
+     * of the total is shared over the tied ones as their batches' goods are worth with tax ({@link #batchValues}), so the
+     * plan still adds up to the total: when the untied ones take exactly the fee lines, each tied installment is its
+     * batch's value, which is what BR-13 suggests. Each is rounded to the dong; the last tied one takes what the
+     * rounding left, so the untied shares keep the amounts the contract shows. Two installments tied to one batch share
+     * its value equally.
+     *
+     * @param plan the plan as it stands, read back as entries
+     * @return the plan's entries with the tied ones' amounts suggested, ready for {@link #plan}; unchanged when none is
+     *         tied
+     * @throws BusinessException {@code PAYMENT_PLAN_INVALID} when the untied installments already take the whole total,
+     *                           or a tied one names a batch the schedule does not have
+     */
+    public static List<InstallmentEntry> suggestTied(Order order, List<DeliveryBatch> batches,
+                                                     List<InstallmentEntry> plan) {
+        Money total = order.total();
+        Map<Integer, Money> values = batchValues(order, batches);
+        List<Integer> tied = new ArrayList<>();
+        Map<Integer, Integer> perBatch = new HashMap<>();
+        Money untied = Money.zero(total.currency());
+        for (int i = 0; i < plan.size(); i++) {
+            InstallmentEntry entry = plan.get(i);
+            if (entry.milestone() != PaymentMilestone.ON_SIGNING && entry.deliveryBatchSeq() != null) {
+                if (!values.containsKey(entry.deliveryBatchSeq())) {
+                    throw invalidPlan(List.of(new FieldError("paymentPlan[" + i + "].deliveryBatchSeq",
+                            "a delivery batch of the schedule, 1 to " + batches.size(), "BR-13")));
+                }
+                tied.add(i);
+                perBatch.merge(entry.deliveryBatchSeq(), 1, Integer::sum);
+            } else if (entry.amount() != null) {
+                untied = untied.plus(new Money(entry.amount(), total.currency()));
+            } else if (entry.percent() != null) {
+                untied = untied.plus(new Money(total.amount().multiply(entry.percent())
+                        .divide(HUNDRED, 0, RoundingMode.HALF_UP), total.currency()));
+            }
+        }
+        if (tied.isEmpty()) {
+            return List.copyOf(plan);
+        }
+        Money rest = total.minus(untied);
+        BigDecimal worth = tied.stream().map(i -> values.get(plan.get(i).deliveryBatchSeq()).amount()
+                        .divide(BigDecimal.valueOf(perBatch.get(plan.get(i).deliveryBatchSeq())), 10, RoundingMode.HALF_UP))
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        if (rest.amount().signum() <= 0 || worth.signum() <= 0) {
+            throw invalidPlan(List.of(new FieldError("paymentPlan", ("the installments tied to no delivery batch take "
+                    + "%s of the total %s: nothing is left for those tied to one").formatted(
+                    untied.amount().toPlainString(), total.amount().toPlainString()), "BR-13")));
+        }
+        List<InstallmentEntry> suggested = new ArrayList<>(plan);
+        BigDecimal given = BigDecimal.ZERO;
+        for (int k = 0; k < tied.size(); k++) {
+            int i = tied.get(k);
+            InstallmentEntry entry = plan.get(i);
+            BigDecimal amount;
+            if (k == tied.size() - 1) {
+                amount = rest.amount().subtract(given);
+            } else {
+                BigDecimal share = values.get(entry.deliveryBatchSeq()).amount()
+                        .divide(BigDecimal.valueOf(perBatch.get(entry.deliveryBatchSeq())), 10, RoundingMode.HALF_UP);
+                amount = rest.amount().multiply(share).divide(worth, 0, RoundingMode.HALF_UP);
+                given = given.add(amount);
+            }
+            suggested.set(i, new InstallmentEntry(entry.name(), entry.milestone(), amount.setScale(0,
+                    RoundingMode.UNNECESSARY), null, entry.dueDays(), entry.deliveryBatchSeq()));
+        }
+        return List.copyOf(suggested);
     }
 
     private static BusinessException invalidSchedule(List<FieldError> errors) {

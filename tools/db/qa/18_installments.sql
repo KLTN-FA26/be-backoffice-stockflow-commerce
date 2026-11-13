@@ -224,6 +224,20 @@ SELECT pg_temp.expect_fail('IN19 the same statement line recorded on a second li
     VALUES (gen_random_uuid(), md5('qa18:r2')::uuid, md5('qa18:n2')::uuid, 100000);
     UPDATE payment.installment SET paid_amount = 100000, status = 'PARTIALLY_PAID'
      WHERE id = md5('qa18:n2')::uuid $q$);
+SELECT pg_temp.expect_fail('IN19b the same statement line typed in lower case and with spaces (BR-03, V20261124000200)', $q$
+    INSERT INTO payment.payment_receipt (id, customer_id, reference, received_on, amount, currency, status, recorded_by,
+                                         recorded_at)
+    SELECT md5('qa18:r2b')::uuid, c.customer_id, 'ft-qa18 -1', CURRENT_DATE, 100000, 'VND', 'RECORDED',
+           md5('demo:user:editor')::uuid, NOW()
+      FROM ordering.customer_order c WHERE c.id = md5('qa18:order')::uuid;
+    INSERT INTO payment.payment_receipt_line (id, receipt_id, installment_id, amount)
+    VALUES (gen_random_uuid(), md5('qa18:r2b')::uuid, md5('qa18:n2')::uuid, 100000);
+    UPDATE payment.installment SET paid_amount = 100000, status = 'PARTIALLY_PAID'
+     WHERE id = md5('qa18:n2')::uuid $q$);
+SELECT pg_temp.expect_true('IN19c the reference is compared upper case without whitespace, kept as typed',
+    (SELECT reference_normalized = 'FT-QA18-1' FROM payment.payment_receipt WHERE id = md5('qa18:r1')::uuid));
+SELECT pg_temp.expect_fail('IN19d the normalised reference written by hand', $q$
+    UPDATE payment.payment_receipt SET reference_normalized = 'X' WHERE id = md5('qa18:r1')::uuid $q$);
 SELECT pg_temp.expect_fail('IN20 more paid than owed, nothing left over (BR-05)', $q$
     INSERT INTO payment.payment_receipt (id, customer_id, reference, received_on, amount, currency, status, recorded_by,
                                          recorded_at)

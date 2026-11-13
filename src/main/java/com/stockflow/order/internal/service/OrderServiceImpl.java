@@ -36,7 +36,6 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDate;
-import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -174,7 +173,9 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
         // Another customer's own SKU is not there for this customer (kltn-docs 13 BR-02), whoever places the order.
         customerSkus.requireVisibleTo(command.lines().stream().map(line -> line.sku().code()).toList(),
                 command.customerId());
-        LocalDate today = LocalDate.ofInstant(clock.instant(), ZoneOffset.UTC);
+        // The day in the business's calendar, as a quote's number is dated: an order converted at 06:00 in Ho Chi Minh
+        // City is numbered for that day, not for the UTC day before.
+        LocalDate today = com.stockflow.common.domain.BusinessCalendar.date(clock.instant());
         OrderNumber orderNumber = repository.nextOrderNumber(today);
 
         // Line ids derived from the request id and the line's position, not random: a retried conversion writes the

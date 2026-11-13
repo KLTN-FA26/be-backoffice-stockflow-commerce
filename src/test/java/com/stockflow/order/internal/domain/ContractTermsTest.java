@@ -171,6 +171,81 @@ class ContractTermsTest {
                 .containsExactly("the installments add up to 1000000; the order's total with tax is 3080000");
     }
 
+    /** 1 carton of 7 cups at 1,001 a piece, 10% VAT: 7,007 + 701 = 7,708 - a total whose shares fall between dongs. */
+    private static Order oddOrder() {
+        OrderLine cups = Order.line(UUID.randomUUID(), new Sku("LY-B"), 7, Money.vnd(1_001), null)
+                .withCartons(UUID.randomUUID(), 1, 7).withTax(TEN);
+        return Order.draft(OrderNumber.of(LocalDate.of(2026, 11, 9), 8), UUID.randomUUID(), UUID.randomUUID(),
+                List.of(cups), Instant.now());
+    }
+
+    @Test
+    @DisplayName("A8 (14 §6): amounts and shares mixed - the dong the shares' rounding leaves goes on the last one")
+    void mixedPlanPutsTheRoundingOnTheLast() {
+        Order order = oddOrder();
+        assertThat(order.total()).isEqualTo(Money.vnd(7_708));
+        // 5,781 + 12.5% + 12.5%: exactly the total (963.5 each), but each share rounds up to 964 - one dong over.
+        List<PlannedInstallment> plan = ContractTerms.plan(order, 1, List.of(
+                amount(5_781, PaymentMilestone.ON_SIGNING, null), share("12.5", PaymentMilestone.BEFORE_DELIVERY),
+                share("12.5", PaymentMilestone.BEFORE_DELIVERY)), false, null);
+        assertThat(plan).extracting(i -> i.amount().amount().longValueExact()).containsExactly(5_781L, 964L, 963L);
+        assertThat(plan.getLast().percent()).as("the share as Sales entered it").isEqualByComparingTo("12.5");
+        // A share first and an amount last: the amount takes the dong.
+        assertThat(ContractTerms.plan(order, 1, List.of(share("12.5", PaymentMilestone.ON_SIGNING),
+                        share("12.5", PaymentMilestone.ON_SIGNING), amount(5_781, PaymentMilestone.BEFORE_DELIVERY,
+                                null)), false, null))
+                .extracting(i -> i.amount().amount().longValueExact()).containsExactly(964L, 964L, 5_780L);
+        // Further off than rounding can explain: refused, with what it adds up to.
+        assertThat(refused(ErrorCode.PAYMENT_PLAN_INVALID, () -> ContractTerms.plan(order, 1, List.of(
+                amount(5_000, PaymentMilestone.ON_SIGNING, null), share("12.5", PaymentMilestone.BEFORE_DELIVERY),
+                share("12.5", PaymentMilestone.BEFORE_DELIVERY)), false, null)))
+                .extracting(FieldError::message)
+                .containsExactly("the installments add up to 6928; the order's total with tax is 7708");
+        // Amounts alone are what Sales typed: one dong off is refused, never adjusted.
+        assertThat(refused(ErrorCode.PAYMENT_PLAN_INVALID, () -> ContractTerms.plan(order, 1, List.of(
+                amount(5_781, PaymentMilestone.ON_SIGNING, null), amount(1_926, PaymentMilestone.BEFORE_DELIVERY,
+                        null)), false, null))).hasSize(1);
+    }
+
+    @Test
+    @DisplayName("A4 (BR-13, DS-02b): tied installments suggested again from the batches; the plan adds up to the total")
+    void tiedInstallmentsAreSuggestedFromTheBatches() {
+        Order order = order();
+        List<DeliveryBatch> schedule = ContractTerms.schedule(order, List.of(
+                batch(ASKED, ASKED.plusDays(2), cups(order), 7, lids(order), 10),
+                batch(ASKED.plusDays(14), ASKED.plusDays(14), cups(order), 13)));
+        // Worth 1,320,000 and 1,430,000 with tax; the shipping fee (330,000) is in no batch.
+        List<ContractTerms.InstallmentEntry> stale = List.of(amount(330_000, PaymentMilestone.ON_SIGNING, null),
+                amount(2_000_000, PaymentMilestone.BEFORE_DELIVERY, 1),
+                amount(750_000, PaymentMilestone.AFTER_DELIVERY, 2));
+        List<ContractTerms.InstallmentEntry> suggested = ContractTerms.suggestTied(order, schedule, stale);
+        assertThat(suggested).extracting(e -> e.amount().longValueExact())
+                .as("the fees on signing: each tied one is its batch's value").containsExactly(330_000L, 1_320_000L,
+                        1_430_000L);
+        assertThat(suggested).extracting(ContractTerms.InstallmentEntry::deliveryBatchSeq).containsExactly(null, 1, 2);
+
+        // A third on signing: the rest shared as the batches are worth, the last tied one taking the rounding.
+        suggested = ContractTerms.suggestTied(order, schedule, List.of(share("33.33", PaymentMilestone.ON_SIGNING),
+                amount(1, PaymentMilestone.BEFORE_DELIVERY, 1), amount(1, PaymentMilestone.AFTER_DELIVERY, 2)));
+        assertThat(suggested.getFirst().percent()).as("the untied share is kept").isEqualByComparingTo("33.33");
+        // 3,080,000 - 1,026,564 = 2,053,436; x 1,320,000 / 2,750,000 = 985,649.28 -> 985,649; the last 1,067,787.
+        assertThat(suggested.subList(1, 3)).extracting(e -> e.amount().longValueExact())
+                .containsExactly(985_649L, 1_067_787L);
+        List<PlannedInstallment> plan = ContractTerms.plan(order, 2, suggested, true, 30);
+        assertThat(plan.stream().map(PlannedInstallment::amount).reduce(Money.vnd(0), Money::plus))
+                .isEqualTo(order.total());
+
+        // Nothing tied: nothing to suggest. Everything already taken by the untied ones: refused.
+        List<ContractTerms.InstallmentEntry> untied = List.of(share("100", PaymentMilestone.ON_SIGNING));
+        assertThat(ContractTerms.suggestTied(order, schedule, untied)).isEqualTo(untied);
+        assertThat(refused(ErrorCode.PAYMENT_PLAN_INVALID, () -> ContractTerms.suggestTied(order, schedule, List.of(
+                share("100", PaymentMilestone.ON_SIGNING), amount(1, PaymentMilestone.BEFORE_DELIVERY, 2)))))
+                .extracting(FieldError::field).containsExactly("paymentPlan");
+        assertThat(refused(ErrorCode.PAYMENT_PLAN_INVALID, () -> ContractTerms.suggestTied(order, schedule, List.of(
+                amount(1, PaymentMilestone.BEFORE_DELIVERY, 3))))).extracting(FieldError::field)
+                .containsExactly("paymentPlan[0].deliveryBatchSeq");
+    }
+
     @Test
     @DisplayName("BR-13: every rule an installment breaks is named; paying after delivery needs credit (15 BR-12)")
     void planRules() {

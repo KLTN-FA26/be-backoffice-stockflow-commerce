@@ -487,6 +487,28 @@ class DesignProjectIntegrationTest {
                 .satisfies(e -> assertThat(e.lines()).extracting(DesignProjectQuoteRequested.Line::cartons)
                         .containsExactlyInAnyOrder(10, 4));
         assertThat(projectEvents()).contains("PROJECT_QUOTE_REQUESTED");
+        assertThat(asked.get("status").asText()).isEqualTo("OPEN");
+
+        // Clicked twice (A3): the open request answers, 200, and nobody is told again.
+        String sameAsk = "{\"lines\":[{\"designId\":\"" + mug + "\",\"cartons\":4},{\"designId\":\"" + cup
+                + "\",\"cartons\":10}],\"desiredDeliveryDate\":\"" + date + "\"}";
+        mvc.perform(post("/api/v1/design-projects/" + project + "/quote-requests")
+                .contentType(MediaType.APPLICATION_JSON).content(sameAsk)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.id").value(asked.get("id").asText()));
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM design.design_project_quote_request WHERE project_id = "
+                + "?::uuid", Long.class, project)).isEqualTo(1);
+        assertThat(recorded.matching(DesignProjectQuoteRequested.class,
+                e -> e.projectId().toString().equals(project))).as("told once").hasSize(1);
+        assertThat(projectEvents().stream().filter("PROJECT_QUOTE_REQUESTED"::equals)).hasSize(1);
+        // Something else asked while it is open: the same request now asks that, and the sales staff are told.
+        mvc.perform(post("/api/v1/design-projects/" + project + "/quote-requests")
+                .contentType(MediaType.APPLICATION_JSON).content("{\"lines\":[{\"designId\":\"" + cup
+                        + "\",\"cartons\":12}],\"desiredDeliveryDate\":\"" + date + "\"}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.id").value(asked.get("id").asText()))
+                .andExpect(jsonPath("$.data.lines.length()").value(1))
+                .andExpect(jsonPath("$.data.lines[0].cartons").value(12));
+        assertThat(recorded.matching(DesignProjectQuoteRequested.class,
+                e -> e.projectId().toString().equals(project))).hasSize(2);
 
         // Only approved designs of the project, each named once.
         String fresh = draft(project, middle());
@@ -504,6 +526,17 @@ class DesignProjectIntegrationTest {
                         .value("Nhận diện quán A"));
         mvc.perform(get("/api/v1/design-project-quote-requests").param("customerId", customerId.toString()))
                 .andExpect(jsonPath("$.data.items.length()").value(1));
+        // Answered, they close it; the project then asks anew.
+        as(tx.execute(s -> ReferenceRows.user(entityManager)), Set.of(PermissionCode.of("design-quote-requests",
+                Action.UPDATE), PermissionCode.of("design-quote-requests", Action.READ)));
+        mvc.perform(post("/api/v1/design-project-quote-requests/" + asked.get("id").asText() + "/closure"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("CLOSED"))
+                .andExpect(jsonPath("$.data.closedAt").exists());
+        as(owner, Set.of());
+        mvc.perform(post("/api/v1/design-projects/" + project + "/quote-requests")
+                .contentType(MediaType.APPLICATION_JSON).content(sameAsk)).andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.status").value("OPEN"))
+                .andExpect(jsonPath("$.data.id").value(org.hamcrest.Matchers.not(asked.get("id").asText())));
 
         // A revision of an approved design joins the open project; once it is closed, a revision stands alone.
         as(owner, Set.of());

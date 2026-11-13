@@ -170,7 +170,8 @@ class InstallmentBookAdapter implements InstallmentBook, InstallmentSearch {
     @Override
     public boolean referenceInUse(String reference) {
         // Receipts only: the money ledger's transfers and payments, which this also looked through, are gone (4B-11).
-        return receipts.existsByReferenceAndStatus(reference.strip(), PaymentReceiptStatus.RECORDED);
+        return receipts.existsByReferenceNormalizedAndStatus(PaymentReceipt.normalize(reference),
+                PaymentReceiptStatus.RECORDED);
     }
 
     @Override
@@ -225,7 +226,9 @@ class InstallmentBookAdapter implements InstallmentBook, InstallmentSearch {
         Specification<PaymentReceiptJpaEntity> spec = Specification
                 .<PaymentReceiptJpaEntity>where(Specs.eq("customerId", customerId))
                 .and(Specs.eq("status", status))
-                .and(Specs.eq("reference", reference == null || reference.isBlank() ? null : reference.strip()));
+                // Normalised as BR-03 compares: "ft 26111abc" finds the receipt recorded as "FT26111ABC".
+                .and(Specs.eq("referenceNormalized", reference == null || reference.isBlank() ? null
+                        : PaymentReceipt.normalize(reference)));
         Page<PaymentReceiptJpaEntity> page = receipts.findAll(spec, pageable);
         // One query for the lines of the whole page.
         Map<UUID, List<PaymentReceipt.Line>> lines = linesOf(page.map(PaymentReceiptJpaEntity::getId).getContent());

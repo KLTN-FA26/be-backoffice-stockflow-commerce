@@ -19,13 +19,16 @@ import java.util.stream.Collectors;
  *     └──contract cancelled───┘
  *   PENDING_PAYMENT ─paid─▶ CONFIRMED ─release─▶ READY_TO_FULFILL
  *                           CONFIRMED ─short, a production order sent─▶ AWAITING_STOCK ─release─▶ READY_TO_FULFILL
- *   DRAFT ─▶ PENDING_PAYMENT / CONFIRMED / ON_HOLD: checkout, until it is removed (4B-10)
  *
  *   READY_TO_FULFILL ─▶ PICKING ─▶ PACKED ─handover─▶ SHIPPED ─▶ DELIVERED ─▶ COMPLETED ─▶ CLOSED
  *                                                                   └─▶ DELIVERY_FAILED ─▶ DELIVERED / RETURNED
  *                     PICKING / PACKED ─part handed over─▶ PARTIALLY_FULFILLED ─rest packed─▶ PACKED
  *   DELIVERED ─▶ RETURN_REQUESTED ─▶ RETURNED ─▶ REFUNDED / PARTIALLY_REFUNDED ─▶ CLOSED
  * </pre>
+ *
+ * <p><b>No way round the contract</b> (14 §5.3). A draft leaves only for PENDING_CONTRACT or CANCELLED: the old
+ * checkout's DRAFT → PENDING_PAYMENT / CONFIRMED / ON_HOLD went with checkout (4B-10, removed from the table in
+ * V20261124000200), so an order is confirmed, held for credit or waits for money only once its contract is signed.</p>
  *
  * <p><b>Split shipments</b> (decision G4-Q3, 2026-10-19). {@code PARTIALLY_FULFILLED} is kltn-docs 17's "Partially
  * Fulfilled — giao một phần, phần còn lại backorder" and 09's "đơn ở trạng thái giao một phần": some of the order's goods
@@ -74,7 +77,11 @@ public enum OrderStatus {
      */
     PENDING_CONTRACT,
 
-    /** Submitted, stock reserved, waiting for the prepayment or the deposit. */
+    /**
+     * Its contract signed, waiting for the installment due on signing (14 §4.3 step 15, 15 BR-07). Nothing is reserved
+     * yet: stock is held only once it is CONFIRMED and Sales chose its shipping warehouse (17 §4.2). {@link #holdsStock}
+     * still answers true so that a cancellation from here releases whatever is held - which is nothing.
+     */
     PENDING_PAYMENT,
 
     /**
@@ -198,10 +205,9 @@ public enum OrderStatus {
      */
     public boolean canTransitionTo(OrderStatus target) {
         return switch (this) {
-            // PENDING_CONTRACT: its contract sent (4B-5). PENDING_PAYMENT / CONFIRMED / ON_HOLD: checkout's - a credit
-            // order within or over its limit (SCRUM-427) - until checkout is removed (4B-10).
-            case DRAFT -> target == PENDING_CONTRACT || target == PENDING_PAYMENT || target == CONFIRMED
-                    || target == ON_HOLD || target == CANCELLED;
+            // 14 §5.3: its contract sent (4B-5), or cancelled. Checkout's edges to PENDING_PAYMENT / CONFIRMED / ON_HOLD
+            // went with checkout (4B-10): a draft is placed only through its signed contract.
+            case DRAFT -> target == PENDING_CONTRACT || target == CANCELLED;
             // 14 §5.3: signed - waiting for an installment on signing, confirmed, or held for credit (15 BR-11); back to
             // DRAFT when the contract is cancelled to be drawn up again.
             case PENDING_CONTRACT -> target == DRAFT || target == PENDING_PAYMENT || target == CONFIRMED
