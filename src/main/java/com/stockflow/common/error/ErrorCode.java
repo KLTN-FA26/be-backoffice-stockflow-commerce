@@ -223,6 +223,20 @@ public enum ErrorCode {
     CARTONS_WOULD_NOT_FIT("This change would leave cartons that no longer fit where they stand", 409),
     /** kltn-docs 05 BR-13: a carton goes to the OVERFLOW area only when no bin of its warehouse takes it. */
     PUTAWAY_OVERFLOW_NOT_ALLOWED("A bin can still take this carton; put it away into a bin", 409),
+    /** Kltn-docs 05 §4.5: no putaway trip with this id. */
+    PUTAWAY_TRIP_NOT_FOUND("Putaway trip not found", 404),
+    /** Kltn-docs 05 BR-15: a clerk has one open putaway trip (LOADING or IN_PROGRESS) at a time. */
+    PUTAWAY_TRIP_ALREADY_OPEN("You already have a putaway trip open", 409),
+    /** Kltn-docs 05 §5: the trip is not in the status this step needs (loading a cart that left, closing a closed one). */
+    PUTAWAY_TRIP_INVALID_STATE("This putaway trip is not in a state that allows this", 409),
+    /** Kltn-docs 05 §5: a trip sets off with at least one carton on the cart. */
+    PUTAWAY_TRIP_EMPTY("The cart has no carton; scan cartons onto it first", 422),
+    /** Kltn-docs 05 BR-15: a carton is on one open cart at most; this one is on somebody else's. */
+    PUTAWAY_TASK_ON_ANOTHER_TRIP("This carton is on the cart of another putaway trip", 409),
+    /** Kltn-docs 05 §4.5: the scanned carton is not on this trip's cart. */
+    PUTAWAY_CARTON_NOT_ON_TRIP("This carton is not on the cart of this putaway trip", 409),
+    /** Kltn-docs 05 §4.5 step 17: a trip is worked and closed by its own clerk; a warehouse manager may close it. */
+    PUTAWAY_TRIP_NOT_YOURS("This putaway trip belongs to another clerk", 403),
     /**
      * SCRUM-473: a line with cartons names the active packing unit they are in; a loose line counts in the base unit
      * and claims no packing unit it holds no carton of.

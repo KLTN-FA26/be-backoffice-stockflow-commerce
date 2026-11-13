@@ -157,6 +157,39 @@ public class BinOccupancyQuery {
         });
     }
 
+    /**
+     * What a carton adds to the bin it goes into: its SKU and lot (for grouping), its units, volume and full weight.
+     * The same figures {@link #occupancyOf} counts for a carton already standing there.
+     */
+    public record CartonLoad(String sku, String lotNumber, int units, BigDecimal volumeM3, BigDecimal weightKg) {
+    }
+
+    /** The load of each of these cartons, in one read; a carton that does not exist is absent. */
+    public Map<UUID, CartonLoad> loadsOf(Collection<UUID> cartonIds) {
+        if (cartonIds.isEmpty()) {
+            return Map.of();
+        }
+        Map<UUID, CartonLoad> out = new HashMap<>();
+        jdbc.query("""
+                select p.id, i.sku,
+                       (select min(s.lot_number) from inventory.stock_item s
+                         where s.stock_package_id = p.id and s.on_hand > 0) as lot_number,
+                       coalesce(p.received_qty, p.nominal_qty) as units,
+                       coalesce(u.length_cm * u.width_cm * u.height_cm / 1000000, 0) as volume_m3,
+                       coalesce(u.weight_kg, i.weight_kg * p.nominal_qty, 0) as weight_kg
+                from inventory.stock_package p
+                join inventory.uom_conversions u on u.id = p.uom_conversion_id
+                join inventory.inventory_items i on i.id = p.inventory_item_id
+                where p.id = any (?)""",
+                ps -> ps.setArray(1, ps.getConnection().createArrayOf("uuid", cartonIds.toArray())),
+                rs -> {
+                    out.put(rs.getObject("id", UUID.class), new CartonLoad(rs.getString("sku"),
+                            rs.getString("lot_number"), rs.getInt("units"), orZero(rs.getBigDecimal("volume_m3")),
+                            orZero(rs.getBigDecimal("weight_kg"))));
+                });
+        return out;
+    }
+
     /** A carton standing at {@code locationCode}, in carton unit {@code unitId}, with what it measures. */
     public record CartonIn(String locationCode, UUID cartonId, UUID unitId, String lpn, CartonFit.Carton carton) {
     }
