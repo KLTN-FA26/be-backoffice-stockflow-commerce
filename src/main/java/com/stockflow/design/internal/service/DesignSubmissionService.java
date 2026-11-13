@@ -75,6 +75,12 @@ public class DesignSubmissionService {
 
     private static final int NOTES_MAX = 4000;
 
+    /** The most findings a browser may report at once (A-3, and a project's E-4 per design). */
+    public static final int REPORTED_ISSUES_MAX = 50;
+
+    /** The longest rule, surface code or element id a browser may report. */
+    public static final int REPORTED_FIELD_MAX = 64;
+
     private final DesignDraftJpaRepository drafts;
     private final DesignDocumentJpaRepository documents;
     private final DesignAssetJpaRepository assets;
@@ -210,9 +216,67 @@ public class DesignSubmissionService {
     }
 
     /** {@code PREFLIGHT_FAILED} in the history, without touching the design: its version does not move. */
-    void recordFailure(UUID id, UUID actor, List<LayoutPreflight.Issue> issues) {
+    DesignDecisionJpaEntity recordFailure(UUID id, UUID actor, List<LayoutPreflight.Issue> issues) {
         DesignDraftJpaEntity draft = drafts.findById(id).orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
-        decide(draft, actor, DesignDecisionType.PREFLIGHT_FAILED, summary(issues));
+        return decide(draft, actor, DesignDecisionType.PREFLIGHT_FAILED, summary(issues));
+    }
+
+    /**
+     * One finding of the studio's own preflight, which checks what this server cannot - text overrun by font metrics,
+     * {@code ON_SEAM}. Only the rule and where it is are kept (Q-7): a browser's free text is not trusted into the
+     * history.
+     */
+    public record ReportedIssue(String rule, String surfaceCode, String elementId) {
+    }
+
+    /**
+     * A submission the studio's preflight refused before it reached this server (kltn-docs 12 §5.3, BR-13): its owner
+     * writes {@code PREFLIGHT_FAILED} to the draft's history, the way a failing server preflight does, and the design
+     * does not change - its version stays.
+     *
+     * @throws BusinessException 404 for anyone but the owner or for an archived design; 409 {@code CONFLICT} on a stale
+     *         version; 409 {@code DESIGN_NOT_DRAFT}; 400 {@code VALIDATION_FAILED} for no findings, more than
+     *         {@value #REPORTED_ISSUES_MAX}, or a blank or over-long field
+     */
+    public DesignWorkflowService.DecisionView recordReportedFailure(UUID id, UUID actor, long version,
+                                                                   List<ReportedIssue> reported) {
+        List<LayoutPreflight.Issue> issues = reportedIssues(reported);
+        DesignDraftJpaEntity draft = drafts.findById(id).orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
+        CustomerDesignRules.requireOwner(actor, draft.getOwnerUserId(), draft.getStatus());
+        DesignWorkflow.requireVersion(draft.getVersion(), version);
+        CustomerDesignRules.requireDraft(draft.getStatus());
+        DesignDecisionJpaEntity decision = recordFailure(id, actor, issues);
+        return new DesignWorkflowService.DecisionView(decision.getActorId(), decision.getArtifactId(),
+                decision.getDecision(), decision.getNotes(), decision.getDraftVersion(),
+                decision.getCreatedAt() != null ? decision.getCreatedAt() : clock.instant());
+    }
+
+    /**
+     * A browser's findings as the history records them, checked again here whatever the caller validated: 1 to
+     * {@value #REPORTED_ISSUES_MAX}, each with a rule, every field at most {@value #REPORTED_FIELD_MAX} characters.
+     */
+    public static List<LayoutPreflight.Issue> reportedIssues(List<ReportedIssue> reported) {
+        if (reported == null || reported.isEmpty() || reported.size() > REPORTED_ISSUES_MAX) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "Report between 1 and " + REPORTED_ISSUES_MAX + " findings");
+        }
+        return reported.stream().map(issue -> {
+            if (issue == null || issue.rule() == null || issue.rule().isBlank() || tooLong(issue.rule())
+                    || tooLong(issue.surfaceCode()) || tooLong(issue.elementId())) {
+                throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                        "Each finding names a rule; no field is longer than " + REPORTED_FIELD_MAX + " characters");
+            }
+            return new LayoutPreflight.Issue(issue.rule().strip(), blankToNull(issue.surfaceCode()),
+                    blankToNull(issue.elementId()), null);
+        }).toList();
+    }
+
+    private static boolean tooLong(String value) {
+        return value != null && value.length() > REPORTED_FIELD_MAX;
+    }
+
+    private static String blankToNull(String value) {
+        return value == null || value.isBlank() ? null : value.strip();
     }
 
     /** Under the design's lock: submitted, if nothing moved since it was checked. */
@@ -300,8 +364,9 @@ public class DesignSubmissionService {
         return files;
     }
 
-    private void decide(DesignDraftJpaEntity draft, UUID actor, DesignDecisionType type, String notes) {
-        decisions.save(new DesignDecisionJpaEntity(draft, actor, type.name(), notes));
+    private DesignDecisionJpaEntity decide(DesignDraftJpaEntity draft, UUID actor, DesignDecisionType type,
+                                           String notes) {
+        return decisions.save(new DesignDecisionJpaEntity(draft, actor, type.name(), notes));
     }
 
     /** The findings as one line each, cut to what the history holds. */

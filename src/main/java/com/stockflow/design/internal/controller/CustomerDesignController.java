@@ -1,12 +1,15 @@
 package com.stockflow.design.internal.controller;
 
 import com.stockflow.common.api.ApiResponse;
+import com.stockflow.common.ratelimit.RateLimit;
 import com.stockflow.common.security.Action;
 import com.stockflow.common.security.AuthenticatedUser;
 import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.RequiresPermission;
+import com.stockflow.design.internal.controller.dto.DesignDecisionResponse;
 import com.stockflow.design.internal.controller.dto.DesignDocumentResponse;
 import com.stockflow.design.internal.controller.dto.DesignDraftResponse;
+import com.stockflow.design.internal.controller.dto.PreflightFailureRequest;
 import com.stockflow.design.internal.service.CustomerDesignService;
 import com.stockflow.design.internal.service.DesignSubmissionService;
 import io.swagger.v3.oas.annotations.Operation;
@@ -137,6 +140,24 @@ class CustomerDesignController {
                                                    @AuthenticatedUser CurrentUser user) {
         return ApiResponse.ok(drafts.toResponse(submissions.submit(id, actor(user), request.version(),
                 request.quoteRequest() == null ? null : request.quoteRequest().input())));
+    }
+
+    /**
+     * A submission the studio's own preflight refused before sending it (kltn-docs 12 §5.3): one {@code PREFLIGHT_FAILED}
+     * row in the draft's history, notes built from each finding's rule, surface and element; the design and its version
+     * do not change. The browser's word is not trusted beyond that: its owner only, a draft only, the version it read,
+     * at most 50 findings, a {@code message} ignored, and a budget per user so nobody floods the history. 404 for anyone
+     * but the owner or an archived design; 409 {@code CONFLICT} on a stale version, {@code DESIGN_NOT_DRAFT}; 429.
+     */
+    @PostMapping("/{id}/preflight-failures")
+    @Operation(summary = "Record that the studio's preflight refused a submission: one PREFLIGHT_FAILED history row")
+    @RequiresPermission(resource = DesignResources.DESIGNS, action = Action.UPDATE)
+    @RateLimit(limit = 60, perSeconds = 3600, key = RateLimit.Key.USER, bucket = "design-preflight-failures")
+    public ResponseEntity<ApiResponse<DesignDecisionResponse>> recordPreflightFailure(
+            @PathVariable UUID id, @Valid @RequestBody PreflightFailureRequest request,
+            @AuthenticatedUser CurrentUser user) {
+        return ResponseEntity.status(HttpStatus.CREATED).body(ApiResponse.ok(drafts.toResponse(
+                submissions.recordReportedFailure(id, actor(user), request.version(), request.reported()))));
     }
 
     /**

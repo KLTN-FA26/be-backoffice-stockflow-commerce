@@ -417,6 +417,9 @@ class PermissionMatrixTest {
                 Map.entry("PUT /api/v1/designs/{id}/name", "{\"version\":0,\"name\":\"stolen\"}"),
                 Map.entry("POST /api/v1/designs/{id}/archive", "{\"version\":0}"),
                 Map.entry("POST /api/v1/designs/{id}/technical-review-requests", "{\"version\":0}"),
+                // A-3: a well-formed report, so only the owner check can refuse a history row on the victim's design.
+                Map.entry("POST /api/v1/designs/{id}/preflight-failures",
+                        "{\"version\":0,\"issues\":[{\"rule\":\"OUTSIDE_PRINT_AREA\"}]}"),
                 // 2F-8: a well-formed request, so only the owner check can refuse a quote on the victim's design.
                 Map.entry("POST /api/v1/designs/{id}/quote-requests", "{\"cartons\":1}"),
                 // 2F-9: well-formed writes on the victim's project and design, so only the owner check can refuse them.
