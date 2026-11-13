@@ -56,8 +56,11 @@ public interface OrderService {
     OrderSummary startPicking(UUID orderId, UUID by);
 
     /**
-     * Everything still to ship is packed: READY_TO_FULFILL (printed goods only), PICKING or PARTIALLY_FULFILLED →
-     * PACKED (kltn-docs 08, 17 §5). Also records that a package was completed (the cancellation rules read it).
+     * Everything still to ship is packed: READY_TO_FULFILL (printed goods only), PICKING or PARTIALLY_FULFILLED with
+     * nothing handed over yet → PACKED (kltn-docs 08, 17 §5). Once a part of the order was handed over - an earlier
+     * delivery batch, or the part a partial completion shipped - it stays PARTIALLY_FULFILLED until its last handover
+     * (17 §4.5; owner decision WF4-PF-NEXT, 2026-11-13). Also records that a package was completed (the cancellation
+     * rules read it).
      *
      * @throws com.stockflow.common.error.BusinessException {@code ORDER_CANCELLED}; {@code ORDER_INVALID_TRANSITION},
      *         also while the order is ON_HOLD
@@ -205,7 +208,11 @@ public interface OrderService {
     /**
      * Close what is left of a partly fulfilled order (17 edge "short pick"): its units not shipped will not be
      * delivered; their stock holds are released, payment refunds money received above what the order is now worth
-     * ({@code OrderRemainderClosed}). Only from PARTIALLY_FULFILLED, once a part of it was handed over.
+     * ({@code OrderRemainderClosed}). Only from PARTIALLY_FULFILLED. Cartons checked and labelled for it and not handed
+     * over yet stay on the order and are delivered: only the units neither handed over nor labelled are closed, and only
+     * they come off the installments (owner decision WF4-CLOSE-REST, 2026-11-13; 17 §4.8 step 33). The order stays
+     * PARTIALLY_FULFILLED until the last of those cartons is handed over, then SHIPPED. Refused when nothing is left to
+     * close, and when nothing was handed over and nothing labelled waits.
      */
     default OrderSummary closeRemainder(UUID orderId, CancellationReasonCode reasonCode, String note, UUID by) {
         return closeRemainder(orderId, reasonCode, note, null, by);
@@ -285,8 +292,9 @@ public interface OrderService {
 
     /**
      * 4B-8 (kltn-docs 08 §4.4 step 8.3): the units of each order line a delivery batch carries - its cartons in pieces,
-     * as the signed schedule fixes them: what the carton check of that batch's task expects. Empty for a batch not of
-     * the order's contract.
+     * as the signed schedule fixes them: what the carton check of that batch's task expects. Once the rest of a line was
+     * closed (WF4-CLOSE-REST), no more than the line still has open beyond the other batches' shipments. Empty for a
+     * batch not of the order's contract.
      */
     java.util.Map<UUID, Integer> batchUnits(UUID orderId, UUID deliveryBatchId);
 

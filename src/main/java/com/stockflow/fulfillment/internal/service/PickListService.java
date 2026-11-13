@@ -248,7 +248,8 @@ class PickListService implements PickLists {
             }
             allowed.ifPresent(ids -> where.add(ids.isEmpty() ? cb.disjunction() : pick.get("warehouseId").in(ids)));
             task.select(pick.get("id")).where(where.toArray(Predicate[]::new));
-            // 4C-6: a carton the check station removed as damaged waits too, cancelled task or not, for quarantine.
+            // 4C-6: a carton the check station removed as damaged waits too, cancelled task or not, for quarantine; and
+            // one removed because the rest of its order was closed (WF4-CLOSE-REST), for a bin.
             var live = query.subquery(UUID.class);
             var livePick = live.from(PickJpaEntity.class);
             List<Predicate> liveWhere = new ArrayList<>(List.of(cb.equal(livePick.get("id"), root.get("pickId"))));
@@ -260,7 +261,7 @@ class PickListService implements PickLists {
             live.select(livePick.get("id")).where(liveWhere.toArray(Predicate[]::new));
             return cb.and(cb.gt(root.<Integer>get("pickedQty"), 0), cb.or(
                     cb.and(root.get("status").in(PickLineStatus.PICKED, PickLineStatus.STAGED), cb.exists(task)),
-                    cb.and(cb.equal(root.get("status"), PickLineStatus.PICKED), cb.exists(removedDamaged(root, query,
+                    cb.and(cb.equal(root.get("status"), PickLineStatus.PICKED), cb.exists(removedToPutBack(root, query,
                             cb)), cb.exists(live))));
         };
         Page<PickLineJpaEntity> found = pickLines.findAll(waiting,
@@ -299,7 +300,10 @@ class PickListService implements PickLists {
                 .orElse(null);
 
         boolean damaged = removedDamaged(List.of(lineId)).contains(lineId);
-        PickList.PutBack outcome = list.putBack(lineId, lpn, target, damaged, actor.userId(), clock.instant());
+        boolean closedRest = removedFor(List.of(lineId),
+                com.stockflow.fulfillment.internal.domain.CartonCheck.RemovalReason.REMAINDER_CLOSED).contains(lineId);
+        PickList.PutBack outcome = list.putBack(lineId, lpn, target, damaged, closedRest, actor.userId(),
+                clock.instant());
         PickLine line = outcome.line();
         String barcode = barcodesOf(List.of(line.sku())).get(line.sku());
         if (outcome.repeated()) {
@@ -327,24 +331,34 @@ class PickListService implements PickLists {
      * through the put-back queue (08 §4.2 step 4).
      */
     private Set<UUID> removedDamaged(Collection<UUID> lineIds) {
+        return removedFor(lineIds, com.stockflow.fulfillment.internal.domain.CartonCheck.RemovalReason.DAMAGED);
+    }
+
+    /** The lines among {@code lineIds} whose carton the check station removed for {@code reason}. */
+    private Set<UUID> removedFor(Collection<UUID> lineIds,
+                                 com.stockflow.fulfillment.internal.domain.CartonCheck.RemovalReason reason) {
         return lineIds.isEmpty() ? Set.of() : packages.findByPickLineIdIn(lineIds).stream()
                 .filter(carton -> carton.getStatus() == com.stockflow.fulfillment.internal.domain.PackageStatus.REMOVED
-                        && carton.getRemovalReason() == com.stockflow.fulfillment.internal.domain.CartonCheck
-                        .RemovalReason.DAMAGED)
+                        && carton.getRemovalReason() == reason)
                 .map(com.stockflow.fulfillment.internal.entity.PackageJpaEntity::getPickLineId)
                 .collect(Collectors.toSet());
     }
 
-    /** The criteria twin of {@link #removedDamaged(Collection)}: a removed, damaged carton of the line {@code root}. */
-    private static jakarta.persistence.criteria.Subquery<UUID> removedDamaged(
+    /**
+     * A carton of the line {@code root} the check station removed and that waits to be put back whatever its task's
+     * status: damaged (to quarantine, 4C-6), or no longer wanted because the rest of its order was closed (to a bin,
+     * WF4-CLOSE-REST). A carton removed with its order cancelled waits through its cancelled task instead.
+     */
+    private static jakarta.persistence.criteria.Subquery<UUID> removedToPutBack(
             jakarta.persistence.criteria.Root<PickLineJpaEntity> root, jakarta.persistence.criteria.CriteriaQuery<?> query,
             jakarta.persistence.criteria.CriteriaBuilder cb) {
         var carton = query.subquery(UUID.class);
         var row = carton.from(com.stockflow.fulfillment.internal.entity.PackageJpaEntity.class);
         carton.select(row.get("id")).where(cb.equal(row.get("pickLineId"), root.get("id")),
                 cb.equal(row.get("status"), com.stockflow.fulfillment.internal.domain.PackageStatus.REMOVED),
-                cb.equal(row.get("removalReason"),
-                        com.stockflow.fulfillment.internal.domain.CartonCheck.RemovalReason.DAMAGED));
+                row.get("removalReason").in(
+                        com.stockflow.fulfillment.internal.domain.CartonCheck.RemovalReason.DAMAGED,
+                        com.stockflow.fulfillment.internal.domain.CartonCheck.RemovalReason.REMAINDER_CLOSED));
         return carton;
     }
 

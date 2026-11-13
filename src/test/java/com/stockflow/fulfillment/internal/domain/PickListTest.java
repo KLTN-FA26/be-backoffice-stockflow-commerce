@@ -378,6 +378,31 @@ class PickListTest {
         }
 
         @Test
+        @DisplayName("WF4-CLOSE-REST: a carton removed because the rest of its order was closed goes back onto a bin of a "
+                + "task that goes on (PICKED); not into quarantine; not from an open line")
+        void removedClosedRestCartonGoesBackOntoABin() {
+            PickLine line = picked("SOFA-3S-GREY", "HCM-A01-2-B", 2, LPN);
+            var list = new PickList(UUID.randomUUID(), HCM, PickStatus.PICKED, false, List.of(line));
+            assertThat(refusal(() -> list.putBack(line.id(), LPN, quarantine, false, true, PICKER, NOW)))
+                    .isEqualTo(ErrorCode.PUT_BACK_LOCATION_INVALID);
+            var outcome = list.putBack(line.id(), LPN, bin, false, true, PICKER, NOW);
+            assertThat(outcome.toQuarantine()).isFalse();
+            assertThat(outcome.fromStaging()).isFalse();
+            assertThat(line.status()).isEqualTo(PickLineStatus.PUT_BACK);
+            assertThat(line.putBackQty()).isEqualTo(2);
+            assertThat(list.putBack(line.id(), LPN, bin, false, true, PICKER, NOW.plusSeconds(5)).repeated()).isTrue();
+
+            PickLine open = open("SOFA-3S-GREY", "HCM-A01-2-B", 2, LPN);
+            var openList = new PickList(UUID.randomUUID(), HCM, PickStatus.PICKED, false, List.of(open));
+            assertThat(refusal(() -> openList.putBack(open.id(), LPN, bin, false, true, PICKER, NOW)))
+                    .isEqualTo(ErrorCode.PUT_BACK_NOT_REQUIRED);
+            PickLine kept = picked("SOFA-3S-GREY", "HCM-A01-2-B", 2, LPN);
+            var keptList = new PickList(UUID.randomUUID(), HCM, PickStatus.PICKED, false, List.of(kept));
+            assertThat(refusal(() -> keptList.putBack(kept.id(), LPN, bin, false, false, PICKER, NOW)))
+                    .as("a carton still on the order of a live task").isEqualTo(ErrorCode.PUT_BACK_NOT_REQUIRED);
+        }
+
+        @Test
         @DisplayName("a damaged carton is refused a bin, an unusable or another warehouse's quarantine area, and no target")
         void removedDamagedCartonNeedsAQuarantineArea() {
             List<PickList.PutBackTarget> wrong = new ArrayList<>();

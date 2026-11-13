@@ -95,7 +95,7 @@ final class OrderFixtures {
                 org.mockito.Mockito.mock(com.stockflow.order.internal.repository.OrderHoldJpaRepository.class),
                 org.mockito.Mockito.mock(com.stockflow.customer.api.CustomerService.class),
                 org.mockito.Mockito.mock(com.stockflow.order.internal.domain.CancellationRequestRepository.class),
-                org.mockito.Mockito.mock(com.stockflow.payment.api.PaymentService.class), org.mockito.Mockito.mock(com.stockflow.product.api.CustomerSkus.class), org.mockito.Mockito.mock(com.stockflow.order.internal.domain.SalesContractRepository.class), org.mockito.Mockito.mock(com.stockflow.order.internal.service.DeliveryBatchService.class), org.mockito.Mockito.mock(com.stockflow.order.internal.domain.DeliveryBatchRecords.class));
+                org.mockito.Mockito.mock(com.stockflow.payment.api.PaymentService.class), org.mockito.Mockito.mock(com.stockflow.product.api.CustomerSkus.class), org.mockito.Mockito.mock(com.stockflow.order.internal.domain.SalesContractRepository.class), org.mockito.Mockito.mock(com.stockflow.order.internal.service.DeliveryBatchService.class), org.mockito.Mockito.mock(com.stockflow.order.internal.domain.DeliveryBatchRecords.class), org.mockito.Mockito.mock(org.springframework.beans.factory.ObjectProvider.class));
         return service.findById(order.id().value()).orElseThrow();
     }
 

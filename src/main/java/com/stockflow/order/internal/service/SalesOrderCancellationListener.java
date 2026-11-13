@@ -23,6 +23,7 @@ import java.util.UUID;
  * those not mass printing yet (DRAFT, PENDING_APPROVAL, SENT, ACCEPTED, SAMPLE_PENDING) are cancelled; those printing
  * (IN_PRODUCTION) or partly received are closed - what the producer already made and still delivers is received as the
  * customer's surplus (BR-07). Each with the order's cancellation as its reason and who cancelled the order as its actor.
+ * The rest of a sales order closed stops them the same way (17 §4.8 step 33, WF4-CLOSE-REST 2026-11-13).
  * A production order already sent tells its producer to stop through {@code ProductionOrderService.cancel} and
  * {@code close} (4A-3).
  *
@@ -78,15 +79,42 @@ class SalesOrderCancellationListener {
                     event.orderNumber(), open.size());
             return;
         }
-        String reason = reasonOf(event);
+        stopAll(open, event.orderId(), event.orderNumber(), event.cancelledBy(), reasonOf(event), "was cancelled");
+    }
+
+    /**
+     * The rest of the sales order was closed (kltn-docs 17 §4.8 step 33; owner decision WF4-CLOSE-REST, 2026-11-13):
+     * whatever it still wants is labelled at dispatch already, so its production orders are stopped as a cancellation
+     * stops them - not mass printing yet: cancelled; printing or partly received: closed. Each with the closure as its
+     * reason and who closed the rest as its actor; the same transactions and redelivery as {@link #on(OrderCancelled)}.
+     */
+    @Async
+    @TransactionalEventListener
+    public void on(com.stockflow.contracts.OrderRemainderClosed event) {
+        var open = productionOrders.ofSalesOrder(event.orderId()).stream()
+                .filter(production -> production.status().open()).toList();
+        if (open.isEmpty()) {
+            return;
+        }
+        if (event.closedBy() == null) {
+            log.warn("The rest of order {} was closed by no one: its {} open production order(s) are left to the "
+                    + "coordinator", event.orderNumber(), open.size());
+            return;
+        }
+        stopAll(open, event.orderId(), event.orderNumber(), event.closedBy(), reasonOf(event), "had its rest closed");
+    }
+
+    private void stopAll(java.util.List<ProductionOrder> open, UUID orderId, String orderNumber, UUID by, String reason,
+                         String what) {
         RuntimeException failure = null;
         for (ProductionOrder production : open) {
             try {
-                eachProductionOrder.executeWithoutResult(status -> stop(production.id(), event, reason));
+                eachProductionOrder.executeWithoutResult(status -> stop(production.id(), orderId, orderNumber, by,
+                        reason));
             } catch (BusinessException e) {
                 if (DRAFT_RECEIPTS.equals(e.errorCode().name())) {
-                    log.info("Order {} was cancelled; production order {} has a goods receipt in progress and is "
-                            + "stopped once it is settled", event.orderNumber(), production.code());
+                    log.info("Order {} {}; production order {} has a goods receipt in progress and is stopped once it "
+                            + "is settled", orderNumber, what, production.code());
                 } else {
                     failure = keep(failure, e);
                 }
@@ -100,23 +128,31 @@ class SalesOrderCancellationListener {
     }
 
     /** One production order, in its own transaction: the sales order locked first, then it. */
-    private void stop(UUID productionOrderId, OrderCancelled event, String reason) {
-        orders.findByIdForUpdate(new OrderId(event.orderId())).orElseThrow();
+    private void stop(UUID productionOrderId, UUID orderId, String orderNumber, UUID by, String reason) {
+        orders.findByIdForUpdate(new OrderId(orderId)).orElseThrow();
         ProductionOrder production = productionOrders.findByIdForUpdate(productionOrderId).orElseThrow();
         if (production.status().cancellable()) {
-            service.cancel(productionOrderId, production.version(), reason, event.cancelledBy());
-            log.info("Production order {} cancelled with its sales order {}", production.code(), event.orderNumber());
+            service.cancel(productionOrderId, production.version(), reason, by);
+            log.info("Production order {} cancelled with its sales order {}", production.code(), orderNumber);
         } else if (production.status().canTransitionTo(ProductionOrderStatus.CLOSED)) {
-            service.close(productionOrderId, production.version(), reason, event.cancelledBy());
+            service.close(productionOrderId, production.version(), reason, by);
             log.info("Production order {} closed with its sales order {}: mass printing had started",
-                    production.code(), event.orderNumber());
+                    production.code(), orderNumber);
         }
     }
 
     /** "Sales order SO-… was cancelled: CODE - note", within what a production order keeps of a reason. */
     static String reasonOf(OrderCancelled event) {
-        String reason = "Sales order %s was cancelled: %s".formatted(event.orderNumber(), event.reasonCode())
-                + (event.note() == null || event.note().isBlank() ? "" : " - " + event.note().strip());
+        return fitted("Sales order %s was cancelled: %s".formatted(event.orderNumber(), event.reasonCode())
+                + (event.note() == null || event.note().isBlank() ? "" : " - " + event.note().strip()));
+    }
+
+    /** "Sales order SO-… had its rest closed: CODE", within what a production order keeps of a reason. */
+    static String reasonOf(com.stockflow.contracts.OrderRemainderClosed event) {
+        return fitted("Sales order %s had its rest closed: %s".formatted(event.orderNumber(), event.reasonCode()));
+    }
+
+    private static String fitted(String reason) {
         if (reason.length() <= ProductionOrder.TEXT_MAX) {
             return reason;
         }

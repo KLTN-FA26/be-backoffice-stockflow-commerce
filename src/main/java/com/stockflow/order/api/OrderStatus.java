@@ -23,8 +23,10 @@ import java.util.stream.Collectors;
  *
  *   READY_TO_FULFILL ─▶ PICKING ─▶ PACKED ─handover─▶ SHIPPED ─▶ DELIVERED ─▶ COMPLETED ─▶ CLOSED
  *                                                                   └─▶ DELIVERY_FAILED ─▶ DELIVERED / RETURNED
- *                     PICKING ─completed in part─▶ PARTIALLY_FULFILLED ─rest packed─▶ PACKED
+ *                     PICKING ─completed in part─▶ PARTIALLY_FULFILLED ─rest packed, nothing left yet─▶ PACKED
  *                     PACKED ─part handed over─▶ PARTIALLY_FULFILLED ─rest handed over─▶ SHIPPED
+ *                     (a part handed over: the rest - of the batch, or a later batch - is packed while it stays
+ *                      PARTIALLY_FULFILLED, WF4-PF-NEXT)
  *   DELIVERED ─▶ RETURN_REQUESTED ─▶ RETURNED ─▶ REFUNDED / PARTIALLY_REFUNDED ─▶ CLOSED
  * </pre>
  *
@@ -32,8 +34,12 @@ import java.util.stream.Collectors;
  * Fulfilled" and 09's "đơn ở trạng thái giao một phần": the order goes out in parts. It is entered when the check station
  * completes part of what the order wants now (08 §4.4 step 8 - the owner's decision WF4-PF-STATUS of 2026-11-12: at
  * once, not when that part is handed over), when part of it is handed over with the rest still to go (a later delivery
- * batch, 17 §4.5), and when a shipment comes back while others arrived. It is left when the rest is packed
- * ({@code PACKED}), handed over ({@code SHIPPED}), or closed by staff once a part has left, after which the order shows
+ * batch, 17 §4.5), and when a shipment comes back while others arrived. It is left for {@code PACKED} only when the
+ * rest is packed before anything was handed over: once a part left, later delivery batches and the rest of a batch are
+ * picked, checked and handed over while it stays PARTIALLY_FULFILLED (17 §4.5; owner decision WF4-PF-NEXT,
+ * 2026-11-13). It is left when the rest is handed over ({@code SHIPPED}), or closed by staff, after which the order
+ * shows what its shipments say; cartons labelled for it and not handed over when the rest is closed stay on it and are
+ * delivered, the order PARTIALLY_FULFILLED until their handover (WF4-CLOSE-REST, 2026-11-13). The order shows
  * what its shipments say ({@code SHIPPED}, {@code DELIVERY_FAILED}, {@code DELIVERED}, {@code RETURNED}). An order with every
  * unit in a shipment follows its shipments: in transit while one is, {@code DELIVERY_FAILED} once all have an outcome and
  * one failed, {@code DELIVERED} when all arrived; a shipment that comes back while others arrived makes the order
@@ -220,7 +226,8 @@ public enum OrderStatus {
             // PARTIALLY_FULFILLED: completed in part at the check station (08 §4.4, WF4-PF-STATUS 2026-11-12).
             case PICKING -> target == PACKED || target == PARTIALLY_FULFILLED || target == ON_HOLD
                     || target == CANCELLED;
-            // PACKED: the rest packed (17 §5). SHIPPED: the rest handed over. SHIPPED / DELIVERY_FAILED / DELIVERED /
+            // PACKED: the rest packed while nothing was handed over yet (17 §5; WF4-PF-NEXT). SHIPPED: the rest handed
+            // over. SHIPPED / DELIVERY_FAILED / DELIVERED /
             // RETURNED: the rest closed by staff, the order then shows its shipments.
             case PARTIALLY_FULFILLED -> target == PACKED || target == SHIPPED || target == DELIVERY_FAILED
                     || target == DELIVERED || target == RETURNED || target == ON_HOLD;

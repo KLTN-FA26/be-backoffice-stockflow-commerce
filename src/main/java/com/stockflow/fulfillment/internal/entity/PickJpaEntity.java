@@ -199,6 +199,22 @@ public class PickJpaEntity extends BaseEntity {
         status = PickStatus.PICKING;
     }
     /**
+     * The rest of the order was closed while this task was back at PICKING for a top-up (07 §4.3 step 7; 17 §4.8 step
+     * 33, WF4-CLOSE-REST 2026-11-13): its open lines were cancelled, and with every line now picked or cancelled it is
+     * PICKED again, so the check station can finish its labelled cartons. Any other status is left as it is.
+     *
+     * @return whether this changed the task
+     */
+    public boolean pickedOnClosedRest(Instant now) {
+        if (status != PickStatus.PICKING) {
+            return false;
+        }
+        status = PickStatus.PICKED;
+        pickedAt = java.util.Objects.requireNonNull(now, "now");
+        return true;
+    }
+
+    /**
      * The order was cancelled (SCRUM-460). Once picking has started, goods may be off their bins, so
      * the pick is flagged for a put-back. Idempotent.
      *

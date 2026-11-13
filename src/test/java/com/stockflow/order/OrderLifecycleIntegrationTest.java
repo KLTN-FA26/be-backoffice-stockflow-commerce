@@ -173,7 +173,8 @@ class OrderLifecycleIntegrationTest {
                 .isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
         assertThat(orders.recordHandover(order.orderId(), handover(order, s1, 1)).status())
                 .as("the same shipment again").isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
-        assertThat(orders.markPacked(order.orderId(), staff).status()).isEqualTo(OrderStatus.PACKED);
+        assertThat(orders.markPacked(order.orderId(), staff).status()).as("a part left already (WF4-PF-NEXT)")
+                .isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
         OrderSummary shipped = orders.recordHandover(order.orderId(), handover(order, s2, 3));
         assertThat(shipped.status()).isEqualTo(OrderStatus.SHIPPED);
         assertThat(shipped.lifecycle().shipments()).hasSize(2);
@@ -204,14 +205,14 @@ class OrderLifecycleIntegrationTest {
         List<OrderStatusChange> history = orders.history(order.orderId());
         assertThat(history).extracting(OrderStatusChange::to).containsExactly(OrderStatus.DRAFT,
                 OrderStatus.PENDING_CONTRACT, OrderStatus.PENDING_PAYMENT, OrderStatus.CONFIRMED, OrderStatus.READY_TO_FULFILL, OrderStatus.PICKING, OrderStatus.ON_HOLD,
-                OrderStatus.PICKING, OrderStatus.PARTIALLY_FULFILLED, OrderStatus.PACKED, OrderStatus.SHIPPED,
+                OrderStatus.PICKING, OrderStatus.PARTIALLY_FULFILLED, OrderStatus.SHIPPED,
                 OrderStatus.DELIVERY_FAILED, OrderStatus.DELIVERED, OrderStatus.COMPLETED, OrderStatus.CLOSED);
         // The first two entries are the contract's: the order drafted, then waiting for its contract.
         assertThat(history.get(6).reason()).isEqualTo("ADDRESS: sai phường");
         assertThat(history.get(6).actorId()).isEqualTo(staff);
         assertThat(history.get(7).reason()).isEqualTo("HOLD_RESOLVED_ADDRESS: khách đã xác nhận");
-        assertThat(history.get(11).reason()).isEqualTo("CUSTOMER_ABSENT");
-        assertThat(history.get(14).actorId()).as("closed by the system").isNull();
+        assertThat(history.get(10).reason()).isEqualTo("CUSTOMER_ABSENT");
+        assertThat(history.get(13).actorId()).as("closed by the system").isNull();
         assertThat(jdbc.queryForObject("SELECT count(*) FROM ordering.order_hold WHERE order_id = ? AND reason = 'ADDRESS' "
                 + "AND note = 'sai phường' AND raised_by = ? AND resolved_at IS NOT NULL", Long.class, order.orderId(), staff))
                 .isEqualTo(1);
@@ -347,8 +348,9 @@ class OrderLifecycleIntegrationTest {
 
     @Test
     @DisplayName("WF4-PF-STATUS: completed in part at the check station - PARTIALLY_FULFILLED at once, the customer sees "
-            + "it in preparation and not shipped; the rest not closed before the part left; the part handed over - "
-            + "still PARTIALLY_FULFILLED, in transit; the rest packed - PACKED; handed over - SHIPPED")
+            + "it in preparation and not shipped; nothing handed over and nothing labelled: no rest to close; the part "
+            + "handed over - still PARTIALLY_FULFILLED, in transit; the rest packed - still PARTIALLY_FULFILLED "
+            + "(WF4-PF-NEXT); handed over - SHIPPED")
     void completedInPartThenTheRest() {
         OrderSummary order = picking(4);
         OrderSummary partial = orders.markPartlyPacked(order.orderId(), staff);
@@ -362,7 +364,8 @@ class OrderLifecycleIntegrationTest {
         assertThat(card(order.orderId()).deliveryState()).as("the list row too")
                 .isEqualTo(CustomerOrders.DeliveryState.NOT_SHIPPED);
         assertThat(code(catchThrowable(() -> orders.closeRemainder(order.orderId(), CancellationReasonCode.OUT_OF_STOCK,
-                null, staff)))).as("its packed part still at dispatch").isEqualTo(ErrorCode.ORDER_INVALID_TRANSITION);
+                null, staff)))).as("no part to deliver: nothing handed over, nothing labelled")
+                .isEqualTo(ErrorCode.ORDER_INVALID_TRANSITION);
 
         UUID s1 = UUID.randomUUID();
         UUID s2 = UUID.randomUUID();
@@ -371,11 +374,27 @@ class OrderLifecycleIntegrationTest {
         assertThat(customerOrders.myOrder(customer, order.orderId()).deliveryState())
                 .isEqualTo(CustomerOrders.DeliveryState.IN_TRANSIT);
         assertThat(card(order.orderId()).deliveryState()).isEqualTo(CustomerOrders.DeliveryState.IN_TRANSIT);
-        assertThat(orders.markPacked(order.orderId(), staff).status()).isEqualTo(OrderStatus.PACKED);
+        assertThat(orders.markPacked(order.orderId(), staff).status()).isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
         assertThat(orders.recordHandover(order.orderId(), handover(order, s2, 3)).status())
                 .isEqualTo(OrderStatus.SHIPPED);
         assertThat(orders.history(order.orderId())).extracting(OrderStatusChange::to).endsWith(OrderStatus.PICKING,
-                OrderStatus.PARTIALLY_FULFILLED, OrderStatus.PACKED, OrderStatus.SHIPPED);
+                OrderStatus.PARTIALLY_FULFILLED, OrderStatus.SHIPPED);
+    }
+
+    @Test
+    @DisplayName("WF4-PF-NEXT: completed in part, the rest packed in full before anything left - PACKED (17 §5.1 "
+            + "\"phần còn lại kiểm đủ\"); both parts handed over - PARTIALLY_FULFILLED, then SHIPPED")
+    void completedInPartThenTheRestBeforeAnythingLeft() {
+        OrderSummary order = picking(4);
+        orders.markPartlyPacked(order.orderId(), staff);
+        assertThat(orders.markPacked(order.orderId(), staff).status()).isEqualTo(OrderStatus.PACKED);
+        assertThat(orders.recordHandover(order.orderId(), handover(order, UUID.randomUUID(), 1)).status())
+                .isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
+        assertThat(orders.recordHandover(order.orderId(), handover(order, UUID.randomUUID(), 3)).status())
+                .isEqualTo(OrderStatus.SHIPPED);
+        assertThat(orders.history(order.orderId())).extracting(OrderStatusChange::to).endsWith(OrderStatus.PICKING,
+                OrderStatus.PARTIALLY_FULFILLED, OrderStatus.PACKED, OrderStatus.PARTIALLY_FULFILLED,
+                OrderStatus.SHIPPED);
     }
 
     @Test
@@ -407,9 +426,10 @@ class OrderLifecycleIntegrationTest {
     }
 
     @Test
-    @DisplayName("WF4-PF-STATUS with a delivery schedule (17 §4.5, BR-29): batch 1 completed in part - PARTIALLY_FULFILLED; "
-            + "batch 2 not released while batch 1 is not all handed over; batch 1's rest packed - PACKED, handed over - "
-            + "PARTIALLY_FULFILLED; batch 2 released and packed in full - PACKED; handed over in its window - SHIPPED")
+    @DisplayName("WF4-PF-STATUS / WF4-PF-NEXT with a delivery schedule (17 §4.5, BR-29): batch 1 completed in part - "
+            + "PARTIALLY_FULFILLED; batch 2 not released while batch 1 is not all handed over; batch 1's rest packed and "
+            + "handed over - PARTIALLY_FULFILLED throughout; batch 2 released and packed in full - still "
+            + "PARTIALLY_FULFILLED; handed over in its window - SHIPPED")
     void completedInPartWithADeliverySchedule() {
         CustomerSkuRows.Issued pairs = CustomerSkuRows.issue(jdbc, tx, entityManager, customer, 2);
         CustomerSkuRows.stock(jdbc, tx, pairs.sku(), 8);
@@ -434,8 +454,8 @@ class OrderLifecycleIntegrationTest {
         assertThat(code(catchThrowable(() -> releaseNext(orderId)))).as("batch 1 is not all handed over")
                 .isEqualTo(ErrorCode.DELIVERY_BATCH_NOT_NEXT);
 
-        // Batch 1's rest: packed in full, handed over - batch 2 still to come.
-        assertThat(orders.markPacked(orderId, staff).status()).isEqualTo(OrderStatus.PACKED);
+        // Batch 1's rest: packed in full, handed over - batch 2 still to come; a part left, so never PACKED again.
+        assertThat(orders.markPacked(orderId, staff).status()).isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
         assertThat(orders.recordHandover(orderId, handover(order, UUID.randomUUID(), 2)).status())
                 .isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
         assertThat(jdbc.queryForList("SELECT DISTINCT delivery_batch_id FROM ordering.order_shipment WHERE order_id = ?",
@@ -443,7 +463,7 @@ class OrderLifecycleIntegrationTest {
 
         // Batch 2: released while PARTIALLY_FULFILLED, packed in full, handed over once its window is open.
         assertThat(releaseNext(orderId).status()).isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
-        assertThat(orders.markPacked(orderId, staff).status()).isEqualTo(OrderStatus.PACKED);
+        assertThat(orders.markPacked(orderId, staff).status()).isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
         UUID s3 = UUID.randomUUID();
         assertThat(code(catchThrowable(() -> orders.recordHandover(orderId, handover(order, s3, 4)))))
                 .isEqualTo(ErrorCode.DELIVERY_BATCH_WINDOW_NOT_OPEN);

@@ -80,9 +80,10 @@ class CartonCheckServiceTest {
             mock(com.stockflow.fulfillment.internal.repository.PickLineJpaRepository.class),
             mock(PackageJpaRepository.class), planMembers,
             mock(com.stockflow.fulfillment.internal.repository.DispatchLoadPackageJpaRepository.class), 6000);
+    private final LabelledCartons labelledCartons = mock(LabelledCartons.class);
     private final CartonCheckService service = new CartonCheckService(picks, packs, mock(PackageJpaRepository.class),
             shipments, store, orders, measures, payments, identities, mock(WarehouseService.class), timeline,
-            Clock.fixed(NOW, ZoneOffset.UTC), loadPlans, planVehicles);
+            Clock.fixed(NOW, ZoneOffset.UTC), loadPlans, planVehicles, labelledCartons);
 
     private final UUID worker = UUID.randomUUID();
     private final UUID otherWorker = UUID.randomUUID();

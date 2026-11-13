@@ -103,13 +103,16 @@ class CartonCheckService implements CartonChecks {
     private final CartonMeasures measures;
     private final LoadPlanReleases loadPlans;
     private final PlanVehicles planVehicles;
+    /** The units labelled and not handed over, which the closure of an order's rest keeps (WF4-CLOSE-REST). */
+    private final LabelledCartons labelledCartons;
 
     @SuppressWarnings("java:S107")
     CartonCheckService(PickJpaRepository picks, PackJpaRepository packs, PackageJpaRepository packages,
                        ShipmentJpaRepository shipments, CartonCheckStore store, OrderService orders,
                        CartonMeasures measures, PaymentService payments, IdentityService identities,
                        WarehouseService warehouses, ShipmentTimeline timeline, Clock clock,
-                       LoadPlanReleases loadPlans, PlanVehicles planVehicles) {
+                       LoadPlanReleases loadPlans, PlanVehicles planVehicles, LabelledCartons labelledCartons) {
+        this.labelledCartons = labelledCartons;
         this.loadPlans = loadPlans;
         this.planVehicles = planVehicles;
         this.picks = picks;
@@ -242,6 +245,9 @@ class CartonCheckService implements CartonChecks {
             orders.recordFirstLabel(ctx.order().orderId());
         }
         store.save(check, ctx.pack());
+        if (!labeled.isEmpty()) {
+            requireStillWanted(ctx.order().orderId());
+        }
         log.info("Order {}: {} carton(s) labelled", ctx.pick().getOrderNumber(), labeled.size());
         return view(ctx, check);
     }
@@ -423,6 +429,67 @@ class CartonCheckService implements CartonChecks {
         }
         log.info("Check of cancelled order {}: {} carton(s) removed to the put-back queue", pick.getOrderNumber(),
                 removed.size());
+    }
+
+    /**
+     * Sales closed the rest of the order (17 §4.8 step 33; owner decision WF4-CLOSE-REST, 2026-11-13): this task's
+     * labelled cartons stay - in a shipment waiting at dispatch, or labelled and still to be completed into one - and
+     * every carton picked for it and not labelled is REMOVED ({@code REMAINDER_CLOSED}) into the put-back queue. The
+     * cartons picked since the session was last written are received first, so none is left out. Called by the closure's
+     * listener under the pick's lock.
+     *
+     * @return whether a labelled carton keeps the task; false - nothing changed - for a session with none, which the
+     *         caller cancels whole
+     */
+    public boolean closeRestForOrder(PickJpaEntity pick, PackJpaEntity pack, UUID closedBy) {
+        CartonCheck check = store.load(pack, pick.getOrderId(), pick.getOrderNumber());
+        if (!check.anyLabeled()) {
+            return false;
+        }
+        check.receive(store.pickedCartons(pick.getId()), Identifiers::newId);
+        List<CartonCheck.Carton> removed = check.closeRest(closedBy, clock.instant());
+        store.save(check, pack);
+        log.info("Rest of order {} closed: {} carton(s) not labelled removed to the put-back queue; the check is {}",
+                pick.getOrderNumber(), removed.size(), check.status());
+        return true;
+    }
+
+    /**
+     * The order's rest closed with this task's cartons not labelled yet, and nothing of it labelled (WF4-CLOSE-REST): the
+     * session is CANCELLED and every carton REMOVED ({@code REMAINDER_CLOSED}) into the put-back queue, as a cancelled
+     * order's are. It has no shipment to cancel - a shipment is made only of labelled cartons.
+     */
+    public void cancelForClosedRest(PickJpaEntity pick, PackJpaEntity pack, UUID closedBy) {
+        CartonCheck check = store.load(pack, pick.getOrderId(), pick.getOrderNumber());
+        List<CartonCheck.Carton> removed = check.cancel(clock.instant(), Set.of(),
+                CartonCheck.RemovalReason.REMAINDER_CLOSED, closedBy);
+        store.save(check, pack);
+        log.info("Rest of order {} closed: the check of task {} cancelled, {} carton(s) removed to the put-back queue",
+                pick.getOrderNumber(), pick.getId(), removed.size());
+    }
+
+    /**
+     * After a label, under the order's lock (taken by {@code recordFirstLabel}): once Sales closed the rest of the order,
+     * a carton of the closed part is no longer wanted and is not labelled - the labelled cartons not handed over must
+     * stay within what the order still wants of each line (WF4-CLOSE-REST). An order without a closure is not asked.
+     */
+    private void requireStillWanted(UUID orderId) {
+        OrderSummary order = requireOrder(orderId);
+        if (order.lifecycle() == null
+                || order.lifecycle().lines().stream().noneMatch(line -> line.cancelledQuantity() > 0)) {
+            return;
+        }
+        Map<UUID, Integer> labelled = labelledCartons.unitsOf(orderId);
+        Map<UUID, Integer> quantities = order.lines().stream()
+                .collect(Collectors.toMap(OrderSummary.LineSummary::lineId, OrderSummary.LineSummary::quantity));
+        for (OrderSummary.LineProgress line : order.lifecycle().lines()) {
+            int wanted = quantities.getOrDefault(line.lineId(), 0) - line.cancelledQuantity() - line.shippedQuantity();
+            if (labelled.getOrDefault(line.lineId(), 0) > wanted) {
+                throw new BusinessException(ErrorCode.PACK_STATE_CONFLICT, ("The rest of order %s was closed: its "
+                        + "cartons not labelled are no longer wanted, and go back to the put-back queue")
+                        .formatted(order.orderNumber()));
+            }
+        }
     }
 
     // ------------------------------------------------------------------ internals
