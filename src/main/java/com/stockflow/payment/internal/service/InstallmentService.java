@@ -357,8 +357,9 @@ public class InstallmentService {
             throw new BusinessException(ErrorCode.TRANSFER_INSTRUCTIONS_UNAVAILABLE,
                     "The company's bank account is not configured");
         }
+        // The BIN goes along: without it the chat's transfer card draws no VietQR code.
         CompanyBankAccount account = new CompanyBankAccount(bank.bankName().strip(), bank.accountNumber().strip(),
-                bank.accountName().strip());
+                bank.accountName().strip(), bank.bin());
         return new TransferInstructions(installment, account, installment.outstanding(),
                 installment.transferReference());
     }
