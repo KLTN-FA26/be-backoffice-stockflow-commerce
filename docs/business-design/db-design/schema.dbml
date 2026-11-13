@@ -224,6 +224,19 @@ Enum warehouse.putaway_task_status {
   CANCELLED
 }
 
+Enum warehouse.putaway_trip_status {
+  LOADING
+  IN_PROGRESS
+  COMPLETED
+  CLOSED
+}
+
+Enum warehouse.putaway_trip_item_status {
+  ON_CART
+  PLACED
+  RETURNED
+}
+
 Enum warehouse.shelf_status {
   ACTIVE
   BLOCKED
@@ -547,6 +560,19 @@ Enum design.design_artifact_artifact_role {
   TECHNICAL_SPEC
   PRINT_READY
   PRODUCTION_INSTRUCTION
+}
+
+Enum design.design_decision_decision {
+  CREATED
+  DERIVED_FROM_SNAPSHOT
+  PREFLIGHT_FAILED
+  SUBMITTED_FOR_REVIEW
+  RETURNED
+  APPROVED
+  ARCHIVED
+  QUOTE_REQUESTED
+  ADDED_TO_PROJECT
+  REMOVED_FROM_PROJECT
 }
 
 Enum design.design_draft_status {
@@ -1604,6 +1630,43 @@ Table warehouse.putaway_task [headercolor: #8E6C3A] {
   goods_receipt_line_id uuid
   stock_package_id      uuid
   source                varchar(32) [not null, default: 'RECEIPT']
+}
+
+Table warehouse.putaway_trip [headercolor: #8E6C3A] {
+  id                uuid [pk]
+  warehouse_id      uuid [not null]
+  operator_id       uuid [not null]
+  status            warehouse.putaway_trip_status [not null]
+  start_location_id uuid
+  started_at        timestamptz
+  last_activity_at  timestamptz [not null]
+  closed_at         timestamptz
+  closed_by         uuid
+  version           bigint [not null, default: 0]
+  created_at        timestamptz [not null]
+  created_by        varchar(100)
+  last_modified_at  timestamptz
+  last_modified_by  varchar(100)
+}
+
+Table warehouse.putaway_trip_item [headercolor: #8E6C3A] {
+  id                   uuid [pk]
+  trip_id              uuid [not null]
+  putaway_task_id      uuid [not null]
+  status               warehouse.putaway_trip_item_status [not null]
+  assigned_location_id uuid
+  stop_sequence        int
+  hold_released_at     timestamptz
+  loaded_at            timestamptz [not null]
+  placed_at            timestamptz
+  version              bigint [not null, default: 0]
+  created_at           timestamptz [not null]
+  created_by           varchar(100)
+  last_modified_at     timestamptz
+  last_modified_by     varchar(100)
+  indexes {
+    (trip_id, putaway_task_id) [unique]
+  }
 }
 
 Table warehouse.shelf [headercolor: #8E6C3A] {
@@ -2821,7 +2884,7 @@ Table design.design_decision [headercolor: #AA4A9E] {
   draft_id         uuid [not null]
   artifact_id      uuid
   actor_id         uuid [not null]
-  decision         varchar(40) [not null]
+  decision         design.design_decision_decision [not null]
   notes            varchar(4000) [not null]
   draft_version    bigint [not null]
   version          bigint [not null, default: 0]
@@ -4260,6 +4323,13 @@ Ref: warehouse.putaway_task.goods_receipt_line_id > procurement.goods_receipt_li
 Ref: warehouse.putaway_task.sku > inventory.inventory_items.sku [delete: restrict]
 Ref: warehouse.putaway_task.stock_package_id > inventory.stock_package.id [delete: restrict]
 Ref: warehouse.putaway_task.target_location_id > warehouse.storage_location.id [delete: restrict]
+Ref: warehouse.putaway_trip.closed_by > identity.app_user.id
+Ref: warehouse.putaway_trip.operator_id > identity.app_user.id
+Ref: warehouse.putaway_trip.start_location_id > warehouse.storage_location.id [delete: restrict]
+Ref: warehouse.putaway_trip.warehouse_id > warehouse.warehouse.id [delete: restrict]
+Ref: warehouse.putaway_trip_item.assigned_location_id > warehouse.storage_location.id [delete: restrict]
+Ref: warehouse.putaway_trip_item.putaway_task_id > warehouse.putaway_task.id [delete: restrict]
+Ref: warehouse.putaway_trip_item.trip_id > warehouse.putaway_trip.id [delete: cascade]
 Ref: warehouse.shelf.warehouse_id > warehouse.warehouse.id [delete: restrict]
 Ref: warehouse.shelf.zone_id > warehouse.zone.id
 Ref: warehouse.shelf_level.shelf_id > warehouse.shelf.id
@@ -4636,6 +4706,8 @@ TableGroup warehouse_group [color: #8E6C3A] {
   warehouse.boundary
   warehouse.move_task
   warehouse.putaway_task
+  warehouse.putaway_trip
+  warehouse.putaway_trip_item
   warehouse.shelf
   warehouse.shelf_level
   warehouse.slotting_rule
