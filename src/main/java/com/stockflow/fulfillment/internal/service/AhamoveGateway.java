@@ -28,7 +28,9 @@ import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Ahamove's partner API v3 (3-4; developers.ahamove.com): {@code POST /v3/accounts/token},
- * {@code GET /v3/services?city_id=&delivery_type=TRUCK}, {@code POST /v3/orders}, {@code DELETE /v3/orders/{id}}.
+ * {@code GET /v3/services?city_id=&delivery_type=TRUCK}, {@code POST /v3/orders}, {@code DELETE /v3/orders/{id}},
+ * {@code GET /v3/orders/{id}} (the order as it is now: after a refused cancel, and before a final outcome its unsigned
+ * callback reported is applied).
  *
  * <p>A token is asked for with the carrier's account (the registered phone number) and key, and kept in memory for that
  * account and key: on production it lasts a year, and asking for a new one invalidates the old (Ahamove's FAQ), so it is
@@ -99,7 +101,7 @@ class AhamoveGateway implements CarrierBookingGateway {
     }
 
     @Override
-    public java.util.Optional<String> orderStatus(Caller caller, String orderId) {
+    public java.util.Optional<OrderState> orderState(Caller caller, String orderId) {
         Answer answer;
         try {
             answer = authorised(caller, "STATUS", HttpMethod.GET, "/v3/orders/" + UriUtils.encodePathSegment(orderId,
@@ -108,13 +110,43 @@ class AhamoveGateway implements CarrierBookingGateway {
             if (failed.answered() && failed.getMessage() != null && failed.getMessage().startsWith("404")) {
                 return java.util.Optional.empty();
             }
+            if (failed.answered() && passing(failed.getMessage())) {
+                // Too many requests, too early, timed out: Ahamove said nothing about the order - asked again later it
+                // will. Told apart from a refusal, which is a verdict.
+                throw new CarrierCallFailed(false, failed.code(), failed.getMessage());
+            }
             throw failed;
         }
         JsonNode order = answer.json();
         if (order != null && order.has("order") && order.get("order").isObject()) {
             order = order.get("order");
         }
-        return java.util.Optional.ofNullable(text(order, "status")).map(s -> s.strip().toUpperCase(Locale.ROOT));
+        if (order == null || !order.isObject()) {
+            // A 200 with no order in it is not "no such order" (that is a 404): nothing was learnt.
+            throw new CarrierCallFailed(false, null, "Ahamove answered the lookup of order " + orderId
+                    + " with nothing that reads as an order");
+        }
+        // The order as its callbacks carry it: path[0] is the pickup, each point after it a drop-off.
+        List<String> stops = new ArrayList<>();
+        JsonNode path = order.get("path");
+        if (path != null && path.isArray()) {
+            for (int k = 1; k < path.size(); k++) {
+                String status = upper(text(path.get(k), "status"));
+                stops.add(status == null ? "" : status);
+            }
+        }
+        return java.util.Optional.of(new OrderState(upper(text(order, "status")), upper(text(order, "sub_status")),
+                stops));
+    }
+
+    /** 408, 425, 429: the request was not served this time; the same one may be later. */
+    private static boolean passing(String described) {
+        return described != null
+                && (described.startsWith("408") || described.startsWith("425") || described.startsWith("429"));
+    }
+
+    private static String upper(String value) {
+        return value == null ? null : value.strip().toUpperCase(Locale.ROOT);
     }
 
     @Override

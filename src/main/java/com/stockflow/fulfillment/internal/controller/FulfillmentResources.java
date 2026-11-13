@@ -22,6 +22,7 @@ final class FulfillmentResources {
     static final String WAYBILL_CORRECTIONS = FulfillmentPermissions.WAYBILL_CORRECTIONS;
     static final String WAYBILL_IMPORTS = FulfillmentPermissions.WAYBILL_IMPORTS;
     static final String CARRIER_EVENTS = FulfillmentPermissions.CARRIER_EVENTS;
+    static final String DELIVERY_OUTCOME_IMPORTS = FulfillmentPermissions.DELIVERY_OUTCOME_IMPORTS;
     static final String DELIVERY_CORRECTIONS = FulfillmentPermissions.DELIVERY_CORRECTIONS;
     /**
      * The order module's resource, declared there ({@code OrderResources.ORDERS}): a customer reads their own order's

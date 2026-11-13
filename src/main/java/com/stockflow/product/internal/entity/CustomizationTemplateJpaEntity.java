@@ -7,6 +7,7 @@ import jakarta.persistence.Table;
 import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
 
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -68,6 +69,20 @@ public class CustomizationTemplateJpaEntity extends BaseEntity {
     @Column(name = "reference_content_type", length = 100)
     private String referenceContentType;
 
+    @Column(name = "model_file_key", length = 500)
+    private String modelFileKey;
+
+    @Column(name = "model_file_name", length = 255)
+    private String modelFileName;
+
+    @Column(name = "model_file_checksum", length = 64)
+    private String modelFileChecksum;
+
+    /** {@code [{"printAreaCode": ..., "meshName": ...}]}; checked against the print areas by the service. */
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "model_surfaces_json", nullable = false, columnDefinition = "jsonb")
+    private List<Map<String, Object>> modelSurfaces = List.of();
+
     protected CustomizationTemplateJpaEntity() {
     }
 
@@ -91,6 +106,10 @@ public class CustomizationTemplateJpaEntity extends BaseEntity {
     public String getReferenceFileKey() { return referenceFileKey; }
     public String getReferenceFileName() { return referenceFileName; }
     public String getReferenceContentType() { return referenceContentType; }
+    public String getModelFileKey() { return modelFileKey; }
+    public String getModelFileName() { return modelFileName; }
+    public String getModelFileChecksum() { return modelFileChecksum; }
+    public List<Map<String, Object>> getModelSurfaces() { return modelSurfaces; }
 
     /** Everything a Sales Manager edits at once; the model as its stored JSON object. */
     public void describe(String name, int minDpi, String colorMode, String[] allowedFileFormats, int maxFileSizeMb,
@@ -111,5 +130,16 @@ public class CustomizationTemplateJpaEntity extends BaseEntity {
         this.referenceFileKey = key;
         this.referenceFileName = fileName;
         this.referenceContentType = contentType;
+    }
+
+    /** The {@code .glb} the model was measured from; {@code checksum} is its SHA-256 in hex. */
+    public void attachModelFile(String key, String fileName, String checksum) {
+        this.modelFileKey = key;
+        this.modelFileName = fileName;
+        this.modelFileChecksum = checksum;
+    }
+
+    public void mapModelSurfaces(List<Map<String, Object>> surfaces) {
+        this.modelSurfaces = surfaces;
     }
 }

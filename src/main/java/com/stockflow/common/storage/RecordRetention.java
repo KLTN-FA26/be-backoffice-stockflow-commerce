@@ -11,5 +11,11 @@ public enum RecordRetention {
     CONFIRMED_DESIGN,
 
     /** A sales contract as sent to the customer, and as signed (4B-4, kltn-docs 14 BR-14): what binds both parties. */
-    SALES_CONTRACT
+    SALES_CONTRACT,
+
+    /**
+     * An issued e-invoice's XML and PDF (WF-05 E2): an accounting record, kept at least ten years (Luật Kế toán 2015
+     * Điều 41) and never changed once issued (kltn-docs 21 BR-03).
+     */
+    EINVOICE
 }

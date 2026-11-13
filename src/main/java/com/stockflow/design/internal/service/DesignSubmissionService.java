@@ -22,6 +22,7 @@ import com.stockflow.design.internal.repository.DesignAssetJpaRepository;
 import com.stockflow.design.internal.repository.DesignDecisionJpaRepository;
 import com.stockflow.design.internal.repository.DesignDocumentJpaRepository;
 import com.stockflow.design.internal.repository.DesignDraftJpaRepository;
+import com.stockflow.inventory.api.UomConversion;
 import com.stockflow.inventory.api.UomConversionService;
 import com.stockflow.product.api.PrintConfig;
 import com.stockflow.product.api.PrintConfigs;
@@ -345,7 +346,7 @@ public class DesignSubmissionService {
     /** An active packing unit of more than one base unit: the variant's carton specification (kltn-docs 01 BR-03). */
     private boolean hasCartonSpec(String sku) {
         return units.conversionsOf(List.of(new Sku(sku))).getOrDefault(sku, List.of()).stream()
-                .anyMatch(unit -> unit.active() && !unit.base() && unit.factor() > 1);
+                .anyMatch(UomConversion::cartonCandidate);
     }
 
     /** The design's current file of each role, its own. */

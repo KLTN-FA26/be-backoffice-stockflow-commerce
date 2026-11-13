@@ -95,6 +95,8 @@ class PermissionMatrixTest {
                     + "the token (4B-10: replaces GET /orders/payment-terms)"),
             Map.entry("GET /api/v1/installments/me", "the caller's own installments, selected by the customer profile of the "
                     + "token (4B-6)"),
+            Map.entry("GET /api/v1/einvoices/me", "the e-invoices issued to the caller's own customer, selected by the "
+                    + "customer profile of the token (WF-05 E5)"),
             Map.entry("GET /api/v1/customer/production-samples", "the caller's own print samples waiting for them, "
                     + "selected by the customer profile of the token (4A-4)"),
             Map.entry("GET /api/v1/notifications/me", "the caller's own inbox: every query is recipient_id = the token's subject"),
@@ -178,6 +180,9 @@ class PermissionMatrixTest {
             Map.entry("POST /api/v1/fulfillment/tasks/{taskId}/shipping-labels", "fulfillment-packing:READ"),
             Map.entry("POST /api/v1/fulfillment/carriers", "fulfillment-carriers:UPDATE"),
             Map.entry("PUT /api/v1/fulfillment/carriers/{carrierId}", "fulfillment-carriers:UPDATE"),
+            // WF-05 fix plan item 6: an unsigned webhook's credential replaced without a moment when none holds.
+            Map.entry("POST /api/v1/fulfillment/carriers/{carrierId}/webhook-credential-rotation",
+                    "fulfillment-carriers:UPDATE"),
             // 3-1 (V20261108001300): an API_BOOKING carrier's service codes, read as the catalogue is, kept as it is.
             Map.entry("GET /api/v1/fulfillment/carriers/{carrierId}/service-codes", "fulfillment-shipments:READ"),
             Map.entry("PUT /api/v1/fulfillment/carriers/{carrierId}/service-codes", "fulfillment-carriers:UPDATE"),
@@ -230,6 +235,16 @@ class PermissionMatrixTest {
             Map.entry("POST /api/v1/fulfillment/waybill-imports", "fulfillment-waybill-imports:CREATE"),
             Map.entry("GET /api/v1/fulfillment/waybill-imports", "fulfillment-waybill-imports:READ"),
             Map.entry("GET /api/v1/fulfillment/waybill-imports/{importId}", "fulfillment-waybill-imports:READ"),
+            // WF-05 fix plan item 5 (V20261122000100): delivery outcomes applied from a file.
+            Map.entry("GET /api/v1/fulfillment/delivery-outcome-imports/template",
+                    "fulfillment-delivery-outcome-imports:READ"),
+            Map.entry("POST /api/v1/fulfillment/delivery-outcome-imports/preview",
+                    "fulfillment-delivery-outcome-imports:CREATE"),
+            Map.entry("POST /api/v1/fulfillment/delivery-outcome-imports",
+                    "fulfillment-delivery-outcome-imports:CREATE"),
+            Map.entry("GET /api/v1/fulfillment/delivery-outcome-imports", "fulfillment-delivery-outcome-imports:READ"),
+            Map.entry("GET /api/v1/fulfillment/delivery-outcome-imports/{importId}",
+                    "fulfillment-delivery-outcome-imports:READ"),
             Map.entry("GET /api/v1/fulfillment/carrier-events", "fulfillment-carrier-events:READ"),
             Map.entry("GET /api/v1/fulfillment/carrier-events/{eventId}", "fulfillment-carrier-events:READ"),
             Map.entry("POST /api/v1/fulfillment/carrier-events/{eventId}/resolution", "fulfillment-carrier-events:UPDATE"),
@@ -301,6 +316,11 @@ class PermissionMatrixTest {
             Map.entry("fulfillment-waybill-imports:CREATE", Set.of(Role.WAREHOUSE_STAFF, Role.WAREHOUSE_MANAGER,
                     Role.SYSTEM_ADMIN)),
             // 3-5, kltn-docs 09 §4.5 step 8: the warehouse manager reads and resolves the carriers' error list.
+            // WF-05 fix plan item 5: the warehouse manager applies a carrier's list of delivery outcomes.
+            Map.entry("fulfillment-delivery-outcome-imports:READ", Set.of(Role.WAREHOUSE_MANAGER,
+                    Role.SYSTEM_ADMIN)),
+            Map.entry("fulfillment-delivery-outcome-imports:CREATE", Set.of(Role.WAREHOUSE_MANAGER,
+                    Role.SYSTEM_ADMIN)),
             Map.entry("fulfillment-carrier-events:READ", Set.of(Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             Map.entry("fulfillment-carrier-events:UPDATE", Set.of(Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             // 3-6, kltn-docs 09 §4.3 step 5: the warehouse manager corrects an outcome the carrier reported wrongly.
@@ -757,6 +777,43 @@ class PermissionMatrixTest {
         assertThat(byKey.get("GET /api/v1/orders/me/{orderId}/delivery-batches").rp().scope()).isEqualTo(DataScope.OWN);
         assertThat(roles.resolve(List.of(Role.CUSTOMER.authority())).permissions())
                 .doesNotContain(PermissionCode.parse("sales-contracts:READ"), PermissionCode.parse("sales-contracts:UPDATE"));
+    }
+
+    /**
+     * WF-05 fix plan, section 2 (kltn-docs 09 §4.3, 17 §4.8): a delivery failure case is Sales' to decide. Delivering
+     * again lifts the order's hold ({@code sales-order-holds:UPDATE}); cancelling what was not delivered is the closure
+     * of the rest with its fee ({@code sales-order-cancellations:UPDATE}, as {@code /remainder-closure}); the cases are
+     * read as orders are. Sales hold all three; the warehouse manager, who releases the redelivery, decides neither;
+     * the customer holds {@code sales-orders:READ} for their own orders and is refused by the back-office check.
+     */
+    @Test
+    void theDeliveryFailureEndpointsNeedTheirPermissions() {
+        Map<String, Handler> byKey = new HashMap<>();
+        handlers().forEach(h -> byKey.put(h.key(), h));
+        Map<String, String> expected = Map.of(
+                "GET /api/v1/orders/delivery-failures", "sales-orders:READ",
+                "GET /api/v1/orders/{orderId}/delivery-failures", "sales-orders:READ",
+                "POST /api/v1/orders/{orderId}/delivery-failures/{caseId}/redelivery", "sales-order-holds:UPDATE",
+                "POST /api/v1/orders/{orderId}/delivery-failures/{caseId}/cancellation",
+                "sales-order-cancellations:UPDATE",
+                // WF-05 review F6.1: what came back with no case yet is cancelled under the same permission.
+                "POST /api/v1/orders/{orderId}/delivery-failures/cancellation", "sales-order-cancellations:UPDATE");
+        expected.forEach((key, code) -> {
+            assertThat(byKey).as(key).containsKey(key);
+            RequiresPermission rp = byKey.get(key).rp();
+            assertThat(rp).as(key + " is guarded").isNotNull();
+            assertThat(PermissionCode.of(rp.resource(), rp.action())).as(key).isEqualTo(PermissionCode.parse(code));
+            assertThat(rp.scope()).as(key).isEqualTo(DataScope.ALL);
+        });
+        assertThat(roles.resolve(List.of(Role.SALES_STAFF.authority())).permissions())
+                .contains(PermissionCode.parse("sales-order-holds:UPDATE"),
+                        PermissionCode.parse("sales-order-cancellations:UPDATE"), PermissionCode.parse("sales-orders:READ"));
+        assertThat(roles.resolve(List.of(Role.WAREHOUSE_MANAGER.authority())).permissions())
+                .doesNotContain(PermissionCode.parse("sales-order-holds:UPDATE"),
+                        PermissionCode.parse("sales-order-cancellations:UPDATE"));
+        assertThat(roles.resolve(List.of(Role.CUSTOMER.authority())).permissions())
+                .doesNotContain(PermissionCode.parse("sales-order-holds:UPDATE"),
+                        PermissionCode.parse("sales-order-cancellations:UPDATE"));
     }
 
     /**

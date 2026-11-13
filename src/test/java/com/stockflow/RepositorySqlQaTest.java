@@ -33,7 +33,9 @@ class RepositorySqlQaTest {
                     var result = pg.execInContainer("psql", "-U", pg.getUsername(), "-d", pg.getDatabaseName(),
                             "-X", "-q", "-o", "/dev/null", "-f", target);
                     assertThat(result.getExitCode()).withFailMessage(script + ": " + result.getStderr()).isZero();
-                    assertThat(result.getStderr()).as(script.toString()).doesNotContain("FAIL", "ERROR:");
+                    // A check that fails raises 'FAIL  <label>' (two spaces); a bare "FAIL" also matches the label
+                    // of a passing check that names DELIVERY_FAILED or FAILED_TRIP_FEE.
+                    assertThat(result.getStderr()).as(script.toString()).doesNotContain("FAIL  ", "ERROR:");
                     checks += result.getStderr().lines().filter(line -> line.contains("ok    ")).count();
                 }
             }

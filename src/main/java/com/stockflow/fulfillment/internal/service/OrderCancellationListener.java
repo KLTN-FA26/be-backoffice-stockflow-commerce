@@ -1,6 +1,8 @@
 package com.stockflow.fulfillment.internal.service;
 
 import com.stockflow.contracts.OrderCancelled;
+import com.stockflow.contracts.RedeliveryWithdrawn;
+import com.stockflow.fulfillment.internal.entity.PickJpaEntity;
 import com.stockflow.fulfillment.internal.repository.PackJpaRepository;
 import com.stockflow.fulfillment.internal.repository.PickJpaRepository;
 import org.slf4j.Logger;
@@ -20,6 +22,10 @@ import org.springframework.stereotype.Component;
  *
  * <p>The pick is locked before anything changes, the same lock a pick confirmation takes first, so a
  * confirmation and this listener never interleave on one task.</p>
+ *
+ * <p>The same stop, narrowed to one task, when Sales withdraw a redelivery already released to the warehouse
+ * ({@link RedeliveryWithdrawn}, WF-05 review F3): only the task picking that delivery failure case's goods again is
+ * cancelled; the order's other tasks go on.</p>
  *
  * <p>Idempotent: the event is delivered at least once, and a cancelled pick stays cancelled.</p>
  */
@@ -44,21 +50,32 @@ class OrderCancellationListener {
     @ApplicationModuleListener
     public void on(OrderCancelled event) {
         // 4B-8: an order releasing by delivery batch has a task per batch; a task already done is left as it is.
-        picks.lockAllByOrderId(event.orderId()).forEach(pick -> {
-            if (!pick.cancel()) {
-                return;
-            }
-            picks.save(pick);
-            pickLists.cancelOpenLines(pick);
-            packs.findByPickId(pick.getId()).ifPresent(pack -> {
-                // 08 BR-04, BR-05: a shipment not handed over is cancelled, the cartons not shipped go to the put-back
-                // queue, the session is cancelled.
-                cartonChecks.cancelForOrder(pick, pack);
-                pack.cancel();
-                packs.save(pack);
-            });
-            log.info("Fulfillment of order {} cancelled{}", event.orderNumber(),
-                    pick.isNeedsPutBack() ? "; picked goods to be put back" : "");
+        picks.lockAllByOrderId(event.orderId()).forEach(pick -> cancel(pick, event.orderNumber()));
+    }
+
+    @ApplicationModuleListener
+    public void on(RedeliveryWithdrawn event) {
+        // Every task of the order is locked, in the order the order's cancellation locks them, then only the one
+        // picking the case's goods again is cancelled.
+        picks.lockAllByOrderId(event.orderId()).stream()
+                .filter(pick -> event.caseId().equals(pick.getRedeliveryCaseId()))
+                .forEach(pick -> cancel(pick, event.orderNumber()));
+    }
+
+    private void cancel(PickJpaEntity pick, String orderNumber) {
+        if (!pick.cancel()) {
+            return;
+        }
+        picks.save(pick);
+        pickLists.cancelOpenLines(pick);
+        packs.findByPickId(pick.getId()).ifPresent(pack -> {
+            // 08 BR-04, BR-05: a shipment not handed over is cancelled, the cartons not shipped go to the put-back
+            // queue, the session is cancelled.
+            cartonChecks.cancelForOrder(pick, pack);
+            pack.cancel();
+            packs.save(pack);
         });
+        log.info("Fulfillment task {} of order {} cancelled{}", pick.getId(), orderNumber,
+                pick.isNeedsPutBack() ? "; picked goods to be put back" : "");
     }
 }

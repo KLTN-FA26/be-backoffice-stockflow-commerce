@@ -5,6 +5,8 @@ import com.stockflow.common.audit.AuditAction;
 import com.stockflow.common.audit.Auditable;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
+import com.stockflow.common.storage.FileTransfers;
+import com.stockflow.common.storage.StorageException;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.idempotency.IdempotencyKeys;
 import com.stockflow.common.json.CanonicalJson;
@@ -75,13 +77,15 @@ public class CustomerDesignService {
     private final DesignProjectService projects;
     private final EntityManager entityManager;
     private final Clock clock;
+    private final FileTransfers files;
 
     public CustomerDesignService(DesignDraftJpaRepository drafts, DesignDocumentJpaRepository documents,
                                  DesignAssetJpaRepository assets,
                                  DesignDecisionJpaRepository decisions, DesignSnapshotJpaRepository snapshots,
                                  CustomerService customers, ProductService products, PrintConfigs printConfigs,
                                  DraftViews views, DesignQuoteRequestService quoteRequests,
-                                 DesignProjectService projects, EntityManager entityManager, Clock clock) {
+                                 DesignProjectService projects, EntityManager entityManager, Clock clock,
+                                 FileTransfers files) {
         this.drafts = drafts;
         this.documents = documents;
         this.assets = assets;
@@ -95,6 +99,7 @@ public class CustomerDesignService {
         this.projects = projects;
         this.entityManager = entityManager;
         this.clock = clock;
+        this.files = files;
     }
 
     /**
@@ -234,11 +239,23 @@ public class CustomerDesignService {
         if (draft.getStatus() == DesignStatus.APPROVED) {
             var frozen = snapshots.findByDraftId(id).map(snapshot -> snapshot.getTemplate());
             if (frozen.isPresent() && frozen.get() != null) {
-                return frozen.get();
+                return TemplateShapes.forReader(frozen.get(), this::modelLink);
             }
         }
-        return TemplateShapes.json(printConfigs.byId(draft.getTemplateId())
-                .orElseThrow(() -> new BusinessException(ErrorCode.PRINT_CONFIG_NOT_FOUND)));
+        return TemplateShapes.forReader(TemplateShapes.json(printConfigs.byId(draft.getTemplateId())
+                .orElseThrow(() -> new BusinessException(ErrorCode.PRINT_CONFIG_NOT_FOUND))), this::modelLink);
+    }
+
+    /**
+     * A link to a template's {@code .glb} the studio can cache for a working session (FE request 2026-11-13 B-3), or
+     * null when this storage provider signs no browser links.
+     */
+    private String modelLink(String key) {
+        try {
+            return files.sessionViewLink(key).url();
+        } catch (StorageException unsignable) {
+            return null;
+        }
     }
 
     /**

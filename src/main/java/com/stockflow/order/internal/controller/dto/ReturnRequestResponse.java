@@ -56,7 +56,7 @@ public record ReturnRequestResponse(
      * The refund. {@code settlementAmount}: what the units refunded are worth with their VAT; settled by payment as
      * {@code offsetAmount} (taken off what the order's installments still owed) + {@code refundedAmount} (paid already,
      * to be refunded - the accountant records the transfer). {@code vatAdjustmentRequired}: accounting issues an
-     * adjustment invoice (Nghị định 123/2020).
+     * adjustment invoice (TT 91/2026/TT-BTC Điều 10 khoản 5 điểm c.1).
      */
     public record Resolution(@Schema(example = "REFUND") String moneyMode, BigDecimal settlementAmount, UUID proposedBy,
                              Instant proposedAt, String note, UUID settledBy, Instant settledAt, BigDecimal offsetAmount,

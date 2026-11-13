@@ -10,10 +10,13 @@ public record CarrierResponse(UUID carrierId, String code, String name, String c
     /**
      * @param webhookSecretConfigured    WEBHOOK_LOAD: whether the signing secret is set
      * @param webhookAuthValueConfigured API_BOOKING: whether the header credential is set
+     * @param webhookAuthValueNextConfigured API_BOOKING: whether a second header credential holds as well, the first
+     *                                   being replaced at the carrier (a rotation under way)
      * @param apiKeyConfigured           API_BOOKING: whether the API key is set
      */
     public record Connection(String connectionType, boolean webhookEnabled, boolean webhookSecretConfigured,
-                             String webhookAuthHeader, boolean webhookAuthValueConfigured, String apiEnvironment,
-                             String apiAccount, boolean apiKeyConfigured, Map<String, String> failureReasonMap) {
+                             String webhookAuthHeader, boolean webhookAuthValueConfigured,
+                             boolean webhookAuthValueNextConfigured, String apiEnvironment, String apiAccount,
+                             boolean apiKeyConfigured, Map<String, String> failureReasonMap) {
     }
 }

@@ -41,8 +41,9 @@ class OrderStatusTest {
             Map.entry(PACKED, EnumSet.of(SHIPPED, PARTIALLY_FULFILLED, ON_HOLD)),
             Map.entry(ON_HOLD, EnumSet.of(CONFIRMED, PENDING_PAYMENT, AWAITING_STOCK, IN_PRODUCTION, READY_TO_FULFILL,
                     PICKING, PARTIALLY_FULFILLED, PACKED, CANCELLED)),
-            Map.entry(SHIPPED, EnumSet.of(DELIVERED, DELIVERY_FAILED, PARTIALLY_FULFILLED)),
-            Map.entry(DELIVERY_FAILED, EnumSet.of(DELIVERED, RETURNED, PARTIALLY_FULFILLED)),
+            // ON_HOLD: a shipment came back - held for the failed delivery (WF-05 fix plan, sections 2-3).
+            Map.entry(SHIPPED, EnumSet.of(DELIVERED, DELIVERY_FAILED, PARTIALLY_FULFILLED, ON_HOLD)),
+            Map.entry(DELIVERY_FAILED, EnumSet.of(DELIVERED, RETURNED, PARTIALLY_FULFILLED, ON_HOLD)),
             Map.entry(DELIVERED, EnumSet.of(COMPLETED, RETURN_REQUESTED, DELIVERY_FAILED)),
             Map.entry(RETURN_REQUESTED, EnumSet.of(RETURNED, DELIVERED)),
             Map.entry(RETURNED, EnumSet.of(REFUNDED, PARTIALLY_REFUNDED)),
@@ -92,9 +93,11 @@ class OrderStatusTest {
     @DisplayName("a hold is entered from up to PACKED and the partly shipped state, and left back to each of them")
     void holdGoesBackWhereItCameFrom() {
         for (OrderStatus status : values()) {
-            // DRAFT (checkout) and PENDING_CONTRACT go ON_HOLD only for credit, which a credit decision leaves.
+            // DRAFT (checkout) and PENDING_CONTRACT go ON_HOLD only for credit, which a credit decision leaves; SHIPPED
+            // and DELIVERY_FAILED only for a shipment that came back, which Sales' decision leaves (WF-05 fix plan).
             assertThat(status.mayBePutOnHold()).as(status.name()).isEqualTo(status.canTransitionTo(ON_HOLD)
-                    && status != DRAFT && status != PENDING_CONTRACT);
+                    && status != DRAFT && status != PENDING_CONTRACT && status != SHIPPED
+                    && status != DELIVERY_FAILED);
             if (status.mayBePutOnHold()) {
                 assertThat(ON_HOLD.canTransitionTo(status)).as("ON_HOLD -> " + status).isTrue();
             }
