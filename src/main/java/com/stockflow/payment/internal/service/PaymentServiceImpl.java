@@ -94,7 +94,7 @@ class PaymentServiceImpl implements PaymentService {
     public java.util.Optional<com.stockflow.payment.api.CompanyBankAccount> companyBankAccount() {
         return bank.configured()
                 ? java.util.Optional.of(new com.stockflow.payment.api.CompanyBankAccount(bank.bankName().strip(),
-                        bank.accountNumber().strip(), bank.accountName().strip()))
+                        bank.accountNumber().strip(), bank.accountName().strip(), bank.bin()))
                 : java.util.Optional.empty();
     }
 }

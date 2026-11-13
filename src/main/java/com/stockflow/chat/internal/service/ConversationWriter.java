@@ -10,6 +10,7 @@ import com.stockflow.chat.internal.domain.ConversationRepository;
 import com.stockflow.chat.internal.domain.ConversationStatus;
 import com.stockflow.chat.internal.domain.ReadMarkers;
 import com.stockflow.chat.internal.domain.SenderType;
+import com.stockflow.chat.internal.domain.Visibility;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
@@ -50,11 +51,14 @@ public class ConversationWriter {
     private final ChatViews views;
     private final CustomerService customers;
     private final ChatProperties properties;
+    private final ChatNotifier notifier;
     private final Clock clock;
 
     public ConversationWriter(ConversationRepository conversations, ChatMessageRepository messages,
                               ReadMarkers markers, ConversationRouter router, ChatBroadcaster broadcaster,
-                              ChatViews views, CustomerService customers, ChatProperties properties, Clock clock) {
+                              ChatViews views, CustomerService customers, ChatProperties properties,
+                              ChatNotifier notifier, Clock clock) {
+        this.notifier = notifier;
         this.conversations = conversations;
         this.messages = messages;
         this.markers = markers;
@@ -68,6 +72,14 @@ public class ConversationWriter {
 
     public Instant now() {
         return clock.instant();
+    }
+
+    /**
+     * When a first answer asked for at {@code from} is due: {@link ChatProperties#firstResponseTarget} of business time
+     * later (16 §4.1 step 3, BR-09) - asked on Saturday evening, it is due on Monday morning.
+     */
+    public Instant firstResponseDue(Instant from) {
+        return properties.businessHours().plus(from, properties.firstResponseTarget());
     }
 
     /** The conversation under its row lock; {@code CHAT_CONVERSATION_NOT_FOUND} when there is none. */
@@ -94,11 +106,22 @@ public class ConversationWriter {
      */
     public Conversation open(UUID customerId, String subject, Actor opener, List<ContextResolver.Resolved> about,
                              UUID assignTo, UUID continuedFromId) {
+        return open(customerId, subject, opener, about, assignTo, continuedFromId, true);
+    }
+
+    /**
+     * {@link #open(UUID, String, Actor, List, UUID, UUID)}, with the first-response clock running from now
+     * ({@code clockRunning}) or from the customer's first word: a conversation the system opens to carry a card that
+     * asks Sales nothing (an invoice, a parcel shipped) is not late for an answer nobody asked for.
+     */
+    public Conversation open(UUID customerId, String subject, Actor opener, List<ContextResolver.Resolved> about,
+                             UUID assignTo, UUID continuedFromId, boolean clockRunning) {
         Instant now = clock.instant();
         UUID orderId = about.isEmpty() || about.get(0).ref().kind() != ContextKind.ORDER ? null
                 : about.get(0).ref().id();
+        Instant due = clockRunning ? firstResponseDue(now) : null;
         Conversation c = Conversation.open(Identifiers.newId(), customerId, subject, orderId, opener, continuedFromId,
-                now, properties.firstResponseTarget());
+                now, due);
         c.route(assignTo != null ? assignTo : router.agentFor(c, about).orElse(null), now);
         conversations.save(c);
         for (int i = 0; i < about.size(); i++) {
@@ -143,7 +166,11 @@ public class ConversationWriter {
         if (sender.type() != SenderType.SYSTEM) {
             markers.advance(c.id(), sender.userId(), sender.type(), seq, stored.sentAt());
         }
-        broadcaster.message(ChatEvent.MESSAGE_CREATED, views.message(stored), customerAccounts(c));
+        List<UUID> customerAccounts = customerAccounts(c);
+        broadcaster.message(ChatEvent.MESSAGE_CREATED, views.message(stored), customerAccounts);
+        if (sender.isStaff() && stored.visibility() == Visibility.CUSTOMER) {
+            notifier.salesReplied(c, customerAccounts, stored.sentAt());
+        }
         if (before != c.status() || !Objects.equals(agentBefore, c.assignedAgentId())) {
             changed(c, agentBefore);
         } else {

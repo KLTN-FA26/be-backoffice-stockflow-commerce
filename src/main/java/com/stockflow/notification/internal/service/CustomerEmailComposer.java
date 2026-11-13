@@ -62,6 +62,7 @@ class CustomerEmailComposer {
     static final String RETURN_RESOLVED = "return.resolved";
     static final String RETURN_CANCELLED = "return.cancelled";
     static final String RETURN_EXPIRED = "return.expired";
+    static final String CHAT_REPLY = "chat.reply";
 
     static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Ho_Chi_Minh");
 
@@ -191,6 +192,24 @@ class CustomerEmailComposer {
      * Part of a partly fulfilled order closed (decision G4-Q3): which lines will not come, what is refunded and what
      * fee is owed. One message per closure, so a second closure of the same order is told too.
      */
+    /**
+     * kltn-docs 16 §4.1 step 3: Sales answered while the customer had no chat open. Once per conversation per notice
+     * period - the period names the message - and never what Sales wrote: the customer reads it in the conversation.
+     */
+    Optional<CustomerMessage> chatReplied(com.stockflow.contracts.CustomerChatReplied event) {
+        String source = event.conversationId() + "@" + (event.periodStart() == null ? 0
+                : event.periodStart().getEpochSecond());
+        return Optional.of(new CustomerMessage(CHAT_REPLY, source, event.customerId(), null,
+                addressee -> {
+                    ResourceBundle m = bundle();
+                    List<Fact> facts = new ArrayList<>();
+                    if (event.repliedAt() != null) {
+                        facts.add(new Fact(m.getString("email.chat.reply.at"), WHEN.format(event.repliedAt())));
+                    }
+                    return content(m, CHAT_REPLY, addressee, null, facts, null);
+                }));
+    }
+
     Optional<CustomerMessage> remainderClosed(OrderRemainderClosed event) {
         String source = event.closureId() != null ? event.closureId().toString()
                 : event.orderId() + "@" + (event.closedAt() == null ? "" : event.closedAt().toEpochMilli());

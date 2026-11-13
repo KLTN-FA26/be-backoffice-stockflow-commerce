@@ -2,6 +2,7 @@ package com.stockflow.payment.internal.repository;
 
 import com.stockflow.common.domain.BusinessCalendar;
 import com.stockflow.payment.api.CustomerInstallments;
+import com.stockflow.payment.internal.domain.InstallmentBook;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
@@ -10,6 +11,7 @@ import java.time.Clock;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 
 /**
@@ -24,9 +26,25 @@ class CustomerInstallmentsAdapter implements CustomerInstallments {
     private final NamedParameterJdbcTemplate jdbc;
     private final Clock clock;
 
-    CustomerInstallmentsAdapter(NamedParameterJdbcTemplate jdbc, Clock clock) {
+    private final InstallmentBook book;
+
+    CustomerInstallmentsAdapter(NamedParameterJdbcTemplate jdbc, Clock clock, InstallmentBook book) {
         this.jdbc = jdbc;
         this.clock = clock;
+        this.book = book;
+    }
+
+    /** Read through the installment itself, so the reference and what is owed are the ones its own rules give. */
+    @Override
+    @Transactional(readOnly = true)
+    public Optional<Transfer> transfer(UUID installmentId) {
+        if (installmentId == null) {
+            return Optional.empty();
+        }
+        LocalDate today = BusinessCalendar.date(clock.instant());
+        return book.find(installmentId).map(i -> new Transfer(i.id(), i.customerId(), i.contractId(),
+                i.contractNumber(), i.orderId(), i.orderNumber(), i.seq(), i.name(), i.amount(), i.outstanding(),
+                i.currency(), i.dueDate(), i.status().name(), i.overdue(today), i.transferReference()));
     }
 
     @Override

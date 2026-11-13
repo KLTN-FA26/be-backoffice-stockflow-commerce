@@ -22,6 +22,11 @@ class OrderEventPublisher {
         this.publisher = publisher;
     }
 
+    /** A contract event a service states itself, not drained from an aggregate. */
+    void publish(Object event) {
+        publisher.publishEvent(event);
+    }
+
     void publishEventsOf(AggregateRoot aggregate) {
         aggregate.pullDomainEvents().forEach(event -> {
             if (event instanceof OrderEvent orderEvent) {

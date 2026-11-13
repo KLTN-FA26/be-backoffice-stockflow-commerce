@@ -49,4 +49,33 @@ public interface ConversationRepository extends AggregateRepository<Conversation
 
     /** The conversation's log, the oldest first. */
     List<LogEntry> logOf(UUID conversationId);
+
+    /** The customer's most recently active conversation that has not ended, about anything. */
+    Optional<Conversation> newestOpenOf(UUID customerId);
+
+    /**
+     * The agents who looked after the customer, the most recent first, at most {@code limit}, leaving out
+     * {@code except} (16 §4.1 step 2.2: "Sale đã chăm sóc khách gần nhất").
+     */
+    List<UUID> recentAgentsOf(UUID customerId, UUID except, int limit);
+
+    /** Conversations whose first answer is late and whose supervisors were not told yet (BR-09), at most {@code limit}. */
+    List<UUID> firstResponseOverdueUnalerted(Instant now, int limit);
+
+    /** Conversations waiting on the customer since before {@code silentSince}, at most {@code limit} (16 §5). */
+    List<UUID> waitingOnCustomerSince(Instant silentSince, int limit);
+
+    /** Resolved or auto-closed conversations whose reopen window ended by {@code now}, at most {@code limit}. */
+    List<UUID> pastReopenWindow(Instant now, int limit);
+
+    /**
+     * The facts the supervisor's report counts (BR-09: first response, resolution, CSAT), of the conversations opened
+     * in {@code [from, to)}, of one agent or all, at most {@code limit}.
+     */
+    List<ConversationFacts> openedBetween(Instant from, Instant to, UUID agentId, int limit);
+
+    /** One conversation as the report counts it. */
+    record ConversationFacts(UUID id, UUID agentId, Instant createdAt, Instant firstRespondedAt,
+                             Instant firstResponseAlertedAt, Instant resolvedAt, Integer csatScore) {
+    }
 }

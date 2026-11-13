@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.stockflow.chat.internal.domain.Actor;
 import com.stockflow.chat.internal.domain.Audience;
+import com.stockflow.chat.internal.domain.BusinessHours;
 import com.stockflow.chat.internal.domain.ChatMessage;
 import com.stockflow.chat.internal.domain.ChatMessageRepository;
 import com.stockflow.chat.internal.domain.Conversation;
@@ -52,11 +53,13 @@ public class ChatViews {
     private final ChatPresence presence;
     private final CustomerService customers;
     private final ObjectMapper json;
+    private final ChatProperties properties;
     private final Clock clock;
 
     public ChatViews(ConversationRepository conversations, ChatMessageRepository messages, ReadMarkers markers,
                      ContextResolver contexts, AgentDirectory agents, ChatPresence presence,
-                     CustomerService customers, ObjectMapper json, Clock clock) {
+                     CustomerService customers, ObjectMapper json, ChatProperties properties, Clock clock) {
+        this.properties = properties;
         this.conversations = conversations;
         this.messages = messages;
         this.markers = markers;
@@ -125,7 +128,8 @@ public class ChatViews {
                 row.nextStatuses(), row.assignedAgentId(), row.assignedAgentName(), row.agentOnline(),
                 row.escalationReason(), row.firstResponseDueAt(), row.firstRespondedAt(), row.firstResponseOverdue(),
                 row.reopenUntil(), row.continuedFromId(), row.createdAt(), row.lastMessageAt(), row.lastSeq(),
-                row.unread(), row.lastMessage(), about, read);
+                row.unread(), row.lastMessage(), about, read, row.withinBusinessHours(), row.expectedResponseAt(),
+                row.resolvedAt(), row.canRate(), row.csatScore(), row.csatComment(), row.csatSubmittedAt());
     }
 
     public List<ChatLogEntryView> log(List<LogEntry> entries) {
@@ -144,6 +148,7 @@ public class ChatViews {
                                       Instant now, ChatMessageView newest, long unread,
                                       List<ChatConversationView.Context> about, List<ChatReadMarkerView> read) {
         Conversation.Snapshot s = c.snapshot();
+        BusinessHours hours = properties.businessHours();
         Set<ConversationStatus> next = null;
         if (staff != null) {
             next = EnumSet.noneOf(ConversationStatus.class);
@@ -161,7 +166,9 @@ public class ChatViews {
                 s.assignedAgentId(), agentName, presence.isOnline(s.assignedAgentId()),
                 staff == null ? null : s.escalationReason(), s.firstResponseDueAt(), s.firstRespondedAt(),
                 c.firstResponseOverdueAt(now), s.reopenUntil(), s.continuedFromId(), s.createdAt(), lastAt, lastSeq,
-                unread, newest, about, read);
+                unread, newest, about, read, hours.isOpenAt(now), expectedResponseAt(c, hours, now), s.resolvedAt(),
+                s.status() == ConversationStatus.RESOLVED && s.csatSubmittedAt() == null, s.csatScore(),
+                staff == null ? null : s.csatComment(), s.csatSubmittedAt());
     }
 
     private ChatMessageView message(ChatMessage m, Map<UUID, String> names) {
@@ -169,11 +176,31 @@ public class ChatViews {
         ChatMessage.Card card = m.card();
         return new ChatMessageView(m.id(), m.conversationId(), m.seq(), m.kind(), m.visibility(), m.senderType(),
                 m.senderId(), name(names, m.senderId()), deleted ? null : m.body(), m.clientMessageId(), m.contextId(),
-                card == null ? null : new ChatMessageView.Card(card.kind(), card.state(),
-                        deleted ? null : parse(card.payloadJson()), card.updatedAt()),
+                card == null ? null : card(card, deleted),
                 deleted ? List.of() : m.attachments().stream().map(a -> new ChatMessageView.Attachment(a.id(),
                         a.originalName(), a.contentType(), a.sizeBytes(), a.width(), a.height())).toList(),
                 m.mentions(), m.sentAt(), m.editedAt(), deleted);
+    }
+
+    /**
+     * When the customer can expect Sales (16 §4.1 step 3: shown outside business hours): the first answer's due time
+     * while none came; otherwise, while the conversation goes on and Sales are not at work, their next opening.
+     */
+    static Instant expectedResponseAt(Conversation c, BusinessHours hours, Instant now) {
+        if (c.status().isEnded()) {
+            return null;
+        }
+        if (c.firstRespondedAt() == null && c.firstResponseDueAt() != null) {
+            return c.firstResponseDueAt();
+        }
+        return hours.isOpenAt(now) ? null : hours.nextOpening(now);
+    }
+
+    private ChatMessageView.Card card(ChatMessage.Card card, boolean deleted) {
+        JsonNode payload = deleted ? null : parse(card.payloadJson());
+        CardActions.Available actions = CardActions.of(card.kind(), card.state(), payload);
+        return new ChatMessageView.Card(card.kind(), card.state(), payload, card.updatedAt(), actions.customer(),
+                actions.staff());
     }
 
     private JsonNode parse(String text) {

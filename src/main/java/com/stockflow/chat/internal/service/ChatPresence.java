@@ -27,6 +27,8 @@ public class ChatPresence {
 
     private final Map<UUID, Agent> online = new ConcurrentHashMap<>();
     private final Map<String, UUID> sessions = new ConcurrentHashMap<>();
+    /** Customers' portal accounts and how many chat sockets each has open. */
+    private final Map<UUID, Integer> customers = new ConcurrentHashMap<>();
     private final ChatProperties properties;
     private final Clock clock;
 
@@ -62,6 +64,10 @@ public class ChatPresence {
         if (userId == null) {
             return null;
         }
+        if (customers.containsKey(userId)) {
+            customers.computeIfPresent(userId, (id, open) -> open > 1 ? open - 1 : null);
+            return null;
+        }
         boolean[] last = {false};
         online.computeIfPresent(userId, (id, agent) -> {
             Set<String> open = new HashSet<>(agent.sessions());
@@ -75,6 +81,21 @@ public class ChatPresence {
     /** The agent's socket spoke: they are still there. */
     public void seen(UUID userId) {
         online.computeIfPresent(userId, (id, agent) -> new Agent(agent.sessions(), clock.instant()));
+    }
+
+    /**
+     * A customer's socket opened. A customer has no heartbeat: an open socket is a portal page with the chat on it,
+     * which is all "the customer is here" means for telling them of a reply (16 §4.1 step 3) - the socket's own
+     * heartbeats close it when the page goes away.
+     */
+    public void customerConnected(UUID userId, String sessionId) {
+        sessions.put(sessionId, userId);
+        customers.merge(userId, 1, Integer::sum);
+    }
+
+    /** Whether the customer's portal account has a chat socket open now. */
+    public boolean isCustomerOnline(UUID userId) {
+        return userId != null && customers.getOrDefault(userId, 0) > 0;
     }
 
     public boolean isOnline(UUID userId) {

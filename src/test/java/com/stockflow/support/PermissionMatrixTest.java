@@ -107,7 +107,9 @@ class PermissionMatrixTest {
                     "stock indicator of the caller's own ACTIVE customer's own SKUs, the customer taken from the token "
                             + "(SCRUM-429, 5-3)"),
             Map.entry("GET /api/v1/chat/me/conversations", "the caller's own conversations (F-13), selected by the "
-                    + "customer profile of the token; a document filter only narrows them"));
+                    + "customer profile of the token; a document filter only narrows them"),
+            Map.entry("GET /api/v1/chat/me/conversations/unread-count", "the caller's own chat badge (F-13): counts "
+                    + "over the conversations of the token's customer profile, read by the token's subject"));
 
     /**
      * Handlers with neither {@code @RequiresPermission} nor {@code @PreAuthorize}. They are open to anyone signed in

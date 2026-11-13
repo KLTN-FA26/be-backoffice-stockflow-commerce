@@ -20,6 +20,12 @@ import java.util.UUID;
  * @param lastMessage         the newest message the caller may see; null when none
  * @param contexts            what it is about; in a list row without labels, on the detail page with them
  * @param readMarkers         how far each participant has read; detail page only
+ * @param withinBusinessHours whether Sales are at work now (16 §4.1 step 3)
+ * @param expectedResponseAt  when the customer can expect an answer: the first answer's due time while none came, or
+ *                            the next opening outside business hours; null when nothing is awaited
+ * @param canRate             whether the customer may rate it now (resolved, not rated yet)
+ * @param csatScore           the customer's rating, 1-5; null until rated
+ * @param csatComment         their comment; staff only
  */
 public record ChatConversationView(UUID id, UUID customerId, String customerName, String subject,
                                    ConversationStatus status, Set<ConversationStatus> nextStatuses,
@@ -28,7 +34,9 @@ public record ChatConversationView(UUID id, UUID customerId, String customerName
                                    boolean firstResponseOverdue, Instant reopenUntil, UUID continuedFromId,
                                    Instant createdAt, Instant lastMessageAt, long lastSeq, long unread,
                                    ChatMessageView lastMessage, List<Context> contexts,
-                                   List<ChatReadMarkerView> readMarkers) {
+                                   List<ChatReadMarkerView> readMarkers, boolean withinBusinessHours,
+                                   Instant expectedResponseAt, Instant resolvedAt, boolean canRate, Integer csatScore,
+                                   String csatComment, Instant csatSubmittedAt) {
 
     /**
      * A document the conversation is about.
