@@ -221,6 +221,11 @@ public enum ErrorCode {
      * no longer fits, or a bin holding more volume than it has. The details list the bins and cartons; move them first.
      */
     CARTONS_WOULD_NOT_FIT("This change would leave cartons that no longer fit where they stand", 409),
+    /**
+     * kltn-docs 06 BR-04: a bin, a shelf, an area or a warehouse is not made INACTIVE while cartons still stand there.
+     * The details give the count and list the first cartons; move them first. BLOCKED and MAINTENANCE stay allowed.
+     */
+    LOCATION_HOLDS_CARTONS("This place still holds cartons; move them first", 409),
     /** kltn-docs 05 BR-13: a carton goes to the OVERFLOW area only when no bin of its warehouse takes it. */
     PUTAWAY_OVERFLOW_NOT_ALLOWED("A bin can still take this carton; put it away into a bin", 409),
     /** Kltn-docs 05 §4.5: no putaway trip with this id. */

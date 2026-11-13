@@ -133,7 +133,10 @@ public final class Warehouse extends AggregateRoot {
         this.status = WarehouseStatus.ACTIVE;
     }
 
-    /** No cascade (issue #18 D2), and no stock check yet (BR-04, issue #18 Q5). */
+    /**
+     * No cascade (issue #18 D2). That no carton stands in the warehouse any more (kltn-docs 06 BR-04) is the
+     * application service's check: what stands where is inventory's knowledge.
+     */
     public void deactivate() {
         this.status = WarehouseStatus.INACTIVE;
     }

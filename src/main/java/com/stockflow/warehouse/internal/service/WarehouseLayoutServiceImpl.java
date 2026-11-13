@@ -12,6 +12,7 @@ import com.stockflow.common.persistence.SortWhitelist;
 import com.stockflow.warehouse.internal.domain.CodePart;
 import com.stockflow.warehouse.internal.domain.Warehouse;
 import com.stockflow.warehouse.internal.domain.WarehouseRepository;
+import com.stockflow.warehouse.internal.domain.WarehouseStatus;
 import com.stockflow.warehouse.internal.domain.Zone;
 import com.stockflow.warehouse.internal.domain.ZoneRepository;
 import com.stockflow.warehouse.internal.repository.LayoutReadRepository;
@@ -47,13 +48,16 @@ class WarehouseLayoutServiceImpl implements WarehouseLayoutService {
     private final WarehouseSearchRepository warehouseSearch;
     private final ZoneRepository zones;
     private final LayoutReadRepository layoutRead;
+    private final EmptyBeforeInactive emptyBeforeInactive;
 
     WarehouseLayoutServiceImpl(WarehouseRepository warehouses, WarehouseSearchRepository warehouseSearch,
-                               ZoneRepository zones, LayoutReadRepository layoutRead) {
+                               ZoneRepository zones, LayoutReadRepository layoutRead,
+                               EmptyBeforeInactive emptyBeforeInactive) {
         this.warehouses = warehouses;
         this.warehouseSearch = warehouseSearch;
         this.zones = zones;
         this.layoutRead = layoutRead;
+        this.emptyBeforeInactive = emptyBeforeInactive;
     }
 
     /**
@@ -101,7 +105,11 @@ class WarehouseLayoutServiceImpl implements WarehouseLayoutService {
     @Override
     @Auditable(action = AuditAction.TRANSITION, resourceType = "warehouse", resourceId = "#warehouseId")
     public WarehouseSummary deactivate(UUID warehouseId) {
-        Warehouse warehouse = require(warehouseId);
+        // Under the map's lock, so no bin or area is added while the warehouse's locations are read.
+        Warehouse warehouse = WarehouseLocks.lock(warehouses, warehouseId);
+        if (warehouse.status() != WarehouseStatus.INACTIVE) {
+            emptyBeforeInactive.require(warehouses.findLocationCodes(warehouse.id()), "warehouse " + warehouse.prefix());
+        }
         warehouse.deactivate();
         return toSummary(warehouses.save(warehouse));
     }
