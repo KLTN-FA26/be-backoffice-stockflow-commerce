@@ -455,8 +455,11 @@ public enum ErrorCode {
     EINVOICE_ERROR_NOTICE_NOT_FOUND("Notice of an e-invoice drawn up wrongly not found", 404),
     /** WF-05 E4: a notice of this invoice is still on its way, or the notice asked about is already answered. */
     EINVOICE_ERROR_NOTICE_NOT_SENDABLE("This notice cannot be recorded or sent now: another one of the invoice is still open, or it is already answered", 409),
-    /** 4B-4, WF-05 E2: stockflow.seller.* is blank in this deployment; no contract or invoice names a seller. */
-    SELLER_PROFILE_UNAVAILABLE("The seller's company details are not configured; contracts and invoices cannot be drawn up", 503),
+    /**
+     * 4B-4, WF-05 E2, BE3-A: stockflow.seller.* is blank in this deployment; no quote PDF, contract or invoice names a
+     * seller.
+     */
+    SELLER_PROFILE_UNAVAILABLE("The seller's company details are not configured; quotes, contracts and invoices cannot be drawn up", 503),
     /**
      * 4B-2 (kltn-docs 14 BR-04, 13 BR-02): a quote line, an order line placed from one, or a customer price names one
      * of the customer's own SKUs - not a stock variant or a blank. Another customer's SKU answers VARIANT_NOT_FOUND.

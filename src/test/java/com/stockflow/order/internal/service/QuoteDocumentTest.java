@@ -1,5 +1,8 @@
 package com.stockflow.order.internal.service;
 
+import com.stockflow.common.config.SellerProperties;
+import com.stockflow.common.error.BusinessException;
+import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.label.LabelFonts;
 import com.stockflow.order.api.FeeKind;
 import com.stockflow.order.internal.domain.QuoteStatus;
@@ -12,12 +15,19 @@ import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.math.BigDecimal;
+import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Locale;
+import java.util.ResourceBundle;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.catchThrowable;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 /**
  * The quote drawn as a PDF (kltn-docs 14 §4.1, BR-08, BR-09): every word on the page however long the customer's legal
@@ -153,5 +163,28 @@ class QuoteDocumentTest {
         try (var doc = Loader.loadPDF(pdf)) {
             return new PDFTextStripper().getText(doc).replaceAll("\\s+", " ");
         }
+    }
+
+    @Test
+    @DisplayName("no seller configured: the quote's PDF is refused with SELLER_PROFILE_UNAVAILABLE, whose message names "
+            + "quotes beside contracts and invoices, in both languages")
+    void noSellerNoQuoteDocument() {
+        Quotes quotes = mock(Quotes.class);
+        Quotes.QuoteView sent = quote(QuoteStatus.SENT, List.of(cartonLine(null)), offered(), null);
+        when(quotes.get(any(), any())).thenReturn(sent);
+        QuoteDocumentService service = new QuoteDocumentService(quotes, document,
+                new SellerProperties("", "", "", "", ""), null, null, Clock.systemUTC());
+
+        Throwable refused = catchThrowable(() -> service.document(null, sent.id()));
+
+        assertThat(refused).isInstanceOf(BusinessException.class);
+        assertThat(((BusinessException) refused).errorCode()).isEqualTo(ErrorCode.SELLER_PROFILE_UNAVAILABLE);
+        assertThat(ErrorCode.SELLER_PROFILE_UNAVAILABLE.defaultMessage()).contains("quotes", "contracts", "invoices");
+        ResourceBundle.Control exact = ResourceBundle.Control.getNoFallbackControl(
+                ResourceBundle.Control.FORMAT_PROPERTIES);
+        assertThat(ResourceBundle.getBundle("i18n.messages", Locale.ENGLISH, exact)
+                .getString("error.SELLER_PROFILE_UNAVAILABLE")).contains("quotes", "contracts", "invoices");
+        assertThat(ResourceBundle.getBundle("i18n.messages", Locale.forLanguageTag("vi"), exact)
+                .getString("error.SELLER_PROFILE_UNAVAILABLE")).contains("báo giá", "hợp đồng", "hoá đơn");
     }
 }
