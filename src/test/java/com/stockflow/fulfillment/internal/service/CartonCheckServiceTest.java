@@ -80,9 +80,10 @@ class CartonCheckServiceTest {
             mock(com.stockflow.fulfillment.internal.repository.PickLineJpaRepository.class),
             mock(PackageJpaRepository.class), planMembers,
             mock(com.stockflow.fulfillment.internal.repository.DispatchLoadPackageJpaRepository.class), 6000);
+    private final LabelledCartons labelledCartons = mock(LabelledCartons.class);
     private final CartonCheckService service = new CartonCheckService(picks, packs, mock(PackageJpaRepository.class),
             shipments, store, orders, measures, payments, identities, mock(WarehouseService.class), timeline,
-            Clock.fixed(NOW, ZoneOffset.UTC), loadPlans, planVehicles);
+            Clock.fixed(NOW, ZoneOffset.UTC), loadPlans, planVehicles, labelledCartons);
 
     private final UUID worker = UUID.randomUUID();
     private final UUID otherWorker = UUID.randomUUID();
@@ -139,6 +140,7 @@ class CartonCheckServiceTest {
     private void orderIs(OrderSummary order) {
         when(orders.findById(orderId)).thenReturn(Optional.of(order));
         when(orders.markPacked(any(), any())).thenReturn(order);
+        when(orders.markPartlyPacked(any(), any())).thenReturn(order);
     }
 
     private void started() {
@@ -332,7 +334,8 @@ class CartonCheckServiceTest {
         }
 
         @Test
-        @DisplayName("a partial completion records the order as packed in part and leaves the session IN_PROGRESS")
+        @DisplayName("a partial completion makes the order PARTIALLY_FULFILLED at once (WF4-PF-STATUS) and leaves the "
+                + "session IN_PROGRESS")
         void partialCompletion() {
             started();
             service.check(pick.getId(), "LPN-1", actor);
@@ -341,8 +344,9 @@ class CartonCheckServiceTest {
 
             service.complete(pick.getId(), new PackingCompletion(null, true, "one carton wet"), actor);
 
-            verify(orders).recordPacked(orderId);
+            verify(orders).markPartlyPacked(orderId, actor.userId());
             verify(orders, never()).markPacked(any(), any());
+            verify(orders, never()).recordPacked(any());
             assertThat(check.status()).isEqualTo(PackStatus.IN_PROGRESS);
         }
     }

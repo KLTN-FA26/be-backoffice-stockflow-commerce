@@ -52,7 +52,8 @@ class OrderNumberDayTest {
                 ZoneOffset.UTC), mock(DesignService.class), mock(OrderHoldJpaRepository.class),
                 mock(CustomerService.class), mock(CancellationRequestRepository.class), mock(PaymentService.class),
                 mock(CustomerSkus.class), mock(SalesContractRepository.class), mock(DeliveryBatchService.class),
-                mock(DeliveryBatchRecords.class), mock(DeliveryFailureCases.class));
+                mock(DeliveryBatchRecords.class), mock(DeliveryFailureCases.class),
+                mock(org.springframework.beans.factory.ObjectProvider.class));
         when(repository.findByRequestId(any())).thenReturn(Optional.empty());
         IllegalStateException stop = new IllegalStateException("numbered");
         when(repository.nextOrderNumber(any())).thenThrow(stop);

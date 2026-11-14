@@ -702,6 +702,73 @@ class CartonCheckTest {
     }
 
     @Nested
+    @DisplayName("closeRest: the rest of the order closed (17 §4.8 step 33, WF4-CLOSE-REST 2026-11-13)")
+    class CloseRest {
+
+        private final UUID sales = UUID.randomUUID();
+
+        @Test
+        @DisplayName("the labelled cartons stay - in a shipment or not; TO_CHECK and CHECKED ones are REMOVED for "
+                + "REMAINDER_CLOSED by who closed it; with a labelled carton still to ship the session stays IN_PROGRESS")
+        void labelledStayTheRestIsRemoved() {
+            CartonCheck check = started();
+            check.check("LPN-A1", WORKER, NOW);
+            check.label(List.of("LPN-A1"), specs(), DIVISOR, WORKER, NOW);
+            check.check("LPN-A2", WORKER, NOW);
+            assertThat(check.anyLabeled()).isTrue();
+            List<Carton> removed = check.closeRest(sales, NOW.plusSeconds(1));
+            assertThat(removed).extracting(Carton::lpn).containsExactlyInAnyOrder("LPN-A2", "LPN-B1");
+            assertThat(removed).allSatisfy(c -> {
+                assertThat(c.status()).isEqualTo(PackageStatus.REMOVED);
+                assertThat(c.removalReason()).isEqualTo(RemovalReason.REMAINDER_CLOSED);
+                assertThat(c.removedBy()).isEqualTo(sales);
+            });
+            assertThat(check.carton("LPN-A1").orElseThrow().status()).isEqualTo(PackageStatus.LABELED);
+            assertThat(check.status()).isEqualTo(PackStatus.IN_PROGRESS);
+            Completion rest = check.complete(false, null, false, wanted(10, 0), skus());
+            assertThat(rest.partial()).as("the labelled carton is all the order still wants").isFalse();
+            assertThat(rest.cartons()).extracting(Carton::lpn).containsExactly("LPN-A1");
+        }
+
+        @Test
+        @DisplayName("every labelled carton in a shipment already: the session is COMPLETED, by who closed the rest; again: "
+                + "nothing changes")
+        void completedWhenNothingIsLeftToShip() {
+            CartonCheck check = started();
+            check.check("LPN-A1", WORKER, NOW);
+            check.label(List.of("LPN-A1"), specs(), DIVISOR, WORKER, NOW);
+            check.remove("LPN-A2", "móp", WORKER, NOW);
+            check.remove("LPN-B1", "móp", WORKER, NOW);
+            Completion part = check.complete(true, "giao trước", true, wanted(20, 5), skus());
+            check.ship(part, UUID.randomUUID(), WORKER, NOW);
+            check.receive(List.of(picked("LPN-A3", LINE_A, "SKU-A", 10)), UUID::randomUUID);
+            check.saved();
+            assertThat(check.closeRest(sales, NOW.plusSeconds(1))).extracting(Carton::lpn).containsExactly("LPN-A3");
+            assertThat(check.carton("LPN-A2").orElseThrow().removalReason()).as("left as it was")
+                    .isEqualTo(RemovalReason.DAMAGED);
+            assertThat(check.status()).isEqualTo(PackStatus.COMPLETED);
+            assertThat(check.completedBy()).isEqualTo(sales);
+            assertThat(check.completedAt()).isEqualTo(NOW.plusSeconds(1));
+            assertThat(check.sessionChanged()).isTrue();
+            assertThat(check.closeRest(sales, NOW.plusSeconds(2))).isEmpty();
+        }
+
+        @Test
+        @DisplayName("nothing labelled: anyLabeled is false - the caller cancels the session whole, for REMAINDER_CLOSED")
+        void nothingLabelled() {
+            CartonCheck check = started();
+            check.check("LPN-A1", WORKER, NOW);
+            assertThat(check.anyLabeled()).isFalse();
+            List<Carton> removed = check.cancel(NOW, java.util.Set.of(), RemovalReason.REMAINDER_CLOSED, sales);
+            assertThat(removed).hasSize(3).allSatisfy(c -> {
+                assertThat(c.removalReason()).isEqualTo(RemovalReason.REMAINDER_CLOSED);
+                assertThat(c.removedBy()).isEqualTo(sales);
+            });
+            assertThat(check.status()).isEqualTo(PackStatus.CANCELLED);
+        }
+    }
+
+    @Nested
     @DisplayName("cancel: the order was cancelled before any label (08 BR-04)")
     class Cancel {
 

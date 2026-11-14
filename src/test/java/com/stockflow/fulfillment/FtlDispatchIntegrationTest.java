@@ -254,6 +254,14 @@ class FtlDispatchIntegrationTest {
     }
     /** The order picked and packed at the check station, one shipment of all its cartons. Returns the shipment and task. */
     private UUID[] packed(OrderSummary order, boolean kits) throws Exception {
+        UUID task = picked(order);
+        // The check station (4C-6): start, scan the LPN of every picked carton, label, complete: one shipment.
+        UUID shipment = CartonStationSupport.ship(this::packer, jdbc, json, task, null);
+        return new UUID[] {shipment, task};
+    }
+
+    /** The order's task created, every carton picked to dispatch: the task PICKED, at the check station. */
+    private UUID picked(OrderSummary order) throws Exception {
         UUID task = UUID.fromString(data(oc(body(post(BASE + "/tasks"), "{\"orderId\":\"" + order.orderId()
                 + "\",\"assignedUserId\":\"" + picker + "\"}")).andExpect(status().isCreated())).path("taskId").asText());
         packer(post(BASE + "/tasks/" + task + "/picking-start")).andExpect(status().isOk());
@@ -265,9 +273,7 @@ class FtlDispatchIntegrationTest {
                             + "\"}")).andExpect(status().isOk());
         }
         packer(post(BASE + "/tasks/" + task + "/picking-completion")).andExpect(status().isOk());
-        // The check station (4C-6): start, scan the LPN of every picked carton, label, complete: one shipment.
-        UUID shipment = CartonStationSupport.ship(this::packer, jdbc, json, task, null);
-        return new UUID[] {shipment, task};
+        return task;
     }
 
     private static String ids(List<UUID> ids) {
@@ -2447,6 +2453,8 @@ class FtlDispatchIntegrationTest {
                 () -> context.getBean(OrderReleases.class).release(orderId, HCM, coordinator));
         assertThat(second.status()).isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
         UUID[] next = packed(second, false);
+        assertThat(orders.findById(orderId).orElseThrow().status()).as("batch 2 checked in full: a part left already, "
+                + "so still PARTIALLY_FULFILLED (17 §4.5, WF4-PF-NEXT)").isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
         assertThat(next[1]).as("a task of its own").isNotEqualTo(first[1]);
         assertThat(jdbc.queryForObject("SELECT delivery_batch_id FROM fulfillment.pick WHERE id = ?", UUID.class,
                 next[1])).isEqualTo(batchIds.get(1));
@@ -2475,6 +2483,174 @@ class FtlDispatchIntegrationTest {
                 () -> context.getBean(DeliveryBatchService.class).schedule(orderId));
         assertThat(schedule.batches()).extracting(DeliveryBatchService.BatchView::state)
                 .containsExactly(DeliveryBatchService.BatchState.IN_DELIVERY, DeliveryBatchService.BatchState.IN_DELIVERY);
+    }
+
+    @Test
+    @DisplayName("WF4-X02 (08 §4.2 step 4, §4.4 step 8; WF4-PF-STATUS 2026-11-12): a carton damaged at the check station "
+            + "is removed; completing in full is refused (PACKING_INCOMPLETE); Sales allows partial delivery; completed in "
+            + "part with a note - a shipment of the labelled carton READY_TO_DISPATCH, the session still IN_PROGRESS, the "
+            + "order PARTIALLY_FULFILLED at once; that shipment planned, loaded and handed over - the order still "
+            + "PARTIALLY_FULFILLED, the rest to come")
+    void completedInPartAtTheCheckStation() throws Exception {
+        OrderSummary order = ftlOrder(2);
+        allowPartial(order, false);
+        UUID task = picked(order);
+        assertThat(orders.findById(order.orderId()).orElseThrow().status()).isEqualTo(OrderStatus.PICKING);
+        CartonStationSupport.startAndScanAll(this::packer, jdbc, task);
+        List<String> lpns = CartonStationSupport.pickedLpns(jdbc, task);
+        assertThat(lpns).hasSize(2);
+        CartonStationSupport.post(this::packer, BASE + "/tasks/" + task + "/cartons/" + lpns.get(1) + "/removal",
+                "{\"note\":\"móp góc\"}").andExpect(status().isOk());
+        CartonStationSupport.labelAll(this::packer, task);
+
+        CartonStationSupport.post(this::packer, BASE + "/tasks/" + task + "/packing-completion", "{}")
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("PACKING_INCOMPLETE"));
+        CartonStationSupport.post(this::packer, BASE + "/tasks/" + task + "/packing-completion",
+                "{\"partial\":true,\"note\":\"1 thùng móp, giao sau\"}").andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("PACK_PARTIAL_NOT_ALLOWED"));
+        assertThat(orders.findById(order.orderId()).orElseThrow().status()).as("refused: nothing changed")
+                .isEqualTo(OrderStatus.PICKING);
+
+        allowPartial(order, true);
+        JsonNode done = CartonStationSupport.completeOnly(this::packer, json, task,
+                "{\"partial\":true,\"note\":\"1 thùng móp, giao sau\"}");
+        UUID shipment = UUID.fromString(done.path("shipmentId").asText());
+        assertThat(jdbc.queryForMap("SELECT status, package_count, partial, partial_note FROM fulfillment.shipment "
+                + "WHERE id = ?", shipment)).containsEntry("status", "READY_TO_DISPATCH")
+                .containsEntry("package_count", 1).containsEntry("partial", true)
+                .containsEntry("partial_note", "1 thùng móp, giao sau");
+        assertThat(jdbc.queryForObject("SELECT status FROM fulfillment.pack WHERE pick_id = ?", String.class, task))
+                .isEqualTo("IN_PROGRESS");
+        assertThat(orders.findById(order.orderId()).orElseThrow().status()).as("at once, nothing handed over yet")
+                .isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
+
+        String load = loadOf(confirmed(List.of(shipment), truck5t), 1);
+        loadAll(load, ghn);
+        handOver(load).andExpect(status().isOk());
+        assertThat(shipmentStatus(shipment)).isEqualTo("HANDED_OVER");
+        OrderSummary after = orders.findById(order.orderId()).orElseThrow();
+        assertThat(after.status()).as("one sofa carton of two still to come").isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
+        assertThat(after.lifecycle().shipments()).singleElement()
+                .satisfies(s -> assertThat(s.shipmentId()).isEqualTo(shipment));
+    }
+
+    @Test
+    @DisplayName("WF4-CLOSE-REST (17 §4.8 step 33, owner decision 2026-11-13): completed in part, the checked part waiting "
+            + "at dispatch - Sales closes the rest: 200, only the carton neither handed over nor labelled is closed and "
+            + "taken off the installments, the order stays PARTIALLY_FULFILLED, the check is COMPLETED; the waiting "
+            + "shipment planned, loaded and handed over - SHIPPED")
+    void restClosedWhileTheCheckedPartWaits() throws Exception {
+        OrderSummary order = ftlOrder(2);
+        allowPartial(order, true);
+        UUID task = picked(order);
+        CartonStationSupport.startAndScanAll(this::packer, jdbc, task);
+        List<String> lpns = CartonStationSupport.pickedLpns(jdbc, task);
+        CartonStationSupport.post(this::packer, BASE + "/tasks/" + task + "/cartons/" + lpns.get(1) + "/removal",
+                "{\"note\":\"móp góc\"}").andExpect(status().isOk());
+        CartonStationSupport.labelAll(this::packer, task);
+        UUID shipment = UUID.fromString(CartonStationSupport.completeOnly(this::packer, json, task,
+                "{\"partial\":true,\"note\":\"1 thùng móp, giao sau\"}").path("shipmentId").asText());
+        assertThat(orders.findById(order.orderId()).orElseThrow().status()).isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
+        int perCarton = jdbc.queryForObject("SELECT units_per_carton FROM ordering.order_line WHERE order_id = ?",
+                Integer.class, order.orderId());
+
+        JsonNode closed = data(sales(body(post(ORDERS + "/" + order.orderId() + "/remainder-closure"),
+                "{\"reasonCode\":\"OUT_OF_STOCK\",\"note\":\"khách không chờ thùng thay\"}"))
+                .andExpect(status().isOk()));
+        assertThat(closed.path("status").asText()).as("the labelled part still to go").isEqualTo("PARTIALLY_FULFILLED");
+        assertThat(jdbc.queryForObject("SELECT cancelled_quantity FROM ordering.order_line WHERE order_id = ?",
+                Integer.class, order.orderId())).as("the removed carton only").isEqualTo(perCarton);
+        OrderSummary after = orders.findById(order.orderId()).orElseThrow();
+        BigDecimal settled = jdbc.queryForObject("SELECT closed_amount FROM payment.order_settlement WHERE order_id = ? "
+                + "AND kind = 'REMAINDER_CLOSED'", BigDecimal.class, order.orderId());
+        assertThat(settled).as("15 §4.6: the closed carton's worth, not the waiting one's")
+                .isEqualByComparingTo(after.total().amount().subtract(after.lifecycle().effectiveTotal()))
+                .isPositive().isLessThan(after.total().amount());
+        Await.until("the check completed with nothing left to ship", ASYNC, () -> "COMPLETED".equals(
+                jdbc.queryForObject("SELECT status FROM fulfillment.pack WHERE pick_id = ?", String.class, task)));
+        assertThat(jdbc.queryForObject("SELECT status FROM fulfillment.pick WHERE id = ?", String.class, task))
+                .as("the task goes on").isEqualTo("PICKED");
+        assertThat(shipmentStatus(shipment)).isEqualTo("READY_TO_DISPATCH");
+
+        String load = loadOf(confirmed(List.of(shipment), truck5t), 1);
+        loadAll(load, ghn);
+        handOver(load).andExpect(status().isOk());
+        assertThat(shipmentStatus(shipment)).isEqualTo("HANDED_OVER");
+        assertThat(orders.findById(order.orderId()).orElseThrow().status()).isEqualTo(OrderStatus.SHIPPED);
+    }
+
+    @Test
+    @DisplayName("WF4-PF-NEXT + WF4-CLOSE-REST with a delivery schedule: batch 1 handed over - PARTIALLY_FULFILLED; batch "
+            + "2 released and picked, one carton labelled and one only checked - Sales closes the rest: the checked one "
+            + "is REMOVED into the put-back queue, the labelled one kept, the order stays PARTIALLY_FULFILLED; batch 2 "
+            + "completed in full - still PARTIALLY_FULFILLED (a part left already); handed over in its window - SHIPPED")
+    void laterBatchStaysPartialAndItsRestIsClosed() throws Exception {
+        CustomerSkuRows.Issued sofa = sofaOf(DemoData.CUSTOMER_ID);
+        CustomerSkuRows.stock(jdbc, tx, sofa.sku(), 2 * 4);
+        ConfirmedOrders.Confirmed confirmed = confirmedOrders().pay(confirmedOrders().signedInBatches(
+                DemoData.CUSTOMER_ID, 2, ConfirmedOrders.Line.cartons(sofa, 4, 6_000_000)));
+        UUID orderId = confirmed.orderId();
+        OrderSummary order = confirmedOrders().release(orderId, HCM, coordinator);
+        List<UUID> batchIds = jdbc.queryForList("""
+                SELECT b.id FROM ordering.delivery_batch b JOIN ordering.sales_contract c ON c.id = b.contract_id
+                 WHERE c.order_id = ? ORDER BY b.seq""", UUID.class, orderId);
+        UUID[] first = packed(order, false);
+        assertThat(orders.findById(orderId).orElseThrow().status()).as("batch 1 checked in full, nothing left yet")
+                .isEqualTo(OrderStatus.PACKED);
+        String load1 = loadOf(confirmed(List.of(first[0]), truck5t), 1);
+        loadAll(load1, ghn);
+        handOver(load1).andExpect(status().isOk());
+        assertThat(orders.findById(orderId).orElseThrow().status()).isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
+
+        OrderSummary second = WithCurrentUser.call(confirmedOrders().sales(), DataScope.ALL,
+                () -> context.getBean(OrderReleases.class).release(orderId, HCM, coordinator));
+        UUID task = picked(second);
+        CartonStationSupport.startAndScanAll(this::packer, jdbc, task);
+        List<String> lpns = CartonStationSupport.pickedLpns(jdbc, task);
+        assertThat(lpns).hasSize(2);
+        CartonStationSupport.post(this::packer, BASE + "/tasks/" + task + "/carton-labels",
+                "{\"lpns\":[\"" + lpns.get(0) + "\"]}").andExpect(status().isOk());
+
+        assertThat(data(sales(body(post(ORDERS + "/" + orderId + "/remainder-closure"),
+                "{\"reasonCode\":\"OUT_OF_STOCK\"}")).andExpect(status().isOk())).path("status").asText())
+                .isEqualTo("PARTIALLY_FULFILLED");
+        // A label after the closure is refused: by the order (the closed part is no longer wanted), or because the
+        // closure's listener removed the carton already.
+        CartonStationSupport.post(this::packer, BASE + "/tasks/" + task + "/carton-labels",
+                "{\"lpns\":[\"" + lpns.get(1) + "\"]}").andExpect(status().isConflict());
+        Await.until("the checked carton removed", ASYNC, () -> "REMOVED".equals(jdbc.queryForObject(
+                "SELECT k.status FROM fulfillment.package k JOIN fulfillment.pack p ON p.id = k.pack_id "
+                        + "WHERE k.lpn = ? AND p.pick_id = ?", String.class, lpns.get(1), task)));
+        assertThat(jdbc.queryForMap("SELECT k.removal_reason, k.removed_by FROM fulfillment.package k JOIN "
+                + "fulfillment.pack p ON p.id = k.pack_id WHERE k.lpn = ? AND p.pick_id = ?", lpns.get(1), task)).containsEntry("removal_reason", "REMAINDER_CLOSED")
+                .containsEntry("removed_by", sales);
+        assertThat(jdbc.queryForObject("SELECT k.status FROM fulfillment.package k JOIN fulfillment.pack p ON "
+                + "p.id = k.pack_id WHERE k.lpn = ? AND p.pick_id = ?", String.class, lpns.get(0), task))
+                .isEqualTo("LABELED");
+        assertThat(jdbc.queryForObject("SELECT status FROM fulfillment.pack WHERE pick_id = ?", String.class, task))
+                .isEqualTo("IN_PROGRESS");
+        JsonNode queue = data(oc(get(BASE + "/put-backs").param("warehouseId", HCM.toString()).param("size", "200"))
+                .andExpect(status().isOk())).path("items");
+        List<String> queued = new ArrayList<>();
+        queue.forEach(row -> queued.add(row.path("lpn").asText()));
+        assertThat(queued).as("back onto a bin").contains(lpns.get(1)).doesNotContain(lpns.get(0));
+
+        UUID rest = UUID.fromString(CartonStationSupport.completeOnly(this::packer, json, task, "{}")
+                .path("shipmentId").asText());
+        assertThat(orders.findById(orderId).orElseThrow().status()).as("a part left already (WF4-PF-NEXT)")
+                .isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
+        String load2 = loadOf(confirmed(List.of(rest), truck5t), 1);
+        loadAll(load2, ghtk);
+        LocalDate today = LocalDate.now(ConfirmedOrders.VIETNAM);
+        UUID consent = ChatRows.message(jdbc, tx, DemoData.CUSTOMER_ID, orderId, "CUSTOMER");
+        WithCurrentUser.call(confirmedOrders().sales(), DataScope.ALL, () -> context.getBean(DeliveryBatchService.class)
+                .changeWindow(confirmedOrders().sales(), orderId, batchIds.get(1), new DeliveryBatchService.WindowChange(
+                        today, today.plusDays(2), WindowChangeReason.CUSTOMER_REQUEST, "The customer takes it now",
+                        null, consent)));
+        handOver(load2).andExpect(status().isOk());
+        assertThat(orders.findById(orderId).orElseThrow().status()).isEqualTo(OrderStatus.SHIPPED);
+        assertThat(orders.history(orderId)).extracting(com.stockflow.order.api.OrderStatusChange::to)
+                .endsWith(OrderStatus.PICKING, OrderStatus.PACKED, OrderStatus.PARTIALLY_FULFILLED, OrderStatus.SHIPPED);
     }
 
     @Test

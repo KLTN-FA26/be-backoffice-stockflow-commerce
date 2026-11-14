@@ -263,7 +263,9 @@ class Wf05DeliveryToCompletionIntegrationTest {
                 Boolean.class, orderId)).isTrue();
         assertThat(jdbc.queryForObject("SELECT string_agg(to_status, '>' ORDER BY occurred_at, id) FROM "
                 + "ordering.order_status_history WHERE order_id = ?", String.class, orderId))
-                .endsWith("PACKED>PARTIALLY_FULFILLED>PACKED>SHIPPED>DELIVERED>COMPLETED");
+                // WF4-PF-NEXT (owner decision 2026-11-13, 17 §4.5): batch 2 is packed while batch 1 already left, so the
+                // order stays PARTIALLY_FULFILLED until the last handover makes it SHIPPED - no PACKED in between.
+                .endsWith("PACKED>PARTIALLY_FULFILLED>SHIPPED>DELIVERED>COMPLETED");
         assertThat(settlements.complete(orderId)).as("completed once").isFalse();
         // The invoices are what they were issued as: completing the order touches neither.
         assertThat(queries.get(firstDraft.id())).isEqualTo(firstIssued);

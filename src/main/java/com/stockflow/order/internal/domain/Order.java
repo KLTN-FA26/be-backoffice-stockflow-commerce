@@ -590,8 +590,12 @@ public final class Order extends AggregateRoot {
 
     /**
      * Everything still to ship is packed (kltn-docs 08, 17 §5): READY_TO_FULFILL (printed goods only, or stock picked
-     * while printing), PICKING, or PARTIALLY_FULFILLED (the rest of a split order) → PACKED. Records that a package was
-     * completed, the fact the cancellation rules read. Refused while the order is on hold: resolve it first.
+     * while printing), PICKING, or PARTIALLY_FULFILLED with nothing handed over yet (the rest of a partial completion at
+     * the check station, 17 §5.1 "phần còn lại kiểm đủ") → PACKED. Once a part of the order was handed over - an earlier
+     * delivery batch, or the part a partial completion shipped - the order stays PARTIALLY_FULFILLED while the rest is
+     * picked, checked and handed over (17 §4.5 "các đợt sau được lấy hàng, kiểm thùng, bàn giao trong lúc đơn ở
+     * Partially Fulfilled"; owner decision WF4-PF-NEXT, 2026-11-13); its last handover makes it SHIPPED. Records that a
+     * package was completed, the fact the cancellation rules read. Refused while the order is on hold: resolve it first.
      *
      * @return whether this changed the order
      */
@@ -608,9 +612,44 @@ public final class Order extends AggregateRoot {
         if (status == OrderStatus.PARTIALLY_FULFILLED && outstandingUnits() == 0) {
             throw new InvalidOrderTransitionException(orderNumber, status, "nothing of it is left to pack");
         }
+        if (status == OrderStatus.PARTIALLY_FULFILLED && !shipments.isEmpty()) {
+            // WF4-PF-NEXT (2026-11-13, 17 §4.5): part of it left already - it stays PARTIALLY_FULFILLED until the last
+            // handover, which makes it SHIPPED (followShipments).
+            return recordPacked(at);
+        }
         transitionTo(OrderStatus.PACKED, by, null, at);
         recordPacked(at);
         return true;
+    }
+
+    /**
+     * Part of what the order wants now is packed (kltn-docs 08 §4.4 step 8; owner decision WF4-PF-STATUS, 2026-11-12):
+     * the check station completed with cartons missing - removed as damaged, or never picked - and Sales allowed the
+     * order to ship in parts. The order is PARTIALLY_FULFILLED from this moment, not only once that part is handed over:
+     * READY_TO_FULFILL or PICKING → PARTIALLY_FULFILLED; an order already PARTIALLY_FULFILLED (the rest of a split order,
+     * a later delivery batch) stays so. Handing the part over then leaves it PARTIALLY_FULFILLED while units are still to
+     * go ({@link #recordHandover}); the rest packed in full makes it PACKED only while nothing was handed over yet, and
+     * leaves it PARTIALLY_FULFILLED once a part left ({@link #markPacked}, WF4-PF-NEXT). Records that a package was completed, the fact the cancellation rules read. Refused while the order is
+     * on hold - resolve it first - and from any status the check station does not complete in.
+     *
+     * @return whether this changed the order
+     */
+    public boolean markPartlyPacked(Instant at, UUID by) {
+        java.util.Objects.requireNonNull(at, "at");
+        requireNotCancelled("its package is not completed");
+        switch (status) {
+            case PARTIALLY_FULFILLED -> {
+                return recordPacked(at);
+            }
+            case READY_TO_FULFILL, PICKING -> {
+                transitionTo(OrderStatus.PARTIALLY_FULFILLED, by, null, at);
+                recordPacked(at);
+                return true;
+            }
+            case ON_HOLD -> throw new InvalidOrderTransitionException(orderNumber, status,
+                    "resolve the hold before packing");
+            default -> throw new InvalidOrderTransitionException(orderNumber, status, OrderStatus.PARTIALLY_FULFILLED);
+        }
     }
 
     /**
@@ -1293,11 +1332,13 @@ public final class Order extends AggregateRoot {
      * delivered. The order then shows its shipments (SHIPPED, DELIVERY_FAILED, DELIVERED or RETURNED);
      * {@code OrderRemainderClosed} tells fulfillment to stop the rest; the money is settled on the contract's installments
      * by payment in the caller's transaction (4B-9). Only from PARTIALLY_FULFILLED: an order on hold is resolved first.
+     * Nothing is left labelled at dispatch here; see {@link #closeRemainder(CancellationReasonCode, String,
+     * com.stockflow.order.api.CancellationFee, Map, UUID, Instant)} for an order whose checked part still waits there.
      *
      * @return the value of the units closed
      */
     public BigDecimal closeRemainder(CancellationReasonCode code, String note, UUID by, Instant at) {
-        return closeRemainder(code, note, null, by, at);
+        return closeRemainder(code, note, null, Map.of(), by, at);
     }
 
     /**
@@ -1311,7 +1352,24 @@ public final class Order extends AggregateRoot {
      */
     public BigDecimal closeRemainder(CancellationReasonCode code, String note,
                                      com.stockflow.order.api.CancellationFee agreedFee, UUID by, Instant at) {
+        return closeRemainder(code, note, agreedFee, Map.of(), by, at);
+    }
+
+    /**
+     * The same, for an order with cartons checked and labelled for it that were not handed over yet (owner decision
+     * WF4-CLOSE-REST, 2026-11-13; 17 §4.8 step 33): those units stay on the order and are delivered - their handover
+     * goes on as before, and the last of them makes the order SHIPPED; only the units neither handed over nor labelled
+     * are closed, and only they come off what the installments owe (15 §4.6). Until that handover the order stays
+     * PARTIALLY_FULFILLED. Refused when nothing is left to close: everything still to go is labelled already.
+     *
+     * @param labelled per order line, the units in labelled cartons not handed over yet (fulfillment's
+     *                 {@code LabelledNotHandedOver}); a line's count above what it has left is taken as what it has left
+     */
+    public BigDecimal closeRemainder(CancellationReasonCode code, String note,
+                                     com.stockflow.order.api.CancellationFee agreedFee, Map<UUID, Integer> labelled,
+                                     UUID by, Instant at) {
         java.util.Objects.requireNonNull(code, "code");
+        Map<UUID, Integer> kept = labelled == null ? Map.of() : labelled;
         String trimmed = trimmed(note);
         if (code == CancellationReasonCode.OTHER && trimmed == null) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Closing the rest for OTHER must say why in the note");
@@ -1326,13 +1384,32 @@ public final class Order extends AggregateRoot {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED,
                     "REPLACEMENT_WITHDRAWN is historical: no order replaces a return's goods any more");
         }
+        // Per line, the units closed: neither shipped nor in a labelled carton waiting at dispatch (WF4-CLOSE-REST).
+        Map<UUID, Integer> closing = new LinkedHashMap<>();
+        for (OrderLine line : lines) {
+            int left = line.quantity() - line.cancelledQuantity() - shippedUnits(line.id(), false);
+            int closes = left - Math.min(left, Math.max(0, kept.getOrDefault(line.id(), 0)));
+            if (closes > 0) {
+                closing.put(line.id(), closes);
+            }
+        }
+        if (closing.isEmpty()) {
+            throw new InvalidOrderTransitionException(orderNumber, status,
+                    "everything it still wants is labelled and waits at dispatch: nothing is left to close");
+        }
+        if (shipments.isEmpty() && kept.values().stream().noneMatch(units -> units > 0)) {
+            // Nothing of it left and nothing labelled waits to go: closing would leave an order with no goods and no
+            // shipment to follow. Not a case the docs describe (17 §4.8 step 33 closes the rest of goods that went).
+            throw new InvalidOrderTransitionException(orderNumber, status,
+                    "nothing of it was handed over and nothing labelled waits at dispatch: there is no part to deliver");
+        }
         // Validated before anything changes: a refused fee leaves the order as it was.
         Money closedPrints = Money.zero(total().currency());
         for (OrderLine line : lines) {
-            int left = line.quantity() - line.cancelledQuantity() - shippedUnits(line.id(), false);
-            if (left > 0 && line.printedToCustomerDesign()) {
+            int closes = closing.getOrDefault(line.id(), 0);
+            if (closes > 0 && line.printedToCustomerDesign()) {
                 int open = line.quantity() - line.cancelledQuantity();
-                closedPrints = closedPrints.plus(line.grossBetween(open - left, open));
+                closedPrints = closedPrints.plus(line.grossBetween(open - closes, open));
             }
         }
         boolean goodsMade = printingStartedAt != null || shipments.stream().anyMatch(OrderShipment::isReturned);
@@ -1341,12 +1418,13 @@ public final class Order extends AggregateRoot {
         Money closed = Money.zero(total().currency());
         List<com.stockflow.contracts.OrderRemainderClosed.Line> closedLines = new ArrayList<>();
         for (OrderLine line : lines) {
-            int left = line.quantity() - line.cancelledQuantity() - shippedUnits(line.id(), false);
-            if (left > 0) {
+            int closes = closing.getOrDefault(line.id(), 0);
+            if (closes > 0) {
                 int open = line.quantity() - line.cancelledQuantity();
-                line.closeUnits(left);
-                closed = closed.plus(line.grossBetween(open - left, open));
-                closedLines.add(new com.stockflow.contracts.OrderRemainderClosed.Line(line.id(), line.sku().code(), left));
+                line.closeUnits(closes);
+                closed = closed.plus(line.grossBetween(open - closes, open));
+                closedLines.add(new com.stockflow.contracts.OrderRemainderClosed.Line(line.id(), line.sku().code(),
+                        closes));
             }
         }
         String reason = withNote("REMAINDER_CLOSED_" + code.name(), trimmed);
@@ -1355,6 +1433,8 @@ public final class Order extends AggregateRoot {
             reason = reason + " (fee " + fee.stripTrailingZeros().toPlainString() + ": " + agreedFee.reason() + ")";
             reason = reason.length() > 500 ? reason.substring(0, 500) : reason;
         }
+        // With labelled cartons still to hand over, the order stays PARTIALLY_FULFILLED (followShipments leaves it so,
+        // or has no shipment to look at yet); their last handover makes it SHIPPED.
         followShipments(ShipmentChange.CLOSED, at, by, reason);
         this.lastClosureId = UUID.randomUUID();
         // The money is the installments', settled by payment in this transaction (OrderServiceImpl.closeRemainder): the

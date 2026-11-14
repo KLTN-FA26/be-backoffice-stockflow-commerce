@@ -55,7 +55,12 @@ public final class CartonCheck {
         /** Damaged outside (dented, torn, wet), removed by a worker: it goes whole to quarantine (08 §4.2 step 4). */
         DAMAGED,
         /** Its order was cancelled before any carton was labelled: it goes back onto a bin (08 BR-04). */
-        ORDER_CANCELLED
+        ORDER_CANCELLED,
+        /**
+         * Sales closed the rest of its order while it was not labelled yet (17 §4.8 step 33; owner decision
+         * WF4-CLOSE-REST, 2026-11-13): it is no longer wanted and goes back onto a bin through the put-back queue.
+         */
+        REMAINDER_CLOSED
     }
 
     /**
@@ -466,12 +471,21 @@ public final class CartonCheck {
      * @return the cartons removed
      */
     public List<Carton> cancel(Instant now, Set<UUID> cancelledShipments) {
+        return cancel(now, cancelledShipments, RemovalReason.ORDER_CANCELLED, null);
+    }
+
+    /**
+     * As {@link #cancel(Instant, Set)}, the cartons removed for {@code reason} by {@code actor}: the rest of the order
+     * closed while nothing of this task was labelled (WF4-CLOSE-REST) cancels the whole session the same way.
+     */
+    public List<Carton> cancel(Instant now, Set<UUID> cancelledShipments, RemovalReason reason, UUID actor) {
+        Objects.requireNonNull(reason, "reason");
         List<Carton> removed = new ArrayList<>();
         for (Carton carton : cartons) {
             boolean free = carton.shipmentId == null || cancelledShipments.contains(carton.shipmentId);
             if (carton.status != PackageStatus.REMOVED && free) {
                 carton.shipmentId = null;
-                carton.removeFor(RemovalReason.ORDER_CANCELLED, null, null, now);
+                carton.removeFor(reason, null, actor, now);
                 changed.add(carton.id);
                 removed.add(carton);
             }
@@ -481,6 +495,45 @@ public final class CartonCheck {
             sessionChanged = true;
         }
         return removed;
+    }
+
+    /**
+     * Sales closed the rest of the order while cartons of this session are labelled (17 §4.8 step 33; owner decision
+     * WF4-CLOSE-REST, 2026-11-13): the labelled cartons - in a shipment waiting at dispatch, or not in one yet - stay and
+     * are delivered; every carton not labelled - TO_CHECK or CHECKED - is REMOVED for {@link RemovalReason#REMAINDER_CLOSED}
+     * and goes back onto a bin through the put-back queue. With no labelled carton left to ship the session is
+     * COMPLETED; otherwise it stays IN_PROGRESS, for those cartons to be completed into a shipment. A cancelled or
+     * completed session is left as it is.
+     *
+     * @return the cartons removed
+     */
+    public List<Carton> closeRest(UUID actor, Instant now) {
+        Objects.requireNonNull(now, "now");
+        if (status == PackStatus.CANCELLED || status == PackStatus.COMPLETED) {
+            return List.of();
+        }
+        List<Carton> removed = new ArrayList<>();
+        for (Carton carton : cartons) {
+            if ((carton.status == PackageStatus.TO_CHECK || carton.status == PackageStatus.CHECKED)
+                    && carton.shipmentId == null) {
+                carton.removeFor(RemovalReason.REMAINDER_CLOSED, null, actor, now);
+                changed.add(carton.id);
+                removed.add(carton);
+            }
+        }
+        boolean toShip = cartons.stream().anyMatch(c -> c.status == PackageStatus.LABELED && c.shipmentId == null);
+        if (!toShip && status == PackStatus.IN_PROGRESS) {
+            status = PackStatus.COMPLETED;
+            completedAt = now;
+            completedBy = actor;
+            sessionChanged = true;
+        }
+        return removed;
+    }
+
+    /** Whether a carton of the session is labelled - shipped or not: what the closure of the rest keeps. */
+    public boolean anyLabeled() {
+        return cartons.stream().anyMatch(c -> c.status == PackageStatus.LABELED);
     }
 
     // ------------------------------------------------------------------ reading

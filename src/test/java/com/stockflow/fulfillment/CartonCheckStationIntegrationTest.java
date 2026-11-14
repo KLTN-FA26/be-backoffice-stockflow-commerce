@@ -616,8 +616,9 @@ class CartonCheckStationIntegrationTest {
                 shipment)).containsEntry("package_count", 2).containsEntry("partial", true)
                 .containsEntry("partial_note", "one carton damaged");
         assertThat(sessionStatus(task)).isEqualTo("IN_PROGRESS");
-        assertThat(orders.findById(order.orderId()).orElseThrow().status()).as("still picking until it is handed over")
-                .isNotEqualTo(OrderStatus.CANCELLED);
+        assertThat(orders.findById(order.orderId()).orElseThrow().status())
+                .as("PARTIALLY_FULFILLED at once, before it is handed over (08 §4.4, WF4-PF-STATUS 2026-11-12)")
+                .isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
 
         // The removed carton waits in the put-back queue, goes into a quarantine area only, whole.
         String lineId = jdbc.queryForObject("SELECT id::text FROM fulfillment.pick_line WHERE lpn = ?", String.class, damaged);

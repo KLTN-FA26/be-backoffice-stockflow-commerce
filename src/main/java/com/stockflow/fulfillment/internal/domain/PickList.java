@@ -449,12 +449,23 @@ public final class PickList {
      */
     public PutBack putBack(UUID lineId, String scannedLpn, PutBackTarget target, boolean removedDamaged, UUID actor,
                            Instant now) {
+        return putBack(lineId, scannedLpn, target, removedDamaged, false, actor, now);
+    }
+
+    /**
+     * As {@link #putBack(UUID, String, PutBackTarget, boolean, UUID, Instant)}; with {@code removedClosedRest}, the line's
+     * carton was removed at the check station because the rest of its order was closed (17 §4.8 step 33, WF4-CLOSE-REST
+     * 2026-11-13): it goes back onto an active bin of the task's warehouse although the task itself goes on - its
+     * labelled cartons are still delivered.
+     */
+    public PutBack putBack(UUID lineId, String scannedLpn, PutBackTarget target, boolean removedDamaged,
+                           boolean removedClosedRest, UUID actor, Instant now) {
         PickLine line = requireLine(lineId);
         if (line.status() == PickLineStatus.PUT_BACK && lpnMatches(line, scannedLpn)) {
             return new PutBack(line, true);
         }
         boolean staged = line.status() == PickLineStatus.STAGED;
-        boolean queued = removedDamaged ? line.status() == PickLineStatus.PICKED
+        boolean queued = removedDamaged || removedClosedRest ? line.status() == PickLineStatus.PICKED
                 : status == PickStatus.CANCELLED && needsPutBack && (line.status() == PickLineStatus.PICKED || staged);
         if (!queued || line.pickedQty() == 0 || line.lpn() == null) {
             throw new BusinessException(ErrorCode.PUT_BACK_NOT_REQUIRED,

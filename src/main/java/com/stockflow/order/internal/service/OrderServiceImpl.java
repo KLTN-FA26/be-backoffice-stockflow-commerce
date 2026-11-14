@@ -119,6 +119,8 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
     private final DeliveryBatchService batches;
     private final com.stockflow.order.internal.domain.DeliveryBatchRecords batchRecords;
     private final com.stockflow.order.internal.domain.DeliveryFailureCases deliveryFailures;
+    /** Fulfillment's answer to which units are labelled and not handed over (order :: spi); absent in a module test. */
+    private final org.springframework.beans.factory.ObjectProvider<com.stockflow.order.spi.LabelledNotHandedOver> labelled;
 
     OrderServiceImpl(OrderRepository repository, OrderSearchRepository search,
                      InventoryService inventory, OrderEventPublisher events, Clock clock,
@@ -131,8 +133,11 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
                      com.stockflow.order.internal.domain.SalesContractRepository contracts,
                      DeliveryBatchService batches,
                      com.stockflow.order.internal.domain.DeliveryBatchRecords batchRecords,
-                     com.stockflow.order.internal.domain.DeliveryFailureCases deliveryFailures) {
+                     com.stockflow.order.internal.domain.DeliveryFailureCases deliveryFailures,
+                     org.springframework.beans.factory.ObjectProvider<com.stockflow.order.spi.LabelledNotHandedOver>
+                             labelled) {
         this.deliveryFailures = deliveryFailures;
+        this.labelled = labelled;
         this.batches = batches;
         this.batchRecords = batchRecords;
         this.contracts = contracts;
@@ -573,6 +578,16 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
     }
 
     @Override
+    public OrderSummary markPartlyPacked(UUID orderId, UUID by) {
+        Order order = lockOrder(orderId);
+        if (!order.markPartlyPacked(clock.instant(), by)) {
+            return toSummary(order);
+        }
+        log.info("Order {}: packed in part, {}", order.orderNumber(), order.status());
+        return saved(order);
+    }
+
+    @Override
     public OrderSummary markShipped(UUID orderId, java.time.Instant handedOverAt, UUID by) {
         Order order = lockOrder(orderId);
         if (!order.markShipped(handedOverAt == null ? clock.instant() : handedOverAt, by, installmentsDue(order))) {
@@ -704,6 +719,17 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
                 .forEach(l -> order.lines().stream().filter(line -> line.id().equals(l.orderLineId())).findFirst()
                         .ifPresent(line -> units.merge(line.id(), l.cartons()
                                 * (line.unitsPerCarton() == null ? 1 : line.unitsPerCarton()), Integer::sum)));
+        // WF4-CLOSE-REST (2026-11-13): once the rest of a line was closed, the batch wants no more of it than the line
+        // still has open beyond what the other batches shipped - the units labelled for this batch, which the closure
+        // kept (Order#closeRemainder) - so the check of its labelled cartons completes in full.
+        order.lines().stream().filter(line -> line.cancelledQuantity() > 0 && units.containsKey(line.id()))
+                .forEach(line -> {
+                    int elsewhere = order.shipments().stream()
+                            .filter(s -> !s.isReturned() && !deliveryBatchId.equals(s.deliveryBatchId()))
+                            .mapToInt(s -> s.quantities().getOrDefault(line.id(), 0)).sum();
+                    int open = Math.max(0, line.quantity() - line.cancelledQuantity() - elsewhere);
+                    units.computeIfPresent(line.id(), (id, planned) -> Math.min(planned, open));
+                });
         return units;
     }
 
@@ -1019,7 +1045,12 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
         UUID orderId = order.id().value();
         java.util.Map<UUID, Integer> closedBefore = order.lines().stream()
                 .collect(Collectors.toMap(OrderLine::id, OrderLine::cancelledQuantity));
-        BigDecimal closed = order.closeRemainder(reasonCode, note, fee, by, now);
+        // WF4-CLOSE-REST (owner decision 2026-11-13, 17 §4.8 step 33): the cartons checked and labelled for it and not
+        // handed over yet stay on the order and are delivered; asked under the order's lock, which every label takes
+        // too (CartonCheckService.label), so none is labelled between this answer and the closure.
+        com.stockflow.order.spi.LabelledNotHandedOver station = labelled.getIfAvailable();
+        java.util.Map<UUID, Integer> waiting = station == null ? java.util.Map.of() : station.unitsOf(orderId);
+        BigDecimal closed = order.closeRemainder(reasonCode, note, fee, waiting, by, now);
         java.util.Map<OrderLine, Integer> closedLines = order.lines().stream()
                 .filter(line -> line.cancelledQuantity() > closedBefore.get(line.id()))
                 .collect(Collectors.toMap(line -> line, line -> line.cancelledQuantity() - closedBefore.get(line.id()),

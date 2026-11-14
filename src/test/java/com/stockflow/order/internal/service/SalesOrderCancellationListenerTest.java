@@ -100,6 +100,34 @@ class SalesOrderCancellationListenerTest {
     }
 
     @Test
+    @DisplayName("WF4-CLOSE-REST (17 §4.8 step 33): the rest of the order closed - not printing yet: cancelled; printing "
+            + "or partly received: closed; each by who closed it, with the closure as the reason; closed by no one: left")
+    void restClosed() {
+        ProductionOrder sent = production(ProductionOrderStatus.SENT, 1);
+        ProductionOrder printing = production(ProductionOrderStatus.IN_PRODUCTION, 2);
+        ProductionOrder received = production(ProductionOrderStatus.RECEIVED, 3);
+        stored(sent, printing, received);
+
+        listener.on(closed(SALES));
+
+        String reason = "Sales order SO-20261109-000046 had its rest closed: OUT_OF_STOCK";
+        verify(service).cancel(sent.id(), 1, reason, SALES);
+        verify(service).close(printing.id(), 2, reason, SALES);
+        verify(service, never()).cancel(eq(received.id()), anyLong(), anyString(), any());
+        verify(service, never()).close(eq(received.id()), anyLong(), anyString(), any());
+
+        org.mockito.Mockito.clearInvocations(service);
+        listener.on(closed(null));
+        verifyNoInteractions(service);
+    }
+
+    private static com.stockflow.contracts.OrderRemainderClosed closed(UUID by) {
+        return new com.stockflow.contracts.OrderRemainderClosed(ORDER, "SO-20261109-000046", UUID.randomUUID(),
+                "OUT_OF_STOCK", List.of(), BigDecimal.ONE, BigDecimal.TEN, BigDecimal.ZERO, BigDecimal.ZERO, "VND", by,
+                NOW, UUID.randomUUID());
+    }
+
+    @Test
     @DisplayName("one refused does not stop the others; the failure is raised once all were tried, for a redelivery")
     void failureRaisedAfterTheRest() {
         ProductionOrder first = production(ProductionOrderStatus.SENT, 1);
