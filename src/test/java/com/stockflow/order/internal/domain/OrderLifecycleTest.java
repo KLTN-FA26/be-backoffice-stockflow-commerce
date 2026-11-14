@@ -190,6 +190,35 @@ class OrderLifecycleTest {
         }
 
         @Test
+        @DisplayName("WF4-COUNT-EDGE b: held for stock after its release, the task opens anyway - the order stays held and "
+                + "the hold resolves back to PICKING")
+        void heldForStockAfterReleaseStartsPickingWhenResolved() {
+            Order order = order();
+            order.putOnHold(HoldReason.INVENTORY, "Carton counted missing", STAFF, NOW);
+            order.pullTransitions();
+
+            assertThat(order.startPicking(STAFF, NOW)).isTrue();
+
+            assertThat(order.status()).isEqualTo(OrderStatus.ON_HOLD);
+            assertThat(order.holdReason()).isEqualTo(HoldReason.INVENTORY);
+            assertThat(order.statusBeforeHold()).isEqualTo(OrderStatus.PICKING);
+            assertThat(order.pullTransitions()).isEmpty();
+            assertThat(order.startPicking(STAFF, NOW.plusSeconds(60))).isFalse();
+            order.resolveHold("Short line reallocated", STAFF, NOW);
+            assertThat(order.status()).isEqualTo(OrderStatus.PICKING);
+        }
+
+        @Test
+        @DisplayName("WF4-COUNT-EDGE b: any other hold of a released order still stops its picking")
+        void anotherHoldStillStopsPicking() {
+            Order order = order();
+            order.putOnHold(HoldReason.ADDRESS, "sai phường", STAFF, NOW);
+            assertThat(code(catchThrowable(() -> order.startPicking(STAFF, NOW))))
+                    .isEqualTo(ErrorCode.ORDER_INVALID_TRANSITION);
+            assertThat(order.statusBeforeHold()).isEqualTo(OrderStatus.READY_TO_FULFILL);
+        }
+
+        @Test
         @DisplayName("a second hold, a hold after shipping, OTHER without a note, a hand-raised CREDIT: refused")
         void refusals() {
             Order order = picking();

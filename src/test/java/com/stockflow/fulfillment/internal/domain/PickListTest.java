@@ -106,6 +106,36 @@ class PickListTest {
         }
 
         @Test
+        @DisplayName("WF4-COUNT-EDGE b: a hold an approved count gave up with its carton before the task gets its line SHORT "
+                + "(NOT_FOUND, nothing taken) beside the live holds' OPEN lines; planned once; another released hold is not")
+        void aHoldGivenUpWithItsCartonIsPlannedShort() {
+            UUID line = UUID.randomUUID();
+            UUID live = UUID.randomUUID();
+            UUID givenUp = UUID.randomUUID();
+            UUID released = UUID.randomUUID();
+            var list = new PickList(UUID.randomUUID(), HCM, PickStatus.PENDING, false, List.of());
+            var order = List.of(new PickList.OrderLine(line, "SOFA-3S-GREY", List.of(live, givenUp, released)));
+            var holds = Map.of(live, hold(live, "SOFA-3S-GREY", "HCM-A01-2-B", HCM, 2, "LPN-1"),
+                    givenUp, new PickList.Hold(givenUp, "SOFA-3S-GREY", "HCM-A01-1-A", HCM, null, 2, false, "LPN-2",
+                            false),
+                    released, new PickList.Hold(released, "SOFA-3S-GREY", "HCM-A01-3-A", HCM, null, 2, false, "LPN-3",
+                            true));
+
+            List<PickLine> added = list.plan(order, holds, java.util.Set.of(givenUp), UUID::randomUUID);
+
+            assertThat(added).extracting(PickLine::reservationId).containsExactly(givenUp, live);
+            PickLine shortLine = added.getFirst();
+            assertThat(shortLine.status()).isEqualTo(PickLineStatus.SHORT);
+            assertThat(shortLine.shortReason()).isEqualTo(ShortPickReason.NOT_FOUND);
+            assertThat(shortLine.shortQty()).isEqualTo(2);
+            assertThat(shortLine.pickedQty()).isZero();
+            assertThat(shortLine.lpn()).isEqualTo("LPN-2");
+            assertThat(added.get(1).status()).isEqualTo(PickLineStatus.OPEN);
+            assertThat(list.hasShortLines()).isTrue();
+            assertThat(list.plan(order, holds, java.util.Set.of(givenUp), UUID::randomUUID)).isEmpty();
+        }
+
+        @Test
         @DisplayName("planning again adds nothing: lines are planned once")
         void planningIsIdempotent() {
             UUID h1 = UUID.randomUUID();
@@ -232,6 +262,28 @@ class PickListTest {
             assertThat(refusal(() -> list.confirm(UUID.randomUUID(), "HCM-A01-2-B", LPN, PICKER, NOW)))
                     .isEqualTo(ErrorCode.NOT_FOUND);
             assertThat(line.status()).isEqualTo(PickLineStatus.OPEN);
+        }
+
+        @Test
+        @DisplayName("BE-14: the refusals carry the bin / carton to scan as structured details, not only in the message")
+        void refusalsCarryTheExpectedBinAndCarton() {
+            PickLine line = open("SOFA-3S-GREY", "HCM-A01-2-B", 2, LPN);
+            var list = picking(line);
+
+            BusinessException wrongBin = (BusinessException) catchThrowable(
+                    () -> list.confirm(line.id(), "HCM-A02-1-A", LPN, PICKER, NOW));
+            assertThat(wrongBin.errorCode()).isEqualTo(ErrorCode.PICK_LOCATION_MISMATCH);
+            assertThat(wrongBin.details()).containsExactlyEntriesOf(Map.of("expectedLocationCode", "HCM-A01-2-B"));
+
+            BusinessException wrongCarton = (BusinessException) catchThrowable(
+                    () -> list.confirm(line.id(), "hcm-a01-2-b", OTHER_LPN, PICKER, NOW));
+            assertThat(wrongCarton.errorCode()).isEqualTo(ErrorCode.PICK_ITEM_MISMATCH);
+            assertThat(wrongCarton.details()).containsExactlyEntriesOf(Map.of("expectedLpn", LPN));
+
+            // A missing scan is the same refusal and names the same thing.
+            BusinessException noScan = (BusinessException) catchThrowable(
+                    () -> list.confirm(line.id(), null, null, PICKER, NOW));
+            assertThat(noScan.details()).containsEntry("expectedLocationCode", "HCM-A01-2-B");
         }
 
         @Test
@@ -453,6 +505,19 @@ class PickListTest {
                         .as("scan %s", scan).isEqualTo(ErrorCode.PICK_ITEM_MISMATCH);
             }
             assertThat(line.status()).isEqualTo(PickLineStatus.PICKED);
+        }
+
+        @Test
+        @DisplayName("BE-14: a wrong carton at put-back names the carton to scan in details.expectedLpn")
+        void wrongScanCarriesTheExpectedLpn() {
+            PickLine line = picked("SOFA-3S-GREY", "HCM-A01-2-B", 2, LPN);
+            var list = new PickList(UUID.randomUUID(), HCM, PickStatus.CANCELLED, true, List.of(line));
+
+            BusinessException thrown = (BusinessException) catchThrowable(
+                    () -> list.putBack(line.id(), OTHER_LPN, bin, PICKER, NOW));
+
+            assertThat(thrown.errorCode()).isEqualTo(ErrorCode.PICK_ITEM_MISMATCH);
+            assertThat(thrown.details()).containsExactlyEntriesOf(Map.of("expectedLpn", LPN));
         }
 
         @Test

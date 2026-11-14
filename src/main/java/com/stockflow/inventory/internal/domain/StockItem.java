@@ -508,6 +508,31 @@ public final class StockItem extends AggregateRoot {
     }
 
     /**
+     * The carton on this row is written off by an approved count's shortage (20 §4.2 step 8): it is not there, so every
+     * live hold on it is a shortage of its order. Each is given up as a short pick ({@link ReleaseReason#SHORT_PICKED},
+     * what a reallocation does to the same hold) and announced as {@code StockHeldCartonWrittenOff}, which fulfillment
+     * turns into a SHORT line and a held order after the commit. {@code decidedBy} is who approved the shortage. Call before {@link #adjustBy}, which refuses to cut
+     * into a hold. Nothing happens on a row with no live hold.
+     */
+    public void giveUpHoldsOfWrittenOffCarton(UUID decidedBy, Instant now) {
+        for (Reservation hold : reservations.stream().filter(r -> r.status().isActive()).toList()) {
+            releaseReservation(hold.id(), ReleaseReason.SHORT_PICKED, now);
+            registerEvent(new StockEvent.HeldCartonWrittenOff(new com.stockflow.contracts.StockHeldCartonWrittenOff(
+                    hold.orderId(), hold.id().value(), sku.code(), location.code(), hold.quantity().value(), decidedBy)));
+        }
+    }
+
+    /**
+     * WF4-COUNT-EDGE (a): this row's carton, {@code units} of it, was written off by an approved count's shortage (20 §4.2
+     * step 8). Announced as {@code StockWrittenOffByCount}, after the save, so the order module can recompute what orders
+     * hold of the SKU at the warehouse by SKU - a carton fewer may leave a hold uncovered. Call after {@link #adjustBy}.
+     */
+    public void announceCountWriteOff(int units, UUID decidedBy) {
+        registerEvent(new StockEvent.WrittenOffByCount(new com.stockflow.contracts.StockWrittenOffByCount(sku.code(),
+                location.warehouseCode(), units, decidedBy)));
+    }
+
+    /**
      * The goods have been picked: turn a hold into a real deduction (BRD 3.7 / 3.8).
      *
      * <p>This is the only method that lowers {@code onHand}, and it can only do so through a live

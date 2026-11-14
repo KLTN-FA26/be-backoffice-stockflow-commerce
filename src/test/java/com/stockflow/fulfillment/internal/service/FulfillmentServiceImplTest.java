@@ -268,7 +268,52 @@ class FulfillmentServiceImplTest {
         assertThat(saved.getValue().getOrderNumber()).isEqualTo("SO-20261014-0001");
         assertThat(saved.getValue().getWarehouseId()).isEqualTo(HN);
         // SCRUM-267: the lines are planned with the task, from the order's holds.
-        verify(pickLists).planLines(saved.getValue(), order);
+        verify(pickLists).planLines(eq(saved.getValue()), eq(order), any());
+    }
+
+    /** A released order of HN on hold for {@code reason}, held from READY_TO_FULFILL. */
+    private OrderSummary heldAfterRelease(com.stockflow.order.api.HoldReason reason) {
+        var released = orderIn(OrderStatus.READY_TO_FULFILL, HN);
+        var lifecycle = new OrderSummary.Lifecycle(reason, OrderStatus.READY_TO_FULFILL, "held", null, null, null, null,
+                null, null, null, null, List.of(), List.of(), false, null);
+        return new OrderSummary(released.orderId(), released.orderNumber(), released.customerId(), OrderStatus.ON_HOLD,
+                released.total(), released.lines(), released.placedAt(), null, null, null, null, null, null, null, null,
+                HN, now.minusSeconds(60), null, lifecycle);
+    }
+
+    @Test
+    void anOrderHeldForStockAfterItsReleaseGetsItsTask() {
+        // WF4-COUNT-EDGE b: a carton it was allocated was counted missing before its task; the manager opens the task,
+        // its line planned short, and the order goes on picking once the line is reallocated.
+        var order = heldAfterRelease(com.stockflow.order.api.HoldReason.INVENTORY);
+        UUID picker = UUID.randomUUID();
+        holdsAt(order, "HN-A01-1-A=SOFA-3S-GREY");
+        assignable(HN, picker);
+        when(orders.findById(order.orderId())).thenReturn(Optional.of(order));
+        when(picks.findAllByOrderId(order.orderId())).thenReturn(List.of());
+        when(packs.findByPickId(any())).thenReturn(Optional.of(new PackJpaEntity(UUID.randomUUID(), UUID.randomUUID(),
+                PackStatus.PENDING, null)));
+        var manager = unlimitedManager();
+
+        assertThat(service.createTask(order.orderId(), picker, manager).warehouseId()).isEqualTo(HN);
+
+        verify(orders).startPicking(order.orderId(), manager.userId());
+        verify(pickLists).planLines(any(), eq(order), eq(manager.userId()));
+    }
+
+    @Test
+    void anOrderHeldForAnotherReasonGetsNoTask() {
+        // 17 BR-03: any other hold stops the warehouse.
+        var order = heldAfterRelease(com.stockflow.order.api.HoldReason.ADDRESS);
+        holdsAt(order, "HN-A01-1-A=SOFA-3S-GREY");
+        when(orders.findById(order.orderId())).thenReturn(Optional.of(order));
+        when(picks.findAllByOrderId(order.orderId())).thenReturn(List.of());
+
+        var thrown = refusal(() -> service.createTask(order.orderId(), UUID.randomUUID(), unlimitedManager()));
+
+        assertThat(thrown.errorCode()).isEqualTo(ErrorCode.PICK_TASK_STATE_CONFLICT);
+        verify(orders, never()).startPicking(any(), any());
+        verify(picks, never()).saveAndFlush(any());
     }
 
     @Test
@@ -503,7 +548,7 @@ class FulfillmentServiceImplTest {
         var worker = user(assigned, Role.WAREHOUSE_STAFF);
 
         assertThat(service.startPicking(pick.getId(), worker).pickStatus()).isEqualTo("PICKING");
-        verify(pickLists).planLines(pick, order);
+        verify(pickLists).planLines(eq(pick), eq(order), eq(assigned));
         // Starting again is answered: the task stays PICKING and its lines are planned if missing.
         assertThat(service.startPicking(pick.getId(), worker).pickStatus()).isEqualTo("PICKING");
 
@@ -548,7 +593,7 @@ class FulfillmentServiceImplTest {
 
         assertThat(refusal(() -> service.startPicking(pick.getId(), user(assigned, Role.WAREHOUSE_STAFF))).errorCode())
                 .isEqualTo(ErrorCode.PICK_TASK_STATE_CONFLICT);
-        verify(pickLists, never()).planLines(any(), any());
+        verify(pickLists, never()).planLines(any(), any(), any());
     }
 
     private PickJpaEntity pickedTask(UUID assigned) {

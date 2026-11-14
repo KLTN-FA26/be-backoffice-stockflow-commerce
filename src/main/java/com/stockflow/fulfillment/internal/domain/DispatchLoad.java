@@ -434,16 +434,18 @@ public final class DispatchLoad {
 
     /**
      * A driver took the carrier's order (an API carrier's webhook, kltn-docs 09 §4.5 "tài xế nhận đơn"): the driver's
-     * name and phone go on the load while its vehicle is booked or loading. The plate is not touched: the carrier sends
-     * none, and it is given at the handover.
+     * name and phone go on the load while its vehicle is booked or loading. Only what the carrier sends is written: a
+     * name or phone it leaves out keeps the one recorded (a name typed by the dispatcher survives a phone-only event;
+     * a driver given back comes off through {@link #carrierReleasedDriver}). The plate is not touched: the carrier
+     * sends none, and it is given at the handover.
      *
      * @return whether it changed anything
      * @throws BusinessException {@code INVALID_LOAD_TRANSITION} with no vehicle booked, or once the vehicle left with
      *         another driver on its signed manifest
      */
     public boolean carrierAssignedDriver(String driver, String phone) {
-        String name = trimmed(driver);
-        String number = trimmed(phone);
+        String name = trimmed(driver) != null ? trimmed(driver) : driverName;
+        String number = trimmed(phone) != null ? trimmed(phone) : driverPhone;
         if (status == LoadStatus.DISPATCHED && Objects.equals(name, driverName) && Objects.equals(number, driverPhone)) {
             return false;
         }
@@ -470,6 +472,33 @@ public final class DispatchLoad {
         }
         driverName = null;
         driverPhone = null;
+        return true;
+    }
+
+    /**
+     * The driver's name (and phone) typed on a booked or loading vehicle: for a load whose carrier does not send the
+     * driver - or has not yet, as an API carrier's webhook does when a driver takes the order (09 §4.5) - and the
+     * handover is refused without one ({@code LOAD_DRIVER_MISSING}). It is the driver alone: the waybill number, which an
+     * API carrier's booking gives, is not touched. A phone left null keeps the one recorded; the carrier's webhook
+     * may replace what is typed. The same values again change nothing.
+     *
+     * @return whether it changed the load
+     * @throws BusinessException {@code VALIDATION_FAILED} for a blank name; {@code INVALID_LOAD_TRANSITION} with no
+     *         vehicle booked, or once the vehicle left (the driver is on its signed manifest)
+     */
+    public boolean recordDriver(String driver, String phone) {
+        String name = trimmed(driver);
+        if (name == null) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "The driver's name is required",
+                    List.of(com.stockflow.common.api.FieldError.of("driverName", "must not be blank")));
+        }
+        requireVehicleExpected("a driver being recorded");
+        String number = trimmed(phone) != null ? trimmed(phone) : driverPhone;
+        if (name.equals(driverName) && Objects.equals(number, driverPhone)) {
+            return false;
+        }
+        driverName = name;
+        driverPhone = number;
         return true;
     }
 
@@ -647,7 +676,10 @@ public final class DispatchLoad {
      * ({@code parcelsByShipment}: the sealed parcels each one has) - one with a parcel not scanned is refused,
      * naming the parcels ({@code LOAD_NOT_FULLY_LOADED}): the plan placed them on this vehicle. The driver's name and
      * the vehicle plate are on the manifest, and the carrier's waybill number is required ({@code LOAD_WAYBILL_MISSING};
-     * 09 BR-23). Already dispatched: nothing changes.
+     * 09 BR-23). So is the driver's name ({@code LOAD_DRIVER_MISSING}, owner decision WF4-DRIVER 12/11): it is on the
+     * load before the signature - booked, typed, sent by the carrier's webhook or recorded by
+     * {@link #recordDriver} - and the carrier's representative who signs is never taken for the driver. Already
+     * dispatched: nothing changes.
      *
      * @return the shipments to hand over, in the order they were put on; empty when it was dispatched before
      */
@@ -671,6 +703,10 @@ public final class DispatchLoad {
         if (waybillNo == null) {
             throw new BusinessException(ErrorCode.LOAD_WAYBILL_MISSING, ("Load %s has no waybill number: record the "
                     + "carrier's number before the driver signs").formatted(code));
+        }
+        if (driverName == null) {
+            throw new BusinessException(ErrorCode.LOAD_DRIVER_MISSING, ("Load %s has no driver name: record the "
+                    + "driver before the driver signs").formatted(code));
         }
         String representative = trimmed(handover.carrierRepresentative());
         String plate = trimmed(handover.vehiclePlate()) != null ? trimmed(handover.vehiclePlate()) : vehiclePlate;
@@ -703,7 +739,6 @@ public final class DispatchLoad {
         status = LoadStatus.DISPATCHED;
         carrierRepresentative = representative;
         vehiclePlate = plate;
-        driverName = driverName == null ? representative : driverName;
         driverPhone = trimmed(handover.driverPhone()) != null ? trimmed(handover.driverPhone()) : driverPhone;
         signatureRef = trimmed(handover.signatureRef());
         handoverNote = trimmed(handover.note());

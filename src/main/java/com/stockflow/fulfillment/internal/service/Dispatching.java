@@ -160,6 +160,14 @@ public interface Dispatching {
     record WaybillEntry(String waybillNo, String vehiclePlate, String driverName, String driverPhone, String reason) { }
 
     /**
+     * The driver of a booked or loading vehicle, typed by the dispatcher (WF4-DRIVER; 09 §4.2 steps 6 and 8).
+     *
+     * @param driverName  required
+     * @param driverPhone null keeps the phone the load has
+     */
+    record DriverEntry(String driverName, String driverPhone) { }
+
+    /**
      * One change of a load's waybill number (09 §4.4, BR-24).
      *
      * @param newWaybillNo  null when the booking was cancelled and the number went with it
@@ -295,6 +303,19 @@ public interface Dispatching {
 
     /** Every change of the load's waybill number, oldest first. */
     List<WaybillChange> waybillHistory(UUID loadId);
+
+    /**
+     * Records the driver's name (and phone) on a booked or loading load, whatever its carrier: the way in for a load
+     * booked through a carrier's API, whose waybill number cannot be typed ({@code WAYBILL_FROM_CARRIER_API}) and whose
+     * webhook may never send the driver, but without whom the handover is refused ({@code LOAD_DRIVER_MISSING}). Only
+     * the driver changes, never the waybill number. The carrier's webhook may replace what is typed. The same values
+     * again change nothing. Who and when are in the audit log, as for every dispatch call.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code LOAD_NOT_FOUND}; {@code OUT_OF_DATA_SCOPE};
+     *         {@code INVALID_LOAD_TRANSITION} (no carrier booked, cancelled, or the vehicle left: the driver is on the
+     *         signed manifest); {@code VALIDATION_FAILED} (blank name)
+     */
+    LoadDetail recordDriver(UUID loadId, DriverEntry entry, CurrentUser actor);
 
     /**
      * The third step of booking through a carrier's API ({@link Bookings#book}), in the caller's transaction: under the

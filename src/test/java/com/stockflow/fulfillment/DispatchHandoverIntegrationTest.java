@@ -373,8 +373,8 @@ class DispatchHandoverIntegrationTest {
     /** The vehicle booked with {@code carrier} and its waybill number (09 §4.2 step 6) and loading: LOADING. */
     private JsonNode loading(String loadId, UUID carrier) throws Exception {
         dispatch(body(post(BASE + "/loads/" + loadId + "/booking"), "{\"carrierId\":\"" + carrier
-                + "\",\"vehiclePlate\":\"51C-123.45\",\"waybillNo\":\"WB-" + loadId + "\"}"))
-                .andExpect(status().isOk());
+                + "\",\"vehiclePlate\":\"51C-123.45\",\"driverName\":\"Tai\",\"waybillNo\":\"WB-" + loadId
+                + "\"}")).andExpect(status().isOk());
         return data(dispatch(post(BASE + "/loads/" + loadId + "/loading-start")).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("LOADING")));
     }
@@ -925,8 +925,8 @@ class DispatchHandoverIntegrationTest {
         }
         assertThat(plan.path("vehicles")).hasSize(1);
         String loadId = plan.path("vehicles").get(0).path("load").path("loadId").asText();
-        String booking = "{\"carrierId\":\"" + ghn + "\",\"vehiclePlate\":\"51C-123.45\",\"waybillNo\":\"WB-"
-                + loadId + "\"}";
+        String booking = "{\"carrierId\":\"" + ghn + "\",\"vehiclePlate\":\"51C-123.45\","
+                + "\"driverName\":\"Tai\",\"waybillNo\":\"WB-" + loadId + "\"}";
         as(admin, "SYSTEM_ADMIN", body(post(BASE + "/loads/" + loadId + "/booking"), booking))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("VEHICLE_BOOKED"));
         as(admin, "SYSTEM_ADMIN", body(post(BASE + "/loads/" + loadId + "/booking-cancellation"),

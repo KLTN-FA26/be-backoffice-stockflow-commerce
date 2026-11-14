@@ -20,6 +20,7 @@ import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.UUID;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
@@ -56,6 +57,7 @@ class StockPackageContents {
         this.stockItems = stockItems;
         this.locations = locations;
     }
+
 
     /** The cartons of these rows, locked in id order; none when every row is loose. Call under the SKU lock. */
     public LockedCartons lockFor(Collection<StockItem> rows) {
@@ -99,10 +101,14 @@ class StockPackageContents {
      *   <li>Restocked: only a LOST carton, found again whole - its standard count back on the row it was emptied from
      *       (rows are never deleted at zero, and a carton is one row, V20261113000300), its lot unchanged (BR-18), as
      *       AVAILABLE stock unless it is in a QUARANTINE area ({@link #restockLost}).</li>
-     *   <li>Written off: only a carton in stock, every unit of it, none held for an order - a customer's hold is
-     *       never cancelled by a correction; it is released or reallocated first ({@code STOCK_PACKAGE_HELD}). The
-     *       carton is then LOST when {@code missingWhenEmpty} (a count did not find it, or it was written off as
-     *       lost), CONSUMED otherwise.</li>
+     *   <li>Written off: only a carton in stock, every unit of it. A customer's hold is never cancelled by a
+     *       correction: a carton held for an order is refused ({@code STOCK_PACKAGE_HELD}) - released or reallocated
+     *       first - with one exception, {@code giveUpHoldsBy}: a count's shortage (20 §4.2 step 8, 07 §4.4). The carton is
+     *       not there, so what it held for an order is a shortage: the holds are given up ({@code SHORT_PICKED}, as a
+     *       reallocation does) and announced ({@code StockHeldCartonWrittenOff}) for fulfillment to turn the order's
+     *       pick line SHORT and hold the order, after the commit. The carton is then LOST when
+     *       {@code missingWhenEmpty} (a count did not find it, or it was written off as lost), CONSUMED
+     *       otherwise.</li>
      * </ul>
      *
      * <p>Anything but the whole carton is refused ({@code STOCK_PACKAGE_TAKEN_WHOLE}): a request of the history asked
@@ -112,6 +118,16 @@ class StockPackageContents {
      * @return the row changed and the units it gained (positive) or gave (negative) - one ledger line
      */
     public List<RowChange> adjust(StockPackageId id, int delta, boolean missingWhenEmpty, Instant now) {
+        return adjust(id, delta, missingWhenEmpty, null, now);
+    }
+
+    /**
+     * As {@link #adjust(StockPackageId, int, boolean, Instant)}; with {@code giveUpHoldsBy} (who decided the shortage), a
+     * write-off gives up the holds on the carton instead of refusing them. The caller publishes the row's events after
+     * the call.
+     */
+    public List<RowChange> adjust(StockPackageId id, int delta, boolean missingWhenEmpty, UUID giveUpHoldsBy,
+                                  Instant now) {
         if (delta == 0) {
             throw new IllegalArgumentException("An adjustment changes the quantity");
         }
@@ -132,7 +148,7 @@ class StockPackageContents {
         }
         RowChange change = delta > 0
                 ? restockLost(carton, rows, delta)
-                : writeOff(carton, rows, missingWhenEmpty, now);
+                : writeOff(carton, rows, missingWhenEmpty, giveUpHoldsBy, now);
         if (change.delta() > 0) {
             // Units back in the carton they were counted into: the same receipt, proven by the LPN, so no age is lost.
             // saveMerged tells the FIFO trigger so (V20261017000450), which would otherwise refuse raising an
@@ -249,20 +265,27 @@ class StockPackageContents {
     }
 
     private static RowChange writeOff(StockPackage carton, List<StockItem> rows, boolean missingWhenEmpty,
-                                      Instant now) {
+                               UUID giveUpHoldsBy, Instant now) {
         if (carton.status() != StockPackageStatus.IN_STOCK) {
             throw new BusinessException(ErrorCode.INVALID_STOCK_PACKAGE_TRANSITION,
                     "%s is %s; there is nothing in it to write off".formatted(carton.lpn(), carton.status()));
         }
         StockItem row = rows.stream().filter(r -> !r.onHand().isZero()).findFirst().orElseThrow(() ->
                 new IllegalStateException("Stock package %s is in stock and empty".formatted(carton.lpn())));
-        if (!row.reserved().isZero()) {
+        if (!row.reserved().isZero() && giveUpHoldsBy == null) {
             throw new BusinessException(ErrorCode.STOCK_PACKAGE_HELD,
                     "%s is held for an order; release or reallocate it before writing it off".formatted(carton.lpn()),
                     List.of(), Map.of("lpn", carton.lpn()));
         }
+        if (!row.reserved().isZero()) {
+            row.giveUpHoldsOfWrittenOffCarton(giveUpHoldsBy, now);
+        }
         int units = row.onHand().value();
         row.adjustBy(-units);
+        if (giveUpHoldsBy != null) {
+            // A count's shortage (WF4-COUNT-EDGE a): the warehouse has a carton fewer; holds by SKU are recomputed.
+            row.announceCountWriteOff(units, giveUpHoldsBy);
+        }
         if (missingWhenEmpty) {
             carton.lose(now);
         } else {

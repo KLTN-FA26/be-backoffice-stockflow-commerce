@@ -129,10 +129,14 @@ class FulfillmentServiceImpl implements FulfillmentService {
         OrderSummary order = requireOrder(orderId);
         // Released - its warehouse chosen: READY_TO_FULFILL (SCRUM-423, kltn-docs 17 BR-02). A later delivery batch is
         // released while the order is PARTIALLY_FULFILLED and picked in that status (17 §4.5: no new order status).
+        // WF4-COUNT-EDGE (b): an order held for stock (INVENTORY) from one of those - a carton it was allocated counted
+        // missing before its task - gets its task too: the carton's line is planned SHORT and the warehouse manager
+        // reallocates it, as after a picker's short report (07 §4.4). Any other hold stops the warehouse (17 BR-03).
+        OrderStatus released = heldForStock(order) ? order.lifecycle().statusBeforeHold() : order.status();
         // A redelivery is picked in that status too: the order owes the customer the goods that came back.
         boolean laterBatch = (batch.isPresent() || redelivery.isPresent())
-                && order.status() == OrderStatus.PARTIALLY_FULFILLED;
-        if (order.status() != OrderStatus.READY_TO_FULFILL && !laterBatch) {
+                && released == OrderStatus.PARTIALLY_FULFILLED;
+        if (released != OrderStatus.READY_TO_FULFILL && !laterBatch) {
             throw new BusinessException(ErrorCode.PICK_TASK_STATE_CONFLICT,
                     "Only a released order (READY_TO_FULFILL) or its released delivery batch can enter fulfillment; "
                             + "it is " + order.status());
@@ -157,8 +161,14 @@ class FulfillmentServiceImpl implements FulfillmentService {
         picks.saveAndFlush(pick);      // the pick row first: its lines' trigger and foreign key look for it
         packs.save(new PackJpaEntity(Identifiers.newId(), pick.getId(), PackStatus.PENDING, null));
         // SCRUM-267: one line per hold of the order's stock lines, in this warehouse (docs 07 step 2).
-        pickLists.planLines(pick, order);
+        pickLists.planLines(pick, order, actor.userId());
         return toTask(pick, nameOf(assignedUserId), null);
+    }
+
+    /** WF4-COUNT-EDGE (b): the order is on hold for stock ({@code INVENTORY}), the hold a shortage puts it on. */
+    private static boolean heldForStock(OrderSummary order) {
+        return order.status() == OrderStatus.ON_HOLD && order.lifecycle() != null
+                && order.lifecycle().holdReason() == com.stockflow.order.api.HoldReason.INVENTORY;
     }
 
     /** The delivery failure cases {@code picks} were opened for: their redeliveries have a task already. */
@@ -327,7 +337,7 @@ class FulfillmentServiceImpl implements FulfillmentService {
         var order = requireOrderInFulfilment(pick);
         pick.start(actor.userId(), clock.instant());
         picks.save(pick);
-        pickLists.planLines(pick, order);
+        pickLists.planLines(pick, order, actor.userId());
         return toTask(pick);
     }
 

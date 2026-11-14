@@ -100,6 +100,19 @@ class PickListShortPickTest {
     }
 
     @Test
+    @DisplayName("BE-14: the wrong bin of a short report names the right one in details.expectedLocationCode")
+    void reportShortWrongBinCarriesTheExpectedBin() {
+        PickLine line = open("SOFA", "HCM-A01-1-A", 5, LPN);
+        PickList list = picking(line);
+
+        BusinessException thrown = (BusinessException) catchThrowable(
+                () -> list.reportShort(line.id(), "HCM-A01-1-B", ShortPickReason.NOT_FOUND));
+
+        assertThat(thrown.errorCode()).isEqualTo(ErrorCode.PICK_LOCATION_MISMATCH);
+        assertThat(thrown.details()).containsEntry("expectedLocationCode", "HCM-A01-1-A");
+    }
+
+    @Test
     @DisplayName("a short report needs the line's bin, an open line with a carton, a picking task and a known line")
     void reportShortRefusals() {
         PickLine line = open("SOFA", "HCM-A01-1-A", 5, LPN);
