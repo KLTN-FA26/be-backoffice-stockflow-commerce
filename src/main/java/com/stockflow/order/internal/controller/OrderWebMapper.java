@@ -78,6 +78,7 @@ final class OrderWebMapper {
                         ? "AWAITING_CREDIT_APPROVAL" : "UNDER_REVIEW",
                 lifecycle == null || !internal ? null : lifecycle.holdNote(),
                 lifecycle == null ? null : lifecycle.packedAt(),
+                lifecycle == null ? null : lifecycle.firstLabeledAt(),
                 lifecycle == null ? null : lifecycle.shippedAt(),
                 lifecycle == null ? null : lifecycle.deliveredAt(),
                 lifecycle == null || lifecycle.deliveryFailureReason() == null ? null

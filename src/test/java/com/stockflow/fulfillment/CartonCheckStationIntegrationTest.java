@@ -395,6 +395,9 @@ class CartonCheckStationIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT count(*) FROM fulfillment.package WHERE lpn IN (?, ?) AND status = 'LABELED'",
                 Long.class, mine.get(0), mine.get(1))).isZero();
         assertThat(orderLockedAt(order)).isNull();
+        // BE-8: the order response says so too - nothing labelled, so Cancel and the address change stay.
+        oc(get("/api/v1/orders/" + order.orderId())).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.firstLabeledAt").doesNotExist());
         shippingLabelsPdf(task, null).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("CARTON_NOT_CHECKED"));
 
@@ -417,6 +420,13 @@ class CartonCheckStationIntegrationTest {
         assertThat(labelled.get("labeled_by")).isEqualTo(packer);
         assertThat(orderLockedAt(order)).as("the first label locks the order").isNotNull();
         Object lockedAt = orderLockedAt(order);
+        // BE-8 (17 §4.7, §4.8): the order response carries the time of the first label, in the detail and in the list,
+        // so the back office hides Cancel and the address change from then on.
+        oc(get("/api/v1/orders/" + order.orderId())).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.firstLabeledAt").isNotEmpty());
+        oc(get("/api/v1/orders?search=" + order.orderNumber())).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[?(@.orderId=='" + order.orderId() + "')].firstLabeledAt")
+                        .value(org.hamcrest.Matchers.hasSize(1)));
 
         // 17 BR-12: a labelled order is not cancelled; the customer's pending request closes with a note.
         assertThat(code(catchThrowable(() -> WithCurrentUser.run(TestUsers.admin(), DataScope.ALL,

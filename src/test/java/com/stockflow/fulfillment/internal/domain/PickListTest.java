@@ -235,6 +235,28 @@ class PickListTest {
         }
 
         @Test
+        @DisplayName("BE-14: the refusals carry the bin / carton to scan as structured details, not only in the message")
+        void refusalsCarryTheExpectedBinAndCarton() {
+            PickLine line = open("SOFA-3S-GREY", "HCM-A01-2-B", 2, LPN);
+            var list = picking(line);
+
+            BusinessException wrongBin = (BusinessException) catchThrowable(
+                    () -> list.confirm(line.id(), "HCM-A02-1-A", LPN, PICKER, NOW));
+            assertThat(wrongBin.errorCode()).isEqualTo(ErrorCode.PICK_LOCATION_MISMATCH);
+            assertThat(wrongBin.details()).containsExactlyEntriesOf(Map.of("expectedLocationCode", "HCM-A01-2-B"));
+
+            BusinessException wrongCarton = (BusinessException) catchThrowable(
+                    () -> list.confirm(line.id(), "hcm-a01-2-b", OTHER_LPN, PICKER, NOW));
+            assertThat(wrongCarton.errorCode()).isEqualTo(ErrorCode.PICK_ITEM_MISMATCH);
+            assertThat(wrongCarton.details()).containsExactlyEntriesOf(Map.of("expectedLpn", LPN));
+
+            // A missing scan is the same refusal and names the same thing.
+            BusinessException noScan = (BusinessException) catchThrowable(
+                    () -> list.confirm(line.id(), null, null, PICKER, NOW));
+            assertThat(noScan.details()).containsEntry("expectedLocationCode", "HCM-A01-2-B");
+        }
+
+        @Test
         @DisplayName("the same scan again is answered as done; another scan of a picked line is refused")
         void repeatedConfirmation() {
             PickLine line = open("SOFA-3S-GREY", "HCM-A01-2-B", 2, LPN);
@@ -428,6 +450,19 @@ class PickListTest {
                         .as("scan %s", scan).isEqualTo(ErrorCode.PICK_ITEM_MISMATCH);
             }
             assertThat(line.status()).isEqualTo(PickLineStatus.PICKED);
+        }
+
+        @Test
+        @DisplayName("BE-14: a wrong carton at put-back names the carton to scan in details.expectedLpn")
+        void wrongScanCarriesTheExpectedLpn() {
+            PickLine line = picked("SOFA-3S-GREY", "HCM-A01-2-B", 2, LPN);
+            var list = new PickList(UUID.randomUUID(), HCM, PickStatus.CANCELLED, true, List.of(line));
+
+            BusinessException thrown = (BusinessException) catchThrowable(
+                    () -> list.putBack(line.id(), OTHER_LPN, bin, PICKER, NOW));
+
+            assertThat(thrown.errorCode()).isEqualTo(ErrorCode.PICK_ITEM_MISMATCH);
+            assertThat(thrown.details()).containsExactlyEntriesOf(Map.of("expectedLpn", LPN));
         }
 
         @Test

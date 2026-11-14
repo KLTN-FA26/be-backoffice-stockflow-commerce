@@ -219,11 +219,10 @@ public final class PickList {
                     ? "The line names no carton to pick" : "The line is " + line.status());
         }
         if (!sameCode(scannedLocation, line.locationCode())) {
-            throw new BusinessException(ErrorCode.PICK_LOCATION_MISMATCH,
-                    "This line is picked from " + line.locationCode());
+            throw wrongLocation("This line is picked from " + line.locationCode(), line.locationCode());
         }
         if (!lpnMatches(line, scannedLpn)) {
-            throw new BusinessException(ErrorCode.PICK_ITEM_MISMATCH, "This line picks carton " + line.lpn());
+            throw wrongCarton("This line picks carton " + line.lpn(), line.lpn());
         }
         if (stagingLocationCode != null) {
             line.stage(scannedLocation.trim(), line.lpn(), stagingLocationCode, actor, now);
@@ -309,8 +308,7 @@ public final class PickList {
                     ? "The line names no carton to report" : "The line is " + line.status());
         }
         if (!sameCode(scannedLocation, expectedAt(line))) {
-            throw new BusinessException(ErrorCode.PICK_LOCATION_MISMATCH,
-                    "This line's carton is at " + expectedAt(line));
+            throw wrongLocation("This line's carton is at " + expectedAt(line), expectedAt(line));
         }
         line.reportShort(reason, scannedLocation.trim());
         return new Confirmation(line, false);
@@ -424,7 +422,7 @@ public final class PickList {
                     "Task %s, line %s: nothing to put back".formatted(status, line.status()));
         }
         if (!lpnMatches(line, scannedLpn)) {
-            throw new BusinessException(ErrorCode.PICK_ITEM_MISMATCH, "This line puts back carton " + line.lpn());
+            throw wrongCarton("This line puts back carton " + line.lpn(), line.lpn());
         }
         if (line.pickedQty() != line.allocatedQty()) {
             throw new BusinessException(ErrorCode.STOCK_PACKAGE_TAKEN_WHOLE, ("The line took %d of carton %s's %d; only a "
@@ -479,6 +477,20 @@ public final class PickList {
                     "Task %s: stock for %s is held loose, in no carton; a line is picked by its carton's LPN"
                             .formatted(taskId, String.join(", ", loose)));
         }
+    }
+
+    /**
+     * {@code PICK_LOCATION_MISMATCH}, carrying the bin the scan should have been in as {@code details.expectedLocationCode}
+     * (WF4-R01): a client shows it, or highlights it, without reading it out of the English message.
+     */
+    private static BusinessException wrongLocation(String message, String expectedLocationCode) {
+        return new BusinessException(ErrorCode.PICK_LOCATION_MISMATCH, message, List.of(),
+                Map.of("expectedLocationCode", expectedLocationCode));
+    }
+
+    /** {@code PICK_ITEM_MISMATCH}, carrying the carton to scan as {@code details.expectedLpn} (WF4-R01). */
+    private static BusinessException wrongCarton(String message, String expectedLpn) {
+        return new BusinessException(ErrorCode.PICK_ITEM_MISMATCH, message, List.of(), Map.of("expectedLpn", expectedLpn));
     }
 
     /** The line's own LPN, in any case (07 BR-10). A line with no carton matches nothing. */

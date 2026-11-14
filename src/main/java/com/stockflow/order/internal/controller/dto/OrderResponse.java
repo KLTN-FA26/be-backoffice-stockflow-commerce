@@ -73,6 +73,11 @@ public record OrderResponse(
                 + "cancelled")
         Instant packedAt,
 
+        @Schema(description = "When the first shipping carton of the order was labelled (4C-6; kltn-docs 08 BR-04); "
+                + "null until then. From then on the order is not cancelled and its delivery address does not change "
+                + "(17 §4.7, §4.8), so a client hides Cancel and the address change once it is set")
+        Instant firstLabeledAt,
+
         @Schema(description = "When the order last became SHIPPED")
         Instant shippedAt,
 
