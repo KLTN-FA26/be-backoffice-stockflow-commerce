@@ -434,7 +434,10 @@ class PermissionMatrixTest {
             Map.entry("warehouse-capacity:VIEW_PAGE", Set.of(Role.WAREHOUSE_MANAGER, Role.SALES_STAFF,
                     Role.SALES_MANAGER, Role.PRODUCTION_COORDINATOR, Role.SYSTEM_ADMIN)),
             Map.entry("warehouse-capacity:READ", Set.of(Role.WAREHOUSE_MANAGER, Role.SALES_STAFF,
-                    Role.SALES_MANAGER, Role.PRODUCTION_COORDINATOR, Role.SYSTEM_ADMIN)));
+                    Role.SALES_MANAGER, Role.PRODUCTION_COORDINATOR, Role.SYSTEM_ADMIN)),
+            // BE3-B (V20261127000100, kltn-docs 00 §2.5): the audit trail names people - the System Admin alone reads it.
+            Map.entry("platform-audit-logs:READ", Set.of(Role.SYSTEM_ADMIN)),
+            Map.entry("platform-audit-logs:VIEW_PAGE", Set.of(Role.SYSTEM_ADMIN)));
 
     /** A valid body for the customer-reachable write handlers, so validation (400) cannot hide a missing owner check. */
     private Map<String, String> attackBodies() {
@@ -706,11 +709,11 @@ class PermissionMatrixTest {
     void theOwnerOfTheSameRowsIsServed() throws Exception {
         SecuredMvc http = new SecuredMvc(mvc, decoder);
         // The victim's quote is a valid row its owner reads (B-6a): the 404 the attacker gets is the owner check, not a
-        // broken fixture.
+        // broken fixture. So is its PDF, drawn from the same read (a quote drafted before cartons, QD-16).
         for (String path : List.of("/api/v1/orders/" + victimOrder, "/api/v1/orders/me/" + victimOrder,
                 "/api/v1/orders/me/" + victimOrder + "/delivery-batches",
                 "/api/v1/designs/" + victimDesign, "/api/v1/customers/" + victimCustomer + "/addresses",
-                "/api/v1/quotes/" + victimQuote)) {
+                "/api/v1/quotes/" + victimQuote, "/api/v1/quotes/" + victimQuote + "/document")) {
             assertThat(http.asCustomer(victimUser, MockMvcRequestBuilders.get(path)).andReturn().getResponse().getStatus())
                     .as("the owner reading " + path).isEqualTo(200);
         }
@@ -930,6 +933,34 @@ class PermissionMatrixTest {
                         PermissionCode.parse("reporting-stock-summary:EXPORT"))
                 .doesNotContain(PermissionCode.parse("reporting-receivables:READ"),
                         PermissionCode.parse("payment-receipts:EXPORT"));
+    }
+
+    /**
+     * BE3: the printed documents are reads of what they print - a quote's PDF needs what reading the quote needs (the
+     * customer reaches it too, refused another's by the owner check {@link #aCustomerCannotReachAnotherCustomersData}
+     * exercises), a shipment's delivery note what reading the shipment needs (and its warehouse) - and the audit trail
+     * is a resource of its own that only the System Admin holds (kltn-docs 00 §2.5).
+     */
+    @Test
+    void theDocumentAndAuditLogEndpointsNeedTheirPermissions() {
+        Map<String, Handler> byKey = new HashMap<>();
+        handlers().forEach(h -> byKey.put(h.key(), h));
+        Map<String, String> expected = Map.of(
+                "GET /api/v1/quotes/{quoteId}/document", "sales-quotes:READ",
+                "GET /api/v1/fulfillment/shipments/{shipmentId}/delivery-note", "fulfillment-shipments:READ",
+                "GET /api/v1/audit-logs", "platform-audit-logs:READ",
+                "GET /api/v1/audit-logs/{auditLogId}", "platform-audit-logs:READ");
+        expected.forEach((key, code) -> {
+            assertThat(byKey).as(key).containsKey(key);
+            RequiresPermission rp = byKey.get(key).rp();
+            assertThat(rp).as(key + " is guarded").isNotNull();
+            assertThat(PermissionCode.of(rp.resource(), rp.action())).as(key).isEqualTo(PermissionCode.parse(code));
+            assertThat(rp.scope()).as(key).isEqualTo(DataScope.ALL);
+        });
+        assertThat(roles.resolve(List.of(Role.CUSTOMER.authority())).permissions())
+                .contains(PermissionCode.parse("sales-quotes:READ"))
+                .doesNotContain(PermissionCode.parse("fulfillment-shipments:READ"),
+                        PermissionCode.parse("platform-audit-logs:READ"));
     }
 
     /**
