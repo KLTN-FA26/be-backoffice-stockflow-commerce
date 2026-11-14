@@ -1085,6 +1085,12 @@ class FtlDispatchIntegrationTest {
 
     private void loadAndSign(String loadId, String plate) throws Exception {
         loadAndScan(loadId);
+        // WF4-DRIVER: the driver's name is on the load before the signature. A test that is not about the driver has the
+        // dispatcher type one when the booking or the carrier's webhook left the load without.
+        if (!load(loadId).hasNonNull("driverName")) {
+            dispatch(body(put(LOADS + "/" + loadId + "/driver"), "{\"driverName\":\"Tai\"}"))
+                    .andExpect(status().isOk());
+        }
         sign(loadId, plate).andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("DISPATCHED"));
     }
 
