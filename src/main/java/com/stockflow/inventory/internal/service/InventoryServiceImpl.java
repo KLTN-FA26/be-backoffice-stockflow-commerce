@@ -605,6 +605,29 @@ class InventoryServiceImpl implements InventoryService {
     @Override
     @Transactional(propagation = Propagation.REQUIRED)
     public List<StockReservation> reallocate(ReallocateStockCommand command) {
+        return reallocate(command, false);
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>The path of {@link #reallocate(ReallocateStockCommand)} - same pool, same FIFO plan, same locks, the new
+     * allocations descending from the same SKU reservation - except that the hold is left as it is: its carton was
+     * picked and deducted, and goes back into a quarantine area through it (the put-back of 08 §4.2 step 4). A replay
+     * answers with what the request made, whatever became of it since: a replacement picked already is still the
+     * replacement, and allocating again would take a second carton for the one removed.</p>
+     */
+    @Override
+    @Transactional(propagation = Propagation.REQUIRED)
+    public List<StockReservation> reallocateRemoved(ReallocateStockCommand command) {
+        return reallocate(command, true);
+    }
+
+    /**
+     * @param removedCarton the hold's carton was removed at the check station: the hold must be CONSUMED and stays so;
+     *                      otherwise it must be live, and is released {@code SHORT_PICKED}
+     */
+    private List<StockReservation> reallocate(ReallocateStockCommand command, boolean removedCarton) {
         Instant now = clock.instant();
         ReservationId shortId = ReservationId.of(command.reservationId());
         StockItem view = repository.findIdByReservationId(shortId).flatMap(repository::findById)
@@ -614,6 +637,21 @@ class InventoryServiceImpl implements InventoryService {
         if (!command.orderId().equals(shortHold.orderId())) {
             throw new BusinessException(ErrorCode.RESERVATION_NOT_FOUND,
                     "Allocation %s is not order %s's".formatted(command.reservationId(), command.orderId()));
+        }
+        if (removedCarton) {
+            List<StockReservation> made = repository.findReservedByRequest(command.requestId()).stream()
+                    .flatMap(item -> item.reservations().stream()
+                            .filter(r -> command.requestId().equals(r.rootRequestId()))
+                            .map(r -> toApiReservation(item, r)))
+                    .toList();
+            if (!made.isEmpty()) {
+                return made;
+            }
+            // CONSUMED is final: read unlocked, it cannot change under this request.
+            if (shortHold.status() != com.stockflow.inventory.internal.domain.ReservationStatus.CONSUMED) {
+                throw new BusinessException(ErrorCode.RESERVATION_NOT_ACTIVE, ("Allocation %s is %s; only the hold of a "
+                        + "carton picked and then removed is replaced").formatted(shortId, shortHold.status()));
+            }
         }
         List<StockReservation> replayed = repository.findWithReservationsForRequest(command.requestId()).stream()
                 .flatMap(item -> item.activeReservationsFor(command.requestId()).stream()
@@ -638,7 +676,7 @@ class InventoryServiceImpl implements InventoryService {
         Map<StockItemId, StockReservation> made = new LinkedHashMap<>();
         for (StockItemId id : ids) {
             StockItem locked = repository.findByIdForUpdate(id).orElseThrow();
-            if (id.equals(view.id())) {
+            if (id.equals(view.id()) && !removedCarton) {
                 Reservation current = locked.findReservation(shortId).orElseThrow();
                 if (current.status().isActive()) {
                     locked.releaseReservation(shortId, ReleaseReason.SHORT_PICKED, now);

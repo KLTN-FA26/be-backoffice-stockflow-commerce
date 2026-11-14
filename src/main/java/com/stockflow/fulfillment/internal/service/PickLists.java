@@ -77,13 +77,32 @@ public interface PickLists {
      * allocations, the short line is superseded by one new line per allocation, and once no line is SHORT any
      * more the order resumes. The warehouse's manager.
      *
+     * <p>A line whose carton the check station removed as damaged is a shortage too (08 §4.2 step 4, "xử lý như thiếu
+     * hàng"): its carton is replaced the same way - whole cartons of the warehouse, FIFO, never the removed one - while
+     * the removed line stays as it is (its carton goes to quarantine through the put-back queue). The new allocations
+     * stand for the task's delivery batch and join the task as a top-up (07 §4.3 step 7): a PICKED task goes back to
+     * PICKING, and the check session, still IN_PROGRESS, takes the replacement once it is picked. Refused once the
+     * task's check is complete or cancelled, and once the line lacks nothing more (replaced already, or closed).</p>
+     *
      * @return the new lines
      * @throws com.stockflow.common.error.BusinessException {@code NOT_FOUND}; {@code OUT_OF_DATA_SCOPE};
-     *         {@code PICK_LINE_NOT_OPEN} unless SHORT; {@code INSUFFICIENT_STOCK} when whole cartons cannot cover it
-     *         - and then nothing changes and the order stays ON_HOLD; {@code PICK_HOLD_NOT_IN_CARTON} should an allocation still
-     *         land on no carton (a guard), likewise changing nothing
+     *         {@code PICK_LINE_NOT_OPEN} unless SHORT or removed at the check station and not replaced yet;
+     *         {@code PICK_TASK_STATE_CONFLICT} for a removed carton of a task whose check is complete or cancelled;
+     *         {@code INSUFFICIENT_STOCK} when whole cartons cannot cover it - and then nothing changes and the order
+     *         stays ON_HOLD (a removed carton's order is held then: {@link #holdForUnreplacedCarton});
+     *         {@code PICK_HOLD_NOT_IN_CARTON} should an allocation still land on no carton (a guard), likewise changing
+     *         nothing
      */
     List<PickLineView> reallocateShort(UUID taskId, UUID lineId, CurrentUser actor);
+
+    /**
+     * 07 §4.4 step 11 for a carton removed at the check station: no whole carton of the warehouse can replace it, so the
+     * order is held {@code INVENTORY} - Sales decides with the customer (wait for production, fewer cartons, deliver in
+     * part and close the rest, cancel), and a later reallocation resumes it. Called in a transaction of its own after a
+     * reallocation refused {@code INSUFFICIENT_STOCK} (which rolled its own back). An order on hold already, a line
+     * whose carton was not removed, or one replaced since, changes nothing. Locks the pick, then the order.
+     */
+    void holdForUnreplacedCarton(UUID taskId, UUID lineId, CurrentUser actor);
 
     /**
      * An approved count wrote off a carton an order still held (kltn-docs 20 §4.2 step 8): inventory gave the hold up

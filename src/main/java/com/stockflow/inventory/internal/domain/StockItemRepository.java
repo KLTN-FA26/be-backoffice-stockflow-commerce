@@ -50,6 +50,12 @@ public interface StockItemRepository {
     List<StockItem> findHoldingRequest(java.util.UUID rootRequestId);
 
     /**
+     * The stock items a request ever reserved on, whatever became of its reservations since (picked, released), read
+     * without locking: for an answer about what a request made.
+     */
+    List<StockItem> findReservedByRequest(java.util.UUID rootRequestId);
+
+    /**
      * Read-only projections for the allocation planner: enough to choose lots, and nothing more.
      *
      * <p>Returning aggregates here would put them in the persistence context and make the later

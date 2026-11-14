@@ -43,4 +43,31 @@ class OrderReservationService implements OrderReservations {
                     replacements.size());
         }
     }
+
+    @Override
+    public void cartonRemoved(UUID orderId, UUID reservationId) {
+        // No order lock: the row is the batch's record of the hold, and the batch was released already - nothing that
+        // holds or releases for a batch (both under the order's lock) reads a released batch's rows to change them.
+        if (batchRecords.forget(orderId, reservationId)) {
+            log.info("Order {}: hold {} no longer stands for its delivery batch - its carton was removed",
+                    orderId, reservationId);
+        }
+    }
+
+    @Override
+    public void holdReplacement(UUID orderId, UUID orderLineId, UUID deliveryBatchId,
+                                Collection<UUID> reservationIds) {
+        if (reservationIds == null || reservationIds.isEmpty()) {
+            return;
+        }
+        Order order = orders.findByIdForUpdate(new OrderId(orderId))
+                .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No order with id " + orderId));
+        order.holdMore(orderLineId, List.copyOf(reservationIds));
+        orders.save(order);
+        if (deliveryBatchId != null) {
+            batchRecords.recordHolds(orderId, deliveryBatchId, orderLineId, reservationIds);
+        }
+        log.info("Order {}: line {} holds {} replacement hold(s) for a carton removed at the check station",
+                order.orderNumber(), orderLineId, reservationIds.size());
+    }
 }

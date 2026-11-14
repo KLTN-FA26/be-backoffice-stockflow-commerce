@@ -117,6 +117,14 @@ class StockItemRepositoryAdapter implements StockItemRepository {
     }
 
     @Override
+    public List<StockItem> findReservedByRequest(UUID rootRequestId) {
+        return jpa.findStockItemIdsEverForRequest(rootRequestId).stream()
+                .map(id -> jpa.findByIdWithReservations(id).map(StockItemPersistenceMapper::toDomain))
+                .flatMap(Optional::stream)
+                .toList();
+    }
+
+    @Override
     public List<StockAllocator.Candidate> findAvailabilityBySku(Sku sku) {
         return jpa.findAvailabilityBySku(sku.code()).stream()
                 .map(AvailabilityRow::toCandidate)

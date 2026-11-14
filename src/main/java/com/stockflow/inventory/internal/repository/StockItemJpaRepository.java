@@ -147,6 +147,13 @@ interface StockItemJpaRepository extends JpaRepository<StockItemJpaEntity, UUID>
             """)
     List<UUID> findStockItemIdsForRequest(@Param("rootRequestId") UUID rootRequestId);
 
+    /** As {@link #findStockItemIdsForRequest}, whatever became of the reservations since: picked or released too. */
+    @Query("""
+            select distinct s.id from ReservationJpaEntity r join r.stockItem s
+            where r.rootRequestId = :rootRequestId
+            """)
+    List<UUID> findStockItemIdsEverForRequest(@Param("rootRequestId") UUID rootRequestId);
+
     @Query("""
             select new com.stockflow.inventory.internal.domain.HeldStock(s.sku, s.locationCode, r.quantity)
             from ReservationJpaEntity r join r.stockItem s

@@ -398,6 +398,44 @@ class SkuReservationAllocationIntegrationTest {
     }
 
     @Test
+    @DisplayName("BE-3 (08 §4.2 step 4): a carton picked and then removed at the check station is replaced by the next "
+            + "carton in FIFO order, never itself; its hold stays CONSUMED; a replay answers with the replacement, even "
+            + "once that was picked; a live hold is not replaced this way")
+    void replacementOfACartonRemovedAtTheCheckStation() {
+        UUID order = order();
+        Hold soft = reserve(order, 2);
+        List<StockReservation> held = allocate(order, "HCM").allocations().get(0).holds();
+        StockReservation removed = held.get(0);
+        UUID request = UUID.randomUUID();
+        assertThat(code(catchThrowable(() -> tx.execute(s -> inventory.reallocateRemoved(
+                new ReallocateStockCommand(order, removed.reservationId(), request))))))
+                .as("a hold not picked is a short pick's to reallocate").isEqualTo(ErrorCode.RESERVATION_NOT_ACTIVE);
+        UUID picker = jdbc.queryForObject("SELECT id FROM identity.app_user ORDER BY id LIMIT 1", UUID.class);
+        tx.executeWithoutResult(s -> consumption.consumeForPick(removed.reservationId(), UUID.randomUUID(), picker));
+
+        List<StockReservation> replacement = tx.execute(s -> inventory.reallocateRemoved(
+                new ReallocateStockCommand(order, removed.reservationId(), request)));
+
+        assertThat(replacement).singleElement().satisfies(r -> {
+            assertThat(r.quantity()).isEqualTo(1);
+            assertThat(r.stockItemId()).isNotEqualTo(removed.stockItemId());
+            assertThat(held).extracting(StockReservation::stockItemId).doesNotContain(r.stockItemId());
+        });
+        assertThat(status(removed.reservationId())).isEqualTo("CONSUMED");
+        assertThat(jdbc.queryForObject("SELECT allocated_from_id FROM inventory.stock_reservation WHERE id = ?",
+                UUID.class, replacement.get(0).reservationId())).isEqualTo(soft.reservationId());
+        tx.executeWithoutResult(s -> consumption.consumeForPick(replacement.get(0).reservationId(), UUID.randomUUID(),
+                picker));
+        List<StockReservation> replayed = tx.execute(s -> inventory.reallocateRemoved(new ReallocateStockCommand(order,
+                removed.reservationId(), request)));
+        assertThat(replayed).as("replayed after the replacement was picked")
+                .extracting(StockReservation::reservationId).containsExactly(replacement.get(0).reservationId());
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM inventory.stock_reservation WHERE order_id = ? "
+                + "AND status IN ('HELD', 'CONSUMED') AND stock_item_id IS NOT NULL", Integer.class, order))
+                .as("the two allocated, and one replacement - never a second").isEqualTo(3);
+    }
+
+    @Test
     @DisplayName("a short pick opens one blind recount of the carton; the counter does not see the books")
     void shortPickOpensOneBlindRecount() {
         UUID order = order();
