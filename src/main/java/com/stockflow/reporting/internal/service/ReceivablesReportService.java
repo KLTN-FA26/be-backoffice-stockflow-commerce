@@ -123,9 +123,9 @@ public class ReceivablesReportService {
         }
         List<String> parts = new ArrayList<>();
         if (customerId != null) {
-            ReceivableLine one = lines.isEmpty() ? null : lines.getFirst();
-            parts.add(label("filter.customer", "customer {0}", one == null ? customerId.toString()
-                    : one.customerCode() + " " + one.customerName()));
+            CustomerSummary named = customers.summariesOf(List.of(customerId)).get(customerId);
+            parts.add(label("filter.customer", "customer {0}", named == null ? customerId.toString()
+                    : named.code() + " " + named.fullName()));
         }
         if (overdueOnly) {
             parts.add(label("filter.overdue-only", "customers with something overdue only"));
