@@ -143,9 +143,10 @@ public interface StockOperations {
      * What the stock history is filtered by. Every field null means "any".
      *
      * @param from        the first business day (Asia/Ho_Chi_Minh), inclusive - the stock summary's period, so a row of
-     *                    the report drills down to exactly the lines it summed (2026-11-14 plan, BE2-C)
+     *                    a report row drills down to the lines of its period (2026-11-14 plan, BE2-C)
      * @param to          the last business day, inclusive
-     * @param warehouseId lines with either side in this warehouse
+     * @param warehouseId lines with either side in this warehouse - moves inside it included, which the stock
+     *                    summary counts as zero
      */
     record LedgerFilter(String sku, String location, StockMovement.MovementType type, java.time.LocalDate from,
                         java.time.LocalDate to, UUID warehouseId) {

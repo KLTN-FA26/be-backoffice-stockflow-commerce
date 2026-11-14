@@ -92,7 +92,9 @@ class StockOperationsController {
 
     /**
      * The stock history (the card of a SKU, "thẻ kho"). {@code from} / {@code to} / {@code warehouseId} are the stock
-     * summary's own filters (2026-11-14 plan, BE2-C), so a row of that report opens on exactly the lines it summed.
+     * summary's own filters (2026-11-14 plan, BE2-C), so a row of that report opens on the ledger lines of its SKU,
+     * warehouse and days: those it summed, and the moves inside the warehouse (putaway, carton moves), which it
+     * counted as zero.
      */
     @GetMapping("/movements")
     @Operation(summary = "Stock history, newest first; location matches either side of a line",
