@@ -682,11 +682,11 @@ class PermissionMatrixTest {
     void theOwnerOfTheSameRowsIsServed() throws Exception {
         SecuredMvc http = new SecuredMvc(mvc, decoder);
         // The victim's quote is a valid row its owner reads (B-6a): the 404 the attacker gets is the owner check, not a
-        // broken fixture.
+        // broken fixture. So is its PDF, drawn from the same read (a quote drafted before cartons, QD-16).
         for (String path : List.of("/api/v1/orders/" + victimOrder, "/api/v1/orders/me/" + victimOrder,
                 "/api/v1/orders/me/" + victimOrder + "/delivery-batches",
                 "/api/v1/designs/" + victimDesign, "/api/v1/customers/" + victimCustomer + "/addresses",
-                "/api/v1/quotes/" + victimQuote)) {
+                "/api/v1/quotes/" + victimQuote, "/api/v1/quotes/" + victimQuote + "/document")) {
             assertThat(http.asCustomer(victimUser, MockMvcRequestBuilders.get(path)).andReturn().getResponse().getStatus())
                     .as("the owner reading " + path).isEqualTo(200);
         }
