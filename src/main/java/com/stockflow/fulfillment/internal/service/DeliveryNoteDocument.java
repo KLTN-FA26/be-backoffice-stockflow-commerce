@@ -13,6 +13,7 @@ import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.ResourceBundle;
 import java.util.TreeMap;
 
@@ -26,8 +27,9 @@ import java.util.TreeMap;
  *
  * <p>Printed before the goods leave as well as after: what is not known yet - a vehicle not booked, a driver the carrier
  * has not named, the moment of the handover - is a dotted line to fill in by hand, never left out, so the paper is the
- * same form whenever it is printed. SKUs are named by code only: the shipping module does not read the catalogue, and
- * the code is what is printed on the carton's label.</p>
+ * same form whenever it is printed. Each SKU is printed as its code - what the carton's label shows - and its variant's
+ * name from the catalogue, "SKU — name", so the receiving party can tell the goods apart without a list of codes; a SKU
+ * the catalogue does not name prints by its code alone.</p>
  *
  * <p>The labels are the Vietnamese bundle's - the parties are Vietnamese - laid out as every document is
  * ({@link PrintedDocument}). What it shows is given; nothing is looked up here.</p>
@@ -53,8 +55,12 @@ class DeliveryNoteDocument {
                    String waybillNo) {
     }
 
-    /** The cartons of one SKU, whole (4C-2): how many, the pieces in them, and their LPNs. */
-    record SkuCartons(String sku, int cartons, int units, List<String> lpns) {
+    /**
+     * The cartons of one SKU, whole (4C-2): how many, the pieces in them, and their LPNs.
+     *
+     * @param name the variant's name in the catalogue; null when it has none
+     */
+    record SkuCartons(String sku, String name, int cartons, int units, List<String> lpns) {
     }
 
     private static final ZoneId VIETNAM = ZoneId.of("Asia/Ho_Chi_Minh");
@@ -67,12 +73,15 @@ class DeliveryNoteDocument {
         this.fonts = fonts;
     }
 
-    /** The cartons a shipment carried, by SKU in code order, each SKU's LPNs in order. */
-    static List<SkuCartons> bySku(List<ShippedCarton> cartons) {
+    /**
+     * The cartons a shipment carried, by SKU in code order, each SKU's LPNs in order, each SKU with its name from
+     * {@code names} (by SKU; a SKU absent from it has none).
+     */
+    static List<SkuCartons> bySku(List<ShippedCarton> cartons, Map<String, String> names) {
         TreeMap<String, List<ShippedCarton>> grouped = new TreeMap<>();
         cartons.forEach(carton -> grouped.computeIfAbsent(carton.sku(), sku -> new ArrayList<>()).add(carton));
         List<SkuCartons> goods = new ArrayList<>();
-        grouped.forEach((sku, ofSku) -> goods.add(new SkuCartons(sku, ofSku.size(),
+        grouped.forEach((sku, ofSku) -> goods.add(new SkuCartons(sku, names.get(sku), ofSku.size(),
                 ofSku.stream().mapToInt(ShippedCarton::quantity).sum(),
                 ofSku.stream().map(ShippedCarton::lpn).sorted().toList())));
         return goods;
@@ -121,7 +130,10 @@ class DeliveryNoteDocument {
         int cartons = 0;
         int units = 0;
         for (SkuCartons sku : f.goods()) {
-            lines.add(Line.bold(t.getString("delivery-note.pdf.sku").formatted(sku.sku(), sku.cartons(), sku.units())));
+            lines.add(Line.bold(sku.name() == null || sku.name().isBlank()
+                    ? t.getString("delivery-note.pdf.sku").formatted(sku.sku(), sku.cartons(), sku.units())
+                    : t.getString("delivery-note.pdf.skuNamed").formatted(sku.sku(), sku.name(), sku.cartons(),
+                            sku.units())));
             lines.add(Line.text(t.getString("delivery-note.pdf.lpns").formatted(String.join(", ", sku.lpns()))));
             cartons += sku.cartons();
             units += sku.units();

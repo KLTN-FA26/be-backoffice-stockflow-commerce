@@ -23,6 +23,7 @@ import com.stockflow.order.api.DeliveryBatchReferences;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderSummary;
 import com.stockflow.order.api.RedeliveryToPick;
+import com.stockflow.product.api.ProductService;
 import com.stockflow.warehouse.api.WarehouseService;
 import com.stockflow.warehouse.api.WarehouseView;
 import org.springframework.stereotype.Service;
@@ -53,7 +54,8 @@ import java.util.UUID;
  *
  * <p>The delivery batch is the pick's (4B-8: one pick per released batch); a redelivery's pick names its delivery
  * failure case instead, whose batch it is. The vehicles are the loads holding the shipment now, plus the one it left
- * on: a shipment may span several vehicles of a plan (LP-3), and each is a line of the note.</p>
+ * on: a shipment may span several vehicles of a plan (LP-3), and each is a line of the note. The names of the SKUs
+ * carried are the catalogue's, read for all of them in one call ({@code ProductService.variantNamesOf}).</p>
  */
 @Service
 @Transactional(readOnly = true)
@@ -77,6 +79,7 @@ public class DeliveryNoteService {
     private final CustomerLegalProfiles legalProfiles;
     private final CustomerService customers;
     private final WarehouseService warehouses;
+    private final ProductService products;
     private final DeliveryNoteDocument document;
     private final Clock clock;
 
@@ -85,8 +88,8 @@ public class DeliveryNoteService {
                         DispatchLoadJpaRepository loads, DispatchLoadShipmentJpaRepository members,
                         CarrierJpaRepository carriers, ShipmentCartons cartons, OrderService orders,
                         DeliveryBatchReferences batches, CustomerLegalProfiles legalProfiles,
-                        CustomerService customers, WarehouseService warehouses, DeliveryNoteDocument document,
-                        Clock clock) {
+                        CustomerService customers, WarehouseService warehouses, ProductService products,
+                        DeliveryNoteDocument document, Clock clock) {
         this.shipments = shipments;
         this.context = context;
         this.picks = picks;
@@ -99,6 +102,7 @@ public class DeliveryNoteService {
         this.legalProfiles = legalProfiles;
         this.customers = customers;
         this.warehouses = warehouses;
+        this.products = products;
         this.document = document;
         this.clock = clock;
     }
@@ -128,6 +132,9 @@ public class DeliveryNoteService {
         OrderSummary.AddressSummary address = order.shippingAddress();
         List<ShippedCarton> carried = cartons.ofShipment(shipment.getId()).map(ShippedCartons::cartons)
                 .orElse(List.of());
+        Set<String> skus = new HashSet<>();
+        carried.forEach(carton -> skus.add(carton.sku()));
+        Map<String, String> names = skus.isEmpty() ? Map.of() : products.variantNamesOf(skus);
 
         DeliveryNoteDocument.Facts facts = new DeliveryNoteDocument.Facts(shipment.getCode(), order.orderNumber(),
                 batch.map(DeliveryBatchReferences.Reference::contractNumber).orElse(null),
@@ -135,7 +142,7 @@ public class DeliveryNoteService {
                 warehouse.map(WarehouseView::name).orElse(null), warehouse.map(WarehouseView::address).orElse(null),
                 customerName(order.customerId()), address == null ? null : address(address),
                 address == null ? null : recipient(address), vehicles(shipment), shipment.getHandedOverAt(),
-                DeliveryNoteDocument.bySku(carried),
+                DeliveryNoteDocument.bySku(carried, names),
                 LocalDate.ofInstant(clock.instant(), VIETNAM));
         return new Pdf(shipment.getCode() + "-delivery-note.pdf", document.render(facts));
     }

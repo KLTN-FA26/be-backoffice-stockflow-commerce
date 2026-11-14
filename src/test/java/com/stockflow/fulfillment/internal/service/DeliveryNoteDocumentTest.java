@@ -20,13 +20,14 @@ import java.io.IOException;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * The delivery note of a shipment (kltn-docs 09 §4.2; glossary "POD"): the shipment's code a scanner reads, the order,
- * contract and batch, the parties, the vehicle, the cartons by SKU with their LPNs - and dotted lines where a fact is
- * not known yet, so the same form prints before the vehicle is booked.
+ * contract and batch, the parties, the vehicle, the cartons by SKU - "SKU — name" - with their LPNs, and dotted lines
+ * where a fact is not known yet, so the same form prints before the vehicle is booked.
  */
 class DeliveryNoteDocumentTest {
 
@@ -39,7 +40,9 @@ class DeliveryNoteDocumentTest {
         return DeliveryNoteDocument.bySku(List.of(
                 new ShippedCarton("LPN-000003", "LY16-ACME-02", "LOT-2", 40),
                 new ShippedCarton("LPN-000001", "LY12-ACME-01", "LOT-1", 50),
-                new ShippedCarton("LPN-000002", "LY12-ACME-01", "LOT-1", 50)));
+                new ShippedCarton("LPN-000002", "LY12-ACME-01", "LOT-1", 50)),
+                // LY16 has no name in the catalogue: printed by its code alone.
+                Map.of("LY12-ACME-01", "Ly giấy 2 lớp in logo ACME - 12 oz"));
     }
 
     private static DeliveryNoteDocument.Facts facts(List<DeliveryNoteDocument.Vehicle> vehicles, Instant handedOver) {
@@ -50,16 +53,19 @@ class DeliveryNoteDocumentTest {
     }
 
     @Test
-    @DisplayName("the cartons are grouped by SKU in code order: how many, their pieces, their LPNs in order")
+    @DisplayName("the cartons are grouped by SKU in code order, each with its catalogue name: how many, their pieces, "
+            + "their LPNs in order")
     void cartonsBySku() {
         assertThat(goods()).containsExactly(
-                new DeliveryNoteDocument.SkuCartons("LY12-ACME-01", 2, 100, List.of("LPN-000001", "LPN-000002")),
-                new DeliveryNoteDocument.SkuCartons("LY16-ACME-02", 1, 40, List.of("LPN-000003")));
+                new DeliveryNoteDocument.SkuCartons("LY12-ACME-01", "Ly giấy 2 lớp in logo ACME - 12 oz", 2, 100,
+                        List.of("LPN-000001", "LPN-000002")),
+                new DeliveryNoteDocument.SkuCartons("LY16-ACME-02", null, 1, 40, List.of("LPN-000003")));
     }
 
     @Test
-    @DisplayName("after the handover: shipment, order, contract and batch, both parties, the vehicle, every LPN, the "
-            + "totals and the three signatures - all inside the margins")
+    @DisplayName("after the handover: shipment, order, contract and batch, both parties, the vehicle, each SKU with its "
+            + "name (a SKU without one by its code), every LPN, the totals and the three signatures - all inside the "
+            + "margins")
     void everyWordOnThePage() throws IOException {
         byte[] pdf = document.render(facts(List.of(new DeliveryNoteDocument.Vehicle("LD-20261115-0003",
                 "Xe tải Nhanh", "51C-123.45", "Nguyễn Văn Tài", "0912345678", "WB-778899")),
@@ -86,7 +92,8 @@ class DeliveryNoteDocumentTest {
                 "CÔNG TY TRÁCH NHIỆM HỮU HẠN", "MIỀN NAM VIỆT NAM", "Người nhận: Trần Văn Bình - 0901234567",
                 "Chuyến LD-20261115-0003 - Xe tải Nhanh: biển số 51C-123.45; tài xế Nguyễn Văn Tài; điện thoại "
                         + "0912345678; mã vận đơn WB-778899",
-                "Thời điểm bàn giao: 09:05 15/11/2026", "LY12-ACME-01: 2 thùng, 100 cái",
+                "Thời điểm bàn giao: 09:05 15/11/2026",
+                "LY12-ACME-01 — Ly giấy 2 lớp in logo ACME - 12 oz: 2 thùng, 100 cái",
                 "Thùng (LPN): LPN-000001, LPN-000002", "LY16-ACME-02: 1 thùng, 40 cái", "Tổng cộng: 3 thùng, 140 cái",
                 "BÊN GIAO (KHO)", "TÀI XẾ", "BÊN NHẬN", "(POD)")
                 .doesNotContain("Giao lại");

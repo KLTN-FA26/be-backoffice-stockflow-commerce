@@ -5,7 +5,8 @@
  *
  * <p><b>May depend on:</b> order, inventory, warehouse, identity, customer (only to find the signed-in customer
  * whose order's vehicles the portal shows, 3-6; no longer design: the warehouse checks no design,
- * kltn-docs 08 §1). Plus {@code common} and {@code contracts}, which are
+ * kltn-docs 08 §1), payment, product (only the names of the SKUs a delivery note prints; product depends on inventory
+ * and identity alone, so there is no cycle). Plus {@code common} and {@code contracts}, which are
  * available to every module. From inventory it uses two named interfaces: {@code api}, and
  * {@code consumption} — the narrow one that deducts picked stock, books put-backs and moves cartons into and out of
  * a staging area, in the pick line's own transaction (SCRUM-275, team plan 4C-5). No other module may use
@@ -21,5 +22,6 @@
  * </ul>
  */
 @org.springframework.modulith.ApplicationModule(allowedDependencies = {"order :: api", "order :: spi", "inventory :: api",
-        "inventory :: consumption", "warehouse :: api", "identity :: api", "customer :: api", "payment :: api"})
+        "inventory :: consumption", "warehouse :: api", "identity :: api", "customer :: api", "payment :: api",
+        "product :: api"})
 package com.stockflow.fulfillment;
