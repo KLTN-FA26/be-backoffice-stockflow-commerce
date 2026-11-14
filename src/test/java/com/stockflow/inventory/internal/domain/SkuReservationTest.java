@@ -51,6 +51,30 @@ class SkuReservationTest {
     }
 
     @Test
+    @DisplayName("WF4-COUNT-EDGE a: a released hold at a warehouse is replaced by a smaller one for the same order, there")
+    void keepingWhatStockStillCovers() {
+        SkuReservation reservation = hold(10, 10);
+        assertThatThrownBy(() -> reservation.keeping(8, UUID.randomUUID(), NOW))
+                .as("a live hold is released first").isInstanceOf(IllegalStateException.class);
+        reservation.release(ReleaseReason.SHORT_PICKED, NOW);
+        UUID request = UUID.randomUUID();
+
+        SkuReservation kept = reservation.keeping(8, request, NOW.plusSeconds(1));
+
+        assertThat(kept.id()).isNotEqualTo(reservation.id());
+        assertThat(kept.status()).isEqualTo(ReservationStatus.HELD);
+        assertThat(kept.quantity()).isEqualTo(Quantity.of(8));
+        assertThat(kept.orderId()).isEqualTo(reservation.orderId());
+        assertThat(kept.warehouseCode()).isEqualTo("HCM");
+        assertThat(kept.requestId()).isEqualTo(request);
+        assertThat(kept.expiresAt()).isNull();
+        assertThatThrownBy(() -> reservation.keeping(10, UUID.randomUUID(), NOW))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> reservation.keeping(0, UUID.randomUUID(), NOW))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
     @DisplayName("4B-7 (20 §5.6, BR-17): held at a warehouse for an order of a contract, with no deadline")
     void heldAtAWarehouse() {
         SkuReservation reservation = SkuReservation.holdAt("HCM", SKU, UUID.randomUUID(), UUID.randomUUID(),

@@ -153,7 +153,11 @@ class StockOperationsController {
     }
 
     @PostMapping("/adjustments/{adjustmentId}/approval")
-    @Operation(summary = "Approve and post a stock adjustment; the requester cannot approve their own")
+    @Operation(summary = "Approve and post a stock adjustment; the requester cannot approve their own",
+            description = "409 STOCK_PACKAGE_HELD for a write-off of a carton held for an order - except a count's "
+                    + "shortage (COUNT_VARIANCE) of a carton whose pick line is already reported SHORT: it posts, the "
+                    + "hold is given up (SHORT_PICKED) and the line stays SHORT until the warehouse manager "
+                    + "reallocates it (kltn-docs 20 §4.2 step 8, 07 §4.4).")
     @RequiresPermission(resource = InventoryResources.STOCK_ADJUSTMENTS, action = Action.APPROVE)
     public ApiResponse<StockAdjustmentResponse> approve(@PathVariable UUID adjustmentId,
                                                         @AuthenticatedUser CurrentUser user) {

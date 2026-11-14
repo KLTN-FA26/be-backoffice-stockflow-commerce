@@ -1042,8 +1042,12 @@ class StockOperationsServiceImpl implements StockOperations {
             stockPackages.findAllById(List.of(adjustment.stockPackageId())).stream().findFirst()
                     .ifPresent(this::requireNoOpenPutaway);
         }
+        // A count's shortage of a carton an order still holds is handled as a shortage (20 §4.2 step 8): the hold is given
+        // up with the carton and announced, and fulfillment turns the order's line SHORT after the commit. Any other
+        // adjustment keeps refusing a held carton.
         List<StockPackageContents.RowChange> changes = cartons.adjust(adjustment.stockPackageId(),
-                adjustment.quantityDelta(), adjustment.reason().leavesCartonLost(), now);
+                adjustment.quantityDelta(), adjustment.reason().leavesCartonLost(),
+                adjustment.reason() == AdjustmentReason.COUNT_VARIANCE ? approverId : null, now);
         StockAdjustment saved = adjustments.save(adjustment);
         String reason = ledgerReason(adjustment);
         for (StockPackageContents.RowChange change : changes) {
@@ -1056,6 +1060,8 @@ class StockOperationsServiceImpl implements StockOperations {
                     // The ledger names both pairs of eyes, and the counter of a count's variance (section 8).
                     .askedBy(adjustment.requestedBy(), adjustment.countedBy());
             ledger.append(down ? line.leaving(adjustment.stockPackageId()) : line.arriving(adjustment.stockPackageId()));
+            // The holds the write-off gave up, if any: announced after the row is saved.
+            events.publishEventsOf(row);
         }
         log.info("Posted adjustment {}: {} {} in carton {} at {}", adjustment.number(), adjustment.quantityDelta(),
                 adjustment.sku(), adjustment.stockPackageId().value(), adjustment.location());

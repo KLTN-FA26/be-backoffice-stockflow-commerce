@@ -75,6 +75,25 @@ final class PickableStock {
                 Collectors.summingLong(StockItemRepository.Allocatable::units)));
     }
 
+    /**
+     * WF4-COUNT-EDGE (a): the units of whole free cartons of {@code sku} on pickable, usable locations of
+     * {@code warehouseCode} - {@link #allocatableByWarehouse}'s, with the cartons a recount has frozen counted in: a
+     * carton whose count is still pending is in doubt, not missing, and covers a hold until its own variance is decided.
+     */
+    long coverableAt(Sku sku, String warehouseCode) {
+        List<StockItemRepository.Allocatable> rows = stockItems.findAllocatable(List.of(sku.code())).stream()
+                .filter(row -> new com.stockflow.inventory.internal.domain.LocationId(row.locationCode()).warehouseCode()
+                        .equals(warehouseCode))
+                .toList();
+        if (rows.isEmpty()) {
+            return 0;
+        }
+        Map<String, UUID> pickable = locations.pickable(rows.stream()
+                .map(StockItemRepository.Allocatable::locationCode).distinct().toList());
+        return rows.stream().filter(row -> pickable.containsKey(row.locationCode()))
+                .mapToLong(StockItemRepository.Allocatable::units).sum();
+    }
+
     /** The one filter: the rows of whole free cartons, less the frozen ones and those on no pickable location. */
     private List<StockItemRepository.Allocatable> allocatable(Collection<String> skus) {
         List<StockItemRepository.Allocatable> rows = stockItems.findAllocatable(skus);

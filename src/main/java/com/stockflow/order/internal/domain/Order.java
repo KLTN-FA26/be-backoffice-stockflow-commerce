@@ -549,7 +549,9 @@ public final class Order extends AggregateRoot {
 
     /**
      * The warehouse starts picking (kltn-docs 17 §4.2 step 6): READY_TO_FULFILL → PICKING. Only a released order -
-     * its warehouse chosen (17 BR-02). An order already picking, packed or partly shipped is left as it is.
+     * its warehouse chosen (17 BR-02). An order already picking, packed or partly shipped is left as it is. An order held
+     * for stock ({@code INVENTORY}) from READY_TO_FULFILL stays held and goes back PICKING when the hold is resolved
+     * (WF4-COUNT-EDGE b); held for stock from a later status it is left as it is.
      *
      * @return whether this changed the order
      */
@@ -565,6 +567,22 @@ public final class Order extends AggregateRoot {
             case READY_TO_FULFILL -> {
                 transitionTo(OrderStatus.PICKING, by, null, at);
                 return true;
+            }
+            case ON_HOLD -> {
+                // WF4-COUNT-EDGE (b): held for stock (INVENTORY) after its release - a carton it was allocated counted
+                // missing before its task - the warehouse manager opens the task anyway, its line short, as a picker's
+                // short report leaves a task (07 §4.4 step 9). The order stays held, and resolving the hold brings it
+                // back PICKING (17 §4.9 step 36: back where it was, then on with what happened meanwhile).
+                if (holdReason == HoldReason.INVENTORY && statusBeforeHold == OrderStatus.READY_TO_FULFILL) {
+                    this.statusBeforeHold = OrderStatus.PICKING;
+                    return true;
+                }
+                if (holdReason == HoldReason.INVENTORY && (statusBeforeHold == OrderStatus.PICKING
+                        || statusBeforeHold == OrderStatus.PACKED
+                        || statusBeforeHold == OrderStatus.PARTIALLY_FULFILLED)) {
+                    return first;
+                }
+                throw new InvalidOrderTransitionException(orderNumber, status, OrderStatus.PICKING);
             }
             default -> throw new InvalidOrderTransitionException(orderNumber, status, OrderStatus.PICKING);
         }

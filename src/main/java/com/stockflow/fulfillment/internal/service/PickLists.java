@@ -86,6 +86,19 @@ public interface PickLists {
     List<PickLineView> reallocateShort(UUID taskId, UUID lineId, CurrentUser actor);
 
     /**
+     * An approved count wrote off a carton an order still held (kltn-docs 20 §4.2 step 8): inventory gave the hold up
+     * and this turns what stood on it into the shortage 07 §4.4 describes, without anyone at the bin. The pick line on
+     * the hold turns SHORT ({@code NOT_FOUND}, nothing deducted) and the order is held for stock ({@code INVENTORY}),
+     * for the warehouse manager to reallocate. Without a pick line - the order was released and has no task yet - the
+     * order is held the same way. Idempotent (the event is delivered at least once): a line already SHORT, a hold
+     * already on the order, and a line or order no longer in fulfilment change nothing. Locks the pick, then the order;
+     * no stock row.
+     *
+     * @param decidedBy who approved the count's shortage; the order's hold is recorded in their name
+     */
+    void shortenForWrittenOffCarton(UUID orderId, UUID reservationId, UUID decidedBy);
+
+    /**
      * A top-up (07 §4.3 step 7, BR-07; team plan 4C-5): the order holds cartons that no line of its task takes yet - the
      * rest of an order that waited for stock, allocated since - and they become lines of the same task, after its last
      * stop, keeping its destination. A STAGED or PICKED task goes back to PICKING for its assignee, and the order to

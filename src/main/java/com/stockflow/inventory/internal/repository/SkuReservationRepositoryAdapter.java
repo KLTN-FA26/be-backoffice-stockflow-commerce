@@ -72,6 +72,11 @@ class SkuReservationRepositoryAdapter implements SkuReservationRepository {
     }
 
     @Override
+    public List<SkuReservation> findHeldAt(String sku, String warehouseCode) {
+        return jpa.findHeldAt(sku, warehouseCode).stream().map(SkuReservationRepositoryAdapter::toDomain).toList();
+    }
+
+    @Override
     public boolean anyLapsedForOrder(UUID orderId) {
         return !entityManager.createNativeQuery("""
                         select 1 from inventory.stock_reservation
@@ -129,6 +134,11 @@ class SkuReservationRepositoryAdapter implements SkuReservationRepository {
                 reservation.quantity().value(), reservation.reservedAt(), reservation.expiresAt(),
                 reservation.status(), reservation.releaseReason(), reservation.closedAt(), null)
                 .heldAt(reservation.warehouseCode())));
+    }
+
+    @Override
+    public void flush() {
+        jpa.flush();
     }
 
     private List<SkuReservation> lock(String sql, UUID key) {
