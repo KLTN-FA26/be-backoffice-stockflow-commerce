@@ -219,6 +219,49 @@ class CountVarianceAdjustmentIntegrationTest {
     }
 
     @Test
+    @DisplayName("WF-05 section 8: the variance keeps who counted its line, the counter is refused as its decider - by "
+            + "the aggregate and by the table - and the posted ledger line names requester, counter and approver")
+    void theCounterIsKeptRefusedAndNamedOnTheLedger() {
+        UUID box = carton("C");
+        UUID line = countLine(box);
+        UUID counter = tx.execute(s -> ReferenceRows.user(entityManager));
+        tx.executeWithoutResult(s -> jdbc.update("update inventory.cycle_count_line set counted_qty = 0, "
+                + "counted_by = ?, counted_at = now() where id = ?", counter, line));
+
+        StockAdjustmentSummary asked = operations.requestCountVariance(line, cartonSlot(box), -CARTON_FACTOR, clerk,
+                "CC-8");
+
+        assertThat(asked.countedBy()).as("kept on the adjustment, not looked up when it is decided").isEqualTo(counter);
+        assertThat(jdbc.queryForObject("select counted_by from inventory.stock_adjustment where id = ?", UUID.class,
+                asked.adjustmentId())).isEqualTo(counter);
+
+        assertThatThrownBy(() -> operations.approve(asked.adjustmentId(), counter))
+                .extracting(CountVarianceAdjustmentIntegrationTest::codeOf).isEqualTo(ErrorCode.ADJUSTMENT_SELF_APPROVAL);
+        assertThatThrownBy(() -> operations.reject(asked.adjustmentId(), counter, "no"))
+                .extracting(CountVarianceAdjustmentIntegrationTest::codeOf).isEqualTo(ErrorCode.ADJUSTMENT_SELF_APPROVAL);
+        // The table says it again, whoever writes the decision.
+        assertThatThrownBy(() -> tx.executeWithoutResult(s -> jdbc.update("update inventory.stock_adjustment set "
+                + "status = 'REJECTED', decided_by = ?, decided_at = now(), rejection_reason = 'x' where id = ?",
+                counter, asked.adjustmentId())))
+                .hasMessageContaining("ck_stock_adjustment_counter_not_decider");
+
+        operations.approve(asked.adjustmentId(), manager);
+
+        assertThat(jdbc.queryForMap("select requested_by, counted_by, actor_id from inventory.stock_movement "
+                + "where reference_type = 'STOCK_ADJUSTMENT' and reference_id = ?", asked.adjustmentId()))
+                .containsEntry("requested_by", clerk).containsEntry("counted_by", counter)
+                .containsEntry("actor_id", manager);
+        // A ledger line of an adjustment that names other people than the adjustment does is refused.
+        assertThatThrownBy(() -> tx.executeWithoutResult(s -> jdbc.update("""
+                insert into inventory.stock_movement (id, movement_type, sku, lot_number, from_location_code, quantity,
+                    from_status, reference_type, reference_id, actor_id, occurred_at, from_stock_package_id,
+                    requested_by)
+                values (?, 'ADJUSTMENT', ?, ?, ?, ?, 'AVAILABLE', 'STOCK_ADJUSTMENT', ?, ?, now(), ?, ?)""",
+                Identifiers.newId(), sku, lot, BIN, CARTON_FACTOR, asked.adjustmentId(), manager, box, manager)))
+                .hasMessageContaining("names who requested and who counted");
+    }
+
+    @Test
     @DisplayName("a LOST carton a later count finds is restocked whole on its own row: IN_STOCK, lot kept, no new layer")
     void lostCartonFoundAgain() {
         UUID box = carton("F");

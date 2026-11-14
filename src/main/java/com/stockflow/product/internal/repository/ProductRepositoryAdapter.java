@@ -82,6 +82,18 @@ class ProductRepositoryAdapter implements ProductRepository, ProductSearchReposi
     }
 
     @Override
+    public java.util.Map<String, String> variantNamesOf(java.util.Collection<String> skus) {
+        java.util.Map<String, String> names = new java.util.HashMap<>();
+        if (skus == null || skus.isEmpty()) {
+            return names;
+        }
+        for (Object[] row : jpa.variantNamesOf(skus)) {
+            names.put((String) row[0], (String) row[1]);
+        }
+        return names;
+    }
+
+    @Override
     public boolean existsByCode(String code) {
         return jpa.existsByCode(code);
     }

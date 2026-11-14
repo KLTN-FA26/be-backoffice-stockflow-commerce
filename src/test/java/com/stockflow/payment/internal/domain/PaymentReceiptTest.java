@@ -47,6 +47,16 @@ class PaymentReceiptTest {
     }
 
     @Test
+    @DisplayName("A1 (BR-03): a statement line is compared upper case without whitespace, and kept as typed")
+    void referencesAreComparedNormalised() {
+        PaymentReceipt typed = receipt(" ft 26111\tabc ", TODAY, List.of(pays(1_000)));
+        assertThat(typed.reference()).as("as typed, trimmed").isEqualTo("ft 26111\tabc");
+        assertThat(typed.normalizedReference()).isEqualTo("FT26111ABC");
+        assertThat(PaymentReceipt.normalize("FT26111ABC")).isEqualTo(PaymentReceipt.normalize("Ft 2611 1abc"));
+        assertThat(PaymentReceipt.normalize(null)).isEmpty();
+    }
+
+    @Test
     @DisplayName("refused: no line, a line paying nothing or a fraction of a dong, an installment twice, a day ahead")
     void refused() {
         assertThatThrownBy(() -> receipt("FT1", TODAY, List.of())).extracting(PaymentReceiptTest::code)

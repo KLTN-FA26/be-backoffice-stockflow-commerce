@@ -24,7 +24,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 class OrderStatusTest {
 
     private static final Map<OrderStatus, Set<OrderStatus>> ALLOWED = Map.ofEntries(
-            Map.entry(DRAFT, EnumSet.of(PENDING_CONTRACT, PENDING_PAYMENT, CONFIRMED, ON_HOLD, CANCELLED)),
+            // 14 §5.3: a draft is placed only through its signed contract; checkout's edges went with it (4B-10).
+            Map.entry(DRAFT, EnumSet.of(PENDING_CONTRACT, CANCELLED)),
             // 4B-5 (14 §5.3): signed - waiting for the installment on signing, confirmed, held for credit; back to
             // DRAFT when its contract is cancelled.
             Map.entry(PENDING_CONTRACT, EnumSet.of(DRAFT, PENDING_PAYMENT, CONFIRMED, ON_HOLD, CANCELLED)),
@@ -41,8 +42,9 @@ class OrderStatusTest {
             Map.entry(PACKED, EnumSet.of(SHIPPED, PARTIALLY_FULFILLED, ON_HOLD)),
             Map.entry(ON_HOLD, EnumSet.of(CONFIRMED, PENDING_PAYMENT, AWAITING_STOCK, IN_PRODUCTION, READY_TO_FULFILL,
                     PICKING, PARTIALLY_FULFILLED, PACKED, CANCELLED)),
-            Map.entry(SHIPPED, EnumSet.of(DELIVERED, DELIVERY_FAILED, PARTIALLY_FULFILLED)),
-            Map.entry(DELIVERY_FAILED, EnumSet.of(DELIVERED, RETURNED, PARTIALLY_FULFILLED)),
+            // ON_HOLD: a shipment came back - held for the failed delivery (WF-05 fix plan, sections 2-3).
+            Map.entry(SHIPPED, EnumSet.of(DELIVERED, DELIVERY_FAILED, PARTIALLY_FULFILLED, ON_HOLD)),
+            Map.entry(DELIVERY_FAILED, EnumSet.of(DELIVERED, RETURNED, PARTIALLY_FULFILLED, ON_HOLD)),
             Map.entry(DELIVERED, EnumSet.of(COMPLETED, RETURN_REQUESTED, DELIVERY_FAILED)),
             Map.entry(RETURN_REQUESTED, EnumSet.of(RETURNED, DELIVERED)),
             Map.entry(RETURNED, EnumSet.of(REFUNDED, PARTIALLY_REFUNDED)),
@@ -92,12 +94,24 @@ class OrderStatusTest {
     @DisplayName("a hold is entered from up to PACKED and the partly shipped state, and left back to each of them")
     void holdGoesBackWhereItCameFrom() {
         for (OrderStatus status : values()) {
-            // DRAFT (checkout) and PENDING_CONTRACT go ON_HOLD only for credit, which a credit decision leaves.
+            // PENDING_CONTRACT goes ON_HOLD only for credit, which a credit decision leaves; SHIPPED and
+            // DELIVERY_FAILED only for a shipment that came back, which Sales' decision leaves (WF-05 fix plan).
             assertThat(status.mayBePutOnHold()).as(status.name()).isEqualTo(status.canTransitionTo(ON_HOLD)
-                    && status != DRAFT && status != PENDING_CONTRACT);
+                    && status != PENDING_CONTRACT && status != SHIPPED && status != DELIVERY_FAILED);
             if (status.mayBePutOnHold()) {
                 assertThat(ON_HOLD.canTransitionTo(status)).as("ON_HOLD -> " + status).isTrue();
             }
+        }
+    }
+
+    @Test
+    @DisplayName("O-13: a draft is never placed without its contract - only PENDING_CONTRACT or CANCELLED (14 §5.3)")
+    void aDraftIsPlacedOnlyThroughItsContract() {
+        assertThat(EnumSet.allOf(OrderStatus.class).stream().filter(DRAFT::canTransitionTo))
+                .containsExactlyInAnyOrder(PENDING_CONTRACT, CANCELLED);
+        for (OrderStatus placed : EnumSet.of(PENDING_PAYMENT, CONFIRMED, ON_HOLD)) {
+            assertThat(DRAFT.canTransitionTo(placed)).as("DRAFT -> " + placed).isFalse();
+            assertThat(OrderStatus.edges()).doesNotContain("DRAFT>" + placed);
         }
     }
 

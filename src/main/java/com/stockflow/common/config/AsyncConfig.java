@@ -4,6 +4,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.springframework.aop.interceptor.AsyncUncaughtExceptionHandler;
+import org.springframework.beans.factory.BeanFactory;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.task.TaskDecorator;
@@ -29,12 +30,18 @@ import java.util.Map;
  *
  * <h2>Why the executor itself is not replaced</h2>
  *
- * <p>{@link #getAsyncExecutor()} deliberately returns null. {@code spring.threads.virtual.enabled}
- * is on, so Spring Boot supplies a virtual-thread executor; returning a
- * {@code ThreadPoolTaskExecutor} here would silently override it and put the application back on a
- * bounded pool of platform threads. Boot applies a {@link TaskDecorator} bean to whichever executor
- * it builds, so declaring one is enough — and it keeps working if the virtual-thread setting is
- * ever flipped.</p>
+ * <p>{@link #getAsyncExecutor()} hands back the executor Spring Boot builds ({@code applicationTaskExecutor}),
+ * looked up by name, and builds none of its own. {@code spring.threads.virtual.enabled} is on, so Boot supplies a
+ * virtual-thread executor; returning a {@code ThreadPoolTaskExecutor} here would silently override it and put the
+ * application back on a bounded pool of platform threads. Boot applies a {@link TaskDecorator} bean to whichever
+ * executor it builds, so declaring one is enough — and it keeps working if the virtual-thread setting is ever
+ * flipped.</p>
+ *
+ * <p>It used to return null and let Spring find the executor by type. That stopped working with the STOMP broker
+ * (sales chat, {@code common.websocket.WebSocketConfig}): the broker's channels are executors too, so the lookup by
+ * type became ambiguous and Spring fell back - silently - to a new platform thread per call, without the MDC. Boot
+ * likewise backs off building its executor when other executors exist, which is why
+ * {@code spring.task.execution.mode} is {@code force}.</p>
  *
  * <h2>Failures that would otherwise disappear</h2>
  *
@@ -49,12 +56,22 @@ public class AsyncConfig implements AsyncConfigurer {
 
     private static final Logger log = LoggerFactory.getLogger(AsyncConfig.class);
 
+    /** Spring Boot's executor, by its bean name - see the class javadoc. */
+    static final String BOOT_EXECUTOR = "applicationTaskExecutor";
+
+    private final BeanFactory beans;
+
+    public AsyncConfig(BeanFactory beans) {
+        this.beans = beans;
+    }
+
     /**
-     * Null on purpose - see the class javadoc. Overriding this would disable virtual threads.
+     * Boot's own executor, never one built here - see the class javadoc. Asked for when the first {@code @Async} call
+     * is made, not at startup.
      */
     @Override
     public java.util.concurrent.Executor getAsyncExecutor() {
-        return null;
+        return beans.getBean(BOOT_EXECUTOR, java.util.concurrent.Executor.class);
     }
 
     @Bean

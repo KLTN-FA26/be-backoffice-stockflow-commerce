@@ -89,6 +89,9 @@ public final class ContentTypePolicy {
             // ISO base media files (MP4, QuickTime) open with a box whose type, at bytes 4-7, is "ftyp".
             case "video/mp4", "video/quicktime" -> head.length >= 8
                     && head[4] == 'f' && head[5] == 't' && head[6] == 'y' && head[7] == 'p';
+            // glTF binary: the magic "glTF", then the container version as a little-endian uint32 - only 2 exists.
+            case "model/gltf-binary" -> head.length >= 8 && startsWith(head, 0x67, 0x6C, 0x54, 0x46)
+                    && head[4] == 2 && head[5] == 0 && head[6] == 0 && head[7] == 0;
             // WebM is Matroska: the EBML header's id.
             case "video/webm" -> startsWith(head, 0x1A, 0x45, 0xDF, 0xA3);
             // Both modern Office formats are ZIP containers.

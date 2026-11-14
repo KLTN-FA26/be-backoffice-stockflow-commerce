@@ -288,7 +288,10 @@ class ShipmentService implements Shipments {
                 .anyMatch(s -> s.shipmentId().equals(row.getId()));
         boolean orderHasNone = order.lifecycle() == null || order.lifecycle().shipments().isEmpty();
         // The whole-order path, for one rule only: the order does not know this shipment and records none - a shipment
-        // handed over as the whole order (wholeOrderHandover), however it got there.
+        // handed over as the whole order (wholeOrderHandover), however it got there. Historical data only (WF-05 review
+        // F13): DispatchService hands a shipment over whole only when its parcels record no contents, which nothing
+        // packed since #136 does. A RETURNED outcome here returns the whole order and opens no delivery failure case -
+        // the WF-05 flow needs the order to know the shipment - which is accepted for those old rows.
         if (!known && (row.isWholeOrderHandover() || orderHasNone)) {
             long others = shipments.findByOrderIdOrderByReadyAtAscIdAsc(row.getOrderId()).stream()
                     .filter(s -> !s.getId().equals(row.getId()) && s.getStatus() != ShipmentStatus.CANCELLED)

@@ -54,7 +54,8 @@ public record OrderResponse(
         Cancellation cancellation,
 
         @Schema(example = "ADDRESS", description = "Staff only. Set while ON_HOLD: CREDIT, PAYMENT, ADDRESS, "
-                + "INVENTORY, CUSTOMER, FRAUD or OTHER (G3-2); null for a customer, who gets holdReasonPublic")
+                + "INVENTORY, CUSTOMER, FRAUD, OTHER (G3-2) or DELIVERY_FAILED - a shipment came back and Sales decide its "
+                + "delivery failure case; null for a customer, who gets holdReasonPublic")
         String holdReason,
 
         @Schema(example = "PICKING", description = "Staff only. Where resolving the hold goes back to; null for a "

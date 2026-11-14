@@ -3,6 +3,7 @@ package com.stockflow.payment.internal.repository;
 import com.stockflow.common.persistence.Specs;
 import com.stockflow.payment.internal.domain.Installment;
 import com.stockflow.payment.internal.domain.InstallmentBook;
+import com.stockflow.payment.internal.domain.InstallmentStatus;
 import com.stockflow.payment.internal.domain.PaymentReceipt;
 import com.stockflow.payment.internal.domain.PaymentReceiptStatus;
 import com.stockflow.payment.internal.entity.InstallmentJpaEntity;
@@ -100,37 +101,26 @@ class InstallmentBookAdapter implements InstallmentBook, InstallmentSearch {
     }
 
     @Override
-    public List<UUID> markOverdue(LocalDate today) {
-        @SuppressWarnings("unchecked")
-        List<UUID> ids = entityManager.createNativeQuery("""
-                        UPDATE payment.installment SET status = 'OVERDUE', version = version + 1,
-                                                       last_modified_at = NOW(), last_modified_by = 'overdue-job'
-                         WHERE id IN (SELECT id FROM payment.installment
-                                       WHERE status IN ('DUE', 'PARTIALLY_PAID') AND due_date < :today
-                                       ORDER BY id FOR UPDATE)
-                        RETURNING id""")
-                .setParameter("today", today)
-                .getResultList();
-        return ids;
-    }
-
-    @Override
     public BigDecimal afterDeliveryUnpaid(UUID customerId) {
         return decimal(entityManager.createNativeQuery("""
                         SELECT COALESCE(SUM(amount - reduced_amount - paid_amount), 0) FROM payment.installment
-                         WHERE customer_id = :customer AND milestone IN ('AFTER_DELIVERY', 'CANCELLATION_FEE')
+                         WHERE customer_id = :customer
+                           AND milestone IN ('AFTER_DELIVERY', 'CANCELLATION_FEE', 'FAILED_TRIP_FEE')
                            AND status NOT IN ('PAID', 'CANCELLED')""")
                 .setParameter("customer", customerId)
                 .getSingleResult());
     }
 
     @Override
-    public Overdue overdue(UUID customerId) {
+    public Overdue overdue(UUID customerId, LocalDate today) {
+        // The same test as Installment.overdue and payment.installment_is_overdue: past its due day, still owing.
         Object[] row = (Object[]) entityManager.createNativeQuery("""
                         SELECT COALESCE(SUM(amount - reduced_amount - paid_amount), 0), MIN(due_date)
                           FROM payment.installment
-                         WHERE customer_id = :customer AND status = 'OVERDUE'""")
+                         WHERE customer_id = :customer AND due_date < :today
+                           AND status NOT IN ('PAID', 'CANCELLED')""")
                 .setParameter("customer", customerId)
+                .setParameter("today", today)
                 .getSingleResult();
         return new Overdue(decimal(row[0]), localDate(row[1]));
     }
@@ -180,7 +170,8 @@ class InstallmentBookAdapter implements InstallmentBook, InstallmentSearch {
     @Override
     public boolean referenceInUse(String reference) {
         // Receipts only: the money ledger's transfers and payments, which this also looked through, are gone (4B-11).
-        return receipts.existsByReferenceAndStatus(reference.strip(), PaymentReceiptStatus.RECORDED);
+        return receipts.existsByReferenceNormalizedAndStatus(PaymentReceipt.normalize(reference),
+                PaymentReceiptStatus.RECORDED);
     }
 
     @Override
@@ -210,8 +201,23 @@ class InstallmentBookAdapter implements InstallmentBook, InstallmentSearch {
                 .and(filter.dueBefore() == null ? null
                         : (root, query, cb) -> cb.lessThan(root.get("dueDate"), filter.dueBefore()))
                 .and(filter.reached() == null ? null : (root, query, cb) -> filter.reached()
-                        ? cb.isNotNull(root.get("reachedAt")) : cb.isNull(root.get("reachedAt")));
+                        ? cb.isNotNull(root.get("reachedAt")) : cb.isNull(root.get("reachedAt")))
+                .and(filter.overdueOn() == null ? null : overdue(filter.overdueOn(), filter.overdue()));
         return installments.findAll(spec, pageable).map(InstallmentBookAdapter::toDomain);
+    }
+
+    /**
+     * Overdue on {@code day}, or not: past its due day and still owing - the test of {@code Installment.overdue}, as a
+     * predicate, since overdue is no status to filter by.
+     */
+    private static Specification<InstallmentJpaEntity> overdue(LocalDate day, boolean wanted) {
+        return (root, query, cb) -> {
+            var settled = root.get("status").in(InstallmentStatus.PAID, InstallmentStatus.CANCELLED);
+            // Not overdue is spelt out rather than negated: an installment with no due day compares as NULL, and
+            // NOT NULL would leave it out of both readings.
+            return wanted ? cb.and(cb.lessThan(root.get("dueDate"), day), cb.not(settled))
+                    : cb.or(cb.isNull(root.get("dueDate")), cb.greaterThanOrEqualTo(root.get("dueDate"), day), settled);
+        };
     }
 
     @Override
@@ -220,7 +226,9 @@ class InstallmentBookAdapter implements InstallmentBook, InstallmentSearch {
         Specification<PaymentReceiptJpaEntity> spec = Specification
                 .<PaymentReceiptJpaEntity>where(Specs.eq("customerId", customerId))
                 .and(Specs.eq("status", status))
-                .and(Specs.eq("reference", reference == null || reference.isBlank() ? null : reference.strip()));
+                // Normalised as BR-03 compares: "ft 26111abc" finds the receipt recorded as "FT26111ABC".
+                .and(Specs.eq("referenceNormalized", reference == null || reference.isBlank() ? null
+                        : PaymentReceipt.normalize(reference)));
         Page<PaymentReceiptJpaEntity> page = receipts.findAll(spec, pageable);
         // One query for the lines of the whole page.
         Map<UUID, List<PaymentReceipt.Line>> lines = linesOf(page.map(PaymentReceiptJpaEntity::getId).getContent());

@@ -44,7 +44,15 @@ public class CurrentUserProvider {
     private static final Logger log = LoggerFactory.getLogger(CurrentUserProvider.class);
 
     public Optional<CurrentUser> current() {
-        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+        return of(SecurityContextHolder.getContext().getAuthentication());
+    }
+
+    /**
+     * The same reading of an authentication held somewhere other than the security context: a STOMP session's
+     * principal, which arrives on a message-channel thread where no request set the context
+     * ({@code common.websocket.StompAuthenticationInterceptor}). Never throws, as {@link #current()}.
+     */
+    public Optional<CurrentUser> of(Authentication authentication) {
         if (!(authentication instanceof JwtAuthenticationToken token)) {
             return Optional.empty();     // anonymous, a scheduled job, or an async event listener
         }

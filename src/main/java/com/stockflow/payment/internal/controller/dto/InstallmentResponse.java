@@ -18,9 +18,11 @@ public record InstallmentResponse(UUID installmentId, UUID contractId,
                                   UUID orderId, @Schema(example = "SO-20261108-000007") String orderNumber,
                                   UUID customerId, int seq, @Schema(example = "Đặt cọc") String name,
                                   @Schema(description = "CANCELLATION_FEE: the part of a cancellation fee the "
-                                          + "money collected did not cover (15 §4.6 step 18), paid like an installment",
+                                          + "money collected did not cover (15 §4.6 step 18), paid like an installment. "
+                                          + "FAILED_TRIP_FEE: the trip of a delivery the customer refused or "
+                                          + "misaddressed, charged when it is delivered again",
                                           allowableValues = {"ON_SIGNING", "BEFORE_DELIVERY", "AFTER_DELIVERY",
-                                                  "CANCELLATION_FEE"})
+                                                  "CANCELLATION_FEE", "FAILED_TRIP_FEE"})
                                   String milestone,
                                   @Schema(description = "The delivery batch it is tied to (17 §4.5); null when none")
                                   Integer deliveryBatchSeq,
@@ -31,11 +33,16 @@ public record InstallmentResponse(UUID installmentId, UUID contractId,
                                   Integer dueDays,
                                   @Schema(description = "When its milestone came; null while NOT_DUE")
                                   Instant reachedAt,
-                                  @Schema(description = "Past it and not paid in full, it becomes OVERDUE; null before "
+                                  @Schema(description = "Past it and not paid in full, it is overdue; null before "
                                           + "its milestone and for an installment paid before delivery")
                                   LocalDate dueDate,
-                                  @Schema(allowableValues = {"NOT_DUE", "DUE", "PARTIALLY_PAID", "PAID", "OVERDUE",
-                                          "CANCELLED"}) String status,
+                                  @Schema(description = "What the money and the milestone say. Overdue is not a "
+                                          + "status: read `overdue`", allowableValues = {"NOT_DUE", "DUE",
+                                          "PARTIALLY_PAID", "PAID", "CANCELLED"}) String status,
+                                  @Schema(description = "Past its due day and still owing, today in the business "
+                                          + "calendar. Worked out when read; an overdue installment paid in part is "
+                                          + "PARTIALLY_PAID and overdue")
+                                  boolean overdue,
                                   Instant paidAt, Instant cancelledAt,
                                   @Schema(description = "What the customer writes in the transfer: contract number + "
                                           + "installment (15 §4.2 step 5)", example = "HD-20261108-000007-1 DOT1")

@@ -160,15 +160,15 @@ SELECT pg_temp.expect_fail('IN10 paid without a receipt (check_installment_paid)
 SELECT pg_temp.expect_fail('IN11 deleted', $q$
     DELETE FROM payment.installment WHERE id = md5('qa18:n2')::uuid $q$);
 
-\echo '--- the nightly sweep (15 §4.1 step 4)'
-SELECT pg_temp.expect_ok('IN12 past its due day and unpaid: OVERDUE', $q$
-    UPDATE payment.installment SET status = 'OVERDUE'
-     WHERE status IN ('DUE', 'PARTIALLY_PAID') AND due_date < CURRENT_DATE AND id = md5('qa18:n1')::uuid $q$);
-SELECT pg_temp.expect_true('IN12a the installment on signing is overdue; the one before delivery has no due day',
-    (SELECT status FROM payment.installment WHERE id = md5('qa18:n1')::uuid) = 'OVERDUE'
-    AND (SELECT due_date FROM payment.installment WHERE id = md5('qa18:n2')::uuid) IS NULL);
-SELECT pg_temp.expect_fail('IN13 OVERDUE back to DUE without being paid', $q$
-    UPDATE payment.installment SET status = 'DUE' WHERE id = md5('qa18:n1')::uuid $q$);
+\echo '--- overdue is a flag, not a status (15 §4.1 step 4; V20261121000100)'
+SELECT pg_temp.expect_true('IN12 past its due day and unpaid: overdue by its due day, its status still DUE',
+    (SELECT payment.installment_is_overdue(due_date, status) AND status = 'DUE'
+       FROM payment.installment WHERE id = md5('qa18:n1')::uuid));
+SELECT pg_temp.expect_true('IN12a the one before delivery has no due day and is never overdue',
+    (SELECT due_date IS NULL AND NOT payment.installment_is_overdue(due_date, status)
+       FROM payment.installment WHERE id = md5('qa18:n2')::uuid));
+SELECT pg_temp.expect_fail('IN13 OVERDUE written as a status', $q$
+    UPDATE payment.installment SET status = 'OVERDUE' WHERE id = md5('qa18:n1')::uuid $q$);
 
 \echo '--- receipts (15 §4.2, BR-03..BR-05)'
 SELECT pg_temp.expect_fail('IN14 a receipt with no line', $q$
@@ -202,7 +202,7 @@ SELECT pg_temp.expect_fail('IN17 another customer''s installment (BR-05)', $q$
     INSERT INTO payment.payment_receipt_line (id, receipt_id, installment_id, amount)
     VALUES (gen_random_uuid(), md5('qa18:rx')::uuid, md5('qa18:n1')::uuid, 400000);
     UPDATE payment.installment SET paid_amount = 400000 WHERE id = md5('qa18:n1')::uuid $q$);
-SELECT pg_temp.expect_ok('IN18 part of the overdue installment paid: it stays OVERDUE (15 §5.1)', $q$
+SELECT pg_temp.expect_ok('IN18 part of the overdue installment paid: PARTIALLY_PAID, the status says the money', $q$
     INSERT INTO payment.payment_receipt (id, customer_id, reference, received_on, amount, currency, status, recorded_by,
                                          recorded_at)
     SELECT md5('qa18:r1')::uuid, c.customer_id, 'FT-QA18-1', CURRENT_DATE, 400000, 'VND', 'RECORDED',
@@ -210,7 +210,10 @@ SELECT pg_temp.expect_ok('IN18 part of the overdue installment paid: it stays OV
       FROM ordering.customer_order c WHERE c.id = md5('qa18:order')::uuid;
     INSERT INTO payment.payment_receipt_line (id, receipt_id, installment_id, amount)
     VALUES (gen_random_uuid(), md5('qa18:r1')::uuid, md5('qa18:n1')::uuid, 400000);
-    UPDATE payment.installment SET paid_amount = 400000 WHERE id = md5('qa18:n1')::uuid $q$);
+    UPDATE payment.installment SET paid_amount = 400000, status = 'PARTIALLY_PAID'
+     WHERE id = md5('qa18:n1')::uuid $q$);
+SELECT pg_temp.expect_true('IN18a and still overdue for what is left',
+    (SELECT payment.installment_is_overdue(due_date, status) FROM payment.installment WHERE id = md5('qa18:n1')::uuid));
 SELECT pg_temp.expect_fail('IN19 the same statement line recorded on a second live receipt (BR-03)', $q$
     INSERT INTO payment.payment_receipt (id, customer_id, reference, received_on, amount, currency, status, recorded_by,
                                          recorded_at)
@@ -221,6 +224,20 @@ SELECT pg_temp.expect_fail('IN19 the same statement line recorded on a second li
     VALUES (gen_random_uuid(), md5('qa18:r2')::uuid, md5('qa18:n2')::uuid, 100000);
     UPDATE payment.installment SET paid_amount = 100000, status = 'PARTIALLY_PAID'
      WHERE id = md5('qa18:n2')::uuid $q$);
+SELECT pg_temp.expect_fail('IN19b the same statement line typed in lower case and with spaces (BR-03, V20261124000200)', $q$
+    INSERT INTO payment.payment_receipt (id, customer_id, reference, received_on, amount, currency, status, recorded_by,
+                                         recorded_at)
+    SELECT md5('qa18:r2b')::uuid, c.customer_id, 'ft-qa18 -1', CURRENT_DATE, 100000, 'VND', 'RECORDED',
+           md5('demo:user:editor')::uuid, NOW()
+      FROM ordering.customer_order c WHERE c.id = md5('qa18:order')::uuid;
+    INSERT INTO payment.payment_receipt_line (id, receipt_id, installment_id, amount)
+    VALUES (gen_random_uuid(), md5('qa18:r2b')::uuid, md5('qa18:n2')::uuid, 100000);
+    UPDATE payment.installment SET paid_amount = 100000, status = 'PARTIALLY_PAID'
+     WHERE id = md5('qa18:n2')::uuid $q$);
+SELECT pg_temp.expect_true('IN19c the reference is compared upper case without whitespace, kept as typed',
+    (SELECT reference_normalized = 'FT-QA18-1' FROM payment.payment_receipt WHERE id = md5('qa18:r1')::uuid));
+SELECT pg_temp.expect_fail('IN19d the normalised reference written by hand', $q$
+    UPDATE payment.payment_receipt SET reference_normalized = 'X' WHERE id = md5('qa18:r1')::uuid $q$);
 SELECT pg_temp.expect_fail('IN20 more paid than owed, nothing left over (BR-05)', $q$
     INSERT INTO payment.payment_receipt (id, customer_id, reference, received_on, amount, currency, status, recorded_by,
                                          recorded_at)
@@ -245,11 +262,11 @@ SELECT pg_temp.expect_fail('IN25 voided while its installment still counts its m
     UPDATE payment.payment_receipt SET status = 'VOIDED', voided_at = NOW(), voided_by = md5('demo:user:editor')::uuid,
            void_reason = 'wrong customer'
      WHERE id = md5('qa18:r1')::uuid $q$);
-SELECT pg_temp.expect_ok('IN26 voided, its installment put back: still OVERDUE, its due day past', $q$
+SELECT pg_temp.expect_ok('IN26 voided, its installment put back: DUE again, and overdue by its due day', $q$
     UPDATE payment.payment_receipt SET status = 'VOIDED', voided_at = NOW(), voided_by = md5('demo:user:editor')::uuid,
            void_reason = 'wrong customer'
      WHERE id = md5('qa18:r1')::uuid;
-    UPDATE payment.installment SET paid_amount = 0 WHERE id = md5('qa18:n1')::uuid $q$);
+    UPDATE payment.installment SET paid_amount = 0, status = 'DUE' WHERE id = md5('qa18:n1')::uuid $q$);
 SELECT pg_temp.expect_fail('IN27 a voided receipt brought back', $q$
     UPDATE payment.payment_receipt SET status = 'RECORDED', voided_at = NULL, voided_by = NULL, void_reason = NULL
      WHERE id = md5('qa18:r1')::uuid $q$);
@@ -269,6 +286,186 @@ SELECT pg_temp.expect_ok('IN28 the statement line recorded again on the right re
 SELECT pg_temp.expect_true('IN28a the paid and the receipts agree',
     (SELECT paid_amount FROM payment.installment WHERE id = md5('qa18:n1')::uuid) = 1100000
     AND (SELECT status FROM payment.installment WHERE id = md5('qa18:n2')::uuid) = 'PARTIALLY_PAID');
+
+\echo '--- the status machine, edge by edge (15 §5.1; payment.check_installment_transition, V20261121000100)'
+-- Five statuses give twenty pairs: the trigger allows 14 and refuses 6. Each is tried once, from a state built for it
+-- and undone afterwards, so the edges do not depend on one another and the sections below start from where IN28 left
+-- the two installments: the one on signing (its milestone came) PAID, the one before delivery (its milestone not yet)
+-- PARTIALLY_PAID. NOT_DUE and PARTIALLY_PAID have no refused target: each may become any of the other four.
+CREATE FUNCTION pg_temp.qa18_receipt(key TEXT, installment_key TEXT, paid NUMERIC) RETURNS void LANGUAGE sql AS $$
+    INSERT INTO payment.payment_receipt (id, customer_id, reference, received_on, amount, currency, status, recorded_by,
+                                         recorded_at)
+    SELECT md5('qa18:edge:' || key)::uuid, o.customer_id, 'FT-QA18-E-' || key, CURRENT_DATE, paid, 'VND', 'RECORDED',
+           md5('demo:user:editor')::uuid, NOW()
+      FROM ordering.customer_order o WHERE o.id = md5('qa18:order')::uuid;
+    INSERT INTO payment.payment_receipt_line (id, receipt_id, installment_id, amount)
+    VALUES (gen_random_uuid(), md5('qa18:edge:' || key)::uuid, md5('qa18:' || installment_key)::uuid, paid);
+$$;
+CREATE FUNCTION pg_temp.qa18_void(receipt UUID) RETURNS void LANGUAGE sql AS $$
+    UPDATE payment.payment_receipt SET status = 'VOIDED', voided_at = NOW(), voided_by = md5('demo:user:editor')::uuid,
+           void_reason = 'qa: wrong customer'
+     WHERE id = receipt;
+$$;
+
+-- The edge is taken inside a sub-transaction that is always rolled back: a private SQLSTATE carries "it worked" out.
+-- Anything else that goes wrong - the setup, the wrong starting status, the edge refused - fails the script.
+CREATE FUNCTION pg_temp.expect_edge(label TEXT, target UUID, from_status TEXT, to_status TEXT, setup TEXT,
+                                    step TEXT) RETURNS void LANGUAGE plpgsql AS $$
+DECLARE
+    found TEXT;
+BEGIN
+    BEGIN
+        IF setup <> '' THEN
+            EXECUTE setup;
+            SET CONSTRAINTS ALL IMMEDIATE;
+            SET CONSTRAINTS ALL DEFERRED;
+        END IF;
+        SELECT status INTO found FROM payment.installment WHERE id = target;
+        IF found IS DISTINCT FROM from_status THEN
+            RAISE EXCEPTION 'FAIL  %: the setup left it %, not %', label, found, from_status;
+        END IF;
+        EXECUTE step;
+        SET CONSTRAINTS ALL IMMEDIATE;
+        SET CONSTRAINTS ALL DEFERRED;
+        SELECT status INTO found FROM payment.installment WHERE id = target;
+        IF found IS DISTINCT FROM to_status THEN
+            RAISE EXCEPTION 'FAIL  %: it ended %, not %', label, found, to_status;
+        END IF;
+        RAISE EXCEPTION USING ERRCODE = 'QA018', MESSAGE = 'undo';
+    EXCEPTION WHEN SQLSTATE 'QA018' THEN
+        NULL;
+    END;
+    RAISE NOTICE 'ok    %  [% -> %]', label, from_status, to_status;
+END $$;
+
+-- A refused edge must be refused by the transition trigger and for the reason given: a status-facts CHECK refusing the
+-- same statement would hide a missing edge rule. Rolled back like expect_edge.
+CREATE FUNCTION pg_temp.expect_no_edge(label TEXT, setup TEXT, step TEXT, reason TEXT) RETURNS void
+    LANGUAGE plpgsql AS $$
+DECLARE
+    said TEXT;
+BEGIN
+    BEGIN
+        IF setup <> '' THEN
+            EXECUTE setup;
+            SET CONSTRAINTS ALL IMMEDIATE;
+            SET CONSTRAINTS ALL DEFERRED;
+        END IF;
+        BEGIN
+            EXECUTE step;
+            SET CONSTRAINTS ALL IMMEDIATE;
+            SET CONSTRAINTS ALL DEFERRED;
+        EXCEPTION WHEN OTHERS THEN
+            said := SQLERRM;
+        END;
+        RAISE EXCEPTION USING ERRCODE = 'QA018', MESSAGE = COALESCE(said, 'accepted');
+    EXCEPTION WHEN SQLSTATE 'QA018' THEN
+        said := SQLERRM;
+    END;
+    IF said = 'accepted' THEN
+        RAISE EXCEPTION 'FAIL  %: the database accepted it', label;
+    END IF;
+    IF position(reason IN said) = 0 THEN
+        RAISE EXCEPTION 'FAIL  %: refused, but not by the edge rule: %', label, said;
+    END IF;
+    RAISE NOTICE 'ok    %  [%]', label, left(said, 110);
+END $$;
+
+-- The receipt of IN28 voided and both installments put back: the one on signing DUE, the one before delivery NOT_DUE.
+\set unpaid 'SELECT pg_temp.qa18_void(md5(''qa18:r4'')::uuid); UPDATE payment.installment SET paid_amount = 0, status = ''DUE'', paid_at = NULL WHERE id = md5(''qa18:n1'')::uuid; UPDATE payment.installment SET paid_amount = 0, status = ''NOT_DUE'' WHERE id = md5(''qa18:n2'')::uuid;'
+
+SELECT pg_temp.expect_edge('TR1 its milestone comes', md5('qa18:n2')::uuid, 'NOT_DUE', 'DUE', :'unpaid', $q$
+    UPDATE payment.installment SET status = 'DUE', reached_at = NOW() WHERE id = md5('qa18:n2')::uuid $q$);
+SELECT pg_temp.expect_edge('TR2 paid in part before its milestone', md5('qa18:n2')::uuid, 'NOT_DUE', 'PARTIALLY_PAID',
+    :'unpaid', $q$
+    SELECT pg_temp.qa18_receipt('tr2', 'n2', 400000);
+    UPDATE payment.installment SET paid_amount = 400000, status = 'PARTIALLY_PAID' WHERE id = md5('qa18:n2')::uuid $q$);
+SELECT pg_temp.expect_edge('TR3 paid in full before its milestone', md5('qa18:n2')::uuid, 'NOT_DUE', 'PAID', :'unpaid',
+    $q$
+    SELECT pg_temp.qa18_receipt('tr3', 'n2', 1100000);
+    UPDATE payment.installment SET paid_amount = 1100000, status = 'PAID', paid_at = NOW()
+     WHERE id = md5('qa18:n2')::uuid $q$);
+SELECT pg_temp.expect_edge('TR4 cancelled before its milestone', md5('qa18:n2')::uuid, 'NOT_DUE', 'CANCELLED', :'unpaid',
+    $q$
+    UPDATE payment.installment SET status = 'CANCELLED', cancelled_at = NOW() WHERE id = md5('qa18:n2')::uuid $q$);
+
+SELECT pg_temp.expect_edge('TR5 a due installment paid in part', md5('qa18:n1')::uuid, 'DUE', 'PARTIALLY_PAID',
+    :'unpaid', $q$
+    SELECT pg_temp.qa18_receipt('tr5', 'n1', 400000);
+    UPDATE payment.installment SET paid_amount = 400000, status = 'PARTIALLY_PAID' WHERE id = md5('qa18:n1')::uuid $q$);
+SELECT pg_temp.expect_edge('TR6 a due installment paid in full', md5('qa18:n1')::uuid, 'DUE', 'PAID', :'unpaid', $q$
+    SELECT pg_temp.qa18_receipt('tr6', 'n1', 1100000);
+    UPDATE payment.installment SET paid_amount = 1100000, status = 'PAID', paid_at = NOW()
+     WHERE id = md5('qa18:n1')::uuid $q$);
+SELECT pg_temp.expect_edge('TR7 a due installment cancelled', md5('qa18:n1')::uuid, 'DUE', 'CANCELLED', :'unpaid', $q$
+    UPDATE payment.installment SET status = 'CANCELLED', cancelled_at = NOW() WHERE id = md5('qa18:n1')::uuid $q$);
+
+SELECT pg_temp.expect_edge('TR8 the rest paid', md5('qa18:n2')::uuid, 'PARTIALLY_PAID', 'PAID', '', $q$
+    SELECT pg_temp.qa18_receipt('tr8', 'n2', 700000);
+    UPDATE payment.installment SET paid_amount = 1100000, status = 'PAID', paid_at = NOW()
+     WHERE id = md5('qa18:n2')::uuid $q$);
+SELECT pg_temp.expect_edge('TR9 cancelled, keeping what it was paid', md5('qa18:n2')::uuid, 'PARTIALLY_PAID',
+    'CANCELLED', '', $q$
+    UPDATE payment.installment SET status = 'CANCELLED', cancelled_at = NOW() WHERE id = md5('qa18:n2')::uuid $q$);
+SELECT pg_temp.expect_edge('TR10 its only receipt voided, its milestone come', md5('qa18:n1')::uuid, 'PARTIALLY_PAID',
+    'DUE', :'unpaid' || $q$
+    SELECT pg_temp.qa18_receipt('tr10', 'n1', 400000);
+    UPDATE payment.installment SET paid_amount = 400000, status = 'PARTIALLY_PAID' WHERE id = md5('qa18:n1')::uuid $q$,
+    $q$
+    SELECT pg_temp.qa18_void(md5('qa18:edge:tr10')::uuid);
+    UPDATE payment.installment SET paid_amount = 0, status = 'DUE' WHERE id = md5('qa18:n1')::uuid $q$);
+SELECT pg_temp.expect_edge('TR11 its only receipt voided, its milestone not yet', md5('qa18:n2')::uuid,
+    'PARTIALLY_PAID', 'NOT_DUE', '', :'unpaid');
+
+SELECT pg_temp.expect_edge('TR12 one of its two receipts voided', md5('qa18:n1')::uuid, 'PAID', 'PARTIALLY_PAID',
+    :'unpaid' || $q$
+    SELECT pg_temp.qa18_receipt('tr12a', 'n1', 400000);
+    SELECT pg_temp.qa18_receipt('tr12b', 'n1', 700000);
+    UPDATE payment.installment SET paid_amount = 1100000, status = 'PAID', paid_at = NOW()
+     WHERE id = md5('qa18:n1')::uuid $q$, $q$
+    SELECT pg_temp.qa18_void(md5('qa18:edge:tr12b')::uuid);
+    UPDATE payment.installment SET paid_amount = 400000, status = 'PARTIALLY_PAID', paid_at = NULL
+     WHERE id = md5('qa18:n1')::uuid $q$);
+SELECT pg_temp.expect_edge('TR13 the receipt that paid it voided, its milestone come', md5('qa18:n1')::uuid, 'PAID',
+    'DUE', '', :'unpaid');
+SELECT pg_temp.expect_edge('TR14 the receipt that paid it voided, its milestone not yet', md5('qa18:n2')::uuid, 'PAID',
+    'NOT_DUE', :'unpaid' || $q$
+    SELECT pg_temp.qa18_receipt('tr14', 'n2', 1100000);
+    UPDATE payment.installment SET paid_amount = 1100000, status = 'PAID', paid_at = NOW()
+     WHERE id = md5('qa18:n2')::uuid $q$, $q$
+    SELECT pg_temp.qa18_void(md5('qa18:edge:tr14')::uuid);
+    UPDATE payment.installment SET paid_amount = 0, status = 'NOT_DUE', paid_at = NULL
+     WHERE id = md5('qa18:n2')::uuid $q$);
+
+-- The six pairs that are not edges. The statements change the status alone (and the stamp the facts CHECK wants), so
+-- the transition trigger - a BEFORE trigger - is what answers.
+SELECT pg_temp.expect_no_edge('TR15 a milestone that came does not un-come', :'unpaid', $q$
+    UPDATE payment.installment SET status = 'NOT_DUE' WHERE id = md5('qa18:n1')::uuid $q$,
+    'DUE -> NOT_DUE is not a transition');
+SELECT pg_temp.expect_no_edge('TR16 a PAID installment is not cancelled', '', $q$
+    UPDATE payment.installment SET status = 'CANCELLED', cancelled_at = NOW() WHERE id = md5('qa18:n1')::uuid $q$,
+    'PAID -> CANCELLED is not a transition');
+\set cancelled 'UPDATE payment.installment SET status = ''CANCELLED'', cancelled_at = NOW() WHERE id = md5(''qa18:n2'')::uuid;'
+SELECT pg_temp.expect_no_edge('TR17 CANCELLED is the end: not NOT_DUE again', :'cancelled', $q$
+    UPDATE payment.installment SET status = 'NOT_DUE', cancelled_at = NULL WHERE id = md5('qa18:n2')::uuid $q$,
+    'a CANCELLED installment does not change');
+SELECT pg_temp.expect_no_edge('TR18 CANCELLED is the end: not DUE', :'cancelled', $q$
+    UPDATE payment.installment SET status = 'DUE', cancelled_at = NULL WHERE id = md5('qa18:n2')::uuid $q$,
+    'a CANCELLED installment does not change');
+SELECT pg_temp.expect_no_edge('TR19 CANCELLED is the end: not PARTIALLY_PAID', :'cancelled', $q$
+    UPDATE payment.installment SET status = 'PARTIALLY_PAID', cancelled_at = NULL WHERE id = md5('qa18:n2')::uuid $q$,
+    'a CANCELLED installment does not change');
+SELECT pg_temp.expect_no_edge('TR20 CANCELLED is the end: not PAID', :'cancelled', $q$
+    UPDATE payment.installment SET status = 'PAID', cancelled_at = NULL, paid_at = NOW()
+     WHERE id = md5('qa18:n2')::uuid $q$,
+    'a CANCELLED installment does not change');
+
+SELECT pg_temp.expect_true('TR21 every edge was undone: the installments and receipts are as IN28 left them',
+    (SELECT status = 'PAID' AND paid_amount = 1100000 FROM payment.installment WHERE id = md5('qa18:n1')::uuid)
+    AND (SELECT status = 'PARTIALLY_PAID' AND paid_amount = 400000 AND reached_at IS NULL
+           FROM payment.installment WHERE id = md5('qa18:n2')::uuid)
+    AND (SELECT status = 'RECORDED' FROM payment.payment_receipt WHERE id = md5('qa18:r4')::uuid)
+    AND NOT EXISTS (SELECT 1 FROM payment.payment_receipt WHERE reference LIKE 'FT-QA18-E-%'));
 
 \echo '--- the order cancelled (15 §4.6 step 18)'
 SELECT pg_temp.expect_ok('IN29 the unpaid installment CANCELLED, keeping what it was paid', $q$

@@ -70,11 +70,13 @@ class ApprovalFilesTest {
         }
     }
 
+    private static final PrintOutputIntentProperties INTERIM = new PrintOutputIntentProperties(null, null, null, null);
+
     /** {@code pdf} stamped for {@code template}, through files on disk as the approval does. */
     private static byte[] stamped(byte[] pdf, PrintConfig template, String title) throws Exception {
         try (PrintFileCopy in = PrintFileCopy.empty(); PrintFileCopy out = PrintFileCopy.empty()) {
             Files.write(in.path(), pdf);
-            new PrintReadyStamp().stamp(in, template, title, out);
+            new PrintReadyStamp(INTERIM).stamp(in, template, title, out);
             return Files.readAllBytes(out.path());
         }
     }
@@ -97,6 +99,13 @@ class ApprovalFilesTest {
             assertThat(document.getDocumentInformation().getTrapped()).isEqualTo("False");
             assertThat(new String(document.getDocumentCatalog().getMetadata().toByteArray(),
                     java.nio.charset.StandardCharsets.UTF_8)).contains("<pdfxid:GTS_PDFXVersion>PDF/X-4");
+            // C-1: one PDF/X output intent, the interim sRGB profile until the printer's (B35) is configured.
+            var intents = document.getDocumentCatalog().getOutputIntents();
+            assertThat(intents).hasSize(1);
+            assertThat(intents.get(0).getCOSObject().getCOSName(COSName.S).getName()).isEqualTo("GTS_PDFX");
+            assertThat(intents.get(0).getOutputConditionIdentifier()).isEqualTo("sRGB IEC61966-2.1");
+            assertThat(intents.get(0).getRegistryName()).isEqualTo("http://www.color.org");
+            assertThat(intents.get(0).getDestOutputIntent().getInt(COSName.N)).isEqualTo(3);
         }
     }
 
@@ -167,14 +176,14 @@ class ApprovalFilesTest {
     void theProductionInstructionStatesTheJobInVietnamese() throws Exception {
         var carton = new UomConversion(UUID.randomUUID(), "CUP-12", "CARTON", 50, false, new BigDecimal("4.2"),
                 new BigDecimal("60"), new BigDecimal("40"), new BigDecimal("35"), false, true, 0);
-        byte[] sheet = new ProductionInstructionSheet(new LabelFonts()).render(new ProductionInstructionSheet.Facts(
+        byte[] sheet = new ProductionInstructionSheet(new LabelFonts(), INTERIM).render(new ProductionInstructionSheet.Facts(
                 "CUP12-0312345678-01", "Ly giấy 12oz", "CUP-12", cup(), carton, "a".repeat(64), "b".repeat(64),
                 UUID.randomUUID(), Instant.parse("2026-11-08T03:00:00Z")));
 
         try (PDDocument document = Loader.loadPDF(sheet)) {
             String text = new PDFTextStripper().getText(document);
             assertThat(text).contains("Lệnh sản xuất in", "CUP12-0312345678-01", "Ly giấy 12oz", "CARTON 50",
-                    "Thân ly", "PDF/X-4", "10:00");
+                    "Thân ly", "PDF/X-4", "IEC61966-2.1", "10:00");
         }
     }
 

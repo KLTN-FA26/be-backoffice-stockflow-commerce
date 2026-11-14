@@ -71,7 +71,11 @@ public interface StockOperations {
      */
     StockAdjustmentSummary requestPackageAdjustment(PackageAdjustmentRequest request);
 
-    /** Submission's side of SCRUM-164: one counted carton found against the books, as a pending COUNT_VARIANCE. */
+    /**
+     * Submission's side of SCRUM-164: one counted carton found against the books, as a pending COUNT_VARIANCE. The
+     * adjustment keeps who counted the line (WF-05 fix plan, section 8), read from the line itself - its counter is
+     * fixed once the count is submitted - so neither the caller nor a later reader has to be trusted with it.
+     */
     StockAdjustmentSummary requestCountVariance(UUID cycleCountLineId, CountSlot slot, int delta, UUID requestedBy,
                                                 String note);
 
@@ -121,7 +125,7 @@ public interface StockOperations {
     record LedgerLine(UUID movementId, StockMovement.MovementType type, String sku, String lotNumber,
                       String fromLocation, String toLocation, int quantity, String status,
                       String toStatus, String referenceType, UUID referenceId, String reason, UUID actorId,
-                      java.time.Instant occurredAt) {
+                      java.time.Instant occurredAt, UUID requestedBy, UUID countedBy) {
     }
 
     default PageResponse<LedgerLine> ledger(String sku, String location, StockMovement.MovementType type,

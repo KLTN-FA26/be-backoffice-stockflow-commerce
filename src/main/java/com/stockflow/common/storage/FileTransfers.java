@@ -245,13 +245,41 @@ public class FileTransfers {
             @Override
             public void afterCommit() {
                 try {
-                    storage.retain(key, clock.instant().plus(objectLock.periodOf(record)));
+                    storage.retain(key, objectLock.retainUntil(record, clock.instant()), objectLock.modeOf(record));
                 } catch (RuntimeException lockFailure) {
                     log.error("Object Lock was not applied; {} record {} is protected by versioning only",
                             record, key, lockFailure);
                 }
             }
         });
+    }
+
+    /**
+     * Locks {@code key} with S3 Object Lock for the period of {@code record} <b>now</b>, and fails when it cannot. For
+     * the one kind of record whose retention is a legal duty the business action must not complete without: an issued
+     * e-invoice's files (ten years from the end of the accounting year, Luật Kế toán 2015 Điều 41, in COMPLIANCE mode:
+     * {@link ObjectLockProperties#retainUntil}). Everything else uses {@link #retainAfterCommit}.
+     *
+     * <p>Inside the caller's transaction and before its commit, so a lock that fails rolls the action back instead
+     * of being a log line. The price is the case {@link #retainAfterCommit} avoids: if the transaction then rolls back
+     * for another reason, the object stays locked and unreferenced. That is accepted only where the object is true
+     * whatever the transaction does - an invoice the provider has already issued. Does nothing while
+     * {@code stockflow.storage.object-lock.enabled} is off, which the prod profile does not allow by default.</p>
+     *
+     * @throws StorageException when the store refuses the lock or cannot be reached
+     */
+    public void retainNow(String key, RecordRetention record) {
+        StorageKeys.requireValid(key);
+        if (!objectLock.enabled()) {
+            return;
+        }
+        try {
+            storage.retain(key, objectLock.retainUntil(record, clock.instant()), objectLock.modeOf(record));
+        } catch (StorageException lockFailure) {
+            throw lockFailure;
+        } catch (RuntimeException lockFailure) {
+            throw new StorageException("Object Lock was not applied to " + record + " record " + key, lockFailure);
+        }
     }
 
     /**
@@ -291,6 +319,21 @@ public class FileTransfers {
      */
     public DownloadLink viewLink(String key) {
         return viewLink(key, properties.presignedUrlTtl());
+    }
+
+    /**
+     * The longest a signed link may live: {@link StorageProperties} refuses a longer configured lifetime, and the AWS
+     * bucket policy ({@code infra/aws/media-cloudfront.yaml}) refuses any signature older than an hour.
+     */
+    public static final Duration LONGEST_LINK = Duration.ofHours(1);
+
+    /**
+     * {@link #viewLink(String)} valid for {@link #LONGEST_LINK} whatever the configured lifetime: for a file a browser
+     * fetches and caches for a whole working session, such as a template's 3D model the studio reloads as the customer
+     * works. Only for files that are not personal or business records; no existence check.
+     */
+    public DownloadLink sessionViewLink(String key) {
+        return sign(key, LONGEST_LINK, DownloadDisposition.inline(LONGEST_LINK));
     }
 
     /** {@link #viewLink(String)} valid for {@code validFor}, never longer than the configured link lifetime. */
