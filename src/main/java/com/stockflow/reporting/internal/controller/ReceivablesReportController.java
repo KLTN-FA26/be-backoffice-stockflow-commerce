@@ -47,8 +47,8 @@ class ReceivablesReportController {
     private static final String CUSTOMER = "One customer; 404 CUSTOMER_NOT_FOUND for an unknown one";
     private static final String OVERDUE_ONLY = "Only the customers with something overdue: receivable overdue, or an "
             + "installment due on signing past its due day (signingOverdue)";
-    private static final String SORT = "overdue (default, most first), receivable, customerName or oldestDueDate, "
-            + "with ,asc or ,desc";
+    private static final String SORT = "overdue (default, most first: overdue plus signingOverdue, what the credit "
+            + "check counts), receivable, customerName or oldestDueDate, with ,asc or ,desc";
     private static final String AS_OF_TODAY = "Figures of today (Asia/Ho_Chi_Minh): what each installment still owes "
             + "now, aged against today. No other day can be asked for - the system keeps no ledger of payments (15 §0). ";
 

@@ -247,15 +247,49 @@ class ReceivablesReportServiceTest {
             assertThat(header.getCell(9).getStringCellValue()).isEqualTo("Tổng quá hạn");
             assertThat(header.getCell(10).getStringCellValue())
                     .isEqualTo("Đợt thanh toán khi ký quá hạn (ngoài công nợ)");
-            // Ánh, Bình, then the two with nothing overdue on receivables by name: Cường, Dũng; then the total.
-            Row ofDung = sheet.getRow(9);
+            // Ánh (1,000,000 overdue), Bình (500,000), Dũng (300,000 on signing), then Cường, who owes nothing late;
+            // then the total.
+            Row ofDung = sheet.getRow(8);
             assertThat(ofDung.getCell(1).getStringCellValue()).isEqualTo("Công ty Dũng");
             assertThat(ofDung.getCell(9).getNumericCellValue()).isZero();
             assertThat(ofDung.getCell(10).getNumericCellValue()).isEqualTo(300_000d);
+            assertThat(sheet.getRow(9).getCell(1).getStringCellValue()).isEqualTo("Công ty Cường");
             Row total = sheet.getRow(10);
             assertThat(total.getCell(1).getStringCellValue()).isEqualTo("Tổng cộng");
             assertThat(total.getCell(10).getNumericCellValue()).isEqualTo(300_000d);
         }
+    }
+
+    @Test
+    @DisplayName("the default order counts what is overdue on signing: a customer late only on its deposit ranks by that "
+            + "amount among the overdue ones, not with the clean ones")
+    void overdueSortCountsSigningOverdue() {
+        UUID dung = UUID.randomUUID();
+        UUID em = UUID.randomUUID();
+        summaries.put(dung, customer(dung, "Công ty Dũng", "0309999999"));
+        summaries.put(em, customer(em, "Công ty Em", "0308888888"));
+        terms.put(dung, credit(dung, 5_000_000));
+        terms.put(em, credit(em, 5_000_000));
+        List<CustomerReceivable> withThem = new ArrayList<>(owed);
+        // Dũng: 700,000 overdue on signing only - more than Bình's 500,000 overdue receivable, less than Ánh's 1,000,000.
+        withThem.add(signingOnly(dung, 700_000));
+        // Em: 200,000 overdue on signing only - less than Bình, more than Cường, who owes nothing late.
+        withThem.add(signingOnly(em, 200_000));
+        owed = withThem;
+
+        List<ReceivableLine> rows = service.report(null, false, 0, 20, null).rows().items();
+        assertThat(rows).extracting(ReceivableLine::customerId).as("overdue + signingOverdue, most first")
+                .containsExactly(anh, dung, binh, em, cuong);
+        assertThat(rows).extracting(ReceivableLine::overdueForCreditCheck).extracting(BigDecimal::longValue)
+                .containsExactly(1_000_000L, 700_000L, 500_000L, 200_000L, 0L);
+        assertThat(rows.get(1).overdue()).as("the 15 §4.3 column is unchanged").isEqualByComparingTo(BigDecimal.ZERO);
+
+        assertThat(service.report(null, false, 0, 20, "overdue,asc").rows().items())
+                .extracting(ReceivableLine::customerId).as("the same key the other way")
+                .containsExactly(cuong, em, binh, dung, anh);
+        assertThat(service.report(null, true, 0, 20, null).rows().items()).extracting(ReceivableLine::customerId)
+                .as("overdue only keeps the same rows in the same order, Cường left out")
+                .containsExactly(anh, dung, binh, em);
     }
 
     @Test
