@@ -5,6 +5,7 @@ import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Optional;
 
 /**
  * An amount of dong written out in Vietnamese: the total an invoice must state "bằng số và bằng chữ" (NĐ 254/2026
@@ -48,6 +49,19 @@ public final class VietnameseAmountInWords {
             words = "âm " + words;
         }
         return words.substring(0, 1).toUpperCase(Locale.forLanguageTag("vi")) + words.substring(1) + " đồng";
+    }
+
+    /**
+     * {@link #of} for a document being drawn: empty for an amount that is not whole dong, or not known yet, instead of
+     * throwing. A contract or a quote total is whole dong by construction (every line and its VAT is rounded to the
+     * dong); should one ever not be, the document goes out with its figures and without the words, rather than not at
+     * all - an invoice, which must state them, keeps {@link #of}.
+     */
+    public static Optional<String> ofWhole(BigDecimal amount) {
+        if (amount == null || amount.stripTrailingZeros().scale() > 0) {
+            return Optional.empty();
+        }
+        return Optional.of(of(amount));
     }
 
     /** A positive number: what is above a billion read as a number of its own, then "tỷ", then the rest. */

@@ -35,6 +35,10 @@ class SalesContractDocumentTest {
             + "MIỀN NAM VIỆT NAM";
 
     private static SalesContractDocument.Facts facts() {
+        return facts(new BigDecimal("2750000"));
+    }
+
+    private static SalesContractDocument.Facts facts(BigDecimal total) {
         OrderLine cups = Order.line(UUID.randomUUID(), new Sku("LY12-ACME-01"), 1000, Money.vnd(2_000), null)
                 .withCartons(UUID.randomUUID(), 20, 50).withTax(BigDecimal.TEN);
         Order order = Order.draft(OrderNumber.of(LocalDate.of(2026, 11, 9), 1), UUID.randomUUID(), UUID.randomUUID(),
@@ -48,8 +52,7 @@ class SalesContractDocumentTest {
                 "Trần Văn Bình", "Tổng giám đốc");
         SalesContracts.ContractView view = new SalesContracts.ContractView(UUID.randomUUID(), "HD-20261109-000001-1",
                 order.id().value(), order.orderNumber().value(), "DRAFT", seller, buyer, 2,
-                new SalesContracts.Totals(new BigDecimal("2500000"), new BigDecimal("250000"),
-                        new BigDecimal("2750000"), "VND"),
+                new SalesContracts.Totals(new BigDecimal("2500000"), new BigDecimal("250000"), total, "VND"),
                 List.of(new SalesContracts.BatchView(1, LocalDate.of(2026, 12, 1), LocalDate.of(2026, 12, 3),
                         new BigDecimal("2200000"), List.of(new SalesContracts.BatchLineView(cups.id(), "LY12-ACME-01",
                         20, 1000)))),
@@ -84,6 +87,23 @@ class SalesContractDocumentTest {
         String text = words.toString().replaceAll("\\s+", " ");
         assertThat(text).contains("CÔNG TY TRÁCH NHIỆM HỮU HẠN", "MIỀN NAM VIỆT NAM", "Trần Văn Bình",
                 "HD-20261109-000001-1", "Phí khuôn / bản in (LY12-ACME-01)", "Đợt 2 - Thanh toán trước khi giao",
-                "(đợt giao 1)");
+                "(đợt giao 1)", "Bằng chữ: Hai triệu bảy trăm năm mươi nghìn đồng");
+    }
+
+    @Test
+    @DisplayName("the total in words follows the total; a total that is not whole dong leaves the words out, not the PDF")
+    void totalInWords() throws IOException {
+        String whole = text(new SalesContractDocument(new LabelFonts()).render(facts()));
+        assertThat(whole).containsSubsequence("Tổng giá trị có thuế: 2.750.000 VND",
+                "Bằng chữ: Hai triệu bảy trăm năm mươi nghìn đồng", "Điều 3. Giao hàng");
+
+        String fraction = text(new SalesContractDocument(new LabelFonts()).render(facts(new BigDecimal("2750000.5"))));
+        assertThat(fraction).contains("Tổng giá trị có thuế").doesNotContain("Bằng chữ");
+    }
+
+    private static String text(byte[] pdf) throws IOException {
+        try (var document = Loader.loadPDF(pdf)) {
+            return new PDFTextStripper().getText(document).replaceAll("\\s+", " ");
+        }
     }
 }

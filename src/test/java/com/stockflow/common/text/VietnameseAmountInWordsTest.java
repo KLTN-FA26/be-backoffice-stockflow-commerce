@@ -64,4 +64,13 @@ class VietnameseAmountInWordsTest {
         assertThatThrownBy(() -> VietnameseAmountInWords.of(new BigDecimal("10.5")))
                 .isInstanceOf(IllegalArgumentException.class);
     }
+
+    @Test
+    @DisplayName("for a document being drawn: a fraction or an unknown amount reads as no words, never an exception")
+    void ofWholeLeavesOutWhatIsNotWholeDong() {
+        assertThat(VietnameseAmountInWords.ofWhole(new BigDecimal("2750000.00"))).contains("Hai triệu bảy trăm năm "
+                + "mươi nghìn đồng");
+        assertThat(VietnameseAmountInWords.ofWhole(new BigDecimal("2750000.50"))).isEmpty();
+        assertThat(VietnameseAmountInWords.ofWhole(null)).isEmpty();
+    }
 }
