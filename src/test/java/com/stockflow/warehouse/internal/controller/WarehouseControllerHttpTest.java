@@ -43,7 +43,8 @@ class WarehouseControllerHttpTest {
 
     private static WarehouseSummary hanoi(long version) {
         return new WarehouseSummary(WAREHOUSE_ID, "HN", "Kho Hà Nội", "1 Phố Huế", null, MapUnit.M,
-                new BigDecimal("40.000"), new BigDecimal("25.000"), WarehouseStatus.ACTIVE, version, null);
+                new BigDecimal("40.000"), new BigDecimal("25.000"), WarehouseStatus.ACTIVE, new BigDecimal("0.8500"),
+                version, null);
     }
 
     @Test
@@ -89,15 +90,31 @@ class WarehouseControllerHttpTest {
         when(layout.update(any())).thenReturn(hanoi(4));
 
         mvc.perform(put("/api/v1/warehouses/{id}", WAREHOUSE_ID).contentType("application/json").content("""
-                        {"name":"Kho Hà Nội","address":"1 Phố Huế","mapWidth":40,"mapHeight":25,"version":3}
+                        {"name":"Kho Hà Nội","address":"1 Phố Huế","mapWidth":40,"mapHeight":25,"version":3,
+                         "utilizationFactor":0.85}
                         """))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.version").value(4));
+                .andExpect(jsonPath("$.data.version").value(4))
+                .andExpect(jsonPath("$.data.utilizationFactor").value(0.85));
 
         ArgumentCaptor<UpdateWarehouseCommand> sent = ArgumentCaptor.forClass(UpdateWarehouseCommand.class);
         verify(layout).update(sent.capture());
         assertThat(sent.getValue().warehouseId()).isEqualTo(WAREHOUSE_ID);
         assertThat(sent.getValue().expectedVersion()).isEqualTo(3L);
+        assertThat(sent.getValue().utilizationFactor()).isEqualByComparingTo("0.85");
+    }
+
+    /** kltn-docs 06 §4.6, C43: the factor is in (0, 1], at most four decimals - refused before the service. */
+    @Test
+    void aUtilizationFactorOutsideZeroToOneIsRejectedBeforeTheService() throws Exception {
+        for (String factor : new String[] {"0", "1.0001", "-0.5", "0.12345"}) {
+            mvc.perform(put("/api/v1/warehouses/{id}", WAREHOUSE_ID).contentType("application/json").content("""
+                            {"name":"Kho","address":"1 Phố Huế","mapWidth":40,"mapHeight":25,"version":3,
+                             "utilizationFactor":%s}
+                            """.formatted(factor)))
+                    .andExpect(status().isBadRequest());
+        }
+        verifyNoInteractions(layout);
     }
 
     @Test
