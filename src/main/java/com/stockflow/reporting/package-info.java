@@ -4,8 +4,11 @@
  * <p>WBS 3.20 · database schema {@code reporting}</p>
  *
  * <p><b>May depend on:</b> order (the orders behind the rollups and the live status counts) and product (a SKU's
- * name). It listens to {@code OrderPlaced} and {@code OrderCancelled} from {@code contracts}. Plus {@code common} and
- * {@code contracts}, which are available to every module.</p>
+ * name, the customer who owns it); since the management reports (2026-11-14 plan, BE2) also payment (receivables
+ * aged by due date), customer (who they are, their credit), inventory (the stock ledger's totals) and warehouse (the
+ * warehouses' names). No module depends on reporting, so none of these can make a cycle. It listens to
+ * {@code OrderPlaced} and {@code OrderCancelled} from {@code contracts}. Plus {@code common} and {@code contracts},
+ * which are available to every module.</p>
  *
  * <p>The module has two packages and the split is the whole point:</p>
  * <ul>
@@ -15,5 +18,6 @@
  *       you reaching in; {@code ModularityTest} will.</li>
  * </ul>
  */
-@org.springframework.modulith.ApplicationModule(allowedDependencies = {"order :: api", "product :: api"})
+@org.springframework.modulith.ApplicationModule(allowedDependencies = {"order :: api", "product :: api",
+        "payment :: api", "customer :: api", "inventory :: api", "warehouse :: api"})
 package com.stockflow.reporting;

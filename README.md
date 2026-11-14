@@ -157,6 +157,7 @@ the short version:
 | `idempotency` | any request carrying `Idempotency-Key` becomes safe to retry |
 | `ratelimit` | `@RateLimit` on an endpoint, Redis token bucket |
 | `audit` | `@Auditable` → append-only `platform.audit_log`, split retention |
+| `export` | `XlsxTable` — every Excel export: streamed (SXSSF), typed cells in Vietnam time, text never a formula, at most 50,000 rows a sheet (`EXPORT_TOO_LARGE`); `ExportResponses` hands the file over as a never-cached attachment |
 | `storage` | `FileStorage` port, S3/MinIO and local, content-type allow-list with magic-number check; `ImageDimensions` (upright size from the header, ≤ 40 MP) |
 | `lock` | `DistributedLock`, and ShedLock so `@Scheduled` is safe on more than one instance |
 | `http` | `RestClientFactory` — timeouts, correlation propagation, call logging |
