@@ -24,6 +24,7 @@ import com.stockflow.order.internal.service.SalesContracts;
 import com.stockflow.payment.api.CustomerReceivable;
 import com.stockflow.payment.api.PaymentService;
 import com.stockflow.payment.api.Receivables;
+import com.stockflow.payment.internal.domain.InstallmentBook;
 import com.stockflow.payment.internal.domain.InstallmentStatus;
 import com.stockflow.payment.internal.domain.PaymentReceipt;
 import com.stockflow.payment.internal.domain.PaymentReceiptStatus;
@@ -96,6 +97,7 @@ class PaymentReportsIntegrationTest {
     @Autowired OrderRepository orderRepository;
     @Autowired PaymentService payments;
     @Autowired Receivables receivables;
+    @Autowired InstallmentBook installmentBook;
     @Autowired InstallmentService installments;
     @Autowired PaymentReceiptService receipts;
     @Autowired PaymentReceiptExportService receiptExports;
@@ -271,6 +273,8 @@ class PaymentReportsIntegrationTest {
             assertThat(row.receivable()).as("the buckets add up").isEqualByComparingTo(row.notYetDue()
                     .add(row.overdue()));
             assertThat(row.committedNotReached()).isEqualByComparingTo(dong(880_000 - 80_000));
+            assertThat(row.signingOverdue()).as("the deposit is due today: not overdue yet")
+                    .isEqualByComparingTo(BigDecimal.ZERO);
             assertThat(row.oldestDueDate()).isEqualTo(today.minusDays(91));
             assertThat(row.openItems()).as("eight installments and the fee").isEqualTo(9);
         });
@@ -287,6 +291,47 @@ class PaymentReportsIntegrationTest {
         assertThat(all).filteredOn(r -> r.customerId().equals(customerId)).singleElement().isEqualTo(row);
         assertThat(all).noneMatch(r -> r.customerId().equals(owesNothing));
         assertThat(receivables.receivables(today, owesNothing)).isEmpty();
+    }
+
+    @Test
+    @DisplayName("an installment due on signing past its due day is its own figure, outside 15 §4.3's; with it the "
+            + "report shows all the credit check calls overdue, and a customer owing only that has a row")
+    void signingOverdueIsShownApart() {
+        // A deposit of 660,000 due five days after signing, 100,000 of it paid; the rest after delivery, not reached.
+        Signed deposit = signed(share("Deposit", "ON_SIGNING", "30", 5), share("After", "AFTER_DELIVERY", "70", 10));
+        pay(deposit.seq(1), 100_000, today);
+        assertThat(status(deposit.seq(1))).isEqualTo(InstallmentStatus.PARTIALLY_PAID);
+
+        // Aged against the deposit's due day itself: nothing overdue yet. Today's balances against a later day - the
+        // credit check's own test (InstallmentBook.overdue) is asked for the same day below.
+        LocalDate dueDay = today.plusDays(5);
+        assertThat(receivables.receivables(dueDay, customerId)).singleElement()
+                .satisfies(row -> assertThat(row.signingOverdue()).isEqualByComparingTo(BigDecimal.ZERO));
+
+        LocalDate dayAfter = today.plusDays(6);
+        CustomerReceivable row = receivables.receivables(dayAfter, customerId).getFirst();
+        assertThat(row.signingOverdue()).as("660,000 less the 100,000 paid").isEqualByComparingTo(dong(560_000));
+        assertThat(row.receivable()).as("15 §4.3: a deposit is no receivable").isEqualByComparingTo(BigDecimal.ZERO);
+        assertThat(row.overdue()).isEqualByComparingTo(BigDecimal.ZERO);
+        assertThat(row.committedNotReached()).isEqualByComparingTo(dong(1_540_000));
+        assertThat(row.openItems()).isZero();
+        assertThat(row.oldestDueDate()).as("of the receivable items only").isNull();
+        assertThat(row.overdue().add(row.signingOverdue())).as("everything the credit check calls overdue")
+                .isEqualByComparingTo(installmentBook.overdue(customerId, dayAfter).amount());
+        assertThat(row.receivable().add(row.committedNotReached())).as("the exposure as the credit check counts it")
+                .isEqualByComparingTo(payments.creditPosition(customerId).outstandingReceivables());
+
+        // A customer whose only debt is the deposit, overdue: a row of its own, so it never looks clean.
+        customerId = customer("Cong ty Chi Coc");
+        sku = CustomerSkuRows.issue(jdbc, tx, entityManager, customerId, 50, "STANDARD", true);
+        Signed onlyDeposit = signed(share("All on signing", "ON_SIGNING", "100", 0));
+        assertThat(receivables.receivables(today, customerId)).as("due today: owes nothing overdue, no row").isEmpty();
+        assertThat(receivables.receivables(today.plusDays(1), customerId)).singleElement().satisfies(only -> {
+            assertThat(only.signingOverdue()).isEqualByComparingTo(dong(2_200_000));
+            assertThat(only.receivable()).isEqualByComparingTo(BigDecimal.ZERO);
+            assertThat(only.committedNotReached()).isEqualByComparingTo(BigDecimal.ZERO);
+        });
+        assertThat(onlyDeposit.installmentIds()).hasSize(1);
     }
 
     // ---- receipts: the day received, the total, the export ---------------------------------------------------------

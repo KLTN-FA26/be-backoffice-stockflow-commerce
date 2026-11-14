@@ -28,6 +28,11 @@ import java.util.UUID;
  * Asia/Ho_Chi_Minh date): due today or later is not yet due, the same test as {@code Installment.overdue} and
  * {@code payment.installment_is_overdue} ("past its due day and still owing"). A receivable item with no due day,
  * which the CHECKs do not allow, would count as not yet due rather than vanish from the buckets.</p>
+ *
+ * <p>Installments due on signing are read too, but only those past their due day, and only into
+ * {@code signing_overdue}: never receivable, never committed, so the 15 §4.3 figures above are as they were. They are
+ * there because {@code InstallmentBookAdapter.overdue} - the credit check - counts them; a customer owing nothing else
+ * gets a row of its own for them.</p>
  */
 @Component
 class ReceivablesAdapter implements Receivables {
@@ -56,15 +61,20 @@ class ReceivablesAdapter implements Receivables {
                        COALESCE(SUM(owed) FILTER (WHERE receivable AND age BETWEEN 31 AND 60), 0) AS overdue_31_60,
                        COALESCE(SUM(owed) FILTER (WHERE receivable AND age BETWEEN 61 AND 90), 0) AS overdue_61_90,
                        COALESCE(SUM(owed) FILTER (WHERE receivable AND age > 90), 0) AS overdue_over_90,
-                       COALESCE(SUM(owed) FILTER (WHERE NOT receivable), 0) AS committed_not_reached,
+                       COALESCE(SUM(owed) FILTER (WHERE NOT signing AND NOT receivable), 0)
+                           AS committed_not_reached,
+                       COALESCE(SUM(owed) FILTER (WHERE signing), 0) AS signing_overdue,
                        MIN(due_date) FILTER (WHERE receivable) AS oldest_due_date,
                        COUNT(*) FILTER (WHERE receivable) AS open_items
                   FROM (SELECT customer_id, currency, due_date,
                                amount - paid_amount - reduced_amount AS owed,
-                               milestone <> 'AFTER_DELIVERY' OR reached_at IS NOT NULL AS receivable,
+                               milestone = 'ON_SIGNING' AS signing,
+                               milestone IN ('CANCELLATION_FEE', 'FAILED_TRIP_FEE')
+                                   OR (milestone = 'AFTER_DELIVERY' AND reached_at IS NOT NULL) AS receivable,
                                CAST(:today AS date) - due_date AS age
                           FROM payment.installment
-                         WHERE milestone IN ('AFTER_DELIVERY', 'CANCELLATION_FEE', 'FAILED_TRIP_FEE')
+                         WHERE (milestone IN ('AFTER_DELIVERY', 'CANCELLATION_FEE', 'FAILED_TRIP_FEE')
+                                OR (milestone = 'ON_SIGNING' AND due_date < CAST(:today AS date)))
                            AND status NOT IN ('PAID', 'CANCELLED')
                            %s) owing
                  GROUP BY customer_id, currency
@@ -72,7 +82,7 @@ class ReceivablesAdapter implements Receivables {
                 rs.getObject("customer_id", UUID.class), rs.getString("currency"), rs.getBigDecimal("receivable"),
                 rs.getBigDecimal("not_yet_due"), rs.getBigDecimal("overdue_1_30"), rs.getBigDecimal("overdue_31_60"),
                 rs.getBigDecimal("overdue_61_90"), rs.getBigDecimal("overdue_over_90"),
-                rs.getBigDecimal("committed_not_reached"), rs.getObject("oldest_due_date", LocalDate.class),
-                rs.getInt("open_items")));
+                rs.getBigDecimal("committed_not_reached"), rs.getBigDecimal("signing_overdue"),
+                rs.getObject("oldest_due_date", LocalDate.class), rs.getInt("open_items")));
     }
 }

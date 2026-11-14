@@ -19,9 +19,9 @@ import java.util.UUID;
 public interface Receivables {
 
     /**
-     * One row per customer (and currency) that owes anything after delivery - receivable or committed - as of
-     * {@code today}, read in one statement over the payment module's installments. A customer that owes nothing is
-     * absent.
+     * One row per customer (and currency) that owes anything after delivery - receivable or committed - or has an
+     * installment due on signing past its due day ({@link CustomerReceivable#signingOverdue}), as of {@code today},
+     * read in one statement over the payment module's installments. A customer that owes nothing is absent.
      *
      * @param customerIdOrNull one customer, or null for every customer
      */

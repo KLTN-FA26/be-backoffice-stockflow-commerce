@@ -45,7 +45,8 @@ import java.util.UUID;
 class ReceivablesReportController {
 
     private static final String CUSTOMER = "One customer; 404 CUSTOMER_NOT_FOUND for an unknown one";
-    private static final String OVERDUE_ONLY = "Only the customers with something overdue";
+    private static final String OVERDUE_ONLY = "Only the customers with something overdue: receivable overdue, or an "
+            + "installment due on signing past its due day (signingOverdue)";
     private static final String SORT = "overdue (default, most first), receivable, customerName or oldestDueDate, "
             + "with ,asc or ,desc";
     private static final String AS_OF_TODAY = "Figures of today (Asia/Ho_Chi_Minh): what each installment still owes "
@@ -61,7 +62,9 @@ class ReceivablesReportController {
     @Operation(summary = "Receivables per customer, aged by due date, with credit limit and credit left",
             description = AS_OF_TODAY + "Needs reporting-receivables:READ. Receivable = installments after delivery "
                     + "whose goods were delivered and unpaid fee items; committedNotReached = installments after "
-                    + "delivery not reached yet; the two add up to the credit exposure. totals sum every row of the "
+                    + "delivery not reached yet; the two add up to the credit exposure. signingOverdue = installments "
+                    + "due on signing past their due day: not receivable (15 §4.3) and in no other figure, shown apart "
+                    + "because the contract's credit check counts them as overdue. totals sum every row of the "
                     + "filter, not only the page.")
     @RequiresPermission(resource = ReportingResources.RECEIVABLES, action = Action.READ, scope = DataScope.ALL)
     public ApiResponse<ReceivablesReportResponse> report(
@@ -93,13 +96,14 @@ class ReceivablesReportController {
         return new ReceivablesReportResponse.Row(line.customerId(), line.customerCode(), line.customerName(),
                 line.currency(), line.receivable(), line.notYetDue(), line.overdue1To30(), line.overdue31To60(),
                 line.overdue61To90(), line.overdueOver90(), line.overdue(), line.committedNotReached(),
-                line.exposure(), line.creditLimit(), line.creditTermDays(), line.available(), line.oldestDueDate(),
-                line.openItems());
+                line.exposure(), line.signingOverdue(), line.creditLimit(), line.creditTermDays(), line.available(),
+                line.oldestDueDate(), line.openItems());
     }
 
     private static ReceivablesReportResponse.Totals toTotals(ReceivableTotals totals) {
         return new ReceivablesReportResponse.Totals(totals.currency(), totals.customers(), totals.receivable(),
                 totals.notYetDue(), totals.overdue1To30(), totals.overdue31To60(), totals.overdue61To90(),
-                totals.overdueOver90(), totals.overdue(), totals.committedNotReached(), totals.exposure());
+                totals.overdueOver90(), totals.overdue(), totals.committedNotReached(), totals.exposure(),
+                totals.signingOverdue());
     }
 }

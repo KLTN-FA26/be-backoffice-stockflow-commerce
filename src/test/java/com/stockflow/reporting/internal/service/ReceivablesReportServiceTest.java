@@ -27,6 +27,7 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
@@ -117,7 +118,13 @@ class ReceivablesReportServiceTest {
         return new CustomerReceivable(id, "VND", BigDecimal.valueOf(receivable == 0 ? notYetDue + to30 + to60 + to90
                 + over90 : receivable), BigDecimal.valueOf(notYetDue), BigDecimal.valueOf(to30),
                 BigDecimal.valueOf(to60), BigDecimal.valueOf(to90), BigDecimal.valueOf(over90),
-                BigDecimal.valueOf(committed), oldest, items);
+                BigDecimal.valueOf(committed), BigDecimal.ZERO, oldest, items);
+    }
+
+    /** A customer whose only debt is an installment due on signing, past its due day: nothing receivable. */
+    private static CustomerReceivable signingOnly(UUID id, long signingOverdue) {
+        BigDecimal z = BigDecimal.ZERO;
+        return new CustomerReceivable(id, "VND", z, z, z, z, z, z, z, BigDecimal.valueOf(signingOverdue), null, 0);
     }
 
     private static BigDecimal dong(long amount) {
@@ -203,6 +210,52 @@ class ReceivablesReportServiceTest {
         var report = service.report(dung, false, 0, 20, null);
         assertThat(report.rows().items()).isEmpty();
         assertThat(report.totals()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("an installment due on signing past its due day: a figure of its own, outside receivable, overdue and "
+            + "exposure - yet the customer is not clean, overdue only keeps them, and the export has the column")
+    void signingOverdueStandsApart() throws IOException {
+        UUID dung = UUID.randomUUID();
+        summaries.put(dung, customer(dung, "Công ty Dũng", "0309999999"));
+        terms.put(dung, credit(dung, 5_000_000));
+        List<CustomerReceivable> withDung = new ArrayList<>(owed);
+        withDung.add(signingOnly(dung, 300_000));
+        owed = withDung;
+
+        ReceivableLine line = service.report(dung, false, 0, 20, null).rows().items().getFirst();
+        assertThat(line.signingOverdue()).isEqualByComparingTo(dong(300_000));
+        assertThat(line.receivable()).as("15 §4.3: not a receivable").isEqualByComparingTo(BigDecimal.ZERO);
+        assertThat(line.overdue()).as("in no overdue bucket").isEqualByComparingTo(BigDecimal.ZERO);
+        assertThat(line.exposure()).as("not in the exposure").isEqualByComparingTo(BigDecimal.ZERO);
+        assertThat(line.available()).isEqualByComparingTo(dong(5_000_000));
+        assertThat(line.hasOverdue()).as("the contract's credit check calls this customer overdue").isTrue();
+
+        assertThat(service.report(null, true, 0, 20, null).rows().items()).extracting(ReceivableLine::customerId)
+                .as("overdue only keeps them, after those overdue on receivables").containsExactly(anh, binh, dung);
+        assertThat(service.report(null, false, 0, 20, null).totals()).singleElement().satisfies(total -> {
+            assertThat(total.signingOverdue()).isEqualByComparingTo(dong(300_000));
+            assertThat(total.overdue()).as("the receivable overdue as before").isEqualByComparingTo(dong(1_500_000));
+            assertThat(total.exposure()).as("the exposure as before").isEqualByComparingTo(dong(6_000_000));
+            assertThat(total.customers()).isEqualTo(4);
+        });
+
+        var file = service.export(null, false, null);
+        try (XSSFWorkbook workbook = new XSSFWorkbook(new ByteArrayInputStream(file.content()))) {
+            XSSFSheet sheet = workbook.getSheetAt(0);
+            Row header = sheet.getRow(5);
+            assertThat(header.getCell(9).getStringCellValue()).isEqualTo("Tổng quá hạn");
+            assertThat(header.getCell(10).getStringCellValue())
+                    .isEqualTo("Đợt thanh toán khi ký quá hạn (ngoài công nợ)");
+            // Ánh, Bình, then the two with nothing overdue on receivables by name: Cường, Dũng; then the total.
+            Row ofDung = sheet.getRow(9);
+            assertThat(ofDung.getCell(1).getStringCellValue()).isEqualTo("Công ty Dũng");
+            assertThat(ofDung.getCell(9).getNumericCellValue()).isZero();
+            assertThat(ofDung.getCell(10).getNumericCellValue()).isEqualTo(300_000d);
+            Row total = sheet.getRow(10);
+            assertThat(total.getCell(1).getStringCellValue()).isEqualTo("Tổng cộng");
+            assertThat(total.getCell(10).getNumericCellValue()).isEqualTo(300_000d);
+        }
     }
 
     @Test

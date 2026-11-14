@@ -53,6 +53,11 @@ import java.util.stream.Collectors;
  * payments (15 §0), so the report says what is owed now and how old it is today; "as of an earlier day" cannot be
  * worked out and is not offered. Today is the Asia/Ho_Chi_Minh business day.</p>
  *
+ * <p>Beside the 15 §4.3 figures, which stay as 15 defines them, each row and the totals carry what is overdue on
+ * installments due on signing ({@link ReceivableLine#signingOverdue()}): 15 §4.3 does not count those as receivable,
+ * but the credit check of a new contract refuses on them, and a report that left them out would show such a customer
+ * clean. "Overdue only" keeps them for the same reason.</p>
+ *
  * <p>The amounts are the payment module's ({@link Receivables}, one statement), the names and credit the customer
  * module's ({@link CustomerSummaries}, {@link CustomerCredits}, one statement each). The customers who owe are few, so
  * the rows are filtered, sorted and paged here, in memory, and the totals are over every row the filter keeps, not just
@@ -90,7 +95,8 @@ public class ReceivablesReportService {
 
     /**
      * @param customerId  one customer, or null for every customer that owes something
-     * @param overdueOnly keep only the customers with something overdue
+     * @param overdueOnly keep only the customers with something overdue - receivable, or due on signing
+     *                    ({@link ReceivableLine#hasOverdue()})
      * @throws BusinessException {@code CUSTOMER_NOT_FOUND} for an unknown {@code customerId};
      *                           {@code UNSUPPORTED_PARAMETER} for a bad page or size; {@code VALIDATION_FAILED} for a
      *                           sort outside the list
@@ -119,7 +125,8 @@ public class ReceivablesReportService {
         for (ReceivableTotals total : ReceivableTotals.of(lines)) {
             rows.add(new ReceivableLine(null, null, label("total", "Total"), total.currency(), total.receivable(),
                     total.notYetDue(), total.overdue1To30(), total.overdue31To60(), total.overdue61To90(),
-                    total.overdueOver90(), total.committedNotReached(), null, null, null, 0));
+                    total.overdueOver90(), total.committedNotReached(), total.signingOverdue(), null, null, null,
+                    0));
         }
         List<String> parts = new ArrayList<>();
         if (customerId != null) {
@@ -148,6 +155,8 @@ public class ReceivablesReportService {
                 new Column<>(label("column.overdue-over-90", "Over 90 days overdue"), Kind.MONEY,
                         ReceivableLine::overdueOver90),
                 new Column<>(label("column.overdue", "Overdue in all"), Kind.MONEY, ReceivableLine::overdue),
+                new Column<>(label("column.signing-overdue", "Overdue on signing (not receivable)"), Kind.MONEY,
+                        ReceivableLine::signingOverdue),
                 new Column<>(label("column.committed-not-reached", "Signed, milestone not reached"), Kind.MONEY,
                         ReceivableLine::committedNotReached),
                 new Column<>(label("column.exposure", "Credit exposure"), Kind.MONEY, ReceivableLine::exposure),
@@ -186,7 +195,7 @@ public class ReceivablesReportService {
         return new ReceivableLine(row.customerId(), customer == null ? null : customer.code(),
                 customer == null ? null : customer.fullName(), row.currency(), row.receivable(), row.notYetDue(),
                 row.overdue1To30(), row.overdue31To60(), row.overdue61To90(), row.overdueOver90(),
-                row.committedNotReached(), terms == null ? null : terms.creditLimit(),
+                row.committedNotReached(), row.signingOverdue(), terms == null ? null : terms.creditLimit(),
                 terms == null ? null : terms.creditTermDays(), row.oldestDueDate(), row.openItems());
     }
 

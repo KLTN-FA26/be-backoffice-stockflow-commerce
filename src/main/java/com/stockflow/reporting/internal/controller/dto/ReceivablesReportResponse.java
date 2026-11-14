@@ -38,6 +38,10 @@ public record ReceivablesReportResponse(
                     + "owed, not yet receivable") BigDecimal committedNotReached,
             @Schema(description = "receivable + committedNotReached: what the credit check of a new contract counts "
                     + "(15 BR-10)") BigDecimal exposure,
+            @Schema(description = "Installments due on signing past their due day, still owed. Not receivable "
+                    + "(15 §4.3) and in no other figure here - not in overdue, not in exposure - but the credit check of "
+                    + "a new contract counts them as overdue, so they are shown apart: a customer the contract check "
+                    + "calls overdue never looks clean on this report") BigDecimal signingOverdue,
             @Schema(description = "Null for a customer without approved credit") BigDecimal creditLimit,
             Integer creditTermDays,
             @Schema(description = "max(creditLimit - exposure, 0); null without a limit") BigDecimal available,
@@ -57,6 +61,8 @@ public record ReceivablesReportResponse(
             BigDecimal overdueOver90,
             BigDecimal overdue,
             BigDecimal committedNotReached,
-            BigDecimal exposure) {
+            BigDecimal exposure,
+            @Schema(description = "Installments due on signing past their due day: apart from the other sums")
+            BigDecimal signingOverdue) {
     }
 }

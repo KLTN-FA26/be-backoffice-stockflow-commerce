@@ -13,16 +13,22 @@ import java.util.UUID;
  * never below zero, as the customer's own credit position shows it ({@code CreditHoldService.position}); null for a
  * customer without approved credit, who has no limit to have anything left of.</p>
  *
+ * <p>{@code signingOverdue} is beside the 15 §4.3 figures, not in them: installments due on signing past their due
+ * day, which the credit check of a new contract counts as overdue but 15 §4.3 does not count as receivable. It is in
+ * no bucket, not in {@link #overdue()} and not in the exposure; it makes {@link #hasOverdue()} true, so a customer the
+ * contract check calls overdue never looks clean here.</p>
+ *
+ * @param signingOverdue what is still owed on installments due on signing past their due day
  * @param creditLimit    null for a customer accounting set no credit for
  * @param creditTermDays the days to pay after delivery; null exactly when the limit is
  */
 public record ReceivableLine(UUID customerId, String customerCode, String customerName, String currency,
                              BigDecimal receivable, BigDecimal notYetDue, BigDecimal overdue1To30,
                              BigDecimal overdue31To60, BigDecimal overdue61To90, BigDecimal overdueOver90,
-                             BigDecimal committedNotReached, BigDecimal creditLimit, Integer creditTermDays,
-                             LocalDate oldestDueDate, int openItems) {
+                             BigDecimal committedNotReached, BigDecimal signingOverdue, BigDecimal creditLimit,
+                             Integer creditTermDays, LocalDate oldestDueDate, int openItems) {
 
-    /** Everything overdue, whatever its age. */
+    /** Everything receivable that is overdue, whatever its age (15 §4.3): {@code signingOverdue} is not in it. */
     public BigDecimal overdue() {
         return overdue1To30.add(overdue31To60).add(overdue61To90).add(overdueOver90);
     }
@@ -37,7 +43,8 @@ public record ReceivableLine(UUID customerId, String customerCode, String custom
         return creditLimit == null ? null : creditLimit.subtract(exposure()).max(BigDecimal.ZERO);
     }
 
+    /** Something overdue, receivable or due on signing: what the credit check of a new contract refuses on. */
     public boolean hasOverdue() {
-        return overdue().signum() > 0;
+        return overdue().signum() > 0 || signingOverdue.signum() > 0;
     }
 }

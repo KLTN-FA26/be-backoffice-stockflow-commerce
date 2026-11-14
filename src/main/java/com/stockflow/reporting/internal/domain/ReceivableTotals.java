@@ -15,11 +15,11 @@ import java.util.TreeMap;
 public record ReceivableTotals(String currency, int customers, BigDecimal receivable, BigDecimal notYetDue,
                                BigDecimal overdue1To30, BigDecimal overdue31To60, BigDecimal overdue61To90,
                                BigDecimal overdueOver90, BigDecimal overdue, BigDecimal committedNotReached,
-                               BigDecimal exposure) {
+                               BigDecimal exposure, BigDecimal signingOverdue) {
 
     private static ReceivableTotals zero(String currency) {
         BigDecimal z = BigDecimal.ZERO;
-        return new ReceivableTotals(currency, 0, z, z, z, z, z, z, z, z, z);
+        return new ReceivableTotals(currency, 0, z, z, z, z, z, z, z, z, z, z);
     }
 
     private ReceivableTotals plus(ReceivableLine line) {
@@ -27,7 +27,8 @@ public record ReceivableTotals(String currency, int customers, BigDecimal receiv
                 notYetDue.add(line.notYetDue()), overdue1To30.add(line.overdue1To30()),
                 overdue31To60.add(line.overdue31To60()), overdue61To90.add(line.overdue61To90()),
                 overdueOver90.add(line.overdueOver90()), overdue.add(line.overdue()),
-                committedNotReached.add(line.committedNotReached()), exposure.add(line.exposure()));
+                committedNotReached.add(line.committedNotReached()), exposure.add(line.exposure()),
+                signingOverdue.add(line.signingOverdue()));
     }
 
     /** The sums of {@code lines} per currency, by currency code; none for no line. */
