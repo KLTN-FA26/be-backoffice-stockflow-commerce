@@ -1007,6 +1007,11 @@ public enum ErrorCode {
      * did not pass, with its {@code issues} or the {@code roles} of files to render again.
      */
     DESIGN_BATCH_PREFLIGHT_FAILED("Some designs did not pass the print checks; none was submitted", 422),
+    /**
+     * An XLSX export over {@code XlsxTable.MAX_ROWS} rows on a sheet (2026-11-14 plan, BE2): refused rather than cut,
+     * since a file that silently stops at a limit reads as complete. The client narrows the filter.
+     */
+    EXPORT_TOO_LARGE("The export has too many rows; narrow the filter", 422),
 
     // ---- 429
     RATE_LIMITED("Too many requests", 429),
