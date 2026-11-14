@@ -122,6 +122,13 @@ public final class OrderResources {
      */
     public static final String RMA_RESOLUTIONS = "sales-rma-resolutions";
 
+    /**
+     * BE1 (kltn-docs 06 §2, §4.6): the warehouse capacity board - the warehouse manager (their warehouses), Sales, the
+     * Production Coordinator and the Sales Manager (V20261125000100). Owned here because the board is worked out here;
+     * named for what it shows.
+     */
+    public static final String WAREHOUSE_CAPACITY = "warehouse-capacity";
+
     private OrderResources() {
     }
 }

@@ -31,6 +31,7 @@ import com.stockflow.order.internal.service.ShippingWarehouseService.Coverage;
 import com.stockflow.order.internal.service.ShippingWarehouseService.LineCoverage;
 import com.stockflow.order.internal.service.ShippingWarehouseService.Option;
 import com.stockflow.order.internal.service.ShippingWarehouseService.Options;
+import com.stockflow.order.internal.service.WarehouseCapacityService;
 import com.stockflow.support.Await;
 import com.stockflow.support.CartonRows;
 import com.stockflow.support.CustomerSkuRows;
@@ -114,6 +115,7 @@ class ShippingWarehouseIntegrationTest {
     @Autowired OrderService orders;
     @Autowired OrderRepository orderRepository;
     @Autowired ShippingWarehouseService shippingWarehouses;
+    @Autowired WarehouseCapacityService capacity;
     @Autowired OrderReleases releases;
     @Autowired InventoryService inventory;
     @Autowired ApplicationEventPublisher publisher;
@@ -389,7 +391,7 @@ class ShippingWarehouseIntegrationTest {
 
         assertThat(options.orderId()).isEqualTo(orderId);
         assertThat(options.chosenWarehouseId()).as("nothing chosen yet").isNull();
-        assertThat(options.capacityComputed()).as("no warehouse capacity table yet").isFalse();
+        assertThat(options.capacityComputed()).as("BE1: every option carries its warehouse's room").isTrue();
         List<UUID> active = jdbc.queryForList("SELECT id FROM warehouse.warehouse WHERE status = 'ACTIVE'",
                 UUID.class);
         assertThat(options.warehouses()).extracting(Option::warehouseId)
@@ -414,6 +416,27 @@ class ShippingWarehouseIntegrationTest {
         assertThat(second.holdsEveryLine()).isFalse();
         assertThat(second.availableCartons()).as("950 pieces are 19 whole cartons").isEqualTo(19);
         assertThat(second.lines()).singleElement().satisfies(l -> assertThat(l.availableCartons()).isEqualTo(19));
+
+        // BE1 (17 §4.2 step 2, BR-25; 06 §4.6): each warehouse's room as its board shows it, and what would have to be
+        // produced there - each carton lacking, 60 x 40 x 35 cm. The board's figures depend on what the other tests
+        // left in these shared warehouses, so they are compared with the board read now, not with constants.
+        Map<UUID, WarehouseCapacityService.Computed> boards = capacity.boardsOf(List.of(a.id(), b.id()));
+        for (Option option : List.of(first, second)) {
+            WarehouseCapacityService.Board board = boards.get(option.warehouseId()).view();
+            assertThat(option.projectedFreeM3()).as("projected free of " + option.warehouseCode())
+                    .isEqualByComparingTo(board.projectedFreeM3());
+            assertThat(option.pendingM3()).isEqualByComparingTo(board.pendingM3());
+            assertThat(option.freeIfAllApprovedM3()).as("projected free - pending")
+                    .isEqualByComparingTo(board.projectedFreeM3().subtract(board.pendingM3()));
+        }
+        assertThat(first.neededM3()).as("A holds every carton: nothing to produce there").isEqualByComparingTo("0");
+        assertThat(first.exceedsProjected()).as("nothing needs room, however full A is").isFalse();
+        assertThat(second.neededM3()).as("B lacks one carton of 0.084 m³").isEqualByComparingTo("0.084");
+        assertThat(second.exceedsProjected()).as("a warning when it does not fit, never a refusal")
+                .isEqualTo(new BigDecimal("0.084").compareTo(second.projectedFreeM3()) > 0);
+        assertThat(options.warehouses().subList(2, options.warehouses().size()))
+                .as("every other warehouse lacks all 20 cartons: 1.68 m³ to produce there")
+                .allSatisfy(o -> assertThat(o.neededM3()).isEqualByComparingTo("1.68"));
 
         assertThat(options.warehouses().subList(2, options.warehouses().size()))
                 .as("every other warehouse has none of this SKU")

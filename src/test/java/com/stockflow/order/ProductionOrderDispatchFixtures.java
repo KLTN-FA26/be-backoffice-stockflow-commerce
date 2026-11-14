@@ -239,6 +239,11 @@ abstract class ProductionOrderDispatchFixtures {
     }
 
     protected UUID confirmedOrder() {
+        return confirmedOrder(a);
+    }
+
+    /** A confirmed order of 20 cartons in two batches (12, then 8), shipping from {@code at}. */
+    protected UUID confirmedOrder(Warehouse at) {
         UUID orderId = tx.execute(s -> {
             OrderLine line = Order.line(Identifiers.newId(), new Sku(sku.sku()), CARTONS * PER_CARTON,
                     Money.vnd(2_000), null).withCartons(sku.uomConversionId(), CARTONS, PER_CARTON)
@@ -264,7 +269,7 @@ abstract class ProductionOrderDispatchFixtures {
                 IncomingFiles.sent(List.of(new FileUpload("signed.pdf", "application/pdf", scan.length,
                         new ByteArrayInputStream(scan)))), today));
         assertThat(orders.findById(orderId).orElseThrow().status()).isEqualTo(OrderStatus.CONFIRMED);
-        shippingWarehouses.choose(orderId, a.id(), sales.userId());
+        shippingWarehouses.choose(orderId, at.id(), sales.userId());
         return orderId;
     }
 
