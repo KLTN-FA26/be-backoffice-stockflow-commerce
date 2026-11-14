@@ -259,6 +259,48 @@ class StockPackageContentsTest {
         }
 
         @Test
+        @DisplayName("a count's shortage of a held carton is written off and the hold given up (SHORT_PICKED) and "
+                + "announced, naming who decided - 20 §4.2 step 8")
+        void shortageOfAHeldCartonGivesUpTheHold() {
+            StockPackage carton = carton(id, 24);
+            StockItem held = row(id, 24);
+            var hold = held.allocate(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(),
+                    Quantity.of(24), NOW);
+            rowsOf(carton, held);
+            held.pullDomainEvents();
+            UUID approver = UUID.randomUUID();
+
+            List<StockPackageContents.RowChange> changes = contents.adjust(id, -24, true, approver, NOW);
+
+            assertThat(changes).singleElement().satisfies(c -> assertThat(c.delta()).isEqualTo(-24));
+            assertThat(held.onHand().value()).isZero();
+            assertThat(held.reserved().value()).isZero();
+            assertThat(hold.status()).isEqualTo(com.stockflow.inventory.internal.domain.ReservationStatus.RELEASED);
+            assertThat(hold.releaseReason()).isEqualTo(com.stockflow.inventory.internal.domain.ReleaseReason.SHORT_PICKED);
+            assertThat(carton.status()).isEqualTo(StockPackageStatus.LOST);
+            assertThat(held.pullDomainEvents()).extracting(e -> ((com.stockflow.inventory.internal.domain.StockEvent) e)
+                    .payload()).anySatisfy(payload -> assertThat(payload).isEqualTo(
+                            new com.stockflow.contracts.StockHeldCartonWrittenOff(hold.orderId(), hold.id().value(),
+                                    "CUP-12OZ", "HCM-A01-1-A", 24, approver)));
+        }
+
+        @Test
+        @DisplayName("without a decider (any adjustment but a count variance) a held carton is still refused, "
+                + "the hold kept")
+        void noDeciderNoGivingUp() {
+            StockPackage carton = carton(id, 24);
+            StockItem held = row(id, 24);
+            var hold = held.allocate(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(),
+                    Quantity.of(24), NOW);
+            rowsOf(carton, held);
+
+            assertThat(codeOf(() -> contents.adjust(id, -24, true, null, NOW))).isEqualTo(ErrorCode.STOCK_PACKAGE_HELD);
+
+            assertThat(hold.status()).isEqualTo(com.stockflow.inventory.internal.domain.ReservationStatus.HELD);
+            assertThat(carton.status()).isEqualTo(StockPackageStatus.IN_STOCK);
+        }
+
+        @Test
         @DisplayName("only an IN_STOCK carton can be written off")
         void writeDownNeedsInStock() {
             rowsOf(cartonWith(id, StockPackageStatus.CONSUMED, 24), row(id, 0));

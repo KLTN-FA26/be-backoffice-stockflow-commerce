@@ -13,6 +13,7 @@ import com.stockflow.fulfillment.internal.controller.dto.BookingRequest;
 import com.stockflow.fulfillment.internal.controller.dto.CancelLoadRequest;
 import com.stockflow.fulfillment.internal.controller.dto.ControlledCancelRequest;
 import com.stockflow.fulfillment.internal.controller.dto.ControlledCancelResponse;
+import com.stockflow.fulfillment.internal.controller.dto.DriverRequest;
 import com.stockflow.fulfillment.internal.controller.dto.HandoverRequest;
 import com.stockflow.fulfillment.internal.controller.dto.LoadResponse;
 import com.stockflow.fulfillment.internal.controller.dto.LoadRowResponse;
@@ -28,6 +29,7 @@ import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -107,11 +109,27 @@ class DispatchController {
         return ApiResponse.ok(mapper.toResponse(dispatching.unscan(loadId, packageId, actor)));
     }
 
+    @PutMapping("/{loadId}/driver")
+    @Operation(summary = "Record the driver's name (and phone) on a booked or loading vehicle, whatever its carrier - for "
+            + "a load booked through a carrier's API, whose waybill number cannot be typed and whose webhook may never "
+            + "send the driver. The driver only, never the waybill number; the carrier's webhook may replace it. 409 "
+            + "INVALID_LOAD_TRANSITION (no carrier booked, cancelled, or the vehicle left)")
+    @RequiresPermission(resource = FulfillmentResources.DISPATCH, action = Action.UPDATE)
+    @Auditable(action = AuditAction.UPDATE, resourceType = "dispatch-load", resourceId = "#loadId",
+            details = "{driverName: #request.driverName()}")
+    public ApiResponse<LoadResponse> recordDriver(@PathVariable UUID loadId, @Valid @RequestBody DriverRequest request,
+                                                  @AuthenticatedUser CurrentUser actor) {
+        return ApiResponse.ok(mapper.toResponse(dispatching.recordDriver(loadId,
+                new Dispatching.DriverEntry(request.driverName(), request.driverPhone()), actor)));
+    }
+
     @PostMapping("/{loadId}/handover")
     @Operation(summary = "Both sides sign the manifest of a load plan's vehicle (SCRUM-392): DISPATCHED once every "
             + "parcel placed on it is scanned; a shipment is HANDED_OVER at its last vehicle, the order "
             + "PARTIALLY_FULFILLED / SHIPPED, the plan DISPATCHED with the last vehicle. 400 HANDOVER_NOT_SIGNED; 409 "
-            + "LOAD_EMPTY, LOAD_NOT_FULLY_LOADED, LOAD_UNLOAD_PENDING, OPTIMISTIC_LOCK, ORDER_BALANCE_NOT_PAID, "
+            + "LOAD_EMPTY, LOAD_NOT_FULLY_LOADED, LOAD_UNLOAD_PENDING, LOAD_WAYBILL_MISSING, LOAD_DRIVER_MISSING "
+            + "(the driver's name is on the load before the signature: booked, from the carrier's webhook, or "
+            + "PUT /loads/{id}/driver), OPTIMISTIC_LOCK, ORDER_BALANCE_NOT_PAID, "
             + "ORDER_INVALID_TRANSITION (on hold); again: answered as it is")
     @RequiresPermission(resource = FulfillmentResources.DISPATCH, action = Action.UPDATE)
     @Auditable(action = AuditAction.TRANSITION, resourceType = "dispatch-load", resourceId = "#loadId")

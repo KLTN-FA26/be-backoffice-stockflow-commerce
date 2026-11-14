@@ -106,6 +106,28 @@ public final class SkuReservation extends AggregateRoot {
         return reservation;
     }
 
+    /**
+     * WF4-COUNT-EDGE (a): what is left of this hold, at a warehouse, once stock no longer covers all of it - a new hold of
+     * {@code units} at the same warehouse for the same order, made after this one was released. Not checked against what
+     * is available: it holds less than the hold it replaces, under the same SKU lock.
+     *
+     * @throws IllegalStateException when this hold is still live, or held at no warehouse
+     * @throws IllegalArgumentException when {@code units} is not between zero and this hold's quantity
+     */
+    public SkuReservation keeping(int units, UUID requestId, Instant now) {
+        if (status.isActive() || warehouseCode == null) {
+            throw new IllegalStateException("Only a released hold at a warehouse is replaced by a smaller one");
+        }
+        if (units <= 0 || units >= quantity.value()) {
+            throw new IllegalArgumentException("A smaller hold keeps between 0 and %d units, not %d"
+                    .formatted(quantity.value(), units));
+        }
+        SkuReservation kept = new SkuReservation(new ReservationId(Identifiers.newId()), sku, orderId, requestId,
+                requestId, Quantity.of(units), now, null, ReservationStatus.HELD, null, null, warehouseCode);
+        kept.registerEvent(new StockEvent.Reserved(new StockReserved(orderId, sku.code(), null, units, null)));
+        return kept;
+    }
+
     /** True once {@code expiresAt} has passed and nobody has allocated or released the hold. */
     public boolean isExpiredAt(Instant now) {
         return status.isActive() && expiresAt != null && !now.isBefore(expiresAt);

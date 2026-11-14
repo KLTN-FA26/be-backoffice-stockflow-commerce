@@ -34,6 +34,9 @@ public interface SkuReservationRepository {
     /** Units under live SKU reservations, per SKU code; a SKU with none is absent. */
     Map<String, Long> heldBySku(Collection<String> skus);
 
+    /** WF4-COUNT-EDGE: the live SKU reservations of {@code sku} held at {@code warehouseCode}, oldest first. Not locked. */
+    List<SkuReservation> findHeldAt(String sku, String warehouseCode);
+
     /** 4B-7: the live SKU reservations of {@code sku} held at a warehouse, by warehouse code (20 BR-17). */
     Map<String, Long> heldBySkuAt(String sku);
 
@@ -41,4 +44,10 @@ public interface SkuReservationRepository {
     List<SkuReservation> findAll(Collection<UUID> reservationIds);
 
     SkuReservation save(SkuReservation reservation);
+
+    /**
+     * Writes the pending changes now. WF4-COUNT-EDGE: a release must reach the table before the smaller hold replacing
+     * it is inserted - a flush inserts before it updates, and {@code tg_stock_reservation_soft_atp} would count both.
+     */
+    void flush();
 }
