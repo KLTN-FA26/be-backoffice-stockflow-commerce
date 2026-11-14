@@ -1,5 +1,6 @@
 package com.stockflow.product.internal.service;
 
+import com.stockflow.common.api.FieldError;
 import com.stockflow.common.audit.AuditAction;
 import com.stockflow.common.audit.Auditable;
 import com.stockflow.common.error.BusinessException;
@@ -11,6 +12,7 @@ import com.stockflow.product.api.PrintConfigs;
 import com.stockflow.product.api.ProductKind;
 import com.stockflow.product.api.ProductModel;
 import com.stockflow.product.api.ProductStatus;
+import com.stockflow.product.api.TemplateModel3d;
 import com.stockflow.product.internal.domain.PrintConfigRules;
 import com.stockflow.product.internal.domain.VariantStatus;
 import com.stockflow.product.internal.entity.CustomizationTemplateJpaEntity;
@@ -35,10 +37,13 @@ import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionOperations;
 
+import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.function.Function;
 import java.util.regex.Pattern;
@@ -86,9 +91,21 @@ public class PrintConfigService implements PrintConfigs {
         this.entityManager = entityManager;
     }
 
-    /** What a Sales Manager enters; the print areas are computed from {@code model} and {@code areaSpecs}. */
+    /** The longest mesh name a 3D surface may give. */
+    private static final int MESH_NAME_MAX = 100;
+
+    /**
+     * What a Sales Manager enters; the print areas are computed from {@code model} and {@code areaSpecs}.
+     * {@code surfaces} maps print areas to meshes of the template's {@code .glb}; null keeps the template's own (empty
+     * on create), so a client that knows nothing of 3D models cannot drop the map by saving the template.
+     */
     public record Draft(String code, String name, PrintConfigRules.Limits limits, ProductModel model,
-                        List<PrintConfigRules.AreaSpec> areaSpecs) {
+                        List<PrintConfigRules.AreaSpec> areaSpecs, List<TemplateModel3d.Surface> surfaces) {
+
+        public Draft(String code, String name, PrintConfigRules.Limits limits, ProductModel model,
+                     List<PrintConfigRules.AreaSpec> areaSpecs) {
+            this(code, name, limits, model, areaSpecs, null);
+        }
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -127,6 +144,8 @@ public class PrintConfigService implements PrintConfigs {
         var computed = computeAreas(draft);
         var template = new CustomizationTemplateJpaEntity(Identifiers.newId(), variantId, draft.code());
         describe(template, draft);
+        template.mapModelSurfaces(PrintConfigPersistenceMapper.surfaces(
+                requireSurfaces(draft.surfaces() == null ? List.of() : draft.surfaces(), computed)));
         templates.save(template);
         replaceAreas(template.getId(), computed);
         return assemble(List.of(template), Map.of(variantId, variant)).get(0);
@@ -145,6 +164,9 @@ public class PrintConfigService implements PrintConfigs {
         // was, and its version would not move - a second editor holding the same version would then overwrite it.
         entityManager.lock(template, LockModeType.PESSIMISTIC_FORCE_INCREMENT);
         describe(template, draft);
+        template.mapModelSurfaces(PrintConfigPersistenceMapper.surfaces(draft.surfaces() != null
+                ? requireSurfaces(draft.surfaces(), computed)
+                : keptSurfaces(PrintConfigPersistenceMapper.model3d(template).surfaces(), computed)));
         templates.saveAndFlush(template);
         replaceAreas(templateId, computed);
         return assemble(List.of(template), Map.of(variantId, variant)).get(0);
@@ -213,6 +235,42 @@ public class PrintConfigService implements PrintConfigs {
                 return assemble(List.of(template), Map.of(variantId, variant)).get(0);
             });
         }
+    }
+
+    /**
+     * Attaches the template's 3D model, a glTF 2.0 binary ({@code .glb}, at most 10 MB) the back office measured the
+     * model from (FE request 2026-11-13 B-1, B-5); replaces the one before. Checked by its signature and version,
+     * scanned and stored as the reference die-line is; the server never reads inside it, and keeps its SHA-256 so the
+     * measurements can be traced to the file. The template's version moves like any other change of its print
+     * configuration (B39): drafts follow, an approved design keeps the model frozen in its snapshot.
+     */
+    @Auditable(action = AuditAction.UPDATE, resourceType = "product-customization-template", resourceId = "#templateId")
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    public PrintConfig attachModel(UUID productId, UUID variantId, UUID templateId, long version, FileUpload upload) {
+        try (PreparedFiles prepared = files.prepare(FileCategory.PRINT_MODEL, upload)) {
+            return tx.execute(status -> {
+                ProductJpaEntity product = lockCustomizable(productId);
+                VariantJpaEntity variant = variantOf(productId, variantId);
+                requireWritable(product, variant);
+                CustomizationTemplateJpaEntity template = lockTemplate(variantId, templateId, version);
+                PreparedFiles.PreparedFile file = prepared.single();
+                template.attachModelFile(file.file().key(), file.file().originalName(), file.sha256());
+                templates.saveAndFlush(template);
+                prepared.adopt();
+                return assemble(List.of(template), Map.of(variantId, variant)).get(0);
+            });
+        }
+    }
+
+    /** A short-lived link to the template's 3D model, for the back office. */
+    @Transactional(readOnly = true)
+    public DownloadLink modelLink(UUID productId, UUID variantId, UUID templateId) {
+        variantOf(productId, variantId);
+        CustomizationTemplateJpaEntity template = templateOf(variantId, templateId);
+        if (template.getModelFileKey() == null) {
+            throw new BusinessException(ErrorCode.NOT_FOUND, "The template has no 3D model file");
+        }
+        return files.downloadLink(template.getModelFileKey(), template.getModelFileName());
     }
 
     /** A short-lived link to the reference die-line, for the back office. */
@@ -303,6 +361,55 @@ public class PrintConfigService implements PrintConfigs {
             throw new BusinessException(ErrorCode.PRINT_CONFIG_INVALID, "A template needs the product model");
         }
         return PrintConfigRules.areas(draft.model(), draft.areaSpecs());
+    }
+
+    /**
+     * {@code surfaces} checked against the template's print areas: each names one of them, at most once, and gives a
+     * mesh name of 1 to 100 characters. 422 naming every entry at fault.
+     */
+    private static List<TemplateModel3d.Surface> requireSurfaces(List<TemplateModel3d.Surface> surfaces,
+                                                                 List<PrintArea> computed) {
+        Set<String> codes = computed.stream().map(PrintArea::code).collect(Collectors.toSet());
+        Set<String> seen = new HashSet<>();
+        List<FieldError> errors = new ArrayList<>();
+        List<TemplateModel3d.Surface> checked = new ArrayList<>();
+        for (int i = 0; i < surfaces.size(); i++) {
+            TemplateModel3d.Surface surface = surfaces.get(i);
+            String at = "model3d.surfaces[%d]".formatted(i);
+            if (surface == null) {
+                errors.add(new FieldError(at, "A surface is required", "NotNull"));
+                continue;
+            }
+            String code = surface.printAreaCode();
+            if (code == null || !codes.contains(code)) {
+                errors.add(new FieldError(at + ".printAreaCode",
+                        "Not a print area of this template's model: " + codes.stream().sorted().toList(),
+                        "PrintAreaUnknown"));
+            } else if (!seen.add(code)) {
+                errors.add(new FieldError(at + ".printAreaCode", "Print area " + code + " is mapped twice",
+                        "PrintAreaDuplicate"));
+            }
+            String mesh = surface.meshName() == null ? null : surface.meshName().trim();
+            if (mesh == null || mesh.isEmpty() || mesh.length() > MESH_NAME_MAX) {
+                errors.add(new FieldError(at + ".meshName", "A mesh name is 1 to 100 characters", "Size"));
+            }
+            checked.add(new TemplateModel3d.Surface(code, mesh));
+        }
+        if (!errors.isEmpty()) {
+            throw new BusinessException(ErrorCode.PRINT_CONFIG_SURFACES_INVALID,
+                    "The 3D model's surfaces do not match the template's print areas", errors);
+        }
+        return checked;
+    }
+
+    /**
+     * The surfaces kept by an update that sent none: those whose print area the new model still has. A model of
+     * another kind (a cup made a bag) has none of the old areas, and a mesh map naming them would mean nothing.
+     */
+    private static List<TemplateModel3d.Surface> keptSurfaces(List<TemplateModel3d.Surface> surfaces,
+                                                              List<PrintArea> computed) {
+        Set<String> codes = computed.stream().map(PrintArea::code).collect(Collectors.toSet());
+        return surfaces.stream().filter(s -> codes.contains(s.printAreaCode())).toList();
     }
 
     private void replaceAreas(UUID templateId, List<PrintArea> computed) {

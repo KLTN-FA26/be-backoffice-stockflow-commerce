@@ -17,11 +17,50 @@ import java.util.regex.Pattern;
  * <p>{@code category} becomes a provider tag for its dashboards: letters, digits, {@code _} and {@code -} only (Resend's
  * rule), and never anything personal.</p>
  *
+ * <p>{@code attachments} are files sent with the message - an issued e-invoice's PDF and XML (WF-05 E5). They are part
+ * of the logical message: every attempt under one idempotency key carries the same files, or a provider that honours
+ * the key refuses the second attempt as a different message.</p>
+ *
  * <p>{@link #toString()} names sizes and counts only. Subjects and bodies carry names, amounts and - for an invitation -
  * a secret link, and a value that is printed whole the day someone logs it is a leak waiting for that day.</p>
  */
 public record Email(String from, List<String> to, String replyTo, String subject, String text, String html,
-                    String idempotencyKey, String category) {
+                    String idempotencyKey, String category, List<Attachment> attachments) {
+
+    /**
+     * A file sent with the message.
+     *
+     * @param name        the file name the recipient saves it under: one line, no path
+     * @param contentType its media type ({@code application/pdf})
+     * @param content     its bytes
+     */
+    public record Attachment(String name, String contentType, byte[] content) {
+
+        public Attachment {
+            if (name == null || name.isBlank() || name.chars().anyMatch(c -> Character.isISOControl(c) || c == '/'
+                    || c == '\\')) {
+                throw new IllegalArgumentException("An attachment needs a file name: one line, no path");
+            }
+            if (contentType == null || contentType.isBlank()) {
+                throw new IllegalArgumentException("An attachment needs a content type");
+            }
+            if (content == null || content.length == 0) {
+                throw new IllegalArgumentException("An attachment needs content");
+            }
+        }
+
+        /** The name and the size, never the bytes. */
+        @Override
+        public String toString() {
+            return "Attachment[" + name + ", " + content.length + " bytes]";
+        }
+    }
+
+    /** A message with no attachment: every message but the issued e-invoice's. */
+    public Email(String from, List<String> to, String replyTo, String subject, String text, String html,
+                 String idempotencyKey, String category) {
+        this(from, to, replyTo, subject, text, html, idempotencyKey, category, List.of());
+    }
 
     private static final Pattern TAG = Pattern.compile("[A-Za-z0-9_-]{1,256}");
     private static final int MAX_KEY_LENGTH = 256;
@@ -52,6 +91,7 @@ public record Email(String from, List<String> to, String replyTo, String subject
         if (category != null && !TAG.matcher(category).matches()) {
             throw new IllegalArgumentException("A category is letters, digits, '_' and '-' only");
         }
+        attachments = attachments == null ? List.of() : List.copyOf(attachments);
     }
 
     /** A text-only message with no idempotency key and no category: staff and supplier mail. */
@@ -69,6 +109,6 @@ public record Email(String from, List<String> to, String replyTo, String subject
     public String toString() {
         return "Email[to=" + to.size() + " recipient(s), subjectLength=" + subject.length() + ", textLength="
                 + text.length() + ", html=" + (html != null) + ", idempotent=" + (idempotencyKey != null)
-                + ", category=" + category + "]";
+                + ", category=" + category + ", attachments=" + attachments.size() + "]";
     }
 }

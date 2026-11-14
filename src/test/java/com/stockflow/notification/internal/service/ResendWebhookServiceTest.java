@@ -45,7 +45,7 @@ class ResendWebhookServiceTest {
     private ResendWebhookService service(String secret) {
         var properties = new EmailProperties(EmailProvider.RESEND, EmailFixtures.FROM, null,
                 Locale.forLanguageTag("vi"), "StockFlow",
-                new EmailProperties.Customer(true, 10, Duration.ofMinutes(1), Duration.ofHours(6)),
+                new EmailProperties.Customer(true, 10, Duration.ofMinutes(1), Duration.ofHours(6), true),
                 new EmailProperties.Resend("re_key", "https://api.resend.com", secret, Duration.ofMinutes(5), 2, 2));
         return new ResendWebhookService(logs, new ObjectMapper(), Clock.fixed(NOW, ZoneOffset.UTC), properties);
     }

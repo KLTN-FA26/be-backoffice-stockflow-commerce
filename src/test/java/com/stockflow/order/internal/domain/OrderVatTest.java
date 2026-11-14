@@ -127,6 +127,7 @@ class OrderVatTest {
 
         order.recordShipmentDeliveryFailed(first, DeliveryFailureReason.REFUSED, null, NOW, STAFF);
         order.recordShipmentReturned(first, NOW, STAFF);
+        order.resolveDeliveryFailure("giao lại", STAFF, NOW);
         order.recordHandover(handover(again, cups, 400));
         assertThat(valueOf(order, again)).as("the cups again, and the fee lines that came back with them")
                 .isEqualByComparingTo("1760000");
@@ -151,6 +152,7 @@ class OrderVatTest {
         order.recordHandover(handover(b, line, 1));
         order.recordShipmentDeliveryFailed(a, DeliveryFailureReason.REFUSED, null, NOW, STAFF);
         order.recordShipmentReturned(a, NOW, STAFF);
+        order.resolveDeliveryFailure("giao lại", STAFF, NOW);
         order.recordHandover(handover(c, line, 1));
         assertThat(valueOf(order, b).add(valueOf(order, c))).isEqualByComparingTo("2111");
     }

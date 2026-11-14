@@ -37,6 +37,20 @@ class StockAdjustmentRepositoryAdapter implements StockAdjustmentRepository, Sto
     }
 
     /**
+     * Refreshes under the lock: the copy in the persistence context was read before the lock was taken, and deciding on
+     * it would let two deciders both find the adjustment pending - the lock would be decorative.
+     */
+    @Override
+    public Optional<StockAdjustment> findByIdForUpdate(UUID id) {
+        StockAdjustmentJpaEntity entity = entityManager.find(StockAdjustmentJpaEntity.class, id);
+        if (entity == null) {
+            return Optional.empty();
+        }
+        entityManager.refresh(entity, jakarta.persistence.LockModeType.PESSIMISTIC_WRITE);
+        return Optional.of(toDomain(entity));
+    }
+
+    /**
      * One upsert on {@code platform.document_sequence}: the row lock it takes serialises two
      * requests on the same day, and a rolled-back request leaves a gap rather than a duplicate —
      * the right trade for a document number.
@@ -62,7 +76,7 @@ class StockAdjustmentRepositoryAdapter implements StockAdjustmentRepository, Sto
                         adjustment.reason(), adjustment.note(), adjustment.requestedBy())
                         .atLayer(adjustment.receivedAt()).forHold(adjustment.reservationId())
                         .inPackage(adjustment.stockPackageId() == null ? null : adjustment.stockPackageId().value())
-                        .forCountLine(adjustment.cycleCountLineId()));
+                        .forCountLine(adjustment.cycleCountLineId()).countedBy(adjustment.countedBy()));
         entity.decide(adjustment.status(), adjustment.decidedBy(), adjustment.decidedAt(),
                 adjustment.rejectionReason(), adjustment.postedAt(), adjustment.withdrawnAt());
         return toDomain(jpa.saveAndFlush(entity));
@@ -111,6 +125,6 @@ class StockAdjustmentRepositoryAdapter implements StockAdjustmentRepository, Sto
                 e.getRejectionReason(), e.getPostedAt(), e.getWithdrawnAt(), e.getVersion())
                 .atLayer(e.getReceivedAt()).forHold(e.getReservationId())
                 .inPackage(e.getStockPackageId() == null ? null : new StockPackageId(e.getStockPackageId()))
-                .forCountLine(e.getCycleCountLineId());
+                .forCountLine(e.getCycleCountLineId()).countedBy(e.getCountedBy());
     }
 }

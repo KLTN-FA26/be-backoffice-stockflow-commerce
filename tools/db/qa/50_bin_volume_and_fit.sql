@@ -68,13 +68,6 @@ SELECT pg_temp.expect_true('BV2 no unit capacity, no carrier flags on the item',
                        (('warehouse', 'storage_location', 'capacity_units'),
                         ('inventory', 'inventory_items', 'requires_adult_signature'),
                         ('inventory', 'inventory_items', 'shipping_restriction_note'))));
-SELECT pg_temp.expect_true('BV3 what was dropped is archived: every location, every shelf, every item',
-    (SELECT count(*) FROM platform.legacy_archive WHERE source_table = 'warehouse.storage_location'
-                                                    AND row_data ? 'storage_class') >= 6
-    AND (SELECT count(*) FROM platform.legacy_archive WHERE source_table = 'warehouse.shelf'
-                                                        AND row_data ? 'default_storage_class') >= 3
-    AND (SELECT count(*) FROM platform.legacy_archive WHERE source_table = 'inventory.inventory_items'
-                                                        AND row_data ? 'requires_adult_signature') >= 2);
 SELECT pg_temp.expect_fail('BV4 a location can no longer be given a storage class', $q$
     UPDATE warehouse.storage_location SET storage_class = 'COLD' WHERE location_code = 'HCM-A01-1-A' $q$);
 SELECT pg_temp.expect_true('BV5 the putaway index no longer names a storage class',
@@ -87,8 +80,10 @@ SELECT pg_temp.expect_fail('BV6 a new level without a clear height', $q$
     VALUES (gen_random_uuid(), md5('demo:shelf:HCM-B01')::uuid, 6, 4, NULL, 500) $q$);
 SELECT pg_temp.expect_fail('BV7 an edit that clears a level''s clear height', $q$
     UPDATE warehouse.shelf_level SET usable_height = NULL WHERE id = md5('demo:level:HCM-B01-1')::uuid $q$);
-SELECT pg_temp.expect_true('BV8 the check is NOT VALID: a legacy level without one may stay',
-    (SELECT NOT convalidated FROM pg_constraint WHERE conname = 'ck_shelf_level_usable_height_required'));
+-- Added NOT VALID so a legacy level without a clear height could stay; a fresh database (baseline V20261111000000,
+-- 2026-11-11) has none, so it is created validated. BV25-BV27 below still play out a legacy level by hand.
+SELECT pg_temp.expect_true('BV8 the check is validated: every level has a clear height',
+    (SELECT convalidated FROM pg_constraint WHERE conname = 'ck_shelf_level_usable_height_required'));
 SELECT pg_temp.expect_true('BV9 the volume is computed from the map: 5 x 1.2 x 1.4 = 8.4 m³ for HCM-A01-1-A',
     (SELECT b.width * b.length * l.usable_height FROM warehouse.bin b JOIN warehouse.shelf_level l ON l.id = b.level_id
       WHERE b.location_id = md5('demo:loc:HCM-A01-1-A')::uuid) = 8.4);

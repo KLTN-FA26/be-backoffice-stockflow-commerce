@@ -1,12 +1,16 @@
 package com.stockflow.design.internal.controller;
 
 import com.stockflow.common.api.ApiResponse;
+import com.stockflow.common.ratelimit.RateLimit;
 import com.stockflow.common.security.Action;
 import com.stockflow.common.security.AuthenticatedUser;
 import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.RequiresPermission;
+import com.stockflow.design.internal.controller.dto.DesignCloneResponse;
+import com.stockflow.design.internal.controller.dto.DesignDecisionResponse;
 import com.stockflow.design.internal.controller.dto.DesignDocumentResponse;
 import com.stockflow.design.internal.controller.dto.DesignDraftResponse;
+import com.stockflow.design.internal.controller.dto.PreflightFailureRequest;
 import com.stockflow.design.internal.service.CustomerDesignService;
 import com.stockflow.design.internal.service.DesignSubmissionService;
 import io.swagger.v3.oas.annotations.Operation;
@@ -26,6 +30,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -140,6 +145,24 @@ class CustomerDesignController {
     }
 
     /**
+     * A submission the studio's own preflight refused before sending it (kltn-docs 12 §5.3): one {@code PREFLIGHT_FAILED}
+     * row in the draft's history, notes built from each finding's rule, surface and element; the design and its version
+     * do not change. The browser's word is not trusted beyond that: its owner only, a draft only, the version it read,
+     * at most 50 findings, a {@code message} ignored, and a budget per user so nobody floods the history. 404 for anyone
+     * but the owner or an archived design; 409 {@code CONFLICT} on a stale version, {@code DESIGN_NOT_DRAFT}; 429.
+     */
+    @PostMapping("/{id}/preflight-failures")
+    @Operation(summary = "Record that the studio's preflight refused a submission: one PREFLIGHT_FAILED history row")
+    @RequiresPermission(resource = DesignResources.DESIGNS, action = Action.UPDATE)
+    @RateLimit(limit = 60, perSeconds = 3600, key = RateLimit.Key.USER, bucket = "design-preflight-failures")
+    public ResponseEntity<ApiResponse<DesignDecisionResponse>> recordPreflightFailure(
+            @PathVariable UUID id, @Valid @RequestBody PreflightFailureRequest request,
+            @AuthenticatedUser CurrentUser user) {
+        return ResponseEntity.status(HttpStatus.CREATED).body(ApiResponse.ok(drafts.toResponse(
+                submissions.recordReportedFailure(id, actor(user), request.version(), request.reported()))));
+    }
+
+    /**
      * In the shape of one template of the storefront's P2, plus {@code active}: as it is now, or for an approved design
      * as it was approved.
      */
@@ -150,6 +173,25 @@ class CustomerDesignController {
             @AuthenticatedUser CurrentUser user) throws com.fasterxml.jackson.core.JsonProcessingException {
         return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(ApiResponse.ok(
                 json.readTree(service.template(id, actor(user), DesignWorkflowController.readRights(user)))));
+    }
+
+    /**
+     * Clones the design onto another variant of its product (FE request 2026-11-13 E-3): {@code {variantSku,
+     * document}}, the layout already fitted to the target's print areas. The body is taken as text, as a layout save's
+     * is, and capped before it is read ({@code stockflow.web.body-limits}). The {@code Idempotency-Key} is required: the
+     * idempotency filter answers a retry with the first response, so a lost answer never makes a second clone.
+     */
+    @PostMapping(path = "/{id}/clones", consumes = MediaType.APPLICATION_JSON_VALUE)
+    @Operation(summary = "Clone the design onto another variant of its product: {variantSku, document}; "
+            + "Idempotency-Key required")
+    @RequiresPermission(resource = DesignResources.DESIGNS, action = Action.CREATE)
+    public ResponseEntity<ApiResponse<DesignCloneResponse>> cloneDesign(@PathVariable UUID id,
+            @RequestHeader(name = "Idempotency-Key", required = false) String requestKey, @RequestBody String body,
+            @AuthenticatedUser CurrentUser user) {
+        // Required, but checked by the service after the owner check: a stranger learns nothing from a 400.
+        var clone = service.cloneDesign(id, actor(user), requestKey, body);
+        return ResponseEntity.status(HttpStatus.CREATED).body(ApiResponse.ok(
+                new DesignCloneResponse(drafts.toResponse(clone.design()), clone.notInProject())));
     }
 
     private static UUID actor(CurrentUser user) {

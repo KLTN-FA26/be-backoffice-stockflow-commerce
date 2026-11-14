@@ -37,6 +37,8 @@ class NotificationModuleTest {
      */
     @MockitoBean CustomerDirectory customerDirectory;
     @MockitoBean com.stockflow.notification.api.ProductionOrderDirectory productionOrderDirectory;
+    // WF-05 E5: the e-invoice mail reads the invoice through this port, implemented by invoicing (not booted here).
+    @MockitoBean com.stockflow.notification.api.EInvoiceDirectory einvoiceDirectory;
 
     @Test
     @DisplayName("notification starts and answers through its api with the other modules absent")

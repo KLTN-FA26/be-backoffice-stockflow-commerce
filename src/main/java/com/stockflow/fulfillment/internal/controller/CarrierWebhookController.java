@@ -23,7 +23,9 @@ import java.util.Map;
  *
  * <p><b>Anonymous, and safe to be.</b> A carrier holds no token, so the route is open in the security chain and its
  * credential is what the carrier was configured with (3-1): an API_BOOKING carrier's header, compared in constant time,
- * or a WEBHOOK_LOAD carrier's HMAC signature of the raw body. The body is read only up to {@value #MAX_BODY_BYTES} bytes
+ * or a WEBHOOK_LOAD carrier's HMAC signature of the raw body. A header value is not a signature, so an API_BOOKING
+ * carrier's call is defended further (WF-05 fix plan item 6): an optional list of the addresses it may come from, a
+ * window of time its report must fall in, and its final outcomes asked back of the carrier's API. The body is read only up to {@value #MAX_BODY_BYTES} bytes
  * and the raw bytes are what is checked; each address gets a request budget; the idempotency filter leaves the route
  * alone, a repeat being told apart by the event log (BR-27). Every call naming a known carrier is kept - a refused
  * one as a summary - whatever it says.</p>
@@ -54,7 +56,7 @@ class CarrierWebhookController {
     public ApiResponse<Map<String, Object>> receive(@PathVariable String carrierCode, HttpServletRequest request)
             throws IOException {
         byte[] body = read(request);
-        CarrierEvents.Receipt receipt = events.receive(carrierCode, request::getHeader, body);
+        CarrierEvents.Receipt receipt = events.receive(carrierCode, request::getHeader, request.getRemoteAddr(), body);
         if (!receipt.authenticated()) {
             throw new BusinessException(ErrorCode.WEBHOOK_SIGNATURE_INVALID);
         }

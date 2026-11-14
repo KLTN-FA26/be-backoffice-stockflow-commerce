@@ -142,6 +142,36 @@ public enum ErrorCode {
 
     // ---- 409: the request is fine, the current state is not
     CONFLICT("Conflicting state", 409),
+    /** kltn-docs 16 §5: the conversation cannot move to that status from where it is, or not by this caller. */
+    CHAT_TRANSITION_NOT_ALLOWED("The conversation cannot move to that status now", 409),
+    /**
+     * The conversation is closed, or resolved past its reopen window: nothing more is written in it. The customer
+     * reopens, which starts a new conversation continuing it (16 §5).
+     */
+    CHAT_CONVERSATION_ENDED("The conversation has ended; start a new one", 409),
+    /** 16 edge case "nhiều agent cùng mở": only the agent in charge (or a chat supervisor) answers the customer. */
+    CHAT_NOT_ASSIGNEE("Only the agent in charge of the conversation can do this", 409),
+    /** Claiming a conversation another agent already has. */
+    CHAT_ALREADY_ASSIGNED("Another agent already has this conversation", 409),
+    /** The account a conversation was to be handed to does not answer customers (chat-conversations:UPDATE, staff). */
+    CHAT_AGENT_NOT_AVAILABLE("This person cannot take chat conversations", 409),
+    /** A retried send named the client id of an earlier message with something else in it. */
+    CHAT_CLIENT_MESSAGE_ID_REUSED("This client message id was already used for another message", 409),
+    /** 16 package 3: a card, a system line, someone else's message or a deleted one is not edited or deleted. */
+    CHAT_MESSAGE_NOT_EDITABLE("This message cannot be changed", 409),
+    /** A message is edited or deleted by its author within the edit window (5 minutes) of sending it. */
+    CHAT_EDIT_WINDOW_PASSED("The time to change this message has passed", 409),
+    /** CSAT: a conversation is rated while it is resolved. */
+    CHAT_CSAT_NOT_OPEN("This conversation cannot be rated now", 409),
+    /** CSAT: a conversation is rated once. */
+    CHAT_CSAT_ALREADY_GIVEN("This conversation was already rated", 409),
+    /**
+     * A card's action that is not open to the caller or to the card now: the customer's action taken by staff (16 BR-10,
+     * BR-11), a card that is no longer open, an action the card's kind does not have.
+     */
+    CHAT_CARD_ACTION_NOT_ALLOWED("This action is not available on this card", 409),
+    /** 16 BR-11: a quote is drawn up from a quote request only once its design is approved. */
+    CHAT_DESIGN_NOT_APPROVED("The design is not approved yet; a quote follows its approval", 409),
     /** The inventory item already has a unit with this code (its base unit included). */
     UOM_CONVERSION_DUPLICATE("This SKU already has a unit of measure with this code", 409),
     /**
@@ -223,6 +253,20 @@ public enum ErrorCode {
     CARTONS_WOULD_NOT_FIT("This change would leave cartons that no longer fit where they stand", 409),
     /** kltn-docs 05 BR-13: a carton goes to the OVERFLOW area only when no bin of its warehouse takes it. */
     PUTAWAY_OVERFLOW_NOT_ALLOWED("A bin can still take this carton; put it away into a bin", 409),
+    /** Kltn-docs 05 §4.5: no putaway trip with this id. */
+    PUTAWAY_TRIP_NOT_FOUND("Putaway trip not found", 404),
+    /** Kltn-docs 05 BR-15: a clerk has one open putaway trip (LOADING or IN_PROGRESS) at a time. */
+    PUTAWAY_TRIP_ALREADY_OPEN("You already have a putaway trip open", 409),
+    /** Kltn-docs 05 §5: the trip is not in the status this step needs (loading a cart that left, closing a closed one). */
+    PUTAWAY_TRIP_INVALID_STATE("This putaway trip is not in a state that allows this", 409),
+    /** Kltn-docs 05 §5: a trip sets off with at least one carton on the cart. */
+    PUTAWAY_TRIP_EMPTY("The cart has no carton; scan cartons onto it first", 422),
+    /** Kltn-docs 05 BR-15: a carton is on one open cart at most; this one is on somebody else's. */
+    PUTAWAY_TASK_ON_ANOTHER_TRIP("This carton is on the cart of another putaway trip", 409),
+    /** Kltn-docs 05 §4.5: the scanned carton is not on this trip's cart. */
+    PUTAWAY_CARTON_NOT_ON_TRIP("This carton is not on the cart of this putaway trip", 409),
+    /** Kltn-docs 05 §4.5 step 17: a trip is worked and closed by its own clerk; a warehouse manager may close it. */
+    PUTAWAY_TRIP_NOT_YOURS("This putaway trip belongs to another clerk", 403),
     /**
      * SCRUM-473: a line with cartons names the active packing unit they are in; a loose line counts in the base unit
      * and claims no packing unit it holds no carton of.
@@ -354,8 +398,65 @@ public enum ErrorCode {
      * {@code details} lists each order, why, and what it still owes.
      */
     LOAD_HANDOVER_BLOCKED("Some orders on this vehicle may not be handed over yet", 409),
-    /** 4B-4: stockflow.order.seller.* is blank in this deployment. */
-    SELLER_PROFILE_UNAVAILABLE("The seller's company details are not configured; contracts cannot be drawn up", 503),
+    /** WF-05 E2: no e-invoice with that id. */
+    EINVOICE_NOT_FOUND("E-invoice not found", 404),
+    /** F-13: also the answer for another customer's conversation - a conversation id means something to its customer only. */
+    CHAT_CONVERSATION_NOT_FOUND("Conversation not found", 404),
+    /**
+     * kltn-docs 16 BR-02: the document a conversation was to be about does not exist, or is not the conversation's
+     * customer's - one answer for both, so the chat cannot be used to learn which documents exist.
+     */
+    CHAT_CONTEXT_NOT_FOUND("The document to talk about was not found", 404),
+    CHAT_MESSAGE_NOT_FOUND("Message not found", 404),
+    /** A saved reply that does not exist, is archived, or is another agent's own. */
+    CHAT_CANNED_RESPONSE_NOT_FOUND("Saved reply not found", 404),
+    /** WF-05 E2 (kltn-docs 21 §5.1): the e-invoice's status does not allow this - an issued invoice above all, which is never cancelled or changed (TT 91 Điều 10). */
+    EINVOICE_INVALID_TRANSITION("The e-invoice's status does not allow this", 409),
+    /** WF-05 E2 (21 BR-03): only a draft e-invoice is corrected. */
+    EINVOICE_NOT_DRAFT("Only a draft e-invoice can be changed", 409),
+    /** WF-05 E2 (21 BR-06; NĐ 254 Phụ lục điểm 4.b): the buyer's name, tax code or address is missing, so the invoice is not issued. */
+    EINVOICE_BUYER_PROFILE_INCOMPLETE("The buyer's name, tax code and address are needed before the invoice is issued", 409),
+    /** WF-05 E2 (21 BR-01): the shipment is not delivered, or delivered nothing an invoice can carry. */
+    EINVOICE_NOT_INVOICEABLE("This shipment cannot be invoiced: it is not delivered", 409),
+    /**
+     * WF-05 E2 (NĐ 254 Điều 9 khoản 1; WF05-E0 L6): the delivered shipment has no delivery time, and the invoice is
+     * dated by it - never by today. A code of its own because it reaches the accountants as the cause of an
+     * {@code EInvoiceDraftFailed}, and it tells them what to correct.
+     */
+    EINVOICE_DELIVERY_TIME_MISSING("The delivery has no delivery time to date its invoice by; record it first", 409),
+    /** WF-05 E2 (TT 91 Điều 4): no invoice series is in use at the provider for the invoice's year. */
+    EINVOICE_SERIES_NOT_CONFIGURED("No invoice series is configured for the invoice's year", 409),
+    /**
+     * WF-05 E2 (NĐ 254 Phụ lục điểm 2; TT 91 Điều 10 khoản 6a): an invoice of the same year dated earlier is still to be
+     * issued; issuing this one first would give it the lower number, and numbers would run against the dates.
+     */
+    EINVOICE_OLDER_DRAFT_PENDING("An invoice dated earlier is still to be issued; issue that one first, or void it", 409),
+    /** WF-05 E2: the e-invoice is not issued, so it has no XML or PDF yet. */
+    EINVOICE_NOT_ISSUED("The e-invoice is not issued yet", 409),
+    /** WF-05 E2: the e-invoice provider is not configured, or did not answer; nothing is known about the transaction until it is asked again. */
+    EINVOICE_PROVIDER_UNAVAILABLE("The e-invoice provider is not available right now; the invoice will be checked again", 503),
+    /** WF-05 E3: a real e-invoice provider is put in use only once its account is stored. */
+    EINVOICE_PROVIDER_ACCOUNT_INCOMPLETE("The e-invoice provider's account is not stored yet", 409),
+    /** WF-05 E3: an invoice at the provider is sent as a new transaction only when the provider no longer remembers the old one and confirms it holds no such invoice. */
+    EINVOICE_RESUBMISSION_REFUSED("The e-invoice cannot be sent as a new transaction: the provider may hold it", 409),
+    /** WF-05 E3+E4: the provider in use writes every invoice as an original, so a correction sent to it would be a second invoice. */
+    EINVOICE_PROVIDER_CANNOT_CORRECT("The e-invoice provider in use cannot issue adjustments or replacements yet; the correction is kept as a draft", 409),
+    /** WF-05 E4 (TT 91 Điều 10): only an issued invoice still in force is adjusted, replaced or notified as drawn up wrongly. */
+    EINVOICE_NOT_IN_FORCE("Only an issued e-invoice that is still in force can be corrected", 409),
+    /** WF-05 E4 (TT 91 Điều 10 khoản 6 điểm a): an invoice already adjusted is adjusted again, one replaced is replaced again. */
+    EINVOICE_CORRECTION_FORM_FIXED("This e-invoice is already being corrected in the other form; the form first used is kept", 409),
+    /** WF-05 E4: the correction asked for is not one the law gives for this invoice (an adjustment of an adjustment, a return that adds, an agreement where none is asked). */
+    EINVOICE_CORRECTION_NOT_APPLICABLE("This correction does not apply to this e-invoice", 409),
+    /** WF-05 E4 (TT 91 Điều 10 khoản 1 điểm b): the correction of an error is not sent without the written agreement with the buyer. */
+    EINVOICE_AGREEMENT_REQUIRED("The written agreement with the buyer - its file, number and date - is needed before the correction is issued", 409),
+    /** WF-05 E4: adjustments may not reduce an invoice below nothing. */
+    EINVOICE_ADJUSTMENT_EXCEEDS_INVOICE("The adjustment would reduce the e-invoice by more than it holds", 409),
+    /** WF-05 E4: no such 04/SS-HĐĐT notice on this invoice. */
+    EINVOICE_ERROR_NOTICE_NOT_FOUND("Notice of an e-invoice drawn up wrongly not found", 404),
+    /** WF-05 E4: a notice of this invoice is still on its way, or the notice asked about is already answered. */
+    EINVOICE_ERROR_NOTICE_NOT_SENDABLE("This notice cannot be recorded or sent now: another one of the invoice is still open, or it is already answered", 409),
+    /** 4B-4, WF-05 E2: stockflow.seller.* is blank in this deployment; no contract or invoice names a seller. */
+    SELLER_PROFILE_UNAVAILABLE("The seller's company details are not configured; contracts and invoices cannot be drawn up", 503),
     /**
      * 4B-2 (kltn-docs 14 BR-04, 13 BR-02): a quote line, an order line placed from one, or a customer price names one
      * of the customer's own SKUs - not a stock variant or a blank. Another customer's SKU answers VARIANT_NOT_FOUND.
@@ -424,6 +525,24 @@ public enum ErrorCode {
     ORDER_NOT_ON_HOLD("This order is not on hold", 409),
     /** G3-2: a credit hold is decided through credit approval, not resolved like the others. */
     ORDER_CREDIT_HOLD_USE_APPROVAL("A credit hold is decided through credit approval", 409),
+    /**
+     * WF-05 fix plan, section 2: a hold for a failed delivery is lifted by deciding its delivery failure case - deliver
+     * again, or cancel what was not delivered - not resolved with a note.
+     */
+    ORDER_DELIVERY_FAILURE_USE_DECISION("This order is held for a failed delivery; decide to deliver again or to "
+            + "cancel what was not delivered", 409),
+    /** WF-05 fix plan, section 2: no delivery failure case of that id on that order. */
+    DELIVERY_FAILURE_CASE_NOT_FOUND("Delivery failure case not found", 404),
+    /** WF-05 fix plan, section 2: the case is not where that step starts from (decided already, not released, ...). */
+    DELIVERY_FAILURE_INVALID_TRANSITION("This delivery failure case cannot take that step now", 409),
+    /**
+     * WF-05 review N1: cancelling what a failed delivery left undelivered on an order that still owes units but is
+     * neither held for the failed delivery nor partly fulfilled - on hold for another reason, or packed. Closing it
+     * there would cancel the case and leave its units owed with nothing to deliver them; resolve the hold, or let what
+     * is packed leave, first.
+     */
+    DELIVERY_FAILURE_REST_NOT_CLOSABLE("What this order has not delivered cannot be closed now: resolve its other "
+            + "hold first, or wait until what is packed has left", 409),
     /** G4-Q5: an order with shipments records its delivery outcome per shipment, not for the whole order. */
     ORDER_DELIVERY_VIA_SHIPMENT("This order's delivery is recorded per shipment", 409),
     /** G3-Q4: money due before the goods leave has not all arrived; the handover waits for it. */
@@ -444,6 +563,11 @@ public enum ErrorCode {
     INSTALLMENT_NOT_PAYABLE("This installment is paid or cancelled; it takes no more money", 409),
     /** 4B-6, 15 BR-05: a receipt pays installments of its own customer only. */
     INSTALLMENT_CUSTOMER_MISMATCH("This installment belongs to another customer", 409),
+    /**
+     * WF-05 fix plan, section 8: OVERDUE is no longer a status any installment is in - overdue is the flag
+     * {@code overdue=true}. A filter on the old status would answer an empty list, which reads as "nothing overdue".
+     */
+    INSTALLMENT_OVERDUE_IS_A_FLAG("Overdue is not an installment status; filter with overdue=true", 400),
     /** 4B-6: no payment receipt with that id. */
     PAYMENT_RECEIPT_NOT_FOUND("Payment receipt not found", 404),
     /** 4B-6, 15 BR-03: one bank statement line, one live receipt. */
@@ -705,6 +829,11 @@ public enum ErrorCode {
     /** 3-3 (09 §4.4): the file is not the system's template table; the message says why. */
     WAYBILL_IMPORT_INVALID_FILE("This file cannot be read as the waybill import template", 400),
     WAYBILL_IMPORT_NOT_FOUND("Waybill import not found", 404),
+    /** WF-05 fix plan item 5: the file is not the delivery-outcome template's table; the message says why. */
+    DELIVERY_OUTCOME_IMPORT_INVALID_FILE("This file cannot be read as the delivery outcome template", 400),
+    DELIVERY_OUTCOME_IMPORT_NOT_FOUND("Delivery outcome import not found", 404),
+    /** WF-05 fix plan item 6: promoting or dropping a second webhook credential a carrier does not have. */
+    CARRIER_CREDENTIAL_ROTATION_NOT_STARTED("This carrier has no second webhook credential", 409),
     LOAD_SCAN_ID_CONFLICT("This scan id was already used for another package or load", 409),
     /** SCRUM-392: parcels of a cancelled order are still on the vehicle; unload them before it is handed over. */
     LOAD_UNLOAD_PENDING("Parcels of a cancelled order are still on this vehicle; unload them first", 409),
@@ -737,6 +866,11 @@ public enum ErrorCode {
     PRODUCT_NOT_CUSTOMIZABLE("This product cannot be customized", 409),
     /** A template code is unique per variant. */
     PRINT_CONFIG_CODE_TAKEN("This variant already has a template with this code", 409),
+    /**
+     * A template's 3D surfaces name a print area its model does not have, name one twice, or give a mesh name that is
+     * empty or longer than 100 characters; {@code fieldErrors} names each entry at fault (FE request 2026-11-13 B-2).
+     */
+    PRINT_CONFIG_SURFACES_INVALID("The 3D model's surfaces do not match the template's print areas", 422),
     /** A customer SKU is issued only from an ordinary ACTIVE variant of an approved or published product (B20). */
     CUSTOMER_SKU_SOURCE_UNAVAILABLE("This variant cannot have customer SKUs now", 409),
     /** A customer holds at most 50 drafts at once (kltn-docs 12 B37); deleting one makes room. */
@@ -771,6 +905,11 @@ public enum ErrorCode {
     DESIGN_IN_ANOTHER_PROJECT("This design belongs to another project", 409),
     /** A design waiting for review neither leaves its project nor moves to another (kltn-docs 12 BR-17). */
     DESIGN_PENDING_IN_PROJECT("A design waiting for review stays in its project", 409),
+    /**
+     * A design is cloned only onto another ACTIVE variant of its own product (FE request 2026-11-13 E-3; BR-01, BR-02):
+     * not onto its own variant, nor one of another product, nor one that cannot be designed on.
+     */
+    DESIGN_CLONE_TARGET_INVALID("This design cannot be cloned onto that variant", 409),
     /** The same idempotency key is still being processed. The client should poll, not retry blindly. */
     IDEMPOTENT_REQUEST_IN_PROGRESS("An identical request is still being processed", 409),
     PRODUCT_CODE_ALREADY_EXISTS("A product with this code already exists", 409),

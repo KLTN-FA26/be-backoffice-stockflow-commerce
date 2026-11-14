@@ -25,17 +25,29 @@ import java.util.UUID;
  * @param referenceFileKey   storage key of the reference die-line the Sales Manager attached, or null
  * @param referenceFileName  that file's name as uploaded, or null
  * @param version            optimistic-lock version
+ * @param model3d            the {@code .glb} the model was measured from and its print-area-to-mesh map; never null
  */
 public record PrintConfig(UUID templateId, UUID productId, UUID variantId, String sku, String code, String name,
                           int minDpi, String colorMode, List<String> allowedFileFormats, int maxFileSizeMb,
                           Integer maxColors, List<String> allowedFontCodes, boolean active, ProductModel model,
                           List<PrintArea> printAreas, String referenceFileKey, String referenceFileName,
-                          long version) {
+                          long version, TemplateModel3d model3d) {
 
     public PrintConfig {
         allowedFileFormats = List.copyOf(allowedFileFormats);
         allowedFontCodes = allowedFontCodes == null ? null : List.copyOf(allowedFontCodes);
         printAreas = List.copyOf(printAreas);
+        model3d = model3d == null ? TemplateModel3d.NONE : model3d;
+    }
+
+    /** A template with no 3D model. */
+    public PrintConfig(UUID templateId, UUID productId, UUID variantId, String sku, String code, String name,
+                       int minDpi, String colorMode, List<String> allowedFileFormats, int maxFileSizeMb,
+                       Integer maxColors, List<String> allowedFontCodes, boolean active, ProductModel model,
+                       List<PrintArea> printAreas, String referenceFileKey, String referenceFileName, long version) {
+        this(templateId, productId, variantId, sku, code, name, minDpi, colorMode, allowedFileFormats, maxFileSizeMb,
+                maxColors, allowedFontCodes, active, model, printAreas, referenceFileKey, referenceFileName, version,
+                TemplateModel3d.NONE);
     }
 
     /** The print area with {@code code}, or null when the template has none. */

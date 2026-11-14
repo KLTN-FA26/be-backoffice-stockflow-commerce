@@ -17,9 +17,12 @@ import java.util.UUID;
  * @param leavingWith   the units of the order's other shipments handed over in the same signature after this one
  *                      (PACK-PARTIAL): an order that does not allow partial shipments lets this one go only when, with
  *                      them, nothing of the order is left behind. Empty when there are none
+ * @param redeliveryCaseId the delivery failure case whose goods this shipment delivers again (WF-05 fix plan, section
+ *                      2): its pick was a redelivery's. The order closes that case with the handover and records the
+ *                      batch delivered again; null for any other shipment
  */
 public record ShipmentHandover(UUID shipmentId, List<Line> lines, Instant handedOverAt, UUID handedOverBy,
-                               Carriage carriage, List<Line> leavingWith) {
+                               Carriage carriage, List<Line> leavingWith, UUID redeliveryCaseId) {
 
     public ShipmentHandover {
         if (shipmentId == null || handedOverAt == null) {
@@ -27,6 +30,12 @@ public record ShipmentHandover(UUID shipmentId, List<Line> lines, Instant handed
         }
         lines = lines == null ? List.of() : List.copyOf(lines);
         leavingWith = leavingWith == null ? List.of() : List.copyOf(leavingWith);
+    }
+
+    /** A shipment that delivers nothing again: the first delivery of its goods. */
+    public ShipmentHandover(UUID shipmentId, List<Line> lines, Instant handedOverAt, UUID handedOverBy,
+                            Carriage carriage, List<Line> leavingWith) {
+        this(shipmentId, lines, handedOverAt, handedOverBy, carriage, leavingWith, null);
     }
 
     /** Without the other shipments leaving in the same signature (callers written before PACK-PARTIAL). */

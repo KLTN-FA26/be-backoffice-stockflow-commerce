@@ -271,6 +271,12 @@ public final class OrderSettlement {
      * on "milestone not reached" instead would take off an after-delivery installment of a batch already delivered
      * (it is reached only once the whole order is) before a before-delivery one of the batch closed. Handing the closed
      * batches in and ranking on them is left open (reports/C3.md).</p>
+     *
+     * <p>Known limitation, made common by WF-05 (review F11): when batch 1 fails to deliver and its rest is cancelled
+     * while batch 2 was delivered, the cut lands on batch 2's installment and batch 1's stays owed - the total is right,
+     * the installment named is wrong. Fixing it is not local to this class: the order closes its rest per line, not per
+     * batch, and {@code OrderRemainderClosed} names no batch, so the closure would first have to say which batches it
+     * closed. Open question in the WF05-dfail report.</p>
      */
     static final Comparator<Installment> CLOSURE_ORDER = Comparator
             .comparing((Installment i) -> i.deliveryBatchSeq() == null ? Integer.MIN_VALUE : i.deliveryBatchSeq(),
@@ -279,7 +285,7 @@ public final class OrderSettlement {
                 case AFTER_DELIVERY -> 0;
                 case BEFORE_DELIVERY -> 1;
                 case ON_SIGNING -> 2;
-                case CANCELLATION_FEE -> 3;
+                case CANCELLATION_FEE, FAILED_TRIP_FEE -> 3;
             })
             .thenComparing(Installment::seq, Comparator.reverseOrder());
 

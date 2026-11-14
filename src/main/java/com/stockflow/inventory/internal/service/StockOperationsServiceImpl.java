@@ -918,7 +918,9 @@ class StockOperationsServiceImpl implements StockOperations {
                 adjustments.nextNumber(LocalDate.ofInstant(now, BUSINESS_ZONE)), slot.stockPackageId(),
                 slot.location(), slot.sku(), slot.lotNumber(),
                 delta < 0 ? AdjustmentDirection.WRITE_OFF : AdjustmentDirection.RESTOCK, Math.abs(delta),
-                AdjustmentReason.COUNT_VARIANCE, note, cycleCountLineId, requestedBy, now);
+                AdjustmentReason.COUNT_VARIANCE, note, cycleCountLineId, requestedBy, now)
+                // Who counted the line: the counter does not decide its variance, and the row says so itself.
+                .countedBy(countLines.countedByOf(cycleCountLineId).orElse(null));
         log.info("Count line {}: carton {} {} asked", cycleCountLineId, slot.stockPackageId().value(),
                 delta < 0 ? "write-off" : "restock");
         return toSummary(adjustments.save(adjustment));
@@ -1008,8 +1010,11 @@ class StockOperationsServiceImpl implements StockOperations {
     @Override
     @Auditable(action = AuditAction.APPROVE, resourceType = "stock-adjustment", resourceId = "#adjustmentId")
     public StockAdjustmentSummary approve(UUID adjustmentId, UUID approverId) {
-        StockAdjustment adjustment = load(adjustmentId);
-        policies.lock(adjustment.sku().code());
+        // The SKU is read first, without a lock, only to take its advisory lock - what an adjustment is about never
+        // changes - and the adjustment is then read again FOR UPDATE: the SKU lock before the adjustment's row, the
+        // order every path holding both keeps, and two approvals of one adjustment decide one after the other.
+        policies.lock(load(adjustmentId).sku().code());
+        StockAdjustment adjustment = lock(adjustmentId);
         requireNotCounter(adjustment, approverId);
         if (adjustment.stockPackageId() != null) {
             return approveCarton(adjustment, approverId);
@@ -1051,7 +1056,9 @@ class StockOperationsServiceImpl implements StockOperations {
             StockMovement line = new StockMovement(Identifiers.newId(), StockMovement.MovementType.ADJUSTMENT,
                     row.sku(), row.lotNumber(), down ? row.location() : null, down ? null : row.location(),
                     Math.abs(change.delta()), row.status(), StockMovement.ReferenceType.STOCK_ADJUSTMENT,
-                    adjustment.id(), reason, approverId, now).ofLot(row.lotId());
+                    adjustment.id(), reason, approverId, now).ofLot(row.lotId())
+                    // The ledger names both pairs of eyes, and the counter of a count's variance (section 8).
+                    .askedBy(adjustment.requestedBy(), adjustment.countedBy());
             ledger.append(down ? line.leaving(adjustment.stockPackageId()) : line.arriving(adjustment.stockPackageId()));
             // The holds the write-off gave up, if any: announced after the row is saved.
             events.publishEventsOf(row);
@@ -1080,7 +1087,7 @@ class StockOperationsServiceImpl implements StockOperations {
     @Override
     @Auditable(action = AuditAction.REJECT, resourceType = "stock-adjustment", resourceId = "#adjustmentId")
     public StockAdjustmentSummary reject(UUID adjustmentId, UUID approverId, String reason) {
-        StockAdjustment adjustment = load(adjustmentId);
+        StockAdjustment adjustment = lock(adjustmentId);
         requireNotCounter(adjustment, approverId);
         adjustment.reject(approverId, reason, clock.instant());
         return toSummary(adjustments.save(adjustment));
@@ -1089,7 +1096,7 @@ class StockOperationsServiceImpl implements StockOperations {
     @Override
     @Auditable(action = AuditAction.TRANSITION, resourceType = "stock-adjustment", resourceId = "#adjustmentId")
     public StockAdjustmentSummary withdraw(UUID adjustmentId, UUID userId) {
-        StockAdjustment adjustment = load(adjustmentId);
+        StockAdjustment adjustment = lock(adjustmentId);
         adjustment.withdraw(userId, clock.instant());
         log.info("Adjustment {} withdrawn by its requester", adjustment.number());
         return toSummary(adjustments.save(adjustment));
@@ -1137,6 +1144,18 @@ class StockOperationsServiceImpl implements StockOperations {
         return adjustment;
     }
 
+    /**
+     * The adjustment to decide, its row locked ({@code FOR UPDATE}) and read fresh: approve, reject and withdraw all
+     * start from PENDING_APPROVAL, and without the lock two of them could both find it pending (WF-05 fix plan,
+     * section 8) - the row's version would refuse the second only at flush, as an optimistic-lock failure.
+     */
+    private StockAdjustment lock(UUID adjustmentId) {
+        StockAdjustment adjustment = adjustments.findByIdForUpdate(adjustmentId).orElseThrow(() ->
+                new BusinessException(ErrorCode.STOCK_ADJUSTMENT_NOT_FOUND, "No stock adjustment " + adjustmentId));
+        WarehouseScope.requireLocation(adjustment.location().code());
+        return adjustment;
+    }
+
     private static boolean inScope(String locationCode) {
         return WarehouseScope.restriction()
                 .map(allowed -> allowed.prefixes().contains(WarehouseScope.prefixOf(locationCode)))
@@ -1162,7 +1181,8 @@ class StockOperationsServiceImpl implements StockOperations {
         return new LedgerLine(m.id(), m.type(), m.sku().code(), m.lotNumber(),
                 m.from() == null ? null : m.from().code(), m.to() == null ? null : m.to().code(),
                 m.quantity(), m.status() == null ? null : m.status().name(),
-                m.toStatus() == null ? null : m.toStatus().name(), m.referenceType().name(), m.referenceId(), m.reason(), m.actorId(), m.occurredAt());
+                m.toStatus() == null ? null : m.toStatus().name(), m.referenceType().name(), m.referenceId(),
+                m.reason(), m.actorId(), m.occurredAt(), m.requestedBy(), m.countedBy());
     }
 
     static StockAdjustmentSummary toSummary(StockAdjustment a) {
@@ -1170,6 +1190,6 @@ class StockOperationsServiceImpl implements StockOperations {
                 a.quantityDelta(), StockAdjustmentReason.valueOf(a.reason().name()), a.note(),
                 StockAdjustmentStatus.valueOf(a.status().name()), a.requestedBy(), a.requestedAt(),
                 a.decidedBy(), a.decidedAt(), a.rejectionReason(), a.postedAt(), a.withdrawnAt(), a.version(),
-                a.stockPackageId() == null ? null : a.stockPackageId().value(), a.cycleCountLineId());
+                a.stockPackageId() == null ? null : a.stockPackageId().value(), a.cycleCountLineId(), a.countedBy());
     }
 }

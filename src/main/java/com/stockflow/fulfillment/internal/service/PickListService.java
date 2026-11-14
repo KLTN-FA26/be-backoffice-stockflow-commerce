@@ -607,7 +607,12 @@ class PickListService implements PickLists {
         Set<UUID> ids = order.lines().stream()
                 .flatMap(line -> line.reservationIds().stream())
                 .collect(Collectors.toCollection(LinkedHashSet::new));
-        if (pick.getDeliveryBatchId() != null) {
+        if (pick.getRedeliveryCaseId() != null) {
+            // WF-05 fix plan, section 2: a redelivery's task picks the goods held for its delivery failure case - not
+            // the batch's first holds (picked long ago) nor a later batch's.
+            ids.retainAll(orders.redelivery(pick.getRedeliveryCaseId())
+                    .map(com.stockflow.order.api.RedeliveryToPick::holdIds).orElse(Set.of()));
+        } else if (pick.getDeliveryBatchId() != null) {
             // 4B-8 (07 BR-07): a task picks its own delivery batch - the holds that stand for it, not the order's
             // others (a later batch's holds wait at the warehouse for their own release).
             ids.retainAll(orders.holdsOfBatch(order.orderId(), pick.getDeliveryBatchId()));

@@ -109,7 +109,10 @@ class DesignQuoteRequestNotificationListener {
         }
         return new InboxMessage(CATEGORY, InboxSeverity.INFO, texts.getString("inbox.design.projectQuote.title")
                 .formatted(event.lines().size()), body, "/admin/design-project-quote-requests", "DESIGN_PROJECT",
-                event.projectId().toString(), "design-project-quote:" + event.requestId());
+                // Keyed by the ask, not the request: an open request asked again differently tells the staff what it
+                // asks now, as a design's does; the same ask clicked twice publishes nothing the second time.
+                event.projectId().toString(), "design-project-quote:%s:%d".formatted(event.requestId(),
+                event.requestedAt().toEpochMilli()));
     }
 
     static InboxMessage message(DesignReviewed event) {

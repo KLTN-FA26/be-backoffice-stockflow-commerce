@@ -13,5 +13,12 @@ public record StockMovementResponse(UUID movementId, String type, String sku, St
                                     String fromLocation, String toLocation, int quantity, String status,
                                     String toStatus,
                                     String referenceType, UUID referenceId, String reason, UUID actorId,
-                                    Instant occurredAt) {
+                                    Instant occurredAt,
+                                    @io.swagger.v3.oas.annotations.media.Schema(description = "On an ADJUSTMENT line: "
+                                            + "who asked for the adjustment; actorId is who approved it. Null on "
+                                            + "every other line", nullable = true)
+                                    UUID requestedBy,
+                                    @io.swagger.v3.oas.annotations.media.Schema(description = "On an ADJUSTMENT line "
+                                            + "of a cycle count's variance: who counted the line", nullable = true)
+                                    UUID countedBy) {
 }

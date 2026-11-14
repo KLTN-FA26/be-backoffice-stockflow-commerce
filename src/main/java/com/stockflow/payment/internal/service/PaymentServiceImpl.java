@@ -38,7 +38,7 @@ class PaymentServiceImpl implements PaymentService {
     @Override
     @Transactional(readOnly = true)
     public CreditPosition creditPosition(UUID customerId) {
-        var overdue = installmentBook.overdue(customerId);
+        var overdue = installmentBook.overdue(customerId, installments.today());
         return new CreditPosition(installmentBook.afterDeliveryUnpaid(customerId), overdue.amount().signum() > 0,
                 overdue.amount(), overdue.oldestDueDate());
     }
@@ -73,6 +73,11 @@ class PaymentServiceImpl implements PaymentService {
     }
 
     @Override
+    public java.util.Optional<UUID> chargeFailedDelivery(com.stockflow.payment.api.ChargeFailedDeliveryCommand command) {
+        return installments.chargeFailedDelivery(command);
+    }
+
+    @Override
     public java.util.Optional<com.stockflow.payment.api.OrderSettlementResult> settleReturn(
             com.stockflow.payment.api.SettleReturnCommand command) {
         return settlements.settleReturn(command);
@@ -89,7 +94,7 @@ class PaymentServiceImpl implements PaymentService {
     public java.util.Optional<com.stockflow.payment.api.CompanyBankAccount> companyBankAccount() {
         return bank.configured()
                 ? java.util.Optional.of(new com.stockflow.payment.api.CompanyBankAccount(bank.bankName().strip(),
-                        bank.accountNumber().strip(), bank.accountName().strip()))
+                        bank.accountNumber().strip(), bank.accountName().strip(), bank.bin()))
                 : java.util.Optional.empty();
     }
 }

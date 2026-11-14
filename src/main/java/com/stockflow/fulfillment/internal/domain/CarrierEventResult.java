@@ -1,7 +1,8 @@
 package com.stockflow.fulfillment.internal.domain;
 
 /**
- * What came of a call to a carrier's webhook (kltn-docs 09 §4.5, BR-27). Decided once; the error list's results
+ * What came of a call to a carrier's webhook, or of a line of an imported file of outcomes (kltn-docs 09 §4.5,
+ * BR-27). Decided once; the error list's results
  * ({@link #errorList()}) are resolved by hand and never applied again.
  */
 public enum CarrierEventResult {
@@ -21,10 +22,16 @@ public enum CarrierEventResult {
     /** Its signature or credential did not hold, or it named no carrier the system knows. */
     INVALID_SIGNATURE,
     /** Not valid for the state of the load or shipment. */
-    NEEDS_REVIEW;
+    NEEDS_REVIEW,
+    /**
+     * A final outcome an unsigned webhook reported that the carrier's own API, asked back, does not confirm (WF-05 fix
+     * plan item 6): not applied.
+     */
+    UNVERIFIED;
 
     /** The warehouse manager's error list (09 §4.5 step 8). */
     public boolean errorList() {
-        return this == RECEIVED || this == UNMATCHED || this == INVALID_SIGNATURE || this == NEEDS_REVIEW;
+        return this == RECEIVED || this == UNMATCHED || this == INVALID_SIGNATURE || this == NEEDS_REVIEW
+                || this == UNVERIFIED;
     }
 }

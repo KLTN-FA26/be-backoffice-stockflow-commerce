@@ -78,7 +78,9 @@ refuses to start and deploy.sh rolls back, so set all of them before the deploy 
 `RESEND_REPLY_TO` (Sales' mailbox), `RESEND_WEBHOOK_SECRET` with a webhook in Resend pointing at
 `https://api.<domain>/api/v1/notifications/webhooks/resend` (events `email.delivered`, `email.bounced`,
 `email.complained`, `email.delivery_delayed`, `email.failed`) for delivery reports. Customer order mail is off by
-default (`CUSTOMER_EMAIL_ENABLED=false`): the business documents leave it to a later phase. Check after switching with
+default (`CUSTOMER_EMAIL_ENABLED=false`): the business documents leave it to a later phase. E-invoice mail to the
+buyer is not order mail and is on by default (`EINVOICE_EMAIL_ENABLED=true`): an issued invoice must reach the buyer.
+Check after switching with
 the portal invitation instead: invite a customer contact whose e-mail you own; the mail arrives and
 `notification.delivery_log` has a `SENT` row with a `provider_message_id`.
 

@@ -42,9 +42,11 @@ class ProductionInstructionSheet {
             .withZone(ZoneId.of("Asia/Ho_Chi_Minh"));
 
     private final LabelFonts fonts;
+    private final PrintOutputIntentProperties intent;
 
-    ProductionInstructionSheet(LabelFonts fonts) {
+    ProductionInstructionSheet(LabelFonts fonts, PrintOutputIntentProperties intent) {
         this.fonts = fonts;
+        this.intent = intent;
     }
 
     /** What the sheet states. {@code carton} is null when the variant has none (preflight refuses that already). */
@@ -77,7 +79,9 @@ class ProductionInstructionSheet {
         lines.add(row(texts, "design.instruction.printFileChecksum", facts.printFileChecksum()));
         lines.add(row(texts, "design.instruction.approved", facts.approvedBy() + " · "
                 + WHEN.format(facts.approvedAt())));
-        lines.add(new String[] {"", texts.getString("design.instruction.pdfx")});
+        // Which output intent PrintReadyStamp embedded, and whether it is still the interim one (B35).
+        lines.add(new String[] {"", texts.getString(intent.interim() ? "design.instruction.pdfxInterim"
+                : "design.instruction.pdfx").formatted(intent.outputConditionIdentifier())});
 
         try (PDDocument document = new PDDocument()) {
             PDFont bold = PDType0Font.load(document, new ByteArrayInputStream(fonts.bold()), true);

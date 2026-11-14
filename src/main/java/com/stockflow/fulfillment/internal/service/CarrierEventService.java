@@ -55,6 +55,10 @@ import java.util.stream.Collectors;
  *   <li>it is applied ({@link CarrierEventApplier#apply}); a refusal is decided NEEDS_REVIEW in one more.</li>
  * </ol>
  * A process that dies between the first and the last leaves the call RECEIVED, which the error list shows.
+ *
+ * <p>A line of an imported file of delivery outcomes ({@link #recordFromFile}) is kept and matched in one transaction
+ * and applied in the next, by the same applier: one rule for a repeat and for an outdated report, whichever way the
+ * carrier's word came.</p>
  */
 @Service
 class CarrierEventService implements CarrierEvents {
@@ -62,7 +66,8 @@ class CarrierEventService implements CarrierEvents {
     /** A RECEIVED call younger than this is still being handled, not stranded. */
     static final Duration STILL_HANDLED = Duration.ofMinutes(5);
     private static final Set<CarrierEventResult> ERRORS = EnumSet.of(CarrierEventResult.RECEIVED,
-            CarrierEventResult.UNMATCHED, CarrierEventResult.INVALID_SIGNATURE, CarrierEventResult.NEEDS_REVIEW);
+            CarrierEventResult.UNMATCHED, CarrierEventResult.INVALID_SIGNATURE, CarrierEventResult.NEEDS_REVIEW,
+            CarrierEventResult.UNVERIFIED);
     private static final Logger log = LoggerFactory.getLogger(CarrierEventService.class);
 
     private final CarrierEventJpaRepository events;
@@ -71,6 +76,9 @@ class CarrierEventService implements CarrierEvents {
     private final ShipmentJpaRepository shipments;
     private final IdentityService identities;
     private final CarrierEventApplier applier;
+    private final AhamoveOutcomeVerifier verifier;
+    private final CarrierReportWindow window;
+    private final IpAllowList allowedAddresses;
     private final SecretCipher cipher;
     private final ObjectMapper json;
     private final TransactionOperations tx;
@@ -79,13 +87,17 @@ class CarrierEventService implements CarrierEvents {
     @SuppressWarnings("java:S107")
     CarrierEventService(CarrierEventJpaRepository events, CarrierJpaRepository carriers, DispatchLoadJpaRepository loads,
                         ShipmentJpaRepository shipments, IdentityService identities, CarrierEventApplier applier,
-                        SecretCipher cipher, ObjectMapper json, TransactionOperations tx, Clock clock) {
+                        AhamoveOutcomeVerifier verifier, AhamoveProperties ahamove, SecretCipher cipher,
+                        ObjectMapper json, TransactionOperations tx, Clock clock) {
         this.events = events;
         this.carriers = carriers;
         this.loads = loads;
         this.shipments = shipments;
         this.identities = identities;
         this.applier = applier;
+        this.verifier = verifier;
+        this.window = new CarrierReportWindow(ahamove.webhook().maxAge(), ahamove.webhook().maxFuture());
+        this.allowedAddresses = IpAllowList.of(ahamove.webhook().allowedIps());
         this.cipher = cipher;
         this.json = json;
         this.tx = tx;
@@ -96,7 +108,7 @@ class CarrierEventService implements CarrierEvents {
 
     @Override
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
-    public Receipt receive(String carrierCode, UnaryOperator<String> header, byte[] body) {
+    public Receipt receive(String carrierCode, UnaryOperator<String> header, String remoteAddress, byte[] body) {
         Instant now = clock.instant();
         String code = carrierCode == null ? "" : carrierCode.strip();
         String kept = code.matches("^[!-~]{1,64}$") ? code : "?";
@@ -107,7 +119,7 @@ class CarrierEventService implements CarrierEvents {
             log.warn("Carrier webhook for unknown carrier '{}' refused ({} bytes)", kept, body == null ? 0 : body.length);
             return new Receipt(null, CarrierEventResult.INVALID_SIGNATURE.name(), false, false);
         }
-        String refusal = refusal(carrier, header, body);
+        String refusal = refusal(carrier, header, remoteAddress, body);
         UUID eventId = Identifiers.newId();
         // A refused call is kept as its size, digest and first characters: enough to recognise, too little to fill the
         // log with what anyone can send.
@@ -123,7 +135,7 @@ class CarrierEventService implements CarrierEvents {
         try {
             CarrierEventApplier.Matched matched = tx.execute(s -> applier.match(eventId, carrier, body));
             result = matched == null ? tx.execute(s -> events.findById(eventId).orElseThrow().getResult())
-                    : tx.execute(s -> applier.apply(eventId, carrier, matched));
+                    : guardedApply(eventId, carrier, matched, now);
         } catch (CarrierWebhookRetry later) {
             tx.executeWithoutResult(s -> applier.retryLater(eventId, later.getMessage()));
             log.info("Carrier webhook {} for {}: to be sent again ({})", eventId, kept, later.getMessage());
@@ -143,6 +155,94 @@ class CarrierEventService implements CarrierEvents {
         return new Receipt(eventId, Objects.requireNonNull(result).name(), true, false);
     }
 
+    /**
+     * Applies a matched webhook call - an API_BOOKING carrier's only after the defences its unsigned callback needs
+     * (WF-05 fix plan item 6): the report's time inside the window, and a final outcome borne out by the carrier's own
+     * API. The API is asked with no transaction open, and only about a report that is neither a repeat nor outdated:
+     * those are told so by {@link CarrierEventApplier#apply} without a call.
+     *
+     * @throws CarrierWebhookRetry when the carrier's API did not answer
+     */
+    private CarrierEventResult guardedApply(UUID eventId, CarrierJpaEntity carrier, CarrierEventApplier.Matched matched,
+                                            Instant now) {
+        if (CarrierConnectionType.API_BOOKING.name().equals(carrier.getConnectionType())) {
+            CarrierReportWindow.Outside outside = window.judge(matched.report().reportedAt(), now);
+            if (outside != null) {
+                return tx.execute(s -> applier.close(eventId, outside.result(), outside.note()));
+            }
+            if (verifier.concerns(matched) && Boolean.TRUE.equals(tx.execute(s -> applier.fresh(eventId, matched)))) {
+                String unconfirmed = verifier.verify(carrier, matched);
+                if (unconfirmed != null) {
+                    return tx.execute(s -> applier.close(eventId, CarrierEventResult.UNVERIFIED, unconfirmed));
+                }
+            }
+        }
+        return tx.execute(s -> applier.apply(eventId, carrier, matched));
+    }
+
+    // ------------------------------------------------------------------ a line of an imported file
+
+    @Override
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    public FileOutcome recordFromFile(FileLine line) {
+        UUID eventId = Identifiers.newId();
+        CarrierJpaEntity carrier = tx.execute(s -> carriers.findById(line.carrierId()).orElseThrow());
+        String payload = payload(line);
+        CarrierEventResult result;
+        try {
+            CarrierEventApplier.Matched matched = tx.execute(s -> applier.matchFile(eventId, carrier, line, payload));
+            result = matched == null ? tx.execute(s -> events.findById(eventId).orElseThrow().getResult())
+                    : tx.execute(s -> applier.apply(eventId, carrier, matched));
+        } catch (RuntimeException failure) {
+            if (!(failure instanceof BusinessException) && !uniqueRace(failure)) {
+                // A deadlock, a lost connection: not the line's fault. Left undecided; the file applied again makes a
+                // new event of the line, which this one - never handled - does not make a repeat.
+                log.error("Line {} of delivery-outcome import {} could not be applied now", line.line(),
+                        line.importId(), failure);
+                String why = "Could not be applied (" + failure.getClass().getSimpleName() + "): apply the file again";
+                tx.executeWithoutResult(s -> applier.retryLater(eventId, why));
+                return new FileOutcome(eventId, CarrierEventResult.RECEIVED.name(), why);
+            }
+            result = tx.execute(s -> applier.failed(eventId, failure));
+        }
+        String note = tx.execute(s -> events.findById(eventId).map(CarrierEventJpaEntity::getResultNote).orElse(null));
+        log.info("Line {} of delivery-outcome import {} (event {}): {}", line.line(), line.importId(), eventId, result);
+        return new FileOutcome(eventId, Objects.requireNonNull(result).name(), note);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Map<Integer, FileOutcome> outcomesOfImport(UUID importId) {
+        Map<Integer, FileOutcome> byLine = new HashMap<>();
+        events.findByOutcomeImportId(importId).forEach(e -> byLine.put(e.getOutcomeImportLine(),
+                new FileOutcome(e.getId(), e.getResult().name(), e.getResultNote())));
+        return byLine;
+    }
+
+    /** The line as the event keeps it: what the file said, as a webhook's body is kept. */
+    private String payload(FileLine line) {
+        com.fasterxml.jackson.databind.node.ObjectNode body = json.createObjectNode();
+        body.put("source", CarrierEventJpaEntity.FILE);
+        body.put("importId", line.importId().toString());
+        body.put("line", line.line());
+        body.put("waybillNo", line.waybillNo());
+        body.put("outcome", line.kind().name());
+        body.put("reportedAt", line.reportedAt().toString());
+        if (line.shipmentCode() != null) {
+            body.put("shipmentCode", line.shipmentCode());
+        }
+        if (line.reason() != null || line.wording() != null) {
+            body.put("failureReason", line.reason() != null ? line.reason().name() : line.wording());
+        }
+        if (line.recipient() != null) {
+            body.put("recipient", line.recipient());
+        }
+        if (line.note() != null) {
+            body.put("note", line.note());
+        }
+        return body.toString();
+    }
+
     /** Two copies of one report applied at the same moment: one of them meets {@code uk_carrier_event_applied}. */
     private static boolean uniqueRace(RuntimeException failure) {
         return failure instanceof org.springframework.dao.DataIntegrityViolationException taken
@@ -150,19 +250,30 @@ class CarrierEventService implements CarrierEvents {
     }
 
     /**
-     * Why the call is not taken as the carrier's (09 §4.5 step 3), or null when it is: an API_BOOKING carrier's
-     * configured header must carry the configured value; a WEBHOOK_LOAD carrier's body must be signed with its secret.
-     * The reason names no value.
+     * Why the call is not taken as the carrier's (09 §4.5 step 3), or null when it is: an API_BOOKING carrier's call
+     * must come from an allowed address, when a list is configured, and its configured header must carry the
+     * configured value - or the next one, while it is being replaced; a WEBHOOK_LOAD carrier's body must be signed
+     * with its secret. The reason names no value.
      */
-    private String refusal(CarrierJpaEntity carrier, UnaryOperator<String> header, byte[] body) {
+    private String refusal(CarrierJpaEntity carrier, UnaryOperator<String> header, String remoteAddress,
+                           byte[] body) {
         if (!carrier.isWebhookEnabled()) {
             return "Carrier %s does not take webhooks now".formatted(carrier.getCode());
         }
         try {
             if (CarrierConnectionType.API_BOOKING.name().equals(carrier.getConnectionType())) {
+                if (!allowedAddresses.allows(remoteAddress)) {
+                    // The address is not kept in the note: the log line below the caller writes has the event's id.
+                    return "The call came from an address that is not on the allow-list";
+                }
                 String expected = cipher.open(carrier.getWebhookAuthValueSealed(),
-                        CarrierService.context(carrier, "webhook-auth-value"));
-                return WebhookCredentials.headerHolds(expected, header.apply(carrier.getWebhookAuthHeader())) ? null
+                        CarrierService.context(carrier, CarrierService.WEBHOOK_AUTH_VALUE));
+                // While the credential is being replaced at the carrier, the next one holds as well.
+                String next = carrier.getWebhookAuthValueNextSealed() == null ? null
+                        : cipher.open(carrier.getWebhookAuthValueNextSealed(),
+                                CarrierService.context(carrier, CarrierService.WEBHOOK_AUTH_VALUE_NEXT));
+                return WebhookCredentials.headerHoldsEither(expected, next,
+                        header.apply(carrier.getWebhookAuthHeader())) ? null
                         : "The %s header does not carry the credential configured".formatted(
                                 carrier.getWebhookAuthHeader());
             }
@@ -295,8 +406,8 @@ class CarrierEventService implements CarrierEvents {
         }
         Map<UUID, String> names = new HashMap<>(identities.displayNames(found.stream()
                 .map(CarrierEventJpaEntity::getResolvedBy).filter(Objects::nonNull).distinct().toList()));
-        return found.stream().map(e -> new EventRow(e.getId(), e.getCarrierId(), e.getCarrierCode(), e.getReceivedAt(),
-                e.isSignatureValid(), e.getEventKind() == null ? null : e.getEventKind().name(),
+        return found.stream().map(e -> new EventRow(e.getId(), e.getCarrierId(), e.getCarrierCode(), e.getSource(),
+                e.getReceivedAt(), e.isSignatureValid(), e.getEventKind() == null ? null : e.getEventKind().name(),
                 e.getCarrierReference(), e.getCarrierReportedAt(), e.getWarehouseId(), e.getLoadId(),
                 loadCodes.get(e.getLoadId()), e.getShipmentId(), shipmentCodes.get(e.getShipmentId()),
                 e.getResult().name(), e.getResultNote(), e.getDecidedAt(), e.getResolvedAt(), e.getResolvedBy(),
