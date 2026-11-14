@@ -37,12 +37,14 @@ BEGIN
     RAISE NOTICE 'ok    %', label;
 END $$;
 
--- Fixtures: a carton unit of the sofa measuring 60 x 50 x 40 cm (the demo's own unit has no size), a non-rotatable
--- variant of it on the oak table, and two small bins on a new level of B01: N (0.55 x 0.55, too narrow either way)
--- and T (0.6 wide x 0.5 long: only a carton turned on the horizontal fits), both on a level 0.45 m clear.
+-- Fixtures: a carton unit of the sofa measuring 60 x 50 x 40 cm and one nobody measured (the demo's own carton unit
+-- has the item's package size since V20261128000100), a non-rotatable variant of the first on the oak table, and two
+-- small bins on a new level of B01: N (0.55 x 0.55, too narrow either way) and T (0.6 wide x 0.5 long: only a carton
+-- turned on the horizontal fits), both on a level 0.45 m clear.
 INSERT INTO inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor, length_cm, width_cm, height_cm)
 VALUES (md5('qa50:unit:sofa')::uuid, md5('demo:item:SOFA-3S-GREY')::uuid, 'QA50_CTN', 1, 60, 50, 40),
-       (md5('qa50:unit:table')::uuid, md5('demo:item:TABLE-OAK-160')::uuid, 'QA50_CTN', 1, 60, 50, 40);
+       (md5('qa50:unit:table')::uuid, md5('demo:item:TABLE-OAK-160')::uuid, 'QA50_CTN', 1, 60, 50, 40),
+       (md5('qa50:unit:unmeasured')::uuid, md5('demo:item:SOFA-3S-GREY')::uuid, 'QA50_NOSIZE', 1, NULL, NULL, NULL);
 UPDATE inventory.inventory_items SET rotatable = FALSE WHERE sku = 'TABLE-OAK-160';
 INSERT INTO warehouse.shelf_level (id, shelf_id, level_index, elevation, usable_height, max_weight)
 VALUES (md5('qa50:level')::uuid, md5('demo:shelf:HCM-B01')::uuid, 5, 3, 0.45, 500);
@@ -111,10 +113,10 @@ SELECT pg_temp.expect_ok('BV14 any carton goes into an area: size is not checked
     INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, location_code)
     VALUES (gen_random_uuid(), 'QA50-A', md5('demo:item:TABLE-OAK-160')::uuid, md5('qa50:unit:table')::uuid, 1,
             'HCM-RCV01') $q$);
-SELECT pg_temp.expect_ok('BV15 a carton nobody measured is not judged (the demo carton unit has no size)', $q$
+SELECT pg_temp.expect_ok('BV15 a carton nobody measured is not judged (a carton unit with no size)', $q$
     INSERT INTO inventory.stock_package (id, lpn, inventory_item_id, uom_conversion_id, nominal_qty, location_code)
     VALUES (gen_random_uuid(), 'QA50-U', md5('demo:item:SOFA-3S-GREY')::uuid,
-            md5('demo:unit:SOFA-3S-GREY:CARTON')::uuid, 1, 'HCM-B01-5-N') $q$);
+            md5('qa50:unit:unmeasured')::uuid, 1, 'HCM-B01-5-N') $q$);
 SELECT pg_temp.expect_ok('BV16 a carton already standing in a bin is not judged again until it moves', $q$
     UPDATE inventory.uom_conversions SET height_cm = 46 WHERE id = md5('qa50:unit:sofa')::uuid;
     UPDATE inventory.stock_package SET last_modified_by = 'qa50' WHERE id = md5('qa50:pk:sofa')::uuid;

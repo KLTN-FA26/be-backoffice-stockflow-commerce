@@ -13,13 +13,10 @@
 --
 -- Every row printed is a (warehouse, SKU) whose ledger and on hand disagree; no row = balanced.
 --
--- Not under tools/db/qa/ (and so not run by RepositorySqlQaTest), on purpose: the demo seed fails it. Its stock
--- (V20261111000001: SOFA-3S-GREY, TABLE-OAK-160 at HCM, 75 pieces) was loaded as rows with triggers off, as opening
--- stock with no receipt (lot UNTRACED, 20 §4.7 step 3); the only ledger lines it has are the boxing of loose stock into
--- cartons (V20261111000110: MOVE / STOCK_PACKAGE inside HCM, zero for the warehouse). So the ledger says 0 where the
--- shelves hold 33 and 42. StockLedgerTotalsIntegrationTest holds the invariant over flows it builds. Once the demo
--- data's opening stock has ledger lines (a demo migration of BE4), this belongs under qa/ as an expect_true on
--- "no row".
+-- The demo data balances since V20261128000100 gave the seeded opening stock its opening ledger lines (open-questions
+-- C45), so tools/db/qa/99_stock_ledger_balance.sql now guards the same invariant on the demo database (and
+-- RepositorySqlQaTest runs it). This report stays for any other database - real data, a restored dump - and prints the
+-- rows that disagree, which the QA script only counts.
 -- =============================================================================
 
 WITH warehouses AS (

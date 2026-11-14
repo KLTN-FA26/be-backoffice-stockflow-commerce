@@ -5,9 +5,10 @@ package com.stockflow.inventory.api;
  * 2026-11-14 plan, BE2-C): what it held at the start, what came in and went out by kind, what it held at the end. In
  * pieces (the base unit the ledger counts in); every in and out column is zero or more, an out column counting what
  * left. Opening and closing are the ledger's own sums, true as long as every change of stock wrote its line (20
- * BR-16): stock loaded as rows without one - the demo seed's opening stock, V20261111000001 - is missing from them,
- * and a SKU whose only stock is such can even close below zero ({@code tools/db/stock_ledger_balance.sql} lists
- * them).
+ * BR-16): stock loaded as rows without one is missing from them, and a SKU whose only stock is such can even close
+ * below zero ({@code tools/db/stock_ledger_balance.sql} lists them; {@code tools/db/qa/99_stock_ledger_balance.sql}
+ * holds the demo data to it). Opening stock is loaded with an opening line - a {@code RECEIPT} of a
+ * {@code STOCK_PACKAGE}, as the demo seed's got in V20261128000100 (open-questions C45) - which counts as "other in".
  *
  * <p>The columns add up: {@code closing = opening + received + returned + putBack - picked + adjustedIn - adjustedOut
  * + otherIn - otherOut}. "Other" is whatever the kinds above do not name - the movement types of removed flows
