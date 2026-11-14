@@ -362,6 +362,24 @@ class PermissionMatrixTest {
                     Role.CUSTOMER, Role.SYSTEM_ADMIN)),
             Map.entry("payment-refunds:CREATE", Set.of(Role.ACCOUNTANT, Role.SYSTEM_ADMIN)),
             Map.entry("payment-refunds:UPDATE", Set.of(Role.ACCOUNTANT, Role.SYSTEM_ADMIN)),
+            // 2026-11-14 plan, BE2 (V20261126000100): the receipts' Excel file, for the accounting software (15 BR-06), is
+            // the accountant's, as recording and voiding them are.
+            Map.entry("payment-receipts:EXPORT", Set.of(Role.ACCOUNTANT, Role.SYSTEM_ADMIN)),
+            // BE2-B (15 §2, §4.3): receivables are read by the accountant, Sales and the Sales Manager; exported - every
+            // customer's debt at once - by the accountant and the Sales Manager.
+            Map.entry("reporting-receivables:VIEW_PAGE", Set.of(Role.ACCOUNTANT, Role.SALES_MANAGER,
+                    Role.SALES_STAFF, Role.SYSTEM_ADMIN)),
+            Map.entry("reporting-receivables:READ", Set.of(Role.ACCOUNTANT, Role.SALES_MANAGER, Role.SALES_STAFF,
+                    Role.SYSTEM_ADMIN)),
+            Map.entry("reporting-receivables:EXPORT", Set.of(Role.ACCOUNTANT, Role.SALES_MANAGER, Role.SYSTEM_ADMIN)),
+            // BE2-C (20 §4.7): the stock summary is read by the warehouse manager (their warehouses), the Sales Manager
+            // and the accountant; exported by the warehouse manager and the accountant.
+            Map.entry("reporting-stock-summary:VIEW_PAGE", Set.of(Role.WAREHOUSE_MANAGER, Role.SALES_MANAGER,
+                    Role.ACCOUNTANT, Role.SYSTEM_ADMIN)),
+            Map.entry("reporting-stock-summary:READ", Set.of(Role.WAREHOUSE_MANAGER, Role.SALES_MANAGER,
+                    Role.ACCOUNTANT, Role.SYSTEM_ADMIN)),
+            Map.entry("reporting-stock-summary:EXPORT", Set.of(Role.WAREHOUSE_MANAGER, Role.ACCOUNTANT,
+                    Role.SYSTEM_ADMIN)),
             // 4B-7, kltn-docs 17 §4.2 step 2: Sales chooses the shipping warehouse; those who follow the order read it.
             Map.entry("sales-order-shipping-warehouses:UPDATE", Set.of(Role.SALES_STAFF, Role.SYSTEM_ADMIN)),
             Map.entry("sales-order-shipping-warehouses:READ", Set.of(Role.SALES_STAFF, Role.SALES_MANAGER,
@@ -838,6 +856,46 @@ class PermissionMatrixTest {
         assertThat(roles.resolve(List.of(Role.CUSTOMER.authority())).permissions())
                 .doesNotContain(PermissionCode.parse("sales-order-holds:UPDATE"),
                         PermissionCode.parse("sales-order-cancellations:UPDATE"));
+    }
+
+    /**
+     * 2026-11-14 plan, BE2: each report reads with its own resource's READ and exports with its EXPORT; the receipts'
+     * total reads as the list does and their file is {@code payment-receipts:EXPORT}. The stock summary keeps the
+     * default scope (ALL), which is what narrows a WAREHOUSE-scoped manager to their warehouses. The customer holds
+     * none of them; a salesperson reads receivables but does not export them; the warehouse manager reads stock, not
+     * debts.
+     */
+    @Test
+    void theReportEndpointsNeedTheirPermissions() {
+        Map<String, Handler> byKey = new HashMap<>();
+        handlers().forEach(h -> byKey.put(h.key(), h));
+        Map<String, String> expected = Map.of(
+                "GET /api/v1/reports/receivables", "reporting-receivables:READ",
+                "GET /api/v1/reports/receivables/export", "reporting-receivables:EXPORT",
+                "GET /api/v1/reports/stock-summary", "reporting-stock-summary:READ",
+                "GET /api/v1/reports/stock-summary/export", "reporting-stock-summary:EXPORT",
+                "GET /api/v1/payment-receipts", "payment-receipts:READ",
+                "GET /api/v1/payment-receipts/summary", "payment-receipts:READ",
+                "GET /api/v1/payment-receipts/export", "payment-receipts:EXPORT");
+        expected.forEach((key, code) -> {
+            assertThat(byKey).as(key).containsKey(key);
+            RequiresPermission rp = byKey.get(key).rp();
+            assertThat(rp).as(key + " is guarded").isNotNull();
+            assertThat(PermissionCode.of(rp.resource(), rp.action())).as(key).isEqualTo(PermissionCode.parse(code));
+            assertThat(rp.scope()).as(key).isEqualTo(DataScope.ALL);
+        });
+        List<PermissionCode> all = expected.values().stream().distinct().map(PermissionCode::parse).toList();
+        assertThat(roles.resolve(List.of(Role.CUSTOMER.authority())).permissions()).doesNotContainAnyElementsOf(all);
+        assertThat(roles.resolve(List.of(Role.SALES_STAFF.authority())).permissions())
+                .contains(PermissionCode.parse("reporting-receivables:READ"))
+                .doesNotContain(PermissionCode.parse("reporting-receivables:EXPORT"),
+                        PermissionCode.parse("reporting-stock-summary:READ"),
+                        PermissionCode.parse("payment-receipts:EXPORT"));
+        assertThat(roles.resolve(List.of(Role.WAREHOUSE_MANAGER.authority())).permissions())
+                .contains(PermissionCode.parse("reporting-stock-summary:READ"),
+                        PermissionCode.parse("reporting-stock-summary:EXPORT"))
+                .doesNotContain(PermissionCode.parse("reporting-receivables:READ"),
+                        PermissionCode.parse("payment-receipts:EXPORT"));
     }
 
     /**
