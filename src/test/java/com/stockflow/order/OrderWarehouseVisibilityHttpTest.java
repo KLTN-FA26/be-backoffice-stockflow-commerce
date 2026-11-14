@@ -150,6 +150,58 @@ class OrderWarehouseVisibilityHttpTest {
     }
 
     @Test
+    @DisplayName("BE-8: the order, in the detail and in the list, carries the time of its first label - absent until then")
+    void orderResponseCarriesTheFirstLabelTime() throws Exception {
+        mvc.asRole(Role.WAREHOUSE_MANAGER, managerHere, get(ORDERS + "/" + shipsHere)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.firstLabeledAt").doesNotExist());
+        tx.executeWithoutResult(s -> {
+            jdbc.update("SET LOCAL session_replication_role = replica");
+            jdbc.update("UPDATE ordering.customer_order SET first_labeled_at = '2026-11-12T03:04:05Z' WHERE id = ?",
+                    shipsHere);
+        });
+        mvc.asRole(Role.WAREHOUSE_MANAGER, managerHere, get(ORDERS + "/" + shipsHere)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.firstLabeledAt").value("2026-11-12T03:04:05Z"));
+        mvc.asRole(Role.SALES_STAFF, sales, get(ORDERS).param("size", "200")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[?(@.orderId == '" + shipsHere + "')].firstLabeledAt")
+                        .value(org.hamcrest.Matchers.contains("2026-11-12T03:04:05Z")))
+                .andExpect(jsonPath("$.data.items[?(@.orderId == '" + shipsThere + "')].firstLabeledAt")
+                        .isEmpty());
+    }
+
+    @Test
+    @DisplayName("BE-13: the manager reads the delivery schedule of an order of their warehouse (sales-order-delivery-"
+            + "batches:READ, which follows the release permission), not found for any other - and never the contract")
+    void deliveryScheduleIsReadByWhoeverReleasesWithinTheirWarehouses() throws Exception {
+        String schedule = ORDERS + "/" + shipsHere + "/delivery-batches";
+        mvc.asRole(Role.WAREHOUSE_MANAGER, managerHere, get(schedule)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.orderId").value(shipsHere.toString()));
+        mvc.asRole(Role.WAREHOUSE_MANAGER, managerHere, get(ORDERS + "/" + releasedHere + "/delivery-batches"))
+                .andExpect(status().isOk());
+        for (UUID other : List.of(shipsThere, shipsNowhere)) {
+            mvc.asRole(Role.WAREHOUSE_MANAGER, managerHere, get(ORDERS + "/" + other + "/delivery-batches"))
+                    .andExpect(status().isNotFound());
+        }
+        mvc.asRole(Role.WAREHOUSE_MANAGER, managerNowhere, get(schedule)).andExpect(status().isNotFound());
+        // An unknown order is 404 for a limited caller and for an unlimited one alike.
+        mvc.asRole(Role.WAREHOUSE_MANAGER, managerHere, get(ORDERS + "/" + UUID.randomUUID() + "/delivery-batches"))
+                .andExpect(status().isNotFound());
+        // What it does not get is the contract: the schedule's own code, not sales-contracts:READ, was granted.
+        mvc.asRole(Role.WAREHOUSE_MANAGER, managerHere, get(ORDERS + "/" + shipsHere + "/contract"))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    @DisplayName("BE-13: whoever read the schedule with the contract still reads it, of every order; a customer never does")
+    void deliveryScheduleStaysWithItsFormerReaders() throws Exception {
+        for (Role role : List.of(Role.SALES_STAFF, Role.SALES_MANAGER, Role.ACCOUNTANT)) {
+            mvc.asRole(role, sales, get(ORDERS + "/" + shipsThere + "/delivery-batches")).andExpect(status().isOk());
+            mvc.asRole(role, sales, get(ORDERS + "/" + shipsNowhere + "/delivery-batches")).andExpect(status().isOk());
+        }
+        mvc.asRole(Role.CUSTOMER, sales, get(ORDERS + "/" + shipsHere + "/delivery-batches"))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
     @DisplayName("Sales (scope ALL) still sees every order")
     void salesSeesAll() throws Exception {
         mvc.asRole(Role.SALES_STAFF, sales, get(ORDERS).param("size", "200")).andExpect(status().isOk())

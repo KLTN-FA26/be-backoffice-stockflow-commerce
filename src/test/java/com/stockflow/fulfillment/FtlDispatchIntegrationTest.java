@@ -555,6 +555,12 @@ class FtlDispatchIntegrationTest {
         waybill(dispatcher, "WAREHOUSE_STAFF", loadId, number, null).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.waybillNo").value(number))
                 .andExpect(jsonPath("$.data.carrierConnectionType").value("MANUAL"));
+        // The number is there; the driver's name is not: refused (WF4-DRIVER) until typed with the number.
+        handOver(loadId).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("LOAD_DRIVER_MISSING"));
+        as(dispatcher, "WAREHOUSE_STAFF", body(put(LOADS + "/" + loadId + "/waybill"), "{\"waybillNo\":\"" + number
+                + "\",\"driverName\":\"Tai\"}")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.driverName").value("Tai"));
         handOver(loadId).andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("DISPATCHED"));
         dispatch(get(LOADS + "/" + loadId + "/manifest")).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.waybillNo").value(number));
@@ -1078,14 +1084,27 @@ class FtlDispatchIntegrationTest {
     }
 
     private void loadAndSign(String loadId, String plate) throws Exception {
+        loadAndScan(loadId);
+        // WF4-DRIVER: the driver's name is on the load before the signature. A test that is not about the driver has the
+        // dispatcher type one when the booking or the carrier's webhook left the load without.
+        if (!load(loadId).hasNonNull("driverName")) {
+            dispatch(body(put(LOADS + "/" + loadId + "/driver"), "{\"driverName\":\"Tai\"}"))
+                    .andExpect(status().isOk());
+        }
+        sign(loadId, plate).andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("DISPATCHED"));
+    }
+
+    private void loadAndScan(String loadId) throws Exception {
         dispatch(post(LOADS + "/" + loadId + "/loading-start")).andExpect(status().isOk());
         for (String label : labels(load(loadId))) {
             scanOnto(loadId, label).andExpect(status().isOk());
         }
+    }
+
+    private ResultActions sign(String loadId, String plate) throws Exception {
         long version = load(loadId).path("version").asLong();
-        dispatch(body(post(LOADS + "/" + loadId + "/handover"), "{\"version\":" + version
-                + ",\"carrierRepresentative\":\"Nguyen Van Tai\",\"vehiclePlate\":\"" + plate + "\",\"signed\":true}"))
-                .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("DISPATCHED"));
+        return dispatch(body(post(LOADS + "/" + loadId + "/handover"), "{\"version\":" + version
+                + ",\"carrierRepresentative\":\"Nguyen Van Tai\",\"vehiclePlate\":\"" + plate + "\",\"signed\":true}"));
     }
 
     @Test
@@ -1141,6 +1160,9 @@ class FtlDispatchIntegrationTest {
         aha(code, ahamove("AHA-W1", "IN PROCESS", "", "\"pickup_time\":1800000600", ""))
                 .andExpect(jsonPath("$.data.result").value("NEEDS_REVIEW"));
         loadAndSign(loadId, "51C-AHA.01");
+        // WF4-DRIVER: the driver the carrier sent is the driver on the signed load - not the one who signed for it.
+        assertThat(load(loadId).path("driverName").asText()).isEqualTo("Tài xế B");
+        assertThat(load(loadId).path("carrierRepresentative").asText()).isEqualTo("Nguyen Van Tai");
         aha(code, ahamove("AHA-W1", "IN PROCESS", "", "\"pickup_time\":1800000700", ""))
                 .andExpect(jsonPath("$.data.result").value("APPLIED"));
         assertThat(jdbc.queryForObject("SELECT milestone FROM fulfillment.tracking_milestone WHERE load_id = ?::uuid",
@@ -1225,7 +1247,16 @@ class FtlDispatchIntegrationTest {
                 .CarrierBookingGateway.Placed("AHA-K1", null));
         dispatch(body(post(LOADS + "/" + loadId + "/booking"), "{\"carrierId\":\"" + aha + "\"}"))
                 .andExpect(status().isOk());
-        loadAndSign(loadId, "51C-AHA.02");
+        // The carrier never sent a driver: the load cannot be signed until the dispatcher types one (WF4-DRIVER).
+        loadAndScan(loadId);
+        sign(loadId, "51C-AHA.02").andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("LOAD_DRIVER_MISSING"));
+        dispatch(body(put(LOADS + "/" + loadId + "/driver"), "{\"driverName\":\"Tài xế gõ tay\"}"))
+                .andExpect(status().isOk());
+        sign(loadId, "51C-AHA.02").andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("DISPATCHED"));
+        assertThat(load(loadId).path("driverName").asText()).isEqualTo("Tài xế gõ tay");
+        assertThat(load(loadId).path("carrierRepresentative").asText()).isEqualTo("Nguyen Van Tai");
+        assertThat(load(loadId).path("waybillNo").asText()).isEqualTo("AHA-K1");
 
         String wording = "Khách không nghe máy ".repeat(40);
         ahamoveSays("AHA-K1", "COMPLETED", "FAILED");
@@ -1891,7 +1922,8 @@ class FtlDispatchIntegrationTest {
         String loadId = loadOf(confirmed(List.of(shipment), truck5t), 1);
         String loadCode = load(loadId).path("code").asText();
         dispatch(body(post(LOADS + "/" + loadId + "/booking"), "{\"carrierId\":\"" + carrier
-                + "\",\"vehiclePlate\":\"51C-WC.01\",\"waybillNo\":\"WC-" + loadId + "\"}")).andExpect(status().isOk());
+                + "\",\"vehiclePlate\":\"51C-WC.01\",\"driverName\":\"Tai\",\"waybillNo\":\"WC-" + loadId
+                + "\"}")).andExpect(status().isOk());
         loadAndSign(loadId, "51C-WC.01");
         String delivered = "{\"loadCode\":\"" + loadCode + "\",\"type\":\"DELIVERED\",\"reportedAt\":"
                 + "\"2026-11-21T09:00:00Z\",\"shipmentCode\":\"" + shipmentCode + "\"}";
@@ -1946,7 +1978,8 @@ class FtlDispatchIntegrationTest {
         String firstCode = jdbc.queryForObject("SELECT code FROM fulfillment.shipment WHERE id = ?", String.class,
                 first);
         dispatch(body(post(LOADS + "/" + loadId + "/booking"), "{\"carrierId\":\"" + carrier
-                + "\",\"vehiclePlate\":\"51C-WE.01\",\"waybillNo\":\"WE-" + loadId + "\"}")).andExpect(status().isOk());
+                + "\",\"vehiclePlate\":\"51C-WE.01\",\"driverName\":\"Tai\",\"waybillNo\":\"WE-" + loadId
+                + "\"}")).andExpect(status().isOk());
         loadAndSign(loadId, "51C-WE.01");
         java.util.function.Function<String, String> signed = content -> com.stockflow.fulfillment.internal.service
                 .CarrierWebhookTestSigner.sign(secret, content);
@@ -1965,6 +1998,118 @@ class FtlDispatchIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT result_note FROM fulfillment.carrier_event WHERE carrier_id = ? "
                 + "ORDER BY received_at DESC LIMIT 1", String.class, carrier)).contains("corrected by hand")
                 .contains(firstCode);
+    }
+
+    // ---- the driver before the signature (WF4-DRIVER; 09 §4.2 steps 6 and 8) ---------------------
+
+    @Test
+    @DisplayName("WF4-DRIVER: a load with no driver name is not handed over (409 LOAD_DRIVER_MISSING) - who signed for "
+            + "the carrier is not taken for the driver; the dispatcher types the driver (permission checked, name "
+            + "required, audited, the waybill number untouched); it cannot change once the vehicle left")
+    void noDriverNoHandover() throws Exception {
+        UUID shipment = packed(ftlOrder(1), false)[0];
+        String loadId = loadOf(confirmed(List.of(shipment), truck5t), 1);
+        // Booked with its number and plate but no driver, loaded and every parcel scanned.
+        dispatch(body(post(LOADS + "/" + loadId + "/booking"), "{\"carrierId\":\"" + ghn
+                + "\",\"vehiclePlate\":\"51C-DR.01\",\"waybillNo\":\"WB-" + loadId + "\"}")).andExpect(status().isOk());
+        loadAndScan(loadId);
+        sign(loadId, "51C-DR.01").andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("LOAD_DRIVER_MISSING"));
+        assertThat(load(loadId).path("status").asText()).isEqualTo("LOADING");
+        assertThat(load(loadId).hasNonNull("driverName")).isFalse();
+
+        // Sales does not work vehicles; a blank name is no name; the dispatcher's entry is on the load and audited.
+        sales(body(put(LOADS + "/" + loadId + "/driver"), "{\"driverName\":\"Tai\"}")).andExpect(status().isForbidden());
+        dispatch(body(put(LOADS + "/" + loadId + "/driver"), "{\"driverName\":\" \"}"))
+                .andExpect(status().isBadRequest());
+        dispatch(body(put(LOADS + "/" + loadId + "/driver"), "{\"driverPhone\":\"0900\"}"))
+                .andExpect(status().isBadRequest());
+        dispatch(body(put(LOADS + "/" + loadId + "/driver"), "{\"driverName\":\" Hoang Van Tai \","
+                + "\"driverPhone\":\"0901234567\"}")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.driverName").value("Hoang Van Tai"))
+                .andExpect(jsonPath("$.data.driverPhone").value("0901234567"))
+                .andExpect(jsonPath("$.data.waybillNo").value("WB-" + loadId));
+        // The same again changes nothing; a name alone keeps the phone.
+        dispatch(body(put(LOADS + "/" + loadId + "/driver"), "{\"driverName\":\"Hoang Van Tai\"}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.driverPhone").value("0901234567"));
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM platform.audit_log WHERE resource_type = 'dispatch-load' "
+                + "AND resource_id = ? AND outcome = 'SUCCESS' AND action = 'UPDATE' AND actor_id = ? "
+                + "AND details LIKE '%Hoang Van Tai%'", Long.class, loadId, dispatcher)).isPositive();
+        assertThat(data(dispatch(get(LOADS + "/" + loadId + "/waybill-history")).andExpect(status().isOk())))
+                .as("the driver is not a waybill change").hasSize(1);
+
+        sign(loadId, "51C-DR.01").andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("DISPATCHED"))
+                .andExpect(jsonPath("$.data.driverName").value("Hoang Van Tai"))
+                .andExpect(jsonPath("$.data.carrierRepresentative").value("Nguyen Van Tai"));
+        // The driver is on the manifest both sides signed.
+        dispatch(body(put(LOADS + "/" + loadId + "/driver"), "{\"driverName\":\"Someone else\"}"))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("INVALID_LOAD_TRANSITION"));
+        assertThat(load(loadId).path("driverName").asText()).isEqualTo("Hoang Van Tai");
+        // And not on a load with no carrier booked.
+        UUID other = packed(ftlOrder(1), false)[0];
+        String planned = loadOf(confirmed(List.of(other), truck5t), 1);
+        dispatch(body(put(LOADS + "/" + planned + "/driver"), "{\"driverName\":\"Tai\"}"))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("INVALID_LOAD_TRANSITION"));
+    }
+
+    @Test
+    @DisplayName("WF4-DRIVER: a load booked through a carrier's API takes no typed waybill number but its driver is "
+            + "typed by the dispatcher or the warehouse manager when the carrier's webhook never sends one - the number "
+            + "stays the carrier's order id; the carrier's driver replaces the typed one, and when the driver gives "
+            + "the order back the load needs another before it is signed")
+    void aDriverByHandOnAnApiBookedLoad() throws Exception {
+        UUID manager = staff("WAREHOUSE_MANAGER", HCM);
+        UUID aha = apiCarrier(manager);
+        String code = carrierCode(aha);
+        UUID shipment = packed(ftlOrder(1), false)[0];
+        String loadId = loadOf(confirmed(List.of(shipment), truck5t), 1);
+        deliverTo(shipment, "79");
+        org.mockito.Mockito.when(carrierGateway.place(org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any())).thenReturn(new com.stockflow.fulfillment.internal.service
+                .CarrierBookingGateway.Placed("AHA-D1", null));
+        dispatch(body(post(LOADS + "/" + loadId + "/booking"), "{\"carrierId\":\"" + aha + "\"}"))
+                .andExpect(status().isOk());
+
+        // The waybill route is closed to a typed number, driver or not - the driver has its own.
+        dispatch(body(put(LOADS + "/" + loadId + "/waybill"), "{\"waybillNo\":\"AHA-TYPED\",\"driverName\":\"Tai\"}"))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("WAYBILL_FROM_CARRIER_API"));
+        loadAndScan(loadId);
+        sign(loadId, "51C-AHA.03").andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("LOAD_DRIVER_MISSING"));
+
+        // The warehouse manager types the driver (the dispatcher's permission is the manager's too).
+        as(manager, "WAREHOUSE_MANAGER", body(put(LOADS + "/" + loadId + "/driver"), "{\"driverName\":\"Tài xế A\","
+                + "\"driverPhone\":\"0907000001\"}")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.driverName").value("Tài xế A"))
+                .andExpect(jsonPath("$.data.waybillNo").value("AHA-D1"));
+        assertThat(load(loadId).path("waybillNo").asText()).isEqualTo("AHA-D1");
+        assertThat(data(dispatch(get(LOADS + "/" + loadId + "/waybill-history")).andExpect(status().isOk())))
+                .hasSize(1);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM platform.audit_log WHERE resource_type = 'dispatch-load' "
+                + "AND resource_id = ? AND outcome = 'SUCCESS' AND action = 'UPDATE' AND actor_id = ?", Long.class,
+                loadId, manager)).isPositive();
+
+        // An event with the driver's phone only: the phone is updated, the typed name stays.
+        aha(code, ahamove("AHA-D1", "ACCEPTED", "", "\"accept_time\":1800000000,\"supplier_id\":\"84903333333\"", ""))
+                .andExpect(jsonPath("$.data.result").value("APPLIED"));
+        assertThat(load(loadId).path("driverName").asText()).isEqualTo("Tài xế A");
+        assertThat(load(loadId).path("driverPhone").asText()).isEqualTo("84903333333");
+
+        // The carrier's driver takes the order: it replaces the typed one. The driver gives it back: none is left.
+        aha(code, ahamove("AHA-D1", "ACCEPTED", "", "\"accept_time\":1800000100,\"supplier_name\":\"Tài xế B\","
+                + "\"supplier_id\":\"84902222222\"", "")).andExpect(jsonPath("$.data.result").value("APPLIED"));
+        assertThat(load(loadId).path("driverName").asText()).isEqualTo("Tài xế B");
+        aha(code, ahamove("AHA-D1", "ASSIGNING", "", "\"accept_time\":1800000200", ""))
+                .andExpect(jsonPath("$.data.result").value("APPLIED"));
+        assertThat(load(loadId).hasNonNull("driverName")).isFalse();
+        sign(loadId, "51C-AHA.03").andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("LOAD_DRIVER_MISSING"));
+
+        dispatch(body(put(LOADS + "/" + loadId + "/driver"), "{\"driverName\":\"Tài xế C\"}"))
+                .andExpect(status().isOk());
+        sign(loadId, "51C-AHA.03").andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("DISPATCHED"))
+                .andExpect(jsonPath("$.data.driverName").value("Tài xế C"))
+                .andExpect(jsonPath("$.data.waybillNo").value("AHA-D1"));
     }
 
     // ---- an order cancelled while its vehicle loads -------------------------------------------

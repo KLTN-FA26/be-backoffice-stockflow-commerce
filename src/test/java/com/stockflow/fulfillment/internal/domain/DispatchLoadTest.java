@@ -32,10 +32,13 @@ class DispatchLoadTest {
                 UUID.randomUUID());
     }
 
-    /** A plan's vehicle booked with no plate, its waybill number recorded, and being loaded. */
+    /** The driver every vehicle below is booked with: not the carrier's representative who signs ({@link #SIGNED}). */
+    private static final String DRIVER = "Le Van Lai";
+
+    /** A plan's vehicle booked with no plate, its waybill number and driver recorded, and being loaded. */
     private static DispatchLoad loading() {
         DispatchLoad load = vehicle();
-        load.book(GHN, null, null, null, "WB-0001", DISPATCHER, NOW);
+        load.book(GHN, null, DRIVER, null, "WB-0001", DISPATCHER, NOW);
         load.startLoading(DISPATCHER, NOW);
         return load;
     }
@@ -151,6 +154,29 @@ class DispatchLoadTest {
     }
 
     @Test
+    @DisplayName("WF4-DRIVER: a driver event writes only what the carrier sends - a phone-only event keeps the typed "
+            + "name and updates the phone, a name-only event keeps the phone, an empty one changes nothing; only a "
+            + "release takes the driver off")
+    void theCarriersDriverWritesOnlyWhatItSends() {
+        DispatchLoad load = vehicle();
+        load.book(GHN, null, null, null, "AHA-2", DISPATCHER, NOW);
+        assertThat(load.recordDriver("Tài xế gõ tay", "0900")).isTrue();
+
+        assertThat(load.carrierAssignedDriver(null, "0911")).isTrue();
+        assertThat(load.snapshot().driverName()).isEqualTo("Tài xế gõ tay");
+        assertThat(load.snapshot().driverPhone()).isEqualTo("0911");
+        assertThat(load.carrierAssignedDriver(" ", "0911")).isFalse();
+        assertThat(load.carrierAssignedDriver(null, null)).isFalse();
+        assertThat(load.carrierAssignedDriver("Lâm", null)).isTrue();
+        assertThat(load.snapshot().driverName()).isEqualTo("Lâm");
+        assertThat(load.snapshot().driverPhone()).isEqualTo("0911");
+
+        assertThat(load.carrierReleasedDriver()).isTrue();
+        assertThat(load.snapshot().driverName()).isNull();
+        assertThat(load.snapshot().driverPhone()).isNull();
+    }
+
+    @Test
     @DisplayName("waybill number (09 §4.4, BR-23, BR-24): booked with it or recorded after, kept while the carrier stays, "
             + "gone with the booking, required to leave, corrected after leaving only with a reason")
     void theWaybillNumber() {
@@ -182,7 +208,7 @@ class DispatchLoadTest {
         UUID s1 = UUID.randomUUID();
         UUID parcel = UUID.randomUUID();
         noNumber.addShipment(ftl(s1, null), DISPATCHER, NOW);
-        noNumber.book(GHN, "51C-1", null, null, DISPATCHER, NOW);
+        noNumber.book(GHN, "51C-1", DRIVER, null, DISPATCHER, NOW);
         noNumber.startLoading(DISPATCHER, NOW);
         noNumber.scan(UUID.randomUUID(), placed(parcel, ftl(s1, null), HERE), DISPATCHER, NOW);
         assertThat(code(() -> noNumber.handOver(SIGNED, Map.of(s1, Set.of(parcel)), Map.of(), DISPATCHER, NOW)))
@@ -202,6 +228,76 @@ class DispatchLoadTest {
         assertThat(noNumber.recordWaybill("WB-10", null, null, null, "Hãng gửi lại mã")).isTrue();
         assertThat(noNumber.waybillNo()).isEqualTo("WB-10");
         assertThat(DispatchLoad.restore(noNumber.snapshot()).waybillNo()).isEqualTo("WB-10");
+    }
+
+    @Test
+    @DisplayName("WF4-DRIVER: a load with no driver name is not handed over (LOAD_DRIVER_MISSING) - the carrier's "
+            + "representative who signs is not taken for the driver; typed, the driver lets it go")
+    void noDriverNoHandover() {
+        DispatchLoad load = vehicle();
+        UUID s1 = UUID.randomUUID();
+        UUID parcel = UUID.randomUUID();
+        load.addShipment(ftl(s1, null), DISPATCHER, NOW);
+        load.book(GHN, "51C-1", null, null, "WB-1", DISPATCHER, NOW);
+        load.startLoading(DISPATCHER, NOW);
+        load.scan(UUID.randomUUID(), placed(parcel, ftl(s1, null), HERE), DISPATCHER, NOW);
+        Map<UUID, Set<UUID>> parcels = Map.of(s1, Set.of(parcel));
+
+        assertThat(code(() -> load.handOver(SIGNED, parcels, Map.of(), DISPATCHER, NOW)))
+                .isEqualTo(ErrorCode.LOAD_DRIVER_MISSING);
+        assertThat(load.status()).isEqualTo(LoadStatus.LOADING);
+        assertThat(load.snapshot().driverName()).isNull();
+        // A driver the carrier gave back comes off the load, and the signature waits for another.
+        assertThat(load.carrierAssignedDriver("Tài", "0900")).isTrue();
+        assertThat(load.carrierReleasedDriver()).isTrue();
+        assertThat(code(() -> load.handOver(SIGNED, parcels, Map.of(), DISPATCHER, NOW)))
+                .isEqualTo(ErrorCode.LOAD_DRIVER_MISSING);
+
+        assertThat(load.recordDriver(" Tài xế Hùng ", null)).isTrue();
+        assertThat(load.handOver(SIGNED, parcels, Map.of(), DISPATCHER, NOW)).containsExactly(s1);
+        assertThat(load.snapshot().driverName()).isEqualTo("Tài xế Hùng");
+        assertThat(load.snapshot().carrierRepresentative()).isEqualTo("Nguyen Van Tai");
+    }
+
+    @Test
+    @DisplayName("WF4-DRIVER: the driver is typed on a booked or loading vehicle (name required, phone kept when left "
+            + "out, same values: no change, the waybill number untouched); with no vehicle booked, cancelled or once "
+            + "it left, it is refused; the carrier's webhook may replace what is typed")
+    void theDriverByHand() {
+        DispatchLoad load = vehicle();
+        assertThat(code(() -> load.recordDriver("Tài", null))).isEqualTo(ErrorCode.INVALID_LOAD_TRANSITION);
+
+        load.book(GHN, null, null, null, "AHA-1", DISPATCHER, NOW);
+        assertThat(code(() -> load.recordDriver(" ", "0900"))).isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThat(code(() -> load.recordDriver(null, "0900"))).isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThat(load.recordDriver(" Tài ", "0900")).isTrue();
+        assertThat(load.recordDriver("Tài", "0900")).isFalse();
+        assertThat(load.recordDriver("Tài", null)).isFalse();
+        assertThat(load.recordDriver("Hùng", null)).isTrue();
+        assertThat(load.snapshot().driverName()).isEqualTo("Hùng");
+        assertThat(load.snapshot().driverPhone()).isEqualTo("0900");
+        assertThat(load.snapshot().waybillNo()).isEqualTo("AHA-1");
+
+        assertThat(load.carrierAssignedDriver("Lâm", "0911")).isTrue();
+        assertThat(load.snapshot().driverName()).isEqualTo("Lâm");
+        load.startLoading(DISPATCHER, NOW);
+        assertThat(load.recordDriver("Tài", null)).isTrue();
+
+        DispatchLoad cancelled = vehicle();
+        cancelled.cancel("Plan reopened", DISPATCHER, NOW);
+        assertThat(code(() -> cancelled.recordDriver("Tài", null))).isEqualTo(ErrorCode.INVALID_LOAD_TRANSITION);
+
+        // Once the vehicle left, the driver is on its signed manifest.
+        DispatchLoad left = vehicle();
+        UUID s1 = UUID.randomUUID();
+        UUID parcel = UUID.randomUUID();
+        left.addShipment(ftl(s1, null), DISPATCHER, NOW);
+        left.book(GHN, "51C-1", "Tài", null, "WB-1", DISPATCHER, NOW);
+        left.startLoading(DISPATCHER, NOW);
+        left.scan(UUID.randomUUID(), placed(parcel, ftl(s1, null), HERE), DISPATCHER, NOW);
+        left.handOver(SIGNED, Map.of(s1, Set.of(parcel)), Map.of(), DISPATCHER, NOW);
+        assertThat(code(() -> left.recordDriver("Hùng", null))).isEqualTo(ErrorCode.INVALID_LOAD_TRANSITION);
+        assertThat(left.snapshot().driverName()).isEqualTo("Tài");
     }
 
     @Test
@@ -246,6 +342,8 @@ class DispatchLoadTest {
         assertThat(code(() -> load.cancel("too late", DISPATCHER, NOW))).isEqualTo(ErrorCode.INVALID_LOAD_TRANSITION);
         DispatchLoad.Snapshot s = load.snapshot();
         assertThat(s.carrierRepresentative()).isEqualTo("Nguyen Van Tai");
+        // The representative who signed is not taken for the driver: the driver is the one the load already had.
+        assertThat(s.driverName()).isEqualTo(DRIVER);
         assertThat(s.vehiclePlate()).isEqualTo("51C-123.45");
         assertThat(s.signatureRef()).isEqualTo("MF-0001");
         assertThat(s.dispatchedBy()).isEqualTo(DISPATCHER);
@@ -331,7 +429,7 @@ class DispatchLoadTest {
         assertThat(load.addShipment(shipment, DISPATCHER, NOW)).isTrue();
         assertThat(code(() -> load.addShipment(ftl(UUID.randomUUID(), "LD-OTHER"), DISPATCHER, NOW)))
                 .isEqualTo(ErrorCode.SHIPMENT_ON_ANOTHER_LOAD);
-        load.book(GHN, "51C-1", null, null, "WB-0001", DISPATCHER, NOW);
+        load.book(GHN, "51C-1", DRIVER, null, "WB-0001", DISPATCHER, NOW);
         load.startLoading(DISPATCHER, NOW);
         UUID mine = UUID.randomUUID();
         UUID theirs = UUID.randomUUID();
@@ -361,7 +459,7 @@ class DispatchLoadTest {
         load.addShipment(ftl(doomed, null), DISPATCHER, NOW);
         load.addShipment(ftl(kept, null), DISPATCHER, NOW);
         assertThat(load.withdrawShipment(UUID.randomUUID(), "x", NOW)).isFalse();
-        load.book(UUID.randomUUID(), "51C-1", null, null, "WB-0001", DISPATCHER, NOW);
+        load.book(UUID.randomUUID(), "51C-1", DRIVER, null, "WB-0001", DISPATCHER, NOW);
         load.startLoading(DISPATCHER, NOW);
         UUID onBoard = UUID.randomUUID();
         UUID keptParcel = UUID.randomUUID();
