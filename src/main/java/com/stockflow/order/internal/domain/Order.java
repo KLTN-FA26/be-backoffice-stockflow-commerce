@@ -848,11 +848,37 @@ public final class Order extends AggregateRoot {
             throw new BusinessException(ErrorCode.ORDER_NOT_ON_HOLD,
                     "Order %s is %s, not on hold".formatted(orderNumber, status));
         }
+        if (holdReason == HoldReason.DELIVERY_FAILED) {
+            throw new BusinessException(ErrorCode.ORDER_DELIVERY_FAILURE_USE_DECISION, ("Order %s is held for a failed "
+                    + "delivery; decide its delivery failure case - deliver again, or cancel what was not delivered")
+                    .formatted(orderNumber));
+        }
         if (holdReason == HoldReason.CREDIT || statusBeforeHold == null) {
             throw new BusinessException(ErrorCode.ORDER_CREDIT_HOLD_USE_APPROVAL,
                     "Order %s waits for a credit decision; decide it through credit approval".formatted(orderNumber));
         }
         resumeFromHold(note, by, at);
+    }
+
+    /**
+     * Sales decided the delivery failure the order was held for (WF-05 fix plan, section 2): back to
+     * PARTIALLY_FULFILLED - the units that came back are owed a delivery again, or are about to be closed with the rest
+     * - then on with what its other shipments reported meanwhile. Only this lifts a DELIVERY_FAILED hold
+     * ({@link #resolveHold} refuses it): the hold is the decision waiting, not a note waiting.
+     *
+     * @throws BusinessException {@code ORDER_NOT_ON_HOLD} for an order not held for a failed delivery
+     */
+    public void resolveDeliveryFailure(String note, UUID by, Instant at) {
+        if (status != OrderStatus.ON_HOLD || holdReason != HoldReason.DELIVERY_FAILED) {
+            throw new BusinessException(ErrorCode.ORDER_NOT_ON_HOLD,
+                    "Order %s is %s, not held for a failed delivery".formatted(orderNumber, status));
+        }
+        resumeFromHold(note, by, at);
+    }
+
+    /** Whether the order waits for Sales' decision on a shipment that came back. */
+    public boolean heldForDeliveryFailure() {
+        return status == OrderStatus.ON_HOLD && holdReason == HoldReason.DELIVERY_FAILED;
     }
 
     private void resumeFromHold(String note, UUID by, Instant at) {
@@ -989,9 +1015,13 @@ public final class Order extends AggregateRoot {
         }
     }
 
-    /** The agreed amount of a closure: after printing started, more than zero, whole units, at most the prints closed. */
-    private BigDecimal requireRemainderFee(com.stockflow.order.api.CancellationFee fee, BigDecimal closedPrints) {
-        if (printingStartedAt == null) {
+    /**
+     * The agreed amount of a closure: once the goods exist - printing started, or goods of the order came back - more
+     * than zero, whole units, at most the prints closed. {@code payment.check_order_settlement} says the first again.
+     */
+    private BigDecimal requireRemainderFee(com.stockflow.order.api.CancellationFee fee, BigDecimal closedPrints,
+                                           boolean goodsMade) {
+        if (!goodsMade) {
             throw new BusinessException(ErrorCode.CANCELLATION_FEE_BEFORE_PRINTING,
                     "Order %s has not started printing: its rest is closed without a fee".formatted(orderNumber));
         }
@@ -1251,15 +1281,30 @@ public final class Order extends AggregateRoot {
     }
 
     /**
-     * One failed shipment came back to the warehouse (09 §4.3 step 3, through the returns receipt): its units are no
-     * longer with the customer, and were never billed. With others delivered the order is partial again; with all of
-     * it back, RETURNED.
+     * One failed shipment came back from the carrier (09 §4.3 step 3): its units are no longer on their way to the
+     * customer, and were never billed. The order does not move on by itself any more (WF-05 fix plan, sections 2-3): it
+     * goes ON_HOLD for {@link HoldReason#DELIVERY_FAILED}, held from PARTIALLY_FULFILLED - part of it did not reach the
+     * customer - and waits for Sales to decide, once the goods are received back, whether they are delivered again or
+     * what was not delivered is cancelled ({@link #resolveDeliveryFailure}). The goods are printed to the customer's
+     * design and sold to nobody else, so neither RETURNED nor a refund is what a failed delivery means by default.
+     *
+     * <p>An order already on hold for another reason is held for the failed delivery from then on: that decision comes
+     * first, and resolving the earlier hold with a note would let the order go on past it.</p>
      */
     public boolean recordShipmentReturned(UUID shipmentId, Instant at, UUID by) {
-        if (!requireShipment(shipmentId).returned(at, by)) {
+        OrderShipment shipment = requireShipment(shipmentId);
+        if (!shipment.returned(at, by)) {
             return false;
         }
-        followShipments(ShipmentChange.RETURNED, at, by);
+        String why = shipment.failureReason() == null ? null : shipment.failureReason().name();
+        if (status != OrderStatus.ON_HOLD) {
+            transitionTo(OrderStatus.ON_HOLD, by, withNote(HoldReason.DELIVERY_FAILED.name(), why), at);
+        }
+        this.holdReason = HoldReason.DELIVERY_FAILED;
+        this.statusBeforeHold = OrderStatus.PARTIALLY_FULFILLED;
+        this.holdNote = why;
+        // ck_order_delivery_failure: the reason is the order's only while it is DELIVERY_FAILED; the shipment keeps it.
+        this.deliveryFailureReason = null;
         return true;
     }
 
@@ -1283,7 +1328,9 @@ public final class Order extends AggregateRoot {
      * #150; decisions 2026-10-17 / 2026-10-19: cancelling after printing is allowed with a printing fee; 17 edge "khách
      * huỷ khi đang In Production (đã in)"). The fee is at most the value of the print units closed. Payment settles it
      * on the installments (4B-9): what was paid above the order's new worth pays it first, the rest is refunded, a
-     * shortfall is owed on a fee item. Before printing nothing is kept ({@code CANCELLATION_FEE_BEFORE_PRINTING}).
+     * shortfall is owed on a fee item. Before printing nothing is kept ({@code CANCELLATION_FEE_BEFORE_PRINTING}) -
+     * unless goods of the order came back from a failed delivery (WF-05 fix plan, section 2): they were made to the
+     * customer's design whatever the production order recorded, so their closure may keep the agreed fee too.
      */
     public BigDecimal closeRemainder(CancellationReasonCode code, String note,
                                      com.stockflow.order.api.CancellationFee agreedFee, UUID by, Instant at) {
@@ -1347,7 +1394,9 @@ public final class Order extends AggregateRoot {
                 closedPrints = closedPrints.plus(line.grossBetween(open - closes, open));
             }
         }
-        BigDecimal fee = agreedFee == null ? BigDecimal.ZERO : requireRemainderFee(agreedFee, closedPrints.amount());
+        boolean goodsMade = printingStartedAt != null || shipments.stream().anyMatch(OrderShipment::isReturned);
+        BigDecimal fee = agreedFee == null ? BigDecimal.ZERO
+                : requireRemainderFee(agreedFee, closedPrints.amount(), goodsMade);
         Money closed = Money.zero(total().currency());
         List<com.stockflow.contracts.OrderRemainderClosed.Line> closedLines = new ArrayList<>();
         for (OrderLine line : lines) {
@@ -1387,7 +1436,12 @@ public final class Order extends AggregateRoot {
      * The order's status from its shipments, after one of them changed (see {@link OrderStatus}): an order with units
      * neither shipped nor closed is partial (or stays PACKED while those are packed and nothing came back); one with
      * every unit shipped or closed is in transit while a shipment is, failed once all have an outcome and one failed,
-     * delivered once all arrived, returned when everything came back. On hold it waits: resolving looks again.
+     * delivered once all arrived, returned when every shipment came back and their units were closed. On hold it
+     * waits: resolving looks again.
+     *
+     * <p>Units that came back are neither shipped nor closed: they are owed a delivery again until Sales close them
+     * (WF-05 fix plan, section 3), so an order whose every shipment came back is partial, not RETURNED - it was
+     * RETURNED here before any goods were received back, and nothing ever moved it on.</p>
      */
     private void followShipments(ShipmentChange change, Instant at, UUID by, String reason) {
         if (shipments.isEmpty() || status == OrderStatus.ON_HOLD) {
@@ -1395,10 +1449,7 @@ public final class Order extends AggregateRoot {
         }
         OrderStatus target;
         if (outstandingUnits() > 0) {
-            boolean allBack = shipments.stream().allMatch(OrderShipment::isReturned);
-            if (allBack && unshippedUnits() == 0) {
-                target = OrderStatus.RETURNED;
-            } else if (change == ShipmentChange.HANDED_OVER || change == ShipmentChange.RETURNED
+            if (change == ShipmentChange.HANDED_OVER || change == ShipmentChange.RETURNED
                     || status != OrderStatus.PACKED && status != OrderStatus.PICKING
                     && status != OrderStatus.PARTIALLY_FULFILLED) {
                 target = OrderStatus.PARTIALLY_FULFILLED;
@@ -1464,6 +1515,15 @@ public final class Order extends AggregateRoot {
                 .mapToInt(s -> s.quantityOf(lineId)).sum();
     }
 
+    /**
+     * Whether the order still owes a unit of a line {@code shipmentId} carried: neither shipped again nor closed. A
+     * shipment that came back is owed until it is delivered again or the rest of the order is closed - after a closure
+     * its goods, received back later, are owed to nobody (WF-05 review F1).
+     */
+    public boolean owesUnitsOf(UUID shipmentId) {
+        return requireShipment(shipmentId).quantities().keySet().stream().anyMatch(line -> unshippedUnits(line) > 0);
+    }
+
     /** Units neither closed nor in a shipment that is still with the carrier or the customer. */
     public int outstandingUnits() {
         return lines.stream().mapToInt(l -> l.quantity() - l.cancelledQuantity() - shippedUnits(l.id(), false)).sum();
@@ -1481,12 +1541,6 @@ public final class Order extends AggregateRoot {
      */
     public int unitsDueTogether(BatchInFlight batch) {
         return Math.max(0, outstandingUnits() - (batch == null ? 0 : batch.laterUnits()));
-    }
-
-    /** Units neither closed nor ever handed over. */
-    private int unshippedUnits() {
-        return lines.stream()
-                .mapToInt(l -> Math.max(0, l.quantity() - l.cancelledQuantity() - shippedUnits(l.id(), true))).sum();
     }
 
     // ---- money of a partly fulfilled order -----------------------------------------------------------------------
@@ -1535,13 +1589,23 @@ public final class Order extends AggregateRoot {
      * one with a return request open. The window is counted in calendar days of Asia/Ho_Chi_Minh, exactly as a return
      * is ({@link ReturnPolicy#endOfDays}): the order never completes while its customer may still claim.
      *
-     * @param owing whether the order's installments still owe something, as payment reads them (4B-10: the order keeps
-     *              no money of its own); false for an order without installments
+     * <p>And one whose deliveries are not all invoiced stays DELIVERED too (WF-05 plan §4, condition 5). COMPLETED says
+     * the sale is finished on both sides, and it completes the contract with it. A delivery without its e-invoice is
+     * not finished: the law has every delivery invoiced (NĐ 254/2026/NĐ-CP Điều 9 khoản 3), the buyer cannot book the
+     * goods without it, and a draft nobody issued - or one the tax authority refused - would otherwise disappear
+     * behind an order that reads as done and is closed for good thirty days later. The order does not look at
+     * invoices itself (it has none): the caller asks invoicing and passes the answer, as it does for the money.</p>
+     *
+     * @param owing            whether the order's installments still owe something, as payment reads them (4B-10: the
+     *                         order keeps no money of its own); false for an order without installments
+     * @param awaitingInvoice  whether a delivered shipment of the order has no e-invoice issued yet; false for an
+     *                         order delivered without shipments, which has no delivery to invoice
      * @return whether this changed the order
      */
-    public boolean complete(Instant now, java.time.Duration returnWindow, boolean hasOpenReturn, boolean owing) {
+    public boolean complete(Instant now, java.time.Duration returnWindow, boolean hasOpenReturn, boolean owing,
+                            boolean awaitingInvoice) {
         if (status != OrderStatus.DELIVERED || deliveredAt == null || hasOpenReturn
-                || ReturnPolicy.endOfDays(deliveredAt, returnWindow).isAfter(now) || owing) {
+                || ReturnPolicy.endOfDays(deliveredAt, returnWindow).isAfter(now) || owing || awaitingInvoice) {
             return false;
         }
         transitionTo(OrderStatus.COMPLETED, null, "RETURN_WINDOW_CLOSED", now);

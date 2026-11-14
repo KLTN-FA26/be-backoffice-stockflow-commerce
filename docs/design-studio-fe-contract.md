@@ -76,6 +76,7 @@ allowedFontCodes?, active, model, printAreas}`.
 | `PUT /api/v1/designs/{id}/name` | `{version, name}` | Drafts only, otherwise 409 `DESIGN_NOT_DRAFT` |
 | `POST /api/v1/designs/{id}/archive` | `{version}` | Deletes a draft. An open quote request on it closes |
 | `POST /api/v1/designs/{id}/revisions` | | From an approved design: copies its approved layout and images; counts against the 50 drafts. It joins the source's project while that project is open and has room; otherwise it stands alone |
+| `POST /api/v1/designs/{id}/clones` | `{variantSku, document}`; header `Idempotency-Key` **required** | 201 `{design, notInProject?}`. A new draft of the source (any of the caller's designs but an archived one) on another ACTIVE variant of the same product, with the active template `document.templateCode` names; `document` is the layout fitted to that template (checked as a layout save, at most 1,000,000 bytes) and may place only the source's images. The clone gets the source's images **with the same `assetId`s**, so the layout needs no rewriting. Name `"<source name> · <sku>"`. Joins the source's project as a revision does; `notInProject` = `PROJECT_ARCHIVED` / `PROJECT_FULL` when it could not. 409 `DESIGN_CLONE_TARGET_INVALID` (same variant, another product, a variant that cannot be designed on), `DESIGN_DRAFT_LIMIT_REACHED`, `PRODUCT_NOT_CUSTOMIZABLE`; 404 `PRINT_CONFIG_NOT_FOUND`; 400 `VALIDATION_FAILED`; 413. Same key and body again: the first answer; same key, other body: 422 `IDEMPOTENCY_KEY_REUSED` |
 | `GET /api/v1/designs/{id}/history` | `?page&size` | Decision history, newest first (§7) |
 | `GET /api/v1/designs/{id}/snapshot` | | The approved snapshot: files, `document`, `documentChecksum`, `assets`, `customerSku` |
 | `GET /api/v1/designs/{id}/template` | | The template the design is drawn on: current for a draft (B39); frozen in the snapshot for an approved design |
@@ -152,9 +153,14 @@ allowedFontCodes?, active, model, printAreas}`.
 | `POST /api/v1/design-projects/{id}/designs` | `{designId}` | 409 `DESIGN_IN_ANOTHER_PROJECT`, `DESIGN_PROJECT_FULL` (20) |
 | `DELETE /api/v1/design-projects/{id}/designs/{designId}` | | 409 `DESIGN_PENDING_IN_PROJECT` while it waits for review |
 | `GET /api/v1/design-projects/{id}/history` | `?page&size` | The project's history (§7) |
-| `POST /api/v1/design-projects/{id}/assets` | multipart `file` | The library: as a design's images; at most 30 files (409 `DESIGN_PROJECT_LIBRARY_FULL`) |
+| `POST /api/v1/design-projects/{id}/assets` | multipart `file`; header `Idempotency-Key` optional | The library: as a design's images; at most 30 files (409 `DESIGN_PROJECT_LIBRARY_FULL`). With a key, a retry of an upload that succeeded returns the same file and takes no second place; the same key with another file is 422 `IDEMPOTENCY_KEY_REUSED` |
+| `POST /api/v1/design-projects/{id}/assets/from-design` | `{designId, assetId}` | 201, the library file (as an upload's). A server-side copy of an image of one of the project's designs; the same pair again returns the file it made. 404 when the design is not the caller's or not in this project, or the image is not that design's; 409 `DESIGN_PROJECT_LIBRARY_FULL`, `DESIGN_PROJECT_ARCHIVED` |
 | `GET /api/v1/design-projects/{id}/assets`, `.../assets/{assetId}/download-url` | | |
 | `DELETE /api/v1/design-projects/{id}/assets/{assetId}` | | 204. Designs it was placed on keep their copy |
+| `GET /api/v1/design-projects/{id}/texts` | | The library's texts, newest first: `[{id, projectId, text, style, createdAt}]` |
+| `POST /api/v1/design-projects/{id}/texts` | `{text, style: {fontCode, sizePt, color, bold?, italic?, align, letterSpacingEm?, lineHeight, outline?: {color, widthMm}}}` | 201, the text. `text` 1–500 characters; `color` `#rgb`/`#rrggbb`/`#rrggbbaa`; `align` `left`/`center`/`right`; `sizePt`, `lineHeight`, `outline.widthMm` > 0; `bold`/`italic` default `false`, `letterSpacingEm` `0`. At most 30 texts, apart from the 30 files: 409 `DESIGN_PROJECT_LIBRARY_FULL`; closed project 409 `DESIGN_PROJECT_ARCHIVED` |
+| `DELETE /api/v1/design-projects/{id}/texts/{textId}` | | 204. Open projects only |
+| `POST /api/v1/design-projects/{id}/preflight-failures` | `{items: [{designId, issues: [{rule, surfaceCode?, elementId?}]}]}` | 201, one history row `{actorId, event: "BATCH_PREFLIGHT_FAILED", notes, createdAt}`. For a batch the studio's own preflight refused; nothing else changes. 1–20 items, 1–50 issues each, every field at most 64 characters; a `message` is accepted and not stored. Notes: `"<designId>: RULE SURFACE/element, ...; ..."`. 404 for a design not in the project; 409 `DESIGN_PROJECT_ARCHIVED`; 429 `RATE_LIMITED` (60 an hour) |
 | `POST /api/v1/design-projects/{id}/review-rounds` | `{designs: [{id, version}, ...]}` | "Gửi duyệt cả bộ", details below |
 | `POST /api/v1/design-projects/{id}/quote-requests` | `{lines: [{designId, cartons}], desiredDeliveryDate?}` | 201. Approved designs of an open project only, each named once |
 | `GET /api/v1/design-projects/{id}/quote-requests` | | |
@@ -243,8 +249,9 @@ updatedAt}`.
   - `ADDED_TO_PROJECT`, `REMOVED_FROM_PROJECT`.
 
   Rows written by the retired staff workflow keep their old words.
-- **Project (12 §5.4):** `PROJECT_CREATED`, `ASSET_ADDED`, `ASSET_REMOVED`, `BATCH_PREFLIGHT_FAILED`,
-  `BATCH_SUBMITTED`, `BATCH_CLOSED`, `PROJECT_QUOTE_REQUESTED`, `PROJECT_ARCHIVED`.
+- **Project (12 §5.4):** `PROJECT_CREATED`, `ASSET_ADDED`, `ASSET_REMOVED`, `TEXT_ADDED`, `TEXT_REMOVED`,
+  `BATCH_PREFLIGHT_FAILED`, `BATCH_SUBMITTED`, `BATCH_CLOSED`, `PROJECT_QUOTE_REQUESTED`, `PROJECT_ARCHIVED`.
+  `TEXT_*` are the library's texts, beyond kltn-docs.
 
 ---
 
@@ -275,7 +282,7 @@ The server has no font metrics, so it checks text by its anchor only. How far te
 - `DESIGN_DRAFT_LIMIT_REACHED`, `DESIGN_NOT_DRAFT`, `DESIGN_NOT_APPROVED`;
 - `DESIGN_FILES_OUTDATED` (`details.roles`), `DESIGN_PRINT_FILE_INVALID`, `DESIGN_ASSET_LIMIT_REACHED`;
 - `DESIGN_PROJECT_ARCHIVED`, `DESIGN_PROJECT_FULL`, `DESIGN_PROJECT_LIBRARY_FULL`, `DESIGN_PROJECT_HAS_PENDING`;
-- `DESIGN_IN_ANOTHER_PROJECT`, `DESIGN_PENDING_IN_PROJECT`;
+- `DESIGN_IN_ANOTHER_PROJECT`, `DESIGN_PENDING_IN_PROJECT`, `DESIGN_CLONE_TARGET_INVALID`;
 - `CUSTOMER_NOT_ACTIVE`, `CUSTOMER_SKU_SOURCE_UNAVAILABLE`, `CONFLICT` (stale version).
 
 **Other statuses:**
@@ -332,8 +339,11 @@ warning level, and the minimum is the template's `minDpi` (300).
 
 ## 11. Known limits
 
-- **PDF/X:** the stamped print file is identified as PDF/X-4 (TrimBox, BleedBox, `GTS_PDFXVersion`, `Trapped`) but
-  has no ICC output intent until the printer's profile is chosen (B35).
+- **PDF/X:** the stamped print file is identified as PDF/X-4 (TrimBox, BleedBox, `GTS_PDFXVersion`, `Trapped`) and
+  carries a `GTS_PDFX` output intent from `stockflow.design.print.output-intent`. Until the printer's ICC profile is
+  chosen (B35) that is the interim sRGB profile (`sRGB IEC61966-2.1`), a display profile a strict PDF/X-4 checker can
+  still reject; the production instruction says which intent is embedded. Colours are never converted to the profile,
+  and nothing in the build checks conformance (no veraPDF).
 - **Quotes:** writing a quote from a request, with the customer's SKU filled in, is plan D5 and belongs to the order
   module. Quotes, orders and production orders still use the blank SKU and snapshot until then.
 - **Library formats:** the library takes the image types a design takes (PNG, JPEG, WebP). B43's SVG and PDF are

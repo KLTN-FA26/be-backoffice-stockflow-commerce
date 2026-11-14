@@ -92,7 +92,8 @@ class PutawayServiceConfirmTest {
     private final StockOperations operations = mock(StockOperations.class);
     private final ApplicationEventPublisher events = mock(ApplicationEventPublisher.class);
     private final PutawayService service = new PutawayService(tasks, warehouses, stockPackages, ledger, occupancy,
-            operations, events, mock(StockItemRepository.class));
+            operations, events, mock(StockItemRepository.class),
+            mock(com.stockflow.warehouse.api.PutawayTrips.class));
 
     private final UUID binId = UUID.randomUUID();
     private final StockPackageId carton = new StockPackageId(UUID.randomUUID());

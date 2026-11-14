@@ -55,8 +55,9 @@ import org.springframework.transaction.annotation.Transactional;
  * <p>Every writer of a request takes the design's row lock first, then the request's: the design lock serialises an ask
  * with the submission, the decision and the deletion of the design.</p>
  *
- * <p>The chat card that is to carry a request (16 §4.2, BR-11) belongs to the chat module, which is not built yet.
- * Writing the quote from a request - the customer's SKU filled in - is plan D5, outside this branch.</p>
+ * <p>The chat carries a request as a card (16 §4.2, BR-11): it reads the request here ({@link #find}), follows the
+ * design's decisions and is told when the request closes ({@code DesignQuoteRequestClosed}); a quote drawn up from the
+ * card closes the request ({@link #close}).</p>
  */
 @Service
 @Transactional
@@ -177,8 +178,10 @@ public class DesignQuoteRequestService {
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
         entityManager.refresh(request);
         if (request.getStatus() == QuoteRequestStatus.OPEN) {
-            request.close(clock.instant(), actor);
+            Instant now = clock.instant();
+            request.close(now, actor);
             requests.saveAndFlush(request);
+            closed(request, "ANSWERED", actor, now);
         }
         return views(List.of(request)).getFirst();
     }
@@ -188,7 +191,24 @@ public class DesignQuoteRequestService {
         requests.findOpen(designId).ifPresent(request -> {
             request.close(at, null);
             requests.saveAndFlush(request);
+            closed(request, "DESIGN_ARCHIVED", null, at);
         });
+    }
+
+    /** One request as read, whoever asks: the chat's quote request card (16 §4.2) shows the design as it is now. */
+    @Transactional(readOnly = true)
+    public Optional<QuoteRequestView> find(UUID requestId) {
+        return requests.findById(requestId).map(request -> views(List.of(request)).getFirst());
+    }
+
+    /**
+     * Tells the modules that follow requests - the chat's quote request card (16 §4.2, B40) - that it closed.
+     * Published in the closing transaction, delivered after commit.
+     */
+    private void closed(DesignQuoteRequestJpaEntity request, String outcome, UUID by, Instant at) {
+        UUID customerId = drafts.findById(request.getDraftId()).map(DesignDraftJpaEntity::getCustomerId).orElse(null);
+        events.publishEvent(new com.stockflow.contracts.DesignQuoteRequestClosed(request.getId(), request.getDraftId(),
+                customerId, outcome, by, at));
     }
 
     /** The design's open request, or null. */

@@ -49,13 +49,16 @@ class OrderReleaseService implements OrderReleases {
     private final ShippingWarehouseService shippingWarehouses;
     private final DeliveryBatchService batches;
     private final com.stockflow.order.internal.domain.DeliveryBatchRecords batchRecords;
+    private final com.stockflow.order.internal.domain.DeliveryFailureCases deliveryFailures;
 
     OrderReleaseService(OrderRepository repository, WarehouseDirectory warehouses,
                         OrderEventPublisher events, OrderService orders, Clock clock,
                         com.stockflow.payment.api.PaymentService paymentService,
                         OrderStockAllocation allocation, com.stockflow.order.internal.domain.SalesContractRepository contracts,
                         ShippingWarehouseService shippingWarehouses, DeliveryBatchService batches,
-                        com.stockflow.order.internal.domain.DeliveryBatchRecords batchRecords) {
+                        com.stockflow.order.internal.domain.DeliveryBatchRecords batchRecords,
+                        com.stockflow.order.internal.domain.DeliveryFailureCases deliveryFailures) {
+        this.deliveryFailures = deliveryFailures;
         this.batches = batches;
         this.batchRecords = batchRecords;
         this.shippingWarehouses = shippingWarehouses;
@@ -84,6 +87,14 @@ class OrderReleaseService implements OrderReleases {
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No order " + orderId));
         String warehouseCode = warehouses.codeOf(warehouseId).orElseThrow(() ->
                 new BusinessException(ErrorCode.WAREHOUSE_NOT_FOUND, "No warehouse " + warehouseId));
+        // WF-05 fix plan, section 2: goods of a shipment that came back, which Sales decided to deliver again, are
+        // released before anything else of the order - the batch after it waits for them to be handed over.
+        java.util.Optional<com.stockflow.order.internal.domain.DeliveryFailureCase> redelivery = deliveryFailures
+                .ofOrder(orderId).stream()
+                .filter(com.stockflow.order.internal.domain.DeliveryFailureCase::awaitingRelease).findFirst();
+        if (redelivery.isPresent()) {
+            return releaseRedelivery(order, redelivery.get(), warehouseId, warehouseCode, deliveryBatchId, releasedBy);
+        }
         if (order.hasPrintLines()) {
             // QD-16: a legacy line of a blank and a design snapshot only; the customer's own SKU is stock.
             throw new BusinessException(ErrorCode.ORDER_PRINT_GOODS_NOT_RECEIVED, ("Order %s has print lines; their "
@@ -147,6 +158,45 @@ class OrderReleaseService implements OrderReleases {
         events.publishEventsOf(order);
         log.info("Released delivery batch {} of order {} from {}: {}", batch.seq(), order.orderNumber(), warehouseCode,
                 order.status());
+        return orders.findById(order.id().value()).orElseThrow();
+    }
+
+    /**
+     * The goods of a returned shipment to the warehouse again (WF-05 fix plan, section 2; 09 §4.3): every unit of the
+     * case held there - what just became available is held first - its holds allocated on bins, the case released. The
+     * order stays PARTIALLY_FULFILLED (17 §4.5: no new status); fulfillment opens a pick task for the redelivery, the
+     * cartons are checked and labelled again, and the handover closes the case. No credit gate: these goods were
+     * released once already, and nothing new is given on credit by delivering them.
+     *
+     * @throws BusinessException {@code CONFLICT} for another warehouse than the goods came back to;
+     *         {@code DELIVERY_BATCH_NOT_NEXT} when another batch is named; {@code ORDER_INVALID_TRANSITION} while the
+     *         order is on hold; {@code ORDER_STOCK_NOT_HELD} while goods are in quarantine or written off
+     */
+    private OrderSummary releaseRedelivery(Order order, com.stockflow.order.internal.domain.DeliveryFailureCase failure,
+                                           UUID warehouseId, String warehouseCode, UUID deliveryBatchId,
+                                           UUID releasedBy) {
+        if (!failure.warehouseId().equals(warehouseId)) {
+            throw new BusinessException(ErrorCode.CONFLICT, ("The goods of return receipt %s came back to another "
+                    + "warehouse; order %s delivers them again from there").formatted(failure.receiptNumber(),
+                    order.orderNumber()));
+        }
+        if (deliveryBatchId != null && !deliveryBatchId.equals(failure.deliveryBatchId())) {
+            throw new BusinessException(ErrorCode.DELIVERY_BATCH_NOT_NEXT, ("Order %s releases the goods of return "
+                    + "receipt %s next, to be delivered again").formatted(order.orderNumber(), failure.receiptNumber()));
+        }
+        if (order.status() != com.stockflow.order.api.OrderStatus.PARTIALLY_FULFILLED) {
+            throw new BusinessException(ErrorCode.ORDER_INVALID_TRANSITION, ("Order %s is %s: goods that came back are "
+                    + "released to be delivered again once every delivery failure of the order is decided")
+                    .formatted(order.orderNumber(), order.status()));
+        }
+        shippingWarehouses.holdReturnedGoods(order);
+        allocation.allocate(order, warehouseCode, shippingWarehouses.heldForRedelivery(order, failure));
+        failure.release(releasedBy, clock.instant());
+        deliveryFailures.save(failure);
+        repository.save(order);
+        events.publishEventsOf(order);
+        log.info("Released the goods of return receipt {} of order {} from {} to be delivered again",
+                failure.receiptNumber(), order.orderNumber(), warehouseCode);
         return orders.findById(order.id().value()).orElseThrow();
     }
 

@@ -926,8 +926,7 @@ class Order:
                 status = "CANCELLED"
             elif paid_amount >= i["amount"]:
                 status = "PAID"
-            elif due and due < TODAY:
-                status = "OVERDUE"
+            # Overdue is a flag worked out from the due day, not a status (V20261121000100).
             elif paid_amount > 0:
                 status = "PARTIALLY_PAID"
             elif reached:

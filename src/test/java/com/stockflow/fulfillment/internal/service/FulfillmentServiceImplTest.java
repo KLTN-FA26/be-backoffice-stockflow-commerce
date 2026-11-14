@@ -622,6 +622,39 @@ class FulfillmentServiceImplTest {
     }
 
     @Test
+    void aRedeliveryIsReadAgainUnderTheOrdersRowLockBeforeItsTaskIsOpened() {
+        // WF-05 review N4: the unlocked read only says a redelivery may be waiting; the order's row lock is taken and
+        // the picks and the case are read again under it. Cancelled in between, the case gets no task.
+        UUID picker = UUID.randomUUID();
+        var order = releasedOrder(picker);
+        var redelivery = new com.stockflow.order.api.RedeliveryToPick(UUID.randomUUID(), UUID.randomUUID(),
+                Set.of(UUID.randomUUID()), java.util.Map.of());
+        when(orders.redeliveryToPick(eq(order.orderId()), any()))
+                .thenReturn(Optional.of(redelivery)).thenReturn(Optional.empty());
+
+        service.createTask(order.orderId(), picker, unlimitedManager());
+
+        var inOrder = org.mockito.Mockito.inOrder(orders, picks);
+        inOrder.verify(orders).redeliveryToPick(eq(order.orderId()), any());
+        inOrder.verify(orders).lockedStatus(order.orderId());
+        inOrder.verify(picks).findAllByOrderId(order.orderId());
+        inOrder.verify(orders).redeliveryToPick(eq(order.orderId()), any());
+        assertThat(savedByCreateTask().getRedeliveryCaseId()).as("the withdrawn case gets no pick").isNull();
+    }
+
+    @Test
+    void noRedeliveryTakesNoOrderLockBeforeTheUsualPath() {
+        UUID picker = UUID.randomUUID();
+        var order = releasedOrder(picker);
+        when(orders.redeliveryToPick(eq(order.orderId()), any())).thenReturn(Optional.empty());
+
+        service.createTask(order.orderId(), picker, unlimitedManager());
+
+        verify(orders, never()).lockedStatus(any());
+        verify(orders, org.mockito.Mockito.times(1)).redeliveryToPick(eq(order.orderId()), any());
+    }
+
+    @Test
     void aTaskWithNoDestinationGoesToDispatchWhateverStagingAreaWasSent() {
         UUID picker = UUID.randomUUID();
         var order = releasedOrder(picker);

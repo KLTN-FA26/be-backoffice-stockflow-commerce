@@ -14,6 +14,8 @@ public final class DesignProjectRules {
     public static final int MAX_DESIGNS = 20;
     /** Files a project's library holds (B43). */
     public static final int MAX_ASSETS = 30;
+    /** Texts a project's library holds, counted apart from its files (FE request 2026-11-13 E-1, beyond kltn-docs). */
+    public static final int MAX_TEXTS = 30;
     /** A batch is at least two drafts (BR-19); a single one is submitted on its own. */
     public static final int MIN_BATCH = 2;
 
@@ -47,6 +49,14 @@ public final class DesignProjectRules {
         if (files >= MAX_ASSETS) {
             throw new BusinessException(ErrorCode.DESIGN_PROJECT_LIBRARY_FULL,
                     "A design project's library holds at most " + MAX_ASSETS + " files; remove one first");
+        }
+    }
+
+    /** Room for one more library text beside {@code texts}. */
+    public static void requireRoomForText(long texts) {
+        if (texts >= MAX_TEXTS) {
+            throw new BusinessException(ErrorCode.DESIGN_PROJECT_LIBRARY_FULL,
+                    "A design project's library holds at most " + MAX_TEXTS + " texts; remove one first");
         }
     }
 

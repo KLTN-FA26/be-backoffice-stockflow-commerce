@@ -7,6 +7,7 @@ import com.stockflow.product.api.PrintArea;
 import com.stockflow.product.api.PrintAreaShape;
 import com.stockflow.product.api.PrintConfig;
 import com.stockflow.product.api.ProductModel;
+import com.stockflow.product.api.TemplateModel3d;
 import com.stockflow.product.internal.entity.CustomizationTemplateJpaEntity;
 import com.stockflow.product.internal.entity.PrintAreaJpaEntity;
 
@@ -37,7 +38,29 @@ public final class PrintConfigPersistenceMapper {
                 template.getAllowedFontCodes() == null ? null : Arrays.asList(template.getAllowedFontCodes()),
                 template.isActive(), model(template.getModelParams()),
                 areas.stream().map(PrintConfigPersistenceMapper::toArea).toList(), template.getReferenceFileKey(),
-                template.getReferenceFileName(), template.getVersion());
+                template.getReferenceFileName(), template.getVersion(), model3d(template));
+    }
+
+    /** The template's {@code .glb} and its surfaces, as stored. */
+    public static TemplateModel3d model3d(CustomizationTemplateJpaEntity template) {
+        List<Map<String, Object>> stored = template.getModelSurfaces();
+        List<TemplateModel3d.Surface> surfaces = stored == null ? List.of() : stored.stream()
+                .map(s -> new TemplateModel3d.Surface((String) s.get("printAreaCode"), (String) s.get("meshName")))
+                .toList();
+        return new TemplateModel3d(template.getModelFileKey(), template.getModelFileName(),
+                template.getModelFileChecksum(), surfaces);
+    }
+
+    /** {@code surfaces} as the JSON array stored in {@code model_surfaces_json}. */
+    public static List<Map<String, Object>> surfaces(List<TemplateModel3d.Surface> surfaces) {
+        return surfaces.stream()
+                .<Map<String, Object>>map(s -> {
+                    Map<String, Object> json = new LinkedHashMap<>();
+                    json.put("printAreaCode", s.printAreaCode());
+                    json.put("meshName", s.meshName());
+                    return json;
+                })
+                .toList();
     }
 
     /** The rows of {@code areas} for {@code templateId}, in order. */

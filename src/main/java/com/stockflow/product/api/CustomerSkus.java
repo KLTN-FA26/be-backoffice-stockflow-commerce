@@ -56,6 +56,12 @@ public interface CustomerSkus {
     /** 4A-2: the customer's own SKU with this code - its design snapshot for a production order; empty for another. */
     Optional<CustomerSku> find(String sku);
 
+    /**
+     * The customer's own SKU that is this variant - what a chat conversation about it names (kltn-docs 16 BR-02: its
+     * owner is checked against the conversation's customer); empty for an ordinary variant or an unknown id.
+     */
+    Optional<CustomerSku> findByVariant(UUID variantId);
+
     /** {@link #ownerOf} of each of {@code skus} in one read, by SKU as stored; ordinary and unknown SKUs are absent. */
     java.util.Map<String, UUID> ownersOf(java.util.Collection<String> skus);
 

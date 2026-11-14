@@ -67,6 +67,12 @@ public interface SalesContracts {
     record CreditWarning(String outcome, BigDecimal creditLimit, BigDecimal exposure, BigDecimal afterDelivery) { }
 
     /**
+     * A plan suggested for the draft contract {@code contractId} read at {@code version}: what {@code paymentPlan}
+     * would be, adding up to {@code totalAmount}, the order's total with tax.
+     */
+    record PlanSuggestion(UUID contractId, long version, BigDecimal totalAmount, List<InstallmentView> paymentPlan) { }
+
+    /**
      * @param creditWarning set only on the answer to a send that warned
      */
     record ContractView(UUID id, String contractNumber, UUID orderId, String orderNumber, String status, Party seller,
@@ -92,8 +98,25 @@ public interface SalesContracts {
     /** Every contract the order had, the cancelled ones too, newest first. */
     List<ContractView> history(UUID orderId);
 
+    /**
+     * {@link #history} for the system itself, outside any request: the chat's contract card follows the contract from
+     * an event listener, where no caller and so no data scope exists. Never for an endpoint.
+     */
+    List<ContractView> historyForSystem(UUID orderId);
+
     /** A draft revised against the version read (14 §4.3 step 16). */
     ContractView edit(CurrentUser user, UUID orderId, long version, Draft draft);
+
+    /**
+     * The payment plan a draft contract would have with every installment tied to a delivery batch suggested again
+     * from the batches as they are now (14 §4.3 step 12, BR-13; DS-02b): {@code ContractTerms.suggestTied}. Read only:
+     * Sales takes it - or changes it - with {@link #edit}, at {@code version}.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code NOT_FOUND}; {@code SALES_CONTRACT_NOT_FOUND};
+     *         {@code SALES_CONTRACT_STATUS_INVALID} once sent; {@code PAYMENT_PLAN_INVALID};
+     *         {@code PAYMENT_SCHEDULE_NEEDS_CREDIT}
+     */
+    PlanSuggestion suggestPaymentPlan(UUID orderId);
 
     /** Sent to the customer (14 §4.3 step 13); the answer carries the credit warning, if any. */
     ContractView send(CurrentUser user, UUID orderId, long version);

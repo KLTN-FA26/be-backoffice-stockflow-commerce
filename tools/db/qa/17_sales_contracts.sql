@@ -194,6 +194,18 @@ SELECT md5('qa17:order2')::uuid, 'SO-QA-HD2', c.id, gen_random_uuid(), 'DRAFT', 
   FROM customer.customer c WHERE c.id = md5('qa17:customer')::uuid;
 SELECT pg_temp.expect_fail('SC22 an order waiting for a contract it does not have', $q$
     UPDATE ordering.customer_order SET status = 'PENDING_CONTRACT' WHERE id = md5('qa17:order2')::uuid $q$);
+SELECT pg_temp.expect_fail('SC22b a draft order confirmed as checkout did, its contract never signed (14 §5.3)', $q$
+    UPDATE ordering.customer_order SET status = 'CONFIRMED', contract_signed_at = NOW()
+     WHERE id = md5('qa17:order2')::uuid $q$);
+SELECT pg_temp.expect_fail('SC22c a draft order waiting for money without a contract (14 §5.3)', $q$
+    UPDATE ordering.customer_order SET status = 'PENDING_PAYMENT', contract_signed_at = NOW()
+     WHERE id = md5('qa17:order2')::uuid $q$);
+SELECT pg_temp.expect_fail('SC22d a draft order held for credit without a contract (14 §5.3)', $q$
+    UPDATE ordering.customer_order SET status = 'ON_HOLD', hold_reason = 'CREDIT', contract_signed_at = NOW()
+     WHERE id = md5('qa17:order2')::uuid $q$);
+SELECT pg_temp.expect_true('SC22e no edge from DRAFT but to PENDING_CONTRACT and CANCELLED',
+    (SELECT array_agg(to_status ORDER BY to_status) = ARRAY['CANCELLED', 'PENDING_CONTRACT']::varchar[]
+       FROM ordering.order_status_transition WHERE from_status = 'DRAFT'));
 SELECT pg_temp.expect_fail('SC23 a draft order straight to the warehouse, without a contract', $q$
     UPDATE ordering.customer_order SET status = 'READY_TO_FULFILL' WHERE id = md5('qa17:order2')::uuid $q$);
 SELECT pg_temp.expect_true('SC24 the edges of 17 §5.1 around the contract',

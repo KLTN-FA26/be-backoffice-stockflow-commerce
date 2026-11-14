@@ -36,6 +36,14 @@ public class PickJpaEntity extends BaseEntity {
     @Column(name = "delivery_batch_id", updatable = false)
     private UUID deliveryBatchId;
 
+    /**
+     * WF-05 fix plan, section 2: the delivery failure case whose goods this task picks again - a second task of an
+     * order and batch that were picked once already ({@code uk_fulfillment_pick_order_batch} counts it apart); null
+     * for the first pick. {@code tg_pick_redelivery_case}: a case of this order and batch, released for redelivery.
+     */
+    @Column(name = "redelivery_case_id", updatable = false)
+    private UUID redeliveryCaseId;
+
     /** The order's number when the task was opened, so a pick list needs no call to the orders module (SCRUM-466). */
     @Column(name = "order_number", nullable = false, length = 32)
     private String orderNumber;
@@ -239,6 +247,14 @@ public class PickJpaEntity extends BaseEntity {
 
     /** 4B-8 (07 BR-07): the released delivery batch this task picks; null for an order without a schedule. */
     public UUID getDeliveryBatchId() { return deliveryBatchId; }
+
+    public UUID getRedeliveryCaseId() { return redeliveryCaseId; }
+
+    /** The task picks again the goods of this delivery failure case (set once, when the task is opened). */
+    public PickJpaEntity forRedelivery(UUID caseId) {
+        this.redeliveryCaseId = caseId;
+        return this;
+    }
 
     /** Set once, when the task is opened. */
     public PickJpaEntity forDeliveryBatch(UUID batchId) {

@@ -478,6 +478,12 @@ class QuoteIntegrationTest {
         Await.until("the validity passes", Duration.ofSeconds(10), () -> Instant.now().isAfter(sent.validUntil()));
 
         assertThat(quotes.get(portal, sent.id()).status()).isEqualTo(QuoteStatus.EXPIRED);
+        // A9: a list filtered by status reads it as it is now - before the sweep has written EXPIRED down, which it
+        // almost never has yet here (it runs every five minutes); either way the answer is the same.
+        assertThat(quotes.list(sales, new Quotes.Criteria(customerId, List.of(QuoteStatus.EXPIRED), null, 0, 50,
+                null)).items()).extracting(Quotes.Row::id).contains(sent.id());
+        assertThat(quotes.list(sales, new Quotes.Criteria(customerId, List.of(QuoteStatus.SENT), null, 0, 50, null))
+                .items()).extracting(Quotes.Row::id).doesNotContain(sent.id());
         assertThatThrownBy(() -> quotes.accept(portal, sent.id(), new Quotes.Acceptance(sent.version(), Map.of())))
                 .extracting(QuoteIntegrationTest::code).isEqualTo(ErrorCode.QUOTE_EXPIRED);
         assertThatThrownBy(() -> quotes.requestChanges(portal, sent.id(), sent.version(), "cheaper"))

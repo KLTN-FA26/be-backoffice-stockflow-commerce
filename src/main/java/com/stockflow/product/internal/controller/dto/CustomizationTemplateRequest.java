@@ -60,6 +60,25 @@ public record CustomizationTemplateRequest(
 
         @Schema(description = "Update only: the template's version as last read; a changed template answers 409 "
                 + "OPTIMISTIC_LOCK")
-        Long version
+        Long version,
+
+        @Schema(description = "Optional: which mesh of the template's .glb each print area is drawn on. Omitted keeps "
+                + "the template's map (empty on create); an empty surfaces list clears it. A print area the model does "
+                + "not have, one mapped twice, or a meshName outside 1-100 characters is 422 "
+                + "PRINT_CONFIG_SURFACES_INVALID with fieldErrors model3d.surfaces[i].printAreaCode / .meshName")
+        Model3d model3d
 ) {
+
+    /** The template's 3D surfaces; the file itself is uploaded on its own ({@code PUT .../model-file}). */
+    public record Model3d(List<Surface> surfaces) {
+    }
+
+    /** The mesh a print area is drawn on. */
+    public record Surface(
+            @Schema(example = "BODY", description = "A print area of the template's model: BODY; or FRONT, BACK, "
+                    + "LEFT, RIGHT")
+            String printAreaCode,
+            @Schema(example = "print:BODY", description = "The mesh's name in the .glb, 1-100 characters")
+            String meshName) {
+    }
 }

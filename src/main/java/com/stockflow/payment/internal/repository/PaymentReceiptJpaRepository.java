@@ -6,5 +6,6 @@ import com.stockflow.payment.internal.domain.PaymentReceiptStatus;
 
 interface PaymentReceiptJpaRepository extends BaseJpaRepository<PaymentReceiptJpaEntity> {
 
-    boolean existsByReferenceAndStatus(String reference, PaymentReceiptStatus status);
+    /** By the normalised reference (15 BR-03): {@code PaymentReceipt.normalize}, as the unique index compares. */
+    boolean existsByReferenceNormalizedAndStatus(String referenceNormalized, PaymentReceiptStatus status);
 }

@@ -28,6 +28,11 @@ public enum CancellationReasonCode {
      * only way such an order is cancelled - it ships goods a return already promised.
      */
     REPLACEMENT_WITHDRAWN,
+    /**
+     * What a failed delivery left undelivered, cancelled by Sales' decision on its delivery failure case (WF-05 fix
+     * plan, section 2): the reason the closure of the rest carries. Never a customer's own reason.
+     */
+    DELIVERY_FAILED,
     /** Needs a note: "other" with no explanation is not a reason. */
     OTHER;
 

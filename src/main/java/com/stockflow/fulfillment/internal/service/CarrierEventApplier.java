@@ -54,13 +54,21 @@ import java.util.stream.Collectors;
  * </ol>
  * A change the load's or shipment's state refuses throws; the caller then decides the call NEEDS_REVIEW in a third
  * transaction ({@link #failed}), keeping what was matched. A call on the error list is never applied again.
+ *
+ * <p>A line of an imported file of delivery outcomes takes the same second step after {@link #matchFile}.</p>
  */
 @Component
 class CarrierEventApplier {
 
-    /** What was matched, carried from the first transaction to the second. */
+    /**
+     * What was matched, carried from the first transaction to the second.
+     *
+     * @param failure the reason of a failed delivery when the report names an internal reason outright (a line of an
+     *                imported file); null when the carrier's own words are mapped by its table
+     */
     record Matched(CarrierReport report, UUID loadId, String loadCode, UUID warehouseId, UUID bookingId,
-                   String carrierOrderId, UUID shipmentId, String dedupeKey, List<CarrierReport> stops) { }
+                   String carrierOrderId, UUID shipmentId, String dedupeKey, List<CarrierReport> stops,
+                   FailureReasonMap.Resolution failure) { }
 
     private static final String E21_NOTE = "Returned by the carrier with no failed delivery reported first";
 
@@ -205,7 +213,47 @@ class CarrierEventApplier {
         List<CarrierReport> stops = api && report.kind() == CarrierEventKind.ORDER_COMPLETED
                 ? AhamoveWebhookReader.stops(tree, report.reference()) : List.of();
         return new Matched(report, load.getId(), load.getCode(), load.getWarehouseId(), bookingId, orderId, shipmentId,
-                key, stops);
+                key, stops, null);
+    }
+
+    /**
+     * A line of an imported file of delivery outcomes, kept as an event and matched (WF-05 fix plan item 5): the load
+     * the import found by its waybill number, and the shipment the line names, if any. From here on it is decided as a
+     * webhook call is ({@link #apply}), so a repeat and an outdated report are told by the same rules (BR-27). The
+     * report names the load by its code, as a WEBHOOK_LOAD carrier's own report does: the same outcome sent both ways
+     * is one report.
+     *
+     * @return what was matched, or null when the line is decided already (the load cancelled since the check, the
+     *         shipment no longer on it)
+     */
+    Matched matchFile(UUID eventId, CarrierJpaEntity carrier, CarrierEvents.FileLine line, String payload) {
+        DispatchLoadJpaRepository.LoadFacts load = loads.findFactsById(line.loadId()).orElseThrow();
+        CarrierEventJpaEntity event = CarrierEventJpaEntity.fromFile(eventId, carrier.getId(), carrier.getCode(),
+                clock.instant(), payload, line.importId(), line.line());
+        CarrierReport report = new CarrierReport(line.kind(), load.getCode(), null, line.shipmentCode(),
+                line.reportedAt(), null, null, null, null, line.wording());
+        event.read(report.kind(), line.waybillNo(), report.reportedAt());
+        if (load.getStatus() == LoadStatus.CANCELLED) {
+            event.matched(load.getWarehouseId(), load.getId(), null, null);
+            return decided(event, CarrierEventResult.UNMATCHED, "Load %s is cancelled (BR-22)".formatted(load.getCode()));
+        }
+        UUID shipmentId = null;
+        if (line.shipmentCode() != null) {
+            shipmentId = shipments.statesOnLoad(load.getId()).stream()
+                    .filter(s -> s.getCode().equals(line.shipmentCode())).map(ShipmentJpaRepository.ShipmentState::getId)
+                    .findFirst().orElse(null);
+            if (shipmentId == null) {
+                event.matched(load.getWarehouseId(), load.getId(), null, null);
+                return decided(event, CarrierEventResult.NEEDS_REVIEW, "Shipment %s did not leave on load %s"
+                        .formatted(line.shipmentCode(), load.getCode()));
+            }
+        }
+        String key = dedupeKey(carrier.getId(), report, payload.getBytes(StandardCharsets.UTF_8));
+        event.matched(load.getWarehouseId(), load.getId(), shipmentId, key);
+        events.saveAndFlush(event);
+        return new Matched(report, load.getId(), load.getCode(), load.getWarehouseId(), null, null, shipmentId, key,
+                List.of(), line.reason() == null ? null
+                : new FailureReasonMap.Resolution(line.reason(), line.note()));
     }
 
     // ------------------------------------------------------------------ 2. apply
@@ -213,6 +261,24 @@ class CarrierEventApplier {
     /** @return the result decided */
     CarrierEventResult apply(UUID eventId, CarrierJpaEntity carrier, Matched m) {
         events.lockReportsOf("carrier-event:" + m.loadId());
+        CarrierEventResult result = decideUnderLock(eventId, carrier, m);
+        closeEarlierCopies(eventId, m.dedupeKey());
+        return result;
+    }
+
+    /**
+     * A report handled closes its copies still RECEIVED (WF-05 review F6): the ones answered 503 while the carrier's API
+     * did not answer, or while a booking was being saved. A copy another thread is handling right now finds itself
+     * decided when it reaches the load's lock, and says so.
+     */
+    private void closeEarlierCopies(UUID eventId, String dedupeKey) {
+        if (dedupeKey != null) {
+            events.closeUndecidedCopies(dedupeKey, eventId, "A copy of this report sent again was handled (event "
+                    + eventId + ")", clock.instant());
+        }
+    }
+
+    private CarrierEventResult decideUnderLock(UUID eventId, CarrierJpaEntity carrier, Matched m) {
         CarrierEventJpaEntity event = events.findById(eventId).orElseThrow();
         if (event.getResult() != CarrierEventResult.RECEIVED) {
             return event.getResult();
@@ -221,12 +287,9 @@ class CarrierEventApplier {
             return decide(event, CarrierEventResult.DUPLICATE, "The same report was handled already");
         }
         CarrierReport report = m.report();
-        if (report.reportedAt() != null) {
-            Instant last = latest(events.lastAppliedToLoad(m.loadId()),
-                    m.shipmentId() == null ? null : events.lastAppliedToShipment(m.shipmentId()));
-            if (last != null && report.reportedAt().isBefore(last)) {
-                return decide(event, CarrierEventResult.STALE, "Older than the last report applied (" + last + ")");
-            }
+        Instant last = newerApplied(m);
+        if (last != null) {
+            return decide(event, CarrierEventResult.STALE, "Older than the last report applied (" + last + ")");
         }
         Instant at = report.reportedAt() != null ? report.reportedAt() : event.getReceivedAt();
         Outcome outcome = switch (report.kind()) {
@@ -244,6 +307,38 @@ class CarrierEventApplier {
             case OTHER -> new Outcome(CarrierEventResult.IGNORED, "A status the system has no use for");
         };
         return decide(event, outcome.result(), outcome.note());
+    }
+
+    /**
+     * The time of a report applied to the same shipment, or to the load, that is later than this one's (BR-27: this one
+     * is then outdated); null when there is none, or the report carries no time.
+     */
+    private Instant newerApplied(Matched m) {
+        Instant reportedAt = m.report().reportedAt();
+        if (reportedAt == null) {
+            return null;
+        }
+        Instant last = latest(events.lastAppliedToLoad(m.loadId()),
+                m.shipmentId() == null ? null : events.lastAppliedToShipment(m.shipmentId()));
+        return last != null && reportedAt.isBefore(last) ? last : null;
+    }
+
+    /**
+     * Whether the report is neither a repeat nor outdated by what is committed now - read without the load's lock, so
+     * not the decision ({@link #apply} decides under it), only whether asking the carrier's API about it is worth a
+     * call: a repeat or an outdated report is told so without one.
+     */
+    boolean fresh(UUID eventId, Matched m) {
+        return !events.handledBefore(m.dedupeKey(), eventId) && newerApplied(m) == null;
+    }
+
+    /**
+     * Decides a matched call without applying it: outside the time window, or not borne out by the carrier's API
+     * (WF-05 fix plan item 6). What was matched stays on it.
+     */
+    CarrierEventResult close(UUID eventId, CarrierEventResult result, String note) {
+        CarrierEventJpaEntity event = events.findById(eventId).orElseThrow();
+        return event.getResult() != CarrierEventResult.RECEIVED ? event.getResult() : decide(event, result, note);
     }
 
     private record Outcome(CarrierEventResult result, String note) { }
@@ -271,8 +366,8 @@ class CarrierEventApplier {
         CarrierReport report = m.report();
         ShipmentStatus target = report.kind() == CarrierEventKind.DELIVERED ? ShipmentStatus.DELIVERED
                 : ShipmentStatus.DELIVERY_FAILED;
-        FailureReasonMap.Resolution failure = target == ShipmentStatus.DELIVERY_FAILED
-                ? FailureReasonMap.of(reasons(carrier)).resolve(report.failureWording()) : null;
+        FailureReasonMap.Resolution failure = target != ShipmentStatus.DELIVERY_FAILED ? null
+                : m.failure() != null ? m.failure() : FailureReasonMap.of(reasons(carrier)).resolve(report.failureWording());
         DeliveryFailureReason reason = failure == null ? null : failure.reason();
         String note = failure == null ? null : failure.carrierWording() != null ? failure.carrierWording()
                 : reason == DeliveryFailureReason.OTHER ? "The carrier gave no reason" : null;
@@ -460,11 +555,11 @@ class CarrierEventApplier {
      * one shows on the error list.
      */
     void retryLater(UUID eventId, String why) {
-        CarrierEventJpaEntity event = events.findById(eventId).orElseThrow();
-        if (event.getResult() == CarrierEventResult.RECEIVED) {
+        // A line of a file whose event could not even be kept has nothing to mark.
+        events.findById(eventId).filter(event -> event.getResult() == CarrierEventResult.RECEIVED).ifPresent(event -> {
             event.pending(why);
             events.saveAndFlush(event);
-        }
+        });
     }
 
     /**
@@ -483,7 +578,9 @@ class CarrierEventApplier {
         }
         String why = failure instanceof BusinessException refused ? refused.getMessage()
                 : "Could not be applied (" + failure.getClass().getSimpleName() + ")";
-        return decide(event, CarrierEventResult.NEEDS_REVIEW, why);
+        CarrierEventResult result = decide(event, CarrierEventResult.NEEDS_REVIEW, why);
+        closeEarlierCopies(eventId, event.getDedupeKey());
+        return result;
     }
 
     // ------------------------------------------------------------------ helpers

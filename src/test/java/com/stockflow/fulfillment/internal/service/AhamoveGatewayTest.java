@@ -63,7 +63,7 @@ class AhamoveGatewayTest {
                 return builder.baseUrl(baseUrl);
             }
         };
-        gateway = new AhamoveGateway(clients, new AhamoveProperties(STAGING, STAGING, "Khách hàng muốn hủy đơn"),
+        gateway = new AhamoveGateway(clients, new AhamoveProperties(STAGING, STAGING, "Khách hàng muốn hủy đơn", null),
                 calls, new ObjectMapper());
         caller = new CarrierBookingGateway.Caller(UUID.randomUUID(), UUID.randomUUID(), CarrierApiEnvironment.STAGING,
                 "84908000000", KEY);
@@ -208,6 +208,44 @@ class AhamoveGatewayTest {
 
         assertThat(gateway.orderStatus(caller, "24ABCD")).contains("CANCELLED");
         assertThat(gateway.orderStatus(caller, "24ABCE")).isEmpty();
+        server.verify();
+    }
+
+    @Test
+    @DisplayName("an order is read whole before a final outcome its callback reported is applied: its status, its "
+            + "sub-status and each drop-off's status, the pickup left out; an empty answer and 'too many requests' are no "
+            + "answer, a 403 is a refusal")
+    void readsAnOrdersState() {
+        token("t1");
+        server.expect(requestTo(STAGING + "/v3/orders/24ABCD")).andExpect(method(HttpMethod.GET))
+                .andExpect(header("Authorization", "Bearer t1"))
+                .andRespond(withSuccess("{\"order\":{\"_id\":\"24ABCD\",\"status\":\"completed\",\"sub_status\":"
+                        + "\"returned\",\"path\":[{\"address\":\"kho\",\"status\":\"\"},{\"status\":\"Completed\"},"
+                        + "{\"address\":\"2 Hai Bà Trưng\"},{\"status\":\"FAILED\"}]}}", MediaType.APPLICATION_JSON));
+        server.expect(requestTo(STAGING + "/v3/orders/24ABCF")).andRespond(withSuccess("", MediaType.APPLICATION_JSON));
+        server.expect(requestTo(STAGING + "/v3/orders/24ABCG")).andRespond(withStatus(HttpStatus.TOO_MANY_REQUESTS)
+                .body("{\"code\":\"TOO_MANY_REQUESTS\"}").contentType(MediaType.APPLICATION_JSON));
+        server.expect(requestTo(STAGING + "/v3/orders/24ABCH")).andRespond(withStatus(HttpStatus.FORBIDDEN)
+                .body("{\"code\":\"NOT_PERMITTED\"}").contentType(MediaType.APPLICATION_JSON));
+
+        CarrierBookingGateway.OrderState state = gateway.orderState(caller, "24ABCD").orElseThrow();
+        assertThat(state.status()).isEqualTo("COMPLETED");
+        assertThat(state.subStatus()).isEqualTo("RETURNED");
+        assertThat(state.stopStatuses()).containsExactly("COMPLETED", "", "FAILED");
+        assertThat(state.stopStatus(1)).isEqualTo("COMPLETED");
+        assertThat(state.stopStatus(3)).isEqualTo("FAILED");
+        assertThat(state.stopStatus(0)).isNull();
+        assertThat(state.stopStatus(4)).isNull();
+        // Review F2: an answer with no order in it, and being told to come back later, say nothing about the order -
+        // not "no such order", and not a refusal.
+        assertThat(catchThrowableOfType(CarrierBookingGateway.CarrierCallFailed.class,
+                () -> gateway.orderState(caller, "24ABCF")).answered()).isFalse();
+        CarrierBookingGateway.CarrierCallFailed later = catchThrowableOfType(
+                CarrierBookingGateway.CarrierCallFailed.class, () -> gateway.orderState(caller, "24ABCG"));
+        assertThat(later.answered()).isFalse();
+        assertThat(later.code()).isEqualTo("TOO_MANY_REQUESTS");
+        assertThat(catchThrowableOfType(CarrierBookingGateway.CarrierCallFailed.class,
+                () -> gateway.orderState(caller, "24ABCH")).answered()).isTrue();
         server.verify();
     }
 

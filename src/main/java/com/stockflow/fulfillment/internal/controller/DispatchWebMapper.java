@@ -23,8 +23,8 @@ class DispatchWebMapper {
         Carriers.ConnectionView k = c.connection();
         return new CarrierResponse(c.id(), c.code(), c.name(), c.contactName(), c.contactPhone(), c.status(),
                 new CarrierResponse.Connection(k.type(), k.webhookEnabled(), k.webhookSecretConfigured(),
-                        k.webhookAuthHeader(), k.webhookAuthValueConfigured(), k.apiEnvironment(), k.apiAccount(),
-                        k.apiKeyConfigured(), k.failureReasonMap()), c.version());
+                        k.webhookAuthHeader(), k.webhookAuthValueConfigured(), k.webhookAuthValueNextConfigured(),
+                        k.apiEnvironment(), k.apiAccount(), k.apiKeyConfigured(), k.failureReasonMap()), c.version());
     }
 
     CarrierServiceCodeResponse toResponse(CarrierServiceCodes.ServiceCode c) {

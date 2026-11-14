@@ -30,8 +30,22 @@ public record CustomizationTemplateResponse(
         List<Area> printAreas,
         @Schema(description = "File name of the attached reference die-line, if any")
         String referenceFileName,
-        long version
+        long version,
+        @Schema(description = "The template's 3D model: whether a .glb is attached, its name and SHA-256, and which "
+                + "mesh each print area is drawn on. Always present")
+        Model3d model3d
 ) {
+
+    /**
+     * The template's {@code .glb} and its surfaces. {@code fileChecksum} is the SHA-256 (hex) of the file the model's
+     * measurements were taken from; null with no file.
+     */
+    public record Model3d(boolean hasFile, String fileName, String fileChecksum, List<Surface> surfaces) {
+    }
+
+    /** The mesh a print area is drawn on. */
+    public record Surface(String printAreaCode, String meshName) {
+    }
 
     /** The parametric model; only the fields of its {@code kind} are present. */
     public record Model(String kind, Double topDiameterMm, Double bottomDiameterMm, Double heightMm, Double rimMm,

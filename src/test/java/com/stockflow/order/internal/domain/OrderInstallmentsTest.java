@@ -100,9 +100,9 @@ class OrderInstallmentsTest {
         order.markDelivered(NOW, SALES);
         Instant later = NOW.plus(java.time.Duration.ofDays(40));
 
-        assertThat(order.complete(later, java.time.Duration.ofDays(7), false, true)).as("still owing").isFalse();
+        assertThat(order.complete(later, java.time.Duration.ofDays(7), false, true, false)).as("still owing").isFalse();
         assertThat(order.status()).isEqualTo(OrderStatus.DELIVERED);
-        assertThat(order.complete(later, java.time.Duration.ofDays(7), false, false)).isTrue();
+        assertThat(order.complete(later, java.time.Duration.ofDays(7), false, false, false)).isTrue();
         assertThat(order.status()).isEqualTo(OrderStatus.COMPLETED);
 
         Instant muchLater = later.plus(java.time.Duration.ofDays(31));

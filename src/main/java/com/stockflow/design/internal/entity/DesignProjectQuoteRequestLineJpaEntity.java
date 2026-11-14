@@ -15,7 +15,8 @@ import org.springframework.data.domain.Persistable;
 
 /**
  * {@code design.design_project_quote_request_line}: one approved design of a project quote request and the cartons
- * asked of it - a suggestion (kltn-docs 12 BR-21, 14 BR-22). Insert-only.
+ * asked of it - a suggestion (kltn-docs 12 BR-21, 14 BR-22). Never updated: a request asked again while open has its
+ * lines deleted and written anew.
  *
  * <p>{@link Persistable} with an explicit new flag: with an assigned key Spring Data would otherwise merge.</p>
  */

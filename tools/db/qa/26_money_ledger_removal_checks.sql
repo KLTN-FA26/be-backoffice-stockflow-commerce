@@ -33,9 +33,10 @@ BEGIN
     RAISE NOTICE 'ok    %', label;
 END $$;
 
-\echo '--- ck_order_confirmed_basis: a signed contract, or a free replacement (NOT VALID: old rows stay)'
-SELECT pg_temp.expect_true('MR1 the check does not validate the rows that were there: legacy CONFIRMED orders stay',
-    (SELECT NOT convalidated FROM pg_constraint WHERE conname = 'ck_order_confirmed_basis'));
+\echo '--- ck_order_confirmed_basis: a signed contract, or a free replacement'
+-- Added NOT VALID to spare CONFIRMED orders of before; on a fresh database (baseline V20261111000000, 2026-11-11): no row predates it, so it is created validated.
+SELECT pg_temp.expect_true('MR1 the check is validated: every CONFIRMED order has its contract basis',
+    (SELECT convalidated FROM pg_constraint WHERE conname = 'ck_order_confirmed_basis'));
 SELECT pg_temp.expect_fail('MR2 a new CONFIRMED order with no contract signed', $q$
     INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, currency, placed_at,
                                          created_at)

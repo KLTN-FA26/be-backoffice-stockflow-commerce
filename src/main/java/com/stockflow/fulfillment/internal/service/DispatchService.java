@@ -290,8 +290,13 @@ class DispatchService implements Dispatching {
             if (wholeOrder) {
                 order = orders.markShipped(row.getOrderId(), at, by);
             } else {
+                // WF-05 fix plan, section 2: a shipment whose task picked a returned shipment's goods again tells the
+                // order which delivery failure case it delivers.
+                UUID redeliveryCase = row.getPackId() == null ? null
+                        : picks.redeliveryCaseOfPack(row.getPackId()).orElse(null);
                 order = orders.recordHandover(row.getOrderId(), new ShipmentHandover(row.getId(), lines, at, by,
-                        new ShipmentHandover.Carriage(row.getCode(), parcels, carrier.getName()), leavingWith));
+                        new ShipmentHandover.Carriage(row.getCode(), parcels, carrier.getName()), leavingWith,
+                        redeliveryCase));
             }
             shipment.handOver(loadId, carrier.getId(), wholeOrder, by, at);
         } catch (BusinessException refused) {

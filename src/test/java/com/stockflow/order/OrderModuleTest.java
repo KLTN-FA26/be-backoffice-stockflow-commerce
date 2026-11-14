@@ -39,6 +39,10 @@ class OrderModuleTest {
     // R4 (4B-8): order's own port for the customer's chat consent, implemented by chat, which is not booted here.
     @MockitoBean com.stockflow.order.api.ConsentMessages consentMessagesMock;
     @MockitoBean com.stockflow.notification.api.ProductionOrderResends productionOrderResendsMock;
+    // WF-05: order's own port for "every delivery invoiced", implemented by invoicing, which depends on order and is
+    // not booted here; and notification's (booted) port for the e-invoice mail, implemented by invoicing too.
+    @MockitoBean com.stockflow.order.api.DeliveryInvoices deliveryInvoicesMock;
+    @MockitoBean com.stockflow.notification.api.EInvoiceDirectory einvoiceDirectoryMock;
 
     @Test
     @DisplayName("order starts and answers through its api with the other modules absent")
