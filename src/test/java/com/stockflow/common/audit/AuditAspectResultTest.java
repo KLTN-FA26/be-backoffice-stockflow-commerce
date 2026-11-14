@@ -4,6 +4,7 @@ import com.stockflow.common.security.CurrentUserProvider;
 import org.junit.jupiter.api.Test;
 import org.springframework.aop.aspectj.annotation.AspectJProxyFactory;
 
+import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
@@ -22,6 +23,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class AuditAspectResultTest {
 
     record Created(UUID id) {}
+
+    record Tier(int minQuantity, BigDecimal unitPrice) {}
+
+    record Placed(UUID id, String locationCode) {}
 
     /** Stands in for a service; public, because the aspect only advises what a proxy can reach. */
     public static class Catalogue {
@@ -47,6 +52,16 @@ class AuditAspectResultTest {
                 throw new IllegalStateException("refused");
             }
             return new Created(id);
+        }
+
+        @Auditable(action = AuditAction.UPDATE, resourceType = "bin", resourceId = "#id",
+                details = "{locationCode: #result?.locationCode(), "
+                        + "tiers: #tiers.![minQuantity() + ':' + unitPrice().toPlainString()]}")
+        public Placed place(UUID id, List<Tier> tiers) {
+            if (tiers.isEmpty()) {
+                throw new IllegalArgumentException("no tiers");
+            }
+            return new Placed(id, "HCM-A01-L1-B01");
         }
 
         @Auditable(action = AuditAction.UPDATE, resourceType = "thing", details = "#nope.broken()")
@@ -132,5 +147,19 @@ class AuditAspectResultTest {
             assertThat(entry.outcome()).isEqualTo(AuditEntry.Outcome.SUCCESS);
             assertThat(entry.details()).isNull();
         });
+    }
+
+    @Test
+    void detailsReadTheResultAndProjectAList() {
+        UUID id = UUID.fromString("01a10000-0000-7000-8000-0000000000ee");
+
+        proxied().place(id, List.of(new Tier(1, new BigDecimal("11000")), new Tier(5, new BigDecimal("10500"))));
+        assertThatThrownBy(() -> proxied().place(id, List.of())).isInstanceOf(IllegalArgumentException.class);
+
+        assertThat(entries).hasSize(2);
+        assertThat(entries.get(0).details())
+                .isEqualTo("{\"locationCode\":\"HCM-A01-L1-B01\",\"tiers\":\"[1:11000, 5:10500]\"}");
+        // A failure has no result: the location code is null, the arguments are still there.
+        assertThat(entries.get(1).details()).contains("\"context\":{\"locationCode\":null,\"tiers\":\"[]\"}");
     }
 }

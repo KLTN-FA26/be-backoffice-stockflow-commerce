@@ -34,10 +34,20 @@ import java.util.UUID;
  * number of cartons and pricing one piece. A price set before on a stock variant is kept, counted in units
  * ({@link PriceView#measure()} {@code UNIT}); no order is priced from it since checkout went (team plan 5-2): it can be
  * read and deleted, not set again. {@code tg_customer_price_own_sku} holds the same rule for a new row.</p>
+ *
+ * <p>Every change is audited with what changed (13 §4.2 step 3; BE3-B): the entry is under the customer, and its details
+ * name the SKU and, for a price set or replaced, its new tiers ("from 5: 10500" - from 5 cartons, 10 500 VND a piece),
+ * so the System Admin's audit log reads which price became what without a second table of old prices.</p>
  */
 @Service
 @Transactional
 public class CustomerPriceService {
+
+    /** The audited SKU: upper-cased and stripped as {@link #sku} keeps it, so one SKU reads one way in the log. */
+    private static final String AUDITED_SKU = "sku: #sku?.strip()?.toUpperCase(T(java.util.Locale).ROOT)";
+    /** The audited tiers, one string each: "from 5: 10500" - from 5 cartons on, 10 500 VND a piece. */
+    private static final String AUDITED_TIERS = "tiers: (#tiers == null ? null "
+            + ": #tiers.!['from ' + minQuantity() + ': ' + unitPrice()?.toPlainString()])";
 
     private final CustomerPriceRepository prices;
     private final PriceResolver resolver;
@@ -95,7 +105,8 @@ public class CustomerPriceService {
      *         included), {@code CUSTOMER_SKU_REQUIRED} for a SKU that is not the customer's own, {@code CONFLICT}
      *         when the customer already has one (replace it instead), {@code VALIDATION_FAILED}
      */
-    @Auditable(action = AuditAction.CREATE, resourceType = "customer-price", resourceId = "#customerId")
+    @Auditable(action = AuditAction.CREATE, resourceType = "customer-price", resourceId = "#customerId",
+            details = "{" + AUDITED_SKU + ", " + AUDITED_TIERS + "}")
     public PriceView create(UUID customerId, String sku, List<TierInput> tiers, String note) {
         String code = prepare(customerId, sku);
         requireOwnSku(customerId, code);
@@ -114,7 +125,8 @@ public class CustomerPriceService {
      * @throws BusinessException {@code CUSTOMER_PRICE_NOT_FOUND}, {@code CUSTOMER_SKU_REQUIRED} for a price on a stock
      *         variant (kept to read and delete, not set again), {@code OPTIMISTIC_LOCK}, {@code VALIDATION_FAILED}
      */
-    @Auditable(action = AuditAction.UPDATE, resourceType = "customer-price", resourceId = "#customerId")
+    @Auditable(action = AuditAction.UPDATE, resourceType = "customer-price", resourceId = "#customerId",
+            details = "{" + AUDITED_SKU + ", " + AUDITED_TIERS + ", version: #expectedVersion}")
     public PriceView replace(UUID customerId, String sku, List<TierInput> tiers, String note,
                              long expectedVersion) {
         String code = prepare(customerId, sku);
@@ -129,7 +141,8 @@ public class CustomerPriceService {
      * The SKU no longer has a price of this customer's own - and there is no other (kltn-docs 13 BR-04): Sales enters
      * the tiers on the next quote by hand (13 §4.2 step 5); quotes already sent keep theirs.
      */
-    @Auditable(action = AuditAction.DELETE, resourceType = "customer-price", resourceId = "#customerId")
+    @Auditable(action = AuditAction.DELETE, resourceType = "customer-price", resourceId = "#customerId",
+            details = "{" + AUDITED_SKU + ", version: #expectedVersion}")
     public void delete(UUID customerId, String sku, long expectedVersion) {
         String code = prepare(customerId, sku);
         CustomerPrice price = prices.findForUpdate(customerId, code)

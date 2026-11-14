@@ -62,7 +62,10 @@ class WarehouseLayoutServiceImpl implements WarehouseLayoutService {
      */
     @Override
     @Auditable(action = AuditAction.CREATE, resourceType = "warehouse",
-            resourceId = "#command.prefix()?.toUpperCase(T(java.util.Locale).ROOT)")
+            resourceId = "#command.prefix()?.toUpperCase(T(java.util.Locale).ROOT)",
+            details = "{warehouseId: #result?.id(), name: #command.name(), address: #command.address(), "
+                    + "returnAddress: #command.returnAddress(), mapUnit: #command.mapUnit(), "
+                    + "mapWidth: #command.mapWidth(), mapHeight: #command.mapHeight()}")
     public WarehouseSummary register(RegisterWarehouseCommand command) {
         String prefix = CodePart.of(command.prefix(), CodePart.PREFIX_MAX_LENGTH).value();
         if (warehouses.existsByPrefix(prefix)) {
@@ -80,7 +83,10 @@ class WarehouseLayoutServiceImpl implements WarehouseLayoutService {
      * placed beyond the new edge between the check and the commit.
      */
     @Override
-    @Auditable(action = AuditAction.UPDATE, resourceType = "warehouse", resourceId = "#command.warehouseId()")
+    @Auditable(action = AuditAction.UPDATE, resourceType = "warehouse", resourceId = "#command.warehouseId()",
+            details = "{prefix: #result?.prefix(), name: #command.name(), address: #command.address(), "
+                    + "returnAddress: #command.returnAddress(), mapWidth: #command.mapWidth(), "
+                    + "mapHeight: #command.mapHeight()}")
     public WarehouseSummary update(UpdateWarehouseCommand command) {
         Warehouse warehouse = WarehouseLocks.lock(warehouses, command.warehouseId());
         warehouse.updateDetails(command.name(), command.address(), command.returnAddress(),
@@ -91,7 +97,8 @@ class WarehouseLayoutServiceImpl implements WarehouseLayoutService {
     }
 
     @Override
-    @Auditable(action = AuditAction.TRANSITION, resourceType = "warehouse", resourceId = "#warehouseId")
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "warehouse", resourceId = "#warehouseId",
+            details = "{prefix: #result?.prefix(), status: #result?.status()}")
     public WarehouseSummary activate(UUID warehouseId) {
         Warehouse warehouse = require(warehouseId);
         warehouse.activate();
@@ -99,7 +106,8 @@ class WarehouseLayoutServiceImpl implements WarehouseLayoutService {
     }
 
     @Override
-    @Auditable(action = AuditAction.TRANSITION, resourceType = "warehouse", resourceId = "#warehouseId")
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "warehouse", resourceId = "#warehouseId",
+            details = "{prefix: #result?.prefix(), status: #result?.status()}")
     public WarehouseSummary deactivate(UUID warehouseId) {
         Warehouse warehouse = require(warehouseId);
         warehouse.deactivate();
@@ -128,7 +136,8 @@ class WarehouseLayoutServiceImpl implements WarehouseLayoutService {
      * and two requests for "Cups" and "cups" must not both read them before either has written.</p>
      */
     @Override
-    @Auditable(action = AuditAction.CREATE, resourceType = "zone", resourceId = "#command.warehouseId()")
+    @Auditable(action = AuditAction.CREATE, resourceType = "zone", resourceId = "#command.warehouseId()",
+            details = "{zoneId: #result?.id(), name: #command.name(), color: #command.color()}")
     public ZoneSummary createZone(CreateZoneCommand command) {
         WarehouseLocks.lock(warehouses, command.warehouseId());
         Zone zone = Zone.create(Identifiers.newId(), command.warehouseId(), command.name(), command.color());
@@ -137,7 +146,8 @@ class WarehouseLayoutServiceImpl implements WarehouseLayoutService {
     }
 
     @Override
-    @Auditable(action = AuditAction.UPDATE, resourceType = "zone", resourceId = "#command.zoneId()")
+    @Auditable(action = AuditAction.UPDATE, resourceType = "zone", resourceId = "#command.zoneId()",
+            details = "{name: #command.name(), color: #command.color()}")
     public ZoneSummary updateZone(UpdateZoneCommand command) {
         WarehouseLocks.lockOwner(warehouses, zones.findWarehouseIdOf(command.zoneId()),
                 () -> zoneNotFound(command.zoneId()));
