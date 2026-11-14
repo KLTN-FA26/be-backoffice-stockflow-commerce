@@ -36,4 +36,9 @@ public final class ExportResponses {
                 .cacheControl(CacheControl.noStore())
                 .body(body);
     }
+
+    /** {@link #xlsx(byte[], String)} of a service's export. */
+    public static ResponseEntity<byte[]> xlsx(ExportFile file) {
+        return xlsx(file.content(), file.filename());
+    }
 }
