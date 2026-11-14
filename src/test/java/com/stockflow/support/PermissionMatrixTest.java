@@ -346,7 +346,7 @@ class PermissionMatrixTest {
             Map.entry("sales-contracts:APPROVE", Set.of(Role.SALES_STAFF, Role.SYSTEM_ADMIN)),
             // 4B-8 (V20261116000300, kltn-docs 17 BR-03): the warehouse manager of the warehouse released to.
             Map.entry("sales-order-releases:UPDATE", Set.of(Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
-            // WF4 BE-13 (V20261120000300, 17 §4.2, §4.5): the schedule is read by everyone who read it with the contract
+            // WF4 BE-13 (V20261124000400, 17 §4.2, §4.5): the schedule is read by everyone who read it with the contract
             // (sales-contracts:READ) and by whoever releases - the warehouse manager, who does not read the contract.
             Map.entry("sales-order-delivery-batches:READ", Set.of(Role.SALES_STAFF, Role.SALES_MANAGER,
                     Role.ACCOUNTANT, Role.PRODUCTION_COORDINATOR, Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),

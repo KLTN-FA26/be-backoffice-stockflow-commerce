@@ -13,7 +13,7 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * V20261120000300 on the real upgrade path (WF4 BE-13; kltn-docs 17 §4.2, §4.5): the delivery schedule gets its own read
+ * V20261124000400 on the real upgrade path (WF4 BE-13; kltn-docs 17 §4.2, §4.5): the delivery schedule gets its own read
  * permission, {@code sales-order-delivery-batches:READ}, granted to everyone who read the schedule with the contract
  * ({@code sales-contracts:READ}) and to whoever releases ({@code sales-order-releases:UPDATE}) - the warehouse manager -
  * who does not get the contract. Generic over roles, so one created at run time follows too; a role holding neither
@@ -22,7 +22,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class DeliveryBatchesReadPermissionMigrationUpgradeTest {
 
     private static final String BEFORE = "20261117000300";
-    private static final String MIGRATION = "20261120000300";
+    private static final String MIGRATION = "20261124000400";
     private static final String CODE = "sales-order-delivery-batches:READ";
 
     @Test

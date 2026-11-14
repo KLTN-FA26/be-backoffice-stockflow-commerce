@@ -28,7 +28,7 @@ public final class OrderResources {
      * Reading an order's delivery schedule (17 §4.5, BR-29): the batches, the window in force, what is held and released.
      * Its own resource, not {@code sales-contracts:READ}, which opens the contract itself: the warehouse manager releases
      * batch by batch and must see the schedule without seeing the contract (WF4 BE-13). Held by everyone who read the
-     * schedule before and by whoever releases ({@link #RELEASES}); seeded by V20261120000300. Window changes stay
+     * schedule before and by whoever releases ({@link #RELEASES}); seeded by V20261124000400. Window changes stay
      * {@code sales-contracts:UPDATE}.
      */
     public static final String DELIVERY_BATCHES = "sales-order-delivery-batches";
