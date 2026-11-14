@@ -10,8 +10,8 @@ import java.util.stream.Collectors;
  * <p>Public because {@code OrderSummary} carries it and other modules branch on it. The transitions stay private to
  * the module — {@link #canTransitionTo} is exposed so a caller can ask, but only {@code order} may actually move a
  * row. The same table is written a second time in the database ({@code ordering.order_status_transition}, enforced by
- * the trigger {@code tg_order_status_transition}); {@code OrderLifecycleIntegrationTest#triggerRefusesJumps} and
- * {@code OrderLifecycleMigrationUpgradeTest} check the two are equal.</p>
+ * the trigger {@code tg_order_status_transition}); {@code OrderLifecycleIntegrationTest#triggerRefusesJumps} checks
+ * the two are equal.</p>
  *
  * <pre>
  *   DRAFT ─contract sent─▶ PENDING_CONTRACT ─signed─▶ PENDING_PAYMENT (an installment on signing) / CONFIRMED /
@@ -19,13 +19,16 @@ import java.util.stream.Collectors;
  *     └──contract cancelled───┘
  *   PENDING_PAYMENT ─paid─▶ CONFIRMED ─release─▶ READY_TO_FULFILL
  *                           CONFIRMED ─short, a production order sent─▶ AWAITING_STOCK ─release─▶ READY_TO_FULFILL
- *   DRAFT ─▶ PENDING_PAYMENT / CONFIRMED / ON_HOLD: checkout, until it is removed (4B-10)
  *
  *   READY_TO_FULFILL ─▶ PICKING ─▶ PACKED ─handover─▶ SHIPPED ─▶ DELIVERED ─▶ COMPLETED ─▶ CLOSED
  *                                                                   └─▶ DELIVERY_FAILED ─▶ DELIVERED / RETURNED
  *                     PICKING / PACKED ─part handed over─▶ PARTIALLY_FULFILLED ─rest packed─▶ PACKED
  *   DELIVERED ─▶ RETURN_REQUESTED ─▶ RETURNED ─▶ REFUNDED / PARTIALLY_REFUNDED ─▶ CLOSED
  * </pre>
+ *
+ * <p><b>No way round the contract</b> (14 §5.3). A draft leaves only for PENDING_CONTRACT or CANCELLED: the old
+ * checkout's DRAFT → PENDING_PAYMENT / CONFIRMED / ON_HOLD went with checkout (4B-10, removed from the table in
+ * V20261124000200), so an order is confirmed, held for credit or waits for money only once its contract is signed.</p>
  *
  * <p><b>Split shipments</b> (decision G4-Q3, 2026-10-19). {@code PARTIALLY_FULFILLED} is kltn-docs 17's "Partially
  * Fulfilled — giao một phần, phần còn lại backorder" and 09's "đơn ở trạng thái giao một phần": some of the order's goods
@@ -50,6 +53,13 @@ import java.util.stream.Collectors;
  * {@code PARTIALLY_FULFILLED}) and left back to the status it was entered from, or to {@code CANCELLED}; a credit hold
  * (an order placed over its limit) is decided through credit approval instead.</p>
  *
+ * <p><b>A shipment that comes back</b> (WF-05 fix plan, sections 2-3; 09 §4.3 step 3). The order no longer follows a
+ * returned shipment to {@code RETURNED} or {@code PARTIALLY_FULFILLED} by itself: it goes {@code ON_HOLD} for
+ * {@code DELIVERY_FAILED} - from {@code SHIPPED} and {@code DELIVERY_FAILED} too - and waits there for Sales to decide
+ * its delivery failure case. Decided, it is {@code PARTIALLY_FULFILLED} (the goods are owed a delivery again, or are
+ * closed with the rest); {@code RETURNED} is reached only when Sales cancelled everything that was not delivered and
+ * nothing of the order was.</p>
+ *
  * <p><b>Cancellation</b> stops at the first completed package (decision 2026-10-17, BR-ORD-004): {@code PACKED} and
  * later go through a return. There is no {@code PAYMENT_FAILED}: a B2B bank transfer has no failure to report (G3-Q2).</p>
  */
@@ -67,7 +77,11 @@ public enum OrderStatus {
      */
     PENDING_CONTRACT,
 
-    /** Submitted, stock reserved, waiting for the prepayment or the deposit. */
+    /**
+     * Its contract signed, waiting for the installment due on signing (14 §4.3 step 15, 15 BR-07). Nothing is reserved
+     * yet: stock is held only once it is CONFIRMED and Sales chose its shipping warehouse (17 §4.2). {@link #holdsStock}
+     * still answers true so that a cancellation from here releases whatever is held - which is nothing.
+     */
     PENDING_PAYMENT,
 
     /**
@@ -122,7 +136,11 @@ public enum OrderStatus {
     /** The customer asked to return goods (RMA, SCRUM-243). */
     RETURN_REQUESTED,
 
-    /** The goods came back to the warehouse: returned to origin, or through an RMA. */
+    /**
+     * The goods came back to the warehouse through an RMA, or - after a failed delivery - Sales cancelled everything
+     * that was not delivered and nothing of the order was. A shipment coming back no longer moves the order here by
+     * itself: it holds it ({@code HoldReason.DELIVERY_FAILED}).
+     */
     RETURNED,
 
     /** Refunded in full (or the receivable reduced in full, kltn-docs 15 §4.4). */
@@ -187,10 +205,9 @@ public enum OrderStatus {
      */
     public boolean canTransitionTo(OrderStatus target) {
         return switch (this) {
-            // PENDING_CONTRACT: its contract sent (4B-5). PENDING_PAYMENT / CONFIRMED / ON_HOLD: checkout's - a credit
-            // order within or over its limit (SCRUM-427) - until checkout is removed (4B-10).
-            case DRAFT -> target == PENDING_CONTRACT || target == PENDING_PAYMENT || target == CONFIRMED
-                    || target == ON_HOLD || target == CANCELLED;
+            // 14 §5.3: its contract sent (4B-5), or cancelled. Checkout's edges to PENDING_PAYMENT / CONFIRMED / ON_HOLD
+            // went with checkout (4B-10): a draft is placed only through its signed contract.
+            case DRAFT -> target == PENDING_CONTRACT || target == CANCELLED;
             // 14 §5.3: signed - waiting for an installment on signing, confirmed, or held for credit (15 BR-11); back to
             // DRAFT when the contract is cancelled to be drawn up again.
             case PENDING_CONTRACT -> target == DRAFT || target == PENDING_PAYMENT || target == CONFIRMED
@@ -226,9 +243,12 @@ public enum OrderStatus {
             case ON_HOLD -> target == CONFIRMED || target == PENDING_PAYMENT || target == AWAITING_STOCK
                     || target == IN_PRODUCTION || target == READY_TO_FULFILL || target == PICKING
                     || target == PARTIALLY_FULFILLED || target == PACKED || target == CANCELLED;
-            // PARTIALLY_FULFILLED: a shipment came back while the others arrived.
-            case SHIPPED -> target == DELIVERED || target == DELIVERY_FAILED || target == PARTIALLY_FULFILLED;
-            case DELIVERY_FAILED -> target == DELIVERED || target == RETURNED || target == PARTIALLY_FULFILLED;
+            // PARTIALLY_FULFILLED: before WF-05's fix, a shipment that came back while the others arrived; kept for the
+            // history. ON_HOLD: a shipment came back - the order waits for Sales' decision (hold DELIVERY_FAILED).
+            case SHIPPED -> target == DELIVERED || target == DELIVERY_FAILED || target == PARTIALLY_FULFILLED
+                    || target == ON_HOLD;
+            case DELIVERY_FAILED -> target == DELIVERED || target == RETURNED || target == PARTIALLY_FULFILLED
+                    || target == ON_HOLD;
             // DELIVERY_FAILED: only a delivery the warehouse manager corrected by hand, the carrier having reported it
             // wrongly, before the order completed (09 §4.3 step 5, E17; V20261108001800).
             case DELIVERED -> target == COMPLETED || target == RETURN_REQUESTED || target == DELIVERY_FAILED;

@@ -132,6 +132,7 @@ public final class StorageKeys {
             case "video/quicktime" -> ".mov";
             case "video/webm" -> ".webm";
             case "application/pdf" -> ".pdf";
+            case "application/xml" -> ".xml";
             case "text/csv" -> ".csv";
             case "text/plain" -> ".txt";
             case "application/vnd.openxmlformats-officedocument.wordprocessingml.document" -> ".docx";

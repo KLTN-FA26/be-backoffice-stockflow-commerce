@@ -106,6 +106,12 @@ class OrderRepositoryAdapter implements OrderRepository, OrderSearchRepository {
      * already was.
      */
     @Override
+    public Optional<Order> findByIdInScopeForReading(OrderId id) {
+        return jpa.findByIdInScope(id.value()).flatMap(scoped -> jpa.findByIdWithLines(scoped.getId()))
+                .map(this::toDomain);
+    }
+
+    @Override
     public Optional<Order> findByIdInScope(OrderId id) {
         // The probe is let go before the lock: kept managed, the locking query would upgrade it with a version check
         // and answer a concurrent change (a package completed while this waited) with an optimistic-lock failure

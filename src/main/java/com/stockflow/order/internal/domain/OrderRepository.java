@@ -40,6 +40,13 @@ public interface OrderRepository {
      */
     Optional<Order> findByIdInScope(OrderId id);
 
+    /**
+     * {@link #findByIdInScope} without the lock, for a read: the order when the current {@code DataScope} lets the
+     * caller see it, empty when it does not - so a read-only transaction asks no {@code FOR UPDATE} and an order out of
+     * scope reads as absent, as it does to a change.
+     */
+    Optional<Order> findByIdInScopeForReading(OrderId id);
+
     /** Idempotency: a resubmitted checkout must return the original order, not create a second. */
     Optional<Order> findByRequestId(UUID requestId);
 

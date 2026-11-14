@@ -72,7 +72,9 @@ class ShipmentController {
 
     @PostMapping("/{shipmentId}/delivery-outcome")
     @Operation(summary = "Record what the carrier reported: DELIVERED, DELIVERY_FAILED (with failureReason; OTHER needs "
-            + "a note) or RETURNED; the order follows and bills a delivered shipment. fulfillment-delivery-outcomes:UPDATE; "
+            + "a note) or RETURNED; the order follows: a delivery makes the batch's installments after delivery due, "
+            + "a RETURNED shipment puts the order ON_HOLD (DELIVERY_FAILED) until Sales decide to deliver again or "
+            + "cancel what was not delivered. Nothing is billed here. fulfillment-delivery-outcomes:UPDATE; "
             + "DELIVERED / DELIVERY_FAILED also :APPROVE. 409 SHIPMENT_STATE_CONFLICT")
     @RequiresPermission(resource = FulfillmentResources.DELIVERY_OUTCOMES, action = Action.UPDATE)
     @Auditable(action = AuditAction.TRANSITION, resourceType = "shipment", resourceId = "#shipmentId")

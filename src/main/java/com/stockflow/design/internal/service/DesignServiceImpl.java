@@ -134,15 +134,46 @@ class DesignServiceImpl implements DesignService {
         }
         var item = manifest.stream().filter(value -> value.role() == role).findFirst()
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "The confirmed bundle has no " + role + " artifact"));
-        if (!expectedChecksum.equals(snapshot.getChecksum()) || !recordedManifestAddsUp(snapshot)
-                || !item.checksum().equals(storedDigest(item.storageKey(), false))) {
+        if (!expectedChecksum.equals(snapshot.getChecksum())) {
             throw new BusinessException(ErrorCode.CONFLICT, "Design integrity verification failed");
         }
+        requireIntact(snapshot, item);
         // The preview is looked at in the page; every other file is saved under the name it was uploaded with.
         var link = item.role() == DesignArtifactRole.CUSTOMER_PREVIEW ? files.viewLink(item.storageKey())
                 : files.downloadLink(item.storageKey(), item.originalName());
         return new FulfillmentArtifact(item.artifactId(), item.role(), item.originalName(), item.contentType(),
                 item.sizeBytes(), item.checksum(), link.url(), link.expiresAt());
+    }
+
+    /**
+     * Refuses a link to a file of a design's approved bundle unless the file is still what was approved (kltn-docs 12
+     * §3 "Link tải file", BR-10): the same metadata check as {@link #fulfillmentDownload}, for the customer's own
+     * download link. A file that is in no approved bundle - a draft's, or one replaced before approval - is not checked:
+     * nothing was frozen for it.
+     *
+     * @throws BusinessException {@code CONFLICT} when the manifest or the stored file no longer matches
+     */
+    public void requireApprovedFileIntact(UUID designId, UUID artifactId) {
+        snapshots.findByDraftId(designId).ifPresent(snapshot -> {
+            var manifest = snapshot.getArtifactManifest();
+            if (manifest.isEmpty()) {
+                // A legacy snapshot is one file, so checking the bundle is checking the file.
+                if (artifactId.equals(snapshot.getArtifactId())
+                        && !inspect(snapshot, snapshot.getChecksum(), false).matching()) {
+                    throw new BusinessException(ErrorCode.CONFLICT, "Design integrity verification failed");
+                }
+                return;
+            }
+            manifest.stream().filter(item -> item.artifactId().equals(artifactId)).findFirst()
+                    .ifPresent(item -> requireIntact(snapshot, item));
+        });
+    }
+
+    /** One manifest entry: the recorded manifest still adds up to the approved checksum, and the stored file to it. */
+    private void requireIntact(DesignSnapshotJpaEntity snapshot, DesignSnapshotArtifact item) {
+        if (!recordedManifestAddsUp(snapshot) || !item.checksum().equals(storedDigest(item.storageKey(), false))) {
+            throw new BusinessException(ErrorCode.CONFLICT, "Design integrity verification failed");
+        }
     }
 
     private DesignVerification inspect(DesignSnapshotJpaEntity snapshot, String expectedChecksum, boolean rehash) {

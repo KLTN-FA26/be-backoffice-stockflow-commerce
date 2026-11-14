@@ -47,15 +47,16 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * What V20261111000110 (team plan 4C-1, QD-5) promises the application, read back through the application on the
- * demo stock it converted: the loose demo sofas (25 and 8, no lot) and oak tables (12 available, 30 quarantined) are
+ * What the 4C-1 conversion (team plan 4C-1, QD-5; migration V20261111000110, squashed into the baseline and the demo
+ * seed on 2026-11-11, which keep the cartons it made and its ledger lines) promises the application, read back through
+ * the application on the demo stock it converted: the loose demo sofas (25 and 8, no lot) and oak tables (12 available, 30 quarantined) are
  * whole sealed cartons of their SKU's carton unit, each found by its LPN where its units were (kltn-docs 20 BR-14,
  * BR-18, §4.6, §5.5; 01 BR-03, BR-11); nothing is loose or opened; availability in pieces is what it was before
  * (BR-01); the conversion's ledger lines - a MOVE that stays in place into the carton it names - read through the
  * ledger and the lot trace (§4.7, BR-16), the lot-less sofas as lot {@code UNTRACED} of origin {@code UNTRACED} (BR-22,
  * C45); none of the demo stock was written off (QD-5: the carton unit of one leaves no remainder); and the allocator
- * hands the converted stock out as whole cartons named by LPN (07 BR-03). The migration's own cases are
- * {@code LooseStockToCartonsMigrationUpgradeTest} and {@code tools/db/qa/40_loose_stock_to_cartons.sql}.
+ * hands the converted stock out as whole cartons named by LPN (07 BR-03). The database rules themselves are
+ * pinned by {@code tools/db/qa/40_loose_stock_to_cartons.sql}.
  *
  * <p><b>A context of its own, on purpose</b> (the extra property below): the assertions are about the demo stock as
  * the migration left it, and the shared secured context lends that same stock to dozens of classes that reserve, pick,
@@ -79,12 +80,6 @@ class LooseStockToCartonsIntegrationTest {
     private static final String MIGRATION = "V20261111000110";
     /** LpnSequence's shape: the business day and six digits of that day's sequence. */
     private static final String LPN = "LPN-\\d{8}-\\d{6}";
-    /** The four demo stock rows of V20260901000500, moved onto the map by V20260928009000. */
-    private static final List<UUID> DEMO_ROWS = List.of(
-            UUID.fromString("11111111-1111-4111-8111-111111111111"),
-            UUID.fromString("22222222-2222-4222-8222-222222222222"),
-            UUID.fromString("33333333-3333-4333-8333-333333333333"),
-            UUID.fromString("44444444-4444-4444-8444-444444444444"));
 
     @Autowired MockMvc mockMvc;
     @MockitoBean JwtDecoder decoder;
@@ -201,28 +196,10 @@ class LooseStockToCartonsIntegrationTest {
     // ------------------------------------------------------------------ availability
 
     @Test
-    @DisplayName("availability in pieces is what it was before the conversion: 25 + 8 sofas in two bins, 12 oak tables,"
-            + " the 30 quarantined ones not available")
+    @DisplayName("availability in pieces is the demo stock's: 25 + 8 sofas in two bins, 12 oak tables, the 30"
+            + " quarantined ones not available")
     void availabilityIsUnchangedInPieces() throws Exception {
-        // Before: the four demo rows as the migration archived them, loose and lot-less where the seed wrote them so (the
-        // whole rows, not the lot-and-expiry entries V20261111000300 archived under the same ids).
-        assertThat(jdbc.queryForList("""
-                SELECT (row_data ->> 'sku') || ' ' || (row_data ->> 'location_code') || ' '
-                       || COALESCE(row_data ->> 'lot_number', '-') || ' ' || (row_data ->> 'status') || ' '
-                       || (row_data ->> 'on_hand') || ' ' || (row_data ->> 'reserved') || ' '
-                       || COALESCE(row_data ->> 'stock_package_id', 'loose')
-                  FROM platform.legacy_archive
-                 WHERE source_table = 'inventory.stock_item' AND row_id IN (?, ?, ?, ?)
-                   AND row_data ->> 'on_hand' <> '0'
-                   AND jsonb_exists(row_data, 'status')""", String.class,
-                DEMO_ROWS.toArray()))
-                .containsExactlyInAnyOrder(
-                        SOFA + " " + SOFA_BIN + " - AVAILABLE 25 0 loose",
-                        SOFA + " " + SOFA_BIN_2 + " - AVAILABLE 8 0 loose",
-                        TABLE + " " + TABLE_BIN + " LOT-2026-03 AVAILABLE 12 0 loose",
-                        TABLE + " " + QUARANTINE + " LOT-2026-04 QUARANTINE 30 0 loose");
-
-        // After, per warehouse (20 BR-01): on hand, available, held, ATP.
+        // Per warehouse (20 BR-01): on hand, available, held, ATP.
         assertThat(level(SOFA)).isEqualTo("HCM onHand 33 available 33 reserved 0 allocated 0 atp 33");
         assertThat(level(TABLE)).isEqualTo("HCM onHand 42 available 12 reserved 0 allocated 0 atp 12");
 

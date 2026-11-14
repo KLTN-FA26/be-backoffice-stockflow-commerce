@@ -43,6 +43,9 @@ class ProcurementModuleTest {
     com.stockflow.product.api.ProductPublication productPublicationMock;
     @org.springframework.test.context.bean.override.mockito.MockitoBean
     com.stockflow.notification.api.NotificationService notificationServiceMock;
+    // order's SalesFollowUpService posts inbox notices (WF-02 A10)
+    @org.springframework.test.context.bean.override.mockito.MockitoBean
+    com.stockflow.notification.api.Inbox inboxMock;
     @org.springframework.test.context.bean.override.mockito.MockitoBean
     com.stockflow.identity.api.PortalAccountService portalAccountServiceMock;
     @org.springframework.test.context.bean.override.mockito.MockitoBean
@@ -67,6 +70,9 @@ class ProcurementModuleTest {
     /** Order's port for the customer's word in their conversation (a delivery window moved on it), chat's to answer. */
     @org.springframework.test.context.bean.override.mockito.MockitoBean
     com.stockflow.order.api.ConsentMessages consentMessagesMock;
+    /** Order completion asks invoicing whether every delivery is invoiced (WF-05 condition 5); invoicing is not loaded here. */
+    @org.springframework.test.context.bean.override.mockito.MockitoBean
+    com.stockflow.order.api.DeliveryInvoices deliveryInvoicesMock;
 
     @Test
     @DisplayName("procurement starts and answers through its goods receipts with the other modules absent")

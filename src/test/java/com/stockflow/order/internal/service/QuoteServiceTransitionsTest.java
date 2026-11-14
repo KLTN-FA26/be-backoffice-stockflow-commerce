@@ -187,9 +187,11 @@ class QuoteServiceTransitionsTest {
         assertThat(quote.offer().lines().get(0).acceptedQuantity()).as("20 cartons, as proposed").isEqualTo(20);
         verify(quotes).recordTransition(eq(quote.id()), eq(1), eq(QuoteStatus.SENT), eq(QuoteStatus.ACCEPTED), eq(null),
                 eq(null), eq(NOW), eq(portalUser));
+        // QuoteStatusChanged (the chat card follows the quote) is published beside the notice to Sales.
         ArgumentCaptor<Object> event = ArgumentCaptor.forClass(Object.class);
-        verify(events).publishEvent(event.capture());
-        assertThat(event.getValue()).isInstanceOfSatisfying(CustomerActedOnQuote.class, acted -> {
+        verify(events, org.mockito.Mockito.atLeastOnce()).publishEvent(event.capture());
+        assertThat(event.getAllValues().stream().filter(CustomerActedOnQuote.class::isInstance).toList()).singleElement()
+                .isInstanceOfSatisfying(CustomerActedOnQuote.class, acted -> {
             assertThat(acted.action()).isEqualTo(CustomerActedOnQuote.Action.ACCEPTED);
             assertThat(acted.salesUserId()).isEqualTo(salesUser);
             assertThat(acted.quoteNumber()).isEqualTo("QT-1");
@@ -249,8 +251,9 @@ class QuoteServiceTransitionsTest {
         verify(quotes).recordTransition(eq(quote.id()), eq(1), eq(QuoteStatus.SENT),
                 eq(QuoteStatus.CHANGES_REQUESTED), eq("lower the price"), eq(null), eq(NOW), eq(portalUser));
         ArgumentCaptor<Object> event = ArgumentCaptor.forClass(Object.class);
-        verify(events).publishEvent(event.capture());
-        assertThat(event.getValue().toString()).doesNotContain("lower the price");
+        verify(events, org.mockito.Mockito.atLeastOnce()).publishEvent(event.capture());
+        assertThat(event.getAllValues()).isNotEmpty()
+                .allSatisfy(published -> assertThat(published.toString()).doesNotContain("lower the price"));
     }
 
     @Test

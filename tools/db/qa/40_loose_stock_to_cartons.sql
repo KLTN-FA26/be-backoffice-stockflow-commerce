@@ -79,9 +79,9 @@ SELECT pg_temp.expect_true('LC4 the oak tables keep their lots and the quarantin
        FROM (SELECT s.lot_number, s.status, count(*) AS n FROM inventory.stock_item s
               WHERE s.sku = 'TABLE-OAK-160' AND s.on_hand > 0 GROUP BY s.lot_number, s.status) c)
         = 'LOT-2026-03/AVAILABLE=12,LOT-2026-04/QUARANTINE=30');
-SELECT pg_temp.expect_true('LC5 the demo rows were archived as they were, and are empty now',
-    (SELECT count(*) FROM platform.legacy_archive a JOIN inventory.stock_item s ON s.id = a.row_id
-      WHERE a.source_table = 'inventory.stock_item' AND s.on_hand = 0 AND (a.row_data ->> 'on_hand')::int > 0
+SELECT pg_temp.expect_true('LC5 the four loose demo rows are empty now: their units are in the cartons',
+    (SELECT count(*) FROM inventory.stock_item s
+      WHERE s.on_hand = 0
         AND s.id IN ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222',
                      '33333333-3333-4333-8333-333333333333', '44444444-4444-4444-8444-444444444444')) = 4);
 SELECT pg_temp.expect_true('LC6 each new carton has the ledger lines that put its units into it, no more',

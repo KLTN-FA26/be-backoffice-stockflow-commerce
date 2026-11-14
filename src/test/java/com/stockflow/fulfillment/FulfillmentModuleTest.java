@@ -43,9 +43,14 @@ class FulfillmentModuleTest {
     @MockitoBean com.stockflow.payment.api.PaymentService paymentServiceMock;
     @MockitoBean com.stockflow.catalog.api.CatalogService catalogServiceMock;
     @MockitoBean com.stockflow.customer.api.CustomerService customerServiceMock;
+    // order's SalesFollowUpService posts inbox notices (WF-02 A10)
+    @org.springframework.test.context.bean.override.mockito.MockitoBean
+    com.stockflow.notification.api.Inbox inboxMock;
     // 3-6: fulfillment reads customer :: api (the portal's tracking), so customer is bootstrapped with it.
     @MockitoBean com.stockflow.notification.api.NotificationService notificationServiceMock;
     @MockitoBean com.stockflow.warehouse.api.WarehouseService warehouseServiceMock;
+    // Order completion asks invoicing whether every delivery is invoiced (WF-05 condition 5); invoicing is not loaded here.
+    @MockitoBean com.stockflow.order.api.DeliveryInvoices deliveryInvoicesMock;
     @MockitoBean com.stockflow.warehouse.api.PutawayTasks putawayTasksMock;
     @MockitoBean com.stockflow.product.api.ProductService productServiceMock;
     @MockitoBean com.stockflow.product.api.CustomerSkus customerSkusMock;

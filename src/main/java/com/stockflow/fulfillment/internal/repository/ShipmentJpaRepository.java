@@ -29,6 +29,23 @@ public interface ShipmentJpaRepository extends BaseJpaRepository<ShipmentJpaEnti
             + "s.status as status from ShipmentJpaEntity s where s.loadId = :loadId order by s.orderId, s.id")
     List<ShipmentState> statesOnLoad(@org.springframework.data.repository.query.Param("loadId") UUID loadId);
 
+    /** A shipment on a load, read without loading it. */
+    interface ShipmentOnLoad {
+        UUID getId();
+
+        UUID getLoadId();
+
+        String getCode();
+
+        com.stockflow.fulfillment.internal.domain.ShipmentStatus getStatus();
+    }
+
+    /** The shipments that left on these loads, for checking a file of outcomes line by line in one query. */
+    @org.springframework.data.jpa.repository.Query("select s.id as id, s.loadId as loadId, s.code as code, "
+            + "s.status as status from ShipmentJpaEntity s where s.loadId in :loadIds order by s.loadId, s.id")
+    List<ShipmentOnLoad> statesOnLoads(
+            @org.springframework.data.repository.query.Param("loadIds") java.util.Collection<UUID> loadIds);
+
     /** A shipment's code, read without loading it. */
     @org.springframework.data.jpa.repository.Query("select s.code from ShipmentJpaEntity s where s.id = :id")
     Optional<String> codeOf(@org.springframework.data.repository.query.Param("id") UUID id);

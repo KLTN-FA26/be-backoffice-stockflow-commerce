@@ -7,8 +7,8 @@ hand it drifted from the database within a week (QA notes, 27/9). Regenerate it 
 
     tools/db/gen_dbml.py <database> docs/business-design/db-design/schema.dbml
 
-Use a database with every migration AND every db/pending contract applied, so the diagram shows
-the target model rather than the expand-period mix of old and new tables. Tables, columns,
+Use a freshly migrated database (db/migration only, no demo seed needed: the diagram is schema).
+Tables, columns,
 primary/unique keys, defaults, foreign keys (with ON DELETE) and one colour per module schema.
 A "col IN ('A','B')" CHECK is drawn as a DBML Enum for readability; the database itself keeps
 VARCHAR + CHECK because every entity maps enums @Enumerated(STRING). No notes, by request: the
@@ -26,10 +26,11 @@ def q(sql):
                         "-At", "-c", sql], capture_output=True, text=True, check=True)
     return r.stdout.strip()
 
-SCHEMAS = ["product", "inventory", "warehouse", "procurement", "ordering", "customer", "payment",
+SCHEMAS = ["product", "inventory", "warehouse", "procurement", "ordering", "customer", "payment", "invoicing",
            "design", "fulfillment", "catalog", "chat", "notification", "reporting", "identity", "platform", "public"]
 COLORS = {"product": "#2E86AB", "inventory": "#3E7C4A", "warehouse": "#8E6C3A", "procurement": "#7D5BA6",
-          "ordering": "#C0392B", "customer": "#D68910", "payment": "#B8860B", "design": "#AA4A9E",
+          "ordering": "#C0392B", "customer": "#D68910", "payment": "#B8860B", "invoicing": "#A0522D",
+          "design": "#AA4A9E",
           "fulfillment": "#2C7873", "catalog": "#1B998B", "chat": "#4C93A8", "notification": "#A6763F",
           "reporting": "#607D8B", "identity": "#5A6ACF", "platform": "#616161", "public": "#9E9E9E"}
 
@@ -80,9 +81,15 @@ for c in cons:
     elif c["type"] == "f":
         fks.append(c)
     elif c["type"] == "c":
-        m = re.match(r"^CHECK \(\(\((\w+)\)::text = ANY \(\(ARRAY\[(.*)\]\)::text\[\]\)\)\)$", c["def"])
+        # A CHECK restored from a dump (the baseline, V20261111000000) is stored with every element cast,
+        # "ANY (ARRAY[('A'::character varying)::text, ...])", where one written as "IN ('A', ...)" is stored as
+        # "ANY ((ARRAY['A'::character varying, ...])::text[])". Read the first as the second, or a database built
+        # from the baseline - every database since the squash - draws no enum but the ones added after it.
+        d = re.sub(r"\('([^']*)'::character varying\)::text", r"'\1'::character varying", c["def"])
+        d = re.sub(r"= ANY \(ARRAY\[([^\]]*)\]\)", r"= ANY ((ARRAY[\1])::text[])", d)
+        m = re.match(r"^CHECK \(\(\((\w+)\)::text = ANY \(\(ARRAY\[(.*)\]\)::text\[\]\)\)\)$", d)
         if not m:
-            m = re.match(r"^CHECK \(\(\((\w+) IS NULL\) OR \(\((\w+)\)::text = ANY \(\(ARRAY\[(.*)\]\)::text\[\]\)\)\)\)$", c["def"])
+            m = re.match(r"^CHECK \(\(\((\w+) IS NULL\) OR \(\((\w+)\)::text = ANY \(\(ARRAY\[(.*)\]\)::text\[\]\)\)\)\)$", d)
             # "col IS NULL OR col IN (...)" only: "other IS NULL OR col IN (...)" is a rule about some rows, not the
             # column's values - read as an enum, it would replace the real list with a subset of it.
             if m and m.group(1) == m.group(2):

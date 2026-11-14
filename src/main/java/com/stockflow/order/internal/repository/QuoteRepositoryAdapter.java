@@ -181,7 +181,7 @@ class QuoteRepositoryAdapter implements QuoteRepository, QuoteSearch {
                 .<QuoteJpaEntity>allOf(Specs.eq("customerId", criteria.customerId()))
                 .and(Specs.contains("quoteNumber", criteria.number()))
                 .and(criteria.statuses() == null || criteria.statuses().isEmpty()
-                        ? null : Specs.in("status", criteria.statuses()))
+                        ? null : statusAt(criteria.statuses(), criteria.now()))
                 .and(criteria.seenByCustomerOnly()
                         ? Specification.<QuoteJpaEntity>anyOf(Specs.in("status", java.util.Arrays.stream(QuoteStatus.values())
                                         .filter(QuoteStatus::seenByCustomer).toList()),
@@ -189,6 +189,32 @@ class QuoteRepositoryAdapter implements QuoteRepository, QuoteSearch {
                                         cb.isNotNull(root.get("sentAt"))))
                         : null);
         return jpa.findAll(spec, pageable).map(QuoteRepositoryAdapter::toRow);
+    }
+
+    /**
+     * The statuses as read at {@code now} ({@code Quote.statusAt}): a SENT quote past its validity is EXPIRED - found
+     * under EXPIRED and not under SENT - from the moment it passes, not only once {@code QuoteExpirySweeper} has written
+     * it down, up to five minutes later. Every other status is the stored one.
+     */
+    private static Specification<QuoteJpaEntity> statusAt(List<QuoteStatus> wanted, Instant now) {
+        return (root, query, cb) -> {
+            List<jakarta.persistence.criteria.Predicate> any = new java.util.ArrayList<>();
+            List<QuoteStatus> stored = wanted.stream()
+                    .filter(status -> status != QuoteStatus.SENT && status != QuoteStatus.EXPIRED).toList();
+            if (!stored.isEmpty()) {
+                any.add(root.get("status").in(stored));
+            }
+            if (wanted.contains(QuoteStatus.SENT)) {
+                any.add(cb.and(cb.equal(root.get("status"), QuoteStatus.SENT),
+                        cb.greaterThan(root.<Instant>get("validUntil"), now)));
+            }
+            if (wanted.contains(QuoteStatus.EXPIRED)) {
+                any.add(cb.equal(root.get("status"), QuoteStatus.EXPIRED));
+                any.add(cb.and(cb.equal(root.get("status"), QuoteStatus.SENT),
+                        cb.lessThanOrEqualTo(root.<Instant>get("validUntil"), now)));
+            }
+            return cb.or(any.toArray(jakarta.persistence.criteria.Predicate[]::new));
+        };
     }
 
     @Override

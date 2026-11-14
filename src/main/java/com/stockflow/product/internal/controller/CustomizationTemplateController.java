@@ -149,11 +149,57 @@ class CustomizationTemplateController {
         }
     }
 
+    /**
+     * The template's 3D model (FE request 2026-11-13 B-1). A browser sends a {@code .glb} as
+     * {@code application/octet-stream} or with no type at all; such a part named {@code *.glb} is taken as
+     * {@code model/gltf-binary}, and its first bytes then decide.
+     */
+    @PutMapping(value = "/{templateId}/model-file", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    @Operation(summary = "Attach the template's 3D model (glTF 2.0 binary .glb, at most 10 MB)",
+            description = "Replaces the file attached before and moves the template's version; drafts follow, approved "
+                    + "designs keep the model frozen in their snapshot. Not a glTF 2.0 binary is 415 "
+                    + "UNSUPPORTED_MEDIA_TYPE, larger than 10 MB 413 PAYLOAD_TOO_LARGE, a file the scan refuses 400 "
+                    + "VALIDATION_FAILED, a changed template 409 OPTIMISTIC_LOCK. Only the file's SHA-256 is kept "
+                    + "about its contents (model3d.fileChecksum).")
+    @RequiresPermission(resource = ProductResources.CUSTOMIZATION_TEMPLATES, action = Action.UPDATE)
+    public ApiResponse<CustomizationTemplateResponse> attachModel(@PathVariable UUID productId,
+                                                                  @PathVariable UUID variantId,
+                                                                  @PathVariable UUID templateId,
+                                                                  @RequestParam long version,
+                                                                  @RequestPart("file") MultipartFile file) {
+        try (var content = file.getInputStream()) {
+            var upload = new FileUpload(file.getOriginalFilename(), modelType(file), file.getSize(), content);
+            return ApiResponse.ok(mapper.toResponse(templates.attachModel(productId, variantId, templateId,
+                    version, upload)));
+        } catch (IOException ex) {
+            throw new StorageException("Could not read the multipart upload", ex);
+        }
+    }
+
+    @GetMapping("/{templateId}/model-file/download-url")
+    @Operation(summary = "A short-lived link to the template's 3D model; 404 when none is attached")
+    @RequiresPermission(resource = ProductResources.CUSTOMIZATION_TEMPLATES, action = Action.READ)
+    public ApiResponse<DownloadLink> modelLink(@PathVariable UUID productId, @PathVariable UUID variantId,
+                                               @PathVariable UUID templateId) {
+        return ApiResponse.ok(templates.modelLink(productId, variantId, templateId));
+    }
+
     @GetMapping("/{templateId}/reference-file/download-url")
     @Operation(summary = "A short-lived link to the reference die-line")
     @RequiresPermission(resource = ProductResources.CUSTOMIZATION_TEMPLATES, action = Action.READ)
     public ApiResponse<DownloadLink> referenceLink(@PathVariable UUID productId, @PathVariable UUID variantId,
                                                    @PathVariable UUID templateId) {
         return ApiResponse.ok(templates.referenceLink(productId, variantId, templateId));
+    }
+
+    private static String modelType(MultipartFile file) {
+        String declared = file.getContentType();
+        String name = file.getOriginalFilename();
+        boolean generic = declared == null || declared.isBlank()
+                || declared.toLowerCase(java.util.Locale.ROOT).startsWith("application/octet-stream");
+        if (generic && name != null && name.toLowerCase(java.util.Locale.ROOT).endsWith(".glb")) {
+            return "model/gltf-binary";
+        }
+        return declared;
     }
 }

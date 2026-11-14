@@ -26,7 +26,7 @@ class DesignFileReferences implements StoredFileReferences {
 
     @Override
     public Set<FileCategory> categories() {
-        return Set.of(FileCategory.DESIGN_RENDER, FileCategory.DESIGN_ASSET);
+        return Set.of(FileCategory.DESIGN_RENDER, FileCategory.DESIGN_ASSET, FileCategory.PRINT_MODEL);
     }
 
     @Override
@@ -42,6 +42,13 @@ class DesignFileReferences implements StoredFileReferences {
                     UNION
                     SELECT storage_key FROM design.design_project_asset WHERE storage_key IN (:keys)""",
                     Map.of("keys", keys), String.class));
+        }
+        if (category == FileCategory.PRINT_MODEL) {
+            // The template's 3D model an approved design was approved on, frozen in its snapshot (kltn-docs 12 BR-08):
+            // the template may have been given a newer file since, and the approved design must still open on this one.
+            return new HashSet<>(jdbc.queryForList("""
+                    SELECT template -> 'model3d' ->> 'fileKey' FROM design.design_snapshot
+                     WHERE template -> 'model3d' ->> 'fileKey' IN (:keys)""", Map.of("keys", keys), String.class));
         }
         if (category != FileCategory.DESIGN_RENDER) {
             return Set.of();

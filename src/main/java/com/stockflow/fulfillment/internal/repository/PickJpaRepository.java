@@ -26,6 +26,15 @@ public interface PickJpaRepository extends BaseJpaRepository<PickJpaEntity> {
     @org.springframework.data.jpa.repository.Query("select p from PickJpaEntity p where p.orderId = :orderId order by p.id")
     java.util.List<PickJpaEntity> lockAllByOrderId(@org.springframework.data.repository.query.Param("orderId") java.util.UUID orderId);
 
+    /**
+     * The delivery failure case whose goods the task of pack {@code packId} picked again (WF-05 fix plan, section 2);
+     * empty for the first pick of its goods. What a shipment made from that pack tells the order at the handover.
+     */
+    @org.springframework.data.jpa.repository.Query("select p.redeliveryCaseId from PickJpaEntity p, PackJpaEntity k "
+            + "where k.pickId = p.id and k.id = :packId and p.redeliveryCaseId is not null")
+    java.util.Optional<java.util.UUID> redeliveryCaseOfPack(@org.springframework.data.repository.query.Param("packId")
+                                                            java.util.UUID packId);
+
     /** G4-2a: the order numbers of a page of shipments, in one read. */
     java.util.List<PickJpaEntity> findByOrderIdIn(java.util.Collection<java.util.UUID> orderIds);
 }

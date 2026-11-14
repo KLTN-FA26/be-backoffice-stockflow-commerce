@@ -162,6 +162,12 @@ public class CustomerSkuService implements CustomerSkus {
 
     @Override
     @Transactional(readOnly = true)
+    public Optional<CustomerSku> findByVariant(UUID variantId) {
+        return variants.findById(variantId).filter(v -> v.getOwnerCustomerId() != null).map(v -> view(v, null));
+    }
+
+    @Override
+    @Transactional(readOnly = true)
     public Map<String, UUID> ownersOf(java.util.Collection<String> skus) {
         if (skus == null || skus.isEmpty()) {
             return Map.of();

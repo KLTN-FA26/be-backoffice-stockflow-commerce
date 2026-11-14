@@ -38,8 +38,8 @@ Mỗi người **chỉ viết code** (entity, repository, service, controller). 
 Code module trên bảng mới  ──▶  PR vào develop (review + test)
         │
         ▼  báo Tú "module X đã chuyển xong"
-C1–C4 đã kích hoạt (V20261011000300–0600). Còn lại trong db/pending:
-   dữ liệu cũ sạch (orphan_check = 0) ─▶ C0
+C1–C4 đã kích hoạt (V20261011000300–0600). C0 (validate các khoá / CHECK NOT VALID) đã gộp vào
+V20261111000000__baseline khi squash 270 migration ngày 2026-11-11; thư mục db/pending không còn.
 ```
 
 ### Chuyển dữ liệu cũ (V20261011000200)

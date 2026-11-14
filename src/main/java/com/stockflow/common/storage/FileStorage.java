@@ -76,6 +76,12 @@ public interface FileStorage {
     void retain(String key, java.time.Instant until);
 
     /**
+     * {@link #retain(String, java.time.Instant)} in the mode given, not the configured one: an e-invoice's files are
+     * locked in COMPLIANCE whatever the other records use ({@link ObjectLockProperties#modeOf}).
+     */
+    void retain(String key, java.time.Instant until, ObjectLockProperties.Mode mode);
+
+    /**
      * Writes a copy the platform derived from a stored file (an evidence photo's display copy) at its derived key,
      * with its SHA-256 declared. Only for {@link FileCategory#EVIDENCE_COPY} keys: everything else is stored under a
      * key {@link #store} chooses.

@@ -62,7 +62,8 @@ public class DesignWorkflowService {
     public record DraftView(UUID id, UUID customerId, UUID productId, UUID ownerUserId, String name, String spec,
             String status, UUID currentArtifactId, UUID reviewedBy, String reviewNotes, long version,
             UUID parentSnapshotId, String productSlug, String sku, String templateCode, Instant reviewRequestedAt,
-            Instant reviewedAt, Instant updatedAt, UUID projectId) { }
+            Instant reviewedAt, Instant updatedAt, UUID projectId, String previewUrl, String variantName,
+            String productName) { }
 
     /**
      * An approved design's snapshot. {@code document}, {@code documentChecksum}, {@code assets} and

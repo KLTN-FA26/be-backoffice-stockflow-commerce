@@ -198,7 +198,6 @@ public class PaymentReceiptService {
                 .ifPresent(order -> payable.put(orderId, order)));
         PaymentReceipt receipt = book.lockReceipt(command.receiptId()).orElseThrow(() -> notFound(command.receiptId()));
         Instant now = clock.instant();
-        LocalDate today = LocalDate.ofInstant(now, InstallmentService.BUSINESS_ZONE);
         receipt.voidReceipt(command.reason(), command.voidedBy(), now);
 
         // Every installment of those orders, locked in id order: whether the orders are still paid on signing reads
@@ -233,7 +232,7 @@ public class PaymentReceiptService {
                         + "which is %s: its money is settled with the order").formatted(receipt.reference(),
                         order.orderNumber(), order.status()));
             }
-            installment.unpay(line.amount(), today);
+            installment.unpay(line.amount());
         }
         List<String> leftShort = new ArrayList<>();
         for (UUID orderId : orderIds) {

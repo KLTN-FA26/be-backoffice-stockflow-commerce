@@ -9,6 +9,14 @@ public interface StockAdjustmentRepository {
 
     Optional<StockAdjustment> findById(UUID id);
 
+    /**
+     * The adjustment with its row locked until the transaction ends ({@code SELECT ... FOR UPDATE}) and read fresh:
+     * what a decision - approve, reject, withdraw - works on, so two decisions of one adjustment are taken one after
+     * the other and the second finds it decided (WF-05 fix plan, section 8). Taken after the SKU advisory lock where
+     * the decision also touches stock.
+     */
+    Optional<StockAdjustment> findByIdForUpdate(UUID id);
+
     /** {@code ADJ-yyyyMMdd-0001}, from a per-day counter that never hands out the same value twice. */
     String nextNumber(LocalDate day);
 

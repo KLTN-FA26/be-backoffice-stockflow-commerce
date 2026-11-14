@@ -67,6 +67,12 @@ public final class FulfillmentPermissions {
     public static final String WAYBILL_IMPORTS = "fulfillment-waybill-imports";
 
     /**
+     * READ: the template and past imports; CREATE: preview and apply a file of delivery outcomes (WF-05 fix plan item
+     * 5; V20261122000100). Warehouse managers and the system admin.
+     */
+    public static final String DELIVERY_OUTCOME_IMPORTS = "fulfillment-delivery-outcome-imports";
+
+    /**
      * READ: what carriers reported through their webhooks, and the error list; UPDATE: mark an error-list event dealt
      * with, with a note (3-5; kltn-docs 09 §4.5 step 8; V20261108001700). Warehouse manager and system admin.
      */
