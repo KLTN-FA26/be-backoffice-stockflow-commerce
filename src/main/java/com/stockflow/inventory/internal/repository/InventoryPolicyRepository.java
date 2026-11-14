@@ -113,20 +113,40 @@ public class InventoryPolicyRepository {
      * an unknown SKU, or one with no such unit.
      */
     public Optional<com.stockflow.inventory.api.CartonSpec> findCartonSpec(String sku) {
+        return Optional.ofNullable(findCartonSpecs(List.of(sku)).get(sku));
+    }
+
+    /**
+     * {@link #findCartonSpec} for many SKUs in one read (BE1: the capacity board sizes every SKU it counts by the same
+     * rule). A SKU with no carton spec is absent.
+     */
+    public java.util.Map<String, com.stockflow.inventory.api.CartonSpec> findCartonSpecs(Collection<String> skus) {
         record Unit(com.stockflow.inventory.api.CartonSpec spec, boolean defaultShipping) { }
+        if (skus.isEmpty()) {
+            return java.util.Map.of();
+        }
         List<Unit> units = jdbc.query("""
-                select u.unit_of_measure, u.factor, u.length_cm, u.width_cm, u.height_cm, u.weight_kg,
+                select i.sku, u.unit_of_measure, u.factor, u.length_cm, u.width_cm, u.height_cm, u.weight_kg,
                        u.default_shipping, i.rotatable
                   from inventory.uom_conversions u
                   join inventory.inventory_items i on i.id = u.inventory_item_id
-                 where i.sku = ? and u.active and not u.is_base
-                """, (rs, n) -> new Unit(new com.stockflow.inventory.api.CartonSpec(sku,
+                 where i.sku = any (?) and u.active and not u.is_base
+                """, ps -> ps.setArray(1, ps.getConnection().createArrayOf("text", skus.toArray())),
+                (rs, n) -> new Unit(new com.stockflow.inventory.api.CartonSpec(rs.getString("sku"),
                         rs.getString("unit_of_measure"), rs.getInt("factor"), rs.getBigDecimal("length_cm"),
                         rs.getBigDecimal("width_cm"), rs.getBigDecimal("height_cm"), rs.getBigDecimal("weight_kg"),
                         rs.getBoolean("rotatable")),
-                        rs.getBoolean("default_shipping")), sku);
-        List<Unit> chosen = units.size() == 1 ? units : units.stream().filter(Unit::defaultShipping).toList();
-        return chosen.size() == 1 ? Optional.of(chosen.getFirst().spec()) : Optional.empty();
+                        rs.getBoolean("default_shipping")));
+        java.util.Map<String, com.stockflow.inventory.api.CartonSpec> specs = new java.util.HashMap<>();
+        units.stream().collect(java.util.stream.Collectors.groupingBy(unit -> unit.spec().sku()))
+                .forEach((sku, ofSku) -> {
+                    List<Unit> chosen = ofSku.size() == 1 ? ofSku : ofSku.stream().filter(Unit::defaultShipping)
+                            .toList();
+                    if (chosen.size() == 1) {
+                        specs.put(sku, chosen.getFirst().spec());
+                    }
+                });
+        return specs;
     }
 
     /** Whether any stock of the SKU is held anywhere, in any status. */

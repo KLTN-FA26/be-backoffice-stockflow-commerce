@@ -55,8 +55,9 @@ class ShippingWarehouseController {
 
     @GetMapping("/{orderId}/shipping-warehouse/options")
     @Operation(summary = "The warehouses an order of a contract may ship from, best first: whole cartons of each line "
-            + "available to promise at each (17 §4.2 step 2; the projected free space is not worked out yet - "
-            + "capacityComputed false)")
+            + "available to promise at each, and each warehouse's room - projected free, pending, free if all approved "
+            + "(m³) - with the volume to be produced there and a warning when it does not fit (17 §4.2 step 2, BR-25; "
+            + "06 §4.6). A warning, never a refusal; capacityComputed true")
     @RequiresPermission(resource = OrderResources.SHIPPING_WAREHOUSES, action = Action.READ, scope = DataScope.ALL)
     public ApiResponse<ShippingWarehouseService.Options> options(@PathVariable UUID orderId,
                                                                 @AuthenticatedUser CurrentUser user) {

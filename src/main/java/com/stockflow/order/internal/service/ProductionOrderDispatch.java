@@ -27,6 +27,7 @@ import com.stockflow.identity.api.IdentityService;
 import com.stockflow.inventory.api.PackagingRequest;
 import com.stockflow.inventory.api.PackagingSpec;
 import com.stockflow.inventory.api.PackagingSpecResolver;
+import com.stockflow.inventory.api.WarehouseOccupancy;
 import com.stockflow.notification.api.DeliveryAttemptSummary;
 import com.stockflow.notification.api.NotificationService;
 import com.stockflow.notification.api.ProductionOrderMail;
@@ -143,6 +144,7 @@ public class ProductionOrderDispatch {
     private final WarehouseService warehouses;
     private final CustomerSkus customerSkus;
     private final PackagingSpecResolver packaging;
+    private final WarehouseOccupancy occupancy;
     private final DesignService designs;
     private final NotificationService notifications;
     private final ProductionOrderResends resends;
@@ -164,7 +166,8 @@ public class ProductionOrderDispatch {
                             FileTransfers files, FileStorage storage, SignedLinks links,
                             ApplicationEventPublisher events, Clock clock, PlatformTransactionManager transactions,
                             @Value("${stockflow.order.production-order.file-links-valid-for:P30D}")
-                            Duration linksValidFor) {
+                            Duration linksValidFor, WarehouseOccupancy occupancy) {
+        this.occupancy = occupancy;
         this.productionOrders = productionOrders;
         this.slips = slips;
         this.producers = producers;
@@ -252,7 +255,8 @@ public class ProductionOrderDispatch {
                 warehouse.map(WarehouseView::name).orElse(production.receivingWarehouseId().toString()),
                 warehouse.map(WarehouseView::address).orElse(null), production.needByDate(),
                 production.sampleApprovalRequired(), production.unitPrice(), production.currency(), production.note(),
-                person(production.drawnUpBy()), person(approver), lines), volume(production, sizes));
+                person(production.drawnUpBy()), person(approver), lines), volume(production,
+                occupancy.cartonVolumesM3(production.lines().stream().map(ProductionOrder.Line::sku).toList())));
     }
 
     /**
@@ -543,18 +547,24 @@ public class ProductionOrderDispatch {
         return sizes;
     }
 
-    /** The volume of every carton in cubic metres, or null when a SKU's carton size is unknown. */
-    private static BigDecimal volume(ProductionOrder production, Map<String, PackagingSpec.CartonSpec> sizes) {
-        BigDecimal cubicMillimetres = BigDecimal.ZERO;
+    /**
+     * The volume of every carton in cubic metres (three decimals), or null when a SKU's carton has no size. Measured by
+     * the carton spec of inventory (BE1), the measure the warehouse capacity board counts what is coming by, so the m³
+     * the warehouse manager is told are the m³ the board adds to its incoming column - not by the packing rule chain of
+     * load planning ({@link #cartonSizes(ProductionOrder)}), which only advises the producer on the slip.
+     *
+     * @param cartonVolumes one carton of each SKU, m³ ({@code WarehouseOccupancy.cartonVolumesM3})
+     */
+    private static BigDecimal volume(ProductionOrder production, Map<String, BigDecimal> cartonVolumes) {
+        BigDecimal volume = BigDecimal.ZERO;
         for (ProductionOrder.Line line : production.lines()) {
-            PackagingSpec.CartonSpec carton = sizes.get(line.sku());
+            BigDecimal carton = cartonVolumes.get(line.sku());
             if (carton == null) {
                 return null;
             }
-            cubicMillimetres = cubicMillimetres.add(BigDecimal.valueOf((long) carton.lengthMm() * carton.widthMm()
-                    * carton.heightMm()).multiply(BigDecimal.valueOf(line.cartons())));
+            volume = volume.add(carton.multiply(BigDecimal.valueOf(line.cartons())));
         }
-        return cubicMillimetres.divide(BigDecimal.valueOf(1_000_000_000L), 3, RoundingMode.HALF_UP);
+        return volume.setScale(3, RoundingMode.HALF_UP);
     }
 
     private static String size(PackagingSpec.CartonSpec carton) {

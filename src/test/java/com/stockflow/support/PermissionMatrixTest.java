@@ -410,7 +410,13 @@ class PermissionMatrixTest {
             // SCRUM-474 5b (V20261029004000): the user-management screen picks warehouses too.
             Map.entry("warehouse-warehouses:READ", Set.of(Role.WAREHOUSE_MANAGER, Role.WAREHOUSE_STAFF,
                     Role.SALES_STAFF,
-                    Role.SALES_MANAGER, Role.SYSTEM_ADMIN)));
+                    Role.SALES_MANAGER, Role.SYSTEM_ADMIN)),
+            // BE1 (V20261125000100, kltn-docs 06 §2): the capacity board - the warehouse manager, Sales choosing a
+            // shipping warehouse, the coordinator drawing up and the Sales Manager approving a production order.
+            Map.entry("warehouse-capacity:VIEW_PAGE", Set.of(Role.WAREHOUSE_MANAGER, Role.SALES_STAFF,
+                    Role.SALES_MANAGER, Role.PRODUCTION_COORDINATOR, Role.SYSTEM_ADMIN)),
+            Map.entry("warehouse-capacity:READ", Set.of(Role.WAREHOUSE_MANAGER, Role.SALES_STAFF,
+                    Role.SALES_MANAGER, Role.PRODUCTION_COORDINATOR, Role.SYSTEM_ADMIN)));
 
     /** A valid body for the customer-reachable write handlers, so validation (400) cannot hide a missing owner check. */
     private Map<String, String> attackBodies() {
@@ -838,6 +844,34 @@ class PermissionMatrixTest {
         assertThat(roles.resolve(List.of(Role.CUSTOMER.authority())).permissions())
                 .doesNotContain(PermissionCode.parse("sales-order-holds:UPDATE"),
                         PermissionCode.parse("sales-order-cancellations:UPDATE"));
+    }
+
+    /**
+     * BE1 (kltn-docs 06 §2, §4.6): both capacity-board reads need {@code warehouse-capacity:READ} with scope ALL - so the
+     * warehouse manager, whose own scope is WAREHOUSE, is narrowed to their warehouses in the service - and warehouse
+     * staff, the accountant and the customer hold no part of it. Editing the utilization factor is the warehouse's own
+     * {@code PUT /warehouses/{id}}, {@code warehouse-warehouses:UPDATE}.
+     */
+    @Test
+    void theWarehouseCapacityEndpointsNeedTheirPermission() {
+        Map<String, Handler> byKey = new HashMap<>();
+        handlers().forEach(h -> byKey.put(h.key(), h));
+        Map<String, String> expected = Map.of(
+                "GET /api/v1/warehouse-capacity", "warehouse-capacity:READ",
+                "GET /api/v1/warehouse-capacity/{warehouseId}", "warehouse-capacity:READ",
+                "PUT /api/v1/warehouses/{warehouseId}", "warehouse-warehouses:UPDATE");
+        expected.forEach((key, code) -> {
+            assertThat(byKey).as(key).containsKey(key);
+            RequiresPermission rp = byKey.get(key).rp();
+            assertThat(rp).as(key + " is guarded").isNotNull();
+            assertThat(PermissionCode.of(rp.resource(), rp.action())).as(key).isEqualTo(PermissionCode.parse(code));
+            assertThat(rp.scope()).as(key).isEqualTo(DataScope.ALL);
+        });
+        for (Role role : List.of(Role.WAREHOUSE_STAFF, Role.ACCOUNTANT, Role.CUSTOMER)) {
+            assertThat(roles.resolve(List.of(role.authority())).permissions()).as(role.name())
+                    .doesNotContain(PermissionCode.parse("warehouse-capacity:READ"),
+                            PermissionCode.parse("warehouse-capacity:VIEW_PAGE"));
+        }
     }
 
     /**

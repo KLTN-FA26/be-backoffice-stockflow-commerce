@@ -56,6 +56,13 @@ public class WarehouseJpaEntity extends BaseEntity {
     @Column(name = "status", nullable = false, length = 32)
     private WarehouseStatus status;
 
+    /**
+     * The share of the bins' computed volume the capacity board counts, (0, 1] (kltn-docs 06 §4.6, C43;
+     * {@code ck_warehouse_utilization_factor}); 1 unless the warehouse manager set another.
+     */
+    @Column(name = "utilization_factor", nullable = false, precision = 5, scale = 4)
+    private BigDecimal utilizationFactor = BigDecimal.ONE;
+
     protected WarehouseJpaEntity() {
     }
 
@@ -73,15 +80,23 @@ public class WarehouseJpaEntity extends BaseEntity {
         this.status = status;
     }
 
+    public WarehouseJpaEntity(UUID id, String prefix, String name, String address,
+                              String returnAddress, MapUnit mapUnit, BigDecimal mapWidth,
+                              BigDecimal mapHeight, WarehouseStatus status, BigDecimal utilizationFactor) {
+        this(id, prefix, name, address, returnAddress, mapUnit, mapWidth, mapHeight, status);
+        this.utilizationFactor = utilizationFactor;
+    }
+
     /** Everything a warehouse may change after registration; prefix and map unit never do. */
     public void apply(String name, String address, String returnAddress, BigDecimal mapWidth,
-                      BigDecimal mapHeight, WarehouseStatus status) {
+                      BigDecimal mapHeight, WarehouseStatus status, BigDecimal utilizationFactor) {
         this.name = name;
         this.address = address;
         this.returnAddress = returnAddress;
         this.mapWidth = mapWidth;
         this.mapHeight = mapHeight;
         this.status = status;
+        this.utilizationFactor = utilizationFactor;
     }
 
     public String getPrefix() { return prefix; }
@@ -92,4 +107,5 @@ public class WarehouseJpaEntity extends BaseEntity {
     public BigDecimal getMapWidth() { return mapWidth; }
     public BigDecimal getMapHeight() { return mapHeight; }
     public WarehouseStatus getStatus() { return status; }
+    public BigDecimal getUtilizationFactor() { return utilizationFactor; }
 }

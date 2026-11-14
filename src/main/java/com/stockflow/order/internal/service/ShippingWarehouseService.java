@@ -27,6 +27,7 @@ import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.LocalDate;
@@ -46,8 +47,11 @@ import java.util.UUID;
  *
  * <ul>
  *   <li><b>Options</b> (step 2): for each active warehouse, the whole cartons of each line's SKU available to promise
- *       there. Warehouses holding every line in full come first, then those holding more. The projected free space (m³)
- *       is not worked out yet: no warehouse capacity table exists (team plan, "Bảng sức chứa kho").</li>
+ *       there, and its capacity board (BE1, 06 §4.6): projected free room, pending, free if all approved, and the volume
+ *       of what would have to be produced there - the cartons it lacks times a carton - with a warning when that does
+ *       not fit (BR-25; a warning, never a refusal). The order's own production orders are judged out of the board
+ *       they are already counted in. Warehouses holding every line in full come first, then those holding more, then -
+ *       among those holding as many - the ones with room for what must be produced (C3).</li>
  *   <li><b>Choose</b>: Sales picks one; the order then holds there, by SKU, as many whole cartons of each line as are
  *       available - all, or some (k &lt; N) - with no deadline. What is missing is not refused: it is shown per delivery
  *       batch, the earliest batch served first, and topped up when stock arrives. The warehouse changes only while
@@ -81,16 +85,34 @@ public class ShippingWarehouseService {
 
     private static final Logger log = LoggerFactory.getLogger(ShippingWarehouseService.class);
 
-    /** One warehouse an order may ship from, and what of each line it has available to promise now. */
+    /**
+     * One warehouse an order may ship from, what of each line it has available to promise now, and its room (BE1; 17
+     * §4.2 step 2, BR-25; 06 §4.6). m³ to three decimals; the free columns may be negative.
+     *
+     * @param projectedFreeM3      the warehouse's projected free room, as its capacity board shows it
+     * @param pendingM3            its production orders not sent yet
+     * @param freeIfAllApprovedM3  projected free - pending
+     * @param neededM3             what would have to be produced for the order there: each line's cartons lacking
+     *                             times a carton; null when a SKU's carton has no size
+     * @param exceedsProjected     {@code neededM3} does not fit the projected free room (the order's own production
+     *                             orders left out of it): warn Sales, do not refuse
+     * @param exceedsIfAllApproved it does not fit once the other production orders pending for the warehouse are sent
+     */
     public record Option(UUID warehouseId, String warehouseCode, String warehouseName, boolean holdsEveryLine,
-                         int availableCartons, List<LineAvailability> lines) {
+                         int availableCartons, List<LineAvailability> lines, BigDecimal projectedFreeM3,
+                         BigDecimal pendingM3, BigDecimal freeIfAllApprovedM3, BigDecimal neededM3,
+                         boolean exceedsProjected, boolean exceedsIfAllApproved) {
     }
 
     /** A line's SKU at one warehouse: its cartons, and how many are available to promise there. */
     public record LineAvailability(UUID lineId, String sku, int cartons, int availableCartons) {
     }
 
-    /** The warehouses an order may ship from, best first, and the one chosen, if any. */
+    /**
+     * The warehouses an order may ship from, best first, and the one chosen, if any.
+     *
+     * @param capacityComputed true since BE1: every option carries its warehouse's room
+     */
     public record Options(UUID orderId, UUID chosenWarehouseId, boolean capacityComputed, List<Option> warehouses) {
     }
 
@@ -124,12 +146,15 @@ public class ShippingWarehouseService {
     private final com.stockflow.order.internal.domain.ProductionOrderRepository productionOrders;
     private final DeliveryBatchRecords batchRecords;
     private final com.stockflow.order.internal.domain.DeliveryFailureCases deliveryFailures;
+    private final WarehouseCapacityService capacity;
 
     ShippingWarehouseService(OrderRepository orders, InventoryService inventory, WarehouseDirectory warehouses,
                              SalesContractRepository contracts, Clock clock, PlatformTransactionManager transactions,
                              com.stockflow.order.internal.domain.ProductionOrderRepository productionOrders,
                              DeliveryBatchRecords batchRecords,
-                             com.stockflow.order.internal.domain.DeliveryFailureCases deliveryFailures) {
+                             com.stockflow.order.internal.domain.DeliveryFailureCases deliveryFailures,
+                             WarehouseCapacityService capacity) {
+        this.capacity = capacity;
         this.deliveryFailures = deliveryFailures;
         this.batchRecords = batchRecords;
         this.productionOrders = productionOrders;
@@ -161,21 +186,82 @@ public class ShippingWarehouseService {
         Map<UUID, Integer> own = heldUnitsByLine(order);
         String chosen = order.shippingWarehouseId() == null ? null
                 : warehouses.codeOf(order.shippingWarehouseId()).orElse(null);
+        List<WarehouseDirectory.Warehouse> active = warehouses.active();
+        // BE1: each warehouse's board, and the order's own production orders, which the board counts already.
+        Map<UUID, WarehouseCapacityService.Computed> boards = capacity.boardsOf(active.stream()
+                .map(WarehouseDirectory.Warehouse::id).toList());
+        List<com.stockflow.order.internal.domain.ProductionOrder> production = productionOrders.ofSalesOrder(orderId);
+        Set<String> skus = new java.util.HashSet<>();
+        lines.forEach(line -> skus.add(line.sku().code()));
+        production.forEach(p -> p.lines().forEach(line -> skus.add(line.sku())));
+        Map<String, BigDecimal> cartonVolumes = capacity.cartonVolumes(skus);
         List<Option> options = new ArrayList<>();
-        for (WarehouseDirectory.Warehouse warehouse : warehouses.active()) {
+        for (WarehouseDirectory.Warehouse warehouse : active) {
             List<LineAvailability> availability = lines.stream().map(line -> new LineAvailability(line.id(),
                     line.sku().code(), line.cartons(), (atp.get(line.sku().code()).getOrDefault(warehouse.code(), 0)
                     + (warehouse.code().equals(chosen) ? own.getOrDefault(line.id(), 0) : 0))
                     / line.unitsPerCarton())).toList();
             boolean every = availability.stream().allMatch(a -> a.availableCartons() >= a.cartons());
             int cartons = availability.stream().mapToInt(a -> Math.min(a.availableCartons(), a.cartons())).sum();
-            options.add(new Option(warehouse.id(), warehouse.code(), warehouse.name(), every, cartons, availability));
+            options.add(option(warehouse, every, cartons, availability, boards.get(warehouse.id()), production,
+                    cartonVolumes));
         }
-        // C3: a warehouse holding every line first, then the one holding more, then by code for a stable order.
+        // C3: a warehouse holding every line first, then the one holding more, then - among those holding as many -
+        // one with room for what must be produced there (BE1), then by code for a stable order.
         options.sort(Comparator.comparing(Option::holdsEveryLine).reversed()
                 .thenComparing(Comparator.comparingInt(Option::availableCartons).reversed())
+                .thenComparing(Option::exceedsProjected)
                 .thenComparing(Option::warehouseCode));
-        return new Options(orderId, order.shippingWarehouseId(), false, options);
+        return new Options(orderId, order.shippingWarehouseId(), true, options);
+    }
+
+    /**
+     * An option with its warehouse's room (BE1; 17 §4.2 step 2, BR-25): what the order lacks there is to be produced
+     * there, and it is judged against the board without the order's own production orders - the ones sent are
+     * incoming, the drafts pending, both already on the board. A warehouse the board cannot read (gone meanwhile) shows
+     * no room and no warning.
+     */
+    private static Option option(WarehouseDirectory.Warehouse warehouse, boolean every, int cartons,
+                                 List<LineAvailability> availability, WarehouseCapacityService.Computed board,
+                                 List<com.stockflow.order.internal.domain.ProductionOrder> production,
+                                 Map<String, BigDecimal> cartonVolumes) {
+        if (board == null) {
+            return new Option(warehouse.id(), warehouse.code(), warehouse.name(), every, cartons, availability, null,
+                    null, null, null, false, false);
+        }
+        BigDecimal needed = BigDecimal.ZERO;
+        for (LineAvailability line : availability) {
+            int lacking = Math.max(0, line.cartons() - line.availableCartons());
+            if (lacking == 0) {
+                continue;
+            }
+            BigDecimal carton = cartonVolumes.get(line.sku());
+            if (carton == null) {
+                needed = null;
+                break;
+            }
+            needed = needed.add(carton.multiply(BigDecimal.valueOf(lacking)));
+        }
+        BigDecimal ownIncoming = BigDecimal.ZERO;
+        BigDecimal ownPending = BigDecimal.ZERO;
+        for (com.stockflow.order.internal.domain.ProductionOrder p : production) {
+            if (!warehouse.id().equals(p.receivingWarehouseId())) {
+                continue;
+            }
+            BigDecimal volume = WarehouseCapacityService.outstandingVolume(p, cartonVolumes);
+            if (volume == null) {
+                continue;
+            }
+            if (p.sentAndOpen()) {
+                ownIncoming = ownIncoming.add(volume);
+            } else if (p.status().open()) {
+                ownPending = ownPending.add(volume);
+            }
+        }
+        var check = board.board().check(needed, ownIncoming, ownPending);
+        return new Option(warehouse.id(), warehouse.code(), warehouse.name(), every, cartons, availability,
+                board.view().projectedFreeM3(), board.view().pendingM3(), board.view().freeIfAllApprovedM3(),
+                check.neededM3(), check.exceedsProjected(), check.exceedsIfAllApproved());
     }
 
     /**
