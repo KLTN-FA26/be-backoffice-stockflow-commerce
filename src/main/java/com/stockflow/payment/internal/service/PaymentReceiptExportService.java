@@ -19,6 +19,7 @@ import com.stockflow.payment.internal.repository.ReceiptExportSearch;
 import com.stockflow.payment.internal.repository.ReceiptExportSearch.ExportedLine;
 import com.stockflow.payment.internal.repository.ReceiptExportSearch.ExportedReceipt;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
@@ -96,9 +97,14 @@ public class PaymentReceiptExportService {
      * paid). Voided receipts are in it unless the filter leaves them out: the accounting software needs to know a
      * receipt it may have imported was voided (15 §4.4).
      *
+     * <p>Read in one snapshot ({@code REPEATABLE_READ}): the receipts and their lines are two statements, and under the
+     * default READ COMMITTED a receipt voided or recorded between them would be RECORDED on one sheet and VOIDED, or
+     * missing, on the other - in the file the accountant imports.</p>
+     *
      * @throws BusinessException {@code EXPORT_TOO_LARGE} past {@link XlsxTable#MAX_ROWS} receipts or lines - nothing is
      *                           read beyond one row over
      */
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
     @Auditable(action = AuditAction.EXPORT, resourceType = "payment-receipt",
             details = "{customerId: #filter.customerId(), status: #filter.status(), reference: #filter.reference(), "
                     + "receivedFrom: #filter.receivedFrom(), receivedTo: #filter.receivedTo()}")
