@@ -163,4 +163,5 @@ class AuditLogEntity implements Persistable<UUID> {
     String getClientAddress() { return clientAddress; }
     String getDetails() { return details; }
     Instant getOccurredAt() { return occurredAt; }
+    boolean isSecurityRelevant() { return securityRelevant; }
 }

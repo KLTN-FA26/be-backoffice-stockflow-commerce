@@ -410,7 +410,10 @@ class PermissionMatrixTest {
             // SCRUM-474 5b (V20261029004000): the user-management screen picks warehouses too.
             Map.entry("warehouse-warehouses:READ", Set.of(Role.WAREHOUSE_MANAGER, Role.WAREHOUSE_STAFF,
                     Role.SALES_STAFF,
-                    Role.SALES_MANAGER, Role.SYSTEM_ADMIN)));
+                    Role.SALES_MANAGER, Role.SYSTEM_ADMIN)),
+            // BE3-B (V20261127000100, kltn-docs 00 §2.5): the audit trail names people - the System Admin alone reads it.
+            Map.entry("platform-audit-logs:READ", Set.of(Role.SYSTEM_ADMIN)),
+            Map.entry("platform-audit-logs:VIEW_PAGE", Set.of(Role.SYSTEM_ADMIN)));
 
     /** A valid body for the customer-reachable write handlers, so validation (400) cannot hide a missing owner check. */
     private Map<String, String> attackBodies() {
@@ -838,6 +841,34 @@ class PermissionMatrixTest {
         assertThat(roles.resolve(List.of(Role.CUSTOMER.authority())).permissions())
                 .doesNotContain(PermissionCode.parse("sales-order-holds:UPDATE"),
                         PermissionCode.parse("sales-order-cancellations:UPDATE"));
+    }
+
+    /**
+     * BE3: the printed documents are reads of what they print - a quote's PDF needs what reading the quote needs (the
+     * customer reaches it too, refused another's by the owner check {@link #aCustomerCannotReachAnotherCustomersData}
+     * exercises), a shipment's delivery note what reading the shipment needs (and its warehouse) - and the audit trail
+     * is a resource of its own that only the System Admin holds (kltn-docs 00 §2.5).
+     */
+    @Test
+    void theDocumentAndAuditLogEndpointsNeedTheirPermissions() {
+        Map<String, Handler> byKey = new HashMap<>();
+        handlers().forEach(h -> byKey.put(h.key(), h));
+        Map<String, String> expected = Map.of(
+                "GET /api/v1/quotes/{quoteId}/document", "sales-quotes:READ",
+                "GET /api/v1/fulfillment/shipments/{shipmentId}/delivery-note", "fulfillment-shipments:READ",
+                "GET /api/v1/audit-logs", "platform-audit-logs:READ",
+                "GET /api/v1/audit-logs/{auditLogId}", "platform-audit-logs:READ");
+        expected.forEach((key, code) -> {
+            assertThat(byKey).as(key).containsKey(key);
+            RequiresPermission rp = byKey.get(key).rp();
+            assertThat(rp).as(key + " is guarded").isNotNull();
+            assertThat(PermissionCode.of(rp.resource(), rp.action())).as(key).isEqualTo(PermissionCode.parse(code));
+            assertThat(rp.scope()).as(key).isEqualTo(DataScope.ALL);
+        });
+        assertThat(roles.resolve(List.of(Role.CUSTOMER.authority())).permissions())
+                .contains(PermissionCode.parse("sales-quotes:READ"))
+                .doesNotContain(PermissionCode.parse("fulfillment-shipments:READ"),
+                        PermissionCode.parse("platform-audit-logs:READ"));
     }
 
     /**

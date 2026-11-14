@@ -14,6 +14,12 @@ public final class IdentityResources {
     public static final String ROLES = "identity-roles";
     public static final String USERS = "identity-users";
     public static final String RBAC = "identity-rbac";
+    /**
+     * The audit trail of the whole platform ({@code platform.audit_log}): read here because identity is where the
+     * administration screens live, though the trail belongs to no module ({@code common.audit}). Seeded by
+     * V20261127000100 to SYSTEM_ADMIN only.
+     */
+    public static final String AUDIT_LOGS = "platform-audit-logs";
 
     private IdentityResources() {
     }
