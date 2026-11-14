@@ -50,8 +50,9 @@ import java.util.UUID;
  *       there, and its capacity board (BE1, 06 §4.6): projected free room, pending, free if all approved, and the volume
  *       of what would have to be produced there - the cartons it lacks times a carton - with a warning when that does
  *       not fit (BR-25; a warning, never a refusal). The order's own production orders are judged out of the board
- *       they are already counted in. Warehouses holding every line in full come first, then those holding more, then -
- *       among those holding as many - the ones with room for what must be produced (C3).</li>
+ *       they are already counted in. Ranked as open question C3 and 17 §4.2 step 2 put it ({@link #RANKING}):
+ *       warehouses holding every line in full first, then those with room for the part still to be produced, the
+ *       larger projected free room first, then the rest by available cartons.</li>
  *   <li><b>Choose</b>: Sales picks one; the order then holds there, by SKU, as many whole cartons of each line as are
  *       available - all, or some (k &lt; N) - with no deadline. What is missing is not refused: it is shown per delivery
  *       batch, the earliest batch served first, and topped up when stock arrives. The warehouse changes only while
@@ -137,6 +138,33 @@ public class ShippingWarehouseService {
     public record NextBatch(UUID batchId, int seq, boolean fullyHeld) {
     }
 
+    /**
+     * The order in which the options are suggested, as kltn-docs open question C3 (settled 2026-11-05) and 17 §4.2
+     * step 2 give it: first the warehouses that hold every line of the order in whole cartons; then the warehouses with
+     * room for the part still to be produced - projected free room at least the volume to be produced there - the larger
+     * projected free room first; then the rest, more available cartons first; the warehouse code last, for a stable
+     * order.
+     *
+     * <p>Room is the second key, before how much a warehouse holds, because the documents put it there: what a warehouse
+     * lacks is produced and delivered to it, so a warehouse that holds more but cannot take the rest is the worse
+     * suggestion. Room only ranks the warehouses that have something to produce: one holding every line needs none.
+     * A volume that cannot be worked out (a carton without a size) or a warehouse whose board cannot be read is not
+     * "room" - it is unknown, and the warehouse ranks with those without room. The room compared is the projected free
+     * room the option shows Sales.</p>
+     */
+    static final Comparator<Option> RANKING = Comparator.comparing(Option::holdsEveryLine).reversed()
+            .thenComparing(Comparator.comparing(ShippingWarehouseService::hasRoomForWhatIsProduced).reversed())
+            .thenComparing(o -> hasRoomForWhatIsProduced(o) ? o.projectedFreeM3() : null,
+                    Comparator.nullsLast(Comparator.<BigDecimal>reverseOrder()))
+            .thenComparing(Comparator.comparingInt(Option::availableCartons).reversed())
+            .thenComparing(Option::warehouseCode);
+
+    /** C3: a warehouse that must produce part of the order and has the projected free room for it. */
+    private static boolean hasRoomForWhatIsProduced(Option option) {
+        return !option.holdsEveryLine() && option.neededM3() != null && option.projectedFreeM3() != null
+                && !option.exceedsProjected();
+    }
+
     private final OrderRepository orders;
     private final InventoryService inventory;
     private final WarehouseDirectory warehouses;
@@ -168,7 +196,8 @@ public class ShippingWarehouseService {
     }
 
     /**
-     * The warehouses the order may ship from (17 §4.2 step 2), best first.
+     * The warehouses the order may ship from (17 §4.2 step 2), in the order C3 and 17 §4.2 step 2 suggest them
+     * ({@link #RANKING}).
      *
      * @throws BusinessException {@code NOT_FOUND}; {@code ORDER_SHIPPING_WAREHOUSE_NOT_ALLOWED} for an order not of a
      *         contract
@@ -206,12 +235,7 @@ public class ShippingWarehouseService {
             options.add(option(warehouse, every, cartons, availability, boards.get(warehouse.id()), production,
                     cartonVolumes));
         }
-        // C3: a warehouse holding every line first, then the one holding more, then - among those holding as many -
-        // one with room for what must be produced there (BE1), then by code for a stable order.
-        options.sort(Comparator.comparing(Option::holdsEveryLine).reversed()
-                .thenComparing(Comparator.comparingInt(Option::availableCartons).reversed())
-                .thenComparing(Option::exceedsProjected)
-                .thenComparing(Option::warehouseCode));
+        options.sort(RANKING);
         return new Options(orderId, order.shippingWarehouseId(), true, options);
     }
 
