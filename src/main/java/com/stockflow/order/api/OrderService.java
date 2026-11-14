@@ -291,6 +291,17 @@ public interface OrderService {
     java.util.Set<UUID> holdsOfBatch(UUID orderId, UUID deliveryBatchId);
 
     /**
+     * WF-05 fix plan, section 2 (09 §4.3): the goods of a returned shipment that Sales decided to deliver again and the
+     * warehouse manager released, with no pick task yet - what {@code createTask} opens a second pick for. Empty when
+     * the order has none, or every one of them is in {@code pickedCases}. Read without locks: its caller takes the
+     * order's row lock ({@link #lockedStatus}) and reads it again before opening the task (WF-05 review N4).
+     */
+    Optional<RedeliveryToPick> redeliveryToPick(UUID orderId, java.util.Collection<UUID> pickedCases);
+
+    /** The redelivery of delivery failure case {@code caseId}: its allocations and units, whatever became of it. */
+    Optional<RedeliveryToPick> redelivery(UUID caseId);
+
+    /**
      * 4B-8 (kltn-docs 08 §4.4 step 8.3): the units of each order line a delivery batch carries - its cartons in pieces,
      * as the signed schedule fixes them: what the carton check of that batch's task expects. Once the rest of a line was
      * closed (WF4-CLOSE-REST), no more than the line still has open beyond the other batches' shipments. Empty for a

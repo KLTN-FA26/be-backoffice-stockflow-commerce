@@ -24,6 +24,9 @@ import java.util.UUID;
  */
 public final class PaymentReceipt {
 
+    /** Every whitespace character, which a bank never puts inside a statement reference but a person typing one does. */
+    private static final java.util.regex.Pattern WHITESPACE = java.util.regex.Pattern.compile("\\s+");
+
     /** The longest statement reference kept (15 §3: ≤ 100). */
     public static final int REFERENCE_MAX = 100;
     /** The longest note and void reason kept (15 §3: ≤ 500). */
@@ -145,6 +148,24 @@ public final class PaymentReceipt {
         this.voidedBy = Objects.requireNonNull(by, "by");
         this.voidedAt = Objects.requireNonNull(at, "at");
         this.voidReason = why;
+    }
+
+    /**
+     * What two statement references are compared by (15 BR-03): upper case, every whitespace character removed. The bank
+     * prints one line as {@code FT26111ABC}; an accountant types {@code ft26111abc} or {@code FT 26111 ABC} - one sum of
+     * money, which recorded twice would be counted twice. The reference is kept as typed, for the receipt to show; the
+     * database generates the same value ({@code payment_receipt.reference_normalized}) and holds it unique among live
+     * receipts.
+     *
+     * @return the normalised reference; empty for null or blank
+     */
+    public static String normalize(String reference) {
+        return reference == null ? "" : WHITESPACE.matcher(reference).replaceAll("").toUpperCase(java.util.Locale.ROOT);
+    }
+
+    /** {@link #normalize} of this receipt's reference: what another live receipt may not share. */
+    public String normalizedReference() {
+        return normalize(reference);
     }
 
     private static BusinessException invalid(String message) {

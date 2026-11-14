@@ -126,7 +126,7 @@ class OrderThroughContractIntegrationTest {
         return tx.execute(s -> {
             OrderLine line = Order.line(Identifiers.newId(), new Sku(sku.sku()), 1000, Money.vnd(2_000), null)
                     .withCartons(sku.uomConversionId(), 20, 50).withTax(BigDecimal.TEN);
-            Order order = Order.draft(OrderNumber.of(today, 700_000 + ThreadLocalRandom.current().nextInt(99_999)),
+            Order order = Order.draft(OrderNumber.of(today, 900_000 + ThreadLocalRandom.current().nextInt(49_999)),
                     customerId, Identifiers.newId(), List.of(line), Instant.now());
             return orderRepository.save(order).id().value();
         });

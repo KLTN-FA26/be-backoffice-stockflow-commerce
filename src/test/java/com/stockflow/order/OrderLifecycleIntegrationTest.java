@@ -41,6 +41,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
@@ -72,6 +73,7 @@ class OrderLifecycleIntegrationTest {
     @Autowired CancellationRequestService cancellationRequests;
     @Autowired CustomerOrders customerOrders;
     @Autowired OrderSettlementService settlements;
+    @Autowired com.stockflow.invoicing.internal.service.EInvoiceIssuance einvoices;
     @Autowired com.stockflow.inventory.api.InventoryService inventory;
     @Autowired TransactionTemplate tx;
     @Autowired JdbcTemplate jdbc;
@@ -154,6 +156,16 @@ class OrderLifecycleIntegrationTest {
     @DisplayName("prepaid, end to end: hold and resolve, split handover, one failed then redelivered, completed, closed; "
             + "the history names who and why")
     void prepaidEndToEnd() {
+        // The buyer an e-invoice is issued to: a tax code and the e-mail its invoices go to (21 BR-06).
+        tx.executeWithoutResult(s -> {
+            jdbc.update("UPDATE customer.customer SET tax_code = ? WHERE id = ?", "03" + (10_000_000
+                    + java.util.concurrent.ThreadLocalRandom.current().nextInt(89_999_999)), customer);
+            jdbc.update("INSERT INTO customer.customer_legal_profile (id, customer_id, registered_address, "
+                    + "representative_name, representative_title, invoice_email, version, created_at) "
+                    + "VALUES (gen_random_uuid(), ?, '1 Le Loi, TP HCM', 'Tran Van A', 'Director', ?, 0, NOW()) "
+                    + "ON CONFLICT (customer_id) DO UPDATE SET invoice_email = EXCLUDED.invoice_email", customer,
+                    "ke.toan@" + customer + ".example.com");
+        });
         OrderSummary order = picking(4);
         assertThat(order.status()).isEqualTo(OrderStatus.PICKING);
 
@@ -195,6 +207,19 @@ class OrderLifecycleIntegrationTest {
         tx.executeWithoutResult(s -> jdbc.update("UPDATE ordering.customer_order SET delivered_at = NOW() - interval '8 days' "
                 + "WHERE id = ?", order.orderId()));
         assertThat(settlements.completionCandidates(0, 1000)).contains(order.orderId());
+        // WF-05 plan 4, condition 5: both deliveries were drawn up as drafts (after commit); until the accountant
+        // issues them the order stays DELIVERED.
+        com.stockflow.support.Await.until("the drafts of both deliveries", Duration.ofSeconds(20),
+                () -> jdbc.queryForObject("SELECT count(*) FROM invoicing.einvoice WHERE order_id = ? AND status = "
+                        + "'DRAFT'", Long.class, order.orderId()) == 2);
+        assertThat(settlements.complete(order.orderId())).as("its deliveries are not invoiced yet").isFalse();
+        assertThat(statusOf(order)).isEqualTo(OrderStatus.DELIVERED);
+        jdbc.queryForList("SELECT id FROM invoicing.einvoice WHERE order_id = ?", UUID.class, order.orderId())
+                .forEach(invoice -> einvoices.issue(invoice, null, staff));
+        // Issuing returns SUBMITTING; the provider is called on another thread (WF-05 E3).
+        com.stockflow.support.Await.until("both invoices issued", Duration.ofSeconds(20),
+                () -> jdbc.queryForObject("SELECT count(*) FROM invoicing.einvoice WHERE order_id = ? AND status = "
+                        + "'ISSUED'", Long.class, order.orderId()) == 2);
         assertThat(settlements.complete(order.orderId())).isTrue();
         assertThat(statusOf(order)).isEqualTo(OrderStatus.COMPLETED);
         tx.executeWithoutResult(s -> jdbc.update("UPDATE ordering.customer_order SET completed_at = NOW() - interval '31 days' "
@@ -221,7 +246,8 @@ class OrderLifecycleIntegrationTest {
     @Test
     @DisplayName("4B-10 (17 §4.6 step 21): a contract order completes only once its installments are paid - the settlement "
             + "leaves it DELIVERED while one owes, the receipt lets it complete (it never completed before: its paid "
-            + "amount stayed 0)")
+            + "amount stayed 0); its contract goes SIGNED -> COMPLETED in the same transaction (14 §5.2), on the real "
+            + "rows, and is final")
     void completesOnlyOncePaid() {
         // Everything after delivery, on the customer's credit: a limit above zero (15 BR-12).
         customers.saveCreditTerms(new com.stockflow.customer.api.SaveCreditTermsCommand(customer,
@@ -244,6 +270,8 @@ class OrderLifecycleIntegrationTest {
                 .contains(orderId);
         assertThat(settlements.complete(orderId)).as("the installment after delivery is unpaid").isFalse();
         assertThat(statusOf(orderId)).isEqualTo(OrderStatus.DELIVERED);
+        assertThat(contractOf(orderId)).as("the contract waits with its order").containsEntry("status", "SIGNED")
+                .containsEntry("completed", false);
 
         // Reached by the delivery (payment reads OrderDelivered after commit); the customer pays it.
         UUID installment = jdbc.queryForObject("SELECT id FROM payment.installment WHERE order_id = ?", UUID.class,
@@ -255,10 +283,32 @@ class OrderLifecycleIntegrationTest {
 
         assertThat(settlements.complete(orderId)).as("paid in full").isTrue();
         assertThat(statusOf(orderId)).isEqualTo(OrderStatus.COMPLETED);
+        // WF-05 fix plan, sections 4 and 7: the contract completed with the order - read from the table, not a mock.
+        assertThat(contractOf(orderId)).containsEntry("status", "COMPLETED").containsEntry("completed", true);
+        assertThat(jdbc.queryForObject("SELECT c.completed_at = o.completed_at FROM ordering.sales_contract c JOIN "
+                + "ordering.customer_order o ON o.id = c.order_id WHERE o.id = ?", Boolean.class, orderId))
+                .as("one moment, one transaction").isTrue();
+        assertThat(settlements.complete(orderId)).as("completed once").isFalse();
+        // COMPLETED is the end of a contract (tg_sales_contract_transition): the table refuses to reopen it, or to
+        // take back when it completed.
+        assertThat(catchThrowable(() -> tx.executeWithoutResult(s -> jdbc.update(
+                "UPDATE ordering.sales_contract SET status = 'SIGNED', completed_at = NULL WHERE order_id = ?", orderId))))
+                .isInstanceOf(DataAccessException.class);
+        assertThat(catchThrowable(() -> tx.executeWithoutResult(s -> jdbc.update(
+                "UPDATE ordering.sales_contract SET completed_at = NULL WHERE order_id = ?", orderId))))
+                .isInstanceOf(DataAccessException.class);
+        assertThat(contractOf(orderId)).containsEntry("status", "COMPLETED");
+    }
+
+    /** The order's live contract as the table has it. */
+    private Map<String, Object> contractOf(UUID orderId) {
+        return jdbc.queryForMap("SELECT status, completed_at IS NOT NULL AS completed FROM ordering.sales_contract "
+                + "WHERE order_id = ? AND status <> 'CANCELLED'", orderId);
     }
 
     @Test
-    @DisplayName("split: one shipment delivered, the other failed and returned - partial; the rest closed - DELIVERED")
+    @DisplayName("split: one shipment delivered, the other failed and returned - ON_HOLD for the failed delivery, "
+            + "its hold on record, neither resolved with a note nor closed past it")
     void oneDeliveredOneReturned() {
         OrderSummary order = picking(3);
         orders.markPacked(order.orderId(), staff);
@@ -268,12 +318,19 @@ class OrderLifecycleIntegrationTest {
         orders.recordHandover(order.orderId(), handover(order, s2, 1));
         orders.recordShipmentDelivered(order.orderId(), s1, staff);
         orders.recordShipmentDeliveryFailed(order.orderId(), s2, DeliveryFailureReason.DAMAGED, "vỡ thùng", staff);
-        assertThat(orders.recordShipmentReturned(order.orderId(), s2, staff).status())
-                .isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
-        OrderSummary closed = orders.closeRemainder(order.orderId(), CancellationReasonCode.OTHER,
-                "khách không lấy lại", staff);
-        assertThat(closed.status()).isEqualTo(OrderStatus.DELIVERED);
-        assertThat(closed.lifecycle().effectiveTotal()).isEqualByComparingTo("2000000");
+        OrderSummary held = orders.recordShipmentReturned(order.orderId(), s2, staff);
+        assertThat(held.status()).as("WF-05: the order waits for Sales").isEqualTo(OrderStatus.ON_HOLD);
+        assertThat(held.lifecycle().holdReason()).isEqualTo(HoldReason.DELIVERY_FAILED);
+        assertThat(held.lifecycle().statusBeforeHold()).isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
+        assertThat(jdbc.queryForList("SELECT reason FROM ordering.order_hold WHERE order_id = ? AND resolved_at IS NULL",
+                String.class, order.orderId())).containsExactly("DELIVERY_FAILED");
+        assertThat(code(catchThrowable(() -> orders.resolveHold(order.orderId(), "a note is not a decision", staff))))
+                .isEqualTo(ErrorCode.ORDER_DELIVERY_FAILURE_USE_DECISION);
+        assertThat(code(catchThrowable(() -> orders.closeRemainder(order.orderId(), CancellationReasonCode.OTHER,
+                "khách không lấy lại", staff)))).isEqualTo(ErrorCode.ORDER_INVALID_TRANSITION);
+        // The decision itself - deliver again, or cancel what was not delivered - is the delivery failure case's
+        // (FtlDispatchIntegrationTest#aFailedDelivery...): it needs the goods received back.
+        assertThat(statusOf(order.orderId())).isEqualTo(OrderStatus.ON_HOLD);
     }
 
     @Test
@@ -532,7 +589,8 @@ class OrderLifecycleIntegrationTest {
     }
 
     @Test
-    @DisplayName("two closures of one order: the first leaves it SHIPPED, the second, after a shipment came back, DELIVERED")
+    @DisplayName("a closure of one order leaves it SHIPPED; its last shipment then fails and comes back: held for the "
+            + "failed delivery from DELIVERY_FAILED, and closing again is Sales' decision on that")
     void secondClosureIsNotLost() {
         OrderSummary order = picking(4);
         UUID a = UUID.randomUUID();
@@ -544,11 +602,14 @@ class OrderLifecycleIntegrationTest {
                 .isEqualTo(OrderStatus.SHIPPED);
         orders.recordShipmentDeliveryFailed(order.orderId(), b, DeliveryFailureReason.LOST, null, staff);
         assertThat(orders.recordShipmentReturned(order.orderId(), b, staff).status())
-                .isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
-        assertThat(orders.closeRemainder(order.orderId(), CancellationReasonCode.OTHER, "hàng thất lạc", staff)
-                .status()).isEqualTo(OrderStatus.DELIVERED);
+                .as("held from DELIVERY_FAILED: the new edge, checked by tg_order_status_transition")
+                .isEqualTo(OrderStatus.ON_HOLD);
+        assertThat(code(catchThrowable(() -> orders.closeRemainder(order.orderId(), CancellationReasonCode.OTHER,
+                "hàng thất lạc", staff)))).as("the second closure is Sales' decision on the failed delivery now")
+                .isEqualTo(ErrorCode.ORDER_INVALID_TRANSITION);
         assertThat(jdbc.queryForObject("SELECT cancelled_quantity FROM ordering.order_line WHERE order_id = ?",
-                Integer.class, order.orderId())).as("two pieces closed by the first closure, the one that came back by the second").isEqualTo(3);
+                Integer.class, order.orderId())).as("two pieces closed by the first closure; the one that came back waits")
+                .isEqualTo(2);
     }
 
     /** Both calls released at once, each in its own transaction; what each returned or threw. */

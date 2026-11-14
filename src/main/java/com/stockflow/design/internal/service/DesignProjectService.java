@@ -28,8 +28,10 @@ import java.time.Clock;
 import java.time.Instant;
 import java.util.EnumSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
@@ -51,6 +53,11 @@ import org.springframework.transaction.annotation.Transactional;
 public class DesignProjectService {
 
     private static final Set<ProjectStatus> LISTED = EnumSet.allOf(ProjectStatus.class);
+
+    /** Why a revision or a clone stands alone: the source's project is closed. */
+    public static final String NOT_JOINED_ARCHIVED = "PROJECT_ARCHIVED";
+    /** Why a revision or a clone stands alone: the source's project holds the most designs it may (B42). */
+    public static final String NOT_JOINED_FULL = "PROJECT_FULL";
 
     private final DesignProjectJpaRepository projects;
     private final DesignDraftJpaRepository drafts;
@@ -209,14 +216,60 @@ public class DesignProjectService {
      * project takes it not, and it stands on its own. So it does when the project is full (B42): revising is never
      * refused for the project's sake - the customer may move it in once a place is free. Whether the source is still in
      * that project is read again under the project's lock, which removing a design takes too.
+     *
+     * <p>A clone of a design (FE request 2026-11-13 E-3) joins the same way. The answer says why the new design stands
+     * alone: {@link #NOT_JOINED_ARCHIVED} or {@link #NOT_JOINED_FULL}; {@code null} when it joined, or when the source
+     * has left the project meanwhile and there is no project to join.</p>
      */
-    void joinRevision(DesignDraftJpaEntity revision, UUID sourceId, UUID sourceProjectId, UUID actor) {
+    String joinRevision(DesignDraftJpaEntity revision, UUID sourceId, UUID sourceProjectId, UUID actor) {
         DesignProjectJpaEntity project = projects.lockById(sourceProjectId)
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
         entityManager.refresh(project);
-        if (project.getStatus() == ProjectStatus.ACTIVE && sourceProjectId.equals(drafts.projectIdOf(sourceId))
-                && drafts.countInProject(sourceProjectId) < DesignProjectRules.MAX_DESIGNS) {
-            join(project, revision, actor);
+        if (!sourceProjectId.equals(drafts.projectIdOf(sourceId))) {
+            return null;
+        }
+        if (project.getStatus() != ProjectStatus.ACTIVE) {
+            return NOT_JOINED_ARCHIVED;
+        }
+        if (drafts.countInProject(sourceProjectId) >= DesignProjectRules.MAX_DESIGNS) {
+            return NOT_JOINED_FULL;
+        }
+        join(project, revision, actor);
+        return null;
+    }
+
+    /**
+     * Records that the studio's own preflight refused a batch of the project (FE request 2026-11-13 E-4; kltn-docs 12
+     * §5.4 {@code BATCH_PREFLIGHT_FAILED}, BR-13) - findings the backend cannot see itself, such as text crossing a
+     * seam. Nothing else changes; each design records its own refusal on its own. The findings come from the browser
+     * and are not trusted: only the owner of an open project records them, every design named must be in it, and the
+     * notes keep the rule, surface and element of each finding - never a free-text message - in the form the
+     * backend's own refusal writes ({@code DesignBatchSubmissionService}), cut to what the history holds.
+     */
+    @Auditable(action = AuditAction.UPDATE, resourceType = "design-project", resourceId = "#id")
+    public EventView recordPreflightFailure(UUID id, UUID actor, Map<UUID, List<ReportedIssue>> issuesByDesign) {
+        DesignProjectJpaEntity project = lockActive(id, actor);
+        for (UUID designId : issuesByDesign.keySet()) {
+            DesignDraftJpaEntity draft = drafts.findById(designId)
+                    .filter(found -> id.equals(found.getProjectId()))
+                    .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
+            CustomerDesignRules.requireOwner(actor, draft.getOwnerUserId(), draft.getStatus());
+        }
+        String notes = issuesByDesign.entrySet().stream()
+                .map(e -> e.getKey() + ": " + e.getValue().stream().map(ReportedIssue::summary).distinct()
+                        .collect(Collectors.joining(", ")))
+                .collect(Collectors.joining("; "));
+        DesignProjectEventJpaEntity event = history.saveAndFlush(new DesignProjectEventJpaEntity(project.getId(), actor,
+                ProjectEventType.BATCH_PREFLIGHT_FAILED.name(), notes));
+        return new EventView(event.getActorId(), event.getEvent(), event.getNotes(), event.getCreatedAt());
+    }
+
+    /** One finding the studio reported: its rule, and where it is if it says so. */
+    public record ReportedIssue(String rule, String surfaceCode, String elementId) {
+
+        /** As {@code DesignSubmissionService} writes a finding into the history. */
+        String summary() {
+            return rule + (surfaceCode == null ? "" : " " + surfaceCode) + (elementId == null ? "" : "/" + elementId);
         }
     }
 
@@ -234,7 +287,8 @@ public class DesignProjectService {
         return project;
     }
 
-    private DesignProjectJpaEntity lock(UUID id, UUID actor) {
+    /** The owner's project, open or closed, locked, read as it is now. */
+    DesignProjectJpaEntity lock(UUID id, UUID actor) {
         authenticated(actor);
         DesignProjectJpaEntity project = projects.lockById(id)
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));

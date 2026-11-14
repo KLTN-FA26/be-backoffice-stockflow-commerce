@@ -6,9 +6,10 @@ import org.springframework.modulith.events.ApplicationModuleListener;
 import org.springframework.stereotype.Component;
 
 /**
- * What other modules tell a return (team plan 4D-3): its goods came back on a confirmed return receipt
- * ({@code procurement}, kltn-docs 03 §4.2 step 12), and the accountant recorded a refund of its order
- * ({@code payment}, 15 §4.5 step 16).
+ * What other modules tell a return (team plan 4D-3) and a failed delivery (WF-05 fix plan, section 2): goods came
+ * back on a confirmed return receipt ({@code procurement}, kltn-docs 03 §4.2 step 12) - a return request's, or a
+ * shipment's the carrier brought back - and the accountant recorded a refund of the order ({@code payment}, 15 §4.5
+ * step 16).
  *
  * <p>Events, not calls: the receipt and the refund record are another module's documents and commit on their own - the
  * goods are in quarantine whether or not the order is moved a moment later - and neither module may depend on
@@ -22,9 +23,11 @@ import org.springframework.stereotype.Component;
 class ReturnedGoodsListener {
 
     private final ReturnRequestService returns;
+    private final DeliveryFailureService deliveryFailures;
 
-    ReturnedGoodsListener(ReturnRequestService returns) {
+    ReturnedGoodsListener(ReturnRequestService returns, DeliveryFailureService deliveryFailures) {
         this.returns = returns;
+        this.deliveryFailures = deliveryFailures;
     }
 
     @ApplicationModuleListener
@@ -32,8 +35,13 @@ class ReturnedGoodsListener {
         returns.goodsReceived(event);
     }
 
+    /**
+     * A refund recorded settles a return (the order RETURNED through an RMA), or - WF-05 fix plan, section 2 - an order
+     * whose failed delivery Sales cancelled: each looks at its own kind of order and leaves the other's alone.
+     */
     @ApplicationModuleListener
     public void on(OrderRefundRecorded event) {
         returns.followRefunds(event.orderId(), event.recordedBy());
+        deliveryFailures.followRefunds(event.orderId(), event.recordedBy());
     }
 }

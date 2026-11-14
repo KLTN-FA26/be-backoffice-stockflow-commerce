@@ -7,6 +7,7 @@ import com.stockflow.common.audit.Auditable;
 import com.stockflow.common.persistence.Pages;
 import com.stockflow.common.security.Action;
 import com.stockflow.common.security.RequiresPermission;
+import com.stockflow.fulfillment.internal.controller.dto.CarrierCredentialRotationRequest;
 import com.stockflow.fulfillment.internal.controller.dto.CarrierPickupPointsRequest;
 import com.stockflow.fulfillment.internal.controller.dto.CarrierRequest;
 import com.stockflow.fulfillment.internal.controller.dto.CarrierServiceOptionResponse;
@@ -134,6 +135,24 @@ class CarrierController {
         return ApiResponse.ok(mapper.toResponse(carriers.update(carrierId, new Carriers.SaveCarrier(request.code(),
                 request.name(), request.contactName(), request.contactPhone(), request.status(),
                 mapper.toInput(request.connection()), request.version()))));
+    }
+
+    @PostMapping("/{carrierId}/webhook-credential-rotation")
+    @Operation(summary = "Replace an API_BOOKING carrier's webhook credential in two steps, both holding in between: "
+            + "START with the new value, then PROMOTE once the carrier sends it (or DISCARD). 409 "
+            + "CARRIER_NOT_API_BOOKING, CARRIER_CREDENTIAL_ROTATION_NOT_STARTED, OPTIMISTIC_LOCK")
+    @RequiresPermission(resource = FulfillmentResources.CARRIERS, action = Action.UPDATE)
+    @Auditable(action = AuditAction.UPDATE, resourceType = "carrier", resourceId = "#carrierId")
+    public ApiResponse<CarrierResponse> rotateWebhookCredential(@PathVariable UUID carrierId,
+            @Valid @RequestBody CarrierCredentialRotationRequest request) {
+        Carriers.CredentialRotation step;
+        try {
+            step = Carriers.CredentialRotation.valueOf(request.step().strip().toUpperCase(java.util.Locale.ROOT));
+        } catch (IllegalArgumentException unknown) {
+            step = null;
+        }
+        return ApiResponse.ok(mapper.toResponse(carriers.rotateWebhookCredential(carrierId, step, request.value(),
+                request.version())));
     }
 
     @GetMapping("/{carrierId}/service-codes")

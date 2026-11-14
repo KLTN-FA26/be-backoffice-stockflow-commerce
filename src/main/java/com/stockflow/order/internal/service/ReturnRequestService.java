@@ -121,10 +121,13 @@ public class ReturnRequestService {
     private final StagedUploads staged;
     private final ReturnPolicy policy;
     private final Clock clock;
+    private final DeliveryFailureService deliveryFailures;
 
     ReturnRequestService(ReturnRequestRepository returns, OrderRepository orders, OrderEventPublisher events,
                          PaymentService payments, CustomerService customers, FileTransfers files,
-                         StagedUploads staged, TransactionOperations tx, ReturnPolicy policy, Clock clock) {
+                         StagedUploads staged, TransactionOperations tx, ReturnPolicy policy, Clock clock,
+                         DeliveryFailureService deliveryFailures) {
+        this.deliveryFailures = deliveryFailures;
         this.returns = returns;
         this.orders = orders;
         this.events = events;
@@ -340,8 +343,13 @@ public class ReturnRequestService {
      * The goods of a return came back on a confirmed return receipt (17 §4.10 step 39; 03 §4.2 step 12): the return is
      * RECEIVED with the units of each line's SKU among the cartons, and its order RETURNED. Called by
      * {@link ReturnedGoodsListener} after the receipt committed, in a transaction of its own; a receipt seen again
-     * changes nothing. A receipt against a shipment the carrier brought back (RTO) names no return: its order is
-     * RETURNED by the shipment's outcome already (09), and nothing happens here.
+     * changes nothing.
+     *
+     * <p>A receipt against a shipment the carrier brought back (RTO) names no return. It used to be dropped here - the
+     * order was RETURNED by the shipment's outcome and nothing followed, so no money was ever settled and the order
+     * stayed RETURNED (WF-05 audit, DS-05b). It now opens the shipment's delivery failure case
+     * ({@link DeliveryFailureService#goodsReceived}), for Sales to deliver the goods again or cancel what was not
+     * delivered.</p>
      *
      * @throws BusinessException {@code RETURN_INVALID_TRANSITION} when the return takes no goods now - the event stays
      *         in the publication registry and is retried, so a defect here is seen rather than lost
@@ -350,6 +358,7 @@ public class ReturnRequestService {
             resourceId = "#event.returnRequestId()", details = "{receipt: #event.receiptNumber()}")
     public void goodsReceived(ReturnedGoodsReceived event) {
         if (event.returnRequestId() == null) {
+            deliveryFailures.goodsReceived(event);
             return;
         }
         Locked locked = lock(event.returnRequestId(), null, null);

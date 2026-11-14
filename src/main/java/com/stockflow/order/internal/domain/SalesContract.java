@@ -126,13 +126,24 @@ public final class SalesContract {
      * @throws BusinessException {@code SALES_CONTRACT_STATUS_INVALID} once sent; {@code SALES_CONTRACT_ORDER_NOT_DRAFT}
      */
     public void revise(Order order, int freeSampleRounds, List<DeliveryBatch> schedule, List<PlannedInstallment> plan) {
-        requireStatus(SalesContractStatus.DRAFT, "edited");
-        requireOrder(order);
-        requireDraftOrder(order);
+        requireRevisable(order);
         requireRounds(freeSampleRounds);
         this.freeSampleRounds = freeSampleRounds;
         this.schedule = List.copyOf(schedule);
         this.plan = List.copyOf(plan);
+    }
+
+    /**
+     * Whether it may still be edited: a draft, of a draft order. Asked before a new schedule or plan is even checked,
+     * so editing a sent contract answers that it is sent (BR-14) - not that the plan Sales typed does not add up, which
+     * would send them fixing a plan they may not change at all.
+     *
+     * @throws BusinessException {@code SALES_CONTRACT_STATUS_INVALID}; {@code SALES_CONTRACT_ORDER_NOT_DRAFT}
+     */
+    public void requireRevisable(Order order) {
+        requireStatus(SalesContractStatus.DRAFT, "edited");
+        requireOrder(order);
+        requireDraftOrder(order);
     }
 
     /**

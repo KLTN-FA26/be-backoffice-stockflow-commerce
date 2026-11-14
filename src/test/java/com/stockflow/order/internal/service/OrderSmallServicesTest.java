@@ -37,7 +37,7 @@ class OrderSmallServicesTest {
     class StockAllocation {
 
         private final InventoryService inventory = mock(InventoryService.class);
-        private final OrderStockAllocation allocation = new OrderStockAllocation(inventory, org.mockito.Mockito.mock(com.stockflow.order.internal.domain.DeliveryBatchRecords.class));
+        private final OrderStockAllocation allocation = new OrderStockAllocation(inventory, org.mockito.Mockito.mock(com.stockflow.order.internal.domain.DeliveryBatchRecords.class), org.mockito.Mockito.mock(com.stockflow.order.internal.domain.DeliveryFailureCases.class));
 
         private StockReservation hold() {
             StockReservation hold = mock(StockReservation.class);

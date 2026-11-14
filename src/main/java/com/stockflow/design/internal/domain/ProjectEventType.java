@@ -12,6 +12,10 @@ public enum ProjectEventType {
     ASSET_ADDED,
     /** A file left the library; the notes name it. Designs it was placed on keep their copy (BR-18). */
     ASSET_REMOVED,
+    /** A text and its type style joined the library; the notes name it. */
+    TEXT_ADDED,
+    /** A text left the library; the notes name it. Designs it was placed on keep their own copy of it. */
+    TEXT_REMOVED,
     /** A batch was refused because some designs did not pass the preflight; the notes list them (BR-19). */
     BATCH_PREFLIGHT_FAILED,
     /** A batch passed and waits for review as one round; the notes name the round and its designs. */

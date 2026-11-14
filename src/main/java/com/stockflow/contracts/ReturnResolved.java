@@ -20,7 +20,8 @@ import java.util.UUID;
  *       refunded and {@code creditAmount} their value before VAT (what the sales rollups take off revenue);
  *       {@code replacementQuantity} is always zero.</li>
  *   <li>{@code vatAdjustmentRequired}: money was given back for invoiced goods, so accounting issues an adjustment
- *       invoice (hóa đơn điều chỉnh giảm, Nghị định 123/2020/NĐ-CP, Thông tư 78/2021/TT-BTC; 21 §4.4).</li>
+ *       invoice (hóa đơn điều chỉnh giảm, TT 91/2026/TT-BTC Điều 10 khoản 5 điểm c.1, under NĐ 254/2026/NĐ-CP;
+ *       21 §4.4).</li>
  *   <li>{@code paidOrderId}: the returned order itself.</li>
  * </ul>
  *

@@ -14,8 +14,11 @@ import com.stockflow.payment.internal.domain.InstallmentBook;
 import com.stockflow.payment.internal.domain.InstallmentMilestone;
 import com.stockflow.payment.internal.domain.InstallmentStatus;
 import com.stockflow.payment.internal.repository.InstallmentSearch;
+import com.stockflow.contracts.InstallmentDue;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -31,7 +34,7 @@ import java.util.UUID;
 
 /**
  * A signed contract's installments (4B-6, kltn-docs 15 §4.1, §4.3, §5.1, §5.2): opened with the signature, due when
- * their milestone comes, OVERDUE past their due day. Receipts pay them ({@link PaymentReceiptService}); a cancellation
+ * their milestone comes, overdue - a flag, not a status - past their due day. Receipts pay them ({@link PaymentReceiptService}); a cancellation
  * or a closure of the rest settles them with the order ({@link OrderSettlementService}, 4B-9).
  *
  * <ul>
@@ -76,14 +79,23 @@ public class InstallmentService {
     private final InstallmentOrders orders;
     private final CompanyBankProperties bank;
     private final Clock clock;
+    private final ApplicationEventPublisher events;
 
+    @Autowired
     InstallmentService(InstallmentBook book, InstallmentSearch search, InstallmentOrders orders, CompanyBankProperties bank,
-                       Clock clock) {
+                       Clock clock, ApplicationEventPublisher events) {
         this.book = book;
         this.search = search;
         this.orders = orders;
         this.bank = bank;
         this.clock = clock;
+        this.events = events;
+    }
+
+    /** Without anyone told that an installment fell due: the unit tests that drive the arithmetic alone. */
+    InstallmentService(InstallmentBook book, InstallmentSearch search, InstallmentOrders orders, CompanyBankProperties bank,
+                       Clock clock) {
+        this(book, search, orders, bank, clock, event -> { });
     }
 
     /** {@link com.stockflow.payment.api.PaymentService#openInstallments}. */
@@ -98,10 +110,12 @@ public class InstallmentService {
                     planned.seq(), planned.name(), InstallmentMilestone.valueOf(planned.milestone()),
                     planned.deliveryBatchId(), planned.deliveryBatchSeq(), planned.amount(), contract.currency(),
                     planned.dueDays());
-            if (installment.milestone() == InstallmentMilestone.ON_SIGNING) {
-                installment.reach(contract.signedAt(), signedOn);
-            }
+            boolean due = installment.milestone() == InstallmentMilestone.ON_SIGNING
+                    && installment.reach(contract.signedAt(), signedOn);
             book.save(installment);
+            if (due) {
+                fellDue(installment);
+            }
         }
         log.info("Contract {} of order {}: {} installment(s) opened", contract.contractNumber(), contract.orderNumber(),
                 contract.installments().size());
@@ -124,6 +138,7 @@ public class InstallmentService {
                             || deliveryBatchId.equals(installment.deliveryBatchId()))
                     && installment.reach(at, day)) {
                 book.save(installment);
+                fellDue(installment);
                 log.info("Installment {} of contract {} is due (BEFORE_DELIVERY{})", installment.seq(),
                         installment.contractNumber(), deliveryBatchId == null ? "" : ", its delivery batch released");
             }
@@ -169,6 +184,7 @@ public class InstallmentService {
                     : batches.getOrDefault(installment.deliveryBatchId(), whole);
             if (from != null && installment.reach(from, LocalDate.ofInstant(from, BUSINESS_ZONE))) {
                 book.save(installment);
+                fellDue(installment);
                 log.info("Installment {} of contract {} is due (AFTER_DELIVERY) by {}", installment.seq(),
                         installment.contractNumber(), installment.dueDate());
             }
@@ -180,6 +196,7 @@ public class InstallmentService {
         for (Installment installment : book.lockOfOrder(orderId)) {
             if (installment.milestone() == milestone && installment.reach(at, day)) {
                 book.save(installment);
+                fellDue(installment);
                 log.info("Installment {} of contract {} is due ({}){}", installment.seq(),
                         installment.contractNumber(), milestone,
                         installment.dueDate() == null ? "" : " by " + installment.dueDate());
@@ -187,13 +204,64 @@ public class InstallmentService {
         }
     }
 
-    /** 15 §4.1 step 4: every night, installments past their due day and not paid in full become OVERDUE. */
-    public int markOverdue() {
-        List<UUID> marked = book.markOverdue(LocalDate.now(clock.withZone(BUSINESS_ZONE)));
-        if (!marked.isEmpty()) {
-            log.info("{} installment(s) became overdue", marked.size());
+    /**
+     * {@link com.stockflow.payment.api.PaymentService#chargeFailedDelivery}: the fee item of a failed trip, numbered
+     * after the contract's plan and its other fee items, due from today. The order's installments are locked first, in
+     * id order, as every money movement of the order locks them - so two fee items never take the same number.
+     *
+     * <p><b>Due today, deliberately</b> (open question for the owner, WF-05 review F10). The fee is owed for a trip
+     * that already happened, as the cancellation fee item is (15 §5.1 "đến hạn ngay"); no payment term was agreed for
+     * it, so none is invented here. The consequence is meant: from the next business day it is unpaid it is overdue
+     * ({@link Installment#overdue}), and the customer's credit position then shows it overdue - which refuses the
+     * release of their orders paying after delivery, this one's next batches included ({@code CUSTOMER_CREDIT_OVERDUE},
+     * {@code OrderReleaseService.release}), until it is paid. The redelivery itself is
+     * released without that check ({@code OrderReleaseService.releaseRedelivery}), so the goods that came back are
+     * never held hostage by their own fee. Giving the fee a term (a {@code due_days}, or the contract's terms) would be
+     * a one-line change in {@link Installment#openDeliveryFailureFee}.</p>
+     */
+    public Optional<UUID> chargeFailedDelivery(com.stockflow.payment.api.ChargeFailedDeliveryCommand command) {
+        List<Installment> ofOrder = book.lockOfOrder(command.orderId());
+        if (ofOrder.isEmpty()) {
+            return Optional.empty();
         }
-        return marked.size();
+        BigDecimal amount = command.amount();
+        if (amount.signum() <= 0 || amount.stripTrailingZeros().scale() > 0) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "The fee of a failed trip is more than zero, in whole units of the currency");
+        }
+        Installment first = ofOrder.stream().filter(i -> !i.isFeeItem()).findFirst().orElse(ofOrder.getFirst());
+        int seq = ofOrder.stream().filter(Installment::isFeeItem).mapToInt(Installment::seq).max()
+                .orElse(Installment.FIRST_FEE_SEQ - 1) + 1;
+        if (seq > Installment.LAST_FEE_SEQ) {
+            throw new IllegalStateException("Contract %s has no room for another fee item"
+                    .formatted(first.contractNumber()));
+        }
+        Installment fee = Installment.openDeliveryFailureFee(first, seq, command.label(), amount,
+                command.chargedAt(), LocalDate.ofInstant(command.chargedAt(), BUSINESS_ZONE));
+        book.save(fee);
+        fellDue(fee);
+        log.info("Contract {}: failed trip charged {} {} on fee item {} ({})", first.contractNumber(),
+                amount.toPlainString(), first.currency(), seq, command.label());
+        return Optional.of(fee.id());
+    }
+
+    /**
+     * Tells the modules that follow installments - the chat's transfer card (kltn-docs 16 §4.4 step 9, BR-06) - that
+     * one fell due. Published in the transaction that reached its milestone, delivered after commit; the amount it still
+     * owes is read when the card is drawn.
+     */
+    private void fellDue(Installment installment) {
+        events.publishEvent(new InstallmentDue(installment.id(), installment.contractId(),
+                installment.contractNumber(), installment.orderId(), installment.customerId(), installment.seq(),
+                installment.dueDate(), installment.reachedAt()));
+    }
+
+    /**
+     * The business day overdue is read on (15 §4.1 step 4): an installment is overdue from the day after its due day, in
+     * the business calendar - worked out when asked, by no nightly job (WF-05 fix plan, section 8).
+     */
+    public LocalDate today() {
+        return LocalDate.now(clock.withZone(BUSINESS_ZONE));
     }
 
     /** {@link com.stockflow.payment.api.PaymentService#installmentStanding}. */
@@ -230,14 +298,24 @@ public class InstallmentService {
 
     /**
      * Every filter null means "any"; {@code dueBefore} keeps installments due before that day; {@code reached} true keeps
-     * those whose milestone came (what is due), false those still waiting for it.
+     * those whose milestone came (what is due), false those still waiting for it; {@code overdue} true keeps those
+     * overdue today, false those that are not.
+     *
+     * @throws BusinessException {@code INSTALLMENT_OVERDUE_IS_A_FLAG} (400) for {@code status} OVERDUE: no installment is
+     *         in it any more ({@link InstallmentStatus}), so the filter would answer an empty list - which a client
+     *         written against the old status reads as "nothing overdue". It is told to send {@code overdue=true}.
      */
     @Transactional(readOnly = true)
     public PageResponse<Installment> installments(UUID customerId, UUID orderId, InstallmentStatus status,
                                                   InstallmentMilestone milestone, LocalDate dueBefore, Boolean reached,
-                                                  int page, int size, String sort) {
+                                                  Boolean overdue, int page, int size, String sort) {
+        if (status == InstallmentStatus.OVERDUE) {
+            throw new BusinessException(ErrorCode.INSTALLMENT_OVERDUE_IS_A_FLAG,
+                    "OVERDUE is not an installment status any more; filter with overdue=true");
+        }
         return Pages.toResponse(search.installments(new InstallmentSearch.InstallmentFilter(customerId, orderId, status,
-                milestone, dueBefore, reached), Pages.of(page, size, SORT.parse(sort))));
+                milestone, dueBefore, reached, overdue, overdue == null ? null : today()),
+                Pages.of(page, size, SORT.parse(sort))));
     }
 
     /**
@@ -279,8 +357,9 @@ public class InstallmentService {
             throw new BusinessException(ErrorCode.TRANSFER_INSTRUCTIONS_UNAVAILABLE,
                     "The company's bank account is not configured");
         }
+        // The BIN goes along: without it the chat's transfer card draws no VietQR code.
         CompanyBankAccount account = new CompanyBankAccount(bank.bankName().strip(), bank.accountNumber().strip(),
-                bank.accountName().strip());
+                bank.accountName().strip(), bank.bin());
         return new TransferInstructions(installment, account, installment.outstanding(),
                 installment.transferReference());
     }

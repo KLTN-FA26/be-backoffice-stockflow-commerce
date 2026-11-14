@@ -30,6 +30,13 @@ public interface ProductService {
      */
     java.util.Map<String, TaxClass> taxClassesOf(java.util.Collection<String> skus);
 
+    /**
+     * The name of the variant each of {@code skus} is (its {@code variants.name}, what a customer sees the variant
+     * called), by SKU as stored, any status: a design drawn on a variant since blocked still shows its name. An unknown
+     * SKU is absent. One query, for a page of designs.
+     */
+    java.util.Map<String, String> variantNamesOf(java.util.Collection<String> skus);
+
     ProductSummary create(CreateProductCommand command);
 
     Optional<ProductSummary> findById(UUID productId);

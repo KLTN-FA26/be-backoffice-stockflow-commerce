@@ -22,6 +22,9 @@ import java.util.UUID;
  * @param fromStockPackage the stock package (carton) the units left, if any (V20261020000300); only on a line
  *                 with a {@code from}
  * @param toStockPackage   the stock package they went into, if any; only on a line with a {@code to}
+ * @param requestedBy who asked for the adjustment an {@code ADJUSTMENT} line posts (WF-05 fix plan, section 8); null on
+ *                 every other line. {@code actorId} is who approved it: the ledger alone then names both pairs of eyes
+ * @param countedBy   who counted the line, when that adjustment is a cycle count's variance; null otherwise
  */
 public record StockMovement(
         UUID id,
@@ -41,24 +44,51 @@ public record StockMovement(
         UUID lotId,
         UUID orderId,
         StockPackageId fromStockPackage,
-        StockPackageId toStockPackage
+        StockPackageId toStockPackage,
+        UUID requestedBy,
+        UUID countedBy
 ) {
+
+    /** A line that posts no adjustment: nobody requested or counted it. */
+    public StockMovement(UUID id, MovementType type, Sku sku, String lotNumber, LocationId from, LocationId to,
+                         int quantity, StockStatus status, StockStatus toStatus, ReferenceType referenceType,
+                         UUID referenceId, String reason, UUID actorId, Instant occurredAt, UUID lotId, UUID orderId,
+                         StockPackageId fromStockPackage, StockPackageId toStockPackage) {
+        this(id, type, sku, lotNumber, from, to, quantity, status, toStatus, referenceType, referenceId, reason,
+                actorId, occurredAt, lotId, orderId, fromStockPackage, toStockPackage, null, null);
+    }
+
+    /**
+     * The same line, posting an adjustment {@code requester} asked for and, for a count's variance, {@code counter}
+     * counted. Only an {@code ADJUSTMENT} line names them ({@code ck_stock_movement_adjustment_people}).
+     */
+    public StockMovement askedBy(UUID requester, UUID counter) {
+        return new StockMovement(id, type, sku, lotNumber, from, to, quantity, status, toStatus, referenceType,
+                referenceId, reason, actorId, occurredAt, lotId, orderId, fromStockPackage, toStockPackage, requester,
+                counter);
+    }
 
     /** The same line, of the lot {@code lot} (null keeps the database's resolution). */
     public StockMovement ofLot(UUID lot) {
         return new StockMovement(id, type, sku, lotNumber, from, to, quantity, status, toStatus, referenceType,
-                referenceId, reason, actorId, occurredAt, lot, orderId, fromStockPackage, toStockPackage);
+                referenceId, reason, actorId, occurredAt, lot, orderId, fromStockPackage, toStockPackage, requestedBy,
+                countedBy);
     }
 
     /** The same line, naming the customer order the units moved for. */
     public StockMovement forOrder(UUID order) {
         return new StockMovement(id, type, sku, lotNumber, from, to, quantity, status, toStatus, referenceType,
-                referenceId, reason, actorId, occurredAt, lotId, order, fromStockPackage, toStockPackage);
+                referenceId, reason, actorId, occurredAt, lotId, order, fromStockPackage, toStockPackage, requestedBy,
+                countedBy);
     }
 
     public StockMovement {
         if (quantity <= 0) {
             throw new IllegalArgumentException("A ledger line moves a positive quantity");
+        }
+        // ck_stock_movement_adjustment_people: only the posting of an adjustment names who asked and who counted.
+        if ((requestedBy != null || countedBy != null) && type != MovementType.ADJUSTMENT) {
+            throw new IllegalArgumentException("Only an ADJUSTMENT line names who requested and who counted");
         }
         // ck_stock_movement_package_side: a side's stock package belongs to that side's location.
         if ((fromStockPackage != null && from == null) || (toStockPackage != null && to == null)) {
@@ -81,13 +111,15 @@ public record StockMovement(
     /** The same line, the units having left this stock package ({@code null}: loose stock). */
     public StockMovement leaving(StockPackageId stockPackage) {
         return new StockMovement(id, type, sku, lotNumber, from, to, quantity, status, toStatus, referenceType,
-                referenceId, reason, actorId, occurredAt, lotId, orderId, stockPackage, toStockPackage);
+                referenceId, reason, actorId, occurredAt, lotId, orderId, stockPackage, toStockPackage, requestedBy,
+                countedBy);
     }
 
     /** The same line, the units having gone into this stock package ({@code null}: loose stock). */
     public StockMovement arriving(StockPackageId stockPackage) {
         return new StockMovement(id, type, sku, lotNumber, from, to, quantity, status, toStatus, referenceType,
-                referenceId, reason, actorId, occurredAt, lotId, orderId, fromStockPackage, stockPackage);
+                referenceId, reason, actorId, occurredAt, lotId, orderId, fromStockPackage, stockPackage, requestedBy,
+                countedBy);
     }
 
     /** A line that does not change the status of what it moves. */

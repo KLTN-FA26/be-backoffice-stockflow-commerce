@@ -88,12 +88,14 @@ public class ProductionSampleService {
     private final StagedUploads staged;
     private final TransactionOperations tx;
     private final ProductionOrderDispatch dispatch;
+    private final OrderEventPublisher events;
     private final Clock clock;
 
     ProductionSampleService(ProductionOrderRepository productionOrders, SampleRoundRepository sampleRounds,
                             OrderRepository orders, SalesContractRepository contracts, FileTransfers transfers,
                             StagedUploads staged, TransactionOperations tx, ProductionOrderDispatch dispatch,
-                            Clock clock) {
+                            OrderEventPublisher events, Clock clock) {
+        this.events = events;
         this.productionOrders = productionOrders;
         this.sampleRounds = sampleRounds;
         this.orders = orders;
@@ -165,6 +167,7 @@ public class ProductionSampleService {
                 sampleRounds.insert(opened);
                 ProductionOrder saved = opened.roundNo() == 1 ? productionOrders.save(production) : production;
                 prepared.adopt();
+                roundChanged(saved, opened, "WAITING", now);
                 RoundsView view = new RoundsView(saved, rounds, allowance(saved, rounds));
                 log.info("Production order {}: print sample round {} opened with {} file(s)", saved.code(),
                         opened.roundNo(), opened.media().size());
@@ -296,12 +299,31 @@ public class ProductionSampleService {
             // B31: the producer is told to print the batch, once per approval - after commit, by notification.
             dispatch.sampleApproved(saved, now);
         }
+        roundChanged(saved, answered, answer == SampleRound.Result.APPROVED ? "APPROVED" : "REPRINT_REQUESTED", now);
         log.info("Production order {}: print sample round {} {} by its customer", saved.code(), answered.roundNo(),
                 answer == SampleRound.Result.APPROVED ? "approved" : "sent back to be printed again");
         return new RoundsView(saved, rounds, allowance(saved, rounds));
     }
 
     // ---- shared -----------------------------------------------------------------------------------------------------
+
+    /**
+     * The production order of a round, whatever its status, read for the chat's sample approval card - which shows the
+     * round to the customer it belongs to and to Sales (kltn-docs 16 §4.5 step 11).
+     */
+    @Transactional(readOnly = true)
+    public Optional<RoundsView> ofRound(UUID roundId) {
+        return sampleRounds.productionOrderOf(roundId).flatMap(productionOrders::findById).map(this::view);
+    }
+
+    /**
+     * Tells the modules that follow sample rounds - the chat's approval card (16 §4.5, BR-10) - that a round waits for
+     * the customer, or was answered. Published in the round's transaction, delivered after commit.
+     */
+    private void roundChanged(ProductionOrder production, SampleRound round, String status, Instant at) {
+        events.publish(new com.stockflow.contracts.SampleRoundChanged(round.id(), production.id(), production.code(),
+                production.customerId(), round.roundNo(), status, at));
+    }
 
     private RoundsView view(ProductionOrder production) {
         SampleRounds rounds = sampleRounds.of(production.id());

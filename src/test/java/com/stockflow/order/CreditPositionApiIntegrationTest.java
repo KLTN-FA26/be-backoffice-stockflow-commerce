@@ -8,7 +8,6 @@ import com.stockflow.common.storage.IncomingFiles;
 import com.stockflow.customer.api.CustomerService;
 import com.stockflow.customer.api.SaveCreditTermsCommand;
 import com.stockflow.order.internal.service.SalesContracts;
-import com.stockflow.payment.internal.service.InstallmentService;
 import com.stockflow.support.ConfirmedOrders;
 import com.stockflow.support.CustomerSkuRows;
 import com.stockflow.support.IntegrationTest;
@@ -39,7 +38,6 @@ import java.time.LocalDate;
 import java.util.List;
 import java.util.UUID;
 
-import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -71,7 +69,6 @@ class CreditPositionApiIntegrationTest {
     @MockitoBean JwtDecoder decoder;
     @Autowired CustomerService customers;
     @Autowired SalesContracts contracts;
-    @Autowired InstallmentService installments;
     @Autowired ApplicationContext context;
     @Autowired JdbcTemplate jdbc;
     @Autowired TransactionTemplate tx;
@@ -174,7 +171,6 @@ class CreditPositionApiIntegrationTest {
         WithCurrentUser.call(sales, DataScope.ALL, () -> contracts.sign(sales, orderId, sent.version(),
                 IncomingFiles.sent(List.of(new FileUpload("signed.pdf", "application/pdf", scan.length,
                         new ByteArrayInputStream(scan)))), today.minusDays(5)));
-        assertThat(installments.markOverdue()).isPositive();
         UUID onSigning = jdbc.queryForObject("SELECT id FROM payment.installment WHERE order_id = ? AND seq = 1",
                 UUID.class, orderId);
         confirmedOrders.pay(customer, onSigning, new BigDecimal("1000000"));   // 6,000,000 due: 5,000,000 left

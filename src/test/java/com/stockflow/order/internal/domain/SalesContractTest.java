@@ -99,6 +99,56 @@ class SalesContractTest {
     }
 
     @Test
+    @DisplayName("C-06 (14 §5.2): only the documented edges, every pair of statuses")
+    void onlyTheDocumentedEdgesExist() {
+        java.util.Map<SalesContractStatus, java.util.Set<SalesContractStatus>> allowed = java.util.Map.of(
+                SalesContractStatus.DRAFT, java.util.Set.of(SalesContractStatus.SENT, SalesContractStatus.CANCELLED),
+                SalesContractStatus.SENT, java.util.Set.of(SalesContractStatus.SIGNED, SalesContractStatus.CANCELLED),
+                SalesContractStatus.SIGNED, java.util.Set.of(SalesContractStatus.COMPLETED),
+                SalesContractStatus.COMPLETED, java.util.Set.of(),
+                SalesContractStatus.CANCELLED, java.util.Set.of());
+        for (SalesContractStatus from : SalesContractStatus.values()) {
+            for (SalesContractStatus to : SalesContractStatus.values()) {
+                assertThat(from.canTransitionTo(to)).as("%s -> %s", from, to)
+                        .isEqualTo(allowed.get(from).contains(to));
+            }
+        }
+    }
+
+    @Test
+    @DisplayName("C-06: a draft is not signed, a completed one not reopened; a signed one completes once (C-03)")
+    void invalidTransitionsAreRefused() {
+        Order order = order(true);
+        SalesContract draft = contract(order, TODAY.plusDays(20));
+        assertThatThrownBy(draft::requireSignable).extracting(SalesContractTest::code)
+                .isEqualTo(ErrorCode.SALES_CONTRACT_STATUS_INVALID);
+        assertThatThrownBy(() -> draft.sign(TODAY, "k", "signed.pdf", NOW, SALES)).extracting(SalesContractTest::code)
+                .isEqualTo(ErrorCode.SALES_CONTRACT_STATUS_INVALID);
+        assertThatThrownBy(() -> draft.complete(NOW)).extracting(SalesContractTest::code)
+                .isEqualTo(ErrorCode.SALES_CONTRACT_STATUS_INVALID);
+
+        draft.send(order, NOW, SALES, "x");
+        draft.sign(TODAY, "k", "signed.pdf", NOW, SALES);
+        assertThat(draft.complete(NOW)).isTrue();
+        assertThat(draft.status()).isEqualTo(SalesContractStatus.COMPLETED);
+        assertThatThrownBy(() -> draft.cancel("too late", NOW, SALES)).extracting(SalesContractTest::code)
+                .isEqualTo(ErrorCode.SALES_CONTRACT_STATUS_INVALID);
+        assertThatThrownBy(() -> draft.revise(order, 1, draft.schedule(), draft.plan()))
+                .extracting(SalesContractTest::code).isEqualTo(ErrorCode.SALES_CONTRACT_STATUS_INVALID);
+    }
+
+    @Test
+    @DisplayName("A5: a sent contract answers that it is sent before anything is checked of what was sent with the edit")
+    void aSentContractIsNotRevisable() {
+        Order order = order(true);
+        SalesContract contract = contract(order, TODAY.plusDays(20));
+        contract.requireRevisable(order);
+        contract.send(order, NOW, SALES, "x");
+        assertThatThrownBy(() -> contract.requireRevisable(order)).extracting(SalesContractTest::code)
+                .isEqualTo(ErrorCode.SALES_CONTRACT_STATUS_INVALID);
+    }
+
+    @Test
     @DisplayName("cancelled before it is signed, with a reason; a new one may then be drawn up")
     void cancelled() {
         Order order = order(true);

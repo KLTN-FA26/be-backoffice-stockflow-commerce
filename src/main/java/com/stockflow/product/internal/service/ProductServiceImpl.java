@@ -132,6 +132,12 @@ class ProductServiceImpl implements ProductService {
         return products.taxClassesOf(skus);
     }
 
+    @Override
+    @Transactional(readOnly = true)
+    public java.util.Map<String, String> variantNamesOf(java.util.Collection<String> skus) {
+        return products.variantNamesOf(skus);
+    }
+
     /**
      * A draft product and its variants; each variant creates its SKU's inventory item (trigger), where
      * its logistics are then filled in.

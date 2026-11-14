@@ -105,7 +105,7 @@ class FileStorageIntegrationTest {
     void retentionIsAppliedOnlyAfterCommitAndOnlyWhenEnabled() {
         var storage = mock(FileStorage.class);
         var enabled = new ObjectLockProperties(true, ObjectLockProperties.Mode.GOVERNANCE, Duration.ofDays(3),
-                Duration.ofDays(10));
+                Duration.ofDays(10), java.time.Period.ofYears(10), ObjectLockProperties.Mode.COMPLIANCE);
         String key = "design-renders/2026/01/01/00000000-0000-7000-8000-000000000001.pdf";
         for (boolean lockOn : new boolean[]{true, false}) {
             var transfers = new FileTransfers(storage, properties(), Clock.systemUTC(),
@@ -125,7 +125,8 @@ class FileStorageIntegrationTest {
                     if (lockOn && commit) {
                         org.mockito.Mockito.verify(storage).retain(org.mockito.ArgumentMatchers.eq(key),
                                 org.mockito.ArgumentMatchers.argThat(until -> until.isAfter(
-                                        java.time.Instant.now().plus(Duration.ofDays(3)).minusSeconds(60))));
+                                        java.time.Instant.now().plus(Duration.ofDays(3)).minusSeconds(60))),
+                                org.mockito.ArgumentMatchers.eq(ObjectLockProperties.Mode.GOVERNANCE));
                     } else {
                         org.mockito.Mockito.verifyNoInteractions(storage);
                     }
@@ -140,9 +141,11 @@ class FileStorageIntegrationTest {
     void aFailedLockAfterCommitIsLoggedNotThrown() {
         var storage = mock(FileStorage.class);
         org.mockito.Mockito.doThrow(new StorageException("no Object Lock on this bucket"))
-                .when(storage).retain(any(), any());
+                .when(storage).retain(any(), any(), any());
         var transfers = new FileTransfers(storage, properties(), Clock.systemUTC(),
-                new ObjectLockProperties(true, ObjectLockProperties.Mode.GOVERNANCE, Duration.ofDays(1), Duration.ofDays(1)));
+                new ObjectLockProperties(true, ObjectLockProperties.Mode.GOVERNANCE, Duration.ofDays(1), Duration.ofDays(1),
+                        java.time.Period.ofYears(10),
+                ObjectLockProperties.Mode.COMPLIANCE));
         TransactionSynchronizationManager.setActualTransactionActive(true);
         TransactionSynchronizationManager.initSynchronization();
         try {

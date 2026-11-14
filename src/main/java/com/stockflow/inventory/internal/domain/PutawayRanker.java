@@ -57,6 +57,17 @@ public final class PutawayRanker {
      */
     public record Occupancy(int units, BigDecimal volumeM3, BigDecimal weightKg, boolean holdsSku, boolean holdsLot) {
         public static final Occupancy EMPTY = new Occupancy(0, BigDecimal.ZERO, BigDecimal.ZERO, false, false);
+
+        /**
+         * This bin with one more carton counted in it: one a putaway trip holds space for, or one of the same cart
+         * already given the bin (kltn-docs 05 BR-16: held space counts as taken).
+         */
+        public Occupancy plus(int moreUnits, BigDecimal moreVolumeM3, BigDecimal moreWeightKg, boolean sameSku,
+                              boolean sameLot) {
+            return new Occupancy(units + moreUnits, volumeM3.add(moreVolumeM3 == null ? BigDecimal.ZERO : moreVolumeM3),
+                    weightKg.add(moreWeightKg == null ? BigDecimal.ZERO : moreWeightKg), holdsSku || sameSku,
+                    holdsLot || sameLot);
+        }
     }
 
     /** One carton to put away; {@code weightKg} its full weight, null when nobody recorded one. */

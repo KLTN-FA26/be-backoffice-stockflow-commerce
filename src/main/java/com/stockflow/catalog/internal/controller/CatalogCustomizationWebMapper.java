@@ -19,11 +19,17 @@ class CatalogCustomizationWebMapper {
                 customization.templates().stream().map(CatalogCustomizationWebMapper::toTemplate).toList());
     }
 
-    private static CatalogCustomizationResponse.Template toTemplate(PrintConfig config) {
+    private static CatalogCustomizationResponse.Template toTemplate(CatalogCustomizationService.Template template) {
+        PrintConfig config = template.config();
+        CatalogCustomizationResponse.Model3d model3d = template.modelUrl() == null ? null
+                : new CatalogCustomizationResponse.Model3d(template.modelUrl(), config.model3d().surfaces().stream()
+                        .map(s -> new CatalogCustomizationResponse.Surface(s.printAreaCode(), s.meshName()))
+                        .toList());
         return new CatalogCustomizationResponse.Template(config.templateId(), config.code(), config.name(),
                 config.sku(), config.minDpi(), config.colorMode(), config.allowedFileFormats(), config.maxFileSizeMb(),
                 config.maxColors(), config.allowedFontCodes(), toModel(config.model()),
-                config.printAreas().stream().map(CatalogCustomizationWebMapper::toArea).toList());
+                config.printAreas().stream().map(CatalogCustomizationWebMapper::toArea).toList(),
+                template.hasCartonSpec(), model3d);
     }
 
     private static CatalogCustomizationResponse.Model toModel(ProductModel model) {

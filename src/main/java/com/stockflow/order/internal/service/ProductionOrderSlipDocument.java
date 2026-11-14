@@ -1,7 +1,8 @@
 package com.stockflow.order.internal.service;
 
 import com.stockflow.common.label.LabelFonts;
-import com.stockflow.order.internal.service.PrintedDocument.Line;
+import com.stockflow.common.label.PrintedDocument;
+import com.stockflow.common.label.PrintedDocument.Line;
 import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;

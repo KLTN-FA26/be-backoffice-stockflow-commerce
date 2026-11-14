@@ -27,22 +27,12 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * V20261028003000 (SCRUM-473 picking by carton): a pick line names the carton of the hold it consumes - that carton's
- * LPN exactly - and lines planned before the migration are given theirs. A hold on loose units (which named no carton)
+ * LPN exactly. A hold on loose units (which named no carton)
  * cannot exist since review C4 M-5 ({@code ck_stock_item_whole_cartons}): its case went with it.
  */
 @IntegrationTest
 @Import(PostgresContainer.class)
 class PickLineCartonMigrationTest {
-
-    /** The migration's backfill, verbatim: kept in step with V20261028003000 by hand. */
-    private static final String BACKFILL = """
-            UPDATE fulfillment.pick_line l
-               SET lpn = p.lpn
-              FROM inventory.stock_reservation r
-              JOIN inventory.stock_item s ON s.id = r.stock_item_id
-              JOIN inventory.stock_package p ON p.id = s.stock_package_id
-             WHERE r.id = l.reservation_id
-               AND l.lpn IS NULL""";
 
     private static final String SHELF = "HCM-A01-1-B";
     private static final Instant RECEIVED = Instant.parse("2026-01-02T00:00:00Z");
@@ -189,39 +179,5 @@ class PickLineCartonMigrationTest {
         })).isInstanceOf(DataAccessException.class).hasMessageContaining("ck_pick_line_whole_carton");
         assertThat(jdbc.queryForObject("select count(*) from pg_constraint where conname = 'ck_pick_line_lpn'",
                 Integer.class)).as("the lifted rule is back: the transaction rolled back").isOne();
-    }
-
-    /**
-     * The backfill of V20261028003000 (and step 3 of V20261113000400, which repeats it) on a line written before: such a
-     * line cannot be written any more, so the old state is made inside a transaction that is rolled back - the lpn rule
-     * lifted, the carton trigger off - and the assertion is made before it ends. {@code PickByLpnMigrationUpgradeTest}
-     * runs the migration itself.
-     */
-    @Test
-    @DisplayName("lines planned before the migration are given the LPN of their hold's carton")
-    void backfillNamesTheCartonOfExistingLines() {
-        String lpn = carton("A");
-        UUID reservation = hold(10);
-        tx.executeWithoutResult(s -> {
-            jdbc.execute("ALTER TABLE fulfillment.pick_line DROP CONSTRAINT ck_pick_line_lpn");
-            jdbc.execute("ALTER TABLE fulfillment.pick_line DISABLE TRIGGER tg_pick_line_carton");
-            line(reservation, null, false);
-            // Deferred keys of the line are checked now: PostgreSQL refuses an ALTER TABLE while a trigger event of the
-            // table is still pending.
-            jdbc.execute("SET CONSTRAINTS ALL IMMEDIATE");
-            jdbc.execute("ALTER TABLE fulfillment.pick_line ENABLE TRIGGER tg_pick_line_carton");
-            assertThat(jdbc.queryForObject("select lpn from fulfillment.pick_line where reservation_id = ?",
-                    String.class, reservation)).isNull();
-            jdbc.update(BACKFILL);
-
-            assertThat(jdbc.queryForObject("select lpn from fulfillment.pick_line where reservation_id = ?",
-                    String.class, reservation)).isEqualTo(lpn);
-            s.setRollbackOnly();
-        });
-
-        assertThat(jdbc.queryForObject("select count(*) from fulfillment.pick_line where reservation_id = ?",
-                Integer.class, reservation)).as("rolled back, with the rule lifted for it alone").isZero();
-        assertThat(jdbc.queryForObject("select count(*) from pg_constraint where conname = 'ck_pick_line_lpn'",
-                Integer.class)).isOne();
     }
 }

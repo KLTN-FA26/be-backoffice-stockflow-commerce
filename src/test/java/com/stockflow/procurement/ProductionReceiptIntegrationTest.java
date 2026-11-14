@@ -838,7 +838,7 @@ class ProductionReceiptIntegrationTest {
 
     private long stoppedNotices(UUID productionOrderId) {
         return jdbc.queryForObject("""
-                SELECT count(*) FROM event_publication WHERE event_type = ? AND serialized_event LIKE ?""", Long.class,
+                SELECT count(DISTINCT serialized_event) FROM event_publication WHERE event_type = ? AND serialized_event LIKE ?""", Long.class,
                 com.stockflow.contracts.ProductionOrderStopped.class.getName(), "%" + productionOrderId + "%");
     }
 

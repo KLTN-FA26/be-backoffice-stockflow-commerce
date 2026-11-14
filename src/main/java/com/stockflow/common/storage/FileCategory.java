@@ -58,6 +58,15 @@ public enum FileCategory {
             Set.of("application/pdf", "image/png")),
 
     /**
+     * A customization template's 3D model (kltn-docs 01 §4.10; FE request 2026-11-13 B-1): a glTF 2.0 binary
+     * ({@code .glb}) the back office measured the template's model from, which the storefront's studio draws the design
+     * on. Never parsed on the server - only its signature and version are checked - and served only through a signed
+     * link. Its own category: a model is not a document, and a replaced one is kept while an approved design's snapshot
+     * still names it.
+     */
+    PRINT_MODEL("print-models", 10 * 1024 * 1024, Set.of("model/gltf-binary")),
+
+    /**
      * Documents kept with a business record: a production order's slip (4A-3), a load's waybill from its carrier
      * (kltn-docs 09 §4.4, BR-28). A photo of a paper document too: a delivery note is signed on paper. A purchase
      * order's attachments were kept here until purchasing went (4A-8): no record claims them any more, so the
@@ -116,6 +125,23 @@ public enum FileCategory {
      * not let into a category whose every other type is checked.
      */
     WAYBILL_IMPORT("waybill-imports", 2 * 1024 * 1024, Set.of("text/csv")),
+
+    /**
+     * An issued e-invoice as the provider returned it (WF-05 E2; kltn-docs 21 §1): the XML, which is the invoice in
+     * law, and the PDF people read. Written by the system when the invoice is issued, and locked for ten years
+     * ({@link RecordRetention#EINVOICE}; Luật Kế toán 2015 Điều 41). The one upload here is the signed agreement of
+     * the two parties attached to a correction of an issued invoice (WF-05 E4; TT 91/2026/TT-BTC Điều 10 khoản 1 điểm
+     * b), a PDF kept and locked with the invoice it justifies. No module claims the prefix for the orphaned-file
+     * sweep, so nothing under it is ever swept.
+     */
+    EINVOICE("einvoices", 10 * 1024 * 1024, Set.of("application/xml", "application/pdf")),
+
+    /**
+     * A file sent in a chat conversation (kltn-docs 16 §3: reference pictures, photos of a faulty product, a signed
+     * contract scan): images and PDF, 20 MB - the chat's own limit, stated again by {@code ck_message_attachment_*}.
+     */
+    CHAT_ATTACHMENT("chat-attachments", 20 * 1024 * 1024,
+            Set.of("image/jpeg", "image/png", "image/webp", "application/pdf")),
 
     /** Generated reports awaiting download. Short-lived; the retention job clears them. */
     EXPORT("exports", 100 * 1024 * 1024,

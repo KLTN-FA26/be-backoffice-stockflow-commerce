@@ -22,6 +22,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
+import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -119,16 +120,37 @@ class RolePermissionEditingIntegrationTest {
 
     @Test
     void grantsTheScreenCannotShowSurviveASave() {
-        // The seed grants permissions for modules not built yet; the matrix hides them.
-        int before = grantRows("SALES_STAFF");
-        RoleMatrixView matrix = identity.roleMatrix("SALES_STAFF");
-        assertThat(granted(matrix)).hasSizeLessThan(before);
+        // A grant on a resource no controller declares is hidden by the matrix. The seed used to hold such grants
+        // for modules not built yet (chat was the last); the test now makes its own, so it does not depend on what
+        // is still unbuilt.
+        UUID permission = com.stockflow.common.id.Identifiers.newId();
+        // In a transaction of its own: the pool hands out connections with auto-commit off.
+        TransactionTemplate tx = new TransactionTemplate(transactionManager);
+        tx.executeWithoutResult(status -> {
+            jdbc.update("""
+                    INSERT INTO identity.permission (id, code, resource, action, version, created_at)
+                    VALUES (?, 'unbuilt-module:READ', 'unbuilt-module', 'READ', 0, NOW())""", permission);
+            jdbc.update("""
+                    INSERT INTO identity.role_permission (id, role_id, permission_id, version, created_at)
+                    SELECT ?, r.id, ?, 0, NOW() FROM identity.app_role r WHERE r.code = 'SALES_STAFF'""",
+                    com.stockflow.common.id.Identifiers.newId(), permission);
+        });
+        try {
+            int before = grantRows("SALES_STAFF");
+            RoleMatrixView matrix = identity.roleMatrix("SALES_STAFF");
+            assertThat(granted(matrix)).hasSizeLessThan(before).doesNotContain("unbuilt-module:READ");
 
-        RoleMatrixView saved = identity.updateRolePermissions(
-                new UpdateRolePermissionsCommand("SALES_STAFF", matrix.version(), granted(matrix)));
+            RoleMatrixView saved = identity.updateRolePermissions(
+                    new UpdateRolePermissionsCommand("SALES_STAFF", matrix.version(), granted(matrix)));
 
-        assertThat(saved.version()).isEqualTo(matrix.version() + 1);
-        assertThat(grantRows("SALES_STAFF")).isEqualTo(before);
+            assertThat(saved.version()).isEqualTo(matrix.version() + 1);
+            assertThat(grantRows("SALES_STAFF")).isEqualTo(before);
+        } finally {
+            tx.executeWithoutResult(status -> {
+                jdbc.update("DELETE FROM identity.role_permission WHERE permission_id = ?", permission);
+                jdbc.update("DELETE FROM identity.permission WHERE id = ?", permission);
+            });
+        }
     }
 
     @Test

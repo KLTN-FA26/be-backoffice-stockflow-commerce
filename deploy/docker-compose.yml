@@ -124,6 +124,9 @@ services:
       AWS_REGION: ${AWS_REGION:-ap-southeast-1}
       PRODUCT_MEDIA_CDN_BASE_URL: ${PRODUCT_MEDIA_CDN_BASE_URL:-https://media.${DOMAIN}}
       STOCKFLOW_STORAGE_OBJECT_LOCK_ENABLED: ${S3_OBJECT_LOCK_ENABLED:-false}
+      # With the lock on, an issued e-invoice's files are locked in COMPLIANCE for ten years from the end of the year:
+      # nobody can delete them, the bucket included. GOVERNANCE only on a bucket holding test invoices.
+      S3_OBJECT_LOCK_EINVOICE_MODE: ${S3_OBJECT_LOCK_EINVOICE_MODE:-COMPLIANCE}
       # Optional demo data (db/demo) - see .env.example for why it is off. Switching it either way
       # needs a database reset: Flyway refuses to start when migrations appear (or vanish) out of
       # order, and the demo versions interleave with the real ones.
@@ -164,6 +167,9 @@ services:
       # Off until the customer mail phase of the business documents: no customer order mail, staff and producer
       # mail and the portal invitation unchanged. Never true on a server holding copies of real customers.
       CUSTOMER_EMAIL_ENABLED: ${CUSTOMER_EMAIL_ENABLED:-false}
+      # E-invoice mail to the buyer: on, since an issued invoice must reach the buyer (NĐ 254 Điều 12 khoản 3). With
+      # EMAIL_PROVIDER=smtp it stops at Mailpit; set false on a Resend server holding copies of real customers.
+      EINVOICE_EMAIL_ENABLED: ${EINVOICE_EMAIL_ENABLED:-true}
       TRACE_SAMPLING: ${TRACE_SAMPLING:-1.0}
       # B2B onboarding (SCRUM-429): the portal page an invitation links to. Without it Sales cannot create a customer
       # (503 PORTAL_INVITATION_UNAVAILABLE) and, with self-registration gone, nobody can. Required, never guessed.
@@ -173,6 +179,17 @@ services:
       COMPANY_BANK_NAME: ${COMPANY_BANK_NAME:-}
       COMPANY_BANK_ACCOUNT_NUMBER: ${COMPANY_BANK_ACCOUNT_NUMBER:-}
       COMPANY_BANK_ACCOUNT_NAME: ${COMPANY_BANK_ACCOUNT_NAME:-}
+      COMPANY_BANK_BIN: ${COMPANY_BANK_BIN:-}
+      # The seller on sales contracts and e-invoices (4B-4, WF-05 E1): the company's name, tax code and registered
+      # address, its legal representative and their title, as on its business registration. This compose runs the dev
+      # profile, so an unset or blank value falls back to an obviously made-up company and the server keeps working
+      # (the fallback is spelled out here because a blank passed through would override the profile's own default).
+      # A deployment in the prod profile sets all five: there the application refuses to start without them.
+      SELLER_NAME: ${SELLER_NAME:-DEMO STOCKFLOW CO LTD}
+      SELLER_TAX_CODE: ${SELLER_TAX_CODE:-0000000000}
+      SELLER_ADDRESS: ${SELLER_ADDRESS:-1 Demo Street, Ho Chi Minh City}
+      SELLER_REPRESENTATIVE: ${SELLER_REPRESENTATIVE:-Demo Director}
+      SELLER_REPRESENTATIVE_TITLE: ${SELLER_REPRESENTATIVE_TITLE:-Director}
       CACHE_VERSION: ${CACHE_VERSION:-v1}
       LOG_LEVEL: ${LOG_LEVEL:-DEBUG}
       AUDIT_ROUTINE_RETENTION: ${AUDIT_ROUTINE_RETENTION:-P180D}
