@@ -11,8 +11,8 @@ import java.util.ResourceBundle;
 /**
  * The lines every sales document of the module draws the same way - the sales contract (4B-4) and the quote (kltn-docs
  * 14 §4.1): a party as the seller or the buyer, an amount, and a total in words. One place, so a quote and the contract
- * it becomes name the two companies and spell a total identically; the labels are the contract's ({@code contract.pdf.*}),
- * the vocabulary both documents share.
+ * it becomes name the two companies and spell a total identically; the labels are the contract's
+ * ({@code contract.pdf.*}), the vocabulary both documents share.
  */
 final class SalesDocumentLines {
 

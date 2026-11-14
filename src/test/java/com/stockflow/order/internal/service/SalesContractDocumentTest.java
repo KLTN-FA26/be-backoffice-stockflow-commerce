@@ -91,7 +91,7 @@ class SalesContractDocumentTest {
     }
 
     @Test
-    @DisplayName("the total in words follows the total; a total that is not whole dong leaves the words out, not the PDF")
+    @DisplayName("the total in words follows the total; a total not in whole dong leaves out the words, not the PDF")
     void totalInWords() throws IOException {
         String whole = text(new SalesContractDocument(new LabelFonts()).render(facts()));
         assertThat(whole).containsSubsequence("Tổng giá trị có thuế: 2.750.000 VND",

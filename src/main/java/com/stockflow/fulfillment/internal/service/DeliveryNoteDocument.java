@@ -101,7 +101,8 @@ class DeliveryNoteDocument {
         }
         lines.add(Line.heading(t.getString("delivery-note.pdf.receiver")));
         lines.add(Line.bold(or(f.customerName(), blank)));
-        lines.add(Line.text(t.getString("delivery-note.pdf.deliveryAddress").formatted(or(f.deliveryAddress(), blank))));
+        lines.add(Line.text(t.getString("delivery-note.pdf.deliveryAddress")
+                .formatted(or(f.deliveryAddress(), blank))));
         lines.add(Line.text(t.getString("delivery-note.pdf.recipient").formatted(or(f.recipient(), blank))));
 
         lines.add(Line.heading(t.getString("delivery-note.pdf.carriage")));

@@ -17,6 +17,6 @@ public interface DeliveryBatchReferences {
     record Reference(String contractNumber, int seq) {
     }
 
-    /** The batch {@code deliveryBatchId} of the live contract of order {@code orderId}; empty when it holds none such. */
+    /** The batch {@code deliveryBatchId} of order {@code orderId}'s live contract; empty when it holds none such. */
     Optional<Reference> of(UUID orderId, UUID deliveryBatchId);
 }
