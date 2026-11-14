@@ -134,6 +134,28 @@ public interface StockOperations {
     }
 
     /** As above, without the lines of slots under a count for a reader who may not see their books (SCRUM-146). */
-    PageResponse<LedgerLine> ledger(String sku, String location, StockMovement.MovementType type,
-                                    int page, int size, BookVisibility visibility);
+    default PageResponse<LedgerLine> ledger(String sku, String location, StockMovement.MovementType type,
+                                            int page, int size, BookVisibility visibility) {
+        return ledger(new LedgerFilter(sku, location, type, null, null, null), page, size, visibility);
+    }
+
+    /**
+     * What the stock history is filtered by. Every field null means "any".
+     *
+     * @param from        the first business day (Asia/Ho_Chi_Minh), inclusive - the stock summary's period, so a row of
+     *                    the report drills down to exactly the lines it summed (2026-11-14 plan, BE2-C)
+     * @param to          the last business day, inclusive
+     * @param warehouseId lines with either side in this warehouse
+     */
+    record LedgerFilter(String sku, String location, StockMovement.MovementType type, java.time.LocalDate from,
+                        java.time.LocalDate to, UUID warehouseId) {
+    }
+
+    /**
+     * The history, newest first, by {@code filter}; scoped to the caller's warehouses, as every read of the ledger.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code VALIDATION_FAILED} when {@code from} is after
+     *         {@code to}; {@code WAREHOUSE_NOT_FOUND}; {@code OUT_OF_DATA_SCOPE} for a warehouse not the caller's
+     */
+    PageResponse<LedgerLine> ledger(LedgerFilter filter, int page, int size, BookVisibility visibility);
 }
