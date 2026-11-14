@@ -794,6 +794,8 @@ public enum ErrorCode {
     LOAD_EMPTY("Nothing is on this load's manifest", 409),
     /** 3-2 (kltn-docs 09 BR-23): the driver signs only once the load carries the carrier's waybill number. */
     LOAD_WAYBILL_MISSING("Record the carrier's waybill number before the handover", 409),
+    /** WF4-DRIVER (owner decision 12/11; 09 §4.2 step 8): the driver signs only once the load carries the driver's name. */
+    LOAD_DRIVER_MISSING("Record the driver's name before the handover", 409),
     /** 3-2 (09 BR-23, E19): a waybill number is unique within its carrier among loads not cancelled. */
     WAYBILL_DUPLICATE("Another load of this carrier has this waybill number", 409),
     /** 3-2 (09 §4.4 (4)): an API_BOOKING carrier's number comes from its booking API, never typed or imported. */

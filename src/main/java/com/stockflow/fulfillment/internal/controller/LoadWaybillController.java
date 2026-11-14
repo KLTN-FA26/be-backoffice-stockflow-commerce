@@ -65,7 +65,8 @@ class LoadWaybillController {
     @PutMapping("/waybill")
     @Operation(summary = "Record the carrier's waybill number (and the plate, driver when known) on a booked load. After "
             + "the vehicle left: a correction, with a reason and fulfillment-waybill-corrections. 409 "
-            + "INVALID_LOAD_TRANSITION (no carrier booked, or cancelled), WAYBILL_DUPLICATE, WAYBILL_FROM_CARRIER_API")
+            + "INVALID_LOAD_TRANSITION (no carrier booked, or cancelled), WAYBILL_DUPLICATE, WAYBILL_FROM_CARRIER_API "
+            + "(an API carrier's load: record the driver alone with PUT /loads/{id}/driver)")
     @RequiresPermission(resource = FulfillmentResources.DISPATCH, action = Action.UPDATE)
     @Auditable(action = AuditAction.UPDATE, resourceType = "dispatch-load", resourceId = "#loadId",
             details = "{waybillNo: #request.waybillNo()}")

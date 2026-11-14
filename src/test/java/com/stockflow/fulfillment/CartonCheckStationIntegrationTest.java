@@ -772,7 +772,8 @@ class CartonCheckStationIntegrationTest {
         assertThat(planView.path("status").asText()).isEqualTo("CONFIRMED");
         String load = planView.path("vehicles").get(0).path("load").path("loadId").asText();
         dispatch(body(post(BASE + "/loads/" + load + "/booking"), "{\"carrierId\":\"" + carrier
-                + "\",\"vehiclePlate\":\"51C-123.45\",\"waybillNo\":\"WB-" + load + "\"}")).andExpect(status().isOk());
+                + "\",\"vehiclePlate\":\"51C-123.45\",\"driverName\":\"Tai\",\"waybillNo\":\"WB-" + load + "\"}"))
+                .andExpect(status().isOk());
         dispatch(post(BASE + "/loads/" + load + "/loading-start")).andExpect(status().isOk());
         JsonNode view = data(dispatch(get(BASE + "/loads/" + load)).andExpect(status().isOk()));
         assertThat(view.path("expectedPackageCount").asInt()).isEqualTo(2);
