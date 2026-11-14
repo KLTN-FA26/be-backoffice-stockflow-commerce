@@ -21,7 +21,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class DeliveryBatchesReadPermissionMigrationUpgradeTest {
 
-    private static final String BEFORE = "20261117000300";
+    private static final String BEFORE = "20261124000300";
     private static final String MIGRATION = "20261124000400";
     private static final String CODE = "sales-order-delivery-batches:READ";
 
