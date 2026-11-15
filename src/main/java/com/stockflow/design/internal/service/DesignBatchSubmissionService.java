@@ -24,6 +24,7 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
 import org.springframework.context.ApplicationEventPublisher;
@@ -44,6 +45,9 @@ import org.springframework.transaction.support.TransactionOperations;
  */
 @Service
 public class DesignBatchSubmissionService {
+
+    /** The refusals of one design that a batch answers with {@code details.designIds}: those the customer can fix. */
+    private static final Set<ErrorCode> NAMED_REFUSALS = Set.of(ErrorCode.CONFLICT, ErrorCode.DESIGN_NOT_DRAFT);
 
     private final DesignProjectService projects;
     private final DesignSubmissionService submissions;
@@ -80,8 +84,9 @@ public class DesignBatchSubmissionService {
      * @return the review round they wait in
      * @throws BusinessException 422 {@code DESIGN_BATCH_PREFLIGHT_FAILED} with {@code details.designs} - each
      *         {@code {designId, issues?, roles?}} - when any does not pass; 400 for fewer than
-     *         {@value DesignProjectRules#MIN_BATCH} designs or one named twice; 409 {@code DESIGN_PROJECT_ARCHIVED},
-     *         {@code DESIGN_NOT_DRAFT}, a stale version; 404 for a design not in the project, or anyone but the owner
+     *         {@value DesignProjectRules#MIN_BATCH} designs or one named twice; 409 {@code DESIGN_PROJECT_ARCHIVED};
+     *         409 {@code DESIGN_NOT_DRAFT} or {@code CONFLICT} (a stale version) with {@code details.designIds}, every
+     *         design of the batch it applies to; 404 for a design not in the project, or anyone but the owner
      */
     @Auditable(action = AuditAction.UPDATE, resourceType = "design-project", resourceId = "#projectId")
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
@@ -97,9 +102,29 @@ public class DesignBatchSubmissionService {
             DesignProjectJpaEntity project = projects.own(projectId, actor);
             DesignProjectRules.requireActive(project.getStatus());
             Map<UUID, DesignSubmissionService.Plan> found = new LinkedHashMap<>();
+            // A stale version or a design no longer a draft is reported with every design it applies to, not only the
+            // first one met: the customer has to know which designs to open again (FE request 2026-11-15 BE-4).
+            BusinessException refused = null;
+            List<String> refusedIds = new ArrayList<>();
             for (DesignAtVersion design : designs) {
                 requireInProject(design.id(), projectId);
-                found.put(design.id(), submissions.plan(design.id(), actor, design.version(), null));
+                try {
+                    found.put(design.id(), submissions.plan(design.id(), actor, design.version(), null));
+                } catch (BusinessException e) {
+                    if (!NAMED_REFUSALS.contains(e.errorCode())) {
+                        throw e;
+                    }
+                    if (refused == null) {
+                        refused = e;
+                    }
+                    if (e.errorCode() == refused.errorCode()) {
+                        refusedIds.add(design.id().toString());
+                    }
+                }
+            }
+            if (refused != null) {
+                throw new BusinessException(refused.errorCode(), refused.getMessage(), List.of(),
+                        Map.of("designIds", refusedIds));
             }
             return found;
         });

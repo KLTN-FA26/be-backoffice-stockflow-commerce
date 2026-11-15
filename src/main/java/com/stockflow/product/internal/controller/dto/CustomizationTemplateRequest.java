@@ -11,8 +11,8 @@ import java.util.List;
 
 /**
  * Body of {@code POST} and {@code PUT /api/v1/products/{productId}/variants/{variantId}/customization-templates}
- * (kltn-docs 01 §4.10). The print areas' position and shape are computed from {@code model}; each area entry only names
- * the area and sets its margins.
+ * (kltn-docs 01 §4.10), or their multipart part {@code template}. The print areas' position and shape are computed
+ * from {@code model}; each area entry only names the area and sets its margins.
  */
 @Schema(description = "A customization template: the product model, the upload limits, and each print area's margins")
 public record CustomizationTemplateRequest(
@@ -62,14 +62,17 @@ public record CustomizationTemplateRequest(
                 + "OPTIMISTIC_LOCK")
         Long version,
 
-        @Schema(description = "Optional: which mesh of the template's .glb each print area is drawn on. Omitted keeps "
-                + "the template's map (empty on create); an empty surfaces list clears it. A print area the model does "
-                + "not have, one mapped twice, or a meshName outside 1-100 characters is 422 "
-                + "PRINT_CONFIG_SURFACES_INVALID with fieldErrors model3d.surfaces[i].printAreaCode / .meshName")
+        @Schema(description = "Which mesh of the template's .glb each print area is drawn on. Omitted keeps the "
+                + "template's map (empty on create). A template with a file maps every print area exactly once, to "
+                + "the mesh print:<printAreaCode>; a print area the model does not have, one mapped twice, a meshName "
+                + "outside 1-100 characters, another mesh name or an unmapped area is 422 "
+                + "PRINT_CONFIG_SURFACES_INVALID with fieldErrors model3d.surfaces[i].printAreaCode / .meshName, or "
+                + "model3d.surfaces for a missing area. Changing the map without a new file is 409 "
+                + "PRINT_CONFIG_MODEL_FILE_REQUIRED")
         Model3d model3d
 ) {
 
-    /** The template's 3D surfaces; the file itself is uploaded on its own ({@code PUT .../model-file}). */
+    /** The template's 3D surfaces; the file itself is the {@code file} part of the same multipart request. */
     public record Model3d(List<Surface> surfaces) {
     }
 

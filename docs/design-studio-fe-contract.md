@@ -60,12 +60,19 @@ All need a signed-in customer. A design is its owner's; anyone else gets 404, so
 ### Template (P2)
 `GET /api/v1/catalog/products/{slug}/customization` returns the active templates of the product's `ACTIVE` variants.
 Each template is `{templateId, code, name, sku, minDpi, colorMode, allowedFileFormats, maxFileSizeMb, maxColors?,
-allowedFontCodes?, active, model, printAreas}`.
+allowedFontCodes?, model, printAreas, hasCartonSpec, model3d?}`. Filter `templates[]` by `sku`.
 - `model` is the cup or bag geometry:
   - `{kind: "parametric-cup", topDiameterMm, bottomDiameterMm, heightMm, rimMm, seamMm, bandTopOffsetMm,
     bandBottomOffsetMm, material}`;
   - or `{kind: "parametric-bag", widthMm, gussetMm, heightMm, topFoldMm, handle, material}`.
 - The cup's sector is computed by the server.
+- `hasCartonSpec`: the variant has an active packing unit of more than one piece. Without it a design cannot be
+  submitted (`CARTON_SPEC_MISSING`), so the studio can say so before the customer starts.
+- `model3d: {url, surfaces: [{printAreaCode, meshName}]}` is the template's `.glb`: a signed link valid one hour,
+  readable from the storefront's origin, and the mesh each print area is drawn on (`meshName` is always
+  `print:<printAreaCode>`). Absent when the template has no file; the studio then draws the parametric `model`.
+  `model`'s measurements are taken from that file by the back office and only ever change together with it.
+- `GET /api/v1/designs/{id}/template` returns the same shape for the template a design is drawn on (see Designs).
 
 ### Designs (P1, P6)
 | Endpoint | Body / query | Notes |
@@ -117,6 +124,8 @@ allowedFontCodes?, active, model, printAreas}`.
   - each page the size of that area's bleed box (±0.5 mm);
   - for a cup, the flattened sector's bounding box including bleed.
 - **Reading:** `GET .../artifacts` lists them, `GET .../artifacts/{artifactId}/download-url` returns a signed link.
+  The file is checked before the link is issued: a stored file that is missing or no longer matches its checksum is
+  409 `CONFLICT`, never a link to a broken file.
 - **Generated at approval, never uploaded:** the stamped `PRINT_READY` and `PRODUCTION_INSTRUCTION`.
 
 ### Submission (P5)
@@ -167,7 +176,10 @@ allowedFontCodes?, active, model, printAreas}`.
 
 **Batch submission (`review-rounds`):**
 - at least 2 drafts, all or none;
-- if any fails, the answer is 422 `DESIGN_BATCH_PREFLIGHT_FAILED` with `details.designs: [{designId, issues? | roles?}]`;
+- a stale `version` or a design no longer a draft is 409 `CONFLICT` / `DESIGN_NOT_DRAFT` with
+  `details.designIds`: every design of the batch with that refusal, so the studio can say which to open again;
+- if any fails preflight, the answer is 422 `DESIGN_BATCH_PREFLIGHT_FAILED` with
+  `details.designs: [{designId, issues? | roles?}]`;
 - on success it returns 201 `{roundId, project}`.
 
 ---
@@ -185,6 +197,42 @@ allowedFontCodes?, active, model, printAreas}`.
 | `POST /api/v1/design-quote-requests/{id}/closure` | `design-quote-requests:UPDATE` | Close a request once answered |
 | `GET /api/v1/design-project-quote-requests` | `design-quote-requests:READ` | `?customerId&page&size`: project requests with the project's name and a line per design |
 | `GET /api/v1/design-snapshots` | `design-snapshots:READ` | Approved designs and their own SKUs by customer |
+
+**Templates and their `.glb` (`/api/v1/products/{productId}/variants/{variantId}/customization-templates`):**
+
+The back office measures the model from its `.glb` at upload, so a template's measurements and its file are saved
+together and never apart.
+
+| Endpoint | Body | Notes |
+|---|---|---|
+| `POST` | `multipart/form-data`: part `template` = the template JSON, sent as a Blob with type `application/json`; part `file` = the `.glb` | 201. The file is required: without one (or as plain JSON) 409 `PRINT_CONFIG_MODEL_FILE_REQUIRED` |
+| `PUT /{templateId}` | the same multipart, `template` with `version`; `file` optional | Measurements, print areas, mesh map and file are saved in one transaction; a failure changes nothing |
+| `PUT /{templateId}` | `application/json`, the template with `version` | For edits without a file |
+| `POST /{templateId}/activation`, `/deactivation` | `{version}` | Activation needs a file and a complete mesh map, else 409 / 422 as below |
+| `GET /{templateId}/model-file/download-url` | | A signed link to the stored `.glb` |
+
+The response is the template with `model3d: {hasFile, fileName?, fileChecksum?, surfaces: [{printAreaCode,
+meshName}]}`; `fileChecksum` is the SHA-256 (hex) of the file. `PUT /{templateId}/model-file` is gone: a file alone
+would leave the measurements of the file before.
+
+- **File:** a glTF 2.0 binary (`.glb`), at most 10 MB, virus-scanned. 415 `UNSUPPORTED_MEDIA_TYPE`, 413
+  `PAYLOAD_TOO_LARGE`, 400 `VALIDATION_FAILED` when the scan refuses it.
+- **Values only a new file may change** (409 `PRINT_CONFIG_MODEL_FILE_REQUIRED`, the message names them), compared as
+  stored to 0.01 mm so re-sending what was read is never refused:
+  - cup: `topDiameterMm`, `bottomDiameterMm`, `heightMm`, `bandTopOffsetMm`, `bandBottomOffsetMm`;
+  - bag: `widthMm`, `gussetMm`, and `heightMm − topFoldMm` (the fold may move if the height moves with it);
+  - the model's `kind`, and the set of `model3d.surfaces` (a request with no `surfaces` keeps them).
+
+  Free to change without a file: `name`, `minDpi`, `colorMode`, `allowedFileFormats`, `maxFileSizeMb`, `maxColors`,
+  `allowedFontCodes`, `seamMm`, `rimMm`, `material`, `handle`, and each print area's name and margins. A template
+  written before files were required, with none, is read as before and takes only these edits until a file is
+  uploaded with it.
+- **Mesh map with a file** (stored, or sent with the request): every print area has exactly one entry, on the mesh
+  `print:<printAreaCode>` (`print:BODY`, `print:FRONT`, ...). Otherwise 422 `PRINT_CONFIG_SURFACES_INVALID` with
+  `fieldErrors`: `model3d.surfaces` / `PrintAreaMissing`, `model3d.surfaces[i].meshName` / `MeshNameMismatch`, and the
+  earlier `PrintAreaUnknown`, `PrintAreaDuplicate`, `Size`. Checked again on activation.
+- Stale `version`: 409 `OPTIMISTIC_LOCK`. Permission `product-customization-templates:{VIEW_PAGE, READ, CREATE,
+  UPDATE, DELETE}`, held by the Sales Manager and the System Admin.
 
 **`POST /designs/{id}/reviews`:**
 - Returning requires `notes`, 1–2000 characters.
@@ -230,8 +278,11 @@ Until then every holder of the right hears.
 
 `{id, customerId, productId, ownerUserId, name, status, version, productSlug, sku, templateCode, projectId,
 currentArtifactId, previewArtifactId, reviewRequestedAt, reviewedAt, reviewedBy, reviewNotes, parentSnapshotId,
-updatedAt}`.
+updatedAt, previewUrl?, variantName, productName}`.
 
+- `previewUrl` is a signed link to the current `CUSTOMER_PREVIEW`, absent when there is none; lists carry it too.
+- `variantName` is the variant's name, or its SKU when it has none; `productName` names the product even once it is
+  no longer sold.
 - `reviewNotes` is the reason the design was returned.
 - `updatedAt` covers layout saves.
 - `parentSnapshotId` is set on a revision.
@@ -274,6 +325,8 @@ Every finding blocks; there is no warning level (B18). Each finding has a `rule`
 
 The server has no font metrics, so it checks text by its anchor only. How far text reaches is the studio's to check.
 
+This list is the whole set today. A new or renamed `rule` is announced to the frontends before it ships.
+
 ---
 
 ## 9. Error codes (design)
@@ -283,7 +336,8 @@ The server has no font metrics, so it checks text by its anchor only. How far te
 - `DESIGN_FILES_OUTDATED` (`details.roles`), `DESIGN_PRINT_FILE_INVALID`, `DESIGN_ASSET_LIMIT_REACHED`;
 - `DESIGN_PROJECT_ARCHIVED`, `DESIGN_PROJECT_FULL`, `DESIGN_PROJECT_LIBRARY_FULL`, `DESIGN_PROJECT_HAS_PENDING`;
 - `DESIGN_IN_ANOTHER_PROJECT`, `DESIGN_PENDING_IN_PROJECT`, `DESIGN_CLONE_TARGET_INVALID`;
-- `CUSTOMER_NOT_ACTIVE`, `CUSTOMER_SKU_SOURCE_UNAVAILABLE`, `CONFLICT` (stale version).
+- `CUSTOMER_NOT_ACTIVE`, `CUSTOMER_SKU_SOURCE_UNAVAILABLE`, `CONFLICT` (stale version);
+- in a batch, `CONFLICT` and `DESIGN_NOT_DRAFT` carry `details.designIds`.
 
 **Other statuses:**
 - 422: `DESIGN_PREFLIGHT_FAILED` (`details.issues`), `DESIGN_BATCH_PREFLIGHT_FAILED` (`details.designs`);
@@ -349,3 +403,8 @@ warning level, and the minimum is the template's `minDpi` (300).
 - **Library formats:** the library takes the image types a design takes (PNG, JPEG, WebP). B43's SVG and PDF are
   refused, because no template could place them.
 - **Text extent:** the server cannot check how far text reaches (see §8).
+- **One formula in three places.** The print areas are computed from the model by the server
+  (`CupGeometry`, `PrintConfigRules`), the storefront and the back office alike. `PrintConfigRulesTest` pins the
+  server's with literal numbers, the same as the frontends' test: a 90 / 60 / 110 mm cup, band 6 mm below the rim
+  and 8 mm above the base, 8 mm seam → inner radius 230.04 mm, outer 327.05 mm, sweep 0.84894 rad, box 279.67 ×
+  120.85 mm. Whichever side changes the formula fails its own test. The server rounds to 0.01 mm when it stores.

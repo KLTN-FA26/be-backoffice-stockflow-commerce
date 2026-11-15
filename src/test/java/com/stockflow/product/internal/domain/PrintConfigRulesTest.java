@@ -18,6 +18,10 @@ import static org.assertj.core.api.Assertions.within;
  * The print areas a template's model computes, against the numbers the storefront's mock templates were computed with
  * (its {@code design-templates.ts}: the 12 oz cup's sector 230.04 / 327.05 / 0.84894 and box 279.67 x 120.85), and the
  * models and margins a Sales Manager may not save.
+ *
+ * <p>The literals are the point: the same formula runs in the storefront and the back office, each pinned by its own
+ * test with these numbers (FE request 2026-11-15 BE-6), so whichever side changes it fails here or there. Never replace
+ * them with values computed by {@link CupGeometry}.</p>
  */
 class PrintConfigRulesTest {
 

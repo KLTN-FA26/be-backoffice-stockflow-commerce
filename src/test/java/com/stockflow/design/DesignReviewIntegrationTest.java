@@ -24,6 +24,7 @@ import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
 import com.stockflow.support.RecordedEvents;
 import com.stockflow.support.ReferenceRows;
+import com.stockflow.support.TemplateModelFiles;
 import jakarta.persistence.EntityManager;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayOutputStream;
@@ -114,7 +115,7 @@ class DesignReviewIntegrationTest {
         var variant = variants.list(productId, 0, 1).items().getFirst();
         sku = variant.sku();
         String base = "/api/v1/products/" + productId + "/variants/" + variant.id() + "/customization-templates";
-        JsonNode template = data(mvc.perform(post(base).contentType(MediaType.APPLICATION_JSON).content(
+        JsonNode template = data(mvc.perform(TemplateModelFiles.create(base,
                 "{\"code\":\"CUP12-BODY\",\"name\":\"Ly 12oz\",\"allowedFileFormats\":[\"image/png\"],"
                         + "\"maxFileSizeMb\":20,\"model\":{\"kind\":\"parametric-cup\",\"topDiameterMm\":90,"
                         + "\"bottomDiameterMm\":60,\"heightMm\":110,\"rimMm\":3,\"seamMm\":8,\"bandTopOffsetMm\":6,"
