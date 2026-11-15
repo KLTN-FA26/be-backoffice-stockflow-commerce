@@ -602,6 +602,20 @@ class FulfillmentServiceImplTest {
     }
 
     @Test
+    void aTaskWithNoAssigneeIsRefusedToTheManagerToo() {
+        var pick = new PickJpaEntity(UUID.randomUUID(), null, UUID.randomUUID(), "SO-TEST", HCM, PickStatus.PENDING);
+        when(picks.lockById(pick.getId())).thenReturn(Optional.of(pick));
+        var manager = user(UUID.randomUUID(), Role.WAREHOUSE_MANAGER);
+
+        assertThat(refusal(() -> service.startPicking(pick.getId(), manager)).errorCode())
+                .isEqualTo(ErrorCode.NOT_FOUND);
+        assertThat(refusal(() -> service.completePicking(pick.getId(), manager)).errorCode())
+                .isEqualTo(ErrorCode.NOT_FOUND);
+        assertThat(pick.getStatus()).isEqualTo(PickStatus.PENDING);
+        assertThat(pick.getAssignedUserId()).isNull();
+    }
+
+    @Test
     void aWarehouseStaffMemberWhoIsNotTheAssigneeStillFindsNoSuchTask() {
         UUID assigned = UUID.randomUUID();
         var pick = new PickJpaEntity(UUID.randomUUID(), null, UUID.randomUUID(), "SO-TEST", HCM, PickStatus.PENDING);

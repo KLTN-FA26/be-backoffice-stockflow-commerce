@@ -48,7 +48,8 @@ final class TaskAccess {
      * @return the user the task is worked as: the caller for the assignee, the assignee for the one working on behalf
      */
     static java.util.UUID requireWorker(PickJpaEntity pick, CurrentUser actor) {
-        if (actor.can(FulfillmentPermissions.TASK_ASSIGNMENT, Action.UPDATE)) {
+        // A task nobody is assigned to is nobody's to work on behalf of: refused as before, never given to the manager.
+        if (pick.getAssignedUserId() != null && actor.can(FulfillmentPermissions.TASK_ASSIGNMENT, Action.UPDATE)) {
             return pick.getAssignedUserId();
         }
         pick.requireAssigned(actor.userId());
