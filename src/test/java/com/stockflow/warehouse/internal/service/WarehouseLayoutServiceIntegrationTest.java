@@ -174,8 +174,9 @@ class WarehouseLayoutServiceIntegrationTest {
                     .extracting(WarehouseSummary::prefix).containsExactly("HN");
             assertThat(layout.list(new ListWarehousesQuery(0, 20, null, WarehouseStatus.INACTIVE, null))
                     .items()).isEmpty();
+            // HCM is the demo seed's, DNI the demo history's (V20261128000200), HN this test's.
             assertThat(layout.list(new ListWarehousesQuery(0, 20, null, null, "prefix,desc")).items())
-                    .extracting(WarehouseSummary::prefix).containsExactly("HN", "HCM");
+                    .extracting(WarehouseSummary::prefix).containsExactly("HN", "HCM", "DNI");
         }
 
         @Test

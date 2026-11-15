@@ -67,7 +67,11 @@ import java.util.stream.Collectors;
 @Transactional(readOnly = true)
 public class ReceivablesReportService {
 
-    /** Sortable by what is overdue (the default: the most overdue first), what is owed, the name, the oldest debt. */
+    /**
+     * Sortable by what is overdue (the default: the most overdue first), what is owed, the name, the oldest debt.
+     * "Overdue" is {@link ReceivableLine#overdueForCreditCheck()}: the receivable overdue and what is overdue on signing,
+     * so a customer the credit check calls overdue on signing alone does not sort among the clean ones.
+     */
     static final SortWhitelist SORT = SortWhitelist.of("overdue", "receivable", "customerName", "oldestDueDate")
             .withDefault("overdue", Sort.Direction.DESC);
 
@@ -207,7 +211,8 @@ public class ReceivablesReportService {
         Comparator<ReceivableLine> order = (a, b) -> 0;
         for (Sort.Order by : sort) {
             Comparator<ReceivableLine> one = switch (by.getProperty()) {
-                case "overdue" -> key(ReceivableLine::overdue, Comparator.naturalOrder(), by.isDescending());
+                case "overdue" -> key(ReceivableLine::overdueForCreditCheck, Comparator.naturalOrder(),
+                        by.isDescending());
                 case "receivable" -> key(ReceivableLine::receivable, Comparator.naturalOrder(), by.isDescending());
                 case "customerName" -> key(ReceivableLine::customerName, NAMES, by.isDescending());
                 case "oldestDueDate" -> key(ReceivableLine::oldestDueDate, Comparator.naturalOrder(),

@@ -15,8 +15,9 @@ import java.util.UUID;
  *
  * <p>{@code signingOverdue} is beside the 15 §4.3 figures, not in them: installments due on signing past their due
  * day, which the credit check of a new contract counts as overdue but 15 §4.3 does not count as receivable. It is in
- * no bucket, not in {@link #overdue()} and not in the exposure; it makes {@link #hasOverdue()} true, so a customer the
- * contract check calls overdue never looks clean here.</p>
+ * no bucket, not in {@link #overdue()} and not in the exposure; it makes {@link #hasOverdue()} true and it is in
+ * {@link #overdueForCreditCheck()}, the report's default order, so a customer the contract check calls overdue never
+ * looks clean here, nor sorts among the clean ones.</p>
  *
  * @param signingOverdue what is still owed on installments due on signing past their due day
  * @param creditLimit    null for a customer accounting set no credit for
@@ -43,8 +44,17 @@ public record ReceivableLine(UUID customerId, String customerCode, String custom
         return creditLimit == null ? null : creditLimit.subtract(exposure()).max(BigDecimal.ZERO);
     }
 
+    /**
+     * Everything overdue the credit check of a new contract counts: {@link #overdue()} and {@code signingOverdue}. The
+     * report sorts on it by default, so a customer overdue only on signing ranks by that amount among the overdue ones
+     * rather than with those owing nothing late; the 15 §4.3 columns keep {@link #overdue()}.
+     */
+    public BigDecimal overdueForCreditCheck() {
+        return overdue().add(signingOverdue);
+    }
+
     /** Something overdue, receivable or due on signing: what the credit check of a new contract refuses on. */
     public boolean hasOverdue() {
-        return overdue().signum() > 0 || signingOverdue.signum() > 0;
+        return overdueForCreditCheck().signum() > 0;
     }
 }
