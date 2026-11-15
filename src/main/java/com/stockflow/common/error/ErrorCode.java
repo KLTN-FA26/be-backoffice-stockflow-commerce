@@ -869,6 +869,13 @@ public enum ErrorCode {
     /** A template code is unique per variant. */
     PRINT_CONFIG_CODE_TAKEN("This variant already has a template with this code", 409),
     /**
+     * A template's measurements are generated from its {@code .glb} by the back office, so they and the file change
+     * together: creating or activating a template without a model file, or changing a value the file determines (a
+     * cup's or bag's sizes, the model kind, the mesh map) without sending a new file. One code with one status for
+     * every case, so a client handles "send the file" in one place.
+     */
+    PRINT_CONFIG_MODEL_FILE_REQUIRED("Upload the template's 3D model file together with these measurements", 409),
+    /**
      * A template's 3D surfaces name a print area its model does not have, name one twice, or give a mesh name that is
      * empty or longer than 100 characters; {@code fieldErrors} names each entry at fault (FE request 2026-11-13 B-2).
      */

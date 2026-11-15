@@ -104,7 +104,7 @@ public final class PrintConfigPersistenceMapper {
     }
 
     /** The model stored in {@code model_params_json}, or null for a template written before it had one. */
-    static ProductModel model(Map<String, Object> json) {
+    public static ProductModel model(Map<String, Object> json) {
         if (json == null) {
             return null;
         }

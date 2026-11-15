@@ -13,6 +13,7 @@ import com.stockflow.product.api.ProductKind;
 import com.stockflow.product.api.ProductModel;
 import com.stockflow.product.api.ProductStatus;
 import com.stockflow.product.api.TemplateModel3d;
+import com.stockflow.product.internal.domain.ModelFileRules;
 import com.stockflow.product.internal.domain.PrintConfigRules;
 import com.stockflow.product.internal.domain.VariantStatus;
 import com.stockflow.product.internal.entity.CustomizationTemplateJpaEntity;
@@ -125,11 +126,30 @@ public class PrintConfigService implements PrintConfigs {
         return assemble(List.of(templateOf(variantId, templateId)), Map.of(variantId, variant)).get(0);
     }
 
-    /** A new, inactive template on a variant of a CUSTOMIZABLE product. */
-    @Transactional
+    /**
+     * A new, inactive template on a variant of a CUSTOMIZABLE product, created with its {@code .glb}: the back office
+     * generates the measurements from that file, so a template never exists without the file they came from
+     * ({@code PRINT_CONFIG_MODEL_FILE_REQUIRED} when {@code modelFile} is null). Not transactional itself, as
+     * {@link #attachReference} is not: the file is checked, scanned and stored first with no lock held, and the
+     * template is written with it in one short transaction ({@link PreparedFiles}); a failure leaves nothing but the
+     * stored object, which is deleted.
+     */
     @Auditable(action = AuditAction.CREATE, resourceType = "product-customization-template",
             resourceId = "#result?.templateId()")
-    public PrintConfig create(UUID productId, UUID variantId, Draft draft) {
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    public PrintConfig create(UUID productId, UUID variantId, Draft draft, FileUpload modelFile) {
+        if (modelFile == null) {
+            throw new BusinessException(ErrorCode.PRINT_CONFIG_MODEL_FILE_REQUIRED,
+                    "A template is created together with its 3D model file (.glb)");
+        }
+        // Cheap and pure: a draft that cannot be saved is refused before its file is scanned and stored.
+        computeAreas(draft);
+        try (PreparedFiles prepared = files.prepare(FileCategory.PRINT_MODEL, modelFile)) {
+            return tx.execute(status -> createLocked(productId, variantId, draft, prepared));
+        }
+    }
+
+    private PrintConfig createLocked(UUID productId, UUID variantId, Draft draft, PreparedFiles prepared) {
         ProductJpaEntity product = lockCustomizable(productId);
         VariantJpaEntity variant = variantOf(productId, variantId);
         requireWritable(product, variant);
@@ -142,39 +162,82 @@ public class PrintConfigService implements PrintConfigs {
                     "Variant %s already has a template %s".formatted(variant.getSku(), draft.code()));
         }
         var computed = computeAreas(draft);
+        List<TemplateModel3d.Surface> surfaces =
+                requireSurfaces(draft.surfaces() == null ? List.of() : draft.surfaces(), computed);
+        requireComplete(surfaces, codes(computed));
         var template = new CustomizationTemplateJpaEntity(Identifiers.newId(), variantId, draft.code());
         describe(template, draft);
-        template.mapModelSurfaces(PrintConfigPersistenceMapper.surfaces(
-                requireSurfaces(draft.surfaces() == null ? List.of() : draft.surfaces(), computed)));
-        templates.save(template);
+        template.mapModelSurfaces(PrintConfigPersistenceMapper.surfaces(surfaces));
+        PreparedFiles.PreparedFile file = prepared.single();
+        template.attachModelFile(file.file().key(), file.file().originalName(), file.sha256());
+        templates.saveAndFlush(template);
+        prepared.adopt();
         replaceAreas(template.getId(), computed);
         return assemble(List.of(template), Map.of(variantId, variant)).get(0);
     }
 
-    /** Everything but the code; the print areas are computed again. */
-    @Transactional
+    /**
+     * Everything but the code; the print areas are computed again. With {@code modelFile} the template's {@code .glb}
+     * is replaced in the same transaction as the measurements it determines; without one, those measurements, the
+     * model's kind and the mesh map must stay as they are ({@link ModelFileRules}), since the back office generates
+     * them from the file and a file alone, or measurements alone, would leave the two disagreeing. The file is
+     * prepared before the transaction, as on {@link #create}.
+     */
     @Auditable(action = AuditAction.UPDATE, resourceType = "product-customization-template", resourceId = "#templateId")
-    public PrintConfig update(UUID productId, UUID variantId, UUID templateId, long version, Draft draft) {
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    public PrintConfig update(UUID productId, UUID variantId, UUID templateId, long version, Draft draft,
+                              FileUpload modelFile) {
+        if (modelFile == null) {
+            return tx.execute(status -> updateLocked(productId, variantId, templateId, version, draft, null));
+        }
+        computeAreas(draft);
+        try (PreparedFiles prepared = files.prepare(FileCategory.PRINT_MODEL, modelFile)) {
+            return tx.execute(status -> updateLocked(productId, variantId, templateId, version, draft, prepared));
+        }
+    }
+
+    /** {@link #update} inside its transaction; {@code prepared} is the new {@code .glb}, or null for none. */
+    private PrintConfig updateLocked(UUID productId, UUID variantId, UUID templateId, long version, Draft draft,
+                                     PreparedFiles prepared) {
         ProductJpaEntity product = lockCustomizable(productId);
         VariantJpaEntity variant = variantOf(productId, variantId);
         requireWritable(product, variant);
         CustomizationTemplateJpaEntity template = lockTemplate(variantId, templateId, version);
         var computed = computeAreas(draft);
+        TemplateModel3d current = PrintConfigPersistenceMapper.model3d(template);
+        List<TemplateModel3d.Surface> requested = draft.surfaces() == null ? null
+                : requireSurfaces(draft.surfaces(), computed);
+        if (prepared == null) {
+            ModelFileRules.requireUnchangedWithoutFile(PrintConfigPersistenceMapper.model(template.getModelParams()),
+                    current.surfaces(), draft.model(), requested);
+        }
+        List<TemplateModel3d.Surface> surfaces = requested != null ? requested
+                : keptSurfaces(current.surfaces(), computed);
+        if (prepared != null || current.hasFile()) {
+            requireComplete(surfaces, codes(computed));
+        }
         // The areas' names and margins live in their own rows: an edit of only those leaves the template row as it
         // was, and its version would not move - a second editor holding the same version would then overwrite it.
         entityManager.lock(template, LockModeType.PESSIMISTIC_FORCE_INCREMENT);
         describe(template, draft);
-        template.mapModelSurfaces(PrintConfigPersistenceMapper.surfaces(draft.surfaces() != null
-                ? requireSurfaces(draft.surfaces(), computed)
-                : keptSurfaces(PrintConfigPersistenceMapper.model3d(template).surfaces(), computed)));
+        template.mapModelSurfaces(PrintConfigPersistenceMapper.surfaces(surfaces));
+        if (prepared != null) {
+            PreparedFiles.PreparedFile file = prepared.single();
+            template.attachModelFile(file.file().key(), file.file().originalName(), file.sha256());
+        }
         templates.saveAndFlush(template);
+        if (prepared != null) {
+            prepared.adopt();
+        }
         replaceAreas(templateId, computed);
         return assemble(List.of(template), Map.of(variantId, variant)).get(0);
     }
 
     /**
      * Customers may start designs on this template. The variant's template active until now, if any, is retired in
-     * the same transaction: a customer starts a design on "the" template of a variant (kltn-docs 13 BR-14).
+     * the same transaction: a customer starts a design on "the" template of a variant (kltn-docs 13 BR-14). Only a
+     * template with its {@code .glb} and every print area mapped to its {@code print:<code>} mesh is offered: the
+     * storefront draws the 3D view from them, and a template written before files were required may lack both.
      */
     @Transactional
     @Auditable(action = AuditAction.UPDATE, resourceType = "product-customization-template", resourceId = "#templateId")
@@ -187,6 +250,14 @@ public class PrintConfigService implements PrintConfigs {
             throw new BusinessException(ErrorCode.PRINT_CONFIG_INVALID,
                     "Enter the product model before activating the template");
         }
+        if (template.getModelFileKey() == null) {
+            throw new BusinessException(ErrorCode.PRINT_CONFIG_MODEL_FILE_REQUIRED,
+                    "Upload the template's 3D model file before activating it");
+        }
+        requireComplete(PrintConfigPersistenceMapper.model3d(template).surfaces(),
+                areas.findByTemplateIdInOrderByTemplateIdAscSortOrderAsc(List.of(templateId)).stream()
+                        .map(PrintAreaJpaEntity::getCode)
+                        .toList());
         if (!template.isActive()) {
             for (CustomizationTemplateJpaEntity other : templates.findByVariantIdInAndActiveTrue(List.of(variantId))) {
                 other.setActive(false);
@@ -230,31 +301,6 @@ public class PrintConfigService implements PrintConfigs {
                 CustomizationTemplateJpaEntity template = lockTemplate(variantId, templateId, version);
                 StoredFile file = prepared.single().file();
                 template.attachReference(file.key(), file.originalName(), file.contentType());
-                templates.saveAndFlush(template);
-                prepared.adopt();
-                return assemble(List.of(template), Map.of(variantId, variant)).get(0);
-            });
-        }
-    }
-
-    /**
-     * Attaches the template's 3D model, a glTF 2.0 binary ({@code .glb}, at most 10 MB) the back office measured the
-     * model from (FE request 2026-11-13 B-1, B-5); replaces the one before. Checked by its signature and version,
-     * scanned and stored as the reference die-line is; the server never reads inside it, and keeps its SHA-256 so the
-     * measurements can be traced to the file. The template's version moves like any other change of its print
-     * configuration (B39): drafts follow, an approved design keeps the model frozen in its snapshot.
-     */
-    @Auditable(action = AuditAction.UPDATE, resourceType = "product-customization-template", resourceId = "#templateId")
-    @Transactional(propagation = Propagation.NOT_SUPPORTED)
-    public PrintConfig attachModel(UUID productId, UUID variantId, UUID templateId, long version, FileUpload upload) {
-        try (PreparedFiles prepared = files.prepare(FileCategory.PRINT_MODEL, upload)) {
-            return tx.execute(status -> {
-                ProductJpaEntity product = lockCustomizable(productId);
-                VariantJpaEntity variant = variantOf(productId, variantId);
-                requireWritable(product, variant);
-                CustomizationTemplateJpaEntity template = lockTemplate(variantId, templateId, version);
-                PreparedFiles.PreparedFile file = prepared.single();
-                template.attachModelFile(file.file().key(), file.file().originalName(), file.sha256());
                 templates.saveAndFlush(template);
                 prepared.adopt();
                 return assemble(List.of(template), Map.of(variantId, variant)).get(0);
@@ -400,6 +446,23 @@ public class PrintConfigService implements PrintConfigs {
                     "The 3D model's surfaces do not match the template's print areas", errors);
         }
         return checked;
+    }
+
+    /**
+     * {@code surfaces} as a template with a {@code .glb} needs them: every print area mapped, each to its
+     * {@code print:<code>} mesh, the only name the storefront looks for. 422 naming every entry at fault and every area
+     * left out.
+     */
+    private static void requireComplete(List<TemplateModel3d.Surface> surfaces, List<String> areaCodes) {
+        List<FieldError> errors = ModelFileRules.incompleteSurfaces(surfaces, areaCodes);
+        if (!errors.isEmpty()) {
+            throw new BusinessException(ErrorCode.PRINT_CONFIG_SURFACES_INVALID,
+                    "Every print area of a template with a 3D model is drawn on its own print:<code> mesh", errors);
+        }
+    }
+
+    private static List<String> codes(List<PrintArea> computed) {
+        return computed.stream().map(PrintArea::code).toList();
     }
 
     /**

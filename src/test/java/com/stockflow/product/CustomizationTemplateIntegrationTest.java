@@ -17,6 +17,7 @@ import com.stockflow.product.internal.service.ProductVariantService;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
 import com.stockflow.support.ReferenceRows;
+import com.stockflow.support.TemplateModelFiles;
 import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -50,8 +51,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 /**
  * Customization templates through HTTP (kltn-docs 01 §4.10): the print areas computed from the model, the refusals a
- * Sales Manager meets, one active template per variant, the reference die-line, and the storefront's P2 reading the
- * active template of a published product.
+ * Sales Manager meets, the {@code .glb} saved with the measurements generated from it, one active template per
+ * variant, the reference die-line, and the storefront's P2 reading the active template of a published product.
  */
 @IntegrationTest
 @Import(PostgresContainer.class)
@@ -108,10 +109,24 @@ class CustomizationTemplateIntegrationTest {
         return json.readTree(result.andReturn().getResponse().getContentAsString()).get("data");
     }
 
+    /** {@code POST base} with the template's {@code .glb}, each print area on its {@code print:<code>} mesh. */
+    private org.springframework.test.web.servlet.ResultActions createWithFile(String templateJson) throws Exception {
+        return mvc.perform(TemplateModelFiles.create(base, templateJson));
+    }
+
+    private org.springframework.test.web.servlet.ResultActions updateJson(String id, String templateJson)
+            throws Exception {
+        return mvc.perform(put(base + "/" + id).contentType(MediaType.APPLICATION_JSON).content(templateJson));
+    }
+
+    private org.springframework.test.web.servlet.ResultActions activate(String id, long version) throws Exception {
+        return mvc.perform(post(base + "/" + id + "/activation").contentType(MediaType.APPLICATION_JSON)
+                .content("{\"version\":" + version + "}"));
+    }
+
     @Test
-    void aCupTemplateIsCreatedInactiveWithItsWallComputedFromTheModel() throws Exception {
-        JsonNode created = data(mvc.perform(post(base).contentType(MediaType.APPLICATION_JSON)
-                        .content(cup("CUP12-BODY", 2, null)))
+    void aCupTemplateIsCreatedInactiveWithItsWallComputedFromTheModelAndItsFile() throws Exception {
+        JsonNode created = data(createWithFile(cup("CUP12-BODY", 2, null))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.data.active").value(false))
                 .andExpect(jsonPath("$.data.minDpi").value(300))
@@ -120,20 +135,61 @@ class CustomizationTemplateIntegrationTest {
                 .andExpect(jsonPath("$.data.model.kind").value("parametric-cup"))
                 .andExpect(jsonPath("$.data.printAreas[0].code").value("BODY"))
                 .andExpect(jsonPath("$.data.printAreas[0].shape.type").value("annular-sector"))
-                .andExpect(jsonPath("$.data.printAreas[0].uvMapping.meshPart").value("body")));
+                .andExpect(jsonPath("$.data.printAreas[0].uvMapping.meshPart").value("body"))
+                .andExpect(jsonPath("$.data.model3d.hasFile").value(true))
+                .andExpect(jsonPath("$.data.model3d.fileName").value("model.glb"))
+                .andExpect(jsonPath("$.data.model3d.surfaces[0].printAreaCode").value("BODY"))
+                .andExpect(jsonPath("$.data.model3d.surfaces[0].meshName").value("print:BODY")));
 
         JsonNode wall = created.get("printAreas").get(0);
         assertThat(wall.get("shape").get("innerRadiusMm").asDouble()).isCloseTo(230.04, within(0.005));
         assertThat(wall.get("shape").get("sweepRad").asDouble()).isCloseTo(0.84894, within(0.000005));
         assertThat(wall.get("widthMm").asDouble()).isCloseTo(279.67, within(0.005));
+        assertThat(created.get("model3d").get("fileChecksum").asText()).hasSize(64);
         assertThat(printConfigs.ofVariant(sku, "CUP12-BODY")).hasValueSatisfying(config -> {
             assertThat(config.active()).isFalse();
             assertThat(config.printAreas()).hasSize(1);
+            assertThat(config.model3d().fileKey()).startsWith("print-models/");
         });
 
-        mvc.perform(post(base).contentType(MediaType.APPLICATION_JSON).content(cup("CUP12-BODY", 2, null)))
+        createWithFile(cup("CUP12-BODY", 2, null))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("PRINT_CONFIG_CODE_TAKEN"));
+    }
+
+    @Test
+    void aTemplateIsNotCreatedWithoutItsFileOrWithAFileThatIsNotAGlb() throws Exception {
+        mvc.perform(post(base).contentType(MediaType.APPLICATION_JSON).content(cup("CUP12-BODY", 2, null)))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("PRINT_CONFIG_MODEL_FILE_REQUIRED"));
+        mvc.perform(multipart(base).file(TemplateModelFiles.templatePart(cup("CUP12-BODY", 2, null))))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("PRINT_CONFIG_MODEL_FILE_REQUIRED"));
+        mvc.perform(multipart(base).file(TemplateModelFiles.templatePart(cup("CUP12-BODY", 2, null)))
+                        .file(new MockMultipartFile("file", "model.glb", "application/octet-stream",
+                                "PK this is a zip, not a glb".getBytes(java.nio.charset.StandardCharsets.UTF_8))))
+                .andExpect(status().isUnsupportedMediaType())
+                .andExpect(jsonPath("$.errorCode").value("UNSUPPORTED_MEDIA_TYPE"));
+
+        assertThat(printConfigs.ofVariant(sku, "CUP12-BODY")).isEmpty();
+    }
+
+    @Test
+    void aTemplateWithAFileMapsEveryAreaToItsPrintMesh() throws Exception {
+        String unmapped = cup("CUP12-BODY", 2, null).replace("}]}", "}],\"model3d\":{\"surfaces\":[]}}");
+        createWithFile(unmapped)
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.errorCode").value("PRINT_CONFIG_SURFACES_INVALID"))
+                .andExpect(jsonPath("$.fieldErrors[0].field").value("model3d.surfaces"))
+                .andExpect(jsonPath("$.fieldErrors[0].code").value("PrintAreaMissing"));
+        String misnamed = cup("CUP12-BODY", 2, null)
+                .replace("}]}", "}],\"model3d\":{\"surfaces\":[{\"printAreaCode\":\"BODY\",\"meshName\":\"Cup_Body\"}]}}");
+        createWithFile(misnamed)
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.fieldErrors[0].field").value("model3d.surfaces[0].meshName"))
+                .andExpect(jsonPath("$.fieldErrors[0].code").value("MeshNameMismatch"));
+
+        assertThat(printConfigs.ofVariant(sku, "CUP12-BODY")).isEmpty();
     }
 
     @Test
@@ -144,38 +200,34 @@ class CustomizationTemplateIntegrationTest {
                 + "\"printAreas\":[{\"code\":\"FRONT\",\"name\":\"a\",\"safeMarginMm\":5,\"bleedMm\":3},"
                 + "{\"code\":\"BACK\",\"name\":\"b\",\"safeMarginMm\":5,\"bleedMm\":3},"
                 + "{\"code\":\"LEFT\",\"name\":\"c\",\"safeMarginMm\":5,\"bleedMm\":3}]}";
-        mvc.perform(post(base).contentType(MediaType.APPLICATION_JSON).content(bagWithThreeSides))
+        createWithFile(bagWithThreeSides)
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.errorCode").value("PRINT_CONFIG_INVALID"));
-        mvc.perform(post(base).contentType(MediaType.APPLICATION_JSON)
-                        .content(cup("CUP12-BODY", 2, null).replace("parametric-cup", "gltf")))
+        createWithFile(cup("CUP12-BODY", 2, null).replace("parametric-cup", "gltf"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.errorCode").value("PRINT_CONFIG_INVALID"));
-        mvc.perform(post(base).contentType(MediaType.APPLICATION_JSON)
-                        .content(cup("cup lower", 2, null)))
+        createWithFile(cup("cup lower", 2, null))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.errorCode").value("PRINT_CONFIG_INVALID"));
-
     }
 
     @Test
     void anUpdateRecomputesTheAreasAndAStaleOneIsRefused() throws Exception {
-        JsonNode created = data(mvc.perform(post(base).contentType(MediaType.APPLICATION_JSON)
-                .content(cup("CUP12-BODY", 2, null))).andExpect(status().isCreated()));
+        JsonNode created = data(createWithFile(cup("CUP12-BODY", 2, null)).andExpect(status().isCreated()));
         String id = created.get("templateId").asText();
         long version = created.get("version").asLong();
 
-        mvc.perform(put(base + "/" + id).contentType(MediaType.APPLICATION_JSON).content(cup(null, 3, version + 5)))
+        updateJson(id, cup(null, 3, version + 5))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("OPTIMISTIC_LOCK"));
-        JsonNode updated = data(mvc.perform(put(base + "/" + id).contentType(MediaType.APPLICATION_JSON)
-                .content(cup(null, 3, version))).andExpect(status().isOk()));
+        JsonNode updated = data(updateJson(id, cup(null, 3, version)).andExpect(status().isOk()));
 
         assertThat(updated.get("code").asText()).isEqualTo("CUP12-BODY");
         assertThat(updated.get("printAreas")).hasSize(1);
         assertThat(updated.get("printAreas").get(0).get("bleedMm").asDouble()).isEqualTo(3);
         assertThat(updated.get("printAreas").get(0).get("widthMm").asDouble())
                 .isEqualTo(created.get("printAreas").get(0).get("widthMm").asDouble());
+        assertThat(updated.get("model3d").get("surfaces")).hasSize(1);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM product.print_areas WHERE template_id = ?::uuid",
                 Long.class, id)).isEqualTo(1);
         assertThat(updated.get("version").asLong()).isGreaterThan(version);
@@ -187,35 +239,86 @@ class CustomizationTemplateIntegrationTest {
      */
     @Test
     void anEditOfOnlyTheMarginsMovesTheVersionSoAStaleEditorIsRefused() throws Exception {
-        JsonNode created = data(mvc.perform(post(base).contentType(MediaType.APPLICATION_JSON)
-                .content(cup("CUP12-BODY", 2, null))).andExpect(status().isCreated()));
+        JsonNode created = data(createWithFile(cup("CUP12-BODY", 2, null)).andExpect(status().isCreated()));
         String id = created.get("templateId").asText();
         long read = created.get("version").asLong();
 
-        JsonNode first = data(mvc.perform(put(base + "/" + id).contentType(MediaType.APPLICATION_JSON)
-                .content(cup(null, 2, read).replace("\"safeMarginMm\":3", "\"safeMarginMm\":4")))
+        JsonNode first = data(updateJson(id, cup(null, 2, read).replace("\"safeMarginMm\":3", "\"safeMarginMm\":4"))
                 .andExpect(status().isOk()));
 
         assertThat(first.get("version").asLong()).isGreaterThan(read);
         assertThat(first.get("printAreas").get(0).get("safeMarginMm").asDouble()).isEqualTo(4);
-        mvc.perform(put(base + "/" + id).contentType(MediaType.APPLICATION_JSON).content(cup(null, 2, read)))
+        updateJson(id, cup(null, 2, read))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("OPTIMISTIC_LOCK"));
     }
 
+    /**
+     * The measurements are generated from the {@code .glb}: without a new file they, the model's kind and the mesh map
+     * stay as they are, while the Sales Manager's own values change freely; with a file everything changes together.
+     */
+    @Test
+    void whatTheFileDeterminesChangesOnlyWithANewFile() throws Exception {
+        JsonNode created = data(createWithFile(cup("CUP12-BODY", 2, null)).andExpect(status().isCreated()));
+        String id = created.get("templateId").asText();
+        long version = created.get("version").asLong();
+
+        updateJson(id, cup(null, 2, version).replace("\"topDiameterMm\":90", "\"topDiameterMm\":95"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("PRINT_CONFIG_MODEL_FILE_REQUIRED"));
+        updateJson(id, TemplateModelFiles.withSurfaces(cup(null, 2, version)).replace("print:BODY", "print:BODY-2"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("PRINT_CONFIG_MODEL_FILE_REQUIRED"));
+        // The saved values sent back - surfaces included, a little off below the stored hundredth - are no change.
+        JsonNode renamed = data(updateJson(id, TemplateModelFiles.withSurfaces(cup(null, 2, version))
+                        .replace("\"heightMm\":110", "\"heightMm\":110.001")
+                        .replace("\"rimMm\":3", "\"rimMm\":4").replace("Ly 12oz - thân ly", "Ly 12oz mới"))
+                .andExpect(status().isOk()));
+        assertThat(renamed.get("name").asText()).isEqualTo("Ly 12oz mới");
+        assertThat(renamed.get("model").get("rimMm").asDouble()).isEqualTo(4);
+
+        // A refused file save changes nothing: the version a client holds is still good.
+        long held = renamed.get("version").asLong();
+        mvc.perform(TemplateModelFiles.updateWithFile(base + "/" + id, cup(null, 2, held)
+                        .replace("}]", "}],\"model3d\":{\"surfaces\":[{\"printAreaCode\":\"BODY\","
+                                + "\"meshName\":\"Body\"}]}")))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.errorCode").value("PRINT_CONFIG_SURFACES_INVALID"));
+
+        JsonNode resized = data(mvc.perform(TemplateModelFiles.updateWithFile(base + "/" + id,
+                        cup(null, 2, held).replace("\"topDiameterMm\":90", "\"topDiameterMm\":95")))
+                .andExpect(status().isOk()));
+        assertThat(resized.get("model").get("topDiameterMm").asDouble()).isEqualTo(95);
+        assertThat(resized.get("printAreas").get(0).get("widthMm").asDouble())
+                .isGreaterThan(created.get("printAreas").get(0).get("widthMm").asDouble());
+        assertThat(resized.get("model3d").get("hasFile").asBoolean()).isTrue();
+        assertThat(resized.get("version").asLong()).isGreaterThan(held);
+    }
+
+    @Test
+    void theModelFileIsNoLongerReplacedOnItsOwn() throws Exception {
+        JsonNode created = data(createWithFile(cup("CUP12-BODY", 2, null)).andExpect(status().isCreated()));
+        String id = created.get("templateId").asText();
+
+        int answered = mvc.perform(multipart(org.springframework.http.HttpMethod.PUT, base + "/" + id + "/model-file")
+                        .file(TemplateModelFiles.glbPart())
+                        .param("version", created.get("version").asText()))
+                .andReturn().getResponse().getStatus();
+
+        assertThat(answered).isIn(404, 405);
+        assertThat(jdbc.queryForObject("SELECT model_file_key FROM product.customization_templates WHERE id = ?::uuid",
+                String.class, id)).startsWith("print-models/");
+    }
+
     @Test
     void activatingATemplateRetiresTheVariantsActiveOne() throws Exception {
-        JsonNode first = data(mvc.perform(post(base).contentType(MediaType.APPLICATION_JSON)
-                .content(cup("CUP12-A", 2, null))).andExpect(status().isCreated()));
-        JsonNode second = data(mvc.perform(post(base).contentType(MediaType.APPLICATION_JSON)
-                .content(cup("CUP12-B", 2, null))).andExpect(status().isCreated()));
+        JsonNode first = data(createWithFile(cup("CUP12-A", 2, null)).andExpect(status().isCreated()));
+        JsonNode second = data(createWithFile(cup("CUP12-B", 2, null)).andExpect(status().isCreated()));
 
-        mvc.perform(post(base + "/" + first.get("templateId").asText() + "/activation")
-                        .contentType(MediaType.APPLICATION_JSON).content("{\"version\":" + first.get("version") + "}"))
+        activate(first.get("templateId").asText(), first.get("version").asLong())
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.active").value(true));
-        mvc.perform(post(base + "/" + second.get("templateId").asText() + "/activation")
-                        .contentType(MediaType.APPLICATION_JSON).content("{\"version\":" + second.get("version") + "}"))
+        activate(second.get("templateId").asText(), second.get("version").asLong())
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.active").value(true));
 
@@ -231,10 +334,52 @@ class CustomizationTemplateIntegrationTest {
                 .andExpect(jsonPath("$.data.active").value(false));
     }
 
+    /** Hikari runs with auto-commit off: a statement outside a transaction would never be seen by the request. */
+    private void sql(String statement, Object... args) {
+        tx.executeWithoutResult(status -> jdbc.update(statement, args));
+    }
+
+    /**
+     * A template written before files were required has none, or a partial mesh map: it is still read and its free
+     * values edited, but it is offered to customers only once it has its file and every area on its print mesh.
+     */
+    @Test
+    void activationNeedsTheFileAndACompleteMeshMap() throws Exception {
+        JsonNode created = data(createWithFile(cup("CUP12-LEGACY", 2, null)).andExpect(status().isCreated()));
+        String id = created.get("templateId").asText();
+        long version = created.get("version").asLong();
+        sql("UPDATE product.customization_templates SET model_file_key = NULL, model_file_name = NULL, "
+                + "model_file_checksum = NULL, model_surfaces_json = '[]'::jsonb WHERE id = ?::uuid", id);
+
+        activate(id, version)
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("PRINT_CONFIG_MODEL_FILE_REQUIRED"));
+        mvc.perform(get(base + "/" + id)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.model3d.hasFile").value(false));
+        JsonNode renamed = data(updateJson(id, cup(null, 2, version).replace("Ly 12oz - thân ly", "Ly cũ"))
+                .andExpect(status().isOk()));
+        updateJson(id, cup(null, 2, renamed.get("version").asLong()).replace("\"heightMm\":110", "\"heightMm\":112"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("PRINT_CONFIG_MODEL_FILE_REQUIRED"));
+
+        JsonNode withFile = data(mvc.perform(TemplateModelFiles.updateWithFile(base + "/" + id,
+                cup(null, 2, renamed.get("version").asLong()))).andExpect(status().isOk()));
+        sql("UPDATE product.customization_templates SET model_surfaces_json = '[]'::jsonb WHERE id = ?::uuid",
+                id);
+        activate(id, withFile.get("version").asLong())
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.errorCode").value("PRINT_CONFIG_SURFACES_INVALID"))
+                .andExpect(jsonPath("$.fieldErrors[0].code").value("PrintAreaMissing"));
+        sql("UPDATE product.customization_templates SET model_surfaces_json = "
+                + "'[{\"printAreaCode\":\"BODY\",\"meshName\":\"print:BODY\"}]'::jsonb WHERE id = ?::uuid", id);
+        activate(id, withFile.get("version").asLong())
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.active").value(true));
+    }
+
     @Test
     void aReferenceDieLineIsAttachedAndLinked() throws Exception {
-        JsonNode created = data(mvc.perform(post(base).contentType(MediaType.APPLICATION_JSON)
-                .content(cup("CUP12-BODY", 2, null))).andExpect(status().isCreated()));
+        JsonNode created = data(createWithFile(cup("CUP12-BODY", 2, null)).andExpect(status().isCreated()));
         String id = created.get("templateId").asText();
         var image = new BufferedImage(20, 10, BufferedImage.TYPE_INT_RGB);
         var png = new ByteArrayOutputStream();
@@ -258,10 +403,8 @@ class CustomizationTemplateIntegrationTest {
 
     @Test
     void theStorefrontReadsThePublishedProductsActiveTemplates() throws Exception {
-        JsonNode created = data(mvc.perform(post(base).contentType(MediaType.APPLICATION_JSON)
-                .content(cup("CUP12-BODY", 2, null))).andExpect(status().isCreated()));
-        mvc.perform(post(base + "/" + created.get("templateId").asText() + "/activation")
-                        .contentType(MediaType.APPLICATION_JSON).content("{\"version\":" + created.get("version") + "}"))
+        JsonNode created = data(createWithFile(cup("CUP12-BODY", 2, null)).andExpect(status().isCreated()));
+        activate(created.get("templateId").asText(), created.get("version").asLong())
                 .andExpect(status().isOk());
         String slug = publish(productId, sku);
 

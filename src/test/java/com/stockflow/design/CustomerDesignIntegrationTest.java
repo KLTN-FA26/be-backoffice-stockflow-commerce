@@ -19,6 +19,7 @@ import com.stockflow.product.internal.service.ProductVariantService;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
 import com.stockflow.support.ReferenceRows;
+import com.stockflow.support.TemplateModelFiles;
 import jakarta.persistence.EntityManager;
 import java.util.ArrayList;
 import java.util.List;
@@ -88,8 +89,8 @@ class CustomerDesignIntegrationTest {
         var variant = variants.list(productId, 0, 1).items().getFirst();
         sku = variant.sku();
         templatesBase = "/api/v1/products/" + productId + "/variants/" + variant.id() + "/customization-templates";
-        JsonNode template = data(mvc.perform(post(templatesBase).contentType(MediaType.APPLICATION_JSON)
-                .content(cupTemplate("CUP12-BODY"))).andExpect(status().isCreated()));
+        JsonNode template = data(mvc.perform(TemplateModelFiles.create(templatesBase, cupTemplate("CUP12-BODY")))
+                .andExpect(status().isCreated()));
         templateId = template.get("templateId").asText();
         mvc.perform(post(templatesBase + "/" + templateId + "/activation").contentType(MediaType.APPLICATION_JSON)
                 .content("{\"version\":" + template.get("version") + "}")).andExpect(status().isOk());
