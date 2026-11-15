@@ -24,6 +24,7 @@ import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
 import com.stockflow.support.RecordedEvents;
 import com.stockflow.support.ReferenceRows;
+import com.stockflow.support.TemplateModelFiles;
 import jakarta.persistence.EntityManager;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayOutputStream;
@@ -111,7 +112,7 @@ class DesignProjectIntegrationTest {
         var variant = variants.list(productId, 0, 1).items().getFirst();
         sku = variant.sku();
         String base = "/api/v1/products/" + productId + "/variants/" + variant.id() + "/customization-templates";
-        JsonNode template = data(mvc.perform(post(base).contentType(MediaType.APPLICATION_JSON).content(
+        JsonNode template = data(mvc.perform(TemplateModelFiles.create(base,
                 "{\"code\":\"CUP12-BODY\",\"name\":\"Ly 12oz\",\"allowedFileFormats\":[\"image/png\"],"
                         + "\"maxFileSizeMb\":20,\"model\":{\"kind\":\"parametric-cup\",\"topDiameterMm\":90,"
                         + "\"bottomDiameterMm\":60,\"heightMm\":110,\"rimMm\":3,\"seamMm\":8,\"bandTopOffsetMm\":6,"
@@ -450,6 +451,24 @@ class DesignProjectIntegrationTest {
         mvc.perform(get("/api/v1/designs/review-queue"))
                 .andExpect(jsonPath("$.data.items[?(@.id == '" + stale + "')]").isNotEmpty())
                 .andExpect(jsonPath("$.data.items[?(@.id == '" + first + "')]").isEmpty());
+    }
+
+    @Test
+    void aBatchRefusedForStaleVersionsNamesEveryStaleDesign() throws Exception {
+        String fresh = draft(project, middle());
+        String staleOne = draft(project, middle());
+        String staleTwo = draft(project, middle());
+        String body = "{\"designs\":[{\"id\":\"%s\",\"version\":%d},{\"id\":\"%s\",\"version\":%d},{\"id\":\"%s\",\"version\":%d}]}"
+                .formatted(fresh, version(fresh), staleOne, version(staleOne) - 1, staleTwo, version(staleTwo) - 1);
+
+        mvc.perform(post("/api/v1/design-projects/" + project + "/review-rounds")
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("CONFLICT"))
+                .andExpect(jsonPath("$.details.designIds.length()").value(2))
+                .andExpect(jsonPath("$.details.designIds[0]").value(staleOne))
+                .andExpect(jsonPath("$.details.designIds[1]").value(staleTwo));
+        assertThat(statusOf(fresh)).isEqualTo("DRAFT");
     }
 
     @Test
