@@ -480,6 +480,17 @@ public class DeliveryBatchService {
         }).sum();
     }
 
+    /**
+     * The earliest batch of the order's schedule that still has goods to hand over (units handed over, not returned,
+     * below the units it carries) - the delivery the customer waits for next, whatever its state (WF4-COUNT-WHO).
+     * Empty when every batch is handed over in full, or the schedule has none.
+     */
+    static Optional<DeliveryBatch> nextToHandOver(Order order, SalesContract contract) {
+        Map<UUID, OrderLine> lines = linesById(order);
+        return sorted(contract).stream()
+                .filter(batch -> shippedUnits(order, batch.id(), false) < unitsOf(batch, lines)).findFirst();
+    }
+
     /** Units of the batch's shipments: handed over (not returned), or delivered only. */
     private static int shippedUnits(Order order, UUID batchId, boolean deliveredOnly) {
         return order.shipments().stream().filter(s -> batchId.equals(s.deliveryBatchId()))

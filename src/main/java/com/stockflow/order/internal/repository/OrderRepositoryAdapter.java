@@ -277,6 +277,12 @@ class OrderRepositoryAdapter implements OrderRepository, OrderSearchRepository {
     }
 
     @Override
+    public java.util.Optional<java.time.Instant> confirmedAt(UUID orderId) {
+        return history.findFirstByOrderIdAndToStatusOrderByOccurredAtAscCreatedAtAsc(orderId,
+                com.stockflow.order.api.OrderStatus.CONFIRMED.name()).map(OrderStatusHistoryJpaEntity::getOccurredAt);
+    }
+
+    @Override
     public List<OrderStatusChange> history(UUID orderId) {
         return history.findByOrderIdOrderByOccurredAtAscCreatedAtAsc(orderId).stream()
                 .map(row -> new OrderStatusChange(
