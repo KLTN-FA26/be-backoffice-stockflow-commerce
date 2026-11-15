@@ -108,6 +108,8 @@ class CartonCheckService implements CartonChecks {
     /** A removed carton's line, for its hold; the hold then leaves its delivery batch (08 §4.2 step 4). */
     private final com.stockflow.fulfillment.internal.repository.PickLineJpaRepository pickLines;
     private final com.stockflow.order.api.OrderReservations orderReservations;
+    /** Holds the order for a removed carton, as a short pick report does. */
+    private final PickLists pickLists;
 
     @SuppressWarnings("java:S107")
     CartonCheckService(PickJpaRepository picks, PackJpaRepository packs, PackageJpaRepository packages,
@@ -116,7 +118,8 @@ class CartonCheckService implements CartonChecks {
                        WarehouseService warehouses, ShipmentTimeline timeline, Clock clock,
                        LoadPlanReleases loadPlans, PlanVehicles planVehicles, LabelledCartons labelledCartons,
                        com.stockflow.fulfillment.internal.repository.PickLineJpaRepository pickLines,
-                       com.stockflow.order.api.OrderReservations orderReservations) {
+                       com.stockflow.order.api.OrderReservations orderReservations, PickLists pickLists) {
+        this.pickLists = pickLists;
         this.labelledCartons = labelledCartons;
         this.pickLines = pickLines;
         this.orderReservations = orderReservations;
@@ -279,12 +282,19 @@ class CartonCheckService implements CartonChecks {
         Context ctx = forWork(taskId);
         CartonCheck check = load(ctx);
         check.requireWorkable(actor.userId(), isManager(actor));
+        boolean removedBefore = check.carton(lpn).filter(c -> c.status() == PackageStatus.REMOVED).isPresent();
         CartonCheck.Carton removed = check.remove(lpn, note, actor.userId(), clock.instant());
         store.save(check, ctx.pack());
         // 08 §4.2 step 4: the line lacks this carton now, handled as a shortage (07 §4.4) - its delivery batch no longer
         // counts the hold (17 §5.5), and the warehouse manager replaces it by reallocating the line. Idempotent.
         pickLines.findById(removed.pickLineId()).map(line -> line.getReservationId()).ifPresent(hold ->
                 orderReservations.cartonRemoved(ctx.order().orderId(), hold));
+        if (!removedBefore) {
+            // 07 §4.4 step 9, as a short pick report: the order stops (INVENTORY) at once, whatever stock there is. A
+            // reallocation that finds stock resumes it; one that does not keeps it (WF4-BE3-HOLD). Only a removal
+            // that happens now: a repeated request must not hold an order whose hold was resolved since.
+            pickLists.holdForRemovedCarton(taskId, removed.pickLineId(), actor);
+        }
         log.info("Order {}: carton {} removed as damaged; it waits in the put-back queue for quarantine",
                 ctx.pick().getOrderNumber(), removed.lpn());
         return view(ctx, check);

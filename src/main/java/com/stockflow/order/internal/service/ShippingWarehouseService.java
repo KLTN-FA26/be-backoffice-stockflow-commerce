@@ -879,8 +879,30 @@ public class ShippingWarehouseService {
                         batchLines.stream().allMatch(l -> l.shortCartons() == 0), batchLines));
             }
         }
+        if (contract != null && !byBatch.isEmpty()) {
+            perLine = perLineFromBatches(perLine, batches);
+        }
+        List<LineCoverage> lineCover = perLine;
         return new Coverage(order.id().value(), order.shippingWarehouseId(), warehouseCode,
-                perLine.stream().allMatch(l -> l.shortCartons() == 0), perLine, batches);
+                lineCover.stream().allMatch(l -> l.shortCartons() == 0), lineCover, batches);
+    }
+
+    /**
+     * WF4-BE3-LINE: a line's cover, once the order works its delivery batches, is what its batches hold - so the line
+     * shows the same shortage its batches do. Counting the line's holds instead would still count the hold of a carton
+     * removed at the check station (08 §4.2 step 4): its hold stays on the line, picked, but no longer stands for its
+     * batch, which lacks the carton again. A line no batch carries keeps its own count.
+     */
+    private static List<LineCoverage> perLineFromBatches(List<LineCoverage> perLine, List<BatchCoverage> batches) {
+        Map<UUID, Integer> held = new HashMap<>();
+        batches.forEach(batch -> batch.lines().forEach(l -> held.merge(l.lineId(), l.heldCartons(), Integer::sum)));
+        return perLine.stream().map(line -> {
+            if (!held.containsKey(line.lineId())) {
+                return line;
+            }
+            int cartons = Math.min(line.cartons(), held.get(line.lineId()));
+            return new LineCoverage(line.lineId(), line.sku(), line.cartons(), cartons, line.cartons() - cartons);
+        }).toList();
     }
 
     /** Units held for each line: its reservation ids still HELD (holds at the warehouse, or allocations after release). */

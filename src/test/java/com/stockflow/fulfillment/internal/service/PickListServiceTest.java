@@ -703,6 +703,32 @@ class PickListServiceTest {
 
             verify(orders, never()).putOnHold(any(), any(), any(), any());
         }
+
+        @Test
+        @DisplayName("WF4-BE3-HOLD: at the removal itself the order is held INVENTORY, as a short pick report holds it; "
+                + "held already, it is left")
+        void holdsAtTheRemoval() {
+            service.holdForRemovedCarton(task.getId(), removed.getId(), actor);
+
+            verify(orders).putOnHold(eq(task.getOrderId()), eq(HoldReason.INVENTORY), any(), eq(picker));
+
+            orderIs(OrderStatus.ON_HOLD, HoldReason.INVENTORY);
+            service.holdForRemovedCarton(task.getId(), removed.getId(), actor);
+            verify(orders, org.mockito.Mockito.times(1)).putOnHold(any(), any(), any(), any());
+        }
+
+        @Test
+        @DisplayName("WF4-BE3-HOLD: a line whose carton was not removed, or whose carton is replaced already, does not "
+                + "hold the order")
+        void doesNotHoldWhatIsNotLacking() {
+            service.holdForRemovedCarton(task.getId(), stored.get(1).getId(), actor);
+            PickLineJpaEntity replacement = new PickLineJpaEntity(UUID.randomUUID(), task.getId(), orderLine, newHold,
+                    "SKU-A", "HCM-B-01", "LOT-2", 3, 5, "LPN-NEW", true);
+            stored.add(replacement);
+            service.holdForRemovedCarton(task.getId(), removed.getId(), actor);
+
+            verify(orders, never()).putOnHold(any(), any(), any(), any());
+        }
     }
 
     @Nested
