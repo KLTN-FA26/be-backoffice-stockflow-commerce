@@ -581,6 +581,39 @@ class FulfillmentServiceImplTest {
     }
 
     @Test
+    void theWarehouseManagerStartsAndCompletesAnAssigneesTaskOnBehalf() {
+        // WF4-QLK-TAKEOVER (07 §2): task-assignment:UPDATE - a permission code, not a role name - lets them work it.
+        UUID assigned = UUID.randomUUID();
+        var pick = new PickJpaEntity(UUID.randomUUID(), null, UUID.randomUUID(), "SO-TEST", HCM, PickStatus.PENDING);
+        pick.assign(assigned, now.minusSeconds(120));
+        var order = order(pick.getOrderId(), "d".repeat(64));
+        when(picks.lockById(pick.getId())).thenReturn(Optional.of(pick));
+        when(picks.save(any())).thenAnswer(call -> call.getArgument(0));
+        when(packs.findByPickId(pick.getId())).thenReturn(Optional.of(
+                new PackJpaEntity(UUID.randomUUID(), pick.getId(), PackStatus.PENDING, null)));
+        when(orders.findById(pick.getOrderId())).thenReturn(Optional.of(order));
+        var manager = user(UUID.randomUUID(), Role.WAREHOUSE_MANAGER);
+
+        assertThat(service.startPicking(pick.getId(), manager).pickStatus()).isEqualTo("PICKING");
+        // Once started it is still the assignee's task: the manager takes it over, the assignee stays.
+        assertThat(pick.getAssignedUserId()).isEqualTo(assigned);
+        org.mockito.Mockito.doNothing().when(pickLists).requireAllPicked(pick, order);
+        assertThat(service.completePicking(pick.getId(), manager).pickStatus()).isEqualTo("PICKED");
+    }
+
+    @Test
+    void aWarehouseStaffMemberWhoIsNotTheAssigneeStillFindsNoSuchTask() {
+        UUID assigned = UUID.randomUUID();
+        var pick = new PickJpaEntity(UUID.randomUUID(), null, UUID.randomUUID(), "SO-TEST", HCM, PickStatus.PENDING);
+        pick.assign(assigned, now.minusSeconds(120));
+        when(picks.lockById(pick.getId())).thenReturn(Optional.of(pick));
+
+        assertThat(refusal(() -> service.startPicking(pick.getId(), user(UUID.randomUUID(), Role.WAREHOUSE_STAFF)))
+                .errorCode()).isEqualTo(ErrorCode.NOT_FOUND);
+        assertThat(pick.getStatus()).isEqualTo(PickStatus.PENDING);
+    }
+
+    @Test
     void aCancelledOrdersTaskIsAStateConflict() {
         UUID assigned = UUID.randomUUID();
         var pick = new PickJpaEntity(UUID.randomUUID(), null, UUID.randomUUID(), "SO-TEST", HCM, PickStatus.PENDING);

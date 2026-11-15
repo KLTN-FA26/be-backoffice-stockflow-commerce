@@ -39,6 +39,22 @@ final class TaskAccess {
         WarehouseScope.requireWarehouse(pick.getWarehouseId());
     }
 
+    /**
+     * Who may work a pick task (07 BR-08, and the actor table of 07 §2: the warehouse manager "works on behalf when
+     * needed"; WF4-QLK-TAKEOVER). The assignee does; so does whoever holds task assignment ({@code
+     * fulfillment-task-assignment:UPDATE}) for a warehouse of their scope - the caller checked the scope - even once
+     * picking has started. Permission codes only. Anyone else is refused as before ({@code NOT_FOUND}).
+     *
+     * @return the user the task is worked as: the caller for the assignee, the assignee for the one working on behalf
+     */
+    static java.util.UUID requireWorker(PickJpaEntity pick, CurrentUser actor) {
+        if (actor.can(FulfillmentPermissions.TASK_ASSIGNMENT, Action.UPDATE)) {
+            return pick.getAssignedUserId();
+        }
+        pick.requireAssigned(actor.userId());
+        return actor.userId();
+    }
+
     /** Picking is complete: the goods wait at the packing area and the task is the packer's to work. */
     static boolean atPacking(PickJpaEntity pick) {
         return pick.getStatus() == com.stockflow.fulfillment.internal.domain.PickStatus.PICKED;
