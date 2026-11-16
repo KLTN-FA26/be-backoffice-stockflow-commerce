@@ -172,8 +172,13 @@ final class SepayEInvoiceAnswers {
         if (number == null || !number.matches("[0-9]{1,8}")) {
             return null;
         }
-        int value = Integer.parseInt(number);
-        return value >= 1 ? value : null;
+        try {
+            int value = Integer.parseInt(number);
+            return value >= 1 ? value : null;
+        } catch (NumberFormatException unreadable) {
+            // Eight ASCII digits always parse; kept so an answer can never throw out of the reading of it.
+            return null;
+        }
     }
 
     /**
