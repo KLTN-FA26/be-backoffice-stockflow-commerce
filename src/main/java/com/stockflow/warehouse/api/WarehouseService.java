@@ -102,4 +102,11 @@ public interface WarehouseService {
      * @return empty when {@code locationCode} is not a putaway candidate in the warehouse
      */
     java.util.Optional<PutawayCandidate> putawayCandidate(UUID warehouseId, String locationCode);
+
+    /**
+     * The bins, storage areas and utilisation factor of a warehouse, for the capacity board (kltn-docs 06 §4.6).
+     *
+     * @return empty for an unknown warehouse
+     */
+    java.util.Optional<CapacityLayout> capacityLayout(UUID warehouseId);
 }

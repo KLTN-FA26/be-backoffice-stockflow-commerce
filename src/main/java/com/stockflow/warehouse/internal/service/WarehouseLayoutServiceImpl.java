@@ -87,6 +87,9 @@ class WarehouseLayoutServiceImpl implements WarehouseLayoutService {
                 command.expectedVersion());
         warehouse.resizeMap(command.mapWidth(), command.mapHeight(),
                 warehouses.findOccupiedExtent(warehouse.id()));
+        if (command.utilizationFactor() != null) {
+            warehouse.changeUtilizationFactor(command.utilizationFactor());
+        }
         return toSummary(warehouses.save(warehouse));
     }
 
@@ -209,8 +212,8 @@ class WarehouseLayoutServiceImpl implements WarehouseLayoutService {
     private static WarehouseSummary toSummary(Warehouse warehouse) {
         return new WarehouseSummary(warehouse.id(), warehouse.prefix(), warehouse.name(),
                 warehouse.address(), warehouse.returnAddress(), warehouse.mapUnit(),
-                warehouse.mapWidth(), warehouse.mapHeight(), warehouse.status(), warehouse.version(),
-                warehouse.createdAt());
+                warehouse.mapWidth(), warehouse.mapHeight(), warehouse.status(), warehouse.utilizationFactor(),
+                warehouse.version(), warehouse.createdAt());
     }
 
     private static ZoneSummary toSummary(Zone zone) {

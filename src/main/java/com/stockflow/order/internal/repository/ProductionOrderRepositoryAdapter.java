@@ -125,6 +125,31 @@ class ProductionOrderRepositoryAdapter implements ProductionOrderRepository, Pro
     }
 
     @Override
+    public List<DueCartons> dueAt(UUID receivingWarehouseId) {
+        @SuppressWarnings("unchecked")
+        List<Object[]> rows = entityManager.createNativeQuery("""
+                        SELECT l.sku, p.status, SUM(l.cartons - l.received_cartons)
+                          FROM ordering.production_order p
+                          JOIN ordering.production_order_line l ON l.production_order_id = p.id
+                         WHERE p.receiving_warehouse_id = :warehouse
+                           AND p.status IN (:open)
+                           AND l.cartons > l.received_cartons
+                         GROUP BY l.sku, p.status
+                         ORDER BY l.sku, p.status""")
+                .setParameter("warehouse", receivingWarehouseId)
+                .setParameter("open", java.util.stream.Stream.of(ProductionOrderStatus.DRAFT,
+                                ProductionOrderStatus.PENDING_APPROVAL, ProductionOrderStatus.SENT,
+                                ProductionOrderStatus.ACCEPTED, ProductionOrderStatus.SAMPLE_PENDING,
+                                ProductionOrderStatus.IN_PRODUCTION, ProductionOrderStatus.PARTIALLY_RECEIVED)
+                        .map(Enum::name).toList())
+                .getResultList();
+        return rows.stream()
+                .map(r -> new DueCartons((String) r[0], ProductionOrderStatus.valueOf((String) r[1]),
+                        ((Number) r[2]).longValue()))
+                .toList();
+    }
+
+    @Override
     public ProductionOrder save(ProductionOrder order) {
         ProductionOrderJpaEntity entity = jpa.findById(order.id()).orElse(null);
         boolean created = entity == null;

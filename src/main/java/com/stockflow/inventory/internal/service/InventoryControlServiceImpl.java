@@ -35,6 +35,15 @@ class InventoryControlServiceImpl implements InventoryControlService {
 
     @Override
     @Transactional(readOnly = true)
+    public java.util.Map<Sku, com.stockflow.inventory.api.CartonSpec> cartonSpecs(java.util.Collection<Sku> skus) {
+        java.util.Map<Sku, com.stockflow.inventory.api.CartonSpec> out = new java.util.HashMap<>();
+        policies.findCartonSpecs(skus.stream().map(Sku::code).distinct().toList())
+                .forEach((code, spec) -> out.put(new Sku(code), spec));
+        return out;
+    }
+
+    @Override
+    @Transactional(readOnly = true)
     public InventoryItemLogistics logistics(Sku sku) {
         return policies.findLogistics(sku.code())
                 .orElseThrow(() -> new BusinessException(ErrorCode.INVENTORY_ITEM_NOT_FOUND, "No inventory item " + sku));

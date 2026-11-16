@@ -1,6 +1,12 @@
 package com.stockflow.warehouse.internal.service;
 
 import com.stockflow.warehouse.api.BinSize;
+import com.stockflow.warehouse.api.CapacityLayout;
+import com.stockflow.warehouse.internal.domain.WarehouseRepository;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import com.stockflow.warehouse.api.PutawayCandidate;
 import com.stockflow.warehouse.api.StorageLocationView;
 import com.stockflow.warehouse.api.WarehouseService;
@@ -34,9 +40,46 @@ import java.util.UUID;
 class WarehouseServiceImpl implements WarehouseService {
 
     private final LocationLookupRepository locations;
+    private final WarehouseRepository warehouses;
+    private final WarehouseLayoutService layouts;
 
-    WarehouseServiceImpl(LocationLookupRepository locations) {
+    WarehouseServiceImpl(LocationLookupRepository locations, WarehouseRepository warehouses,
+                         WarehouseLayoutService layouts) {
         this.locations = locations;
+        this.warehouses = warehouses;
+        this.layouts = layouts;
+    }
+
+    /**
+     * The map's own layout read (one query per table), flattened to what the board needs: bins with their shelf and
+     * zone, storage areas by type. The factor comes from the aggregate, which the layout read does not carry.
+     */
+    @Override
+    public Optional<CapacityLayout> capacityLayout(UUID warehouseId) {
+        if (warehouseId == null) {
+            return Optional.empty();
+        }
+        return warehouses.findById(warehouseId).map(warehouse -> {
+            WarehouseLayout layout = layouts.layoutOf(warehouseId);
+            Map<UUID, String> zoneNames = new HashMap<>();
+            layout.zones().forEach(zone -> zoneNames.put(zone.id(), zone.name()));
+            List<CapacityLayout.Bin> bins = new ArrayList<>();
+            for (WarehouseLayout.Shelf shelf : layout.shelves()) {
+                for (WarehouseLayout.Level level : shelf.levels()) {
+                    for (WarehouseLayout.Bin bin : level.bins()) {
+                        bins.add(new CapacityLayout.Bin(bin.locationCode(), shelf.zoneId(),
+                                shelf.zoneId() == null ? null : zoneNames.get(shelf.zoneId()), shelf.code(),
+                                bin.capacityVolumeM3(), bin.maxWeight(), bin.usable()));
+                    }
+                }
+            }
+            List<CapacityLayout.Area> areas = layout.areas().stream()
+                    .filter(area -> area.locationCode() != null)
+                    .map(area -> new CapacityLayout.Area(area.locationCode(), area.code(), area.name(),
+                            StorageLocationView.AreaType.valueOf(area.type().name())))
+                    .toList();
+            return new CapacityLayout(warehouse.id(), warehouse.prefix(), warehouse.utilizationFactor(), bins, areas);
+        });
     }
 
     /** Upper-cased first: every part of a code is {@code [A-Z0-9]} (BR-10), and scanners and people disagree on case. */

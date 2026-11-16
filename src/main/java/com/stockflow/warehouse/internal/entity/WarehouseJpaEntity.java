@@ -56,12 +56,15 @@ public class WarehouseJpaEntity extends BaseEntity {
     @Column(name = "status", nullable = false, length = 32)
     private WarehouseStatus status;
 
+    @Column(name = "utilization_factor", nullable = false, precision = 5, scale = 4)
+    private BigDecimal utilizationFactor;
+
     protected WarehouseJpaEntity() {
     }
 
     public WarehouseJpaEntity(UUID id, String prefix, String name, String address,
                               String returnAddress, MapUnit mapUnit, BigDecimal mapWidth,
-                              BigDecimal mapHeight, WarehouseStatus status) {
+                              BigDecimal mapHeight, WarehouseStatus status, BigDecimal utilizationFactor) {
         super(id);
         this.prefix = prefix;
         this.name = name;
@@ -71,17 +74,19 @@ public class WarehouseJpaEntity extends BaseEntity {
         this.mapWidth = mapWidth;
         this.mapHeight = mapHeight;
         this.status = status;
+        this.utilizationFactor = utilizationFactor;
     }
 
     /** Everything a warehouse may change after registration; prefix and map unit never do. */
     public void apply(String name, String address, String returnAddress, BigDecimal mapWidth,
-                      BigDecimal mapHeight, WarehouseStatus status) {
+                      BigDecimal mapHeight, WarehouseStatus status, BigDecimal utilizationFactor) {
         this.name = name;
         this.address = address;
         this.returnAddress = returnAddress;
         this.mapWidth = mapWidth;
         this.mapHeight = mapHeight;
         this.status = status;
+        this.utilizationFactor = utilizationFactor;
     }
 
     public String getPrefix() { return prefix; }
@@ -92,4 +97,5 @@ public class WarehouseJpaEntity extends BaseEntity {
     public BigDecimal getMapWidth() { return mapWidth; }
     public BigDecimal getMapHeight() { return mapHeight; }
     public WarehouseStatus getStatus() { return status; }
+    public BigDecimal getUtilizationFactor() { return utilizationFactor; }
 }

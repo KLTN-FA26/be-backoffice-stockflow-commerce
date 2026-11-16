@@ -99,12 +99,29 @@ class WarehouseLayoutServiceIntegrationTest {
 
             WarehouseSummary updated = layout.update(new UpdateWarehouseCommand(hanoi.id(),
                     "Kho Hà Nội mới", "2 Phố Huế", "Kho trả hàng", new BigDecimal("45"),
-                    new BigDecimal("25"), hanoi.version()));
+                    new BigDecimal("25"), new BigDecimal("0.85"), hanoi.version()));
 
             assertThat(updated.prefix()).isEqualTo("HN");
             assertThat(updated.name()).isEqualTo("Kho Hà Nội mới");
             assertThat(updated.mapWidth()).isEqualByComparingTo("45");
+            assertThat(updated.utilizationFactor()).isEqualByComparingTo("0.85");
             assertThat(updated.version()).isEqualTo(hanoi.version() + 1);
+        }
+
+        @Test
+        @DisplayName("a new warehouse fills 100% of its bins; an edit without a factor keeps it, one out of (0, 1] is refused")
+        void utilizationFactor() {
+            WarehouseSummary hanoi = registerHanoi();
+            assertThat(hanoi.utilizationFactor()).isEqualByComparingTo("1");
+
+            WarehouseSummary kept = resize(hanoi, "40", "25");
+            assertThat(kept.utilizationFactor()).isEqualByComparingTo("1");
+
+            for (String refused : new String[] {"0", "-0.1", "1.01", "0.85555"}) {
+                assertThat(errorOf(() -> layout.update(new UpdateWarehouseCommand(kept.id(), kept.name(),
+                        kept.address(), kept.returnAddress(), kept.mapWidth(), kept.mapHeight(),
+                        new BigDecimal(refused), kept.version())))).isEqualTo(ErrorCode.VALIDATION_FAILED);
+            }
         }
 
         @Test
@@ -113,7 +130,7 @@ class WarehouseLayoutServiceIntegrationTest {
             WarehouseSummary hanoi = registerHanoi();
 
             assertThat(errorOf(() -> layout.update(new UpdateWarehouseCommand(hanoi.id(), "X", "Y",
-                    null, hanoi.mapWidth(), hanoi.mapHeight(), hanoi.version() + 1))))
+                    null, hanoi.mapWidth(), hanoi.mapHeight(), null, hanoi.version() + 1))))
                     .isEqualTo(ErrorCode.OPTIMISTIC_LOCK);
         }
 
@@ -174,7 +191,7 @@ class WarehouseLayoutServiceIntegrationTest {
         private WarehouseSummary resize(WarehouseSummary current, String width, String height) {
             return layout.update(new UpdateWarehouseCommand(current.id(), current.name(),
                     current.address(), current.returnAddress(), new BigDecimal(width),
-                    new BigDecimal(height), current.version()));
+                    new BigDecimal(height), null, current.version()));
         }
     }
 

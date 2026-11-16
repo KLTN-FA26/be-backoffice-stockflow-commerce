@@ -19,4 +19,7 @@ public interface InventoryControlService {
      * measures may still be undeclared ({@link CartonSpec#measured()}): no shipping label prints then (08 BR-07).
      */
     java.util.Optional<CartonSpec> cartonSpec(Sku sku);
+
+    /** {@link #cartonSpec} for many SKUs in one read; a SKU without a carton spec is absent. */
+    java.util.Map<Sku, CartonSpec> cartonSpecs(java.util.Collection<Sku> skus);
 }

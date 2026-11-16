@@ -101,6 +101,12 @@ public final class OrderResources {
     public static final String PRODUCTION_SCHEDULE = "production-schedule";
 
     /**
+     * The warehouse capacity board (kltn-docs 06 §4.6, SCRUM-669), served here because only {@code order} may compose
+     * the facts of warehouse, inventory and production orders (see {@code CapacityBoardService}).
+     */
+    public static final String WAREHOUSE_CAPACITY = "warehouse-capacity";
+
+    /**
      * 4A-7 (17 §4.12 step 49): the delay flags of an order, for the order page - Sales, the Sales Manager and the
      * warehouse manager; its holders who can see the order's shipping warehouse are the ones told of DELIVERY_LATE
      * (BR-30: not the Production Coordinator).

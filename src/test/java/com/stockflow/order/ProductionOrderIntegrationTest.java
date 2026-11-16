@@ -121,6 +121,7 @@ class ProductionOrderIntegrationTest {
     private static Warehouse b;
 
     @Autowired ProductionOrderService productionOrders;
+    @Autowired com.stockflow.order.internal.service.CapacityBoardService capacityBoards;
     @Autowired ProductionSampleService samples;
     @Autowired ProducerService producers;
     @Autowired SalesContracts contracts;
@@ -743,6 +744,30 @@ class ProductionOrderIntegrationTest {
                 .extracting(ProductionOrderIntegrationTest::code).isEqualTo(ErrorCode.PRODUCTION_ORDER_STATUS_INVALID);
         assertThatThrownBy(() -> productionOrders.approve(sent.id(), sent.version(), manager))
                 .extracting(ProductionOrderIntegrationTest::code).isEqualTo(ErrorCode.PRODUCTION_ORDER_STATUS_INVALID);
+    }
+
+    @Test
+    @DisplayName("06 §4.6, SCRUM-669: the capacity board counts a draft and a pending one as pending approval, a sent one "
+            + "as incoming")
+    void capacityBoardCountsWhatProductionOrdersOwe() {
+        UUID orderId = confirmedOrder();
+        choose(orderId, a);
+        com.stockflow.order.internal.domain.CapacityBoard before = capacityBoards.boardOf(a.id());
+
+        ProductionOrder drawn = drawUp(orderId, 1);
+        int cartons = drawn.lines().getFirst().cartons();
+        com.stockflow.order.internal.domain.CapacityBoard drafted = capacityBoards.boardOf(a.id());
+        assertThat(drafted.pendingApproval().cartons() - before.pendingApproval().cartons()).isEqualTo(cartons);
+        assertThat(drafted.incoming().cartons()).isEqualTo(before.incoming().cartons());
+
+        ProductionOrder pending = submit(drawn);
+        assertThat(capacityBoards.boardOf(a.id()).pendingApproval().cartons()
+                - before.pendingApproval().cartons()).isEqualTo(cartons);
+
+        productionOrders.approve(pending.id(), pending.version(), manager);
+        com.stockflow.order.internal.domain.CapacityBoard sent = capacityBoards.boardOf(a.id());
+        assertThat(sent.incoming().cartons() - before.incoming().cartons()).isEqualTo(cartons);
+        assertThat(sent.pendingApproval().cartons()).isEqualTo(before.pendingApproval().cartons());
     }
 
     @Test

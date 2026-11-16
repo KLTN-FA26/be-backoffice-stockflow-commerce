@@ -156,7 +156,7 @@ class ShelfJpaRepositoryIntegrationTest {
     private WarehouseJpaEntity warehouse(String prefix) {
         return warehouses.save(new WarehouseJpaEntity(Identifiers.newId(), prefix, "Test " + prefix,
                 "1 Test street", null, MapUnit.M, new BigDecimal("40"), new BigDecimal("25"),
-                WarehouseStatus.ACTIVE));
+                WarehouseStatus.ACTIVE, BigDecimal.ONE));
     }
 
     private StorageLocationJpaEntity location(WarehouseJpaEntity warehouse, StorageLocationKind kind,

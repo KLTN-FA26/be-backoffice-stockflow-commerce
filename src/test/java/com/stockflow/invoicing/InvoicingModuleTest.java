@@ -31,6 +31,8 @@ class InvoicingModuleTest {
     // Dependencies of the bootstrapped dependencies (order, customer), not of this module: explicit ports only, the
     // slice must not boot more.
     @MockitoBean com.stockflow.inventory.api.InventoryService inventoryServiceMock;
+    @MockitoBean com.stockflow.inventory.api.StockLoads stockLoadsMock;
+    @MockitoBean com.stockflow.inventory.api.InventoryControlService inventoryControlServiceMock;
     @MockitoBean com.stockflow.inventory.api.UomConversionService uomConversionServiceMock;
     @MockitoBean com.stockflow.inventory.api.PackagingSpecResolver packagingSpecResolverMock;
     @MockitoBean com.stockflow.design.api.DesignService designServiceMock;

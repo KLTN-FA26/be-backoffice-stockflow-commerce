@@ -381,6 +381,12 @@ class PermissionMatrixTest {
                     Role.SALES_STAFF, Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
             Map.entry("production-schedule:VIEW_PAGE", Set.of(Role.PRODUCTION_COORDINATOR, Role.SALES_MANAGER,
                     Role.SALES_STAFF, Role.WAREHOUSE_MANAGER, Role.SYSTEM_ADMIN)),
+            // SCRUM-669, kltn-docs 06 §2, §4.6: the warehouse manager prepares room by the capacity board (their
+            // warehouses); Sales, the Sales Manager and the coordinator are warned from it (BR-21).
+            Map.entry("warehouse-capacity:READ", Set.of(Role.WAREHOUSE_MANAGER, Role.SALES_STAFF, Role.SALES_MANAGER,
+                    Role.PRODUCTION_COORDINATOR, Role.SYSTEM_ADMIN)),
+            Map.entry("warehouse-capacity:VIEW_PAGE", Set.of(Role.WAREHOUSE_MANAGER, Role.SALES_STAFF,
+                    Role.SALES_MANAGER, Role.PRODUCTION_COORDINATOR, Role.SYSTEM_ADMIN)),
             Map.entry("delay-alerts:READ", Set.of(Role.SALES_MANAGER, Role.SALES_STAFF, Role.WAREHOUSE_MANAGER,
                     Role.SYSTEM_ADMIN)),
             // 4A-1, kltn-docs 17 §4.3 and 00 §2.1 (2026-11-07): the Production Coordinator keeps the producers.

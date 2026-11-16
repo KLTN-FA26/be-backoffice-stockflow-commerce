@@ -27,6 +27,17 @@ public interface ProductionOrderRepository {
     /** Of these SKUs, those some production order has started mass printing of (BR-24: produced before). */
     Set<String> producedBefore(Collection<String> skus);
 
+    /** Cartons of one SKU still to arrive on the production orders of one status (kltn-docs 06 §4.6 "Sắp về"). */
+    record DueCartons(String sku, ProductionOrderStatus status, long cartons) {
+    }
+
+    /**
+     * What the open production orders sending goods to this warehouse still owe, by SKU and status: Σ (cartons −
+     * received cartons) over their lines, for {@code DRAFT} to {@code PARTIALLY_RECEIVED}. A received, cancelled or
+     * closed order owes nothing; a fully received line is left out.
+     */
+    List<DueCartons> dueAt(UUID receivingWarehouseId);
+
     /**
      * Writes a new production order, or the changes of one read before at its version, with its lines (rewritten
      * while it is a draft) and its changes of status.

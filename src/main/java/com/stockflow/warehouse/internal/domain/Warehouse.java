@@ -39,6 +39,7 @@ public final class Warehouse extends AggregateRoot {
     private BigDecimal mapWidth;
     private BigDecimal mapHeight;
     private WarehouseStatus status;
+    private BigDecimal utilizationFactor;
     private final long version;
     private final Instant createdAt;
 
@@ -48,7 +49,7 @@ public final class Warehouse extends AggregateRoot {
      */
     public Warehouse(UUID id, String prefix, String name, String address, String returnAddress,
                      MapUnit mapUnit, BigDecimal mapWidth, BigDecimal mapHeight,
-                     WarehouseStatus status, long version, Instant createdAt) {
+                     WarehouseStatus status, BigDecimal utilizationFactor, long version, Instant createdAt) {
         this.id = Objects.requireNonNull(id, "id");
         this.prefix = prefix;
         this.name = name;
@@ -58,6 +59,7 @@ public final class Warehouse extends AggregateRoot {
         this.mapWidth = mapWidth;
         this.mapHeight = mapHeight;
         this.status = Objects.requireNonNull(status, "status");
+        this.utilizationFactor = Objects.requireNonNull(utilizationFactor, "utilizationFactor");
         this.version = version;
         this.createdAt = createdAt;
     }
@@ -76,7 +78,22 @@ public final class Warehouse extends AggregateRoot {
                 mapUnit,
                 DomainChecks.positiveMeasure("mapWidth", mapWidth),
                 DomainChecks.positiveMeasure("mapHeight", mapHeight),
-                WarehouseStatus.ACTIVE, 0L, null);
+                WarehouseStatus.ACTIVE, BigDecimal.ONE, 0L, null);
+    }
+
+    /**
+     * kltn-docs 06 §4.6 step 2, C43: the share of the bins' computed volume cartons really fill (aisles inside a bin,
+     * gaps between cartons), in (0, 1]. It scales the capacity board only: putaway still checks a bin's full volume.
+     * Stated twice, here and as {@code ck_warehouse_utilization_factor}.
+     */
+    public void changeUtilizationFactor(BigDecimal factor) {
+        if (factor == null || factor.signum() <= 0 || factor.compareTo(BigDecimal.ONE) > 0) {
+            throw DomainChecks.invalid("A utilization factor is more than 0 and at most 1, got " + factor);
+        }
+        if (factor.stripTrailingZeros().scale() > 4) {
+            throw DomainChecks.invalid("A utilization factor has at most 4 decimals, got " + factor.toPlainString());
+        }
+        this.utilizationFactor = factor;
     }
 
     /** @param expectedVersion the version the caller's edit was based on */
@@ -144,6 +161,7 @@ public final class Warehouse extends AggregateRoot {
     public String address() { return address; }
     public String returnAddress() { return returnAddress; }
     public MapUnit mapUnit() { return mapUnit; }
+    public BigDecimal utilizationFactor() { return utilizationFactor; }
     public BigDecimal mapWidth() { return mapWidth; }
     public BigDecimal mapHeight() { return mapHeight; }
     public WarehouseStatus status() { return status; }

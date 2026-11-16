@@ -43,7 +43,8 @@ class WarehouseControllerHttpTest {
 
     private static WarehouseSummary hanoi(long version) {
         return new WarehouseSummary(WAREHOUSE_ID, "HN", "Kho Hà Nội", "1 Phố Huế", null, MapUnit.M,
-                new BigDecimal("40.000"), new BigDecimal("25.000"), WarehouseStatus.ACTIVE, version, null);
+                new BigDecimal("40.000"), new BigDecimal("25.000"), WarehouseStatus.ACTIVE, BigDecimal.ONE, version,
+                null);
     }
 
     @Test

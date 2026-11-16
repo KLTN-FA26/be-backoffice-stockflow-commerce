@@ -11,5 +11,9 @@ import java.util.UUID;
 @Schema(name = "Warehouse")
 public record WarehouseResponse(UUID id, String prefix, String name, String address, String returnAddress,
                                 MapUnit mapUnit, BigDecimal mapWidth, BigDecimal mapHeight,
-                                WarehouseStatus status, long version, Instant createdAt) {
+                                WarehouseStatus status,
+                                @Schema(description = "Share of the bins' computed volume cartons really fill, in "
+                                        + "(0, 1]; scales the capacity board only (kltn-docs 06 §4.6)")
+                                BigDecimal utilizationFactor,
+                                long version, Instant createdAt) {
 }

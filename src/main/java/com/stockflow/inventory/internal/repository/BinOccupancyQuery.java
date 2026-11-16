@@ -215,6 +215,89 @@ public class BinOccupancyQuery {
                                 rs.getBigDecimal("height_cm"), rs.getBoolean("rotatable"))));
     }
 
+    /** The room cartons take: how many, their volume and full weight, and how many have no full size. */
+    public record Load(long cartons, BigDecimal volumeM3, BigDecimal weightKg, long unmeasuredCartons) {
+    }
+
+    /** One SKU's units held by SKU holds (no carton chosen yet). */
+    public record HeldUnits(String sku, long units) {
+    }
+
+    /**
+     * The cartons with units in them at each of these locations, any stock status - what fills the place (kltn-docs
+     * 06 §4.6). Measured as {@link #occupancyOf} measures a bin's load; a location holding nothing is absent.
+     */
+    public Map<String, Load> loadAt(Collection<String> locationCodes) {
+        if (locationCodes.isEmpty()) {
+            return Map.of();
+        }
+        Map<String, Load> out = new HashMap<>();
+        jdbc.query("""
+                with c as (
+                    select s.location_code, s.stock_package_id
+                    from inventory.stock_item s
+                    where s.location_code = any (?) and s.on_hand > 0 and s.stock_package_id is not null
+                    group by s.location_code, s.stock_package_id)
+                select c.location_code, count(*) as cartons,
+                       coalesce(sum(u.length_cm * u.width_cm * u.height_cm / 1000000), 0) as volume_m3,
+                       coalesce(sum(coalesce(u.weight_kg, i.weight_kg * p.nominal_qty)), 0) as weight_kg,
+                       count(*) filter (where u.length_cm is null or u.width_cm is null or u.height_cm is null)
+                           as unmeasured
+                from c
+                join inventory.stock_package p on p.id = c.stock_package_id
+                join inventory.uom_conversions u on u.id = p.uom_conversion_id
+                join inventory.inventory_items i on i.id = p.inventory_item_id
+                group by c.location_code""",
+                ps -> ps.setArray(1, ps.getConnection().createArrayOf("text", locationCodes.toArray())),
+                rs -> {
+                    out.put(rs.getString("location_code"), new Load(rs.getLong("cartons"),
+                            orZero(rs.getBigDecimal("volume_m3")), orZero(rs.getBigDecimal("weight_kg")),
+                            rs.getLong("unmeasured")));
+                });
+        return out;
+    }
+
+    /**
+     * The cartons allocated to orders of a warehouse and not yet picked: a {@code HELD} allocation names its stock row,
+     * whose location's prefix is the warehouse (an allocation carries no warehouse code of its own,
+     * {@code ck_stock_reservation_warehouse}). One carton per carton, however many allocations share it.
+     */
+    public Load allocatedAt(String warehouseCode) {
+        return jdbc.query("""
+                with c as (
+                    select distinct s.stock_package_id
+                    from inventory.stock_reservation r
+                    join inventory.stock_item s on s.id = r.stock_item_id
+                    where r.status = 'HELD' and r.stock_item_id is not null
+                      and s.stock_package_id is not null
+                      and split_part(s.location_code, '-', 1) = ?)
+                select count(*) as cartons,
+                       coalesce(sum(u.length_cm * u.width_cm * u.height_cm / 1000000), 0) as volume_m3,
+                       coalesce(sum(coalesce(u.weight_kg, i.weight_kg * p.nominal_qty)), 0) as weight_kg,
+                       count(*) filter (where u.length_cm is null or u.width_cm is null or u.height_cm is null)
+                           as unmeasured
+                from c
+                join inventory.stock_package p on p.id = c.stock_package_id
+                join inventory.uom_conversions u on u.id = p.uom_conversion_id
+                join inventory.inventory_items i on i.id = p.inventory_item_id""",
+                ps -> ps.setString(1, warehouseCode),
+                rs -> {
+                    rs.next();
+                    return new Load(rs.getLong("cartons"), orZero(rs.getBigDecimal("volume_m3")),
+                            orZero(rs.getBigDecimal("weight_kg")), rs.getLong("unmeasured"));
+                });
+    }
+
+    /** The units each SKU's {@code HELD} SKU holds keep at a warehouse, before any carton is chosen. */
+    public java.util.List<HeldUnits> heldUnitsAt(String warehouseCode) {
+        return jdbc.query("""
+                select sku, sum(quantity) as units
+                from inventory.stock_reservation
+                where status = 'HELD' and stock_item_id is null and warehouse_code = ?
+                group by sku
+                order by sku""", (rs, n) -> new HeldUnits(rs.getString("sku"), rs.getLong("units")), warehouseCode);
+    }
+
     /** Where cartons of this carton unit holding units stand, by location code. */
     public java.util.List<String> locationsOfUnit(UUID unitId) {
         return jdbc.queryForList("""
