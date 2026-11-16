@@ -40,6 +40,7 @@ browser ─┬─ api, s3, media ─────── DNS-only, straight to the
 | `nginx/snippets/` | TLS, proxy headers, Cloudflare ranges (generated) |
 | `scripts/deploy.sh` | pull, replace, wait for health, roll back on failure |
 | `scripts/refresh-cloudflare-ips.sh` | regenerates the Cloudflare range lists |
+| `scripts/check-env.sh` | compares the server's `.env` with `.env.example` by name (never prints a value) |
 
 ## Memory budget (2 vCPU / 4 GB)
 
@@ -228,7 +229,11 @@ change is needed.
    cd /opt/stockflow
    cp .env.example .env && chmod 600 .env
    nano .env          # every CHANGE_ME, DOMAIN, APP_IMAGE
+   scripts/check-env.sh   # MISSING / EMPTY / CHANGE_ME must be gone; OPTIONAL is fine
    ```
+
+   After any release that adds a variable, run `scripts/check-env.sh` again: the deploy copies the new
+   `.env.example` but never touches `.env`.
 3. Re-run the failed workflow (Actions → the run → Re-run failed jobs).
 
 The first start is the slow one - Flyway applies every migration while the JVM warms up on two
