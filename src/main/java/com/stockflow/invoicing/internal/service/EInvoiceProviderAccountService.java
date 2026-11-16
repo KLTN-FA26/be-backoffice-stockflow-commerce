@@ -6,6 +6,7 @@ import com.stockflow.common.audit.Auditable;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.security.SecretCipher;
+import com.stockflow.invoicing.internal.domain.EInvoiceProvider;
 import com.stockflow.invoicing.internal.domain.InvoiceSeries;
 import com.stockflow.invoicing.internal.domain.ProviderAccounts;
 import org.springframework.stereotype.Service;
@@ -57,8 +58,10 @@ public class EInvoiceProviderAccountService {
      * @param environment {@code SANDBOX} (the provider's test system) or {@code PRODUCTION}
      * @param secret      the account's password; null keeps the one stored. Never logged, never returned
      * @throws BusinessException 404 {@code NOT_FOUND} for an unknown provider; 400 {@code VALIDATION_FAILED} for the
-     *         sandbox, which has no account, or an environment that is neither; 503 {@code SECRETS_UNAVAILABLE} when
-     *         no secrets key is configured; 409 {@code OPTIMISTIC_LOCK}
+     *         sandbox, which has no account, a provider whose account is the deployment's
+     *         ({@link EInvoiceProvider#accountInDeployment()}), or an environment that is neither; 503
+     *         {@code EINVOICE_PROVIDER_UNAVAILABLE} when this build has no implementation of it; 503
+     *         {@code SECRETS_UNAVAILABLE} when no secrets key is configured; 409 {@code OPTIMISTIC_LOCK}
      */
     @Transactional
     @Auditable(action = AuditAction.UPDATE, resourceType = "einvoice-settings", resourceId = "#provider")
@@ -67,6 +70,9 @@ public class EInvoiceProviderAccountService {
         ProviderAccounts.Account account = require(provider);
         if (SandboxProvider.CODE.equals(provider)) {
             throw invalid("provider", "The sandbox has no account");
+        }
+        if (providers.require(provider).accountInDeployment()) {
+            throw invalid("provider", "This provider's account is set in the deployment's environment, not here");
         }
         if (!"SANDBOX".equals(environment) && !"PRODUCTION".equals(environment)) {
             throw invalid("environment", "SANDBOX or PRODUCTION");
@@ -118,14 +124,17 @@ public class EInvoiceProviderAccountService {
      *
      * @throws BusinessException 404 {@code NOT_FOUND}; 503 {@code EINVOICE_PROVIDER_UNAVAILABLE} when this build has no
      *         implementation of it; 409 {@code EINVOICE_PROVIDER_ACCOUNT_INCOMPLETE} for a real provider without a
-     *         stored account ({@code ck_einvoice_provider_config_account} says the same); 409 {@code OPTIMISTIC_LOCK}
+     *         stored account ({@code ck_einvoice_provider_config_account} says the same), or, for one whose account is
+     *         the deployment's, without one configured there; 409 {@code OPTIMISTIC_LOCK}
      */
     @Transactional
     @Auditable(action = AuditAction.UPDATE, resourceType = "einvoice-settings", resourceId = "#provider")
     public ProviderAccounts.Account activate(String provider, long expectedVersion) {
         ProviderAccounts.Account account = require(provider);
-        providers.require(provider);
-        if (!SandboxProvider.CODE.equals(provider) && !account.complete()) {
+        EInvoiceProvider implementation = providers.require(provider);
+        boolean hasAccount = implementation.accountInDeployment() ? implementation.deploymentAccountReady()
+                : account.complete();
+        if (!SandboxProvider.CODE.equals(provider) && !hasAccount) {
             throw new BusinessException(ErrorCode.EINVOICE_PROVIDER_ACCOUNT_INCOMPLETE,
                     "Provider %s has no account stored".formatted(provider));
         }

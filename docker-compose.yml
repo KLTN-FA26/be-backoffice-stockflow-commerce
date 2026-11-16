@@ -164,6 +164,11 @@ services:
       EMAIL_PROVIDER: ${EMAIL_PROVIDER:-smtp}
       RESEND_API_KEY: ${RESEND_API_KEY:-}
       RESEND_FROM: ${RESEND_FROM:-}
+      # SePay eInvoice's key (.env.example). Blank: SePay cannot be switched on; the sandbox keeps issuing.
+      EINVOICE_SEPAY_ENVIRONMENT: ${EINVOICE_SEPAY_ENVIRONMENT:-SANDBOX}
+      EINVOICE_SEPAY_CLIENT_ID: ${EINVOICE_SEPAY_CLIENT_ID:-}
+      EINVOICE_SEPAY_CLIENT_SECRET: ${EINVOICE_SEPAY_CLIENT_SECRET:-}
+      EINVOICE_SEPAY_PROVIDER_ACCOUNT_ID: ${EINVOICE_SEPAY_PROVIDER_ACCOUNT_ID:-}
       OTLP_TRACING_ENDPOINT: http://jaeger:4318/v1/traces
     ports:
       - "8080:8080"

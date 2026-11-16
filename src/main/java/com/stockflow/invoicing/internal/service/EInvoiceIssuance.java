@@ -388,7 +388,8 @@ public class EInvoiceIssuance {
 
     /**
      * The invoice an adjustment or replacement changes, as the provider is to be told: its template, symbol, number
-     * and date, which it has because only an issued invoice is corrected. Null for an original.
+     * and date, which it has because only an issued invoice is corrected, and the transaction it was issued under.
+     * Null for an original.
      */
     private EInvoiceProvider.Correction correctionOf(EInvoice.Snapshot invoice) {
         if (invoice.originalEInvoiceId() == null) {
@@ -396,7 +397,7 @@ public class EInvoiceIssuance {
         }
         EInvoice.Snapshot original = steps.get(invoice.originalEInvoiceId());
         return new EInvoiceProvider.Correction(invoice.type(), original.templateCode(), original.symbol(),
-                original.invoiceNumber(), original.issueDate(), invoice.adjustmentReason());
+                original.invoiceNumber(), original.issueDate(), invoice.adjustmentReason(), original.transactionId());
     }
 
     /** An original invoice as the provider is handed it. */
