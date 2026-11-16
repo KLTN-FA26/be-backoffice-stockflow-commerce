@@ -636,6 +636,7 @@ Enum invoicing.einvoice_provider_config_environment {
 Enum invoicing.einvoice_provider_config_provider {
   SANDBOX
   VIETTEL_SINVOICE
+  SEPAY_EINVOICE
 }
 
 Enum invoicing.sandbox_issuance_kind {
