@@ -102,8 +102,11 @@ Resources:
     Properties:
       Name: !Sub '${AWS::StackName}-product-path-guard'
       AutoPublish: true
+      # Serve only the product-images/ prefix, which holds renditions copied there on gallery approval.
+      # Originals (product-originals/) and unapproved renditions (product-renditions/) are never reachable here.
+      # CloudFront refuses a function Comment over 128 characters, so the explanation lives in this YAML comment.
       FunctionConfig:
-        Comment: Serve only the product-images/ prefix, which holds renditions copied there on gallery approval. Originals (product-originals/) and unapproved renditions (product-renditions/) are never reachable here.
+        Comment: Serves only /product-images/ (approved product renditions); any other path gets 404.
         Runtime: cloudfront-js-2.0
       FunctionCode: |
         function handler(event) {
