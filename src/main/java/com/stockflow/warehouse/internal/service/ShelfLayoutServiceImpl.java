@@ -75,7 +75,10 @@ class ShelfLayoutServiceImpl implements ShelfLayoutService {
 
     @Override
     @Auditable(action = AuditAction.CREATE, resourceType = "shelf",
-            resourceId = "#command.warehouseId()", includeFailures = false)
+            resourceId = "#command.warehouseId()", includeFailures = false,
+            details = "{shelfId: #result?.id(), code: #result?.code(), zoneId: #command.zoneId(), "
+                    + "name: #command.name(), description: #command.description(), footprint: #command.footprint(), "
+                    + "obstacle: #command.obstacle(), pickFaces: #command.pickFaces()}")
     public ShelfSummary createShelf(ShelfCommands.CreateShelf command) {
         Warehouse warehouse = WarehouseLocks.lock(warehouses, command.warehouseId());
         requireZoneOf(command.zoneId(), warehouse.id());
@@ -92,7 +95,10 @@ class ShelfLayoutServiceImpl implements ShelfLayoutService {
 
     @Override
     @Auditable(action = AuditAction.UPDATE, resourceType = "shelf",
-            resourceId = "#command.shelfId()", includeFailures = false)
+            resourceId = "#command.shelfId()", includeFailures = false,
+            details = "{code: #result?.code(), zoneId: #command.zoneId(), name: #command.name(), "
+                    + "description: #command.description(), footprint: #command.footprint(), "
+                    + "obstacle: #command.obstacle(), pickFaces: #command.pickFaces()}")
     public ShelfSummary updateShelf(ShelfCommands.UpdateShelf command) {
         Warehouse warehouse = lockWarehouseOf(command.shelfId());
         Shelf shelf = require(command.shelfId());
@@ -106,7 +112,8 @@ class ShelfLayoutServiceImpl implements ShelfLayoutService {
     }
 
     @Override
-    @Auditable(action = AuditAction.TRANSITION, resourceType = "shelf", resourceId = "#shelfId")
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "shelf", resourceId = "#shelfId",
+            details = "{code: #result?.code(), status: #status}")
     public ShelfSummary changeShelfStatus(UUID shelfId, LocationStatus status) {
         Warehouse warehouse = lockWarehouseOf(shelfId);
         Shelf shelf = require(shelfId);
@@ -124,7 +131,8 @@ class ShelfLayoutServiceImpl implements ShelfLayoutService {
     }
 
     @Override
-    @Auditable(action = AuditAction.CREATE, resourceType = "shelf-level", resourceId = "#command.shelfId()")
+    @Auditable(action = AuditAction.CREATE, resourceType = "shelf-level", resourceId = "#command.shelfId()",
+            details = "{levelId: #result?.id(), levelIndex: #command.levelIndex(), measures: #command.measures()}")
     public ShelfSummary.Level addLevel(ShelfCommands.AddLevel command) {
         lockWarehouseOf(command.shelfId());
         Shelf shelf = require(command.shelfId());
@@ -133,7 +141,8 @@ class ShelfLayoutServiceImpl implements ShelfLayoutService {
     }
 
     @Override
-    @Auditable(action = AuditAction.UPDATE, resourceType = "shelf-level", resourceId = "#command.levelId()")
+    @Auditable(action = AuditAction.UPDATE, resourceType = "shelf-level", resourceId = "#command.levelId()",
+            details = "{levelIndex: #result?.levelIndex(), measures: #command.measures()}")
     public ShelfSummary.Level updateLevel(ShelfCommands.UpdateLevel command) {
         lockWarehouseOf(command.shelfId());
         Shelf shelf = require(command.shelfId());
@@ -152,7 +161,9 @@ class ShelfLayoutServiceImpl implements ShelfLayoutService {
 
     @Override
     @Auditable(action = AuditAction.CREATE, resourceType = "bin",
-            resourceId = "#command.levelId()", includeFailures = false)
+            resourceId = "#command.levelId()", includeFailures = false,
+            details = "{locationCode: #result?.locationCode(), details: #command.details(), "
+                    + "settings: #command.settings()}")
     public ShelfSummary.BinEntry addBin(ShelfCommands.AddBin command) {
         Warehouse warehouse = lockWarehouseOf(command.shelfId());
         Shelf shelf = require(command.shelfId());
@@ -163,7 +174,9 @@ class ShelfLayoutServiceImpl implements ShelfLayoutService {
 
     @Override
     @Auditable(action = AuditAction.UPDATE, resourceType = "bin",
-            resourceId = "#command.binId()", includeFailures = false)
+            resourceId = "#command.binId()", includeFailures = false,
+            details = "{locationCode: #result?.locationCode(), details: #command.details(), "
+                    + "settings: #command.settings()}")
     public ShelfSummary.BinEntry updateBin(ShelfCommands.UpdateBin command) {
         lockWarehouseOf(command.shelfId());
         Shelf shelf = require(command.shelfId());
@@ -181,7 +194,8 @@ class ShelfLayoutServiceImpl implements ShelfLayoutService {
     }
 
     @Override
-    @Auditable(action = AuditAction.TRANSITION, resourceType = "bin", resourceId = "#binId")
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "bin", resourceId = "#binId",
+            details = "{locationCode: #result?.locationCode(), status: #status}")
     public ShelfSummary.BinEntry changeBinStatus(UUID shelfId, UUID levelId, UUID binId, LocationStatus status) {
         lockWarehouseOf(shelfId);
         Shelf shelf = require(shelfId);
@@ -199,7 +213,10 @@ class ShelfLayoutServiceImpl implements ShelfLayoutService {
      */
     @Override
     @Auditable(action = AuditAction.CREATE, resourceType = "bin",
-            resourceId = "#command.shelfId()", includeFailures = false)
+            resourceId = "#command.shelfId()", includeFailures = false,
+            details = "{levelIds: #command.levelIds(), rows: #command.rows(), columns: #command.columns(), "
+                    + "scheme: #command.scheme(), defaults: #command.defaults(), "
+                    + "binsPerLevel: (#result == null ? null : #result.![bins().size()])}")
     public List<ShelfSummary.Level> generateBins(ShelfCommands.GenerateBins command) {
         Warehouse warehouse = lockWarehouseOf(command.shelfId());
         Shelf shelf = require(command.shelfId());

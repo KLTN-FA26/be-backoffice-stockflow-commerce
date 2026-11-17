@@ -6,10 +6,14 @@ import com.stockflow.payment.internal.domain.InstallmentBook;
 import com.stockflow.payment.internal.domain.InstallmentStatus;
 import com.stockflow.payment.internal.domain.PaymentReceipt;
 import com.stockflow.payment.internal.domain.PaymentReceiptStatus;
+import com.stockflow.payment.internal.domain.ReceiptFilter;
 import com.stockflow.payment.internal.entity.InstallmentJpaEntity;
 import com.stockflow.payment.internal.entity.PaymentReceiptJpaEntity;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.LockModeType;
+import jakarta.persistence.criteria.CriteriaBuilder;
+import jakarta.persistence.criteria.CriteriaQuery;
+import jakarta.persistence.criteria.Root;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.domain.Specification;
@@ -223,18 +227,43 @@ class InstallmentBookAdapter implements InstallmentBook, InstallmentSearch {
     }
 
     @Override
-    public Page<PaymentReceipt> receipts(UUID customerId, PaymentReceiptStatus status, String reference,
-                                         Pageable pageable) {
-        Specification<PaymentReceiptJpaEntity> spec = Specification
-                .<PaymentReceiptJpaEntity>where(Specs.eq("customerId", customerId))
-                .and(Specs.eq("status", status))
-                // Normalised as BR-03 compares: "ft 26111abc" finds the receipt recorded as "FT26111ABC".
-                .and(Specs.eq("referenceNormalized", reference == null || reference.isBlank() ? null
-                        : PaymentReceipt.normalize(reference)));
-        Page<PaymentReceiptJpaEntity> page = receipts.findAll(spec, pageable);
+    public Page<PaymentReceipt> receipts(ReceiptFilter filter, Pageable pageable) {
+        Page<PaymentReceiptJpaEntity> page = receipts.findAll(matching(filter), pageable);
         // One query for the lines of the whole page.
         Map<UUID, List<PaymentReceipt.Line>> lines = linesOf(page.map(PaymentReceiptJpaEntity::getId).getContent());
         return page.map(entity -> toDomain(entity, lines.getOrDefault(entity.getId(), List.of())));
+    }
+
+    @Override
+    public List<ReceiptTotal> recordedTotals(ReceiptFilter filter) {
+        CriteriaBuilder cb = entityManager.getCriteriaBuilder();
+        CriteriaQuery<Object[]> query = cb.createQuery(Object[].class);
+        Root<PaymentReceiptJpaEntity> root = query.from(PaymentReceiptJpaEntity.class);
+        Specification<PaymentReceiptJpaEntity> recorded = matching(filter)
+                .and(Specs.eq("status", PaymentReceiptStatus.RECORDED));
+        query.multiselect(root.get("currency"), cb.count(root), cb.sum(root.<BigDecimal>get("amount")))
+                .where(recorded.toPredicate(root, query, cb))
+                .groupBy(root.get("currency"))
+                .orderBy(cb.asc(root.get("currency")));
+        return entityManager.createQuery(query).getResultList().stream()
+                .map(row -> new ReceiptTotal((String) row[0], ((Number) row[1]).longValue(), decimal(row[2])))
+                .toList();
+    }
+
+    /**
+     * The receipts a filter matches, for the list and its totals alike: the same predicate, so the sum shown above the
+     * list is the sum of its rows.
+     */
+    private static Specification<PaymentReceiptJpaEntity> matching(ReceiptFilter filter) {
+        return Specification
+                .<PaymentReceiptJpaEntity>where(Specs.eq("customerId", filter.customerId()))
+                .and(Specs.eq("status", filter.status()))
+                // Normalised as BR-03 compares: "ft 26111abc" finds the receipt recorded as "FT26111ABC".
+                .and(Specs.eq("referenceNormalized", filter.normalizedReference()))
+                .and(filter.receivedFrom() == null ? null
+                        : (root, query, cb) -> cb.greaterThanOrEqualTo(root.get("receivedOn"), filter.receivedFrom()))
+                .and(filter.receivedTo() == null ? null
+                        : (root, query, cb) -> cb.lessThanOrEqualTo(root.get("receivedOn"), filter.receivedTo()));
     }
 
     private Map<UUID, List<PaymentReceipt.Line>> linesOf(List<UUID> receiptIds) {

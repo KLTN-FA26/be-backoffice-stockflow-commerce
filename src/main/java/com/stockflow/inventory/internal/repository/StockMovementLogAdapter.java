@@ -96,6 +96,11 @@ class StockMovementLogAdapter implements StockMovementLog, StockLedgerSearch {
                 .<StockMovementJpaEntity>where(Specs.eq("sku", upper(criteria.sku())))
                 .and(Specs.eq("movementType", criteria.type()))
                 .and(location(upper(criteria.location())))
+                .and(criteria.occurredFrom() == null ? null : (root, query, cb) ->
+                        cb.greaterThanOrEqualTo(root.get("occurredAt"), criteria.occurredFrom()))
+                .and(criteria.occurredBefore() == null ? null : (root, query, cb) ->
+                        cb.lessThan(root.get("occurredAt"), criteria.occurredBefore()))
+                .and(inWarehouse(criteria.warehousePrefix()))
                 .and(UnderCountSpecs.unless(criteria.hideCountedSlots(), UnderCountSpecs.movementsOutsideCountedSlots()))
                 .and(com.stockflow.common.security.WarehouseScope.locationsIn("fromLocationCode", "toLocationCode"));
         return jpa.findAll(spec, pageable).map(StockMovementLogAdapter::toDomain);
@@ -107,6 +112,19 @@ class StockMovementLogAdapter implements StockMovementLog, StockLedgerSearch {
         }
         return (root, query, cb) -> cb.or(
                 cb.equal(root.get("fromLocationCode"), code), cb.equal(root.get("toLocationCode"), code));
+    }
+
+    /**
+     * Lines with either side in the warehouse: its location codes start with its prefix and a dash (06 BR-13), the
+     * pattern {@link com.stockflow.common.security.WarehouseScope#locationPattern} spells for every query.
+     */
+    private static Specification<StockMovementJpaEntity> inWarehouse(String prefix) {
+        if (prefix == null) {
+            return null;
+        }
+        String pattern = com.stockflow.common.security.WarehouseScope.locationPattern(prefix);
+        return (root, query, cb) -> cb.or(cb.like(root.get("fromLocationCode"), pattern, '\\'),
+                cb.like(root.get("toLocationCode"), pattern, '\\'));
     }
 
     private static String upper(String value) {

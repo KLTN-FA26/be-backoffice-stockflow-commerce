@@ -220,7 +220,12 @@ Stock the business does not have is not bought: Sales Manager-approved **product
 `order/internal/service/`) are sent to producers outside the system, one per delivery batch, for what the batch lacks
 after the stock held for it. The order waits `AWAITING_STOCK` / `IN_PRODUCTION`. The print sample rounds
 (`ProductionSampleService`), the schedule and the delay alerts are in the same module. Every write locks the sales
-order first and the production order after it.
+order first and the production order after it. Approving one (`ProductionOrderService.approve`, the capacity board's
+warning when the warehouse's projected free room turns negative, kltn-docs 06 §4.6, C42) takes one more lock, last:
+
+```
+customer_order → production_order → warehouse-capacity:<warehouseId> advisory lock   (approval only)
+```
 
 Goods come back printed, in cartons, and are received against the production order: `GoodsReceiptServiceImpl`
 (`procurement`) works through `order :: api` `ProductionOrderReceiving`. A receipt takes whole cartons of each line's

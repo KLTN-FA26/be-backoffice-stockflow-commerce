@@ -108,7 +108,7 @@ class OrderReleaseService implements OrderReleases {
                 && batches.scheduled(order) ? batches.nextToRelease(order) : java.util.Optional.empty();
         if (order.paidByContract() && batches.scheduled(order)) {
             com.stockflow.order.internal.domain.DeliveryBatch batch = next.orElseThrow(() -> new BusinessException(
-                    ErrorCode.DELIVERY_BATCH_NOT_NEXT, "Every delivery batch of order %s is released already"
+                    ErrorCode.DELIVERY_BATCH_ALL_RELEASED, "Every delivery batch of order %s is released already"
                             .formatted(order.orderNumber())));
             if (deliveryBatchId != null && !deliveryBatchId.equals(batch.id())) {
                 throw new BusinessException(ErrorCode.DELIVERY_BATCH_NOT_NEXT, ("Order %s releases delivery batch %d "

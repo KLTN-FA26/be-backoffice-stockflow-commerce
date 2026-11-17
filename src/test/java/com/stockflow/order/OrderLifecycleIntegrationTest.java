@@ -480,6 +480,17 @@ class OrderLifecycleIntegrationTest {
         assertThat(closed.status()).isEqualTo(OrderStatus.SHIPPED);
         assertThat(jdbc.queryForObject("SELECT cancelled_quantity FROM ordering.order_line WHERE order_id = ?",
                 Integer.class, order.orderId())).as("the shortfall only").isEqualTo(1);
+        // WF4-CLOSE-HIST-SCHEMA: the closure is a row of its own - never a from = to row of the status history - and the
+        // table is append-only.
+        assertThat(orders.remainderClosures(order.orderId())).singleElement().satisfies(closure -> {
+            assertThat(closure.reasonCode()).isEqualTo(CancellationReasonCode.OUT_OF_STOCK);
+            assertThat(closure.note()).isNull();
+            assertThat(closure.closedBy()).isEqualTo(staff);
+            assertThat(closure.closedAt()).isNotNull();
+        });
+        assertThat(orders.history(order.orderId())).noneMatch(change -> change.from() == change.to());
+        assertThat(catchThrowable(() -> jdbc.update("UPDATE ordering.order_remainder_closure SET note = 'x' "
+                + "WHERE order_id = ?", order.orderId()))).hasMessageContaining("append-only");
     }
 
     @Test
@@ -607,6 +618,7 @@ class OrderLifecycleIntegrationTest {
         assertThat(code(catchThrowable(() -> orders.closeRemainder(order.orderId(), CancellationReasonCode.OTHER,
                 "hàng thất lạc", staff)))).as("the second closure is Sales' decision on the failed delivery now")
                 .isEqualTo(ErrorCode.ORDER_INVALID_TRANSITION);
+        assertThat(orders.remainderClosures(order.orderId())).as("a refused closure leaves no row").hasSize(1);
         assertThat(jdbc.queryForObject("SELECT cancelled_quantity FROM ordering.order_line WHERE order_id = ?",
                 Integer.class, order.orderId())).as("two pieces closed by the first closure; the one that came back waits")
                 .isEqualTo(2);

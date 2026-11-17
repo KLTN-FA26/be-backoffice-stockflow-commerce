@@ -25,6 +25,8 @@ import com.stockflow.support.PostgresContainer;
 import com.stockflow.support.RedisContainer;
 import com.stockflow.support.ReferenceRows;
 import jakarta.persistence.EntityManager;
+import org.apache.pdfbox.Loader;
+import org.apache.pdfbox.text.PDFTextStripper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -33,6 +35,7 @@ import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMock
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Import;
+import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
@@ -59,6 +62,7 @@ import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -2403,6 +2407,8 @@ class FtlDispatchIntegrationTest {
                 .andExpect(jsonPath("$.details.orders[0].orderId").value(order.orderId().toString()))
                 .andExpect(jsonPath("$.details.orders[0].orderNumber").value(order.orderNumber()))
                 .andExpect(jsonPath("$.details.orders[0].reasonCode").value("ORDER_BALANCE_NOT_PAID"))
+                .andExpect(jsonPath("$.details.orders[0].reasonCodes.length()").value(1))
+                .andExpect(jsonPath("$.details.orders[0].reasonCodes[0]").value("ORDER_BALANCE_NOT_PAID"))
                 .andExpect(jsonPath("$.details.orders[0].amountDue").value(owed.stripTrailingZeros().toPlainString()))
                 .andExpect(jsonPath("$.details.orders[0].currency").value("VND"))
                 .andExpect(jsonPath("$.details.orders[0].deliveryBatchSeq").value(1));
@@ -2465,6 +2471,8 @@ class FtlDispatchIntegrationTest {
                 .andExpect(jsonPath("$.errorCode").value("LOAD_HANDOVER_BLOCKED"))
                 .andExpect(jsonPath("$.details.orders[0].orderId").value(orderId.toString()))
                 .andExpect(jsonPath("$.details.orders[0].reasonCode").value("DELIVERY_BATCH_WINDOW_NOT_OPEN"))
+                .andExpect(jsonPath("$.details.orders[0].reasonCodes.length()").value(1))
+                .andExpect(jsonPath("$.details.orders[0].reasonCodes[0]").value("DELIVERY_BATCH_WINDOW_NOT_OPEN"))
                 .andExpect(jsonPath("$.details.orders[0].deliveryBatchSeq").value(2))
                 .andExpect(jsonPath("$.details.orders[0].windowStart").value(today.plusDays(14).toString()));
         assertThat(shipmentStatus(next[0])).isEqualTo("READY_TO_DISPATCH");
@@ -2501,6 +2509,11 @@ class FtlDispatchIntegrationTest {
         assertThat(lpns).hasSize(2);
         CartonStationSupport.post(this::packer, BASE + "/tasks/" + task + "/cartons/" + lpns.get(1) + "/removal",
                 "{\"note\":\"móp góc\"}").andExpect(status().isOk());
+        // WF4-BE3-HOLD: the order is held at the removal and the station refuses its cartons until Sales decides.
+        assertHeldForTheRemovedCarton(order);
+        CartonStationSupport.post(this::packer, BASE + "/tasks/" + task + "/carton-labels", null)
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("PACK_STATE_CONFLICT"));
+        salesResolvesTheInventoryHold(order);
         CartonStationSupport.labelAll(this::packer, task);
 
         CartonStationSupport.post(this::packer, BASE + "/tasks/" + task + "/packing-completion", "{}")
@@ -2535,6 +2548,38 @@ class FtlDispatchIntegrationTest {
     }
 
     // ---- BE-3: a carton removed at the check station is a shortage, replaced as a short pick is reallocated -------
+
+    /**
+     * WF4-BE3-HOLD (owner, 2026-11-15): the removal of a carton at the check station puts the order on INVENTORY hold at
+     * once, as a short pick report does; the check station refuses the order's cartons while it is held.
+     */
+    private void assertHeldForTheRemovedCarton(OrderSummary order) throws Exception {
+        OrderSummary held = orders.findById(order.orderId()).orElseThrow();
+        assertThat(held.status()).as("held at the removal").isEqualTo(OrderStatus.ON_HOLD);
+        assertThat(held.lifecycle().holdReason()).isEqualTo(HoldReason.INVENTORY);
+    }
+
+    /** Sales decides with the customer to go on with what is checked: the INVENTORY hold is resolved (17 §4.9 step 36). */
+    private void salesResolvesTheInventoryHold(OrderSummary order) throws Exception {
+        assertHeldForTheRemovedCarton(order);
+        sales(body(post(ORDERS + "/" + order.orderId() + "/hold/resolution"),
+                "{\"note\":\"Khách đồng ý nhận phần đã kiểm trước\"}")).andExpect(status().isOk());
+        assertThat(orders.findById(order.orderId()).orElseThrow().status()).as("back where it was before the hold")
+                .isNotEqualTo(OrderStatus.ON_HOLD);
+    }
+
+    /** The per-line view of the order's cover (GET stock-coverage): the cartons the line holds and lacks. */
+    private void assertLineCover(OrderSummary order, int held, int lacking) throws Exception {
+        JsonNode coverage = data(sales(get(ORDERS + "/" + order.orderId() + "/stock-coverage"))
+                .andExpect(status().isOk()));
+        assertThat(coverage.path("lines")).singleElement().satisfies(line -> {
+            assertThat(line.path("heldCartons").asInt()).as("line: held cartons").isEqualTo(held);
+            assertThat(line.path("shortCartons").asInt()).as("line: short cartons").isEqualTo(lacking);
+        });
+        assertThat(coverage.path("batches")).singleElement().satisfies(batch -> assertThat(batch.path("lines"))
+                .singleElement().satisfies(line -> assertThat(line.path("shortCartons").asInt())
+                        .as("batch: short cartons").isEqualTo(lacking)));
+    }
 
     /** The pick line of a carton the task picked, by its LPN. */
     private UUID lineOf(UUID task, String lpn) {
@@ -2581,6 +2626,8 @@ class FtlDispatchIntegrationTest {
                 "{\"note\":\"móp góc\"}").andExpect(status().isOk());
         assertThat(batchHolds(order)).as("17 §5.5: the batch no longer counts the removed carton - it lacks it again")
                 .isEqualTo(1);
+        assertLineCover(order, 1, 1);
+        salesResolvesTheInventoryHold(order);
         CartonStationSupport.labelAll(this::packer, task);
         UUID part = UUID.fromString(CartonStationSupport.completeOnly(this::packer, json, task,
                 "{\"partial\":true,\"note\":\"1 thùng móp, giao sau\"}").path("shipmentId").asText());
@@ -2698,7 +2745,12 @@ class FtlDispatchIntegrationTest {
         UUID removed = lineOf(task, damaged);
         CartonStationSupport.post(this::packer, BASE + "/tasks/" + task + "/cartons/" + damaged + "/removal",
                 "{\"note\":\"ướt\"}").andExpect(status().isOk());
+        assertHeldForTheRemovedCarton(order);
+        assertLineCover(order, 1, 1);
         assertThat(data(reallocate(task, removed).andExpect(status().isOk()))).hasSize(1);
+        assertThat(orders.findById(order.orderId()).orElseThrow().status())
+                .as("a reallocation that finds stock lifts the hold").isNotEqualTo(OrderStatus.ON_HOLD);
+        assertLineCover(order, 2, 0);
         CartonStationSupport.post(this::packer, BASE + "/tasks/" + task + "/carton-labels", null)
                 .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("PACKING_NOT_READY"));
         assertThat(orders.findById(order.orderId()).orElseThrow().status()).isEqualTo(OrderStatus.PICKING);
@@ -2733,6 +2785,7 @@ class FtlDispatchIntegrationTest {
         List<String> lpns = CartonStationSupport.pickedLpns(jdbc, task);
         CartonStationSupport.post(this::packer, BASE + "/tasks/" + task + "/cartons/" + lpns.get(1) + "/removal",
                 "{\"note\":\"móp góc\"}").andExpect(status().isOk());
+        salesResolvesTheInventoryHold(order);
         CartonStationSupport.labelAll(this::packer, task);
         UUID shipment = UUID.fromString(CartonStationSupport.completeOnly(this::packer, json, task,
                 "{\"partial\":true,\"note\":\"1 thùng móp, giao sau\"}").path("shipmentId").asText());
@@ -4051,5 +4104,71 @@ class FtlDispatchIntegrationTest {
         assertThat(second.status()).isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
         assertThat(jdbc.queryForList("SELECT delivery_batch_id FROM ordering.delivery_batch_release WHERE order_id = ? "
                 + "ORDER BY seq", UUID.class, orderId)).containsExactlyElementsOf(batchIds);
+    }
+
+    // ---- BE3-A: the delivery note -------------------------------------------------------------
+
+    @Test
+    @DisplayName("09 §4.2: a shipment's delivery note prints at dispatch before a vehicle is booked (lines to fill in) "
+            + "and after the handover with the vehicle, the waybill, every LPN; another warehouse 403; a cancelled "
+            + "shipment 409; none 404")
+    void theDeliveryNote() throws Exception {
+        OrderSummary order = ftlOrder(1);
+        UUID shipment = packed(order, false)[0];
+        String note = BASE + "/shipments/" + shipment + "/delivery-note";
+        String code = jdbc.queryForObject("SELECT code FROM fulfillment.shipment WHERE id = ?", String.class, shipment);
+        List<String> lpns = jdbc.queryForList("""
+                SELECT l.lpn FROM fulfillment.package p JOIN fulfillment.pick_line l ON l.id = p.pick_line_id
+                 WHERE p.shipment_id = ? ORDER BY l.lpn""", String.class, shipment);
+        String contract = jdbc.queryForObject("SELECT contract_number FROM ordering.sales_contract WHERE order_id = ? "
+                + "AND status <> 'CANCELLED'", String.class, order.orderId());
+        assertThat(lpns).isNotEmpty();
+        // Each SKU carried is printed with its catalogue name (the variant's), looked up through product :: api.
+        Map<String, Object> skuNamed = jdbc.queryForMap("""
+                SELECT DISTINCT l.sku, v.name FROM fulfillment.package p
+                  JOIN fulfillment.pick_line l ON l.id = p.pick_line_id
+                  JOIN product.variants v ON v.sku = l.sku
+                 WHERE p.shipment_id = ?""", shipment);
+
+        // At dispatch, no vehicle yet: the same form, the vehicle and the handover dotted lines.
+        String before = pdfText(dispatch(get(note)).andExpect(status().isOk())
+                .andExpect(content().contentType(MediaType.APPLICATION_PDF))
+                .andReturn().getResponse().getContentAsByteArray());
+        assertThat(before).contains("BIÊN BẢN GIAO NHẬN HÀNG HOÁ", "Mã shipment: " + code,
+                "Đơn hàng: " + order.orderNumber(), "Hợp đồng: " + contract + " - đợt giao 1",
+                "Xe: biển số ......", "Thời điểm bàn giao: ......", lpns.getFirst(),
+                skuNamed.get("sku") + " — " + skuNamed.get("name") + ": " + lpns.size() + " thùng",
+                "Tổng cộng: " + lpns.size() + " thùng");
+
+        // Booked, loaded and signed: the vehicle, its waybill and the moment of the handover are on it.
+        String loadId = loadOf(confirmed(List.of(shipment), truck5t), 1);
+        book(loadId, ghn, "51C-246.80");
+        loadAndSign(loadId, "51C-246.80");
+        String loadCode = load(loadId).path("code").asText();
+        String after = pdfText(dispatch(get(note)).andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsByteArray());
+        assertThat(after).contains("Chuyến " + loadCode + " - Xe tải Nhanh: biển số 51C-246.80; tài xế Tai",
+                "mã vận đơn WB-" + loadId, lpns.getLast()).doesNotContain("Thời điểm bàn giao: ......");
+
+        // Limited to the caller's warehouses, as every shipment read is.
+        as(dispatcherElsewhere, "WAREHOUSE_STAFF", get(note)).andExpect(status().isForbidden());
+        dispatch(get(BASE + "/shipments/" + UUID.randomUUID() + "/delivery-note")).andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.errorCode").value("SHIPMENT_NOT_FOUND"));
+
+        // A cancelled shipment hands nothing over: no delivery note.
+        UUID cancelled = Identifiers.newId();
+        tx.executeWithoutResult(s -> jdbc.update("""
+                INSERT INTO fulfillment.shipment (id, order_id, status, code, warehouse_id, package_count, ready_at,
+                                                  cancelled_at, cancel_reason, created_at, created_by)
+                VALUES (?, ?, 'CANCELLED', ?, ?, 1, NOW(), NOW(), 'order cancelled', NOW(), 'test')""",
+                cancelled, order.orderId(), code + "-X", HCM));
+        dispatch(get(BASE + "/shipments/" + cancelled + "/delivery-note")).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("SHIPMENT_STATE_CONFLICT"));
+    }
+
+    private static String pdfText(byte[] pdf) throws Exception {
+        try (var document = Loader.loadPDF(pdf)) {
+            return new PDFTextStripper().getText(document).replaceAll("\\s+", " ");
+        }
     }
 }

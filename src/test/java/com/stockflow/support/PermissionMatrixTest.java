@@ -362,6 +362,24 @@ class PermissionMatrixTest {
                     Role.CUSTOMER, Role.SYSTEM_ADMIN)),
             Map.entry("payment-refunds:CREATE", Set.of(Role.ACCOUNTANT, Role.SYSTEM_ADMIN)),
             Map.entry("payment-refunds:UPDATE", Set.of(Role.ACCOUNTANT, Role.SYSTEM_ADMIN)),
+            // 2026-11-14 plan, BE2 (V20261126000100): the receipts' Excel file, for the accounting software (15 BR-06), is
+            // the accountant's, as recording and voiding them are.
+            Map.entry("payment-receipts:EXPORT", Set.of(Role.ACCOUNTANT, Role.SYSTEM_ADMIN)),
+            // BE2-B (15 §2, §4.3): receivables are read by the accountant, Sales and the Sales Manager; exported - every
+            // customer's debt at once - by the accountant and the Sales Manager.
+            Map.entry("reporting-receivables:VIEW_PAGE", Set.of(Role.ACCOUNTANT, Role.SALES_MANAGER,
+                    Role.SALES_STAFF, Role.SYSTEM_ADMIN)),
+            Map.entry("reporting-receivables:READ", Set.of(Role.ACCOUNTANT, Role.SALES_MANAGER, Role.SALES_STAFF,
+                    Role.SYSTEM_ADMIN)),
+            Map.entry("reporting-receivables:EXPORT", Set.of(Role.ACCOUNTANT, Role.SALES_MANAGER, Role.SYSTEM_ADMIN)),
+            // BE2-C (20 §4.7): the stock summary is read by the warehouse manager (their warehouses), the Sales Manager
+            // and the accountant; exported by the warehouse manager and the accountant.
+            Map.entry("reporting-stock-summary:VIEW_PAGE", Set.of(Role.WAREHOUSE_MANAGER, Role.SALES_MANAGER,
+                    Role.ACCOUNTANT, Role.SYSTEM_ADMIN)),
+            Map.entry("reporting-stock-summary:READ", Set.of(Role.WAREHOUSE_MANAGER, Role.SALES_MANAGER,
+                    Role.ACCOUNTANT, Role.SYSTEM_ADMIN)),
+            Map.entry("reporting-stock-summary:EXPORT", Set.of(Role.WAREHOUSE_MANAGER, Role.ACCOUNTANT,
+                    Role.SYSTEM_ADMIN)),
             // 4B-7, kltn-docs 17 §4.2 step 2: Sales chooses the shipping warehouse; those who follow the order read it.
             Map.entry("sales-order-shipping-warehouses:UPDATE", Set.of(Role.SALES_STAFF, Role.SYSTEM_ADMIN)),
             Map.entry("sales-order-shipping-warehouses:READ", Set.of(Role.SALES_STAFF, Role.SALES_MANAGER,
@@ -410,7 +428,16 @@ class PermissionMatrixTest {
             // SCRUM-474 5b (V20261029004000): the user-management screen picks warehouses too.
             Map.entry("warehouse-warehouses:READ", Set.of(Role.WAREHOUSE_MANAGER, Role.WAREHOUSE_STAFF,
                     Role.SALES_STAFF,
-                    Role.SALES_MANAGER, Role.SYSTEM_ADMIN)));
+                    Role.SALES_MANAGER, Role.SYSTEM_ADMIN)),
+            // BE1 (V20261125000100, kltn-docs 06 §2): the capacity board - the warehouse manager, Sales choosing a
+            // shipping warehouse, the coordinator drawing up and the Sales Manager approving a production order.
+            Map.entry("warehouse-capacity:VIEW_PAGE", Set.of(Role.WAREHOUSE_MANAGER, Role.SALES_STAFF,
+                    Role.SALES_MANAGER, Role.PRODUCTION_COORDINATOR, Role.SYSTEM_ADMIN)),
+            Map.entry("warehouse-capacity:READ", Set.of(Role.WAREHOUSE_MANAGER, Role.SALES_STAFF,
+                    Role.SALES_MANAGER, Role.PRODUCTION_COORDINATOR, Role.SYSTEM_ADMIN)),
+            // BE3-B (V20261127000100, kltn-docs 00 §2.5): the audit trail names people - the System Admin alone reads it.
+            Map.entry("platform-audit-logs:READ", Set.of(Role.SYSTEM_ADMIN)),
+            Map.entry("platform-audit-logs:VIEW_PAGE", Set.of(Role.SYSTEM_ADMIN)));
 
     /** A valid body for the customer-reachable write handlers, so validation (400) cannot hide a missing owner check. */
     private Map<String, String> attackBodies() {
@@ -682,11 +709,11 @@ class PermissionMatrixTest {
     void theOwnerOfTheSameRowsIsServed() throws Exception {
         SecuredMvc http = new SecuredMvc(mvc, decoder);
         // The victim's quote is a valid row its owner reads (B-6a): the 404 the attacker gets is the owner check, not a
-        // broken fixture.
+        // broken fixture. So is its PDF, drawn from the same read (a quote drafted before cartons, QD-16).
         for (String path : List.of("/api/v1/orders/" + victimOrder, "/api/v1/orders/me/" + victimOrder,
                 "/api/v1/orders/me/" + victimOrder + "/delivery-batches",
                 "/api/v1/designs/" + victimDesign, "/api/v1/customers/" + victimCustomer + "/addresses",
-                "/api/v1/quotes/" + victimQuote)) {
+                "/api/v1/quotes/" + victimQuote, "/api/v1/quotes/" + victimQuote + "/document")) {
             assertThat(http.asCustomer(victimUser, MockMvcRequestBuilders.get(path)).andReturn().getResponse().getStatus())
                     .as("the owner reading " + path).isEqualTo(200);
         }
@@ -843,6 +870,102 @@ class PermissionMatrixTest {
     }
 
     /**
+     * BE1 (kltn-docs 06 §2, §4.6): both capacity-board reads need {@code warehouse-capacity:READ} with scope ALL - so the
+     * warehouse manager, whose own scope is WAREHOUSE, is narrowed to their warehouses in the service - and warehouse
+     * staff, the accountant and the customer hold no part of it. Editing the utilization factor is the warehouse's own
+     * {@code PUT /warehouses/{id}}, {@code warehouse-warehouses:UPDATE}.
+     */
+    @Test
+    void theWarehouseCapacityEndpointsNeedTheirPermission() {
+        Map<String, Handler> byKey = new HashMap<>();
+        handlers().forEach(h -> byKey.put(h.key(), h));
+        Map<String, String> expected = Map.of(
+                "GET /api/v1/warehouse-capacity", "warehouse-capacity:READ",
+                "GET /api/v1/warehouse-capacity/{warehouseId}", "warehouse-capacity:READ",
+                "PUT /api/v1/warehouses/{warehouseId}", "warehouse-warehouses:UPDATE");
+        expected.forEach((key, code) -> {
+            assertThat(byKey).as(key).containsKey(key);
+            RequiresPermission rp = byKey.get(key).rp();
+            assertThat(rp).as(key + " is guarded").isNotNull();
+            assertThat(PermissionCode.of(rp.resource(), rp.action())).as(key).isEqualTo(PermissionCode.parse(code));
+            assertThat(rp.scope()).as(key).isEqualTo(DataScope.ALL);
+        });
+        for (Role role : List.of(Role.WAREHOUSE_STAFF, Role.ACCOUNTANT, Role.CUSTOMER)) {
+            assertThat(roles.resolve(List.of(role.authority())).permissions()).as(role.name())
+                    .doesNotContain(PermissionCode.parse("warehouse-capacity:READ"),
+                            PermissionCode.parse("warehouse-capacity:VIEW_PAGE"));
+        }
+    }
+
+    /**
+     * 2026-11-14 plan, BE2: each report reads with its own resource's READ and exports with its EXPORT; the receipts'
+     * total reads as the list does and their file is {@code payment-receipts:EXPORT}. The stock summary keeps the
+     * default scope (ALL), which is what narrows a WAREHOUSE-scoped manager to their warehouses. The customer holds
+     * none of them; a salesperson reads receivables but does not export them; the warehouse manager reads stock, not
+     * debts.
+     */
+    @Test
+    void theReportEndpointsNeedTheirPermissions() {
+        Map<String, Handler> byKey = new HashMap<>();
+        handlers().forEach(h -> byKey.put(h.key(), h));
+        Map<String, String> expected = Map.of(
+                "GET /api/v1/reports/receivables", "reporting-receivables:READ",
+                "GET /api/v1/reports/receivables/export", "reporting-receivables:EXPORT",
+                "GET /api/v1/reports/stock-summary", "reporting-stock-summary:READ",
+                "GET /api/v1/reports/stock-summary/export", "reporting-stock-summary:EXPORT",
+                "GET /api/v1/payment-receipts", "payment-receipts:READ",
+                "GET /api/v1/payment-receipts/summary", "payment-receipts:READ",
+                "GET /api/v1/payment-receipts/export", "payment-receipts:EXPORT");
+        expected.forEach((key, code) -> {
+            assertThat(byKey).as(key).containsKey(key);
+            RequiresPermission rp = byKey.get(key).rp();
+            assertThat(rp).as(key + " is guarded").isNotNull();
+            assertThat(PermissionCode.of(rp.resource(), rp.action())).as(key).isEqualTo(PermissionCode.parse(code));
+            assertThat(rp.scope()).as(key).isEqualTo(DataScope.ALL);
+        });
+        List<PermissionCode> all = expected.values().stream().distinct().map(PermissionCode::parse).toList();
+        assertThat(roles.resolve(List.of(Role.CUSTOMER.authority())).permissions()).doesNotContainAnyElementsOf(all);
+        assertThat(roles.resolve(List.of(Role.SALES_STAFF.authority())).permissions())
+                .contains(PermissionCode.parse("reporting-receivables:READ"))
+                .doesNotContain(PermissionCode.parse("reporting-receivables:EXPORT"),
+                        PermissionCode.parse("reporting-stock-summary:READ"),
+                        PermissionCode.parse("payment-receipts:EXPORT"));
+        assertThat(roles.resolve(List.of(Role.WAREHOUSE_MANAGER.authority())).permissions())
+                .contains(PermissionCode.parse("reporting-stock-summary:READ"),
+                        PermissionCode.parse("reporting-stock-summary:EXPORT"))
+                .doesNotContain(PermissionCode.parse("reporting-receivables:READ"),
+                        PermissionCode.parse("payment-receipts:EXPORT"));
+    }
+
+    /**
+     * BE3: the printed documents are reads of what they print - a quote's PDF needs what reading the quote needs (the
+     * customer reaches it too, refused another's by the owner check {@link #aCustomerCannotReachAnotherCustomersData}
+     * exercises), a shipment's delivery note what reading the shipment needs (and its warehouse) - and the audit trail
+     * is a resource of its own that only the System Admin holds (kltn-docs 00 §2.5).
+     */
+    @Test
+    void theDocumentAndAuditLogEndpointsNeedTheirPermissions() {
+        Map<String, Handler> byKey = new HashMap<>();
+        handlers().forEach(h -> byKey.put(h.key(), h));
+        Map<String, String> expected = Map.of(
+                "GET /api/v1/quotes/{quoteId}/document", "sales-quotes:READ",
+                "GET /api/v1/fulfillment/shipments/{shipmentId}/delivery-note", "fulfillment-shipments:READ",
+                "GET /api/v1/audit-logs", "platform-audit-logs:READ",
+                "GET /api/v1/audit-logs/{auditLogId}", "platform-audit-logs:READ");
+        expected.forEach((key, code) -> {
+            assertThat(byKey).as(key).containsKey(key);
+            RequiresPermission rp = byKey.get(key).rp();
+            assertThat(rp).as(key + " is guarded").isNotNull();
+            assertThat(PermissionCode.of(rp.resource(), rp.action())).as(key).isEqualTo(PermissionCode.parse(code));
+            assertThat(rp.scope()).as(key).isEqualTo(DataScope.ALL);
+        });
+        assertThat(roles.resolve(List.of(Role.CUSTOMER.authority())).permissions())
+                .contains(PermissionCode.parse("sales-quotes:READ"))
+                .doesNotContain(PermissionCode.parse("fulfillment-shipments:READ"),
+                        PermissionCode.parse("platform-audit-logs:READ"));
+    }
+
+    /**
      * kltn-docs 01 §5.1: suspending, resuming and discontinuing a product are the System Admin's. The three handlers
      * need {@code product-lifecycle:APPROVE}, and the seeded matrix grants it to SYSTEM_ADMIN and nobody else - not
      * the Sales Manager, who approves and publishes with {@code product-products:APPROVE}.
@@ -962,7 +1085,8 @@ class PermissionMatrixTest {
 
     /**
      * SCRUM-474 5b (V20261029004000): the staff user-management screen picks roles and warehouses, so every role that
-     * can read users also reads roles and warehouses - READ only.
+     * can read users also reads roles and warehouses - READ only. Since V20261129000100 that is SYSTEM_ADMIN alone:
+     * staff accounts, roles and permissions are the administrator's (kltn-docs 00 §2.5.3 item 7, decided 2026-11-07).
      */
     @Test
     void everyRoleThatReadsUsersAlsoReadsRolesAndWarehouses() {
@@ -970,16 +1094,30 @@ class PermissionMatrixTest {
         List<Role> holders = Arrays.stream(Role.values())
                 .filter(role -> roles.resolve(List.of(role.authority())).permissions().contains(users))
                 .toList();
-        assertThat(holders).containsExactlyInAnyOrder(Role.SALES_MANAGER, Role.SYSTEM_ADMIN);
+        assertThat(holders).containsExactly(Role.SYSTEM_ADMIN);
         for (Role role : holders) {
             assertThat(roles.resolve(List.of(role.authority())).permissions()).as(role.name())
                     .contains(PermissionCode.parse("identity-roles:READ"),
                             PermissionCode.parse("warehouse-warehouses:READ"));
         }
-        assertThat(roles.resolve(List.of(Role.SALES_MANAGER.authority())).permissions())
-                .doesNotContain(PermissionCode.parse("warehouse-warehouses:VIEW_PAGE"),
-                        PermissionCode.parse("warehouse-warehouses:CREATE"),
-                        PermissionCode.parse("warehouse-warehouses:UPDATE"));
+    }
+
+    /**
+     * V20261129000100: only SYSTEM_ADMIN manages staff accounts, roles and permissions (kltn-docs 00 §2.5.3 item 7),
+     * and every staff role reads its own inbox - the Production Coordinator was left without it.
+     */
+    @Test
+    void onlyTheAdministratorManagesAccountsAndEveryStaffRoleReadsItsInbox() {
+        for (Role role : Role.values()) {
+            Set<PermissionCode> granted = roles.resolve(List.of(role.authority())).permissions();
+            boolean identityGrant = granted.stream().anyMatch(code -> code.toString().startsWith("identity-users:")
+                    || code.toString().startsWith("identity-roles:") || code.toString().startsWith("identity-rbac:"));
+            assertThat(identityGrant).as(role.name() + " manages accounts").isEqualTo(role == Role.SYSTEM_ADMIN);
+            assertThat(granted).as(role.name() + " reads its inbox").contains(
+                    PermissionCode.parse("notification-notifications:VIEW_PAGE"),
+                    PermissionCode.parse("notification-notifications:READ"),
+                    PermissionCode.parse("notification-notifications:UPDATE"));
+        }
     }
 
     @Test

@@ -28,8 +28,12 @@ public enum Role {
     CUSTOMER(Roles.CUSTOMER, "Browse, design, request and accept quotes, track orders"),
     SALES_STAFF(Roles.SALES_STAFF, "Customers, quotes, orders and contracts; shipping warehouse, holds, "
             + "cancellations, partial delivery and returns of a confirmed order; chat"),
-    /** Was ECOMMERCE_ADMIN; renamed by V20261107000100 (kltn-docs 00 §2, 2026-11-05) with its id and grants. */
-    SALES_MANAGER(Roles.SALES_MANAGER, "Product data and approval, internal prices, print setup, design review, staff accounts"),
+    /**
+     * Was ECOMMERCE_ADMIN; renamed by V20261107000100 (kltn-docs 00 §2, 2026-11-05) with its id and grants. Staff
+     * accounts, roles and permissions left it with V20261129000100: they are the System Admin's (00 §2.5.3 item 7).
+     */
+    SALES_MANAGER(Roles.SALES_MANAGER, "Product data and approval, internal prices, print setup, design review, "
+            + "production order approval"),
     /** Added by V20261108002600 (kltn-docs 00 §2.1, decision 2026-11-07): production orders and the producers. */
     PRODUCTION_COORDINATOR(Roles.PRODUCTION_COORDINATOR,
             "Production orders for what a confirmed order lacks: producers, lead times, print samples, progress"),
