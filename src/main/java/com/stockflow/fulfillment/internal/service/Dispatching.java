@@ -39,7 +39,7 @@ public interface Dispatching {
     record PendingUnload(UUID packageId, String labelCode, UUID shipmentId, String shipmentCode, String reason,
                          Instant requestedAt, String reasonCode) { }
 
-    record LoadParcel(UUID packageId, String labelCode, BigDecimal weightKg, boolean loaded, Instant loadedAt,
+    record LoadParcel(UUID packageId, String labelCode, String lpn, BigDecimal weightKg, boolean loaded, Instant loadedAt,
                       UUID loadedBy) { }
 
     /**

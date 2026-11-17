@@ -54,7 +54,7 @@ class DispatchWebMapper {
                 d.version(), d.shipments().stream().map(s -> new LoadResponse.Shipment(s.shipmentId(), s.code(),
                         s.orderId(), s.orderNumber(), s.taskId(), s.status(), s.packageCount(), s.loadedCount(),
                         s.packages().stream().map(p -> new LoadResponse.Parcel(
-                                p.packageId(), p.labelCode(), p.weightKg(), p.loaded(), p.loadedAt(), p.loadedBy()))
+                                p.packageId(), p.labelCode(), p.lpn(), p.weightKg(), p.loaded(), p.loadedAt(), p.loadedBy()))
                         .toList())).toList(), d.loadPlanId(), d.loadPlanCode(), d.vehicleSeq(),
                 d.vehicleTypeCode(),
                 d.bookedAt(), d.bookedBy(), d.bookingCancelledAt(), d.bookingCancelReason(),
