@@ -387,6 +387,23 @@ class PickListServiceTest {
         }
 
         @Test
+        @DisplayName("whoever holds task assignment (the warehouse manager) confirms on behalf, in their own name (WF4-QLK-TAKEOVER)")
+        void whoAssignsMayConfirmOnBehalf() {
+            UUID managerId = UUID.randomUUID();
+            CurrentUser manager = new CurrentUser(managerId, "manager",
+                    java.util.Set.of(com.stockflow.common.security.Role.WAREHOUSE_MANAGER),
+                    java.util.Set.of(com.stockflow.common.security.PermissionCode.of(
+                            FulfillmentPermissions.TASK_ASSIGNMENT, com.stockflow.common.security.Action.UPDATE)),
+                    DataScope.ALL, java.util.Set.of(), java.util.Set.of());
+
+            var view = service.confirm(task.getId(), row.getId(), "HCM-A-01", "LPN-SKU-A", manager);
+
+            assertThat(view.status()).isEqualTo("PICKED");
+            assertThat(task.getAssignedUserId()).isEqualTo(picker);
+            verify(consumption).consumeForPick(reservation, row.getId(), managerId);
+        }
+
+        @Test
         @DisplayName("a task that does not exist is NOT_FOUND")
         void unknownTask() {
             UUID id = UUID.randomUUID();
@@ -700,6 +717,32 @@ class PickListServiceTest {
             UUID kept = stored.get(1).getId();
 
             service.holdForUnreplacedCarton(task.getId(), kept, actor);
+
+            verify(orders, never()).putOnHold(any(), any(), any(), any());
+        }
+
+        @Test
+        @DisplayName("WF4-BE3-HOLD: at the removal itself the order is held INVENTORY, as a short pick report holds it; "
+                + "held already, it is left")
+        void holdsAtTheRemoval() {
+            service.holdForRemovedCarton(task.getId(), removed.getId(), actor);
+
+            verify(orders).putOnHold(eq(task.getOrderId()), eq(HoldReason.INVENTORY), any(), eq(picker));
+
+            orderIs(OrderStatus.ON_HOLD, HoldReason.INVENTORY);
+            service.holdForRemovedCarton(task.getId(), removed.getId(), actor);
+            verify(orders, org.mockito.Mockito.times(1)).putOnHold(any(), any(), any(), any());
+        }
+
+        @Test
+        @DisplayName("WF4-BE3-HOLD: a line whose carton was not removed, or whose carton is replaced already, does not "
+                + "hold the order")
+        void doesNotHoldWhatIsNotLacking() {
+            service.holdForRemovedCarton(task.getId(), stored.get(1).getId(), actor);
+            PickLineJpaEntity replacement = new PickLineJpaEntity(UUID.randomUUID(), task.getId(), orderLine, newHold,
+                    "SKU-A", "HCM-B-01", "LOT-2", 3, 5, "LPN-NEW", true);
+            stored.add(replacement);
+            service.holdForRemovedCarton(task.getId(), removed.getId(), actor);
 
             verify(orders, never()).putOnHold(any(), any(), any(), any());
         }

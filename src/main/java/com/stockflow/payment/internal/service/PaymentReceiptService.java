@@ -19,6 +19,7 @@ import com.stockflow.payment.internal.domain.InstallmentStatus;
 import com.stockflow.payment.internal.domain.OrderSettlement;
 import com.stockflow.payment.internal.domain.PaymentReceipt;
 import com.stockflow.payment.internal.domain.PaymentReceiptStatus;
+import com.stockflow.payment.internal.domain.ReceiptFilter;
 import com.stockflow.payment.internal.domain.SettlementBook;
 import com.stockflow.payment.internal.repository.InstallmentSearch;
 import org.slf4j.Logger;
@@ -272,7 +273,13 @@ public class PaymentReceiptService {
     @Transactional(readOnly = true)
     public PageResponse<PaymentReceipt> receipts(UUID customerId, PaymentReceiptStatus status, String reference,
                                                  int page, int size, String sort) {
-        return Pages.toResponse(search.receipts(customerId, status, reference, Pages.of(page, size, SORT.parse(sort))));
+        return receipts(new ReceiptFilter(customerId, status, reference, null, null), page, size, sort);
+    }
+
+    /** The receipts {@code filter} matches, a page at a time; the received days bound the bank statement's day. */
+    @Transactional(readOnly = true)
+    public PageResponse<PaymentReceipt> receipts(ReceiptFilter filter, int page, int size, String sort) {
+        return Pages.toResponse(search.receipts(filter, Pages.of(page, size, SORT.parse(sort))));
     }
 
     @Transactional(readOnly = true)

@@ -118,7 +118,7 @@ public class AuditAspect {
                     outcome,
                     MDC.get(CorrelationIdFilter.MDC_KEY),
                     clientAddress(),
-                    describe(failure, resolveDetails(auditable, joinPoint, method)),
+                    describe(failure, resolveDetails(auditable, joinPoint, method, result)),
                     clock.instant()));
         } catch (RuntimeException ex) {
             // Belt and braces. AuditTrail.record is contractually not allowed to throw, but this
@@ -164,8 +164,12 @@ public class AuditAspect {
     /**
      * Evaluates {@link Auditable#details()} to a JSON object, or null when there is none (or it cannot
      * be evaluated: logged, never thrown - same rule as {@link #resolveResourceId}).
+     *
+     * <p>{@code #result} is the return value here too, null on a failure: what an update changed is
+     * often named only by what it returns - a bin's location code is minted from the warehouse, the
+     * shelf and the level, and no argument carries it (kltn-docs 06 §4.1 step 8: "who, when, what").</p>
      */
-    private String resolveDetails(Auditable auditable, ProceedingJoinPoint joinPoint, Method method) {
+    private String resolveDetails(Auditable auditable, ProceedingJoinPoint joinPoint, Method method, Object result) {
         String expression = auditable.details();
         if (expression == null || expression.isBlank()) {
             return null;
@@ -174,6 +178,7 @@ public class AuditAspect {
             Expression parsed = EXPRESSIONS.computeIfAbsent(expression, PARSER::parseExpression);
             MethodBasedEvaluationContext context = new MethodBasedEvaluationContext(
                     joinPoint.getTarget(), method, joinPoint.getArgs(), PARAMETER_NAMES);
+            context.setVariable("result", result);
             Object value = parsed.getValue(context);
             if (value instanceof java.util.Map<?, ?> map) {
                 return toJson(map);

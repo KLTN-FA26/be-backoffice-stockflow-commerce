@@ -27,6 +27,7 @@ import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.LocalDate;
@@ -46,8 +47,12 @@ import java.util.UUID;
  *
  * <ul>
  *   <li><b>Options</b> (step 2): for each active warehouse, the whole cartons of each line's SKU available to promise
- *       there. Warehouses holding every line in full come first, then those holding more. The projected free space (m³)
- *       is not worked out yet: no warehouse capacity table exists (team plan, "Bảng sức chứa kho").</li>
+ *       there, and its capacity board (BE1, 06 §4.6): projected free room, pending, free if all approved, and the volume
+ *       of what would have to be produced there - the cartons it lacks times a carton - with a warning when that does
+ *       not fit (BR-25; a warning, never a refusal). The order's own production orders are judged out of the board
+ *       they are already counted in. Ranked as open question C3 and 17 §4.2 step 2 put it ({@link #RANKING}):
+ *       warehouses holding every line in full first, then those with room for the part still to be produced, the
+ *       larger projected free room first, then the rest by available cartons.</li>
  *   <li><b>Choose</b>: Sales picks one; the order then holds there, by SKU, as many whole cartons of each line as are
  *       available - all, or some (k &lt; N) - with no deadline. What is missing is not refused: it is shown per delivery
  *       batch, the earliest batch served first, and topped up when stock arrives. The warehouse changes only while
@@ -81,16 +86,34 @@ public class ShippingWarehouseService {
 
     private static final Logger log = LoggerFactory.getLogger(ShippingWarehouseService.class);
 
-    /** One warehouse an order may ship from, and what of each line it has available to promise now. */
+    /**
+     * One warehouse an order may ship from, what of each line it has available to promise now, and its room (BE1; 17
+     * §4.2 step 2, BR-25; 06 §4.6). m³ to three decimals; the free columns may be negative.
+     *
+     * @param projectedFreeM3      the warehouse's projected free room, as its capacity board shows it
+     * @param pendingM3            its production orders not sent yet
+     * @param freeIfAllApprovedM3  projected free - pending
+     * @param neededM3             what would have to be produced for the order there: each line's cartons lacking
+     *                             times a carton; null when a SKU's carton has no size
+     * @param exceedsProjected     {@code neededM3} does not fit the projected free room (the order's own production
+     *                             orders left out of it): warn Sales, do not refuse
+     * @param exceedsIfAllApproved it does not fit once the other production orders pending for the warehouse are sent
+     */
     public record Option(UUID warehouseId, String warehouseCode, String warehouseName, boolean holdsEveryLine,
-                         int availableCartons, List<LineAvailability> lines) {
+                         int availableCartons, List<LineAvailability> lines, BigDecimal projectedFreeM3,
+                         BigDecimal pendingM3, BigDecimal freeIfAllApprovedM3, BigDecimal neededM3,
+                         boolean exceedsProjected, boolean exceedsIfAllApproved) {
     }
 
     /** A line's SKU at one warehouse: its cartons, and how many are available to promise there. */
     public record LineAvailability(UUID lineId, String sku, int cartons, int availableCartons) {
     }
 
-    /** The warehouses an order may ship from, best first, and the one chosen, if any. */
+    /**
+     * The warehouses an order may ship from, best first, and the one chosen, if any.
+     *
+     * @param capacityComputed true since BE1: every option carries its warehouse's room
+     */
     public record Options(UUID orderId, UUID chosenWarehouseId, boolean capacityComputed, List<Option> warehouses) {
     }
 
@@ -115,6 +138,33 @@ public class ShippingWarehouseService {
     public record NextBatch(UUID batchId, int seq, boolean fullyHeld) {
     }
 
+    /**
+     * The order in which the options are suggested, as kltn-docs open question C3 (settled 2026-11-05) and 17 §4.2
+     * step 2 give it: first the warehouses that hold every line of the order in whole cartons; then the warehouses with
+     * room for the part still to be produced - projected free room at least the volume to be produced there - the larger
+     * projected free room first; then the rest, more available cartons first; the warehouse code last, for a stable
+     * order.
+     *
+     * <p>Room is the second key, before how much a warehouse holds, because the documents put it there: what a warehouse
+     * lacks is produced and delivered to it, so a warehouse that holds more but cannot take the rest is the worse
+     * suggestion. Room only ranks the warehouses that have something to produce: one holding every line needs none.
+     * A volume that cannot be worked out (a carton without a size) or a warehouse whose board cannot be read is not
+     * "room" - it is unknown, and the warehouse ranks with those without room. The room compared is the projected free
+     * room the option shows Sales.</p>
+     */
+    static final Comparator<Option> RANKING = Comparator.comparing(Option::holdsEveryLine).reversed()
+            .thenComparing(Comparator.comparing(ShippingWarehouseService::hasRoomForWhatIsProduced).reversed())
+            .thenComparing(o -> hasRoomForWhatIsProduced(o) ? o.projectedFreeM3() : null,
+                    Comparator.nullsLast(Comparator.<BigDecimal>reverseOrder()))
+            .thenComparing(Comparator.comparingInt(Option::availableCartons).reversed())
+            .thenComparing(Option::warehouseCode);
+
+    /** C3: a warehouse that must produce part of the order and has the projected free room for it. */
+    private static boolean hasRoomForWhatIsProduced(Option option) {
+        return !option.holdsEveryLine() && option.neededM3() != null && option.projectedFreeM3() != null
+                && !option.exceedsProjected();
+    }
+
     private final OrderRepository orders;
     private final InventoryService inventory;
     private final WarehouseDirectory warehouses;
@@ -124,12 +174,15 @@ public class ShippingWarehouseService {
     private final com.stockflow.order.internal.domain.ProductionOrderRepository productionOrders;
     private final DeliveryBatchRecords batchRecords;
     private final com.stockflow.order.internal.domain.DeliveryFailureCases deliveryFailures;
+    private final WarehouseCapacityService capacity;
 
     ShippingWarehouseService(OrderRepository orders, InventoryService inventory, WarehouseDirectory warehouses,
                              SalesContractRepository contracts, Clock clock, PlatformTransactionManager transactions,
                              com.stockflow.order.internal.domain.ProductionOrderRepository productionOrders,
                              DeliveryBatchRecords batchRecords,
-                             com.stockflow.order.internal.domain.DeliveryFailureCases deliveryFailures) {
+                             com.stockflow.order.internal.domain.DeliveryFailureCases deliveryFailures,
+                             WarehouseCapacityService capacity) {
+        this.capacity = capacity;
         this.deliveryFailures = deliveryFailures;
         this.batchRecords = batchRecords;
         this.productionOrders = productionOrders;
@@ -143,7 +196,8 @@ public class ShippingWarehouseService {
     }
 
     /**
-     * The warehouses the order may ship from (17 §4.2 step 2), best first.
+     * The warehouses the order may ship from (17 §4.2 step 2), in the order C3 and 17 §4.2 step 2 suggest them
+     * ({@link #RANKING}).
      *
      * @throws BusinessException {@code NOT_FOUND}; {@code ORDER_SHIPPING_WAREHOUSE_NOT_ALLOWED} for an order not of a
      *         contract
@@ -161,21 +215,77 @@ public class ShippingWarehouseService {
         Map<UUID, Integer> own = heldUnitsByLine(order);
         String chosen = order.shippingWarehouseId() == null ? null
                 : warehouses.codeOf(order.shippingWarehouseId()).orElse(null);
+        List<WarehouseDirectory.Warehouse> active = warehouses.active();
+        // BE1: each warehouse's board, and the order's own production orders, which the board counts already.
+        Map<UUID, WarehouseCapacityService.Computed> boards = capacity.boardsOf(active.stream()
+                .map(WarehouseDirectory.Warehouse::id).toList());
+        List<com.stockflow.order.internal.domain.ProductionOrder> production = productionOrders.ofSalesOrder(orderId);
+        Set<String> skus = new java.util.HashSet<>();
+        lines.forEach(line -> skus.add(line.sku().code()));
+        production.forEach(p -> p.lines().forEach(line -> skus.add(line.sku())));
+        Map<String, BigDecimal> cartonVolumes = capacity.cartonVolumes(skus);
         List<Option> options = new ArrayList<>();
-        for (WarehouseDirectory.Warehouse warehouse : warehouses.active()) {
+        for (WarehouseDirectory.Warehouse warehouse : active) {
             List<LineAvailability> availability = lines.stream().map(line -> new LineAvailability(line.id(),
                     line.sku().code(), line.cartons(), (atp.get(line.sku().code()).getOrDefault(warehouse.code(), 0)
                     + (warehouse.code().equals(chosen) ? own.getOrDefault(line.id(), 0) : 0))
                     / line.unitsPerCarton())).toList();
             boolean every = availability.stream().allMatch(a -> a.availableCartons() >= a.cartons());
             int cartons = availability.stream().mapToInt(a -> Math.min(a.availableCartons(), a.cartons())).sum();
-            options.add(new Option(warehouse.id(), warehouse.code(), warehouse.name(), every, cartons, availability));
+            options.add(option(warehouse, every, cartons, availability, boards.get(warehouse.id()), production,
+                    cartonVolumes));
         }
-        // C3: a warehouse holding every line first, then the one holding more, then by code for a stable order.
-        options.sort(Comparator.comparing(Option::holdsEveryLine).reversed()
-                .thenComparing(Comparator.comparingInt(Option::availableCartons).reversed())
-                .thenComparing(Option::warehouseCode));
-        return new Options(orderId, order.shippingWarehouseId(), false, options);
+        options.sort(RANKING);
+        return new Options(orderId, order.shippingWarehouseId(), true, options);
+    }
+
+    /**
+     * An option with its warehouse's room (BE1; 17 §4.2 step 2, BR-25): what the order lacks there is to be produced
+     * there, and it is judged against the board without the order's own production orders - the ones sent are
+     * incoming, the drafts pending, both already on the board. A warehouse the board cannot read (gone meanwhile) shows
+     * no room and no warning.
+     */
+    private static Option option(WarehouseDirectory.Warehouse warehouse, boolean every, int cartons,
+                                 List<LineAvailability> availability, WarehouseCapacityService.Computed board,
+                                 List<com.stockflow.order.internal.domain.ProductionOrder> production,
+                                 Map<String, BigDecimal> cartonVolumes) {
+        if (board == null) {
+            return new Option(warehouse.id(), warehouse.code(), warehouse.name(), every, cartons, availability, null,
+                    null, null, null, false, false);
+        }
+        BigDecimal needed = BigDecimal.ZERO;
+        for (LineAvailability line : availability) {
+            int lacking = Math.max(0, line.cartons() - line.availableCartons());
+            if (lacking == 0) {
+                continue;
+            }
+            BigDecimal carton = cartonVolumes.get(line.sku());
+            if (carton == null) {
+                needed = null;
+                break;
+            }
+            needed = needed.add(carton.multiply(BigDecimal.valueOf(lacking)));
+        }
+        BigDecimal ownIncoming = BigDecimal.ZERO;
+        BigDecimal ownPending = BigDecimal.ZERO;
+        for (com.stockflow.order.internal.domain.ProductionOrder p : production) {
+            if (!warehouse.id().equals(p.receivingWarehouseId())) {
+                continue;
+            }
+            BigDecimal volume = WarehouseCapacityService.outstandingVolume(p, cartonVolumes);
+            if (volume == null) {
+                continue;
+            }
+            if (p.sentAndOpen()) {
+                ownIncoming = ownIncoming.add(volume);
+            } else if (p.status().open()) {
+                ownPending = ownPending.add(volume);
+            }
+        }
+        var check = board.board().check(needed, ownIncoming, ownPending);
+        return new Option(warehouse.id(), warehouse.code(), warehouse.name(), every, cartons, availability,
+                board.view().projectedFreeM3(), board.view().pendingM3(), board.view().freeIfAllApprovedM3(),
+                check.neededM3(), check.exceedsProjected(), check.exceedsIfAllApproved());
     }
 
     /**
@@ -641,17 +751,21 @@ public class ShippingWarehouseService {
      * 47) and its delay alerts are recomputed. Its status does not change here: as at confirmation, an order goes
      * AWAITING_STOCK once a production order for its shortage is sent (BR-04, {@link Order#awaitStock}).
      *
-     * <p>Within the order, the latest delivery batch gives its holds up first, the newest hold first: held cartons count
+     * <p>Within an order, the latest delivery batch gives its holds up first, the newest hold first: held cartons count
      * for the earliest batch first (17 §4.2 step 3, BR-29).</p>
      *
-     * <p><b>One order only.</b> When the uncovered holds belong to more than one order, nothing is given up: kltn-docs
-     * does not say which order loses its hold first, and that rule waits for the owner (WF4-COUNT-EDGE, reported). The
-     * holds stay as they are, as before this change - the release that finds too few cartons is refused
-     * ({@code INSUFFICIENT_STOCK}).</p>
+     * <p><b>Several orders.</b> When the uncovered holds belong to more than one order, holds are cut until the units
+     * no carton covers are made up, the orders taken in this order (owner's decision, WF4-COUNT-WHO): the order whose
+     * next delivery - the window in force of its earliest batch not handed over in full - starts LATEST gives up first;
+     * on a tie, the order confirmed LATEST (the first time its status became CONFIRMED); on a tie still, the order with
+     * the greater id, so the choice never depends on a read order. An order with no batch left to hand over has no next
+     * delivery and counts as the latest. Each order then goes as the single holder does: the line holds fewer cartons
+     * and the batch lacks them; the status is not touched here (BR-04: AWAITING_STOCK once a production order for the
+     * shortage is sent).</p>
      *
-     * <p>Locks: the order's row, then the SKU's advisory lock - as choosing a warehouse and topping up take them - and
-     * the figures are read again under both. Idempotent: a repeated event finds every hold covered and changes
-     * nothing.</p>
+     * <p>Locks: the rows of every order holding the SKU in id order, then the SKU's advisory lock - as choosing a
+     * warehouse and topping up take them (the order's row, then the SKU) - and the figures are read again under both.
+     * Idempotent: a repeated event finds every hold covered and changes nothing.</p>
      *
      * @return the units of holds given up
      */
@@ -661,16 +775,11 @@ public class ShippingWarehouseService {
         if (cover.uncoveredUnits() == 0) {
             return 0;
         }
-        Set<UUID> holders = holdersOf(cover);
-        if (holders.size() != 1) {
-            log.warn("{} at {}: {} unit(s) held by SKU are no longer covered after a count's shortage, held by {} orders "
-                            + "{}; which one gives its hold up is not decided (WF4-COUNT-EDGE), so the holds are kept",
-                    sku, warehouseCode, cover.uncoveredUnits(), holders.size(), holders);
-            return 0;
+        Map<UUID, Order> locked = new java.util.TreeMap<>();
+        for (UUID orderId : holdersOf(cover).stream().sorted().toList()) {
+            orders.findByIdForUpdate(new OrderId(orderId)).ifPresent(order -> locked.put(orderId, order));
         }
-        UUID orderId = holders.iterator().next();
-        Order order = orders.findByIdForUpdate(new OrderId(orderId)).orElse(null);
-        if (order == null) {
+        if (locked.isEmpty()) {
             return 0;
         }
         inventory.prepareReservation(Set.of(code));
@@ -678,11 +787,58 @@ public class ShippingWarehouseService {
         if (cover.uncoveredUnits() == 0) {
             return 0;
         }
-        if (!holdersOf(cover).equals(holders)) {
+        if (!locked.keySet().containsAll(holdersOf(cover))) {
             log.warn("{} at {}: the holds changed hands meanwhile ({}); kept as they are", sku, warehouseCode,
                     holdersOf(cover));
             return 0;
         }
+        Map<UUID, List<com.stockflow.inventory.api.SkuHoldCover.Hold>> holdsOfOrder = new HashMap<>();
+        cover.holds().forEach(h -> holdsOfOrder.computeIfAbsent(h.orderId(), id -> new ArrayList<>()).add(h));
+        int left = cover.uncoveredUnits();
+        int givenUp = 0;
+        for (Order order : orderedToGiveUp(locked.values())) {
+            if (left <= 0) {
+                break;
+            }
+            int cut = giveUpOf(order, holdsOfOrder.getOrDefault(order.id().value(), List.of()), left, sku, warehouseCode);
+            left -= cut;
+            givenUp += cut;
+        }
+        return givenUp;
+    }
+
+    /**
+     * WF4-COUNT-WHO: the orders in the order they give their holds up - the one whose next delivery starts latest
+     * first, then the one confirmed latest.
+     */
+    private List<Order> orderedToGiveUp(java.util.Collection<Order> holders) {
+        record Rank(java.time.LocalDate nextDelivery, java.time.Instant confirmedAt) { }
+        Map<UUID, Rank> rank = new HashMap<>();
+        for (Order order : holders) {
+            UUID id = order.id().value();
+            java.time.LocalDate next = contracts.findLiveByOrderId(id)
+                    .flatMap(contract -> DeliveryBatchService.nextToHandOver(order, contract))
+                    .map(batch -> batchRecords.windowInForce(id, batch).start()).orElse(LocalDate.MAX);
+            java.time.Instant confirmed = orders.confirmedAt(id).orElse(order.contractSignedAt() != null
+                    ? order.contractSignedAt() : java.time.Instant.MIN);
+            rank.put(id, new Rank(next, confirmed));
+        }
+        return holders.stream().sorted(Comparator
+                .comparing((Order o) -> rank.get(o.id().value()).nextDelivery())
+                .thenComparing(o -> rank.get(o.id().value()).confirmedAt())
+                .thenComparing(o -> o.id().value()).reversed()).toList();
+    }
+
+    /**
+     * One order's cut: its holds of the SKU given up - the latest batch first (a hold of no batch counts as the
+     * latest), then the newest hold - until {@code left} units are made up or its holds run out; whole cartons (17
+     * BR-21), so the cut is rounded up to the line's carton. Saves the order when it gave anything up.
+     *
+     * @return the units given up
+     */
+    private int giveUpOf(Order order, List<com.stockflow.inventory.api.SkuHoldCover.Hold> holds, int left, String sku,
+                         String warehouseCode) {
+        UUID orderId = order.id().value();
         Map<UUID, OrderLine> lineOfHold = new HashMap<>();
         order.lines().forEach(line -> line.reservationIds().forEach(id -> lineOfHold.put(id, line)));
         Map<UUID, DeliveryBatchRecords.Hold> recorded = new HashMap<>();
@@ -690,7 +846,6 @@ public class ShippingWarehouseService {
         Map<UUID, Integer> seqOf = new HashMap<>();
         contracts.findLiveByOrderId(orderId).ifPresent(contract -> contract.schedule()
                 .forEach(batch -> seqOf.put(batch.id(), batch.seq())));
-        // The latest batch first (a hold of no batch counts as the latest), then the newest hold.
         Comparator<com.stockflow.inventory.api.SkuHoldCover.Hold> latestFirst = Comparator
                 .comparing((com.stockflow.inventory.api.SkuHoldCover.Hold h) -> {
                     DeliveryBatchRecords.Hold of = recorded.get(h.reservationId());
@@ -699,9 +854,8 @@ public class ShippingWarehouseService {
                 .thenComparing(com.stockflow.inventory.api.SkuHoldCover.Hold::reservedAt)
                 .thenComparing(com.stockflow.inventory.api.SkuHoldCover.Hold::reservationId)
                 .reversed();
-        int left = cover.uncoveredUnits();
         int givenUp = 0;
-        for (com.stockflow.inventory.api.SkuHoldCover.Hold hold : cover.holds().stream().sorted(latestFirst).toList()) {
+        for (com.stockflow.inventory.api.SkuHoldCover.Hold hold : holds.stream().sorted(latestFirst).toList()) {
             if (left <= 0) {
                 break;
             }
@@ -711,7 +865,6 @@ public class ShippingWarehouseService {
                         hold.reservationId(), sku);
                 continue;
             }
-            // Whole cartons (17 BR-21): the cut is rounded up to the line's carton.
             int cartons = (left + line.unitsPerCarton() - 1) / line.unitsPerCarton();
             int cut = Math.min(hold.quantity(), cartons * line.unitsPerCarton());
             java.util.Optional<UUID> kept = inventory.shrinkHold(hold.reservationId(), hold.quantity() - cut);
@@ -879,8 +1032,30 @@ public class ShippingWarehouseService {
                         batchLines.stream().allMatch(l -> l.shortCartons() == 0), batchLines));
             }
         }
+        if (contract != null && !byBatch.isEmpty()) {
+            perLine = perLineFromBatches(perLine, batches);
+        }
+        List<LineCoverage> lineCover = perLine;
         return new Coverage(order.id().value(), order.shippingWarehouseId(), warehouseCode,
-                perLine.stream().allMatch(l -> l.shortCartons() == 0), perLine, batches);
+                lineCover.stream().allMatch(l -> l.shortCartons() == 0), lineCover, batches);
+    }
+
+    /**
+     * WF4-BE3-LINE: a line's cover, once the order works its delivery batches, is what its batches hold - so the line
+     * shows the same shortage its batches do. Counting the line's holds instead would still count the hold of a carton
+     * removed at the check station (08 §4.2 step 4): its hold stays on the line, picked, but no longer stands for its
+     * batch, which lacks the carton again. A line no batch carries keeps its own count.
+     */
+    private static List<LineCoverage> perLineFromBatches(List<LineCoverage> perLine, List<BatchCoverage> batches) {
+        Map<UUID, Integer> held = new HashMap<>();
+        batches.forEach(batch -> batch.lines().forEach(l -> held.merge(l.lineId(), l.heldCartons(), Integer::sum)));
+        return perLine.stream().map(line -> {
+            if (!held.containsKey(line.lineId())) {
+                return line;
+            }
+            int cartons = Math.min(line.cartons(), held.get(line.lineId()));
+            return new LineCoverage(line.lineId(), line.sku(), line.cartons(), cartons, line.cartons() - cartons);
+        }).toList();
     }
 
     /** Units held for each line: its reservation ids still HELD (holds at the warehouse, or allocations after release). */

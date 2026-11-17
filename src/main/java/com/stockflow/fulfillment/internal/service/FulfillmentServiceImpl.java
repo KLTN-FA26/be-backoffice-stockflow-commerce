@@ -333,9 +333,9 @@ class FulfillmentServiceImpl implements FulfillmentService {
     public FulfillmentTask startPicking(UUID taskId, CurrentUser actor) {
         var pick = lockPick(taskId);
         WarehouseScope.requireWarehouse(pick.getWarehouseId());
-        pick.requireAssigned(actor.userId());
+        UUID worker = TaskAccess.requireWorker(pick, actor);
         var order = requireOrderInFulfilment(pick);
-        pick.start(actor.userId(), clock.instant());
+        pick.start(worker, clock.instant());
         picks.save(pick);
         pickLists.planLines(pick, order, actor.userId());
         return toTask(pick);
@@ -353,7 +353,7 @@ class FulfillmentServiceImpl implements FulfillmentService {
     public FulfillmentTask completePicking(UUID taskId, CurrentUser actor) {
         var pick = lockPick(taskId);
         WarehouseScope.requireWarehouse(pick.getWarehouseId());
-        pick.requireAssigned(actor.userId());
+        UUID worker = TaskAccess.requireWorker(pick, actor);
         if (pick.getStatus() == PickStatus.PICKED || pick.getStatus() == PickStatus.STAGED) {
             return toTask(pick);
         }
@@ -361,7 +361,7 @@ class FulfillmentServiceImpl implements FulfillmentService {
         if (pick.getStatus() == PickStatus.PICKING) {
             pickLists.requireAllPicked(pick, order);
         }
-        pick.complete(actor.userId(), clock.instant());
+        pick.complete(worker, clock.instant());
         return toTask(picks.save(pick));
     }
 

@@ -61,6 +61,11 @@ public @interface Auditable {
      * {@code details} becomes that map as one JSON object (strings quoted, numbers and booleans as
      * they are). On a failure the object is kept next to the error, under {@code "context"}.
      *
+     * <p>{@code #result} is the return value, as in {@link #resourceId()}, for what only the outcome names - a
+     * location code the call minted: {@code "{locationCode: #result?.locationCode()}"}. Null on a failure, hence
+     * {@code ?.}. Any other value is written as its {@code toString()}: a list of records reads as
+     * {@code "[Tier[minQuantity=1, ...]]"}, so project the fields that matter ({@code #tiers.![minQuantity()]}).</p>
+     *
      * <p>Callers put in what an auditor would ask for later and nothing more (see {@code AuditEntry}):
      * never a credential, never a whole entity. A bad expression is logged and the entry is still
      * written without it. Optional.</p>

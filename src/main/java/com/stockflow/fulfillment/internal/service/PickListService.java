@@ -226,7 +226,7 @@ class PickListService implements PickLists {
     public PickLineView confirm(UUID taskId, UUID lineId, String locationCode, String lpn, CurrentUser actor) {
         PickJpaEntity pick = lockPick(taskId);
         WarehouseScope.requireWarehouse(pick.getWarehouseId());
-        pick.requireAssigned(actor.userId());
+        TaskAccess.requireWorker(pick, actor);
         TaskAccess.orderInFulfilment(orders, pick);
         List<PickLineJpaEntity> stored = pickLines.findByPickIdOrderBySequenceNoAscIdAsc(pick.getId());
         PickList list = toList(pick, stored);
@@ -394,13 +394,9 @@ class PickListService implements PickLists {
         WarehouseScope.requireWarehouse(pick.getWarehouseId());
         List<PickLineJpaEntity> stored = pickLines.findByPickIdOrderBySequenceNoAscIdAsc(pick.getId());
         PickList list = toList(pick, stored);
-        // A carton missing from the staging area (review M2, 20 §4.9 step 4) is found by whoever counts or checks it,
-        // often not the picker: the assignee or whoever assigns the work may report it. A shelf short is the picker's.
-        boolean stagedCarton = list.line(lineId).map(PickList::stagedCarton).orElse(false);
-        if (!stagedCarton || !actor.can(FulfillmentPermissions.TASK_ASSIGNMENT,
-                com.stockflow.common.security.Action.UPDATE)) {
-            pick.requireAssigned(actor.userId());
-        }
+        // WF4-QLK-TAKEOVER (07 §2): the assignee reports a short - and so does whoever assigns the work, who may work
+        // the task on behalf (this once covered a carton missing from the staging area only, review M2).
+        TaskAccess.requireWorker(pick, actor);
         TaskAccess.orderInFulfilment(orders, pick);
         PickList.Confirmation outcome = list.reportShort(lineId, locationCode, reason);
         PickLine line = outcome.line();
@@ -560,6 +556,25 @@ class PickListService implements PickLists {
 
     @Override
     public void holdForUnreplacedCarton(UUID taskId, UUID lineId, CurrentUser actor) {
+        holdForLackingCarton(taskId, lineId, actor, "Carton %s (%d x %s) removed at the check station: no whole carton "
+                + "in the warehouse to replace it", "Order {} held INVENTORY: removed carton {} has no replacement in "
+                + "stock");
+    }
+
+    @Override
+    public void holdForRemovedCarton(UUID taskId, UUID lineId, CurrentUser actor) {
+        holdForLackingCarton(taskId, lineId, actor, "Carton %s (%d x %s) removed at the check station: the warehouse "
+                + "manager replaces it", "Order {} held INVENTORY: carton {} was removed at the check station");
+    }
+
+    /**
+     * The order stops ({@code INVENTORY}) for a carton removed at the check station that no carton replaces yet, as the
+     * order stops for a short pick report (07 §4.4 step 9, 11): Sales decides with the customer (17: wait for
+     * production, agree fewer cartons, deliver in part and close the rest, or cancel). An order on hold already, a line
+     * whose carton was not removed, or one replaced since, changes nothing.
+     */
+    private void holdForLackingCarton(UUID taskId, UUID lineId, CurrentUser actor, String noteFormat,
+                                      String logFormat) {
         PickJpaEntity pick = lockPick(taskId);
         WarehouseScope.requireWarehouse(pick.getWarehouseId());
         OrderSummary order = TaskAccess.orderInFulfilment(orders, pick);
@@ -571,14 +586,9 @@ class PickListService implements PickLists {
         if (lacking(pick, order, list).getOrDefault(removed.orderLineId(), 0) < removed.allocatedQty()) {
             return;
         }
-        // 07 §4.4 step 11: the shortage cannot be reallocated - the order stops (INVENTORY), and the warehouse manager
-        // tells Sales, who decides (17: wait for production, agree fewer cartons, deliver in part and close the rest,
-        // or cancel).
-        holdForInventory(pick.getOrderId(), actor.userId(), ("Carton %s (%d x %s) removed at the check station: no "
-                + "whole carton in the warehouse to replace it").formatted(removed.lpn(), removed.allocatedQty(),
+        holdForInventory(pick.getOrderId(), actor.userId(), noteFormat.formatted(removed.lpn(), removed.allocatedQty(),
                 removed.sku()));
-        log.info("Order {} held INVENTORY: removed carton {} has no replacement in stock", pick.getOrderNumber(),
-                removed.lpn());
+        log.info(logFormat, pick.getOrderNumber(), removed.lpn());
     }
 
     /**
