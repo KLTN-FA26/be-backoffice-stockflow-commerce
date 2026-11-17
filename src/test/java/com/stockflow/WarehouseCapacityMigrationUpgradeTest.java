@@ -21,7 +21,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class WarehouseCapacityMigrationUpgradeTest {
 
-    private static final String BEFORE = "20261124000700";
+    private static final String BEFORE = "20261124000800";
     private static final String MIGRATION = "20261125000100";
 
     @Test
