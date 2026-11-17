@@ -50,6 +50,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -85,11 +86,12 @@ class CartonCheckServiceTest {
             mock(com.stockflow.fulfillment.internal.repository.PickLineJpaRepository.class);
     private final com.stockflow.order.api.OrderReservations orderReservations =
             mock(com.stockflow.order.api.OrderReservations.class);
+    private final PickLists pickLists = mock(PickLists.class);
     private final ForeignCartonReports foreignCartons = mock(ForeignCartonReports.class);
     private final CartonCheckService service = new CartonCheckService(picks, packs, mock(PackageJpaRepository.class),
             shipments, store, orders, measures, payments, identities, mock(WarehouseService.class), timeline,
             Clock.fixed(NOW, ZoneOffset.UTC), loadPlans, planVehicles, labelledCartons, pickLines, orderReservations,
-            foreignCartons);
+            pickLists, foreignCartons);
 
     private final UUID worker = UUID.randomUUID();
     private final UUID otherWorker = UUID.randomUUID();
@@ -376,6 +378,27 @@ class CartonCheckServiceTest {
 
             assertThat(check.carton("LPN-2").orElseThrow().status()).isEqualTo(PackageStatus.REMOVED);
             verify(orderReservations).cartonRemoved(orderId, hold);
+        }
+
+        @Test
+        @DisplayName("WF4-BE3-HOLD: the order is held INVENTORY at the removal, as a short pick report holds it")
+        void theOrderIsHeldAtOnce() {
+            started();
+
+            service.remove(pick.getId(), "LPN-2", "wet", actor);
+
+            verify(pickLists).holdForRemovedCarton(pick.getId(), secondPickLine, actor);
+        }
+
+        @Test
+        @DisplayName("a repeated removal changes nothing: it does not hold an order whose hold was resolved since")
+        void aRepeatedRemovalDoesNotHoldAgain() {
+            started();
+            service.remove(pick.getId(), "LPN-2", "wet", actor);
+
+            service.remove(pick.getId(), "LPN-2", "wet", actor);
+
+            verify(pickLists, times(1)).holdForRemovedCarton(pick.getId(), secondPickLine, actor);
         }
     }
 

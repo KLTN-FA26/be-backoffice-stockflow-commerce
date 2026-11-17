@@ -2505,6 +2505,11 @@ class FtlDispatchIntegrationTest {
         assertThat(lpns).hasSize(2);
         CartonStationSupport.post(this::packer, BASE + "/tasks/" + task + "/cartons/" + lpns.get(1) + "/removal",
                 "{\"note\":\"móp góc\"}").andExpect(status().isOk());
+        // WF4-BE3-HOLD: the order is held at the removal and the station refuses its cartons until Sales decides.
+        assertHeldForTheRemovedCarton(order);
+        CartonStationSupport.post(this::packer, BASE + "/tasks/" + task + "/carton-labels", null)
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("PACK_STATE_CONFLICT"));
+        salesResolvesTheInventoryHold(order);
         CartonStationSupport.labelAll(this::packer, task);
 
         CartonStationSupport.post(this::packer, BASE + "/tasks/" + task + "/packing-completion", "{}")
@@ -2539,6 +2544,38 @@ class FtlDispatchIntegrationTest {
     }
 
     // ---- BE-3: a carton removed at the check station is a shortage, replaced as a short pick is reallocated -------
+
+    /**
+     * WF4-BE3-HOLD (owner, 2026-11-15): the removal of a carton at the check station puts the order on INVENTORY hold at
+     * once, as a short pick report does; the check station refuses the order's cartons while it is held.
+     */
+    private void assertHeldForTheRemovedCarton(OrderSummary order) throws Exception {
+        OrderSummary held = orders.findById(order.orderId()).orElseThrow();
+        assertThat(held.status()).as("held at the removal").isEqualTo(OrderStatus.ON_HOLD);
+        assertThat(held.lifecycle().holdReason()).isEqualTo(HoldReason.INVENTORY);
+    }
+
+    /** Sales decides with the customer to go on with what is checked: the INVENTORY hold is resolved (17 §4.9 step 36). */
+    private void salesResolvesTheInventoryHold(OrderSummary order) throws Exception {
+        assertHeldForTheRemovedCarton(order);
+        sales(body(post(ORDERS + "/" + order.orderId() + "/hold/resolution"),
+                "{\"note\":\"Khách đồng ý nhận phần đã kiểm trước\"}")).andExpect(status().isOk());
+        assertThat(orders.findById(order.orderId()).orElseThrow().status()).as("back where it was before the hold")
+                .isNotEqualTo(OrderStatus.ON_HOLD);
+    }
+
+    /** The per-line view of the order's cover (GET stock-coverage): the cartons the line holds and lacks. */
+    private void assertLineCover(OrderSummary order, int held, int lacking) throws Exception {
+        JsonNode coverage = data(sales(get(ORDERS + "/" + order.orderId() + "/stock-coverage"))
+                .andExpect(status().isOk()));
+        assertThat(coverage.path("lines")).singleElement().satisfies(line -> {
+            assertThat(line.path("heldCartons").asInt()).as("line: held cartons").isEqualTo(held);
+            assertThat(line.path("shortCartons").asInt()).as("line: short cartons").isEqualTo(lacking);
+        });
+        assertThat(coverage.path("batches")).singleElement().satisfies(batch -> assertThat(batch.path("lines"))
+                .singleElement().satisfies(line -> assertThat(line.path("shortCartons").asInt())
+                        .as("batch: short cartons").isEqualTo(lacking)));
+    }
 
     /** The pick line of a carton the task picked, by its LPN. */
     private UUID lineOf(UUID task, String lpn) {
@@ -2585,6 +2622,8 @@ class FtlDispatchIntegrationTest {
                 "{\"note\":\"móp góc\"}").andExpect(status().isOk());
         assertThat(batchHolds(order)).as("17 §5.5: the batch no longer counts the removed carton - it lacks it again")
                 .isEqualTo(1);
+        assertLineCover(order, 1, 1);
+        salesResolvesTheInventoryHold(order);
         CartonStationSupport.labelAll(this::packer, task);
         UUID part = UUID.fromString(CartonStationSupport.completeOnly(this::packer, json, task,
                 "{\"partial\":true,\"note\":\"1 thùng móp, giao sau\"}").path("shipmentId").asText());
@@ -2702,7 +2741,12 @@ class FtlDispatchIntegrationTest {
         UUID removed = lineOf(task, damaged);
         CartonStationSupport.post(this::packer, BASE + "/tasks/" + task + "/cartons/" + damaged + "/removal",
                 "{\"note\":\"ướt\"}").andExpect(status().isOk());
+        assertHeldForTheRemovedCarton(order);
+        assertLineCover(order, 1, 1);
         assertThat(data(reallocate(task, removed).andExpect(status().isOk()))).hasSize(1);
+        assertThat(orders.findById(order.orderId()).orElseThrow().status())
+                .as("a reallocation that finds stock lifts the hold").isNotEqualTo(OrderStatus.ON_HOLD);
+        assertLineCover(order, 2, 0);
         CartonStationSupport.post(this::packer, BASE + "/tasks/" + task + "/carton-labels", null)
                 .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("PACKING_NOT_READY"));
         assertThat(orders.findById(order.orderId()).orElseThrow().status()).isEqualTo(OrderStatus.PICKING);
@@ -2737,6 +2781,7 @@ class FtlDispatchIntegrationTest {
         List<String> lpns = CartonStationSupport.pickedLpns(jdbc, task);
         CartonStationSupport.post(this::packer, BASE + "/tasks/" + task + "/cartons/" + lpns.get(1) + "/removal",
                 "{\"note\":\"móp góc\"}").andExpect(status().isOk());
+        salesResolvesTheInventoryHold(order);
         CartonStationSupport.labelAll(this::packer, task);
         UUID shipment = UUID.fromString(CartonStationSupport.completeOnly(this::packer, json, task,
                 "{\"partial\":true,\"note\":\"1 thùng móp, giao sau\"}").path("shipmentId").asText());
