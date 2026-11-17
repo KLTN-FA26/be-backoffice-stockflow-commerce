@@ -24,7 +24,6 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
 import org.springframework.context.ApplicationEventPublisher;
@@ -46,8 +45,20 @@ import org.springframework.transaction.support.TransactionOperations;
 @Service
 public class DesignBatchSubmissionService {
 
-    /** The refusals of one design that a batch answers with {@code details.designIds}: those the customer can fix. */
-    private static final Set<ErrorCode> NAMED_REFUSALS = Set.of(ErrorCode.CONFLICT, ErrorCode.DESIGN_NOT_DRAFT);
+    /**
+     * The refusals of one design that a batch names in {@code details}: a design gone from the project (or never in it),
+     * one no longer a draft, one at a stale version. Most serious first: the answer's error code is the first of these
+     * any design of the batch got, as a design gone must leave the batch, one no longer a draft too, and a stale one
+     * only needs reading again.
+     */
+    private static final List<ErrorCode> NAMED_REFUSALS = List.of(ErrorCode.NOT_FOUND, ErrorCode.DESIGN_NOT_DRAFT,
+            ErrorCode.CONFLICT);
+
+    private static final String GONE = "This design is not in the project";
+
+    /** One design the batch cannot submit as it is, and why. */
+    private record Refusal(UUID designId, BusinessException cause) {
+    }
 
     private final DesignProjectService projects;
     private final DesignSubmissionService submissions;
@@ -85,8 +96,11 @@ public class DesignBatchSubmissionService {
      * @throws BusinessException 422 {@code DESIGN_BATCH_PREFLIGHT_FAILED} with {@code details.designs} - each
      *         {@code {designId, issues?, roles?}} - when any does not pass; 400 for fewer than
      *         {@value DesignProjectRules#MIN_BATCH} designs or one named twice; 409 {@code DESIGN_PROJECT_ARCHIVED};
-     *         409 {@code DESIGN_NOT_DRAFT} or {@code CONFLICT} (a stale version) with {@code details.designIds}, every
-     *         design of the batch it applies to; 404 for a design not in the project, or anyone but the owner
+     *         404 {@code NOT_FOUND} for a design gone from the project or never in it, 409 {@code DESIGN_NOT_DRAFT},
+     *         409 {@code CONFLICT} for a stale version: every design of the batch refused is named, whichever step met
+     *         it (FE request 2026-11-17 S-1..S-3) - {@code details.designs} lists each as {@code {designId, errorCode}},
+     *         {@code details.designIds} the designs of the answer's own code (see {@link #NAMED_REFUSALS}); 404 for
+     *         anyone but the owner of the project
      */
     @Auditable(action = AuditAction.UPDATE, resourceType = "design-project", resourceId = "#projectId")
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
@@ -102,29 +116,22 @@ public class DesignBatchSubmissionService {
             DesignProjectJpaEntity project = projects.own(projectId, actor);
             DesignProjectRules.requireActive(project.getStatus());
             Map<UUID, DesignSubmissionService.Plan> found = new LinkedHashMap<>();
-            // A stale version or a design no longer a draft is reported with every design it applies to, not only the
-            // first one met: the customer has to know which designs to open again (FE request 2026-11-15 BE-4).
-            BusinessException refused = null;
-            List<String> refusedIds = new ArrayList<>();
+            // Every design refused is reported, each with its own reason, not only the first one met: the customer has
+            // to know which designs to open again or take out (FE requests 2026-11-15 BE-4, 2026-11-17 S-1, S-3).
+            List<Refusal> refused = new ArrayList<>();
             for (DesignAtVersion design : designs) {
-                requireInProject(design.id(), projectId);
                 try {
+                    requireInProject(design.id(), projectId);
                     found.put(design.id(), submissions.plan(design.id(), actor, design.version(), null));
                 } catch (BusinessException e) {
                     if (!NAMED_REFUSALS.contains(e.errorCode())) {
                         throw e;
                     }
-                    if (refused == null) {
-                        refused = e;
-                    }
-                    if (e.errorCode() == refused.errorCode()) {
-                        refusedIds.add(design.id().toString());
-                    }
+                    refused.add(new Refusal(design.id(), e));
                 }
             }
-            if (refused != null) {
-                throw new BusinessException(refused.errorCode(), refused.getMessage(), List.of(),
-                        Map.of("designIds", refusedIds));
+            if (!refused.isEmpty()) {
+                throw refusal(refused, designs.size());
             }
             return found;
         });
@@ -164,16 +171,36 @@ public class DesignBatchSubmissionService {
                               Map<UUID, DesignSubmissionService.Plan> plans) {
         DesignProjectJpaEntity project = projects.lockActive(projectId, actor);
         Instant now = clock.instant();
-        DesignReviewRoundJpaEntity round = rounds.saveAndFlush(new DesignReviewRoundJpaEntity(projectId, actor, now));
         List<DesignAtVersion> ordered = designs.stream().sorted(Comparator.comparing(DesignAtVersion::id)).toList();
+        // Every design locked and checked before any is submitted: one that moved between the first read and now
+        // (someone else saved, submitted or moved it) is named with the others, not thrown bare (FE request 2026-11-17
+        // S-2).
+        Map<UUID, DesignDraftJpaEntity> locked = new LinkedHashMap<>();
+        List<Refusal> refused = new ArrayList<>();
         for (DesignAtVersion design : ordered) {
-            DesignDraftJpaEntity draft = drafts.lockById(design.id())
-                    .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
-            entityManager.refresh(draft);
-            if (!projectId.equals(draft.getProjectId())) {
-                throw new BusinessException(ErrorCode.NOT_FOUND);
+            try {
+                DesignDraftJpaEntity draft = drafts.lockById(design.id())
+                        .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, GONE));
+                entityManager.refresh(draft);
+                if (!projectId.equals(draft.getProjectId())) {
+                    throw new BusinessException(ErrorCode.NOT_FOUND, GONE);
+                }
+                DesignSubmissionService.requireSubmittable(draft, design.version());
+                locked.put(design.id(), draft);
+            } catch (BusinessException e) {
+                if (!NAMED_REFUSALS.contains(e.errorCode())) {
+                    throw e;
+                }
+                refused.add(new Refusal(design.id(), e));
             }
-            submissions.submitOne(draft, actor, design.version(), plans.get(design.id()), round.getId());
+        }
+        if (!refused.isEmpty()) {
+            throw refusal(refused, designs.size());
+        }
+        DesignReviewRoundJpaEntity round = rounds.saveAndFlush(new DesignReviewRoundJpaEntity(projectId, actor, now));
+        for (DesignAtVersion design : ordered) {
+            submissions.submitOne(locked.get(design.id()), actor, design.version(), plans.get(design.id()),
+                    round.getId());
             members.save(new DesignReviewRoundDesignJpaEntity(round.getId(), design.id()));
         }
         members.flush();
@@ -187,9 +214,29 @@ public class DesignBatchSubmissionService {
 
     private void requireInProject(UUID designId, UUID projectId) {
         DesignDraftJpaEntity draft = drafts.findById(designId)
-                .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
+                .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, GONE));
         if (!projectId.equals(draft.getProjectId())) {
-            throw new BusinessException(ErrorCode.NOT_FOUND);
+            throw new BusinessException(ErrorCode.NOT_FOUND, GONE);
         }
+    }
+
+    /**
+     * The answer to a batch some of whose designs cannot go: the code of the most serious refusal; {@code designIds},
+     * the designs refused for that code (as before, so a client reading only that keeps working); {@code designs},
+     * every design refused with its own code.
+     */
+    private static BusinessException refusal(List<Refusal> refused, int batchSize) {
+        Refusal first = refused.stream()
+                .min(Comparator.comparingInt(r -> NAMED_REFUSALS.indexOf(r.cause().errorCode()))).orElseThrow();
+        ErrorCode code = first.cause().errorCode();
+        List<String> sameCode = refused.stream().filter(r -> r.cause().errorCode() == code)
+                .map(r -> r.designId().toString()).toList();
+        List<Map<String, Object>> each = refused.stream()
+                .map(r -> Map.<String, Object>of("designId", r.designId().toString(), "errorCode",
+                        r.cause().errorCode().name()))
+                .toList();
+        String message = refused.size() == 1 ? first.cause().getMessage()
+                : refused.size() + " of " + batchSize + " designs cannot be submitted as they are; none was submitted";
+        return new BusinessException(code, message, List.of(), Map.of("designIds", sameCode, "designs", each));
     }
 }

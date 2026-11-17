@@ -72,7 +72,9 @@ allowedFontCodes?, model, printAreas, hasCartonSpec, model3d?}`. Filter `templat
   readable from the storefront's origin, and the mesh each print area is drawn on (`meshName` is always
   `print:<printAreaCode>`). Absent when the template has no file; the studio then draws the parametric `model`.
   `model`'s measurements are taken from that file by the back office and only ever change together with it.
-- `GET /api/v1/designs/{id}/template` returns the same shape for the template a design is drawn on (see Designs).
+- `GET /api/v1/designs/{id}/template` returns the template a design is drawn on (see Designs) in nearly the same
+  shape: it has `active` (whether that template still takes new designs) and no `hasCartonSpec`; read the carton
+  question from `/customization` or from the submission's `CARTON_SPEC_MISSING`.
 
 ### Designs (P1, P6)
 | Endpoint | Body / query | Notes |
@@ -124,8 +126,11 @@ allowedFontCodes?, model, printAreas, hasCartonSpec, model3d?}`. Filter `templat
   - each page the size of that area's bleed box (±0.5 mm);
   - for a cup, the flattened sector's bounding box including bleed.
 - **Reading:** `GET .../artifacts` lists them, `GET .../artifacts/{artifactId}/download-url` returns a signed link.
-  The file is checked before the link is issued: a stored file that is missing or no longer matches its checksum is
-  409 `CONFLICT`, never a link to a broken file.
+  Before the link is issued:
+  - a file of the **approved** bundle is checked against its checksum: missing or changed is 409 `CONFLICT`;
+  - any other file (a draft's) is checked only for being there: missing is 503 `STORAGE_ERROR`.
+
+  Either way no link to a broken file is ever issued.
 - **Generated at approval, never uploaded:** the stamped `PRINT_READY` and `PRODUCTION_INSTRUCTION`.
 
 ### Submission (P5)
@@ -176,8 +181,16 @@ allowedFontCodes?, model, printAreas, hasCartonSpec, model3d?}`. Filter `templat
 
 **Batch submission (`review-rounds`):**
 - at least 2 drafts, all or none;
-- a stale `version` or a design no longer a draft is 409 `CONFLICT` / `DESIGN_NOT_DRAFT` with
-  `details.designIds`: every design of the batch with that refusal, so the studio can say which to open again;
+- designs that cannot go as they are are **all** named, whichever check met them (the first read, or the locked
+  check just before submitting):
+  - `details.designs: [{designId, errorCode}]`, every design refused, each with its own code: `NOT_FOUND` (deleted,
+    or not in this project), `DESIGN_NOT_DRAFT` (submitted, approved or archived since), `CONFLICT` (a draft at another
+    version);
+  - the answer's own code is the most serious of them, in that order: 404 `NOT_FOUND`, then 409 `DESIGN_NOT_DRAFT`,
+    then 409 `CONFLICT`;
+  - `details.designIds`: the designs refused for that same code (as before);
+- a design no longer a draft is `DESIGN_NOT_DRAFT` even when its `version` is stale too: status is checked before
+  version, for a design submitted alone as well;
 - if any fails preflight, the answer is 422 `DESIGN_BATCH_PREFLIGHT_FAILED` with
   `details.designs: [{designId, issues? | roles?}]`;
 - on success it returns 201 `{roundId, project}`.
@@ -216,17 +229,28 @@ meshName}]}`; `fileChecksum` is the SHA-256 (hex) of the file. `PUT /{templateId
 would leave the measurements of the file before.
 
 - **File:** a glTF 2.0 binary (`.glb`), at most 10 MB, virus-scanned. 415 `UNSUPPORTED_MEDIA_TYPE`, 413
-  `PAYLOAD_TOO_LARGE`, 400 `VALIDATION_FAILED` when the scan refuses it.
-- **Values only a new file may change** (409 `PRINT_CONFIG_MODEL_FILE_REQUIRED`, the message names them), compared as
-  stored to 0.01 mm so re-sending what was read is never refused:
+  `PAYLOAD_TOO_LARGE`, 400 `VALIDATION_FAILED` when the scan refuses it, 429 `RATE_LIMITED` when too many files are
+  being scanned at once (retry later). The download link names the file `<name>.glb`, also for a file stored before
+  the extension was kept.
+- **Order of checks on `POST`:** the file first, then the product. A JSON `POST` (no file) is 409
+  `PRINT_CONFIG_MODEL_FILE_REQUIRED` even for a product that is not customizable; with the file, a product that is
+  not customizable is 409 `PRODUCT_NOT_CUSTOMIZABLE`.
+- **Values only a new file may change** (409 `PRINT_CONFIG_MODEL_FILE_REQUIRED`, the message names them). Checked on
+  **every** save without a file, whether or not the template has one. Values are stored as sent and compared after
+  rounding each to 0.01 mm, so re-sending what was read is never refused:
   - cup: `topDiameterMm`, `bottomDiameterMm`, `heightMm`, `bandTopOffsetMm`, `bandBottomOffsetMm`;
-  - bag: `widthMm`, `gussetMm`, and `heightMm − topFoldMm` (the fold may move if the height moves with it);
-  - the model's `kind`, and the set of `model3d.surfaces` (a request with no `surfaces` keeps them).
+  - bag: `widthMm`, `gussetMm`, and `round(heightMm) − round(topFoldMm)` (each rounded first, then subtracted; the
+    fold may move if the height moves with it);
+  - the model's `kind`, and the set of `model3d.surfaces`. A request with no `surfaces` keeps the stored rows whose
+    print area the new model still has, and drops the others.
 
   Free to change without a file: `name`, `minDpi`, `colorMode`, `allowedFileFormats`, `maxFileSizeMb`, `maxColors`,
   `allowedFontCodes`, `seamMm`, `rimMm`, `material`, `handle`, and each print area's name and margins. A template
   written before files were required, with none, is read as before and takes only these edits until a file is
-  uploaded with it.
+  uploaded with it. One written before models were stored (no `model` at all) is refused (409) on any save without
+  a file, since any `model` sent differs in `kind`: it needs the file with its measurements.
+- **Activation** of a template without its file, or without a model at all, is 409
+  `PRINT_CONFIG_MODEL_FILE_REQUIRED`: in both cases the fix is to upload the `.glb` with its measurements.
 - **Mesh map with a file** (stored, or sent with the request): every print area has exactly one entry, on the mesh
   `print:<printAreaCode>` (`print:BODY`, `print:FRONT`, ...). Otherwise 422 `PRINT_CONFIG_SURFACES_INVALID` with
   `fieldErrors`: `model3d.surfaces` / `PrintAreaMissing`, `model3d.surfaces[i].meshName` / `MeshNameMismatch`, and the
@@ -337,7 +361,7 @@ This list is the whole set today. A new or renamed `rule` is announced to the fr
 - `DESIGN_PROJECT_ARCHIVED`, `DESIGN_PROJECT_FULL`, `DESIGN_PROJECT_LIBRARY_FULL`, `DESIGN_PROJECT_HAS_PENDING`;
 - `DESIGN_IN_ANOTHER_PROJECT`, `DESIGN_PENDING_IN_PROJECT`, `DESIGN_CLONE_TARGET_INVALID`;
 - `CUSTOMER_NOT_ACTIVE`, `CUSTOMER_SKU_SOURCE_UNAVAILABLE`, `CONFLICT` (stale version);
-- in a batch, `CONFLICT` and `DESIGN_NOT_DRAFT` carry `details.designIds`.
+- in a batch, `NOT_FOUND`, `CONFLICT` and `DESIGN_NOT_DRAFT` carry `details.designIds` and `details.designs`.
 
 **Other statuses:**
 - 422: `DESIGN_PREFLIGHT_FAILED` (`details.issues`), `DESIGN_BATCH_PREFLIGHT_FAILED` (`details.designs`);

@@ -118,6 +118,16 @@ public class DesignSubmissionService {
         this.storage = storage;
     }
 
+    /**
+     * The design is still a draft, then at the version its owner saw: status first, so a design submitted, approved or
+     * returned elsewhere answers {@code DESIGN_NOT_DRAFT} - the reason - rather than {@code CONFLICT}, which its version
+     * would also give (FE request 2026-11-17 S-6). A draft at another version is {@code CONFLICT}.
+     */
+    static void requireSubmittable(DesignDraftJpaEntity draft, long version) {
+        CustomerDesignRules.requireDraft(draft.getStatus());
+        DesignWorkflow.requireVersion(draft.getVersion(), version);
+    }
+
     /** What the first read found: why the design cannot go, or the print file to check before it does. */
     record Plan(List<LayoutPreflight.Issue> issues, List<String> outdatedFiles, PrintConfig template,
                         String printFileKey, String printFileChecksum) {
@@ -163,8 +173,7 @@ public class DesignSubmissionService {
     Plan plan(UUID id, UUID actor, long version, DesignQuoteRequestService.QuoteRequestInput quote) {
         DesignDraftJpaEntity draft = drafts.findById(id).orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
         CustomerDesignRules.requireOwner(actor, draft.getOwnerUserId(), draft.getStatus());
-        DesignWorkflow.requireVersion(draft.getVersion(), version);
-        CustomerDesignRules.requireDraft(draft.getStatus());
+        requireSubmittable(draft, version);
         if (draft.getTemplateId() == null) {
             throw new BusinessException(ErrorCode.CONFLICT, "This design was not started on a template");
         }
@@ -243,8 +252,7 @@ public class DesignSubmissionService {
         List<LayoutPreflight.Issue> issues = reportedIssues(reported);
         DesignDraftJpaEntity draft = drafts.findById(id).orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
         CustomerDesignRules.requireOwner(actor, draft.getOwnerUserId(), draft.getStatus());
-        DesignWorkflow.requireVersion(draft.getVersion(), version);
-        CustomerDesignRules.requireDraft(draft.getStatus());
+        requireSubmittable(draft, version);
         DesignDecisionJpaEntity decision = recordFailure(id, actor, issues);
         return new DesignWorkflowService.DecisionView(decision.getActorId(), decision.getArtifactId(),
                 decision.getDecision(), decision.getNotes(), decision.getDraftVersion(),
@@ -317,8 +325,7 @@ public class DesignSubmissionService {
      */
     Instant submitOne(DesignDraftJpaEntity draft, UUID actor, long version, Plan plan, UUID roundId) {
         CustomerDesignRules.requireOwner(actor, draft.getOwnerUserId(), draft.getStatus());
-        DesignWorkflow.requireVersion(draft.getVersion(), version);
-        CustomerDesignRules.requireDraft(draft.getStatus());
+        requireSubmittable(draft, version);
         long templateNow = printConfigs.byId(draft.getTemplateId()).map(PrintConfig::version).orElse(-1L);
         if (templateNow != plan.template().version()) {
             throw new BusinessException(ErrorCode.DESIGN_FILES_OUTDATED,

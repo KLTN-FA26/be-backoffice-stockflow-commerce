@@ -354,6 +354,16 @@ class CustomizationTemplateIntegrationTest {
         activate(id, version)
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("PRINT_CONFIG_MODEL_FILE_REQUIRED"));
+        // No model at all either (written before models were stored): the same 409, the same fix (FE 2026-11-17 B-2).
+        String noModel = data(createWithFile(cup("CUP12-NOMODEL", 2, null)).andExpect(status().isCreated()))
+                .get("templateId").asText();
+        sql("UPDATE product.customization_templates SET model_params_json = NULL, model_file_key = NULL, "
+                + "model_file_name = NULL, model_file_checksum = NULL, model_surfaces_json = '[]'::jsonb "
+                + "WHERE id = ?::uuid", noModel);
+        activate(noModel, jdbc.queryForObject("SELECT version FROM product.customization_templates WHERE id = ?::uuid",
+                Long.class, noModel))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("PRINT_CONFIG_MODEL_FILE_REQUIRED"));
         mvc.perform(get(base + "/" + id)).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.model3d.hasFile").value(false));
         JsonNode renamed = data(updateJson(id, cup(null, 2, version).replace("Ly 12oz - thân ly", "Ly cũ"))

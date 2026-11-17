@@ -200,6 +200,16 @@ class PreparedFilesTest {
     }
 
     @Test
+    void aPrintModelDownloadsAsGlbEvenWhenItsKeyWasStoredWithoutAnExtension() {
+        assertThat(StorageKeys.extensionFor("model/gltf-binary")).isEqualTo(".glb");
+        assertThat(StorageKeys.downloadName("test-cup-16oz.glb", "print-models/2026/11/17/x.glb")).isEqualTo("test-cup-16oz.glb");
+        assertThat(StorageKeys.downloadName("test-cup-16oz", "print-models/2026/11/17/0192f4c1-8e3a-7b21-9c44-3f2a1b8d5e60"))
+                .as("a model saved before .glb was listed: the category accepts only glTF binary").isEqualTo("test-cup-16oz.glb");
+        assertThat(StorageKeys.downloadName("scan", "documents/2026/11/06/x"))
+                .as("a category of several types guesses nothing").isEqualTo("scan");
+    }
+
+    @Test
     void aViewLinkMayBeCachedForAsLongAsItLives() {
         var disposition = DownloadDisposition.inline(Duration.ofMinutes(5));
 
