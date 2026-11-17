@@ -678,11 +678,10 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
             }
             var batch = inFlight(order);
             java.math.BigDecimal due = installmentsDue(order, batch);
-            try {
-                order.requireHandoverAllowed(due, batch.orElse(null), businessDay(at));
-            } catch (BusinessException refused) {
+            java.util.List<String> reasons = order.handoverBlockReasons(due, batch.orElse(null), businessDay(at));
+            if (!reasons.isEmpty()) {
                 blocks.add(new com.stockflow.order.api.HandoverBlock(orderId, order.orderNumber().value(),
-                        refused.errorCode().name(), due == null ? java.math.BigDecimal.ZERO : due,
+                        reasons.get(0), reasons, due == null ? java.math.BigDecimal.ZERO : due,
                         order.total().currency().getCurrencyCode(),
                         batch.map(com.stockflow.order.internal.domain.BatchInFlight::seq).orElse(null),
                         batch.map(com.stockflow.order.internal.domain.BatchInFlight::windowStart).orElse(null)));

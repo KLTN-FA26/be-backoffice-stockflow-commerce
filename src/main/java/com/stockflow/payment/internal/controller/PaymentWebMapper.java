@@ -16,9 +16,11 @@ final class PaymentWebMapper {
     static com.stockflow.payment.internal.controller.dto.InstallmentResponse toResponse(
             com.stockflow.payment.internal.domain.Installment i,
             List<com.stockflow.payment.internal.domain.InstallmentBook.ReceiptOfInstallment> receipts,
-            java.time.LocalDate today) {
+            java.time.LocalDate today, java.util.Map<java.util.UUID, com.stockflow.customer.api.CustomerLabel> labels) {
+        var label = labelOf(labels, i.customerId());
         return new com.stockflow.payment.internal.controller.dto.InstallmentResponse(i.id(), i.contractId(),
-                i.contractNumber(), i.orderId(), i.orderNumber(), i.customerId(), i.seq(), i.name(),
+                i.contractNumber(), i.orderId(), i.orderNumber(), i.customerId(),
+                label == null ? null : label.name(), label == null ? null : label.code(), i.seq(), i.name(),
                 i.milestone().name(), i.deliveryBatchSeq(), i.amount(), i.paidAmount(), i.reducedAmount(),
                 i.outstanding(), i.currency(),
                 i.dueDays(), i.reachedAt(), i.dueDate(), i.status().name(), i.overdue(today), i.paidAt(),
@@ -31,7 +33,7 @@ final class PaymentWebMapper {
 
     static com.stockflow.payment.internal.controller.dto.OrderInstallmentsResponse toResponse(
             com.stockflow.payment.internal.service.InstallmentService.OrderInstallments o,
-            java.time.LocalDate today) {
+            java.time.LocalDate today, java.util.Map<java.util.UUID, com.stockflow.customer.api.CustomerLabel> labels) {
         var standing = o.standing();
         var first = o.installments().getFirst();
         return new com.stockflow.payment.internal.controller.dto.OrderInstallmentsResponse(standing.orderId(),
@@ -39,7 +41,7 @@ final class PaymentWebMapper {
                 standing.paymentStatus() == null ? null : standing.paymentStatus().name(), standing.total(),
                 standing.paid(), standing.total().subtract(standing.paid()), standing.onSigningPaid(),
                 standing.beforeDeliveryUnpaid(), standing.dueBeforeHandover(), first.currency(),
-                o.installments().stream().map(i -> toResponse(i, null, today)).toList());
+                o.installments().stream().map(i -> toResponse(i, null, today, labels)).toList());
     }
 
     static com.stockflow.payment.internal.controller.dto.InstallmentTransferResponse toResponse(
@@ -53,8 +55,11 @@ final class PaymentWebMapper {
 
     static com.stockflow.payment.internal.controller.dto.PaymentReceiptResponse toResponse(
             com.stockflow.payment.internal.domain.PaymentReceipt r,
-            java.util.Map<java.util.UUID, com.stockflow.payment.internal.domain.Installment> installments) {
+            java.util.Map<java.util.UUID, com.stockflow.payment.internal.domain.Installment> installments,
+            java.util.Map<java.util.UUID, com.stockflow.customer.api.CustomerLabel> labels) {
+        var label = labelOf(labels, r.customerId());
         return new com.stockflow.payment.internal.controller.dto.PaymentReceiptResponse(r.id(), r.customerId(),
+                label == null ? null : label.name(), label == null ? null : label.code(),
                 r.reference(), r.receivedOn(), r.amount(), r.currency(), r.note(), r.status().name(), r.recordedBy(),
                 r.recordedAt(), r.voidedBy(), r.voidedAt(), r.voidReason(), r.lines().stream().map(line -> {
                     var i = installments == null ? null : installments.get(line.installmentId());
@@ -64,6 +69,12 @@ final class PaymentWebMapper {
                             i == null ? null : i.seq(), i == null ? null : i.name(),
                             i == null ? null : i.milestone().name());
                 }).toList());
+    }
+
+    /** The label of a customer from a batch read; null when there is no batch (a customer's own view) or no such customer. */
+    private static com.stockflow.customer.api.CustomerLabel labelOf(
+            java.util.Map<java.util.UUID, com.stockflow.customer.api.CustomerLabel> labels, java.util.UUID customerId) {
+        return labels == null || customerId == null ? null : labels.get(customerId);
     }
 
     // ---- 4B-9: refunds ------------------------------------------------------------------------------------------------

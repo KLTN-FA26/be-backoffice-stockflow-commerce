@@ -34,6 +34,12 @@ public interface CustomerService {
      */
     java.util.Map<UUID, String> fullNames(java.util.Collection<UUID> customerIds);
 
+    /**
+     * The name and code of these customers, in one query: a page of installments, receipts or orders shows whose each
+     * row is without a lookup per row. Unknown ids are absent; null or empty in, empty out.
+     */
+    java.util.Map<UUID, CustomerLabel> labels(java.util.Collection<UUID> customerIds);
+
     Optional<CustomerSummary> findByUserId(UUID userId);
 
     PageResponse<CustomerSummary> list(ListCustomersQuery query);

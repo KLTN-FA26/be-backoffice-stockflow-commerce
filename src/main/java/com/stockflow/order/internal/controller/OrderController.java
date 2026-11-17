@@ -1,6 +1,7 @@
 package com.stockflow.order.internal.controller;
 
 import com.stockflow.order.api.ListOrdersQuery;
+import com.stockflow.order.api.OrderSummary;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.internal.controller.dto.OrderStatusChangeResponse;
@@ -107,7 +108,11 @@ class OrderController {
                 .filter(order -> ownCustomerId == null || order.status() != OrderStatus.DRAFT)
                 // A warehouse manager reads the orders of their warehouses only (5-7 review M1); 404 like any other.
                 .filter(order -> ownCustomerId != null || warehouseVisibility.visible(orderId, user))
-                .map(order -> OrderWebMapper.toResponse(order, ownCustomerId == null))
+                .map(order -> ownCustomerId == null
+                        // Staff read the customer's name on the order; a customer reads their own order as before.
+                        ? OrderWebMapper.toResponse(order, true, OrderWebMapper.labelOf(
+                                customerService.labels(java.util.List.of(order.customerId())), order.customerId()))
+                        : OrderWebMapper.toResponse(order, false))
                 .map(ApiResponse::ok)
                 .orElseThrow(() -> new BusinessException(
                         ErrorCode.NOT_FOUND, "No order with id " + orderId));
@@ -236,12 +241,15 @@ class OrderController {
             @RequestParam(required = false) String sort) {
         // Customers hold sales-orders:READ for their own orders; this list is every customer's.
         ScopeGuards.requireBackOffice(user);
-        return ApiResponse.ok(orderService.list(new ListOrdersQuery(page,
+        var found = orderService.list(new ListOrdersQuery(page,
                         size == null ? Pages.DEFAULT_PAGE_SIZE : size, search, OrderStatusFilter.parse(statuses),
                         customerId,
                         placedFrom, placedTo, sort,
-                        com.stockflow.order.internal.service.OrderWarehouseVisibility.limitOf(user)))
-                .map(OrderWebMapper::toResponse));
+                        com.stockflow.order.internal.service.OrderWarehouseVisibility.limitOf(user)));
+        // One query for the names of the whole page - not one per row.
+        var labels = customerService.labels(found.items().stream().map(OrderSummary::customerId).toList());
+        return ApiResponse.ok(found.map(order -> OrderWebMapper.toResponse(order,
+                OrderWebMapper.labelOf(labels, order.customerId()))));
     }
 
     @GetMapping("/{orderId}/history")
