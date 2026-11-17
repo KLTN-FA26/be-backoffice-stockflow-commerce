@@ -20,12 +20,28 @@ final class OrderWebMapper {
         return toResponse(summary, true);
     }
 
+    /** What a back-office reader of an order sees of its customer: the name and code, from one batch lookup. */
+    static OrderResponse toResponse(OrderSummary summary, com.stockflow.customer.api.CustomerLabel label) {
+        return toResponse(summary, true, label);
+    }
+
+    /** The label of an order's customer in a batch read; null when there is none (or the order has no customer). */
+    static com.stockflow.customer.api.CustomerLabel labelOf(
+            java.util.Map<java.util.UUID, com.stockflow.customer.api.CustomerLabel> labels, java.util.UUID customerId) {
+        return labels == null || customerId == null ? null : labels.get(customerId);
+    }
+
     /**
      * {@code internal} false for a customer reading their own order: the agreed cancellation amount and why they pay
      * it are theirs to see, but {@code feeDetail} - what Sales agreed with whom and how it was counted - is the back
      * office's note (review of #109, nit).
      */
     static OrderResponse toResponse(OrderSummary summary, boolean internal) {
+        return toResponse(summary, internal, null);
+    }
+
+    static OrderResponse toResponse(OrderSummary summary, boolean internal,
+                                    com.stockflow.customer.api.CustomerLabel label) {
         OrderSummary.Lifecycle lifecycle = summary.lifecycle();
         java.util.Map<java.util.UUID, OrderSummary.LineProgress> progress = lifecycle == null ? java.util.Map.of()
                 : lifecycle.lines().stream().collect(java.util.stream.Collectors.toMap(OrderSummary.LineProgress::lineId,
@@ -34,6 +50,8 @@ final class OrderWebMapper {
                 summary.orderId(),
                 summary.orderNumber(),
                 summary.customerId(),
+                label == null ? null : label.name(),
+                label == null ? null : label.code(),
                 summary.status().name(),
                 summary.total().amount(),
                 summary.total().currency().getCurrencyCode(),

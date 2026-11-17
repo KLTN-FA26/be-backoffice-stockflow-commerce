@@ -44,7 +44,9 @@ import java.util.UUID;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.design.api.DesignService;
 import com.stockflow.order.internal.entity.OrderHoldJpaEntity;
+import com.stockflow.order.internal.entity.OrderRemainderClosureJpaEntity;
 import com.stockflow.order.internal.repository.OrderHoldJpaRepository;
+import com.stockflow.order.internal.repository.OrderRemainderClosureJpaRepository;
 import java.nio.charset.StandardCharsets;
 import java.time.ZoneId;
 import java.util.Map;
@@ -121,6 +123,8 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
     private final com.stockflow.order.internal.domain.DeliveryFailureCases deliveryFailures;
     /** Fulfillment's answer to which units are labelled and not handed over (order :: spi); absent in a module test. */
     private final org.springframework.beans.factory.ObjectProvider<com.stockflow.order.spi.LabelledNotHandedOver> labelled;
+    /** Every closure of the rest of an order, one row each (WF4-CLOSE-HIST-SCHEMA). */
+    private final OrderRemainderClosureJpaRepository remainderClosures;
 
     OrderServiceImpl(OrderRepository repository, OrderSearchRepository search,
                      InventoryService inventory, OrderEventPublisher events, Clock clock,
@@ -135,7 +139,9 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
                      com.stockflow.order.internal.domain.DeliveryBatchRecords batchRecords,
                      com.stockflow.order.internal.domain.DeliveryFailureCases deliveryFailures,
                      org.springframework.beans.factory.ObjectProvider<com.stockflow.order.spi.LabelledNotHandedOver>
-                             labelled) {
+                             labelled,
+                     OrderRemainderClosureJpaRepository remainderClosures) {
+        this.remainderClosures = remainderClosures;
         this.deliveryFailures = deliveryFailures;
         this.labelled = labelled;
         this.batches = batches;
@@ -432,6 +438,15 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
     @Transactional(readOnly = true)
     public List<OrderStatusChange> history(UUID orderId) {
         return search.history(orderId);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<com.stockflow.order.api.RemainderClosure> remainderClosures(UUID orderId) {
+        return remainderClosures.findByOrderIdOrderByClosedAtAscIdAsc(orderId).stream()
+                .map(row -> new com.stockflow.order.api.RemainderClosure(CancellationReasonCode.valueOf(row.getReasonCode()),
+                        row.getNote(), row.getClosedBy(), row.getClosedAt()))
+                .toList();
     }
 
     /**
@@ -1050,6 +1065,10 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
         com.stockflow.order.spi.LabelledNotHandedOver station = labelled.getIfAvailable();
         java.util.Map<UUID, Integer> waiting = station == null ? java.util.Map.of() : station.unitsOf(orderId);
         BigDecimal closed = order.closeRemainder(reasonCode, note, fee, waiting, by, now);
+        // WF4-CLOSE-HIST-SCHEMA: the closure is an entry of the order's history of its own, written whether or not it moved
+        // the order's status (the checked cartons stay and it remains PARTIALLY_FULFILLED); a refused closure threw above.
+        remainderClosures.save(new OrderRemainderClosureJpaEntity(Identifiers.newId(), orderId, order.lastClosureId(),
+                reasonCode.name(), note, by, now));
         java.util.Map<OrderLine, Integer> closedLines = order.lines().stream()
                 .filter(line -> line.cancelledQuantity() > closedBefore.get(line.id()))
                 .collect(Collectors.toMap(line -> line, line -> line.cancelledQuantity() - closedBefore.get(line.id()),

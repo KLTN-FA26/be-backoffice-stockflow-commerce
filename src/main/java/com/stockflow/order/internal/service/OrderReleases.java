@@ -17,7 +17,7 @@ public interface OrderReleases {
      *
      * @throws com.stockflow.common.error.BusinessException {@code WAREHOUSE_NOT_FOUND},
      *         {@code ORDER_PRINT_GOODS_NOT_RECEIVED} (a legacy print line - a blank with a design snapshot - whose goods
-     *         were never received; QD-16), {@code ORDER_STOCK_NOT_HELD}, {@code CUSTOMER_CREDIT_OVERDUE},
+     *         were never received; QD-16), {@code ORDER_STOCK_NOT_HELD},
      *         {@code CONFLICT} (not in a releasable status)
      */
     OrderSummary release(UUID orderId, UUID warehouseId, UUID releasedBy);
@@ -32,4 +32,21 @@ public interface OrderReleases {
      *         in full
      */
     OrderSummary release(UUID orderId, UUID warehouseId, UUID deliveryBatchId, UUID releasedBy);
+
+    /**
+     * What the person about to release the order should know, never a reason to refuse it (WF4-OVERDUE-WARN): the
+     * customer has an installment overdue (15 §4.3 step 9, 11), as {@code creditWarning} warns when a contract is sent
+     * (15 BR-11). Read when the release dialog opens; the release itself proceeds whatever it says.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code NOT_FOUND} (no such order)
+     */
+    ReleaseWarnings releaseWarnings(UUID orderId);
+
+    /** @param outcome OVERDUE: the customer owes something overdue */
+    record CreditWarning(String outcome) {
+        public static final String OVERDUE = "OVERDUE";
+    }
+
+    /** @param creditWarning set only when the customer has something overdue */
+    record ReleaseWarnings(CreditWarning creditWarning) { }
 }

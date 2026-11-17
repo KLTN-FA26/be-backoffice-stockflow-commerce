@@ -20,6 +20,7 @@ import com.stockflow.order.internal.service.OrderReleases;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -135,6 +136,22 @@ class OrderReleaseController {
         WarehouseScope.requireWarehouse(request.warehouseId());
         return ApiResponse.ok(OrderWebMapper.toResponse(releases.release(orderId, request.warehouseId(),
                 request.deliveryBatchId(), user.userId())));
+    }
+
+    /**
+     * WF4-OVERDUE-WARN: what the release dialog shows when it opens - the customer has an installment overdue. A warning
+     * only: the release goes ahead (the same shape as {@code creditWarning} of a contract sent, 15 BR-11). Behind the
+     * release permission itself, and holds nothing but the outcome: no amount, no name.
+     */
+    @GetMapping("/{orderId}/release-warnings")
+    @Operation(summary = "What to know before releasing an order (never a reason to refuse it): creditWarning with "
+            + "outcome OVERDUE when its customer has an installment past its due day and still owing, else null. "
+            + "404 NOT_FOUND for an unknown order")
+    @RequiresPermission(resource = OrderResources.RELEASES, action = Action.UPDATE, scope = DataScope.ALL)
+    public ApiResponse<OrderReleases.ReleaseWarnings> releaseWarnings(@PathVariable UUID orderId,
+                                                                      @AuthenticatedUser CurrentUser user) {
+        ScopeGuards.requireBackOffice(user);
+        return ApiResponse.ok(releases.releaseWarnings(orderId));
     }
 
     /**

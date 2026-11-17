@@ -80,7 +80,8 @@ public record LoadResponse(UUID loadId, String code, UUID warehouseId, String st
                            int packageCount, int loadedCount, List<Parcel> packages) {
     }
 
-    public record Parcel(UUID packageId, String labelCode, BigDecimal weightKg, boolean loaded, Instant loadedAt,
-                         UUID loadedBy) {
+    /** @param lpn the carton's LPN, the barcode on its shipping label (08 §4.3 step 6); a scan may carry it or labelCode */
+    public record Parcel(UUID packageId, String labelCode, String lpn, BigDecimal weightKg, boolean loaded,
+                         Instant loadedAt, UUID loadedBy) {
     }
 }

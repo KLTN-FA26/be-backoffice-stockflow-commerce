@@ -1276,7 +1276,7 @@ class DispatchService implements Dispatching {
             ShipmentJpaEntity row = rows.get(member.shipmentId());
             List<LoadParcel> own = parcels.getOrDefault(member.shipmentId(), List.of()).stream().map(p -> {
                 DispatchLoad.Loaded l = onVehicle.get(p.getId());
-                return new LoadParcel(p.getId(), p.getLabelCode(), p.getWeightKg(), l != null,
+                return new LoadParcel(p.getId(), p.getLabelCode(), p.getLpn(), p.getWeightKg(), l != null,
                         l == null ? null : l.loadedAt(), l == null ? null : l.loadedBy());
             }).toList();
             expected += own.size();

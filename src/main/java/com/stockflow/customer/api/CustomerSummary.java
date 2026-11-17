@@ -24,6 +24,11 @@ public record CustomerSummary(
      * created before tax codes were kept. Capitals, digits and hyphens only, at most 20 characters.
      */
     public String code() {
+        return codeOf(customerId, taxCode);
+    }
+
+    /** {@link #code()} for a customer known only by its id and tax code (a batch of labels reads no more). */
+    public static String codeOf(UUID customerId, String taxCode) {
         if (taxCode != null) {
             String spelled = taxCode.toUpperCase(java.util.Locale.ROOT).replaceAll("[^A-Z0-9-]", "");
             if (!spelled.isEmpty() && Character.isLetterOrDigit(spelled.charAt(0))) {
