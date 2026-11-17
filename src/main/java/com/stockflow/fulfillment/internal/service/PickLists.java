@@ -105,6 +105,16 @@ public interface PickLists {
     void holdForUnreplacedCarton(UUID taskId, UUID lineId, CurrentUser actor);
 
     /**
+     * A carton was removed at the check station (kltn-docs 08 §4.2 step 4): its line lacks it, handled as a short pick
+     * (07 §4.4 step 9), so the order is held {@code INVENTORY} at once - as a picker's short report holds it - and the
+     * warehouse manager reallocates the line ({@link #reallocateShort}), which resumes the order when stock replaces the
+     * carton; when none does, {@link #holdForUnreplacedCarton} keeps it held. In the caller's transaction (the
+     * removal's), which already holds the pick's lock; then the order's. An order on hold already, a line whose carton
+     * was not removed, or one replaced since, changes nothing.
+     */
+    void holdForRemovedCarton(UUID taskId, UUID lineId, CurrentUser actor);
+
+    /**
      * An approved count wrote off a carton an order still held (kltn-docs 20 §4.2 step 8): inventory gave the hold up
      * and this turns what stood on it into the shortage 07 §4.4 describes, without anyone at the bin. The pick line on
      * the hold turns SHORT ({@code NOT_FOUND}, nothing deducted) and the order is held for stock ({@code INVENTORY}),

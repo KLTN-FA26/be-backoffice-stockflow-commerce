@@ -80,6 +80,7 @@ class CountVarianceOfShortCartonIntegrationTest {
     @Autowired EntityManager entityManager;
     @Autowired ApplicationContext context;
     @Autowired com.stockflow.order.internal.service.ShippingWarehouseService shippingWarehouses;
+    @Autowired com.stockflow.order.internal.service.DeliveryBatchService deliveryBatches;
 
     private ConfirmedOrders confirmedOrders;
     private Sku sofa;
@@ -356,21 +357,28 @@ class CountVarianceOfShortCartonIntegrationTest {
      * COUNT_VARIANCE of it, asked as a submitted count asks it.
      */
     private StockAdjustmentSummary manualCountMisses(UUID carton) {
+        return manualCountMissesAll(List.of(carton)).getFirst();
+    }
+
+    /** {@link #manualCountMisses} for several cartons of one count: one pending COUNT_VARIANCE each. */
+    private List<StockAdjustmentSummary> manualCountMissesAll(List<UUID> cartons) {
         UUID count = WithCurrentUser.call(TestUsers.admin(), DataScope.ALL, () -> cycleCounts.plan(
                 new CycleCounts.PlanCycleCountCommand(HCM, null, null, true, "Manual count", List.of(), List.of(),
                         List.of("HCM-A01-1-A"), List.of(sofa.code())), false).count().id());
         WithCurrentUser.run(TestUsers.admin(), DataScope.ALL, () -> {
             for (Map<String, Object> line : jdbc.queryForList(
                     "SELECT id, stock_package_id FROM inventory.cycle_count_line WHERE cycle_count_id = ?", count)) {
-                cycleCounts.count(count, (UUID) line.get("id"), !carton.equals(line.get("stock_package_id")), counter,
-                        false);
+                cycleCounts.count(count, (UUID) line.get("id"), !cartons.contains(line.get("stock_package_id")),
+                        counter, false);
             }
             cycleCounts.submit(count, counter, false);
         });
-        UUID adjustment = jdbc.queryForObject("SELECT id FROM inventory.stock_adjustment WHERE stock_package_id = ? "
-                + "AND status = 'PENDING_APPROVAL'", UUID.class, carton);
-        return WithCurrentUser.call(TestUsers.admin(), DataScope.ALL,
-                () -> operations.findAdjustment(adjustment).orElseThrow());
+        return cartons.stream().map(carton -> {
+            UUID adjustment = jdbc.queryForObject("SELECT id FROM inventory.stock_adjustment WHERE stock_package_id = ? "
+                    + "AND status = 'PENDING_APPROVAL'", UUID.class, carton);
+            return WithCurrentUser.call(TestUsers.admin(), DataScope.ALL,
+                    () -> operations.findAdjustment(adjustment).orElseThrow());
+        }).toList();
     }
 
     private void awaitLine(UUID line, String wanted) {
@@ -501,6 +509,14 @@ class CountVarianceOfShortCartonIntegrationTest {
                 sofa.code());
     }
 
+    /** {@code n} cartons of the SKU nothing holds. */
+    private List<UUID> freeCartons(int n) {
+        return jdbc.queryForList("""
+                SELECT p.id FROM inventory.stock_package p JOIN inventory.stock_item s ON s.stock_package_id = p.id
+                 WHERE s.sku = ? AND p.status = 'IN_STOCK' AND s.reserved = 0 ORDER BY p.lpn LIMIT ?""", UUID.class,
+                sofa.code(), n);
+    }
+
     /** The order module handled the count's write-off of the SKU (its publication completed). */
     private void awaitRecomputed() {
         com.stockflow.support.Await.until("the holds of " + sofa.code() + " are recomputed",
@@ -574,26 +590,95 @@ class CountVarianceOfShortCartonIntegrationTest {
                    AND status <> 'HELD'""", Integer.class, order)).isZero();
     }
 
+    /** Sales moves the first batch's window of the order to start {@code days} from today (17 BR-28). */
+    private void moveFirstWindow(UUID order, int days) {
+        java.time.LocalDate start = java.time.LocalDate.now(ConfirmedOrders.VIETNAM).plusDays(days);
+        UUID batch = jdbc.queryForObject("""
+                SELECT b.id FROM ordering.delivery_batch b JOIN ordering.sales_contract c ON c.id = b.contract_id
+                 WHERE c.order_id = ? AND b.seq = 1""", UUID.class, order);
+        UUID consent = com.stockflow.support.ChatRows.message(jdbc, tx, DemoData.CUSTOMER_ID, order, "CUSTOMER");
+        WithCurrentUser.run(confirmedOrders.sales(), DataScope.ALL, () -> deliveryBatches.changeWindow(
+                confirmedOrders.sales(), order, batch, new com.stockflow.order.internal.service.DeliveryBatchService
+                        .WindowChange(start, start.plusDays(2),
+                        com.stockflow.order.internal.domain.WindowChangeReason.SELLER_DELAY, "The producer is late",
+                        null, consent)));
+    }
+
+    private UUID holdingOrder(int cartons) {
+        UUID order = confirmedOrders.confirmed(DemoData.CUSTOMER_ID,
+                ConfirmedOrders.Line.cartons(sofaCarton, cartons, 12_000_000)).orderId();
+        placed.add(order);
+        confirmedOrders.ship(order, HCM);
+        return order;
+    }
+
+    private void approveAll(List<StockAdjustmentSummary> variances) {
+        variances.forEach(v -> assertThat(WithCurrentUser.call(TestUsers.admin(), DataScope.ALL,
+                () -> operations.approve(v.adjustmentId(), approver)).status()).isEqualTo(StockAdjustmentStatus.POSTED));
+    }
+
     @Test
-    @DisplayName("WF4-COUNT-EDGE a, not decided: two orders holding the SKU by SKU, one carton counted missing - which "
-            + "order gives its hold up is not in kltn-docs, so both holds are kept")
-    void twoOrdersShortOfTheSameCartonsKeepTheirHolds() {
-        UUID a = confirmedOrders.confirmed(DemoData.CUSTOMER_ID,
-                ConfirmedOrders.Line.cartons(sofaCarton, 3, 12_000_000)).orderId();
-        placed.add(a);
-        confirmedOrders.ship(a, HCM);
-        UUID b = confirmedOrders.confirmed(DemoData.CUSTOMER_ID,
-                ConfirmedOrders.Line.cartons(sofaCarton, 2, 12_000_000)).orderId();
-        placed.add(b);
-        confirmedOrders.ship(b, HCM);
+    @DisplayName("WF4-COUNT-WHO: two orders hold the SKU by SKU, one carton counted missing - the order whose next "
+            + "delivery window starts LATEST gives its hold up first, even when it was confirmed first")
+    void theOrderDeliveringLatestGivesUpFirst() {
+        UUID later = holdingOrder(3);
+        UUID sooner = holdingOrder(2);
+        moveFirstWindow(later, 10);
         StockAdjustmentSummary variance = manualCountMisses(freeCarton());
 
         WithCurrentUser.call(TestUsers.admin(), DataScope.ALL, () -> operations.approve(variance.adjustmentId(),
                 approver));
 
-        awaitRecomputed();
-        assertThat(heldBySku(a)).isEqualTo(6);
-        assertThat(heldBySku(b)).isEqualTo(4);
+        com.stockflow.support.Await.until("the later order gives a carton up", java.time.Duration.ofSeconds(20),
+                () -> heldBySku(later) == 4);
+        assertThat(heldBySku(sooner)).as("the order delivering sooner keeps every carton").isEqualTo(4);
+        var coverage = WithCurrentUser.call(TestUsers.admin(), DataScope.ALL, () -> shippingWarehouses.coverage(later));
+        assertThat(coverage.lines()).singleElement().satisfies(line -> {
+            assertThat(line.heldCartons()).isEqualTo(2);
+            assertThat(line.shortCartons()).isEqualTo(1);
+        });
+        assertThat(orders.findById(later).orElseThrow().status()).as("BR-04: AWAITING_STOCK only when a production "
+                + "order is sent").isEqualTo(OrderStatus.CONFIRMED);
+        assertThat(orders.findById(sooner).orElseThrow().status()).isEqualTo(OrderStatus.CONFIRMED);
+        assertThat(shippingWarehouses.giveUpUncovered(sofa.code(), "HCM")).as("the event handled again").isZero();
+    }
+
+    @Test
+    @DisplayName("WF4-COUNT-WHO: the next windows start the same day - the order confirmed LATEST gives up first")
+    void aTieGoesToTheOrderConfirmedLatest() {
+        UUID first = holdingOrder(3);
+        UUID last = holdingOrder(2);
+        StockAdjustmentSummary variance = manualCountMisses(freeCarton());
+
+        WithCurrentUser.call(TestUsers.admin(), DataScope.ALL, () -> operations.approve(variance.adjustmentId(),
+                approver));
+
+        com.stockflow.support.Await.until("the order confirmed last gives a carton up",
+                java.time.Duration.ofSeconds(20), () -> heldBySku(last) == 2);
+        assertThat(heldBySku(first)).isEqualTo(6);
+    }
+
+    @Test
+    @DisplayName("WF4-COUNT-WHO: holds are cut in that order until the missing cartons are covered - the first order "
+            + "gives all it holds, the next the rest")
+    void theNextOrderGivesUpWhatTheFirstCannot() {
+        UUID later = holdingOrder(2);
+        UUID sooner = holdingOrder(3);
+        moveFirstWindow(later, 10);
+        List<StockAdjustmentSummary> variances = manualCountMissesAll(freeCartons(3));
+
+        approveAll(variances);
+
+        com.stockflow.support.Await.until("two cartons are left for five held", java.time.Duration.ofSeconds(20),
+                () -> heldBySku(later) + heldBySku(sooner) == 4);
+        assertThat(heldBySku(later)).as("the later order lost everything it held").isZero();
+        assertThat(heldBySku(sooner)).as("the other lost one carton").isEqualTo(4);
+        assertThat(WithCurrentUser.call(TestUsers.admin(), DataScope.ALL, () -> shippingWarehouses.coverage(later))
+                .lines()).singleElement().satisfies(line -> assertThat(line.shortCartons()).isEqualTo(2));
+        assertThat(WithCurrentUser.call(TestUsers.admin(), DataScope.ALL, () -> shippingWarehouses.coverage(sooner))
+                .lines()).singleElement().satisfies(line -> assertThat(line.shortCartons()).isEqualTo(1));
+        assertThat(orders.findById(later).orElseThrow().status()).isEqualTo(OrderStatus.CONFIRMED);
+        assertThat(orders.findById(sooner).orElseThrow().status()).isEqualTo(OrderStatus.CONFIRMED);
     }
 
     // ------------------------------------------------------------------ WF4-COUNT-EDGE (b): no task yet
