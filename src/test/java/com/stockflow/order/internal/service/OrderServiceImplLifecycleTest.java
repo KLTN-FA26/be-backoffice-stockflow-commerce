@@ -52,10 +52,12 @@ class OrderServiceImplLifecycleTest {
     private final OrderHoldJpaRepository holds = mock(OrderHoldJpaRepository.class);
     private final CancellationRequestRepository requests = mock(CancellationRequestRepository.class);
     private final PaymentService paymentService = mock(PaymentService.class);
+    private final com.stockflow.order.internal.repository.OrderRemainderClosureJpaRepository closures =
+            mock(com.stockflow.order.internal.repository.OrderRemainderClosureJpaRepository.class);
     private final OrderServiceImpl service = new OrderServiceImpl(repository, mock(OrderSearchRepository.class),
             inventory, events, Clock.fixed(NOW, ZoneOffset.UTC), mock(DesignService.class), holds,
             mock(CustomerService.class),
-            requests, paymentService, org.mockito.Mockito.mock(com.stockflow.product.api.CustomerSkus.class), org.mockito.Mockito.mock(com.stockflow.order.internal.domain.SalesContractRepository.class), org.mockito.Mockito.mock(com.stockflow.order.internal.service.DeliveryBatchService.class), org.mockito.Mockito.mock(com.stockflow.order.internal.domain.DeliveryBatchRecords.class), org.mockito.Mockito.mock(com.stockflow.order.internal.domain.DeliveryFailureCases.class), org.mockito.Mockito.mock(org.springframework.beans.factory.ObjectProvider.class));
+            requests, paymentService, org.mockito.Mockito.mock(com.stockflow.product.api.CustomerSkus.class), org.mockito.Mockito.mock(com.stockflow.order.internal.domain.SalesContractRepository.class), org.mockito.Mockito.mock(com.stockflow.order.internal.service.DeliveryBatchService.class), org.mockito.Mockito.mock(com.stockflow.order.internal.domain.DeliveryBatchRecords.class), org.mockito.Mockito.mock(com.stockflow.order.internal.domain.DeliveryFailureCases.class), org.mockito.Mockito.mock(org.springframework.beans.factory.ObjectProvider.class), closures);
 
     {
         // Without installments an order owes nothing in the system (4B-10).
@@ -279,6 +281,28 @@ class OrderServiceImplLifecycleTest {
                 .containsExactly(0, 5);
         lidHolds.forEach(hold -> verify(inventory).release(hold, "ORDER_CANCELLED"));
         assertThat(lids(order)).isNotNull();
+        // WF4-CLOSE-HIST-SCHEMA: the closure is one row of its own, with the reason, the note, who and when.
+        ArgumentCaptor<com.stockflow.order.internal.entity.OrderRemainderClosureJpaEntity> row =
+                ArgumentCaptor.forClass(com.stockflow.order.internal.entity.OrderRemainderClosureJpaEntity.class);
+        verify(closures).save(row.capture());
+        assertThat(row.getValue().getOrderId()).isEqualTo(order.id().value());
+        assertThat(row.getValue().getClosureId()).isEqualTo(order.lastClosureId());
+        assertThat(row.getValue().getReasonCode()).isEqualTo("OUT_OF_STOCK");
+        assertThat(row.getValue().getNote()).isEqualTo("no lids");
+        assertThat(row.getValue().getClosedBy()).isEqualTo(STAFF);
+        assertThat(row.getValue().getClosedAt()).isEqualTo(NOW);
+    }
+
+    @Test
+    @DisplayName("the order's closures are read oldest first as the API's entries, reason code and note kept")
+    void remainderClosuresAreRead() {
+        UUID orderId = UUID.randomUUID();
+        when(closures.findByOrderIdOrderByClosedAtAscIdAsc(orderId)).thenReturn(List.of(
+                new com.stockflow.order.internal.entity.OrderRemainderClosureJpaEntity(UUID.randomUUID(), orderId,
+                        UUID.randomUUID(), "OTHER", "  customer moved  ", STAFF, NOW)));
+
+        assertThat(service.remainderClosures(orderId)).containsExactly(new com.stockflow.order.api.RemainderClosure(
+                CancellationReasonCode.OTHER, "customer moved", STAFF, NOW));
     }
 
     @Test
@@ -290,6 +314,7 @@ class OrderServiceImplLifecycleTest {
                 CancellationReasonCode.OUT_OF_STOCK, null, STAFF)).isInstanceOf(
                 com.stockflow.order.internal.domain.InvalidOrderTransitionException.class);
         verify(inventory, never()).release(any(), anyString());
+        verify(closures, never()).save(any());
     }
 
     @Test

@@ -539,6 +539,16 @@ it on a load (refused when the shipment is added, 409 `ORDER_PARTIAL_SHIPMENT_NO
 still says why when completing a part. It cannot be stopped while the order waits for production after its stock left
 (409 `ORDER_PARTIAL_SHIPMENT_LOCKED`).
 
+**Closing the rest of a partly fulfilled order is an entry of the history of its own (WF4-CLOSE-HIST-SCHEMA, owner
+2026-11-15; 17 §4.8 step 33).** Each closure (`POST /orders/{id}/remainder-closure`, and Sales' decision to cancel what a
+failed delivery left) writes a row of `ordering.order_remainder_closure` - the `CancellationReasonCode`, the note, who
+and when, and the `closure_id` the closure is settled under on the installments - whether or not it moved the order's
+status (the cartons checked and labelled stay on it and are delivered, so it often stays PARTIALLY_FULFILLED). The table
+is append-only like the partial-shipment decisions; `ordering.order_status_history` is untouched: `ck_order_status_history_change`
+stays and no from = to row is written. `GET /orders/{id}/history` lists the rows for staff, with the status changes, as entries
+of `type = REMAINDER_CLOSURE` (`closureReasonCode`, the note as `reason`, `from` / `to` null); a customer's history
+carries status changes only, as with the partial-shipment decisions. Closures before V20261125000100 left no such row.
+
 **Delivery mode is the coordinator's, until packing starts (LP-1 / LP-2, lead 2026-10-22; 09 §3, 17 §4.2 step 4).**
 `customer_order.delivery_mode` is `PARCEL` (default; every order before V20261022000800) or `FULL_TRUCKLOAD`. The Order
 Coordinator sets it with the release (`POST /orders/{id}/release {warehouseId, deliveryMode?}`; a mode other than the

@@ -2387,6 +2387,21 @@ Table ordering.order_partial_shipment_decision [headercolor: #C0392B] {
   last_modified_by varchar(100)
 }
 
+Table ordering.order_remainder_closure [headercolor: #C0392B] {
+  id               uuid [pk]
+  order_id         uuid [not null]
+  closure_id       uuid [not null, unique]
+  reason_code      varchar(32) [not null]
+  note             varchar(1000)
+  closed_by        uuid
+  closed_at        timestamptz [not null]
+  version          bigint [not null, default: 0]
+  created_at       timestamptz [not null, default: `now()`]
+  created_by       varchar(100)
+  last_modified_at timestamptz
+  last_modified_by varchar(100)
+}
+
 Table ordering.order_shipment [headercolor: #C0392B] {
   id                uuid [pk]
   order_id          uuid [not null]
@@ -5111,6 +5126,8 @@ Ref: ordering.order_line_reservation.order_line_id > ordering.order_line.id [del
 Ref: ordering.order_line_reservation.reservation_id > inventory.stock_reservation.id [delete: restrict]
 Ref: ordering.order_partial_shipment_decision.decided_by > identity.app_user.id
 Ref: ordering.order_partial_shipment_decision.order_id > ordering.customer_order.id [delete: cascade]
+Ref: ordering.order_remainder_closure.closed_by > identity.app_user.id
+Ref: ordering.order_remainder_closure.order_id > ordering.customer_order.id [delete: cascade]
 Ref: ordering.order_shipment.delivery_batch_id > ordering.delivery_batch.id [delete: restrict]
 Ref: ordering.order_shipment.handed_over_by > identity.app_user.id
 Ref: ordering.order_shipment.id > fulfillment.shipment.id [delete: restrict]
@@ -5513,6 +5530,7 @@ TableGroup ordering_group [color: #C0392B] {
   ordering.order_line_reservation
   ordering.order_number_sequence
   ordering.order_partial_shipment_decision
+  ordering.order_remainder_closure
   ordering.order_shipment
   ordering.order_shipment_line
   ordering.order_status_history

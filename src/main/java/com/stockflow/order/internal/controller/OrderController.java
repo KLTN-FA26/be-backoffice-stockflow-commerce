@@ -268,12 +268,20 @@ class OrderController {
         // PACK-PARTIAL: Sales' decisions on shipping in parts are part of the order's history for staff - entries of
         // their own type (PARTIAL_SHIPMENT_DECISION), not status changes.
         List<com.stockflow.order.api.PartialShipmentDecision> decisions = partialShipments.decisions(orderId);
+        // WF4-CLOSE-HIST-SCHEMA: so are the closures of the rest (REMAINDER_CLOSURE), whether or not one moved the status.
+        List<com.stockflow.order.api.RemainderClosure> closures = orderService.remainderClosures(orderId);
         java.util.Map<UUID, String> names = identities.displayNames(java.util.stream.Stream.of(
                         changes.stream().map(com.stockflow.order.api.OrderStatusChange::actorId),
-                        decisions.stream().map(com.stockflow.order.api.PartialShipmentDecision::decidedBy))
+                        decisions.stream().map(com.stockflow.order.api.PartialShipmentDecision::decidedBy),
+                        closures.stream().map(com.stockflow.order.api.RemainderClosure::closedBy))
                 .flatMap(stream -> stream)
                 .filter(java.util.Objects::nonNull).distinct().toList());
-        return ApiResponse.ok(java.util.stream.Stream.of(changes.stream()
+        // Listed first so that a closure and the status change it caused, stamped alike, read closure first.
+        return ApiResponse.ok(java.util.stream.Stream.of(
+                closures.stream().map(closure -> OrderStatusChangeResponse.remainderClosure(closure.reasonCode().name(),
+                        closure.note(), closure.closedAt(), closure.closedBy(),
+                        closure.closedBy() == null ? null : names.get(closure.closedBy()))),
+                changes.stream()
                         .map(change -> new OrderStatusChangeResponse(change.from(), change.to(), change.reason(),
                                 change.occurredAt(), change.actorId(),
                                 change.actorId() == null ? null : names.get(change.actorId()))),

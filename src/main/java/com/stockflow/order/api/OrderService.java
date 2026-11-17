@@ -273,6 +273,12 @@ public interface OrderService {
     java.util.List<OrderStatusChange> history(UUID orderId);
 
     /**
+     * Every closure of the rest of the order, oldest first (WF4-CLOSE-HIST-SCHEMA): entries of the order's history that
+     * are not status changes - a closure that leaves the order's status where it was is one too.
+     */
+    java.util.List<RemainderClosure> remainderClosures(UUID orderId);
+
+    /**
      * 4B-8 (kltn-docs 09 BR-18, 15 BR-08, 17 BR-29): the orders among {@code orderIds} whose goods may not leave at
      * {@code at} - an installment still owed before delivery, a delivery window not open yet, a hold - each with why
      * and what it owes. Empty: the vehicle may go. Fulfillment asks before handing a vehicle over, and refuses it whole.
