@@ -102,6 +102,25 @@ class WarehouseTest {
             assertThat(errorOf(() -> hanoi().updateDetails("X", "Y", null, 3L)))
                     .isEqualTo(ErrorCode.OPTIMISTIC_LOCK);
         }
+
+        @Test
+        @DisplayName("C43: the utilization factor starts at 100% and stays in (0, 1], four decimals at most")
+        void utilizationFactor() {
+            Warehouse warehouse = hanoi();
+            assertThat(warehouse.utilizationFactor()).isEqualByComparingTo("1");
+
+            warehouse.changeUtilizationFactor(new BigDecimal("0.85"));
+            assertThat(warehouse.utilizationFactor()).isEqualByComparingTo("0.85");
+            warehouse.changeUtilizationFactor(new BigDecimal("1.0000"));
+            assertThat(warehouse.utilizationFactor()).isEqualByComparingTo("1");
+
+            for (String refused : new String[] {"0", "-0.1", "1.0001", "0.00001"}) {
+                assertThat(errorOf(() -> warehouse.changeUtilizationFactor(new BigDecimal(refused))))
+                        .as(refused).isEqualTo(ErrorCode.VALIDATION_FAILED);
+            }
+            assertThat(errorOf(() -> warehouse.changeUtilizationFactor(null))).isEqualTo(ErrorCode.VALIDATION_FAILED);
+            assertThat(warehouse.utilizationFactor()).as("a refused factor changes nothing").isEqualByComparingTo("1");
+        }
     }
 
     @Nested

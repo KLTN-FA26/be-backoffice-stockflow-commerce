@@ -8,6 +8,7 @@ import com.stockflow.invoicing.internal.controller.dto.EInvoiceProviderResponse;
 import com.stockflow.invoicing.internal.controller.dto.EInvoiceRegisterEntryResponse;
 import com.stockflow.invoicing.internal.controller.dto.EInvoiceResponse;
 import com.stockflow.invoicing.internal.controller.dto.EInvoiceSettingsResponse;
+import com.stockflow.invoicing.internal.controller.dto.EInvoiceSignatureResponse;
 import com.stockflow.invoicing.internal.controller.dto.ProviderCallResponse;
 import com.stockflow.invoicing.internal.domain.EInvoice;
 import com.stockflow.invoicing.internal.domain.EInvoiceQueries;
@@ -18,6 +19,7 @@ import com.stockflow.invoicing.internal.domain.ProviderAccounts;
 import com.stockflow.invoicing.internal.domain.ProviderCallLog;
 import com.stockflow.invoicing.internal.domain.TaxRateTotal;
 import com.stockflow.invoicing.internal.service.EInvoiceSettingsService;
+import com.stockflow.invoicing.internal.service.InvoiceXmlSignature;
 
 import java.time.Instant;
 import java.util.Arrays;
@@ -131,5 +133,12 @@ final class InvoicingWebMapper {
     /** Still to issue, past the end of the working day after its date (NĐ 254 Phụ lục điểm 7). */
     private static boolean overdue(EInvoiceStatus status, Instant dueAt, Instant now) {
         return !status.wasIssued() && status != EInvoiceStatus.VOIDED_DRAFT && !now.isBefore(dueAt);
+    }
+
+    static EInvoiceSignatureResponse toResponse(InvoiceXmlSignature.Check check) {
+        return new EInvoiceSignatureResponse(check.status().name(), check.valid(), check.signer(),
+                check.signerTaxCode(), check.signerOrganization(), check.issuer(), check.signingTime(),
+                check.certificateValidFrom(), check.certificateValidTo(), check.certificateValidAtSigning(),
+                check.buyerSigned(), check.chainChecked());
     }
 }

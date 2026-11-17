@@ -307,10 +307,17 @@ class ArchitectureTest {
      *
      * <p>Both are mutable and zone-ambiguous, and mixing them with {@code java.time} in one
      * codebase produces off-by-one-day bugs that only appear near midnight in one timezone.
+     *
+     * <p>One exception, by name: {@code CertificateValidity}, because the JDK's X.509 API
+     * ({@code X509Certificate.getNotBefore/getNotAfter}) answers only with {@code Date} and has no
+     * {@code java.time} form. That class turns them into {@code Instant}s where it reads them and
+     * hands nothing else a {@code Date}; checking an e-invoice's signing certificate needs it.
      */
     @Test
     void onlyJavaTimeIsUsed() {
         ArchRule rule = noClasses()
+                .that().doNotHaveFullyQualifiedName(
+                        "com.stockflow.invoicing.internal.service.CertificateValidity")
                 .should().dependOnClassesThat()
                 .haveFullyQualifiedName("java.util.Date")
                 .because("java.time is the only date API used here");

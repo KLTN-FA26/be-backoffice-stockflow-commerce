@@ -387,6 +387,23 @@ class PickListServiceTest {
         }
 
         @Test
+        @DisplayName("whoever holds task assignment (the warehouse manager) confirms on behalf, in their own name (WF4-QLK-TAKEOVER)")
+        void whoAssignsMayConfirmOnBehalf() {
+            UUID managerId = UUID.randomUUID();
+            CurrentUser manager = new CurrentUser(managerId, "manager",
+                    java.util.Set.of(com.stockflow.common.security.Role.WAREHOUSE_MANAGER),
+                    java.util.Set.of(com.stockflow.common.security.PermissionCode.of(
+                            FulfillmentPermissions.TASK_ASSIGNMENT, com.stockflow.common.security.Action.UPDATE)),
+                    DataScope.ALL, java.util.Set.of(), java.util.Set.of());
+
+            var view = service.confirm(task.getId(), row.getId(), "HCM-A-01", "LPN-SKU-A", manager);
+
+            assertThat(view.status()).isEqualTo("PICKED");
+            assertThat(task.getAssignedUserId()).isEqualTo(picker);
+            verify(consumption).consumeForPick(reservation, row.getId(), managerId);
+        }
+
+        @Test
         @DisplayName("a task that does not exist is NOT_FOUND")
         void unknownTask() {
             UUID id = UUID.randomUUID();

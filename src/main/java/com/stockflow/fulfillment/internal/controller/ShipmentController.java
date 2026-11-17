@@ -13,10 +13,15 @@ import com.stockflow.fulfillment.internal.controller.dto.DeliveryOutcomeCorrecti
 import com.stockflow.fulfillment.internal.controller.dto.DeliveryOutcomeRequest;
 import com.stockflow.fulfillment.internal.controller.dto.ShipmentResponse;
 import com.stockflow.fulfillment.internal.controller.dto.ShipmentRowResponse;
+import com.stockflow.fulfillment.internal.service.DeliveryNoteService;
 import com.stockflow.fulfillment.internal.service.Shipments;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
+import org.springframework.http.ContentDisposition;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -29,7 +34,8 @@ import java.util.UUID;
 
 /**
  * Shipments in the back office (G4-2a; kltn-docs 09 §5): the list load plans are built from, a shipment's parcels and
- * timeline, and the outcome recorded when the carrier reports back (§4.3).
+ * timeline, its delivery note to print and sign (§4.2; the signed copy is its POD), and the outcome recorded when the
+ * carrier reports back (§4.3).
  *
  * <p>Outcomes have a resource of their own, {@code fulfillment-delivery-outcomes}: UPDATE records one, and on its own
  * only RETURNED (09 §5 "Warehouse": the warehouse manager may record a shipment back at the warehouse until the
@@ -44,10 +50,12 @@ class ShipmentController {
 
     private final Shipments shipments;
     private final DispatchWebMapper mapper;
+    private final DeliveryNoteService deliveryNotes;
 
-    ShipmentController(Shipments shipments, DispatchWebMapper mapper) {
+    ShipmentController(Shipments shipments, DispatchWebMapper mapper, DeliveryNoteService deliveryNotes) {
         this.shipments = shipments;
         this.mapper = mapper;
+        this.deliveryNotes = deliveryNotes;
     }
 
     @GetMapping
@@ -68,6 +76,22 @@ class ShipmentController {
     @RequiresPermission(resource = FulfillmentResources.SHIPMENTS, action = Action.READ)
     public ApiResponse<ShipmentResponse> get(@PathVariable UUID shipmentId) {
         return ApiResponse.ok(mapper.toResponse(shipments.get(shipmentId)));
+    }
+
+    @GetMapping(value = "/{shipmentId}/delivery-note", produces = MediaType.APPLICATION_PDF_VALUE)
+    @Operation(summary = "The shipment's delivery note as a PDF (09 §4.2): shipment code as barcode and QR, order, "
+            + "contract and delivery batch, customer and delivery address, vehicle, cartons by SKU with their LPNs, "
+            + "three signatures; once signed, its photo or scan is the shipment's POD. Printable from "
+            + "READY_TO_DISPATCH on; 409 SHIPMENT_STATE_CONFLICT for a cancelled shipment, 404 SHIPMENT_NOT_FOUND, "
+            + "403 for a shipment of another warehouse")
+    @RequiresPermission(resource = FulfillmentResources.SHIPMENTS, action = Action.READ)
+    public ResponseEntity<byte[]> deliveryNote(@PathVariable UUID shipmentId) {
+        DeliveryNoteService.Pdf pdf = deliveryNotes.deliveryNote(shipmentId);
+        return ResponseEntity.ok()
+                .header(HttpHeaders.CONTENT_DISPOSITION, ContentDisposition.inline().filename(pdf.fileName()).build()
+                        .toString())
+                .contentType(MediaType.APPLICATION_PDF)
+                .body(pdf.content());
     }
 
     @PostMapping("/{shipmentId}/delivery-outcome")
