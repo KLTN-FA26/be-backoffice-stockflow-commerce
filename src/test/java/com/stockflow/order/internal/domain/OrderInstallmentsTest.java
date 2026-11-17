@@ -87,6 +87,28 @@ class OrderInstallmentsTest {
     }
 
     @Test
+    @DisplayName("09 BR-18: every reason the goods may not leave is listed - money owed and the window not open together")
+    void handoverBlockReasonsListsEveryReason() {
+        Order order = signedWaitingOnSigning();
+        order.confirmByInstallments(NOW);
+        order.lines().forEach(line -> order.attachReservations(line.id(), List.of(UUID.randomUUID())));
+        UUID warehouse = UUID.randomUUID();
+        order.chooseShippingWarehouse(warehouse, true, SALES, NOW);
+        order.release(warehouse, "HCM", SALES, NOW);
+        order.startPicking(SALES, NOW);
+        LocalDate today = LocalDate.of(2026, 11, 9);
+        BatchInFlight early = new BatchInFlight(UUID.randomUUID(), 1, today.plusDays(14), 0);
+
+        assertThat(order.handoverBlockReasons(new BigDecimal("600000"), early, today))
+                .containsExactly("ORDER_BALANCE_NOT_PAID", "DELIVERY_BATCH_WINDOW_NOT_OPEN");
+        assertThat(order.handoverBlockReasons(BigDecimal.ZERO, early, today))
+                .containsExactly("DELIVERY_BATCH_WINDOW_NOT_OPEN");
+        assertThat(order.handoverBlockReasons(new BigDecimal("600000"), null, today))
+                .containsExactly("ORDER_BALANCE_NOT_PAID");
+        assertThat(order.handoverBlockReasons(BigDecimal.ZERO, early, today.plusDays(14))).isEmpty();
+    }
+
+    @Test
     @DisplayName("17 §4.6 step 21: delivered, it completes and closes only once its installments owe nothing")
     void completesAndClosesOnlyWhenNothingIsOwed() {
         Order order = signedWaitingOnSigning();
