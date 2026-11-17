@@ -59,6 +59,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.nullable;
 import static org.mockito.Mockito.doAnswer;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -285,6 +286,7 @@ class CustomerEInvoicePortalIntegrationTest {
         for (String path : List.of("/api/v1/einvoices", "/api/v1/einvoices/" + theirs.id(),
                 "/api/v1/einvoices/" + own.id(), "/api/v1/einvoices/" + theirs.id() + "/files/PDF",
                 "/api/v1/einvoices/" + own.id() + "/files/PDF", "/api/v1/einvoices/" + theirs.id() + "/provider-calls",
+                "/api/v1/einvoices/" + own.id() + "/signature",
                 "/api/v1/einvoices/register?from=2026-01-01&to=2027-12-31")) {
             String answer = http.asCustomer(mine.account(), get(path)).andExpect(status().isForbidden())
                     .andReturn().getResponse().getContentAsString();
@@ -297,6 +299,23 @@ class CustomerEInvoicePortalIntegrationTest {
         // The accountant still reads both in the back office.
         http.asRole(Role.ACCOUNTANT, accountant, get("/api/v1/einvoices/" + theirs.id())).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.id").value(theirs.id().toString()));
+        // The built-in sandbox provider signs nothing; an XML signed by a real provider checks out, and only in the
+        // back office.
+        http.asRole(Role.ACCOUNTANT, accountant, get("/api/v1/einvoices/" + theirs.id() + "/signature"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("NOT_SIGNED"))
+                .andExpect(jsonPath("$.data.valid").value(false));
+        byte[] sepaySigned;
+        try (var in = getClass().getResourceAsStream("/einvoice/sepay-sandbox-357207.xml")) {
+            sepaySigned = in.readAllBytes();
+        }
+        var upload = new org.springframework.mock.web.MockMultipartFile("file", "357207.xml", "application/xml",
+                sepaySigned);
+        http.asRole(Role.ACCOUNTANT, accountant, multipart("/api/v1/einvoices/signature-checks").file(upload))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("VALID"))
+                .andExpect(jsonPath("$.data.signer").value("MẮT BÃO - KIỂM THỬ HĐĐT CÓ MÃ"))
+                .andExpect(jsonPath("$.data.chainChecked").value(false));
+        http.asCustomer(mine.account(), multipart("/api/v1/einvoices/signature-checks").file(upload))
+                .andExpect(status().isForbidden());
 
         // Not signed in; signed in without the permission; signed in with it but no customer behind the account.
         http.anonymous(get(MINE)).andExpect(status().isUnauthorized());

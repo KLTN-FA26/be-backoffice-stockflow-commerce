@@ -70,10 +70,13 @@ public class DeliveryBatchService {
     public record BatchLine(UUID orderLineId, String sku, int cartons, int heldCartons) {
     }
 
-    /** One window move (BR-28), as the history shows it. */
+    /**
+     * One window move (BR-28), as the history shows it. {@code changedByName} is who moved it, by name (17 §5.2: the
+     * history names the person - the staff's view; the customer's carries none).
+     */
     public record WindowChangeView(UUID id, LocalDate oldStart, LocalDate oldEnd, LocalDate newStart, LocalDate newEnd,
                                    WindowChangeReason reason, String note, String evidenceFileName,
-                                   UUID evidenceMessageId, UUID changedBy, Instant changedAt) {
+                                   UUID evidenceMessageId, UUID changedBy, String changedByName, Instant changedAt) {
     }
 
     /**
@@ -101,6 +104,7 @@ public class DeliveryBatchService {
     private final DeliveryBatchRecords records;
     private final com.stockflow.order.internal.domain.ProductionOrderRepository productionOrders;
     private final com.stockflow.order.api.ConsentMessages consentMessages;
+    private final com.stockflow.identity.api.IdentityService identities;
     private final ShippingWarehouseService shippingWarehouses;
     private final FileTransfers files;
     private final StagedUploads staged;
@@ -111,7 +115,9 @@ public class DeliveryBatchService {
                          ShippingWarehouseService shippingWarehouses, FileTransfers files, StagedUploads staged,
                          TransactionTemplate tx, Clock clock,
                          com.stockflow.order.internal.domain.ProductionOrderRepository productionOrders,
-                         com.stockflow.order.api.ConsentMessages consentMessages) {
+                         com.stockflow.order.api.ConsentMessages consentMessages,
+                         com.stockflow.identity.api.IdentityService identities) {
+        this.identities = identities;
         this.consentMessages = consentMessages;
         this.productionOrders = productionOrders;
         this.orders = orders;
@@ -130,17 +136,18 @@ public class DeliveryBatchService {
     @Transactional(readOnly = true)
     public Schedule schedule(UUID orderId) {
         return scheduleOf(orders.findById(new OrderId(orderId))
-                .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No order " + orderId)));
+                .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No order " + orderId)), true);
     }
 
     /** The schedule of one of the customer's own orders (17 BR-28: the customer sees the windows in force). */
     @Transactional(readOnly = true)
     public Schedule scheduleOfCustomer(UUID customerId, UUID orderId) {
         return scheduleOf(orders.findById(new OrderId(orderId)).filter(o -> customerId.equals(o.customerId()))
-                .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No order " + orderId)));
+                .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No order " + orderId)), false);
     }
 
-    private Schedule scheduleOf(Order order) {
+    /** @param staffNames name who moved each window (the back office's view); the customer's carries no name */
+    private Schedule scheduleOf(Order order, boolean staffNames) {
         SalesContract contract = signedContract(order).orElse(null);
         if (contract == null) {
             return new Schedule(order.id().value(), order.orderNumber().value(), null, List.of());
@@ -151,6 +158,9 @@ public class DeliveryBatchService {
         records.releasesOf(order.id().value()).forEach(r -> releases.put(r.batchId(), r));
         Map<UUID, List<DeliveryBatchRecords.WindowChange>> changes = changesByBatch(order);
         Map<UUID, OrderLine> lines = linesById(order);
+        Map<UUID, String> movers = staffNames ? identities.displayNames(changes.values().stream()
+                .flatMap(List::stream).map(DeliveryBatchRecords.WindowChange::changedBy)
+                .filter(java.util.Objects::nonNull).distinct().toList()) : Map.of();
         LocalDate today = BusinessCalendar.date(clock.instant());
         List<BatchView> batches = new ArrayList<>();
         for (DeliveryBatch batch : sorted(contract)) {
@@ -171,7 +181,7 @@ public class DeliveryBatchService {
             DeliveryBatchRecords.Release release = releases.get(batch.id());
             batches.add(new BatchView(batch.id(), batch.seq(), batch.windowStart(), batch.windowEnd(), start, end,
                     state, late, release == null ? null : release.releasedAt(), batchLines,
-                    moved.stream().map(DeliveryBatchService::view).toList()));
+                    moved.stream().map(c -> view(c, movers)).toList()));
         }
         return new Schedule(order.id().value(), order.orderNumber().value(), contract.contractNumber(), batches);
     }
@@ -372,7 +382,7 @@ public class DeliveryBatchService {
                         change.windowStart());
             }
         }
-        return scheduleOf(order);
+        return scheduleOf(order, true);
     }
 
     private static void requireWellFormed(WindowChange change) {
@@ -499,8 +509,9 @@ public class DeliveryBatchService {
                 .mapToInt(s -> s.quantities().values().stream().mapToInt(Integer::intValue).sum()).sum();
     }
 
-    private static WindowChangeView view(DeliveryBatchRecords.WindowChange c) {
+    private static WindowChangeView view(DeliveryBatchRecords.WindowChange c, Map<UUID, String> movers) {
         return new WindowChangeView(c.id(), c.oldStart(), c.oldEnd(), c.newStart(), c.newEnd(), c.reason(), c.note(),
-                c.evidenceFileName(), c.evidenceMessageId(), c.changedBy(), c.changedAt());
+                c.evidenceFileName(), c.evidenceMessageId(), c.changedBy(),
+                c.changedBy() == null ? null : movers.get(c.changedBy()), c.changedAt());
     }
 }

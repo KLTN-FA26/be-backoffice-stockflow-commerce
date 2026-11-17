@@ -350,13 +350,14 @@ class ViettelSInvoiceIntegrationTest {
     // ---- which provider --------------------------------------------------------------------------------------------
 
     @Test
-    @DisplayName("the sandbox is the provider in use; Viettel SInvoice is there, not in use, and not put in use "
-            + "without an account")
+    @DisplayName("the sandbox is the provider in use; Viettel SInvoice and SePay are there, not in use, and Viettel "
+            + "is not put in use without an account")
     void theSandboxIsTheDefault() {
         assertThat(settings.get().provider().provider()).isEqualTo(SANDBOX);
         assertThat(providerAccounts.providers()).extracting(ProviderAccounts.Account::provider,
                         ProviderAccounts.Account::active, ProviderAccounts.Account::complete)
-                .containsExactly(tuple(SANDBOX, true, false), tuple(VIETTEL, false, false));
+                .containsExactly(tuple(SANDBOX, true, false), tuple(SepayEInvoiceProvider.CODE, false, false),
+                        tuple(VIETTEL, false, false));
         assertThat(providers.require(SANDBOX)).isInstanceOf(SandboxProvider.class);
         assertThat(providers.require(VIETTEL)).isInstanceOf(ViettelSInvoiceProvider.class);
         assertThatThrownBy(() -> providers.require("MISA")).extracting(ViettelSInvoiceIntegrationTest::code)

@@ -4,11 +4,13 @@ import com.stockflow.payment.internal.domain.Installment;
 import com.stockflow.payment.internal.domain.InstallmentMilestone;
 import com.stockflow.payment.internal.domain.InstallmentStatus;
 import com.stockflow.payment.internal.domain.PaymentReceipt;
-import com.stockflow.payment.internal.domain.PaymentReceiptStatus;
+import com.stockflow.payment.internal.domain.ReceiptFilter;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 
+import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.util.List;
 import java.util.UUID;
 
 /** Paged lists of installments and receipts for the accountant, Sales and the customer (4B-6). */
@@ -33,7 +35,18 @@ public interface InstallmentSearch {
 
     /**
      * Every filter null means "any"; {@code reference} matches the statement reference as BR-03 compares it - case and
-     * whitespace aside ({@code PaymentReceipt.normalize}).
+     * whitespace aside ({@code PaymentReceipt.normalize}); the days bound {@code received_on}, both inclusive.
      */
-    Page<PaymentReceipt> receipts(UUID customerId, PaymentReceiptStatus status, String reference, Pageable pageable);
+    Page<PaymentReceipt> receipts(ReceiptFilter filter, Pageable pageable);
+
+    /**
+     * What the RECORDED receipts among those {@code filter} matches add up to, one total per currency (none when
+     * nothing matched): the figure above the accountant's list (2026-11-14 plan, BE2-A). A voided receipt counts no
+     * money (15 §5.3), so it is left out even when the filter asks for VOIDED ones.
+     */
+    List<ReceiptTotal> recordedTotals(ReceiptFilter filter);
+
+    /** How many RECORDED receipts in one currency, and their sum. */
+    record ReceiptTotal(String currency, long count, BigDecimal amount) {
+    }
 }

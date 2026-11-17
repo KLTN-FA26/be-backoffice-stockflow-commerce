@@ -26,8 +26,9 @@ import java.util.List;
  * <p>A provider must treat a second {@code submit} of a transaction id it already holds as the first one again, never
  * as a second invoice. Every implementation is held to that; it is what lets the caller retry.</p>
  *
- * <p>Implementations: {@code SandboxProvider} (the default; no legal value) and {@code ViettelSInvoiceProvider}
- * (package E3), chosen by configuration - nothing about an invoice's rules names a provider.</p>
+ * <p>Implementations: {@code SandboxProvider} (the default; no legal value), {@code ViettelSInvoiceProvider}
+ * (package E3) and {@code SepayEInvoiceProvider}, chosen by configuration - nothing about an invoice's rules names a
+ * provider.</p>
  */
 public interface EInvoiceProvider {
 
@@ -71,6 +72,20 @@ public interface EInvoiceProvider {
      * are refused before they are sent to such a provider ({@code EINVOICE_PROVIDER_CANNOT_CORRECT}).
      */
     default boolean issuesCorrections() {
+        return false;
+    }
+
+    /**
+     * Whether the account this provider is called with is the deployment's configuration (environment variables) and
+     * not a row an administrator stores ({@code invoicing.einvoice_provider_config}). Such a provider takes no stored
+     * account, and is put in use only when {@link #deploymentAccountReady()} says the deployment gave it one.
+     */
+    default boolean accountInDeployment() {
+        return false;
+    }
+
+    /** For a provider whose account is in the deployment: whether the deployment configured one. */
+    default boolean deploymentAccountReady() {
         return false;
     }
 
@@ -208,11 +223,20 @@ public interface EInvoiceProvider {
      * The invoice an adjustment or a replacement changes, as the new invoice must name it (TT 91 Điều 10 khoản 1 điểm
      * b.1, b.2: "Điều chỉnh / Thay thế cho hóa đơn Mẫu số... ký hiệu... số... ngày... tháng... năm").
      *
-     * @param type   ADJUSTMENT or REPLACEMENT
-     * @param reason what was wrong, or what the adjustment is for
+     * @param type                  ADJUSTMENT or REPLACEMENT
+     * @param reason                what was wrong, or what the adjustment is for
+     * @param originalTransactionId the transaction the changed invoice was issued under: a provider that names an
+     *                              invoice by the reference it was handed (SePay) needs it, one that names it by its
+     *                              number does not; null where it is not known
      */
     record Correction(EInvoiceType type, String templateCode, String symbol, int invoiceNumber, LocalDate issueDate,
-                      String reason) {
+                      String reason, String originalTransactionId) {
+
+        /** A correction naming the invoice by its number alone. */
+        public Correction(EInvoiceType type, String templateCode, String symbol, int invoiceNumber, LocalDate issueDate,
+                          String reason) {
+            this(type, templateCode, symbol, invoiceNumber, issueDate, reason, null);
+        }
     }
 
     /**

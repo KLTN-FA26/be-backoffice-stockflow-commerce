@@ -226,7 +226,7 @@ class PickListService implements PickLists {
     public PickLineView confirm(UUID taskId, UUID lineId, String locationCode, String lpn, CurrentUser actor) {
         PickJpaEntity pick = lockPick(taskId);
         WarehouseScope.requireWarehouse(pick.getWarehouseId());
-        pick.requireAssigned(actor.userId());
+        TaskAccess.requireWorker(pick, actor);
         TaskAccess.orderInFulfilment(orders, pick);
         List<PickLineJpaEntity> stored = pickLines.findByPickIdOrderBySequenceNoAscIdAsc(pick.getId());
         PickList list = toList(pick, stored);
@@ -394,13 +394,9 @@ class PickListService implements PickLists {
         WarehouseScope.requireWarehouse(pick.getWarehouseId());
         List<PickLineJpaEntity> stored = pickLines.findByPickIdOrderBySequenceNoAscIdAsc(pick.getId());
         PickList list = toList(pick, stored);
-        // A carton missing from the staging area (review M2, 20 §4.9 step 4) is found by whoever counts or checks it,
-        // often not the picker: the assignee or whoever assigns the work may report it. A shelf short is the picker's.
-        boolean stagedCarton = list.line(lineId).map(PickList::stagedCarton).orElse(false);
-        if (!stagedCarton || !actor.can(FulfillmentPermissions.TASK_ASSIGNMENT,
-                com.stockflow.common.security.Action.UPDATE)) {
-            pick.requireAssigned(actor.userId());
-        }
+        // WF4-QLK-TAKEOVER (07 §2): the assignee reports a short - and so does whoever assigns the work, who may work
+        // the task on behalf (this once covered a carton missing from the staging area only, review M2).
+        TaskAccess.requireWorker(pick, actor);
         TaskAccess.orderInFulfilment(orders, pick);
         PickList.Confirmation outcome = list.reportShort(lineId, locationCode, reason);
         PickLine line = outcome.line();
