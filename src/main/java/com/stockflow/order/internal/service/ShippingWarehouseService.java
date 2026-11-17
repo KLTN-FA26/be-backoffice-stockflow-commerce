@@ -751,17 +751,21 @@ public class ShippingWarehouseService {
      * 47) and its delay alerts are recomputed. Its status does not change here: as at confirmation, an order goes
      * AWAITING_STOCK once a production order for its shortage is sent (BR-04, {@link Order#awaitStock}).
      *
-     * <p>Within the order, the latest delivery batch gives its holds up first, the newest hold first: held cartons count
+     * <p>Within an order, the latest delivery batch gives its holds up first, the newest hold first: held cartons count
      * for the earliest batch first (17 §4.2 step 3, BR-29).</p>
      *
-     * <p><b>One order only.</b> When the uncovered holds belong to more than one order, nothing is given up: kltn-docs
-     * does not say which order loses its hold first, and that rule waits for the owner (WF4-COUNT-EDGE, reported). The
-     * holds stay as they are, as before this change - the release that finds too few cartons is refused
-     * ({@code INSUFFICIENT_STOCK}).</p>
+     * <p><b>Several orders.</b> When the uncovered holds belong to more than one order, holds are cut until the units
+     * no carton covers are made up, the orders taken in this order (owner's decision, WF4-COUNT-WHO): the order whose
+     * next delivery - the window in force of its earliest batch not handed over in full - starts LATEST gives up first;
+     * on a tie, the order confirmed LATEST (the first time its status became CONFIRMED); on a tie still, the order with
+     * the greater id, so the choice never depends on a read order. An order with no batch left to hand over has no next
+     * delivery and counts as the latest. Each order then goes as the single holder does: the line holds fewer cartons
+     * and the batch lacks them; the status is not touched here (BR-04: AWAITING_STOCK once a production order for the
+     * shortage is sent).</p>
      *
-     * <p>Locks: the order's row, then the SKU's advisory lock - as choosing a warehouse and topping up take them - and
-     * the figures are read again under both. Idempotent: a repeated event finds every hold covered and changes
-     * nothing.</p>
+     * <p>Locks: the rows of every order holding the SKU in id order, then the SKU's advisory lock - as choosing a
+     * warehouse and topping up take them (the order's row, then the SKU) - and the figures are read again under both.
+     * Idempotent: a repeated event finds every hold covered and changes nothing.</p>
      *
      * @return the units of holds given up
      */
@@ -771,16 +775,11 @@ public class ShippingWarehouseService {
         if (cover.uncoveredUnits() == 0) {
             return 0;
         }
-        Set<UUID> holders = holdersOf(cover);
-        if (holders.size() != 1) {
-            log.warn("{} at {}: {} unit(s) held by SKU are no longer covered after a count's shortage, held by {} orders "
-                            + "{}; which one gives its hold up is not decided (WF4-COUNT-EDGE), so the holds are kept",
-                    sku, warehouseCode, cover.uncoveredUnits(), holders.size(), holders);
-            return 0;
+        Map<UUID, Order> locked = new java.util.TreeMap<>();
+        for (UUID orderId : holdersOf(cover).stream().sorted().toList()) {
+            orders.findByIdForUpdate(new OrderId(orderId)).ifPresent(order -> locked.put(orderId, order));
         }
-        UUID orderId = holders.iterator().next();
-        Order order = orders.findByIdForUpdate(new OrderId(orderId)).orElse(null);
-        if (order == null) {
+        if (locked.isEmpty()) {
             return 0;
         }
         inventory.prepareReservation(Set.of(code));
@@ -788,11 +787,58 @@ public class ShippingWarehouseService {
         if (cover.uncoveredUnits() == 0) {
             return 0;
         }
-        if (!holdersOf(cover).equals(holders)) {
+        if (!locked.keySet().containsAll(holdersOf(cover))) {
             log.warn("{} at {}: the holds changed hands meanwhile ({}); kept as they are", sku, warehouseCode,
                     holdersOf(cover));
             return 0;
         }
+        Map<UUID, List<com.stockflow.inventory.api.SkuHoldCover.Hold>> holdsOfOrder = new HashMap<>();
+        cover.holds().forEach(h -> holdsOfOrder.computeIfAbsent(h.orderId(), id -> new ArrayList<>()).add(h));
+        int left = cover.uncoveredUnits();
+        int givenUp = 0;
+        for (Order order : orderedToGiveUp(locked.values())) {
+            if (left <= 0) {
+                break;
+            }
+            int cut = giveUpOf(order, holdsOfOrder.getOrDefault(order.id().value(), List.of()), left, sku, warehouseCode);
+            left -= cut;
+            givenUp += cut;
+        }
+        return givenUp;
+    }
+
+    /**
+     * WF4-COUNT-WHO: the orders in the order they give their holds up - the one whose next delivery starts latest
+     * first, then the one confirmed latest.
+     */
+    private List<Order> orderedToGiveUp(java.util.Collection<Order> holders) {
+        record Rank(java.time.LocalDate nextDelivery, java.time.Instant confirmedAt) { }
+        Map<UUID, Rank> rank = new HashMap<>();
+        for (Order order : holders) {
+            UUID id = order.id().value();
+            java.time.LocalDate next = contracts.findLiveByOrderId(id)
+                    .flatMap(contract -> DeliveryBatchService.nextToHandOver(order, contract))
+                    .map(batch -> batchRecords.windowInForce(id, batch).start()).orElse(LocalDate.MAX);
+            java.time.Instant confirmed = orders.confirmedAt(id).orElse(order.contractSignedAt() != null
+                    ? order.contractSignedAt() : java.time.Instant.MIN);
+            rank.put(id, new Rank(next, confirmed));
+        }
+        return holders.stream().sorted(Comparator
+                .comparing((Order o) -> rank.get(o.id().value()).nextDelivery())
+                .thenComparing(o -> rank.get(o.id().value()).confirmedAt())
+                .thenComparing(o -> o.id().value()).reversed()).toList();
+    }
+
+    /**
+     * One order's cut: its holds of the SKU given up - the latest batch first (a hold of no batch counts as the
+     * latest), then the newest hold - until {@code left} units are made up or its holds run out; whole cartons (17
+     * BR-21), so the cut is rounded up to the line's carton. Saves the order when it gave anything up.
+     *
+     * @return the units given up
+     */
+    private int giveUpOf(Order order, List<com.stockflow.inventory.api.SkuHoldCover.Hold> holds, int left, String sku,
+                         String warehouseCode) {
+        UUID orderId = order.id().value();
         Map<UUID, OrderLine> lineOfHold = new HashMap<>();
         order.lines().forEach(line -> line.reservationIds().forEach(id -> lineOfHold.put(id, line)));
         Map<UUID, DeliveryBatchRecords.Hold> recorded = new HashMap<>();
@@ -800,7 +846,6 @@ public class ShippingWarehouseService {
         Map<UUID, Integer> seqOf = new HashMap<>();
         contracts.findLiveByOrderId(orderId).ifPresent(contract -> contract.schedule()
                 .forEach(batch -> seqOf.put(batch.id(), batch.seq())));
-        // The latest batch first (a hold of no batch counts as the latest), then the newest hold.
         Comparator<com.stockflow.inventory.api.SkuHoldCover.Hold> latestFirst = Comparator
                 .comparing((com.stockflow.inventory.api.SkuHoldCover.Hold h) -> {
                     DeliveryBatchRecords.Hold of = recorded.get(h.reservationId());
@@ -809,9 +854,8 @@ public class ShippingWarehouseService {
                 .thenComparing(com.stockflow.inventory.api.SkuHoldCover.Hold::reservedAt)
                 .thenComparing(com.stockflow.inventory.api.SkuHoldCover.Hold::reservationId)
                 .reversed();
-        int left = cover.uncoveredUnits();
         int givenUp = 0;
-        for (com.stockflow.inventory.api.SkuHoldCover.Hold hold : cover.holds().stream().sorted(latestFirst).toList()) {
+        for (com.stockflow.inventory.api.SkuHoldCover.Hold hold : holds.stream().sorted(latestFirst).toList()) {
             if (left <= 0) {
                 break;
             }
@@ -821,7 +865,6 @@ public class ShippingWarehouseService {
                         hold.reservationId(), sku);
                 continue;
             }
-            // Whole cartons (17 BR-21): the cut is rounded up to the line's carton.
             int cartons = (left + line.unitsPerCarton() - 1) / line.unitsPerCarton();
             int cut = Math.min(hold.quantity(), cartons * line.unitsPerCarton());
             java.util.Optional<UUID> kept = inventory.shrinkHold(hold.reservationId(), hold.quantity() - cut);
