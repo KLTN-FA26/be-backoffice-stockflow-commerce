@@ -598,6 +598,22 @@ stockflow:
       resubmit-window: ${EINVOICE_VIETTEL_RESUBMIT_WINDOW:P3D}
       file-pause: ${EINVOICE_VIETTEL_FILE_PAUSE:PT2S}
       payment-status-paid: ${EINVOICE_VIETTEL_PAYMENT_STATUS_PAID:true}
+    sepay:
+      # SePay eInvoice. Its key is configuration, unlike Viettel's account: a client id and secret from SePay's portal
+      # ("API xuat hoa don dien tu"), issued per environment - a SANDBOX key signs in only to the sandbox host. Not in
+      # use until an administrator switches to it (POST /api/v1/einvoice-settings/providers/SEPAY_EINVOICE/activation),
+      # which is refused while either value is blank.
+      environment: ${EINVOICE_SEPAY_ENVIRONMENT:SANDBOX}
+      client-id: ${EINVOICE_SEPAY_CLIENT_ID:}
+      client-secret: ${EINVOICE_SEPAY_CLIENT_SECRET:}
+      # Which of the account's invoicing registrations (GET /v1/provider-accounts) issues; blank takes the first active.
+      provider-account-id: ${EINVOICE_SEPAY_PROVIDER_ACCOUNT_ID:}
+      sandbox-url: ${EINVOICE_SEPAY_SANDBOX_URL:https://einvoice-api-sandbox.sepay.vn}
+      production-url: ${EINVOICE_SEPAY_PRODUCTION_URL:https://einvoice-api.sepay.vn}
+      read-timeout: ${EINVOICE_SEPAY_READ_TIMEOUT:PT30S}
+      # A transaction a look-up does not find is sent again only this long after it was last sent. 4 x (connect-timeout
+      # + read-timeout) must stay below it and the 15-minute provider lease, or the application does not start.
+      resubmit-quiet-period: ${EINVOICE_SEPAY_RESUBMIT_QUIET_PERIOD:PT10M}
     corrections:
       # Whether a 04/SS-HDDT notice may also be recorded for an invoice that was adjusted or replaced. TT 91/2026
       # Dieu 10 khoan 1 diem b does not ask for one and it is not verified whether a provider sends it by itself
