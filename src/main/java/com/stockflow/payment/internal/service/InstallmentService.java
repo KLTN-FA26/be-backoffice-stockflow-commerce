@@ -15,6 +15,7 @@ import com.stockflow.payment.internal.domain.InstallmentMilestone;
 import com.stockflow.payment.internal.domain.InstallmentStatus;
 import com.stockflow.payment.internal.repository.InstallmentSearch;
 import com.stockflow.contracts.InstallmentDue;
+import com.stockflow.contracts.InstallmentOverdue;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -54,6 +55,8 @@ public class InstallmentService {
 
     private static final Logger log = LoggerFactory.getLogger(InstallmentService.class);
     static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Ho_Chi_Minh");
+    /** A scan reads at most 50 pages of 200 installments - far above what turns overdue in a few days. */
+    static final int SCAN_MAX_PAGES = 50;
 
     private static final SortWhitelist SORT = SortWhitelist.of("dueDate", "seq", "amount", "status", "createdAt")
             .withDefault("dueDate", Sort.Direction.ASC);
@@ -212,11 +215,9 @@ public class InstallmentService {
      * <p><b>Due today, deliberately</b> (open question for the owner, WF-05 review F10). The fee is owed for a trip
      * that already happened, as the cancellation fee item is (15 §5.1 "đến hạn ngay"); no payment term was agreed for
      * it, so none is invented here. The consequence is meant: from the next business day it is unpaid it is overdue
-     * ({@link Installment#overdue}), and the customer's credit position then shows it overdue - which refuses the
-     * release of their orders paying after delivery, this one's next batches included ({@code CUSTOMER_CREDIT_OVERDUE},
-     * {@code OrderReleaseService.release}), until it is paid. The redelivery itself is
-     * released without that check ({@code OrderReleaseService.releaseRedelivery}), so the goods that came back are
-     * never held hostage by their own fee. Giving the fee a term (a {@code due_days}, or the contract's terms) would be
+     * ({@link Installment#overdue}), and the customer's credit position then shows it overdue - which warns whoever
+     * releases their orders ({@code OrderReleases.releaseWarnings}) and tells Sales ({@link #announceNewlyOverdue}); no
+     * release is refused for it any more (WF4-OVERDUE-WARN). Giving the fee a term (a {@code due_days}, or the contract's terms) would be
      * a one-line change in {@link Installment#openDeliveryFailureFee}.</p>
      */
     public Optional<UUID> chargeFailedDelivery(com.stockflow.payment.api.ChargeFailedDeliveryCommand command) {
@@ -254,6 +255,46 @@ public class InstallmentService {
         events.publishEvent(new InstallmentDue(installment.id(), installment.contractId(),
                 installment.contractNumber(), installment.orderId(), installment.customerId(), installment.seq(),
                 installment.dueDate(), installment.reachedAt()));
+    }
+
+    /**
+     * The daily overdue scan (kltn-docs 15 §4.3 step 11, WF4-OVERDUE-TRIGGER): publishes {@link InstallmentOverdue} for
+     * every installment that turned overdue lately - past its due day, still owing, due on or after
+     * {@code lookbackDays} days before today - so Sales hear of it and may hold the customer's orders by hand.
+     *
+     * <p>Overdue is the one definition the application repeats ({@link Installment#overdue},
+     * {@code payment.installment_is_overdue}); the scan asks the installment search for it and adds only a lower bound on
+     * the due day, so the whole history is not announced at the first run. Nothing records what was announced - the
+     * listener posts under a key of the installment, so a run again (or a restart) tells nobody twice. The look-back
+     * lets a night the job missed be caught the next; the same installment may therefore be published on up to
+     * {@code lookbackDays} runs, each time harmlessly.</p>
+     *
+     * @return how many installments were announced
+     */
+    public int announceNewlyOverdue(int lookbackDays) {
+        if (lookbackDays < 1) {
+            throw new IllegalArgumentException("lookbackDays must be at least 1");
+        }
+        LocalDate today = today();
+        InstallmentSearch.InstallmentFilter filter = new InstallmentSearch.InstallmentFilter(null, null, null, null,
+                null, null, true, today, today.minusDays(lookbackDays));
+        int announced = 0;
+        for (int page = 0; page < SCAN_MAX_PAGES; page++) {
+            var found = search.installments(filter, Pages.of(page, Pages.MAX_PAGE_SIZE,
+                    Sort.by("dueDate", "id")));
+            for (Installment installment : found.getContent()) {
+                events.publishEvent(new InstallmentOverdue(installment.id(), installment.contractId(),
+                        installment.contractNumber(), installment.orderId(), installment.orderNumber(),
+                        installment.customerId(), installment.seq(), installment.dueDate(),
+                        installment.outstanding(), installment.currency()));
+                announced++;
+            }
+            if (!found.hasNext()) {
+                break;
+            }
+        }
+        log.info("Overdue scan: {} installment(s) overdue since the last {} day(s)", announced, lookbackDays);
+        return announced;
     }
 
     /**

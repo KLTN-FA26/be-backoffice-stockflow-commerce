@@ -808,6 +808,8 @@ class PermissionMatrixTest {
         handlers().forEach(h -> byKey.put(h.key(), h));
         Map<String, String> expected = Map.of(
                 "POST /api/v1/orders/{orderId}/release", "sales-order-releases:UPDATE",
+                // WF4-OVERDUE-WARN: what the release dialog shows when it opens - behind the release permission itself.
+                "GET /api/v1/orders/{orderId}/release-warnings", "sales-order-releases:UPDATE",
                 "GET /api/v1/orders/{orderId}/delivery-batches", "sales-order-delivery-batches:READ",
                 "GET /api/v1/orders/me/{orderId}/delivery-batches", "sales-orders:READ",
                 "POST /api/v1/orders/{orderId}/delivery-batches/{batchId}/window-change", "sales-contracts:UPDATE",

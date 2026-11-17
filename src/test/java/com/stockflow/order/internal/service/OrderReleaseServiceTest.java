@@ -34,8 +34,8 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * Releasing an order (SCRUM-423, kltn-docs 17 §4.2): no credit for an overdue customer (15 §4.3 step 4, 17 BR-02), stock
- * allocated on the warehouse's bins, and no order with print lines until their goods are received.
+ * Releasing an order (SCRUM-423, kltn-docs 17 §4.2): an overdue customer is warned about, never refused (WF4-OVERDUE-WARN),
+ * stock allocated on the warehouse's bins, and no order with print lines until their goods are received.
  */
 class OrderReleaseServiceTest {
 
@@ -45,11 +45,9 @@ class OrderReleaseServiceTest {
     private final OrderService orders = mock(OrderService.class);
     private final PaymentService paymentService = mock(PaymentService.class);
     private final OrderStockAllocation allocation = mock(OrderStockAllocation.class);
-    private final com.stockflow.order.internal.domain.SalesContractRepository contracts =
-            mock(com.stockflow.order.internal.domain.SalesContractRepository.class);
     private final OrderSummary summary = mock(OrderSummary.class);
     private final OrderReleaseService service = new OrderReleaseService(repository, warehouses, events,
-            orders, Clock.fixed(NOW, ZoneOffset.UTC), paymentService, allocation, contracts,
+            orders, Clock.fixed(NOW, ZoneOffset.UTC), paymentService, allocation,
             org.mockito.Mockito.mock(ShippingWarehouseService.class), org.mockito.Mockito.mock(com.stockflow.order.internal.service.DeliveryBatchService.class), org.mockito.Mockito.mock(com.stockflow.order.internal.domain.DeliveryBatchRecords.class), org.mockito.Mockito.mock(com.stockflow.order.internal.domain.DeliveryFailureCases.class));
 
     @BeforeEach
@@ -117,53 +115,49 @@ class OrderReleaseServiceTest {
         verify(repository, never()).save(any());
     }
 
-    /** The order's signed contract: {@code milestones} are what its installments fall due on. */
-    private void contractWith(Order order, com.stockflow.order.internal.domain.PaymentMilestone... milestones) {
-        com.stockflow.order.internal.domain.SalesContract contract =
-                mock(com.stockflow.order.internal.domain.SalesContract.class);
-        java.util.List<com.stockflow.order.internal.domain.PlannedInstallment> plan = new java.util.ArrayList<>();
-        for (int i = 0; i < milestones.length; i++) {
-            plan.add(new com.stockflow.order.internal.domain.PlannedInstallment(UUID.randomUUID(), i + 1, "I" + i,
-                    milestones[i], null, com.stockflow.common.domain.Money.vnd(1_000), 0, null));
-        }
-        when(contract.plan()).thenReturn(plan);
-        when(contracts.findLiveByOrderId(order.id().value())).thenReturn(Optional.of(contract));
-    }
-
     @Test
-    @DisplayName("an order whose contract pays after delivery is not released for a customer with an overdue "
-            + "installment (CUSTOMER_CREDIT_OVERDUE)")
-    void overdueCustomerGetsNoCreditRelease() {
+    @DisplayName("WF4-OVERDUE-WARN: an overdue customer no longer blocks the release - the order is released and "
+            + "allocated as any other")
+    void overdueCustomerIsReleasedAnyway() {
         Order order = loaded(OrderFixtures.confirmed());
-        contractWith(order, com.stockflow.order.internal.domain.PaymentMilestone.AFTER_DELIVERY);
         when(paymentService.creditPosition(order.customerId()))
                 .thenReturn(new CreditPosition(new BigDecimal("500000"), true));
-
-        assertThat(codeOf(() -> service.release(order.id().value(), WAREHOUSE, STAFF)))
-                .isEqualTo(ErrorCode.CUSTOMER_CREDIT_OVERDUE);
-        assertThat(order.status()).isEqualTo(OrderStatus.CONFIRMED);
-        verify(allocation, never()).allocate(any(), anyString());
-    }
-
-    @Test
-    @DisplayName("an order whose contract pays after delivery is released for a customer who is not overdue")
-    void creditOrderReleasedWhenNotOverdue() {
-        Order order = loaded(OrderFixtures.confirmed());
-        contractWith(order, com.stockflow.order.internal.domain.PaymentMilestone.AFTER_DELIVERY);
 
         service.release(order.id().value(), WAREHOUSE, STAFF);
 
         assertThat(order.status()).isEqualTo(OrderStatus.READY_TO_FULFILL);
+        verify(allocation).allocate(order, "HCM");
+        verify(repository).save(order);
     }
 
     @Test
-    @DisplayName("an order whose contract is paid before delivery is not asked about credit at all")
-    void prepaidOrderSkipsTheCreditCheck() {
-        Order order = loaded(OrderFixtures.confirmed());
-        contractWith(order, com.stockflow.order.internal.domain.PaymentMilestone.ON_SIGNING);
+    @DisplayName("release warnings: a customer with an overdue installment gets creditWarning OVERDUE")
+    void warnsOfAnOverdueCustomer() {
+        Order order = OrderFixtures.confirmed();
+        when(repository.findById(order.id())).thenReturn(Optional.of(order));
+        when(paymentService.creditPosition(order.customerId()))
+                .thenReturn(new CreditPosition(new BigDecimal("500000"), true, new BigDecimal("200000"),
+                        java.time.LocalDate.parse("2026-11-01")));
 
-        service.release(order.id().value(), WAREHOUSE, STAFF);
+        OrderReleases.ReleaseWarnings warnings = service.releaseWarnings(order.id().value());
 
-        verify(paymentService, never()).creditPosition(any());
+        assertThat(warnings.creditWarning()).isEqualTo(new OrderReleases.CreditWarning("OVERDUE"));
+    }
+
+    @Test
+    @DisplayName("release warnings: a customer who is not overdue has none")
+    void noWarningWhenNotOverdue() {
+        Order order = OrderFixtures.confirmed();
+        when(repository.findById(order.id())).thenReturn(Optional.of(order));
+
+        assertThat(service.releaseWarnings(order.id().value()).creditWarning()).isNull();
+    }
+
+    @Test
+    @DisplayName("release warnings: an unknown order is NOT_FOUND")
+    void warningsOfAnUnknownOrder() {
+        when(repository.findById(any(OrderId.class))).thenReturn(Optional.empty());
+
+        assertThat(codeOf(() -> service.releaseWarnings(UUID.randomUUID()))).isEqualTo(ErrorCode.NOT_FOUND);
     }
 }

@@ -560,8 +560,6 @@ public enum ErrorCode {
     ORDER_SHIPMENT_QUANTITY_EXCEEDED("More than this order line has left to ship", 409),
     /** G3-2: a shipment outcome its status does not allow (kltn-docs 09 §5). */
     ORDER_SHIPMENT_INVALID_TRANSITION("This shipment cannot move to that status now", 409),
-    /** SCRUM-431, kltn-docs 15 §4.3 step 4: an overdue customer gets no new credit until they pay. */
-    CUSTOMER_CREDIT_OVERDUE("The customer has overdue receivables", 409),
     /** 4B-6: no installment with that id (for a customer: none of theirs). */
     INSTALLMENT_NOT_FOUND("Installment not found", 404),
     /** 4B-6, 15 BR-05: a paid or cancelled installment takes no more money. */
