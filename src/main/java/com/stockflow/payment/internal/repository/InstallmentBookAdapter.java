@@ -200,6 +200,8 @@ class InstallmentBookAdapter implements InstallmentBook, InstallmentSearch {
                 .and(Specs.eq("milestone", filter.milestone()))
                 .and(filter.dueBefore() == null ? null
                         : (root, query, cb) -> cb.lessThan(root.get("dueDate"), filter.dueBefore()))
+                .and(filter.dueFrom() == null ? null
+                        : (root, query, cb) -> cb.greaterThanOrEqualTo(root.get("dueDate"), filter.dueFrom()))
                 .and(filter.reached() == null ? null : (root, query, cb) -> filter.reached()
                         ? cb.isNotNull(root.get("reachedAt")) : cb.isNull(root.get("reachedAt")))
                 .and(filter.overdueOn() == null ? null : overdue(filter.overdueOn(), filter.overdue()));

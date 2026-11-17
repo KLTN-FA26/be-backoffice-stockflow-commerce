@@ -45,7 +45,6 @@ class OrderReleaseService implements OrderReleases {
     private final Clock clock;
     private final com.stockflow.payment.api.PaymentService paymentService;
     private final OrderStockAllocation allocation;
-    private final com.stockflow.order.internal.domain.SalesContractRepository contracts;
     private final ShippingWarehouseService shippingWarehouses;
     private final DeliveryBatchService batches;
     private final com.stockflow.order.internal.domain.DeliveryBatchRecords batchRecords;
@@ -54,7 +53,7 @@ class OrderReleaseService implements OrderReleases {
     OrderReleaseService(OrderRepository repository, WarehouseDirectory warehouses,
                         OrderEventPublisher events, OrderService orders, Clock clock,
                         com.stockflow.payment.api.PaymentService paymentService,
-                        OrderStockAllocation allocation, com.stockflow.order.internal.domain.SalesContractRepository contracts,
+                        OrderStockAllocation allocation,
                         ShippingWarehouseService shippingWarehouses, DeliveryBatchService batches,
                         com.stockflow.order.internal.domain.DeliveryBatchRecords batchRecords,
                         com.stockflow.order.internal.domain.DeliveryFailureCases deliveryFailures) {
@@ -62,7 +61,6 @@ class OrderReleaseService implements OrderReleases {
         this.batches = batches;
         this.batchRecords = batchRecords;
         this.shippingWarehouses = shippingWarehouses;
-        this.contracts = contracts;
         this.allocation = allocation;
         this.repository = repository;
         this.warehouses = warehouses;
@@ -101,12 +99,9 @@ class OrderReleaseService implements OrderReleases {
                     + "goods are received from the producer before it is released").formatted(order.orderNumber()));
         }
 
-        // kltn-docs 15 §4.3 step 4, 17 BR-02: an order whose contract pays after delivery gives credit on delivery, so it
-        // is not released for a customer who is overdue (4B-5; until 4B-10 also checkout's credit orders).
-        if (paysAfterDelivery(order) && paymentService.creditPosition(order.customerId()).hasOverdue()) {
-            throw new BusinessException(ErrorCode.CUSTOMER_CREDIT_OVERDUE,
-                    "Order %s is on credit and its customer has an overdue installment".formatted(order.orderNumber()));
-        }
+        // WF4-OVERDUE-WARN (owner decision, 2026-11-15): an overdue customer no longer blocks the release - the person
+        // releasing is warned when the dialog opens (releaseWarnings) and Sales are told by the daily overdue scan
+        // (kltn-docs 15 §4.3 step 11), who may hold the order by hand.
         // 4B-8 (17 §4.5, BR-03, BR-29): an order with a signed delivery schedule is released batch by batch - the next
         // one, held in full at the shipping warehouse, once the batch before it was handed over.
         java.util.Optional<com.stockflow.order.internal.domain.DeliveryBatch> next = order.paidByContract()
@@ -200,10 +195,14 @@ class OrderReleaseService implements OrderReleases {
         return orders.findById(order.id().value()).orElseThrow();
     }
 
-    /** Whether the order's signed contract pays after delivery (15 BR-09): credit given on delivery. */
-    private boolean paysAfterDelivery(Order order) {
-        return order.paidByContract() && contracts.findLiveByOrderId(order.id().value()).stream()
-                .flatMap(contract -> contract.plan().stream())
-                .anyMatch(i -> i.milestone() == com.stockflow.order.internal.domain.PaymentMilestone.AFTER_DELIVERY);
+    @Override
+    @Transactional(readOnly = true)
+    public ReleaseWarnings releaseWarnings(UUID orderId) {
+        Order order = repository.findById(new OrderId(orderId))
+                .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "No order " + orderId));
+        // 15 §4.3 step 9, 11: the customer has an installment past its due day and still owing - read the way the credit
+        // check reads it, never a second definition of overdue.
+        return paymentService.creditPosition(order.customerId()).hasOverdue()
+                ? new ReleaseWarnings(new CreditWarning(CreditWarning.OVERDUE)) : new ReleaseWarnings(null);
     }
 }
