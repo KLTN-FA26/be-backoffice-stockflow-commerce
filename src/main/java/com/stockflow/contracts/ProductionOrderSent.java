@@ -18,7 +18,8 @@ import java.util.UUID;
  * {@code @ApplicationModuleListener}; see {@code package-info.java} for the rules on changing this contract.</p>
  *
  * @param totalCartons the cartons of every line
- * @param volumeM3     their volume in cubic metres, from each SKU's carton size; null when a SKU has none recorded
+ * @param volumeM3     their volume in cubic metres, from each SKU's carton spec - the measure of the warehouse capacity
+ *                     board (BE1); null when a SKU has none recorded
  */
 public record ProductionOrderSent(UUID eventId, UUID productionOrderId, String code, UUID receivingWarehouseId,
                                   LocalDate needByDate, int totalCartons, BigDecimal volumeM3, Instant sentAt) {

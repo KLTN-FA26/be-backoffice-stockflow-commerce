@@ -17,18 +17,19 @@ final class WarehousePersistenceMapper {
     static Warehouse toDomain(WarehouseJpaEntity entity) {
         return new Warehouse(entity.getId(), entity.getPrefix(), entity.getName(), entity.getAddress(),
                 entity.getReturnAddress(), entity.getMapUnit(), entity.getMapWidth(),
-                entity.getMapHeight(), entity.getStatus(), entity.getVersion(), entity.getCreatedAt());
+                entity.getMapHeight(), entity.getStatus(), entity.getUtilizationFactor(), entity.getVersion(),
+                entity.getCreatedAt());
     }
 
     static WarehouseJpaEntity toNewEntity(Warehouse warehouse) {
         return new WarehouseJpaEntity(warehouse.id(), warehouse.prefix(), warehouse.name(),
                 warehouse.address(), warehouse.returnAddress(), warehouse.mapUnit(),
-                warehouse.mapWidth(), warehouse.mapHeight(), warehouse.status());
+                warehouse.mapWidth(), warehouse.mapHeight(), warehouse.status(), warehouse.utilizationFactor());
     }
 
     static void apply(Warehouse warehouse, WarehouseJpaEntity entity) {
         entity.apply(warehouse.name(), warehouse.address(), warehouse.returnAddress(),
-                warehouse.mapWidth(), warehouse.mapHeight(), warehouse.status());
+                warehouse.mapWidth(), warehouse.mapHeight(), warehouse.status(), warehouse.utilizationFactor());
     }
 
     static Zone toDomain(ZoneJpaEntity entity) {

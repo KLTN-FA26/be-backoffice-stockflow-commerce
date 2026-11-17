@@ -12,11 +12,16 @@ import com.stockflow.order.internal.controller.dto.QuoteRequests;
 import com.stockflow.order.internal.controller.dto.QuoteResponse;
 import com.stockflow.order.internal.controller.dto.QuoteRowResponse;
 import com.stockflow.order.internal.domain.QuoteStatus;
+import com.stockflow.order.internal.service.QuoteDocumentService;
 import com.stockflow.order.internal.service.Quotes;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
+import org.springframework.http.ContentDisposition;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -55,9 +60,11 @@ import java.util.UUID;
 class QuoteController {
 
     private final Quotes quotes;
+    private final QuoteDocumentService documents;
 
-    QuoteController(Quotes quotes) {
+    QuoteController(Quotes quotes, QuoteDocumentService documents) {
         this.quotes = quotes;
+        this.documents = documents;
     }
 
     @PostMapping
@@ -91,6 +98,20 @@ class QuoteController {
     @RequiresPermission(resource = OrderResources.QUOTES, action = Action.READ)
     public ApiResponse<QuoteResponse> get(@PathVariable UUID quoteId, @AuthenticatedUser CurrentUser user) {
         return ApiResponse.ok(QuoteWebMapper.toResponse(quotes.get(user, quoteId)));
+    }
+
+    @GetMapping(value = "/{quoteId}/document", produces = MediaType.APPLICATION_PDF_VALUE)
+    @Operation(summary = "The quote drawn as a PDF (14 §4.1): the offer as sent, or as accepted once it is; a draft, a "
+            + "cancelled and an expired quote say so on the page. A portal customer prints only their own, once sent "
+            + "(404 otherwise, as reading it); 503 SELLER_PROFILE_UNAVAILABLE without the seller configured")
+    @RequiresPermission(resource = OrderResources.QUOTES, action = Action.READ)
+    public ResponseEntity<byte[]> document(@PathVariable UUID quoteId, @AuthenticatedUser CurrentUser user) {
+        QuoteDocumentService.Pdf pdf = documents.document(user, quoteId);
+        return ResponseEntity.ok()
+                .header(HttpHeaders.CONTENT_DISPOSITION, ContentDisposition.inline().filename(pdf.fileName()).build()
+                        .toString())
+                .contentType(MediaType.APPLICATION_PDF)
+                .body(pdf.content());
     }
 
     @PutMapping("/{quoteId}")

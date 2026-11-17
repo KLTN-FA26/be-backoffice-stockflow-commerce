@@ -9,8 +9,9 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * values would let the two documents of one sale disagree.
  *
  * <p>Blank by default. local, dev and test carry a demo company; in the {@code prod} profile the application refuses to
- * start until every field is set ({@link SellerProfileRequirement}), so no contract or invoice ever names a made-up
- * company. Where it is blank anyway, a contract or an invoice is refused (503 {@code SELLER_PROFILE_UNAVAILABLE}).</p>
+ * start until every field is set ({@link SellerProfileRequirement}), so no quote, contract or invoice ever names a
+ * made-up company. Where it is blank anyway, a quote's PDF, a contract or an invoice is refused (503
+ * {@code SELLER_PROFILE_UNAVAILABLE}).</p>
  */
 @ConfigurationProperties(prefix = "stockflow.seller")
 public record SellerProperties(String name, String taxCode, String address, String representative,

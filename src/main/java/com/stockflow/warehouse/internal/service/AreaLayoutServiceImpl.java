@@ -43,7 +43,8 @@ class AreaLayoutServiceImpl implements AreaLayoutService {
 
     @Override
     @Auditable(action = AuditAction.CREATE, resourceType = "area",
-            resourceId = "#command.warehouseId()", includeFailures = false)
+            resourceId = "#command.warehouseId()", includeFailures = false,
+            details = "{locationCode: #result?.locationCode(), code: #command.code(), details: #command.details()}")
     public AreaSummary createArea(AreaCommands.CreateArea command) {
         Warehouse warehouse = WarehouseLocks.lock(warehouses, command.warehouseId());
         String code = CodePart.of(command.code(), CodePart.CODE_MAX_LENGTH).value();
@@ -59,7 +60,8 @@ class AreaLayoutServiceImpl implements AreaLayoutService {
 
     @Override
     @Auditable(action = AuditAction.UPDATE, resourceType = "area",
-            resourceId = "#command.areaId()", includeFailures = false)
+            resourceId = "#command.areaId()", includeFailures = false,
+            details = "{locationCode: #result?.locationCode(), details: #command.details()}")
     public AreaSummary updateArea(AreaCommands.UpdateArea command) {
         Warehouse warehouse = lockWarehouseOf(command.areaId());
         Area area = require(command.areaId());
@@ -71,7 +73,8 @@ class AreaLayoutServiceImpl implements AreaLayoutService {
     }
 
     @Override
-    @Auditable(action = AuditAction.TRANSITION, resourceType = "area", resourceId = "#areaId")
+    @Auditable(action = AuditAction.TRANSITION, resourceType = "area", resourceId = "#areaId",
+            details = "{locationCode: #result?.locationCode(), status: #status}")
     public AreaSummary changeAreaStatus(UUID areaId, LocationStatus status) {
         Warehouse warehouse = lockWarehouseOf(areaId);
         Area area = require(areaId);

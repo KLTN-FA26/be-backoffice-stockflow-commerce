@@ -695,6 +695,11 @@ Enum design.design_project_event_event {
   PROJECT_ARCHIVED
 }
 
+Enum design.design_project_quote_request_status {
+  OPEN
+  CLOSED
+}
+
 Enum design.design_quote_request_status {
   OPEN
   CLOSED
@@ -1953,20 +1958,21 @@ Table warehouse.storage_location [headercolor: #8E6C3A] {
 }
 
 Table warehouse.warehouse [headercolor: #8E6C3A] {
-  id               uuid [pk]
-  name             varchar(200) [not null]
-  status           warehouse.warehouse_status [not null]
-  version          bigint [not null, default: 0]
-  created_at       timestamptz [not null]
-  created_by       varchar(100)
-  last_modified_at timestamptz
-  last_modified_by varchar(100)
-  prefix           varchar(10) [not null, unique]
-  address          varchar(500) [not null]
-  return_address   varchar(500)
-  map_unit         varchar(8) [not null]
-  map_width        decimal(10,3) [not null]
-  map_height       decimal(10,3) [not null]
+  id                 uuid [pk]
+  name               varchar(200) [not null]
+  status             warehouse.warehouse_status [not null]
+  version            bigint [not null, default: 0]
+  created_at         timestamptz [not null]
+  created_by         varchar(100)
+  last_modified_at   timestamptz
+  last_modified_by   varchar(100)
+  prefix             varchar(10) [not null, unique]
+  address            varchar(500) [not null]
+  return_address     varchar(500)
+  map_unit           varchar(8) [not null]
+  map_width          decimal(10,3) [not null]
+  map_height         decimal(10,3) [not null]
+  utilization_factor decimal(5,4) [not null, default: 1]
 }
 
 Table warehouse.zone [headercolor: #8E6C3A] {
@@ -3065,24 +3071,25 @@ Table payment.order_settlement [headercolor: #B8860B] {
 }
 
 Table payment.payment_receipt [headercolor: #B8860B] {
-  id               uuid [pk]
-  customer_id      uuid [not null]
-  reference        varchar(100) [not null]
-  received_on      date [not null]
-  amount           decimal(19,4) [not null]
-  currency         varchar(3) [not null]
-  note             varchar(500)
-  status           payment.payment_receipt_status [not null]
-  recorded_by      uuid [not null]
-  recorded_at      timestamptz [not null]
-  voided_by        uuid
-  voided_at        timestamptz
-  void_reason      varchar(500)
-  version          bigint [not null, default: 0]
-  created_at       timestamptz [not null, default: `now()`]
-  created_by       varchar(100)
-  last_modified_at timestamptz
-  last_modified_by varchar(100)
+  id                   uuid [pk]
+  customer_id          uuid [not null]
+  reference            varchar(100) [not null]
+  received_on          date [not null]
+  amount               decimal(19,4) [not null]
+  currency             varchar(3) [not null]
+  note                 varchar(500)
+  status               payment.payment_receipt_status [not null]
+  recorded_by          uuid [not null]
+  recorded_at          timestamptz [not null]
+  voided_by            uuid
+  voided_at            timestamptz
+  void_reason          varchar(500)
+  version              bigint [not null, default: 0]
+  created_at           timestamptz [not null, default: `now()`]
+  created_by           varchar(100)
+  last_modified_at     timestamptz
+  last_modified_by     varchar(100)
+  reference_normalized varchar(100) [note: 'generated: upper(regexp_replace((reference)::text, \'\s\'::text, \'\'::text, \'g\'::text))']
 }
 
 Table payment.payment_receipt_line [headercolor: #B8860B] {
@@ -3489,6 +3496,9 @@ Table design.design_project_quote_request [headercolor: #AA4A9E] {
   created_by            varchar(100)
   last_modified_at      timestamptz
   last_modified_by      varchar(100)
+  status                design.design_project_quote_request_status [not null, default: 'OPEN']
+  closed_at             timestamptz
+  closed_by             uuid
 }
 
 Table design.design_project_quote_request_line [headercolor: #AA4A9E] {
@@ -5271,6 +5281,7 @@ Ref: design.design_project.owner_user_id > identity.app_user.id
 Ref: design.design_project_asset.project_id > design.design_project.id
 Ref: design.design_project_event.actor_id > identity.app_user.id
 Ref: design.design_project_event.project_id > design.design_project.id
+Ref: design.design_project_quote_request.closed_by > identity.app_user.id
 Ref: design.design_project_quote_request.project_id > design.design_project.id
 Ref: design.design_project_quote_request.requested_by > identity.app_user.id
 Ref: design.design_project_quote_request_line.draft_id > design.design_draft.id

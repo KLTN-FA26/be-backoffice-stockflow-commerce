@@ -113,6 +113,7 @@ class CartonCheckStationIntegrationTest {
     private UUID packer;
     private UUID otherPacker;
     private UUID packerElsewhere;
+    private UUID managerElsewhere;
     private UUID accountant;
     private UUID customerUser;
     private UUID customer;
@@ -128,6 +129,7 @@ class CartonCheckStationIntegrationTest {
         otherPacker = staff("WAREHOUSE_STAFF", HCM);
         UUID elsewhere = tx.execute(s -> otherWarehouse());
         packerElsewhere = staff("WAREHOUSE_STAFF", elsewhere);
+        managerElsewhere = staff("WAREHOUSE_MANAGER", elsewhere);
         accountant = staff("ACCOUNTANT");
         customerUser = staff("CUSTOMER");
         customer = customerOf(customerUser);
@@ -294,6 +296,11 @@ class CartonCheckStationIntegrationTest {
         return ((BusinessException) thrown).errorCode();
     }
 
+    private long notices(UUID recipient, UUID task) {
+        return jdbc.queryForObject("SELECT count(*) FROM notification.user_notification WHERE recipient_id = ? "
+                + "AND category = 'CARTON_CHECK' AND source_id = ?", Long.class, recipient, task.toString());
+    }
+
     // ---- the station: scanning, labels, the order lock -------------------------------------------
 
     @Test
@@ -364,6 +371,13 @@ class CartonCheckStationIntegrationTest {
                 .andExpect(jsonPath("$.errorCode").value("CARTON_NOT_IN_TASK"));
         assertThat(jdbc.queryForObject("SELECT count(*) FROM fulfillment.package WHERE lpn = ?", Long.class, foreign))
                 .as("the other order's carton has no row in this session").isZero();
+        // WF4-LPN-FOREIGN: besides the refusal, the managers of the task's warehouse are told in-app - once per
+        // scanned code - and a manager of another warehouse is not.
+        Await.until("the warehouse managers told", ASYNC, () -> notices(manager, task) == 2 && notices(coordinator, task) == 2);
+        scan(packer, "WAREHOUSE_STAFF", task, foreign).andExpect(status().isConflict());
+        assertThat(notices(manager, task)).as("the same code again tells nobody twice").isEqualTo(2);
+        assertThat(notices(managerElsewhere, task)).isZero();
+        assertThat(notices(packer, task)).as("the worker is not a manager").isZero();
         asPacker(body(post(url(task, "/carton-checks")), "{\"lpn\":\"\"}")).andExpect(status().isBadRequest());
 
         // A repeat of the same scan writes nothing.
