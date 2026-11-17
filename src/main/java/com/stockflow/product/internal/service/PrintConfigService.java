@@ -246,13 +246,11 @@ public class PrintConfigService implements PrintConfigs {
         VariantJpaEntity variant = variantOf(productId, variantId);
         requireWritable(product, variant);
         CustomizationTemplateJpaEntity template = lockTemplate(variantId, templateId, version);
-        if (template.getModelParams() == null) {
-            throw new BusinessException(ErrorCode.PRINT_CONFIG_INVALID,
-                    "Enter the product model before activating the template");
-        }
-        if (template.getModelFileKey() == null) {
+        // A template written before files were required may lack its model, its file or both: either way the fix is
+        // the same - upload the .glb with its measurements - so the answer is the same 409 (FE request 2026-11-17 B-2).
+        if (template.getModelParams() == null || template.getModelFileKey() == null) {
             throw new BusinessException(ErrorCode.PRINT_CONFIG_MODEL_FILE_REQUIRED,
-                    "Upload the template's 3D model file before activating it");
+                    "Upload the template's 3D model file (.glb) with its measurements before activating it");
         }
         requireComplete(PrintConfigPersistenceMapper.model3d(template).surfaces(),
                 areas.findByTemplateIdInOrderByTemplateIdAscSortOrderAsc(List.of(templateId)).stream()
