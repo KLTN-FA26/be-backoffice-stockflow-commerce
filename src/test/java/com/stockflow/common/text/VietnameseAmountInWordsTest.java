@@ -1,4 +1,4 @@
-package com.stockflow.invoicing.internal.domain;
+package com.stockflow.common.text;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -10,7 +10,10 @@ import java.math.BigDecimal;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/** The total "bằng chữ" of an invoice (NĐ 254 Phụ lục điểm 5.d): every turn the spoken number takes. */
+/**
+ * The total "bằng chữ" of an invoice (NĐ 254 Phụ lục điểm 5.d), a contract or a quote: every turn the spoken number
+ * takes.
+ */
 class VietnameseAmountInWordsTest {
 
     @ParameterizedTest(name = "{0} -> {1}")
@@ -60,5 +63,14 @@ class VietnameseAmountInWordsTest {
         assertThat(VietnameseAmountInWords.of(new BigDecimal("-110000"))).isEqualTo("Âm một trăm mười nghìn đồng");
         assertThatThrownBy(() -> VietnameseAmountInWords.of(new BigDecimal("10.5")))
                 .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    @DisplayName("for a document being drawn: a fraction or an unknown amount reads as no words, never an exception")
+    void ofWholeLeavesOutWhatIsNotWholeDong() {
+        assertThat(VietnameseAmountInWords.ofWhole(new BigDecimal("2750000.00"))).contains("Hai triệu bảy trăm năm "
+                + "mươi nghìn đồng");
+        assertThat(VietnameseAmountInWords.ofWhole(new BigDecimal("2750000.50"))).isEmpty();
+        assertThat(VietnameseAmountInWords.ofWhole(null)).isEmpty();
     }
 }

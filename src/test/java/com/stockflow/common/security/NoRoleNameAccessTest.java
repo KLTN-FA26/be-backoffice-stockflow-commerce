@@ -72,6 +72,11 @@ class NoRoleNameAccessTest {
             // ---- who is told: the audience of a notification, not access
             new Allowed("notification/internal/service/QuoteNotificationListener.java", "staff.activeStaff(Role.SALES_STAFF)",
                     "who is told of a quote with no handler"),
+            new Allowed("notification/internal/service/WarehouseCapacityNotificationListener.java",
+                    "staff.activeStaff(Role.WAREHOUSE_MANAGER, event.warehouseId())",
+                    "who is told the projected free room turned negative: kltn-docs 00 §6 picks recipients by role "
+                            + "and warehouse at send time, and C42 names only the receiving warehouse's Warehouse "
+                            + "Manager - it addresses a message, it grants no access"),
             // ---- checks on the user an action is about, not on the caller
             new Allowed("fulfillment/internal/service/FulfillmentServiceImpl.java",
                     "Role.WAREHOUSE_STAFF.authority(), Role.WAREHOUSE_MANAGER.authority()",

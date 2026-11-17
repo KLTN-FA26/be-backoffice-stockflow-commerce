@@ -170,6 +170,11 @@ services:
       # E-invoice mail to the buyer: on, since an issued invoice must reach the buyer (NĐ 254 Điều 12 khoản 3). With
       # EMAIL_PROVIDER=smtp it stops at Mailpit; set false on a Resend server holding copies of real customers.
       EINVOICE_EMAIL_ENABLED: ${EINVOICE_EMAIL_ENABLED:-true}
+      # SePay eInvoice's key (deploy/.env.example). Blank: SePay cannot be switched on; the sandbox keeps issuing.
+      EINVOICE_SEPAY_ENVIRONMENT: ${EINVOICE_SEPAY_ENVIRONMENT:-SANDBOX}
+      EINVOICE_SEPAY_CLIENT_ID: ${EINVOICE_SEPAY_CLIENT_ID:-}
+      EINVOICE_SEPAY_CLIENT_SECRET: ${EINVOICE_SEPAY_CLIENT_SECRET:-}
+      EINVOICE_SEPAY_PROVIDER_ACCOUNT_ID: ${EINVOICE_SEPAY_PROVIDER_ACCOUNT_ID:-}
       TRACE_SAMPLING: ${TRACE_SAMPLING:-1.0}
       # B2B onboarding (SCRUM-429): the portal page an invitation links to. Without it Sales cannot create a customer
       # (503 PORTAL_INVITATION_UNAVAILABLE) and, with self-registration gone, nobody can. Required, never guessed.

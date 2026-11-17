@@ -32,8 +32,9 @@ import java.util.UUID;
  * edited. A redelivered event tells nobody twice
  * ({@code production-order-sent:<id>}).
  *
- * <p>The WARN when the warehouse's expected free space turns negative (C42) waits for the capacity table, as the
- * capacity warnings of 4A-2 do.</p>
+ * <p>The volume is the carton spec's (BE1), the measure the warehouse capacity board counts by, so the m³ told here
+ * are the m³ the board shows coming. The WARN when sending takes the warehouse's projected free room below zero (C42)
+ * is a separate message, {@link WarehouseCapacityNotificationListener}'s.</p>
  */
 @Component
 class ProductionOrderArrivalNotificationListener {

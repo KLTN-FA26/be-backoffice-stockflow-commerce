@@ -7,8 +7,9 @@
  *
  * <p>WBS 3.15 · database schema {@code payment}</p>
  *
- * <p><b>May depend on:</b> none — this module calls no other business module. Plus {@code common} and {@code contracts}, which are
- * available to every module.</p>
+ * <p><b>May depend on:</b> customer (whether a customer exists, their code and name on an export) and identity (the name
+ * of who recorded a receipt, on the receipts' export for the accounting software, 2026-11-14 plan BE2). Plus
+ * {@code common} and {@code contracts}, which are available to every module.</p>
  *
  * <p>The module has two packages and the split is the whole point:</p>
  * <ul>
@@ -18,5 +19,5 @@
  *       you reaching in; {@code ModularityTest} will.</li>
  * </ul>
  */
-@org.springframework.modulith.ApplicationModule(allowedDependencies = {"customer :: api"})
+@org.springframework.modulith.ApplicationModule(allowedDependencies = {"customer :: api", "identity :: api"})
 package com.stockflow.payment;

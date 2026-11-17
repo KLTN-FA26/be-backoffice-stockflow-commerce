@@ -12,6 +12,7 @@ import com.stockflow.warehouse.internal.domain.MapUnit;
 import com.stockflow.warehouse.internal.domain.Warehouse;
 import com.stockflow.warehouse.internal.domain.WarehouseRepository;
 import com.stockflow.warehouse.internal.domain.WarehouseStatus;
+import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -42,6 +43,7 @@ class WarehouseLayoutServiceIntegrationTest {
     @Autowired WarehouseRepository warehouseRepository;
     @Autowired PermissionCatalog permissionCatalog;
     @Autowired JdbcTemplate jdbc;
+    @Autowired EntityManager entityManager;
 
     private WarehouseSummary registerHanoi() {
         return layout.register(new RegisterWarehouseCommand("hn", "Kho Hà Nội", "1 Phố Huế", null,
@@ -96,15 +98,28 @@ class WarehouseLayoutServiceIntegrationTest {
         @DisplayName("updates the details and keeps the prefix")
         void updates() {
             WarehouseSummary hanoi = registerHanoi();
+            assertThat(hanoi.utilizationFactor()).as("100% until the manager sets it (C43)").isEqualByComparingTo("1");
 
             WarehouseSummary updated = layout.update(new UpdateWarehouseCommand(hanoi.id(),
                     "Kho Hà Nội mới", "2 Phố Huế", "Kho trả hàng", new BigDecimal("45"),
-                    new BigDecimal("25"), hanoi.version()));
+                    new BigDecimal("25"), hanoi.version(), new BigDecimal("0.85")));
 
             assertThat(updated.prefix()).isEqualTo("HN");
             assertThat(updated.name()).isEqualTo("Kho Hà Nội mới");
             assertThat(updated.mapWidth()).isEqualByComparingTo("45");
+            assertThat(updated.utilizationFactor()).isEqualByComparingTo("0.85");
             assertThat(updated.version()).isEqualTo(hanoi.version() + 1);
+            entityManager.flush();
+            assertThat(jdbc.queryForObject("select utilization_factor from warehouse.warehouse where id = ?",
+                    BigDecimal.class, hanoi.id())).isEqualByComparingTo("0.85");
+
+            // Absent, the factor stays: a client that does not know the capacity board does not reset it.
+            WarehouseSummary renamed = layout.update(new UpdateWarehouseCommand(hanoi.id(), "Kho Hà Nội 3",
+                    "2 Phố Huế", null, new BigDecimal("45"), new BigDecimal("25"), updated.version(), null));
+            assertThat(renamed.utilizationFactor()).isEqualByComparingTo("0.85");
+            assertThat(errorOf(() -> layout.update(new UpdateWarehouseCommand(hanoi.id(), "Kho Hà Nội 3",
+                    "2 Phố Huế", null, new BigDecimal("45"), new BigDecimal("25"), renamed.version(),
+                    BigDecimal.ZERO)))).as("C43: above 0").isEqualTo(ErrorCode.VALIDATION_FAILED);
         }
 
         @Test
@@ -113,7 +128,7 @@ class WarehouseLayoutServiceIntegrationTest {
             WarehouseSummary hanoi = registerHanoi();
 
             assertThat(errorOf(() -> layout.update(new UpdateWarehouseCommand(hanoi.id(), "X", "Y",
-                    null, hanoi.mapWidth(), hanoi.mapHeight(), hanoi.version() + 1))))
+                    null, hanoi.mapWidth(), hanoi.mapHeight(), hanoi.version() + 1, null))))
                     .isEqualTo(ErrorCode.OPTIMISTIC_LOCK);
         }
 
@@ -159,8 +174,9 @@ class WarehouseLayoutServiceIntegrationTest {
                     .extracting(WarehouseSummary::prefix).containsExactly("HN");
             assertThat(layout.list(new ListWarehousesQuery(0, 20, null, WarehouseStatus.INACTIVE, null))
                     .items()).isEmpty();
+            // HCM is the demo seed's, DNI the demo history's (V20261128000200), HN this test's.
             assertThat(layout.list(new ListWarehousesQuery(0, 20, null, null, "prefix,desc")).items())
-                    .extracting(WarehouseSummary::prefix).containsExactly("HN", "HCM");
+                    .extracting(WarehouseSummary::prefix).containsExactly("HN", "HCM", "DNI");
         }
 
         @Test
@@ -174,7 +190,7 @@ class WarehouseLayoutServiceIntegrationTest {
         private WarehouseSummary resize(WarehouseSummary current, String width, String height) {
             return layout.update(new UpdateWarehouseCommand(current.id(), current.name(),
                     current.address(), current.returnAddress(), new BigDecimal(width),
-                    new BigDecimal(height), current.version()));
+                    new BigDecimal(height), current.version(), null));
         }
     }
 

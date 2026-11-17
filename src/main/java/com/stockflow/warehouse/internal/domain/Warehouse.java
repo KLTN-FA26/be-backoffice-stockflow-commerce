@@ -5,6 +5,7 @@ import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.Instant;
 import java.util.Objects;
 import java.util.UUID;
@@ -24,11 +25,18 @@ import java.util.UUID;
  * <p>Deactivating does not touch the shelves, bins and areas of the warehouse: their usability is
  * derived from the warehouse's status when it is read (issue #18 D2), so reactivating brings every
  * location back exactly as it was.</p>
+ *
+ * <p>{@code utilizationFactor} is the share of its bins' computed volume the warehouse can really fill once working
+ * space and the gaps between cartons are taken out (kltn-docs 06 §4.6 step 2): one factor for the whole warehouse, 1
+ * (100%) until its manager sets it, always in (0, 1] (C43). Only the capacity board reads it; putaway checks a bin
+ * against its full volume (05 BR-03). The database states the bound again, {@code ck_warehouse_utilization_factor}.</p>
  */
 public final class Warehouse extends AggregateRoot {
 
     static final int NAME_MAX_LENGTH = 200;
     static final int ADDRESS_MAX_LENGTH = 500;
+    /** {@code numeric(5,4)}: 0.8500 is 85%. */
+    static final int UTILIZATION_FACTOR_SCALE = 4;
 
     private final UUID id;
     private final String prefix;
@@ -39,6 +47,7 @@ public final class Warehouse extends AggregateRoot {
     private BigDecimal mapWidth;
     private BigDecimal mapHeight;
     private WarehouseStatus status;
+    private BigDecimal utilizationFactor;
     private final long version;
     private final Instant createdAt;
 
@@ -48,7 +57,7 @@ public final class Warehouse extends AggregateRoot {
      */
     public Warehouse(UUID id, String prefix, String name, String address, String returnAddress,
                      MapUnit mapUnit, BigDecimal mapWidth, BigDecimal mapHeight,
-                     WarehouseStatus status, long version, Instant createdAt) {
+                     WarehouseStatus status, BigDecimal utilizationFactor, long version, Instant createdAt) {
         this.id = Objects.requireNonNull(id, "id");
         this.prefix = prefix;
         this.name = name;
@@ -58,6 +67,7 @@ public final class Warehouse extends AggregateRoot {
         this.mapWidth = mapWidth;
         this.mapHeight = mapHeight;
         this.status = Objects.requireNonNull(status, "status");
+        this.utilizationFactor = Objects.requireNonNull(utilizationFactor, "utilizationFactor");
         this.version = version;
         this.createdAt = createdAt;
     }
@@ -76,7 +86,7 @@ public final class Warehouse extends AggregateRoot {
                 mapUnit,
                 DomainChecks.positiveMeasure("mapWidth", mapWidth),
                 DomainChecks.positiveMeasure("mapHeight", mapHeight),
-                WarehouseStatus.ACTIVE, 0L, null);
+                WarehouseStatus.ACTIVE, BigDecimal.ONE, 0L, null);
     }
 
     /** @param expectedVersion the version the caller's edit was based on */
@@ -129,6 +139,25 @@ public final class Warehouse extends AggregateRoot {
         }
     }
 
+    /**
+     * C43: one factor for the whole warehouse, in (0, 1] - a warehouse that fills none of its bins has no capacity to
+     * plan with, and one cannot hold more than its bins. At most four decimals, the column's ({@code numeric(5,4)}).
+     */
+    public void changeUtilizationFactor(BigDecimal factor) {
+        if (factor == null) {
+            throw DomainChecks.invalid("utilizationFactor is required");
+        }
+        if (factor.signum() <= 0 || factor.compareTo(BigDecimal.ONE) > 0) {
+            throw DomainChecks.invalid("utilizationFactor must be above 0 and at most 1 (100%%): %s"
+                    .formatted(factor.toPlainString()));
+        }
+        if (factor.stripTrailingZeros().scale() > UTILIZATION_FACTOR_SCALE) {
+            throw DomainChecks.invalid("utilizationFactor has more than %d decimals: %s"
+                    .formatted(UTILIZATION_FACTOR_SCALE, factor.toPlainString()));
+        }
+        this.utilizationFactor = factor.setScale(UTILIZATION_FACTOR_SCALE, RoundingMode.UNNECESSARY);
+    }
+
     public void activate() {
         this.status = WarehouseStatus.ACTIVE;
     }
@@ -147,6 +176,7 @@ public final class Warehouse extends AggregateRoot {
     public BigDecimal mapWidth() { return mapWidth; }
     public BigDecimal mapHeight() { return mapHeight; }
     public WarehouseStatus status() { return status; }
+    public BigDecimal utilizationFactor() { return utilizationFactor; }
     public long version() { return version; }
     public Instant createdAt() { return createdAt; }
 }
