@@ -21,10 +21,15 @@ import java.util.UUID;
  *                        loose stock from before cartons
  * @param stagedAt        when the carton was moved to the staging area; null for a line never staged
  * @param stagedLocationCode the staging area it was moved to; null for a line never staged
+ * @param removalReason   why the check station removed the line's carton ({@code DAMAGED}, {@code ORDER_CANCELLED},
+ *                        ...); null while it was not removed. The line stays {@code PICKED}; a damaged carton goes to
+ *                        quarantine (08 §4.2 step 4)
+ * @param replacementPending the carton was removed as damaged and its order line still lacks it, so the warehouse
+ *                        manager may replace it through the reallocation (07 §4.4 step 10); false once replaced
  */
 public record PickLineResponse(UUID lineId, UUID taskId, int sequenceNo, UUID orderLineId, String sku, String barcode,
                                String locationCode, String lotNumber, int allocatedQty, int pickedQty, String status,
                                Instant pickedAt, int putBackQty, String putBackLocationCode, Instant putBackAt,
                                int shortQty, String shortReason, String lpn, boolean wholeCarton, Instant stagedAt,
-                               String stagedLocationCode) {
+                               String stagedLocationCode, String removalReason, boolean replacementPending) {
 }

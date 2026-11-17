@@ -66,7 +66,8 @@ class DispatchWebMapper {
                         d.carrierBooking().trackingLink(), d.carrierBooking().requestedAt(),
                         d.carrierBooking().bookedAt(), d.carrierBooking().lastError()),
                 d.handoverWarnings().stream().map(w -> new LoadResponse.HandoverWarning(w.orderId(), w.orderNumber(),
-                        w.reasonCode(), w.amountDue(), w.currency(), w.deliveryBatchSeq(), w.windowStart())).toList());
+                        w.reasonCode(), w.reasonCodes(), w.amountDue(), w.currency(), w.deliveryBatchSeq(),
+                        w.windowStart())).toList());
     }
 
     ControlledCancelResponse toResponse(Dispatching.ControlledCancelResult r) {

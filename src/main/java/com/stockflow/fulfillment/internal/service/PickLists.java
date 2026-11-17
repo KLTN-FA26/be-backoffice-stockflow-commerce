@@ -152,12 +152,34 @@ public interface PickLists {
      * @param lpn the carton the line takes, scanned to confirm it and to put it back
      * @param stagedAt when the carton was moved to the staging area (4C-5); null for a line never staged
      * @param stagedLocationCode the staging area it was moved to; null for a line never staged
+     * @param removalReason why the check station removed the line's carton ({@code DAMAGED}, {@code ORDER_CANCELLED}, ...);
+     *                      null while it was not removed. Filled by the list read only
+     * @param replacementPending the carton was removed as damaged and its order line still lacks it: it may be replaced
+     *                      through the reallocation (08 §4.2 step 4, 07 §4.4 step 10). Filled by the list read only
      */
     record PickLineView(UUID lineId, UUID taskId, int sequenceNo, UUID orderLineId, String sku, String barcode,
                         String locationCode, String lotNumber, int allocatedQty, int pickedQty, String status,
                         Instant pickedAt, int putBackQty, String putBackLocationCode, Instant putBackAt,
                         int shortQty, ShortPickReason shortReason, String lpn, boolean wholeCarton, Instant stagedAt,
-                        String stagedLocationCode) {
+                        String stagedLocationCode, String removalReason, boolean replacementPending) {
+
+        /** A line whose carton was not looked up at the check station (every answer but the list read). */
+        public PickLineView(UUID lineId, UUID taskId, int sequenceNo, UUID orderLineId, String sku, String barcode,
+                            String locationCode, String lotNumber, int allocatedQty, int pickedQty, String status,
+                            Instant pickedAt, int putBackQty, String putBackLocationCode, Instant putBackAt,
+                            int shortQty, ShortPickReason shortReason, String lpn, boolean wholeCarton,
+                            Instant stagedAt, String stagedLocationCode) {
+            this(lineId, taskId, sequenceNo, orderLineId, sku, barcode, locationCode, lotNumber, allocatedQty,
+                    pickedQty, status, pickedAt, putBackQty, putBackLocationCode, putBackAt, shortQty, shortReason,
+                    lpn, wholeCarton, stagedAt, stagedLocationCode, null, false);
+        }
+
+        /** The same line with what the check station did to its carton. */
+        PickLineView withRemoval(String removalReason, boolean replacementPending) {
+            return new PickLineView(lineId, taskId, sequenceNo, orderLineId, sku, barcode, locationCode, lotNumber,
+                    allocatedQty, pickedQty, status, pickedAt, putBackQty, putBackLocationCode, putBackAt, shortQty,
+                    shortReason, lpn, wholeCarton, stagedAt, stagedLocationCode, removalReason, replacementPending);
+        }
 
         /** A line as it was shown before team plan 4C-5: never staged. */
         public PickLineView(UUID lineId, UUID taskId, int sequenceNo, UUID orderLineId, String sku, String barcode,
@@ -166,7 +188,7 @@ public interface PickLists {
                             int shortQty, ShortPickReason shortReason, String lpn, boolean wholeCarton) {
             this(lineId, taskId, sequenceNo, orderLineId, sku, barcode, locationCode, lotNumber, allocatedQty,
                     pickedQty, status, pickedAt, putBackQty, putBackLocationCode, putBackAt, shortQty, shortReason,
-                    lpn, wholeCarton, null, null);
+                    lpn, wholeCarton, null, null, null, false);
         }
     }
 

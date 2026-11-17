@@ -2395,6 +2395,7 @@ class FtlDispatchIntegrationTest {
         assertThat(started.path("handoverWarnings")).singleElement().satisfies(w -> {
             assertThat(w.path("orderId").asText()).isEqualTo(order.orderId().toString());
             assertThat(w.path("reasonCode").asText()).isEqualTo("ORDER_BALANCE_NOT_PAID");
+            assertThat(w.path("reasonCodes")).extracting(JsonNode::asText).containsExactly("ORDER_BALANCE_NOT_PAID");
             assertThat(w.path("amountDue").decimalValue()).isEqualByComparingTo(owed);
             assertThat(w.path("deliveryBatchSeq").asInt()).isEqualTo(1);
         });
@@ -2427,6 +2428,58 @@ class FtlDispatchIntegrationTest {
         assertThat(load(truck1).has("handoverWarnings")).as("paid: the warning no longer holds, so it is gone").isFalse();
         handOver(truck1).andExpect(status().isOk());
         assertThat(shipmentStatus(shipment)).isEqualTo("READY_TO_DISPATCH");
+    }
+
+    @Test
+    @DisplayName("09 §4.2 step 7, BR-18: an order owing its BEFORE_DELIVERY installment whose delivery window also opens "
+            + "tomorrow is warned for BOTH reasons - when loading starts and on every read of the loading vehicle "
+            + "(reasonCodes, reasonCode the first) - and the handover's refusal lists the same two; paying leaves the window")
+    void bothReasonsWarnedAtLoadingStart() throws Exception {
+        OrderSummary order = ftlOrder(2, DemoData.CUSTOMER_ID, List.of(
+                new SalesContracts.Installment("Deposit", "ON_SIGNING", null, new BigDecimal("30"), 0, null),
+                new SalesContracts.Installment("Before delivery", "BEFORE_DELIVERY", null, new BigDecimal("70"), null,
+                        null)));
+        UUID shipment = packed(order, true)[0];
+        JsonNode plan = confirmed(List.of(shipment), truck1t25);
+        String truck1 = loadOf(plan, 1);
+        LocalDate tomorrow = LocalDate.now(ConfirmedOrders.VIETNAM).plusDays(1);
+        // The schedule of a signed contract is fixed (14 BR-14): the window is moved as time passing would, triggers off.
+        tx.executeWithoutResult(status -> {
+            jdbc.execute("SET LOCAL session_replication_role = replica");
+            jdbc.update("UPDATE ordering.delivery_batch SET window_start = ?, window_end = ? WHERE contract_id IN "
+                    + "(SELECT id FROM ordering.sales_contract WHERE order_id = ?)", tomorrow, tomorrow.plusDays(6),
+                    order.orderId());
+        });
+        book(truck1, ghn, "51C-" + truck1.substring(0, 6));
+        List<String> both = List.of("ORDER_BALANCE_NOT_PAID", "DELIVERY_BATCH_WINDOW_NOT_OPEN");
+
+        JsonNode started = data(dispatch(post(LOADS + "/" + truck1 + "/loading-start")).andExpect(status().isOk()));
+        assertThat(started.path("handoverWarnings")).singleElement().satisfies(w -> {
+            assertThat(w.path("orderId").asText()).isEqualTo(order.orderId().toString());
+            assertThat(w.path("reasonCode").asText()).isEqualTo("ORDER_BALANCE_NOT_PAID");
+            assertThat(w.path("reasonCodes")).extracting(JsonNode::asText).containsExactlyElementsOf(both);
+            assertThat(w.path("windowStart").asText()).isEqualTo(tomorrow.toString());
+        });
+        assertThat(load(truck1).path("handoverWarnings")).singleElement().satisfies(w ->
+                assertThat(w.path("reasonCodes")).extracting(JsonNode::asText).containsExactlyElementsOf(both));
+        for (String label : labels(load(truck1))) {
+            scanOnto(truck1, label).andExpect(status().isOk());
+        }
+        handOver(truck1).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("LOAD_HANDOVER_BLOCKED"))
+                .andExpect(jsonPath("$.details.orders[0].reasonCodes.length()").value(2))
+                .andExpect(jsonPath("$.details.orders[0].reasonCodes[0]").value(both.get(0)))
+                .andExpect(jsonPath("$.details.orders[0].reasonCodes[1]").value(both.get(1)));
+
+        Map<String, Object> balance = jdbc.queryForMap("SELECT id, amount FROM payment.installment WHERE order_id = ? "
+                + "AND milestone = 'BEFORE_DELIVERY'", order.orderId());
+        confirmedOrders().pay(DemoData.CUSTOMER_ID, (UUID) balance.get("id"), (BigDecimal) balance.get("amount"));
+        assertThat(load(truck1).path("handoverWarnings")).as("paid: only the window is left to warn about")
+                .singleElement().satisfies(w -> {
+                    assertThat(w.path("reasonCode").asText()).isEqualTo("DELIVERY_BATCH_WINDOW_NOT_OPEN");
+                    assertThat(w.path("reasonCodes")).extracting(JsonNode::asText)
+                            .containsExactly("DELIVERY_BATCH_WINDOW_NOT_OPEN");
+                });
     }
 
     @Test
@@ -2602,6 +2655,17 @@ class FtlDispatchIntegrationTest {
                  WHERE h.order_id = ? AND r.status IN ('HELD', 'CONSUMED')""", Integer.class, order.orderId());
     }
 
+    /** One line of the task's pick list, as the list read answers it. */
+    private JsonNode pickLine(UUID task, UUID line) throws Exception {
+        for (JsonNode row : data(oc(get(BASE + "/tasks/" + task + "/pick-lines")).andExpect(status().isOk()))
+                .path("items")) {
+            if (row.path("lineId").asText().equals(line.toString())) {
+                return row;
+            }
+        }
+        throw new AssertionError("line " + line + " is not on the pick list of " + task);
+    }
+
     private ResultActions reallocate(UUID task, UUID line) throws Exception {
         return oc(post(BASE + "/tasks/" + task + "/pick-lines/" + line + "/reallocation"));
     }
@@ -2690,6 +2754,12 @@ class FtlDispatchIntegrationTest {
         UUID removed = (UUID) x[1];
         String damaged = (String) x[2];
 
+        // F5: the line list says what the check station did to the carton - the UI shows "replace" from it alone.
+        JsonNode removedLine = pickLine(task, removed);
+        assertThat(removedLine.path("status").asText()).as("PUT_BACK: the damaged carton went to quarantine already")
+                .isEqualTo("PUT_BACK");
+        assertThat(removedLine.path("removalReason").asText()).isEqualTo("DAMAGED");
+        assertThat(removedLine.path("replacementPending").asBoolean()).isTrue();
         // A picker does not reallocate: the warehouse manager does (fulfillment-task-assignment:UPDATE).
         packer(post(BASE + "/tasks/" + task + "/pick-lines/" + removed + "/reallocation"))
                 .andExpect(status().isForbidden());
@@ -2699,6 +2769,12 @@ class FtlDispatchIntegrationTest {
         assertThat(lines.get(0).path("lpn").asText()).isNotEqualTo(damaged);
         assertThat(batchHolds(order)).as("the replacement stands for the batch").isEqualTo(2);
         assertThat(orders.findById(order.orderId()).orElseThrow().status()).isEqualTo(OrderStatus.PARTIALLY_FULFILLED);
+        JsonNode replacedLine = pickLine(task, removed);
+        assertThat(replacedLine.path("removalReason").asText()).isEqualTo("DAMAGED");
+        assertThat(replacedLine.path("replacementPending").asBoolean()).as("replaced: nothing more to replace")
+                .isFalse();
+        assertThat(pickLine(task, UUID.fromString(lines.get(0).path("lineId").asText())).has("removalReason"))
+                .as("the replacement line was not removed").isFalse();
         reallocate(task, removed).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("PICK_LINE_NOT_OPEN"));
         // The top-up of the task finds nothing more to add.

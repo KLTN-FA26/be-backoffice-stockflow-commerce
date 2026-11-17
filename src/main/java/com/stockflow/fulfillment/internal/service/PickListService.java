@@ -219,7 +219,51 @@ class PickListService implements PickLists {
         Page<PickLineJpaEntity> found = pickLines.findByPickId(taskId,
                 Pages.of(page, size, Sort.by(Sort.Direction.ASC, "sequenceNo", "id")));
         Map<String, String> barcodes = barcodesOf(found.getContent().stream().map(PickLineJpaEntity::getSku).toList());
-        return Pages.toResponse(found, row -> view(taskId, PickLineMapper.toDomain(row), barcodes.get(row.getSku())));
+        Map<UUID, com.stockflow.fulfillment.internal.domain.CartonCheck.RemovalReason> removed =
+                removalsOf(found.getContent().stream().map(PickLineJpaEntity::getId).toList());
+        Set<UUID> replaceable = replaceableRemovals(pick, removed);
+        return Pages.toResponse(found, row -> {
+            PickLineView line = view(taskId, PickLineMapper.toDomain(row), barcodes.get(row.getSku()));
+            var reason = removed.get(row.getId());
+            return reason == null ? line : line.withRemoval(reason.name(), replaceable.contains(row.getId()));
+        });
+    }
+
+    /** The reason the check station removed each line's carton, for the lines among {@code lineIds} that were. */
+    private Map<UUID, com.stockflow.fulfillment.internal.domain.CartonCheck.RemovalReason> removalsOf(
+            Collection<UUID> lineIds) {
+        Map<UUID, com.stockflow.fulfillment.internal.domain.CartonCheck.RemovalReason> reasons = new HashMap<>();
+        if (!lineIds.isEmpty()) {
+            packages.findByPickLineIdIn(lineIds).stream()
+                    .filter(carton -> carton.getStatus() == com.stockflow.fulfillment.internal.domain.PackageStatus.REMOVED
+                            && carton.getRemovalReason() != null)
+                    .forEach(carton -> reasons.put(carton.getPickLineId(), carton.getRemovalReason()));
+        }
+        return reasons;
+    }
+
+    /**
+     * Of the lines whose carton was removed, the damaged ones the reallocation would replace now - the very rule of
+     * {@link #replaceRemoved}: the task still takes more lines ({@link #requireOpenForMore}) and its order line lacks
+     * the carton. Empty when nothing was removed as damaged, which costs no order read.
+     */
+    private Set<UUID> replaceableRemovals(PickJpaEntity pick,
+            Map<UUID, com.stockflow.fulfillment.internal.domain.CartonCheck.RemovalReason> removed) {
+        Set<UUID> damaged = removed.entrySet().stream()
+                .filter(e -> e.getValue() == com.stockflow.fulfillment.internal.domain.CartonCheck.RemovalReason.DAMAGED)
+                .map(Map.Entry::getKey).collect(Collectors.toSet());
+        if (damaged.isEmpty() || !isOpenForMore(pick)) {
+            return Set.of();
+        }
+        OrderSummary order = orders.findById(pick.getOrderId()).orElse(null);
+        if (order == null) {
+            return Set.of();
+        }
+        PickList list = toList(pick, pickLines.findByPickIdOrderBySequenceNoAscIdAsc(pick.getId()));
+        Map<UUID, Integer> lacking = lacking(pick, order, list);
+        return list.lines().stream().filter(line -> damaged.contains(line.id())
+                && lacking.getOrDefault(line.orderLineId(), 0) >= line.allocatedQty()).map(PickLine::id)
+                .collect(Collectors.toSet());
     }
 
     @Override
@@ -643,14 +687,23 @@ class PickListService implements PickLists {
         if (pick.getStatus() == PickStatus.CANCELLED) {
             throw new BusinessException(ErrorCode.PICK_TASK_STATE_CONFLICT, "The task was cancelled with its order");
         }
-        packs.findByPickId(pick.getId())
-                .filter(pack -> pack.getStatus() != com.stockflow.fulfillment.internal.domain.PackStatus.PENDING
-                        && pack.getStatus() != com.stockflow.fulfillment.internal.domain.PackStatus.IN_PROGRESS)
-                .ifPresent(pack -> {
-                    throw new BusinessException(ErrorCode.PICK_TASK_STATE_CONFLICT, ("Packing of task %s is %s; its "
-                            + "cartons left with a shipment, so nothing is added to it").formatted(pick.getId(),
-                            pack.getStatus()));
-                });
+        packs.findByPickId(pick.getId()).filter(PickListService::checkLeft).ifPresent(pack -> {
+            throw new BusinessException(ErrorCode.PICK_TASK_STATE_CONFLICT, ("Packing of task %s is %s; its "
+                    + "cartons left with a shipment, so nothing is added to it").formatted(pick.getId(),
+                    pack.getStatus()));
+        });
+    }
+
+    /** {@link #requireOpenForMore} as a question: the read of the lines says whether a removed carton may be replaced. */
+    private boolean isOpenForMore(PickJpaEntity pick) {
+        return pick.getStatus() != PickStatus.CANCELLED
+                && packs.findByPickId(pick.getId()).filter(PickListService::checkLeft).isEmpty();
+    }
+
+    /** The check of the task is complete (or cancelled): its cartons left with a shipment. */
+    private static boolean checkLeft(com.stockflow.fulfillment.internal.entity.PackJpaEntity pack) {
+        return pack.getStatus() != com.stockflow.fulfillment.internal.domain.PackStatus.PENDING
+                && pack.getStatus() != com.stockflow.fulfillment.internal.domain.PackStatus.IN_PROGRESS;
     }
 
     /**

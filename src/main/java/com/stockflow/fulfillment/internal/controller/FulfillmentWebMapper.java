@@ -34,7 +34,8 @@ class FulfillmentWebMapper {
                 line.barcode(), line.locationCode(), line.lotNumber(), line.allocatedQty(), line.pickedQty(),
                 line.status(), line.pickedAt(), line.putBackQty(), line.putBackLocationCode(), line.putBackAt(),
                 line.shortQty(), line.shortReason() == null ? null : line.shortReason().name(), line.lpn(),
-                line.wholeCarton(), line.stagedAt(), line.stagedLocationCode());
+                line.wholeCarton(), line.stagedAt(), line.stagedLocationCode(), line.removalReason(),
+                line.replacementPending());
     }
 
     PutBackRowResponse toResponse(PickLists.PutBackRow row) {

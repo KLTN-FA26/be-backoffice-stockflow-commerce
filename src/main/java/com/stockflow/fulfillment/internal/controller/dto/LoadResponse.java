@@ -48,10 +48,11 @@ public record LoadResponse(UUID loadId, String code, UUID warehouseId, String st
 
     /**
      * 4B-8 (kltn-docs 08 BR-11, 09 BR-18): an order on the vehicle whose goods may not leave yet, answered when loading
-     * starts - the handover refuses the vehicle until it may.
+     * starts - the handover refuses the vehicle until it may. {@code reasonCodes} lists every reason (money owed and a
+     * window not yet open together), {@code reasonCode} is the first, kept for callers that read one.
      */
-    public record HandoverWarning(UUID orderId, String orderNumber, String reasonCode, java.math.BigDecimal amountDue,
-                                  String currency,
+    public record HandoverWarning(UUID orderId, String orderNumber, String reasonCode, List<String> reasonCodes,
+                                  java.math.BigDecimal amountDue, String currency,
                                   @JsonInclude(JsonInclude.Include.NON_NULL) Integer deliveryBatchSeq,
                                   @JsonInclude(JsonInclude.Include.NON_NULL) java.time.LocalDate windowStart) {
     }
