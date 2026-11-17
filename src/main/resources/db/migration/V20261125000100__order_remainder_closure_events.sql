@@ -32,10 +32,9 @@ CREATE TABLE ordering.order_remainder_closure (
     last_modified_by varchar(100),
     CONSTRAINT pk_order_remainder_closure PRIMARY KEY (id),
     CONSTRAINT uk_order_remainder_closure_closure UNIQUE (closure_id),
-    -- The codes of CancellationReasonCode a closure may carry (Order#closeRemainder refuses REPLACEMENT_WITHDRAWN).
-    CONSTRAINT ck_order_remainder_closure_reason CHECK (reason_code IN ('CUSTOMER_REQUEST', 'PAYMENT_NOT_RECEIVED',
-        'PAYMENT_FAILED', 'OUT_OF_STOCK', 'SUSPECTED_FRAUD', 'CREDIT_REJECTED', 'DUPLICATE_ORDER', 'PRODUCTION_ISSUE',
-        'DELIVERY_FAILED', 'OTHER')),
+    -- A CancellationReasonCode name; its values are the enum's to name (Order#closeRemainder refuses
+    -- REPLACEMENT_WITHDRAWN), so only the shape is checked, as ck_order_partial_shipment_decision_status does.
+    CONSTRAINT ck_order_remainder_closure_reason CHECK (reason_code ~ '^[A-Z_]{1,32}$'),
     CONSTRAINT ck_order_remainder_closure_other_note CHECK (reason_code <> 'OTHER' OR (note IS NOT NULL AND btrim(note) <> '')),
     CONSTRAINT ck_order_remainder_closure_note CHECK (note IS NULL OR btrim(note) <> ''),
     CONSTRAINT fk_order_remainder_closure_order FOREIGN KEY (order_id) REFERENCES ordering.customer_order (id) ON DELETE CASCADE,
