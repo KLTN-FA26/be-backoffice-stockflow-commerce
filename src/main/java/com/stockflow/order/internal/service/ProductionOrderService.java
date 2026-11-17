@@ -76,7 +76,11 @@ import java.util.stream.Collectors;
  * and the one receiving takes ({@code ProductionOrderReceivingService}). One order everywhere: a path taking the
  * production order before its sales order would deadlock against an approval.</p>
  *
- * <p>The capacity warning (BR-25) waits for the warehouse capacity table: not computed yet.</p>
+ * <p>The capacity warning (BR-25; 06 §4.6 steps 5-6) is {@link WarehouseCapacityService}'s: shown with the production
+ * order when it is drawn up and read again at approval, a warning and never a refusal. Approving one that takes its
+ * warehouse's projected free room below zero tells the warehouse manager, once (C42) - under the advisory lock
+ * {@code warehouse-capacity:<warehouseId>}, taken after the sales order and the production order: customer_order,
+ * production_order, warehouse capacity.</p>
  */
 @Service
 @Transactional
@@ -116,13 +120,16 @@ public class ProductionOrderService {
     private final Clock clock;
     private final TransactionTemplate tx;
     private final com.stockflow.order.internal.domain.DeliveryBatchRecords batchRecords;
+    private final WarehouseCapacityService capacity;
 
     ProductionOrderService(ProductionOrderRepository productionOrders, ProductionOrderReceiptRepository receipts,
                            ProductionOrderSearch search, OrderRepository orders, SalesContractRepository contracts,
                            ProducerRepository producers, ShippingWarehouseService shippingWarehouses,
                            WarehouseDirectory warehouses, CustomerSkus customerSkus, DesignService designs,
                            ProductionOrderDispatch dispatch, Clock clock, PlatformTransactionManager transactions,
-                           com.stockflow.order.internal.domain.DeliveryBatchRecords batchRecords) {
+                           com.stockflow.order.internal.domain.DeliveryBatchRecords batchRecords,
+                           WarehouseCapacityService capacity) {
+        this.capacity = capacity;
         this.batchRecords = batchRecords;
         this.productionOrders = productionOrders;
         this.receipts = receipts;
@@ -235,7 +242,9 @@ public class ProductionOrderService {
      * makes (as on submission). The print files of every line are re-read and re-hashed first, before any row is locked
      * (a full download of each bundle, each in its own read-only transaction): a production order is not sent to print
      * a file that changed. Its slip is drawn and stored then too, still with no lock held; the transaction keeps it and
-     * publishes {@code ProductionOrderSent} (4A-3), or the stored slip is deleted when it fails.
+     * publishes {@code ProductionOrderSent} (4A-3), or the stored slip is deleted when it fails. The capacity board is
+     * read again at this moment (06 §4.6 step 6): when sending takes the warehouse's projected free room below zero, the
+     * transaction also publishes {@code WarehouseCapacityTurnedNegative} (BE1, C42). Never a refusal (BR-21).
      *
      * @throws BusinessException {@code PRODUCTION_ORDER_SELF_APPROVAL}; {@code PRINT_FILE_MISMATCH};
      *         {@code PRODUCTION_ORDER_EXCEEDS_SHORTAGE}; {@code PRODUCTION_ORDER_STATUS_INVALID};
@@ -275,6 +284,8 @@ public class ProductionOrderService {
                 Locked locked = lockedWithOrder(id, version);
                 ProductionOrder production = locked.production();
                 production.requireWithin(lacking(locked));
+                // BE1 (06 §4.6 step 8, C42): read while it is still pending, under the warehouse's capacity lock.
+                capacity.warnIfSendingTurnsNegative(production, now);
                 production.approve(by, now);
                 ProductionOrder saved = productionOrders.save(production);
                 dispatch.sent(saved, slip);

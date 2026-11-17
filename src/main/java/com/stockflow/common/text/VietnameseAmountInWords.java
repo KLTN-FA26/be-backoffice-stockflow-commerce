@@ -1,14 +1,19 @@
-package com.stockflow.invoicing.internal.domain;
+package com.stockflow.common.text;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Optional;
 
 /**
  * An amount of dong written out in Vietnamese: the total an invoice must state "bằng số và bằng chữ" (NĐ 254/2026
- * Phụ lục điểm 5.d).
+ * Phụ lục điểm 5.d), and the total a sales contract and a quote state the same way so the words settle a misread
+ * figure (kltn-docs 14 §4.3).
+ *
+ * <p>In {@code common} because two modules print it - invoicing on its invoices, order on its contracts and quotes -
+ * and a second copy would let two documents of one sale spell the same total differently.</p>
  *
  * <p>Read in groups of three digits - nghìn, triệu, tỷ, and tỷ again above that ("một nghìn tỷ") - with the turns the
  * spoken number takes: <i>mười</i> for a ten, <i>mươi</i> for the tens above it, <i>mốt</i> for a one after them,
@@ -37,13 +42,26 @@ public final class VietnameseAmountInWords {
         try {
             whole = amount.toBigIntegerExact();
         } catch (ArithmeticException fraction) {
-            throw new IllegalArgumentException("An invoice total is whole dong, not " + amount, fraction);
+            throw new IllegalArgumentException("An amount in words is whole dong, not " + amount, fraction);
         }
         String words = whole.signum() == 0 ? DIGITS[0] : number(whole.abs());
         if (whole.signum() < 0) {
             words = "âm " + words;
         }
         return words.substring(0, 1).toUpperCase(Locale.forLanguageTag("vi")) + words.substring(1) + " đồng";
+    }
+
+    /**
+     * {@link #of} for a document being drawn: empty for an amount that is not whole dong, or not known yet, instead of
+     * throwing. A contract or a quote total is whole dong by construction (every line and its VAT is rounded to the
+     * dong); should one ever not be, the document goes out with its figures and without the words, rather than not at
+     * all - an invoice, which must state them, keeps {@link #of}.
+     */
+    public static Optional<String> ofWhole(BigDecimal amount) {
+        if (amount == null || amount.stripTrailingZeros().scale() > 0) {
+            return Optional.empty();
+        }
+        return Optional.of(of(amount));
     }
 
     /** A positive number: what is above a billion read as a number of its own, then "tỷ", then the rest. */

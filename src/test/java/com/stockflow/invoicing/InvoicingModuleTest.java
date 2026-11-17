@@ -35,6 +35,10 @@ class InvoicingModuleTest {
     @MockitoBean com.stockflow.inventory.api.PackagingSpecResolver packagingSpecResolverMock;
     @MockitoBean com.stockflow.design.api.DesignService designServiceMock;
     @MockitoBean com.stockflow.warehouse.api.WarehouseService warehouseServiceMock;
+    // order's WarehouseCapacityService (BE1: the capacity board behind the shipping-warehouse options and production
+    // order approval) reads the map's room and the cartons standing in each warehouse.
+    @MockitoBean com.stockflow.warehouse.api.WarehouseCapacities warehouseCapacitiesMock;
+    @MockitoBean com.stockflow.inventory.api.WarehouseOccupancy warehouseOccupancyMock;
     // order's SalesFollowUpService posts inbox notices (WF-02 A10)
     @org.springframework.test.context.bean.override.mockito.MockitoBean
     com.stockflow.notification.api.Inbox inboxMock;

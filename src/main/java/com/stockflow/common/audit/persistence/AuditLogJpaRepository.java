@@ -3,6 +3,7 @@ package com.stockflow.common.audit.persistence;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -10,8 +11,12 @@ import org.springframework.data.repository.query.Param;
 import java.time.Instant;
 import java.util.UUID;
 
-/** Writes and purges {@code platform.audit_log}. There is deliberately no update method. */
-interface AuditLogJpaRepository extends JpaRepository<AuditLogEntity, UUID> {
+/**
+ * Writes, reads and purges {@code platform.audit_log}. There is deliberately no update method. Searched by
+ * Specification ({@link JpaAuditHistory#search}): every filter is optional, and each one an investigation asks first
+ * has an index of its own on the entity.
+ */
+interface AuditLogJpaRepository extends JpaRepository<AuditLogEntity, UUID>, JpaSpecificationExecutor<AuditLogEntity> {
 
     /**
      * SCRUM-86 (WBS 3.1.8.2): the read side of the trail — "what happened to this record, in
