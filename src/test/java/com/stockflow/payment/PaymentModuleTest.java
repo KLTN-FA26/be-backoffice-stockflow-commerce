@@ -16,7 +16,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Boots <b>only</b> the payment module and the modules it declares in {@code package-info.java} (customer).
+ * Boots <b>only</b> the payment module and the modules it declares in {@code package-info.java} (customer, and
+ * identity since the receipts' export names who recorded them - 2026-11-14 plan, BE2-A).
  *
  * <p>The point is the boundary: if payment gains a dependency its {@code package-info.java} does not declare, this
  * context cannot start and the build says so, instead of an import nobody noticed in review. Fix the declaration
@@ -29,8 +30,10 @@ class PaymentModuleTest {
 
     @Autowired PaymentService payment;
     @Autowired ApplicationContext context;
-    // A dependency of a bootstrapped dependency, not of this module: explicit ports only, the slice must not boot more.
+    // Identity is booted (a direct dependency); its service stays a mock so the slice reads no accounts.
     @MockitoBean com.stockflow.identity.api.IdentityService identityServiceMock;
+    // A dependency of a bootstrapped dependency (identity's), not of this module: explicit ports only.
+    @MockitoBean com.stockflow.warehouse.api.WarehouseService warehouseServiceMock;
     // customer (bootstrapped) invites portal accounts and mails the invitation (SCRUM-429): its ports, not the modules.
     @MockitoBean com.stockflow.identity.api.PortalAccountService portalAccountServiceMock;
     @MockitoBean com.stockflow.notification.api.NotificationService notificationServiceMock;

@@ -698,6 +698,22 @@ class PickConfirmationIntegrationTest {
     // ---- who may do it -----------------------------------------------------------------------------
 
     @Test
+    @DisplayName("WF4-QLK-TAKEOVER: the warehouse manager of the warehouse confirms a started task's line on behalf of the picker")
+    void managerConfirmsOnBehalf() throws Exception {
+        OrderSummary order = confirmedOrder(sofa(1));
+        UUID task = startedTask(order);
+        JsonNode line = lines(task).get(0);
+        String lineId = line.path("lineId").asText();
+        String scan = scan(line.path("locationCode").asText(), lpn(lineId));
+
+        confirm(task, lineId, managerHcm.toString(), "WAREHOUSE_MANAGER", scan)
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("PICKED"));
+
+        assertThat(lineStatus(lineId)).isEqualTo("PICKED");
+        assertThat(ledgerRows("PICK", lineId)).isEqualTo(1);
+    }
+
+    @Test
     @DisplayName("scope: another warehouse 403, a picker not assigned 404, QC / OC / customer 403; readers see the lines")
     void scope() throws Exception {
         OrderSummary order = confirmedOrder(sofa(1));
@@ -712,9 +728,6 @@ class PickConfirmationIntegrationTest {
                 .andExpect(status().isForbidden()).andExpect(jsonPath("$.errorCode").value("OUT_OF_DATA_SCOPE"));
         confirm(task, lineId, otherPickerHcm.toString(), "WAREHOUSE_STAFF", scan)
                 .andExpect(status().isNotFound()).andExpect(jsonPath("$.errorCode").value("NOT_FOUND"));
-        // The manager of the warehouse is not the assignee either: only the assignee confirms.
-        confirm(task, lineId, managerHcm.toString(), "WAREHOUSE_MANAGER", scan)
-                .andExpect(status().isNotFound());
         confirm(task, lineId, staff("SALES_STAFF").toString(), "SALES_STAFF", scan)
                 .andExpect(status().isForbidden()).andExpect(jsonPath("$.errorCode").value("FORBIDDEN"));
         confirm(task, lineId, customerUser.toString(), "CUSTOMER", scan)

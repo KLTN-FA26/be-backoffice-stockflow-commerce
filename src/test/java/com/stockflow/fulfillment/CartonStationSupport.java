@@ -55,7 +55,10 @@ final class CartonStationSupport {
                  WHERE i.id = u.inventory_item_id AND i.sku = 'SOFA-3S-GREY' AND NOT u.is_base AND u.active""", kg));
     }
 
-    /** The carton spec of the SKU declares no size again, as the demo data has it. */
+    /**
+     * The carton spec of the SKU declares no size, for a test of unmeasured cartons (the demo data measures the sofa and
+     * table cartons since V20261128000100, but declares no weight on them).
+     */
     static void clearCartonSize(TransactionTemplate tx, JdbcTemplate jdbc, String sku) {
         tx.executeWithoutResult(s -> jdbc.update("""
                 UPDATE inventory.uom_conversions u SET length_cm = NULL, width_cm = NULL, height_cm = NULL, weight_kg = NULL

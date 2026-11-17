@@ -39,7 +39,9 @@ class BoundaryLayoutServiceImpl implements BoundaryLayoutService {
 
     @Override
     @Auditable(action = AuditAction.CREATE, resourceType = "boundary",
-            resourceId = "#command.warehouseId()", includeFailures = false)
+            resourceId = "#command.warehouseId()", includeFailures = false,
+            details = "{boundaryId: #result?.id(), type: #command.type(), segment: #command.segment(), "
+                    + "passable: #command.passable(), operationalStatus: #command.operationalStatus()}")
     public BoundarySummary createBoundary(BoundaryCommands.CreateBoundary command) {
         Warehouse warehouse = WarehouseLocks.lock(warehouses, command.warehouseId());
         Boundary boundary = Boundary.create(Identifiers.newId(), warehouse.id(), command.type(), command.segment(),
@@ -50,7 +52,9 @@ class BoundaryLayoutServiceImpl implements BoundaryLayoutService {
 
     @Override
     @Auditable(action = AuditAction.UPDATE, resourceType = "boundary",
-            resourceId = "#command.boundaryId()", includeFailures = false)
+            resourceId = "#command.boundaryId()", includeFailures = false,
+            details = "{type: #command.type(), segment: #command.segment(), passable: #command.passable(), "
+                    + "operationalStatus: #command.operationalStatus()}")
     public BoundarySummary updateBoundary(BoundaryCommands.UpdateBoundary command) {
         Warehouse warehouse = lockWarehouseOf(command.boundaryId());
         Boundary boundary = require(command.boundaryId());

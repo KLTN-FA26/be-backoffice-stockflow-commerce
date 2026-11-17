@@ -2,6 +2,7 @@ package com.stockflow.invoicing.internal.domain;
 
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
+import com.stockflow.common.text.VietnameseAmountInWords;
 
 import java.math.BigDecimal;
 import java.time.Instant;

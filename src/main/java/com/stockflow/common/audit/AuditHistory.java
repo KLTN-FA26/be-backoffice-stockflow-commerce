@@ -2,6 +2,9 @@ package com.stockflow.common.audit;
 
 import com.stockflow.common.api.PageResponse;
 
+import java.util.Optional;
+import java.util.UUID;
+
 /**
  * The read side of the audit trail — "what happened to this record, in order".
  *
@@ -15,6 +18,10 @@ import com.stockflow.common.api.PageResponse;
  * audit entry already says who did what, when, and whether it succeeded, which is what "version
  * history" means anywhere else in this codebase (approve/reject/discontinue are already recorded
  * this way; this just makes the log queryable instead of write-only).</p>
+ *
+ * <p>The System Admin's audit log screen (kltn-docs 00 §2.5; 13 §4.2 and 06 §4.1 step 8 say changes are audited, so
+ * someone must be able to read them) searches the whole trail with {@link #search} and opens a line with
+ * {@link #find}.</p>
  */
 public interface AuditHistory {
 
@@ -26,4 +33,15 @@ public interface AuditHistory {
      * @param resourceId    matches {@link Auditable#resourceId()} as recorded
      */
     PageResponse<AuditEntry> forResource(String resourceType, String resourceId, int page, int size);
+
+    /**
+     * The entries matching {@code filter}, newest first (ties by id, so a page boundary never repeats or skips one).
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code UNSUPPORTED_PARAMETER} for a page below 0 or a size
+     *         outside 1 to {@link com.stockflow.common.persistence.Pages#MAX_PAGE_SIZE}
+     */
+    PageResponse<AuditRecord> search(AuditSearch filter, int page, int size);
+
+    /** One entry by the id it was stored under; empty when there is none, or it was purged ({@code AuditRetention}). */
+    Optional<AuditRecord> find(UUID id);
 }
