@@ -52,6 +52,12 @@ public interface OrderRepository {
 
     List<Order> findByCustomerId(UUID customerId);
 
+    /**
+     * When the order first became CONFIRMED, from its status history; empty for an order that never was (or one whose
+     * history was not recorded).
+     */
+    Optional<java.time.Instant> confirmedAt(UUID orderId);
+
     /** The status and hold reason of each order among {@code ids} that exists, in one query, without its lines. */
     List<com.stockflow.order.api.OrderHoldState> holdStates(java.util.Collection<UUID> ids);
 

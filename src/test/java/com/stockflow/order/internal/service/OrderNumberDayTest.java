@@ -53,7 +53,7 @@ class OrderNumberDayTest {
                 mock(CustomerService.class), mock(CancellationRequestRepository.class), mock(PaymentService.class),
                 mock(CustomerSkus.class), mock(SalesContractRepository.class), mock(DeliveryBatchService.class),
                 mock(DeliveryBatchRecords.class), mock(DeliveryFailureCases.class),
-                mock(org.springframework.beans.factory.ObjectProvider.class));
+                mock(org.springframework.beans.factory.ObjectProvider.class), org.mockito.Mockito.mock(com.stockflow.order.internal.repository.OrderRemainderClosureJpaRepository.class));
         when(repository.findByRequestId(any())).thenReturn(Optional.empty());
         IllegalStateException stop = new IllegalStateException("numbered");
         when(repository.nextOrderNumber(any())).thenThrow(stop);

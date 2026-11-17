@@ -1,6 +1,7 @@
 package com.stockflow.order.internal.controller;
 
 import com.stockflow.order.api.ListOrdersQuery;
+import com.stockflow.order.api.OrderSummary;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.internal.controller.dto.OrderStatusChangeResponse;
@@ -107,7 +108,11 @@ class OrderController {
                 .filter(order -> ownCustomerId == null || order.status() != OrderStatus.DRAFT)
                 // A warehouse manager reads the orders of their warehouses only (5-7 review M1); 404 like any other.
                 .filter(order -> ownCustomerId != null || warehouseVisibility.visible(orderId, user))
-                .map(order -> OrderWebMapper.toResponse(order, ownCustomerId == null))
+                .map(order -> ownCustomerId == null
+                        // Staff read the customer's name on the order; a customer reads their own order as before.
+                        ? OrderWebMapper.toResponse(order, true, OrderWebMapper.labelOf(
+                                customerService.labels(java.util.List.of(order.customerId())), order.customerId()))
+                        : OrderWebMapper.toResponse(order, false))
                 .map(ApiResponse::ok)
                 .orElseThrow(() -> new BusinessException(
                         ErrorCode.NOT_FOUND, "No order with id " + orderId));
@@ -236,12 +241,15 @@ class OrderController {
             @RequestParam(required = false) String sort) {
         // Customers hold sales-orders:READ for their own orders; this list is every customer's.
         ScopeGuards.requireBackOffice(user);
-        return ApiResponse.ok(orderService.list(new ListOrdersQuery(page,
+        var found = orderService.list(new ListOrdersQuery(page,
                         size == null ? Pages.DEFAULT_PAGE_SIZE : size, search, OrderStatusFilter.parse(statuses),
                         customerId,
                         placedFrom, placedTo, sort,
-                        com.stockflow.order.internal.service.OrderWarehouseVisibility.limitOf(user)))
-                .map(OrderWebMapper::toResponse));
+                        com.stockflow.order.internal.service.OrderWarehouseVisibility.limitOf(user)));
+        // One query for the names of the whole page - not one per row.
+        var labels = customerService.labels(found.items().stream().map(OrderSummary::customerId).toList());
+        return ApiResponse.ok(found.map(order -> OrderWebMapper.toResponse(order,
+                OrderWebMapper.labelOf(labels, order.customerId()))));
     }
 
     @GetMapping("/{orderId}/history")
@@ -268,12 +276,20 @@ class OrderController {
         // PACK-PARTIAL: Sales' decisions on shipping in parts are part of the order's history for staff - entries of
         // their own type (PARTIAL_SHIPMENT_DECISION), not status changes.
         List<com.stockflow.order.api.PartialShipmentDecision> decisions = partialShipments.decisions(orderId);
+        // WF4-CLOSE-HIST-SCHEMA: so are the closures of the rest (REMAINDER_CLOSURE), whether or not one moved the status.
+        List<com.stockflow.order.api.RemainderClosure> closures = orderService.remainderClosures(orderId);
         java.util.Map<UUID, String> names = identities.displayNames(java.util.stream.Stream.of(
                         changes.stream().map(com.stockflow.order.api.OrderStatusChange::actorId),
-                        decisions.stream().map(com.stockflow.order.api.PartialShipmentDecision::decidedBy))
+                        decisions.stream().map(com.stockflow.order.api.PartialShipmentDecision::decidedBy),
+                        closures.stream().map(com.stockflow.order.api.RemainderClosure::closedBy))
                 .flatMap(stream -> stream)
                 .filter(java.util.Objects::nonNull).distinct().toList());
-        return ApiResponse.ok(java.util.stream.Stream.of(changes.stream()
+        // Listed first so that a closure and the status change it caused, stamped alike, read closure first.
+        return ApiResponse.ok(java.util.stream.Stream.of(
+                closures.stream().map(closure -> OrderStatusChangeResponse.remainderClosure(closure.reasonCode().name(),
+                        closure.note(), closure.closedAt(), closure.closedBy(),
+                        closure.closedBy() == null ? null : names.get(closure.closedBy()))),
+                changes.stream()
                         .map(change -> new OrderStatusChangeResponse(change.from(), change.to(), change.reason(),
                                 change.occurredAt(), change.actorId(),
                                 change.actorId() == null ? null : names.get(change.actorId()))),

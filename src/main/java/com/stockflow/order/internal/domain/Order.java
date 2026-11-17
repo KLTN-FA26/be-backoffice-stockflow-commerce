@@ -1118,6 +1118,34 @@ public final class Order extends AggregateRoot {
         }
     }
 
+    /**
+     * Every reason {@link #requireHandoverAllowed(BigDecimal, BatchInFlight, java.time.LocalDate)} would refuse the
+     * goods now, as error codes, in the order that method checks them (its own answer is the first). Empty when the
+     * goods may leave. A vehicle's refusal lists them all, so one signing shows everything still in the way.
+     */
+    public java.util.List<String> handoverBlockReasons(BigDecimal installmentsDue, BatchInFlight batch,
+                                                       java.time.LocalDate day) {
+        java.util.List<String> reasons = new java.util.ArrayList<>();
+        try {
+            requireNotCancelled("its goods are not handed over");
+            if (status != OrderStatus.PICKING && status != OrderStatus.PACKED
+                    && status != OrderStatus.PARTIALLY_FULFILLED) {
+                throw new InvalidOrderTransitionException(orderNumber, status, "goods are not handed over in this status");
+            }
+        } catch (BusinessException refused) {
+            reasons.add(refused.errorCode().name());
+        }
+        try {
+            requireHandoverPaid(installmentsDue);
+        } catch (BusinessException refused) {
+            reasons.add(refused.errorCode().name());
+        }
+        if (batch != null && batch.windowStart() != null && day != null && day.isBefore(batch.windowStart())) {
+            reasons.add(ErrorCode.DELIVERY_BATCH_WINDOW_NOT_OPEN.name());
+        }
+        return reasons;
+    }
+
     /** @param installmentsDue as for {@link #markShipped(Instant, UUID, BigDecimal)} */
     public boolean recordHandover(ShipmentHandover handover, BigDecimal installmentsDue) {
         return recordHandover(handover, installmentsDue, null, null);

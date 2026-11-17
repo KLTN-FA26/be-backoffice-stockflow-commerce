@@ -10,6 +10,8 @@ import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.OrderStatusChange;
 import com.stockflow.order.api.OrderSummary;
 import com.stockflow.order.api.PartialShipmentDecision;
+import com.stockflow.order.api.RemainderClosure;
+import com.stockflow.order.api.CancellationReasonCode;
 import com.stockflow.order.internal.controller.dto.OrderStatusChangeResponse;
 import com.stockflow.order.internal.service.PartialShipments;
 import org.junit.jupiter.api.DisplayName;
@@ -70,5 +72,71 @@ class OrderHistoryEntryTypeTest {
         assertThat(decision.reason()).isEqualTo("Khách nhận hàng sẵn trước");
         assertThat(decision.actorName()).isEqualTo("Nguyễn Hải Yến");
         assertThat(history).filteredOn(entry -> entry.from() != null && entry.from() == entry.to()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("staff history lists a closure of the rest as a REMAINDER_CLOSURE entry with its reason code, note and"
+            + " actor - even when no status moved; a customer never sees it")
+    void closureIsItsOwnEntryType() {
+        UUID orderId = UUID.randomUUID();
+        UUID sales = UUID.randomUUID();
+        OrderService orders = mock(OrderService.class);
+        PartialShipments decisions = mock(PartialShipments.class);
+        IdentityService identities = mock(IdentityService.class);
+        UUID customerId = UUID.randomUUID();
+        when(orders.findById(orderId)).thenReturn(Optional.of(new OrderSummary(orderId, "SO-1", customerId,
+                OrderStatus.PARTIALLY_FULFILLED, Money.vnd(1), List.of(), Instant.EPOCH)));
+        when(orders.history(orderId)).thenReturn(List.of(
+                new OrderStatusChange(OrderStatus.IN_PRODUCTION, OrderStatus.PARTIALLY_FULFILLED, null,
+                        Instant.parse("2026-11-20T01:00:00Z"), null)));
+        when(orders.remainderClosures(orderId)).thenReturn(List.of(new RemainderClosure(
+                CancellationReasonCode.OUT_OF_STOCK, "het nap", sales, Instant.parse("2026-11-20T02:00:00Z"))));
+        when(identities.displayNames(any())).thenReturn(Map.of(sales, "Nguyễn Hải Yến"));
+        com.stockflow.order.internal.service.OrderWarehouseVisibility visibility =
+                org.mockito.Mockito.mock(com.stockflow.order.internal.service.OrderWarehouseVisibility.class);
+        when(visibility.visible(any(), any())).thenReturn(true);
+        OrderController controller = new OrderController(orders, null, null, identities, decisions, visibility);
+        CurrentUser staff = new CurrentUser(UUID.randomUUID(), "sales1", Set.of(Role.SALES_STAFF), Set.of(),
+                DataScope.ALL, Set.of());
+
+        List<OrderStatusChangeResponse> history = controller.history(orderId, staff).data();
+
+        assertThat(history).extracting(OrderStatusChangeResponse::type).containsExactly(
+                OrderStatusChangeResponse.STATUS_CHANGE, OrderStatusChangeResponse.REMAINDER_CLOSURE);
+        OrderStatusChangeResponse closure = history.get(1);
+        assertThat(closure.from()).isNull();
+        assertThat(closure.to()).isNull();
+        assertThat(closure.closureReasonCode()).isEqualTo("OUT_OF_STOCK");
+        assertThat(closure.reason()).isEqualTo("het nap");
+        assertThat(closure.actorName()).isEqualTo("Nguyễn Hải Yến");
+        assertThat(history).filteredOn(entry -> entry.from() != null && entry.from() == entry.to()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("a customer's history never carries a closure of the rest, like it never carries a partial-shipment decision")
+    void customerDoesNotSeeClosures() {
+        UUID orderId = UUID.randomUUID();
+        UUID customerId = UUID.randomUUID();
+        UUID userId = UUID.randomUUID();
+        OrderService orders = mock(OrderService.class);
+        com.stockflow.customer.api.CustomerService customers = mock(com.stockflow.customer.api.CustomerService.class);
+        when(customers.findByUserId(userId)).thenReturn(Optional.of(new com.stockflow.customer.api.CustomerSummary(
+                customerId, userId, "A", null, null, null, null, "ACTIVE", 0, Instant.EPOCH)));
+        when(orders.findById(orderId)).thenReturn(Optional.of(new OrderSummary(orderId, "SO-1", customerId,
+                OrderStatus.PARTIALLY_FULFILLED, Money.vnd(1), List.of(), Instant.EPOCH)));
+        when(orders.history(orderId)).thenReturn(List.of(
+                new OrderStatusChange(OrderStatus.IN_PRODUCTION, OrderStatus.PARTIALLY_FULFILLED, null,
+                        Instant.parse("2026-11-20T01:00:00Z"), null)));
+        when(orders.remainderClosures(orderId)).thenReturn(List.of(new RemainderClosure(
+                CancellationReasonCode.OUT_OF_STOCK, "het nap", UUID.randomUUID(),
+                Instant.parse("2026-11-20T02:00:00Z"))));
+        OrderController controller = new OrderController(orders, customers, null, mock(IdentityService.class),
+                mock(PartialShipments.class), mock(com.stockflow.order.internal.service.OrderWarehouseVisibility.class));
+        CurrentUser customer = new CurrentUser(userId, "cust", Set.of(Role.CUSTOMER), Set.of(), DataScope.OWN, Set.of());
+
+        List<OrderStatusChangeResponse> history = controller.history(orderId, customer).data();
+
+        assertThat(history).extracting(OrderStatusChangeResponse::type)
+                .containsExactly(OrderStatusChangeResponse.STATUS_CHANGE);
     }
 }

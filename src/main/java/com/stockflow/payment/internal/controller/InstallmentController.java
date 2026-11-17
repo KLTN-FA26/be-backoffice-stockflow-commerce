@@ -79,9 +79,11 @@ class InstallmentController {
         // Customers hold payment-installments:READ for /me; this list is every customer's.
         ScopeGuards.requireBackOffice(user);
         LocalDate today = installments.today();
-        return ApiResponse.ok(installments.installments(customerId, orderId, status, milestone, dueBefore, reached,
-                overdue, page, size == null ? Pages.DEFAULT_PAGE_SIZE : size, sort)
-                .map(i -> PaymentWebMapper.toResponse(i, null, today)));
+        var found = installments.installments(customerId, orderId, status, milestone, dueBefore, reached,
+                overdue, page, size == null ? Pages.DEFAULT_PAGE_SIZE : size, sort);
+        // One query for the names of the whole page - not one per row.
+        var labels = customers.labels(found.items().stream().map(i -> i.customerId()).toList());
+        return ApiResponse.ok(found.map(i -> PaymentWebMapper.toResponse(i, null, today, labels)));
     }
 
     @GetMapping("/me")
@@ -96,7 +98,7 @@ class InstallmentController {
         LocalDate today = installments.today();
         return ApiResponse.ok(installments.installments(customerOf(user), orderId, status, null, null, null, null,
                 page, size == null ? Pages.DEFAULT_PAGE_SIZE : size, null)
-                .map(i -> PaymentWebMapper.toResponse(i, null, today)));
+                .map(i -> PaymentWebMapper.toResponse(i, null, today, null)));
     }
 
     @GetMapping("/me/orders/{orderId}")
@@ -105,7 +107,7 @@ class InstallmentController {
     public ApiResponse<OrderInstallmentsResponse> myOrder(@PathVariable UUID orderId,
                                                           @AuthenticatedUser CurrentUser user) {
         return ApiResponse.ok(PaymentWebMapper.toResponse(installments.ofOrder(orderId, customerOf(user)),
-                installments.today()));
+                installments.today(), null));
     }
 
     @GetMapping("/me/{installmentId}")
@@ -117,7 +119,7 @@ class InstallmentController {
         // A voided receipt is the accountant's correction, not the customer's payment.
         List<InstallmentBook.ReceiptOfInstallment> live = detail.receipts().stream()
                 .filter(r -> r.status() == PaymentReceiptStatus.RECORDED).toList();
-        return ApiResponse.ok(PaymentWebMapper.toResponse(detail.installment(), live, installments.today()));
+        return ApiResponse.ok(PaymentWebMapper.toResponse(detail.installment(), live, installments.today(), null));
     }
 
     @GetMapping("/me/{installmentId}/transfer-instructions")
@@ -135,8 +137,9 @@ class InstallmentController {
     public ApiResponse<OrderInstallmentsResponse> ofOrder(@PathVariable UUID orderId,
                                                           @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
-        return ApiResponse.ok(PaymentWebMapper.toResponse(installments.ofOrder(orderId, null),
-                installments.today()));
+        var order = installments.ofOrder(orderId, null);
+        var labels = customers.labels(order.installments().stream().map(i -> i.customerId()).toList());
+        return ApiResponse.ok(PaymentWebMapper.toResponse(order, installments.today(), labels));
     }
 
     @GetMapping("/{installmentId}")
@@ -146,8 +149,9 @@ class InstallmentController {
                                                 @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
         var detail = installments.detail(installmentId, null);
+        var labels = customers.labels(java.util.List.of(detail.installment().customerId()));
         return ApiResponse.ok(PaymentWebMapper.toResponse(detail.installment(), detail.receipts(),
-                installments.today()));
+                installments.today(), labels));
     }
 
     /** 15 §2, 16: the transfer details Sales sends the customer for one installment. */

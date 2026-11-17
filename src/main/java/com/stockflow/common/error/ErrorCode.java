@@ -389,6 +389,8 @@ public enum ErrorCode {
      * handed over; the one named is not the next.
      */
     DELIVERY_BATCH_NOT_NEXT("This is not the order's next delivery batch to release", 409),
+    /** 4B-8 (17 BR-29): every delivery batch of the order is released already - there is nothing left to release. */
+    DELIVERY_BATCH_ALL_RELEASED("Every delivery batch of this order is released already", 409),
     /** 4B-8 (09 BR-04, 17 BR-29): a batch's goods leave from the first day of its delivery window. */
     DELIVERY_BATCH_WINDOW_NOT_OPEN("This delivery batch's window has not opened yet", 409),
     /** 4B-8 (17 BR-28): a window moves only while no carton of the batch was handed over. */
@@ -558,8 +560,6 @@ public enum ErrorCode {
     ORDER_SHIPMENT_QUANTITY_EXCEEDED("More than this order line has left to ship", 409),
     /** G3-2: a shipment outcome its status does not allow (kltn-docs 09 §5). */
     ORDER_SHIPMENT_INVALID_TRANSITION("This shipment cannot move to that status now", 409),
-    /** SCRUM-431, kltn-docs 15 §4.3 step 4: an overdue customer gets no new credit until they pay. */
-    CUSTOMER_CREDIT_OVERDUE("The customer has overdue receivables", 409),
     /** 4B-6: no installment with that id (for a customer: none of theirs). */
     INSTALLMENT_NOT_FOUND("Installment not found", 404),
     /** 4B-6, 15 BR-05: a paid or cancelled installment takes no more money. */

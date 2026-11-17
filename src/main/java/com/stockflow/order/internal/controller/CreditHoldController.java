@@ -83,13 +83,21 @@ class CreditHoldController {
     @RequiresPermission(resource = OrderResources.CREDIT_HOLDS, action = Action.READ, scope = DataScope.ALL)
     public ApiResponse<PageResponse<CreditHoldResponse>> holds(@RequestParam(defaultValue = "0") int page,
                                                                @RequestParam(required = false) Integer size) {
-        return ApiResponse.ok(credit.heldOrders(page, size == null ? com.stockflow.common.persistence.Pages.DEFAULT_PAGE_SIZE : size)
-                .map(id -> {
-                    OrderResponse order = OrderWebMapper.toResponse(orders.findById(id).orElseThrow());
-                    var check = checks.latest(id).orElseThrow();
-                    return new CreditHoldResponse(order, check.checkedAt(), check.creditLimit(), check.exposure(),
-                            check.orderAmount());
-                }));
+        var held = credit.heldOrders(page, size == null ? com.stockflow.common.persistence.Pages.DEFAULT_PAGE_SIZE : size);
+        var found = held.items().stream().map(id -> orders.findById(id).orElseThrow()).toList();
+        // The accountant who decides these holds has no customer permission: name each order's customer from one
+        // query for the page - not one per row.
+        var labels = customers.labels(found.stream().map(com.stockflow.order.api.OrderSummary::customerId).toList());
+        var byId = new java.util.HashMap<UUID, com.stockflow.order.api.OrderSummary>();
+        found.forEach(order -> byId.put(order.orderId(), order));
+        return ApiResponse.ok(held.map(id -> {
+            var summary = byId.get(id);
+            OrderResponse order = OrderWebMapper.toResponse(summary,
+                    OrderWebMapper.labelOf(labels, summary.customerId()));
+            var check = checks.latest(id).orElseThrow();
+            return new CreditHoldResponse(order, check.checkedAt(), check.creditLimit(), check.exposure(),
+                    check.orderAmount());
+        }));
     }
 
     @PostMapping("/{orderId}/credit-approval")

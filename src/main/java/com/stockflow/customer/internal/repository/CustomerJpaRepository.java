@@ -23,6 +23,11 @@ interface CustomerJpaRepository extends BaseJpaRepository<CustomerJpaEntity> {
     /** {@code [id, fullName]} of each of these customers, in one query. */
     @org.springframework.data.jpa.repository.Query("select c.id, c.fullName from CustomerJpaEntity c where c.id in :ids")
     java.util.List<Object[]> findNames(@Param("ids") java.util.Collection<UUID> ids);
+
+    /** {@code [id, fullName, taxCode]} of each of these customers, in one query. */
+    @org.springframework.data.jpa.repository.Query(
+            "select c.id, c.fullName, c.taxCode from CustomerJpaEntity c where c.id in :ids")
+    java.util.List<Object[]> findLabels(@Param("ids") java.util.Collection<UUID> ids);
     Optional<CustomerJpaEntity> findByUserId(UUID userId);
     Optional<CustomerJpaEntity> findByEmailIgnoreCase(String email);
 

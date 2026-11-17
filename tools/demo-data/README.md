@@ -27,6 +27,7 @@ instalments. It never prints a password or a token.
 | `--dry-run` | Only GET. Prints `[ok]` for what exists and `[todo]` for what a real run would do. |
 | `--warehouse HAN` | Prefix of the demo warehouse (default `HAN`). |
 | `--set NAME` | Name of the data set (default `1`). The orders are keyed by it: the same set is never created twice, a **new name makes a fresh set** (use it after a demo consumed the first one). |
+| `--spare-cartons N` | Spare cartons per D23 SKU for the X01/X02 "top-up" demos (default `1`, `0` = none; `1` or `2` is enough). See "Spare cartons" below. |
 | `--d14-window-in-days N` | The D14 order's delivery window starts `N` days after the run date (default `1` = tomorrow). Run the script the day before the demo, or raise `N`. |
 | `--only carriers\|vehicles\|staging\|orders` | Run one part only (repeatable). `--only-order D14\|D23-A\|D23-B` narrows `orders`. |
 | `--actor ROLE=USERNAME` | Who acts in a role: `sales`, `accountant`, `coordinator`, `warehouse`, `admin` (default: `SF_DEMO_USER`) and `approver` (default `truongkd`). |
@@ -66,6 +67,17 @@ needs **two vehicles**. The script checks it with the advisory trial estimate (`
 which stores nothing) and prints the result. Plan these two together (D23, X05 "vehicle breaks down during loading");
 keep `D14` out of that plan, its handover is blocked on purpose (with it the plan would be 11 cartons = 3 vehicles).
 
+**Spare cartons (on by default)** - the X01 (missing carton) and X02 (damaged carton) demos end with the warehouse manager
+reallocating a carton of the **same SKU**; it must be free stock at the warehouse, otherwise the reallocation answers
+`409 INSUFFICIENT_STOCK`. A production order never makes more cartons than its order lacks, so for each of `D23-A` and
+`D23-B` the script also makes a **spare order** (`D23-A-SPARE`, `D23-B-SPARE`: same customer and SKU, `--spare-cartons`
+cartons, 30 % on signing paid, window in 30 days) through the same steps below, and then **cancels it as Sales**
+(`POST /orders/{id}/admin-cancellation`, reason `DUPLICATE_ORDER`, nothing retained). The hold goes, the cartons stay in
+their bins, and 1-2 free cartons of each SKU remain. The cancelled spare orders and their pending refunds (the instalment
+on signing) show in the order and refund lists; ignore them. `--spare-cartons 0` skips them. A set that was already created
+without spares gets them on the next run of the same `--set` (they are separate orders); the spare orders are only ever
+cancelled by this script, never an order of the demo.
+
 The steps per order, each one only if the order is not past it yet:
 
 1. quote (Sales) -> sent -> **accepted by the customer's own login** (the API refuses staff here) -> converted to an order
@@ -75,7 +87,7 @@ The steps per order, each one only if the order is not past it yet:
 5. production order for the missing cartons (Production Coordinator) -> submitted -> **approved by a second user** (the
    approver is never the drafter) -> goods receipt of the cartons -> putaway into bins -> the hold completes
 
-It stops there: nothing is released, picked, labelled or loaded. The presenter does steps 1-10 live.
+It stops there: nothing is released, picked, labelled or loaded (a spare order has one more step: it is cancelled). The presenter does steps 1-10 live.
 
 The orders end in status `AWAITING_STOCK` with **every carton held** (`GET /orders/{id}/stock-coverage` says
 `fullyHeld: true`). That is how the backend leaves an order whose cartons arrived through a production order: it becomes
