@@ -193,7 +193,30 @@ class DispatchService implements Dispatching {
         DispatchLoadJpaEntity header = loads.findById(loadId)
                 .orElseThrow(() -> new BusinessException(ErrorCode.LOAD_NOT_FOUND));
         WarehouseScope.requireWarehouse(header.getWarehouseId());
-        return detail(header, store.load(header));
+        DispatchLoad load = store.load(header);
+        return detail(header, load).withHandoverWarnings(currentHandoverWarnings(header, load));
+    }
+
+    /**
+     * The warnings of "start loading" that still hold while the vehicle is loading (kltn-docs 09 section 4.2 step 7,
+     * owner decision WF4-A7-WARN): the same check against the orders on board, made now and never stored - money
+     * collected or a window opened since makes the warning go. As at the start of loading, only a vehicle of a load
+     * plan is checked.
+     */
+    private List<Dispatching.HandoverWarning> currentHandoverWarnings(DispatchLoadJpaEntity header, DispatchLoad load) {
+        if (load.status() != LoadStatus.LOADING || header.getLoadPlanVehicleId() == null) {
+            return List.of();
+        }
+        List<UUID> onBoard = load.activeShipments();
+        Set<UUID> orderIds = onBoard.isEmpty() ? Set.of() : shipments.findByIdIn(onBoard).stream()
+                .map(ShipmentJpaEntity::getOrderId).collect(Collectors.toCollection(java.util.TreeSet::new));
+        return orderIds.isEmpty() ? List.of() : warningsOf(orders.handoverBlocks(orderIds, clock.instant()));
+    }
+
+    private static List<Dispatching.HandoverWarning> warningsOf(List<com.stockflow.order.api.HandoverBlock> blocks) {
+        return blocks.stream().map(block -> new Dispatching.HandoverWarning(block.orderId(), block.orderNumber(),
+                block.reasonCode(), block.amountDue(), block.currency(), block.batchSeq(), block.windowStart()))
+                .toList();
     }
 
     // ------------------------------------------------------------------ the vehicle
@@ -676,9 +699,7 @@ class DispatchService implements Dispatching {
             blocks.forEach(block -> log.warn("Load {}: order {} may not be handed over yet ({}, {} {} due)",
                     load.code(), block.orderNumber(), block.reasonCode(),
                     block.amountDue().stripTrailingZeros().toPlainString(), block.currency()));
-            warnings = blocks.stream().map(block -> new Dispatching.HandoverWarning(block.orderId(),
-                    block.orderNumber(), block.reasonCode(), block.amountDue(), block.currency(), block.batchSeq(),
-                    block.windowStart())).toList();
+            warnings = warningsOf(blocks);
         }
         if (load.startLoading(actor.userId(), now)) {
             header = store.save(load, header);
