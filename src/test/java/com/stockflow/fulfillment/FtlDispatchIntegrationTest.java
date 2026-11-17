@@ -2403,6 +2403,8 @@ class FtlDispatchIntegrationTest {
                 .andExpect(jsonPath("$.details.orders[0].orderId").value(order.orderId().toString()))
                 .andExpect(jsonPath("$.details.orders[0].orderNumber").value(order.orderNumber()))
                 .andExpect(jsonPath("$.details.orders[0].reasonCode").value("ORDER_BALANCE_NOT_PAID"))
+                .andExpect(jsonPath("$.details.orders[0].reasonCodes.length()").value(1))
+                .andExpect(jsonPath("$.details.orders[0].reasonCodes[0]").value("ORDER_BALANCE_NOT_PAID"))
                 .andExpect(jsonPath("$.details.orders[0].amountDue").value(owed.stripTrailingZeros().toPlainString()))
                 .andExpect(jsonPath("$.details.orders[0].currency").value("VND"))
                 .andExpect(jsonPath("$.details.orders[0].deliveryBatchSeq").value(1));
@@ -2465,6 +2467,8 @@ class FtlDispatchIntegrationTest {
                 .andExpect(jsonPath("$.errorCode").value("LOAD_HANDOVER_BLOCKED"))
                 .andExpect(jsonPath("$.details.orders[0].orderId").value(orderId.toString()))
                 .andExpect(jsonPath("$.details.orders[0].reasonCode").value("DELIVERY_BATCH_WINDOW_NOT_OPEN"))
+                .andExpect(jsonPath("$.details.orders[0].reasonCodes.length()").value(1))
+                .andExpect(jsonPath("$.details.orders[0].reasonCodes[0]").value("DELIVERY_BATCH_WINDOW_NOT_OPEN"))
                 .andExpect(jsonPath("$.details.orders[0].deliveryBatchSeq").value(2))
                 .andExpect(jsonPath("$.details.orders[0].windowStart").value(today.plusDays(14).toString()));
         assertThat(shipmentStatus(next[0])).isEqualTo("READY_TO_DISPATCH");

@@ -927,6 +927,7 @@ class DispatchService implements Dispatching {
             row.put("orderId", block.orderId().toString());
             row.put("orderNumber", block.orderNumber());
             row.put("reasonCode", block.reasonCode());
+            row.put("reasonCodes", block.reasonCodes());
             row.put("amountDue", block.amountDue().stripTrailingZeros().toPlainString());
             row.put("currency", block.currency());
             if (block.batchSeq() != null) {
