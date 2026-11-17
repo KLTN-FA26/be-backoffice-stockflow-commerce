@@ -148,8 +148,10 @@ class OverdueInstallmentNoticeIntegrationTest {
      *  been seen too. */
     private void afterMarker() {
         UUID marker = UUID.randomUUID();
-        publisher.publishEvent(new InstallmentOverdue(marker, UUID.randomUUID(), "HD-MARKER", UUID.randomUUID(),
-                "SO-MARKER", UUID.randomUUID(), 1, LocalDate.now(), BigDecimal.ONE, "VND"));
+        // Published in a transaction: a listener of @ApplicationModuleListener runs after its commit.
+        tx.executeWithoutResult(s -> publisher.publishEvent(new InstallmentOverdue(marker, UUID.randomUUID(),
+                "HD-MARKER", UUID.randomUUID(), "SO-MARKER", UUID.randomUUID(), 1, LocalDate.now(), BigDecimal.ONE,
+                "VND")));
         Await.until("the marker is told", ASYNC, () -> jdbc.queryForObject("SELECT count(*) FROM "
                 + "notification.user_notification WHERE recipient_id = ? AND source_id = ?", Long.class, salesA,
                 marker.toString()) >= 1);
