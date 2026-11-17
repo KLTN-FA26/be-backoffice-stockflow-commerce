@@ -143,6 +143,7 @@ WITH reviewed(col, why) AS (
     ('inventory.stock_package.lpn', 'the carton''s own LPN'),
     ('warehouse.storage_location.location_code', 'the location''s own code'),
     ('reporting.processed_order_closures.closure_id', 'the closure event''s own id'),
+    ('ordering.order_remainder_closure.closure_id', 'the closure''s own key (unique); payment settles the closure under the same id'),
     ('inventory.stock_lot.purchase_order_number', 'purchase orders are gone; historical text only'),
     ('fulfillment.carrier_booking.service_code', 'the carrier''s own service vocabulary'),
     ('fulfillment.waybill_import_row.load_code', 'text from an uploaded file; an unmatched row is the point'),
