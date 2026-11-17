@@ -471,6 +471,40 @@ class DesignProjectIntegrationTest {
         assertThat(statusOf(fresh)).isEqualTo("DRAFT");
     }
 
+    /**
+     * FE request 2026-11-17 S-1, S-3, S-6: a batch refused for several reasons names every design refused, each with its
+     * own code - a design not in the project too - and a design no longer a draft says so even at a stale version.
+     */
+    @Test
+    void aBatchRefusedForSeveralReasonsNamesEveryDesignWithItsOwnReason() throws Exception {
+        String fresh = draft(project, middle());
+        String stale = draft(project, middle());
+        String submitted = draft(project, middle());
+        mvc.perform(post("/api/v1/designs/" + submitted + "/technical-review-requests")
+                .contentType(MediaType.APPLICATION_JSON).content("{\"version\":" + version(submitted) + "}"))
+                .andExpect(status().isOk());
+        String alone = draft(null, middle());
+        String body = ("{\"designs\":[{\"id\":\"%s\",\"version\":%d},{\"id\":\"%s\",\"version\":%d},"
+                + "{\"id\":\"%s\",\"version\":%d},{\"id\":\"%s\",\"version\":%d}]}")
+                .formatted(fresh, version(fresh), stale, version(stale) - 1, submitted, version(submitted) - 1, alone,
+                        version(alone));
+
+        mvc.perform(post("/api/v1/design-projects/" + project + "/review-rounds")
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.errorCode").value("NOT_FOUND"))
+                .andExpect(jsonPath("$.details.designIds.length()").value(1))
+                .andExpect(jsonPath("$.details.designIds[0]").value(alone))
+                .andExpect(jsonPath("$.details.designs.length()").value(3))
+                .andExpect(jsonPath("$.details.designs[?(@.designId == '" + stale + "')].errorCode").value("CONFLICT"))
+                .andExpect(jsonPath("$.details.designs[?(@.designId == '" + submitted + "')].errorCode")
+                        .value("DESIGN_NOT_DRAFT"))
+                .andExpect(jsonPath("$.details.designs[?(@.designId == '" + alone + "')].errorCode")
+                        .value("NOT_FOUND"));
+        assertThat(statusOf(fresh)).isEqualTo("DRAFT");
+        assertThat(statusOf(stale)).isEqualTo("DRAFT");
+    }
+
     @Test
     void approvingAllDecidesEachDesignOnItsOwnAndAQuoteIsAskedOverTheApprovedOnes() throws Exception {
         String cup = draft(project, middle());
