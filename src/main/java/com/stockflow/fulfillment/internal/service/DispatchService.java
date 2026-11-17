@@ -215,7 +215,8 @@ class DispatchService implements Dispatching {
 
     private static List<Dispatching.HandoverWarning> warningsOf(List<com.stockflow.order.api.HandoverBlock> blocks) {
         return blocks.stream().map(block -> new Dispatching.HandoverWarning(block.orderId(), block.orderNumber(),
-                block.reasonCode(), block.amountDue(), block.currency(), block.batchSeq(), block.windowStart()))
+                block.reasonCode(), block.reasonCodes(), block.amountDue(), block.currency(), block.batchSeq(),
+                block.windowStart()))
                 .toList();
     }
 

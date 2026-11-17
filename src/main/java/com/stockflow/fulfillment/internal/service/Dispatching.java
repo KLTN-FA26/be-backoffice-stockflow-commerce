@@ -103,10 +103,17 @@ public interface Dispatching {
      * 4B-8 (kltn-docs 08 BR-11, 17 §4.4 step 17, 09 BR-18): an order on the vehicle whose goods may not leave yet, found
      * when loading starts - loading goes ahead; the handover will refuse the vehicle until the order may leave.
      *
-     * @param reasonCode why (ORDER_BALANCE_NOT_PAID, DELIVERY_BATCH_WINDOW_NOT_OPEN, ...)
+     * @param reasonCode  the first of {@code reasonCodes} (ORDER_BALANCE_NOT_PAID, DELIVERY_BATCH_WINDOW_NOT_OPEN, ...)
+     * @param reasonCodes every reason the order's goods may not leave now, the same list the handover's refusal gives
+     *                    (09 section 4.2 step 7: money owed and a window not yet open are both warned)
      */
-    record HandoverWarning(UUID orderId, String orderNumber, String reasonCode, java.math.BigDecimal amountDue,
-                           String currency, Integer deliveryBatchSeq, java.time.LocalDate windowStart) { }
+    record HandoverWarning(UUID orderId, String orderNumber, String reasonCode, List<String> reasonCodes,
+                           java.math.BigDecimal amountDue, String currency, Integer deliveryBatchSeq,
+                           java.time.LocalDate windowStart) {
+        public HandoverWarning {
+            reasonCodes = reasonCodes == null || reasonCodes.isEmpty() ? List.of(reasonCode) : List.copyOf(reasonCodes);
+        }
+    }
 
     /**
      * The load's latest order at an API_BOOKING carrier (3-4), null when it never had one.
