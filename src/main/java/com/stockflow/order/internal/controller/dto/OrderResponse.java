@@ -23,6 +23,16 @@ public record OrderResponse(
 
         UUID customerId,
 
+        @Schema(description = "The customer's registered name, so back-office staff who read the order (the "
+                + "accountant has no customer permission) see whose it is, not an id. Set on the back-office order "
+                + "list, the order detail and the credit-hold list; null elsewhere, and when the customer record is "
+                + "gone")
+        String customerName,
+
+        @Schema(description = "The code the customer is known by (tax code, or KH + 8 characters of the id); set "
+                + "where customerName is", example = "0312345678")
+        String customerCode,
+
         @Schema(example = "PENDING_PAYMENT")
         String status,
 
