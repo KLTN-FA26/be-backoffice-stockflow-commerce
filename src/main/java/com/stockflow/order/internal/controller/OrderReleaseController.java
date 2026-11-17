@@ -125,7 +125,7 @@ class OrderReleaseController {
     @PostMapping("/{orderId}/release")
     @Operation(summary = "Release an order - its next delivery batch, for an order with a delivery schedule - from its "
             + "shipping warehouse: the batch's holds are allocated on bins there. 409 DELIVERY_BATCH_NOT_NEXT, "
-            + "409 ORDER_STOCK_NOT_HELD. 403 for a warehouse the caller is not assigned to")
+            + "409 DELIVERY_BATCH_ALL_RELEASED (every batch is released already), 409 ORDER_STOCK_NOT_HELD. 403 for a warehouse the caller is not assigned to")
     @RequiresPermission(resource = OrderResources.RELEASES, action = Action.UPDATE, scope = DataScope.ALL)
     public ApiResponse<OrderResponse> release(@PathVariable UUID orderId,
                                               @Valid @RequestBody ReleaseOrderRequest request,

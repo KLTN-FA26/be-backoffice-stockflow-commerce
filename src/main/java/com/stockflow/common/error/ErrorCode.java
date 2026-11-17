@@ -389,6 +389,8 @@ public enum ErrorCode {
      * handed over; the one named is not the next.
      */
     DELIVERY_BATCH_NOT_NEXT("This is not the order's next delivery batch to release", 409),
+    /** 4B-8 (17 BR-29): every delivery batch of the order is released already - there is nothing left to release. */
+    DELIVERY_BATCH_ALL_RELEASED("Every delivery batch of this order is released already", 409),
     /** 4B-8 (09 BR-04, 17 BR-29): a batch's goods leave from the first day of its delivery window. */
     DELIVERY_BATCH_WINDOW_NOT_OPEN("This delivery batch's window has not opened yet", 409),
     /** 4B-8 (17 BR-28): a window moves only while no carton of the batch was handed over. */
@@ -455,8 +457,11 @@ public enum ErrorCode {
     EINVOICE_ERROR_NOTICE_NOT_FOUND("Notice of an e-invoice drawn up wrongly not found", 404),
     /** WF-05 E4: a notice of this invoice is still on its way, or the notice asked about is already answered. */
     EINVOICE_ERROR_NOTICE_NOT_SENDABLE("This notice cannot be recorded or sent now: another one of the invoice is still open, or it is already answered", 409),
-    /** 4B-4, WF-05 E2: stockflow.seller.* is blank in this deployment; no contract or invoice names a seller. */
-    SELLER_PROFILE_UNAVAILABLE("The seller's company details are not configured; contracts and invoices cannot be drawn up", 503),
+    /**
+     * 4B-4, WF-05 E2, BE3-A: stockflow.seller.* is blank in this deployment; no quote PDF, contract or invoice names a
+     * seller.
+     */
+    SELLER_PROFILE_UNAVAILABLE("The seller's company details are not configured; quotes, contracts and invoices cannot be drawn up", 503),
     /**
      * 4B-2 (kltn-docs 14 BR-04, 13 BR-02): a quote line, an order line placed from one, or a customer price names one
      * of the customer's own SKUs - not a stock variant or a blank. Another customer's SKU answers VARIANT_NOT_FOUND.
@@ -1014,6 +1019,11 @@ public enum ErrorCode {
      * did not pass, with its {@code issues} or the {@code roles} of files to render again.
      */
     DESIGN_BATCH_PREFLIGHT_FAILED("Some designs did not pass the print checks; none was submitted", 422),
+    /**
+     * An XLSX export over {@code XlsxTable.MAX_ROWS} rows on a sheet (2026-11-14 plan, BE2): refused rather than cut,
+     * since a file that silently stops at a limit reads as complete. The client narrows the filter.
+     */
+    EXPORT_TOO_LARGE("The export has too many rows; narrow the filter", 422),
 
     // ---- 429
     RATE_LIMITED("Too many requests", 429),

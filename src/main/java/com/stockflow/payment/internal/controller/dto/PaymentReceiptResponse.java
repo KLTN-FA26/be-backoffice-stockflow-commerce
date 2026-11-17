@@ -10,7 +10,14 @@ import java.util.UUID;
 
 /** A payment receipt (4B-6, kltn-docs 15 §5.3): as recorded, and its void when voided. */
 @Schema(name = "PaymentReceipt")
-public record PaymentReceiptResponse(UUID receiptId, UUID customerId, String reference, LocalDate receivedOn,
+public record PaymentReceiptResponse(UUID receiptId, UUID customerId,
+                                     @Schema(description = "The customer's registered name; null when the customer "
+                                             + "record is gone")
+                                     String customerName,
+                                     @Schema(description = "The code the customer is known by (tax code, or KH + 8 "
+                                             + "characters of the id); null when the customer record is gone")
+                                     String customerCode,
+                                     String reference, LocalDate receivedOn,
                                      BigDecimal amount, String currency, String note,
                                      @Schema(allowableValues = {"RECORDED", "VOIDED"}) String status,
                                      UUID recordedBy, Instant recordedAt, UUID voidedBy, Instant voidedAt,

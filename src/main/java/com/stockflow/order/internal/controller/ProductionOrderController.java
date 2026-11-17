@@ -14,6 +14,7 @@ import com.stockflow.order.internal.domain.ProductionOrder;
 import com.stockflow.order.internal.domain.ProductionOrderRepository;
 import com.stockflow.order.internal.domain.ProductionOrderStatus;
 import com.stockflow.order.internal.service.ProductionOrderService;
+import com.stockflow.order.internal.service.WarehouseCapacityService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.media.Schema;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -148,17 +149,24 @@ class ProductionOrderController {
                                    @Schema(description = "4A-4: the producer's expected completion day, from ACCEPTED on")
                                    LocalDate expectedCompletionDate, Instant cancelledAt, String cancellationReason,
                                    Instant closedAt, String closingReason,
-                                   @Schema(description = "BR-25: the warehouse capacity check is not computed yet")
+                                   @Schema(description = "BR-25: true since BE1 - capacity carries the receiving "
+                                           + "warehouse's board")
                                    boolean capacityComputed,
+                                   @Schema(description = "BR-25 (17 §4.3 steps 6-7; 06 §4.6): the receiving "
+                                           + "warehouse's capacity board as it is now, and whether what this production "
+                                           + "order still brings fits it - judged without its own cartons. A warning, "
+                                           + "never a refusal; null when its warehouse is gone")
+                                   WarehouseCapacityService.ProductionOrderCapacity capacity,
                                    List<LineResponse> lines, List<HistoryResponse> history, long version) {
 
-        static ProductionOrderResponse of(ProductionOrder p, List<ProductionOrderRepository.HistoryEntry> history) {
+        static ProductionOrderResponse of(ProductionOrder p, List<ProductionOrderRepository.HistoryEntry> history,
+                                          WarehouseCapacityService.ProductionOrderCapacity capacity) {
             return new ProductionOrderResponse(p.id(), p.code(), p.salesOrderId(), p.deliveryBatchId(),
                     p.customerId(), p.producerId(), p.receivingWarehouseId(), p.needByDate(), p.status(),
                     p.sampleApprovalRequired(), p.sampleRequiredByDefault(), p.sampleWaiverReason(), p.unitPrice(),
                     p.currency(), p.note(), p.drawnUpBy(), p.submittedAt(), p.approvedBy(), p.approvedAt(),
                     p.returnedReason(), p.sentAt(), p.productionStartedAt(), p.expectedCompletionDate(),
-                    p.cancelledAt(), p.cancellationReason(), p.closedAt(), p.closingReason(), false,
+                    p.cancelledAt(), p.cancellationReason(), p.closedAt(), p.closingReason(), true, capacity,
                     p.lines().stream().map(l -> new LineResponse(l.id(), l.orderLineId(), l.sku(), l.cartons(),
                             l.unitsPerCarton(), l.totalUnits(), l.designSnapshotId(), l.printFileChecksum(),
                             l.packingRequirements(), l.receivedCartons())).toList(),
@@ -169,9 +177,16 @@ class ProductionOrderController {
     }
 
     private final ProductionOrderService productionOrders;
+    private final WarehouseCapacityService capacity;
 
-    ProductionOrderController(ProductionOrderService productionOrders) {
+    ProductionOrderController(ProductionOrderService productionOrders, WarehouseCapacityService capacity) {
         this.productionOrders = productionOrders;
+        this.capacity = capacity;
+    }
+
+    /** A production order as answered, with its warehouse's capacity read after the change committed (BR-25). */
+    private ProductionOrderResponse respond(ProductionOrder p, List<ProductionOrderRepository.HistoryEntry> history) {
+        return ProductionOrderResponse.of(p, history, capacity.ofProductionOrder(p));
     }
 
     @GetMapping
@@ -188,8 +203,12 @@ class ProductionOrderController {
             @RequestParam(required = false) String sort,
             @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
-        return ApiResponse.ok(productionOrders.list(warehouseId, status, producerId, salesOrderId, page,
-                size == null ? Pages.DEFAULT_PAGE_SIZE : size, sort).map(p -> ProductionOrderResponse.of(p, null)));
+        PageResponse<ProductionOrder> found = productionOrders.list(warehouseId, status, producerId, salesOrderId, page,
+                size == null ? Pages.DEFAULT_PAGE_SIZE : size, sort);
+        // One board per warehouse on the page, not one per production order.
+        Map<UUID, WarehouseCapacityService.ProductionOrderCapacity> capacities = capacity.ofProductionOrders(
+                found.items());
+        return ApiResponse.ok(found.map(p -> ProductionOrderResponse.of(p, null, capacities.get(p.id()))));
     }
 
     @GetMapping("/{id}")
@@ -198,7 +217,7 @@ class ProductionOrderController {
     public ApiResponse<ProductionOrderResponse> one(@PathVariable UUID id, @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
         var detail = productionOrders.detail(id);
-        return ApiResponse.ok(ProductionOrderResponse.of(detail.order(), detail.history()));
+        return ApiResponse.ok(respond(detail.order(), detail.history()));
     }
 
     @PostMapping
@@ -209,7 +228,7 @@ class ProductionOrderController {
     public ApiResponse<ProductionOrderResponse> drawUp(@Valid @RequestBody DrawUpRequest request,
                                                        @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
-        return ApiResponse.ok(ProductionOrderResponse.of(productionOrders.drawUp(request.salesOrderId(),
+        return ApiResponse.ok(respond(productionOrders.drawUp(request.salesOrderId(),
                 request.deliveryBatchSeq(), request.producerId(), user.userId()), null));
     }
 
@@ -224,7 +243,7 @@ class ProductionOrderController {
             request.lines().forEach(line -> lines.put(line.orderLineId(),
                     new ProductionOrder.LineEdit(line.cartons(), line.packingRequirements())));
         }
-        return ApiResponse.ok(ProductionOrderResponse.of(productionOrders.edit(id, request.version(),
+        return ApiResponse.ok(respond(productionOrders.edit(id, request.version(),
                 new ProductionOrder.Draft(request.producerId(), request.needByDate(), request.unitPrice(),
                         request.note(), request.sampleApprovalRequired(), request.sampleWaiverReason(), lines)), null));
     }
@@ -235,7 +254,7 @@ class ProductionOrderController {
     public ApiResponse<ProductionOrderResponse> submit(@PathVariable UUID id, @Valid @RequestBody VersionRequest request,
                                                        @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
-        return ApiResponse.ok(ProductionOrderResponse.of(productionOrders.submit(id, request.version(), user.userId()),
+        return ApiResponse.ok(respond(productionOrders.submit(id, request.version(), user.userId()),
                 null));
     }
 
@@ -247,7 +266,7 @@ class ProductionOrderController {
                                                         @Valid @RequestBody VersionRequest request,
                                                         @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
-        return ApiResponse.ok(ProductionOrderResponse.of(productionOrders.approve(id, request.version(),
+        return ApiResponse.ok(respond(productionOrders.approve(id, request.version(),
                 user.userId()), null));
     }
 
@@ -258,7 +277,7 @@ class ProductionOrderController {
                                                               @Valid @RequestBody ReasonRequest request,
                                                               @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
-        return ApiResponse.ok(ProductionOrderResponse.of(productionOrders.returnToDraft(id, request.version(),
+        return ApiResponse.ok(respond(productionOrders.returnToDraft(id, request.version(),
                 request.reason(), user.userId()), null));
     }
 
@@ -269,7 +288,7 @@ class ProductionOrderController {
     public ApiResponse<ProductionOrderResponse> accept(@PathVariable UUID id, @Valid @RequestBody AcceptRequest request,
                                                        @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
-        return ApiResponse.ok(ProductionOrderResponse.of(productionOrders.accept(id, request.version(),
+        return ApiResponse.ok(respond(productionOrders.accept(id, request.version(),
                 request.expectedCompletionDate(), user.userId()), null));
     }
 
@@ -280,7 +299,7 @@ class ProductionOrderController {
                                                                  @Valid @RequestBody ExpectedCompletionRequest request,
                                                                  @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
-        return ApiResponse.ok(ProductionOrderResponse.of(productionOrders.expectCompletion(id, request.version(),
+        return ApiResponse.ok(respond(productionOrders.expectCompletion(id, request.version(),
                 request.expectedCompletionDate()), null));
     }
 
@@ -292,7 +311,7 @@ class ProductionOrderController {
                                                                 @Valid @RequestBody StartProductionRequest request,
                                                                 @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
-        return ApiResponse.ok(ProductionOrderResponse.of(productionOrders.startProduction(id, request.version(),
+        return ApiResponse.ok(respond(productionOrders.startProduction(id, request.version(),
                 request.expectedCompletionDate(), user.userId()), null));
     }
 
@@ -302,7 +321,7 @@ class ProductionOrderController {
     public ApiResponse<ProductionOrderResponse> cancel(@PathVariable UUID id, @Valid @RequestBody ReasonRequest request,
                                                        @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
-        return ApiResponse.ok(ProductionOrderResponse.of(productionOrders.cancel(id, request.version(),
+        return ApiResponse.ok(respond(productionOrders.cancel(id, request.version(),
                 request.reason(), user.userId()), null));
     }
 
@@ -313,7 +332,7 @@ class ProductionOrderController {
     public ApiResponse<ProductionOrderResponse> close(@PathVariable UUID id, @Valid @RequestBody ReasonRequest request,
                                                       @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
-        return ApiResponse.ok(ProductionOrderResponse.of(productionOrders.close(id, request.version(),
+        return ApiResponse.ok(respond(productionOrders.close(id, request.version(),
                 request.reason(), user.userId()), null));
     }
 }

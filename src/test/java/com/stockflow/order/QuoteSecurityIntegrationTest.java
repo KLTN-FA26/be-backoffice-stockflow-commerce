@@ -11,11 +11,15 @@ import com.stockflow.support.PostgresContainer;
 import com.stockflow.support.RedisContainer;
 import com.stockflow.support.ReferenceRows;
 import jakarta.persistence.EntityManager;
+import org.apache.pdfbox.Loader;
+import org.apache.pdfbox.text.PDFTextStripper;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.context.annotation.Import;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
@@ -32,9 +36,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -165,6 +172,49 @@ class QuoteSecurityIntegrationTest {
         for (String verb : List.of("conversion", "sending", "cancellation", "revision")) {
             send(post(QUOTES + "/" + id + "/" + verb), manager, Map.of("version", version + 1, "reason", "Not mine"))
                     .andExpect(status().isForbidden());
+        }
+    }
+
+    @Test
+    @DisplayName("the quote PDF: Sales prints it; the customer prints their own once sent; another customer's and a "
+            + "draft are 404 to a customer; a role without quotes:READ 403")
+    void theQuoteDocumentIsReadAsTheQuoteIs() throws Exception {
+        UUID userA = user();
+        UUID userB = user();
+        UUID customerA = customerOf(userA);
+        customerOf(userB);
+        String sku = CustomerSkuRows.issue(jdbc, tx, entityManager, customerA, 10).sku();
+        String sales = token(user(), "SALES_STAFF");
+        String a = token(userA, "CUSTOMER");
+        String b = token(userB, "CUSTOMER");
+        JsonNode draft = data(send(post(QUOTES), sales, createBody(customerA, sku)).andExpect(status().isCreated()));
+        String document = QUOTES + "/" + draft.path("id").asText() + "/document";
+
+        mvc.perform(get(document)).andExpect(status().isUnauthorized());
+        send(get(document), token(user(), "WAREHOUSE_MANAGER"), null).andExpect(status().isForbidden());
+        byte[] draftPdf = send(get(document), sales, null).andExpect(status().isOk())
+                .andExpect(content().contentType(MediaType.APPLICATION_PDF))
+                .andExpect(header().string(HttpHeaders.CONTENT_DISPOSITION, "inline; filename=\""
+                        + draft.path("quoteNumber").asText() + ".pdf\""))
+                .andReturn().getResponse().getContentAsByteArray();
+        assertThat(pdfText(draftPdf)).contains("BÁO GIÁ", "BẢN NHÁP", draft.path("quoteNumber").asText());
+        send(get(document), a, null).andExpect(status().isNotFound());   // Sales' draft is not shown
+
+        send(post(QUOTES + "/" + draft.path("id").asText() + "/sending"), sales,
+                Map.of("version", draft.path("version").asLong())).andExpect(status().isOk());
+        byte[] sentPdf = send(get(document), a, null).andExpect(status().isOk())
+                .andExpect(content().contentType(MediaType.APPLICATION_PDF))
+                .andReturn().getResponse().getContentAsByteArray();
+        assertThat(pdfText(sentPdf)).contains(draft.path("quoteNumber").asText(), sku, "Portal customer")
+                .doesNotContain("BẢN NHÁP");
+        send(get(document), b, null).andExpect(status().isNotFound());
+        send(get(QUOTES + "/" + UUID.randomUUID() + "/document"), sales, null).andExpect(status().isNotFound());
+    }
+
+    private static String pdfText(byte[] pdf) throws Exception {
+        assertThat(new String(pdf, 0, 5, java.nio.charset.StandardCharsets.US_ASCII)).isEqualTo("%PDF-");
+        try (var document = Loader.loadPDF(pdf)) {
+            return new PDFTextStripper().getText(document).replaceAll("\\s+", " ");
         }
     }
 

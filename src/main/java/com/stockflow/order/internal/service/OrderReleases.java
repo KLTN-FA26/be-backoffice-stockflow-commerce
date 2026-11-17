@@ -27,7 +27,8 @@ public interface OrderReleases {
      *
      * @param deliveryBatchId the batch the caller means to release; null: the next one, whichever it is
      * @throws com.stockflow.common.error.BusinessException {@code DELIVERY_BATCH_NOT_NEXT} for another batch, or while
-     *         the batch before the next still has goods to hand over; {@code ORDER_STOCK_NOT_HELD} for a batch not held
+     *         the batch before the next still has goods to hand over; {@code DELIVERY_BATCH_ALL_RELEASED} when every
+     *         batch is released already; {@code ORDER_STOCK_NOT_HELD} for a batch not held
      *         in full
      */
     OrderSummary release(UUID orderId, UUID warehouseId, UUID deliveryBatchId, UUID releasedBy);

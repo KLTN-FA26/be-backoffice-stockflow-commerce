@@ -166,8 +166,10 @@ class AreaAndBoundaryIntegrationTest {
             areas.changeAreaStatus(DemoData.area("QC01"), LocationStatus.BLOCKED);
             entityManager.flush();
 
+            // By id: area codes are unique per warehouse only, and the demo's DNI has a QC01 too (V20261128000200).
             assertThat(jdbc.queryForObject("select a.status || '/' || l.status from warehouse.area a "
-                    + "join warehouse.storage_location l on l.id = a.location_id where a.code = 'QC01'", String.class))
+                    + "join warehouse.storage_location l on l.id = a.location_id where a.id = ?", String.class,
+                    DemoData.area("QC01")))
                     .isEqualTo("BLOCKED/BLOCKED");
         }
 
