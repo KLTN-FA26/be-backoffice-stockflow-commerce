@@ -233,7 +233,11 @@ class LooseStockToCartonsIntegrationTest {
         // A location's history (either side of a line) reads them too.
         List<JsonNode> atQuarantine = items(data(get("/api/v1/inventory/movements").param("location", QUARANTINE)
                 .param("size", "200")));
-        assertThat(atQuarantine).filteredOn(m -> m.path("referenceType").asText().equals("STOCK_PACKAGE")).hasSize(30);
+        assertThat(atQuarantine).filteredOn(m -> m.path("referenceType").asText().equals("STOCK_PACKAGE")
+                && m.path("type").asText().equals("MOVE")).hasSize(30);
+        // Beside them, each carton's opening line (V20261128000100, open-questions C45): the stock had no receipt.
+        assertThat(atQuarantine).filteredOn(m -> m.path("referenceType").asText().equals("STOCK_PACKAGE")
+                && m.path("type").asText().equals("RECEIPT")).hasSize(30);
 
         // Nothing of the demo stock was written off (QD-5): one piece to a carton leaves no remainder.
         for (String sku : List.of(SOFA, TABLE)) {
@@ -246,7 +250,7 @@ class LooseStockToCartonsIntegrationTest {
 
     @Test
     @DisplayName("the lot trace of the lot-less sofas is lot UNTRACED, origin UNTRACED, its cartons where they were and"
-            + " its ledger the conversion's lines; the oak tables keep their lots")
+            + " its ledger each carton's opening line and the conversion's line; the oak tables keep their lots")
     void theLotTraceReadsTheConvertedLots() throws Exception {
         List<JsonNode> sofaLots = items(data(get("/api/v1/inventory/lots").param("sku", SOFA)
                 .param("lotNumber", "UNTRACED")));
@@ -266,8 +270,11 @@ class LooseStockToCartonsIntegrationTest {
         JsonNode trace = data(get("/api/v1/inventory/lots/{id}", lot));
         assertThat(trace.path("holds")).isEmpty();
         assertThat(trace.path("orders")).isEmpty();
-        assertThat(lotMovements(lot)).containsOnly("MOVE STOCK_PACKAGE in place 1")
+        assertThat(lotMovements(lot)).filteredOn(m -> m.startsWith("MOVE")).containsOnly("MOVE STOCK_PACKAGE in place 1")
                 .hasSize(33);
+        assertThat(lotMovements(lot)).filteredOn(m -> !m.startsWith("MOVE"))
+                .as("each carton's opening line (V20261128000100, C45), nothing else")
+                .containsOnly("RECEIPT STOCK_PACKAGE moved 1").hasSize(33);
 
         // The tables' lots are theirs still, each with what it had, where it had it.
         UUID available = lotOf(TABLE, "LOT-2026-03");

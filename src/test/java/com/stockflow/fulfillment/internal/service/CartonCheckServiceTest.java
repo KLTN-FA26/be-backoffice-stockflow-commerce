@@ -87,9 +87,11 @@ class CartonCheckServiceTest {
     private final com.stockflow.order.api.OrderReservations orderReservations =
             mock(com.stockflow.order.api.OrderReservations.class);
     private final PickLists pickLists = mock(PickLists.class);
+    private final ForeignCartonReports foreignCartons = mock(ForeignCartonReports.class);
     private final CartonCheckService service = new CartonCheckService(picks, packs, mock(PackageJpaRepository.class),
             shipments, store, orders, measures, payments, identities, mock(WarehouseService.class), timeline,
-            Clock.fixed(NOW, ZoneOffset.UTC), loadPlans, planVehicles, labelledCartons, pickLines, orderReservations, pickLists);
+            Clock.fixed(NOW, ZoneOffset.UTC), loadPlans, planVehicles, labelledCartons, pickLines, orderReservations,
+            pickLists, foreignCartons);
 
     private final UUID worker = UUID.randomUUID();
     private final UUID otherWorker = UUID.randomUUID();
@@ -533,6 +535,18 @@ class CartonCheckServiceTest {
 
             assertThat(refusal(() -> service.check(pick.getId(), "LPN-OF-ANOTHER-ORDER", actor)).errorCode())
                     .isEqualTo(ErrorCode.CARTON_NOT_IN_TASK);
+            // WF4-LPN-FOREIGN: besides the refusal, the warehouse manager is told (through the reporter).
+            org.mockito.Mockito.verify(foreignCartons).report(pick, "LPN-OF-ANOTHER-ORDER", actor.userId(), NOW);
+        }
+
+        @Test
+        @DisplayName("a carton of the task, or another refusal, reports nothing to the manager")
+        void ownCartonReportsNothing() {
+            started();
+
+            service.check(pick.getId(), "LPN-1", actor);
+
+            org.mockito.Mockito.verifyNoInteractions(foreignCartons);
         }
 
         @Test

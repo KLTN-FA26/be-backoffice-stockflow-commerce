@@ -31,6 +31,7 @@ import com.stockflow.order.internal.service.ShippingWarehouseService.Coverage;
 import com.stockflow.order.internal.service.ShippingWarehouseService.LineCoverage;
 import com.stockflow.order.internal.service.ShippingWarehouseService.Option;
 import com.stockflow.order.internal.service.ShippingWarehouseService.Options;
+import com.stockflow.order.internal.service.WarehouseCapacityService;
 import com.stockflow.support.Await;
 import com.stockflow.support.CartonRows;
 import com.stockflow.support.CustomerSkuRows;
@@ -114,6 +115,7 @@ class ShippingWarehouseIntegrationTest {
     @Autowired OrderService orders;
     @Autowired OrderRepository orderRepository;
     @Autowired ShippingWarehouseService shippingWarehouses;
+    @Autowired WarehouseCapacityService capacity;
     @Autowired OrderReleases releases;
     @Autowired InventoryService inventory;
     @Autowired ApplicationEventPublisher publisher;
@@ -389,7 +391,7 @@ class ShippingWarehouseIntegrationTest {
 
         assertThat(options.orderId()).isEqualTo(orderId);
         assertThat(options.chosenWarehouseId()).as("nothing chosen yet").isNull();
-        assertThat(options.capacityComputed()).as("no warehouse capacity table yet").isFalse();
+        assertThat(options.capacityComputed()).as("BE1: every option carries its warehouse's room").isTrue();
         List<UUID> active = jdbc.queryForList("SELECT id FROM warehouse.warehouse WHERE status = 'ACTIVE'",
                 UUID.class);
         assertThat(options.warehouses()).extracting(Option::warehouseId)
@@ -409,18 +411,98 @@ class ShippingWarehouseIntegrationTest {
                     .isEqualTo(20);
         });
 
-        Option second = options.warehouses().get(1);
-        assertThat(second.warehouseId()).as("then the one holding more").isEqualTo(b.id());
+        // B holds 19 of 20: where it ranks among the warehouses that must produce part of the order depends on its room
+        // (C3, 17 §4.2 step 2), and its room on what the other tests left in it - so it is found by id.
+        Option second = optionOf(options.warehouses(), b);
         assertThat(second.holdsEveryLine()).isFalse();
         assertThat(second.availableCartons()).as("950 pieces are 19 whole cartons").isEqualTo(19);
         assertThat(second.lines()).singleElement().satisfies(l -> assertThat(l.availableCartons()).isEqualTo(19));
 
-        assertThat(options.warehouses().subList(2, options.warehouses().size()))
-                .as("every other warehouse has none of this SKU")
+        // BE1 (17 §4.2 step 2, BR-25; 06 §4.6): each warehouse's room as its board shows it, and what would have to be
+        // produced there - each carton lacking, 60 x 40 x 35 cm. The board's figures depend on what the other tests
+        // left in these shared warehouses, so they are compared with the board read now, not with constants.
+        Map<UUID, WarehouseCapacityService.Computed> boards = capacity.boardsOf(List.of(a.id(), b.id()));
+        for (Option option : List.of(first, second)) {
+            WarehouseCapacityService.Board board = boards.get(option.warehouseId()).view();
+            assertThat(option.projectedFreeM3()).as("projected free of " + option.warehouseCode())
+                    .isEqualByComparingTo(board.projectedFreeM3());
+            assertThat(option.pendingM3()).isEqualByComparingTo(board.pendingM3());
+            assertThat(option.freeIfAllApprovedM3()).as("projected free - pending")
+                    .isEqualByComparingTo(board.projectedFreeM3().subtract(board.pendingM3()));
+        }
+        assertThat(first.neededM3()).as("A holds every carton: nothing to produce there").isEqualByComparingTo("0");
+        assertThat(first.exceedsProjected()).as("nothing needs room, however full A is").isFalse();
+        assertThat(second.neededM3()).as("B lacks one carton of 0.084 m³").isEqualByComparingTo("0.084");
+        assertThat(second.exceedsProjected()).as("a warning when it does not fit, never a refusal")
+                .isEqualTo(new BigDecimal("0.084").compareTo(second.projectedFreeM3()) > 0);
+        List<Option> others = options.warehouses().stream()
+                .filter(o -> !o.warehouseId().equals(a.id()) && !o.warehouseId().equals(b.id())).toList();
+        assertThat(others).as("every other warehouse lacks all 20 cartons: 1.68 m³ to produce there")
+                .allSatisfy(o -> assertThat(o.neededM3()).isEqualByComparingTo("1.68"));
+
+        assertThat(others).as("every other warehouse has none of this SKU")
                 .allSatisfy(o -> {
                     assertThat(o.holdsEveryLine()).isFalse();
                     assertThat(o.availableCartons()).isZero();
                 });
+
+        assertThat(options.warehouses()).as("in the order C3 and 17 §4.2 step 2 give").isSortedAccordingTo(DOCUMENTED);
+    }
+
+    @Test
+    @DisplayName("C3, 17 §4.2 step 2: a warehouse with room for what is still to be produced comes before one holding more "
+            + "cartons without that room")
+    void roomForWhatIsProducedRanksBeforeMoreCartons() {
+        // Two warehouses of this test alone, so their room is exact: 8.4 m³ of bin each (5 x 1.2 x 1.4 m).
+        Warehouse full = warehouse("ACTIVE");
+        Warehouse roomy = warehouse("ACTIVE");
+        try {
+            stock(full, 500);
+            stock(roomy, 250);
+            // C43: the full one counts almost none of its bins (factor 0.0001), so its 10 cartons leave it short of room.
+            tx.executeWithoutResult(s -> jdbc.update(
+                    "UPDATE warehouse.warehouse SET utilization_factor = 0.0001 WHERE id = ?", full.id()));
+            UUID orderId = confirmedOrder();
+
+            List<Option> ranked = shippingWarehouses.options(orderId).warehouses();
+
+            Option ofFull = optionOf(ranked, full);
+            Option ofRoomy = optionOf(ranked, roomy);
+            assertThat(ofFull.availableCartons()).as("500 pieces are 10 whole cartons").isEqualTo(10);
+            assertThat(ofRoomy.availableCartons()).as("250 pieces are 5 whole cartons").isEqualTo(5);
+            assertThat(ofFull.neededM3()).as("10 cartons of 0.084 m³ to produce").isEqualByComparingTo("0.84");
+            assertThat(ofFull.exceedsProjected()).as("no room for them").isTrue();
+            assertThat(ofRoomy.neededM3()).as("15 cartons of 0.084 m³ to produce").isEqualByComparingTo("1.26");
+            assertThat(ofRoomy.projectedFreeM3()).as("8.4 m³ less its 5 cartons").isEqualByComparingTo("7.98");
+            assertThat(ofRoomy.exceedsProjected()).as("room for them").isFalse();
+            assertThat(ranked.indexOf(ofRoomy)).as("room comes before cartons: the one with room first")
+                    .isLessThan(ranked.indexOf(ofFull));
+            assertThat(ranked).as("in the order C3 and 17 §4.2 step 2 give").isSortedAccordingTo(DOCUMENTED);
+        } finally {
+            // Out of the active list again: the other tests sharing this database read no more warehouses than before.
+            tx.executeWithoutResult(s -> jdbc.update(
+                    "UPDATE warehouse.warehouse SET status = 'INACTIVE' WHERE id IN (?, ?)", full.id(), roomy.id()));
+        }
+    }
+
+    /**
+     * The suggestion order written out from open question C3 and 17 §4.2 step 2, apart from the service's own: every line
+     * held; then room for what must be produced (projected free at least the volume needed), the larger room first;
+     * then the rest by available cartons; then the code.
+     */
+    private static final java.util.Comparator<Option> DOCUMENTED = java.util.Comparator
+            .comparingInt((Option o) -> o.holdsEveryLine() ? 0 : roomFor(o) ? 1 : 2)
+            .thenComparing((Option o) -> roomFor(o) ? o.projectedFreeM3().negate() : BigDecimal.ZERO)
+            .thenComparing((Option o) -> -o.availableCartons())
+            .thenComparing(Option::warehouseCode);
+
+    private static boolean roomFor(Option o) {
+        return !o.holdsEveryLine() && o.neededM3() != null && o.projectedFreeM3() != null
+                && o.projectedFreeM3().compareTo(o.neededM3()) >= 0;
+    }
+
+    private static Option optionOf(List<Option> options, Warehouse warehouse) {
+        return options.stream().filter(o -> o.warehouseId().equals(warehouse.id())).collect(onlyOne());
     }
 
     @Test

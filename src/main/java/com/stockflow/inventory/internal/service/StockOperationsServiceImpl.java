@@ -99,6 +99,8 @@ class StockOperationsServiceImpl implements StockOperations {
     private final SlotsUnderCount underCount;
     private final StockMovementLog ledger;
     private final StockLedgerSearch ledgerSearch;
+    /** Warehouse id to location-code prefix, for the history filtered by warehouse. */
+    private final com.stockflow.inventory.internal.domain.WarehouseDirectory warehouses;
     private final LocationDirectory locations;
     private final Clock clock;
     private final InventoryPolicyRepository policies;
@@ -121,7 +123,9 @@ class StockOperationsServiceImpl implements StockOperations {
                                InventoryEventPublisher events, StockPackageRepository stockPackages,
                                UomConversionRepository units, SlotsUnderCount underCount,
                                CycleCountRepository countLines, CartonPlacement placement,
-                               com.stockflow.warehouse.api.PutawayTasks putawayTasks) {
+                               com.stockflow.warehouse.api.PutawayTasks putawayTasks,
+                               com.stockflow.inventory.internal.domain.WarehouseDirectory warehouses) {
+        this.warehouses = warehouses;
         this.placement = placement;
         this.putawayTasks = putawayTasks;
         this.underCount = underCount;
@@ -1127,11 +1131,25 @@ class StockOperationsServiceImpl implements StockOperations {
 
     @Override
     @Transactional(readOnly = true)
-    public PageResponse<LedgerLine> ledger(String sku, String location, StockMovement.MovementType type,
-                                           int page, int size, BookVisibility visibility) {
+    public PageResponse<LedgerLine> ledger(LedgerFilter filter, int page, int size, BookVisibility visibility) {
         var pageable = Pages.of(page, size, Sort.by(Sort.Direction.DESC, "occurredAt"));
-        return Pages.toResponse(ledgerSearch.search(new StockLedgerSearch.Criteria(sku, location, type,
-                        visibility.hidesCountedSlots()), pageable)
+        if (filter.from() != null && filter.to() != null && filter.from().isAfter(filter.to())) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Invalid date range: 'from' must not be after "
+                    + "'to'", List.of(new com.stockflow.common.api.FieldError("from", "must not be after 'to'",
+                    "RangeInverted")));
+        }
+        String warehouse = null;
+        if (filter.warehouseId() != null) {
+            WarehouseScope.requireWarehouse(filter.warehouseId());
+            warehouse = warehouses.prefixOf(filter.warehouseId()).orElseThrow(() -> new BusinessException(
+                    ErrorCode.WAREHOUSE_NOT_FOUND, "No warehouse " + filter.warehouseId()));
+        }
+        // Business days, Vietnam time: a line at 23:30 on the 14th is the 14th's, though it is the 15th in UTC.
+        Instant from = filter.from() == null ? null : filter.from().atStartOfDay(BusinessCalendar.ZONE).toInstant();
+        Instant before = filter.to() == null ? null
+                : filter.to().plusDays(1).atStartOfDay(BusinessCalendar.ZONE).toInstant();
+        return Pages.toResponse(ledgerSearch.search(new StockLedgerSearch.Criteria(filter.sku(), filter.location(),
+                        filter.type(), visibility.hidesCountedSlots(), from, before, warehouse), pageable)
                 .map(StockOperationsServiceImpl::toLine));
     }
 

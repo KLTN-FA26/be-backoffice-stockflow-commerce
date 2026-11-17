@@ -67,6 +67,12 @@
     <!-- Location labels (SCRUM-97): ZXing encodes Code 128 / QR, PDFBox draws the PDF. -->
     <zxing.version>3.5.3</zxing.version>
     <pdfbox.version>3.0.6</pdfbox.version>
+    <!--
+      Report exports (2026-11-14 plan, BE2): Apache POI writes XLSX, streamed with SXSSF. 5.4.0 carries the fix of
+      CVE-2025-31672 (duplicate zip entries in OOXML), which every earlier 5.x lacks. Its commons-io, commons-compress
+      and xmlbeans are the only ones on the classpath (nothing else here brings them at compile scope).
+    -->
+    <poi.version>5.4.0</poi.version>
 
     <!--
       Recorded in build-info.properties and served at /actuator/info. CI overrides them with
@@ -134,6 +140,11 @@
       <groupId>org.apache.pdfbox</groupId>
       <artifactId>pdfbox</artifactId>
       <version>${pdfbox.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.poi</groupId>
+      <artifactId>poi-ooxml</artifactId>
+      <version>${poi.version}</version>
     </dependency>
 
     <!-- ==================== web, validation, persistence ==================== -->

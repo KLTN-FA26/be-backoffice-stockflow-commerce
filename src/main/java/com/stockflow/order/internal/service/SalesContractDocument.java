@@ -20,7 +20,8 @@ import java.util.StringJoiner;
 
 /**
  * Draws a sales contract as a PDF (4B-4, kltn-docs 14 §4.3 steps 11-13): the parties, the goods and fee lines with
- * their VAT, the three totals, the delivery terms and schedule, the payment plan and the free print-sample rounds. The
+ * their VAT, the three totals and the total in words, the delivery terms and schedule, the payment plan and the free
+ * print-sample rounds. The parties and the words are drawn as the quote draws them ({@link SalesDocumentLines}). The
  * labels are the Vietnamese bundle's - the contract is a Vietnamese document - laid out as every document of the module
  * is ({@link PrintedDocument}). What it shows comes from the contract and its order; nothing is
  * looked up here.
@@ -47,8 +48,8 @@ class SalesContractDocument {
         lines.add(Line.text(t.getString("contract.pdf.number") + ": " + c.contractNumber() + "    "
                 + t.getString("contract.pdf.date") + ": " + DAY.format(facts.dated())));
         lines.add(Line.text(t.getString("contract.pdf.order") + ": " + c.orderNumber()));
-        party(lines, t, "contract.pdf.seller", c.seller());
-        party(lines, t, "contract.pdf.buyer", c.buyer());
+        SalesDocumentLines.party(lines, t, "contract.pdf.seller", c.seller());
+        SalesDocumentLines.party(lines, t, "contract.pdf.buyer", c.buyer());
 
         lines.add(Line.heading(t.getString("contract.pdf.goods")));
         for (OrderLine line : facts.order().lines()) {
@@ -69,6 +70,7 @@ class SalesContractDocument {
         lines.add(Line.text(t.getString("contract.pdf.net") + ": " + money(c.totals().netAmount())));
         lines.add(Line.text(t.getString("contract.pdf.tax") + ": " + money(c.totals().taxAmount())));
         lines.add(Line.bold(t.getString("contract.pdf.total") + ": " + money(c.totals().totalAmount())));
+        SalesDocumentLines.inWords(lines, t, c.totals().totalAmount());
 
         lines.add(Line.heading(t.getString("contract.pdf.delivery")));
         OrderAddressSnapshot address = facts.order().shippingAddress();
@@ -107,24 +109,12 @@ class SalesContractDocument {
         return PrintedDocument.draw(fonts, lines, t.getString("contract.pdf.title") + " " + c.contractNumber(), null);
     }
 
-    private static void party(List<Line> lines, ResourceBundle t, String heading, SalesContracts.Party party) {
-        lines.add(Line.heading(t.getString(heading)));
-        lines.add(Line.bold(party.name()));
-        if (party.taxCode() != null) {
-            lines.add(Line.text(t.getString("contract.pdf.taxCode") + ": " + party.taxCode()));
-        }
-        lines.add(Line.text(t.getString("contract.pdf.address") + ": " + party.address()));
-        lines.add(Line.text(t.getString("contract.pdf.representative") + ": " + party.representative()
-                + " - " + party.representativeTitle()));
-    }
-
-    /** Whole dong, grouped with dots as Vietnamese documents write it: 1.234.567 VND. */
     private static String money(BigDecimal amount) {
-        return PrintedDocument.money(amount, "VND");
+        return SalesDocumentLines.money(amount);
     }
 
     private static String rate(BigDecimal rate) {
-        return rate == null ? "0" : rate.stripTrailingZeros().toPlainString();
+        return SalesDocumentLines.rate(rate);
     }
 
     private static String address(OrderAddressSnapshot a) {

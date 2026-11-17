@@ -24,6 +24,7 @@ import com.stockflow.invoicing.internal.controller.dto.EInvoiceFileLinkResponse;
 import com.stockflow.invoicing.internal.controller.dto.EInvoiceListItemResponse;
 import com.stockflow.invoicing.internal.controller.dto.EInvoiceRegisterEntryResponse;
 import com.stockflow.invoicing.internal.controller.dto.EInvoiceResponse;
+import com.stockflow.invoicing.internal.controller.dto.EInvoiceSignatureResponse;
 import com.stockflow.invoicing.internal.controller.dto.EInvoiceVersionRequest;
 import com.stockflow.invoicing.internal.controller.dto.ProviderCallResponse;
 import com.stockflow.invoicing.internal.controller.dto.RecordErrorNoticeRequest;
@@ -38,6 +39,7 @@ import com.stockflow.invoicing.internal.service.EInvoiceDrafts;
 import com.stockflow.invoicing.internal.service.EInvoiceErrorNotices;
 import com.stockflow.invoicing.internal.service.EInvoiceIssuance;
 import com.stockflow.invoicing.internal.service.EInvoiceQueryService;
+import com.stockflow.invoicing.internal.service.EInvoiceSignatures;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
@@ -97,10 +99,13 @@ class EInvoiceController {
     private final EInvoiceQueryService queries;
     private final EInvoiceCorrections corrections;
     private final EInvoiceErrorNotices errorNotices;
+    private final EInvoiceSignatures signatures;
     private final Clock clock;
 
     EInvoiceController(EInvoiceDrafts drafts, EInvoiceIssuance issuance, EInvoiceQueryService queries,
-                       EInvoiceCorrections corrections, EInvoiceErrorNotices errorNotices, Clock clock) {
+                       EInvoiceCorrections corrections, EInvoiceErrorNotices errorNotices,
+                       EInvoiceSignatures signatures, Clock clock) {
+        this.signatures = signatures;
         this.corrections = corrections;
         this.errorNotices = errorNotices;
         this.drafts = drafts;
@@ -162,6 +167,32 @@ class EInvoiceController {
         ScopeGuards.requireBackOffice(user);
         DownloadLink link = queries.fileLink(id, kind);
         return ApiResponse.ok(new EInvoiceFileLinkResponse(link.url(), link.expiresAt()));
+    }
+
+    @GetMapping("/{id}/signature")
+    @Operation(summary = "The seller's digital signature on the issued e-invoice's XML, checked now: who signed, when, "
+            + "the certificate's issuer, and whether the content is still what was signed (status VALID, "
+            + "CONTENT_CHANGED, SIGNATURE_INVALID, NOT_SIGNED). 409 EINVOICE_NOT_ISSUED before it is issued")
+    @RequiresPermission(resource = InvoicingResources.EINVOICES, action = Action.READ, scope = DataScope.ALL)
+    public ApiResponse<EInvoiceSignatureResponse> signature(@PathVariable UUID id,
+                                                            @AuthenticatedUser CurrentUser user) {
+        ScopeGuards.requireBackOffice(user);
+        return ApiResponse.ok(InvoicingWebMapper.toResponse(signatures.ofInvoice(id)));
+    }
+
+    @PostMapping(path = "/signature-checks", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    @Operation(summary = "Check the digital signature of any e-invoice XML handed in (multipart: file), e.g. a "
+            + "buyer's copy or one changed on purpose: the same answer as /{id}/signature. Nothing is stored. "
+            + "413 PAYLOAD_TOO_LARGE above 5 MB")
+    @RequiresPermission(resource = InvoicingResources.EINVOICES, action = Action.READ, scope = DataScope.ALL)
+    public ApiResponse<EInvoiceSignatureResponse> checkSignature(@RequestPart("file") MultipartFile file,
+                                                                 @AuthenticatedUser CurrentUser user) {
+        ScopeGuards.requireBackOffice(user);
+        try (InputStream content = file.getInputStream()) {
+            return ApiResponse.ok(InvoicingWebMapper.toResponse(signatures.ofXml(content)));
+        } catch (IOException unreadable) {
+            throw new StorageException("Could not read the multipart upload", unreadable);
+        }
     }
 
     @PostMapping

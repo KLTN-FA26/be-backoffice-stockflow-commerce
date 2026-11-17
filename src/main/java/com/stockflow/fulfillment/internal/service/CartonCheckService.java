@@ -110,6 +110,7 @@ class CartonCheckService implements CartonChecks {
     private final com.stockflow.order.api.OrderReservations orderReservations;
     /** Holds the order for a removed carton, as a short pick report does. */
     private final PickLists pickLists;
+    private final ForeignCartonReports foreignCartons;
 
     @SuppressWarnings("java:S107")
     CartonCheckService(PickJpaRepository picks, PackJpaRepository packs, PackageJpaRepository packages,
@@ -118,8 +119,10 @@ class CartonCheckService implements CartonChecks {
                        WarehouseService warehouses, ShipmentTimeline timeline, Clock clock,
                        LoadPlanReleases loadPlans, PlanVehicles planVehicles, LabelledCartons labelledCartons,
                        com.stockflow.fulfillment.internal.repository.PickLineJpaRepository pickLines,
-                       com.stockflow.order.api.OrderReservations orderReservations, PickLists pickLists) {
+                       com.stockflow.order.api.OrderReservations orderReservations, PickLists pickLists,
+                       ForeignCartonReports foreignCartons) {
         this.pickLists = pickLists;
+        this.foreignCartons = foreignCartons;
         this.labelledCartons = labelledCartons;
         this.pickLines = pickLines;
         this.orderReservations = orderReservations;
@@ -233,7 +236,16 @@ class CartonCheckService implements CartonChecks {
         requireWorkable(ctx.order());
         CartonCheck check = load(ctx);
         check.requireWorkable(actor.userId(), isManager(actor));
-        CartonCheck.Scan scan = check.check(lpn, actor.userId(), clock.instant());
+        CartonCheck.Scan scan;
+        try {
+            scan = check.check(lpn, actor.userId(), clock.instant());
+        } catch (BusinessException refused) {
+            if (refused.errorCode() == ErrorCode.CARTON_NOT_IN_TASK) {
+                // 08 §4.2 edge case, WF4-LPN-FOREIGN: refused as before, and the warehouse manager is told.
+                foreignCartons.report(ctx.pick(), lpn, actor.userId(), clock.instant());
+            }
+            throw refused;
+        }
         store.save(check, ctx.pack());
         if (!scan.repeated()) {
             log.info("Order {}: carton {} checked", ctx.pick().getOrderNumber(), scan.carton().lpn());

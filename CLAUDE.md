@@ -20,7 +20,7 @@ code, and points at the code for the rest.
 ## 1. Read this first: what has been verified
 
 **The suite runs.** `mvn test` resolves, compiles and executes under Maven; on the integration tip of the rescope it
-was about 4,570 tests (unit, integration against Testcontainers Postgres + Redis, migration upgrade tests,
+was about 4,570 tests, and about 5,000 by mid-November (unit, integration against Testcontainers Postgres + Redis, migration upgrade tests,
 and the fitness functions); the migration squash of 2026-11-11 removed the ~70 upgrade tests with the path they tested. Earlier versions of this file said it had never run; that was true until the first
 Maven-enabled build and is no longer. Do not "restore" the old caution: when a test is red, it is information.
 
@@ -66,6 +66,7 @@ reshaped by the rescope (ADR-0010).
 | `warehouse` | warehouses, zones, bins (capacity in m³, `STAGING`, `QUARANTINE`, `OVERFLOW`), putaway tasks |
 | `order` | quotes, sales contracts, orders, delivery batches, shipping-warehouse choice and release, production orders and producers, cancellations, return requests |
 | `payment` | installments of signed contracts, payment receipts, credit position, settlements, refund records (no money ledger) |
+| `invoicing` | VAT e-invoices drawn up per delivery and issued through an e-invoice provider (kltn-docs 21) |
 | `fulfillment` | pick lists, staging, carton check and labelling, shipments, load plans, dispatch, carriers (Ahamove), proof of delivery |
 | `procurement` | goods receipts against production orders and return receipts (name kept; purchasing is gone) |
 | `product`, `catalog`, `design`, `customer`, `identity`, `chat`, `notification`, `reporting` | as their `package-info` says; `chat` and `reporting` are the smallest, check before assuming a feature exists |
@@ -219,7 +220,12 @@ Stock the business does not have is not bought: Sales Manager-approved **product
 `order/internal/service/`) are sent to producers outside the system, one per delivery batch, for what the batch lacks
 after the stock held for it. The order waits `AWAITING_STOCK` / `IN_PRODUCTION`. The print sample rounds
 (`ProductionSampleService`), the schedule and the delay alerts are in the same module. Every write locks the sales
-order first and the production order after it.
+order first and the production order after it. Approving one (`ProductionOrderService.approve`, the capacity board's
+warning when the warehouse's projected free room turns negative, kltn-docs 06 §4.6, C42) takes one more lock, last:
+
+```
+customer_order → production_order → warehouse-capacity:<warehouseId> advisory lock   (approval only)
+```
 
 Goods come back printed, in cartons, and are received against the production order: `GoodsReceiptServiceImpl`
 (`procurement`) works through `order :: api` `ProductionOrderReceiving`. A receipt takes whole cartons of each line's
@@ -249,7 +255,8 @@ One task per carton, put away whole (05 BR-08). The task aggregate (`PutawayTask
 `warehouse :: api`; `PutawayTaskCreator` opens tasks when a receipt is confirmed, or when a warehouse manager releases a
 carton from quarantine (4D-1); `PutawayService.confirm` moves the carton in one `@Transactional` method. Candidates are
 usable bins flagged `is_putaway_target`, ranked by the pure `PutawayRanker`; a bin must fit the carton and its volume
-(m³, 5-4), else it goes to `OVERFLOW`.
+(m³, 5-4), else it goes to `OVERFLOW`. **An area has no capacity** (kltn-docs 06 BR-19, decided 2026-11-13): only a
+bin has a volume, so capacity is bins only; cartons standing in an area still count as occupied.
 
 ```
 lock order: task row → bin advisory lock (putaway-bin:<code>) → SKU advisory lock → stock_package FOR UPDATE → stock rows by id
@@ -473,7 +480,7 @@ more than the list: in this stack, the dangerous failures are silent.
 | `docs/adding-a-module.md` | the checklist for a new module: shape, naming, step by step |
 | `docs/adr/0005-modular-monolith.md` | why this is not microservices; ADRs 0001–0003 are what it replaced |
 | `docs/adr/0010-rescope-b2b-printed-goods.md` | the 2026-11 rescope: what was removed, what replaced it, why the in-transaction design still holds |
-| kltn-docs repository (`docs/`) | **the business analysis, source of truth**: flows, state machines, business rules, open questions |
+| kltn-docs repository (`docs/`) | **the business analysis, source of truth**: flows, state machines, business rules, open questions. The `business-docs` skill maps its sections to modules and says where a new decision goes |
 | `docs/superpowers/plans/2026-11-07-rescope/` | the rescope plans and team plan (Vietnamese), package ids (4A-2, 4C-4, …) used in comments |
 | `docs/business-design/` | pre-rescope analysis, kept for history and marked superseded; `db-design/schema.dbml` is current, generated from the migrated database by `tools/db/gen_dbml.py` |
 | `tools/db/` | `orphan_check.sql`, the adversarial schema checks `qa/run.sh`, the DBML generator |
@@ -492,7 +499,8 @@ more than the list: in this stack, the dangerous failures are silent.
 - Primary keys are `Identifiers.newId()` (UUIDv7). A random UUID scatters inserts across the index.
 - If a fitness function is genuinely wrong, change it and write down why — in the class javadoc or a
   new ADR. Deleting a rule to make a build pass is the one thing that is not allowed.
-- **Migrations are written by whoever builds the feature; the schema owner (Tú) reviews every one before merge.**
+- **Migrations are written by whoever builds the feature.** Tú is the schema owner and reviews them; since 2026-11-13
+  Phương also changes the schema without his review.
   Add them to `db/migration` with the feature's code, versioned above the baseline (`ddl-auto: validate` means an entity change and its
   migration go in the same PR). Only add: never edit or delete a migration that has merged (Flyway validates
   checksums, and `develop` deploys), and never edit a demo migration — write a new one (the baseline and the demo seed included: they are
