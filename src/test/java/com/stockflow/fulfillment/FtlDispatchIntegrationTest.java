@@ -2398,6 +2398,12 @@ class FtlDispatchIntegrationTest {
             assertThat(w.path("amountDue").decimalValue()).isEqualByComparingTo(owed);
             assertThat(w.path("deliveryBatchSeq").asInt()).isEqualTo(1);
         });
+        // WF4-A7-WARN: the load page shows the warnings that still hold, computed on every read (reloading keeps them).
+        assertThat(load(truck1).path("handoverWarnings")).singleElement().satisfies(w -> {
+            assertThat(w.path("orderId").asText()).isEqualTo(order.orderId().toString());
+            assertThat(w.path("reasonCode").asText()).isEqualTo("ORDER_BALANCE_NOT_PAID");
+            assertThat(w.path("amountDue").decimalValue()).isEqualByComparingTo(owed);
+        });
         for (String label : labels(load(truck1))) {
             scanOnto(truck1, label).andExpect(status().isOk());
         }
@@ -2418,6 +2424,7 @@ class FtlDispatchIntegrationTest {
         Map<String, Object> balance = jdbc.queryForMap("SELECT id, amount FROM payment.installment WHERE order_id = ? "
                 + "AND milestone = 'BEFORE_DELIVERY'", order.orderId());
         confirmedOrders().pay(DemoData.CUSTOMER_ID, (UUID) balance.get("id"), (BigDecimal) balance.get("amount"));
+        assertThat(load(truck1).has("handoverWarnings")).as("paid: the warning no longer holds, so it is gone").isFalse();
         handOver(truck1).andExpect(status().isOk());
         assertThat(shipmentStatus(shipment)).isEqualTo("READY_TO_DISPATCH");
     }
