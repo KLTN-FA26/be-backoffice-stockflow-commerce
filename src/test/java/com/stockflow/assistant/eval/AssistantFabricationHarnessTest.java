@@ -2,10 +2,6 @@ package com.stockflow.assistant.eval;
 
 import com.stockflow.assistant.internal.domain.LanguageModel;
 import com.stockflow.assistant.internal.domain.Turn;
-import com.stockflow.catalog.internal.service.CatalogProjectionService;
-import com.stockflow.inventory.api.InventoryService;
-import com.stockflow.inventory.consumption.PickConsumption;
-import com.stockflow.procurement.internal.service.GoodsReceipts;
 import com.stockflow.support.SecuredIntegrationTest;
 import com.stockflow.support.SecuredMvc;
 import jakarta.persistence.EntityManager;
@@ -35,6 +31,8 @@ import static org.mockito.Mockito.when;
  * data up before showing the answer, flagged.
  */
 @SecuredIntegrationTest
+// Signing a contract stores its scan, and no virus scanner runs in tests (ConfirmedOrders).
+@org.springframework.test.context.TestPropertySource(properties = "stockflow.upload-inspection.enabled=false")
 class AssistantFabricationHarnessTest {
 
     private static final String LIE = "Có 2 mã dưới điểm đặt hàng: CUP-A và LID-B. LID-B nên đặt trước.";
@@ -45,17 +43,13 @@ class AssistantFabricationHarnessTest {
     @Autowired JdbcTemplate jdbc;
     @Autowired TransactionTemplate tx;
     @Autowired EntityManager entityManager;
-    @Autowired GoodsReceipts receipts;
-    @Autowired InventoryService inventory;
-    @Autowired PickConsumption consumption;
-    @Autowired CatalogProjectionService catalog;
+    @Autowired org.springframework.context.ApplicationContext context;
 
     @Test
     @DisplayName("a model inventing data without a lookup fails the fabrication gates on every case it answers, after "
             + "the loop asked it once to look the data up")
     void aLyingModelIsCaught() throws Exception {
-        GoldenFixtures fixtures = new GoldenFixtures(jdbc, tx, entityManager, receipts, inventory, consumption,
-                catalog);
+        GoldenFixtures fixtures = new GoldenFixtures(context);
         Map<String, String> values = fixtures.ensure();
         when(model.available()).thenReturn(true);
         when(model.next(any())).thenReturn(new LanguageModel.Reply(new Turn.ModelTurn("{\"lie\":true}", LIE,
@@ -66,7 +60,7 @@ class AssistantFabricationHarnessTest {
 
         List<GoldenRunner.CaseResult> results = new ArrayList<>();
         for (GoldenCase golden : GoldenSet.load()) {
-            if (golden.expectNoData() || "U1-01".equals(golden.id())) {
+            if (golden.expectNoData() || "U3-01".equals(golden.id())) {
                 results.add(runner.run(golden.resolve(values)));
             }
         }

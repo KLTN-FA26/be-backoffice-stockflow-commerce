@@ -11,7 +11,7 @@ import java.time.Clock;
 
 /**
  * Revokes every live personal MCP token of an account whose password an administrator reset, or whose owner changed
- * it and signed out everywhere else ({@link CredentialsReset}, ADR-0013 as amended on 5/11/2026).
+ * it and signed out everywhere else ({@link CredentialsReset}, ADR-0014 as amended on 5/11/2026).
  *
  * <p><b>Why.</b> A reset says the old password may be known to someone else. Identity ends the sign-in sessions it
  * opened; a token minted in one of them would otherwise outlive them by up to 90 days. The forced-change gate refuses

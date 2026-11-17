@@ -17,8 +17,18 @@ public record OrderPlaced(
         String orderNumber,
         List<OrderLine> lines,
         BigDecimal totalAmount,
-        String currency
+        String currency,
+        /* 4B-3 (kltn-docs 14 BR-09): the total before tax - lines and fee lines - and the VAT; totalAmount is their
+           sum. Null on events published before. */
+        BigDecimal netAmount,
+        BigDecimal taxAmount
 ) {
+
+    /** Without the tax split: events published before 4B-3, and callers that carry none. */
+    public OrderPlaced(UUID orderId, UUID customerId, String contactEmail, String orderNumber, List<OrderLine> lines,
+                       BigDecimal totalAmount, String currency) {
+        this(orderId, customerId, contactEmail, orderNumber, lines, totalAmount, currency, null, null);
+    }
 
     /** One order line. designSnapshotId is only present for print-on-demand items. */
     public record OrderLine(String sku, int quantity, BigDecimal unitPrice, UUID designSnapshotId) {

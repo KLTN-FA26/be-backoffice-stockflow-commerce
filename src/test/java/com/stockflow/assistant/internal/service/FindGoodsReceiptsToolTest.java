@@ -47,9 +47,9 @@ class FindGoodsReceiptsToolTest {
     }
 
     private static GoodsReceiptSummary receipt(String number, String status) {
-        return new GoodsReceiptSummary(UUID.randomUUID(), number, "PO-HCM-0007", "Xưởng gỗ Việt", "HCM", status,
-                RECEIVED, "DRAFT".equals(status) ? null : RECEIVED.plusSeconds(600),
-                "CLOSED".equals(status) ? RECEIVED.plusSeconds(7_200) : null, false);
+        return new GoodsReceiptSummary(UUID.randomUUID(), number, "PRODUCTION", "LSX-HCM-0007", "Xưởng in Việt",
+                "HCM", status, RECEIVED, "DRAFT".equals(status) ? null : RECEIVED.plusSeconds(600),
+                "CLOSED".equals(status) ? RECEIVED.plusSeconds(7_200) : null);
     }
 
     private void listed(long total, GoodsReceiptSummary... receipts) {
@@ -82,17 +82,18 @@ class FindGoodsReceiptsToolTest {
     }
 
     @Test
-    @DisplayName("a row as the list shows it: number, PO, supplier, warehouse, status and its three moments")
+    @DisplayName("a row as the list shows it: number, production order, producer, warehouse, status and its three "
+            + "moments")
     void rows() {
-        listed(2, receipt("GR-20261028-0001", "IN_QC"), receipt("GR-20261028-0002", "CLOSED"));
+        listed(2, receipt("GR-20261028-0001", "IN_PUTAWAY"), receipt("GR-20261028-0002", "CLOSED"));
 
         FindGoodsReceiptsTool.Answer answer = tool.run(arguments("ANY", "", 50));
 
         assertThat(answer.receipts()).extracting(FindGoodsReceiptsTool.Row::receiptNumber,
-                        FindGoodsReceiptsTool.Row::purchaseOrderNumber, FindGoodsReceiptsTool.Row::supplierName,
+                        FindGoodsReceiptsTool.Row::productionOrderCode, FindGoodsReceiptsTool.Row::producerName,
                         FindGoodsReceiptsTool.Row::warehouseCode, FindGoodsReceiptsTool.Row::status)
-                .containsExactly(tuple("GR-20261028-0001", "PO-HCM-0007", "Xưởng gỗ Việt", "HCM", "IN_QC"),
-                        tuple("GR-20261028-0002", "PO-HCM-0007", "Xưởng gỗ Việt", "HCM", "CLOSED"));
+                .containsExactly(tuple("GR-20261028-0001", "LSX-HCM-0007", "Xưởng in Việt", "HCM", "IN_PUTAWAY"),
+                        tuple("GR-20261028-0002", "LSX-HCM-0007", "Xưởng in Việt", "HCM", "CLOSED"));
         assertThat(answer.receipts().get(1).closedAt()).isEqualTo(RECEIVED.plusSeconds(7_200));
         assertThat(answer.receipts().getFirst().closedAt()).isNull();
         assertThat(answer.total()).isEqualTo(2);
@@ -102,7 +103,7 @@ class FindGoodsReceiptsToolTest {
     @Test
     @DisplayName("more receipts than returned is said: total counts them all")
     void truncated() {
-        listed(73, receipt("GR-20261028-0001", "IN_QC"));
+        listed(73, receipt("GR-20261028-0001", "IN_PUTAWAY"));
 
         FindGoodsReceiptsTool.Answer answer = tool.run(arguments("OPEN", "", 1));
 
@@ -111,23 +112,27 @@ class FindGoodsReceiptsToolTest {
     }
 
     @Test
-    @DisplayName("CONFIRMED is not offered: no receipt stays in it; every other status of the api is")
+    @DisplayName("CONFIRMED is not offered: no receipt stays in it; nor is PENDING_APPROVAL, which no receipt can be "
+            + "in; every other status of the api is")
     void offered() {
-        assertThat(FindGoodsReceiptsTool.STATUSES).containsExactly("OPEN", "ANY", "DRAFT", "PENDING_APPROVAL", "IN_QC",
-                "IN_PUTAWAY", "CLOSED", "CANCELLED");
+        assertThat(FindGoodsReceiptsTool.STATUSES).containsExactly("OPEN", "ANY", "DRAFT", "IN_PUTAWAY", "CLOSED",
+                "CANCELLED");
         assertThatThrownBy(() -> tool.run(arguments("CONFIRMED", "", 5))).isInstanceOf(RuntimeException.class)
                 .hasMessageContaining("status must be one of");
+        assertThatThrownBy(() -> tool.run(arguments("PENDING_APPROVAL", "", 5))).isInstanceOf(RuntimeException.class)
+                .hasMessageContaining("status must be one of");
+        assertThat(tool.spec().description()).doesNotContain("PENDING_APPROVAL");
         verifyNoInteractions(queries);
     }
 
     @Test
-    @DisplayName("fifty receipts of long supplier names, every moment set, stay well under the result limit")
+    @DisplayName("fifty receipts of long producer names, every moment set, stay well under the result limit")
     void fiftyRowsFit() {
         String longName = "Công ty TNHH Sản xuất Thương mại và Dịch vụ Bao bì Giấy Kraft Miền Nam ".repeat(3);
         GoodsReceiptSummary[] rows = java.util.stream.IntStream.range(0, FindGoodsReceiptsTool.MAX_ROWS)
                 .mapToObj(i -> new GoodsReceiptSummary(UUID.randomUUID(), "GR-20261028-%04d".formatted(i),
-                        "PO-HCM-20261028-%04d".formatted(i), longName, "HCM", "IN_PUTAWAY", RECEIVED,
-                        RECEIVED.plusSeconds(600), RECEIVED.plusSeconds(7_200), false))
+                        "PRODUCTION", "LSX-HCM-20261028-%04d".formatted(i), longName, "HCM", "IN_PUTAWAY", RECEIVED,
+                        RECEIVED.plusSeconds(600), RECEIVED.plusSeconds(7_200)))
                 .toArray(GoodsReceiptSummary[]::new);
         listed(200, rows);
         AssistantTools tools = new AssistantTools(List.of(tool), JsonMapper.builder()
@@ -147,7 +152,7 @@ class FindGoodsReceiptsToolTest {
     @Test
     @DisplayName("a receipt's id stays out of the answer")
     void noIds() throws Exception {
-        GoodsReceiptSummary row = receipt("GR-20261028-0001", "IN_QC");
+        GoodsReceiptSummary row = receipt("GR-20261028-0001", "IN_PUTAWAY");
         listed(1, row);
 
         assertThat(JSON.writeValueAsString(tool.run(arguments("ANY", "", 50))))

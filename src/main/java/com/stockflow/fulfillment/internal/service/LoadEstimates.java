@@ -26,10 +26,8 @@ import java.util.UUID;
 public interface LoadEstimates {
 
     enum SourceType {
-        /** A sales order, released and not yet shipped. */
-        ORDER,
-        /** A transfer order (kltn-docs 10), from creation until dispatch, at its source warehouse (SCRUM-287 PR T). */
-        TRANSFER
+        /** A sales order, released and not yet shipped. The only source: transfers between warehouses were removed. */
+        ORDER
     }
 
     record Source(SourceType type, UUID id) { }
@@ -101,7 +99,7 @@ public interface LoadEstimates {
      * Estimates a source and makes it the current estimate of that source, superseding the previous one.
      *
      * @throws com.stockflow.common.error.BusinessException
-     *         {@code NOT_FOUND} (no such order, transfer or warehouse), {@code VALIDATION_FAILED} (a CONFIRMED order without a
+     *         {@code NOT_FOUND} (no such order or warehouse), {@code VALIDATION_FAILED} (a CONFIRMED order without a
      *         warehouse, or a released one with another), {@code LOAD_ESTIMATE_SOURCE_NOT_ELIGIBLE} (DRAFT,
      *         PENDING_PAYMENT, ON_HOLD, shipped or later, nothing left to ship - also when the order changed so while it
      *         was planned),

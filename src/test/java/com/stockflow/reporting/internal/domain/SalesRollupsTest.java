@@ -33,6 +33,18 @@ class SalesRollupsTest {
         return ledger.days.get(day);
     }
 
+    /**
+     * A production shortfall closure (S6) as it was recorded while in-house production existed: kept in the ledger and
+     * taken off the placed day unless the order's cancellation came first. Nothing records one any more; the ones kept
+     * still count when the order is cancelled and when a day is rebuilt.
+     */
+    private void closedWhileProductionExisted(OrderContribution taken) {
+        ledger.closures.put(UUID.randomUUID(), taken);
+        if (!ledger.cancellationApplied(taken.orderId())) {
+            ledger.applyReturn(taken);
+        }
+    }
+
     @Test
     @DisplayName("a placement adds one order, its total and each line's units and revenue to the day it was placed on")
     void placeAdds() {
@@ -174,60 +186,16 @@ class SalesRollupsTest {
     }
 
     @Test
-    @DisplayName("a short completion takes the closed value and units off the placed day; the order count stays; "
-            + "the same closure twice changes nothing")
-    void closureTakesTheShortfallOff() {
-        UUID id = UUID.randomUUID();
-        UUID closure = UUID.randomUUID();
-        rollups.place(order(id, D24, 100_000, line("CUP", 100, 100_000)));
-
-        assertThat(rollups.closed(closure, order(id, D24, 40_000, line("CUP", 40, 40_000)))).isTrue();
-        assertThat(rollups.closed(closure, order(id, D24, 40_000, line("CUP", 40, 40_000)))).as("delivered again")
-                .isFalse();
-
-        assertThat(day(D24)).isEqualTo(new InMemoryLedger.Day(1, BigDecimal.valueOf(60_000)));
-        assertThat(ledger.products.get("CUP@" + D24)).isEqualTo(new InMemoryLedger.Product(60, BigDecimal.valueOf(60_000)));
-        assertThat(ledger.closuresOf(D24)).hasSize(1);
-    }
-
-    @Test
-    @DisplayName("two closures of one order add up")
-    void twoClosuresAddUp() {
-        UUID id = UUID.randomUUID();
-        rollups.place(order(id, D24, 100_000, line("CUP", 100, 100_000)));
-
-        rollups.closed(UUID.randomUUID(), order(id, D24, 10_000, line("CUP", 10, 10_000)));
-        rollups.closed(UUID.randomUUID(), order(id, D24, 5_000, line("CUP", 5, 5_000)));
-
-        assertThat(day(D24).revenue()).isEqualByComparingTo("85000");
-        assertThat(ledger.products.get("CUP@" + D24).quantity()).isEqualTo(85);
-    }
-
-    @Test
     @DisplayName("a cancellation after a closure takes out only what is left, so the day ends at zero")
     void cancelAfterAClosureTakesOutTheRest() {
         UUID id = UUID.randomUUID();
         rollups.place(order(id, D24, 100_000, line("CUP", 100, 100_000)));
-        rollups.closed(UUID.randomUUID(), order(id, D24, 40_000, line("CUP", 40, 40_000)));
+        closedWhileProductionExisted(order(id, D24, 40_000, line("CUP", 40, 40_000)));
 
         assertThat(rollups.cancel(id, () -> null)).isTrue();
 
         assertThat(day(D24)).isEqualTo(new InMemoryLedger.Day(0, BigDecimal.ZERO));
         assertThat(ledger.products.get("CUP@" + D24)).isEqualTo(new InMemoryLedger.Product(0, BigDecimal.ZERO));
-    }
-
-    @Test
-    @DisplayName("a closure that arrives after the cancellation is recorded and takes nothing more off")
-    void closureAfterTheCancellationTakesNothing() {
-        UUID id = UUID.randomUUID();
-        rollups.place(order(id, D24, 100_000, line("CUP", 100, 100_000)));
-        rollups.cancel(id, () -> null);
-
-        assertThat(rollups.closed(UUID.randomUUID(), order(id, D24, 40_000, line("CUP", 40, 40_000)))).isTrue();
-
-        assertThat(day(D24)).isEqualTo(new InMemoryLedger.Day(0, BigDecimal.ZERO));
-        assertThat(ledger.products.get("CUP@" + D24)).isEqualTo(new InMemoryLedger.Product(0, BigDecimal.ZERO));
-        assertThat(ledger.closuresOfOrder(id)).hasSize(1);
     }
 
     @Test
@@ -242,11 +210,11 @@ class SalesRollupsTest {
         rollups.place(keptOrder);
         rollups.place(a);
         rollups.place(b);
-        rollups.closed(UUID.randomUUID(), order(kept, D24, 40_000, line("CUP", 40, 40_000)));
-        rollups.closed(UUID.randomUUID(), order(closedThenCancelled, D24, 10_000, line("CUP", 10, 10_000)));
+        closedWhileProductionExisted(order(kept, D24, 40_000, line("CUP", 40, 40_000)));
+        closedWhileProductionExisted(order(closedThenCancelled, D24, 10_000, line("CUP", 10, 10_000)));
         rollups.cancel(closedThenCancelled, () -> null);
         rollups.cancel(cancelledThenClosed, () -> null);
-        rollups.closed(UUID.randomUUID(), order(cancelledThenClosed, D24, 5_000, line("CUP", 5, 5_000)));
+        closedWhileProductionExisted(order(cancelledThenClosed, D24, 5_000, line("CUP", 5, 5_000)));
         var before = day(D24);
         var beforeProduct = ledger.products.get("CUP@" + D24);
         assertThat(before).isEqualTo(new InMemoryLedger.Day(1, BigDecimal.valueOf(60_000)));

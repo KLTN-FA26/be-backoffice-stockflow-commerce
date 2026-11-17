@@ -18,14 +18,4 @@ interface LoadPlanReleases {
      * dispatch loads are cancelled. Called before the parcels are voided.
      */
     void releaseShipment(UUID shipmentId, Instant at);
-
-    /**
-     * Picking of the transfer was cancelled before any of its goods left (SCRUM-287 PR T, 10 §5): every live plan
-     * holding its parcels is cancelled with {@code reason}, its dispatch loads (booked ones included, LP-11) with it.
-     *
-     * @throws com.stockflow.common.error.BusinessException {@code TRANSFER_LOADING_IN_PROGRESS} while a vehicle of such a
-     *         plan is being loaded (09 BR-14: the controlled cancel comes first); {@code PACKAGE_UNLOAD_PENDING} while a
-     *         parcel of the transfer is still to be scanned off a vehicle that was called off
-     */
-    void releaseTransfer(UUID transferOrderId, String reason, Instant at);
 }

@@ -53,12 +53,12 @@ interface ShelfWebMapper {
 
     default ShelfCommands.CreateShelf toCommand(UUID warehouseId, ShelfRequests.CreateShelf r) {
         return new ShelfCommands.CreateShelf(warehouseId, r.zoneId(), r.code(), r.name(), r.description(),
-                toFootprint(r.footprint()), r.obstacle(), toPickFaces(r.pickFaces()), r.defaultStorageClass());
+                toFootprint(r.footprint()), r.obstacle(), toPickFaces(r.pickFaces()));
     }
 
     default ShelfCommands.UpdateShelf toCommand(UUID shelfId, ShelfRequests.UpdateShelf r) {
         return new ShelfCommands.UpdateShelf(shelfId, r.zoneId(), r.name(), r.description(),
-                toFootprint(r.footprint()), r.obstacle(), toPickFaces(r.pickFaces()), r.defaultStorageClass(),
+                toFootprint(r.footprint()), r.obstacle(), toPickFaces(r.pickFaces()),
                 r.version());
     }
 
@@ -74,21 +74,20 @@ interface ShelfWebMapper {
 
     default ShelfCommands.AddBin toCommand(UUID shelfId, UUID levelId, ShelfRequests.AddBin r) {
         return new ShelfCommands.AddBin(shelfId, levelId, r.code(),
-                new BinDetails(r.description(), toFootprint(r.footprint()), r.type(), r.storageClassOverride()),
-                new LocationSettings(r.capacityUnits(), r.maxWeight(), r.pickable(), r.putawayTarget()));
+                new BinDetails(r.description(), toFootprint(r.footprint()), r.type()),
+                new LocationSettings(r.maxWeight(), r.pickable(), r.putawayTarget()));
     }
 
     default ShelfCommands.UpdateBin toCommand(UUID shelfId, UUID levelId, UUID binId, ShelfRequests.UpdateBin r) {
         return new ShelfCommands.UpdateBin(shelfId, levelId, binId,
-                new BinDetails(r.description(), toFootprint(r.footprint()), r.type(), r.storageClassOverride()),
-                new LocationSettings(r.capacityUnits(), r.maxWeight(), r.pickable(), r.putawayTarget()));
+                new BinDetails(r.description(), toFootprint(r.footprint()), r.type()),
+                new LocationSettings(r.maxWeight(), r.pickable(), r.putawayTarget()));
     }
 
     default ShelfCommands.GenerateBins toCommand(UUID shelfId, ShelfRequests.GenerateBins r) {
         ShelfRequests.BinDefaults d = r.defaults();
         return new ShelfCommands.GenerateBins(shelfId, r.levelIds(), r.rowCount(), r.columnCount(),
                 r.namingScheme() != null ? r.namingScheme() : BinNamingScheme.SEQUENTIAL,
-                new BinDefaults(d.type(), d.storageClassOverride(),
-                        new LocationSettings(d.capacityUnits(), d.maxWeight(), d.pickable(), d.putawayTarget())));
+                new BinDefaults(d.type(), new LocationSettings(d.maxWeight(), d.pickable(), d.putawayTarget())));
     }
 }

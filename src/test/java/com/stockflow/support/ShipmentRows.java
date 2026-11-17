@@ -17,9 +17,9 @@ public final class ShipmentRows {
     /** A shipment of {@code orderId} waiting for dispatch at HCM, with that id; nothing when it exists. */
     public static UUID ready(JdbcTemplate jdbc, TransactionTemplate tx, UUID orderId, UUID shipmentId) {
         tx.executeWithoutResult(s -> jdbc.update("""
-                INSERT INTO fulfillment.shipment (id, order_id, status, code, warehouse_id, delivery_mode, package_count,
-                                                  cod_amount, ready_at, created_at, created_by)
-                VALUES (?, ?, 'READY_TO_DISPATCH', ?, ?, 'PARCEL', 1, 0, NOW(), NOW(), 'test')
+                INSERT INTO fulfillment.shipment (id, order_id, status, code, warehouse_id, package_count, ready_at,
+                                                  created_at, created_by)
+                VALUES (?, ?, 'READY_TO_DISPATCH', ?, ?, 1, NOW(), NOW(), 'test')
                 ON CONFLICT DO NOTHING""", shipmentId, orderId, "T-" + shipmentId, DemoData.WAREHOUSE_HCM));
         return shipmentId;
     }

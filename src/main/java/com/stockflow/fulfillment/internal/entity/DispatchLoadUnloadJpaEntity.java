@@ -22,9 +22,7 @@ public class DispatchLoadUnloadJpaEntity extends BaseEntity {
 
     @Column(name = "load_id", nullable = false, updatable = false) private UUID loadId;
     @Column(name = "package_id", nullable = false, updatable = false) private UUID packageId;
-    @Column(name = "shipment_id", updatable = false) private UUID shipmentId;
-    /** SCRUM-474: the transfer order of a parcel on a TRANSFER plan's vehicle (shipment_id null then). */
-    @Column(name = "transfer_order_id", updatable = false) private UUID transferOrderId;
+    @Column(name = "shipment_id", nullable = false, updatable = false) private UUID shipmentId;
     @Column(name = "reason", nullable = false, updatable = false, length = 500) private String reason;
     /** Set by a controlled cancel only; null for a cancelled order's parcel. */
     @Enumerated(EnumType.STRING)
@@ -38,14 +36,12 @@ public class DispatchLoadUnloadJpaEntity extends BaseEntity {
     protected DispatchLoadUnloadJpaEntity() {
     }
 
-    /** @param transfer {@code key} is the parcel's transfer order, not a shipment */
-    public DispatchLoadUnloadJpaEntity(UUID id, UUID loadId, UUID packageId, UUID key, boolean transfer, String reason,
+    public DispatchLoadUnloadJpaEntity(UUID id, UUID loadId, UUID packageId, UUID shipmentId, String reason,
                                        UnloadReasonCode reasonCode, Instant requestedAt) {
         super(id);
         this.loadId = loadId;
         this.packageId = packageId;
-        this.shipmentId = transfer ? null : key;
-        this.transferOrderId = transfer ? key : null;
+        this.shipmentId = shipmentId;
         this.reason = reason;
         this.reasonCode = reasonCode;
         this.requestedAt = requestedAt;
@@ -61,10 +57,7 @@ public class DispatchLoadUnloadJpaEntity extends BaseEntity {
     public UUID getLoadId() { return loadId; }
     public UUID getPackageId() { return packageId; }
     public UUID getShipmentId() { return shipmentId; }
-    public UUID getTransferOrderId() { return transferOrderId; }
 
-    /** What it was loaded with: its shipment, or its transfer order. */
-    public UUID getKey() { return shipmentId != null ? shipmentId : transferOrderId; }
     public String getReason() { return reason; }
     public UnloadReasonCode getReasonCode() { return reasonCode; }
     public Instant getRequestedAt() { return requestedAt; }

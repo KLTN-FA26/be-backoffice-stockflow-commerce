@@ -19,7 +19,6 @@ import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.Pageable;
 
 import java.time.Clock;
-import java.time.LocalDate;
 import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Optional;
@@ -27,7 +26,6 @@ import java.util.Set;
 import java.util.UUID;
 
 import static com.stockflow.inventory.internal.service.InventoryFixtures.NOW;
-import static com.stockflow.inventory.internal.service.InventoryFixtures.TODAY;
 import static com.stockflow.inventory.internal.service.InventoryFixtures.codeOf;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -57,8 +55,8 @@ class StockBrowsingImplTest {
                 location, "L1", 12, ReservationStatus.HELD, NOW, NOW.plusSeconds(1800), null, null);
     }
 
-    private static StockBrowseSearch.StockRow stock(StockStatus status, LocalDate expiry, int onHand, int reserved) {
-        return new StockBrowseSearch.StockRow(UUID.randomUUID(), "CUP-12OZ", "HCM-A01-1-A", "L1", expiry, onHand,
+    private static StockBrowseSearch.StockRow stock(StockStatus status, int onHand, int reserved) {
+        return new StockBrowseSearch.StockRow(UUID.randomUUID(), "CUP-12OZ", "HCM-A01-1-A", "L1", onHand,
                 reserved, status, NOW);
     }
 
@@ -232,27 +230,21 @@ class StockBrowsingImplTest {
         @Test
         @DisplayName("available is on hand minus reserved for sellable stock")
         void availableIsOnHandMinusReserved() {
-            assertThat(oneStockRow(stock(StockStatus.AVAILABLE, null, 50, 12)).available()).isEqualTo(38);
+            assertThat(oneStockRow(stock(StockStatus.AVAILABLE, 50, 12)).available()).isEqualTo(38);
         }
 
         @Test
         @DisplayName("available is never negative")
         void availableNeverNegative() {
-            assertThat(oneStockRow(stock(StockStatus.AVAILABLE, null, 5, 9)).available()).isZero();
+            assertThat(oneStockRow(stock(StockStatus.AVAILABLE, 5, 9)).available()).isZero();
         }
 
         @Test
         @DisplayName("stock that is not AVAILABLE - quarantine, blocked - has nothing available")
         void notSellableHasNoAvailable() {
-            assertThat(oneStockRow(stock(StockStatus.QUARANTINE, null, 50, 0)).available()).isZero();
+            assertThat(oneStockRow(stock(StockStatus.QUARANTINE, 50, 0)).available()).isZero();
         }
 
-        @Test
-        @DisplayName("expired stock has nothing available, stock expiring today still has")
-        void expiryBoundary() {
-            assertThat(oneStockRow(stock(StockStatus.AVAILABLE, TODAY.minusDays(1), 50, 0)).available()).isZero();
-            assertThat(oneStockRow(stock(StockStatus.AVAILABLE, TODAY, 50, 0)).available()).isEqualTo(50);
-        }
     }
 
     @Nested
@@ -266,8 +258,8 @@ class StockBrowsingImplTest {
         @Test
         @DisplayName("a blind reader gets the quantities of a slot a count holds masked, the other rows as they are")
         void heldRowsAreMasked() {
-            var held = stock(StockStatus.AVAILABLE, null, 50, 12);
-            var free = stock(StockStatus.AVAILABLE, null, 30, 0);
+            var held = stock(StockStatus.AVAILABLE, 50, 12);
+            var free = stock(StockStatus.AVAILABLE, 30, 0);
             when(warehouses.prefixOf(HCM)).thenReturn(Optional.of("HCM"));
             when(search.stock(any(), any(Pageable.class))).thenReturn(new PageImpl<>(List.of(held, free)));
             when(underCount.stockItemsUnderCount(any())).thenReturn(Set.of(held.stockItemId()));
@@ -286,7 +278,7 @@ class StockBrowsingImplTest {
         @Test
         @DisplayName("an approver sees every quantity and the count lookup is never made")
         void fullVisibilitySeesEverything() {
-            var row = stock(StockStatus.AVAILABLE, null, 50, 12);
+            var row = stock(StockStatus.AVAILABLE, 50, 12);
 
             assertThat(oneStockRow(row).onHand()).isEqualTo(50);
             verify(underCount, never()).stockItemsUnderCount(any());

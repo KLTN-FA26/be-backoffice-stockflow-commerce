@@ -58,7 +58,7 @@ public class CatalogSearchService {
     public static final int MAX_SUGGESTIONS = 10;
     public static final int DEFAULT_SUGGESTIONS = 5;
 
-    /** {@code price} is not here: sorting by price waits for SCRUM-428 (docs 13 §4.2 step 2). */
+    /** No {@code price}: the storefront shows no price, so nothing sorts by one (kltn-docs 13 §1, BR-04). */
     public enum Sort {
         RELEVANCE, NEWEST, TITLE;
 
@@ -167,7 +167,7 @@ public class CatalogSearchService {
         // One lookup for the whole page: the card's image and variants, not one detail/gallery read per card.
         var details = products.cards(pageRows.stream().map(Candidate::productId).collect(Collectors.toSet()));
         // A product unpublished (or left without a sellable variant) since the visibility check has no card to
-        // show: the row is dropped, so the storefront never lists a live card it cannot price.
+        // show: the row is dropped, so the storefront never lists a card that is no longer there.
         return PageResponse.of(
                 pageRows.stream().filter(c -> sellable(details.get(c.productId())))
                         .map(c -> card(c, details.get(c.productId()))).toList(),

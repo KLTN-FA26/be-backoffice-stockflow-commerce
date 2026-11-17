@@ -9,8 +9,8 @@ import java.util.UUID;
  * durable by Spring Modulith's event publication registry. See {@code package-info.java} for the
  * rules on changing this contract.
  *
- * <p>The catalog listens to hide the product; a purchase order or an order that still references the
- * product is unaffected (kltn-docs 01 step 12, 02 edge cases). The reason stays with the product module
+ * <p>The catalog listens to hide the product; a production order or an order that still references the
+ * product is unaffected (kltn-docs 01 step 12, BR-14). The reason stays with the product module
  * ({@code products.discontinue_reason} and its change log): a contract carries facts and codes, never
  * text a user typed.</p>
  */

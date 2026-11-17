@@ -1,9 +1,7 @@
 package com.stockflow.catalog.internal.controller;
 
 import com.stockflow.catalog.internal.controller.dto.SkuAvailabilityResponse;
-import com.stockflow.catalog.internal.controller.dto.PriceScheduleResponse;
 import com.stockflow.catalog.internal.service.StorefrontAvailabilityService;
-import com.stockflow.catalog.internal.service.StorefrontPriceService;
 import com.stockflow.common.api.ApiResponse;
 import com.stockflow.common.ratelimit.RateLimit;
 import com.stockflow.common.security.Action;
@@ -33,16 +31,19 @@ import java.util.List;
  *
  * <p>Guarded by {@code catalog-storefront:READ} (V20261022000200), seeded for the CUSTOMER role, scope OWN as
  * {@code /orders/me}: the answer is about the caller's own customer, taken from the token. Staff keep their
- * permission-guarded inventory and price APIs; a caller without an ACTIVE customer profile is refused in the service
- * whatever it was granted. The indicator never includes quantities or prices.</p>
+ * permission-guarded inventory APIs; a caller without an ACTIVE customer profile is refused in the service
+ * whatever it was granted. The indicator never includes quantities.</p>
+ *
+ * <p>No prices: the storefront shows none (kltn-docs 13 BR-04, team plan 5-3). A customer sees a price only on the
+ * quote, order or contract Sales sends; the internal price list behind it is staff-only.</p>
  */
 @RestController
 @RequestMapping("/api/v1/catalog")
-@PermissionResource(code = CatalogController.STOREFRONT, group = "Catalog", label = "Storefront: my prices and stock",
+@PermissionResource(code = CatalogController.STOREFRONT, group = "Catalog", label = "Storefront: my stock",
         route = "/catalog", apiPath = "/api/v1/catalog/products", actions = {Action.READ})
 class CatalogController {
 
-    /** The signed-in customer's own prices and stock indicator. */
+    /** The signed-in customer's stock indicator for its own SKUs. */
     static final String STOREFRONT = "catalog-storefront";
 
     /**
@@ -52,13 +53,10 @@ class CatalogController {
     private static final Duration FRESHNESS = Duration.ofSeconds(10);
 
     private final StorefrontAvailabilityService availability;
-    private final StorefrontPriceService prices;
     private final CatalogWebMapper mapper;
 
-    CatalogController(StorefrontAvailabilityService availability, StorefrontPriceService prices,
-                      CatalogWebMapper mapper) {
+    CatalogController(StorefrontAvailabilityService availability, CatalogWebMapper mapper) {
         this.availability = availability;
-        this.prices = prices;
         this.mapper = mapper;
     }
 
@@ -67,7 +65,7 @@ class CatalogController {
      * answer sits behind a token and a shared cache must not hand it to the next caller.
      */
     @GetMapping("/products/availability")
-    @Operation(summary = "Stock indicator for the SKUs on a catalog page, in the order asked")
+    @Operation(summary = "Stock indicator, in cartons, of the caller's own SKUs asked about, in the order asked")
     @RateLimit(limit = 120, perSeconds = 60, key = RateLimit.Key.USER)
     @RequiresPermission(resource = STOREFRONT, action = Action.READ, scope = DataScope.OWN)
     public ResponseEntity<ApiResponse<List<SkuAvailabilityResponse>>> availability(
@@ -76,20 +74,5 @@ class CatalogController {
         return ResponseEntity.ok()
                 .cacheControl(CacheControl.maxAge(FRESHNESS).cachePrivate())
                 .body(ApiResponse.ok(mapper.toResponses(availability.availabilityOf(user.userId(), skus))));
-    }
-
-    /**
-     * The logged-in customer's prices for the SKUs of a catalog page: its own tiers, else its group's or
-     * the base price, with the MOQ (kltn-docs 13 BR-02, BR-05; SCRUM-428). Unpublished or unpriced SKUs are
-     * left out. Not cached: a price edit must show at once, and the checkout re-checks it anyway.
-     */
-    @GetMapping("/products/prices")
-    @Operation(summary = "The logged-in customer's prices, tiers and MOQ for the SKUs asked")
-    @RateLimit(limit = 120, perSeconds = 60, key = RateLimit.Key.USER)
-    @RequiresPermission(resource = STOREFRONT, action = Action.READ, scope = DataScope.OWN)
-    public ApiResponse<List<PriceScheduleResponse>> prices(@AuthenticatedUser CurrentUser user,
-                                                           @RequestParam("sku") List<String> skus) {
-        return ApiResponse.ok(prices.pricesOf(user.userId(), skus).stream()
-                .map(CustomerPriceController::toResponse).toList());
     }
 }

@@ -18,7 +18,6 @@ public record TranscriptEntryResponse(
         List<ToolCallResponse> toolCalls,
         @Schema(description = "The answer hit the output limit and may be incomplete") boolean cutShort,
         @Schema(description = "Business-rule anchors the answer cites") List<String> citations,
-        @Schema(description = "Purchase orders the panel may open pre-filled") List<ProposalResponse> proposals,
         @Schema(description = "The rows the lookups returned, as they were when the answer was given (see at)")
         List<TableResponse> tables,
         @Schema(description = "Up to three follow-up questions, under the caller's permissions of now; empty for a "

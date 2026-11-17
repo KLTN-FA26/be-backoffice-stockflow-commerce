@@ -15,8 +15,8 @@ public record TodayResponse(
 
     /** One part of the card, read by one assistant tool. */
     public record Section(
-            @Schema(description = "What the section lists", allowableValues = {"lowStock", "expiredLots",
-                    "expiringLots", "heldOrders", "awaitingPayment", "overduePurchaseOrders", "overdueProduction"})
+            @Schema(description = "What the section lists", allowableValues = {"heldOrders",
+                    "awaitingPayment", "awaitingStock", "receiptsToPutAway"})
             String key,
             @Schema(description = "The assistant tool that read it", example = "findOrders") String tool,
             @Schema(description = "How the tool's run ended. Only OK has a table; DENIED or FAILED has none and the "
@@ -31,8 +31,8 @@ public record TodayResponse(
                     + "outcome is OK", nullable = true)
             TableResponse table,
             @JsonInclude(JsonInclude.Include.ALWAYS)
-            @Schema(description = "What the reader needs to read the section right, in the caller's language: the "
-                    + "expiry quantities are the nightly check's, an older late purchase order may be missing, or "
+            @Schema(description = "What the reader needs to read the section right, in the caller's language: what "
+                    + "awaiting payment leaves out (an order held for payment or credit is with the held orders), or "
                     + "why there is no table", nullable = true)
             String note) {
     }

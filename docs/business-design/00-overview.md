@@ -1,5 +1,11 @@
 # Business Design — StockFlowCommerce
 
+> **Superseded by kltn-docs (rescope, 2026-11).** This document is the pre-rescope business analysis (web shop, in-house
+> printing, purchasing, loose stock). The current source of truth is the kltn-docs repository (`docs/`); the code and
+> `CLAUDE.md` §4 describe what is built; [ADR-0010](../adr/0010-rescope-b2b-printed-goods.md) lists what changed. Kept for
+> history only: do not take a flow, state or rule from here without checking it against kltn-docs.
+> *Tài liệu này đã được thay thế bởi kltn-docs; chỉ giữ để tham khảo lịch sử.*
+
 | | |
 |---|---|
 | **Project** | FA26SE029 — GFA26SE03 |

@@ -1,6 +1,6 @@
 package com.stockflow.inventory.api;
 
-import java.time.LocalDate;
+import java.time.Instant;
 import java.util.List;
 
 /**
@@ -40,13 +40,12 @@ public interface ScannedCodeQueries {
 
     /**
      * @param nominalQty what it was made to hold
-     * @param status     RECEIVING, IN_STOCK, CONSUMED, LOST or VOID
-     * @param unopened   no unit has been taken out of it yet
+     * @param status     RECEIVING, IN_STOCK, CONSUMED, LOST or VOID; a carton is whole, never opened (4C-3)
      * @param onHand     what is left in it, the sum of its stock rows
      * @param reserved   of that, what orders hold
      */
     record Carton(String lpn, String sku, String unitOfMeasure, int nominalQty, String locationCode, String status,
-                  boolean unopened, String lotNumber, LocalDate expiryDate, int onHand, int reserved,
+                  String lotNumber, int onHand, int reserved,
                   List<CartonContent> contents) {
 
         public Carton {
@@ -55,19 +54,18 @@ public interface ScannedCodeQueries {
     }
 
     /** One stock row inside a carton; {@code status} is the stock's: AVAILABLE, QUARANTINE, DAMAGED... */
-    record CartonContent(String lotNumber, LocalDate expiryDate, String status, int onHand, int reserved) {
+    record CartonContent(String lotNumber, Instant receivedAt, String status, int onHand, int reserved) {
     }
 
     /**
      * What one location holds of one SKU, lot and stock status.
      *
-     * @param wholeCartons      unopened cartons, and {@code wholeCartonUnits} the units in them
-     * @param openedCartons     opened cartons still holding something, and {@code openedCartonUnits} what is left
-     * @param looseUnits        units in no carton
-     * @param totalUnits        the three added
+     * @param wholeCartons      cartons (every carton in stock is whole, 4C-3), and {@code wholeCartonUnits} the units
+     *                          in them
+     * @param looseUnits        units in no carton, which only paths not yet in cartons leave
+     * @param totalUnits        the two added
      */
-    record LocationLine(String sku, String lotNumber, LocalDate expiryDate, String status, int wholeCartons,
-                        int wholeCartonUnits, int openedCartons, int openedCartonUnits, int looseUnits,
-                        int totalUnits) {
+    record LocationLine(String sku, String lotNumber, String status, int wholeCartons, int wholeCartonUnits,
+                        int looseUnits, int totalUnits) {
     }
 }

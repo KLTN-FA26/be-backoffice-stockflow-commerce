@@ -9,7 +9,6 @@ import com.stockflow.assistant.internal.domain.Turn;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
-import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -31,21 +30,33 @@ class AnswerSourcesTest {
     @DisplayName("an anchor is a citation only when the answer names it and a search returned it")
     void citations() {
         List<ToolExecution> executions = List.of(
-                run("searchKnowledge", ToolOutcome.OK, "{\"passages\":[{\"anchor\":\"BR-RMA-002\"},"
-                        + "{\"anchor\":\"BR-RMA-003\"}]}"),
-                run("findOrder", ToolOutcome.OK, "{\"orderNumber\":\"BR-RMA-009\"}"));
+                run("searchKnowledge", ToolOutcome.OK, "{\"passages\":[{\"anchor\":\"17 §4.10\"},"
+                        + "{\"anchor\":\"15 BR-08\"}]}"),
+                run("findOrder", ToolOutcome.OK, "{\"orderNumber\":\"17 BR-09\"}"));
 
-        assertThat(AnswerSources.citations("Không trả được, trừ khi lỗi (br-rma-002). Xem BR-ZZZ-001.", executions,
-                json)).containsExactly("BR-RMA-002");
-        assertThat(AnswerSources.retrieved(executions, json)).containsExactly("BR-RMA-002", "BR-RMA-003");
+        assertThat(AnswerSources.citations("Chỉ trả khi lỗi sản xuất (17 §4.10). Xem 17 BR-09 và 09 BR-08.",
+                executions, json)).containsExactly("17 §4.10");
+        assertThat(AnswerSources.retrieved(executions, json)).containsExactly("17 §4.10", "15 BR-08");
         assertThat(AnswerSources.citations(null, executions, json)).isEmpty();
+    }
+
+    @Test
+    @DisplayName("an anchor is named whole: not inside a longer section, a rule of another chapter or a longer number")
+    void namedWhole() {
+        assertThat(AnswerSources.names("theo 17 §4.1.", "17 §4.1")).isTrue();
+        assertThat(AnswerSources.names("theo 17 §4.12", "17 §4.1")).isFalse();
+        assertThat(AnswerSources.names("theo 17 §4.1.3", "17 §4.1")).isFalse();
+        assertThat(AnswerSources.names("theo 115 br-08", "15 br-08")).isFalse();
+        assertThat(AnswerSources.names("theo 15 br-080", "15 br-08")).isFalse();
+        assertThat(AnswerSources.names("15 br-08, rồi 15 br-08)", "15 br-08")).isTrue();
+        assertThat(AnswerSources.names("giữ hàng (reservation / giữ hàng)", "reservation / giữ hàng")).isTrue();
     }
 
     @Test
     @DisplayName("a failed search is no source")
     void failedSearch() {
         List<ToolExecution> executions = List.of(run("searchKnowledge", ToolOutcome.FAILED, "TOOL_FAILED: ..."));
-        assertThat(AnswerSources.citations("BR-RMA-002", executions, json)).isEmpty();
+        assertThat(AnswerSources.citations("15 BR-08", executions, json)).isEmpty();
     }
 
     @Test
@@ -76,47 +87,5 @@ class AnswerSourcesTest {
                 turns.size())))).isEmpty();
         assertThat(AnswerSources.exchanges(turns)).hasSize(13).allSatisfy(exchange ->
                 assertThat(exchange.getFirst()).isInstanceOf(Turn.Question.class));
-    }
-
-    @Test
-    @DisplayName("each supplier's proposal is carried to the panel with when it was computed; none carries none")
-    void proposals() {
-        List<ToolExecution> executions = List.of(
-                run("proposeReorder", ToolOutcome.OK, "{\"lines\":[],\"proposals\":["
-                        + "{\"type\":\"PURCHASE_ORDER_DRAFT\",\"supplierCode\":\"SUP-A\",\"supplierName\":\"A\","
-                        + "\"generatedAt\":\"2026-10-25T03:00:00Z\",\"lines\":[{\"sku\":\"CUP-12OZ\",\"quantity\":1276}]},"
-                        + "{\"type\":\"PURCHASE_ORDER_DRAFT\",\"supplierCode\":\"SUP-B\",\"supplierName\":\"B\","
-                        + "\"generatedAt\":1761361200.000000000,\"lines\":[{\"sku\":\"LID-90\",\"quantity\":500}]}]}"),
-                run("proposeReorder", ToolOutcome.OK, "{\"lines\":[],\"proposals\":[]}"));
-
-        assertThat(AnswerSources.proposals(executions, json)).satisfiesExactly(
-                first -> {
-                    assertThat(first.supplierCode()).isEqualTo("SUP-A");
-                    assertThat(first.generatedAt()).isEqualTo(Instant.parse("2026-10-25T03:00:00Z"));
-                    assertThat(first.lines()).containsExactly(new AnswerSources.ProposalLine("CUP-12OZ", 1276));
-                },
-                second -> {
-                    assertThat(second.supplierCode()).isEqualTo("SUP-B");
-                    assertThat(second.generatedAt()).isEqualTo(Instant.ofEpochSecond(1761361200L));
-                    assertThat(second.lines()).containsExactly(new AnswerSources.ProposalLine("LID-90", 500));
-                });
-    }
-
-    @Test
-    @DisplayName("proposeReorder run twice for one question (a model calling it again, or the question answered again on "
-            + "a stronger model) offers one form per supplier, the last: two forms invite two purchase orders")
-    void latestProposalPerSupplier() {
-        String first = "{\"type\":\"PURCHASE_ORDER_DRAFT\",\"supplierCode\":\"SUP-A\",\"supplierName\":\"A\","
-                + "\"generatedAt\":\"2026-10-25T03:00:00Z\",\"lines\":[{\"sku\":\"CUP-12OZ\",\"quantity\":1000}]}";
-        String again = "{\"type\":\"PURCHASE_ORDER_DRAFT\",\"supplierCode\":\"SUP-A\",\"supplierName\":\"A\","
-                + "\"generatedAt\":\"2026-10-25T03:01:00Z\",\"lines\":[{\"sku\":\"CUP-12OZ\",\"quantity\":1276}]}";
-        List<ToolExecution> executions = List.of(
-                run("proposeReorder", ToolOutcome.OK, "{\"lines\":[],\"proposals\":[" + first + "]}"),
-                run("proposeReorder", ToolOutcome.OK, "{\"lines\":[],\"proposals\":[" + again + "]}"));
-
-        assertThat(AnswerSources.proposals(executions, json)).singleElement().satisfies(proposal -> {
-            assertThat(proposal.supplierCode()).isEqualTo("SUP-A");
-            assertThat(proposal.lines()).containsExactly(new AnswerSources.ProposalLine("CUP-12OZ", 1276));
-        });
     }
 }

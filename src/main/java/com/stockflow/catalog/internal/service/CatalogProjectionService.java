@@ -61,7 +61,7 @@ public class CatalogProjectionService {
         if (listing == null && product.status() != ProductStatus.PUBLISHED) return;
         var source = products.ecommerce(id);
         if (listing == null) {
-            // Backfill the snapshot, never the source publication or its selling prices.
+            // Backfill the snapshot, never the source publication.
             if (!Listing.normalizeSlug(source.slug()).equals(source.slug()))
                 throw new BusinessException(ErrorCode.VALIDATION_FAILED);
             listings.save(new Listing(id, source.slug(), source.seoTitle(), source.seoDescription(),
@@ -107,11 +107,8 @@ public class CatalogProjectionService {
         if (listing.enabled() && product.status() == ProductStatus.PUBLISHED) {
             if (product.skus().isEmpty())
                 throw new BusinessException(ErrorCode.PRODUCT_SKU_REQUIRED);
+            // No price is copied: the storefront shows none (kltn-docs 13 BR-04), so a SKU is listed without one.
             for (var sku : product.skus()) {
-                var price =
-                        listings.price(sku.sku())
-                                .orElseThrow(
-                                        () -> new BusinessException(ErrorCode.PRICE_NOT_AVAILABLE));
                 listings.projectSku(
                         id,
                         sku.skuId(),
@@ -120,7 +117,6 @@ public class CatalogProjectionService {
                         product.description(),
                         listing.seoTitle(),
                         listing.seoDescription(),
-                        price,
                         listing.revision(),
                         clock.instant());
             }

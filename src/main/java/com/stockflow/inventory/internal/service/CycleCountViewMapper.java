@@ -32,13 +32,10 @@ class CycleCountViewMapper {
 
     /**
      * The views of these counts, the LPNs and adjustments of all their lines read in one query each. A blind count
-     * hides what the books say from a counter (V20260928005000: is_blind): the expected quantity, the note (a short
-     * pick's note carries what the picker found, which would anchor the count just as the book quantity does) and
-     * the adjustments, which state the variance. The adjustments of a hidden count are not even read.
-     *
-     * <p>A carton line's counted quantity is hidden too: scanned {@code present}, it is the carton's received
-     * quantity, which for a sealed carton is its book quantity - one scan would hand the counter the figure the blind
-     * rule keeps from them. {@code countedAt} still says the line is done.</p>
+     * hides what the books say from a counter (V20260928005000: is_blind; kltn-docs 20 BR-07): whether the books have
+     * each carton at its bin, the note (a short pick's note carries what the picker found, which would anchor the
+     * count just as the books do) and the adjustments, which state the variance. The adjustments of a hidden count
+     * are not even read. What the counter scanned - found or not - is their own answer, shown.
      */
     List<CycleCountView> of(List<CycleCount> found, boolean showExpected) {
         if (found.isEmpty()) {
@@ -74,8 +71,8 @@ class CycleCountViewMapper {
                     StockPackageId pkg = line.slot().stockPackageId();
                     return new CycleCountView.Line(line.id(), line.slot().location().code(), line.slot().sku().code(),
                             line.slot().lotNumber(), pkg == null ? null : pkg.value(),
-                            pkg == null ? null : lpns.get(pkg.value()), reveal ? line.expectedQty() : null,
-                            reveal || pkg == null ? line.countedQty() : null, line.countedBy(), line.countedAt(),
+                            pkg == null ? null : lpns.get(pkg.value()), reveal ? line.booked() : null,
+                            line.found(), line.countedBy(), line.countedAt(),
                             line.recountRequired(),
                             reveal ? adjustments.getOrDefault(line.id(), List.of()) : List.of());
                 }).toList());

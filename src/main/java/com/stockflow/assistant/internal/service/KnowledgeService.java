@@ -30,38 +30,45 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
-import java.util.function.BiFunction;
+import java.util.regex.Pattern;
 
 /**
- * The retrieval corpus: indexed from the business-design documents on every start, searched by
+ * The retrieval corpus: indexed on every start from the kltn-docs business analysis, searched by
  * {@code SearchKnowledgeTool} (design §6).
  *
- * <p><b>Indexed on start, not by a job.</b> The documents are copied onto the classpath by the build
- * ({@code classpath:knowledge/}), so the index follows them on every deploy and nobody has to remember to re-index.
+ * <p><b>Indexed on start, not by a job.</b> {@code tools/sync_kltn_docs.py} copies the chapters the assistant searches
+ * into {@code docs/kltn-snapshot/}, and the build copies them onto the classpath ({@code classpath:knowledge/}), so the
+ * index follows them on every deploy and nobody has to remember to re-index. Every document its {@code index.txt} lists
+ * is indexed — the glossary by {@link KnowledgeParser#glossary}, a chapter ({@code 15-payment}) by
+ * {@link KnowledgeParser#chapter} — and nothing else under {@code knowledge/}, where an earlier build may have left the
+ * documents this corpus replaced.
  * Unchanged chunks are not rewritten (content hash), so a normal start writes nothing.</p>
  *
  * <p><b>Never a reason not to start, never a stale rule.</b> A failed sync is logged per document, and the others
- * are still synced. A document missing from this build (renamed, or the {@code pom.xml} include no longer matching)
- * has its chunks deleted rather than left to be cited forever. A document a newer build indexed last is left alone:
- * an older instance starting after it must not put the older rules back ({@code assistant.knowledge_source}).</p>
+ * are still synced. A source holding chunks that this build does not index (a chapter dropped from the snapshot, the
+ * {@code docs/business-design} documents the snapshot replaced) is synced empty rather than left to be cited forever —
+ * but not when the build finds no document at all, which is a broken build, not an empty corpus. A document a newer
+ * build indexed last is left alone: an older instance starting after it must not put the older rules back
+ * ({@code assistant.knowledge_source}).</p>
  *
- * <p><b>Searched by words and by meaning</b> (design §6.4). The rules and the glossary are in English, the flows in
- * Vietnamese, and the staff ask in Vietnamese: "hang in theo yeu cau co duoc tra lai khong" shares no word with
- * BR-RMA-002, and by keyword finds "In transit" on the word "in". With an {@link EmbeddingModel} available, a search
- * ranks the passages by keyword as before and by meaning — the passages that stand out in cosine similarity to the
- * question's vector
+ * <p><b>Searched by words and by meaning</b> (design §6.4). The analysis is Vietnamese, and the staff ask in
+ * Vietnamese, with accents or without, in words a rule does not use: "khách nhận hàng hai tháng rồi mới đòi trả" shares
+ * few words with the return window. With an {@link EmbeddingModel} available, a search ranks the passages by keyword as
+ * before and by meaning — the passages that stand out in cosine similarity to the question's vector
  * ({@link KnowledgeSearch#nearest}) — the best {@value #FUSION_DEPTH} of each, and fuses the two rankings
- * ({@link KnowledgeSearch#fuse}). Ten, not fifty: over about 200 passages the fifty nearest are a quarter of the
- * corpus, and a keyword hit on a common word would often collect a second share from them and push the passage that means the
- * question out of the five shown. The question is embedded outside any transaction, so no database connection waits on
- * the provider, and once: the last {@value #REMEMBERED_QUESTIONS} vectors are kept.</p>
+ * ({@link KnowledgeSearch#fuse}). Ten, not fifty: the fifty nearest are a large share of the corpus, and a keyword hit
+ * on a common word would often collect a second share from them and push the passage that means the question out of
+ * the five shown. The question is embedded outside any transaction, so no database connection waits on the provider,
+ * and once: the last {@value #REMEMBERED_QUESTIONS} vectors are kept.</p>
  *
  * <p><b>What the search may add, each off until the retrieval eval shows it helps</b> ({@link KnowledgeProperties},
  * design §10.2): the user's question embedded beside the search terms, a third ranking in the fusion; and a reranker
@@ -75,11 +82,11 @@ import java.util.function.BiFunction;
  * provider that hangs or refuses costs one wait and one log line, not one per search.</p>
  *
  * <p><b>Vectors in a plain {@code real[]}, compared here, not in pgvector.</b> A search reads every current vector,
- * about 200 × 768 numbers, in a few milliseconds, and compares them in under one; the question's own embedding call
+ * about 900 × 768 numbers, in a few milliseconds, and compares them in about one; the question's own embedding call
  * costs more than both. pgvector (an HNSW index, the database returning only the nearest passages) is worth its price —
  * another postgres image in both compose files, the Testcontainers support and the migration-upgrade tests — once the
  * corpus passes a few thousand passages (the read grows with it: some 15 MB a search at 5,000), or reading the vectors
- * reaches tens of milliseconds of a search. The column then converts in place ({@code V20261105000600}).</p>
+ * reaches tens of milliseconds of a search. The column then converts in place ({@code V20261125000600}).</p>
  *
  * <p><b>Embedded after the keyword index, off the start-up thread.</b> Only passages whose text, model or length
  * changed are sent, the rules first (they are what answers cite), in batches of {@value #EMBEDDING_BATCH}, each stored
@@ -96,15 +103,14 @@ public class KnowledgeService {
 
     private static final Logger log = LoggerFactory.getLogger(KnowledgeService.class);
 
-    /** The documents indexed, with the parser that cuts each one (its natural unit differs). */
-    static final List<Source> SOURCES = List.of(
-            new Source("05-business-rules", KnowledgeParser::rules),
-            new Source("01-ubiquitous-language", KnowledgeParser::terms),
-            new Source("03-state-machines", KnowledgeParser::sections),
-            new Source("04c-all-flows", KnowledgeParser::flows));
+    /**
+     * The documents of the corpus, one name a line: written by {@code tools/sync_kltn_docs.py} beside the snapshot
+     * ({@code docs/kltn-snapshot}), copied onto the classpath by the build ({@code pom.xml}).
+     */
+    static final String INDEX = "knowledge/index.txt";
 
-    /** The process flows: indexed only with {@link KnowledgeProperties#flows}, otherwise synced empty. */
-    static final String FLOWS = "04c-all-flows";
+    /** A chapter of the analysis, by its snapshot name: {@code 15-payment}. */
+    private static final Pattern CHAPTER = Pattern.compile("\\d{2}-[a-z0-9-]+");
 
     /** How many of each ranking take part in the fusion, unless {@link KnowledgeProperties#fusionDepth} says. */
     static final int FUSION_DEPTH = 10;
@@ -142,11 +148,8 @@ public class KnowledgeService {
             .thenComparing(KnowledgeChunk::source)
             .thenComparing(KnowledgeChunk::anchor);
 
-    record Source(String name, BiFunction<String, String, List<KnowledgeChunk>> parser) {
-
-        String resource() {
-            return "knowledge/" + name + ".md";
-        }
+    /** A document of the corpus: its snapshot name ({@code 15-payment}, {@code glossary}) and its markdown. */
+    record Document(String name, String markdown) {
     }
 
     /**
@@ -246,40 +249,80 @@ public class KnowledgeService {
         background.shutdownNow();
     }
 
-    /** Syncs every document, each in its own transaction. @return rows written or deleted */
+    /**
+     * Syncs every document of this build, each in its own transaction, then empties every other source still holding
+     * chunks. @return rows written or deleted
+     */
     public int index() {
+        return index(documents());
+    }
+
+    int index(List<Document> documents) {
+        if (documents.isEmpty()) {
+            log.error("No knowledge document in this build ({}): the assistant's knowledge index is left as it is",
+                    INDEX);
+            return 0;
+        }
         BuildProperties info = build.getIfAvailable();
         Instant builtAt = info == null ? null : info.getTime();
         int changes = 0;
-        for (Source source : SOURCES) {
+        Set<String> indexed = new HashSet<>();
+        for (Document document : documents) {
+            indexed.add(document.name());
             try {
-                // Switched off, the flows are synced as a document with nothing in it: their passages are deleted.
-                changes += index(source.name().equals(FLOWS) && !properties.flows()
-                        ? new Source(FLOWS, (name, markdown) -> List.of()) : source, builtAt);
+                changes += sync(document.name(), parse(document), builtAt);
             } catch (RuntimeException failed) {
                 log.error("The assistant could not index {}; it answers from that document's previous index",
-                        source.name(), failed);
+                        document.name(), failed);
+            }
+        }
+        List<String> stored;
+        try {
+            stored = readOnly.execute(status -> knowledge.sources());
+        } catch (RuntimeException unreadable) {
+            log.error("The assistant could not read which documents are indexed; none is retired", unreadable);
+            return changes;
+        }
+        for (String source : stored == null ? List.<String>of() : stored) {
+            if (!indexed.contains(source)) {
+                try {
+                    int removed = sync(source, List.of(), builtAt);
+                    if (removed > 0) {
+                        log.info("{} is not in this build's corpus: {} passage(s) removed", source, removed);
+                    }
+                } catch (RuntimeException failed) {
+                    log.error("The assistant could not remove {} from its index", source, failed);
+                }
             }
         }
         return changes;
     }
 
-    private int index(Source source, Instant builtAt) {
-        String markdown = read(source.resource());
+    /**
+     * The passages of {@code document}: the glossary's or a chapter's, without the flows (§4) unless
+     * {@link KnowledgeProperties#flows} is on. Switched off, a chapter's flow passages are deleted on the next start.
+     */
+    List<KnowledgeChunk> parse(Document document) {
         List<KnowledgeChunk> chunks;
-        if (markdown == null) {
-            log.error("classpath:{} is missing from this build: the assistant stops citing {}", source.resource(),
-                    source.name());
-            chunks = List.of();
+        if (document.name().equals(KnowledgeParser.GLOSSARY)) {
+            chunks = KnowledgeParser.glossary(document.name(), document.markdown());
+        } else if (CHAPTER.matcher(document.name()).matches()) {
+            chunks = KnowledgeParser.chapter(document.name(), document.markdown());
         } else {
-            chunks = source.parser().apply(source.name(), markdown);
+            log.warn("{} is neither the glossary nor a chapter (NN-name): not indexed", document.name());
+            return List.of();
         }
-        KnowledgeRepository.Sync sync = tx.execute(status -> knowledge.sync(source.name(), chunks, builtAt));
+        return properties.flows() ? chunks
+                : chunks.stream().filter(chunk -> chunk.kind() != KnowledgeChunk.Kind.FLOW).toList();
+    }
+
+    private int sync(String source, List<KnowledgeChunk> chunks, Instant builtAt) {
+        KnowledgeRepository.Sync sync = tx.execute(status -> knowledge.sync(source, chunks, builtAt));
         if (sync == null) {
             return 0;
         }
         if (sync.newerIndexed()) {
-            log.warn("{} was indexed by a newer build than this one ({}); left as it is", source.name(), builtAt);
+            log.warn("{} was indexed by a newer build than this one ({}); left as it is", source, builtAt);
         }
         return sync.changes();
     }
@@ -534,15 +577,39 @@ public class KnowledgeService {
                 : failed.getClass().getSimpleName() + ": " + failed.getMessage();
     }
 
+    /**
+     * The documents {@code knowledge/index.txt} lists, in its order: only those, so a file an earlier build left in
+     * {@code target/classes/knowledge} is never indexed. When the list or a document on it cannot be read, none is
+     * returned and the index stays as it is: left out alone, a document's passages would be removed as a dropped
+     * chapter's.
+     */
+    static List<Document> documents() {
+        String index = read(INDEX);
+        if (index == null) {
+            return List.of();
+        }
+        List<Document> documents = new ArrayList<>();
+        for (String name : index.lines().map(String::strip).filter(line -> !line.isEmpty() && !line.startsWith("#"))
+                .distinct().toList()) {
+            String markdown = read("knowledge/" + name + ".md");
+            if (markdown == null) {
+                return List.of();
+            }
+            documents.add(new Document(name, markdown));
+        }
+        return List.copyOf(documents);
+    }
+
     private static String read(String resource) {
         ClassPathResource file = new ClassPathResource(resource);
         if (!file.exists()) {
+            log.error("classpath:{} is missing from this build", resource);
             return null;
         }
         try (InputStream in = file.getInputStream()) {
             return new String(in.readAllBytes(), StandardCharsets.UTF_8);
         } catch (IOException unreadable) {
-            log.warn("classpath:{} could not be read", resource, unreadable);
+            log.error("classpath:{} could not be read", resource, unreadable);
             return null;
         }
     }

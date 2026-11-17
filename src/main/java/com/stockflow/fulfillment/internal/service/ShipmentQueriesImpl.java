@@ -26,8 +26,7 @@ class ShipmentQueriesImpl implements ShipmentQueries {
                                                    int size) {
         return shipments.list(null, status, null, null, search, page, size, oldestFirst).map(row -> new ShipmentSummary(
                 row.shipmentId(), row.code(), row.orderId(), row.orderNumber(), row.warehouseId(), row.status(),
-                row.deliveryMode(), row.packageCount(), row.codAmount(), row.currency(), row.carrierName(),
-                row.loadCode(), row.partial(), row.readyAt(), row.handedOverAt(), row.outcomeAt(),
+                row.packageCount(), row.carrierName(), row.loadCode(), row.partial(), row.readyAt(), row.handedOverAt(), row.outcomeAt(),
                 row.failureReason()));
     }
 }

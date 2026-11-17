@@ -17,7 +17,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
-/** Customer aliases (ADR-0014): given out once per customer and conversation, read back as names. */
+/** Customer aliases (ADR-0015): given out once per customer and conversation, read back as names. */
 class PseudonymsTest {
 
     private static final UUID ABC = UUID.randomUUID();

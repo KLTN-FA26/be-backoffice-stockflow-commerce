@@ -27,6 +27,7 @@ import java.time.Instant;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
+import java.util.Base64;
 import java.util.List;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
@@ -123,7 +124,11 @@ final class ResendEmailTransport implements EmailTransport {
             throw EmailDeliveryException.rejected("RESEND_TOO_MANY_RECIPIENTS", null);
         }
         SendRequest body = new SendRequest(email.from(), to, email.subject(), email.html(), email.text(),
-                email.replyTo(), email.category() == null ? null : List.of(new Tag("category", email.category())));
+                email.replyTo(), email.category() == null ? null : List.of(new Tag("category", email.category())),
+                email.attachments().isEmpty() ? null : email.attachments().stream()
+                        .map(file -> new Attachment(file.name(), Base64.getEncoder().encodeToString(file.content()),
+                                file.contentType()))
+                        .toList());
         acquire();
         try {
             return client.post()
@@ -282,7 +287,11 @@ final class ResendEmailTransport implements EmailTransport {
     /** Resend's request body. Absent parts are left out rather than sent as JSON nulls. */
     @JsonInclude(JsonInclude.Include.NON_NULL)
     record SendRequest(String from, List<String> to, String subject, String html, String text,
-                       @JsonProperty("reply_to") String replyTo, List<Tag> tags) {
+                       @JsonProperty("reply_to") String replyTo, List<Tag> tags, List<Attachment> attachments) {
+    }
+
+    /** A file as Resend takes it: its bytes in Base64. */
+    record Attachment(String filename, String content, @JsonProperty("content_type") String contentType) {
     }
 
     record Tag(String name, String value) {

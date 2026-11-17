@@ -1,5 +1,5 @@
 /**
- * <b>Location-level stock, ATP, reservations, counts, transfers</b>
+ * <b>Location-level stock, ATP, reservations, counts</b>
  *
  * <p>WBS 3.6 + 3.10 · database schema {@code inventory}</p>
  *
@@ -15,5 +15,5 @@
  *       you reaching in; {@code ModularityTest} will.</li>
  * </ul>
  */
-@org.springframework.modulith.ApplicationModule(allowedDependencies = {"warehouse :: api", "identity :: api"})
+@org.springframework.modulith.ApplicationModule(allowedDependencies = {"warehouse :: api", "warehouse :: spi", "identity :: api"})
 package com.stockflow.inventory;

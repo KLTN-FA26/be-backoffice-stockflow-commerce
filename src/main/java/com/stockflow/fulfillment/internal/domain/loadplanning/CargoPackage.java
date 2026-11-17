@@ -24,7 +24,7 @@ import java.util.Objects;
  *                  members by it
  * @param kitGroup  the physical set it was sealed in (a package's {@code kit_group_id}), or null; carried for the
  *                  caller
- * @param groupKey  the order, shipment or transfer it belongs to, or null. Carried for the caller; the planner does
+ * @param groupKey  the order or shipment it belongs to, or null. Carried for the caller; the planner does
  *                  not keep a group in one vehicle, since a shipment may span vehicles (LP-3, design v2 Q7)
  * @param fill      lower-priority cargo that only tops up the space the main cargo leaves and never needs a vehicle
  *                  of its own (docs 09 §4.2 "Ưu tiên + hàng chèn")

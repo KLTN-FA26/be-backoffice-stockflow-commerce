@@ -9,14 +9,11 @@ import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.CurrentUserProvider;
 import com.stockflow.common.security.DataScope;
 import com.stockflow.common.security.Role;
-import com.stockflow.order.api.BalancePolicy;
 import com.stockflow.order.api.HoldReason;
 import com.stockflow.order.api.ListOrdersQuery;
 import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.OrderSummary;
-import com.stockflow.order.api.PaymentStatus;
-import com.stockflow.order.api.PaymentTerm;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -83,8 +80,8 @@ class FindOrdersToolTest {
     }
 
     @Test
-    @DisplayName("a row carries the payment and the hold, never the contact block or the address; the note is masked "
-            + "and cut")
+    @DisplayName("a row carries the total and the hold, never the contact block, the address or any payment; the note "
+            + "is masked and cut")
     void rowLeavesContactsOut() throws Exception {
         when(orders.list(any())).thenReturn(PageResponse.of(
                 List.of(row("SO-9", OrderStatus.ON_HOLD, HoldReason.PAYMENT, NOTE)), 0, 50, 1));
@@ -93,8 +90,7 @@ class FindOrdersToolTest {
                 + "\"placedTo\":\"\",\"limit\":50}");
 
         FindOrdersTool.Row row = answer.orders().getFirst();
-        assertThat(row.paymentTerm()).isEqualTo("DEPOSIT");
-        assertThat(row.paymentStatus()).isEqualTo("PARTIALLY_PAID");
+        assertThat(row.total()).isEqualByComparingTo("1250000");
         assertThat(row.hold().reason()).isEqualTo("PAYMENT");
         assertThat(row.hold().statusBeforeHold()).isEqualTo("CONFIRMED");
         assertThat(row.hold().note()).contains("[phone]", "[e-mail]").endsWith("…")
@@ -150,6 +146,14 @@ class FindOrdersToolTest {
         assertThat(answer.total()).isEqualTo(FindOrdersTool.MAX_SCANNED / FindOrdersTool.SCAN_PAGE);
         assertThat(answer.truncated()).isTrue();
         assertThat(answer.note()).contains(String.valueOf(FindOrdersTool.MAX_SCANNED), "FRAUD");
+    }
+
+    @Test
+    @DisplayName("IN_PRODUCTION stays filterable for history but the description calls it legacy; a draft from an "
+            + "accepted quote is never offered")
+    void legacyAndDraftStatuses() {
+        assertThat(FindOrdersTool.STATUSES).contains("IN_PRODUCTION").doesNotContain("DRAFT");
+        assertThat(tool.spec().description()).contains("IN_PRODUCTION is legacy", "accepted quote (DRAFT");
     }
 
     @Test
@@ -222,7 +226,7 @@ class FindOrdersToolTest {
     @DisplayName("rows carry no customer for a caller who may not list customers, and the names are never read")
     void noNamesWithoutTheCustomerList() {
         when(users.current()).thenReturn(Optional.of(new CurrentUser(UUID.randomUUID(), "coordinator",
-                Set.of(Role.ORDER_COORDINATOR), Set.of(), DataScope.ALL, Set.of())));
+                Set.of(Role.SALES_STAFF), Set.of(), DataScope.ALL, Set.of())));
         when(orders.list(any())).thenReturn(PageResponse.of(List.of(row("SO-20261027-000002", OrderStatus.CONFIRMED,
                 null, null)), 0, 5, 1));
 
@@ -245,11 +249,8 @@ class FindOrdersToolTest {
                 placed, "sales", null, null, "Nguyễn Văn A", "a@khach.vn", "0903123456",
                 new OrderSummary.AddressSummary("Nguyễn Văn A", "0903123456", "12 Lê Lợi", null, null, null, null,
                         null, "VN", null),
-                null, PaymentTerm.DEPOSIT, null, null,
-                new OrderSummary.Payment(BigDecimal.valueOf(375_000), BigDecimal.valueOf(375_000), placed, null,
-                        PaymentStatus.PARTIALLY_PAID, null, BalancePolicy.BEFORE_DELIVERY),
-                null,
+                null, null, null, null,
                 new OrderSummary.Lifecycle(holdReason, holdReason == null ? null : OrderStatus.CONFIRMED, note, null,
-                        null, null, null, null, null, BigDecimal.ZERO, null, null, null, List.of(), List.of()));
+                        null, null, null, null, null, BigDecimal.ZERO, BigDecimal.ZERO, List.of(), List.of()));
     }
 }

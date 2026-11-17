@@ -75,7 +75,7 @@ class GoldenResultsTest {
     }
 
     private static GoldenCase golden(List<String> facts) {
-        return new GoldenCase("S-01", "S", "formal", new GoldenCase.Persona("INVENTORY_PLANNER", List.of()),
+        return new GoldenCase("S-01", "S", "formal", new GoldenCase.Persona("SYSTEM_ADMIN", List.of()),
                 "Tồn kho của EVAL-BOX-A4 ở từng kho là bao nhiêu?", List.of("getStockLevels"), List.of(), false, facts,
                 null, List.of(), null, false, null, List.of(), List.of(),
                 List.of(new GoldenCase.Oracle("getStockLevels", Map.of("sku", "EVAL-BOX-A4"))), false);

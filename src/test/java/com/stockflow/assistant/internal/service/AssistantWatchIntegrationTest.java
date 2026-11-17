@@ -7,7 +7,6 @@ import com.stockflow.assistant.internal.domain.ToolCall;
 import com.stockflow.assistant.internal.domain.Turn;
 import com.stockflow.assistant.internal.domain.WatchRepository;
 import com.stockflow.common.i18n.Messages;
-import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.security.Role;
 import com.stockflow.common.security.RunAs;
 import com.stockflow.notification.api.Inbox;
@@ -23,6 +22,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
+import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -33,7 +33,9 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ThreadLocalRandom;
 
+import static com.stockflow.support.DemoData.CUSTOMER_ID;
 import static com.stockflow.support.DemoData.WAREHOUSE_HCM;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -43,16 +45,21 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * The assistant's watch with the real security chain, grants, tools, inbox and database (design §9.1, ADR-0012): it
- * looks as each user, tells them once what is new on their own lists, never what their screens would not show them,
- * and stops for whoever may no longer be acted for.
+ * The assistant's watch with the real security chain, grants, tools, inbox and database (design §9.1, ADR-0013): it
+ * looks as each user, tells them once what is new on their own list - the orders put on hold, the one list watched
+ * since the rescope (ADR-0010) - and stops for whoever may no longer be acted for.
+ *
+ * <p>Its own application context, and so its own database ({@code PostgresContainer}): the held orders are read
+ * company-wide, and a database other tests filled with more than one read of them would make every look a partial
+ * one, which posts nothing.</p>
  */
 @SecuredIntegrationTest
+@TestPropertySource(properties = "stockflow.assistant.watch.enabled=false")
 class AssistantWatchIntegrationTest {
 
-    private static final String LATE = AssistantWatch.OVERDUE_PURCHASE_ORDERS;
+    private static final String HELD = AssistantWatch.HELD_ORDERS;
 
-    // The two mocks every assistant integration test declares, so they all share one application context.
+    // The two mocks every assistant integration test declares.
     @MockitoBean JwtDecoder decoder;
     @MockitoBean LanguageModel model;
     @Autowired MockMvc mockMvc;
@@ -81,100 +88,75 @@ class AssistantWatchIntegrationTest {
     }
 
     @Test
-    @DisplayName("a purchase order gone late is news once, posted only to who may see its warehouse; the first look "
-            + "is a baseline, and the reads keep no results")
-    void aLateOrderIsNewsOnceInItsWarehouse() {
-        UUID mine = tx.execute(s -> warehouse());
-        UUID hcm = staff("WAREHOUSE_MANAGER", mine);
-        UUID elsewhere = tx.execute(s -> warehouse());
-        UUID other = staff("WAREHOUSE_MANAGER", elsewhere);
-        AssistantWatch watch = watch(List.of(LATE), List.of(), Map.of(), 3);
+    @DisplayName("an order put on hold is news once, with its reason; the first look is a baseline, and the reads keep "
+            + "no results")
+    void aHeldOrderIsNewsOnce() {
+        UUID sales = staff("SALES_STAFF");
+        AssistantWatch watch = watch(List.of(HELD), List.of(), Map.of(), 3);
 
-        assertThat(watch.look(hcm, budget()).posted()).as("what is late already is not news").isZero();
-        assertThat(watch.look(other, budget()).outcome()).isEqualTo(AssistantWatch.Outcome.LOOKED);
-        String number = lateOrder(mine, 1);
+        assertThat(watch.look(sales, budget()).posted()).as("what is held already is not news").isZero();
+        String number = heldOrder("PAYMENT");
 
-        AssistantWatch.Look seen = watch.look(hcm, budget());
+        AssistantWatch.Look seen = watch.look(sales, budget());
         assertThat(seen.posted()).isOne();
         assertThat(seen.newItems()).isOne();
-        assertThat(bell(hcm)).singleElement().satisfies(message -> {
-            assertThat(message.get("body")).as("the order's number, as it is written").isEqualTo(number);
+        assertThat(bell(sales)).singleElement().satisfies(message -> {
+            assertThat(message.get("body")).as("the order's number and why it is held").isEqualTo(number
+                    + " (PAYMENT)");
             assertThat(message.get("title")).asString().startsWith("1 ");
             assertThat(message.get("category")).isEqualTo(AssistantWatch.NEWS);
         });
-        assertThat(watch.look(other, budget()).posted()).as("another warehouse's order").isZero();
-        assertThat(bell(other)).isEmpty();
-        assertThat(watch.look(hcm, budget()).posted()).as("told once").isZero();
-        assertThat(bell(hcm)).hasSize(1);
+        assertThat(watch.look(sales, budget()).posted()).as("told once").isZero();
+        assertThat(bell(sales)).hasSize(1);
         assertThat(jdbc.queryForList("SELECT result FROM assistant.tool_call WHERE user_id = ? AND channel = "
-                        + "'PROACTIVE' AND conversation_id IS NULL", String.class, hcm))
+                        + "'PROACTIVE' AND conversation_id IS NULL", String.class, sales))
                 .isNotEmpty().allSatisfy(result -> assertThat(result).isEqualTo(ToolRunRecorder.RESULT_NOT_KEPT));
         assertThat(jdbc.queryForObject("SELECT created_by FROM assistant.watch_item WHERE owner_user_id = ? "
-                + "AND item_key = ?", String.class, hcm, number)).as("the trail says who acted").endsWith(" via "
-                + AssistantWatch.ACTOR);
+                + "AND item_key = ?", String.class, sales, number + " (PAYMENT)")).as("the trail says who acted")
+                .endsWith(" via " + AssistantWatch.ACTOR);
     }
 
     @Test
-    @DisplayName("a late order that is not the latest of many is still seen: the list is read whole, not the card's "
-            + "ten most late")
-    void aNewlyLateOrderAmongManyOlder() {
-        UUID mine = tx.execute(s -> warehouse());
-        UUID hcm = staff("WAREHOUSE_MANAGER", mine);
-        AssistantWatch watch = watch(List.of(LATE), List.of(), Map.of(), 3);
-        for (int i = 0; i < 10; i++) {
-            lateOrder(mine, 400 + i);
-        }
-        watch.look(hcm, budget());
-        String justLate = lateOrder(mine, 1);
+    @DisplayName("an order held again for another reason is held anew: news again")
+    void heldAgainForAnotherReason() {
+        UUID sales = staff("SALES_STAFF");
+        AssistantWatch watch = watch(List.of(HELD), List.of(), Map.of(), 3);
+        String number = heldOrder("ADDRESS");
+        watch.look(sales, budget());
 
-        assertThat(watch.look(hcm, budget()).posted()).isOne();
-        assertThat(bell(hcm)).singleElement()
-                .satisfies(message -> assertThat(message.get("body")).isEqualTo(justLate));
-    }
+        tx.executeWithoutResult(s -> jdbc.update("UPDATE ordering.customer_order SET hold_reason = 'CUSTOMER' "
+                + "WHERE order_number = ?", number));
 
-    @Test
-    @DisplayName("a manager moved to another warehouse is not told that warehouse's old news; its new news, yes")
-    void aChangedViewIsABaseline() {
-        UUID elsewhere = tx.execute(s -> warehouse());
-        lateOrder(elsewhere, 30);
-        UUID manager = staff("WAREHOUSE_MANAGER", WAREHOUSE_HCM);
-        AssistantWatch watch = watch(List.of(LATE), List.of(), Map.of(), 3);
-        watch.look(manager, budget());
-
-        tx.executeWithoutResult(s -> jdbc.update("UPDATE identity.user_warehouse SET warehouse_id = ? "
-                + "WHERE user_id = ?", elsewhere, manager));
-        assertThat(watch.look(manager, budget()).posted()).as("late before the move").isZero();
-        String late = lateOrder(elsewhere, 1);
-        assertThat(watch.look(manager, budget()).posted()).isOne();
-        assertThat(bell(manager)).singleElement().satisfies(message -> assertThat(message.get("body")).isEqualTo(late));
+        assertThat(watch.look(sales, budget()).posted()).isOne();
+        assertThat(bell(sales)).singleElement()
+                .satisfies(message -> assertThat(message.get("body")).isEqualTo(number + " (CUSTOMER)"));
     }
 
     @Test
     @DisplayName("who may not be acted for is not looked at: a disabled account, one whose roles were taken away, a "
             + "role that may not use the assistant; and a list goes only to the roles named for it")
     void onlyWhoMayBeActedFor() {
-        AssistantWatch watch = watch(List.of(LATE), List.of(), Map.of(), 3);
-        UUID mine = tx.execute(s -> warehouse());
-        UUID disabled = staff("WAREHOUSE_MANAGER", mine);
+        AssistantWatch watch = watch(List.of(HELD), List.of(), Map.of(), 3);
+        UUID disabled = staff("SALES_STAFF");
         tx.executeWithoutResult(s -> jdbc.update("UPDATE identity.app_user SET status = 'DISABLED' WHERE id = ?",
                 disabled));
         assertThat(watch.look(disabled, budget()).outcome()).isEqualTo(AssistantWatch.Outcome.NOT_ACTED_FOR);
 
-        UUID revoked = staff("WAREHOUSE_MANAGER", mine);
+        UUID revoked = staff("SALES_STAFF");
         assertThat(watch.look(revoked, budget()).outcome()).isEqualTo(AssistantWatch.Outcome.LOOKED);
         tx.executeWithoutResult(s -> jdbc.update("DELETE FROM identity.user_role WHERE user_id = ?", revoked));
-        lateOrder(mine, 1);
+        heldOrder("FRAUD");
         assertThat(watch.look(revoked, budget()).outcome()).as("the role taken away applies at once")
                 .isEqualTo(AssistantWatch.Outcome.NOT_ACTED_FOR);
         assertThat(bell(revoked)).isEmpty();
 
-        UUID manager = staff("WAREHOUSE_MANAGER", mine);
-        AssistantWatch buyersOnly = watch(List.of(LATE), List.of(), Map.of(LATE, List.of("PROCUREMENT_STAFF")), 3);
-        watch.look(manager, budget());
-        assertThat(state(manager)).isOne();
-        lateOrder(mine, 1);
-        assertThat(buyersOnly.look(manager, budget()).posted()).as("not a buyer's").isZero();
-        assertThat(state(manager)).as("the list is no longer theirs: getting it back is a first look").isZero();
+        UUID sales = staff("SALES_STAFF");
+        AssistantWatch accountantsOnly = watch(List.of(HELD), List.of(), Map.of(HELD, List.of("ACCOUNTANT")), 3);
+        watch.look(sales, budget());
+        assertThat(state(sales)).isOne();
+        heldOrder("OTHER");
+        assertThat(accountantsOnly.look(sales, budget()).posted()).as("not an accountant's").isZero();
+        assertThat(state(sales)).as("the list is no longer theirs: getting it back is a first look").isZero();
 
         String role = jdbc.query("""
                 select r.code from identity.app_role r
@@ -187,51 +169,50 @@ class AssistantWatchIntegrationTest {
     }
 
     @Test
-    @DisplayName("a late order it answers about opens a proactive conversation of the user's, offered that question's "
+    @DisplayName("a held order it answers about opens a proactive conversation of the user's, offered that question's "
             + "tools; one message points to it; the watch's question is not the user's, their own follow-up is; once "
             + "per item, and no more than the daily cap")
     void answersInAConversationOfTheirs() throws Exception {
-        UUID mine = tx.execute(s -> warehouse());
-        UUID manager = staff("WAREHOUSE_MANAGER", mine);
-        AssistantWatch watch = watch(List.of(LATE), List.of(LATE), Map.of(), 1);
-        assertThat(watch.look(manager, budget()).answered()).isZero();
-        String number = lateOrder(mine, 1);
-        script("findPurchaseOrders", "{\"status\":\"CONFIRMED\",\"poNumber\":\"" + number
-                + "\",\"supplier\":\"\",\"limit\":5}", "PO này đang trễ; bạn liên hệ nhà cung cấp.");
-        long asked = asked(manager);
+        UUID sales = staff("SALES_STAFF");
+        AssistantWatch watch = watch(List.of(HELD), List.of(HELD), Map.of(), 1);
+        assertThat(watch.look(sales, budget()).answered()).isZero();
+        String number = heldOrder("PAYMENT");
+        script("findOrder", "{\"orderNumber\":\"" + number + "\"}", "Đơn đang chờ làm rõ thanh toán.");
+        long asked = asked(sales);
 
-        AssistantWatch.Look look = watch.look(manager, budget());
+        AssistantWatch.Look look = watch.look(sales, budget());
 
         assertThat(look.answered()).isOne();
         UUID conversation = jdbc.queryForObject("""
                 SELECT conversation_id FROM assistant.watch_item
-                WHERE owner_user_id = ? AND section = ? AND item_key = ?""", UUID.class, manager, LATE, number);
+                WHERE owner_user_id = ? AND section = ? AND item_key = ?""", UUID.class, sales, HELD,
+                number + " (PAYMENT)");
         assertThat(jdbc.queryForMap("SELECT owner_user_id, origin FROM assistant.conversation WHERE id = ?",
-                conversation)).containsEntry("owner_user_id", manager).containsEntry("origin", "PROACTIVE");
+                conversation)).containsEntry("owner_user_id", sales).containsEntry("origin", "PROACTIVE");
         assertThat(jdbc.queryForList("SELECT tool_name, outcome, channel FROM assistant.tool_call "
                 + "WHERE conversation_id = ?", conversation)).singleElement().satisfies(run -> assertThat(run)
-                .containsEntry("tool_name", "findPurchaseOrders").containsEntry("outcome", "OK")
+                .containsEntry("tool_name", "findOrder").containsEntry("outcome", "OK")
                 .containsEntry("channel", "PROACTIVE"));
-        assertThat(bell(manager)).as("told once, by the answer").singleElement().satisfies(message -> {
+        assertThat(bell(sales)).as("told once, by the answer").singleElement().satisfies(message -> {
             assertThat(message.get("category")).isEqualTo(AssistantWatch.ANSWER);
             assertThat(message.get("source_id")).isEqualTo(conversation.toString());
         });
-        assertThat(asked(manager)).as("the watch's question is not the user's").isEqualTo(asked);
+        assertThat(asked(sales)).as("the watch's question is not the user's").isEqualTo(asked);
 
-        script("findGoodsReceipts", "{\"status\":\"ANY\",\"receiptNumber\":\"\",\"limit\":5}",
-                "Chưa có phiếu nhập nào cho PO này.");
-        new SecuredMvc(mockMvc, decoder).asRole(Role.WAREHOUSE_MANAGER, manager,
+        script("findOrders", "{\"status\":\"ON_HOLD\",\"holdReason\":\"PAYMENT\",\"placedFrom\":\"\","
+                + "\"placedTo\":\"\",\"customer\":\"\",\"limit\":10}", "Còn một đơn chờ làm rõ thanh toán.");
+        new SecuredMvc(mockMvc, decoder).asRole(Role.SALES_STAFF, sales,
                         post("/api/v1/assistant/conversations/" + conversation + "/messages")
                                 .contentType(MediaType.APPLICATION_JSON)
-                                .content("{\"text\":\"Đã có phiếu nhập nào cho PO này chưa?\"}"))
+                                .content("{\"text\":\"Còn đơn nào chờ làm rõ thanh toán nữa không?\"}"))
                 .andExpect(status().isOk());
-        assertThat(asked(manager)).as("a follow-up the user asks is theirs").isEqualTo(asked + 1);
+        assertThat(asked(sales)).as("a follow-up the user asks is theirs").isEqualTo(asked + 1);
         assertThat(jdbc.queryForList("SELECT DISTINCT channel FROM assistant.tool_call WHERE conversation_id = ? "
                 + "ORDER BY channel", String.class, conversation)).containsExactly("CHAT", "PROACTIVE");
 
-        assertThat(watch.look(manager, budget()).answered()).as("once per item").isZero();
-        lateOrder(mine, 1);
-        AssistantWatch.Look capped = watch.look(manager, budget());
+        assertThat(watch.look(sales, budget()).answered()).as("once per item").isZero();
+        heldOrder("ADDRESS");
+        AssistantWatch.Look capped = watch.look(sales, budget());
         assertThat(capped.newItems()).isOne();
         assertThat(capped.answered()).as("one proactive conversation a day").isZero();
         assertThat(capped.posted()).as("the news is still posted").isOne();
@@ -276,43 +257,25 @@ class AssistantWatchIntegrationTest {
                 Integer.class, user);
     }
 
-    /** A purchase order sent to its supplier, expected {@code daysLate} days ago. */
-    private String lateOrder(UUID warehouse, int daysLate) {
-        UUID po = Identifiers.newId();
-        UUID revision = Identifiers.newId();
-        String number = "PO-WT-" + po.toString().substring(24).toUpperCase();
+    /**
+     * An order of the demo customer put on hold for {@code reason}, placed in the 2190s so that it is among the first
+     * the newest-first list reads.
+     */
+    private String heldOrder(String reason) {
+        UUID releasedBy = tx.execute(s -> ReferenceRows.user(entityManager));
+        String number = "SO-2190%04d-%06d".formatted(ThreadLocalRandom.current().nextInt(101, 1231),
+                ThreadLocalRandom.current().nextInt(1_000_000));
         tx.executeWithoutResult(s -> {
-            UUID submitter = ReferenceRows.user(entityManager);
-            UUID approver = ReferenceRows.user(entityManager);
+            UUID order = ReferenceRows.orderWithLine(entityManager, "TABLE-OAK-160", "CONFIRMED", CUSTOMER_ID,
+                    releasedBy, WAREHOUSE_HCM);
+            entityManager.flush();
             jdbc.update("""
-                    INSERT INTO procurement.purchase_orders (id, po_number, status, supplier_id, warehouse_id, currency,
-                        order_date, expected_date, submitted_at, submitted_by, approved_at, approved_by, confirmed_at,
-                        confirmed_by, active_revision_id, version, created_at)
-                    SELECT ?, ?, 'CONFIRMED', s.id, ?, 'VND', CURRENT_DATE - ? - 30, CURRENT_DATE - ?, NOW(), ?, NOW(), ?,
-                           NOW(), ?, ?, 0, NOW()
-                      FROM procurement.suppliers s WHERE s.code = 'GOVIET'""",
-                    po, number, warehouse, daysLate, daysLate, submitter, approver, approver, revision);
-            jdbc.update("""
-                    INSERT INTO procurement.purchase_order_revisions (id, po_id, revision_no, kind, snapshot_header,
-                        changed_by, version, created_at) VALUES (?, ?, 0, 'INITIAL', '{}'::jsonb, ?, 0, NOW())""",
-                    revision, po, submitter);
-            jdbc.update("""
-                    INSERT INTO procurement.purchase_order_lines (id, po_id, po_revision_id, line_no, inventory_item_id,
-                        ordered_qty, unit_price, version, created_at)
-                    SELECT ?, ?, ?, 1, id, 20, 1000, 0, NOW() FROM inventory.inventory_items WHERE sku = 'TABLE-OAK-160'""",
-                    Identifiers.newId(), po, revision);
+                    UPDATE ordering.customer_order SET order_number = ?, status = 'ON_HOLD', hold_reason = ?,
+                        status_before_hold = 'CONFIRMED', contract_signed_at = NOW(),
+                        placed_at = NOW() + INTERVAL '165 years'
+                    WHERE id = ?""", number, reason, order);
         });
         return number;
-    }
-
-    private UUID warehouse() {
-        UUID id = Identifiers.newId();
-        String prefix = "WT" + id.toString().substring(30).toUpperCase();
-        jdbc.update("""
-                INSERT INTO warehouse.warehouse (id, name, status, prefix, address, map_unit, map_width, map_height,
-                                                 version, created_at)
-                VALUES (?, 'Watch fixture', 'ACTIVE', ?, 'Test road', 'M', 50, 50, 0, NOW())""", id, prefix);
-        return id;
     }
 
     private UUID staff(String role, UUID... warehouses) {

@@ -37,6 +37,18 @@ public class DesignArtifactJpaEntity extends BaseEntity {
     private String uploadKey;
     public String getUploadKey() { return uploadKey; }
     public void setUploadKey(String value) { uploadKey = value; }
+    /** The SHA-256 of the canonical layout the file was rendered from; null for a file of the staff workflow. */
+    @Column(name = "document_checksum", updatable = false, length = 64)
+    private String documentChecksum;
+    /** The version of the template the file was drawn on; null exactly when {@code documentChecksum} is. */
+    @Column(name = "template_version", updatable = false)
+    private Long templateVersion;
+    public String getDocumentChecksum() { return documentChecksum; }
+    public Long getTemplateVersion() { return templateVersion; }
+    public void renderedFrom(String layoutChecksum, Long version) {
+        documentChecksum = layoutChecksum;
+        templateVersion = layoutChecksum == null ? null : version;
+    }
 
     protected DesignArtifactJpaEntity() { }
 

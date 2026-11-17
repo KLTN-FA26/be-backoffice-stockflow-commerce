@@ -4,22 +4,20 @@ package com.stockflow.common.security;
  * String constants for the roles.
  *
  * <p>This class exists ONLY because Java annotation arguments must be compile-time constants:
- * {@code @PreAuthorize("hasAnyAuthority('" + Roles.QC_STAFF + "')")} compiles,
- * {@code Role.QC_STAFF.name()} does not. Everywhere else, prefer the {@link Role} enum.</p>
+ * {@code @PreAuthorize("hasAnyAuthority('" + Roles.WAREHOUSE_STAFF + "')")} compiles,
+ * {@code Role.WAREHOUSE_STAFF.name()} does not. Everywhere else, prefer the {@link Role} enum.</p>
  */
 public final class Roles {
 
     public static final String WAREHOUSE_STAFF     = "WAREHOUSE_STAFF";
     public static final String WAREHOUSE_MANAGER   = "WAREHOUSE_MANAGER";
-    public static final String INVENTORY_PLANNER   = "INVENTORY_PLANNER";
-    public static final String QC_STAFF            = "QC_STAFF";
     public static final String CUSTOMER            = "CUSTOMER";
     public static final String SALES_STAFF         = "SALES_STAFF";
-    public static final String ORDER_COORDINATOR   = "ORDER_COORDINATOR";
-    public static final String ECOMMERCE_ADMIN     = "ECOMMERCE_ADMIN";
-    public static final String PROCUREMENT_STAFF   = "PROCUREMENT_STAFF";
+    /** Was ECOMMERCE_ADMIN until V20261107000100 renamed it (kltn-docs 00 §2, 2026-11-05). Same id, same grants. */
+    public static final String SALES_MANAGER       = "SALES_MANAGER";
+    /** Added by V20261108002600 (kltn-docs 00 §2.1, decision 2026-11-07). */
+    public static final String PRODUCTION_COORDINATOR = "PRODUCTION_COORDINATOR";
     public static final String ACCOUNTANT          = "ACCOUNTANT";
-    public static final String PRODUCTION_STAFF    = "PRODUCTION_STAFF";
     public static final String SYSTEM_ADMIN        = "SYSTEM_ADMIN";
 
     private Roles() {

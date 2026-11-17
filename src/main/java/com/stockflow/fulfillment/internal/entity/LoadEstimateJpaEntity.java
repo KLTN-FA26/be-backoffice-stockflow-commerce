@@ -13,7 +13,7 @@ import java.util.UUID;
 /**
  * An advisory load estimate (table {@code fulfillment.load_estimate}; SCRUM-287 PR EST, LP2-1). Written once and then
  * only superseded: what was estimated - lines, layout, warnings, the lines left out - never changes, so a superseded estimate still shows
- * what the coordinator saw. The JSON columns hold the API's own shapes; the service reads and writes them.
+ * what the warehouse manager saw. The JSON columns hold the API's own shapes; the service reads and writes them.
  */
 @Entity
 @Table(name = "load_estimate", schema = "fulfillment")

@@ -120,7 +120,7 @@ class StockBrowseSearchAdapter implements StockBrowseSearch {
                 .and(criteria.includeEmpty() ? null : (root, query, cb) -> cb.greaterThan(root.get("onHand"), 0))
                 .and(WarehouseScope.locationsIn("locationCode"));
         return stockItems.findAll(spec, pageable).map(s -> new StockRow(s.getId(), s.getSku(), s.getLocationCode(),
-                s.getLotNumber(), s.getExpiryDate(), s.getOnHand(), s.getReserved(), s.getStatus(), s.getReceivedAt()));
+                s.getLotNumber(), s.getOnHand(), s.getReserved(), s.getStatus(), s.getReceivedAt()));
     }
 
     private static String blankToNull(String value) {

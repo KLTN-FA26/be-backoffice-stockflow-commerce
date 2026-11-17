@@ -27,7 +27,7 @@ import static org.springframework.test.web.client.match.MockRestRequestMatchers.
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
 
 /**
- * A spoken question written down (ADR-0015): what each adapter sends, what it makes of the answer, and which one the
+ * A spoken question written down (ADR-0016): what each adapter sends, what it makes of the answer, and which one the
  * configuration chooses, never a provider the data boundary rules out.
  */
 class SpeechTranscriberTest {

@@ -70,7 +70,7 @@ public class ToolAvailability {
 
     /**
      * The definitions of the tools this user may use, sorted by name: what the model is offered, the tools of
-     * {@link #grantedTo} (ADR-0010, amended 29/10/2026). Not every tool, as before. The definitions are the largest
+     * {@link #grantedTo} (ADR-0011, amended 29/10/2026). Not every tool, as before. The definitions are the largest
      * part of a request before the history, sent again on every call of an answer, and a small model offered a tool
      * its user may not use calls it all the same and spends a round learning the refusal.
      *

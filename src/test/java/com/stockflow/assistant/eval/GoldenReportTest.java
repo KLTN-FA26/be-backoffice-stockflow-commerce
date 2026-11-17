@@ -47,7 +47,7 @@ class GoldenReportTest {
 
     private static GoldenCase golden(String id, boolean refusal) {
         return new GoldenCase(id, "S", refusal ? "refusal-permission" : "formal",
-                new GoldenCase.Persona(refusal ? "SALES_STAFF" : "INVENTORY_PLANNER", List.of()),
+                new GoldenCase.Persona(refusal ? "SALES_STAFF" : "SYSTEM_ADMIN", List.of()),
                 "Còn bao nhiêu EVAL-BOX-A4?", refusal ? List.of() : List.of("getStockLevels"), List.of(), false,
                 refusal ? List.of() : List.of("75"), null, refusal ? List.of("75") : List.of(), null, refusal, null,
                 List.of(), List.of(), List.of(new GoldenCase.Oracle("getStockLevels", Map.of("sku", "EVAL-BOX-A4"))),

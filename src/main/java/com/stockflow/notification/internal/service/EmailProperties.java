@@ -42,17 +42,30 @@ public record EmailProperties(
     }
 
     /**
-     * @param enabled          switches the customer messages off without touching staff or supplier mail - for a
-     *                         staging server holding a copy of real customers, say. A message not sent for this
-     *                         reason is recorded as skipped, and not sent later when it is switched back on
+     * @param enabled          switches the customer messages off without touching staff or supplier mail. Off unless
+     *                         configured: customer e-mail is a later phase of the business documents, which keep
+     *                         only the in-app inbox for now. A message not sent for this reason is recorded as
+     *                         skipped, and not sent later when it is switched back on. Does not govern e-invoice
+     *                         mail ({@code einvoiceEnabled})
      * @param maxAttempts      attempts of one message before it is given up (recorded as a terminal failure)
      * @param firstRetryDelay  the wait after the first failure worth retrying; doubled after each further one
      * @param maxRetryDelay    the longest wait between two attempts, whatever the provider's Retry-After says
+     * @param einvoiceEnabled  switches the e-invoice messages to the buyer (an invoice issued, an error notice) on or
+     *                         off, apart from the order mail. <b>On unless configured</b>: an issued invoice is a
+     *                         legal record that the seller sends the buyer (NĐ 254/2026/NĐ-CP Điều 12 khoản 3, the
+     *                         way agreed - here the e-mail the invoice names, and the portal), not a later-phase
+     *                         courtesy like the order mail. Off is for a server that must never write to real
+     *                         buyers; a message not sent for this reason is recorded as skipped
+     *                         ({@code EINVOICE_EMAIL_DISABLED})
      */
-    public record Customer(@DefaultValue("true") boolean enabled,
+    public record Customer(@DefaultValue("false") boolean enabled,
                            @DefaultValue("10") int maxAttempts,
                            @DefaultValue("PT1M") Duration firstRetryDelay,
-                           @DefaultValue("PT6H") Duration maxRetryDelay) {
+                           @DefaultValue("PT6H") Duration maxRetryDelay,
+                           @DefaultValue("true") boolean einvoiceEnabled) {
+
+        /** The templates of e-invoice messages ({@code einvoice.*}): governed by {@code einvoiceEnabled}. */
+        static final String EINVOICE_TEMPLATES = "einvoice.";
 
         public Customer {
             if (maxAttempts < 1) {
@@ -62,6 +75,14 @@ public record EmailProperties(
                     || maxRetryDelay.compareTo(firstRetryDelay) < 0) {
                 throw new IllegalArgumentException("Customer e-mail retry delays must be positive, first <= max");
             }
+        }
+
+        /** Null when a message of this template may be sent; otherwise the reason it is skipped. */
+        String disabledReason(String templateCode) {
+            if (templateCode != null && templateCode.startsWith(EINVOICE_TEMPLATES)) {
+                return einvoiceEnabled ? null : "EINVOICE_EMAIL_DISABLED";
+            }
+            return enabled ? null : "CUSTOMER_EMAIL_DISABLED";
         }
     }
 

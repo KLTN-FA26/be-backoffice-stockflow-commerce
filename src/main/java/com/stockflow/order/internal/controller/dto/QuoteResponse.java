@@ -9,12 +9,20 @@ import java.util.UUID;
  * A quote as the back office and the portal show it.
  *
  * @param status        as of now: a sent quote past its validity reads EXPIRED
+ * @param legacy        drafted before 4B-2 on blanks and designs: kept to read, not sent, accepted or converted (QD-16)
+ * @param fees          4B-3: the plate fee of each SKU produced for the first time, the shipping fee
+ * @param proposed      4B-3: goods, fees, VAT and the total with tax at the proposed cartons (14 BR-09); a part not
+ *                      known yet is null, and so is the total
+ * @param accepted      the same as accepted; null until accepted
+ * @param proposedTotal {@code proposed.total}, the total with tax
  * @param version       to send back with the next change
  * @param acceptedTotal VND, once accepted
  */
 public record QuoteResponse(UUID id, String quoteNumber, UUID customerId, String status, int revision,
-                            String paymentTerm, BigDecimal depositPercent, Instant validUntil, String terms,
-                            java.time.LocalDate requestedDeliveryDate, List<Line> lines, boolean priced, BigDecimal proposedTotal, BigDecimal acceptedTotal,
+                            Instant validUntil, String terms,
+                            java.time.LocalDate requestedDeliveryDate, boolean legacy, List<Line> lines, List<Fee> fees,
+                            boolean priced, Totals proposed, Totals accepted, BigDecimal proposedTotal,
+                            BigDecimal acceptedTotal,
                             Instant sentAt,
                             UUID sentBy,
                             Instant respondedAt, UUID respondedBy, String customerFeedback, String cancellationReason,
@@ -22,20 +30,33 @@ public record QuoteResponse(UUID id, String quoteNumber, UUID customerId, String
                             String createdBy, long version) {
 
     /**
-     * @param moq    the minimum order quantity, where the lowest tier starts
-     * @param sample whether acceptance passes the sample rule for this line, and why
+     * A line: cartons of the customer's own SKU, priced per piece (kltn-docs 14 BR-08). Ordered by the carton, shown
+     * with its pieces: {@code units} = {@code cartons} x {@code unitsPerCarton}.
+     *
+     * @param measure          {@code CARTON}; {@code UNIT} on a legacy line, which names a blank ({@code sku}), its
+     *                         design and print specification, and counts units
+     * @param moq              where the lowest tier starts, in the line's measure
+     * @param proposedUnitPrice VND per piece at the proposed cartons
      */
-    public record Line(UUID id, int lineNo, String blankSku, UUID designSnapshotId, String printSpec, int quantity,
-                       boolean priced, Integer moq, List<Tier> tiers, BigDecimal proposedUnitPrice,
-                       BigDecimal proposedLineTotal,
-                       Integer acceptedQuantity, BigDecimal acceptedUnitPrice, BigDecimal acceptedLineTotal,
-                       Sample sample) {
+    public record Line(UUID id, int lineNo, String measure, String sku, Integer cartons, Integer unitsPerCarton,
+                       int units, UUID designSnapshotId, String printSpec, boolean priced, Integer moq,
+                       List<Tier> tiers, BigDecimal proposedUnitPrice, BigDecimal proposedLineTotal,
+                       Integer acceptedCartons, Integer acceptedUnits, BigDecimal acceptedUnitPrice,
+                       BigDecimal acceptedLineTotal, String taxClass, BigDecimal taxRate, BigDecimal proposedTax,
+                       BigDecimal acceptedTax) {
     }
 
+    /** A fee line with its VAT (14 BR-17, BR-20, BR-21); {@code amount} null for a plate fee not priced yet. */
+    public record Fee(UUID id, String kind, String sku, BigDecimal amount, String taxClass, BigDecimal taxRate,
+                      BigDecimal tax) {
+    }
+
+    /** Goods, fees, VAT and the total with it. */
+    public record Totals(BigDecimal subtotal, BigDecimal fees, BigDecimal tax, BigDecimal total) {
+    }
+
+    /** From {@code minQuantity} cartons (units on a legacy line) up, {@code unitPrice} VND per piece. */
     public record Tier(int minQuantity, BigDecimal unitPrice) {
-    }
-
-    public record Sample(boolean satisfied, UUID approvedSampleId, boolean reorder) {
     }
 
     public record Order(UUID orderId, String orderNumber, String status, BigDecimal total) {

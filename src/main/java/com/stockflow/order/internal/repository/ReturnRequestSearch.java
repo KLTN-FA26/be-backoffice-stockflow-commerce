@@ -30,9 +30,8 @@ public interface ReturnRequestSearch {
     record ReturnRequestRow(UUID id, String rmaNumber, UUID orderId, String orderNumber, UUID customerId,
                             ReturnStatus status, ReturnReason reason, ReturnResolution requestedResolution,
                             String channel, Instant requestedAt, Instant returnDeadline, BigDecimal settlementAmount,
-                            BigDecimal refundedAmount, BigDecimal creditedAmount, BigDecimal offsetAmount,
-                            String currency, boolean vatAdjustmentRequired, UUID replacementOrderId,
-                            Instant closedAt, long version) {
+                            BigDecimal refundedAmount, BigDecimal offsetAmount, String currency,
+                            boolean vatAdjustmentRequired, Instant closedAt, long version) {
     }
 
     Page<ReturnRequestRow> search(Criteria criteria, Pageable pageable);

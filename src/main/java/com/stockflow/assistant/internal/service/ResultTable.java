@@ -42,59 +42,26 @@ import java.util.TreeSet;
  */
 public final class ResultTable {
 
-    private static final List<String> LOT_COLUMNS = List.of("sku", "warehouseCode", "lotNumber", "expiryDate",
-            "daysToExpiry", "quantityAtLastCheck", "lastCheckedAt", "stillHeld");
-
     /** Every list the panel shows, by the tool that returns it. */
     private static final Map<String, List<Shape>> SHAPES = Map.ofEntries(
-            Map.entry("findLowStock", List.of(
-                    Shape.of("findLowStock.skus", "skus", "total", "truncated", List.of(),
-                            "sku", "usableOnHand", "availableToPromise", "reorderPoint", "safetyStock",
-                            "atOrBelowReorderPoint", "belowSafetyStock", "unit", "packingUnit", "unitsPerPacking",
-                            "availableToPromisePacked.packingCount", "availableToPromisePacked.looseUnits"))),
-            Map.entry("findExpiringLots", List.of(
-                    Shape.of("findExpiringLots.expiring", "expiring", "expiringTotal", "expiringTruncated",
-                            List.of(), LOT_COLUMNS.toArray(String[]::new)),
-                    Shape.of("findExpiringLots.expired", "expired", "expiredTotal", "expiredTruncated",
-                            List.of(), LOT_COLUMNS.toArray(String[]::new)))),
             Map.entry("getStockLevels", List.of(
                     Shape.of("getStockLevels.warehouses", "warehouses", null, null,
                             List.of("sku", "unit", "packingUnit", "unitsPerPacking"),
                             "sku", "warehouseCode", "onHand", "inAvailableStatus", "heldOnStock",
-                            "availableToPromise", "unit", "packingUnit", "unitsPerPacking",
+                            "allocatedToPicks", "heldForOrders", "availableToPromise", "unit", "packingUnit", "unitsPerPacking",
                             "availableToPromisePacked.packingCount", "availableToPromisePacked.looseUnits"))),
             Map.entry("getStockLots", List.of(
                     Shape.of("getStockLots.locations", "locations", "total", "truncated",
                             List.of("sku", "unit", "packingUnit", "unitsPerPacking"),
-                            "sku", "locationCode", "lotNumber", "expiryDate", "onHand", "held", "unheld", "unit",
+                            "sku", "locationCode", "lotNumber", "onHand", "held", "unheld", "hiddenDuringCount",
+                            "unit",
                             "packingUnit", "unitsPerPacking", "onHandPacked.packingCount",
                             "onHandPacked.looseUnits"))),
             Map.entry("findOrders", List.of(
                     Shape.of("findOrders.orders", "orders", "total", "truncated", List.of(),
-                            "orderNumber", "status", "placedAt", "total", "currency", "paymentTerm",
-                            "paymentStatus", "paidAmount", "depositRequired", "hold.reason", "hold.note",
+                            "orderNumber", "status", "placedAt", "total", "currency",
+                            "hold.reason", "hold.note",
                             "deliveryFailureReason", "cancellationReasonCode", "customer"))),
-            Map.entry("findPurchaseOrders", List.of(
-                    Shape.of("findPurchaseOrders.purchaseOrders", "purchaseOrders", "total", "truncated", List.of(),
-                            "poNumber", "type", "supplierCode", "supplierName", "warehouseCode", "status",
-                            "supplierConfirmationStatus", "orderDate", "expectedAt", "overdue", "daysLate",
-                            "subtotal", "taxTotal", "totalIncludingTax", "currency", "rejectionReason"),
-                    // The lines come with the one purchase order asked about: a list inside its row.
-                    Shape.nested("findPurchaseOrders.lines", "purchaseOrders", "lines", "lineCount",
-                            List.of("poNumber"),
-                            "poNumber", "lineNo", "sku", "ordered", "received", "stillToReceive", "status",
-                            "unitPriceBeforeTax"))),
-            Map.entry("getSupplierTerms", List.of(
-                    Shape.of("getSupplierTerms.terms", "terms", "total", "truncated", List.of(),
-                            "sku", "supplierCode", "supplierName", "supplierStatus", "preferred",
-                            "supplierSkuCode", "unitPriceBeforeTax", "currency", "moq", "packSize",
-                            "leadTimeDays", "skuPurchasable", "orderable"))),
-            Map.entry("findProductionOrders", List.of(
-                    Shape.of("findProductionOrders.productionOrders", "productionOrders", "total", "truncated",
-                            List.of(),
-                            "productionOrderNumber", "type", "mode", "status", "holdReason", "warehouseCode",
-                            "blankSku", "plannedUnits", "goodUnitsPrinted", "dueDate", "overdue",
-                            "salesOrderNumber", "sampleRequestNumber", "sampleRound"))),
             Map.entry("getSalesSummary", List.of(
                     Shape.of("getSalesSummary.topSkus", "topSkus", null, null, List.of(),
                             "sku", "productName", "quantitySold", "revenue"))),
@@ -104,34 +71,32 @@ public final class ResultTable {
                             "assignedAt", "startedAt", "pickedAt", "packedAt"))),
             Map.entry("findGoodsReceipts", List.of(
                     Shape.of("findGoodsReceipts.receipts", "receipts", "total", "truncated", List.of(),
-                            "receiptNumber", "purchaseOrderNumber", "supplierName", "warehouseCode", "status",
-                            "receivedAt", "confirmedAt", "closedAt"))),
+                            "receiptNumber", "receiptType", "productionOrderCode", "producerName", "warehouseCode",
+                            "status", "receivedAt", "confirmedAt", "closedAt"))),
+            Map.entry("findProductionOrders", List.of(
+                    Shape.of("findProductionOrders.productionOrders", "productionOrders", "total", "truncated",
+                            List.of(),
+                            "code", "status", "salesOrderNumber", "deliveryBatchSeq", "producerName", "warehouseCode",
+                            "needByDate", "expectedCompletionDate", "overdue", "atRisk", "cartons", "receivedCartons",
+                            "sampleStatus", "skus"))),
+            Map.entry("findEInvoices", List.of(
+                    Shape.of("findEInvoices.einvoices", "einvoices", "total", "truncated", List.of(),
+                            "code", "type", "status", "overdue", "orderNumber", "shipmentCode", "buyer", "issueDate",
+                            "issueDueAt", "series", "invoiceNumber", "grandTotal", "currency", "issuedAt",
+                            "rejectionCode"))),
             Map.entry("findPendingAdjustments", List.of(
                     Shape.of("findPendingAdjustments.adjustments", "adjustments", "total", "truncated", List.of(),
                             "adjustmentNumber", "warehouseCode", "locationCode", "sku", "lotNumber", "quantityDelta",
                             "reason", "requestedAt", "daysWaiting", "requestedByMe", "carton", "note"))),
             Map.entry("findShipments", List.of(
                     Shape.of("findShipments.shipments", "shipments", "total", "truncated", List.of(),
-                            "shipmentCode", "orderNumber", "warehouseCode", "status", "deliveryMode", "packageCount",
-                            "carrierName", "loadCode", "partial", "codAmount", "currency", "readyAt",
+                            "shipmentCode", "orderNumber", "warehouseCode", "status", "packageCount",
+                            "carrierName", "loadCode", "partial", "readyAt",
                             "handedOverAt", "outcomeAt", "failureReason"))),
-            Map.entry("findTransferOrders", List.of(
-                    Shape.of("findTransferOrders.transfers", "transfers", "total", "truncated", List.of(),
-                            "transferNumber", "fromWarehouseCode", "toWarehouseCode", "status", "expectedDate",
-                            "late", "daysLate", "createdAt", "packedAt", "dispatchedAt", "deliveryMode"))),
-            Map.entry("findReturns", List.of(
-                    Shape.of("findReturns.returns", "returns", "total", "truncated", List.of(),
-                            "rmaNumber", "orderNumber", "customer", "status", "reason", "requestedResolution",
-                            "requestedAt", "lastDayToReturn", "daysToDeadline", "settlementAmount", "currency",
-                            "closedAt"))),
             Map.entry("lookupScan", List.of(
                     Shape.of("lookupScan.location", "location", "locationTotal", "locationTruncated", List.of(),
-                            "sku", "lotNumber", "expiryDate", "status", "wholeCartons", "wholeCartonUnits",
-                            "openedCartons", "openedCartonUnits", "looseUnits", "totalUnits"))),
-            Map.entry("findOverdueCustomers", List.of(
-                    Shape.of("findOverdueCustomers.customers", "customers", "totalCustomers", "truncated",
-                            List.of(), "customerName", "orderNumbers", "overdueAmount", "currency", "oldestDueDate",
-                            "daysOverdue", "overdueReceivables"))));
+                            "sku", "lotNumber", "status", "wholeCartons", "wholeCartonUnits", "looseUnits",
+                            "totalUnits"))));
 
     private ResultTable() {
     }
@@ -139,7 +104,7 @@ public final class ResultTable {
     /**
      * One list of rows as the panel shows it.
      *
-     * @param key       the list it is, {@code tool.field} ({@code findExpiringLots.expired}): what the frontend labels
+     * @param key       the list it is, {@code tool.field} ({@code findOrders.orders}): what the frontend labels
      *                  it by; repeated when the tool ran twice
      * @param tool      the tool that returned it
      * @param columns   the keys of {@code rows}, in display order: the tool record's field names
@@ -162,7 +127,7 @@ public final class ResultTable {
 
         /**
          * With every text cell passed through {@code reveal}: the customers' names put back where the model was given
-         * aliases (ADR-0014). Rows keep their columns' order.
+         * aliases (ADR-0015). Rows keep their columns' order.
          */
         Table revealed(java.util.function.UnaryOperator<String> reveal) {
             List<Map<String, Object>> shown = rows.stream().map(row -> {

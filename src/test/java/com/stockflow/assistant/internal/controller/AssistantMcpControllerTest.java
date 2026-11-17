@@ -59,7 +59,7 @@ import static org.mockito.Mockito.when;
 class AssistantMcpControllerTest {
 
     private static final CurrentUser PLANNER = new CurrentUser(UUID.randomUUID(), "planner",
-            Set.of(Role.INVENTORY_PLANNER), Set.of(), DataScope.ALL, Set.of());
+            Set.of(Role.SYSTEM_ADMIN), Set.of(), DataScope.ALL, Set.of());
     private static final CurrentUser CUSTOMER = new CurrentUser(UUID.randomUUID(), "customer", Set.of(Role.CUSTOMER),
             Set.of(), DataScope.ALL, Set.of());
 

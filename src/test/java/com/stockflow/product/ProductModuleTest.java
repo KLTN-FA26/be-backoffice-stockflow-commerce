@@ -32,6 +32,7 @@ class ProductModuleTest {
     // A dependency of a bootstrapped dependency, not of this module: explicit ports only, the slice must not boot more.
     @MockitoBean com.stockflow.warehouse.api.WarehouseService warehouseServiceMock;
     @MockitoBean com.stockflow.warehouse.api.PutawayTasks putawayTasksMock;
+    @MockitoBean com.stockflow.warehouse.api.PutawayTrips putawayTripsMock;
 
     @Test
     @DisplayName("product starts and answers through its api with the other modules absent")

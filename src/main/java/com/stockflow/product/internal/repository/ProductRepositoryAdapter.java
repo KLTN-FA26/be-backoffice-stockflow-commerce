@@ -70,6 +70,30 @@ class ProductRepositoryAdapter implements ProductRepository, ProductSearchReposi
     }
 
     @Override
+    public java.util.Map<String, com.stockflow.product.api.TaxClass> taxClassesOf(java.util.Collection<String> skus) {
+        java.util.Map<String, com.stockflow.product.api.TaxClass> classes = new java.util.HashMap<>();
+        if (skus == null || skus.isEmpty()) {
+            return classes;
+        }
+        for (Object[] row : jpa.taxClassesOf(skus)) {
+            classes.put((String) row[0], (com.stockflow.product.api.TaxClass) row[1]);
+        }
+        return classes;
+    }
+
+    @Override
+    public java.util.Map<String, String> variantNamesOf(java.util.Collection<String> skus) {
+        java.util.Map<String, String> names = new java.util.HashMap<>();
+        if (skus == null || skus.isEmpty()) {
+            return names;
+        }
+        for (Object[] row : jpa.variantNamesOf(skus)) {
+            names.put((String) row[0], (String) row[1]);
+        }
+        return names;
+    }
+
+    @Override
     public boolean existsByCode(String code) {
         return jpa.existsByCode(code);
     }

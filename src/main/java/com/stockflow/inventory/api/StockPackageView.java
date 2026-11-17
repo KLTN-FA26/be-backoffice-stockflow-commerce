@@ -15,8 +15,8 @@ import java.util.UUID;
  * @param receivedQty     what was counted into it ({@code received_qty}, null until counted); it does not change once
  *                        the carton is in stock, so a receipt's loose part is its line less this, whatever left the
  *                        carton since
- * @param status          RECEIVING, IN_STOCK, CONSUMED or LOST ({@code inventory.stock_package.status})
- * @param unopened        still closed as it was counted: then it holds exactly what was counted into it
+ * @param status          RECEIVING, IN_STOCK, CONSUMED or LOST ({@code inventory.stock_package.status}); a carton in
+ *                        stock is whole, never opened (team plan 4C-3 dropped the flag that said so)
  */
 public record StockPackageView(
         UUID id,
@@ -29,8 +29,7 @@ public record StockPackageView(
         Integer quantity,
         Integer receivedQty,
         String locationCode,
-        String status,
-        boolean unopened
+        String status
 ) {
 
     /**

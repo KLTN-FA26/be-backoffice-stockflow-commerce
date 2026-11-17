@@ -19,6 +19,17 @@ class GoldenScorerTest {
     }
 
     @Test
+    @DisplayName("an answer's citations are read as the anchors write them; a bare rule number and the superseded ids "
+            + "count too, so a citation from memory is caught")
+    void citations() {
+        assertThat(GoldenScorer.namedRules("Theo 15 br-08 và 17 §5.1, xem 7§4.4; glossary §8."))
+                .containsExactly("15 BR-08", "17 §5.1", "7 §4.4", "GLOSSARY §8");
+        assertThat(GoldenScorer.namedRules("Theo BR-08 (nhớ lại), BR-RMA-002 và F-PO"))
+                .containsExactly("BR-08", "BR-RMA-002", "F-PO");
+        assertThat(GoldenScorer.namedRules("Mã EVAL-F-PO, đơn SO-2026-0015, 3 thùng")).isEmpty();
+    }
+
+    @Test
     @DisplayName("codes and names match without regard to case")
     void text() {
         assertThat(GoldenScorer.states("Mã eval-cup-12oz đang thiếu.", "EVAL-CUP-12OZ")).isTrue();

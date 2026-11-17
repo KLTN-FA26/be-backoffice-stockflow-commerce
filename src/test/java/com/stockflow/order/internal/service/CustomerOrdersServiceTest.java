@@ -7,15 +7,11 @@ import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.OrderStatusChange;
 import com.stockflow.order.api.OrderSummary;
-import com.stockflow.order.api.PaymentTerm;
 import com.stockflow.order.internal.domain.CancellationRequest;
 import com.stockflow.order.internal.domain.CancellationRequestRepository;
 import com.stockflow.order.internal.domain.CancellationRequestStatus;
 import com.stockflow.order.internal.domain.CreditChecks;
 import com.stockflow.order.internal.domain.Order;
-import com.stockflow.order.internal.domain.ProductionRecords;
-import com.stockflow.order.internal.domain.Quote;
-import com.stockflow.order.internal.domain.QuoteRepository;
 import com.stockflow.order.internal.repository.OrderSearchRepository;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -48,13 +44,10 @@ class CustomerOrdersServiceTest {
 
     private final OrderSearchRepository search = mock(OrderSearchRepository.class);
     private final OrderService orders = mock(OrderService.class);
-    private final ProductionRecords production = mock(ProductionRecords.class);
     private final CreditChecks creditChecks = mock(CreditChecks.class);
     private final CancellationRequestRepository requests = mock(CancellationRequestRepository.class);
-    private final QuoteRepository quotes = mock(QuoteRepository.class);
     private final CustomerOrdersService service =
-            new CustomerOrdersService(search, orders, production, creditChecks, requests, quotes,
-                    mock(com.stockflow.catalog.api.CatalogService.class));
+            new CustomerOrdersService(search, orders, creditChecks, requests);
 
     private CustomerOrders.Query query(LocalDate from, LocalDate to) {
         return new CustomerOrders.Query(0, 20, List.of(OrderStatus.CONFIRMED), "SO-1", from, to, null);
@@ -107,7 +100,7 @@ class CustomerOrdersServiceTest {
         @Test
         @DisplayName("a card carries the line count, the status group and the latest cancellation request's status")
         void cards() {
-            Order order = OrderFixtures.releasedPrepaid();
+            Order order = OrderFixtures.released();
             OrderSummary row = OrderFixtures.summaryOf(order);
             UUID id = order.id().value();
             when(search.search(any(), any(Pageable.class))).thenReturn(new PageImpl<>(List.of(row)));
@@ -130,7 +123,7 @@ class CustomerOrdersServiceTest {
         @Test
         @DisplayName("an order the customer never asked to cancel has no request status, and a missing count reads 0")
         void cardWithoutRequest() {
-            Order order = OrderFixtures.releasedPrepaid();
+            Order order = OrderFixtures.released();
             OrderSummary row = OrderFixtures.summaryOf(order);
             when(search.search(any(), any(Pageable.class))).thenReturn(new PageImpl<>(List.of(row)));
             when(search.lineCounts(any())).thenReturn(Map.of());
@@ -154,75 +147,65 @@ class CustomerOrdersServiceTest {
             when(orders.findById(order.id().value())).thenReturn(Optional.of(summary));
             when(orders.history(order.id().value())).thenReturn(List.of());
             when(requests.latestOf(order.id().value())).thenReturn(Optional.empty());
-            when(quotes.findByConvertedOrderId(order.id().value())).thenReturn(Optional.empty());
             return order;
         }
 
         @Test
         @DisplayName("someone else's order, or none, is NOT_FOUND: which of the two is not revealed")
         void notTheirs() {
-            Order order = order(OrderFixtures.releasedPrepaid());
+            Order order = order(OrderFixtures.released());
 
             assertThat(codeOf(() -> service.myOrder(UUID.randomUUID(), order.id().value()))).isEqualTo(ErrorCode.NOT_FOUND);
             assertThat(codeOf(() -> service.myOrder(order.customerId(), UUID.randomUUID()))).isEqualTo(ErrorCode.NOT_FOUND);
         }
 
         @Test
-        @DisplayName("blank-only orders do not ask production; the detail carries the lines, payment and an order-start timeline")
+        @DisplayName("blank-only orders need no production; the detail carries the lines and an order-start timeline")
         void blankOrderDetail() {
-            Order order = order(OrderFixtures.releasedPrepaid());
+            Order order = order(OrderFixtures.released());
 
             CustomerOrders.Detail detail = service.myOrder(order.customerId(), order.id().value());
 
-            verify(production, never()).producedByLine(any());
             assertThat(detail.lines()).extracting(CustomerOrders.Line::sku).containsExactly("CUP-12OZ", "LID-90");
             assertThat(detail.lines()).allSatisfy(line -> assertThat(line.production().state())
                     .isEqualTo(CustomerOrders.ProductionState.NOT_REQUIRED));
-            assertThat(detail.payment().paidAmount()).isEqualByComparingTo("1100000");
-            assertThat(detail.paymentTerm()).isEqualTo(PaymentTerm.PREPAID);
             assertThat(detail.holdReasonPublic()).isNull();
             assertThat(detail.timeline()).as("no history reads as one entry, the status it is in").singleElement()
                     .satisfies(entry -> assertThat(entry.status()).isEqualTo(OrderStatus.READY_TO_FULFILL));
             assertThat(detail.cancellationRequest()).isNull();
             assertThat(detail.shipments()).isEmpty();
-            assertThat(detail.deliveryMode()).isNotNull();
         }
 
         @Test
-        @DisplayName("an order with a print line reads its good units from production, once")
-        void printLineAsksProduction() {
-            UUID design = UUID.randomUUID();
-            Order order = order(OrderFixtures.confirmedWithPrintLine(design));
-            UUID printLine = order.printLines().get(0).id();
-            when(production.producedByLine(order.id().value())).thenReturn(Map.of(printLine, 120));
+        @DisplayName("a print line of an order not released yet is not made yet")
+        void printLineBeforeRelease() {
+            Order order = order(OrderFixtures.confirmedWithPrintLine(UUID.randomUUID()));
 
             CustomerOrders.Detail detail = service.myOrder(order.customerId(), order.id().value());
 
             assertThat(detail.lines().get(0).production().state()).isEqualTo(CustomerOrders.ProductionState.NOT_STARTED);
-            assertThat(detail.lines().get(0).production().goodQuantity()).isEqualTo(120);
-            verify(production, org.mockito.Mockito.times(1)).producedByLine(order.id().value());
+            assertThat(detail.lines().get(0).production().goodQuantity()).isZero();
         }
 
         @Test
-        @DisplayName("before release a customer may cancel at once and cannot ask; a quote-born order can be reordered")
+        @DisplayName("before release a customer asks to cancel too, never at once (4B-5)")
         void actionsBeforeRelease() {
-            Order order = order(OrderFixtures.confirmedPrepaid());
-            when(quotes.findByConvertedOrderId(order.id().value())).thenReturn(Optional.of(mock(Quote.class)));
+            Order order = order(OrderFixtures.confirmed());
 
             CustomerOrders.AllowedActions actions = service.myOrder(order.customerId(), order.id().value()).allowedActions();
 
-            assertThat(actions.cancel()).isTrue();
-            assertThat(actions.requestCancellation()).isFalse();
-            assertThat(actions.reorder()).isTrue();
+            // 4B-5 (17 §4.8): the customer asks, before release too; Sales decides.
+            assertThat(actions.cancel()).isFalse();
+            assertThat(actions.requestCancellation()).isTrue();
         }
 
         @Test
         @DisplayName("after release the customer asks instead, one request at a time")
         void actionsAfterRelease() {
-            Order order = order(OrderFixtures.releasedPrepaid());
+            Order order = order(OrderFixtures.released());
 
             assertThat(service.myOrder(order.customerId(), order.id().value()).allowedActions())
-                    .isEqualTo(new CustomerOrders.AllowedActions(false, true, false));
+                    .isEqualTo(new CustomerOrders.AllowedActions(false, true));
 
             when(requests.hasPending(order.id().value())).thenReturn(true);
             assertThat(service.myOrder(order.customerId(), order.id().value()).allowedActions().requestCancellation())
@@ -232,18 +215,34 @@ class CustomerOrdersServiceTest {
         @Test
         @DisplayName("once a package is complete (goods packed for good) the customer can only return, not cancel or ask")
         void actionsAfterPacking() {
-            Order order = OrderFixtures.releasedPrepaid();
+            Order order = OrderFixtures.released();
             order.markPacked(NOW, OrderFixtures.STAFF);
             order(order);
 
             assertThat(service.myOrder(order.customerId(), order.id().value()).allowedActions())
-                    .isEqualTo(new CustomerOrders.AllowedActions(false, false, false));
+                    .isEqualTo(new CustomerOrders.AllowedActions(false, false));
+        }
+
+        @Test
+        @DisplayName("once a carton is labelled (4C-6, 08 BR-04) the order is locked although nothing is packed yet: the "
+                + "portal offers no cancellation request the order would refuse (review L4)")
+        void actionsAfterTheFirstLabel() {
+            Order order = OrderFixtures.released();
+            order.recordFirstLabel(NOW);
+            order(order);
+
+            OrderSummary summary = OrderFixtures.summaryOf(order);
+            assertThat(summary.lifecycle().packedAt()).isNull();
+            assertThat(summary.lifecycle().firstLabeledAt()).isEqualTo(NOW);
+            assertThat(summary.lifecycle().packedForGood()).isTrue();
+            assertThat(service.myOrder(order.customerId(), order.id().value()).allowedActions())
+                    .isEqualTo(new CustomerOrders.AllowedActions(false, false));
         }
 
         @Test
         @DisplayName("the latest cancellation request is shown with how it was decided, without who decided")
         void cancellationRequestIsShown() {
-            Order order = order(OrderFixtures.releasedPrepaid());
+            Order order = order(OrderFixtures.released());
             CancellationRequest request = CancellationRequest.open(order.id().value(), UUID.randomUUID(),
                     CancellationReasonCode.CUSTOMER_REQUEST, "wrong logo", NOW);
             request.reject(UUID.randomUUID(), "already printed", NOW);
@@ -260,8 +259,9 @@ class CustomerOrdersServiceTest {
         @Test
         @DisplayName("an order on hold reads as UNDER_REVIEW, or AWAITING_CREDIT_APPROVAL when a credit check is undecided")
         void holdReasonIsPublicOnly() {
-            Order order = OrderFixtures.draft(PaymentTerm.CREDIT, UUID.randomUUID());
-            order.submitOnCredit(false);
+            Order order = OrderFixtures.draft(UUID.randomUUID());
+            order.sendContract(OrderFixtures.STAFF, OrderFixtures.NOW);
+            order.contractSigned(true, false, OrderFixtures.STAFF, OrderFixtures.NOW);
             order(order);
             when(creditChecks.latest(order.id().value())).thenReturn(Optional.of(new CreditChecks.Check(
                     order.id().value(), NOW, java.math.BigDecimal.TEN, java.math.BigDecimal.TEN, java.math.BigDecimal.TEN,
@@ -278,8 +278,9 @@ class CustomerOrdersServiceTest {
         @Test
         @DisplayName("the timeline takes the cancellation's reason code from the order, never the typed reason")
         void timelineExposesOnlyTheCode() {
-            Order order = OrderFixtures.draft(PaymentTerm.PREPAID, UUID.randomUUID());
-            order.submit();
+            Order order = OrderFixtures.draft(UUID.randomUUID());
+            order.sendContract(OrderFixtures.STAFF, NOW);
+            order.contractSigned(false, true, OrderFixtures.STAFF, NOW);
             order.cancel(CancellationReasonCode.DUPLICATE_ORDER, "secret note", null, null, NOW);
             order(order);
             when(orders.history(order.id().value())).thenReturn(List.of(

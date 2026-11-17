@@ -46,8 +46,9 @@ import javax.sql.DataSource;
  * while the first is still going. {@code lockAtLeastFor} guards against a job that finishes in
  * milliseconds being started again by an instance whose clock is slightly ahead.</p>
  *
- * <p>All three scheduled jobs in the application carry it today: {@code AuditRetention},
- * {@code IdempotencyHousekeeping} and {@code ReservationSweeper}.</p>
+ * <p>Every scheduled job in the application carries it, {@code AuditRetention} and
+ * {@code IdempotencyHousekeeping} among them; {@code verify.py} and {@code ArchitectureTest} fail one that
+ * does not.</p>
  *
  * <h2>The annotation is not optional, and forgetting it is silent</h2>
  *

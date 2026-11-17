@@ -23,13 +23,19 @@ class CycleCountTest {
     private final UUID counter = UUID.randomUUID();
     private final UUID other = UUID.randomUUID();
 
+    private static final int STANDARD = 12;
+    /** 20 BR-12: a count holds at most 500 cartons. */
+    private static final int MAX = 500;
+
+    /** A carton at the bin; one fixed carton per bin keeps the helper deterministic. */
     private static CountSlot slot(String location) {
-        return CountSlot.loose(new LocationId(location), new Sku("CUP-250"), null);
+        return CountSlot.carton(new LocationId(location), new Sku("CUP-250"), "L1",
+                new StockPackageId(UUID.nameUUIDFromBytes(location.toUpperCase().getBytes())));
     }
 
     private static CycleCount planOne(String note, UUID assignee) {
         return CycleCount.plan("CC-20261023-0001", WAREHOUSE, CycleCountTrigger.MANUAL, true, assignee,
-                LocalDate.of(2026, 10, 23), note, List.of(new CountLineDraft(slot("HN-A01-1-01"), 10)));
+                LocalDate.of(2026, 10, 23), note, List.of(new CountLineDraft(slot("HN-A01-1-01"), STANDARD)));
     }
 
     private static void assertCode(Throwable t, ErrorCode code) {
@@ -48,7 +54,7 @@ class CycleCountTest {
     void planRefusesTheSameSlotTwice() {
         assertThatThrownBy(() -> CycleCount.plan("CC-1", WAREHOUSE, CycleCountTrigger.MANUAL, false, null,
                 LocalDate.of(2026, 10, 23), null,
-                List.of(new CountLineDraft(slot("HN-A01-1-01"), 1), new CountLineDraft(slot("hn-a01-1-01"), 2))))
+                List.of(new CountLineDraft(slot("HN-A01-1-01"), STANDARD), new CountLineDraft(slot("hn-a01-1-01"), STANDARD))))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
@@ -59,12 +65,12 @@ class CycleCountTest {
         CountSlot moved = CountSlot.carton(new LocationId("HN-A01-1-02"), new Sku("CUP-250"), "L1", carton);
 
         assertThatThrownBy(() -> CycleCount.plan("CC-1", WAREHOUSE, CycleCountTrigger.MANUAL, false, null,
-                LocalDate.of(2026, 10, 23), null, List.of(new CountLineDraft(here, 5), new CountLineDraft(moved, 5))))
+                LocalDate.of(2026, 10, 23), null, List.of(new CountLineDraft(here, STANDARD), new CountLineDraft(moved, STANDARD))))
                 .as("the claim and the advisory lock key a carton by its package alone")
                 .isInstanceOf(IllegalArgumentException.class);
         CycleCount count = CycleCount.plan("CC-1", WAREHOUSE, CycleCountTrigger.MANUAL, false, null,
-                LocalDate.of(2026, 10, 23), null, List.of(new CountLineDraft(here, 5)));
-        assertThatThrownBy(() -> count.addLine(moved, 5, 5, counter, T1))
+                LocalDate.of(2026, 10, 23), null, List.of(new CountLineDraft(here, STANDARD)));
+        assertThatThrownBy(() -> count.addLine(moved, true, STANDARD, counter, T1, MAX))
                 .satisfies(t -> assertCode(t, ErrorCode.CYCLE_COUNT_SLOT_BUSY));
     }
 
@@ -72,37 +78,81 @@ class CycleCountTest {
     void firstCountStartsTheCountAndOverwritesTheBook() {
         CycleCount count = planOne(null, null);
         CycleCountLine line = count.lines().get(0);
+        assertThat(line.booked()).isTrue();
+        assertThat(line.found()).isNull();
 
-        count.count(line.id(), 7, 9, counter, T1);
+        // planned as booked, but the books no longer have it at the bin when it is scanned (BR-09): booked is re-read
+        count.count(line.id(), true, false, STANDARD, counter, T1);
 
         assertThat(count.status()).isEqualTo(CycleCountStatus.IN_PROGRESS);
         assertThat(count.startedAt()).isEqualTo(T1);
-        assertThat(line.expectedQty()).isEqualTo(9);
-        assertThat(line.delta()).isEqualTo(-2);
+        assertThat(line.booked()).isFalse();
+        assertThat(line.found()).isTrue();
+        assertThat(line.expectedQty()).isZero();
+        assertThat(line.countedQty()).isEqualTo(STANDARD);
+        assertThat(line.delta()).isEqualTo(STANDARD);
+    }
+
+    @Test
+    void aCartonNotFoundIsAShortageOfOneWholeCarton() {
+        CycleCount count = planOne(null, null);
+        CycleCountLine line = count.lines().get(0);
+
+        count.count(line.id(), false, true, STANDARD, counter, T1);
+
+        assertThat(line.found()).isFalse();
+        assertThat(line.countedQty()).isZero();
+        assertThat(line.delta()).isEqualTo(-STANDARD);
     }
 
     @Test
     void recountingALineOverwritesEverything() {
         CycleCount count = planOne(null, null);
         CycleCountLine line = count.lines().get(0);
-        count.count(line.id(), 7, 9, counter, T1);
+        count.count(line.id(), false, true, STANDARD, counter, T1);
 
-        count.count(line.id(), 9, 9, other, T2);
+        count.count(line.id(), true, true, STANDARD, other, T2);
 
         assertThat(line.countedBy()).isEqualTo(other);
         assertThat(line.countedAt()).isEqualTo(T2);
+        assertThat(line.found()).isTrue();
         assertThat(line.delta()).isZero();
         assertThat(count.startedAt()).isEqualTo(T1);
     }
 
     @Test
-    void countingRefusesAnUnknownLineAndANegativeQuantity() {
+    void countingRefusesAnUnknownLineAndACartonOfNoUnits() {
         CycleCount count = planOne(null, null);
-        assertThatThrownBy(() -> count.count(UUID.randomUUID(), 1, 1, counter, T1))
+        assertThatThrownBy(() -> count.count(UUID.randomUUID(), true, true, STANDARD, counter, T1))
                 .satisfies(t -> assertCode(t, ErrorCode.NOT_FOUND));
         UUID lineId = count.lines().get(0).id();
-        assertThatThrownBy(() -> count.count(lineId, -1, 1, counter, T1))
-                .satisfies(t -> assertCode(t, ErrorCode.VALIDATION_FAILED));
+        assertThatThrownBy(() -> count.count(lineId, true, true, 0, counter, T1))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void aCountLineNamesACartonNeverLooseStock() {
+        CountSlot loose = new CountSlot(new LocationId("HN-A01-1-01"), new Sku("CUP-250"), null, null);
+        assertThat(loose.isCarton()).isFalse();
+        assertThatThrownBy(() -> CycleCount.plan("CC-1", WAREHOUSE, CycleCountTrigger.MANUAL, false, null,
+                LocalDate.of(2026, 10, 23), null, List.of(new CountLineDraft(loose, STANDARD))))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void aLooseLineOfTheHistoryIsNeitherCountedNorSentForRecount() {
+        UUID lineId = UUID.randomUUID();
+        CountSlot loose = new CountSlot(new LocationId("HN-A01-1-01"), new Sku("CUP-250"), null, null);
+        CycleCountLine history = new CycleCountLine(lineId, loose, 10, 9, counter, T1, false);
+        CycleCount completed = new CycleCount(UUID.randomUUID(), "CC-OLD", WAREHOUSE, CycleCountTrigger.MANUAL,
+                CycleCountStatus.COMPLETED, false, null, LocalDate.of(2026, 10, 1), T1, T2, null, T1,
+                List.of(history), 0L);
+
+        assertThatThrownBy(() -> completed.markRecount(List.of(lineId)))
+                .satisfies(t -> assertCode(t, ErrorCode.CONFLICT));
+        assertThatThrownBy(() -> history.count(true, true, STANDARD, counter, T2))
+                .isInstanceOf(IllegalStateException.class);
+        assertThat(history.recountRequired()).isFalse();
     }
 
     @Test
@@ -115,7 +165,7 @@ class CycleCountTest {
     @Test
     void submitIsIdempotentOnTheAggregate() {
         CycleCount count = planOne(null, null);
-        count.count(count.lines().get(0).id(), 10, 10, counter, T1);
+        count.count(count.lines().get(0).id(), true, true, STANDARD, counter, T1);
 
         assertThat(count.submit(T2)).isTrue();
         assertThat(count.submit(T2)).isFalse();
@@ -129,7 +179,7 @@ class CycleCountTest {
         count.cancel("Not needed", T1);
         UUID lineId = count.lines().get(0).id();
 
-        assertThatThrownBy(() -> count.count(lineId, 1, 1, counter, T2))
+        assertThatThrownBy(() -> count.count(lineId, true, true, STANDARD, counter, T2))
                 .satisfies(t -> assertCode(t, ErrorCode.CYCLE_COUNT_NOT_OPEN));
         assertThatThrownBy(() -> count.submit(T2)).satisfies(t -> assertCode(t, ErrorCode.CYCLE_COUNT_NOT_OPEN));
     }
@@ -153,7 +203,7 @@ class CycleCountTest {
     @Test
     void cancelRefusesACompletedCount() {
         CycleCount count = planOne(null, null);
-        count.count(count.lines().get(0).id(), 10, 10, counter, T1);
+        count.count(count.lines().get(0).id(), true, true, STANDARD, counter, T1);
         count.submit(T2);
         assertThatThrownBy(() -> count.cancel("late", T2))
                 .satisfies(t -> assertCode(t, ErrorCode.CYCLE_COUNT_NOT_OPEN));
@@ -173,12 +223,34 @@ class CycleCountTest {
     void addLineRefusesASlotAlreadyOnTheCount() {
         CycleCount count = planOne(null, null);
 
-        assertThatThrownBy(() -> count.addLine(slot("HN-A01-1-01"), 3, 3, counter, T1))
+        assertThatThrownBy(() -> count.addLine(slot("HN-A01-1-01"), true, STANDARD, counter, T1, MAX))
                 .satisfies(t -> assertCode(t, ErrorCode.CYCLE_COUNT_SLOT_BUSY));
 
-        CycleCountLine added = count.addLine(slot("HN-A01-1-02"), 3, 0, counter, T1);
+        // a LOST carton found again: the books do not have it, the counter does (a surplus of one carton)
+        CycleCountLine added = count.addLine(slot("HN-A01-1-02"), false, STANDARD, counter, T1, MAX);
         assertThat(count.lines()).hasSize(2);
-        assertThat(added.delta()).isEqualTo(3);
+        assertThat(added.found()).isTrue();
+        assertThat(added.booked()).isFalse();
+        assertThat(added.delta()).isEqualTo(STANDARD);
+        // a carton the books do have, scanned although the plan missed it: present on both sides, no variance
+        CycleCountLine known = count.addLine(slot("HN-A01-1-03"), true, STANDARD, counter, T1, MAX);
+        assertThat(known.delta()).isZero();
+    }
+
+    @Test
+    void aFullCountTakesNoMoreLines() {
+        CycleCount count = planOne(null, null);
+
+        assertThatThrownBy(() -> count.addLine(slot("HN-A01-1-02"), true, STANDARD, counter, T1, 1))
+                .as("the plan already filled a count of one line")
+                .satisfies(t -> assertCode(t, ErrorCode.CYCLE_COUNT_TOO_LARGE));
+        assertThat(count.lines()).hasSize(1);
+
+        count.addLine(slot("HN-A01-1-02"), true, STANDARD, counter, T1, 2);
+        assertThat(count.lines()).hasSize(2);
+        assertThatThrownBy(() -> count.addLine(slot("HN-A01-1-03"), true, STANDARD, counter, T1, 2))
+                .satisfies(t -> assertCode(t, ErrorCode.CYCLE_COUNT_TOO_LARGE));
+        assertThat(count.lines()).hasSize(2);
     }
 
     @Test
@@ -187,7 +259,7 @@ class CycleCountTest {
         count.assign(counter);
         assertThat(count.assignedUserId()).isEqualTo(counter);
 
-        count.count(count.lines().get(0).id(), 10, 10, counter, T1);
+        count.count(count.lines().get(0).id(), true, true, STANDARD, counter, T1);
         assertThatThrownBy(() -> count.assign(other)).satisfies(t -> assertCode(t, ErrorCode.CONFLICT));
     }
 
@@ -198,7 +270,7 @@ class CycleCountTest {
         assertThatThrownBy(() -> count.markRecount(List.of(lineId)))
                 .satisfies(t -> assertCode(t, ErrorCode.CYCLE_COUNT_NOT_OPEN));
 
-        count.count(lineId, 10, 10, counter, T1);
+        count.count(lineId, true, true, STANDARD, counter, T1);
         count.submit(T2);
         List<CountSlot> slots = count.markRecount(List.of(lineId));
 
@@ -210,7 +282,7 @@ class CycleCountTest {
     void aLineIsSentForRecountOnce() {
         CycleCount count = planOne(null, null);
         UUID lineId = count.lines().get(0).id();
-        count.count(lineId, 10, 10, counter, T1);
+        count.count(lineId, true, true, STANDARD, counter, T1);
         count.submit(T2);
         count.markRecount(List.of(lineId));
 
@@ -221,7 +293,7 @@ class CycleCountTest {
 
     @Test
     void shortPickIsBlindPlannedAndUnassigned() {
-        CycleCount count = CycleCount.shortPick("CC-1", WAREHOUSE, slot("HN-A01-1-01"), 4, "short",
+        CycleCount count = CycleCount.shortPick("CC-1", WAREHOUSE, slot("HN-A01-1-01"), STANDARD, "short",
                 LocalDate.of(2026, 10, 23));
         assertThat(count.trigger()).isEqualTo(CycleCountTrigger.SHORT_PICK);
         assertThat(count.blind()).isTrue();

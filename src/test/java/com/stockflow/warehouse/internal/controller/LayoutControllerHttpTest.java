@@ -12,7 +12,6 @@ import com.stockflow.warehouse.internal.domain.Footprint;
 import com.stockflow.warehouse.internal.domain.LocationStatus;
 import com.stockflow.warehouse.internal.domain.MapUnit;
 import com.stockflow.warehouse.internal.domain.PickFaces;
-import com.stockflow.warehouse.internal.domain.StorageClass;
 import com.stockflow.warehouse.internal.domain.WarehouseStatus;
 import com.stockflow.warehouse.internal.service.BoundarySummary;
 import com.stockflow.warehouse.internal.service.WarehouseLayout;
@@ -62,16 +61,16 @@ class LayoutControllerHttpTest {
 
     @Test
     void theLayoutNestsBinsUnderShelvesWithTheirEffectiveStatus() throws Exception {
-        var bin = new WarehouseLayout.Bin(UUID.randomUUID(), "A", null, BIN, BinType.PALLET, null, UUID.randomUUID(),
-                "HCM-A01-1-A", StorageClass.OVERSIZE, 40, new BigDecimal("250"), true, true, LocationStatus.ACTIVE,
+        var bin = new WarehouseLayout.Bin(UUID.randomUUID(), "A", null, BIN, BinType.PALLET, UUID.randomUUID(),
+                "HCM-A01-1-A", new BigDecimal("8.400000"), new BigDecimal("250"), true, true, LocationStatus.ACTIVE,
                 LocationStatus.MAINTENANCE, false);
         var shelf = new WarehouseLayout.Shelf(UUID.randomUUID(), null, "A01", "Kệ A01", null, SHELF, true,
-                new PickFaces(false, false, true, false), StorageClass.OVERSIZE, LocationStatus.MAINTENANCE,
+                new PickFaces(false, false, true, false), LocationStatus.MAINTENANCE,
                 LocationStatus.MAINTENANCE, 3, List.of(new WarehouseLayout.Level(UUID.randomUUID(), 1,
                 BigDecimal.ZERO, null, null, List.of(bin))));
         var office = new WarehouseLayout.Area(UUID.randomUUID(), "OFFICE", AreaType.NON_STORAGE, "Văn phòng kho",
-                FLOOR, true, LocationStatus.ACTIVE, LocationStatus.ACTIVE, null, 0, null, null, null, null, null,
-                null, null);
+                FLOOR, true, LocationStatus.ACTIVE, LocationStatus.ACTIVE, null, 0, null, null, null, null,
+                null);
         when(layout.layoutOf(WAREHOUSE)).thenReturn(new WarehouseLayout(
                 new WarehouseLayout.Warehouse(WAREHOUSE, "HCM", "Kho HCM", MapUnit.M, new BigDecimal("60"),
                         new BigDecimal("40"), WarehouseStatus.ACTIVE, 2),
@@ -90,6 +89,9 @@ class LayoutControllerHttpTest {
                 .andExpect(jsonPath("$.data.shelves[0].levels[0].bins[0].status").value("ACTIVE"))
                 .andExpect(jsonPath("$.data.shelves[0].levels[0].bins[0].effectiveStatus").value("MAINTENANCE"))
                 .andExpect(jsonPath("$.data.shelves[0].levels[0].bins[0].usable").value(false))
+                .andExpect(jsonPath("$.data.shelves[0].levels[0].bins[0].capacityVolumeM3").value(8.4))
+                .andExpect(jsonPath("$.data.shelves[0].levels[0].bins[0].capacityUnits").doesNotExist())
+                .andExpect(jsonPath("$.data.shelves[0].defaultStorageClass").doesNotExist())
                 .andExpect(jsonPath("$.data.areas[0].code").value("OFFICE"))
                 .andExpect(jsonPath("$.data.areas[0].usable").doesNotExist())
                 .andExpect(jsonPath("$.data.areas[0].locationCode").doesNotExist())
@@ -99,15 +101,14 @@ class LayoutControllerHttpTest {
     @Test
     void aLocationIsFoundByItsCode() throws Exception {
         when(locations.findLocation("hcm-a01-2-b")).thenReturn(Optional.of(new StorageLocationView(
-                UUID.randomUUID(), StorageLocationView.Kind.BIN, WAREHOUSE, "HCM-A01-2-B",
-                StorageLocationView.StorageClass.OVERSIZE, StorageLocationView.Status.ACTIVE,
+                UUID.randomUUID(), StorageLocationView.Kind.BIN, WAREHOUSE, "HCM-A01-2-B", StorageLocationView.Status.ACTIVE,
                 StorageLocationView.Status.ACTIVE, true)));
 
         mvc.perform(get("/api/v1/locations/{code}", "hcm-a01-2-b"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.kind").value("BIN"))
                 .andExpect(jsonPath("$.data.locationCode").value("HCM-A01-2-B"))
-                .andExpect(jsonPath("$.data.storageClass").value("OVERSIZE"))
+                .andExpect(jsonPath("$.data.storageClass").doesNotExist())
                 .andExpect(jsonPath("$.data.usable").value(true));
     }
 

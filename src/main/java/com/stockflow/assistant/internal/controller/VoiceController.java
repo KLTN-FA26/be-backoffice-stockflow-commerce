@@ -26,7 +26,7 @@ import java.io.IOException;
 import java.io.InputStream;
 
 /**
- * A spoken question written down, to be read, corrected and sent as a question (ADR-0015, design §8.3). Staff holding
+ * A spoken question written down, to be read, corrected and sent as a question (ADR-0016, design §8.3). Staff holding
  * goods or wearing gloves can ask without typing; the transcript comes back to them first, so nothing heard is acted on
  * unread.
  *

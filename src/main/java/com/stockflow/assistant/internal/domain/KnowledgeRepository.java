@@ -23,8 +23,15 @@ public interface KnowledgeRepository {
     }
 
     /**
+     * Every source holding chunks: the documents indexed, by this build or another. A source this build does not
+     * index (a chapter dropped from the corpus, the documents it replaced) is synced empty, so it is not cited forever.
+     */
+    List<String> sources();
+
+    /**
      * The keyword ranking: the best {@code limit} chunks for {@code query} by its words in the text (accents and case
-     * ignored), title similarity for typos, and a rule the query names first ({@link KnowledgeSearch}).
+     * ignored), title similarity for typos, and a rule or section the query names first, every part of it
+     * ({@link KnowledgeSearch#namedRules}, {@link KnowledgeSearch#isNamed}).
      *
      * @param minMatched how many of the query's words a chunk's text must hold to be found by its words, at most as
      *                   many as the query has: one lets a single shared word ("calendar") bring back a passage about

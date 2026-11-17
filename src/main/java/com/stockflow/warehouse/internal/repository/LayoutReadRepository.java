@@ -6,7 +6,6 @@ import com.stockflow.warehouse.internal.domain.BoundaryType;
 import com.stockflow.warehouse.internal.domain.DoorStatus;
 import com.stockflow.warehouse.internal.domain.LocationStatus;
 import com.stockflow.warehouse.internal.domain.MapUnit;
-import com.stockflow.warehouse.internal.domain.StorageClass;
 import com.stockflow.warehouse.internal.domain.WarehouseStatus;
 
 import java.math.BigDecimal;
@@ -60,7 +59,7 @@ public interface LayoutReadRepository {
     record ShelfRow(UUID id, UUID zoneId, String code, String name, String description, BigDecimal x,
                     BigDecimal y, BigDecimal width, BigDecimal length, Integer rotation, Boolean obstacle,
                     Boolean pickNorth, Boolean pickEast, Boolean pickSouth, Boolean pickWest,
-                    StorageClass defaultStorageClass, LocationStatus status, Long version) {
+                    LocationStatus status, Long version) {
     }
 
     record LevelRow(UUID id, UUID shelfId, Integer levelIndex, BigDecimal elevation, BigDecimal usableHeight,
@@ -69,15 +68,13 @@ public interface LayoutReadRepository {
 
     record BinRow(UUID id, UUID levelId, String code, String description, BigDecimal x, BigDecimal y,
                   BigDecimal width, BigDecimal length, Integer rotation, BinType type,
-                  StorageClass storageClassOverride, UUID locationId, String locationCode,
-                  StorageClass storageClass, Integer capacityUnits, BigDecimal maxWeight, Boolean pickable,
+                  UUID locationId, String locationCode, BigDecimal maxWeight, Boolean pickable,
                   Boolean putawayTarget, LocationStatus status) {
     }
 
     record AreaRow(UUID id, String code, AreaType type, String name, BigDecimal x, BigDecimal y,
                    BigDecimal width, BigDecimal length, Integer rotation, Boolean obstacle, LocationStatus status,
-                   Long version, UUID locationId, String locationCode, StorageClass storageClass,
-                   Integer capacityUnits, BigDecimal maxWeight, Boolean pickable, Boolean putawayTarget) {
+                   Long version, UUID locationId, String locationCode, BigDecimal maxWeight, Boolean pickable, Boolean putawayTarget) {
     }
 
     record BoundaryRow(UUID id, BoundaryType type, BigDecimal startX, BigDecimal startY, BigDecimal endX,

@@ -824,7 +824,7 @@ class IdentityServiceImpl implements IdentityService {
         user.resetPassword(passwordEncoder.encode(password), clock.instant());
         userRepository.save(user);
         int ended = sessions.revokeLive(userId, null, clock.instant(), SessionEndReason.PASSWORD_RESET);
-        // The sessions end here; credentials held elsewhere (personal MCP tokens) end with this event (ADR-0013).
+        // The sessions end here; credentials held elsewhere (personal MCP tokens) end with this event (ADR-0014).
         events.publishEvent(new CredentialsReset(userId, CredentialsReset.Cause.ADMINISTRATOR_RESET, clock.instant()));
         return new PasswordReset(temporary, ended);
     }
@@ -1074,7 +1074,7 @@ class IdentityServiceImpl implements IdentityService {
         if (!forced && !command.logoutOtherDevices()) {
             return 0;
         }
-        // Signing out everywhere else covers the personal MCP tokens too (ADR-0013); a plain change keeps them.
+        // Signing out everywhere else covers the personal MCP tokens too (ADR-0014); a plain change keeps them.
         events.publishEvent(new CredentialsReset(command.userId(),
                 CredentialsReset.Cause.CHANGED_SIGNING_OUT_ELSEWHERE, clock.instant()));
         return sessions.revokeLive(command.userId(), command.currentSessionId(), clock.instant(),

@@ -63,8 +63,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * it is what the tools then enforce.
  *
  * <p>{@link #GRANTED} is the matrix of the seeded grants for the tools that existed when it was last brought up to date
- * (29/10/2026: the customer price and credit tools, the pick-task and goods-receipt queues, and the two floor roles
- * V20261105000500 opened the assistant to; 05/11/2026: lookupScan, findTransferOrders and findReturns). A tool added
+ * (the 2026-11 rescope, ADR-0010: the eight roles of the baseline, warehouse staff opened to the assistant by
+ * V20261125000500, findProductionOrders against outside producers and findEInvoices added; the low-stock, expiry,
+ * purchasing, supplier, reorder, credit, transfer and return tools gone with the features they read). A tool added
  * later is still covered by the context and the enforcement cases, which compare against the endpoint's own answer;
  * add it to the tables when its grants are decided.</p>
  */
@@ -82,34 +83,25 @@ class AssistantCapabilitiesIntegrationTest {
     private static final int CALLS_PER_STEP = 8;
 
     private static final Map<String, String> ARGUMENTS = Map.ofEntries(
-            Map.entry("findExpiringLots", "{\"withinDays\":30,\"limit\":5}"),
             Map.entry("findFulfillmentTasks", "{\"status\":\"ANY\",\"limit\":5}"),
             Map.entry("findGoodsReceipts", "{\"status\":\"OPEN\",\"receiptNumber\":\"\",\"limit\":5}"),
-            Map.entry("findLowStock", "{\"limit\":5}"),
             Map.entry("findOrder", "{\"orderNumber\":\"" + NO_SUCH_ORDER + "\"}"),
-            Map.entry("findOverdueCustomers", "{\"order\":\"LARGEST_FIRST\",\"limit\":5}"),
             Map.entry("findPendingAdjustments", "{\"sku\":\"\",\"limit\":5}"),
             Map.entry("findShipments", "{\"status\":\"ANY\",\"search\":\"\",\"limit\":5}"),
             Map.entry("findOrders", "{\"status\":\"ANY\",\"holdReason\":\"ANY\",\"placedFrom\":\"\","
                     + "\"placedTo\":\"\",\"limit\":5}"),
-            Map.entry("findProductionOrders", "{\"productionOrderNumber\":\"\",\"salesOrderNumber\":\"\","
-                    + "\"status\":\"OPEN\",\"due\":\"ANY\",\"limit\":5}"),
-            Map.entry("findPurchaseOrders", "{\"status\":\"ANY\",\"poNumber\":\"\",\"supplier\":\"\",\"limit\":5}"),
-            Map.entry("getCustomerCredit", "{\"customer\":\"" + NO_SUCH_CUSTOMER + "\"}"),
+            Map.entry("findProductionOrders", "{\"status\":\"OPEN\",\"salesOrderNumber\":\"\",\"code\":\"\","
+                    + "\"limit\":5}"),
+            Map.entry("findEInvoices", "{\"status\":\"ANY\",\"orderNumber\":\"\",\"customer\":\"\","
+                    + "\"issuedFrom\":\"\",\"issuedTo\":\"\",\"limit\":5}"),
             Map.entry("getCustomerPrice", "{\"customer\":\"" + NO_SUCH_CUSTOMER + "\",\"sku\":\"" + SKU
                     + "\",\"quantity\":0}"),
             Map.entry("getOrderPicking", "{\"orderNumber\":\"" + NO_SUCH_ORDER + "\"}"),
             Map.entry("getSalesSummary", "{\"days\":7,\"top\":3}"),
             Map.entry("getStockLevels", "{\"sku\":\"" + SKU + "\"}"),
             Map.entry("getStockLots", "{\"sku\":\"" + SKU + "\"}"),
-            Map.entry("getSupplierTerms", "{\"sku\":\"" + SKU + "\",\"supplier\":\"\"}"),
             // No dash: not a location's shape, so a warehouse-limited user gets NOT_FOUND, not another warehouse.
             Map.entry("lookupScan", "{\"code\":\"NOSUCHLABEL\"}"),
-            Map.entry("findTransferOrders", "{\"status\":\"OPEN\",\"transferNumber\":\"\","
-                    + "\"order\":\"EXPECTED_FIRST\",\"limit\":5}"),
-            Map.entry("findReturns", "{\"status\":\"OPEN\",\"customer\":\"\",\"number\":\"\","
-                    + "\"order\":\"NEWEST_FIRST\",\"limit\":5}"),
-            Map.entry("proposeReorder", "{\"skus\":[\"" + SKU + "\"],\"salesDays\":7,\"coverDays\":30}"),
             Map.entry("searchCatalog", "{\"text\":\"sofa\",\"limit\":3}"),
             Map.entry("searchKnowledge", "{\"query\":\"custom printed return defective\"}"),
             Map.entry("traceLot", "{\"lotNumber\":\"NO-SUCH-LOT\",\"sku\":\"\"}"));
@@ -119,18 +111,15 @@ class AssistantCapabilitiesIntegrationTest {
 
     /** What a warehouse-limited user gets from each tool; a tool not listed answers the same for everyone. */
     private static final Map<String, String> LIMITATIONS = Map.ofEntries(
-            Map.entry("findLowStock", "COMPANY_WIDE_ONLY"), Map.entry("proposeReorder", "COMPANY_WIDE_ONLY"),
             Map.entry("getStockLevels", "PARTIAL"), Map.entry("getStockLots", "PARTIAL"),
-            Map.entry("findExpiringLots", "PARTIAL"), Map.entry("traceLot", "PARTIAL"),
-            Map.entry("findPurchaseOrders", "PARTIAL"), Map.entry("getOrderPicking", "PARTIAL"),
+            Map.entry("traceLot", "PARTIAL"), Map.entry("getOrderPicking", "PARTIAL"),
             Map.entry("findProductionOrders", "PARTIAL"), Map.entry("findFulfillmentTasks", "PARTIAL"),
             Map.entry("findGoodsReceipts", "PARTIAL"), Map.entry("findPendingAdjustments", "PARTIAL"),
-            Map.entry("findShipments", "PARTIAL"), Map.entry("lookupScan", "PARTIAL"),
-            Map.entry("findTransferOrders", "PARTIAL"), Map.entry("findReturns", "PARTIAL"));
+            Map.entry("findShipments", "PARTIAL"), Map.entry("lookupScan", "PARTIAL"));
 
     /**
-     * The tools of {@link #KNOWN} each seeded persona may use (identity.role_permission, 28/10/2026, plus
-     * V20261105000500).
+     * The tools of {@link #KNOWN} each seeded persona may use (identity.role_permission of the baseline after the
+     * rescope, plus V20261125000200 and V20261125000500).
      */
     private static final Map<Persona, Set<String>> GRANTED = granted();
 
@@ -159,38 +148,22 @@ class AssistantCapabilitiesIntegrationTest {
     private static Map<Persona, Set<String>> granted() {
         Map<Persona, Set<String>> granted = new LinkedHashMap<>();
         granted.put(new Persona(Role.SYSTEM_ADMIN, false), KNOWN);
-        granted.put(new Persona(Role.INVENTORY_PLANNER, false), Set.of("findExpiringLots", "findLowStock",
-                "findPendingAdjustments", "findTransferOrders", "getStockLevels", "getStockLots", "lookupScan",
-                "searchCatalog", "searchKnowledge", "traceLot"));
-        // findLowStock and proposeReorder give company-wide figures: refused to a manager of one warehouse.
-        granted.put(new Persona(Role.WAREHOUSE_MANAGER, true), Set.of("findExpiringLots", "findFulfillmentTasks",
-                "findGoodsReceipts", "findPendingAdjustments", "findProductionOrders", "findPurchaseOrders",
-                "findReturns", "findShipments", "findTransferOrders", "getOrderPicking", "getSalesSummary",
-                "getStockLevels", "getStockLots", "lookupScan", "searchCatalog", "searchKnowledge", "traceLot"));
-        granted.put(new Persona(Role.SALES_STAFF, false), Set.of("findOrder", "findOrders", "findOverdueCustomers",
-                "findProductionOrders", "findReturns", "getCustomerCredit", "getCustomerPrice", "searchCatalog",
-                "searchKnowledge"));
-        // proposeReorder: the purchase-order permission, but neither sales nor stock (design §13 AQ-08).
-        granted.put(new Persona(Role.PROCUREMENT_STAFF, false), Set.of("findGoodsReceipts", "findProductionOrders",
-                "findPurchaseOrders", "getSupplierTerms", "searchCatalog", "searchKnowledge"));
-        // The customer tools without customer-customers:READ: a customer is named exactly, never listed.
-        granted.put(new Persona(Role.ORDER_COORDINATOR, false), Set.of("findFulfillmentTasks", "findOrder",
-                "findOrders", "findOverdueCustomers", "findProductionOrders", "findReturns", "findShipments",
-                "getCustomerCredit", "getCustomerPrice", "getOrderPicking", "getSalesSummary", "searchCatalog",
-                "searchKnowledge"));
-        granted.put(new Persona(Role.ACCOUNTANT, false), Set.of("findOrder", "findOrders", "findOverdueCustomers",
-                "findReturns", "getCustomerCredit", "getSalesSummary", "searchCatalog", "searchKnowledge"));
-        // getOrderPicking: fulfillment shows a design re-verifier the tasks of their warehouse (TaskAccess).
-        granted.put(new Persona(Role.QC_STAFF, true), Set.of("findFulfillmentTasks", "findGoodsReceipts",
-                "findProductionOrders", "findReturns", "getOrderPicking", "getStockLevels", "getStockLots",
-                "lookupScan", "searchCatalog", "searchKnowledge"));
-        // V20261105000500: a picker's own tasks, through fulfillment's rule.
-        granted.put(new Persona(Role.WAREHOUSE_STAFF, true), Set.of("findExpiringLots", "findFulfillmentTasks",
-                "findGoodsReceipts", "findPendingAdjustments", "findProductionOrders", "findPurchaseOrders",
-                "findReturns", "findShipments", "findTransferOrders", "getOrderPicking", "getStockLevels",
-                "getStockLots", "lookupScan", "searchCatalog", "searchKnowledge", "traceLot"));
-        granted.put(new Persona(Role.PRODUCTION_STAFF, true), Set.of("findProductionOrders", "getStockLevels",
-                "getStockLots", "searchCatalog", "searchKnowledge"));
+        granted.put(new Persona(Role.WAREHOUSE_MANAGER, true), Set.of("findFulfillmentTasks", "findGoodsReceipts",
+                "findOrder", "findOrders", "findPendingAdjustments", "findProductionOrders", "findShipments",
+                "getOrderPicking", "getSalesSummary", "getStockLevels", "getStockLots", "lookupScan", "searchCatalog",
+                "searchKnowledge", "traceLot"));
+        // Floor staff read stock and their own tasks, never orders (V20261125000500).
+        granted.put(new Persona(Role.WAREHOUSE_STAFF, true), Set.of("findFulfillmentTasks", "findGoodsReceipts",
+                "findPendingAdjustments", "findShipments", "getOrderPicking", "getStockLevels", "getStockLots",
+                "lookupScan", "searchCatalog", "searchKnowledge", "traceLot"));
+        granted.put(new Persona(Role.SALES_STAFF, false), Set.of("findOrder", "findOrders", "findProductionOrders",
+                "getCustomerPrice", "searchCatalog", "searchKnowledge"));
+        granted.put(new Persona(Role.SALES_MANAGER, false), Set.of("findEInvoices", "findProductionOrders",
+                "getCustomerPrice", "getSalesSummary", "searchCatalog", "searchKnowledge"));
+        granted.put(new Persona(Role.ACCOUNTANT, false), Set.of("findEInvoices", "findOrder", "findOrders",
+                "getSalesSummary", "searchCatalog", "searchKnowledge"));
+        granted.put(new Persona(Role.PRODUCTION_COORDINATOR, false), Set.of("findOrder", "findOrders",
+                "findProductionOrders", "searchCatalog", "searchKnowledge"));
         return granted;
     }
 
@@ -315,13 +288,13 @@ class AssistantCapabilitiesIntegrationTest {
             + "number that matches no order; a coordinator, who reads orders, is told the status")
     void orderStatusStaysWithWhoMayReadOrders() throws Exception {
         String number = order();
-        UUID qc = staff(new Persona(Role.QC_STAFF, true));
+        UUID qc = staff(new Persona(Role.WAREHOUSE_STAFF, true));
         when(model.next(any())).thenReturn(toolUse(List.of(
                         new ToolCall("toolu_order", "getOrderPicking", "{\"orderNumber\":\"" + number + "\"}"),
                         new ToolCall("toolu_none", "getOrderPicking", "{\"orderNumber\":\"" + NO_SUCH_ORDER + "\"}"))),
                 answer("Không thấy lệnh nhặt nào."));
-        String asked = start(Role.QC_STAFF, qc);
-        http.asRole(Role.QC_STAFF, qc, ask(asked, "Đơn " + number + " đã có lệnh nhặt chưa?"))
+        String asked = start(Role.WAREHOUSE_STAFF, qc);
+        http.asRole(Role.WAREHOUSE_STAFF, qc, ask(asked, "Đơn " + number + " đã có lệnh nhặt chưa?"))
                 .andExpect(status().isOk());
 
         Map<String, Object> real = picking(asked, number);
@@ -336,13 +309,14 @@ class AssistantCapabilitiesIntegrationTest {
                 .isEqualTo(((String) none.get("result")).replace(NO_SUCH_ORDER, "#"));
         assertThat(JsonPath.<String>read(result, "$.note")).contains("visible");
 
-        UUID coordinator = staff(new Persona(Role.ORDER_COORDINATOR, false));
+        // Orders and pick lists both: a warehouse manager of HCM.
+        UUID coordinator = staff(new Persona(Role.WAREHOUSE_MANAGER, true));
         when(model.next(any())).thenReturn(toolUse(List.of(
                         new ToolCall("toolu_order", "getOrderPicking", "{\"orderNumber\":\"" + number + "\"}"),
                         new ToolCall("toolu_none", "getOrderPicking", "{\"orderNumber\":\"" + NO_SUCH_ORDER + "\"}"))),
                 answer("Đơn chưa có lệnh nhặt."));
-        String told = start(Role.ORDER_COORDINATOR, coordinator);
-        http.asRole(Role.ORDER_COORDINATOR, coordinator, ask(told, "Đơn " + number + " đã có lệnh nhặt chưa?"))
+        String told = start(Role.WAREHOUSE_MANAGER, coordinator);
+        http.asRole(Role.WAREHOUSE_MANAGER, coordinator, ask(told, "Đơn " + number + " đã có lệnh nhặt chưa?"))
                 .andExpect(status().isOk());
 
         assertThat((String) picking(told, number).get("result")).contains("PENDING_PAYMENT");

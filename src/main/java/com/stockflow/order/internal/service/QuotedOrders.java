@@ -11,9 +11,9 @@ import com.stockflow.order.api.PlaceOrderCommand;
 public interface QuotedOrders {
 
     /**
-     * {@code OrderService.placeOrder} with server-authoritative prices: same idempotency on the request
-     * id, same customer snapshot, payment terms and credit check, same all-or-nothing stock holds
-     * (BR-ORD-001). Joins the caller's transaction.
+     * A DRAFT order for the accepted quote's contract, at the quote's prices: idempotent on the request id, with the
+     * customer's contact and addresses frozen on it. No stock is held and no terms or credit are checked here (the
+     * contract does that). Joins the caller's transaction.
      */
     OrderSummary placeQuotedOrder(PlaceOrderCommand command);
 }

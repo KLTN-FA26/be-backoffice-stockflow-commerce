@@ -25,7 +25,7 @@ import java.util.stream.Collectors;
  */
 final class OracleModel {
 
-    static final String NO_TOOL_ANSWER = "Tôi chỉ hỗ trợ tra cứu tồn kho, đơn hàng, mua hàng và doanh số, "
+    static final String NO_TOOL_ANSWER = "Tôi chỉ hỗ trợ tra cứu tồn kho, đơn hàng, nhập hàng và doanh số, "
             + "và không thể thay đổi dữ liệu.";
 
     private final ObjectMapper json = new ObjectMapper();

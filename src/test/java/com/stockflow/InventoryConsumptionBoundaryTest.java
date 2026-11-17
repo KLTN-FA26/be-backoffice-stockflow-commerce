@@ -1,6 +1,8 @@
 package com.stockflow;
 
 import com.stockflow.inventory.consumption.PickConsumption;
+import com.stockflow.inventory.consumption.StageCommand;
+import com.stockflow.inventory.consumption.StagedPick;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.modulith.ApplicationModule;
@@ -47,5 +49,25 @@ class InventoryConsumptionBoundaryTest {
         }
 
         assertThat(allowed).containsExactlyElementsOf(List.of("fulfillment"));
+    }
+
+    /**
+     * Team plan 4C-5: moving a carton to a staging area, deducting it from there and putting it back are as much the
+     * pick's business as the deduction itself, so they ride the same interface - and nothing about them is on the
+     * general inventory API, which would let any module empty a staging area.
+     */
+    @Test
+    @DisplayName("stage, consumeStaged and unstage, with their records, are on 'consumption' and not on 'api'")
+    void stagingRidesTheConsumptionInterface() {
+        var inventory = ModularityTest.MODULES.getModuleByName("inventory").orElseThrow();
+        NamedInterface consumption = inventory.getNamedInterfaces().getByName("consumption").orElseThrow();
+        NamedInterface api = inventory.getNamedInterfaces().getByName("api").orElseThrow();
+
+        assertThat(Arrays.stream(PickConsumption.class.getDeclaredMethods()).map(java.lang.reflect.Method::getName))
+                .contains("stage", "consumeStaged", "unstage");
+        assertThat(consumption.contains(StageCommand.class)).isTrue();
+        assertThat(consumption.contains(StagedPick.class)).isTrue();
+        assertThat(api.contains(StageCommand.class)).isFalse();
+        assertThat(api.contains(StagedPick.class)).isFalse();
     }
 }

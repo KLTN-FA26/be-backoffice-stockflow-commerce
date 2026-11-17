@@ -8,7 +8,6 @@ import com.stockflow.order.internal.entity.OrderAddressJpaEmbeddable;
 
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.OrderSummary;
-import com.stockflow.order.api.PaymentStatus;
 import com.stockflow.order.internal.domain.Order;
 import com.stockflow.order.internal.domain.OrderId;
 import com.stockflow.order.internal.domain.OrderLine;
@@ -42,13 +41,14 @@ final class OrderPersistenceMapper {
                         List.copyOf(line.getReservationIds()),
                         line.getCancelledQuantity());
                     if (line.getDesignChecksum() != null) { mapped.recordDesignChecksum(line.getDesignChecksum()); }
-                    mapped.withRequestedDeliveryDate(line.getRequestedDeliveryDate());
-                    if (line.getShortfallAgreedQuantity() != null || line.getShortfallClosedQuantity() > 0) {
-                        mapped.withShortfall(line.getShortfallAgreedQuantity() == null ? null
-                                : new OrderLine.ShortfallAgreement(line.getShortfallAgreedQuantity(),
-                                        line.getShortfallAgreedNote(), line.getShortfallAgreedBy(),
-                                        line.getShortfallAgreedAt()), line.getShortfallClosedQuantity());
+                    if (line.getCartons() != null) {
+                        mapped.withCartons(line.getUomConversionId(), line.getCartons(), line.getUnitsPerCarton());
                     }
+                    if (line.getTaxRate() != null) {
+                        mapped.withTax(line.getTaxRate(), new Money(line.getTaxAmount(),
+                                Currency.getInstance(line.getCurrency())));
+                    }
+                    mapped.withRequestedDeliveryDate(line.getRequestedDeliveryDate());
                     return mapped;
                 })
                 .toList();
@@ -66,31 +66,32 @@ final class OrderPersistenceMapper {
                 entity.getCreatedBy(), entity.getLastModifiedAt(), entity.getLastModifiedBy(),
                 entity.getContactName(), entity.getContactEmail(), entity.getContactPhone(),
                 toDomain(entity.getShippingAddress()), toDomain(entity.getBillingAddress()));
-        order.restoreTermsAndRelease(entity.getPaymentTerm(), entity.getDepositRequired(),
-                entity.getDepositReceivedAt(), entity.getWarehouseId(), entity.getReleasedAt(),
-                entity.getReleasedBy());
-        order.restorePaymentAndCancellation(entity.getPaidAmount(), entity.getPaidInFullAt(),
-                entity.getCancellationReasonCode(), entity.getCancellationRetainedAmount(), entity.getCreditTermDays());
+        order.restoreRelease(entity.getWarehouseId(), entity.getReleasedAt(), entity.getReleasedBy());
+        order.restoreCancellation(entity.getCancellationReasonCode(), entity.getCancellationRetainedAmount());
         order.restoreCancellationFee(entity.getCancellationFeeAmount(), entity.getCancellationFeeReason(),
                 entity.getCancellationFeeDetail());
         order.restoreFulfilmentFacts(entity.getPrintingStartedAt(), entity.getPackedAt());
         order.restoreGoodsLeft(entity.getGoodsLeftAt());
-        order.restoreReplacement(entity.getReplacesReturnRequestId());
-        order.restoreBalance(entity.getBalancePolicy(), entity.getCodAmount());
-        order.restorePartialShipment(entity.isAllowPartialShipment(), entity.isAwaitingProduction());
-        order.restoreRemainderFee(entity.getRemainderFeeAmount(), entity.getRemainderFeeRetainedAmount(),
-                entity.getRemainderFeePaidAmount());
+        order.restoreContractSigned(entity.getContractSignedAt());
+        order.restoreShippingWarehouse(entity.getShippingWarehouseId(), entity.getShippingWarehouseChosenAt(),
+                entity.getShippingWarehouseChosenBy());
+        order.restorePartialShipment(entity.isAllowPartialShipment());
         order.restoreFulfilmentStarted(entity.getFulfilmentStartedAt());
-        order.restoreDeliveryMode(entity.getDeliveryMode(), entity.getPackingStartedAt());
+        order.restoreFirstLabeled(entity.getFirstLabeledAt());
         order.restoreLifecycle(entity.getHoldReason(), entity.getStatusBeforeHold(), entity.getHoldNote(),
                 entity.getShippedAt(), entity.getDeliveredAt(), entity.getDeliveryFailureReason(),
-                entity.getCompletedAt(), entity.getRefundedAt(), entity.getClosedAt(), entity.getBilledAmount(),
-                entity.getReceivablePaidAmount(), entity.getRemainderRefundAmount());
+                entity.getCompletedAt(), entity.getRefundedAt(), entity.getClosedAt());
+        order.attachFees(entity.getFees().stream()
+                .map(fee -> new com.stockflow.order.internal.domain.OrderFee(fee.getId(), fee.getKind(),
+                        fee.getSku() == null ? null : new Sku(fee.getSku()),
+                        new Money(fee.getAmount(), Currency.getInstance(fee.getCurrency())), fee.getTaxRate(),
+                        new Money(fee.getTaxAmount(), Currency.getInstance(fee.getCurrency()))))
+                .toList());
         order.restoreShipments(shipmentRows.stream()
                 .map(row -> new OrderShipment(row.getId(), row.getQuantities(), row.getAmount(), row.getHandedOverAt(),
                         row.getHandedOverBy(), row.getStatus(), row.getOutcomeAt(), row.getOutcomeBy(),
-                        row.getFailureReason(), row.getFailureNote(), row.getBilledAmount(), row.getCodAmount(),
-                        row.getCarriage()))
+                        row.getFailureReason(), row.getFailureNote(), row.getCarriage())
+                        .restoreDeliveryBatch(row.getDeliveryBatchId()))
                 .toList());
         return order;
     }
@@ -110,30 +111,30 @@ final class OrderPersistenceMapper {
                 order.contactPhone(), toEntity(order.shippingAddress()),
                 toEntity(order.billingAddress()));
         entity.replaceLines(toLineEntities(order));
-        applyTermsAndRelease(order, entity);
-        entity.applyReplacement(order.replacesReturnRequestId());
+        entity.addMissingFees(toFeeEntities(order));
+        entity.applyTax(order.taxTotal().amount());
+        applyState(order, entity);
         return entity;
     }
 
-    private static void applyTermsAndRelease(Order order, OrderJpaEntity entity) {
-        entity.applyTermsAndRelease(order.paymentTerm(), order.depositRequired(), order.depositReceivedAt(),
-                order.warehouseId(), order.releasedAt(), order.releasedBy());
-        entity.applyPaymentAndCancellation(order.paidAmount(), order.paidInFullAt(), order.cancellationReasonCode(),
-                order.cancellationRetainedAmount(), order.creditTermDays());
+    private static void applyState(Order order, OrderJpaEntity entity) {
+        entity.applyRelease(order.warehouseId(), order.releasedAt(), order.releasedBy());
+        entity.applyCancellation(order.cancellationReasonCode(), order.cancellationRetainedAmount());
         entity.applyCancellationFee(order.cancellationFeeAmount(), order.cancellationFeeReason(),
                 order.cancellationFeeDetail());
         entity.applyFulfilmentFacts(order.printingStartedAt(), order.packedAt());
         entity.applyGoodsLeft(order.goodsLeftAt());
-        entity.applyBalance(order.balancePolicy(), order.codAmount());
-        entity.applyPartialShipment(order.allowPartialShipment(), order.awaitingProduction());
-        entity.applyRemainderFee(order.remainderFeeAmount(), order.remainderFeeRetainedAmount(),
-                order.remainderFeePaidAmount());
+        entity.applyContractSigned(order.contractSignedAt());
+        entity.applyShippingWarehouse(order.shippingWarehouseId(), order.shippingWarehouseChosenAt(),
+                order.shippingWarehouseChosenBy());
+        entity.applyPlaced(order.placedAt());
+        entity.applyPartialShipment(order.allowPartialShipment());
         entity.applyClosedAmount(order.closedAmount());
         entity.applyFulfilmentStarted(order.fulfilmentStartedAt());
-        entity.applyDeliveryMode(order.deliveryMode(), order.packingStartedAt());
+        entity.applyFirstLabeled(order.firstLabeledAt());
         entity.applyLifecycle(order.holdReason(), order.statusBeforeHold(), order.holdNote(), order.shippedAt(),
                 order.deliveredAt(), order.deliveryFailureReason(), order.completedAt(), order.refundedAt(),
-                order.closedAt(), order.billedAmount(), order.receivablePaidAmount(), order.remainderRefundAmount());
+                order.closedAt());
     }
 
     /** For the paginated order-history query only. Deliberately never touches {@code
@@ -168,37 +169,29 @@ final class OrderPersistenceMapper {
                 entity.getLastModifiedAt(),
                 entity.getLastModifiedBy(),
                 entity.getContactName(), entity.getContactEmail(), entity.getContactPhone(),
-                toSummary(entity.getShippingAddress()), null,
-                entity.getPaymentTerm(), entity.getWarehouseId(), entity.getReleasedAt(),
-                new OrderSummary.Payment(entity.getPaidAmount(), entity.getDepositRequired(),
-                        entity.getDepositReceivedAt(), entity.getPaidInFullAt(),
-                        PaymentStatus.of(entity.getPaymentTerm(), entity.getPaidAmount(), entity.getPaidInFullAt()),
-                        entity.getCreditTermDays(), entity.getBalancePolicy()),
+                toSummary(entity.getShippingAddress()), null, entity.getWarehouseId(), entity.getReleasedAt(),
                 entity.getStatus() == OrderStatus.CANCELLED
                         ? new OrderSummary.Cancellation(entity.getCancellationReasonCode(),
                                 entity.getCancellationReason(), entity.getCancellationRetainedAmount(),
                                 entity.getCancellationFeeReason(), entity.getCancellationFeeDetail(),
                                 entity.getCancellationFeeAmount())
                         : null,
-                // A list row: the hold and the milestones; no lines, no shipments, no derived money.
+                // A list row: the hold and the milestones; no lines, no shipments, no derived amounts.
                 new OrderSummary.Lifecycle(entity.getHoldReason(), entity.getStatusBeforeHold(), entity.getHoldNote(),
                         entity.getPackedAt(), entity.getShippedAt(), entity.getDeliveredAt(),
-                        entity.getDeliveryFailureReason(), entity.getCompletedAt(), entity.getClosedAt(),
-                        entity.getBilledAmount(), null, null, null, List.of(), List.of(), null, null,
-                        entity.isAllowPartialShipment(), printLinesReady(entity), entity.getDeliveryMode(),
-                        com.stockflow.order.internal.domain.Order.deliveryModeLocked(entity.getStatus(),
-                                entity.getStatusBeforeHold(), entity.getPackingStartedAt(), entity.getPackedAt())));
+                        entity.getDeliveryFailureReason(), entity.getCompletedAt(), entity.getClosedAt(), null, null,
+                        List.of(), List.of(), entity.isAllowPartialShipment(), null, entity.getFirstLabeledAt()),
+                rowCharges(entity));
     }
 
     /**
-     * A list row's view of {@code Order#printLinesReady} without its lines: not while it is printed (or held from
-     * there), nor while it waits for production after its stock left (review of #150). An order with no print line
-     * reads as not ready only in the first two cases, which a stock-only order never is in.
+     * The totals a row holds (4B-3): before tax is {@code net_amount}, which the database generates as the total less
+     * the VAT. The fee lines are not loaded for a row: null, so nobody reads "no fee lines" from it.
      */
-    private static boolean printLinesReady(OrderJpaEntity entity) {
-        boolean printing = entity.getStatus() == OrderStatus.IN_PRODUCTION
-                || entity.getStatus() == OrderStatus.ON_HOLD && entity.getStatusBeforeHold() == OrderStatus.IN_PRODUCTION;
-        return !printing && !entity.isAwaitingProduction();
+    private static OrderSummary.Charges rowCharges(OrderJpaEntity entity) {
+        Currency currency = Currency.getInstance(entity.getCurrency());
+        return new OrderSummary.Charges(new Money(entity.getTotalAmount().subtract(entity.getTaxAmount()), currency),
+                new Money(entity.getTaxAmount(), currency), null);
     }
 
     private static OrderSummary.AddressSummary toSummary(OrderAddressJpaEmbeddable a) {
@@ -215,7 +208,15 @@ final class OrderPersistenceMapper {
         entity.apply(order.status(), total.amount(),
                 total.currency().getCurrencyCode(), order.cancellationReason());
         entity.replaceLines(toLineEntities(order));
-        applyTermsAndRelease(order, entity);
+        entity.addMissingFees(toFeeEntities(order));
+        entity.applyTax(order.taxTotal().amount());
+        applyState(order, entity);
+    }
+
+    private static List<com.stockflow.order.internal.entity.OrderFeeLineJpaEntity> toFeeEntities(Order order) {
+        return order.fees().stream().map(fee -> new com.stockflow.order.internal.entity.OrderFeeLineJpaEntity(fee.id(),
+                fee.kind(), fee.sku() == null ? null : fee.sku().code(), fee.amount().amount(), fee.taxRate(),
+                fee.taxAmount().amount(), fee.amount().currency().getCurrencyCode())).toList();
     }
 
     private static List<OrderLineJpaEntity> toLineEntities(Order order) {
@@ -232,10 +233,8 @@ final class OrderPersistenceMapper {
                     mapped.setDesignChecksum(line.designChecksum());
                     mapped.setCancelledQuantity(line.cancelledQuantity());
                     mapped.setRequestedDeliveryDate(line.requestedDeliveryDate());
-                    OrderLine.ShortfallAgreement agreed = line.shortfallAgreement();
-                    mapped.setShortfall(agreed == null ? null : agreed.quantity(), agreed == null ? null : agreed.note(),
-                            agreed == null ? null : agreed.agreedBy(), agreed == null ? null : agreed.agreedAt(),
-                            line.shortfallClosedQuantity());
+                    mapped.setCartons(line.uomConversionId(), line.cartons(), line.unitsPerCarton());
+                    mapped.setTax(line.taxRate(), line.taxAmount() == null ? null : line.taxAmount().amount());
                     return mapped;
                 })
                 .toList();

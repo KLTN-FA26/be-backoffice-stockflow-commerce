@@ -2,17 +2,15 @@ package com.stockflow.fulfillment;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.stockflow.common.domain.Money;
 import com.stockflow.common.domain.Sku;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.contracts.OrderCancelled;
-import com.stockflow.contracts.PaymentCaptured;
-import com.stockflow.contracts.PaymentMethod;
 import com.stockflow.order.api.OrderService;
-import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.OrderSummary;
-import com.stockflow.order.api.PlaceOrderCommand;
 import com.stockflow.support.Await;
+import com.stockflow.order.internal.service.SalesContracts;
+import com.stockflow.support.ConfirmedOrders;
+import com.stockflow.support.CustomerSkuRows;
 import com.stockflow.support.DemoData;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
@@ -25,6 +23,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.oauth2.jwt.Jwt;
@@ -59,8 +58,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * the real filter chain, permission aspect, solver and database - one test per point of the decision: cancel only; one
  * vehicle back to PLANNED with the same layout while the others carry on; the whole plan refused once a vehicle left;
  * parcels locked until scanned off; scan-off and the warehouse manager's override; the permission; left-behind splits
- * untouched; the order-cancelled-while-loading path in both orders. The transfer picking cancel is in
- * {@link TransferLoadPlanningIntegrationTest}.
+ * untouched; the order-cancelled-while-loading path in both orders.
  *
  * <p>Shares its context, hence its database, with {@link FtlDispatchIntegrationTest}.</p>
  */
@@ -69,22 +67,17 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @AutoConfigureMockMvc
 @TestPropertySource(properties = {"stockflow.security.enabled=true", "stockflow.catalog.projection-retry-ms=3600000",
         "stockflow.fulfillment.packing.dim-divisor=6000", "stockflow.fulfillment.load-planning.solver-budget=PT2S",
-        "stockflow.test.context=ftl-dispatch"})
+        "stockflow.test.context=ftl-dispatch",
+        "stockflow.upload-inspection.enabled=false"})
 class ControlledUnloadIntegrationTest {
 
     private static final Sku SOFA = new Sku("SOFA-3S-GREY");
-    private static final String SOFA_BARCODE = "8930000000011";
     private static final Duration ASYNC = Duration.ofSeconds(15);
     private static final UUID HCM = DemoData.WAREHOUSE_HCM;
     private static final String ORDERS = "/api/v1/orders";
     private static final String BASE = "/api/v1/fulfillment";
     private static final String PLANS = BASE + "/load-plans";
     private static final String LOADS = BASE + "/loads";
-    private static final String ONE_CARTON = "{\"kitOverrideReason\":\"test: packed as one carton\"}";
-    /** A sofa carton, and kit part 1 (the sofa itself): 2150 x 950 x 900 mm. */
-    private static final String SOFA_MEASURES = "{\"weightKg\":52.5,\"lengthCm\":215,\"widthCm\":95,\"heightCm\":90}";
-    /** Kit part 2 (the cushions): 950 x 900 x 400 mm. */
-    private static final String PART2_MEASURES = "{\"weightKg\":20,\"lengthCm\":95,\"widthCm\":90,\"heightCm\":40}";
 
     @Autowired MockMvc mvc;
     @MockitoBean JwtDecoder decoder;
@@ -93,6 +86,7 @@ class ControlledUnloadIntegrationTest {
     @Autowired TransactionTemplate tx;
     @Autowired EntityManager entityManager;
     @Autowired ApplicationEventPublisher publisher;
+    @Autowired ApplicationContext context;
     @Autowired ObjectMapper json;
 
     private UUID coordinator;
@@ -103,12 +97,14 @@ class ControlledUnloadIntegrationTest {
     private UUID managerElsewhere;
     private UUID truck5t;
     private UUID truck1t25;
+    private UUID truck2t5;
     private UUID ghn;
     private UUID ghtk;
 
     @BeforeEach
     void setUp() {
-        coordinator = staff("ORDER_COORDINATOR");
+        CartonStationSupport.giveCartonsASize(tx, jdbc);
+        coordinator = staff("WAREHOUSE_MANAGER", HCM);
         picker = staff("WAREHOUSE_STAFF", HCM);
         dispatcher = staff("WAREHOUSE_STAFF", HCM);
         UUID elsewhere = tx.execute(s -> otherWarehouse());
@@ -118,8 +114,10 @@ class ControlledUnloadIntegrationTest {
         truck5t = jdbc.queryForObject("SELECT id FROM fulfillment.vehicle_type WHERE code = 'TRUCK-5T'", UUID.class);
         truck1t25 = jdbc.queryForObject("SELECT id FROM fulfillment.vehicle_type WHERE code = 'TRUCK-1T25'",
                 UUID.class);
-        ghn = jdbc.queryForObject("SELECT id FROM fulfillment.carrier WHERE code = 'GHN'", UUID.class);
-        ghtk = jdbc.queryForObject("SELECT id FROM fulfillment.carrier WHERE code = 'GHTK'", UUID.class);
+        truck2t5 = jdbc.queryForObject("SELECT id FROM fulfillment.vehicle_type WHERE code = 'TRUCK-2T5'", UUID.class);
+        // Truck hirers of the test's own: the parcel carriers are retired (V20261108001300).
+        ghn = tx.execute(s -> ReferenceRows.truckCarrier(entityManager, "Xe tải Nhanh"));
+        ghtk = tx.execute(s -> ReferenceRows.truckCarrier(entityManager, "Xe tải Tiết Kiệm"));
     }
 
     // ---- fixtures ----------------------------------------------------------------------------
@@ -170,7 +168,7 @@ class ControlledUnloadIntegrationTest {
     }
 
     private ResultActions oc(MockHttpServletRequestBuilder request) throws Exception {
-        return as(coordinator, "ORDER_COORDINATOR", request);
+        return as(coordinator, "WAREHOUSE_MANAGER", request);
     }
 
     private ResultActions packer(MockHttpServletRequestBuilder request) throws Exception {
@@ -189,76 +187,60 @@ class ControlledUnloadIntegrationTest {
         return request.contentType("application/json").content(content);
     }
 
-    private void stock(int sofas) {
-        tx.executeWithoutResult(s -> jdbc.update("""
-                INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, version,
-                    created_at, received_at)
-                VALUES (?, ?, 'HCM-A02-1-A', ?, 0, 'AVAILABLE', 0, NOW(), NOW() - interval '400 days')""",
-                Identifiers.newId(), SOFA.code(), sofas));
+    /**
+     * A paid order of {@code sofas} sofas for the customer, released at HCM (every order is a full truckload): a
+     * contract's order, one carton of two pieces per sofa (14 BR-08), its sealed cartons held at HCM and picked one by
+     * one by their LPN (4C).
+     */
+    private OrderSummary ftlOrder(int sofas, UUID customer) throws Exception {
+        return ftlOrder(sofas, customer, ConfirmedOrders.paidOnSigning());
     }
 
-    /** A paid order of the demo customer for {@code sofas} sofas, released at HCM as a full truckload (LP-1). */
+    /** The same, its contract paying as {@code plan} says; the installments on signing are paid. */
+    private OrderSummary ftlOrder(int sofas, UUID customer, List<SalesContracts.Installment> plan) throws Exception {
+        CustomerSkuRows.Issued issued = sofaOf(customer);
+        CustomerSkuRows.stock(jdbc, tx, issued.sku(), 2 * sofas);
+        ConfirmedOrders.Signed signed = confirmedOrders().signed(customer, plan,
+                ConfirmedOrders.Line.cartons(issued, sofas, 6_000_000));
+        return confirmedOrders().release(confirmedOrders().pay(signed).orderId(), HCM, coordinator);
+    }
+
+    private ConfirmedOrders confirmedOrders;
+
+    private ConfirmedOrders confirmedOrders() {
+        if (confirmedOrders == null) {
+            confirmedOrders = new ConfirmedOrders(context);
+        }
+        return confirmedOrders;
+    }
+
+    private final java.util.Map<UUID, CustomerSkuRows.Issued> sofas = new java.util.HashMap<>();
+
+    /** The customer's own sofa, handling like the catalogue's, sold in cartons of two (a contract's lines are only ever the customer's, 14 BR-04). */
+    private CustomerSkuRows.Issued sofaOf(UUID customer) {
+        return sofas.computeIfAbsent(customer,
+                c -> CustomerSkuRows.like(jdbc, tx, entityManager, c, SOFA.code(), 2));
+    }
+
     private OrderSummary ftlOrder(int sofas) throws Exception {
-        stock(sofas);
-        OrderSummary order = orders.placeOrder(new PlaceOrderCommand(UUID.randomUUID(), DemoData.CUSTOMER_ID,
-                List.of(new PlaceOrderCommand.Line(SOFA, sofas, Money.vnd(12_000_000), null))));
-        BigDecimal total = order.total().amount();
-        UUID payment = Identifiers.newId();
-        tx.executeWithoutResult(s -> jdbc.update("""
-                INSERT INTO payment.payment (id, order_id, amount, currency, method, status, captured_at, created_at)
-                VALUES (?, ?, ?, 'VND', 'BANK_TRANSFER', 'CAPTURED', NOW(), NOW())""", payment, order.orderId(), total));
-        tx.executeWithoutResult(s -> publisher.publishEvent(new PaymentCaptured(order.orderId(), payment, total, "VND",
-                PaymentMethod.BANK_TRANSFER)));
-        Await.until("order confirmed", ASYNC,
-                () -> orders.findById(order.orderId()).orElseThrow().status() == OrderStatus.CONFIRMED);
-        oc(body(post(ORDERS + "/" + order.orderId() + "/release"), "{\"warehouseId\":\"" + HCM
-                + "\",\"deliveryMode\":\"FULL_TRUCKLOAD\"}")).andExpect(status().isOk());
-        return order;
+        return ftlOrder(sofas, DemoData.CUSTOMER_ID);
     }
-
-    /** The order picked and packed: as kits of 2 (LP2-6) or one carton per sofa. Returns the shipment and task. */
-    private UUID[] packed(OrderSummary order, boolean kits) throws Exception {
+    /** The order picked and packed at the check station, one shipment of all its cartons. Returns the shipment and task. */
+    private UUID[] packed(OrderSummary order) throws Exception {
         UUID task = UUID.fromString(data(oc(body(post(BASE + "/tasks"), "{\"orderId\":\"" + order.orderId()
                 + "\",\"assignedUserId\":\"" + picker + "\"}")).andExpect(status().isCreated())).path("taskId").asText());
         packer(post(BASE + "/tasks/" + task + "/picking-start")).andExpect(status().isOk());
         for (Map<String, Object> line : jdbc.queryForList(
-                "SELECT id, location_code, sku, allocated_qty FROM fulfillment.pick_line WHERE pick_id = ?", task)) {
+                "SELECT id, location_code, lpn AS scan "
+                        + "FROM fulfillment.pick_line WHERE pick_id = ?", task)) {
             packer(body(post(BASE + "/tasks/" + task + "/pick-lines/" + line.get("id") + "/confirmation"),
-                    "{\"locationCode\":\"" + line.get("location_code") + "\",\"scannedCode\":\"" + line.get("sku")
-                            + "\",\"quantity\":" + line.get("allocated_qty") + "}")).andExpect(status().isOk());
+                    "{\"locationCode\":\"" + line.get("location_code") + "\",\"lpn\":\"" + line.get("scan")
+                            + "\"}")).andExpect(status().isOk());
         }
         packer(post(BASE + "/tasks/" + task + "/picking-completion")).andExpect(status().isOk());
-        packer(post(BASE + "/tasks/" + task + "/packing-start")).andExpect(status().isOk());
-        int sofas = order.lines().getFirst().quantity();
-        UUID line = order.lines().getFirst().lineId();
-        for (int i = 0; i < sofas; i++) {
-            if (kits) {
-                JsonNode kit = data(packer(body(post(BASE + "/tasks/" + task + "/package-kits"), "{\"orderLineId\":\""
-                        + line + "\"}")).andExpect(status().isCreated()));
-                String part1 = kit.path("packages").get(0).path("packageId").asText();
-                String part2 = kit.path("packages").get(1).path("packageId").asText();
-                scan(task, part1);
-                packer(body(post(BASE + "/tasks/" + task + "/packages/" + part1 + "/seal"), SOFA_MEASURES))
-                        .andExpect(status().isOk());
-                packer(body(post(BASE + "/tasks/" + task + "/packages/" + part2 + "/seal"), PART2_MEASURES))
-                        .andExpect(status().isOk());
-            } else {
-                String parcel = data(packer(body(post(BASE + "/tasks/" + task + "/packages"), ONE_CARTON))
-                        .andExpect(status().isCreated())).path("packageId").asText();
-                scan(task, parcel);
-                packer(body(post(BASE + "/tasks/" + task + "/packages/" + parcel + "/seal"), SOFA_MEASURES))
-                        .andExpect(status().isOk());
-            }
-        }
-        String shipment = data(packer(post(BASE + "/tasks/" + task + "/packing-completion")).andExpect(status().isOk()))
-                .path("shipmentId").asText();
-        return new UUID[] {UUID.fromString(shipment), task};
-    }
-
-    private void scan(UUID task, String parcel) throws Exception {
-        packer(body(post(BASE + "/tasks/" + task + "/packages/" + parcel + "/scans"), "{\"scanId\":\""
-                + UUID.randomUUID() + "\",\"scannedCode\":\"" + SOFA_BARCODE + "\",\"quantity\":1}"))
-                .andExpect(status().isOk());
+        // The check station (4C-6): start, scan the LPN of every picked carton, label, complete: one shipment.
+        UUID shipment = CartonStationSupport.ship(this::packer, jdbc, json, task, null);
+        return new UUID[] {shipment, task};
     }
 
     private static String ids(List<UUID> ids) {
@@ -303,9 +285,11 @@ class ControlledUnloadIntegrationTest {
         return data(dispatch(get(LOADS + "/" + loadId)).andExpect(status().isOk()));
     }
 
+    /** Booked with the carrier's waybill number (3-2: required before the handover), one per load. */
     private JsonNode book(String loadId, UUID carrier, String plate) throws Exception {
         return data(dispatch(body(post(LOADS + "/" + loadId + "/booking"), "{\"carrierId\":\"" + carrier + "\""
-                + (plate == null ? "" : ",\"vehiclePlate\":\"" + plate + "\"") + ",\"driverName\":\"Tai\"}"))
+                + (plate == null ? "" : ",\"vehiclePlate\":\"" + plate + "\"") + ",\"driverName\":\"Tai\""
+                + ",\"waybillNo\":\"WB-" + loadId + "\"}"))
                 .andExpect(status().isOk()));
     }
 
@@ -412,9 +396,10 @@ class ControlledUnloadIntegrationTest {
             + "by the manager without a scan (overridden, who, when, note); then the replacement is loaded and both "
             + "sign - the plan is DISPATCHED. Never a reopening")
     void oneVehicleBackToPlannedWithTheSameLayout() throws Exception {
-        OrderSummary order = ftlOrder(2);
-        UUID shipment = packed(order, true)[0];
-        JsonNode plan = confirmed(List.of(shipment), truck1t25);
+        CartonStationSupport.giveSofaCartonsAWeight(tx, jdbc, "1200");   // a 2.5 t truck takes two of them (4300 mm = two cartons end to end, 2400 kg): four cartons, two trucks
+        OrderSummary order = ftlOrder(4);
+        UUID shipment = packed(order)[0];
+        JsonNode plan = confirmed(List.of(shipment), truck2t5);
         assertThat(plan.path("vehicles")).hasSize(2);
         String planId = plan.path("loadPlanId").asText();
         String v1 = loadOf(plan, 1);
@@ -536,10 +521,10 @@ class ControlledUnloadIntegrationTest {
     @Test
     @DisplayName("point 3: once a vehicle has left (DISPATCHED) the whole plan cannot be cancelled "
             + "(LOAD_PLAN_VEHICLE_DISPATCHED) - the other vehicle is cancelled on its own and the plan stays CONFIRMED; "
-            + "a left vehicle, a vehicle not loading yet and a parcel load are not cancelled under control "
-            + "(INVALID_LOAD_TRANSITION); the plain cancel is still refused (BR-14)")
+            + "a left vehicle, a vehicle not loading yet and a load of no plan (the removed parcel shipping) are not "
+            + "cancelled under control (INVALID_LOAD_TRANSITION); the plain cancel is still refused (BR-14)")
     void wholePlanRefusedOnceAVehicleLeft() throws Exception {
-        UUID shipment = packed(ftlOrder(2), true)[0];
+        UUID shipment = packed(ftlOrder(2))[0];
         JsonNode plan = confirmed(List.of(shipment), truck1t25);
         String v1 = loadOf(plan, 1);
         String v2 = loadOf(plan, 2);
@@ -567,18 +552,24 @@ class ControlledUnloadIntegrationTest {
         // Not loading yet: its booking is cancelled the old way, not under control.
         cancelVehicle(result.path("replacement").path("loadId").asText(), XE_HONG).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("INVALID_LOAD_TRANSITION"));
-        cancelVehicle(parcelLoad("51C-999.99"), XE_HONG).andExpect(status().isConflict())
+        cancelVehicle(historyLoad("51C-999.99"), XE_HONG).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("INVALID_LOAD_TRANSITION"));
     }
 
-    /** A parcel load straight into the table (a parcel load needs parcel shipments, which this context has none of). */
-    private String parcelLoad(String plate) {
+    /**
+     * A load of the parcel shipping that was removed (V20261108000400), straight into the table: it has no plan's vehicle,
+     * which only a closed load may lack, so it is history - signed and gone.
+     */
+    private String historyLoad(String plate) {
         UUID id = Identifiers.newId();
         tx.executeWithoutResult(s -> jdbc.update("""
-                INSERT INTO fulfillment.dispatch_load (id, code, request_id, warehouse_id, mode, carrier_id,
-                    vehicle_plate, status, loading_started_at)
-                VALUES (?, ?, gen_random_uuid(), ?, 'PARCEL', ?, ?, 'LOADING', NOW())""",
-                id, "LD-UL-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(), HCM, ghn, plate));
+                INSERT INTO fulfillment.dispatch_load (id, code, request_id, warehouse_id, carrier_id, vehicle_plate,
+                    status, loading_started_at, dispatched_at, dispatched_by, carrier_representative, shipment_count,
+                    package_count, waybill_no)
+                VALUES (?, ?, gen_random_uuid(), ?, ?, ?, 'DISPATCHED', NOW(), NOW(), ?, 'Tai', 1, 1,
+                        'WB-' || gen_random_uuid())""",
+                id, "LD-UL-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(), HCM, ghn, plate,
+                dispatcher));
         return id.toString();
     }
 
@@ -591,8 +582,8 @@ class ControlledUnloadIntegrationTest {
             + "cancelled another way is 409 INVALID_LOAD_TRANSITION, not a silent 200")
     void emptiedVehicleLeavesNoReplacementAndDoesNotHoldThePlan() throws Exception {
         OrderSummary orderA = ftlOrder(1);
-        UUID shipmentA = packed(orderA, true)[0];
-        UUID shipmentB = packed(ftlOrder(1), true)[0];
+        UUID shipmentA = packed(orderA)[0];
+        UUID shipmentB = packed(ftlOrder(1))[0];
         JsonNode plan = confirmed(List.of(shipmentA, shipmentB), truck1t25);
         assertThat(plan.path("vehicles")).hasSize(2);
         String vA = loadCarrying(plan, shipmentA);
@@ -632,7 +623,7 @@ class ControlledUnloadIntegrationTest {
     @DisplayName("review of #228: a load cancelled another way (the plan was reopened: plain cancel of its PLANNED load) is "
             + "not 'called off again' - 409 INVALID_LOAD_TRANSITION, not a 200 that would read as a replacement")
     void loadCancelledAnotherWayIsRefused() throws Exception {
-        UUID shipment = packed(ftlOrder(1), false)[0];
+        UUID shipment = packed(ftlOrder(1))[0];
         JsonNode plan = confirmed(List.of(shipment), truck5t);
         String loadId = loadOf(plan, 1);
         JsonNode now = planOf(plan);
@@ -650,8 +641,9 @@ class ControlledUnloadIntegrationTest {
             + "parcels still to scan off; the shipment is no candidate and no new plan takes it (PACKAGE_UNLOAD_PENDING) "
             + "until every parcel is off, then it can be planned again; calling it off again changes nothing")
     void wholePlanCancelledAtOnce() throws Exception {
-        UUID shipment = packed(ftlOrder(2), true)[0];
-        JsonNode plan = confirmed(List.of(shipment), truck1t25);
+        CartonStationSupport.giveSofaCartonsAWeight(tx, jdbc, "1200");   // a 2.5 t truck takes two of them (4300 mm = two cartons end to end, 2400 kg): four cartons, two trucks
+        UUID shipment = packed(ftlOrder(4))[0];
+        JsonNode plan = confirmed(List.of(shipment), truck2t5);
         String v1 = loadOf(plan, 1);
         String v2 = loadOf(plan, 2);
         List<String> onTruck = labels(load(v1));
@@ -690,7 +682,7 @@ class ControlledUnloadIntegrationTest {
                 .findValuesAsText("shipmentId")).doesNotContain(shipment.toString());
         JsonNode taken = body(dispatch(body(post(PLANS), "{\"requestId\":\"" + UUID.randomUUID()
                 + "\",\"warehouseId\":\"" + HCM + "\",\"shipmentIds\":[\"" + shipment + "\"],\"vehicleTypeIds\":[\""
-                + truck1t25 + "\"]}")).andExpect(status().isConflict())
+                + truck2t5 + "\"]}")).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("PACKAGE_UNLOAD_PENDING")));
         assertThat(taken.path("message").asText()).contains(onTruck.getFirst());
         scanOff(v1, onTruck.getFirst()).andExpect(status().isOk());
@@ -704,7 +696,7 @@ class ControlledUnloadIntegrationTest {
                 .findValuesAsText("shipmentId")).contains(shipment.toString());
         JsonNode again = data(dispatch(body(post(PLANS), "{\"requestId\":\"" + UUID.randomUUID()
                 + "\",\"warehouseId\":\"" + HCM + "\",\"shipmentIds\":[\"" + shipment + "\"],\"vehicleTypeIds\":[\""
-                + truck1t25 + "\"]}")).andExpect(status().isCreated()));
+                + truck2t5 + "\"]}")).andExpect(status().isCreated()));
         assertThat(again.path("status").asText()).isEqualTo("DRAFT");
     }
 
@@ -716,7 +708,7 @@ class ControlledUnloadIntegrationTest {
             + "code is one of the four (400 otherwise) and the note is required; a plan that is not CONFIRMED is "
             + "cancelled the plain way (INVALID_LOAD_PLAN_TRANSITION), a CONFIRMED one with nothing loading goes at once")
     void permissionAndBody() throws Exception {
-        UUID shipment = packed(ftlOrder(1), false)[0];
+        UUID shipment = packed(ftlOrder(1))[0];
         JsonNode draft = plan(List.of(shipment), truck5t);
         cancelPlan(draft, "KHAC", "x").andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("INVALID_LOAD_PLAN_TRANSITION"));
@@ -727,8 +719,9 @@ class ControlledUnloadIntegrationTest {
         String version = "{\"expectedVersion\":" + plan.path("version").asLong() + ",\"reasonCode\":\"XE_HONG\","
                 + "\"note\":\"x\"}";
         String override = "{\"packageId\":\"" + UUID.randomUUID() + "\"}";
-        for (String[] role : new String[][] {{"WAREHOUSE_STAFF", "d"}, {"ORDER_COORDINATOR", "c"}}) {
-            UUID user = role[1].equals("d") ? dispatcher : coordinator;
+        UUID salesperson = staff("SALES_STAFF");
+        for (String[] role : new String[][] {{"WAREHOUSE_STAFF", "d"}, {"SALES_STAFF", "s"}}) {
+            UUID user = role[1].equals("d") ? dispatcher : salesperson;
             as(user, role[0], body(post(PLANS + "/" + planId + "/controlled-cancellation"), version))
                     .andExpect(status().isForbidden());
             as(user, role[0], body(post(LOADS + "/" + loadId + "/controlled-cancellation"), XE_HONG))
@@ -780,7 +773,7 @@ class ControlledUnloadIntegrationTest {
         OrderSummary order = ftlOrder(2);
         tx.executeWithoutResult(s -> jdbc.update(
                 "UPDATE ordering.customer_order SET allow_partial_shipment = TRUE WHERE id = ?", order.orderId()));
-        UUID shipment = packed(order, false)[0];
+        UUID shipment = packed(order)[0];
         JsonNode plan = plan(List.of(shipment), truck5t);
         plan = step(plan, "/calculation", version(plan));
         List<String> parcels = plan.path("packages").findValuesAsText("packageId");
@@ -799,8 +792,8 @@ class ControlledUnloadIntegrationTest {
         UUID rest = jdbc.queryForObject("SELECT shipment_id FROM fulfillment.package WHERE id = ?::uuid", UUID.class,
                 stays);
         assertThat(rest).isNotEqualTo(shipment);
-        Object outdated = jdbc.queryForObject("SELECT label_outdated_at FROM fulfillment.package WHERE id = ?::uuid",
-                java.sql.Timestamp.class, stays);
+        Integer labelVersion = jdbc.queryForObject("SELECT label_version FROM fulfillment.package WHERE id = ?::uuid",
+                Integer.class, stays);
 
         JsonNode result = data(cancelVehicle(loadId, XE_HONG).andExpect(status().isOk()));
         assertThat(result.path("replacement").path("status").asText()).isEqualTo("PLANNED");
@@ -814,8 +807,8 @@ class ControlledUnloadIntegrationTest {
                 .containsEntry("status", "READY_TO_DISPATCH").containsEntry("package_count", 1);
         assertThat(jdbc.queryForObject("SELECT package_count FROM fulfillment.shipment WHERE id = ?", Integer.class,
                 shipment)).isEqualTo(1);
-        assertThat(jdbc.queryForObject("SELECT label_outdated_at FROM fulfillment.package WHERE id = ?::uuid",
-                java.sql.Timestamp.class, stays)).isEqualTo(outdated);
+        assertThat(jdbc.queryForObject("SELECT label_version FROM fulfillment.package WHERE id = ?::uuid",
+                Integer.class, stays)).as("the split reprints no label").isEqualTo(labelVersion);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM fulfillment.shipment WHERE order_id = ?", Integer.class,
                 order.orderId())).as("no third shipment: the split is not repeated").isEqualTo(2);
         // The same after the whole plan is called off: the left-behind shipment still waits for dispatch, as a candidate.
@@ -835,10 +828,10 @@ class ControlledUnloadIntegrationTest {
             + "scanned off")
     void orderCancelledWhileLoadingBothWays() throws Exception {
         OrderSummary doomedOrder = ftlOrder(1);
-        UUID doomed = packed(doomedOrder, false)[0];
+        UUID doomed = packed(doomedOrder)[0];
         OrderSummary laterOrder = ftlOrder(1);
-        UUID later = packed(laterOrder, false)[0];
-        UUID kept = packed(ftlOrder(1), false)[0];
+        UUID later = packed(laterOrder)[0];
+        UUID kept = packed(ftlOrder(1))[0];
         JsonNode plan = confirmed(List.of(doomed, later, kept), truck5t);
         assertThat(plan.path("vehicles")).hasSize(1);
         String v1 = loadOf(plan, 1);
@@ -891,7 +884,7 @@ class ControlledUnloadIntegrationTest {
             + "LOAD_PLAN_CONTROLLED_CANCELLED), the plan detail says controlledCancelled, nothing changes; only the "
             + "controlled cancel of the whole plan is left; a plan never called off under control still reopens")
     void controlledCancellationCountsAsLoadingStarted() throws Exception {
-        UUID shipment = packed(ftlOrder(2), true)[0];
+        UUID shipment = packed(ftlOrder(2))[0];
         JsonNode plan = confirmed(List.of(shipment), truck1t25);
         assertThat(planOf(plan).path("controlledCancelled").asBoolean()).isFalse();
         String v1 = loadOf(plan, 1);
@@ -924,8 +917,8 @@ class ControlledUnloadIntegrationTest {
             + "shipment on it is a candidate again (the state before planning), the plan is DISPATCHED; again is answered "
             + "as it is; the dispatcher may not (the controlled-cancellation permission); a note is required")
     void aPlannedVehicleIsDroppedOnceTheOthersLeft() throws Exception {
-        UUID shipmentA = packed(ftlOrder(1), true)[0];
-        UUID shipmentB = packed(ftlOrder(1), true)[0];
+        UUID shipmentA = packed(ftlOrder(1))[0];
+        UUID shipmentB = packed(ftlOrder(1))[0];
         JsonNode plan = confirmed(List.of(shipmentA, shipmentB), truck1t25);
         assertThat(plan.path("vehicles")).hasSize(2);
         String v1 = loadOf(plan, 1);
@@ -986,9 +979,10 @@ class ControlledUnloadIntegrationTest {
     @Test
     @DisplayName("UNLOAD-DROP refusals: a vehicle carrying parcels of a shipment that also left on the other vehicle is not "
             + "dropped (LOAD_PLAN_VEHICLE_SHARES_ORDER, nothing changes); a booked vehicle (cancel its booking first), a "
-            + "vehicle being loaded (cancel it under control) and a parcel load are INVALID_LOAD_TRANSITION")
+            + "vehicle being loaded (cancel it under control) and a load of no plan (the removed parcel shipping) are "
+            + "INVALID_LOAD_TRANSITION")
     void aDropIsRefusedWhenItWouldSplitAShipmentOrTheVehicleIsNotPlanned() throws Exception {
-        UUID shipment = packed(ftlOrder(2), true)[0];
+        UUID shipment = packed(ftlOrder(2))[0];
         JsonNode plan = confirmed(List.of(shipment), truck1t25);
         String v1 = loadOf(plan, 1);
         String v2 = loadOf(plan, 2);
@@ -1011,10 +1005,8 @@ class ControlledUnloadIntegrationTest {
                 .andExpect(jsonPath("$.errorCode").value("INVALID_LOAD_TRANSITION"));
         dropVehicle(v1, note).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("INVALID_LOAD_TRANSITION"));
-        dropVehicle(parcelLoad("51C-999.99"), note).andExpect(status().isConflict())
+        dropVehicle(historyLoad("51C-999.99"), note).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("INVALID_LOAD_TRANSITION"));
         assertThat(planStatus(plan)).isEqualTo("CONFIRMED");
     }
-
-    // ---- the transfer's parcels are unloaded too (point 10 is in TransferLoadPlanningIntegrationTest) -----------
 }

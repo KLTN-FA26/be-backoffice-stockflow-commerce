@@ -9,7 +9,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.Set;
 
 /**
- * The words the voice transcribers send with a recording (ADR-0015), kept in resources as the system prompt is: they
+ * The words the voice transcribers send with a recording (ADR-0016), kept in resources as the system prompt is: they
  * hold Vietnamese, which has no place in the code.
  *
  * <ul>

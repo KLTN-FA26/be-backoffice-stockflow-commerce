@@ -1,6 +1,5 @@
 package com.stockflow.product.internal.controller.dto;
 
-import com.stockflow.product.api.ProductKind;
 import com.stockflow.product.api.TaxClass;
 import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.NotBlank;
@@ -33,8 +32,6 @@ public record UpdateProductRequest(
 
         @NotNull(message = "taxClass is required")
         TaxClass taxClass,
-
-        ProductKind kind,
 
         @Schema(description = "The product's version as last read; a changed product answers 409 OPTIMISTIC_LOCK")
         @NotNull(message = "version is required")

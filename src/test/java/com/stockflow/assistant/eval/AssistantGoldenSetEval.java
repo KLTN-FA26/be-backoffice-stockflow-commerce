@@ -2,11 +2,7 @@ package com.stockflow.assistant.eval;
 
 import com.stockflow.assistant.internal.service.AssistantProperties;
 import com.stockflow.assistant.internal.service.KnowledgeService;
-import com.stockflow.catalog.internal.service.CatalogProjectionService;
 import com.stockflow.common.error.ErrorCode;
-import com.stockflow.inventory.api.InventoryService;
-import com.stockflow.inventory.consumption.PickConsumption;
-import com.stockflow.procurement.internal.service.GoodsReceipts;
 import com.stockflow.support.SecuredIntegrationTest;
 import com.stockflow.support.SecuredMvc;
 import jakarta.persistence.EntityManager;
@@ -63,6 +59,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 @EnabledIfSystemProperty(named = "assistant.eval", matches = "true")
 @SecuredIntegrationTest
 @TestPropertySource(properties = {
+        // Signing a contract stores its scan, and no virus scanner runs in tests (ConfirmedOrders).
+        "stockflow.upload-inspection.enabled=false",
         "stockflow.assistant.enabled=true",
         // ASSISTANT_MODEL as the application reads it; a literal default here would send a Claude model to Gemini.
         "stockflow.assistant.model=${assistant.eval.model:${ASSISTANT_MODEL:claude-opus-5-5}}",
@@ -84,10 +82,7 @@ class AssistantGoldenSetEval {
     @Autowired JdbcTemplate jdbc;
     @Autowired TransactionTemplate tx;
     @Autowired EntityManager entityManager;
-    @Autowired GoodsReceipts receipts;
-    @Autowired InventoryService inventory;
-    @Autowired PickConsumption consumption;
-    @Autowired CatalogProjectionService catalog;
+    @Autowired org.springframework.context.ApplicationContext context;
     @Autowired AssistantProperties properties;
     @Autowired KnowledgeService knowledge;
 
@@ -101,8 +96,7 @@ class AssistantGoldenSetEval {
         Path directory = Path.of(System.getProperty("assistant.eval.out",
                 Path.of("assistant-eval-runs", properties.model().replaceAll("[^A-Za-z0-9._-]", "_")).toString()));
         GoldenResults stored = GoldenResults.open(directory.resolve("results.jsonl"), properties.model());
-        GoldenFixtures fixtures = new GoldenFixtures(jdbc, tx, entityManager, receipts, inventory, consumption,
-                catalog);
+        GoldenFixtures fixtures = new GoldenFixtures(context);
         Map<String, String> values = fixtures.ensure();
         // Every passage has its vector before the first case asks (design §6.4); nothing happens when embeddings are off.
         knowledge.embed();

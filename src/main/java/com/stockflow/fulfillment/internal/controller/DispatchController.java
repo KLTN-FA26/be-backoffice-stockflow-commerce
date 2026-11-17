@@ -13,38 +13,37 @@ import com.stockflow.fulfillment.internal.controller.dto.BookingRequest;
 import com.stockflow.fulfillment.internal.controller.dto.CancelLoadRequest;
 import com.stockflow.fulfillment.internal.controller.dto.ControlledCancelRequest;
 import com.stockflow.fulfillment.internal.controller.dto.ControlledCancelResponse;
+import com.stockflow.fulfillment.internal.controller.dto.DriverRequest;
 import com.stockflow.fulfillment.internal.controller.dto.HandoverRequest;
 import com.stockflow.fulfillment.internal.controller.dto.LoadResponse;
 import com.stockflow.fulfillment.internal.controller.dto.LoadRowResponse;
 import com.stockflow.fulfillment.internal.controller.dto.LoadScanRequest;
-import com.stockflow.fulfillment.internal.controller.dto.LoadShipmentsRequest;
 import com.stockflow.fulfillment.internal.controller.dto.ManifestResponse;
-import com.stockflow.fulfillment.internal.controller.dto.OpenLoadRequest;
 import com.stockflow.fulfillment.internal.controller.dto.UnloadOverrideRequest;
 import com.stockflow.fulfillment.internal.controller.dto.UnloadRequest;
 import com.stockflow.fulfillment.internal.service.Dispatching;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
-import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
-import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.UUID;
 
 /**
- * Loading and handover, parcel branch (G4-2a, SCRUM-288/292/293; kltn-docs 09 §4.1). {@code fulfillment-shipments:READ}
- * to look (coordinators too); {@code fulfillment-dispatch}: CREATE to open a load, UPDATE to load and sign - seeded for
- * the warehouse (09 §2 Dispatch Staff), not the coordinator. Cancelling a load is {@code fulfillment-load-cancellations
- * :UPDATE}, the warehouse manager's; calling a plan's vehicle off after loading started, and confirming a parcel
- * off without a scan, is {@code fulfillment-controlled-cancellations:UPDATE} (SCRUM-474), the same two roles. Every call is limited to the caller's warehouses.
+ * Loading and handover of a load plan's vehicles (SCRUM-288/292/293, SCRUM-392; kltn-docs 09 §4.2): every order ships
+ * as a full truckload (09 BR-08), so a load is born from a confirmed plan, never opened by hand.
+ * {@code fulfillment-shipments:READ} to look (managers too); {@code fulfillment-dispatch:UPDATE} to book, load and
+ * sign - seeded for the warehouse (09 §2 Dispatch Staff). Calling a plan's vehicle off after loading
+ * started, dropping one from its plan and confirming a parcel off without a scan is
+ * {@code fulfillment-controlled-cancellations:UPDATE} (SCRUM-474). Every call is limited to the caller's warehouses.
  */
 @RestController
 @RequestMapping("/api/v1/fulfillment/loads")
@@ -52,24 +51,26 @@ import java.util.UUID;
 class DispatchController {
 
     private final Dispatching dispatching;
+    private final com.stockflow.fulfillment.internal.service.Bookings bookings;
     private final DispatchWebMapper mapper;
 
-    DispatchController(Dispatching dispatching, DispatchWebMapper mapper) {
+    DispatchController(Dispatching dispatching, com.stockflow.fulfillment.internal.service.Bookings bookings,
+                       DispatchWebMapper mapper) {
         this.dispatching = dispatching;
+        this.bookings = bookings;
         this.mapper = mapper;
     }
 
     @GetMapping
     @Operation(summary = "Loads of the caller's warehouses, newest first; status PLANNED, VEHICLE_BOOKED, LOADING, "
-            + "DISPATCHED, CANCELLED; mode PARCEL or FULL_TRUCKLOAD (400 UNSUPPORTED_PARAMETER otherwise); search in "
-            + "load code, plate or the load plan's code")
+            + "DISPATCHED, CANCELLED (400 UNSUPPORTED_PARAMETER otherwise); search in load code, plate or the load "
+            + "plan's code")
     @RequiresPermission(resource = FulfillmentResources.SHIPMENTS, action = Action.READ)
     public ApiResponse<PageResponse<LoadRowResponse>> list(@RequestParam(required = false) UUID warehouseId,
-            @RequestParam(required = false) String status, @RequestParam(required = false) String mode,
-            @RequestParam(required = false) UUID carrierId,
+            @RequestParam(required = false) String status, @RequestParam(required = false) UUID carrierId,
             @RequestParam(required = false) String search, @RequestParam(defaultValue = "0") int page,
             @RequestParam(required = false) Integer size) {
-        return ApiResponse.ok(dispatching.list(warehouseId, status, mode, carrierId, search, page,
+        return ApiResponse.ok(dispatching.list(warehouseId, status, carrierId, search, page,
                 size == null ? Pages.DEFAULT_PAGE_SIZE : size).map(mapper::toResponse));
     }
 
@@ -81,49 +82,16 @@ class DispatchController {
     }
 
     @GetMapping("/{loadId}/manifest")
-    @Operation(summary = "The manifest to print (09 §4.1 step 3): shipments, recipients, parcels, COD per shipment and "
-            + "in total")
+    @Operation(summary = "The manifest to print (09 §4.2 step 5): shipments, recipients, parcels")
     @RequiresPermission(resource = FulfillmentResources.SHIPMENTS, action = Action.READ)
     public ApiResponse<ManifestResponse> manifest(@PathVariable UUID loadId) {
         return ApiResponse.ok(mapper.toResponse(dispatching.manifest(loadId)));
     }
 
-    @PostMapping
-    @ResponseStatus(HttpStatus.CREATED)
-    @Operation(summary = "The carrier's driver arrived: open a parcel load (LOADING) with the shipments for that "
-            + "carrier; idempotent by requestId")
-    @RequiresPermission(resource = FulfillmentResources.DISPATCH, action = Action.CREATE)
-    @Auditable(action = AuditAction.CREATE, resourceType = "dispatch-load", resourceId = "#result?.data()?.loadId()")
-    public ApiResponse<LoadResponse> open(@Valid @RequestBody OpenLoadRequest request,
-                                          @AuthenticatedUser CurrentUser actor) {
-        return ApiResponse.ok(mapper.toResponse(dispatching.open(new Dispatching.OpenLoad(request.requestId(),
-                request.warehouseId(), request.carrierId(), request.shipmentIds(), request.vehiclePlate(),
-                request.driverName(), request.driverPhone()), actor)));
-    }
-
-    @PostMapping("/{loadId}/shipments")
-    @Operation(summary = "Put shipments on the manifest: waiting for dispatch, this warehouse, this carrier or none "
-            + "yet; 409 SHIPMENT_ON_ANOTHER_LOAD, SHIPMENT_OTHER_CARRIER, SHIPMENT_NOT_FOR_LOAD, SHIPMENT_STATE_CONFLICT")
-    @RequiresPermission(resource = FulfillmentResources.DISPATCH, action = Action.UPDATE)
-    @Auditable(action = AuditAction.UPDATE, resourceType = "dispatch-load", resourceId = "#loadId")
-    public ApiResponse<LoadResponse> addShipments(@PathVariable UUID loadId,
-            @Valid @RequestBody LoadShipmentsRequest request, @AuthenticatedUser CurrentUser actor) {
-        return ApiResponse.ok(mapper.toResponse(dispatching.addShipments(loadId, request.shipmentIds(), actor)));
-    }
-
-    @DeleteMapping("/{loadId}/shipments/{shipmentId}")
-    @Operation(summary = "Take a shipment and its scanned parcels off the manifest before the handover")
-    @RequiresPermission(resource = FulfillmentResources.DISPATCH, action = Action.UPDATE)
-    @Auditable(action = AuditAction.UPDATE, resourceType = "dispatch-load", resourceId = "#loadId")
-    public ApiResponse<LoadResponse> removeShipment(@PathVariable UUID loadId, @PathVariable UUID shipmentId,
-                                                    @AuthenticatedUser CurrentUser actor) {
-        return ApiResponse.ok(mapper.toResponse(dispatching.removeShipment(loadId, shipmentId, actor)));
-    }
-
     @PostMapping("/{loadId}/scans")
     @Operation(summary = "Scan a parcel onto the vehicle by its label code; the same scanId again answers as before. "
             + "404 PACKAGE_NOT_FOUND; 409 PACKAGE_NOT_IN_LOAD, PACKAGE_ALREADY_LOADED, PACKAGE_NOT_READY, "
-            + "PACKAGE_OTHER_CARRIER, PACKAGE_REQUIRES_LOAD_PLAN, LOAD_SCAN_ID_CONFLICT, INVALID_LOAD_TRANSITION")
+            + "PACKAGE_UNLOAD_PENDING, LOAD_SCAN_ID_CONFLICT, INVALID_LOAD_TRANSITION")
     @RequiresPermission(resource = FulfillmentResources.DISPATCH, action = Action.UPDATE)
     @Auditable(action = AuditAction.UPDATE, resourceType = "dispatch-load", resourceId = "#loadId")
     public ApiResponse<LoadResponse> scan(@PathVariable UUID loadId, @Valid @RequestBody LoadScanRequest request,
@@ -141,12 +109,28 @@ class DispatchController {
         return ApiResponse.ok(mapper.toResponse(dispatching.unscan(loadId, packageId, actor)));
     }
 
+    @PutMapping("/{loadId}/driver")
+    @Operation(summary = "Record the driver's name (and phone) on a booked or loading vehicle, whatever its carrier - for "
+            + "a load booked through a carrier's API, whose waybill number cannot be typed and whose webhook may never "
+            + "send the driver. The driver only, never the waybill number; the carrier's webhook may replace it. 409 "
+            + "INVALID_LOAD_TRANSITION (no carrier booked, cancelled, or the vehicle left)")
+    @RequiresPermission(resource = FulfillmentResources.DISPATCH, action = Action.UPDATE)
+    @Auditable(action = AuditAction.UPDATE, resourceType = "dispatch-load", resourceId = "#loadId",
+            details = "{driverName: #request.driverName()}")
+    public ApiResponse<LoadResponse> recordDriver(@PathVariable UUID loadId, @Valid @RequestBody DriverRequest request,
+                                                  @AuthenticatedUser CurrentUser actor) {
+        return ApiResponse.ok(mapper.toResponse(dispatching.recordDriver(loadId,
+                new Dispatching.DriverEntry(request.driverName(), request.driverPhone()), actor)));
+    }
+
     @PostMapping("/{loadId}/handover")
-    @Operation(summary = "Both sides sign the manifest: DISPATCHED, shipments HANDED_OVER with the COD the order "
-            + "fixes, orders PARTIALLY_FULFILLED / SHIPPED. 400 HANDOVER_NOT_SIGNED; 409 LOAD_EMPTY, "
-            + "LOAD_NOT_FULLY_LOADED, OPTIMISTIC_LOCK, ORDER_BALANCE_NOT_PAID, ORDER_INVALID_TRANSITION (on hold); "
-            + "again: answered as it is. A load plan's vehicle (SCRUM-392): every parcel placed on it scanned; 409 "
-            + "LOAD_UNLOAD_PENDING; a shipment is HANDED_OVER at its last vehicle, the plan DISPATCHED with the last")
+    @Operation(summary = "Both sides sign the manifest of a load plan's vehicle (SCRUM-392): DISPATCHED once every "
+            + "parcel placed on it is scanned; a shipment is HANDED_OVER at its last vehicle, the order "
+            + "PARTIALLY_FULFILLED / SHIPPED, the plan DISPATCHED with the last vehicle. 400 HANDOVER_NOT_SIGNED; 409 "
+            + "LOAD_EMPTY, LOAD_NOT_FULLY_LOADED, LOAD_UNLOAD_PENDING, LOAD_WAYBILL_MISSING, LOAD_DRIVER_MISSING "
+            + "(the driver's name is on the load before the signature: booked, from the carrier's webhook, or "
+            + "PUT /loads/{id}/driver), OPTIMISTIC_LOCK, ORDER_BALANCE_NOT_PAID, "
+            + "ORDER_INVALID_TRANSITION (on hold); again: answered as it is")
     @RequiresPermission(resource = FulfillmentResources.DISPATCH, action = Action.UPDATE)
     @Auditable(action = AuditAction.TRANSITION, resourceType = "dispatch-load", resourceId = "#loadId")
     public ApiResponse<LoadResponse> handOver(@PathVariable UUID loadId, @Valid @RequestBody HandoverRequest request,
@@ -156,29 +140,35 @@ class DispatchController {
                 request.signatureRef(), request.signed(), request.note()), actor)));
     }
 
-    // ---- full truckload: a load plan's vehicle (SCRUM-392; 09 §4.2 step 5) ----------------------------------------
+    // ---- a load plan's vehicle (SCRUM-392; 09 §4.2 step 5) --------------------------------------------------------
 
     @PostMapping("/{loadId}/booking")
     @Operation(summary = "A confirmed load plan's vehicle booked with a carrier (outside the system): PLANNED -> "
             + "VEHICLE_BOOKED; again before loading replaces the booking. 404 CARRIER_NOT_FOUND; 409 "
-            + "INVALID_LOAD_TRANSITION (parcel load / loading started), INVALID_LOAD_PLAN_TRANSITION (plan not "
-            + "CONFIRMED), CARRIER_INACTIVE, SHIPMENT_OTHER_CARRIER")
+            + "INVALID_LOAD_TRANSITION (loading started), INVALID_LOAD_PLAN_TRANSITION (plan not CONFIRMED), "
+            + "CARRIER_INACTIVE, WAYBILL_DUPLICATE (the waybill number, if given). An API_BOOKING carrier (3-4) is booked "
+            + "through its API: give pickupAt and the stops' order, not the plate, driver or number - 422 "
+            + "CARRIER_PICKUP_NOT_CONFIGURED, CARRIER_SERVICE_NOT_CONFIGURED, CARRIER_STOP_OUT_OF_AREA, "
+            + "CARRIER_BOOKING_FAILED (the carrier's reason); 409 CARRIER_BOOKING_IN_PROGRESS; 502 when it does not "
+            + "answer")
     @RequiresPermission(resource = FulfillmentResources.DISPATCH, action = Action.UPDATE)
     @Auditable(action = AuditAction.TRANSITION, resourceType = "dispatch-load", resourceId = "#loadId")
     public ApiResponse<LoadResponse> book(@PathVariable UUID loadId, @Valid @RequestBody BookingRequest request,
                                           @AuthenticatedUser CurrentUser actor) {
-        return ApiResponse.ok(mapper.toResponse(dispatching.book(loadId, new Dispatching.Booking(request.carrierId(),
-                request.vehiclePlate(), request.driverName(), request.driverPhone()), actor)));
+        return ApiResponse.ok(mapper.toResponse(bookings.book(loadId, new com.stockflow.fulfillment.internal.service
+                .Bookings.Request(request.carrierId(), request.vehiclePlate(), request.driverName(),
+                request.driverPhone(), request.waybillNo(), request.pickupAt(), request.stopShipmentIds()), actor)));
     }
 
     @PostMapping("/{loadId}/booking-cancellation")
     @Operation(summary = "The booking fell through before loading: back to PLANNED with the reason, to book again. "
-            + "409 INVALID_LOAD_TRANSITION once loading started")
+            + "An order at an API_BOOKING carrier is cancelled there first: 409 CARRIER_CANCEL_REFUSED when the carrier "
+            + "will not (the driver picked up). 409 INVALID_LOAD_TRANSITION once loading started")
     @RequiresPermission(resource = FulfillmentResources.DISPATCH, action = Action.UPDATE)
     @Auditable(action = AuditAction.TRANSITION, resourceType = "dispatch-load", resourceId = "#loadId")
     public ApiResponse<LoadResponse> cancelBooking(@PathVariable UUID loadId,
             @Valid @RequestBody CancelLoadRequest request, @AuthenticatedUser CurrentUser actor) {
-        return ApiResponse.ok(mapper.toResponse(dispatching.cancelBooking(loadId, request.reason(), actor)));
+        return ApiResponse.ok(mapper.toResponse(bookings.cancelBooking(loadId, request.reason(), actor)));
     }
 
     @PostMapping("/{loadId}/loading-start")
@@ -207,7 +197,7 @@ class DispatchController {
             + "KIEN_KHONG_VUA, KHAC) and note, its scanned parcels stay locked until each is scanned off "
             + "(POST .../unloads) or confirmed off (POST .../unload-overrides), and a PLANNED load with the same layout "
             + "and manifest replaces it, to book with another truck; the plan and its other vehicles carry on. 409 "
-            + "INVALID_LOAD_TRANSITION (a parcel load, or not LOADING), INVALID_LOAD_PLAN_TRANSITION; 400 "
+            + "INVALID_LOAD_TRANSITION (not LOADING), INVALID_LOAD_PLAN_TRANSITION; 400 "
             + "VALIDATION_FAILED. Again: answered as it is")
     @RequiresPermission(resource = FulfillmentResources.CONTROLLED_CANCELLATIONS, action = Action.UPDATE)
     @Auditable(action = AuditAction.TRANSITION, resourceType = "dispatch-load", resourceId = "#loadId")
@@ -222,7 +212,7 @@ class DispatchController {
             + "confirmed plan once every other vehicle of the plan left (SCRUM-474, UNLOAD-DROP): its load is CANCELLED "
             + "with the reason code (XE_HONG, SAI_XE, KIEN_KHONG_VUA, KHAC) and note (required), the vehicle leaves the "
             + "plan, the parcels placed on it wait for a new plan and the plan is DISPATCHED. 409 "
-            + "INVALID_LOAD_TRANSITION (a parcel load, or not PLANNED), INVALID_LOAD_PLAN_TRANSITION, "
+            + "INVALID_LOAD_TRANSITION (not PLANNED), INVALID_LOAD_PLAN_TRANSITION, "
             + "LOAD_PLAN_OTHER_VEHICLES_NOT_LEFT, LOAD_PLAN_VEHICLE_SHARES_ORDER; 400 VALIDATION_FAILED. Again: "
             + "answered as it is")
     @RequiresPermission(resource = FulfillmentResources.CONTROLLED_CANCELLATIONS, action = Action.UPDATE)
@@ -243,14 +233,5 @@ class DispatchController {
             @Valid @RequestBody UnloadOverrideRequest request, @AuthenticatedUser CurrentUser actor) {
         return ApiResponse.ok(mapper.toResponse(dispatching.overrideUnload(loadId, request.packageId(), request.note(),
                 actor)));
-    }
-
-    @PostMapping("/{loadId}/cancellation")
-    @Operation(summary = "Call a load off before it left; its shipments and parcels go back to the dispatch area")
-    @RequiresPermission(resource = FulfillmentResources.LOAD_CANCELLATIONS, action = Action.UPDATE)
-    @Auditable(action = AuditAction.TRANSITION, resourceType = "dispatch-load", resourceId = "#loadId")
-    public ApiResponse<LoadResponse> cancel(@PathVariable UUID loadId, @Valid @RequestBody CancelLoadRequest request,
-                                            @AuthenticatedUser CurrentUser actor) {
-        return ApiResponse.ok(mapper.toResponse(dispatching.cancel(loadId, request.reason(), actor)));
     }
 }

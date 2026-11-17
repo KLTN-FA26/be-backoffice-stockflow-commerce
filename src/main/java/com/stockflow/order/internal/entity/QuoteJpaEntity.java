@@ -1,7 +1,6 @@
 package com.stockflow.order.internal.entity;
 
 import com.stockflow.common.persistence.BaseEntity;
-import com.stockflow.order.api.PaymentTerm;
 import com.stockflow.order.internal.domain.QuoteStatus;
 import jakarta.persistence.CascadeType;
 import jakarta.persistence.Column;
@@ -13,7 +12,6 @@ import jakarta.persistence.OneToMany;
 import jakarta.persistence.OrderBy;
 import jakarta.persistence.Table;
 
-import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -40,12 +38,8 @@ public class QuoteJpaEntity extends BaseEntity {
     @Column(name = "revision", nullable = false)
     private int revision;
 
-    @Enumerated(EnumType.STRING)
-    @Column(name = "payment_term", nullable = false, length = 16)
-    private PaymentTerm paymentTerm;
-
-    @Column(name = "deposit_percent", precision = 5, scale = 2)
-    private BigDecimal depositPercent;
+    // No payment_term or deposit_percent (4B-10 unmapped them, 4B-11 dropped them): a quote has no payment terms; the
+    // contract's plan says how the customer pays.
 
     @Column(name = "valid_until", nullable = false)
     private Instant validUntil;
@@ -85,6 +79,9 @@ public class QuoteJpaEntity extends BaseEntity {
     @OrderBy("lineNo")
     private List<QuoteLineJpaEntity> lines = new ArrayList<>();
 
+    @OneToMany(mappedBy = "quote", cascade = CascadeType.ALL, orphanRemoval = true, fetch = FetchType.LAZY)
+    private List<QuoteFeeLineJpaEntity> fees = new ArrayList<>();
+
     protected QuoteJpaEntity() {
     }
 
@@ -95,15 +92,12 @@ public class QuoteJpaEntity extends BaseEntity {
         this.customerId = customerId;
     }
 
-    public void apply(QuoteStatus status, int revision, PaymentTerm paymentTerm, BigDecimal depositPercent,
-                      Instant validUntil, String terms, Instant sentAt, UUID sentBy, Instant respondedAt,
+    public void apply(QuoteStatus status, int revision, Instant validUntil, String terms, Instant sentAt, UUID sentBy, Instant respondedAt,
                       UUID respondedBy, String customerFeedback, String cancellationReason, UUID convertedOrderId,
                       Instant convertedAt, java.time.LocalDate requestedDeliveryDate) {
         this.requestedDeliveryDate = requestedDeliveryDate;
         this.status = status;
         this.revision = revision;
-        this.paymentTerm = paymentTerm;
-        this.depositPercent = depositPercent;
         this.validUntil = validUntil;
         this.terms = terms;
         this.sentAt = sentAt;
@@ -126,8 +120,6 @@ public class QuoteJpaEntity extends BaseEntity {
     public UUID getCustomerId() { return customerId; }
     public QuoteStatus getStatus() { return status; }
     public int getRevision() { return revision; }
-    public PaymentTerm getPaymentTerm() { return paymentTerm; }
-    public BigDecimal getDepositPercent() { return depositPercent; }
     public Instant getValidUntil() { return validUntil; }
     public java.time.LocalDate getRequestedDeliveryDate() { return requestedDeliveryDate; }
     public String getTerms() { return terms; }
@@ -140,4 +132,11 @@ public class QuoteJpaEntity extends BaseEntity {
     public UUID getConvertedOrderId() { return convertedOrderId; }
     public Instant getConvertedAt() { return convertedAt; }
     public List<QuoteLineJpaEntity> getLines() { return lines; }
+
+    public void addFee(QuoteFeeLineJpaEntity fee) {
+        fee.attachTo(this);
+        fees.add(fee);
+    }
+
+    public List<QuoteFeeLineJpaEntity> getFees() { return fees; }
 }

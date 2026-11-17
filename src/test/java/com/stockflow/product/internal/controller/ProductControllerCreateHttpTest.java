@@ -43,7 +43,7 @@ class ProductControllerCreateHttpTest {
     void created() {
         Instant now = Instant.parse("2026-10-28T03:00:00Z");
         when(service.create(any())).thenReturn(new ProductSummary(UUID.randomUUID(), "CUP-12", "Ly", "Cup", "cup-12",
-                null, null, null, null, null, null, TaxClass.STANDARD, ProductKind.STANDARD, ProductStatus.DRAFT, now,
+                null, null, null, null, null, null, TaxClass.STANDARD, ProductKind.CUSTOMIZABLE, ProductStatus.DRAFT, now,
                 "u", now, "u", null, null, null, null, null, null, null, 0L, null, null, null));
     }
 

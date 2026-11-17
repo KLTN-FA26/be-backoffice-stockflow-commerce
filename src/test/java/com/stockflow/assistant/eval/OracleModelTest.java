@@ -77,7 +77,7 @@ class OracleModelTest {
 
     private static OracleModel oracle(List<GoldenCase.Earlier> earlier, List<GoldenCase.Oracle> steps) {
         OracleModel oracle = new OracleModel();
-        oracle.use(new GoldenCase("T-01", "S", "formal", new GoldenCase.Persona("INVENTORY_PLANNER", List.of()),
+        oracle.use(new GoldenCase("T-01", "S", "formal", new GoldenCase.Persona("SYSTEM_ADMIN", List.of()),
                 "?", List.of(), List.of(), false, List.of(), null, List.of(), null, false, null, List.of(), earlier,
                 steps, false));
         return oracle;

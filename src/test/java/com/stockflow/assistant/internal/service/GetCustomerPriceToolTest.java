@@ -13,6 +13,8 @@ import com.stockflow.common.security.DataScope;
 import com.stockflow.common.security.Role;
 import com.stockflow.customer.api.CustomerService;
 import com.stockflow.customer.api.CustomerSummary;
+import com.stockflow.inventory.api.UomConversion;
+import com.stockflow.inventory.api.UomConversionService;
 import com.stockflow.support.TestUsers;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -65,9 +67,9 @@ class GetCustomerPriceToolTest {
 
     /** The customer's own list: from 5 000 units 1 750 ₫, from 10 000 units 1 650 ₫. */
     private void ownPrices() {
-        when(catalog.priceSchedule(ABC.customerId(), "EVAL-LID-90")).thenReturn(new PriceSchedule("EVAL-LID-90",
-                PriceSchedule.PriceSource.CUSTOMER, 5_000, List.of(new PriceSchedule.Tier(5_000, Money.vnd(1_750)),
-                new PriceSchedule.Tier(10_000, Money.vnd(1_650)))));
+        when(catalog.customerPrice(ABC.customerId(), "EVAL-LID-90")).thenReturn(Optional.of(new PriceSchedule(
+                "EVAL-LID-90", 5_000, List.of(new PriceSchedule.Tier(5_000, Money.vnd(1_750)),
+                new PriceSchedule.Tier(10_000, Money.vnd(1_650))))));
     }
 
     @Test
@@ -79,7 +81,6 @@ class GetCustomerPriceToolTest {
         GetCustomerPriceTool.Answer atTheStep = tool.run(arguments("ABC", "EVAL-LID-90", 10_000));
         GetCustomerPriceTool.Answer above = tool.run(arguments("ABC", "EVAL-LID-90", 20_000));
 
-        assertThat(between.source()).isEqualTo("CUSTOMER");
         assertThat(between.moq()).isEqualTo(5_000);
         assertThat(between.currency()).isEqualTo("VND");
         assertThat(between.tiers()).extracting(GetCustomerPriceTool.Tier::minQuantity,
@@ -126,36 +127,24 @@ class GetCustomerPriceToolTest {
 
         GetCustomerPriceTool.Answer answer = tool.run(arguments("ABC", " eval-lid-90 ", 0));
 
-        verify(catalog).priceSchedule(ABC.customerId(), "EVAL-LID-90");
+        verify(catalog).customerPrice(ABC.customerId(), "EVAL-LID-90");
         assertThat(answer.sku()).isEqualTo("EVAL-LID-90");
     }
 
     @Test
-    @DisplayName("a group or list price comes from one unit on, and says whose it is")
-    void groupPrice() {
-        when(catalog.priceSchedule(ABC.customerId(), "EVAL-CUP-12OZ")).thenReturn(new PriceSchedule("EVAL-CUP-12OZ",
-                PriceSchedule.PriceSource.SEGMENT, 1, List.of(new PriceSchedule.Tier(1, Money.vnd(2_100)))));
-
-        GetCustomerPriceTool.Answer answer = tool.run(arguments("ABC", "EVAL-CUP-12OZ", 300));
-
-        assertThat(answer.source()).isEqualTo("SEGMENT");
-        assertThat(answer.moq()).isEqualTo(1);
-        assertThat(answer.tierForQuantity().unitPrice()).isEqualTo(BigDecimal.valueOf(2_100));
-    }
-
-    @Test
-    @DisplayName("a SKU priced nowhere is a note, never a price; any other refusal of the catalog is passed on")
+    @DisplayName("a SKU without the customer's own price is a note, never a price - there is no list or group price "
+            + "behind it; any refusal of the catalog is passed on")
     void noPrice() {
-        when(catalog.priceSchedule(ABC.customerId(), "EVAL-NOPE")).thenThrow(
-                new BusinessException(ErrorCode.PRICE_NOT_AVAILABLE));
-        when(catalog.priceSchedule(ABC.customerId(), "EVAL-GONE")).thenThrow(
+        when(catalog.customerPrice(ABC.customerId(), "EVAL-NOPE")).thenReturn(Optional.empty());
+        when(catalog.customerPrice(ABC.customerId(), "EVAL-GONE")).thenThrow(
                 new BusinessException(ErrorCode.CUSTOMER_NOT_FOUND));
 
         GetCustomerPriceTool.Answer answer = tool.run(arguments("ABC", "EVAL-NOPE", 100));
 
         assertThat(answer.tiers()).isEmpty();
-        assertThat(answer.source()).isNull();
-        assertThat(answer.note()).contains("No price is set for EVAL-NOPE", "checking the code");
+        assertThat(answer.moq()).isNull();
+        assertThat(answer.note()).contains("no price of its own for EVAL-NOPE", "no list or group price",
+                "checking the code");
         assertThat(answer.customerName().name()).isEqualTo("Công ty In Ly ABC");
         assertThatThrownBy(() -> tool.run(arguments("ABC", "EVAL-GONE", 100)))
                 .isInstanceOfSatisfying(BusinessException.class,
@@ -208,7 +197,7 @@ class GetCustomerPriceToolTest {
     @DisplayName("without the customer list, the customer is named exactly; a fragment shows no names and asks no "
             + "price")
     void coordinatorNamesTheCustomerExactly() {
-        when(users.current()).thenReturn(Optional.of(TestUsers.builder().role(Role.ORDER_COORDINATOR)
+        when(users.current()).thenReturn(Optional.of(TestUsers.builder().role(Role.SALES_STAFF)
                 .scope(DataScope.ALL).can("catalog-customer-prices", Action.READ).build()));
         ownPrices();
 
@@ -219,7 +208,52 @@ class GetCustomerPriceToolTest {
         assertThat(fragment.tiers()).isEmpty();
         assertThat(fragment.note()).doesNotContain("Công ty In Ly ABC");
         assertThat(exact.tiers()).hasSize(2);
-        verify(catalog).priceSchedule(eq(ABC.customerId()), anyString());
+        verify(catalog).customerPrice(eq(ABC.customerId()), anyString());
+    }
+
+    @Test
+    @DisplayName("the answer says what the tiers count and how many pieces a carton holds, so 10,000 cups is never "
+            + "read as 10,000 cartons; the quantity description says so too")
+    void measureAndCarton() {
+        UomConversionService units = mock(UomConversionService.class);
+        when(units.conversionsOf(any())).thenReturn(java.util.Map.of("EVAL-LID-90", List.of(
+                unit("PCS", 1, true, false), unit("CARTON", 50, false, true))));
+        when(catalog.customerPrice(ABC.customerId(), "EVAL-LID-90")).thenReturn(Optional.of(new PriceSchedule(
+                "EVAL-LID-90", 100, List.of(new PriceSchedule.Tier(100, Money.vnd(1_750)),
+                new PriceSchedule.Tier(200, Money.vnd(1_650))), PriceSchedule.Measure.CARTON)));
+        GetCustomerPriceTool withUnits = new GetCustomerPriceTool(catalog, customers, users, units);
+
+        GetCustomerPriceTool.Answer answer = withUnits.run(arguments("ABC", "EVAL-LID-90", 200));
+
+        assertThat(answer.measure()).isEqualTo("CARTON");
+        assertThat(answer.unitsPerCarton()).isEqualTo(50);
+        assertThat(answer.tierForQuantity().minQuantity()).isEqualTo(200);
+        assertThat(tool.spec().toString()).contains("never a number of cartons", "unitsPerCarton");
+
+        // Units that cannot be read leave the size out; the price still answers.
+        when(units.conversionsOf(any())).thenThrow(new IllegalStateException("database gone"));
+        GetCustomerPriceTool.Answer unread = withUnits.run(arguments("ABC", "EVAL-LID-90", 0));
+        assertThat(unread.unitsPerCarton()).isNull();
+        assertThat(unread.measure()).isEqualTo("CARTON");
+        assertThat(unread.tiers()).hasSize(2);
+    }
+
+    @Test
+    @DisplayName("a price kept on a stock variant counts pieces, and says so")
+    void unitMeasure() {
+        when(catalog.customerPrice(ABC.customerId(), "EVAL-LID-90")).thenReturn(Optional.of(new PriceSchedule(
+                "EVAL-LID-90", 5_000, List.of(new PriceSchedule.Tier(5_000, Money.vnd(1_750))),
+                PriceSchedule.Measure.UNIT)));
+
+        GetCustomerPriceTool.Answer answer = tool.run(arguments("ABC", "EVAL-LID-90", 0));
+
+        assertThat(answer.measure()).isEqualTo("UNIT");
+        assertThat(answer.unitsPerCarton()).isNull();
+    }
+
+    private static UomConversion unit(String code, int factor, boolean base, boolean shipping) {
+        return new UomConversion(UUID.randomUUID(), "EVAL-LID-90", code, factor, base, null, null, null, null, base,
+                true, 0, shipping);
     }
 
     @Test

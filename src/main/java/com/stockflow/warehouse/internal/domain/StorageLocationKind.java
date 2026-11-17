@@ -8,6 +8,11 @@ package com.stockflow.warehouse.internal.domain;
 public enum StorageLocationKind {
     BIN,
     AREA,
-    /** Not on the map: blanks a subcontractor holds for this warehouse, outside available-to-promise. */
+    /**
+     * Legacy. Not on the map: blanks a print subcontractor held for this warehouse, outside available-to-promise.
+     * Subcontracting went with purchasing (4A-8): {@code V20261113000200} archived and dropped
+     * {@code warehouse.subcontractor_site}, and {@code check_storage_location_owned} refuses a new location of this
+     * kind. The constant stays for the locations that have it: ledger lines name them.
+     */
     SUBCONTRACTOR
 }

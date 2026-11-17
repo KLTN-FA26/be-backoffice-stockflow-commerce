@@ -6,15 +6,18 @@ import com.stockflow.assistant.internal.domain.ToolCall;
 import com.stockflow.assistant.internal.domain.Turn;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.security.Role;
+import com.stockflow.support.ConfirmedOrders;
+import com.stockflow.support.CustomerSkuRows;
 import com.stockflow.support.DemoData;
 import com.stockflow.support.ReferenceRows;
-import com.stockflow.support.SecuredIntegrationTest;
 import com.stockflow.support.SecuredMvc;
+import com.stockflow.support.SecuredProductionReceiptTest;
 import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.ApplicationContext;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
@@ -25,11 +28,13 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
 import java.sql.Timestamp;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ThreadLocalRandom;
 
@@ -42,12 +47,17 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * The order tools end to end, with the real security chain and the real order module (design §4.2, §5.4):
- * {@code findOrders} serves the work queues of the roles that read orders and no one else, and {@code findOrder} says
- * what keeps a packed order in the warehouse. Neither lets a contact - in the contact block or typed into a note -
- * reach the model.
+ * The order tools end to end, with the real security chain and the real order and payment modules (design §4.2,
+ * §5.4): {@code findOrders} serves the work queues of the roles that read orders and no one else, and its rows carry
+ * no money, since an order owns none of its own (ADR-0010, kltn-docs 15); {@code findOrder} says what keeps a signed
+ * order from moving on, and shows its contract's instalments only to a caller who may see them. Neither lets a
+ * contact - in the contact block or typed into a note - reach the model.
+ *
+ * <p>The list cases insert their orders as rows, on a day of their own; the instalment cases sign a real contract
+ * through {@link ConfirmedOrders}, which stores the signed scan, hence {@link SecuredProductionReceiptTest} (the upload
+ * scanner off), shared with the other assistant classes that need real contracts or production orders.</p>
  */
-@SecuredIntegrationTest
+@SecuredProductionReceiptTest
 class AssistantOrderToolsIntegrationTest {
 
     private static final String BASE = "/api/v1/assistant/conversations";
@@ -63,11 +73,11 @@ class AssistantOrderToolsIntegrationTest {
     @Autowired JdbcTemplate jdbc;
     @Autowired TransactionTemplate tx;
     @Autowired EntityManager entityManager;
+    @Autowired ApplicationContext context;
 
     private SecuredMvc http;
     private String sku;
     private LocalDate placedOn;
-    private UUID releasedBy;
 
     @BeforeEach
     void setUp() {
@@ -75,7 +85,6 @@ class AssistantOrderToolsIntegrationTest {
         sku = "AOT-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(Locale.ROOT);
         // A day of this test's own, far from every other test's orders: the list filters on it see only these.
         placedOn = LocalDate.of(2091, 1, 1).plusDays(ThreadLocalRandom.current().nextInt(20_000));
-        releasedBy = tx.execute(s -> ReferenceRows.user(entityManager));
         tx.executeWithoutResult(s -> {
             UUID product = Identifiers.newId();
             jdbc.update("insert into product.products(id,code,name,slug) values (?,?,?,?)", product, sku,
@@ -95,12 +104,12 @@ class AssistantOrderToolsIntegrationTest {
         String newer = held("PAYMENT", "Chờ đối soát sao kê", 11);
         held("INVENTORY", "Nhặt thiếu 5", 10);
         pending(8);
-        UUID coordinator = staff("ORDER_COORDINATOR");
+        UUID sales = staff("SALES_STAFF");
         script(toolUse("findOrders", "{\"status\":\"ON_HOLD\",\"holdReason\":\"PAYMENT\",\"placedFrom\":\""
                 + placedOn + "\",\"placedTo\":\"" + placedOn + "\",\"limit\":10}"), answer("Có 2 đơn."));
-        String conversation = start(Role.ORDER_COORDINATOR, coordinator);
+        String conversation = start(Role.SALES_STAFF, sales);
 
-        http.asRole(Role.ORDER_COORDINATOR, coordinator, ask(conversation, "Đơn nào đang bị giữ vì thanh toán?"))
+        http.asRole(Role.SALES_STAFF, sales, ask(conversation, "Đơn nào đang bị giữ vì thanh toán?"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.toolCalls[0].tool").value("findOrders"))
                 .andExpect(jsonPath("$.data.toolCalls[0].outcome").value("OK"));
@@ -117,7 +126,8 @@ class AssistantOrderToolsIntegrationTest {
     }
 
     @Test
-    @DisplayName("findOrders by status and day placed: what waits for payment that day, with its payment status")
+    @DisplayName("findOrders by status and day placed: what waits for its signing instalment that day, each row with "
+            + "its total and no money of its own, its customer by alias for Sales, who may list customers")
     void statusAndDayPlaced() throws Exception {
         String waiting = pending(8);
         held("PAYMENT", null, 9);
@@ -132,8 +142,13 @@ class AssistantOrderToolsIntegrationTest {
 
         String result = result(conversation, "findOrders");
         assertThat(JsonPath.<List<String>>read(result, "$.orders[*].orderNumber")).containsExactly(waiting);
-        assertThat(JsonPath.<String>read(result, "$.orders[0].paymentTerm")).isEqualTo("PREPAID");
-        assertThat(JsonPath.<String>read(result, "$.orders[0].paymentStatus")).isEqualTo("UNPAID");
+        assertThat(JsonPath.<String>read(result, "$.orders[0].status")).isEqualTo("PENDING_PAYMENT");
+        assertThat(amount(result, "$.orders[0].total")).isEqualByComparingTo("1000000");
+        assertThat(JsonPath.<String>read(result, "$.orders[0].currency")).isEqualTo("VND");
+        assertThat(JsonPath.<String>read(result, "$.orders[0].customer")).matches("KH#\\d+");
+        assertThat(JsonPath.<Map<String, Object>>read(result, "$.orders[0]"))
+                .as("the instalments are findOrder's, for one order").doesNotContainKeys("paymentTerm",
+                        "paymentStatus", "paid", "amountDue");
         assertThat(JsonPath.<Integer>read(result, "$.total")).isEqualTo(1);
     }
 
@@ -166,57 +181,106 @@ class AssistantOrderToolsIntegrationTest {
     }
 
     @Test
-    @DisplayName("findOrder says what keeps a packed deposit order in the warehouse: the balance due before delivery")
-    void packedOrderWaitsForItsBalance() throws Exception {
-        String packed = packedDeposit(10);
-        tx.executeWithoutResult(s -> history(packed, null, "CONFIRMED", "Đã nhận cọc, đối soát với ketoan@khach.vn"));
+    @DisplayName("findOrder says what keeps a signed order: its instalment due on signing, unpaid, with the "
+            + "contract's figures for the accountant; production orders it was not allowed to check are named")
+    void signedOrderWaitsForItsSigningInstalment() throws Exception {
+        ConfirmedOrders.Signed signed = signedOrder();
         UUID accountant = staff("ACCOUNTANT");
-        script(toolUse("findOrder", "{\"orderNumber\":\"" + packed + "\"}"),
-                answer("Đơn đã đóng gói, chờ khách trả 700.000 đ còn lại."));
+        script(toolUse("findOrder", "{\"orderNumber\":\"" + signed.orderNumber() + "\"}"),
+                answer("Đơn chờ khách trả đợt ký hợp đồng."));
         String conversation = start(Role.ACCOUNTANT, accountant);
 
-        http.asRole(Role.ACCOUNTANT, accountant, ask(conversation, "Đơn " + packed + " đóng gói rồi sao chưa giao?"))
+        http.asRole(Role.ACCOUNTANT, accountant, ask(conversation, "Đơn " + signed.orderNumber()
+                        + " sao chưa chạy?"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.toolCalls[0].outcome").value("OK"));
 
         String result = result(conversation, "findOrder");
-        assertThat(JsonPath.<String>read(result, "$.status")).isEqualTo("PACKED");
-        assertThat(JsonPath.<String>read(result, "$.payment.term")).isEqualTo("DEPOSIT");
-        assertThat(JsonPath.<String>read(result, "$.payment.status")).isEqualTo("PARTIALLY_PAID");
-        assertThat(JsonPath.<String>read(result, "$.payment.balancePolicy")).isEqualTo("BEFORE_DELIVERY");
-        assertThat(JsonPath.<String>read(result, "$.payment.currency")).isEqualTo("VND");
-        assertThat(amount(result, "$.payment.amountDueBeforeHandover")).isEqualByComparingTo("700000");
-        assertThat(amount(result, "$.payment.amountDue")).isEqualByComparingTo("700000");
-        assertThat(amount(result, "$.payment.depositRequired")).isEqualByComparingTo("300000");
-        assertThat(JsonPath.<String>read(result, "$.history[0].reason")).contains("[e-mail]");
+        assertThat(JsonPath.<String>read(result, "$.status")).isEqualTo("PENDING_PAYMENT");
+        assertThat(JsonPath.<List<String>>read(result, "$.blockers.reasons[*].code"))
+                .contains("SIGNING_INSTALLMENT_UNPAID");
+        assertThat(JsonPath.<List<String>>read(result, "$.blockers.notChecked"))
+                .as("the accountant holds no production-orders:READ").contains("PRODUCTION_ORDERS");
+        assertThat(JsonPath.<Boolean>read(result, "$.payment.installmentsShown")).isTrue();
+        assertThat(JsonPath.<Boolean>read(result, "$.payment.contractSigned")).isTrue();
+        assertThat(JsonPath.<String>read(result, "$.payment.status")).isEqualTo("UNPAID");
+        assertThat(JsonPath.<Boolean>read(result, "$.payment.onSigningPaid")).isFalse();
+        assertThat(amount(result, "$.payment.installmentsTotal")).isEqualByComparingTo(signed.total());
+        assertThat(amount(result, "$.payment.paid")).isEqualByComparingTo(BigDecimal.ZERO);
+        assertThat(amount(result, "$.payment.dueBeforeHandover")).isEqualByComparingTo(signed.total());
+        assertThat(JsonPath.<List<String>>read(result, "$.history[*].reason"))
+                .anySatisfy(reason -> assertThat(reason).contains("[e-mail]"));
         assertThat(result).doesNotContain("ketoan@khach.vn", CONTACT_NAME, CONTACT_EMAIL, CONTACT_PHONE, ADDRESS);
+    }
+
+    @Test
+    @DisplayName("a role that reads orders but not instalments gets the order and its totals, installmentsShown false, "
+            + "and no figure of what is paid or owed")
+    void noInstalmentsWithoutTheirPermission() throws Exception {
+        ConfirmedOrders.Signed signed = signedOrder();
+        UUID coordinator = staff("PRODUCTION_COORDINATOR");
+        script(toolUse("findOrder", "{\"orderNumber\":\"" + signed.orderNumber() + "\"}"),
+                answer("Đơn chờ thanh toán đợt ký."));
+        String conversation = start(Role.PRODUCTION_COORDINATOR, coordinator);
+
+        http.asRole(Role.PRODUCTION_COORDINATOR, coordinator, ask(conversation, "Đơn " + signed.orderNumber()
+                        + " tới đâu rồi?"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.toolCalls[0].outcome").value("OK"));
+
+        String result = result(conversation, "findOrder");
+        assertThat(JsonPath.<String>read(result, "$.status")).isEqualTo("PENDING_PAYMENT");
+        assertThat(amount(result, "$.payment.total")).isEqualByComparingTo(signed.total());
+        assertThat(JsonPath.<Boolean>read(result, "$.payment.installmentsShown")).isFalse();
+        assertThat(JsonPath.<Map<String, Object>>read(result, "$.payment")).doesNotContainKeys("contractSigned",
+                "status", "installmentsTotal", "paid", "onSigningPaid", "dueBeforeHandover");
     }
 
     // ------------------------------------------------------------------------------------------------------------
 
-    /** Paid in full, then held from CONFIRMED. */
+    /**
+     * An order of the demo customer's own SKU, 2 cartons of 10 at 10 000 VND a piece, whose contract wants everything
+     * on signing: signed, not paid, so PENDING_PAYMENT. Its contact block and address are filled, and its history holds
+     * a reason with an e-mail address, none of which may reach the model.
+     */
+    private ConfirmedOrders.Signed signedOrder() {
+        ConfirmedOrders orders = new ConfirmedOrders(context);
+        CustomerSkuRows.Issued cups = CustomerSkuRows.issue(jdbc, tx, entityManager, DemoData.CUSTOMER_ID, 10);
+        ConfirmedOrders.Signed signed = orders.signed(DemoData.CUSTOMER_ID,
+                ConfirmedOrders.Line.cartons(cups, 2, 10_000));
+        tx.executeWithoutResult(s -> {
+            jdbc.update("""
+                    UPDATE ordering.customer_order SET contact_name = ?, contact_email = ?, contact_phone = ?,
+                        shipping_recipient_name = ?, shipping_phone = ?, shipping_line1 = ?, shipping_ward_code = '26734',
+                        shipping_ward_name = 'Phường Bến Nghé', shipping_province_code = '79',
+                        shipping_province_name = 'Thành phố Hồ Chí Minh', shipping_country_code = 'VN'
+                    WHERE id = ?""", CONTACT_NAME, CONTACT_EMAIL, CONTACT_PHONE, CONTACT_NAME, CONTACT_PHONE, ADDRESS,
+                    signed.orderId());
+            jdbc.update("""
+                    INSERT INTO ordering.order_status_history (id, order_id, from_status, to_status, reason,
+                        occurred_at, version, created_at) VALUES (?, ?, 'PENDING_CONTRACT', 'PENDING_PAYMENT', ?, ?, 0,
+                        NOW())""", Identifiers.newId(), signed.orderId(),
+                    "Khách hẹn chuyển khoản, đối soát với ketoan@khach.vn", Timestamp.from(Instant.now()));
+        });
+        return signed;
+    }
+
+    /** Signed and paid in full, then held from CONFIRMED. */
     private String held(String reason, String note, int hour) {
-        return order("ON_HOLD", hour, "PREPAID", BigDecimal.valueOf(1_000_000), true, null, null, reason,
-                "CONFIRMED", note, false);
+        return order("ON_HOLD", hour, reason, "CONFIRMED", note);
     }
 
+    /** Signed, its instalment on signing not paid yet. */
     private String pending(int hour) {
-        return order("PENDING_PAYMENT", hour, "PREPAID", BigDecimal.ZERO, false, null, null, null, null, null, false);
-    }
-
-    /** A 30% deposit in, the balance to be paid by transfer before delivery, packed and waiting at dispatch. */
-    private String packedDeposit(int hour) {
-        return order("PACKED", hour, "DEPOSIT", BigDecimal.valueOf(300_000), false, BigDecimal.valueOf(300_000),
-                "BEFORE_DELIVERY", null, null, null, true);
+        return order("PENDING_PAYMENT", hour, null, null, null);
     }
 
     /**
-     * One order of 100 x 10,000 VND, placed on this test's day at {@code hour} Vietnam time, with a contact block and a
-     * shipping address that must never reach the model.
+     * One order of 100 x 10,000 VND under a signed contract, placed on this test's day at {@code hour} Vietnam time,
+     * with a contact block and a shipping address that must never reach the model. No money columns: an order owns
+     * none since the rescope, and the list rows do not read the contract's instalments.
      */
-    private String order(String status, int hour, String term, BigDecimal paid, boolean paidInFull,
-                         BigDecimal deposit, String balancePolicy, String holdReason, String statusBeforeHold,
-                         String holdNote, boolean released) {
+    private String order(String status, int hour, String holdReason, String statusBeforeHold, String holdNote) {
         UUID id = Identifiers.newId();
         String number = "SO-" + placedOn.format(DateTimeFormatter.BASIC_ISO_DATE) + "-"
                 + (1_000_000 + ThreadLocalRandom.current().nextInt(9_000_000));
@@ -224,33 +288,19 @@ class AssistantOrderToolsIntegrationTest {
         tx.executeWithoutResult(s -> {
             jdbc.update("""
                     INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status,
-                        total_amount, currency, placed_at, payment_term, paid_amount, paid_in_full_at,
-                        deposit_required, deposit_received_at, balance_policy, hold_reason, status_before_hold,
-                        hold_note, released_at, released_by, warehouse_id, packed_at, contact_name, contact_email,
-                        contact_phone, shipping_recipient_name, shipping_phone, shipping_line1, shipping_ward_code,
-                        shipping_ward_name, shipping_province_code, shipping_province_name, shipping_country_code,
-                        version, created_at)
-                    VALUES (?, ?, ?, ?, ?, 1000000, 'VND', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                        total_amount, currency, placed_at, contract_signed_at, hold_reason, status_before_hold,
+                        hold_note, contact_name, contact_email, contact_phone, shipping_recipient_name, shipping_phone,
+                        shipping_line1, shipping_ward_code, shipping_ward_name, shipping_province_code,
+                        shipping_province_name, shipping_country_code, version, created_at)
+                    VALUES (?, ?, ?, ?, ?, 1000000, 'VND', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                         '26734', 'Phường Bến Nghé', '79', 'Thành phố Hồ Chí Minh', 'VN', 0, NOW())""",
-                    id, number, DemoData.CUSTOMER_ID, Identifiers.newId(), status, placed, term, paid,
-                    paidInFull ? placed : null, deposit, deposit == null ? null : placed, balancePolicy, holdReason,
-                    statusBeforeHold, holdNote, released ? placed : null, released ? releasedBy : null,
-                    released ? DemoData.WAREHOUSE_HCM : null, "PACKED".equals(status) ? placed : null, CONTACT_NAME,
-                    CONTACT_EMAIL, CONTACT_PHONE, CONTACT_NAME, CONTACT_PHONE, ADDRESS);
+                    id, number, DemoData.CUSTOMER_ID, Identifiers.newId(), status, placed, placed, holdReason,
+                    statusBeforeHold, holdNote, CONTACT_NAME, CONTACT_EMAIL, CONTACT_PHONE, CONTACT_NAME,
+                    CONTACT_PHONE, ADDRESS);
             jdbc.update("INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency) "
                     + "VALUES (?, ?, ?, 100, 10000, 'VND')", Identifiers.newId(), id, sku);
         });
         return number;
-    }
-
-    private void history(String orderNumber, String from, String to, String reason) {
-        UUID order = jdbc.queryForObject("select id from ordering.customer_order where order_number = ?", UUID.class,
-                orderNumber);
-        jdbc.update("""
-                INSERT INTO ordering.order_status_history (id, order_id, from_status, to_status, reason, occurred_at,
-                    version, created_at) VALUES (?, ?, ?, ?, ?, ?, 0, NOW())""",
-                Identifiers.newId(), order, from, to, reason,
-                Timestamp.from(placedOn.atTime(8, 0).atZone(VIETNAM).toInstant()));
     }
 
     private String result(String conversation, String tool) {

@@ -29,18 +29,26 @@ import java.util.Set;
  *
  * <p><b>No more of the order than the pick-lines screen shows.</b> That screen shows a task with its order number and
  * nothing else of the order, and nothing at all for an order with no task the caller may see. Under the seeded grants
- * warehouse managers and QC hold this tool's permission but not {@code sales-orders:READ}: no screen of theirs shows an
+ * warehouse managers and staff hold this tool's permission but not {@code sales-orders:READ}: no screen of theirs shows an
  * order's status or tells them which order numbers exist. So for a caller without {@code sales-orders:READ}, every case
  * without a visible task — no task yet, a task in another warehouse or not theirs to see, no order with that number —
  * gets one and the same note, with the number as they typed it. Only a caller who may read orders is told the status,
  * which is what says where an order without a task stands: a task opens when the warehouse assigns picking after
- * release, and for printed goods only once production is done, so "no task" alone does not mean "not released".</p>
+ * release, and for printed goods only once they are received from the producer, so "no task" alone does not mean
+ * "not released".</p>
  *
- * <p><b>Who may see a task</b> is fulfillment's rule ({@code TaskAccess}): its assignee, a packer once it waits at the
- * packing table, and whoever oversees tasks or re-verifies designs, in their own warehouses. {@code pickingOf} applies
- * the whole rule, so nothing is declared beside the screen's permission: warehouse staff, who may open the assistant
- * since V20261105000500 and hold neither oversight nor re-verification, are served their own tasks, and a task they
- * may not see gets the same note as an order without one.</p>
+ * <p><b>Which task.</b> Since 4B-8 an order has one task per released delivery batch; {@code pickingOf} shows the newest
+ * (ids are UUIDv7), the one in hand - an order stops on a short pick (ON_HOLD), so no later batch is released past the
+ * task holding the short line. An earlier batch's task is not shown, even when the newest is one the caller may not
+ * see.</p>
+ *
+ * <p><b>Who may see a task</b> is fulfillment's rule ({@code TaskAccess}): its assignee; whoever oversees tasks
+ * ({@code fulfillment-task-oversight:READ}), in their own warehouses; and, once picking is done (task PICKED, the goods
+ * at the packing table), any packer of its warehouse ({@code fulfillment-packing:UPDATE}), who may take it there.
+ * {@code pickingOf} applies the whole rule, so nothing is declared beside the screen's permission: warehouse staff, who
+ * may open the assistant since V20261125000500 and hold no oversight, are served their own tasks and - seeded with
+ * packing - every PICKED task of their warehouse; a task they may not see gets the same note as an order without
+ * one.</p>
  */
 @Component
 class GetOrderPickingTool implements AssistantTool {
@@ -55,7 +63,7 @@ class GetOrderPickingTool implements AssistantTool {
     private static final String NO_VISIBLE_TASK = "No pick task for this order number is visible to this user. Say "
             + "only that: their permissions do not show orders, so this tells neither whether the order exists nor "
             + "what its status is. A task appears once the warehouse assigns picking after the order is released, and "
-            + "for printed goods only once production is done; findProductionOrders says how far printing is.";
+            + "for printed goods only once they are received from the producer.";
 
     private static final ToolSpec SPEC = new ToolSpec("getOrderPicking",
             "The pick task of one customer order, looked up by the order number alone, with every pick line: SKU, "

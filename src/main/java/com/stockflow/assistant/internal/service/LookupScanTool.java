@@ -10,7 +10,7 @@ import com.stockflow.common.security.RequiresPermission;
 import com.stockflow.inventory.api.ScannedCodeQueries;
 import org.springframework.stereotype.Component;
 
-import java.time.LocalDate;
+import java.time.Instant;
 import java.util.List;
 import java.util.Locale;
 
@@ -29,12 +29,13 @@ import java.util.Locale;
  * without that permission the tool says so instead of searching.</p>
  *
  * <p><b>A carton's status is not its stock's.</b> IN_STOCK says the carton is in the warehouse; the goods in it may be
- * INBOUND waiting for QC, QUARANTINE, DAMAGED or EXPIRED. The carton's stock rows go with it, each with its status, so
- * a carton waiting for QC is never read as one to pick.</p>
+ * INBOUND waiting for putaway, QUARANTINE or DAMAGED. The carton's stock rows go with it, each with its status, so a
+ * carton waiting for putaway is never read as one to pick.</p>
  *
- * <p><b>Counts, not a conversion.</b> Whole and opened cartons here are the cartons as they stand, unlike the
- * {@code ...Packed} figures of the stock tools, which divide a quantity by a packing's size. A receiving or QC area
- * can hold hundreds of lines: {@value #MAX_LOCATION_ROWS} at most, with the total.</p>
+ * <p><b>Counts, not a conversion.</b> The cartons here are the cartons as they stand - every carton in stock is whole
+ * and sealed since the rescope (4C-3), and nothing expires - unlike the {@code ...Packed} figures of the stock tools,
+ * which divide a quantity by a packing's size. A receiving area can hold hundreds of lines:
+ * {@value #MAX_LOCATION_ROWS} at most, with the total.</p>
  */
 @Component
 class LookupScanTool implements AssistantTool {
@@ -43,13 +44,13 @@ class LookupScanTool implements AssistantTool {
     static final int MAX_LOCATION_ROWS = 50;
 
     private static final ToolSpec SPEC = new ToolSpec("lookupScan",
-            "What a scanned or typed warehouse label stands for. A carton's LPN (LPN-...): its SKU, lot, expiry, "
-                    + "units left and held, where it is, whether it is still sealed, and its contents: each stock row "
-                    + "in it with its stock status. The carton's own status (IN_STOCK...) says only where the carton "
-                    + "is: the goods may be used only where a content row is AVAILABLE; INBOUND waits for QC or "
-                    + "putaway; QUARANTINE, BLOCKED, DAMAGED, EXPIRED and IN_PRODUCTION may not be picked. A location code (a bin or an area): "
-                    + "per SKU, lot and stock status, the whole cartons and their units, the opened cartons and what "
-                    + "is left in them, the loose units and the total; an empty list means nothing is stored there; at "
+            "What a scanned or typed warehouse label stands for. A carton's LPN (LPN-...): its SKU, lot, units in "
+                    + "it and units allocated to an order, where it is, and its contents: each stock row in it with its "
+                    + "stock status and when it was received. Cartons are always whole and sealed, and nothing expires. "
+                    + "The carton's own status (IN_STOCK...) says only where the carton is: the goods may be used only "
+                    + "where a content row is AVAILABLE; INBOUND waits for putaway; QUARANTINE, BLOCKED and DAMAGED "
+                    + "may not be picked. A location code (a bin or an area): per SKU, lot and stock status, the "
+                    + "cartons and their units, units in no carton (looseUnits, rare) and the total; an empty list means nothing is stored there; at "
                     + "most " + MAX_LOCATION_ROWS + " lines, locationTotal counting them all. Any other code is tried "
                     + "as a carton label, then as a product barcode giving its SKUs. These are cartons as they stand, "
                     + "unlike the ...Packed conversions of the stock tools. A code that is none of these comes back "
@@ -159,36 +160,32 @@ class LookupScanTool implements AssistantTool {
     /**
      * @param status   the carton's: RECEIVING (being counted in), IN_STOCK (in the warehouse), CONSUMED (emptied), LOST
      *                 or VOID; not whether its goods may be used, which {@code contents} says
-     * @param unopened no unit taken out of it yet
      * @param onHand   units left in it; {@code held} of them for orders
      * @param contents its stock rows, each with the stock's own status
      */
     record Carton(String lpn, String sku, String unit, int unitsWhenFull, String locationCode, String status,
-                  boolean unopened, String lotNumber, LocalDate expiryDate, int onHand, int held,
-                  List<Content> contents) {
+                  String lotNumber, int onHand, int held, List<Content> contents) {
 
         static Carton of(ScannedCodeQueries.Carton carton) {
             return new Carton(carton.lpn(), carton.sku(), carton.unitOfMeasure(), carton.nominalQty(),
-                    carton.locationCode(), carton.status(), carton.unopened(), carton.lotNumber(), carton.expiryDate(),
+                    carton.locationCode(), carton.status(), carton.lotNumber(),
                     carton.onHand(), carton.reserved(), carton.contents().stream()
-                    .map(row -> new Content(row.lotNumber(), row.expiryDate(), row.status(), row.onHand(),
+                    .map(row -> new Content(row.lotNumber(), row.receivedAt(), row.status(), row.onHand(),
                             row.reserved())).toList());
         }
     }
 
     /** One stock row in a carton; {@code stockStatus} AVAILABLE may be used, the others (INBOUND...) may not. */
-    record Content(String lotNumber, LocalDate expiryDate, String stockStatus, int onHand, int held) {
+    record Content(String lotNumber, Instant receivedAt, String stockStatus, int onHand, int held) {
     }
 
-    /** @param status the stock's: AVAILABLE, QUARANTINE, DAMAGED, EXPIRED... */
-    record LocationRow(String sku, String lotNumber, LocalDate expiryDate, String status, int wholeCartons,
-                       int wholeCartonUnits, int openedCartons, int openedCartonUnits, int looseUnits,
-                       int totalUnits) {
+    /** @param status the stock's: AVAILABLE, INBOUND, QUARANTINE, DAMAGED... */
+    record LocationRow(String sku, String lotNumber, String status, int wholeCartons, int wholeCartonUnits,
+                       int looseUnits, int totalUnits) {
 
         static LocationRow of(ScannedCodeQueries.LocationLine line) {
-            return new LocationRow(line.sku(), line.lotNumber(), line.expiryDate(), line.status(),
-                    line.wholeCartons(), line.wholeCartonUnits(), line.openedCartons(), line.openedCartonUnits(),
-                    line.looseUnits(), line.totalUnits());
+            return new LocationRow(line.sku(), line.lotNumber(), line.status(), line.wholeCartons(),
+                    line.wholeCartonUnits(), line.looseUnits(), line.totalUnits());
         }
     }
 }

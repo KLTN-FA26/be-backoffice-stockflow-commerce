@@ -16,7 +16,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.within;
 
-/** A spoken question's file (ADR-0015): judged by its own header, never by what the upload declares. */
+/** A spoken question's file (ADR-0016): judged by its own header, never by what the upload declares. */
 class WavAudioTest {
 
     /** A WAV file of {@code seconds} of silence; {@code dataSize} overrides the data chunk's declared size. */

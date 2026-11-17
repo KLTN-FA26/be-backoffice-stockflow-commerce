@@ -74,12 +74,12 @@ class AssistantRetryIntegrationTest {
     @DisplayName("an Idempotency-Key on the stream is refused with 400 before anything runs, whatever the client "
             + "accepts, and the filter neither claims nor stores the key")
     void theStreamRefusesAKey() throws Exception {
-        UUID planner = staff();
-        String conversation = start(planner);
+        UUID admin = staff();
+        String conversation = start(admin);
 
         for (String accept : List.of(MediaType.TEXT_EVENT_STREAM_VALUE, MediaType.ALL_VALUE)) {
             String key = "assistant-stream-" + UUID.randomUUID();
-            http.asRole(Role.INVENTORY_PLANNER, planner, question(BASE + "/" + conversation + "/messages/stream")
+            http.asRole(Role.SYSTEM_ADMIN, admin, question(BASE + "/" + conversation + "/messages/stream")
                             .header("Idempotency-Key", key).accept(accept))
                     .andExpect(status().isBadRequest())
                     .andExpect(request().asyncNotStarted())
@@ -97,16 +97,16 @@ class AssistantRetryIntegrationTest {
     @Test
     @DisplayName("the plain endpoint still honours the key: the retry gets the stored answer, the model is asked once")
     void thePlainEndpointReplays() throws Exception {
-        UUID planner = staff();
-        String conversation = start(planner);
+        UUID admin = staff();
+        String conversation = start(admin);
         when(model.next(any())).thenReturn(answer("Xin chào, tôi giúp được gì?"));
         String key = "assistant-ask-" + UUID.randomUUID();
 
-        String first = http.asRole(Role.INVENTORY_PLANNER, planner, question(BASE + "/" + conversation + "/messages")
+        String first = http.asRole(Role.SYSTEM_ADMIN, admin, question(BASE + "/" + conversation + "/messages")
                         .header("Idempotency-Key", key))
                 .andExpect(status().isOk())
                 .andReturn().getResponse().getContentAsString(StandardCharsets.UTF_8);
-        http.asRole(Role.INVENTORY_PLANNER, planner, question(BASE + "/" + conversation + "/messages")
+        http.asRole(Role.SYSTEM_ADMIN, admin, question(BASE + "/" + conversation + "/messages")
                         .header("Idempotency-Key", key))
                 .andExpect(status().isOk())
                 .andExpect(header().string("Idempotency-Replayed", "true"))
@@ -119,19 +119,19 @@ class AssistantRetryIntegrationTest {
     @DisplayName("a spent provider quota is 429 ASSISTANT_QUOTA_EXHAUSTED and the key is released: the same retry asks "
             + "again once the quota is back")
     void aSpentQuotaIsNotKeptAgainstTheKey() throws Exception {
-        UUID planner = staff();
-        String conversation = start(planner);
+        UUID admin = staff();
+        String conversation = start(admin);
         when(model.next(any()))
                 .thenThrow(new BusinessException(ErrorCode.ASSISTANT_QUOTA_EXHAUSTED,
                         "The model provider's quota is used up; the assistant answers again once it is renewed"))
                 .thenReturn(answer("Xin chào."));
         String key = "assistant-quota-" + UUID.randomUUID();
 
-        http.asRole(Role.INVENTORY_PLANNER, planner, question(BASE + "/" + conversation + "/messages")
+        http.asRole(Role.SYSTEM_ADMIN, admin, question(BASE + "/" + conversation + "/messages")
                         .header("Idempotency-Key", key))
                 .andExpect(status().isTooManyRequests())
                 .andExpect(jsonPath("$.errorCode").value("ASSISTANT_QUOTA_EXHAUSTED"));
-        http.asRole(Role.INVENTORY_PLANNER, planner, question(BASE + "/" + conversation + "/messages")
+        http.asRole(Role.SYSTEM_ADMIN, admin, question(BASE + "/" + conversation + "/messages")
                         .header("Idempotency-Key", key))
                 .andExpect(status().isOk())
                 .andExpect(header().doesNotExist("Idempotency-Replayed"))
@@ -142,12 +142,12 @@ class AssistantRetryIntegrationTest {
     @DisplayName("on the stream, a refused key or model is an error event ASSISTANT_MISCONFIGURED, in the user's "
             + "language")
     void theStreamSaysWhoMustAct() throws Exception {
-        UUID planner = staff();
-        String conversation = start(planner);
+        UUID admin = staff();
+        String conversation = start(admin);
         when(model.next(any())).thenThrow(new BusinessException(ErrorCode.ASSISTANT_MISCONFIGURED,
                 "The model provider answered 401"));
 
-        MvcResult started = http.asRole(Role.INVENTORY_PLANNER, planner,
+        MvcResult started = http.asRole(Role.SYSTEM_ADMIN, admin,
                         question(BASE + "/" + conversation + "/messages/stream")
                                 .accept(MediaType.TEXT_EVENT_STREAM).header("Accept-Language", "vi"))
                 .andExpect(request().asyncStarted())
@@ -165,13 +165,13 @@ class AssistantRetryIntegrationTest {
         UUID user = tx.execute(s -> ReferenceRows.user(entityManager));
         tx.executeWithoutResult(s -> jdbc.update("""
                 INSERT INTO identity.user_role (id, user_id, role_id, version, created_at)
-                SELECT gen_random_uuid(), ?, id, 0, NOW() FROM identity.app_role WHERE code = 'INVENTORY_PLANNER'""",
+                SELECT gen_random_uuid(), ?, id, 0, NOW() FROM identity.app_role WHERE code = 'SYSTEM_ADMIN'""",
                 user));
         return user;
     }
 
     private String start(UUID user) throws Exception {
-        String body = http.asRole(Role.INVENTORY_PLANNER, user, post(BASE)).andExpect(status().isCreated())
+        String body = http.asRole(Role.SYSTEM_ADMIN, user, post(BASE)).andExpect(status().isCreated())
                 .andReturn().getResponse().getContentAsString();
         return JsonPath.read(body, "$.data.id");
     }

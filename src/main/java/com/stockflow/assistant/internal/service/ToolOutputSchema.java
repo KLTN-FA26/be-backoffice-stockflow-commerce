@@ -148,7 +148,7 @@ final class ToolOutputSchema {
                     || raw == BigDecimal.class) {
                 return typed("number");
             }
-            // A customer's name is written as text: the name, or its alias for the assistant's own model (ADR-0014).
+            // A customer's name is written as text: the name, or its alias for the assistant's own model (ADR-0015).
             if (CharSequence.class.isAssignableFrom(raw) || raw == char.class || raw == Character.class
                     || raw == byte[].class || raw == CustomerName.class) {
                 return typed("string");

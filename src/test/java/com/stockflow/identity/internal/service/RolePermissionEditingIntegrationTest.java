@@ -22,6 +22,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
+import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -35,8 +36,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 @Import({PostgresContainer.class, RedisContainer.class})
 class RolePermissionEditingIntegrationTest {
 
-    private static final String ROLE = "INVENTORY_PLANNER";
-    private static final String PO_APPROVE = "procurement-purchase-orders:APPROVE";
+    private static final String ROLE = "ACCOUNTANT";
+    private static final String GRANTED = "procurement-goods-receipts:UPDATE";
 
     @Autowired
     private IdentityService identity;
@@ -96,19 +97,19 @@ class RolePermissionEditingIntegrationTest {
 
     @Test
     void aGrantReachesTheNextLookupEvenWithAWarmCache() {
-        assertThat(resolved()).doesNotContain(PermissionCode.parse(PO_APPROVE));   // warms the cache
+        assertThat(resolved()).doesNotContain(PermissionCode.parse(GRANTED));   // warms the cache
         RoleMatrixView before = identity.roleMatrix(ROLE);
 
         RoleMatrixView saved = identity.updateRolePermissions(
-                new UpdateRolePermissionsCommand(ROLE, before.version(), plus(original, PO_APPROVE)));
+                new UpdateRolePermissionsCommand(ROLE, before.version(), plus(original, GRANTED)));
 
         assertThat(saved.version()).isEqualTo(before.version() + 1);
-        assertThat(granted(saved)).contains(PO_APPROVE);
+        assertThat(granted(saved)).contains(GRANTED);
         assertThat(identity.roleMatrix(ROLE).version()).isEqualTo(saved.version());
-        assertThat(resolved()).contains(PermissionCode.parse(PO_APPROVE));
+        assertThat(resolved()).contains(PermissionCode.parse(GRANTED));
 
         identity.updateRolePermissions(new UpdateRolePermissionsCommand(ROLE, saved.version(), original));
-        assertThat(resolved()).doesNotContain(PermissionCode.parse(PO_APPROVE));
+        assertThat(resolved()).doesNotContain(PermissionCode.parse(GRANTED));
     }
 
     private int grantRows(String role) {
@@ -119,28 +120,49 @@ class RolePermissionEditingIntegrationTest {
 
     @Test
     void grantsTheScreenCannotShowSurviveASave() {
-        // The seed grants permissions for modules not built yet; the matrix hides them.
-        int before = grantRows("SALES_STAFF");
-        RoleMatrixView matrix = identity.roleMatrix("SALES_STAFF");
-        assertThat(granted(matrix)).hasSizeLessThan(before);
+        // A grant on a resource no controller declares is hidden by the matrix. The seed used to hold such grants
+        // for modules not built yet (chat was the last); the test now makes its own, so it does not depend on what
+        // is still unbuilt.
+        UUID permission = com.stockflow.common.id.Identifiers.newId();
+        // In a transaction of its own: the pool hands out connections with auto-commit off.
+        TransactionTemplate tx = new TransactionTemplate(transactionManager);
+        tx.executeWithoutResult(status -> {
+            jdbc.update("""
+                    INSERT INTO identity.permission (id, code, resource, action, version, created_at)
+                    VALUES (?, 'unbuilt-module:READ', 'unbuilt-module', 'READ', 0, NOW())""", permission);
+            jdbc.update("""
+                    INSERT INTO identity.role_permission (id, role_id, permission_id, version, created_at)
+                    SELECT ?, r.id, ?, 0, NOW() FROM identity.app_role r WHERE r.code = 'SALES_STAFF'""",
+                    com.stockflow.common.id.Identifiers.newId(), permission);
+        });
+        try {
+            int before = grantRows("SALES_STAFF");
+            RoleMatrixView matrix = identity.roleMatrix("SALES_STAFF");
+            assertThat(granted(matrix)).hasSizeLessThan(before).doesNotContain("unbuilt-module:READ");
 
-        RoleMatrixView saved = identity.updateRolePermissions(
-                new UpdateRolePermissionsCommand("SALES_STAFF", matrix.version(), granted(matrix)));
+            RoleMatrixView saved = identity.updateRolePermissions(
+                    new UpdateRolePermissionsCommand("SALES_STAFF", matrix.version(), granted(matrix)));
 
-        assertThat(saved.version()).isEqualTo(matrix.version() + 1);
-        assertThat(grantRows("SALES_STAFF")).isEqualTo(before);
+            assertThat(saved.version()).isEqualTo(matrix.version() + 1);
+            assertThat(grantRows("SALES_STAFF")).isEqualTo(before);
+        } finally {
+            tx.executeWithoutResult(status -> {
+                jdbc.update("DELETE FROM identity.role_permission WHERE permission_id = ?", permission);
+                jdbc.update("DELETE FROM identity.permission WHERE id = ?", permission);
+            });
+        }
     }
 
     @Test
     void aSaveAgainstAVersionSomeoneElseMovedPastIsRefused() {
         long loaded = identity.roleMatrix(ROLE).version();
-        identity.updateRolePermissions(new UpdateRolePermissionsCommand(ROLE, loaded, plus(original, PO_APPROVE)));
+        identity.updateRolePermissions(new UpdateRolePermissionsCommand(ROLE, loaded, plus(original, GRANTED)));
 
         assertThatThrownBy(() -> identity.updateRolePermissions(
                 new UpdateRolePermissionsCommand(ROLE, loaded, original)))
                 .isInstanceOfSatisfying(BusinessException.class,
                         ex -> assertThat(ex.errorCode()).isEqualTo(ErrorCode.ROLE_PERMISSIONS_CHANGED));
-        assertThat(granted(identity.roleMatrix(ROLE))).contains(PO_APPROVE);
+        assertThat(granted(identity.roleMatrix(ROLE))).contains(GRANTED);
     }
 
     @Test
@@ -148,7 +170,7 @@ class RolePermissionEditingIntegrationTest {
         long loaded = identity.roleMatrix(ROLE).version();
 
         assertThatThrownBy(() -> identity.updateRolePermissions(new UpdateRolePermissionsCommand(ROLE, loaded,
-                List.of("procurement-purchase-orders:READ", "no-such-screen:READ", "not a code"))))
+                List.of("procurement-goods-receipts:READ", "no-such-screen:READ", "not a code"))))
                 .isInstanceOfSatisfying(BusinessException.class, ex -> {
                     assertThat(ex.errorCode()).isEqualTo(ErrorCode.UNKNOWN_PERMISSION);
                     assertThat(ex.getMessage()).contains("no-such-screen:READ", "not a code");
@@ -179,22 +201,22 @@ class RolePermissionEditingIntegrationTest {
     /** SYSTEM_ADMIN always holds the right, so another role is free to give it up. */
     @Test
     void anotherRoleMayGiveUpManagingPermissionsWhileSystemAdminHoldsIt() {
-        RoleMatrixView admin = identity.roleMatrix("ECOMMERCE_ADMIN");
+        RoleMatrixView admin = identity.roleMatrix("SALES_MANAGER");
         List<String> before = granted(admin);
         try {
             RoleMatrixView saved = identity.updateRolePermissions(new UpdateRolePermissionsCommand(
-                    "ECOMMERCE_ADMIN", admin.version(), without(before, MANAGE_RBAC)));
+                    "SALES_MANAGER", admin.version(), without(before, MANAGE_RBAC)));
 
             assertThat(granted(saved)).doesNotContain(MANAGE_RBAC);
         } finally {
-            RoleMatrixView now = identity.roleMatrix("ECOMMERCE_ADMIN");
-            identity.updateRolePermissions(new UpdateRolePermissionsCommand("ECOMMERCE_ADMIN", now.version(), before));
+            RoleMatrixView now = identity.roleMatrix("SALES_MANAGER");
+            identity.updateRolePermissions(new UpdateRolePermissionsCommand("SALES_MANAGER", now.version(), before));
         }
     }
 
     /**
      * The guard itself, with SYSTEM_ADMIN's grant taken away for the duration: SYSTEM_ADMIN is not
-     * editable through the service, so this is the only way left to make ECOMMERCE_ADMIN the last
+     * editable through the service, so this is the only way left to make SALES_MANAGER the last
      * holder, and the guard still has to hold if a migration ever leaves it that way.
      */
     @Test
@@ -208,14 +230,14 @@ class RolePermissionEditingIntegrationTest {
         TransactionTemplate tx = new TransactionTemplate(transactionManager);
         tx.executeWithoutResult(status -> jdbc.update("DELETE " + systemAdminGrant, MANAGE_RBAC));
         try {
-            RoleMatrixView admin = identity.roleMatrix("ECOMMERCE_ADMIN");
+            RoleMatrixView admin = identity.roleMatrix("SALES_MANAGER");
 
             assertThatThrownBy(() -> identity.updateRolePermissions(new UpdateRolePermissionsCommand(
-                    "ECOMMERCE_ADMIN", admin.version(), without(granted(admin), MANAGE_RBAC))))
+                    "SALES_MANAGER", admin.version(), without(granted(admin), MANAGE_RBAC))))
                     .isInstanceOfSatisfying(BusinessException.class,
                             ex -> assertThat(ex.errorCode()).isEqualTo(ErrorCode.RBAC_LOCKOUT));
             // Refused inside the transaction, so the version bump rolled back with it.
-            assertThat(identity.roleMatrix("ECOMMERCE_ADMIN").version()).isEqualTo(admin.version());
+            assertThat(identity.roleMatrix("SALES_MANAGER").version()).isEqualTo(admin.version());
         } finally {
             tx.executeWithoutResult(status -> jdbc.update("""
                     INSERT INTO identity.role_permission (id, role_id, permission_id, version, created_at, created_by)

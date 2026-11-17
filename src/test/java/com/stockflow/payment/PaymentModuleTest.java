@@ -34,8 +34,8 @@ class PaymentModuleTest {
     // customer (bootstrapped) invites portal accounts and mails the invitation (SCRUM-429): its ports, not the modules.
     @MockitoBean com.stockflow.identity.api.PortalAccountService portalAccountServiceMock;
     @MockitoBean com.stockflow.notification.api.NotificationService notificationServiceMock;
-    // G2-3: payment's own SPI, implemented by the order module (which depends on payment, not the other way round).
-    @MockitoBean com.stockflow.payment.api.OrderPayables orderPayablesMock;
+    // 4B-10: payment's own SPI, implemented by the order module (which depends on payment, not the other way round).
+    @MockitoBean com.stockflow.payment.api.InstallmentOrders installmentOrdersMock;
 
     @Test
     @DisplayName("payment starts and answers through its api with the other modules absent")

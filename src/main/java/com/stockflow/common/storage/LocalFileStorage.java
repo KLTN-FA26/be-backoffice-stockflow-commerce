@@ -53,7 +53,7 @@ class LocalFileStorage implements FileStorage {
 
     @Override
     public StoredFile store(FileCategory category, String originalName, String contentType,
-                            long sizeBytes, InputStream content) {
+                            long sizeBytes, InputStream content, String sha256) {
         byte[] head = new byte[12];
         InputStream sniffable = content.markSupported()
                 ? content
@@ -68,7 +68,15 @@ class LocalFileStorage implements FileStorage {
             String key = StorageKeys.generate(category, contentType, clock.instant());
             Path target = resolve(key);
             Files.createDirectories(target.getParent());
-            Files.copy(sniffable, target, StandardCopyOption.REPLACE_EXISTING);
+            var digest = Checksums.sha256();
+            Files.copy(new java.security.DigestInputStream(sniffable, digest), target,
+                    StandardCopyOption.REPLACE_EXISTING);
+            String actual = java.util.HexFormat.of().formatHex(digest.digest());
+            if (sha256 != null && !sha256.equals(actual)) {
+                // What S3 does with a mismatching x-amz-checksum-sha256: refuse the write.
+                Files.deleteIfExists(target);
+                throw new StorageException("Stored bytes do not match the declared SHA-256");
+            }
 
             return new StoredFile(key, originalName, ContentTypePolicy.normalise(contentType),
                     Files.size(target), clock.instant());
@@ -87,8 +95,82 @@ class LocalFileStorage implements FileStorage {
         }
     }
 
+    /**
+     * Size and digest from the file itself: a filesystem keeps no store-side checksum, so the digest
+     * is computed on every call. Fine for the tests and the laptop this class is for.
+     */
     @Override
-    public String presignedDownloadUrl(String key, Duration validFor) {
+    public ObjectStat stat(String key) {
+        Path source = resolve(key);
+        try (var input = new java.security.DigestInputStream(Files.newInputStream(source), Checksums.sha256())) {
+            input.transferTo(java.io.OutputStream.nullOutputStream());
+            return new ObjectStat(Files.size(source), contentTypeOf(key),
+                    java.util.HexFormat.of().formatHex(input.getMessageDigest().digest()));
+        } catch (java.nio.file.NoSuchFileException absent) {
+            throw new StorageException("No stored file with key " + key, absent);
+        } catch (IOException ex) {
+            throw new StorageException("Cannot read " + key, ex);
+        }
+    }
+
+    /** A filesystem has no Object Lock; nothing is locked, and saying so is logged. */
+    @Override
+    public void retain(String key, java.time.Instant until) {
+        resolve(key);
+        log.debug("Local storage cannot lock {}; retention until {} ignored", key, until);
+    }
+
+    @Override
+    public void retain(String key, java.time.Instant until, ObjectLockProperties.Mode mode) {
+        retain(key, until);
+    }
+
+    @Override
+    public java.util.List<StoredObject> list(String prefix, String startAfter, int max) {
+        Path base = root.resolve(prefix).normalize();
+        if (!base.startsWith(root) || !Files.isDirectory(base)) {
+            return java.util.List.of();
+        }
+        try (var files = Files.walk(base)) {
+            return files.filter(Files::isRegularFile)
+                    .map(path -> root.relativize(path).toString().replace('\\', '/'))
+                    .filter(key -> startAfter == null || key.compareTo(startAfter) > 0)
+                    .sorted().limit(max)
+                    .map(key -> {
+                        try {
+                            return new StoredObject(key, Files.getLastModifiedTime(root.resolve(key)).toInstant());
+                        } catch (IOException ex) {
+                            throw new StorageException("Cannot read " + key, ex);
+                        }
+                    }).toList();
+        } catch (IOException ex) {
+            throw new StorageException("Cannot list " + prefix, ex);
+        }
+    }
+
+    @Override
+    public void storeDerived(String key, String contentType, byte[] bytes) {
+        if (StorageKeys.categoryOf(key) != FileCategory.EVIDENCE_COPY) {
+            throw new IllegalArgumentException("Only derived copies are written at a given key");
+        }
+        Path target = resolve(key);
+        try {
+            Files.createDirectories(target.getParent());
+            Files.write(target, bytes);
+        } catch (IOException ex) {
+            throw new StorageException("Failed to write a derived copy to local storage", ex);
+        }
+    }
+
+    /** A filesystem has no URL a browser could write to - honest, like the download link. */
+    @Override
+    public PresignedUpload presignedUploadUrl(String incomingKey, String contentType, long sizeBytes, String sha256,
+                                              Duration validFor) {
+        throw new StorageException("Browser uploads require the S3/MinIO storage provider");
+    }
+
+    @Override
+    public String presignedDownloadUrl(String key, Duration validFor, DownloadDisposition disposition) {
         // Deliberately not a usable HTTP URL - see the class javadoc.
         return resolve(key).toUri().toString();
     }
@@ -128,6 +210,27 @@ class LocalFileStorage implements FileStorage {
      * check — after normalising, the result must still start with the root. Two independent guards,
      * because a path traversal here reads arbitrary files off the developer's machine.</p>
      */
+    /** The type a key's extension stands for ({@link StorageKeys} derives the extension from it). */
+    private static String contentTypeOf(String key) {
+        String name = key.substring(key.lastIndexOf('/') + 1);
+        int dot = name.lastIndexOf('.');
+        return switch (dot < 0 ? "" : name.substring(dot)) {
+            case ".jpg" -> "image/jpeg";
+            case ".png" -> "image/png";
+            case ".webp" -> "image/webp";
+            case ".mp4" -> "video/mp4";
+            case ".mov" -> "video/quicktime";
+            case ".webm" -> "video/webm";
+            case ".pdf" -> "application/pdf";
+            case ".xml" -> "application/xml";
+            case ".csv" -> "text/csv";
+            case ".txt" -> "text/plain";
+            case ".docx" -> "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+            case ".xlsx" -> "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+            default -> "application/octet-stream";
+        };
+    }
+
     private Path resolve(String key) {
         Path resolved = root.resolve(StorageKeys.requireValid(key)).normalize();
         if (!resolved.startsWith(root)) {

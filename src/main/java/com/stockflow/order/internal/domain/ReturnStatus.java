@@ -1,59 +1,69 @@
 package com.stockflow.order.internal.domain;
 
 /**
- * The life of a return request (RMA, 03-state-machines §12; SCRUM-243 / SCRUM-260). Mapped {@code EnumType.STRING};
+ * The life of a return request (RMA; kltn-docs 17 §4.10, team plan 4D-3). Mapped {@code EnumType.STRING};
  * {@code ck_return_request_status} holds the same names.
  *
  * <pre>
- *   REQUESTED ─approve, goods come back─▶ AWAITING_RETURN ─parcel counted in─▶ RECEIVED ─QC─▶ INSPECTED
- *       │       └approve, goods stay (photos)────────────────────────────────────────────────▶ INSPECTED
- *       ├─reject─▶ REJECTED              AWAITING_RETURN ─deadline passed─▶ EXPIRED
- *       └─cancel─▶ CANCELLED ◀─cancel─ AWAITING_RETURN          RECEIVED ─QC finds no defect─▶ REJECTED
- *   RECEIVED ─another parcel─▶ RECEIVED (no transition: the count grows)
- *   EXPIRED, CANCELLED (after approval) ─the goods come anyway─▶ RECEIVED
- *   INSPECTED ─resolution proposed─▶ SETTLEMENT_PENDING ─approved by another person─▶ RESOLVED
- *                                                       └─sent back─▶ INSPECTED
+ *   REQUESTED ─approve─▶ AWAITING_RETURN ─return receipt confirmed─▶ RECEIVED ─refund proposed─▶ SETTLEMENT_PENDING
+ *       ├─reject─▶ REJECTED        └─deadline passed─▶ EXPIRED                      ▲               │
+ *       └─cancel─▶ CANCELLED ◀─cancel─ AWAITING_RETURN                             └──sent back────┤
+ *                                                                          approved by another ─▶ RESOLVED
+ *   EXPIRED, CANCELLED (after approval) ─a return receipt opened before brings the goods anyway─▶ RECEIVED
  * </pre>
  *
- * <p>03 §12 drew APPROVED and AWAITING_RETURN as two states joined by "return instructions sent" by the system. With no
- * carrier integration (docs 09) the instructions are the approval itself - the RMA number to write on the parcel and
- * the deadline - so the two are one state. Its REFUNDED / EXCHANGED ends are one RESOLVED: a resolution may replace
- * some units and credit others, and what it did is on the request.</p>
+ * <p>Sales approve the claim on its photos, and the goods always come back (17 BR-18): the warehouse receives them on a
+ * return receipt, carton by carton, into quarantine (03 §4.2) - that receipt, confirmed, is what moves the return to
+ * RECEIVED. There is no QC of returned goods any more: a warehouse manager releases or writes off each carton in
+ * quarantine (20 §4.8), which is a decision about stock, not about the return. What the return still decides is the
+ * money: Sales propose the refund, a second person approves it, and payment settles it against the order's
+ * installments (15 §4.5). An exchange is a new quote (17 §4.10 step 41); nothing is replaced or credited.</p>
  */
 public enum ReturnStatus {
 
     /** Opened by the customer or by Sales for them; Sales review it. */
     REQUESTED,
 
-    /** Approved; the customer sends the approved units back before the deadline. */
+    /** Approved (the RMA); the customer sends the approved goods back to the order's warehouse before the deadline. */
     AWAITING_RETURN,
 
-    /** The parcel was counted into a quarantine area; QC inspects it. */
+    /** The goods came back on a return receipt, into quarantine; Sales propose the refund. */
     RECEIVED,
 
-    /** Every unit is accepted (the claim holds) or rejected; how the accepted ones are made good is next. */
+    /**
+     * Historical (SCRUM-260): QC had inspected the goods. No return reaches it since team plan 4D-3, which has no QC;
+     * kept because the status history still names it.
+     */
     INSPECTED,
 
-    /** A resolution - money, replacement goods, or both - waits for a second person (four eyes). */
+    /** A refund waits for a second person (four eyes). */
     SETTLEMENT_PENDING,
 
-    /** Every accepted unit was replaced or credited. */
+    /** The refund was approved and settled against the order's installments. */
     RESOLVED,
 
-    /** Refused at review, or nothing received was defective. */
+    /** Refused at review. */
     REJECTED,
 
     /** Withdrawn before the goods came back. */
     CANCELLED,
 
-    /** The approved goods did not arrive by the deadline; goods that come afterwards bring it back to RECEIVED. */
+    /** The approved goods did not arrive by the deadline. */
     EXPIRED;
 
     /** Still being worked on: it holds its units and keeps the order from completing (BR-ORD-005). */
     public boolean isOpen() {
         return switch (this) {
-            case REQUESTED, AWAITING_RETURN, RECEIVED, INSPECTED, SETTLEMENT_PENDING -> true;
-            case RESOLVED, REJECTED, CANCELLED, EXPIRED -> false;
+            case REQUESTED, AWAITING_RETURN, RECEIVED, SETTLEMENT_PENDING -> true;
+            case INSPECTED, RESOLVED, REJECTED, CANCELLED, EXPIRED -> false;
+        };
+    }
+
+    /** Whether the goods of the return are back in the warehouse: a return receipt brought them. */
+    public boolean goodsBack() {
+        return switch (this) {
+            case RECEIVED, SETTLEMENT_PENDING, RESOLVED -> true;
+            case REQUESTED, AWAITING_RETURN, INSPECTED, REJECTED, CANCELLED, EXPIRED -> false;
         };
     }
 
@@ -63,19 +73,14 @@ public enum ReturnStatus {
      */
     public boolean canTransitionTo(ReturnStatus target) {
         return switch (this) {
-            // INSPECTED: approved with the goods staying with the customer - the photos were the inspection.
-            case REQUESTED -> target == AWAITING_RETURN || target == INSPECTED || target == REJECTED
-                    || target == CANCELLED;
+            case REQUESTED -> target == AWAITING_RETURN || target == REJECTED || target == CANCELLED;
             case AWAITING_RETURN -> target == RECEIVED || target == CANCELLED || target == EXPIRED;
-            // Goods are physically here, so they are counted in whatever the return's state was: approved goods that
-            // came after the deadline, or after the customer withdrew. The aggregate checks a CANCELLED one was approved.
+            // Goods are physically here: a return receipt opened while the return awaited them brings them in whatever
+            // happened to the return meanwhile. The aggregate checks a CANCELLED one was approved.
             case EXPIRED, CANCELLED -> target == RECEIVED;
-            // REJECTED: QC found nothing received defective.
-            case RECEIVED -> target == INSPECTED || target == REJECTED;
-            // Every resolution is approved by a second person: replacement goods are worth what money is.
-            case INSPECTED -> target == SETTLEMENT_PENDING;
-            case SETTLEMENT_PENDING -> target == RESOLVED || target == INSPECTED;
-            case RESOLVED, REJECTED -> false;
+            case RECEIVED -> target == SETTLEMENT_PENDING;
+            case SETTLEMENT_PENDING -> target == RESOLVED || target == RECEIVED;
+            case INSPECTED, RESOLVED, REJECTED -> false;
         };
     }
 }

@@ -9,7 +9,7 @@ import com.stockflow.fulfillment.internal.domain.loadplanning.VehicleSpec;
 import com.stockflow.fulfillment.internal.entity.LoadEstimateJpaEntity;
 import com.stockflow.fulfillment.internal.entity.PackageJpaEntity;
 import com.stockflow.fulfillment.internal.repository.LoadEstimateJpaRepository;
-import com.stockflow.fulfillment.internal.repository.PackageLineJpaRepository;
+import com.stockflow.fulfillment.internal.repository.ParcelContents;
 import com.stockflow.order.api.OrderSummary;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -37,7 +37,7 @@ class LoadPlanEstimateComparisonTest {
 
     private final LoadEstimates estimates = mock(LoadEstimates.class);
     private final LoadEstimateJpaRepository rows = mock(LoadEstimateJpaRepository.class);
-    private final PackageLineJpaRepository lines = mock(PackageLineJpaRepository.class);
+    private final ParcelContents lines = mock(ParcelContents.class);
     private final LoadPlanEstimateComparison comparison = new LoadPlanEstimateComparison(estimates, rows, lines);
     private static final VehicleSpec TRUCK = new VehicleSpec(UUID.randomUUID(), "TRUCK-5T", VehicleKind.TRUCK, 5200,
             2050, 2050, new BigDecimal("5000"), 10, 0);
@@ -47,7 +47,7 @@ class LoadPlanEstimateComparisonTest {
     @BeforeEach
     void noEstimateByDefault() {
         when(rows.findBySourceTypeAndSourceIdAndStatus(anyString(), any(), anyString())).thenReturn(Optional.empty());
-        when(lines.findByPackageIdIn(any())).thenReturn(List.of());
+        when(lines.of(any())).thenReturn(List.of());
     }
 
     private static OrderSummary order(UUID id) {

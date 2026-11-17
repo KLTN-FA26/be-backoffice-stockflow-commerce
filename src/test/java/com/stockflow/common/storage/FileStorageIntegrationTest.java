@@ -84,6 +84,88 @@ class FileStorageIntegrationTest {
     }
 
     @Test
+    void localStatReportsTheDigestAndADeclaredDigestIsChecked() {
+        var storage = new LocalFileStorage(properties(), Clock.systemUTC());
+        var file = storage.store(FileCategory.PRODUCT_IMAGE, "x.png", "image/png", PNG.length,
+                new ByteArrayInputStream(PNG), Checksums.sha256Hex(PNG));
+
+        var stat = storage.stat(file.key());
+
+        assertThat(stat.sha256()).isEqualTo(Checksums.sha256Hex(PNG));
+        assertThat(stat.sizeBytes()).isEqualTo(PNG.length);
+        assertThat(stat.contentType()).isEqualTo("image/png");
+        assertThatThrownBy(() -> storage.store(FileCategory.PRODUCT_IMAGE, "y.png", "image/png", PNG.length,
+                new ByteArrayInputStream(PNG), Checksums.sha256Hex(new byte[] {1})))
+                .isInstanceOf(StorageException.class);
+        assertThatThrownBy(() -> storage.stat("product-images/2026/01/01/00000000-0000-7000-8000-000000000000.png"))
+                .isInstanceOf(StorageException.class);
+    }
+
+    @Test
+    void retentionIsAppliedOnlyAfterCommitAndOnlyWhenEnabled() {
+        var storage = mock(FileStorage.class);
+        var enabled = new ObjectLockProperties(true, ObjectLockProperties.Mode.GOVERNANCE, Duration.ofDays(3),
+                Duration.ofDays(10), java.time.Period.ofYears(10), ObjectLockProperties.Mode.COMPLIANCE);
+        String key = "design-renders/2026/01/01/00000000-0000-7000-8000-000000000001.pdf";
+        for (boolean lockOn : new boolean[]{true, false}) {
+            var transfers = new FileTransfers(storage, properties(), Clock.systemUTC(),
+                    lockOn ? enabled : ObjectLockProperties.disabled());
+            for (boolean commit : new boolean[]{true, false}) {
+                org.mockito.Mockito.clearInvocations(storage);
+                TransactionSynchronizationManager.setActualTransactionActive(true);
+                TransactionSynchronizationManager.initSynchronization();
+                try {
+                    transfers.retainAfterCommit(key, RecordRetention.CONFIRMED_DESIGN);
+                    org.mockito.Mockito.verifyNoInteractions(storage);
+                    TransactionSynchronizationManager.getSynchronizations().forEach(callback -> {
+                        if (commit) { callback.afterCommit(); }
+                        callback.afterCompletion(commit ? TransactionSynchronization.STATUS_COMMITTED
+                                : TransactionSynchronization.STATUS_ROLLED_BACK);
+                    });
+                    if (lockOn && commit) {
+                        org.mockito.Mockito.verify(storage).retain(org.mockito.ArgumentMatchers.eq(key),
+                                org.mockito.ArgumentMatchers.argThat(until -> until.isAfter(
+                                        java.time.Instant.now().plus(Duration.ofDays(3)).minusSeconds(60))),
+                                org.mockito.ArgumentMatchers.eq(ObjectLockProperties.Mode.GOVERNANCE));
+                    } else {
+                        org.mockito.Mockito.verifyNoInteractions(storage);
+                    }
+                } finally {
+                    TransactionSynchronizationManager.clear();
+                }
+            }
+        }
+    }
+
+    @Test
+    void aFailedLockAfterCommitIsLoggedNotThrown() {
+        var storage = mock(FileStorage.class);
+        org.mockito.Mockito.doThrow(new StorageException("no Object Lock on this bucket"))
+                .when(storage).retain(any(), any(), any());
+        var transfers = new FileTransfers(storage, properties(), Clock.systemUTC(),
+                new ObjectLockProperties(true, ObjectLockProperties.Mode.GOVERNANCE, Duration.ofDays(1), Duration.ofDays(1),
+                        java.time.Period.ofYears(10),
+                ObjectLockProperties.Mode.COMPLIANCE));
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+        TransactionSynchronizationManager.initSynchronization();
+        try {
+            transfers.retainAfterCommit("documents/2026/01/01/00000000-0000-7000-8000-000000000002.pdf",
+                    RecordRetention.SALES_CONTRACT);
+            TransactionSynchronizationManager.getSynchronizations().forEach(TransactionSynchronization::afterCommit);
+        } finally {
+            TransactionSynchronizationManager.clear();
+        }
+    }
+
+    @Test
+    void retentionOutsideATransactionIsRefused() {
+        var transfers = new FileTransfers(mock(FileStorage.class), properties(), Clock.systemUTC());
+        assertThatThrownBy(() -> transfers.retainAfterCommit(
+                "design-renders/2026/01/01/00000000-0000-7000-8000-000000000003.pdf", RecordRetention.CONFIRMED_DESIGN))
+                .isInstanceOf(IllegalStateException.class);
+    }
+
+    @Test
     void publishCopiesARenditionToTheCdnPrefixAndRollbackTakesItBack() {
         var storage = new LocalFileStorage(properties(), Clock.systemUTC());
         var transfers = new FileTransfers(storage, properties(), Clock.systemUTC());
@@ -188,5 +270,38 @@ class FileStorageIntegrationTest {
             assertThat(url).startsWith("http://localhost:9000/stockflow/product-images/test.png?")
                     .contains("X-Amz-Signature=", "X-Amz-Expires=600");
         }
+    }
+
+    /** 2F-4: through the backend too, a design image is measured before it is stored, and a huge one never is. */
+    @Test
+    void aDesignImageIsMeasuredBeforeItIsStored() throws Exception {
+        var storage = new LocalFileStorage(properties(), Clock.systemUTC());
+        var transfers = new FileTransfers(storage, properties(), Clock.systemUTC());
+        byte[] png = png(120, 80);
+        try (var prepared = transfers.prepare(FileCategory.DESIGN_ASSET,
+                new FileUpload("logo.png", "image/png", png.length, new ByteArrayInputStream(png)))) {
+            assertThat(prepared.single().dimensions()).isEqualTo(new ImageDimensions.Size(120, 80));
+        }
+        byte[] huge = png(1, 1);
+        java.nio.ByteBuffer.wrap(huge, 16, 8).putInt(8000).putInt(5001);
+        assertThatThrownBy(() -> transfers.prepare(FileCategory.DESIGN_ASSET,
+                new FileUpload("huge.png", "image/png", huge.length, new ByteArrayInputStream(huge))))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        ex -> assertThat(ex.errorCode()).isEqualTo(ErrorCode.PAYLOAD_TOO_LARGE));
+        try (var files = java.nio.file.Files.walk(directory)) {
+            assertThat(files.filter(java.nio.file.Files::isRegularFile)).as("nothing stored, the first one closed unadopted")
+                    .isEmpty();
+        }
+        try (var prepared = transfers.prepare(FileCategory.PRODUCT_IMAGE,
+                new FileUpload("p.png", "image/png", png.length, new ByteArrayInputStream(png)))) {
+            assertThat(prepared.single().dimensions()).isNull();
+        }
+    }
+
+    private static byte[] png(int width, int height) throws Exception {
+        var out = new java.io.ByteArrayOutputStream();
+        javax.imageio.ImageIO.write(new java.awt.image.BufferedImage(width, height,
+                java.awt.image.BufferedImage.TYPE_INT_RGB), "png", out);
+        return out.toByteArray();
     }
 }

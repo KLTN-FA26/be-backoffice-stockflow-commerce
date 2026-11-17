@@ -83,4 +83,52 @@ class IdempotencyFilterTest {
                                 .asText())
                 .isEqualTo("Nhà cung cấp");
     }
+
+    /**
+     * A route capped by RequestBodyLimitFilter (a design document): the body overflows while this filter buffers it to
+     * fingerprint the request, and the answer is 413 before any claim is taken - not a 500, and not a stored outcome.
+     */
+    @Test
+    void aCappedBodyOverflowingWhileBufferedIsTooLargeAndClaimsNothing() throws Exception {
+        var store = mock(IdempotencyStore.class);
+        var users = mock(CurrentUserProvider.class);
+        when(users.current()).thenReturn(Optional.empty());
+        var limits = new com.stockflow.common.web.RequestBodyLimitFilter(
+                new com.stockflow.common.web.RequestBodyLimitProperties(java.util.List.of(
+                        new com.stockflow.common.web.RequestBodyLimitProperties.Limit(
+                                "PUT", "/api/v1/designs/{id}/document", 4))),
+                new ObjectMapper().findAndRegisterModules(),
+                new com.stockflow.common.i18n.Messages(new org.springframework.context.support.StaticMessageSource()));
+        var request = new MockHttpServletRequest("PUT", "/api/v1/designs/abc/document") {
+            @Override
+            public long getContentLengthLong() {
+                return -1;
+            }
+
+            @Override
+            public int getContentLength() {
+                return -1;
+            }
+        };
+        request.addHeader("Idempotency-Key", "a-design-document-save");
+        request.setContentType("application/json");
+        request.setContent("{\"a\":1}".getBytes(StandardCharsets.UTF_8));
+        var response = new MockHttpServletResponse();
+
+        new org.springframework.mock.web.MockFilterChain(
+                new jakarta.servlet.http.HttpServlet() {
+                    @Override
+                    protected void service(jakarta.servlet.http.HttpServletRequest req,
+                                           jakarta.servlet.http.HttpServletResponse res) {
+                        throw new AssertionError("The handler must not run");
+                    }
+                },
+                limits,
+                new IdempotencyFilter(store, users, new ObjectMapper().findAndRegisterModules(), Clock.systemUTC()))
+                .doFilter(request, response);
+
+        assertThat(response.getStatus()).isEqualTo(413);
+        assertThat(response.getContentAsString()).contains("REQUEST_BODY_TOO_LARGE");
+        org.mockito.Mockito.verifyNoInteractions(store);
+    }
 }

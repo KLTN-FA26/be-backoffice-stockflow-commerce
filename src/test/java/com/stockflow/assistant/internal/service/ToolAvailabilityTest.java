@@ -58,10 +58,10 @@ class ToolAvailabilityTest {
     @DisplayName("what run() checks besides the guard is listed after it, and each one lacking is named")
     void alsoRequires() {
         ToolAvailability.ToolAccess reorder = only(availability(new ReorderTool()),
-                user(DataScope.ALL, "procurement-purchase-orders:CREATE", "procurement-supplier-items:READ"));
+                user(DataScope.ALL, "catalog-customer-prices:CREATE", "sales-producers:READ"));
 
-        assertThat(codes(reorder.requires())).containsExactly("procurement-purchase-orders:CREATE",
-                "reporting-reports:READ", "inventory-stock-items:READ", "procurement-supplier-items:READ");
+        assertThat(codes(reorder.requires())).containsExactly("catalog-customer-prices:CREATE",
+                "reporting-reports:READ", "inventory-stock-items:READ", "sales-producers:READ");
         assertThat(codes(reorder.missing())).containsExactly("reporting-reports:READ", "inventory-stock-items:READ");
         assertThat(reorder.granted()).isFalse();
     }
@@ -86,14 +86,14 @@ class ToolAvailabilityTest {
         ToolAvailability availability = availability(new LowStockTool(), new ExpiringTool());
 
         List<ToolAvailability.ToolAccess> limited = availability.toolsFor(user(DataScope.WAREHOUSE,
-                "inventory-alerts:READ"));
+                "inventory-stock-movements:READ"));
         assertThat(limited).extracting(ToolAvailability.ToolAccess::name, ToolAvailability.ToolAccess::granted,
                         ToolAvailability.ToolAccess::scopeLimit)
                 .containsExactly(org.assertj.core.groups.Tuple.tuple("findExpiringLots", true, ScopeLimit.PARTIAL),
                         org.assertj.core.groups.Tuple.tuple("findLowStock", false, ScopeLimit.COMPANY_WIDE_ONLY));
         assertThat(limited.get(1).missing()).as("nothing to grant: the refusal is the scope").isEmpty();
 
-        assertThat(availability.grantedTo(user(DataScope.ALL, "inventory-alerts:READ")))
+        assertThat(availability.grantedTo(user(DataScope.ALL, "inventory-stock-movements:READ")))
                 .containsExactly("findExpiringLots", "findLowStock");
     }
 
@@ -110,7 +110,7 @@ class ToolAvailabilityTest {
         ToolAvailability availability = availability(new StockTool(), new LowStockTool(), new ExpiringTool(),
                 new ReorderTool());
 
-        assertThat(availability.grantedTo(user(DataScope.ALL, "inventory-alerts:READ", "inventory-stock-items:READ")))
+        assertThat(availability.grantedTo(user(DataScope.ALL, "inventory-stock-movements:READ", "inventory-stock-items:READ")))
                 .containsExactly("findExpiringLots", "findLowStock", "getStockLevels");
         assertThat(availability.toolsFor(user(DataScope.ALL)))
                 .extracting(ToolAvailability.ToolAccess::name)
@@ -126,11 +126,11 @@ class ToolAvailabilityTest {
 
         assertThat(names(availability.specsFor(user(DataScope.ALL, "sales-orders:READ"))))
                 .containsExactly("findOrder");
-        CurrentUser planner = user(DataScope.ALL, "inventory-alerts:READ", "inventory-stock-items:READ");
+        CurrentUser planner = user(DataScope.ALL, "inventory-stock-movements:READ", "inventory-stock-items:READ");
         assertThat(names(availability.specsFor(planner)))
                 .containsExactly("findExpiringLots", "findLowStock", "getStockLevels")
                 .isEqualTo(availability.grantedTo(planner));
-        assertThat(names(availability.specsFor(user(DataScope.WAREHOUSE, "inventory-alerts:READ"))))
+        assertThat(names(availability.specsFor(user(DataScope.WAREHOUSE, "inventory-stock-movements:READ"))))
                 .as("company-wide figures are not offered to a warehouse-limited user").containsExactly(
                         "findExpiringLots");
         assertThat(availability.specsFor(user(DataScope.ALL))).as("no grant, no tool").isEmpty();
@@ -142,7 +142,7 @@ class ToolAvailabilityTest {
     void offeredSpecsAreStable() {
         StockTool stock = new StockTool();
         ToolAvailability availability = availability(new LowStockTool(), stock, new ExpiringTool());
-        String[] grants = {"inventory-stock-items:READ", "inventory-alerts:READ"};
+        String[] grants = {"inventory-stock-items:READ", "inventory-stock-movements:READ"};
 
         List<ToolSpec> first = availability.specsFor(user(DataScope.ALL, grants));
         List<ToolSpec> second = availability.specsFor(user(DataScope.ALL, grants[1], grants[0]));
@@ -268,7 +268,7 @@ class ToolAvailabilityTest {
         public List<PermissionCode> alsoRequires() {
             return List.of(PermissionCode.of("reporting-reports", Action.READ),
                     PermissionCode.of("inventory-stock-items", Action.READ),
-                    PermissionCode.of("procurement-supplier-items", Action.READ));
+                    PermissionCode.of("sales-producers", Action.READ));
         }
 
         @Override
@@ -277,7 +277,7 @@ class ToolAvailabilityTest {
         }
 
         @Override
-        @RequiresPermission(resource = "procurement-purchase-orders", action = Action.CREATE)
+        @RequiresPermission(resource = "catalog-customer-prices", action = Action.CREATE)
         public Object run(ToolArguments arguments) {
             return null;
         }
@@ -314,7 +314,7 @@ class ToolAvailabilityTest {
         }
 
         @Override
-        @RequiresPermission(resource = "inventory-alerts", action = Action.READ)
+        @RequiresPermission(resource = "inventory-stock-movements", action = Action.READ)
         public Object run(ToolArguments arguments) {
             return null;
         }
@@ -332,7 +332,7 @@ class ToolAvailabilityTest {
         }
 
         @Override
-        @RequiresPermission(resource = "inventory-alerts", action = Action.READ)
+        @RequiresPermission(resource = "inventory-stock-movements", action = Action.READ)
         public Object run(ToolArguments arguments) {
             return null;
         }

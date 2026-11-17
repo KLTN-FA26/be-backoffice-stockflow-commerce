@@ -49,8 +49,6 @@ class CacheConventionsTest {
     void permissionTtlIsShort() {
         assertThat(CacheNames.ttls().get(CacheNames.USER_PERMISSIONS))
                 .isLessThanOrEqualTo(Duration.ofMinutes(15));
-        assertThat(CacheNames.ttls().get(CacheNames.PRICES))
-                .isLessThanOrEqualTo(Duration.ofMinutes(5));
     }
 
     @Test

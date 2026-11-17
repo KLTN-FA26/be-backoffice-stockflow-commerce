@@ -5,7 +5,7 @@ import java.util.List;
 /**
  * The lot traceability report (SCRUM-153) for other modules, looked up by the lot number people read off a carton.
  *
- * <p>The back office's lot screen asks by id, which nobody outside that screen knows; the assistant (ADR-0010) is
+ * <p>The back office's lot screen asks by id, which nobody outside that screen knows; the assistant (ADR-0011) is
  * asked "where did lot L-2310 go?". This is the same report, reached by the number instead.</p>
  *
  * <p><b>Scope.</b> The caller's warehouse limit (BR-SEC-002) is applied exactly as on
@@ -13,6 +13,11 @@ import java.util.List;
  * balances, holds and orders inside them. Call it inside the same guard as that endpoint,
  * {@code @RequiresPermission(resource = "inventory-stock-movements", action = READ, scope = WAREHOUSE)}; outside a
  * guard no scope is in force and the report treats the caller as the system.</p>
+ *
+ * <p><b>Blind count</b> (kltn-docs 20 BR-07). As on the lot screen, a caller without
+ * {@code inventory-cycle-counts:APPROVE} - a counter - gets no figures for a balance at a location a count holds
+ * ({@link LotTraceView.Balance#hiddenDuringCount()}); the caller is read from the security context and an absent one is
+ * treated as blind, so the books never reach whoever is counting them.</p>
  */
 public interface LotTraceQueries {
 

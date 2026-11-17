@@ -56,13 +56,12 @@ class AssistantWatchTest {
     private static final Instant NOW = Instant.parse("2026-11-05T03:00:00Z");
     private static final UUID USER = UUID.fromString("01a1a000-0000-7000-8000-000000000001");
     private static final UUID WAREHOUSE = UUID.fromString("01a1a000-0000-7000-8000-0000000000aa");
-    private static final String LATE = AssistantWatch.OVERDUE_PURCHASE_ORDERS;
-    private static final String LOW = AssistantWatch.LOW_STOCK;
+    private static final String HELD = AssistantWatch.HELD_ORDERS;
     private static final CurrentUser MANAGER = new CurrentUser(USER, "manager", Set.of(Role.WAREHOUSE_MANAGER),
             Set.of(PermissionCode.of(ToolPermissions.ASSISTANT, Action.CREATE)), DataScope.WAREHOUSE, Set.of("W"),
             Set.of(WAREHOUSE));
-    private static final String ONE_LATE = "{\"purchaseOrders\":[{\"poNumber\":\"PO-1\",\"overdue\":true,"
-            + "\"expectedAt\":\"2026-11-01\"}],\"total\":1,\"truncated\":false}";
+    private static final String ONE_HELD = "{\"orders\":[{\"orderNumber\":\"SO-1\",\"hold\":{\"reason\":"
+            + "\"PAYMENT\"}}],\"total\":1,\"truncated\":false}";
 
     private final RunAs runAs = mock(RunAs.class);
     private final AssistantTools tools = mock(AssistantTools.class);
@@ -84,8 +83,7 @@ class AssistantWatchTest {
         when(runAs.call(eq(USER), eq(AssistantWatch.ACTOR), any()))
                 .thenAnswer(call -> ((Function<CurrentUser, Object>) call.getArgument(2)).apply(MANAGER));
         when(transactions.getTransaction(any())).thenReturn(new SimpleTransactionStatus());
-        when(availability.grantedTo(MANAGER)).thenReturn(List.of("findPurchaseOrders", "findGoodsReceipts",
-                "findLowStock", "proposeReorder"));
+        when(availability.grantedTo(MANAGER)).thenReturn(List.of("findOrders", "findOrder", "getStockLevels"));
         when(assistantProperties.answerLease()).thenReturn(Duration.ofMinutes(15));
         when(watched.state(eq(USER), any())).thenReturn(Optional.of(new WatchRepository.State(
                 AssistantWatch.view(MANAGER), NOW.minus(Duration.ofDays(1)), NOW.minus(Duration.ofMinutes(15)), null)));
@@ -130,29 +128,22 @@ class AssistantWatchTest {
         return message.getValue();
     }
 
-    private static AssistantService.Answer answer(boolean proposed) {
-        AssistantService.Answer answer = mock(AssistantService.Answer.class);
-        when(answer.proposals()).thenReturn(proposed ? List.of(new AnswerSources.Proposal("PURCHASE_ORDER_DRAFT",
-                "SUP", "Sup", NOW, List.of())) : List.of());
-        return answer;
-    }
-
     @Test
     @DisplayName("a question refused before anything was stored leaves its items not asked about: they are posted as "
             + "news, and the run's answer is given back")
     void aRefusalBeforeTheClaim() {
-        lists(ONE_LATE);
-        WatchRepository.SeenItem item = waiting(LATE, "PO-1");
+        lists(ONE_HELD);
+        WatchRepository.SeenItem item = waiting(HELD, "SO-1 (PAYMENT)");
         when(assistant.askProactively(eq(conversation), any(), eq(MANAGER), any()))
                 .thenThrow(new BusinessException(ErrorCode.ASSISTANT_DISABLED));
         when(conversations.discardEmptyProactive(conversation, USER)).thenReturn(true);
         AssistantWatch.Budget budget = new AssistantWatch.Budget(1, NOW.plus(Duration.ofHours(1)));
 
-        AssistantWatch.Look look = watch(List.of(LATE), List.of(LATE)).look(USER, budget);
+        AssistantWatch.Look look = watch(List.of(HELD), List.of(HELD)).look(USER, budget);
 
         assertThat(look.answered()).isZero();
         verify(assistant).askProactively(eq(conversation), any(), eq(MANAGER),
-                eq(Set.of("findPurchaseOrders", "findGoodsReceipts")));
+                eq(Set.of("findOrders", "findOrder")));
         verify(watched).analysed(List.of(item.id()), conversation, NOW);
         verify(watched).notAnalysed(List.of(item.id()));
         assertThat(posted().category()).isEqualTo(AssistantWatch.NEWS);
@@ -162,45 +153,46 @@ class AssistantWatchTest {
     @Test
     @DisplayName("a list longer than one read changes nothing it cannot see, and says so once")
     void aListReadInPart() {
-        lists("{\"purchaseOrders\":[{\"poNumber\":\"PO-9\",\"overdue\":true,\"expectedAt\":\"2026-10-01\"}],"
-                + "\"total\":40,\"truncated\":true}");
-        WatchRepository.SeenItem item = new WatchRepository.SeenItem(UUID.randomUUID(), LATE, "PO-9", NOW, false);
-        when(watched.see(eq(USER), eq(LATE), anyCollection(), any())).thenReturn(List.of(item));
+        lists("{\"orders\":[{\"orderNumber\":\"SO-9\",\"hold\":{\"reason\":\"INVENTORY\"}}],\"total\":80,"
+                + "\"truncated\":true}");
+        WatchRepository.SeenItem item = new WatchRepository.SeenItem(UUID.randomUUID(), HELD, "SO-9 (INVENTORY)", NOW,
+                false);
+        when(watched.see(eq(USER), eq(HELD), anyCollection(), any())).thenReturn(List.of(item));
 
-        AssistantWatch.Look look = watch(List.of(LATE), List.of()).look(USER, budget());
+        AssistantWatch.Look look = watch(List.of(HELD), List.of()).look(USER, budget());
 
         assertThat(look.newItems()).isZero();
         verify(watched, never()).forgetUnseen(any(), any(), any());
-        verify(watched).looked(USER, LATE, NOW, NOW);
+        verify(watched).looked(USER, HELD, NOW, NOW);
         verify(watched).dealtWith(List.of(item.id()), NOW);
-        assertThat(posted().dedupeKey()).isEqualTo("assistant:partial:" + LATE + ":" + NOW.toEpochMilli());
+        assertThat(posted().dedupeKey()).isEqualTo("assistant:partial:" + HELD + ":" + NOW.toEpochMilli());
     }
 
     @Test
     @DisplayName("a long list of codes is cut to fit a message, the rest counted")
     void aLongBody() {
-        lists("{\"purchaseOrders\":[],\"total\":0,\"truncated\":false}");
+        lists("{\"orders\":[],\"total\":0,\"truncated\":false}");
         for (int i = 0; i < 60; i++) {
-            waiting(LATE, "PO-HCM-2026-11-05-%04d-LONG-CODE".formatted(i));
+            waiting(HELD, "SO-20261105-%06d (DELIVERY_FAILED)".formatted(i));
         }
 
-        watch(List.of(LATE), List.of()).look(USER, budget());
+        watch(List.of(HELD), List.of()).look(USER, budget());
 
         assertThat(posted().body()).hasSizeLessThanOrEqualTo(InboxMessage.BODY_MAX)
-                .startsWith("PO-HCM-2026-11-05-0000-LONG-CODE").contains("+");
+                .startsWith("SO-20261105-000000 (DELIVERY_FAILED)").contains("+");
     }
 
     @Test
     @DisplayName("an answer that failed after its question was stored, on a list the watch only answers about, is told "
             + "as such and points to its conversation")
     void aFailedAnswerIsTold() {
-        lists("{\"skus\":[{\"sku\":\"CUP-12OZ\"}],\"total\":1,\"truncated\":false}");
-        WatchRepository.SeenItem item = waiting(LOW, "CUP-12OZ");
+        lists(ONE_HELD);
+        WatchRepository.SeenItem item = waiting(HELD, "SO-1 (PAYMENT)");
         when(assistant.askProactively(eq(conversation), any(), eq(MANAGER), any()))
                 .thenThrow(new BusinessException(ErrorCode.ASSISTANT_UNAVAILABLE));
         when(conversations.discardEmptyProactive(conversation, USER)).thenReturn(false);
 
-        watch(List.of(), List.of(LOW)).look(USER, budget());
+        watch(List.of(), List.of(HELD)).look(USER, budget());
 
         InboxMessage message = posted();
         assertThat(message.category()).isEqualTo(AssistantWatch.ANSWER);
@@ -211,24 +203,24 @@ class AssistantWatchTest {
     }
 
     @Test
-    @DisplayName("an answer about low stock that proposed nothing does not say it prepared a proposal; at most thirty "
-            + "items go into one question, the rest wait")
+    @DisplayName("an answer about held orders is told with how many it looked at, offered only the order tools; at "
+            + "most thirty items go into one question, the rest wait")
     void whatAnAnswerSays() {
-        lists("{\"skus\":[],\"total\":0,\"truncated\":false}");
+        lists("{\"orders\":[],\"total\":0,\"truncated\":false}");
         for (int i = 0; i < 35; i++) {
-            waiting(LOW, "SKU-%02d".formatted(i));
+            waiting(HELD, "SO-20261105-%06d (PAYMENT)".formatted(i));
         }
-        AssistantService.Answer none = answer(false);
-        when(assistant.askProactively(eq(conversation), any(), eq(MANAGER), any())).thenReturn(none);
+        when(assistant.askProactively(eq(conversation), any(), eq(MANAGER), any()))
+                .thenReturn(mock(AssistantService.Answer.class));
 
-        AssistantWatch.Look look = watch(List.of(), List.of(LOW)).look(USER, budget());
+        AssistantWatch.Look look = watch(List.of(), List.of(HELD)).look(USER, budget());
 
         assertThat(look.answered()).isOne();
-        assertThat(posted().title()).as("the fallback of assistant.watch.answered.lowStock.none").contains("looked at 30");
+        assertThat(posted().title()).as("the fallback of assistant.watch.answered.heldOrders").contains("looked at 30");
         ArgumentCaptor<String> question = ArgumentCaptor.forClass(String.class);
         verify(assistant).askProactively(eq(conversation), question.capture(), eq(MANAGER),
-                eq(Set.of("findLowStock", "proposeReorder")));
-        assertThat(question.getValue()).contains("SKU-29").doesNotContain("SKU-30");
+                eq(Set.of("findOrders", "findOrder")));
+        assertThat(question.getValue()).contains("SO-20261105-000029").doesNotContain("SO-20261105-000030");
         @SuppressWarnings("unchecked")
         ArgumentCaptor<List<UUID>> dealt = ArgumentCaptor.forClass(List.class);
         verify(watched).dealtWith(dealt.capture(), eq(NOW));

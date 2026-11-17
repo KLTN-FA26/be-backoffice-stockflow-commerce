@@ -47,7 +47,7 @@ class RoleAuthorizationCacheBackoffTest {
     void setUp() {
         when(tx.getTransaction(any())).thenReturn(new SimpleTransactionStatus());
         when(redis.<Object, Object>opsForHash()).thenReturn(hash);
-        when(roles.findGrantsByCode("PROCUREMENT_STAFF")).thenReturn(List.of(row(3, "procurement-purchase-orders", "READ")));
+        when(roles.findGrantsByCode("WAREHOUSE_STAFF")).thenReturn(List.of(row(3, "procurement-purchase-orders", "READ")));
         cache = new RoleAuthorizationCache(redis, roles, tx, clock, "v1");
     }
 
@@ -55,27 +55,27 @@ class RoleAuthorizationCacheBackoffTest {
     void aRedisFailureIsAnsweredFromTheDatabaseAndRedisIsLeftAloneForTheBackoff() {
         when(hash.multiGet(any(), any())).thenThrow(new RedisConnectionFailureException("refused"));
 
-        assertThat(cache.resolve(List.of("PROCUREMENT_STAFF")).permissions())
+        assertThat(cache.resolve(List.of("WAREHOUSE_STAFF")).permissions())
                 .containsExactly(PermissionCode.parse("procurement-purchase-orders:READ"));
-        assertThat(cache.resolve(List.of("PROCUREMENT_STAFF")).permissions()).hasSize(1);
+        assertThat(cache.resolve(List.of("WAREHOUSE_STAFF")).permissions()).hasSize(1);
         clock.advance(RoleAuthorizationCache.REDIS_BACKOFF.minusSeconds(1));
-        cache.resolve(List.of("PROCUREMENT_STAFF"));
+        cache.resolve(List.of("WAREHOUSE_STAFF"));
 
         verify(hash, times(1)).multiGet(any(), any());
 
         clock.advance(Duration.ofSeconds(2));
-        cache.resolve(List.of("PROCUREMENT_STAFF"));
+        cache.resolve(List.of("WAREHOUSE_STAFF"));
         verify(hash, times(2)).multiGet(any(), any());   // tried again once the window passed
     }
 
     @Test
     void aDatabaseFailureIsNotMistakenForARedisFailure() {
         when(hash.multiGet(any(), any())).thenThrow(new RedisConnectionFailureException("refused"));
-        when(roles.findGrantsByCode("PROCUREMENT_STAFF"))
+        when(roles.findGrantsByCode("WAREHOUSE_STAFF"))
                 .thenThrow(new DataAccessResourceFailureException("postgres down"));
 
         // Redis down AND Postgres down: unanswerable, so it must propagate (-> 503), never grant.
-        assertThatThrownBy(() -> cache.resolve(List.of("PROCUREMENT_STAFF")))
+        assertThatThrownBy(() -> cache.resolve(List.of("WAREHOUSE_STAFF")))
                 .isInstanceOf(DataAccessResourceFailureException.class);
     }
 
@@ -84,9 +84,9 @@ class RoleAuthorizationCacheBackoffTest {
         when(hash.multiGet(any(), any())).thenReturn(java.util.Arrays.asList((Object) null));
         when(roles.findAllVersions()).thenThrow(new DataAccessResourceFailureException("postgres down"));
 
-        assertThatThrownBy(() -> cache.resolve(List.of("PROCUREMENT_STAFF")))
+        assertThatThrownBy(() -> cache.resolve(List.of("WAREHOUSE_STAFF")))
                 .isInstanceOf(DataAccessResourceFailureException.class);
-        assertThatThrownBy(() -> cache.resolve(List.of("PROCUREMENT_STAFF")))
+        assertThatThrownBy(() -> cache.resolve(List.of("WAREHOUSE_STAFF")))
                 .isInstanceOf(DataAccessResourceFailureException.class);
         verify(hash, times(2)).multiGet(any(), any());
         verify(roles, never()).findGrantsByCode(any());

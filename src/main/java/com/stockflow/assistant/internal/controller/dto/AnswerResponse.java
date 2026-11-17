@@ -17,8 +17,6 @@ public record AnswerResponse(
         @Schema(description = "Business-rule anchors the answer cites, each one returned by its own rule search",
                 example = "[\"BR-RMA-002\"]")
         List<String> citations,
-        @Schema(description = "Purchase orders the panel may open pre-filled; nothing has been created")
-        List<ProposalResponse> proposals,
         @Schema(description = "The rows the lookups returned, to show under the answer: the answer sums them up and "
                 + "does not repeat them")
         List<TableResponse> tables,

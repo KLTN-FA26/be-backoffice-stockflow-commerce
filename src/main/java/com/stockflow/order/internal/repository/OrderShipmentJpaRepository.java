@@ -2,6 +2,8 @@ package com.stockflow.order.internal.repository;
 
 import com.stockflow.order.internal.entity.OrderShipmentJpaEntity;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 
 import java.util.Collection;
 import java.util.List;
@@ -13,4 +15,8 @@ interface OrderShipmentJpaRepository extends JpaRepository<OrderShipmentJpaEntit
     List<OrderShipmentJpaEntity> findByOrderIdOrderByHandedOverAtAscIdAsc(UUID orderId);
 
     List<OrderShipmentJpaEntity> findByOrderIdIn(Collection<UUID> orderIds);
+
+    /** The ids of these orders that have a shipment (WF4-PF-STATUS: a list row tells a partial order by it). */
+    @Query("select distinct s.orderId from OrderShipmentJpaEntity s where s.orderId in :orderIds")
+    List<UUID> findOrderIdsWithShipments(@Param("orderIds") Collection<UUID> orderIds);
 }

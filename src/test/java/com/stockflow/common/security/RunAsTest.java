@@ -123,7 +123,7 @@ class RunAsTest {
     @Test
     @DisplayName("work that throws still leaves the thread as it found it: no user, the caller's data scope")
     void restoresOnFailure() {
-        account(true, "INVENTORY_PLANNER");
+        account(true, "SYSTEM_ADMIN");
         when(authorizations.resolve(any())).thenReturn(new ResolvedAuthorization(Set.of(READ_ORDERS), DataScope.ALL));
         CurrentUser caller = new CurrentUser(UUID.randomUUID(), "caller", Set.of(), Set.of(), DataScope.OWN, Set.of());
         DataScopeContext.set(DataScope.OWN, caller);

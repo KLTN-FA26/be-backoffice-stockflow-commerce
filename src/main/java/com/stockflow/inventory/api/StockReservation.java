@@ -13,8 +13,8 @@ import java.util.UUID;
  * the picker will physically walk to.</p>
  *
  * <p>The caller stores every id and hands them all back when releasing. Keeping only "the first
- * one" would leave the remaining reservations stranded until the sweeper expired them, which reads
- * stock mysteriously unavailable for half an hour after a cancellation.</p>
+ * one" would leave the remaining reservations stranded - holds carry no deadline - and the stock
+ * unavailable after a cancellation until somebody released them by hand.</p>
  */
 public record StockReservation(
         UUID reservationId,

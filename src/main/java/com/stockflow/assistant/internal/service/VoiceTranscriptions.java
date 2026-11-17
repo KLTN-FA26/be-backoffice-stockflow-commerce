@@ -20,7 +20,7 @@ import java.util.Set;
 import java.util.UUID;
 
 /**
- * A spoken question written down (ADR-0015, design §8.3), for the person who spoke to read, correct and send as a
+ * A spoken question written down (ADR-0016, design §8.3), for the person who spoke to read, correct and send as a
  * question of their own. Nothing is kept: not the recording, not the text, not a row anywhere; the log has the length,
  * the model and how it ended, never what was said.
  *

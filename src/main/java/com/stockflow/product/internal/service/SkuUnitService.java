@@ -23,7 +23,6 @@ import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.math.BigDecimal;
 import java.util.List;
 import java.util.UUID;
 
@@ -35,11 +34,10 @@ import java.util.UUID;
  * <p>The product module owns the sales units, so it is the one that refuses to delete or retire a unit
  * the variant still sells in ({@code UOM_CONVERSION_IN_USE}) before asking inventory to.</p>
  *
- * <p>Sales units: a variant with none sells in its base unit only, at the catalog base price (docs:
- * "mặc định: đơn vị cơ sở"); the list then shows that default as one entry with no id. Listing a unit
- * replaces the default, so a variant can be sold by the carton only. The catalog base price is already
- * the price of one base unit, so the base unit carries no price here; every other unit carries its
- * own, in whole VND like the catalog base price.</p>
+ * <p>Sales units: a variant with none sells in its base unit only (docs: "mặc định: đơn vị cơ sở"); the list then
+ * shows that default as one entry with no id. Listing a unit replaces the default, so a variant can be sold by the
+ * carton only. A unit carries no price since 5-3: there is no base price (kltn-docs 13 BR-04), and a customer's SKU is
+ * sold by the carton at a price per piece agreed on the quote (01 BR-11).</p>
  */
 @Service
 @Transactional
@@ -65,7 +63,7 @@ public class SkuUnitService {
 
     /** One sales unit as shown: {@code id} and {@code version} are null for the default (nothing listed). */
     public record SalesUnitView(UUID id, UUID variantId, UUID uomConversionId, String unitOfMeasure, int factor,
-                                boolean base, boolean active, BigDecimal price, boolean implicitDefault, Long version) {
+                                boolean base, boolean active, boolean implicitDefault, Long version) {
     }
 
     // ---- units of measure ---------------------------------------------------------------------------------
@@ -124,7 +122,7 @@ public class SkuUnitService {
         long total = salesUnits.count(variantId);
         if (total == 0) {
             UomConversion base = units.baseUnit(sku);
-            var implicit = new SalesUnitView(null, variantId, base.id(), base.unitOfMeasure(), 1, true, true, null,
+            var implicit = new SalesUnitView(null, variantId, base.id(), base.unitOfMeasure(), 1, true, true,
                     true, null);
             return PageResponse.of(page == 0 ? List.of(implicit) : List.of(), page, size, 1);
         }
@@ -144,17 +142,16 @@ public class SkuUnitService {
 
     /** BR-11: only a unit of the variant's own inventory item, and only one that is not retired. */
     @Auditable(action = AuditAction.CREATE, resourceType = "sales-unit", resourceId = "#result?.id()")
-    public SalesUnitView addSalesUnit(UUID productId, UUID variantId, UUID uomConversionId, BigDecimal price) {
+    public SalesUnitView addSalesUnit(UUID productId, UUID variantId, UUID uomConversionId) {
         Sku sku = editableSku(productId, variantId);
         var unit = units.conversion(sku, uomConversionId);
         if (!unit.active()) {
             throw invalid("uomConversionId", "Unit %s is retired and cannot be sold in".formatted(unit.unitOfMeasure()));
         }
-        checkPrice(unit, price);
         if (salesUnits.sells(variantId, uomConversionId)) throw duplicate(unit);
         UUID id = Identifiers.newId();
         try {
-            salesUnits.insert(id, variantId, uomConversionId, price, actor());
+            salesUnits.insert(id, variantId, uomConversionId, actor());
         } catch (DuplicateKeyException race) {
             throw duplicate(unit);
         }
@@ -163,24 +160,7 @@ public class SkuUnitService {
         return salesUnit(productId, variantId, id);
     }
 
-    @Auditable(action = AuditAction.UPDATE, resourceType = "sales-unit", resourceId = "#salesUnitId")
-    public SalesUnitView changeSalesUnit(UUID productId, UUID variantId, UUID salesUnitId, long version,
-                                         BigDecimal price) {
-        Sku sku = editableSku(productId, variantId);
-        var row = salesUnits.find(variantId, salesUnitId).orElseThrow(() -> salesUnitNotFound(salesUnitId));
-        var unit = units.conversion(sku, row.uomConversionId());
-        checkPrice(unit, price);
-        if (row.version() != version || !salesUnits.updatePrice(salesUnitId, version, price, actor())) {
-            throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK);
-        }
-        if (row.price() == null ? price != null : price == null || row.price().compareTo(price) != 0) {
-            history.record(productId, ProductChangeType.SALES_UNIT, variantId, null, null, null,
-                    List.of("unit:" + unit.unitOfMeasure(), "price"));
-        }
-        return salesUnit(productId, variantId, salesUnitId);
-    }
-
-    /** Removing the last one brings back the default: the base unit at the catalog base price. */
+    /** Removing the last one brings back the default: the base unit. */
     @Auditable(action = AuditAction.DELETE, resourceType = "sales-unit", resourceId = "#salesUnitId")
     public void removeSalesUnit(UUID productId, UUID variantId, UUID salesUnitId, long version) {
         Sku sku = editableSku(productId, variantId);
@@ -211,24 +191,9 @@ public class SkuUnitService {
         return new Sku(variant.sku());
     }
 
-    private static void checkPrice(UomConversion unit, BigDecimal price) {
-        if (unit.base()) {
-            if (price != null) {
-                throw invalid("price", "The base unit is sold at the catalog base price; leave price empty");
-            }
-            return;
-        }
-        if (price == null) {
-            throw invalid("price", "A price is required for unit " + unit.unitOfMeasure());
-        }
-        if (price.signum() <= 0 || price.stripTrailingZeros().scale() > 0 || price.precision() - price.scale() > 16) {
-            throw invalid("price", "price is a positive whole number of VND");
-        }
-    }
-
     private static SalesUnitView view(VariantSalesUnitRepository.Row row, UomConversion unit) {
         return new SalesUnitView(row.id(), row.variantId(), row.uomConversionId(), unit.unitOfMeasure(),
-                unit.factor(), unit.base(), unit.active(), row.price(), false, row.version());
+                unit.factor(), unit.base(), unit.active(), false, row.version());
     }
 
     private static UomConversion withoutVersion(UomConversion c) {

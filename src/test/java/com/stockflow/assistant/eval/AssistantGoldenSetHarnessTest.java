@@ -2,10 +2,6 @@ package com.stockflow.assistant.eval;
 
 import com.stockflow.assistant.internal.domain.LanguageModel;
 import com.stockflow.assistant.internal.domain.Turn;
-import com.stockflow.catalog.internal.service.CatalogProjectionService;
-import com.stockflow.inventory.api.InventoryService;
-import com.stockflow.inventory.consumption.PickConsumption;
-import com.stockflow.procurement.internal.service.GoodsReceipts;
 import com.stockflow.support.SecuredIntegrationTest;
 import com.stockflow.support.SecuredMvc;
 import jakarta.persistence.EntityManager;
@@ -38,6 +34,8 @@ import static org.mockito.Mockito.when;
  * unlucky". {@code AssistantGoldenSetEval} runs the same cases against the real model.</p>
  */
 @SecuredIntegrationTest
+// Signing a contract stores its scan, and no virus scanner runs in tests (ConfirmedOrders).
+@org.springframework.test.context.TestPropertySource(properties = "stockflow.upload-inspection.enabled=false")
 class AssistantGoldenSetHarnessTest {
 
     @Autowired MockMvc mockMvc;
@@ -46,16 +44,12 @@ class AssistantGoldenSetHarnessTest {
     @Autowired JdbcTemplate jdbc;
     @Autowired TransactionTemplate tx;
     @Autowired EntityManager entityManager;
-    @Autowired GoodsReceipts receipts;
-    @Autowired InventoryService inventory;
-    @Autowired PickConsumption consumption;
-    @Autowired CatalogProjectionService catalog;
+    @Autowired org.springframework.context.ApplicationContext context;
 
     @Test
     @DisplayName("every golden case passes against the oracle: fixtures, fact queries and permissions agree")
     void goldenSetHoldsUnderTheOracle() throws Exception {
-        GoldenFixtures fixtures = new GoldenFixtures(jdbc, tx, entityManager, receipts, inventory, consumption,
-                catalog);
+        GoldenFixtures fixtures = new GoldenFixtures(context);
         Map<String, String> values = fixtures.ensure();
         OracleModel oracle = new OracleModel();
         when(model.available()).thenReturn(true);

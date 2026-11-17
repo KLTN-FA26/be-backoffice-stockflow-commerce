@@ -47,7 +47,6 @@ import java.util.UUID;
 public class ConversationService {
 
     private final ConversationRepository conversations;
-    private final AssistantActions actions;
     private final AnswerFeedbackRepository verdicts;
     private final Clock clock;
     private final ObjectMapper json;
@@ -55,24 +54,17 @@ public class ConversationService {
 
     ConversationService(ConversationRepository conversations, AnswerFeedbackRepository verdicts, Clock clock,
                         ObjectMapper json) {
-        this(conversations, verdicts, clock, json, null);
-    }
-
-    ConversationService(ConversationRepository conversations, AnswerFeedbackRepository verdicts, Clock clock,
-                        ObjectMapper json, AssistantActions actions) {
-        this(conversations, verdicts, clock, json, actions, CustomerPseudonyms.OFF);
+        this(conversations, verdicts, clock, json, CustomerPseudonyms.OFF);
     }
 
     /**
-     * @param actions    the suggestions answers make (ADR-0011); null in tests of the transcript alone
      * @param pseudonyms the customer aliases answers were written with, stored with them and read back as names
-     *                   (ADR-0014)
+     *                   (ADR-0015)
      */
     @org.springframework.beans.factory.annotation.Autowired
     ConversationService(ConversationRepository conversations, AnswerFeedbackRepository verdicts, Clock clock,
-                        ObjectMapper json, AssistantActions actions, CustomerPseudonyms pseudonyms) {
+                        ObjectMapper json, CustomerPseudonyms pseudonyms) {
         this.pseudonyms = pseudonyms;
-        this.actions = actions;
         this.conversations = conversations;
         this.verdicts = verdicts;
         this.clock = clock;
@@ -150,7 +142,7 @@ public class ConversationService {
      * What a person reads: each question, then the answer it got — the last text the assistant wrote for it, with
      * every tool call made for it, read exactly as the live answer is ({@link TranscriptEntry#answer}). Tool results
      * and tool-only turns are not messages to anyone, and neither is an interim line the model wrote beside a tool
-     * call ("let me check the rule"): its calls, citations, proposals and tables belong to the answer that follows.
+     * call ("let me check the rule"): its calls, citations and tables belong to the answer that follows.
      * Each answer carries the verdict its owner gave it, if any.
      *
      * <p>The numbers of an answer may rest on the {@value History#EARLIER_QUESTIONS} exchanges before it
@@ -176,22 +168,9 @@ public class ConversationService {
             entries.add(TranscriptEntry.question(message));
         }
         answer(asked, exchange, earlier, entries);
-        // Checked as stored, with the aliases the model saw; shown with the names (ADR-0014).
+        // Checked as stored, with the aliases the model saw; shown with the names (ADR-0015).
         java.util.function.UnaryOperator<String> reveal = pseudonyms.revealer(conversationId);
-        return withActions(withVerdicts(entries.stream().map(entry -> entry.revealed(reveal)).toList()),
-                conversationId);
-    }
-
-    /** Each answer with the suggestions its proposals became, and what their owner decided. */
-    private List<TranscriptEntry> withActions(List<TranscriptEntry> entries, UUID conversationId) {
-        if (actions == null || entries.stream().allMatch(entry -> entry.proposals().isEmpty())) {
-            return entries;
-        }
-        UUID owner = conversations.findInScope(conversationId).map(Conversation::ownerUserId).orElseThrow();
-        Map<UUID, Map<String, AssistantActions.ActionView>> made = actions.ofAnswers(entries.stream()
-                .filter(entry -> !entry.proposals().isEmpty()).map(TranscriptEntry::messageId).toList(), owner);
-        return entries.stream().map(entry -> made.containsKey(entry.messageId())
-                ? entry.withActions(made.get(entry.messageId())) : entry).toList();
+        return withVerdicts(entries.stream().map(entry -> entry.revealed(reveal)).toList());
     }
 
     /**
@@ -259,11 +238,7 @@ public class ConversationService {
         }
     }
 
-    /**
-     * Stores what the loop produced and releases the claim ({@link ConversationRepository#appendAndRelease}), and in
-     * the same transaction the purchase orders the answer proposes as suggestions of its owner (ADR-0011): a proposal
-     * shown with an answer always has its suggestion to confirm.
-     */
+    /** Stores what the loop produced and releases the claim ({@link ConversationRepository#appendAndRelease}). */
     public List<Message> appendAndRelease(UUID conversationId, UUID ownerUserId, Instant claimedAt,
                                           List<PendingMessage> produced) {
         return appendAndRelease(conversationId, ownerUserId, claimedAt, produced, ToolChannel.CHAT);
@@ -277,44 +252,14 @@ public class ConversationService {
 
     /**
      * @param aliases the customer aliases the question's tools gave out, stored in this transaction: an answer stored
-     *                with "KH#3" always has the customer it stands for (ADR-0014); null for none
+     *                with "KH#3" always has the customer it stands for (ADR-0015); null for none
      */
     public List<Message> appendAndRelease(UUID conversationId, UUID ownerUserId, Instant claimedAt,
                                           List<PendingMessage> produced, ToolChannel channel, Pseudonyms aliases) {
         List<Message> stored = conversations.appendAndRelease(conversationId, produced, clock.instant(), claimedAt,
                 channel);
         pseudonyms.save(conversationId, aliases);
-        if (actions != null) {
-            suggest(conversationId, ownerUserId, stored);
-        }
         return stored;
-    }
-
-    /** The answer's proposals, read as the transcript reads them: from every tool of the question, on its last text. */
-    private void suggest(UUID conversationId, UUID ownerUserId, List<Message> stored) {
-        Message answer = null;
-        List<ToolExecution> executions = new ArrayList<>();
-        for (Message message : stored) {
-            if (message.role() == MessageRole.ASSISTANT) {
-                executions.addAll(message.executions());
-                if (message.text() != null && !message.text().isBlank()) {
-                    answer = message;
-                }
-            }
-        }
-        List<AnswerSources.Proposal> proposals = AnswerSources.proposals(executions, json);
-        if (answer != null && !proposals.isEmpty()) {
-            actions.suggestPurchaseOrders(ownerUserId, conversationId, answer.id(), proposals);
-        }
-    }
-
-    /** The suggestions {@code messageId}'s answer made, by proposal; empty when it made none. */
-    @Transactional(readOnly = true)
-    public Map<String, AssistantActions.ActionView> actionsOf(UUID messageId, UUID ownerUserId) {
-        if (actions == null) {
-            return Map.of();
-        }
-        return actions.ofAnswers(List.of(messageId), ownerUserId).getOrDefault(messageId, Map.of());
     }
 
     /**
@@ -359,7 +304,6 @@ public class ConversationService {
      * @param toolCalls         the tools run to produce an answer; empty for a question
      * @param cutShort          the answer hit the output limit and may be incomplete
      * @param citations         rule anchors the answer names that its own searches returned
-     * @param proposals         purchase orders the panel may open pre-filled
      * @param tables            the rows its lookups returned, as the panel shows them under it ({@link ResultTable})
      * @param unverifiedNumbers numbers the answer states that nothing the model was given for it holds, as written
      *                          ({@link AnswerNumbers}); advisory
@@ -373,19 +317,14 @@ public class ConversationService {
      */
     public record TranscriptEntry(UUID messageId, int sequence, MessageRole role, String text, Instant at,
                                   List<ToolCallView> toolCalls, boolean cutShort, List<String> citations,
-                                  List<AnswerSources.Proposal> proposals, List<ResultTable.Table> tables,
-                                  List<String> unverifiedNumbers, List<String> unverifiedCodes,
-                                  List<String> instructionLike, List<FollowUps.FollowUp> followUps,
-                                  FeedbackVerdict feedback, Map<String, AssistantActions.ActionView> actions) {
-
-        public TranscriptEntry {
-            actions = actions == null ? Map.of() : Map.copyOf(actions);
-        }
+                                  List<ResultTable.Table> tables, List<String> unverifiedNumbers,
+                                  List<String> unverifiedCodes, List<String> instructionLike,
+                                  List<FollowUps.FollowUp> followUps, FeedbackVerdict feedback) {
 
         static TranscriptEntry question(Message message) {
             return new TranscriptEntry(message.id(), message.sequence(), MessageRole.USER, message.text(),
                     message.createdAt(), List.of(), false, List.of(), List.of(), List.of(), List.of(), List.of(),
-                    List.of(), List.of(), null, Map.of());
+                    List.of(), null);
         }
 
         /**
@@ -403,7 +342,7 @@ public class ConversationService {
 
         /**
          * The answer read from the messages stored for one question: its last text, every tool call made for it, the
-         * rules that text cites, the proposals and tables those calls returned, the numbers it states that nothing
+         * rules that text cites, the tables those calls returned, the numbers it states that nothing
          * holds and the questions it leads to; cut short if any of its replies up to that text was — a rewrite set
          * aside after it, stored with no text, says nothing about the answer shown. The live answer
          * ({@code AssistantService.Answer}) and the reopened transcript are both read here, so nothing shown under an
@@ -438,9 +377,9 @@ public class ConversationService {
             return Optional.of(new TranscriptEntry(last.id(), last.sequence(), MessageRole.ASSISTANT, last.text(),
                     last.createdAt(), executions.stream().map(ToolCallView::of).toList(), cutShort,
                     AnswerSources.citations(last.text(), executions, json),
-                    AnswerSources.proposals(executions, json), ResultTable.of(executions, json),
+                    ResultTable.of(executions, json),
                     AnswerNumbers.unverified(last.text(), grounds), AnswerCodes.unverified(last.text(), grounds),
-                    instructionLike(executions), FollowUps.leads(executions, json), null, Map.of()));
+                    instructionLike(executions), FollowUps.leads(executions, json), null));
         }
 
         /** The tools whose results carried typed text marked as instruction-like ({@link TypedText#MARKER}). */
@@ -460,22 +399,16 @@ public class ConversationService {
             return turns;
         }
 
-        /** With the customers' names put back where the model was given aliases (ADR-0014). */
+        /** With the customers' names put back where the model was given aliases (ADR-0015). */
         TranscriptEntry revealed(java.util.function.UnaryOperator<String> reveal) {
             return new TranscriptEntry(messageId, sequence, role, reveal.apply(text), at, toolCalls, cutShort,
-                    citations, proposals, tables.stream().map(table -> table.revealed(reveal)).toList(),
-                    unverifiedNumbers, unverifiedCodes, instructionLike, followUps, feedback, actions);
+                    citations, tables.stream().map(table -> table.revealed(reveal)).toList(),
+                    unverifiedNumbers, unverifiedCodes, instructionLike, followUps, feedback);
         }
 
         TranscriptEntry withFeedback(FeedbackVerdict verdict) {
-            return new TranscriptEntry(messageId, sequence, role, text, at, toolCalls, cutShort, citations, proposals,
-                    tables, unverifiedNumbers, unverifiedCodes, instructionLike, followUps, verdict, actions);
-        }
-
-        /** With the suggestions of its proposals, by proposal key ({@link AnswerSources.Proposal#key}). */
-        TranscriptEntry withActions(Map<String, AssistantActions.ActionView> made) {
-            return new TranscriptEntry(messageId, sequence, role, text, at, toolCalls, cutShort, citations, proposals,
-                    tables, unverifiedNumbers, unverifiedCodes, instructionLike, followUps, feedback, made);
+            return new TranscriptEntry(messageId, sequence, role, text, at, toolCalls, cutShort, citations,
+                    tables, unverifiedNumbers, unverifiedCodes, instructionLike, followUps, verdict);
         }
     }
 

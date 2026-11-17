@@ -44,7 +44,9 @@ import java.util.UUID;
  * copy already in the persistence context, read without a lock, and the busy check below would run on stale data —
  * two questions racing would both see the conversation free.</p>
  */
-@Repository
+// Named: the chat module (develop, 2026-11) has a ConversationRepositoryAdapter of its own, and two beans of one
+// default name stop the application from starting.
+@Repository("assistantConversationRepositoryAdapter")
 class ConversationRepositoryAdapter implements ConversationRepository {
 
     private final AssistantConversationJpaRepository conversations;

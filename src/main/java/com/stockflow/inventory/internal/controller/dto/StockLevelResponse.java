@@ -18,7 +18,7 @@ public record StockLevelResponse(
         @Schema(description = "Units in AVAILABLE status, before subtracting reservations")
         int available,
 
-        @Schema(description = "Units held here and not allocated: production, transfer and older checkout holds")
+        @Schema(description = "Units held here and not allocated: older checkout holds")
         int reserved,
 
         @Schema(description = "Units allocated to a bin and lot for picking, held until picked; not counted in reserved")

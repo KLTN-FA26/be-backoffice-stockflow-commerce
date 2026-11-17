@@ -47,7 +47,7 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * The assistant panel (ADR-0010): a user's own conversations, questions to the assistant, and their verdicts on its
+ * The assistant panel (ADR-0011): a user's own conversations, questions to the assistant, and their verdicts on its
  * answers.
  *
  * <p><b>The permission opens the panel and nothing else.</b> {@code assistant-conversations} grants no data: each tool

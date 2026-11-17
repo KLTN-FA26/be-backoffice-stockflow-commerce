@@ -38,7 +38,7 @@ import java.util.Set;
  *                           call that could outlast it, so it must hold at least two of the longest calls
  * @param refusalFallback    lets the provider retry a request its safeguards declined on a fallback model
  * @param baseUrl            the provider's endpoint; blank for its default (a proxy or a test double otherwise)
- * @param provider           {@code anthropic} (the default, ADR-0010), {@code gemini} or {@code openai} (any server
+ * @param provider           {@code anthropic} (the default, ADR-0011), {@code gemini} or {@code openai} (any server
  *                           speaking OpenAI's chat-completions API, such as a local Ollama): which adapter sits behind
  *                           the {@code LanguageModel} port. The loop, the tools and the stored history do not depend
  *                           on it

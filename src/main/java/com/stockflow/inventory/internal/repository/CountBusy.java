@@ -1,14 +1,19 @@
 package com.stockflow.inventory.internal.repository;
 
 /**
- * What "a count holds this slot" means, in SQL, in one place (SCRUM-146). The slot claim of a plan, a found line and a
- * short pick read {@link #BUSY}; so does the blind-count masking of the stock screens ({@link #stockRowInBusySlot},
- * {@link #movementInBusySlot}), which hides the books of exactly the slots the claim refuses to count twice.
- * {@code UnderCountSpecs} states the same rule for the JPA criteria queries of the ledger and the adjustments, and
- * {@code BlindCountIntegrationTest} pins that the two agree.
+ * What "a count holds this carton" means, in SQL, in one place (SCRUM-146; kltn-docs 20 BR-10). The slot claim of a
+ * plan, a found line and a short pick read {@link #BUSY}; so does the blind-count masking of the stock screens
+ * ({@link #stockRowInBusySlot}, {@link #movementInBusySlot}), which hides the books of exactly the cartons the claim
+ * refuses to count twice. {@code UnderCountSpecs} states the same rule for the JPA criteria queries of the ledger and
+ * the adjustments, and {@code BlindCountIntegrationTest} pins that the two agree.
  *
- * <p>A slot is a bin, SKU and lot of loose stock, or one carton ({@code CountSlot}); a stock row, a ledger line or an
- * adjustment belongs to the slot it names the same way {@code CycleCountRepository.bookQuantity} reads it.</p>
+ * <p>A slot is one LPN carton ({@code CountSlot}, team plan 4C-3): a stock row, a ledger line or an adjustment belongs
+ * to the carton it names. A loose slot (bin, SKU and lot) is only a line of a count written before counts were by
+ * carton, matched as it was so its history stays masked while its variance waits for approval.</p>
+ *
+ * <p>A carton with an adjustment asked by hand still waiting for approval is busy for a count as well
+ * ({@link #PENDING_ADJUSTMENT}, read by the claim): the count's variance would be a second pending adjustment of the
+ * same carton ({@code uk_stock_adjustment_pending_package}), deciding it twice.</p>
  */
 final class CountBusy {
 
@@ -24,6 +29,13 @@ final class CountBusy {
                               WHERE a.cycle_count_line_id = l.id
                                 AND a.reason_code = 'COUNT_VARIANCE'
                                 AND a.status = 'PENDING_APPROVAL')))""";
+
+    /**
+     * When adjustment {@code a} holds its carton for a count: asked by hand (no count line) and still waiting for
+     * approval. A count's own pending variance is {@link #BUSY}'s, through its line.
+     */
+    static final String PENDING_ADJUSTMENT = """
+            (a.status = 'PENDING_APPROVAL' AND a.cycle_count_line_id IS NULL AND a.stock_package_id IS NOT NULL)""";
 
     private CountBusy() {
     }

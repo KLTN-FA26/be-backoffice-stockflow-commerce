@@ -4,7 +4,8 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.security.Role;
-import com.stockflow.support.ReferenceRows;
+import com.stockflow.support.AssistantStock;
+import com.stockflow.support.DemoData;
 import com.stockflow.support.RoleGrants;
 import com.stockflow.support.SecuredIntegrationTest;
 import com.stockflow.support.SecuredMvc;
@@ -25,11 +26,9 @@ import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilde
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.nio.charset.StandardCharsets;
-import java.sql.Date;
 import java.sql.Timestamp;
 import java.time.Duration;
 import java.time.Instant;
-import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.Iterator;
@@ -48,7 +47,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * Personal MCP tokens end to end (ADR-0013), with the real security chain: a token made with the sign-in token opens
+ * Personal MCP tokens end to end (ADR-0014), with the real security chain: a token made with the sign-in token opens
  * the MCP endpoint and nothing else, carries its owner's grants as they stand at each call, and stops when revoked,
  * expired, or when its owner's account may not sign in any more. Also the protocol's structured results, against the
  * schema the server lists, and the Origin a page made to resolve to this server sends.
@@ -61,7 +60,6 @@ class AssistantMcpTokenIntegrationTest {
 
     private static final String MCP = "/api/v1/assistant/mcp";
     private static final String TOKENS = "/api/v1/assistant/mcp-tokens";
-    private static final String BIN = "HCM-A01-1-B";
     private static final String VERSION = "2025-11-25";
 
     @Autowired MockMvc mockMvc;
@@ -79,32 +77,23 @@ class AssistantMcpTokenIntegrationTest {
         http = new SecuredMvc(mockMvc, decoder);
         // As the real decoder: a personal token is not a JWT.
         when(decoder.decode(startsWith("sfmcp_"))).thenThrow(new BadJwtException("Malformed token"));
-        // Opt-in (V20261105001100): the roles these cases sign in with, as an administrator would grant them.
-        RoleGrants.grant(jdbc, tx, "assistant-mcp:CREATE", "INVENTORY_PLANNER", "SALES_STAFF");
-        sku = "MCPT-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(Locale.ROOT);
-        tx.executeWithoutResult(s -> {
-            UUID product = Identifiers.newId();
-            jdbc.update("insert into product.products(id,code,name,slug) values (?,?,?,?)", product, sku,
-                    "MCP token fixture", sku.toLowerCase(Locale.ROOT));
-            jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature) values (?,?,?,?,'')",
-                    Identifiers.newId(), product, sku, "MCP token fixture");
-            jdbc.update("""
-                    insert into inventory.stock_item (id, sku, location_code, expiry_date, received_at, on_hand,
-                        reserved, status, version, created_at) values (?, ?, ?, ?, ?, 10, 0, 'AVAILABLE', 0, now())""",
-                    Identifiers.newId(), sku, BIN, Date.valueOf(LocalDate.now().plusYears(1)),
-                    Timestamp.from(Instant.parse("2026-01-02T00:00:00Z")));
-        });
+        // Opt-in (V20261125001100): the roles these cases sign in with, as an administrator would grant them.
+        RoleGrants.grant(jdbc, tx, "assistant-mcp:CREATE", "SYSTEM_ADMIN", "SALES_STAFF", "WAREHOUSE_STAFF");
+        // One whole carton of 10 at an HCM bin: stock is LPN cartons only since the rescope.
+        AssistantStock stock = new AssistantStock(jdbc, tx, entityManager);
+        sku = stock.sku("MCPT-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(Locale.ROOT));
+        stock.cartons(sku, AssistantStock.HCM_BIN, 1, 10, "MCPT-LOT", Instant.parse("2026-01-02T00:00:00Z"));
     }
 
     @Test
     @DisplayName("a token made with the sign-in token opens the MCP endpoint as its owner: the same tools, a tool call "
             + "recorded as theirs, the token's last use noted")
     void aTokenOpensTheMcpEndpoint() throws Exception {
-        UUID planner = staff("INVENTORY_PLANNER");
-        String token = made(planner, Role.INVENTORY_PLANNER, "Claude Code");
+        UUID admin = staff("SYSTEM_ADMIN");
+        String token = made(admin, Role.SYSTEM_ADMIN, "Claude Code");
 
         List<String> withToken = names(result(withToken(token, mcp(request(2, "tools/list", "{}")))).path("tools"));
-        List<String> signedIn = names(result(http.asRole(Role.INVENTORY_PLANNER, planner,
+        List<String> signedIn = names(result(http.asRole(Role.SYSTEM_ADMIN, admin,
                 mcp(request(2, "tools/list", "{}")))).path("tools"));
         JsonNode answer = result(withToken(token, mcp(request(3, "tools/call",
                 "{\"name\":\"getStockLevels\",\"arguments\":{\"sku\":\"" + sku + "\"}}"))));
@@ -114,17 +103,17 @@ class AssistantMcpTokenIntegrationTest {
         assertThat(answer.path("content").get(0).path("text").asText()).contains(sku, "\"onHand\":10");
         assertThat(jdbc.queryForList("""
                 SELECT outcome FROM assistant.tool_call WHERE channel = 'MCP' AND user_id = ?""", String.class,
-                planner)).containsExactly("OK");
+                admin)).containsExactly("OK");
         assertThat(jdbc.queryForObject("SELECT last_used_at FROM assistant.mcp_token WHERE owner_user_id = ?",
-                Timestamp.class, planner)).isNotNull();
+                Timestamp.class, admin)).isNotNull();
     }
 
     @Test
     @DisplayName("a token opens nothing but the MCP endpoint: not the assistant's other endpoints, and not the token "
             + "endpoints, so it cannot make another")
     void aTokenOpensNothingElse() throws Exception {
-        UUID planner = staff("INVENTORY_PLANNER");
-        String token = made(planner, Role.INVENTORY_PLANNER, "Cursor");
+        UUID admin = staff("SYSTEM_ADMIN");
+        String token = made(admin, Role.SYSTEM_ADMIN, "Cursor");
 
         withToken(token, get("/api/v1/assistant/capabilities")).andExpect(status().isUnauthorized());
         withToken(token, get(TOKENS)).andExpect(status().isUnauthorized());
@@ -132,18 +121,18 @@ class AssistantMcpTokenIntegrationTest {
                 .andExpect(status().isUnauthorized());
         withToken(token, get("/api/v1/inventory/stock-items")).andExpect(status().isUnauthorized());
         assertThat(jdbc.queryForObject("SELECT count(*) FROM assistant.mcp_token WHERE owner_user_id = ?",
-                Integer.class, planner)).isEqualTo(1);
+                Integer.class, admin)).isEqualTo(1);
     }
 
     @Test
     @DisplayName("a revoked token, an expired one, an unknown one and a malformed one are all 401")
     void deadTokensAreRefused() throws Exception {
-        UUID planner = staff("INVENTORY_PLANNER");
-        String revoked = made(planner, Role.INVENTORY_PLANNER, "revoked");
-        String expired = made(planner, Role.INVENTORY_PLANNER, "expired");
+        UUID admin = staff("SYSTEM_ADMIN");
+        String revoked = made(admin, Role.SYSTEM_ADMIN, "revoked");
+        String expired = made(admin, Role.SYSTEM_ADMIN, "expired");
         UUID revokedId = tokenId(revoked);
 
-        http.asRole(Role.INVENTORY_PLANNER, planner, post(TOKENS + "/" + revokedId + "/revocation"))
+        http.asRole(Role.SYSTEM_ADMIN, admin, post(TOKENS + "/" + revokedId + "/revocation"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("REVOKED"))
                 .andExpect(jsonPath("$.data.token").doesNotExist());
@@ -161,8 +150,9 @@ class AssistantMcpTokenIntegrationTest {
     @DisplayName("the token carries its owner's grants as they stand at each call: a role changed changes the tools, "
             + "an account locked stops it, with no one revoking the token")
     void theOwnersGrantsAsTheyStandNow() throws Exception {
-        UUID user = staff("INVENTORY_PLANNER");
-        String token = made(user, Role.INVENTORY_PLANNER, "laptop");
+        // Warehouse staff read stock and no orders; Sales the reverse.
+        UUID user = staff("WAREHOUSE_STAFF", DemoData.WAREHOUSE_HCM);
+        String token = made(user, Role.WAREHOUSE_STAFF, "laptop");
         assertThat(names(result(withToken(token, mcp(request(2, "tools/list", "{}")))).path("tools")))
                 .contains("getStockLevels").doesNotContain("findOrder");
 
@@ -185,8 +175,8 @@ class AssistantMcpTokenIntegrationTest {
     @DisplayName("the forced-change gate (SCRUM-474) refuses a token while the owner's password change is pending, as "
             + "it refuses a sign-in token; the flag alone, set with no reset, revokes nothing")
     void theForcedChangeGateRefusesATokenWhilePending() throws Exception {
-        UUID user = staff("INVENTORY_PLANNER");
-        String token = made(user, Role.INVENTORY_PLANNER, "laptop");
+        UUID user = staff("SYSTEM_ADMIN");
+        String token = made(user, Role.SYSTEM_ADMIN, "laptop");
 
         tx.executeWithoutResult(s -> jdbc.update(
                 "UPDATE identity.app_user SET must_change_password = TRUE WHERE id = ?", user));
@@ -200,12 +190,12 @@ class AssistantMcpTokenIntegrationTest {
     }
 
     @Test
-    @DisplayName("an administrator's password reset revokes the owner's tokens for good (ADR-0013): a token minted by "
+    @DisplayName("an administrator's password reset revokes the owner's tokens for good (ADR-0014): a token minted by "
             + "whoever knew the old password does not come back when the owner sets a new one")
     void aPasswordResetRevokesTheTokens() throws Exception {
         UUID admin = staff("SYSTEM_ADMIN");
-        UUID user = staff("INVENTORY_PLANNER");
-        String token = made(user, Role.INVENTORY_PLANNER, "laptop");
+        UUID user = staff("SYSTEM_ADMIN");
+        String token = made(user, Role.SYSTEM_ADMIN, "laptop");
 
         http.asRole(Role.SYSTEM_ADMIN, admin, post("/api/v1/identity/users/" + user + "/password-reset")
                         .contentType(MediaType.APPLICATION_JSON).content("{}"))
@@ -223,11 +213,11 @@ class AssistantMcpTokenIntegrationTest {
     @DisplayName("the token is shown once: the list has its hint and status, never the token; another user's token is "
             + "not found; a stored answer is refused (Idempotency-Key 400); an eleventh live token is 409")
     void theTokenEndpoints() throws Exception {
-        UUID planner = staff("INVENTORY_PLANNER");
+        UUID admin = staff("SYSTEM_ADMIN");
         UUID other = staff("SALES_STAFF");
-        String token = made(planner, Role.INVENTORY_PLANNER, "desktop");
+        String token = made(admin, Role.SYSTEM_ADMIN, "desktop");
 
-        String listed = http.asRole(Role.INVENTORY_PLANNER, planner, get(TOKENS)).andExpect(status().isOk())
+        String listed = http.asRole(Role.SYSTEM_ADMIN, admin, get(TOKENS)).andExpect(status().isOk())
                 .andReturn().getResponse().getContentAsString(StandardCharsets.UTF_8);
         JsonNode mine = json.readTree(listed).path("data");
         assertThat(mine).hasSize(1);
@@ -238,10 +228,10 @@ class AssistantMcpTokenIntegrationTest {
 
         http.asRole(Role.SALES_STAFF, other, post(TOKENS + "/" + tokenId(token) + "/revocation"))
                 .andExpect(status().isNotFound());
-        http.asRole(Role.INVENTORY_PLANNER, planner, post(TOKENS).contentType(MediaType.APPLICATION_JSON)
+        http.asRole(Role.SYSTEM_ADMIN, admin, post(TOKENS).contentType(MediaType.APPLICATION_JSON)
                         .header("Idempotency-Key", "mcp-token-key-1").content("{\"name\":\"retried\"}"))
                 .andExpect(status().isBadRequest());
-        http.asRole(Role.INVENTORY_PLANNER, planner, post(TOKENS).contentType(MediaType.APPLICATION_JSON)
+        http.asRole(Role.SYSTEM_ADMIN, admin, post(TOKENS).contentType(MediaType.APPLICATION_JSON)
                         .content("{\"name\":\"long\",\"expiresInDays\":91}"))
                 .andExpect(status().isBadRequest());
 
@@ -249,11 +239,11 @@ class AssistantMcpTokenIntegrationTest {
             for (int i = 0; i < 9; i++) {
                 jdbc.update("""
                         INSERT INTO assistant.mcp_token (id, owner_user_id, name, token_hash, token_hint, expires_at)
-                        VALUES (?, ?, ?, ?, 'abcd', now() + INTERVAL '1 day')""", Identifiers.newId(), planner,
-                        "filler " + i, hash("sfmcp_filler-" + planner + "-" + i));
+                        VALUES (?, ?, ?, ?, 'abcd', now() + INTERVAL '1 day')""", Identifiers.newId(), admin,
+                        "filler " + i, hash("sfmcp_filler-" + admin + "-" + i));
             }
         });
-        mockMvc.perform(post(TOKENS).header("Authorization", recentSignIn(Role.INVENTORY_PLANNER, planner))
+        mockMvc.perform(post(TOKENS).header("Authorization", recentSignIn(Role.SYSTEM_ADMIN, admin))
                         .contentType(MediaType.APPLICATION_JSON).content("{\"name\":\"eleventh\"}"))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("ASSISTANT_MCP_TOKEN_LIMIT"));
@@ -263,32 +253,32 @@ class AssistantMcpTokenIntegrationTest {
     @DisplayName("a token is made only just after signing in: a sign-in older than 15 minutes, or a token that says "
             + "nothing of it, is 403 RECENT_SIGN_IN_REQUIRED and nothing is made")
     void madeOnlyJustAfterSigningIn() throws Exception {
-        UUID planner = staff("INVENTORY_PLANNER");
-        String hourOld = TestTokens.bearer(decoder, planner,
-                Map.of("iat", Instant.now().minus(java.time.Duration.ofHours(1))), Role.INVENTORY_PLANNER.authority());
+        UUID admin = staff("SYSTEM_ADMIN");
+        String hourOld = TestTokens.bearer(decoder, admin,
+                Map.of("iat", Instant.now().minus(java.time.Duration.ofHours(1))), Role.SYSTEM_ADMIN.authority());
 
         mockMvc.perform(post(TOKENS).header("Authorization", hourOld).contentType(MediaType.APPLICATION_JSON)
                         .content("{\"name\":\"stale\"}"))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.errorCode").value("RECENT_SIGN_IN_REQUIRED"));
-        http.asRole(Role.INVENTORY_PLANNER, planner, post(TOKENS).contentType(MediaType.APPLICATION_JSON)
+        http.asRole(Role.SYSTEM_ADMIN, admin, post(TOKENS).contentType(MediaType.APPLICATION_JSON)
                         .content("{\"name\":\"no time\"}"))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.errorCode").value("RECENT_SIGN_IN_REQUIRED"));
         assertThat(jdbc.queryForObject("SELECT count(*) FROM assistant.mcp_token WHERE owner_user_id = ?",
-                Integer.class, planner)).isZero();
+                Integer.class, admin)).isZero();
     }
 
     @Test
     @DisplayName("opt-in: a role the business has not granted assistant-mcp:CREATE may chat but neither make a token "
             + "nor use MCP; SYSTEM_ADMIN holds it from the migration")
     void optIn() throws Exception {
-        UUID maker = staff("PRODUCTION_STAFF");
+        UUID maker = staff("PRODUCTION_COORDINATOR");
 
-        mockMvc.perform(post(TOKENS).header("Authorization", recentSignIn(Role.PRODUCTION_STAFF, maker))
+        mockMvc.perform(post(TOKENS).header("Authorization", recentSignIn(Role.PRODUCTION_COORDINATOR, maker))
                         .contentType(MediaType.APPLICATION_JSON).content("{\"name\":\"floor\"}"))
                 .andExpect(status().isForbidden());
-        http.asRole(Role.PRODUCTION_STAFF, maker, mcp(request(1, "ping", "{}"))).andExpect(status().isForbidden());
+        http.asRole(Role.PRODUCTION_COORDINATOR, maker, mcp(request(1, "ping", "{}"))).andExpect(status().isForbidden());
         assertThat(jdbc.queryForList("""
                 SELECT role.code FROM identity.app_role role
                 JOIN identity.role_permission grant_row ON grant_row.role_id = role.id
@@ -301,20 +291,21 @@ class AssistantMcpTokenIntegrationTest {
     @DisplayName("an administrator sees a user's tokens without the tokens themselves and revokes them all at once; "
             + "the next call with any of them is 401; making and revoking are in the audit trail, never the token")
     void anAdministratorRevokesAUsersTokens() throws Exception {
-        UUID planner = staff("INVENTORY_PLANNER");
+        UUID owner = staff("SALES_STAFF");
         UUID admin = staff("SYSTEM_ADMIN");
-        String first = made(planner, Role.INVENTORY_PLANNER, "laptop");
-        String second = made(planner, Role.INVENTORY_PLANNER, "desktop");
+        String first = made(owner, Role.SALES_STAFF, "laptop");
+        String second = made(owner, Role.SALES_STAFF, "desktop");
 
-        String listed = http.asRole(Role.SYSTEM_ADMIN, admin, get(TOKENS + "/users/" + planner))
+        String listed = http.asRole(Role.SYSTEM_ADMIN, admin, get(TOKENS + "/users/" + owner))
                 .andExpect(status().isOk())
                 .andReturn().getResponse().getContentAsString(StandardCharsets.UTF_8);
         assertThat(json.readTree(listed).path("data")).hasSize(2);
         assertThat(listed).doesNotContain(first.substring(6), second.substring(6));
-        http.asRole(Role.INVENTORY_PLANNER, planner, get(TOKENS + "/users/" + planner))
+        // The owner holds no identity-users:READ: another person's list is the administrators' screen.
+        http.asRole(Role.SALES_STAFF, owner, get(TOKENS + "/users/" + owner))
                 .andExpect(status().isForbidden());
 
-        http.asRole(Role.SYSTEM_ADMIN, admin, post(TOKENS + "/users/" + planner + "/revocation"))
+        http.asRole(Role.SYSTEM_ADMIN, admin, post(TOKENS + "/users/" + owner + "/revocation"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.revoked").value(2));
 
@@ -324,11 +315,11 @@ class AssistantMcpTokenIntegrationTest {
                 SELECT count(*) FROM platform.audit_log
                 WHERE resource_type = 'mcp_token' AND action = 'GRANT' AND outcome = 'SUCCESS'
                   AND resource_id IN (SELECT id::text FROM assistant.mcp_token WHERE owner_user_id = ?)""",
-                Integer.class, planner)).isEqualTo(2);
+                Integer.class, owner)).isEqualTo(2);
         assertThat(jdbc.queryForObject("""
                 SELECT count(*) FROM platform.audit_log
                 WHERE resource_type = 'user' AND action = 'REVOKE' AND resource_id = ?""", Integer.class,
-                planner.toString())).isEqualTo(1);
+                owner.toString())).isEqualTo(1);
         assertThat(jdbc.queryForObject("""
                 SELECT count(*) FROM platform.audit_log WHERE details LIKE ? OR resource_id LIKE ?""", Integer.class,
                 "%" + first.substring(6) + "%", "%" + first.substring(6) + "%")).isZero();
@@ -338,8 +329,8 @@ class AssistantMcpTokenIntegrationTest {
     @DisplayName("from 2025-11-25 a call's structuredContent is the text's JSON and valid against the outputSchema "
             + "tools/list gave the tool")
     void structuredContentMatchesTheListedSchema() throws Exception {
-        UUID planner = staff("INVENTORY_PLANNER");
-        String token = made(planner, Role.INVENTORY_PLANNER, "inspector");
+        UUID admin = staff("SYSTEM_ADMIN");
+        String token = made(admin, Role.SYSTEM_ADMIN, "inspector");
 
         JsonNode tools = result(withToken(token, mcp(request(2, "tools/list", "{}")))).path("tools");
         JsonNode schema = null;
@@ -363,8 +354,8 @@ class AssistantMcpTokenIntegrationTest {
     @DisplayName("a page whose host name was made to resolve to this server sends an Origin matching the Host: the "
             + "CORS filter sees no cross-origin request, the endpoint still refuses it with 403")
     void aReboundPageIsRefused() throws Exception {
-        UUID planner = staff("INVENTORY_PLANNER");
-        String token = made(planner, Role.INVENTORY_PLANNER, "rebinding");
+        UUID admin = staff("SYSTEM_ADMIN");
+        String token = made(admin, Role.SYSTEM_ADMIN, "rebinding");
 
         withToken(token, mcp(request(1, "ping", "{}")).with(request -> {
             request.setServerName("attacker.example");
@@ -471,11 +462,7 @@ class AssistantMcpTokenIntegrationTest {
         }
     }
 
-    private UUID staff(String role) {
-        UUID user = tx.execute(s -> ReferenceRows.user(entityManager));
-        tx.executeWithoutResult(s -> jdbc.update("""
-                INSERT INTO identity.user_role (id, user_id, role_id, version, created_at)
-                SELECT gen_random_uuid(), ?, id, 0, NOW() FROM identity.app_role WHERE code = ?""", user, role));
-        return user;
+    private UUID staff(String role, UUID... warehouses) {
+        return new AssistantStock(jdbc, tx, entityManager).staff(role, warehouses);
     }
 }

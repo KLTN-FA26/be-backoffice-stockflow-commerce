@@ -9,7 +9,7 @@ import java.util.UUID;
  * their holds go together, and the carton stays unopened. Cartons are named by LPN because a move named by
  * (SKU, location, lot) cannot tell one carton of a receipt from another.
  *
- * <p>Several at once because a document moves a line's cartons together (a receipt line to QC): one call takes the
+ * <p>Several at once because a document moves a line's cartons together: one call takes the
  * locks once for all of them, where a call per carton read, locked and wrote the same things hundreds of times.</p>
  *
  * @param lpns           the cartons' licence plates, in either case ({@link StockPackageView#normalLpn}); a repeat

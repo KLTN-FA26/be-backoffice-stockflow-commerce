@@ -75,8 +75,8 @@ class AssistantPanelController {
     @Operation(summary = "The caller's \"today\" card: what wants attention in their work, read now",
             description = "Needs assistant-conversations:READ. Each section runs one assistant tool under the caller's "
                     + "own permissions and warehouses, exactly as a question would, and appears only when the caller "
-                    + "may use that tool: low stock, expired and expiring lots, held orders and orders awaiting "
-                    + "payment, purchase orders a supplier is late with, overdue production orders. A section whose "
+                    + "may use that tool: held orders, orders awaiting payment and orders awaiting stock "
+                    + "(findOrders), and goods receipts waiting to be put away (findGoodsReceipts). A section whose "
                     + "tool is refused or fails has that outcome, no table and a note; the others still answer. No "
                     + "model is asked and nothing is stored, so it does not count toward the daily question limit. "
                     + "One card a minute per user: a second is 429 RATE_LIMITED with Retry-After, so keep showing "

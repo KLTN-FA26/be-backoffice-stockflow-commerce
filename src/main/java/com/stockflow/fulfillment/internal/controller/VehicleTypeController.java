@@ -29,7 +29,7 @@ import java.util.UUID;
 
 /**
  * The vehicle-type catalogue of full-truckload load planning (SCRUM-287; kltn-docs 09 §3, §4.2).
- * {@code fulfillment-vehicle-types:READ} to list and read (dispatch staff and coordinators choose from it);
+ * {@code fulfillment-vehicle-types:READ} to list and read (dispatch staff and managers choose from it);
  * {@code :UPDATE} to keep it - seeded for the warehouse manager. A type is retired with PUT status INACTIVE; there is
  * no delete, so a preset (20DC, 40DC, 40HC, 45HC) cannot be deleted.
  */

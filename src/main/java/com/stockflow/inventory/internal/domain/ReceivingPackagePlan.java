@@ -13,26 +13,29 @@ import java.util.stream.Collectors;
 
 /**
  * What a goods-receipt line's cartons must become to match what the operator now says is on the pallet (SCRUM-473):
- * which known cartons are recounted, how many new ones to label, and which still-RECEIVING ones are no longer wanted.
+ * which known cartons are counted again, how many new ones to label, and which still-RECEIVING ones are no longer
+ * wanted.
  *
  * <p>It only decides. Applying the plan (counting, labelling, voiding) is the service's job, so the rules of
- * reconciliation can be tested without a repository.</p>
+ * reconciliation can be tested without a repository. No quantities: every carton holds the SKU's standard count
+ * (kltn-docs 03 BR-13), which {@link StockPackage#count} assigns, so the operator's list is only which cartons are
+ * there.</p>
  *
  * <p><b>Only RECEIVING cartons are live.</b> The repository hands back every carton the line ever had, VOID ones
  * included; a VOID carton that is not named again is history, not something to void a second time
  * ({@link StockPackage#cancel} refuses on it), while naming one is an error: it can no longer be recounted.</p>
+ *
+ * @param recounts   the known cartons named again
+ * @param newCartons how many cartons to label
+ * @param voided     the RECEIVING cartons left out
  */
-public record ReceivingPackagePlan(List<Recount> recounts, List<Integer> newCounts, List<StockPackage> voided) {
-
-    /** A carton the operator named again, with the quantity now counted into it. */
-    public record Recount(StockPackage carton, int quantity) {}
+public record ReceivingPackagePlan(List<StockPackage> recounts, int newCartons, List<StockPackage> voided) {
 
     /** One entry of the operator's list: an existing carton by LPN, or {@code null} for a new one. */
-    public record Wanted(String lpn, int quantity) {}
+    public record Wanted(String lpn) {}
 
     public ReceivingPackagePlan {
         recounts = List.copyOf(recounts);
-        newCounts = List.copyOf(newCounts);
         voided = List.copyOf(voided);
     }
 
@@ -40,15 +43,12 @@ public record ReceivingPackagePlan(List<Recount> recounts, List<Integer> newCoun
         Map<String, StockPackage> byLpn = current.stream()
                 .collect(Collectors.toMap(StockPackage::lpn, Function.identity()));
         Set<String> named = new HashSet<>();
-        List<Recount> recounts = new ArrayList<>();
-        List<Integer> newCounts = new ArrayList<>();
+        List<StockPackage> recounts = new ArrayList<>();
+        int newCartons = 0;
 
         for (Wanted entry : wanted) {
-            if (entry.quantity() < 1) {
-                throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A carton holds at least 1 unit");
-            }
             if (entry.lpn() == null) {
-                newCounts.add(entry.quantity());
+                newCartons++;
                 continue;
             }
             if (!named.add(entry.lpn())) {
@@ -63,13 +63,13 @@ public record ReceivingPackagePlan(List<Recount> recounts, List<Integer> newCoun
                 throw new BusinessException(ErrorCode.INVALID_STOCK_PACKAGE_TRANSITION,
                         "%s is %s and cannot be recounted".formatted(carton.lpn(), carton.status()));
             }
-            recounts.add(new Recount(carton, entry.quantity()));
+            recounts.add(carton);
         }
 
         List<StockPackage> voided = current.stream()
                 .filter(carton -> carton.status() == StockPackageStatus.RECEIVING)
                 .filter(carton -> !named.contains(carton.lpn()))
                 .toList();
-        return new ReceivingPackagePlan(recounts, newCounts, voided);
+        return new ReceivingPackagePlan(recounts, newCartons, voided);
     }
 }

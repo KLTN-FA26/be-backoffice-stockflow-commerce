@@ -6,7 +6,7 @@ import java.util.UUID;
 
 /**
  * Personal tokens: a credential a user creates for one client of theirs and accepted on a few paths only, such as the
- * assistant's MCP endpoint (ADR-0013). The module that issues them implements this; the API chain checks them
+ * assistant's MCP endpoint (ADR-0014). The module that issues them implements this; the API chain checks them
  * ({@link PersonalTokenAuthenticationProvider}).
  *
  * <p><b>A token says who, never what.</b> Holding one proves the bearer is a client the user set up; the grants are

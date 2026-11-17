@@ -134,7 +134,7 @@ class B2bOnboardingIntegrationTest {
 
     @BeforeAll
     void staff() {
-        ecommerceAdmin = staffToken("ECOMMERCE_ADMIN");
+        ecommerceAdmin = staffToken("SALES_MANAGER");
         warehouse = staffToken("WAREHOUSE_STAFF");
         systemAdmin = staffToken("SYSTEM_ADMIN");
     }
@@ -276,7 +276,7 @@ class B2bOnboardingIntegrationTest {
                 SELECT count(*) FROM identity.role_permission rp
                 JOIN identity.app_role r ON r.id = rp.role_id JOIN identity.permission p ON p.id = rp.permission_id
                 WHERE p.code = 'customer-customers:CREATE'
-                  AND r.code IN ('SALES_STAFF','ECOMMERCE_ADMIN','SYSTEM_ADMIN')""", Long.class)).isEqualTo(3);
+                  AND r.code IN ('SALES_STAFF','SALES_MANAGER','SYSTEM_ADMIN')""", Long.class)).isEqualTo(3);
         assertThat(jdbc.queryForObject("""
                 SELECT count(*) FROM identity.role_permission rp
                 JOIN identity.app_role r ON r.id = rp.role_id JOIN identity.permission p ON p.id = rp.permission_id
@@ -713,14 +713,12 @@ class B2bOnboardingIntegrationTest {
                                 """))
                 .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString();
         assertThat(address).contains("SHIPPING");
-        long price = jdbc.queryForObject(
-                "SELECT price FROM catalog.pricing_rule WHERE name='BASE:SOFA-3S-GREY' AND active", Long.class);
+        // The customer follows its orders but does not place one (kltn-docs 14 BR-01; team plan 5-2): Sales does.
         mvc.perform(post("/api/v1/orders").header("Authorization", "Bearer " + shop)
                         .contentType("application/json").content(json(Map.of(
                                 "requestId", UUID.randomUUID(), "customerId", customerId,
-                                "lines", List.of(Map.of("sku", "SOFA-3S-GREY", "quantity", 1, "unitPrice", price))))))
-                .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.data.customerId").value(customerId.toString()));
+                                "lines", List.of(Map.of("sku", "SOFA-3S-GREY", "quantity", 1, "unitPrice", 1000))))))
+                .andExpect(status().isForbidden());
 
         // Supplied later by Sales, with the usual rules.
         String code = mst();
@@ -741,7 +739,7 @@ class B2bOnboardingIntegrationTest {
         reopen(customerId, "   ").andExpect(status().isBadRequest());
         changeStatus(customerId, "BLOCKED").andExpect(status().isConflict())
                 .andExpect(jsonPath("$.errorCode").value("INVALID_CUSTOMER_STATUS_TRANSITION"));
-        // Sales is not the manager (kltn-docs 18 §2: E-commerce Admin).
+        // Sales is not the manager (kltn-docs 18 §2: Sales Manager).
         mvc.perform(post("/api/v1/customers/" + customerId + "/status").header("Authorization", "Bearer " + sales)
                         .contentType("application/json").content(json(Map.of("status", "ACTIVE", "reason", "x"))))
                 .andExpect(status().isForbidden());
@@ -843,60 +841,48 @@ class B2bOnboardingIntegrationTest {
         return UUID.fromString(mapper.readTree(created).at("/data/customer/customerId").asText());
     }
 
-    /** Decision B1 (2026-10-13): Sales sets PREPAID or DEPOSIT at onboarding; CREDIT stays with the approver. */
+    /**
+     * 18 BR-02: onboarding records no credit and the approver alone grants it - a limit and the days to pay (15 BR-12).
+     * Decision B1 let Sales choose PREPAID or DEPOSIT at onboarding; 4B-10 removed payment terms altogether (how a
+     * customer pays is the signed contract's installment plan), so there is nothing left for Sales to choose.
+     */
     @Test
-    void salesChoosesPrepaidOrDepositAtOnboardingAndCreditStaysWithTheApprover() throws Exception {
-        String refused = unique("credit");
-        for (Map<String, Object> bad : List.<Map<String, Object>>of(
-                Map.of("companyName", "Cong ty Cong No", "contactName", "A", "email", refused, "paymentTerm", "CREDIT"),
-                Map.of("companyName", "Cong ty Coc", "contactName", "A", "email", refused, "paymentTerm", "DEPOSIT"),
-                Map.of("companyName", "Cong ty Tra Truoc", "contactName", "A", "email", refused,
-                        "paymentTerm", "PREPAID", "depositPercent", 30),
-                Map.of("companyName", "Cong ty Coc", "contactName", "A", "email", refused,
-                        "paymentTerm", "DEPOSIT", "depositPercent", 100),
-                Map.of("companyName", "Cong ty Coc", "contactName", "A", "email", refused,
-                        "paymentTerm", "DEPOSIT", "depositPercent", 12.345))) {
-            create(sales, json(bad), null).andExpect(status().isBadRequest());
-        }
-        assertThat(jdbc.queryForObject("SELECT count(*) FROM customer.customer WHERE email = ?", Integer.class,
-                refused)).as("nothing written").isZero();
-
-        String email = unique("deposit");
-        String created = create(sales, json(Map.of("companyName", "Cong ty Dat Coc", "contactName", "Chi B",
-                "email", email, "paymentTerm", "DEPOSIT", "depositPercent", 30)), null)
+    void onboardingSetsNoCreditAndCreditStaysWithTheApprover() throws Exception {
+        String email = unique("credit");
+        String created = create(sales, json(Map.of("companyName", "Cong ty Cong No", "contactName", "Chi B",
+                "email", email)), null)
                 .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString();
         UUID customerId = UUID.fromString(mapper.readTree(created).at("/data/customer/customerId").asText());
         String profile = "/api/v1/customers/" + customerId + "/credit-profile";
         String terms = mvc.perform(get(profile).header("Authorization", "Bearer " + sales))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.configured").value(true))
-                .andExpect(jsonPath("$.data.allowPrepaid").value(true))
-                .andExpect(jsonPath("$.data.allowDeposit").value(true))
-                .andExpect(jsonPath("$.data.allowCredit").value(false))
-                .andExpect(jsonPath("$.data.defaultPaymentTerm").value("DEPOSIT"))
-                .andExpect(jsonPath("$.data.depositPercent").value(30))
-                .andExpect(jsonPath("$.data.approvedBy").exists())
+                .andExpect(jsonPath("$.data.configured").value(false))
+                .andExpect(jsonPath("$.data.creditLimit").doesNotExist())
+                .andExpect(jsonPath("$.data.creditTermDays").doesNotExist())
+                .andExpect(jsonPath("$.data.version").value(-1))
                 .andReturn().getResponse().getContentAsString();
         long version = mapper.readTree(terms).at("/data/version").asLong();
 
-        // Sales cannot grant credit afterwards either; the approver can.
-        Map<String, Object> credit = new java.util.HashMap<>(Map.of("allowPrepaid", true, "allowDeposit", true,
-                "allowCredit", true, "defaultPaymentTerm", "CREDIT", "depositPercent", 30, "creditLimit", 50_000_000,
-                "creditTermDays", 30, "expectedVersion", version));
+        // Sales cannot grant credit; the approver can.
+        Map<String, Object> credit = Map.of("creditLimit", 50_000_000, "creditTermDays", 30, "expectedVersion",
+                version);
         mvc.perform(put(profile).header("Authorization", "Bearer " + sales).contentType("application/json")
                 .content(json(credit))).andExpect(status().isForbidden());
-        mvc.perform(put(profile).header("Authorization", "Bearer " + systemAdmin).contentType("application/json")
-                        .content(json(credit)))
-                .andExpect(status().isOk()).andExpect(jsonPath("$.data.allowCredit").value(true));
+        String granted = mvc.perform(put(profile).header("Authorization", "Bearer " + systemAdmin)
+                        .contentType("application/json").content(json(credit)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.configured").value(true))
+                .andExpect(jsonPath("$.data.creditLimit").value(50_000_000))
+                .andExpect(jsonPath("$.data.creditTermDays").value(30))
+                .andExpect(jsonPath("$.data.approvedBy").exists())
+                .andReturn().getResponse().getContentAsString();
 
-        // Without a choice nothing is recorded, as before: the customer prepays until the approver acts.
-        String plain = unique("plain");
-        String createdPlain = create(sales, json(Map.of("companyName", "Cong ty Thuong", "contactName", "C",
-                "email", plain)), null).andExpect(status().isCreated()).andReturn().getResponse().getContentAsString();
-        UUID plainId = UUID.fromString(mapper.readTree(createdPlain).at("/data/customer/customerId").asText());
-        mvc.perform(get("/api/v1/customers/" + plainId + "/credit-profile").header("Authorization", "Bearer " + sales))
-                .andExpect(status().isOk()).andExpect(jsonPath("$.data.configured").value(false))
-                .andExpect(jsonPath("$.data.defaultPaymentTerm").value("PREPAID"));
+        // A limit without its days to pay contradicts itself (ck_credit_profile_credit says so too).
+        mvc.perform(put(profile).header("Authorization", "Bearer " + systemAdmin).contentType("application/json")
+                        .content(json(Map.of("creditLimit", 60_000_000, "expectedVersion",
+                                mapper.readTree(granted).at("/data/version").asLong()))))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("CREDIT_PROFILE_INVALID"));
     }
 
     private ResultActions create(String bearer, String body, String idempotencyKey) throws Exception {

@@ -12,7 +12,6 @@ import com.stockflow.common.security.CurrentUserProvider;
 import com.stockflow.common.security.DataScope;
 import com.stockflow.common.storage.UploadInspection;
 import com.stockflow.product.api.CreateProductCommand;
-import com.stockflow.product.api.ProductKind;
 import com.stockflow.product.api.ProductService;
 import com.stockflow.product.api.ProductSummary;
 import com.stockflow.product.api.TaxClass;
@@ -61,7 +60,7 @@ class UomConversionHttpIntegrationTest {
                 DataScope.ALL, Set.of())));
         String suffix = UUID.randomUUID().toString().substring(0, 6).toUpperCase();
         ProductSummary created = products.create(new CreateProductCommand("UOM-" + suffix, "Ly giấy 12oz",
-                "Paper cup 12oz", null, null, "Ly", null, null, TaxClass.STANDARD, ProductKind.CUSTOMIZABLE,
+                "Paper cup 12oz", null, null, "Ly", null, null, TaxClass.STANDARD,
                 List.of()));
         UUID variantId = variants.list(created.productId(), 0, 1).items().getFirst().id();
         base = "/api/v1/products/" + created.productId() + "/variants/" + variantId + "/uom-conversions";

@@ -7,7 +7,8 @@ import com.stockflow.common.error.ErrorCode;
 import java.util.Objects;
 
 /**
- * A price break: from {@code minQuantity} units up, {@code unitPrice} per unit. Whole VND, positive
+ * A price break: from {@code minQuantity} cartons up (units on a line drafted before 4B-2), {@code unitPrice} per
+ * piece (kltn-docs 14 BR-07, BR-08). Whole VND, positive
  * ({@code ck_quote_price_tier_price}), because order lines are VND and a fraction of a dong cannot be
  * invoiced.
  */

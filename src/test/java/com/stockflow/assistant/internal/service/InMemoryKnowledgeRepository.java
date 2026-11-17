@@ -64,6 +64,11 @@ final class InMemoryKnowledgeRepository implements KnowledgeRepository {
     }
 
     @Override
+    public List<String> sources() {
+        return chunks.keySet().stream().map(Key::source).distinct().sorted().toList();
+    }
+
+    @Override
     public List<KnowledgeChunk> search(String query, int limit, int minMatched) {
         searchLimits.add(limit);
         return rankings.getOrDefault(query, List.of()).stream().limit(limit).toList();

@@ -63,7 +63,7 @@ import java.util.concurrent.ConcurrentMap;
  *
  * <p>A method can also join a transaction its caller began: one module's {@code api} called from
  * another module's {@code @Transactional} method, or the assistant creating a draft purchase order
- * in the transaction that marks the suggestion confirmed (ADR-0011). Its change then commits with
+ * in the transaction that marks the suggestion confirmed (ADR-0012). Its change then commits with
  * the caller's, later, or not at all. Writing SUCCESS when {@code proceed()} returns would record a
  * creation that a rollback afterwards undid — a goods receipt whose lines the receipt screen refused
  * would stay in the trail as created. So when the method joined a transaction still active as it

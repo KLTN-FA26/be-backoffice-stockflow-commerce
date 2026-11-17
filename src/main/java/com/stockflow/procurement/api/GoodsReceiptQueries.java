@@ -6,9 +6,9 @@ import java.util.List;
 
 /**
  * Goods receipts for other modules to show, read through the list the receipt screen reads
- * ({@code GET /api/v1/goods-receipts}). The back-office assistant (ADR-0010) answers receiving's and QC's daily
- * questions with it - which receipts wait for QC, which wait to be put away - that no other {@code api} could: receipts
- * are otherwise this module's alone ({@code GoodsReceipts} drives them, and stays internal).
+ * ({@code GET /api/v1/goods-receipts}). The back-office assistant (ADR-0011) answers receiving's daily questions
+ * with it - which receipts are still being counted, which wait to be put away - that no other {@code api} could:
+ * receipts are otherwise this module's alone ({@code GoodsReceipts} drives them, and stays internal).
  *
  * <p><b>Scope.</b> The rules are that screen's: a warehouse-bound caller sees only the receipts of their warehouses
  * (BR-SEC-002). Call it inside that endpoint's guard,
@@ -23,18 +23,17 @@ public interface GoodsReceiptQueries {
     int MAX_RECEIPTS = 50;
 
     /**
-     * Every status, in the order a receipt moves through them ({@code ck_goods_receipts_status}, docs 03 §5.1): counted
-     * (DRAFT), confirmed and at once on to QC (IN_QC) or to putaway (IN_PUTAWAY), put away (CLOSED), or abandoned before
-     * confirming (CANCELLED). No receipt stays CONFIRMED. A count beyond a PO line's tolerance (SCRUM-477), and every
-     * receipt of goods that came without a purchase order (SCRUM-478), confirm into PENDING_APPROVAL instead: nothing is
-     * counted in until a second person decides. Approving posts the whole count; rejecting cuts a receipt against a PO
-     * back to what its order allows and posts the rest, and cancels a receipt without a PO.
+     * Every status a receipt can be in, in the order it moves through them ({@code ck_goods_receipts_status},
+     * kltn-docs 03): counted (DRAFT), confirmed and at once on to putaway (IN_PUTAWAY), put away (CLOSED), or abandoned
+     * before confirming (CANCELLED). No receipt stays CONFIRMED, and there is no QC step (03 BR-07). PENDING_APPROVAL is
+     * not offered: a receipt against a production order takes whole cartons within what the order asks for, so nothing
+     * waits for approval (03 BR-02), and {@code ck_goods_receipts_status} no longer allows it, so no row can hold it;
+     * asking for it could only ever answer "none".
      */
-    List<String> STATUSES = List.of("DRAFT", "PENDING_APPROVAL", "CONFIRMED", "IN_QC", "IN_PUTAWAY", "CLOSED",
-            "CANCELLED");
+    List<String> STATUSES = List.of("DRAFT", "CONFIRMED", "IN_PUTAWAY", "CLOSED", "CANCELLED");
 
     /** The receipts still being worked on: everything but CLOSED and CANCELLED. */
-    List<String> OPEN_STATUSES = List.of("DRAFT", "PENDING_APPROVAL", "CONFIRMED", "IN_QC", "IN_PUTAWAY");
+    List<String> OPEN_STATUSES = List.of("DRAFT", "CONFIRMED", "IN_PUTAWAY");
 
     /**
      * The receipts that match, the most recently received first, as the screen lists them.

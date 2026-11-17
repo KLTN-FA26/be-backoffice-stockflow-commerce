@@ -17,12 +17,14 @@
 #     the same L2 segment reach loopback-published ports.
 #   - Every service has a memory limit, and they add up to ~3.4 GB. Without limits the JVM sizes its
 #     heap from the HOST's 4 GB and the kernel's OOM killer picks a victim - usually Postgres.
-#   - No ClamAV (~1.2 GB, a third of the machine). Upload scanning is switched OFF instead, which
-#     the application logs as a warning at startup. Acceptable while only the team uploads files.
+#   - ClamAV (~1.2 GB, a third of the machine) only with the `scan` profile. By default upload
+#     scanning is switched OFF instead, which the application logs as a warning at startup.
+#     Acceptable while only the team uploads files; on a machine with the memory for it, set
+#     COMPOSE_PROFILES=scan and UPLOAD_INSPECTION_ENABLED=true in .env (README, "Upload scanning").
 #   - No Elasticsearch: no Java code uses it.
 #   - Mailpit instead of a real SMTP server: every email the application sends is caught and shown
-#     at mail.<domain>, and nothing can reach a real inbox. Supplier PO and cancellation
-#     notifications use SMTP; other notification templates currently write to the application log.
+#     at mail.<domain>, and nothing can reach a real inbox. A producer's production order messages and
+#     staff notices use SMTP; other notification templates currently write to the application log.
 #   - The application runs a pre-built image from GHCR; this file never builds.
 # =============================================================================
 
@@ -112,17 +114,27 @@ services:
       # The PUBLIC hostname, not http://minio:9000. StorageConfig builds the presigner from this
       # same endpoint, so an internal name here produces download links no browser can open. The
       # cost is that the application's own uploads leave the VPS and come back through Cloudflare.
-      S3_ENDPOINT: https://s3.${DOMAIN}
-      S3_PATH_STYLE: "true"
+      #
+      # Real AWS S3 instead (README, "Object storage on AWS S3"): in .env set S3_ENDPOINT= (empty, so
+      # the SDK talks to AWS), S3_PATH_STYLE=false, AWS_REGION to the bucket's region, the IAM user's
+      # keys in S3_ACCESS_KEY / S3_SECRET_KEY, and PRODUCT_MEDIA_CDN_BASE_URL to the CloudFront host.
+      # The `-` (not `:-`) form matters: an empty S3_ENDPOINT must stay empty, not fall back to MinIO.
+      S3_ENDPOINT: ${S3_ENDPOINT-https://s3.${DOMAIN}}
+      S3_PATH_STYLE: ${S3_PATH_STYLE:-true}
       AWS_REGION: ${AWS_REGION:-ap-southeast-1}
-      PRODUCT_MEDIA_CDN_BASE_URL: https://media.${DOMAIN}
+      PRODUCT_MEDIA_CDN_BASE_URL: ${PRODUCT_MEDIA_CDN_BASE_URL:-https://media.${DOMAIN}}
+      STOCKFLOW_STORAGE_OBJECT_LOCK_ENABLED: ${S3_OBJECT_LOCK_ENABLED:-false}
+      # With the lock on, an issued e-invoice's files are locked in COMPLIANCE for ten years from the end of the year:
+      # nobody can delete them, the bucket included. GOVERNANCE only on a bucket holding test invoices.
+      S3_OBJECT_LOCK_EINVOICE_MODE: ${S3_OBJECT_LOCK_EINVOICE_MODE:-COMPLIANCE}
       # Optional demo data (db/demo) - see .env.example for why it is off. Switching it either way
       # needs a database reset: Flyway refuses to start when migrations appear (or vanish) out of
       # order, and the demo versions interleave with the real ones.
       SPRING_FLYWAY_LOCATIONS: ${FLYWAY_LOCATIONS:-classpath:db/migration}
       # Off by default for the reason in application.yml: the request carries its own unit price.
       STOCKFLOW_CHECKOUT_GUEST_ENABLED: ${GUEST_CHECKOUT_ENABLED:-false}
-      STOCKFLOW_UPLOAD_INSPECTION_ENABLED: "false"
+      STOCKFLOW_UPLOAD_INSPECTION_ENABLED: ${UPLOAD_INSPECTION_ENABLED:-false}
+      STOCKFLOW_UPLOAD_INSPECTION_HOST: ${UPLOAD_INSPECTION_HOST:-clamav}
       # Connections allowed to set the client address through X-Forwarded-For (SCRUM-483): a regex over the
       # peer address. nginx reaches the application over the compose network (private range); the
       # application publishes no port. Same value as the default in application-prod.yml / -dev.yml. A
@@ -142,15 +154,23 @@ services:
       RESEND_FROM: ${RESEND_FROM:-}
       RESEND_REPLY_TO: ${RESEND_REPLY_TO:-}
       RESEND_WEBHOOK_SECRET: ${RESEND_WEBHOOK_SECRET:-}
-      # false on a server holding copies of real customers: no customer order mail, staff and supplier mail unchanged.
-      CUSTOMER_EMAIL_ENABLED: ${CUSTOMER_EMAIL_ENABLED:-true}
+      # Seals carriers' API keys and webhook secrets in the database (openssl rand -base64 32). Blank: they cannot be
+      # saved until it is set. Keep it with the database backups: without it the sealed secrets cannot be read.
+      STOCKFLOW_SECRETS_KEY: ${STOCKFLOW_SECRETS_KEY:-}
+      # Links a producer opens without signing in (4A-3: its production order slip and print files). Every link
+      # starts with the public base URL; blank makes none and the mail says the coordinator sends the files. With a
+      # base URL the APPLICATION refuses to start without the HMAC key (openssl rand -base64 32) - not compose: a
+      # ':?' here would break every compose command, a rollback included, until the server's .env is edited.
+      # Changing the key breaks every link already mailed (staff re-send them from the production order).
+      STOCKFLOW_PUBLIC_BASE_URL: ${STOCKFLOW_PUBLIC_BASE_URL-https://api.${DOMAIN}}
+      STOCKFLOW_LINKS_KEY: ${STOCKFLOW_LINKS_KEY:-}
+      # Off until the customer mail phase of the business documents: no customer order mail, staff and producer
+      # mail and the portal invitation unchanged. Never true on a server holding copies of real customers.
+      CUSTOMER_EMAIL_ENABLED: ${CUSTOMER_EMAIL_ENABLED:-false}
+      # E-invoice mail to the buyer: on, since an issued invoice must reach the buyer (NĐ 254 Điều 12 khoản 3). With
+      # EMAIL_PROVIDER=smtp it stops at Mailpit; set false on a Resend server holding copies of real customers.
+      EINVOICE_EMAIL_ENABLED: ${EINVOICE_EMAIL_ENABLED:-true}
       TRACE_SAMPLING: ${TRACE_SAMPLING:-1.0}
-      PO_BUYER_COMPANY_NAME: ${PO_BUYER_COMPANY_NAME:?PO_BUYER_COMPANY_NAME is required}
-      PO_BUYER_COMPANY_ADDRESS: ${PO_BUYER_COMPANY_ADDRESS:?PO_BUYER_COMPANY_ADDRESS is required}
-      PO_BUYER_CONTACT_NAME: ${PO_BUYER_CONTACT_NAME:?PO_BUYER_CONTACT_NAME is required}
-      PO_BUYER_PHONE: ${PO_BUYER_PHONE:?PO_BUYER_PHONE is required}
-      PO_BUYER_EMAIL: ${PO_BUYER_EMAIL:?PO_BUYER_EMAIL is required}
-      PO_RECEIVING_ADDRESS: ${PO_RECEIVING_ADDRESS:?PO_RECEIVING_ADDRESS is required}
       # B2B onboarding (SCRUM-429): the portal page an invitation links to. Without it Sales cannot create a customer
       # (503 PORTAL_INVITATION_UNAVAILABLE) and, with self-registration gone, nobody can. Required, never guessed.
       PORTAL_ACTIVATION_URL: ${PORTAL_ACTIVATION_URL:?PORTAL_ACTIVATION_URL is required}
@@ -159,7 +179,17 @@ services:
       COMPANY_BANK_NAME: ${COMPANY_BANK_NAME:-}
       COMPANY_BANK_ACCOUNT_NUMBER: ${COMPANY_BANK_ACCOUNT_NUMBER:-}
       COMPANY_BANK_ACCOUNT_NAME: ${COMPANY_BANK_ACCOUNT_NAME:-}
-      SUPPLIER_API_ALLOWED_HOSTS: ${SUPPLIER_API_ALLOWED_HOSTS:-}
+      COMPANY_BANK_BIN: ${COMPANY_BANK_BIN:-}
+      # The seller on sales contracts and e-invoices (4B-4, WF-05 E1): the company's name, tax code and registered
+      # address, its legal representative and their title, as on its business registration. This compose runs the dev
+      # profile, so an unset or blank value falls back to an obviously made-up company and the server keeps working
+      # (the fallback is spelled out here because a blank passed through would override the profile's own default).
+      # A deployment in the prod profile sets all five: there the application refuses to start without them.
+      SELLER_NAME: ${SELLER_NAME:-DEMO STOCKFLOW CO LTD}
+      SELLER_TAX_CODE: ${SELLER_TAX_CODE:-0000000000}
+      SELLER_ADDRESS: ${SELLER_ADDRESS:-1 Demo Street, Ho Chi Minh City}
+      SELLER_REPRESENTATIVE: ${SELLER_REPRESENTATIVE:-Demo Director}
+      SELLER_REPRESENTATIVE_TITLE: ${SELLER_REPRESENTATIVE_TITLE:-Director}
       CACHE_VERSION: ${CACHE_VERSION:-v1}
       LOG_LEVEL: ${LOG_LEVEL:-DEBUG}
       AUDIT_ROUTINE_RETENTION: ${AUDIT_ROUTINE_RETENTION:-P180D}
@@ -307,7 +337,43 @@ services:
         mc admin policy create local stockflow-app /tmp/app-policy.json
         mc admin user add local "$$S3_ACCESS_KEY" "$$S3_SECRET_KEY"
         mc admin policy attach local stockflow-app --user "$$S3_ACCESS_KEY" || true
+        # As on AWS (infra/aws/configure-existing-bucket.sh): a direct upload nobody attached is
+        # gone after a day, a generated export after a week. Imported whole, so a re-run replaces
+        # the rules rather than adding them again.
+        cat > /tmp/lifecycle.json <<EOF
+        { "Rules": [
+            { "ID": "ExpireUnclaimedUploads", "Status": "Enabled", "Filter": { "Prefix": "incoming/" },
+              "Expiration": { "Days": 1 } },
+            { "ID": "ExpireGeneratedExports", "Status": "Enabled", "Filter": { "Prefix": "exports/" },
+              "Expiration": { "Days": 7 } } ] }
+        EOF
+        mc ilm import "local/$$S3_BUCKET" < /tmp/lifecycle.json
         echo "minio-init: bucket $$S3_BUCKET ready"
+
+  # Upload scanning, only with the `scan` profile (COMPOSE_PROFILES=scan in .env) and with
+  # UPLOAD_INSPECTION_ENABLED=true, which points the application at this host. ~1.2 GB: not on the
+  # 4 GB machine. INSTREAM is capped by StreamMaxLength, but a stream over MaxFileSize is silently
+  # NOT scanned and reported OK unless AlertExceedsMax is on; design renders may be 50 MiB, so the
+  # three limits are raised together and exceeding them is a detection (fail closed). Same settings
+  # as docker-compose.media.yml at the repository root.
+  clamav:
+    image: clamav/clamav:stable
+    <<: [*restart, *logging]
+    profiles: ["scan"]
+    volumes:
+      - clamav-signatures:/var/lib/clamav
+    environment:
+      CLAMD_CONF_StreamMaxLength: 52M
+      CLAMD_CONF_MaxFileSize: 52M
+      CLAMD_CONF_MaxScanSize: 104M
+      CLAMD_CONF_AlertExceedsMax: "yes"
+    mem_limit: 1536m
+    healthcheck:
+      test: ["CMD", "clamdcheck.sh"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 180s
 
   # Traces from the dev profile's 100% sampling. In-memory storage, capped, so it cannot grow past
   # its limit; traces are lost on restart, which is fine for "why was that request slow just now".
@@ -372,4 +438,5 @@ services:
 volumes:
   postgres-data:
   minio-data:
+  clamav-signatures:
   mailpit-data:

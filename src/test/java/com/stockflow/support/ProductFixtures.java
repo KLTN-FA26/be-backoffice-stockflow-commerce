@@ -1,7 +1,6 @@
 package com.stockflow.support;
 
 import com.stockflow.product.api.CreateProductCommand;
-import com.stockflow.product.api.ProductKind;
 import com.stockflow.product.api.ProductService;
 import com.stockflow.product.api.ProductSummary;
 import com.stockflow.product.api.TaxClass;
@@ -34,8 +33,7 @@ public final class ProductFixtures {
     /** A DRAFT product with the given taxonomy; its code, and its default variant's SKU, is {@code FX-<suffix>}. */
     public static ProductSummary draft(ProductService products, Taxonomy taxonomy, String suffix) {
         return products.create(new CreateProductCommand("FX-" + suffix, "Fixture " + suffix, "Fixture " + suffix,
-                taxonomy.brandId(), taxonomy.categoryId(), null, null, null, TaxClass.STANDARD,
-                ProductKind.STANDARD, null));
+                taxonomy.brandId(), taxonomy.categoryId(), null, null, null, TaxClass.STANDARD, null));
     }
 
     /** Submitted by {@code editor}, approved by {@code approver}: APPROVED, its variant ACTIVE. */

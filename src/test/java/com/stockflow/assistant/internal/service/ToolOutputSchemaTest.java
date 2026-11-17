@@ -70,7 +70,7 @@ class ToolOutputSchemaTest {
     @Test
     @DisplayName("every tool is found, so none is left out of the cases below")
     void everyToolIsChecked() {
-        assertThat(toolClasses().count()).isGreaterThanOrEqualTo(19);
+        assertThat(toolClasses().count()).isGreaterThanOrEqualTo(15);
     }
 
     @ParameterizedTest(name = "{0}")

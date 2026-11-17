@@ -21,9 +21,9 @@ class OrderWebMapperHoldPrivacyTest {
 
     private static OrderSummary heldFor(HoldReason reason) {
         var lifecycle = new OrderSummary.Lifecycle(reason, reason == HoldReason.CREDIT ? null : OrderStatus.PICKING,
-                "nghi gian lận", null, null, null, null, null, null, null, null, null, null, List.of(), List.of());
+                "nghi gian lận", null, null, null, null, null, null, null, null, List.of(), List.of());
         return new OrderSummary(UUID.randomUUID(), "SO-1", UUID.randomUUID(), OrderStatus.ON_HOLD, Money.vnd(1_000),
-                List.of(), Instant.now(), null, null, null, null, null, null, null, null, null, null, null, null, null,
+                List.of(), Instant.now(), null, null, null, null, null, null, null, null, null, null, null,
                 lifecycle);
     }
 

@@ -1,7 +1,6 @@
 package com.stockflow.payment.internal.service;
 
 import com.stockflow.payment.api.CompanyBankAccount;
-import com.stockflow.payment.internal.domain.ReceivableBook;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -12,7 +11,9 @@ import static org.mockito.Mockito.mock;
 class CompanyBankAccountTest {
 
     private static PaymentServiceImpl service(String bank, String number, String holder) {
-        return new PaymentServiceImpl(mock(ReceivableBook.class), new CompanyBankProperties(bank, number, holder));
+        return new PaymentServiceImpl(new CompanyBankProperties(bank, number, holder),
+                mock(com.stockflow.payment.internal.domain.InstallmentBook.class), mock(InstallmentService.class),
+                mock(OrderSettlementService.class));
     }
 
     @Test

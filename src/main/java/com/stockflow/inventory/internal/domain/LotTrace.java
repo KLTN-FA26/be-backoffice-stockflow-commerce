@@ -1,7 +1,6 @@
 package com.stockflow.inventory.internal.domain;
 
 import java.time.Instant;
-import java.time.LocalDate;
 import java.util.List;
 import java.util.UUID;
 
@@ -20,17 +19,30 @@ public record LotTrace(Summary lot, List<Balance> balances, List<Hold> holds, Li
     /**
      * One lot and its current balance.
      *
-     * @param origin           {@code GOODS_RECEIPT}, or {@code UNTRACED} for stock that entered without a receipt the
-     *                         system recorded (an adjustment that found goods, stock older than lot tracking)
+     * @param origin           {@code GOODS_RECEIPT}; {@code PRODUCTION_ORDER} for goods received against a production
+     *                         order, one lot per production order and SKU across its receipts (4A-5, kltn-docs 03
+     *                         BR-03), which then names the production order instead of a receipt; or
+     *                         {@code UNTRACED} for stock that entered without a receipt the system
+     *                         recorded (an adjustment that found goods, stock older than lot tracking)
      * @param receivedQuantity units its receipt ledger lines brought in
      * @param onHand           units of it on hand now, in any status
-     * @param available        units free to promise now: AVAILABLE, not past expiry, not held
-     * @param held             units on hand now held by allocations or production holds
+     * @param available        units free to promise now: AVAILABLE and not held
+     * @param held             units on hand now held by allocations or other holds
      */
-    public record Summary(UUID lotId, String sku, String lotNumber, LocalDate expiryDate, Instant receivedAt,
-                          String origin, UUID goodsReceiptId, String goodsReceiptNumber, UUID purchaseOrderId,
-                          String purchaseOrderNumber, UUID supplierId, String supplierName, UUID receivingWarehouseId,
-                          long receivedQuantity, long onHand, long available, long held) { }
+    public record Summary(UUID lotId, String sku, String lotNumber, Instant receivedAt,
+                          String origin, UUID goodsReceiptId, String goodsReceiptNumber, UUID receivingWarehouseId,
+                          long receivedQuantity, long onHand, long available, long held, UUID productionOrderId,
+                          String productionOrderCode) {
+
+        /** A lot that is not a production order's. */
+        public Summary(UUID lotId, String sku, String lotNumber, Instant receivedAt, String origin,
+                       UUID goodsReceiptId, String goodsReceiptNumber, UUID receivingWarehouseId, long receivedQuantity,
+                       long onHand, long available, long held) {
+            this(lotId, sku, lotNumber, receivedAt, origin, goodsReceiptId, goodsReceiptNumber,
+                    receivingWarehouseId,
+                    receivedQuantity, onHand, available, held, null, null);
+        }
+    }
 
     /**
      * Units of the lot at one location in one status, now. {@code onHand} and {@code held} are null, and
@@ -49,13 +61,13 @@ public record LotTrace(Summary lot, List<Balance> balances, List<Hold> holds, Li
     }
 
     /** An allocation or hold placed on the lot's stock, in any status. */
-    public record Hold(UUID reservationId, UUID orderId, String orderNumber, UUID productionOrderId,
+    public record Hold(UUID reservationId, UUID orderId, String orderNumber,
                        UUID allocatedFrom, String locationCode, int quantity, String status, Instant reservedAt,
                        Instant closedAt) { }
 
     /**
-     * A customer order the lot left for: units picked, or printed and consumed when their production order
-     * completed (G4-Q2), and units put back.
+     * A customer order the lot left for: units picked (or, while in-house production existed, consumed when their
+     * production order completed, G4-Q2), and units put back.
      *
      * @param orderNumber the order's number as it read when the units moved (a snapshot on the ledger line)
      */

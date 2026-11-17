@@ -30,166 +30,131 @@ public record OrderSummary(
         String contactPhone,
         AddressSummary shippingAddress,
         AddressSummary billingAddress,
-        PaymentTerm paymentTerm,
         UUID warehouseId,
         Instant releasedAt,
-        Payment payment,
         Cancellation cancellation,
-        Lifecycle lifecycle
+        Lifecycle lifecycle,
+        Charges charges
 ) {
+
+    /** Without the charges block (4B-3): the total is all there is, with no VAT or fee line. */
+    public OrderSummary(UUID orderId, String orderNumber, UUID customerId, OrderStatus status, Money total,
+                        List<LineSummary> lines, Instant placedAt, String createdBy, Instant lastModifiedAt,
+                        String lastModifiedBy, String contactName, String contactEmail, String contactPhone,
+                        AddressSummary shippingAddress, AddressSummary billingAddress, UUID warehouseId,
+                        Instant releasedAt, Cancellation cancellation, Lifecycle lifecycle) {
+        this(orderId, orderNumber, customerId, status, total, lines, placedAt, createdBy, lastModifiedAt,
+                lastModifiedBy, contactName, contactEmail, contactPhone, shippingAddress, billingAddress, warehouseId,
+                releasedAt, cancellation, lifecycle, null);
+    }
+
+    /**
+     * The order's three totals and its fee lines (4B-3; kltn-docs 14 BR-09): before tax (goods and fees), the VAT, and
+     * {@link #total()} with it.
+     */
+    public record Charges(Money netTotal, Money taxTotal, List<FeeSummary> fees) {
+
+        /** {@code fees} null: not loaded (a list row carries the totals, not the fee lines). */
+        public Charges {
+            fees = fees == null ? null : List.copyOf(fees);
+        }
+    }
+
+    /** A fee line: the plate fee of a SKU produced for the first time, or the shipping fee; its VAT. */
+    public record FeeSummary(FeeKind kind, String sku, Money amount, java.math.BigDecimal taxRate, Money taxAmount) {
+    }
+
+    /** The total before tax: {@link Charges#netTotal()}, or the total of an order without charges. */
+    public Money netTotal() {
+        return charges == null ? total : charges.netTotal();
+    }
 
     /** Without the lifecycle block (G3-2): callers written before it. */
     public OrderSummary(UUID orderId, String orderNumber, UUID customerId, OrderStatus status, Money total,
                         List<LineSummary> lines, Instant placedAt, String createdBy, Instant lastModifiedAt,
                         String lastModifiedBy, String contactName, String contactEmail, String contactPhone,
-                        AddressSummary shippingAddress, AddressSummary billingAddress, PaymentTerm paymentTerm,
-                        UUID warehouseId, Instant releasedAt, Payment payment, Cancellation cancellation) {
+                        AddressSummary shippingAddress, AddressSummary billingAddress, UUID warehouseId,
+                        Instant releasedAt, Cancellation cancellation) {
         this(orderId, orderNumber, customerId, status, total, lines, placedAt, createdBy, lastModifiedAt,
-                lastModifiedBy, contactName, contactEmail, contactPhone, shippingAddress, billingAddress,
-                paymentTerm, warehouseId, releasedAt, payment, cancellation, null);
+                lastModifiedBy, contactName, contactEmail, contactPhone, shippingAddress, billingAddress, warehouseId,
+                releasedAt, cancellation, (Lifecycle) null);
     }
 
     /**
-     * Hold, milestones, shipments and the money of a partly fulfilled order (G3-2; split shipments, G4-Q3). Null on
-     * rows that do not carry it.
+     * Hold, milestones, shipments and what a partly fulfilled order is worth (G3-2; split shipments, G4-Q3). Null on
+     * rows that do not carry it. Since 4B-10 no money of the order's own: what it has been paid and still owes is its
+     * contract's installments' ({@code GET /api/v1/installments/orders/{orderId}}).
      *
      * @param holdReason             set while ON_HOLD
      * @param statusBeforeHold       where resolving the hold goes back to; null for a credit hold
      * @param holdNote               what the coordinator wrote; staff only
      * @param packedAt               when a package of the order was first completed: from then on it is not cancelled
      * @param deliveryFailureReason  set while DELIVERY_FAILED
-     * @param billedAmount           what deliveries billed as receivables (a credit order)
      * @param effectiveTotal         the total less the units closed out of a partly fulfilled order
-     * @param amountDue              what the customer still owes on it, never below zero
-     * @param amountDueBeforeHandover what must be paid before the goods may leave (G3-Q4): fulfillment warns at
-     *                               packing and the handover is refused while it is above zero
-     * @param amountDueOnDelivery    what carriers are to collect on delivery (G2-3, ON_DELIVERY): the balance not
-     *                               yet paid; 0 for every other policy and term
-     * @param wholeOrderCodAmount    what the carrier collects for an order handed over whole, without shipments
-     *                               recorded on it ({@code markShipped}): fixed at that handover; 0 otherwise (G4-2a)
+     * @param amountDueBeforeHandover what the order knows must be paid before the goods may leave: zero since 4B-10 -
+     *                               the handover reads the installments under the order's lock (15 BR-08)
      * @param allowPartialShipment   Sales allowed the order to ship in parts (PACK-PARTIAL, lead's decision
-     *                               2026-10-21): packing may complete part of it and part of it may be handed over -
-     *                               for a mixed order, its stock while the prints are made (PACK-EARLY)
-     * @param printLinesReady        its printed goods are at packing: no print lines, or production completed. False
-     *                               while it is printed, or partly fulfilled before production completed (PACK-EARLY)
-     * @param deliveryMode           how it travels (LP-1, lead's decision 2026-10-22): PARCEL unless the Order
-     *                               Coordinator chose a full truckload; packing copies it onto every shipment
-     * @param deliveryModeLocked     packing started (or the order is past it, cancelled or closed): the delivery mode
-     *                               can no longer change
+     *                               2026-10-21): packing may complete part of it and part of it may be handed over
      * @param goodsLeftAt            SCRUM-392: when goods of the order first left on a load plan's vehicle, before a
      *                               shipment of it is handed over - from then it is not cancelled (review of #162)
-     * @param replacesReturnRequestId SCRUM-260: the return this free order ships replacement goods for; null for an
-     *                               ordinary order. Not a sale: the goods were paid on the original order
+     * @param firstLabeledAt         4C-6: when the order's first shipping carton was labelled - from then it is not
+     *                               cancelled and its delivery address does not change (kltn-docs 08 BR-04)
      */
     public record Lifecycle(HoldReason holdReason, OrderStatus statusBeforeHold, String holdNote, Instant packedAt,
                             Instant shippedAt, Instant deliveredAt, DeliveryFailureReason deliveryFailureReason, Instant completedAt,
-                            Instant closedAt, BigDecimal billedAmount, BigDecimal effectiveTotal, BigDecimal amountDue,
-                            BigDecimal amountDueBeforeHandover, List<LineProgress> lines, List<Shipment> shipments,
-                            BigDecimal amountDueOnDelivery, BigDecimal wholeOrderCodAmount, boolean allowPartialShipment,
-                            boolean printLinesReady, DeliveryMode deliveryMode, boolean deliveryModeLocked,
-                            Instant goodsLeftAt, UUID replacesReturnRequestId) {
+                            Instant closedAt, BigDecimal effectiveTotal, BigDecimal amountDueBeforeHandover,
+                            List<LineProgress> lines, List<Shipment> shipments,
+                            boolean allowPartialShipment, Instant goodsLeftAt, Instant firstLabeledAt) {
 
         public Lifecycle {
             lines = lines == null ? List.of() : List.copyOf(lines);
             shipments = shipments == null ? List.of() : List.copyOf(shipments);
-            deliveryMode = deliveryMode == null ? DeliveryMode.PARCEL : deliveryMode;
+        }
+
+        /** Without the first label (callers written before 4C-6): no carton labelled. */
+        public Lifecycle(HoldReason holdReason, OrderStatus statusBeforeHold, String holdNote, Instant packedAt,
+                         Instant shippedAt, Instant deliveredAt, DeliveryFailureReason deliveryFailureReason,
+                         Instant completedAt, Instant closedAt, BigDecimal effectiveTotal,
+                         BigDecimal amountDueBeforeHandover, List<LineProgress> lines,
+                         List<Shipment> shipments, boolean allowPartialShipment, Instant goodsLeftAt) {
+            this(holdReason, statusBeforeHold, holdNote, packedAt, shippedAt, deliveredAt, deliveryFailureReason,
+                    completedAt, closedAt, effectiveTotal, amountDueBeforeHandover, lines,
+                    shipments, allowPartialShipment, goodsLeftAt, null);
         }
 
         /**
-         * Without the return a free replacement order ships goods for (callers written before SCRUM-260's replacement
-         * orders): an ordinary order.
+         * The order is locked against cancellation and a change of delivery address: a carton labelled (08 BR-04), or a
+         * package the repack station completed before 4C-6.
          */
-        public Lifecycle(HoldReason holdReason, OrderStatus statusBeforeHold, String holdNote, Instant packedAt,
-                         Instant shippedAt, Instant deliveredAt, DeliveryFailureReason deliveryFailureReason,
-                         Instant completedAt, Instant closedAt, BigDecimal billedAmount, BigDecimal effectiveTotal,
-                         BigDecimal amountDue, BigDecimal amountDueBeforeHandover, List<LineProgress> lines,
-                         List<Shipment> shipments, BigDecimal amountDueOnDelivery, BigDecimal wholeOrderCodAmount,
-                         boolean allowPartialShipment, boolean printLinesReady, DeliveryMode deliveryMode,
-                         boolean deliveryModeLocked, Instant goodsLeftAt) {
-            this(holdReason, statusBeforeHold, holdNote, packedAt, shippedAt, deliveredAt, deliveryFailureReason,
-                    completedAt, closedAt, billedAmount, effectiveTotal, amountDue, amountDueBeforeHandover, lines,
-                    shipments, amountDueOnDelivery, wholeOrderCodAmount, allowPartialShipment, printLinesReady,
-                    deliveryMode, deliveryModeLocked, goodsLeftAt, null);
+        public boolean packedForGood() {
+            return firstLabeledAt != null || packedAt != null;
         }
 
         /** Without goodsLeftAt (callers written before SCRUM-392): no goods left on a vehicle yet. */
         public Lifecycle(HoldReason holdReason, OrderStatus statusBeforeHold, String holdNote, Instant packedAt,
                          Instant shippedAt, Instant deliveredAt, DeliveryFailureReason deliveryFailureReason,
-                         Instant completedAt, Instant closedAt, BigDecimal billedAmount, BigDecimal effectiveTotal,
-                         BigDecimal amountDue, BigDecimal amountDueBeforeHandover, List<LineProgress> lines,
-                         List<Shipment> shipments, BigDecimal amountDueOnDelivery, BigDecimal wholeOrderCodAmount,
-                         boolean allowPartialShipment, boolean printLinesReady, DeliveryMode deliveryMode,
-                         boolean deliveryModeLocked) {
+                         Instant completedAt, Instant closedAt, BigDecimal effectiveTotal,
+                         BigDecimal amountDueBeforeHandover, List<LineProgress> lines,
+                         List<Shipment> shipments, boolean allowPartialShipment) {
             this(holdReason, statusBeforeHold, holdNote, packedAt, shippedAt, deliveredAt, deliveryFailureReason,
-                    completedAt, closedAt, billedAmount, effectiveTotal, amountDue, amountDueBeforeHandover, lines,
-                    shipments, amountDueOnDelivery, wholeOrderCodAmount, allowPartialShipment, printLinesReady,
-                    deliveryMode, deliveryModeLocked, null);
+                    completedAt, closedAt, effectiveTotal, amountDueBeforeHandover, lines,
+                    shipments, allowPartialShipment, null);
         }
 
-        /** Without the delivery mode (callers written before LP-1): a parcel order, still open. */
+        /** Without the partial-shipment block (callers written before PACK-PARTIAL): not allowed. */
         public Lifecycle(HoldReason holdReason, OrderStatus statusBeforeHold, String holdNote, Instant packedAt,
                          Instant shippedAt, Instant deliveredAt, DeliveryFailureReason deliveryFailureReason,
-                         Instant completedAt, Instant closedAt, BigDecimal billedAmount, BigDecimal effectiveTotal,
-                         BigDecimal amountDue, BigDecimal amountDueBeforeHandover, List<LineProgress> lines,
-                         List<Shipment> shipments, BigDecimal amountDueOnDelivery, BigDecimal wholeOrderCodAmount,
-                         boolean allowPartialShipment, boolean printLinesReady) {
-            this(holdReason, statusBeforeHold, holdNote, packedAt, shippedAt, deliveredAt, deliveryFailureReason,
-                    completedAt, closedAt, billedAmount, effectiveTotal, amountDue, amountDueBeforeHandover, lines,
-                    shipments, amountDueOnDelivery, wholeOrderCodAmount, allowPartialShipment, printLinesReady,
-                    DeliveryMode.PARCEL, false, null);
-        }
-
-        /** Without the partial-shipment block (callers written before PACK-PARTIAL): not allowed, prints ready. */
-        public Lifecycle(HoldReason holdReason, OrderStatus statusBeforeHold, String holdNote, Instant packedAt,
-                         Instant shippedAt, Instant deliveredAt, DeliveryFailureReason deliveryFailureReason,
-                         Instant completedAt, Instant closedAt, BigDecimal billedAmount, BigDecimal effectiveTotal,
-                         BigDecimal amountDue, BigDecimal amountDueBeforeHandover, List<LineProgress> lines,
-                         List<Shipment> shipments, BigDecimal amountDueOnDelivery, BigDecimal wholeOrderCodAmount) {
-            this(holdReason, statusBeforeHold, holdNote, packedAt, shippedAt, deliveredAt, deliveryFailureReason,
-                    completedAt, closedAt, billedAmount, effectiveTotal, amountDue, amountDueBeforeHandover, lines,
-                    shipments, amountDueOnDelivery, wholeOrderCodAmount, false, true);
-        }
-
-        /** Without the whole-order COD (callers written before G4-2a). */
-        public Lifecycle(HoldReason holdReason, OrderStatus statusBeforeHold, String holdNote, Instant packedAt,
-                         Instant shippedAt, Instant deliveredAt, DeliveryFailureReason deliveryFailureReason,
-                         Instant completedAt, Instant closedAt, BigDecimal billedAmount, BigDecimal effectiveTotal,
-                         BigDecimal amountDue, BigDecimal amountDueBeforeHandover, List<LineProgress> lines,
-                         List<Shipment> shipments, BigDecimal amountDueOnDelivery) {
-            this(holdReason, statusBeforeHold, holdNote, packedAt, shippedAt, deliveredAt, deliveryFailureReason,
-                    completedAt, closedAt, billedAmount, effectiveTotal, amountDue, amountDueBeforeHandover, lines,
-                    shipments, amountDueOnDelivery, null);
-        }
-
-        public Lifecycle(HoldReason holdReason, OrderStatus statusBeforeHold, String holdNote, Instant packedAt,
-                         Instant shippedAt, Instant deliveredAt, DeliveryFailureReason deliveryFailureReason,
-                         Instant completedAt, Instant closedAt, BigDecimal billedAmount, BigDecimal effectiveTotal,
-                         BigDecimal amountDue, BigDecimal amountDueBeforeHandover, List<LineProgress> lines,
+                         Instant completedAt, Instant closedAt, BigDecimal effectiveTotal,
+                         BigDecimal amountDueBeforeHandover, List<LineProgress> lines,
                          List<Shipment> shipments) {
             this(holdReason, statusBeforeHold, holdNote, packedAt, shippedAt, deliveredAt, deliveryFailureReason,
-                    completedAt, closedAt, billedAmount, effectiveTotal, amountDue, amountDueBeforeHandover, lines,
-                    shipments, null);
+                    completedAt, closedAt, effectiveTotal, amountDueBeforeHandover, lines,
+                    shipments, false);
         }
     }
 
-    /**
-     * How much of one line went out: in shipments not returned, delivered, and closed; and for a print line production
-     * could not finish, what the customer agreed to go without (null when nothing was agreed).
-     */
-    public record LineProgress(UUID lineId, int shippedQuantity, int deliveredQuantity, int cancelledQuantity,
-                               ProductionShortfall productionShortfall) {
-
-        public LineProgress(UUID lineId, int shippedQuantity, int deliveredQuantity, int cancelledQuantity) {
-            this(lineId, shippedQuantity, deliveredQuantity, cancelledQuantity, null);
-        }
-    }
-
-    /**
-     * Review 2026-10-25 of S6: the customer goes without at most {@code agreedQuantity} units of a print line, as Sales
-     * recorded it; {@code closedQuantity} of them production closed, completing the line short.
-     */
-    public record ProductionShortfall(int agreedQuantity, String note, UUID agreedBy, Instant agreedAt,
-                                      int closedQuantity) {
+    /** How much of one line went out: in shipments not returned, delivered, and closed. */
+    public record LineProgress(UUID lineId, int shippedQuantity, int deliveredQuantity, int cancelledQuantity) {
     }
 
     /** Units of one order line in one shipment. */
@@ -197,72 +162,42 @@ public record OrderSummary(
     }
 
     /**
-     * One shipment of the order, as the order knows it (from its handover).
+     * One shipment of the order, as the order knows it (from its handover). Nothing is collected on delivery
+     * (kltn-docs 09 BR-08).
      *
-     * @param codAmount what the carrier collects on delivering it (G2-3, ON_DELIVERY): fixed at the handover, printed on
-     *                  the label and the manifest (15 BR-08, 09 BR-04); 0 otherwise
-     * @param carriage  number, parcels, carrier and mode as fulfillment handed it over (G4-2a); null before that
+     * @param carriage number, parcels and carrier as fulfillment handed it over (G4-2a); null before that
      */
-    public record Shipment(UUID shipmentId, OrderShipmentStatus status, BigDecimal amount, BigDecimal billedAmount,
-                           Instant handedOverAt, Instant outcomeAt, DeliveryFailureReason failureReason,
-                           List<ShipmentLine> lines, BigDecimal codAmount, ShipmentHandover.Carriage carriage) {
+    public record Shipment(UUID shipmentId, OrderShipmentStatus status, BigDecimal amount, Instant handedOverAt,
+                           Instant outcomeAt, DeliveryFailureReason failureReason, List<ShipmentLine> lines,
+                           ShipmentHandover.Carriage carriage) {
 
         public Shipment {
             lines = lines == null ? List.of() : List.copyOf(lines);
-            codAmount = codAmount == null ? BigDecimal.ZERO : codAmount;
         }
 
         /** Without the carriage (G4-2a): callers written before it. */
-        public Shipment(UUID shipmentId, OrderShipmentStatus status, BigDecimal amount, BigDecimal billedAmount,
-                        Instant handedOverAt, Instant outcomeAt, DeliveryFailureReason failureReason,
-                        List<ShipmentLine> lines, BigDecimal codAmount) {
-            this(shipmentId, status, amount, billedAmount, handedOverAt, outcomeAt, failureReason, lines, codAmount,
-                    null);
-        }
-
-        public Shipment(UUID shipmentId, OrderShipmentStatus status, BigDecimal amount, BigDecimal billedAmount,
-                        Instant handedOverAt, Instant outcomeAt, DeliveryFailureReason failureReason,
-                        List<ShipmentLine> lines) {
-            this(shipmentId, status, amount, billedAmount, handedOverAt, outcomeAt, failureReason, lines, null);
+        public Shipment(UUID shipmentId, OrderShipmentStatus status, BigDecimal amount, Instant handedOverAt,
+                        Instant outcomeAt, DeliveryFailureReason failureReason, List<ShipmentLine> lines) {
+            this(shipmentId, status, amount, handedOverAt, outcomeAt, failureReason, lines, null);
         }
     }
 
-    /** With the release block but without money and cancellation: list rows of other modules. */
+    /** With the release block but without the cancellation: list rows of other modules. */
     public OrderSummary(UUID orderId, String orderNumber, UUID customerId, OrderStatus status, Money total,
                         List<LineSummary> lines, Instant placedAt, String createdBy, Instant lastModifiedAt,
                         String lastModifiedBy, String contactName, String contactEmail, String contactPhone,
-                        AddressSummary shippingAddress, AddressSummary billingAddress, PaymentTerm paymentTerm,
-                        UUID warehouseId, Instant releasedAt) {
+                        AddressSummary shippingAddress, AddressSummary billingAddress, UUID warehouseId,
+                        Instant releasedAt) {
         this(orderId, orderNumber, customerId, status, total, lines, placedAt, createdBy, lastModifiedAt,
-                lastModifiedBy, contactName, contactEmail, contactPhone, shippingAddress, billingAddress,
-                paymentTerm, warehouseId, releasedAt, null, null);
-    }
-
-    /**
-     * The money side of the order (SCRUM-460, kltn-docs 15 §5.2).
-     *
-     * @param depositRequired null unless the order is on DEPOSIT terms
-     * @param balancePolicy   null unless the order is on DEPOSIT terms: how its balance is collected (G2-3)
-     */
-    public record Payment(BigDecimal paidAmount, BigDecimal depositRequired, Instant depositReceivedAt,
-                          Instant paidInFullAt, PaymentStatus status, Integer creditTermDays,
-                          BalancePolicy balancePolicy) {
-
-        public Payment(BigDecimal paidAmount, BigDecimal depositRequired, Instant depositReceivedAt,
-                       Instant paidInFullAt, PaymentStatus status, Integer creditTermDays) {
-            this(paidAmount, depositRequired, depositReceivedAt, paidInFullAt, status, creditTermDays, null);
-        }
-
-        public Payment(BigDecimal paidAmount, BigDecimal depositRequired, Instant depositReceivedAt,
-                       Instant paidInFullAt, PaymentStatus status) {
-            this(paidAmount, depositRequired, depositReceivedAt, paidInFullAt, status, null, null);
-        }
+                lastModifiedBy, contactName, contactEmail, contactPhone, shippingAddress, billingAddress, warehouseId,
+                releasedAt, (Cancellation) null);
     }
 
     /** Why and on what terms a cancelled order was cancelled; null while it is not. */
     /**
-     * @param retainedAmount what was kept of the money received
-     * @param feeAmount      the amount agreed with the customer (Q2); above {@code retainedAmount} the rest is owed
+     * @param retainedAmount what the order kept of money it received; 0 since 4B-10 - the fee is settled on the
+     *                       installments (4B-9, {@code GET /api/v1/refunds/orders/{orderId}})
+     * @param feeAmount      the amount agreed with the customer (Q2)
      */
     public record Cancellation(CancellationReasonCode reasonCode, String reason, BigDecimal retainedAmount,
                                String feeReason, String feeDetail, BigDecimal feeAmount) {
@@ -285,7 +220,7 @@ public record OrderSummary(
                         AddressSummary shippingAddress, AddressSummary billingAddress) {
         this(orderId, orderNumber, customerId, status, total, lines, placedAt, createdBy, lastModifiedAt,
                 lastModifiedBy, contactName, contactEmail, contactPhone, shippingAddress, billingAddress,
-                null, null, null);
+                null, null);
     }
 
     public record AddressSummary(String recipientName, String phone, String line1, String line2,
@@ -298,6 +233,10 @@ public record OrderSummary(
      *                       from — kept so cancellation knows what to release
      * @param requestedDeliveryDate the date the customer asked to receive a print line (SCRUM-502); null when
      *                       none was asked
+     * @param cartons        cartons ordered (4B-2, kltn-docs 14 BR-08): {@code quantity} is cartons x
+     *                       {@code unitsPerCarton} pieces; both null for a line not ordered in cartons
+     * @param taxRate        the VAT rate fixed on the line (4B-3, 14 BR-21); null with {@code taxAmount} for a line
+     *                       without VAT
      */
     public record LineSummary(
             UUID lineId,
@@ -308,18 +247,39 @@ public record OrderSummary(
             List<UUID> reservationIds,
             UUID designSnapshotId,
             String designChecksum,
-            java.time.LocalDate requestedDeliveryDate
+            java.time.LocalDate requestedDeliveryDate,
+            Integer cartons,
+            Integer unitsPerCarton,
+            java.math.BigDecimal taxRate,
+            Money taxAmount
     ) {
+
+        /** Without VAT. */
+        public LineSummary(UUID lineId, String sku, int quantity, Money unitPrice, Money lineTotal,
+                           List<UUID> reservationIds, UUID designSnapshotId, String designChecksum,
+                           java.time.LocalDate requestedDeliveryDate, Integer cartons, Integer unitsPerCarton) {
+            this(lineId, sku, quantity, unitPrice, lineTotal, reservationIds, designSnapshotId, designChecksum,
+                    requestedDeliveryDate, cartons, unitsPerCarton, null, null);
+        }
+
+        /** Not ordered in cartons. */
+        public LineSummary(UUID lineId, String sku, int quantity, Money unitPrice, Money lineTotal,
+                           List<UUID> reservationIds, UUID designSnapshotId, String designChecksum,
+                           java.time.LocalDate requestedDeliveryDate) {
+            this(lineId, sku, quantity, unitPrice, lineTotal, reservationIds, designSnapshotId, designChecksum,
+                    requestedDeliveryDate, null, null);
+        }
 
         public LineSummary(UUID lineId, String sku, int quantity, Money unitPrice,
                            Money lineTotal, List<UUID> reservationIds) {
-            this(lineId, sku, quantity, unitPrice, lineTotal, reservationIds, null, null, null);
+            this(lineId, sku, quantity, unitPrice, lineTotal, reservationIds, null, null, null, null, null);
         }
 
         /** Without a requested delivery date (SCRUM-502). */
         public LineSummary(UUID lineId, String sku, int quantity, Money unitPrice, Money lineTotal,
                            List<UUID> reservationIds, UUID designSnapshotId, String designChecksum) {
-            this(lineId, sku, quantity, unitPrice, lineTotal, reservationIds, designSnapshotId, designChecksum, null);
+            this(lineId, sku, quantity, unitPrice, lineTotal, reservationIds, designSnapshotId, designChecksum, null,
+                    null, null);
         }
 
         public LineSummary {

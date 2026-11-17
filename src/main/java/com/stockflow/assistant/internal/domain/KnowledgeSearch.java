@@ -28,7 +28,7 @@ import java.util.regex.Pattern;
  * first. On a tie the keyword hit comes first: it is the one a person can check by reading the rule.</p>
  *
  * <p><b>A rule the query names comes first</b>, whatever else matched, as it did when the search was keyword-only: a
- * question about "BR-RMA-002" wants that rule, and fusion alone could put a passage both rankings liked above it.</p>
+ * question about "15 BR-08" wants that rule, and fusion alone could put a passage both rankings liked above it.</p>
  *
  * <p><b>Near means standing out from the corpus, not merely ranking first.</b> Every passage has a nearest neighbour,
  * and an embedding model's similarities sit high even between unrelated texts, so the ten most similar passages to a
@@ -37,8 +37,8 @@ import java.util.regex.Pattern;
  * {@value #STANDOUT} robust standard deviations above the median similarity of this question to the whole corpus. It
  * needs no absolute threshold, which would depend on the model: the passages that answer a question stand clear of the
  * rest, and for a question nothing answers, nothing does, so the search returns what the keywords alone found — often
- * nothing in the English rules, though a Vietnamese question finds Vietnamese passages by its words — exactly as
- * before. The median and the median absolute deviation, not the mean and the standard deviation,
+ * nothing, though two common Vietnamese syllables can still match a passage — exactly as before. The median and the
+ * median absolute deviation, not the mean and the standard deviation,
  * so that a large group of related passages (the twelve passages of the order state machine) does not raise the bar
  * for its own members. Three deviations: among 170 passages that are all unrelated, about one question in five sees a
  * single one clear it by chance, while a rule that answers the question stands further out. It is a first value, to
@@ -64,9 +64,18 @@ public final class KnowledgeSearch {
      */
     private static final Pattern WORD = Pattern.compile("[\\p{L}\\p{N}]{2,}");
 
-    /** A rule id or a flow code named in a query ({@code BR-RMA-002}, {@code F-PO}, {@code X-SHORT}; any case). */
-    private static final Pattern RULE = Pattern.compile("BR-[A-Z]+-\\d+[a-z]?|(?<![\\p{L}\\p{N}-])[FX]-[A-Z]{2,8}"
-            + "(?![\\p{L}\\p{N}-])", Pattern.CASE_INSENSITIVE);
+    /** A token as the database's {@code simple} parser counts positions: letters and digits, one or more. */
+    private static final Pattern TOKEN = Pattern.compile("[\\p{L}\\p{N}]+");
+
+    /**
+     * A rule or a section named in a query, by its chapter as every anchor is: {@code 15 BR-08} (rule 8 of chapter 15),
+     * {@code 17 §5.1}, {@code glossary §8}; any case, {@code 15 BR-8} for {@code 15 BR-08}. A rule number without its
+     * chapter names a rule of every chapter, so it is not taken as a name: the words of the query search for it.
+     */
+    private static final Pattern RULE = Pattern.compile(
+            "(?<![\\p{L}\\p{N}])(\\d{1,2})\\s*BR-(\\d{1,3})([a-z]?)(?![\\p{L}\\p{N}])"
+            + "|(?<![\\p{L}\\p{N}])(\\d{1,2}|glossary)\\s*§\\s*(\\d+[a-z]?(?:\\.\\d+)*)(?!\\p{N}|\\.\\p{N})",
+            Pattern.CASE_INSENSITIVE);
 
     /**
      * Vietnamese words that carry no topic, as written with their marks. The keyword search is OR over a query's
@@ -102,13 +111,39 @@ public final class KnowledgeSearch {
         Matcher word = WORD.matcher(Normalizer.normalize(query, Normalizer.Form.NFC));
         while (word.find() && words.size() < MAX_WORDS) {
             String lower = word.group().toLowerCase(Locale.ROOT);
-            String unmarked = unmarked(lower);
-            boolean empty = unmarked.equals(lower) ? EMPTY_UNMARKED.contains(lower) : EMPTY_MARKED.contains(lower);
-            if (!empty) {
+            if (!empty(lower)) {
                 words.add(lower);
             }
         }
         return words;
+    }
+
+    /**
+     * The query's words two by two as written next to each other ({@code đổi trả}, {@code lỗi sản}, {@code sản xuất}),
+     * lower-case, each once, at most {@value #MAX_WORDS}: a passage holding one as a phrase ranks higher. A Vietnamese
+     * word is often two syllables, and each syllable alone is common: "sản" and "xuất" of "lỗi sản xuất" are in every
+     * passage about a production order and every one about shipping goods out, "sản xuất" in far fewer. A pair never
+     * spans a word that names nothing, nor a token of one letter or digit ("sau 7 ngày" makes no "sau ngày"), since the
+     * passage holds that token between them.
+     */
+    public static List<String> pairs(String query) {
+        Set<String> pairs = new LinkedHashSet<>();
+        String previous = null;
+        Matcher token = TOKEN.matcher(Normalizer.normalize(query, Normalizer.Form.NFC));
+        while (token.find() && pairs.size() < MAX_WORDS) {
+            String lower = token.group().toLowerCase(Locale.ROOT);
+            String current = lower.length() < 2 || empty(lower) ? null : lower;
+            if (previous != null && current != null) {
+                pairs.add(previous + " " + current);
+            }
+            previous = current;
+        }
+        return List.copyOf(pairs);
+    }
+
+    /** A Vietnamese word that names nothing, as written ({@link #EMPTY_MARKED}, {@link #EMPTY_UNMARKED}). */
+    private static boolean empty(String lower) {
+        return unmarked(lower).equals(lower) ? EMPTY_UNMARKED.contains(lower) : EMPTY_MARKED.contains(lower);
     }
 
     /** A word without its Vietnamese marks, đ read as d: how the database compares it ({@code immutable_unaccent}). */
@@ -116,14 +151,35 @@ public final class KnowledgeSearch {
         return Normalizer.normalize(word.replace('đ', 'd'), Normalizer.Form.NFD).replaceAll("\\p{M}", "");
     }
 
-    /** The rule ids and flow codes {@code query} names, upper-case: those passages come first in either search. */
+    /**
+     * The rules and sections {@code query} names, as their anchors are written and upper-case ({@code 15 BR-08},
+     * {@code 17 §5.1}, {@code GLOSSARY §8}): those passages come first in either search ({@link #isNamed}).
+     */
     public static List<String> namedRules(String query) {
         List<String> rules = new ArrayList<>();
-        Matcher rule = RULE.matcher(query);
+        Matcher rule = RULE.matcher(Normalizer.normalize(query, Normalizer.Form.NFC));
         while (rule.find()) {
-            rules.add(rule.group().toUpperCase(Locale.ROOT));
+            String named = rule.group(1) != null
+                    ? twoDigits(rule.group(1)) + " BR-" + twoDigits(rule.group(2)) + rule.group(3)
+                    : (rule.group(4).chars().allMatch(Character::isDigit) ? twoDigits(rule.group(4)) : rule.group(4))
+                            + " §" + rule.group(5);
+            rules.add(named.toUpperCase(Locale.ROOT));
         }
         return rules;
+    }
+
+    /**
+     * Whether {@code anchor} is a passage of a rule or section in {@code named}: the anchor itself, or a later part of
+     * it when it is cut ({@code 17 §5.1 (2)}).
+     */
+    public static boolean isNamed(String anchor, Collection<String> named) {
+        String upper = anchor.toUpperCase(Locale.ROOT);
+        return named.stream().anyMatch(name -> upper.equals(name) || upper.startsWith(name + " ("));
+    }
+
+    /** A rule or chapter number as the documents write it: {@code 8} is {@code 08}. */
+    private static String twoDigits(String number) {
+        return number.length() == 1 ? "0" + number : number;
     }
 
     /**
@@ -269,7 +325,7 @@ public final class KnowledgeSearch {
     }
 
     private static boolean named(KnowledgeChunk chunk, Collection<String> namedRules) {
-        return namedRules.contains(chunk.anchor().toUpperCase(Locale.ROOT));
+        return isNamed(chunk.anchor(), namedRules);
     }
 
     private static void rank(List<KnowledgeChunk> ranking, Map<Key, Fused> fused, boolean byWords) {

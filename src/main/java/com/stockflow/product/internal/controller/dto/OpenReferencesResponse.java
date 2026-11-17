@@ -5,7 +5,7 @@ import io.swagger.v3.oas.annotations.media.Schema;
 import java.util.List;
 
 /** Response of {@code GET /api/v1/products/{productId}/open-references}. */
-@Schema(name = "OpenReferences", description = "Open purchase order lines and order lines that still refer to the product's SKUs")
+@Schema(name = "OpenReferences", description = "Open production order lines and order lines that still refer to the product's SKUs")
 public record OpenReferencesResponse(
 
         @Schema(description = "At most 20, taken from each kind in turn")

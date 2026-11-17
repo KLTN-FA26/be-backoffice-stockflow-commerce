@@ -14,13 +14,11 @@ import java.util.stream.Collectors;
  * The assistant's watch (design §9.1): what it reads for whom, what it tells them, and what it answers on its own.
  *
  * @param enabled          whether the job runs at all ({@code ASSISTANT_WATCH_ENABLED}); off unless asked for
- * @param post             lists whose new items are posted to the user's inbox. By default the two nothing else tells
- *                         anyone about: orders put on hold and purchase orders gone late. Low stock is already posted
- *                         by the inventory alerts, and posting it again would ring twice
+ * @param post             lists whose new items are posted to the user's inbox: heldOrders, the orders put on hold,
+ *                         which nothing else tells anyone about. Since the rescope (ADR-0010) it is the one list
  * @param analyse          lists whose new items the watch also answers a fixed question about, in a proactive
- *                         conversation of the user's, with only the tools that question needs: lowStock (a reorder
- *                         proposal, which becomes the user's suggestion to confirm), heldOrders, overduePurchaseOrders.
- *                         Empty by default: each answer is a model call
+ *                         conversation of the user's, with only the tools that question needs: heldOrders. Empty by
+ *                         default: each answer is a model call
  * @param roles            per list, the roles whose holders are watched for it (a list's job, not just the right to
  *                         read it: every sales and accounting user may read held orders, the coordinators handle
  *                         them). A list not named here goes to whoever may read it
@@ -45,9 +43,8 @@ public record AssistantWatchProperties(
         @DefaultValue("P4D") Duration rebaselineAfter,
         List<String> models) {
 
-    /** The lists the watch reads: the three whose news someone acts on, each read whole (AssistantWatch). */
-    static final Set<String> WATCHABLE = Set.of(AssistantWatch.LOW_STOCK, AssistantWatch.HELD_ORDERS,
-            AssistantWatch.OVERDUE_PURCHASE_ORDERS);
+    /** The lists the watch reads: the one whose news someone acts on, read whole (AssistantWatch). */
+    static final Set<String> WATCHABLE = Set.of(AssistantWatch.HELD_ORDERS);
 
     public AssistantWatchProperties {
         post = clean(post);

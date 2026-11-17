@@ -13,24 +13,20 @@ import java.util.List;
 import java.util.stream.Stream;
 
 /**
- * ROLE-7: receiving's and QC's queue - "Phiếu nhập nào đang chờ QC?", "Còn phiếu nào chờ cất hàng?", "GR-… tới đâu
- * rồi?" - as the goods receipts screen lists it ({@code GET /api/v1/goods-receipts}), through
- * {@link GoodsReceiptQueries}, which reads the list that screen reads. Its warehouse rule is therefore the screen's: a
- * warehouse-bound user sees only their warehouses' receipts.
+ * ROLE-7: receiving's queue - "Còn phiếu nào chờ cất hàng?", "GR-… tới đâu rồi?" - as the goods receipts screen lists
+ * it ({@code GET /api/v1/goods-receipts}), through {@link GoodsReceiptQueries}, which reads the list that screen reads.
+ * Its warehouse rule is therefore the screen's: a warehouse-bound user sees only their warehouses' receipts.
  *
- * <p><b>Where a receipt stands is its status</b>: counted but not confirmed (DRAFT), waiting for or in QC until every
- * line needing it is decided (IN_QC), waiting to be put away (IN_PUTAWAY), finished (CLOSED); and waiting for a second
- * person's decision before any stock is counted in (PENDING_APPROVAL), for one of two reasons with two different
- * rejections: a count beyond a PO line's tolerance (SCRUM-477: rejecting cuts the excess and posts the rest) or goods
- * that came without a purchase order (SCRUM-478: rejecting cancels the receipt). OPEN asks for the four that are work
- * still to do. {@code withoutPurchaseOrder} tells the two apart, so that the model never calls a receipt against a PO
- * "without a PO", nor tells a manager that rejecting cancels it.
- * A row carries no lines, so it does not say which line still waits for QC or how many units are left to put away; the
- * description says so rather than let a receipt in QC read as "all of it in QC".</p>
+ * <p><b>A receipt is against a production order</b> since the rescope (ADR-0010, kltn-docs 03): printed goods come back
+ * from the producer in whole cartons, within what the order asks for, so nothing waits for approval and there is no QC
+ * step (03 BR-02, BR-07). Where it stands is its status: counted but not confirmed (DRAFT), waiting to be put away
+ * (IN_PUTAWAY), finished (CLOSED), abandoned (CANCELLED). PENDING_APPROVAL is not offered: no row can hold it any more
+ * ({@code ck_goods_receipts_status}), so {@link GoodsReceiptQueries#STATUSES} leaves it out. A row carries no lines, so
+ * it does not say how many cartons are left to put away.</p>
  *
- * <p><b>What a row leaves out</b>: who received and who confirmed it (staff names) and the supplier's delivery-note
- * reference, typed by hand. The supplier is named as on the screen, a long company name cut so that fifty rows fit in
- * one result; the receipt list holds no contact of it.</p>
+ * <p><b>What a row leaves out</b>: who received and who confirmed it (staff names) and the delivery-note reference,
+ * typed by hand. The producer is named as on the screen, a long company name cut so that fifty rows fit in one result;
+ * the receipt list holds no contact of it.</p>
  */
 @Component
 class FindGoodsReceiptsTool implements AssistantTool {
@@ -45,30 +41,22 @@ class FindGoodsReceiptsTool implements AssistantTool {
             GoodsReceiptQueries.STATUSES.stream().filter(status -> !"CONFIRMED".equals(status))).toList();
 
     private static final ToolSpec SPEC = new ToolSpec("findGoodsReceipts",
-            "Goods receipts (deliveries from suppliers counted in, against a purchase order or, for goods that came "
-                    + "without one, against the supplier only), most recently received first: receipt number, PO "
-                    + "number, withoutPurchaseOrder (true: the goods came without a purchase order, so there is no PO "
-                    + "number), supplier, warehouse, status, when it was received, confirmed and closed. status: DRAFT "
-                    + "counted but not confirmed yet, PENDING_APPROVAL confirmed and waiting for a second person (never "
-                    + "whoever received it) to decide, with no stock counted in until then: either a line was counted "
-                    + "beyond what its purchase order allows (approving posts the whole count, rejecting cuts the "
-                    + "excess and posts the rest) or, when withoutPurchaseOrder is true, the goods came without a "
-                    + "purchase order (approving posts them, rejecting cancels the receipt); IN_QC waiting for or in "
-                    + "quality "
-                    + "control (until every line that needs QC is decided), IN_PUTAWAY waiting to be put away on the "
-                    + "shelves, CLOSED finished (put away, or nothing was left to put away), CANCELLED abandoned before "
-                    + "confirming or rejected. OPEN asks for DRAFT, PENDING_APPROVAL, IN_QC and IN_PUTAWAY "
-                    + "together, the work still to do. A row has no lines: it does not say which line still waits for "
-                    + "QC or how many units are left to put away. Only receipts of the warehouses the user may see. "
-                    + "Filter by status and by text in the receipt number; there is no filter by PO, supplier or "
-                    + "warehouse, so when a question is about one of those, use only a list that is not truncated, and "
-                    + "otherwise say what the count covers. total counts every match; when it is above the receipts "
-                    + "returned (truncated), say how many were left out. findPurchaseOrders says what is still to "
-                    + "arrive on a PO.",
+            "Goods receipts (printed goods back from a producer, counted in whole cartons against a production "
+                    + "order), most recently received first: receipt number, receiptType (PRODUCTION; PURCHASE only "
+                    + "for a legacy receipt from before purchasing was dropped), the production order code, the "
+                    + "producer, warehouse, status, when it was received, confirmed and closed. status: DRAFT counted "
+                    + "but not confirmed yet; IN_PUTAWAY confirmed, its cartons waiting to be put away on the shelves; "
+                    + "CLOSED finished (every carton put away); CANCELLED abandoned before confirming. There is no QC "
+                    + "step and nothing waits for approval. OPEN asks for DRAFT and IN_PUTAWAY together, the work "
+                    + "still to do. "
+                    + "A row has no lines: it does not say how many cartons are left to put away. Only receipts of the "
+                    + "warehouses the user may see. Filter by status and by text in the receipt number; there is no "
+                    + "filter by production order, producer or warehouse, so when a question is about one of those, "
+                    + "use only a list that is not truncated, and otherwise say what the count covers. total counts "
+                    + "every match; when it is above the receipts returned (truncated), say how many were left out.",
             ToolSchema.object()
-                    .choice("status", "Only receipts in this status; OPEN for DRAFT, PENDING_APPROVAL, IN_QC and "
-                            + "IN_PUTAWAY; ANY for "
-                            + "every status", STATUSES)
+                    .choice("status", "Only receipts in this status; OPEN for DRAFT and IN_PUTAWAY; ANY for every "
+                            + "status", STATUSES)
                     .string("receiptNumber", "Text in the receipt number, in the form GR-yyyyMMdd-nnnn, or part "
                             + "of it; an empty string for every receipt")
                     .integer("limit", "How many receipts to return, 1 to " + MAX_ROWS)
@@ -119,19 +107,19 @@ class FindGoodsReceiptsTool implements AssistantTool {
     }
 
     /**
-     * @param supplierName as the list shows it, cut to {@value #MAX_SUPPLIER_NAME} characters and an ellipsis: enough
-     *                     to tell suppliers apart, and fifty rows of long company names still fit in one result
+     * @param producerName as the list shows it, cut to {@value #MAX_PRODUCER_NAME} characters and an ellipsis: enough
+     *                     to tell producers apart, and fifty rows of long company names still fit in one result
      */
-    record Row(String receiptNumber, String purchaseOrderNumber, boolean withoutPurchaseOrder, String supplierName,
+    record Row(String receiptNumber, String receiptType, String productionOrderCode, String producerName,
                String warehouseCode, String status, Instant receivedAt, Instant confirmedAt, Instant closedAt) {
 
-        static final int MAX_SUPPLIER_NAME = 60;
+        static final int MAX_PRODUCER_NAME = 60;
 
         static Row of(GoodsReceiptSummary receipt) {
-            String supplier = receipt.supplierName();
-            return new Row(receipt.number(), receipt.purchaseOrderNumber(), receipt.withoutPurchaseOrder(),
-                    supplier != null && supplier.length() > MAX_SUPPLIER_NAME
-                            ? supplier.substring(0, MAX_SUPPLIER_NAME) + "…" : supplier,
+            String producer = receipt.producerName();
+            return new Row(receipt.number(), receipt.receiptType(), receipt.productionOrderCode(),
+                    producer != null && producer.length() > MAX_PRODUCER_NAME
+                            ? producer.substring(0, MAX_PRODUCER_NAME) + "…" : producer,
                     receipt.warehouseCode(), receipt.status(), receipt.receivedAt(), receipt.confirmedAt(),
                     receipt.closedAt());
         }

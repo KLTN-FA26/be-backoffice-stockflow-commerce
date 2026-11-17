@@ -8,7 +8,6 @@ import com.stockflow.contracts.ReturnApproved;
 import com.stockflow.contracts.ReturnClosed;
 import com.stockflow.contracts.ReturnReceived;
 import com.stockflow.contracts.ReturnRejected;
-import com.stockflow.contracts.ReturnReplacementWithdrawn;
 import com.stockflow.contracts.ReturnRequested;
 import com.stockflow.contracts.ReturnResolved;
 import com.stockflow.order.api.OrderStatus;
@@ -19,6 +18,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -27,30 +27,30 @@ import java.util.Set;
 import java.util.UUID;
 
 /**
- * <b>A return request (RMA, "đổi trả"; SCRUM-243 / SCRUM-260, 03-state-machines §12).</b> The aggregate root of the
- * after-sales claim on a delivered order: what the customer says is wrong, what Sales approved, what the warehouse
- * counted in, what QC accepted, and how the accepted units were made good. The order is its own aggregate; the
- * application service moves it alongside (RETURN_REQUESTED while a return is open, then DELIVERED again or
- * (PARTIALLY_)REFUNDED, 03 §9), under the order's row lock.
+ * <b>A return request (RMA, "đổi trả"; kltn-docs 17 §4.10, BR-18; team plan 4D-3).</b> The aggregate root of the
+ * after-sales claim on a delivered order: what the customer says is wrong, what Sales approved, what came back on the
+ * return receipt, and what was refunded. The order is its own aggregate; the application service moves it alongside
+ * (RETURN_REQUESTED while a return is open, RETURNED once goods are back, REFUNDED / PARTIALLY_REFUNDED once refunded
+ * in full), under the order's row lock.
  *
- * <p>Invariants it protects - each stated again as a {@code CHECK} in {@code V20261101020000}:</p>
+ * <p>The goods always come back (17 BR-18): the warehouse receives them on a return receipt into quarantine
+ * ({@code procurement}, 03 §4.2), and that receipt, confirmed, is what moves the return to RECEIVED
+ * ({@link #goodsReceived}). What happens to the goods next is a warehouse manager's decision on each carton
+ * (20 §4.8), not the return's. The return decides the money: Sales propose a refund, a second person approves it,
+ * payment settles it against the order's installments (15 §4.5). There is no QC step, no replacement order and no
+ * credit kept for the customer any more (team plan 4D-3; 15 BR-05).</p>
+ *
+ * <p>Invariants it protects - each stated again as a {@code CHECK} ({@code V20261101020000}, {@code V20261114000100}):</p>
  * <ul>
  *   <li><b>BR-RMA-001</b>: opened only on a delivered order, within the return window after delivery (calendar days of
  *       Asia/Ho_Chi_Minh) - or outside it when Sales accept a late claim and say why;</li>
- *   <li><b>BR-RMA-002</b>: goods printed to the customer's design come back only when defective - a change of mind is
- *       refused for them, and they never go back on sale (OQ-12); nor does anything QC has not called plain stock,
- *       since a design is not part of a SKU;</li>
+ *   <li><b>BR-RMA-002</b>: goods printed to the customer's design come back only for a named defect;</li>
  *   <li>never more units of a line than were delivered, counting what the line's other returns still claim, and one
  *       open return per order line;</li>
- *   <li>units only narrow: approved ≤ asked for, accepted ≤ approved; every unit received - in one parcel or several,
- *       on time or late - is accepted or rejected. Accepted units go back on sale or to scrap; rejected units are the
- *       customer's and go back to them, scrapped only with their recorded consent; every accepted unit is replaced or
- *       credited;</li>
- *   <li>a claim is approved on evidence (a photo of the defect, or of the delivery note for a short delivery), and the
- *       goods stay with the customer only below a value threshold or when there is nothing to send;</li>
- *   <li>four eyes on everything of value: a claim Sales opened is approved by another person, and every resolution -
- *       money, or free replacement goods - by someone other than who proposed it (BR-PAY-003, in the absence of
- *       approver limits); so is withdrawing a replacement for credit;</li>
+ *   <li>units only narrow: approved ≤ asked for, refunded ≤ approved and ≤ what came back;</li>
+ *   <li>a claim is approved on evidence (a photo of the defect), and its goods come back;</li>
+ *   <li>four eyes: a claim Sales opened is approved by another person, and every refund by someone other than who
+ *       proposed it;</li>
  *   <li>status moves only along {@link ReturnStatus#canTransitionTo}, each change kept with who and why.</li>
  * </ul>
  */
@@ -64,56 +64,32 @@ public final class ReturnRequest extends AggregateRoot {
     public record Claim(UUID orderLineId, int quantity) {
     }
 
-    /** What arrived for one line: {@code quantity} units of {@code sku} (null: the line's own SKU), of lot {@code lotNumber}. */
-    public record Receipt(UUID lineId, int quantity, String sku, String lotNumber) {
-    }
+    /** One carton that came back on the return receipt: its SKU and the units in it. */
+    public record ReturnedCarton(String sku, int quantity) {
 
-    /** Something in the parcel that belongs to no line of the return, as the warehouse read it. */
-    public record Unexpected(String sku, int quantity, String note) {
-    }
-
-    /**
-     * QC's verdict on one line: of the units received, {@code accepted} hold the claim and {@code rejected} do not.
-     * Accepted units go back on sale ({@code restock}, at {@code restockLocation}) or to scrap; rejected units are the
-     * customer's and go back to them ({@code customerReturn}), any scrapped instead only with {@code disposalConsent}
-     * (how and when the customer agreed). {@code plainStock}: QC saw the units going back on sale are plain goods with
-     * no customer print; null takes it for the line's own SKU on a line that was not printed.
-     */
-    public record Inspection(UUID lineId, int accepted, int rejected, ReturnItemCondition condition, int restock,
-                             int scrap, int customerReturn, String restockLocation, String note, Boolean plainStock,
-                             String disposalConsent) {
-
-        /** Without the plain-stock call and a disposal consent: the defaults above, nothing of the customer's scrapped. */
-        public Inspection(UUID lineId, int accepted, int rejected, ReturnItemCondition condition, int restock, int scrap,
-                          int customerReturn, String restockLocation, String note) {
-            this(lineId, accepted, rejected, condition, restock, scrap, customerReturn, restockLocation, note, null,
-                    null);
+        public ReturnedCarton {
+            Objects.requireNonNull(sku, "sku");
+            if (quantity < 1) {
+                throw new IllegalArgumentException("A carton holds at least one unit");
+            }
         }
     }
 
-    /** Where withdrawing a resolved return's replacement order stands (SCRUM-260): proposed, approved, or sent back. */
-    public enum WithdrawalStatus { PENDING, APPROVED, REJECTED }
-
-    /** How one line's accepted units are made good: {@code replacement} new units, {@code credit} units of money. */
-    public record Remedy(UUID lineId, int replacement, int credit) {
-    }
-
     /**
-     * What payment booked for the credited value (V20261101020100): set off against the order's receivables, refunded
-     * (PENDING), kept as the customer's credit; and the ledger entry of the credit, when one was made.
+     * What payment settled for the refunded value (team plan 4D-3): {@code offset} taken off what the order's
+     * installments still owed, {@code refunded} paid already and to be refunded by the accountant.
      */
-    public record MoneyOutcome(BigDecimal offset, BigDecimal refunded, BigDecimal credited, UUID creditTransferId) {
+    public record MoneyOutcome(BigDecimal offset, BigDecimal refunded) {
 
-        public static final MoneyOutcome NONE = new MoneyOutcome(BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, null);
+        public static final MoneyOutcome NONE = new MoneyOutcome(BigDecimal.ZERO, BigDecimal.ZERO);
 
         public MoneyOutcome {
             offset = offset == null ? BigDecimal.ZERO : offset;
             refunded = refunded == null ? BigDecimal.ZERO : refunded;
-            credited = credited == null ? BigDecimal.ZERO : credited;
         }
 
         public BigDecimal total() {
-            return offset.add(refunded).add(credited);
+            return offset.add(refunded);
         }
     }
 
@@ -143,12 +119,8 @@ public final class ReturnRequest extends AggregateRoot {
     private Instant returnDeadline;
     private UUID receivedBy;
     private Instant receivedAt;
-    private int parcelCount;
     private String receivingLocation;
-    private String receiptNote;
-    private UUID inspectedBy;
-    private Instant inspectedAt;
-    private String inspectionNote;
+    private UUID goodsReceiptId;
     private ReturnResolution moneyMode;
     private BigDecimal settlementAmount = BigDecimal.ZERO;
     private UUID proposedBy;
@@ -157,20 +129,10 @@ public final class ReturnRequest extends AggregateRoot {
     private UUID settledBy;
     private Instant settledAt;
     private MoneyOutcome money = MoneyOutcome.NONE;
-    private UUID replacementOrderId;
     private boolean vatAdjustmentRequired;
     private UUID cancelledBy;
     private String cancellationReason;
     private Instant closedAt;
-    private WithdrawalStatus withdrawalStatus;
-    private String withdrawalReason;
-    private BigDecimal withdrawalAmount = BigDecimal.ZERO;
-    private UUID withdrawalProposedBy;
-    private Instant withdrawalProposedAt;
-    private UUID withdrawalDecidedBy;
-    private Instant withdrawalDecidedAt;
-    private String withdrawalDecisionNote;
-    private MoneyOutcome withdrawalMoney = MoneyOutcome.NONE;
 
     private final List<ReturnEvidence> evidence = new ArrayList<>();
     private final List<ReturnDiscrepancy> discrepancies = new ArrayList<>();
@@ -207,51 +169,52 @@ public final class ReturnRequest extends AggregateRoot {
 
     // ================================================================================================= opening
 
-    /**
-     * The customer (or Sales for them) claims {@code claims} of {@code order} (03 §12: — → REQUESTED), within the
-     * return window, at the order's own prices.
-     *
-     * @see #open(String, UUID, Order, ReturnChannel, ReturnReason, String, ReturnResolution, List, Map, Set, UUID,
-     *      Instant, ReturnPolicy, String, Map)
-     */
+    /** Within the return window. */
     public static ReturnRequest open(String rmaNumber, UUID requestId, Order order, ReturnChannel channel,
                                      ReturnReason reason, String description, ReturnResolution requested,
                                      List<Claim> claims, Map<UUID, Integer> claimedElsewhere,
                                      Set<UUID> openElsewhere, UUID requestedBy, Instant now, ReturnPolicy policy) {
         return open(rmaNumber, requestId, order, channel, reason, description, requested, claims, claimedElsewhere,
-                openElsewhere, requestedBy, now, policy, null, Map.of());
+                openElsewhere, requestedBy, now, policy, null);
     }
 
     /**
-     * The customer (or Sales for them) claims {@code claims} of {@code order} (03 §12: — → REQUESTED).
+     * The customer (or Sales for them) claims {@code claims} of {@code order} (17 §4.10 step 37: — → REQUESTED), at the
+     * order's own prices.
      *
+     * @param requested        what the customer would like; null reads as {@link ReturnResolution#REFUND}, the only
+     *                         one there is
      * @param claimedElsewhere per order line, the units the line's other returns still claim
      * @param openElsewhere    the order lines that already have an open return
      * @param windowOverride   why Sales accept the claim outside the return window - goods that came late, a second
      *                         defect found after the window, goodwill; back office only, and approved by someone else
      *                         like every claim staff open. Null: the window applies
-     * @param unitPrices       per order line, the price credited when it is not the line's own: a free replacement
-     *                         order's lines cost nothing, but the units they replaced were paid at the original order's
-     *                         prices, and a defective reprint is credited at those
      * @throws BusinessException {@code ORDER_CANCELLED}, {@code RETURN_ORDER_NOT_DELIVERED},
      *         {@code RETURN_ORDER_NOT_RETURNABLE}, {@code RETURN_WINDOW_CLOSED} (BR-RMA-001);
      *         {@code RETURN_LINE_ALREADY_OPEN}; {@code RETURN_QUANTITY_EXCEEDED};
-     *         {@code RETURN_CUSTOM_ITEM_NOT_DEFECTIVE} (BR-RMA-002); {@code RETURN_REASON_NOT_ACCEPTED} (SCRUM-243);
+     *         {@code RETURN_CUSTOM_ITEM_NOT_DEFECTIVE} (BR-RMA-002); {@code RETURN_REASON_NOT_ACCEPTED} for a change of
+     *         mind the policy refuses, and for a short delivery - nothing to send back, so no return;
      *         {@code RETURN_QUANTITIES_INVALID}, {@code VALIDATION_FAILED}
      */
     public static ReturnRequest open(String rmaNumber, UUID requestId, Order order, ReturnChannel channel,
                                      ReturnReason reason, String description, ReturnResolution requested,
                                      List<Claim> claims, Map<UUID, Integer> claimedElsewhere,
                                      Set<UUID> openElsewhere, UUID requestedBy, Instant now, ReturnPolicy policy,
-                                     String windowOverride, Map<UUID, BigDecimal> unitPrices) {
+                                     String windowOverride) {
         Objects.requireNonNull(order, "order");
         Objects.requireNonNull(reason, "reason");
-        Objects.requireNonNull(requested, "requested");
         Objects.requireNonNull(now, "now");
+        ReturnResolution wanted = requested == null ? ReturnResolution.REFUND : requested;
         String override = limited(windowOverride, REASON_LIMIT, "late-claim reason");
         if (override != null && channel != ReturnChannel.BACK_OFFICE) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED,
                     "Only Sales accept a claim outside the return window");
+        }
+        if (!reason.hasGoodsToReturn()) {
+            // 17 BR-18: a return brings its goods back through a return receipt. A shortfall has nothing to bring back;
+            // it is the delivery's to correct (09: the delivery outcome, or closing the rest), not a return.
+            throw new BusinessException(ErrorCode.RETURN_REASON_NOT_ACCEPTED,
+                    "A short delivery has no goods to send back: correct the delivery instead of opening a return");
         }
         requireReturnable(order, now, policy, channel, override);
         String text = trimmed(description);
@@ -291,33 +254,26 @@ public final class ReturnRequest extends AggregateRoot {
                         "%s: %d unit(s) delivered, %d already claimed by other returns; %d cannot be returned"
                                 .formatted(line.sku().code(), delivered, claimed, claim.quantity()));
             }
-            if (!reason.isNamedFault() && line.isMadeToOrder()) {
+            if (!reason.isNamedFault() && line.printedToCustomerDesign()) {
                 throw new BusinessException(ErrorCode.RETURN_CUSTOM_ITEM_NOT_DEFECTIVE, ("%s was printed to the "
                         + "customer's design: it is returned only for a named defect, not %s (BR-RMA-002)")
                         .formatted(line.sku().code(), reason));
             }
-            BigDecimal price = unitPrices == null ? null : unitPrices.get(line.id());
-            lines.add(new ReturnLine(Identifiers.newId(), line.id(), line.sku().code(), line.isMadeToOrder(),
-                    price == null ? line.unitPrice().amount() : price, claim.quantity()));
+            lines.add(new ReturnLine(Identifiers.newId(), line.id(), line.sku().code(), line.printedToCustomerDesign(),
+                    line.unitPrice().amount(), claim.quantity()));
         }
-        if (reason == ReturnReason.CHANGED_MIND) {
-            if (!policy.changeOfMindForStockItems()) {
-                throw new BusinessException(ErrorCode.RETURN_REASON_NOT_ACCEPTED,
-                        "Returns are taken for defects and delivery faults, not a change of mind (SCRUM-243)");
-            }
-            if (!requested.isMoney()) {
-                throw new BusinessException(ErrorCode.RETURN_REASON_NOT_ACCEPTED,
-                        "Goods returned on a change of mind are refunded or credited, not exchanged");
-            }
+        if (reason == ReturnReason.CHANGED_MIND && !policy.changeOfMindForStockItems()) {
+            throw new BusinessException(ErrorCode.RETURN_REASON_NOT_ACCEPTED,
+                    "Returns are taken for defects and delivery faults, not a change of mind (SCRUM-243)");
         }
         ReturnRequest request = new ReturnRequest(Identifiers.newId(), rmaNumber, order.id().value(),
-                order.orderNumber().value(), order.customerId(), requestId, channel, reason, text, requested,
+                order.orderNumber().value(), order.customerId(), requestId, channel, reason, text, wanted,
                 requestedBy, now, order.total().currency().getCurrencyCode(), lines, override, ReturnStatus.REQUESTED,
                 0L);
         request.transitions.add(new ReturnTransition(null, ReturnStatus.REQUESTED, requestedBy,
                 override == null ? reason.name() : reason.name() + " LATE_CLAIM_ACCEPTED: " + override, now));
         request.registerEvent(new OrderEvent.ReturnChanged(request.id, new ReturnRequested(request.id, rmaNumber,
-                request.orderId, request.orderNumber, request.customerId, reason.name(), requested.name(),
+                request.orderId, request.orderNumber, request.customerId, reason.name(), wanted.name(),
                 channel.name(), request.lines.stream()
                         .map(l -> new ReturnRequested.Line(l.orderLineId(), l.sku(), l.requestedQuantity())).toList(),
                 requestedBy, now)));
@@ -326,7 +282,7 @@ public final class ReturnRequest extends AggregateRoot {
 
     /**
      * BR-RMA-001: a delivered order, within the window after delivery - or, for Sales with a reason, after it. A further
-     * claim on an order a return already settled goes through Sales (03 §12); a CLOSED order takes none (BR-05).
+     * claim on an order a return already refunded goes through Sales; a CLOSED order takes none (BR-05).
      */
     private static void requireReturnable(Order order, Instant now, ReturnPolicy policy, ReturnChannel channel,
                                           String override) {
@@ -345,9 +301,9 @@ public final class ReturnRequest extends AggregateRoot {
                             .formatted(order.orderNumber()));
             case CLOSED -> new BusinessException(ErrorCode.RETURN_ORDER_NOT_RETURNABLE,
                     "Order %s is closed for good (BR-05): it takes no return".formatted(order.orderNumber()));
-            // RETURNED as an order status is goods that came back undelivered (RTO), or a return being settled.
-            case DRAFT, PENDING_PAYMENT, CONFIRMED, IN_PRODUCTION, READY_TO_FULFILL, PICKING, PARTIALLY_FULFILLED,
-                 PACKED, ON_HOLD, SHIPPED, DELIVERY_FAILED, RETURNED -> new BusinessException(
+            // RETURNED as an order status is goods that came back undelivered (RTO), or a return being refunded.
+            case DRAFT, PENDING_CONTRACT, PENDING_PAYMENT, CONFIRMED, AWAITING_STOCK, IN_PRODUCTION, READY_TO_FULFILL,
+                 PICKING, PARTIALLY_FULFILLED, PACKED, ON_HOLD, SHIPPED, DELIVERY_FAILED, RETURNED -> new BusinessException(
                     ErrorCode.RETURN_ORDER_NOT_DELIVERED,
                     "Order %s is %s: only a delivered order can be returned".formatted(order.orderNumber(), status));
         };
@@ -372,10 +328,9 @@ public final class ReturnRequest extends AggregateRoot {
     // ================================================================================================= evidence
 
     /**
-     * Keep a photo with the return: the customer's while the claim is open and the goods not yet back, the warehouse's
-     * at receipt, QC's at inspection.
+     * Keep a photo of the problem with the claim, while it is open and its goods not yet back.
      *
-     * @throws BusinessException {@code RETURN_INVALID_TRANSITION} for a stage the return is past (or not at);
+     * @throws BusinessException {@code RETURN_INVALID_TRANSITION} for a stage the return is past or that is gone;
      *         {@code RETURN_EVIDENCE_LIMIT_REACHED}
      */
     public void addEvidence(ReturnEvidence photo, ReturnPolicy policy) {
@@ -387,18 +342,20 @@ public final class ReturnRequest extends AggregateRoot {
 
     /**
      * Whether a photo of {@code stage} is taken now and fits; the service asks before it stores the file, so a refused
-     * photo leaves nothing behind in storage. The limit is per stage: the customer's photos never use up the room the
-     * warehouse and QC need for theirs.
+     * photo leaves nothing behind in storage. Only the claim's photos are the return's since team plan 4D-3: photos of
+     * the goods as they came back are the return receipt's ({@code procurement.goods_receipt_photos}), and there is no
+     * inspection to photograph.
      */
     public void requireEvidenceAllowed(ReturnEvidence.Stage stage, ReturnPolicy policy) {
         boolean open = switch (Objects.requireNonNull(stage, "stage")) {
             case CLAIM -> status == ReturnStatus.REQUESTED || status == ReturnStatus.AWAITING_RETURN;
-            case RECEIPT -> status == ReturnStatus.AWAITING_RETURN || status == ReturnStatus.RECEIVED;
-            case INSPECTION -> status == ReturnStatus.RECEIVED || status == ReturnStatus.INSPECTED;
+            case RECEIPT, INSPECTION -> false;
         };
         if (!open) {
-            throw new BusinessException(ErrorCode.RETURN_INVALID_TRANSITION,
-                    "Return %s is %s: it takes no %s photo now".formatted(rmaNumber, status, stage));
+            throw new BusinessException(ErrorCode.RETURN_INVALID_TRANSITION, stage == ReturnEvidence.Stage.CLAIM
+                    ? "Return %s is %s: it takes no photo of the claim now".formatted(rmaNumber, status)
+                    : "A return keeps the photos of its claim only; photos of the goods that came back are kept on "
+                            + "their return receipt");
         }
         long atStage = evidence.stream().filter(photo -> photo.stage() == stage).count();
         if (atStage >= policy.maxEvidence()) {
@@ -410,35 +367,28 @@ public final class ReturnRequest extends AggregateRoot {
     // ================================================================================================= review
 
     /**
-     * Sales approve the claim (03 §12: REQUESTED → AWAITING_RETURN, or INSPECTED when the goods stay). A claim Sales
-     * opened themselves is approved by another person: opening and approving a claim worth anything is never one
-     * person's decision.
+     * Sales approve the claim (17 §4.10 step 38: REQUESTED → AWAITING_RETURN, the RMA): the customer sends the approved
+     * goods back to the order's warehouse by the deadline. A claim Sales opened themselves is approved by another
+     * person: opening and approving a claim worth anything is never one person's decision.
      *
      * @param approved       units approved per line of the return; a line left out is approved in full, 0 approves
      *                       none of it (a partial approval). At least one unit is approved, or the return is rejected
-     * @param returnRequired whether the goods come back; null: they do, unless there is nothing to send (a short
-     *                       delivery)
+     * @param returnRequired whether the goods come back: null or true. They always do (17 BR-18); false is refused
      * @throws BusinessException {@code RETURN_INVALID_TRANSITION}; {@code RETURN_SELF_APPROVAL};
-     *         {@code RETURN_EVIDENCE_REQUIRED}; {@code RETURN_GOODS_REQUIRED} for goods above the no-return value, or a
-     *         change of mind; {@code RETURN_QUANTITIES_INVALID}
+     *         {@code RETURN_EVIDENCE_REQUIRED}; {@code RETURN_GOODS_REQUIRED} when asked to leave the goods with the
+     *         customer; {@code RETURN_QUANTITIES_INVALID}
      */
     public void approve(UUID by, Instant now, Map<UUID, Integer> approved, Boolean returnRequired, String note,
                         ReturnPolicy policy) {
-        approve(by, now, approved, returnRequired, note, policy, BigDecimal.ZERO);
-    }
-
-    /**
-     * The same, knowing what the order's other returns already left with the customer on photos alone
-     * ({@code leftWithCustomerElsewhere}, at the order's prices): the limit is the order's, so a large claim split into
-     * small returns still comes back to the warehouse.
-     */
-    public void approve(UUID by, Instant now, Map<UUID, Integer> approved, Boolean returnRequired, String note,
-                        ReturnPolicy policy, BigDecimal leftWithCustomerElsewhere) {
         Objects.requireNonNull(by, "by");
         requireStatus(ReturnStatus.REQUESTED, "be approved");
         if (channel == ReturnChannel.BACK_OFFICE && by.equals(requestedBy)) {
             throw new BusinessException(ErrorCode.RETURN_SELF_APPROVAL,
                     "Return %s was opened by the same person: someone else approves it".formatted(rmaNumber));
+        }
+        if (Boolean.FALSE.equals(returnRequired)) {
+            throw new BusinessException(ErrorCode.RETURN_GOODS_REQUIRED, ("The goods of %s come back through a return "
+                    + "receipt before anything is refunded (17 BR-18)").formatted(rmaNumber));
         }
         Map<UUID, Integer> units = new HashMap<>();
         for (ReturnLine line : lines) {
@@ -460,54 +410,23 @@ public final class ReturnRequest extends AggregateRoot {
             throw new BusinessException(ErrorCode.RETURN_QUANTITIES_INVALID,
                     "Approve at least one unit, or reject the return");
         }
-        // Every claim, a short delivery's too: there it is the delivery note the carrier signed with the shortage.
         if (policy.evidenceRequired() && evidence.stream().noneMatch(e -> e.stage() == ReturnEvidence.Stage.CLAIM)) {
-            throw new BusinessException(ErrorCode.RETURN_EVIDENCE_REQUIRED, reason.hasGoodsToReturn()
-                    ? "Return %s has no photo of the problem".formatted(rmaNumber)
-                    : "Return %s has no photo of the delivery note with the shortage on it".formatted(rmaNumber));
-        }
-        boolean goodsBack = returnRequired == null ? reason.hasGoodsToReturn() : returnRequired;
-        if (goodsBack && !reason.hasGoodsToReturn()) {
-            throw new BusinessException(ErrorCode.RETURN_QUANTITIES_INVALID,
-                    "A short delivery has nothing to send back");
-        }
-        if (!goodsBack && reason.hasGoodsToReturn()) {
-            if (!reason.isSellerFault()) {
-                throw new BusinessException(ErrorCode.RETURN_GOODS_REQUIRED,
-                        "Goods returned on a change of mind come back before anything is credited");
-            }
-            BigDecimal value = lines.stream().map(l -> l.unitPrice().multiply(BigDecimal.valueOf(units.get(l.id()))))
-                    .reduce(BigDecimal.ZERO, BigDecimal::add);
-            BigDecimal elsewhere = leftWithCustomerElsewhere == null ? BigDecimal.ZERO : leftWithCustomerElsewhere;
-            if (value.add(elsewhere).compareTo(policy.noReturnMaxValue()) > 0) {
-                throw new BusinessException(ErrorCode.RETURN_GOODS_REQUIRED, ("Return %s is worth %s %s and the order's "
-                        + "other returns left %s %s with the customer already, above the %s %s accepted on photos "
-                        + "alone per order: the goods come back").formatted(rmaNumber, plain(value), currency,
-                        plain(elsewhere), currency, plain(policy.noReturnMaxValue()), currency));
-            }
+            throw new BusinessException(ErrorCode.RETURN_EVIDENCE_REQUIRED,
+                    "Return %s has no photo of the problem".formatted(rmaNumber));
         }
         lines.forEach(line -> line.approve(units.get(line.id())));
         this.decidedBy = by;
         this.decidedAt = now;
         this.decisionNote = limited(note, NOTE_LIMIT, "note");
-        this.returnRequired = goodsBack;
-        if (goodsBack) {
-            this.returnDeadline = policy.returnDeadlineFrom(now);
-            transitionTo(ReturnStatus.AWAITING_RETURN, by, "APPROVED", now);
-        } else {
-            // The photos were the inspection: every approved unit is accepted, nothing comes back to the warehouse.
-            lines.forEach(line -> line.inspect(line.approvedQuantity(), 0, null, null, 0, 0, 0, null, null, null));
-            this.inspectedBy = by;
-            this.inspectedAt = now;
-            this.inspectionNote = "Accepted on the evidence; the goods stay with the customer";
-            transitionTo(ReturnStatus.INSPECTED, by, "APPROVED_WITHOUT_RETURN", now);
-        }
+        this.returnRequired = true;
+        this.returnDeadline = policy.returnDeadlineFrom(now);
+        transitionTo(ReturnStatus.AWAITING_RETURN, by, "APPROVED", now);
         registerEvent(new OrderEvent.ReturnChanged(id, new ReturnApproved(id, rmaNumber, orderId, orderNumber,
-                customerId, goodsBack, returnDeadline, lines.stream().map(l -> new ReturnApproved.Line(
+                customerId, true, returnDeadline, lines.stream().map(l -> new ReturnApproved.Line(
                         l.orderLineId(), l.sku(), l.requestedQuantity(), l.approvedQuantity())).toList(), by, now)));
     }
 
-    /** Sales refuse the claim, saying why (03 §12: REQUESTED → REJECTED, outside policy). */
+    /** Sales refuse the claim, saying why (17 §4.10 step 38: REQUESTED → REJECTED). */
     public void reject(UUID by, Instant now, String why) {
         Objects.requireNonNull(by, "by");
         requireStatus(ReturnStatus.REQUESTED, "be rejected");
@@ -524,7 +443,7 @@ public final class ReturnRequest extends AggregateRoot {
 
     /**
      * The customer (or Sales for them) withdraws the return before the goods are back: REQUESTED or AWAITING_RETURN →
-     * CANCELLED. Goods that arrive anyway are still counted in ({@link #receive}).
+     * CANCELLED. Goods a return receipt already opened for it brings in anyway ({@link #goodsReceived}).
      */
     public void cancel(UUID by, Instant now, String why, boolean byCustomer) {
         Objects.requireNonNull(by, "by");
@@ -541,8 +460,8 @@ public final class ReturnRequest extends AggregateRoot {
     }
 
     /**
-     * The approved goods did not arrive by the deadline (03 §12: AWAITING_RETURN → EXPIRED), as the nightly sweep finds
-     * it. Goods that arrive afterwards are still counted in ({@link #receive}).
+     * The approved goods did not arrive by the deadline (AWAITING_RETURN → EXPIRED), as the nightly sweep finds it.
+     * Goods a return receipt already opened for it brings in anyway ({@link #goodsReceived}).
      *
      * @return whether it expired; false while the deadline has not passed, or once the return moved on
      */
@@ -556,595 +475,198 @@ public final class ReturnRequest extends AggregateRoot {
         return true;
     }
 
-    // ================================================================================================= receipt
+    // ================================================================================================= goods back
 
     /**
-     * Whether goods counted in now would bring this return back from where it ended: approved goods that arrived after
-     * the deadline (EXPIRED), or after the customer withdrew an approved return (CANCELLED with goods to come back).
-     */
-    public boolean receivingReopens() {
-        return status == ReturnStatus.EXPIRED
-                || status == ReturnStatus.CANCELLED && Boolean.TRUE.equals(returnRequired) && decidedAt != null;
-    }
-
-    /**
-     * The warehouse counts a parcel in at {@code location}, a quarantine area (03 §12: AWAITING_RETURN → RECEIVED;
-     * OQ-12: never straight into sellable stock). A B2B customer often ships in more than one consignment: a later
-     * parcel is counted in while the return is RECEIVED and not yet inspected, at the same location, so the goods of one
-     * return wait for QC together. Goods are physically here whatever the return's state, so a parcel that comes after
-     * the deadline or after the customer withdrew an approved return is counted in too, and brings the return back to
-     * RECEIVED - Sales and QC then decide on it as on any other.
+     * The goods came back (17 §4.10 step 39; 03 §4.2 step 12): the warehouse confirmed return receipt
+     * {@code receiptId}, which scanned {@code cartons} of the order into the quarantine area {@code location}. Each line
+     * counts the units of its SKU among them; fewer or more than approved, and a carton of a SKU the return does not
+     * claim, are recorded as discrepancies for Sales to follow up (03 edge cases: the receipt is confirmed with the
+     * cartons that came, the rest is settled outside the system). AWAITING_RETURN → RECEIVED; an EXPIRED return, or one
+     * withdrawn after approval, is brought back too: the goods are here, and a return receipt was opened for them while
+     * the return awaited them.
      *
-     * <p>Discrepancies are recorded as facts of each parcel: another SKU than the line's (WRONG_ITEM), more units than
-     * approved (EXCESS, as the count passes it), something of no line (UNEXPECTED_ITEM). A shortfall is known only when
-     * no more parcels come, so QC records it at inspection.</p>
-     *
-     * @param receipts what this parcel held per line of the return; a line left out received nothing in it
-     * @throws BusinessException {@code RETURN_INVALID_TRANSITION}; {@code RETURN_RECEIVING_LOCATION_INVALID} for a later
-     *         parcel at another location; {@code RETURN_QUANTITIES_INVALID} when nothing of the return arrived, or a
-     *         later parcel brings other goods for a line than the first did (record them as an unexpected item)
+     * @return false when this receipt was taken already (the event delivered again): nothing changes
+     * @throws BusinessException {@code RETURN_INVALID_TRANSITION} for a return that does not take goods now, or took
+     *         them on another receipt
      */
-    public void receive(UUID by, Instant now, String location, List<Receipt> receipts, List<Unexpected> unexpected,
-                        String note) {
+    public boolean goodsReceived(UUID receiptId, String receiptNumber, String location, List<ReturnedCarton> cartons,
+                                 UUID by, Instant now) {
+        Objects.requireNonNull(receiptId, "receiptId");
         Objects.requireNonNull(by, "by");
-        boolean reopening = receivingReopens();
-        if (status != ReturnStatus.AWAITING_RETURN && status != ReturnStatus.RECEIVED && !reopening) {
-            throw new BusinessException(ErrorCode.RETURN_INVALID_TRANSITION,
-                    "Return %s is %s and takes no goods now".formatted(rmaNumber, status));
+        if (receiptId.equals(goodsReceiptId)) {
+            return false;
+        }
+        boolean reopening = status == ReturnStatus.EXPIRED
+                || status == ReturnStatus.CANCELLED && Boolean.TRUE.equals(returnRequired) && decidedAt != null;
+        if (goodsReceiptId != null || status != ReturnStatus.AWAITING_RETURN && !reopening) {
+            throw new BusinessException(ErrorCode.RETURN_INVALID_TRANSITION, goodsReceiptId != null
+                    ? "Return %s took its goods on another return receipt".formatted(rmaNumber)
+                    : "Return %s is %s and takes no goods now".formatted(rmaNumber, status));
         }
         String at = trimmed(location);
         if (at == null) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Name the location the goods are received into");
+            throw new IllegalArgumentException("Returned goods are received into a location");
         }
-        if (status == ReturnStatus.RECEIVED && !at.equals(receivingLocation)) {
-            throw new BusinessException(ErrorCode.RETURN_RECEIVING_LOCATION_INVALID,
-                    "The goods of %s wait for QC at %s: count this parcel in there".formatted(rmaNumber,
-                            receivingLocation));
+        Map<String, Integer> bySku = new LinkedHashMap<>();
+        for (ReturnedCarton carton : cartons == null ? List.<ReturnedCarton>of() : cartons) {
+            bySku.merge(carton.sku(), carton.quantity(), Integer::sum);
         }
-        Map<UUID, Receipt> byLine = new HashMap<>();
-        for (Receipt receipt : receipts == null ? List.<Receipt>of() : receipts) {
-            if (receipt == null || receipt.lineId() == null || byLine.putIfAbsent(receipt.lineId(), receipt) != null) {
-                throw new BusinessException(ErrorCode.RETURN_QUANTITIES_INVALID, "Count each line of the return once");
-            }
-            line(receipt.lineId());
-            if (receipt.quantity() < 0) {
-                throw new BusinessException(ErrorCode.RETURN_QUANTITIES_INVALID, "A count is not negative");
-            }
-        }
-        if (byLine.values().stream().mapToInt(Receipt::quantity).sum() == 0) {
-            throw new BusinessException(ErrorCode.RETURN_QUANTITIES_INVALID,
-                    "Nothing of return %s arrived: record the parcel when its goods do".formatted(rmaNumber));
-        }
-        // Validated whole before anything changes: a later parcel brings for each line what the first one did.
-        for (ReturnLine line : lines) {
-            Receipt receipt = byLine.get(line.id());
-            if (receipt == null || receipt.quantity() == 0 || !line.hasReceived()) {
-                continue;
-            }
-            String sku = trimmed(receipt.sku());
-            if (sku != null && !sku.equals(line.receivedSkuOrOwn())) {
-                throw new BusinessException(ErrorCode.RETURN_QUANTITIES_INVALID,
-                        "%s: this return already holds %s for the line; record %s as an unexpected item".formatted(
-                                line.sku(), line.receivedSkuOrOwn(), sku));
-            }
-            if (!Objects.equals(trimmed(receipt.lotNumber()), line.lotNumber())) {
-                throw new BusinessException(ErrorCode.RETURN_QUANTITIES_INVALID,
-                        "%s: this return already holds lot %s for the line; record lot %s as an unexpected item"
-                                .formatted(line.sku(), line.lotNumber(), trimmed(receipt.lotNumber())));
-            }
-        }
-        int parcel = parcelCount + 1;
-        List<ReturnDiscrepancy> found = new ArrayList<>();
-        for (ReturnLine line : lines) {
-            Receipt receipt = byLine.get(line.id());
-            int units = receipt == null ? 0 : receipt.quantity();
-            if (units == 0) {
-                continue;
-            }
-            int approvedUnits = line.approvedQuantity() == null ? 0 : line.approvedQuantity();
-            int before = line.receivedQuantity() == null ? 0 : line.receivedQuantity();
-            if (line.hasReceived()) {
-                line.receiveParcel(null, units, null);
-            } else {
-                String sku = trimmed(receipt.sku());
-                String receivedSku = sku != null && !sku.equals(line.sku()) ? sku : null;
-                line.receiveParcel(receivedSku, units, trimmed(receipt.lotNumber()));
-                if (receivedSku != null) {
-                    found.add(new ReturnDiscrepancy(Identifiers.newId(), line.id(), ReturnDiscrepancy.Kind.WRONG_ITEM,
-                            receivedSku, units, "Expected %s".formatted(line.sku()), by, now));
-                }
-            }
-            int excess = Math.max(0, before + units - approvedUnits) - Math.max(0, before - approvedUnits);
-            if (excess > 0) {
-                found.add(new ReturnDiscrepancy(Identifiers.newId(), line.id(), ReturnDiscrepancy.Kind.EXCESS,
-                        line.receivedSkuOrOwn(), excess, parcel > 1 ? "Parcel %d".formatted(parcel) : null, by, now));
-            }
-        }
-        for (Unexpected item : unexpected == null ? List.<Unexpected>of() : unexpected) {
-            if (item == null || item.quantity() < 1 || (trimmed(item.sku()) == null && trimmed(item.note()) == null)) {
-                throw new BusinessException(ErrorCode.RETURN_QUANTITIES_INVALID,
-                        "An unexpected item names what it is and how many arrived");
-            }
-            found.add(new ReturnDiscrepancy(Identifiers.newId(), null, ReturnDiscrepancy.Kind.UNEXPECTED_ITEM,
-                    limited(item.sku(), 64, "sku"), item.quantity(), limited(item.note(), REASON_LIMIT, "note"), by,
-                    now));
-        }
-        discrepancies.addAll(found);
-        newDiscrepancies.addAll(found);
-        String text = limited(note, NOTE_LIMIT, "note");
-        if (parcelCount == 0) {
-            // The first parcel names the stock layer: every later one is counted into the same quarantine layer.
-            this.receivedBy = by;
-            this.receivedAt = now;
-            this.receivingLocation = at;
-        }
-        this.parcelCount = parcel;
-        if (text != null) {
-            this.receiptNote = text;
-        }
-        if (status != ReturnStatus.RECEIVED) {
-            String why = reopening
-                    ? (status == ReturnStatus.EXPIRED ? "RECEIVED_AFTER_DEADLINE" : "RECEIVED_AFTER_WITHDRAWAL")
-                    : found.isEmpty() ? "RECEIVED" : "RECEIVED_WITH_DISCREPANCY";
-            if (reopening) {
-                this.closedAt = null;
-                this.cancelledBy = null;
-                this.cancellationReason = null;
-            }
-            transitionTo(ReturnStatus.RECEIVED, by, why, now);
-        }
-        registerEvent(new OrderEvent.ReturnChanged(id, new ReturnReceived(id, rmaNumber, orderId, orderNumber,
-                customerId, at, lines.stream().map(l -> new ReturnReceived.Line(l.orderLineId(), l.sku(),
-                        l.receivedSkuOrOwn(), l.approvedQuantity() == null ? 0 : l.approvedQuantity(),
-                        l.receivedQuantity() == null ? 0 : l.receivedQuantity())).toList(), !found.isEmpty(), by, now,
-                parcel)));
-    }
-
-    // ================================================================================================= inspection
-
-    /**
-     * QC decides every received unit (03 §12: RECEIVED → INSPECTED): accepted when the claim holds, rejected when it
-     * does not (no defect, misuse, more than approved); and where it goes. Accepted units are ours once made good: back
-     * on sale - plain stock only, never goods printed to a customer's design (OQ-12, BR-RMA-002), at a bin of the
-     * warehouse - or scrapped. Rejected units are the customer's: they go back to them, and are scrapped only with
-     * the customer's recorded consent. When nothing received is accepted the return is rejected (RECEIVED → REJECTED,
-     * 03 §12 "goods not as described"). Lines that came back short of what was approved are recorded now, when no more
-     * parcels are coming.
-     *
-     * @throws BusinessException {@code RETURN_INVALID_TRANSITION}; {@code RETURN_QUANTITIES_INVALID};
-     *         {@code RETURN_RESTOCK_NOT_ALLOWED} (BR-RMA-002, or goods QC has not called plain stock);
-     *         {@code RETURN_DISPOSAL_CONSENT_REQUIRED}
-     */
-    public void inspect(UUID by, Instant now, List<Inspection> inspections, String note) {
-        inspect(by, now, inspections, note, false);
-    }
-
-    /**
-     * The same, saying whether more parcels are coming. With units approved and not arrived, QC inspects only once
-     * {@code noMoreParcels} says the rest is not coming - the customer said so, or it is too late: the shortfall is then
-     * recorded and the return goes on without them. Otherwise a second consignment would find the return closed and
-     * have nowhere to be counted in.
-     *
-     * @throws BusinessException as {@link #inspect(UUID, Instant, List, String)}; {@code RETURN_PARCELS_OUTSTANDING}
-     *         while units are still expected
-     */
-    public void inspect(UUID by, Instant now, List<Inspection> inspections, String note, boolean noMoreParcels) {
-        Objects.requireNonNull(by, "by");
-        requireStatus(ReturnStatus.RECEIVED, "be inspected");
-        int outstanding = lines.stream().mapToInt(l -> Math.max(0, (l.approvedQuantity() == null ? 0
-                : l.approvedQuantity()) - (l.receivedQuantity() == null ? 0 : l.receivedQuantity()))).sum();
-        if (outstanding > 0 && !noMoreParcels) {
-            throw new BusinessException(ErrorCode.RETURN_PARCELS_OUTSTANDING, ("%d approved unit(s) of %s have not "
-                    + "arrived: wait for the next parcel, or inspect saying no more parcels are coming")
-                    .formatted(outstanding, rmaNumber));
-        }
-        Map<UUID, Inspection> byLine = new HashMap<>();
-        for (Inspection inspection : inspections == null ? List.<Inspection>of() : inspections) {
-            if (inspection == null || inspection.lineId() == null
-                    || byLine.putIfAbsent(inspection.lineId(), inspection) != null) {
-                throw new BusinessException(ErrorCode.RETURN_QUANTITIES_INVALID, "Inspect each line of the return once");
-            }
-            line(inspection.lineId());
-        }
-        // Validated whole before anything changes: a refused line leaves the return as it was.
-        for (ReturnLine line : lines) {
-            Inspection inspection = byLine.get(line.id());
-            int received = line.receivedQuantity() == null ? 0 : line.receivedQuantity();
-            if (inspection == null) {
-                if (received > 0) {
-                    throw new BusinessException(ErrorCode.RETURN_QUANTITIES_INVALID,
-                            "%s: %d unit(s) arrived and are not inspected".formatted(line.sku(), received));
-                }
-                continue;
-            }
-            int approvedUnits = line.approvedQuantity() == null ? 0 : line.approvedQuantity();
-            if (inspection.accepted() < 0 || inspection.rejected() < 0 || inspection.restock() < 0
-                    || inspection.scrap() < 0 || inspection.customerReturn() < 0) {
-                throw new BusinessException(ErrorCode.RETURN_QUANTITIES_INVALID, "Counts are not negative");
-            }
-            if (inspection.accepted() + inspection.rejected() != received) {
-                throw new BusinessException(ErrorCode.RETURN_QUANTITIES_INVALID,
-                        "%s: %d unit(s) arrived; accepted and rejected add up to %d".formatted(line.sku(), received,
-                                inspection.accepted() + inspection.rejected()));
-            }
-            if (inspection.accepted() > approvedUnits) {
-                throw new BusinessException(ErrorCode.RETURN_QUANTITIES_INVALID,
-                        "%s: at most the %d approved unit(s) are accepted".formatted(line.sku(), approvedUnits));
-            }
-            if (inspection.restock() + inspection.scrap() + inspection.customerReturn() != received) {
-                throw new BusinessException(ErrorCode.RETURN_QUANTITIES_INVALID,
-                        "%s: every one of the %d unit(s) received goes back on sale, to scrap or to the customer"
-                                .formatted(line.sku(), received));
-            }
-            if (inspection.restock() > inspection.accepted()) {
-                throw new BusinessException(ErrorCode.RETURN_QUANTITIES_INVALID,
-                        "%s: only accepted units go back on sale; rejected ones are the customer's".formatted(
-                                line.sku()));
-            }
-            if (inspection.customerReturn() > inspection.rejected()) {
-                throw new BusinessException(ErrorCode.RETURN_QUANTITIES_INVALID,
-                        "%s: only rejected units go back to the customer".formatted(line.sku()));
-            }
-            int customersScrapped = inspection.rejected() - inspection.customerReturn();
-            if (customersScrapped > 0 && trimmed(inspection.disposalConsent()) == null) {
-                throw new BusinessException(ErrorCode.RETURN_DISPOSAL_CONSENT_REQUIRED,
-                        ("%s: %d rejected unit(s) are the customer's goods: send them back, or record how the customer "
-                                + "agreed to their disposal").formatted(line.sku(), customersScrapped));
-            }
-            if (inspection.restock() > 0 && line.receivedPrintedGoods()) {
-                throw new BusinessException(ErrorCode.RETURN_RESTOCK_NOT_ALLOWED,
-                        "%s was printed to the customer's design and never goes back on sale (BR-RMA-002, OQ-12)"
-                                .formatted(line.sku()));
-            }
-            if (inspection.restock() > 0 && !plainStock(line, inspection)) {
-                throw new BusinessException(ErrorCode.RETURN_RESTOCK_NOT_ALLOWED,
-                        ("%s: what came back is not known to be plain stock - QC says so before it goes back on sale "
-                                + "(a design is not part of a SKU)").formatted(line.receivedSkuOrOwn()));
-            }
-            if ((inspection.restock() > 0) != (trimmed(inspection.restockLocation()) != null)) {
-                throw new BusinessException(ErrorCode.RETURN_QUANTITIES_INVALID,
-                        "%s: units back on sale name the bin they go to, and only they do".formatted(line.sku()));
-            }
-            if (inspection.restock() > 0 && inspection.condition() != ReturnItemCondition.GOOD
-                    && inspection.condition() != ReturnItemCondition.UNOPENED) {
-                throw new BusinessException(ErrorCode.RETURN_RESTOCK_NOT_ALLOWED,
-                        "%s: QC graded the units %s; only GOOD or UNOPENED units go back on sale".formatted(line.sku(),
-                                inspection.condition() == null ? "nothing" : inspection.condition()));
-            }
+        if (bySku.isEmpty()) {
+            throw new IllegalArgumentException("A confirmed return receipt received at least one carton");
         }
         List<ReturnDiscrepancy> found = new ArrayList<>();
+        Set<String> claimed = new HashSet<>();
         for (ReturnLine line : lines) {
-            Inspection inspection = byLine.get(line.id());
-            if (inspection == null) {
-                line.inspect(0, 0, null, null, 0, 0, 0, null, null, null);
-            } else {
-                int customersScrapped = inspection.rejected() - inspection.customerReturn();
-                line.inspect(inspection.accepted(), inspection.rejected(), inspection.condition(),
-                        limited(inspection.note(), NOTE_LIMIT, "note"), inspection.restock(), inspection.scrap(),
-                        inspection.customerReturn(), trimmed(inspection.restockLocation()),
-                        inspection.restock() > 0 ? Boolean.TRUE : inspection.plainStock(),
-                        customersScrapped > 0 ? limited(inspection.disposalConsent(), REASON_LIMIT, "consent") : null);
-            }
+            claimed.add(line.sku());
+            int units = bySku.getOrDefault(line.sku(), 0);
             int approvedUnits = line.approvedQuantity() == null ? 0 : line.approvedQuantity();
-            int received = line.receivedQuantity() == null ? 0 : line.receivedQuantity();
-            if (received < approvedUnits) {
+            line.receive(units);
+            if (units < approvedUnits) {
                 found.add(new ReturnDiscrepancy(Identifiers.newId(), line.id(), ReturnDiscrepancy.Kind.SHORT,
-                        line.sku(), approvedUnits - received, null, by, now));
+                        line.sku(), approvedUnits - units, "Receipt %s".formatted(receiptNumber), by, now));
+            } else if (units > approvedUnits) {
+                found.add(new ReturnDiscrepancy(Identifiers.newId(), line.id(), ReturnDiscrepancy.Kind.EXCESS,
+                        line.sku(), units - approvedUnits, "Receipt %s".formatted(receiptNumber), by, now));
             }
         }
+        bySku.forEach((sku, units) -> {
+            if (!claimed.contains(sku)) {
+                found.add(new ReturnDiscrepancy(Identifiers.newId(), null, ReturnDiscrepancy.Kind.UNEXPECTED_ITEM,
+                        sku, units, "Receipt %s: a SKU the return does not claim".formatted(receiptNumber), by, now));
+            }
+        });
         discrepancies.addAll(found);
         newDiscrepancies.addAll(found);
-        String text = limited(note, NOTE_LIMIT, "note");
-        if (acceptedUnits() == 0) {
-            // The customer reads the reason; QC's own words stay in the inspection note, for staff.
-            this.rejectionReason = "NO_DEFECT_FOUND";
-            this.inspectionNote = text;
-            close(ReturnStatus.REJECTED, by, text == null ? rejectionReason : rejectionReason + ": " + text, now);
-            registerEvent(new OrderEvent.ReturnChanged(id, new ReturnRejected(id, rmaNumber, orderId, orderNumber,
-                    customerId, "INSPECTION", by, now)));
-            return;
+        this.receivedBy = by;
+        this.receivedAt = now;
+        this.receivingLocation = at;
+        this.goodsReceiptId = receiptId;
+        String why = reopening
+                ? (status == ReturnStatus.EXPIRED ? "RECEIVED_AFTER_DEADLINE" : "RECEIVED_AFTER_WITHDRAWAL")
+                : found.isEmpty() ? "RECEIVED" : "RECEIVED_WITH_DISCREPANCY";
+        if (reopening) {
+            this.closedAt = null;
+            this.cancelledBy = null;
+            this.cancellationReason = null;
         }
-        this.inspectedBy = by;
-        this.inspectedAt = now;
-        this.inspectionNote = text;
-        transitionTo(ReturnStatus.INSPECTED, by, "INSPECTED", now);
+        transitionTo(ReturnStatus.RECEIVED, by, why + " " + receiptNumber, now);
+        registerEvent(new OrderEvent.ReturnChanged(id, new ReturnReceived(id, rmaNumber, orderId, orderNumber,
+                customerId, at, lines.stream().map(l -> new ReturnReceived.Line(l.orderLineId(), l.sku(), l.sku(),
+                        l.approvedQuantity() == null ? 0 : l.approvedQuantity(),
+                        l.receivedQuantity() == null ? 0 : l.receivedQuantity())).toList(), !found.isEmpty(), by, now,
+                1)));
+        return true;
     }
 
-    /** QC's call, or the default: the line's own SKU, on a line that was not printed, is plain stock. */
-    private static boolean plainStock(ReturnLine line, Inspection inspection) {
-        return inspection.plainStock() != null ? inspection.plainStock()
-                : !line.customPrinted() && line.receivedSku() == null;
-    }
-
-    /** The inventory adjustments asked for the line's scrapped units and units going back to the customer. */
-    public void recordStockAdjustments(UUID lineId, UUID scrapAdjustment, UUID customerReturnAdjustment) {
-        line(lineId).stockAdjustments(scrapAdjustment, customerReturnAdjustment);
-    }
-
-    // ================================================================================================= resolution
+    // ================================================================================================= refund
 
     /**
-     * Sales say how the accepted units are made good (SCRUM-260): per line, replaced by new goods or credited at the
-     * price paid; the credited value is refunded or credited against what the customer owes ({@code moneyMode}). Every
-     * resolution waits for a second person (INSPECTED → SETTLEMENT_PENDING): free replacement goods are worth as much as
-     * the money they stand for, so neither leaves on one person's word.
+     * Sales propose the refund of the goods that came back (17 §4.10 step 40; 15 §4.5 step 15): per line, the units
+     * refunded - at most those approved and back - worth what the order line charged for them with its VAT
+     * ({@link OrderLine#grossOf}). Every refund waits for a second person (RECEIVED → SETTLEMENT_PENDING).
      *
-     * @throws BusinessException {@code RETURN_INVALID_TRANSITION}; {@code RETURN_QUANTITIES_INVALID} unless every
-     *         accepted unit is replaced or credited; {@code RETURN_REASON_NOT_ACCEPTED} for an exchange on a change of
-     *         mind; {@code VALIDATION_FAILED} for money without a mode
+     * @param units per line of the return, the units refunded; null or empty refunds every unit approved and back, a
+     *              line left out of a list refunds nothing. At least one unit is refunded: goods taken back for a defect
+     *              Sales approved are made good, at least in part
+     * @throws BusinessException {@code RETURN_INVALID_TRANSITION}; {@code RETURN_QUANTITIES_INVALID}
      */
-    public void proposeResolution(UUID by, Instant now, List<Remedy> remedies, ReturnResolution mode, String note) {
+    public void proposeRefund(UUID by, Instant now, Map<UUID, Integer> units, Order order, String note) {
         Objects.requireNonNull(by, "by");
-        requireStatus(ReturnStatus.INSPECTED, "be resolved");
-        Map<UUID, Remedy> byLine = new HashMap<>();
-        for (Remedy remedy : remedies == null ? List.<Remedy>of() : remedies) {
-            if (remedy == null || remedy.lineId() == null || byLine.putIfAbsent(remedy.lineId(), remedy) != null) {
-                throw new BusinessException(ErrorCode.RETURN_QUANTITIES_INVALID, "Resolve each line of the return once");
+        Objects.requireNonNull(order, "order");
+        requireStatus(ReturnStatus.RECEIVED, "have a refund proposed");
+        Map<UUID, Integer> refunded = new HashMap<>();
+        if (units == null || units.isEmpty()) {
+            lines.forEach(line -> refunded.put(line.id(), line.refundableUnits()));
+        } else {
+            for (Map.Entry<UUID, Integer> entry : units.entrySet()) {
+                ReturnLine line = line(entry.getKey());
+                int value = entry.getValue() == null ? 0 : entry.getValue();
+                if (value < 0 || value > line.refundableUnits()) {
+                    throw new BusinessException(ErrorCode.RETURN_QUANTITIES_INVALID, ("%s: refund between 0 and the %d "
+                            + "unit(s) approved and back").formatted(line.sku(), line.refundableUnits()));
+                }
+                refunded.put(line.id(), value);
             }
-            line(remedy.lineId());
+        }
+        if (refunded.values().stream().mapToInt(Integer::intValue).sum() == 0) {
+            throw new BusinessException(ErrorCode.RETURN_QUANTITIES_INVALID,
+                    "Refund at least one unit of %s that came back".formatted(rmaNumber));
         }
         BigDecimal value = BigDecimal.ZERO;
-        int replaced = 0;
         for (ReturnLine line : lines) {
-            Remedy remedy = byLine.get(line.id());
-            int accepted = line.acceptedQuantity() == null ? 0 : line.acceptedQuantity();
-            int replacement = remedy == null ? 0 : remedy.replacement();
-            int credit = remedy == null ? 0 : remedy.credit();
-            if (replacement < 0 || credit < 0 || replacement + credit != accepted) {
-                throw new BusinessException(ErrorCode.RETURN_QUANTITIES_INVALID,
-                        "%s: each of the %d accepted unit(s) is replaced or credited".formatted(line.sku(), accepted));
-            }
-            value = value.add(line.unitPrice().multiply(BigDecimal.valueOf(credit)));
-            replaced += replacement;
+            int count = refunded.getOrDefault(line.id(), 0);
+            BigDecimal amount = count == 0 ? BigDecimal.ZERO : order.findLine(line.orderLineId())
+                    .orElseThrow(() -> new IllegalStateException("Return %s names line %s that order %s does not have"
+                            .formatted(rmaNumber, line.orderLineId(), order.orderNumber())))
+                    .grossOf(count).amount();
+            line.refund(count, amount);
+            value = value.add(amount);
         }
-        if (replaced > 0 && !reason.isSellerFault()) {
-            throw new BusinessException(ErrorCode.RETURN_REASON_NOT_ACCEPTED,
-                    "Goods returned on a change of mind are refunded or credited, not exchanged");
-        }
-        if (value.signum() > 0 && (mode == null || !mode.isMoney())) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
-                    "Credited units are refunded or credited against what the customer owes: choose REFUND or "
-                            + "CREDIT_NOTE");
-        }
-        for (ReturnLine line : lines) {
-            Remedy remedy = byLine.get(line.id());
-            line.remedy(remedy == null ? 0 : remedy.replacement(), remedy == null ? 0 : remedy.credit());
-        }
-        // Non-null exactly when money moves: the check above refused a positive value without a money mode.
-        ReturnResolution money = value.signum() > 0 ? mode : null;
         this.settlementAmount = value;
-        this.moneyMode = money;
+        this.moneyMode = ReturnResolution.REFUND;
         this.proposedBy = by;
         this.proposedAt = now;
         this.resolutionNote = limited(note, NOTE_LIMIT, "note");
-        transitionTo(ReturnStatus.SETTLEMENT_PENDING, by,
-                "SETTLEMENT_PROPOSED_" + (money == null ? ReturnResolution.REPLACEMENT : money).name(), now);
+        transitionTo(ReturnStatus.SETTLEMENT_PENDING, by, "REFUND_PROPOSED %s %s".formatted(plain(value), currency),
+                now);
     }
 
     /**
-     * Four eyes on every resolution: approved by someone other than who proposed it. Checked before anything is booked
-     * or placed, so the refusal is the answer and not whatever a booking would have failed with.
+     * Four eyes on every refund: approved by someone other than who proposed it. Checked before anything is settled,
+     * so the refusal is the answer and not whatever a settlement would have failed with.
      *
      * @throws BusinessException {@code RETURN_INVALID_TRANSITION}; {@code RETURN_SELF_APPROVAL}
      */
     public void requireSettlementApprover(UUID by) {
-        requireStatus(ReturnStatus.SETTLEMENT_PENDING, "have its settlement approved");
+        requireStatus(ReturnStatus.SETTLEMENT_PENDING, "have its refund approved");
         if (Objects.equals(by, proposedBy)) {
             throw new BusinessException(ErrorCode.RETURN_SELF_APPROVAL,
-                    "The settlement of %s was proposed by the same person".formatted(rmaNumber));
+                    "The refund of %s was proposed by the same person".formatted(rmaNumber));
         }
     }
 
-    /** The approver sends the settlement back, saying why: SETTLEMENT_PENDING → INSPECTED, the proposal cleared. */
+    /** The approver sends the refund back, saying why: SETTLEMENT_PENDING → RECEIVED, the proposal cleared. */
     public void rejectSettlement(UUID by, Instant now, String why) {
         Objects.requireNonNull(by, "by");
-        requireStatus(ReturnStatus.SETTLEMENT_PENDING, "have its settlement sent back");
-        String text = required(why, REASON_LIMIT, "A settlement sent back says why");
-        lines.forEach(line -> line.remedy(0, 0));
+        requireStatus(ReturnStatus.SETTLEMENT_PENDING, "have its refund sent back");
+        String text = required(why, REASON_LIMIT, "A refund sent back says why");
+        lines.forEach(line -> line.refund(0, BigDecimal.ZERO));
         this.settlementAmount = BigDecimal.ZERO;
         this.moneyMode = null;
         this.proposedBy = null;
         this.proposedAt = null;
         this.resolutionNote = null;
-        transitionTo(ReturnStatus.INSPECTED, by, "SETTLEMENT_SENT_BACK: " + text, now);
+        transitionTo(ReturnStatus.RECEIVED, by, "REFUND_SENT_BACK: " + text, now);
     }
 
     /**
-     * The approved resolution was carried out (03 §12: SETTLEMENT_PENDING → RESOLVED, by the approver): the replacement
-     * order placed (its lines named per return line), the money booked by payment.
+     * The approved refund was settled (SETTLEMENT_PENDING → RESOLVED, by the approver): payment took the value off what
+     * the order's installments owed and made the rest refundable, in the same transaction.
      *
-     * @throws IllegalStateException when payment booked another amount than the settlement - a defect, never a refusal
+     * @throws IllegalStateException when payment settled another amount than the refund - a defect, never a refusal
      */
-    public void resolve(UUID by, Instant now, UUID replacementOrder, String replacementOrderNumber,
-                        Map<UUID, UUID> replacementLines, MoneyOutcome outcome) {
-        resolve(by, now, replacementOrder, replacementOrderNumber, replacementLines, outcome, orderId);
-    }
-
-    /**
-     * The same, naming the order whose money settled it: {@code orderId}, or for a return on a free replacement order the
-     * order whose units that replaced.
-     */
-    public void resolve(UUID by, Instant now, UUID replacementOrder, String replacementOrderNumber,
-                        Map<UUID, UUID> replacementLines, MoneyOutcome outcome, UUID paidOrderId) {
+    public void resolve(UUID by, Instant now, MoneyOutcome outcome) {
         Objects.requireNonNull(by, "by");
         MoneyOutcome booked = outcome == null ? MoneyOutcome.NONE : outcome;
         requireSettlementApprover(by);
         if (booked.total().compareTo(settlementAmount) != 0) {
-            throw new IllegalStateException("Return %s settles %s but %s was booked".formatted(rmaNumber,
+            throw new IllegalStateException("Return %s refunds %s but %s was settled".formatted(rmaNumber,
                     plain(settlementAmount), plain(booked.total())));
         }
-        if ((replacementOrder == null) != (replacementUnits() == 0)) {
-            throw new IllegalStateException("Return %s replaces %d unit(s) but names replacement order %s"
-                    .formatted(rmaNumber, replacementUnits(), replacementOrder));
-        }
-        for (ReturnLine line : lines) {
-            UUID replacement = replacementLines == null ? null : replacementLines.get(line.id());
-            if ((replacement == null) != (line.replacementQuantity() == 0)) {
-                throw new IllegalStateException("Line %s of %s replaces %d unit(s) but names order line %s"
-                        .formatted(line.id(), rmaNumber, line.replacementQuantity(), replacement));
-            }
-            line.replacedBy(replacement);
-        }
-        this.replacementOrderId = replacementOrder;
         this.money = booked;
         this.settledBy = by;
         this.settledAt = now;
         this.vatAdjustmentRequired = settlementAmount.signum() > 0;
-        close(ReturnStatus.RESOLVED, by, resolutionSummary(), now);
+        close(ReturnStatus.RESOLVED, by, "RESOLVED_REFUND %s %s".formatted(plain(settlementAmount), currency), now);
         registerEvent(new OrderEvent.ReturnChanged(id, new ReturnResolved(id, rmaNumber, orderId, orderNumber,
-                customerId, replacementOrder, replacementOrderNumber, booked.offset(), booked.refunded(),
-                booked.credited(), currency,
+                customerId, null, null, booked.offset(), booked.refunded(), BigDecimal.ZERO, currency,
                 vatAdjustmentRequired, lines.stream().map(l -> new ReturnResolved.Line(l.orderLineId(), l.sku(),
-                        l.acceptedQuantity() == null ? 0 : l.acceptedQuantity(), l.replacementQuantity(),
-                        l.creditQuantity(), l.creditAmount())).toList(), by, now,
-                paidOrderId == null ? orderId : paidOrderId)));
-    }
-
-    private String resolutionSummary() {
-        int replaced = replacementUnits();
-        if (settlementAmount.signum() == 0) {
-            return "RESOLVED_REPLACEMENT %d".formatted(replaced);
-        }
-        return "RESOLVED_%s %s %s%s".formatted(moneyMode.name(), plain(settlementAmount), currency,
-                replaced > 0 ? ", replacement %d".formatted(replaced) : "");
-    }
-
-    // ================================================================================================= replacement withdrawal
-
-    /**
-     * Sales propose to withdraw the free replacement order of a resolved return before it ships - the customer would
-     * rather have the money, or the goods cannot be made again - and credit the replaced units at the return's prices
-     * instead. It waits for a second person ({@link #approveReplacementWithdrawal}); the return stays RESOLVED, and the
-     * replacement order is left as it is until then. A proposal sent back may be made again.
-     *
-     * @throws BusinessException {@code RETURN_INVALID_TRANSITION} unless the return is RESOLVED with a replacement that
-     *         is not withdrawn or waiting to be; {@code VALIDATION_FAILED} without a reason
-     */
-    public void proposeReplacementWithdrawal(UUID by, Instant now, String why) {
-        Objects.requireNonNull(by, "by");
-        requireStatus(ReturnStatus.RESOLVED, "withdraw its replacement");
-        if (replacementOrderId == null) {
-            throw new BusinessException(ErrorCode.RETURN_INVALID_TRANSITION,
-                    "Return %s replaced nothing".formatted(rmaNumber));
-        }
-        if (withdrawalStatus == WithdrawalStatus.PENDING || withdrawalStatus == WithdrawalStatus.APPROVED) {
-            throw new BusinessException(ErrorCode.RETURN_INVALID_TRANSITION,
-                    "The replacement of %s is %s".formatted(rmaNumber, withdrawalStatus == WithdrawalStatus.PENDING
-                            ? "already waiting to be withdrawn" : "withdrawn already"));
-        }
-        String text = required(why, REASON_LIMIT, "A withdrawn replacement says why");
-        this.withdrawalStatus = WithdrawalStatus.PENDING;
-        this.withdrawalReason = text;
-        this.withdrawalAmount = lines.stream()
-                .map(l -> l.unitPrice().multiply(BigDecimal.valueOf(l.replacementQuantity())))
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
-        this.withdrawalProposedBy = by;
-        this.withdrawalProposedAt = now;
-        this.withdrawalDecidedBy = null;
-        this.withdrawalDecidedAt = null;
-        this.withdrawalDecisionNote = null;
-        this.withdrawalMoney = MoneyOutcome.NONE;
-    }
-
-    /**
-     * Four eyes on the withdrawal: approved by someone other than who proposed it.
-     *
-     * @throws BusinessException {@code RETURN_INVALID_TRANSITION} with nothing waiting; {@code RETURN_SELF_APPROVAL}
-     */
-    public void requireWithdrawalApprover(UUID by) {
-        if (withdrawalStatus != WithdrawalStatus.PENDING) {
-            throw new BusinessException(ErrorCode.RETURN_INVALID_TRANSITION,
-                    "No withdrawal of the replacement of %s waits for approval".formatted(rmaNumber));
-        }
-        if (Objects.equals(by, withdrawalProposedBy)) {
-            throw new BusinessException(ErrorCode.RETURN_SELF_APPROVAL,
-                    "The withdrawal of the replacement of %s was proposed by the same person".formatted(rmaNumber));
-        }
-    }
-
-    /**
-     * The withdrawal was carried out by the approver: the replacement order cancelled and the replaced units' value
-     * credited - set off against the original order's receivables, the rest kept as the customer's credit. Nothing is
-     * refunded in cash here: the credit is the customer's, and paying it out is the accountant's (SCRUM-220).
-     *
-     * @throws IllegalStateException when payment booked another amount, or a refund - a defect, never a refusal
-     */
-    public void approveReplacementWithdrawal(UUID by, Instant now, MoneyOutcome booked, UUID paidOrderId) {
-        Map<UUID, Integer> all = new HashMap<>();
-        lines.stream().filter(l -> l.replacementQuantity() > 0).forEach(l -> all.put(l.id(), l.replacementQuantity()));
-        approveReplacementWithdrawal(by, now, booked, paidOrderId, all);
-    }
-
-    /**
-     * What withdrawing {@code withdrawnByLine} units of the replacement (per return line) is worth at the return's
-     * prices: all of them while nothing shipped; for a replacement that shipped in part, the units not shipped.
-     */
-    public BigDecimal withdrawalAmountFor(Map<UUID, Integer> withdrawnByLine) {
-        return lines.stream().map(l -> l.unitPrice().multiply(BigDecimal.valueOf(
-                        Math.min(l.replacementQuantity(), withdrawnByLine.getOrDefault(l.id(), 0)))))
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
-    }
-
-    /**
-     * The withdrawal carried out for {@code withdrawnByLine} units per return line - every unit of a replacement that
-     * shipped nothing, or the rest of one that shipped in part, whose shipped units the customer keeps. The amount
-     * credited is theirs at the return's prices, and the money given back flags the adjustment invoice.
-     */
-    public void approveReplacementWithdrawal(UUID by, Instant now, MoneyOutcome booked, UUID paidOrderId,
-                                             Map<UUID, Integer> withdrawnByLine) {
-        Objects.requireNonNull(by, "by");
-        requireWithdrawalApprover(by);
-        if (withdrawnByLine.values().stream().mapToInt(Integer::intValue).sum() <= 0) {
-            throw new BusinessException(ErrorCode.RETURN_REPLACEMENT_NOT_WITHDRAWABLE,
-                    "Every unit of the replacement of %s has shipped: nothing is left to withdraw".formatted(rmaNumber));
-        }
-        this.withdrawalAmount = withdrawalAmountFor(withdrawnByLine);
-        MoneyOutcome outcome = booked == null ? MoneyOutcome.NONE : booked;
-        if (outcome.refunded().signum() != 0 || outcome.total().compareTo(withdrawalAmount) != 0) {
-            throw new IllegalStateException("The withdrawal of %s credits %s but %s was booked".formatted(rmaNumber,
-                    plain(withdrawalAmount), plain(outcome.total())));
-        }
-        this.withdrawalStatus = WithdrawalStatus.APPROVED;
-        this.withdrawalDecidedBy = by;
-        this.withdrawalDecidedAt = now;
-        this.withdrawalMoney = outcome;
-        // Money given back for goods sold: accounting issues the adjustment invoice, as for a refund or credit.
-        this.vatAdjustmentRequired = vatAdjustmentRequired || outcome.total().signum() > 0;
-        registerEvent(new OrderEvent.ReturnChanged(id, new ReturnReplacementWithdrawn(id, rmaNumber, orderId,
-                orderNumber, customerId, replacementOrderId, outcome.offset(), outcome.credited(), currency,
-                lines.stream().filter(l -> withdrawnByLine.getOrDefault(l.id(), 0) > 0)
-                        .map(l -> {
-                            int units = Math.min(l.replacementQuantity(), withdrawnByLine.get(l.id()));
-                            return new ReturnReplacementWithdrawn.Line(l.orderLineId(), l.sku(), units,
-                                    l.unitPrice().multiply(BigDecimal.valueOf(units)));
-                        }).toList(),
-                paidOrderId == null ? orderId : paidOrderId, by, now)));
-    }
-
-    /** The approver sends the withdrawal back, saying why: the replacement ships as decided. */
-    public void rejectReplacementWithdrawal(UUID by, Instant now, String why) {
-        Objects.requireNonNull(by, "by");
-        if (withdrawalStatus != WithdrawalStatus.PENDING) {
-            throw new BusinessException(ErrorCode.RETURN_INVALID_TRANSITION,
-                    "No withdrawal of the replacement of %s waits for approval".formatted(rmaNumber));
-        }
-        this.withdrawalDecisionNote = required(why, REASON_LIMIT, "A withdrawal sent back says why");
-        this.withdrawalStatus = WithdrawalStatus.REJECTED;
-        this.withdrawalDecidedBy = by;
-        this.withdrawalDecidedAt = now;
+                        l.receivedQuantity() == null ? 0 : l.receivedQuantity(), 0, l.refundQuantity(),
+                        l.refundNetAmount())).toList(), by, now, orderId)));
     }
 
     // ================================================================================================= reading
-
-    /** Units accepted across the lines: what the claim was found to hold for. */
-    public int acceptedUnits() {
-        return lines.stream().mapToInt(l -> l.acceptedQuantity() == null ? 0 : l.acceptedQuantity()).sum();
-    }
-
-    /** Units the resolution replaces with new goods. */
-    public int replacementUnits() {
-        return lines.stream().mapToInt(ReturnLine::replacementQuantity).sum();
-    }
 
     /** Whether the customer of {@code customer} owns this return (a portal caller's own). */
     public boolean belongsTo(UUID customer) {
@@ -1232,12 +754,10 @@ public final class ReturnRequest extends AggregateRoot {
 
     // ================================================================================================= rehydration
 
-    /** Rehydration of the review, receipt and inspection. */
+    /** Rehydration of the review and of the goods coming back. */
     public ReturnRequest restoreProgress(UUID decidedBy, Instant decidedAt, String decisionNote, String rejectionReason,
                                          Boolean returnRequired, Instant returnDeadline, UUID receivedBy,
-                                         Instant receivedAt, String receivingLocation, String receiptNote,
-                                         UUID inspectedBy, Instant inspectedAt, String inspectionNote,
-                                         int parcelCount) {
+                                         Instant receivedAt, String receivingLocation, UUID goodsReceiptId) {
         this.decidedBy = decidedBy;
         this.decidedAt = decidedAt;
         this.decisionNote = decisionNote;
@@ -1247,35 +767,15 @@ public final class ReturnRequest extends AggregateRoot {
         this.receivedBy = receivedBy;
         this.receivedAt = receivedAt;
         this.receivingLocation = receivingLocation;
-        this.receiptNote = receiptNote;
-        this.inspectedBy = inspectedBy;
-        this.inspectedAt = inspectedAt;
-        this.inspectionNote = inspectionNote;
-        this.parcelCount = parcelCount;
+        this.goodsReceiptId = goodsReceiptId;
         return this;
     }
 
-    /** Rehydration of the withdrawal of a replacement, when one was proposed. */
-    public ReturnRequest restoreWithdrawal(WithdrawalStatus status, String reason, BigDecimal amount, UUID proposedBy,
-                                           Instant proposedAt, UUID decidedBy, Instant decidedAt, String decisionNote,
-                                           MoneyOutcome money) {
-        this.withdrawalStatus = status;
-        this.withdrawalReason = reason;
-        this.withdrawalAmount = amount == null ? BigDecimal.ZERO : amount;
-        this.withdrawalProposedBy = proposedBy;
-        this.withdrawalProposedAt = proposedAt;
-        this.withdrawalDecidedBy = decidedBy;
-        this.withdrawalDecidedAt = decidedAt;
-        this.withdrawalDecisionNote = decisionNote;
-        this.withdrawalMoney = money == null ? MoneyOutcome.NONE : money;
-        return this;
-    }
-
-    /** Rehydration of the resolution and the end. */
+    /** Rehydration of the refund and the end. */
     public ReturnRequest restoreResolution(ReturnResolution moneyMode, BigDecimal settlementAmount, UUID proposedBy,
                                            Instant proposedAt, String resolutionNote, UUID settledBy, Instant settledAt,
-                                           MoneyOutcome money, UUID replacementOrderId, boolean vatAdjustmentRequired,
-                                           UUID cancelledBy, String cancellationReason, Instant closedAt) {
+                                           MoneyOutcome money, boolean vatAdjustmentRequired, UUID cancelledBy,
+                                           String cancellationReason, Instant closedAt) {
         this.moneyMode = moneyMode;
         this.settlementAmount = settlementAmount == null ? BigDecimal.ZERO : settlementAmount;
         this.proposedBy = proposedBy;
@@ -1284,7 +784,6 @@ public final class ReturnRequest extends AggregateRoot {
         this.settledBy = settledBy;
         this.settledAt = settledAt;
         this.money = money == null ? MoneyOutcome.NONE : money;
-        this.replacementOrderId = replacementOrderId;
         this.vatAdjustmentRequired = vatAdjustmentRequired;
         this.cancelledBy = cancelledBy;
         this.cancellationReason = cancellationReason;
@@ -1316,7 +815,6 @@ public final class ReturnRequest extends AggregateRoot {
     public String currency() { return currency; }
     public List<ReturnLine> lines() { return java.util.Collections.unmodifiableList(lines); }
     public String windowOverride() { return windowOverride; }
-    public int parcelCount() { return parcelCount; }
     public long version() { return version; }
     public ReturnStatus status() { return status; }
     public UUID decidedBy() { return decidedBy; }
@@ -1327,11 +825,10 @@ public final class ReturnRequest extends AggregateRoot {
     public Instant returnDeadline() { return returnDeadline; }
     public UUID receivedBy() { return receivedBy; }
     public Instant receivedAt() { return receivedAt; }
+    /** The quarantine area the goods came back into, as the return receipt named it. */
     public String receivingLocation() { return receivingLocation; }
-    public String receiptNote() { return receiptNote; }
-    public UUID inspectedBy() { return inspectedBy; }
-    public Instant inspectedAt() { return inspectedAt; }
-    public String inspectionNote() { return inspectionNote; }
+    /** The return receipt that brought the goods back; null until it was confirmed. */
+    public UUID goodsReceiptId() { return goodsReceiptId; }
     public ReturnResolution moneyMode() { return moneyMode; }
     public BigDecimal settlementAmount() { return settlementAmount; }
     public UUID proposedBy() { return proposedBy; }
@@ -1340,20 +837,10 @@ public final class ReturnRequest extends AggregateRoot {
     public UUID settledBy() { return settledBy; }
     public Instant settledAt() { return settledAt; }
     public MoneyOutcome money() { return money; }
-    public UUID replacementOrderId() { return replacementOrderId; }
     public boolean vatAdjustmentRequired() { return vatAdjustmentRequired; }
     public UUID cancelledBy() { return cancelledBy; }
     public String cancellationReason() { return cancellationReason; }
     public Instant closedAt() { return closedAt; }
-    public WithdrawalStatus withdrawalStatus() { return withdrawalStatus; }
-    public String withdrawalReason() { return withdrawalReason; }
-    public BigDecimal withdrawalAmount() { return withdrawalAmount; }
-    public UUID withdrawalProposedBy() { return withdrawalProposedBy; }
-    public Instant withdrawalProposedAt() { return withdrawalProposedAt; }
-    public UUID withdrawalDecidedBy() { return withdrawalDecidedBy; }
-    public Instant withdrawalDecidedAt() { return withdrawalDecidedAt; }
-    public String withdrawalDecisionNote() { return withdrawalDecisionNote; }
-    public MoneyOutcome withdrawalMoney() { return withdrawalMoney; }
     public List<ReturnEvidence> evidence() { return java.util.Collections.unmodifiableList(evidence); }
     public List<ReturnDiscrepancy> discrepancies() { return java.util.Collections.unmodifiableList(discrepancies); }
 }

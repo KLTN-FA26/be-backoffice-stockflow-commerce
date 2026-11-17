@@ -131,11 +131,6 @@ class ProductPublicationAdapter implements ProductPublication {
         products.edit(id, slug, title, description, actor());
     }
 
-    public void advanceCommerceRevision(UUID id) {
-        lock(id);
-        products.advanceCommerceRevision(id, actor());
-    }
-
     public void publish(UUID id) {
         var p = lock(id);
         if (p.status() != ProductStatus.APPROVED && p.status() != ProductStatus.PUBLISHED)

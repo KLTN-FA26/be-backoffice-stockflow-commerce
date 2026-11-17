@@ -7,7 +7,6 @@ import com.stockflow.warehouse.internal.domain.BinType;
 import com.stockflow.warehouse.internal.domain.Footprint;
 import com.stockflow.warehouse.internal.domain.LocationStatus;
 import com.stockflow.warehouse.internal.domain.PickFaces;
-import com.stockflow.warehouse.internal.domain.StorageClass;
 import com.stockflow.warehouse.internal.service.ShelfCommands;
 import com.stockflow.warehouse.internal.service.ShelfLayoutService;
 import com.stockflow.warehouse.internal.service.ShelfSummary;
@@ -50,12 +49,11 @@ class ShelfControllerHttpTest {
     @Test
     void creatingAShelfTurnsTheNestedShapesIntoDomainValues() throws Exception {
         when(shelves.createShelf(any())).thenReturn(new ShelfSummary(SHELF, WAREHOUSE, null, "A01", "Kệ A01", null,
-                FOOTPRINT, true, new PickFaces(false, false, true, false), StorageClass.NORMAL,
+                FOOTPRINT, true, new PickFaces(false, false, true, false),
                 LocationStatus.ACTIVE, 0, List.of()));
 
         mvc.perform(post("/api/v1/warehouses/{id}/shelves", WAREHOUSE).contentType("application/json").content("""
-                        {"code":"a01","name":"Kệ A01","obstacle":true,"defaultStorageClass":"NORMAL",
-                         "footprint":{"x":5,"y":5,"width":10,"length":1.2,"rotation":90},
+                        {"code":"a01","name":"Kệ A01","obstacle":true,"footprint":{"x":5,"y":5,"width":10,"length":1.2,"rotation":90},
                          "pickFaces":{"north":false,"east":false,"south":true,"west":false}}
                         """))
                 .andExpect(status().isCreated())
@@ -72,8 +70,7 @@ class ShelfControllerHttpTest {
     @Test
     void aShelfWithoutAFootprintIsRejectedBeforeTheService() throws Exception {
         mvc.perform(post("/api/v1/warehouses/{id}/shelves", WAREHOUSE).contentType("application/json").content("""
-                        {"code":"A01","name":"Kệ A01","defaultStorageClass":"NORMAL",
-                         "pickFaces":{"north":false,"east":false,"south":true,"west":false}}
+                        {"code":"A01","name":"Kệ A01","pickFaces":{"north":false,"east":false,"south":true,"west":false}}
                         """))
                 .andExpect(status().isBadRequest());
         verifyNoInteractions(shelves);
@@ -84,8 +81,7 @@ class ShelfControllerHttpTest {
     void aRotationThatIsNotAQuarterTurnNeverReachesTheService() {
         assertThatThrownBy(() -> mvc.perform(post("/api/v1/warehouses/{id}/shelves", WAREHOUSE)
                 .contentType("application/json").content("""
-                        {"code":"A01","name":"Kệ A01","defaultStorageClass":"NORMAL",
-                         "footprint":{"x":5,"y":5,"width":10,"length":1.2,"rotation":45},
+                        {"code":"A01","name":"Kệ A01","footprint":{"x":5,"y":5,"width":10,"length":1.2,"rotation":45},
                          "pickFaces":{"north":false,"east":false,"south":true,"west":false}}
                         """)))
                 .rootCause().isInstanceOf(BusinessException.class)
@@ -97,22 +93,24 @@ class ShelfControllerHttpTest {
     void addingABinCarriesItsLocationSettings() throws Exception {
         when(shelves.addBin(any())).thenReturn(new ShelfSummary.BinEntry(UUID.randomUUID(), "03", null,
                 new Footprint(BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ONE, BigDecimal.ONE, 0), BinType.PALLET,
-                null, UUID.randomUUID(), "HCM-A01-2-03", StorageClass.NORMAL, 40, new BigDecimal("250"), true,
+                UUID.randomUUID(), "HCM-A01-2-03", new BigDecimal("1.400000"), new BigDecimal("250"), true,
                 true, LocationStatus.ACTIVE));
 
         mvc.perform(post("/api/v1/shelves/{s}/levels/{l}/bins", SHELF, LEVEL).contentType("application/json")
                         .content("""
-                                {"code":"03","type":"PALLET","capacityUnits":40,"maxWeight":250,
+                                {"code":"03","type":"PALLET","maxWeight":250,
                                  "pickable":true,"putawayTarget":true,
                                  "footprint":{"x":0,"y":0,"width":1,"length":1,"rotation":0}}
                                 """))
                 .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.data.locationCode").value("HCM-A01-2-03"));
+                .andExpect(jsonPath("$.data.locationCode").value("HCM-A01-2-03"))
+                .andExpect(jsonPath("$.data.capacityVolumeM3").value(1.4))
+                .andExpect(jsonPath("$.data.storageClass").doesNotExist());
 
         ArgumentCaptor<ShelfCommands.AddBin> sent = ArgumentCaptor.forClass(ShelfCommands.AddBin.class);
         verify(shelves).addBin(sent.capture());
         assertThat(sent.getValue().levelId()).isEqualTo(LEVEL);
-        assertThat(sent.getValue().settings().capacityUnits()).isEqualTo(40);
+        assertThat(sent.getValue().settings().maxWeight()).isEqualByComparingTo("250");
         assertThat(sent.getValue().settings().pickable()).isTrue();
     }
 
@@ -126,7 +124,7 @@ class ShelfControllerHttpTest {
 
         mvc.perform(post("/api/v1/shelves/{s}/bin-generation", SHELF).contentType("application/json").content("""
                         {"levelIds":["%s","%s"],"rowCount":1,"columnCount":2,
-                         "defaults":{"type":"PALLET","capacityUnits":40,"pickable":true,"putawayTarget":true}}
+                         "defaults":{"type":"PALLET","pickable":true,"putawayTarget":true}}
                         """.formatted(LEVEL, second)))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.data.length()").value(2))
@@ -140,7 +138,30 @@ class ShelfControllerHttpTest {
         assertThat(sent.getValue().levelIds()).containsExactly(LEVEL, second);
         assertThat(sent.getValue().scheme()).isEqualTo(BinNamingScheme.SEQUENTIAL);
         assertThat(sent.getValue().defaults().type()).isEqualTo(BinType.PALLET);
-        assertThat(sent.getValue().defaults().settings().capacityUnits()).isEqualTo(40);
+        assertThat(sent.getValue().defaults().settings().putawayTarget()).isTrue();
+    }
+
+    @Test
+    void aLevelWithoutItsClearHeightIsRejectedBeforeTheService() throws Exception {
+        mvc.perform(post("/api/v1/shelves/{s}/levels", SHELF).contentType("application/json")
+                        .content("{\"levelIndex\":3,\"elevation\":3}"))
+                .andExpect(status().isBadRequest());
+        verifyNoInteractions(shelves);
+    }
+
+    @Test
+    void addingALevelCarriesItsClearHeight() throws Exception {
+        when(shelves.addLevel(any())).thenReturn(new ShelfSummary.Level(LEVEL, 3, new BigDecimal("3"),
+                new BigDecimal("1.4"), null, List.of()));
+
+        mvc.perform(post("/api/v1/shelves/{s}/levels", SHELF).contentType("application/json")
+                        .content("{\"levelIndex\":3,\"elevation\":3,\"usableHeight\":1.4}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.usableHeight").value(1.4));
+
+        ArgumentCaptor<ShelfCommands.AddLevel> sent = ArgumentCaptor.forClass(ShelfCommands.AddLevel.class);
+        verify(shelves).addLevel(sent.capture());
+        assertThat(sent.getValue().measures().usableHeight()).isEqualByComparingTo("1.4");
     }
 
     @Test
@@ -161,7 +182,7 @@ class ShelfControllerHttpTest {
     }
 
     private static ShelfSummary.BinEntry bin(String code, String locationCode, Footprint footprint) {
-        return new ShelfSummary.BinEntry(UUID.randomUUID(), code, null, footprint, BinType.PALLET, null,
-                UUID.randomUUID(), locationCode, StorageClass.NORMAL, 40, null, true, true, LocationStatus.ACTIVE);
+        return new ShelfSummary.BinEntry(UUID.randomUUID(), code, null, footprint, BinType.PALLET,
+                UUID.randomUUID(), locationCode, new BigDecimal("8.4"), null, true, true, LocationStatus.ACTIVE);
     }
 }

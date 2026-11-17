@@ -37,8 +37,9 @@ import java.util.stream.Stream;
 class SalesRollupBackfill {
 
     private static final Logger LOG = LoggerFactory.getLogger(SalesRollupBackfill.class);
+    /** As {@link SalesRollupRebuilder}: an order is a sale once its contract is signed (4B-5). */
     private static final List<OrderStatus> COUNTABLE = Stream.of(OrderStatus.values())
-            .filter(status -> status != OrderStatus.DRAFT).toList();
+            .filter(status -> status != OrderStatus.DRAFT && status != OrderStatus.PENDING_CONTRACT).toList();
 
     private final OrderService orders;
     private final SalesRollupQueries queries;

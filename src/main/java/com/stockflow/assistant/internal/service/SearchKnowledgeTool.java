@@ -10,10 +10,11 @@ import org.springframework.stereotype.Component;
 import java.util.List;
 
 /**
- * U6: the business rules, glossary, state machines and process flows, searched (design §6).
+ * U6: the business analysis (kltn-docs) searched: each chapter's rules, statuses, edge cases and flow, and the
+ * glossary (design §6).
  *
  * <p>No screen shows these, so the tool mirrors no endpoint and carries the assistant's own permission: whoever may
- * ask the assistant may read the rules. Each passage keeps its anchor, so the answer can cite {@code BR-RMA-002} and
+ * ask the assistant may read the rules. Each passage keeps its anchor, so the answer can cite {@code 15 BR-08} and
  * the golden set can check that what it cites was actually retrieved, and says how the search found it
  * ({@code foundBy}): a passage only its meaning found shares no word with the search, and is the one to read most
  * carefully before relying on it.</p>
@@ -31,7 +32,7 @@ class SearchKnowledgeTool implements AssistantTool {
     /** The longest question the search embeds: a pasted e-mail is cut to its start. */
     static final int QUESTION_LENGTH = 1000;
 
-    private static final String QUERY_HINT = "Keywords, for example 'custom printed return defective'";
+    private static final String QUERY_HINT = "Vietnamese keywords, for example 'phí huỷ đơn sau khi in hàng loạt'";
 
     private final KnowledgeService knowledge;
     private final ToolSpec spec;
@@ -53,23 +54,27 @@ class SearchKnowledgeTool implements AssistantTool {
      * a flow that is not there; and what {@code foundBy} means, so it reads a passage found by meaning alone with care.
      */
     static String description(boolean flows) {
-        return "Search StockFlow's business rules (ids like BR-RMA-002), glossary and state machines"
-                + (flows ? " and process flows (codes like F-PO purchase orders, F-RCP receiving, F-FUL picking and "
-                        + "packing, F-SHP shipping, F-RMA returns, F-CNT stock counts, X-SHORT short picks)" : "")
-                + ": policies, what is allowed, definitions, which status changes are possible"
-                + (flows ? ", and the steps of a process in order" : "")
-                + ". The rules, the glossary and the state machines are written in English"
-                + (flows ? ", the flows in Vietnamese: search with English keywords, and add Vietnamese ones for how a "
-                        + "process goes. A flow describes the steps as designed: which statuses exist is for the state "
-                        + "machines to say, and live data for the other tools."
-                        : ", so search with English keywords; add Vietnamese ones if useful.")
-                + " Returns up to 5 passages, each with its anchor and how the search found it (foundBy: named, both, "
+        return "Search StockFlow's business analysis, written in Vietnamese: the business rules of each chapter, the "
+                + "statuses and which changes are allowed, the edge cases"
+                + (flows ? ", the steps of each process in order" : "")
+                + ", and the glossary (terms, statuses, roles, and terms no longer used). Chapters: 01 products, SKUs "
+                + "and carton specs; 03 receiving finished goods and returned goods; 05 putaway; 06 warehouse map, bins and "
+                + "capacity; 07 picking; 08 carton check and shipping labels; 09 shipping, load plans and carriers; 11 "
+                + "moves inside a warehouse; 20 inventory control, counts and adjustments; 14 quotes, orders and sales "
+                + "contracts; 15 contract payments and receivables; 17 order management, production orders, holds, "
+                + "cancellation and returns; 18 wholesale customers; 21 e-invoices. Search with Vietnamese keywords. "
+                + "Returns up to 5 passages, each with its anchor and how the search found it (foundBy: named, both, "
                 + "words or meaning; one found by meaning alone shares no word with your search, so check that it "
-                + "really answers before relying on it): name the rule" + (flows ? " or flow" : "") + " you rely on by "
-                + "its anchor, and give what it lays down in the language of the user's question. A long state "
-                + "machine" + (flows ? " or flow" : "") + " is split into passages ('9. Order — order-service', '... "
-                + "(2)', '... › Who may cancel ...'): when a rule points elsewhere or a passage is cut, search again for "
-                + "the part you need. Answer a policy question only from what the passages say; if they do not say it, "
+                + "really answers before relying on it). An anchor carries its chapter: '15 BR-08' is rule 8 of "
+                + "chapter 15, and rule numbers start again in every chapter, so a rule number is never written "
+                + "without its chapter; '17 §5.1' is a section (§5 statuses, §6 edge cases"
+                + (flows ? ", §4 the steps" : "") + "); a glossary passage is anchored by its term or 'glossary §8'. "
+                + "Name what you rely on by its anchor exactly as written, and give what it lays down in the language "
+                + "of the user's question. A long section or rule is split into passages ('17 §5.1', '17 §5.1 (2)'). "
+                + "A rule or section a passage names without a chapter ('BR-17', '§4.5') is one of the passage's own "
+                + "chapter: inside '20 BR-01', 'BR-17' is '20 BR-17'. When a passage points to another rule or section "
+                + "or is cut, search for that anchor. Answer a policy question only from what the passages say; if "
+                + "they do not say it, "
                 + "say no rule was found. Not for live data such as stock or orders.";
     }
 

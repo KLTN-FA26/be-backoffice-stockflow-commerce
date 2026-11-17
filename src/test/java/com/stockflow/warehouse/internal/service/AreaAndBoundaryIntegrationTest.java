@@ -14,7 +14,6 @@ import com.stockflow.warehouse.internal.domain.Footprint;
 import com.stockflow.warehouse.internal.domain.LocationSettings;
 import com.stockflow.warehouse.internal.domain.LocationStatus;
 import com.stockflow.warehouse.internal.domain.Segment;
-import com.stockflow.warehouse.internal.domain.StorageClass;
 import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -43,7 +42,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 @Transactional
 class AreaAndBoundaryIntegrationTest {
 
-    private static final LocationSettings PUTAWAY_ONLY = new LocationSettings(null, null, false, true);
+    private static final LocationSettings PUTAWAY_ONLY = new LocationSettings(null, false, true);
 
     @Autowired AreaLayoutService areas;
     @Autowired BoundaryLayoutService boundaries;
@@ -65,7 +64,7 @@ class AreaAndBoundaryIntegrationTest {
 
     private AreaSummary create(String code, AreaType type, Footprint footprint) {
         return areas.createArea(new AreaCommands.CreateArea(WAREHOUSE_HCM, code,
-                new AreaDetails(type, "Khu " + code, footprint, false, null, PUTAWAY_ONLY)));
+                new AreaDetails(type, "Khu " + code, footprint, false, PUTAWAY_ONLY)));
     }
 
     /** Runs the deferred ownership trigger now, inside a test that will roll back. */
@@ -114,7 +113,7 @@ class AreaAndBoundaryIntegrationTest {
             long version = versionOf("area", office);
 
             AreaSummary updated = areas.updateArea(new AreaCommands.UpdateArea(office, new AreaDetails(
-                    AreaType.OVERFLOW, "Khu tràn", at("2", "30", "10", "8"), true, StorageClass.OVERSIZE,
+                    AreaType.OVERFLOW, "Khu tràn", at("2", "30", "10", "8"), true,
                     PUTAWAY_ONLY), version));
             checkDeferredConstraints();
 
@@ -128,7 +127,7 @@ class AreaAndBoundaryIntegrationTest {
         /**
          * Only the location row changes here, and Hibernate versions the area by its own columns. Without
          * the forced increment the version would stay put, and the stale second edit would pass its check
-         * and quietly put capacity 500 back.
+         * and quietly put the old weight limit back.
          */
         @Test
         @DisplayName("changing only the location's settings still moves the area's version")
@@ -136,17 +135,17 @@ class AreaAndBoundaryIntegrationTest {
             UUID rcv01 = DemoData.area("RCV01");
             long version = versionOf("area", rcv01);
             AreaDetails moreCapacity = new AreaDetails(AreaType.RECEIVING, "Khu nhận hàng", at("40", "2", "15", "8"),
-                    false, StorageClass.OVERSIZE, new LocationSettings(800, null, false, false));
+                    false, new LocationSettings(new BigDecimal("800"), false, false));
 
             AreaSummary updated = areas.updateArea(new AreaCommands.UpdateArea(rcv01, moreCapacity, version));
             entityManager.flush();
 
-            assertThat(updated.capacityUnits()).isEqualTo(800);
+            assertThat(updated.maxWeight()).isEqualByComparingTo("800");
             assertThat(updated.version()).isEqualTo(version + 1);
             assertThat(versionOf("area", rcv01)).isEqualTo(version + 1);
             assertThat(errorOf(() -> areas.updateArea(new AreaCommands.UpdateArea(rcv01, new AreaDetails(
-                    AreaType.RECEIVING, "Khu nhận", at("40", "2", "15", "8"), false, StorageClass.OVERSIZE,
-                    new LocationSettings(500, null, false, false)), version))))
+                    AreaType.RECEIVING, "Khu nhận", at("40", "2", "15", "8"), false,
+                    new LocationSettings(null, false, false)), version))))
                     .isEqualTo(ErrorCode.OPTIMISTIC_LOCK);
         }
 
@@ -156,7 +155,7 @@ class AreaAndBoundaryIntegrationTest {
             UUID rcv01 = DemoData.area("RCV01");
 
             assertThat(errorOf(() -> areas.updateArea(new AreaCommands.UpdateArea(rcv01, new AreaDetails(
-                    AreaType.NON_STORAGE, "Văn phòng", at("40", "2", "15", "8"), false, null, null),
+                    AreaType.NON_STORAGE, "Văn phòng", at("40", "2", "15", "8"), false, null),
                     versionOf("area", rcv01)))))
                     .isEqualTo(ErrorCode.AREA_TYPE_CHANGE_NOT_ALLOWED);
         }

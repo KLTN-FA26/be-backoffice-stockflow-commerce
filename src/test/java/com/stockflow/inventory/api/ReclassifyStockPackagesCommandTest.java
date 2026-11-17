@@ -25,16 +25,28 @@ class ReclassifyStockPackagesCommandTest {
     @Test
     @DisplayName("any other reference cannot make a carton AVAILABLE, which would skip every bin rule")
     void otherReferencesCannotMakeAvailable() {
-        assertThatThrownBy(() -> command(StockDisposition.AVAILABLE, MoveReference.QC_INSPECTION))
+        assertThatThrownBy(() -> command(StockDisposition.AVAILABLE, MoveReference.MOVE_TASK))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
-    @DisplayName("QC still quarantines or blocks a carton")
-    void qcStillQuarantines() {
-        assertThat(command(StockDisposition.QUARANTINE, MoveReference.QC_INSPECTION).disposition())
+    @DisplayName("the putaway of a released carton is a putaway to AVAILABLE and nothing else (team plan 4D-1)")
+    void quarantineReleaseIsAPutaway() {
+        assertThat(new ReclassifyStockPackagesCommand("LPN-20261026-000001", "HCM-A01-2-B", StockDisposition.AVAILABLE,
+                MoveReference.PUTAWAY_TASK, Identifiers.newId(), Identifiers.newId(), null, true).quarantineRelease())
+                .isTrue();
+        assertThatThrownBy(() -> new ReclassifyStockPackagesCommand("LPN-20261026-000001", "HCM-QC01",
+                StockDisposition.QUARANTINE, MoveReference.PUTAWAY_TASK, Identifiers.newId(), Identifiers.newId(), null,
+                true)).isInstanceOf(IllegalArgumentException.class);
+        assertThat(command(StockDisposition.AVAILABLE, MoveReference.PUTAWAY_TASK).quarantineRelease()).isFalse();
+    }
+
+    @Test
+    @DisplayName("a carton may still be quarantined or blocked under another reference")
+    void cartonsAreStillQuarantined() {
+        assertThat(command(StockDisposition.QUARANTINE, MoveReference.MOVE_TASK).disposition())
                 .isEqualTo(StockDisposition.QUARANTINE);
-        assertThat(command(StockDisposition.BLOCKED, MoveReference.QC_INSPECTION).disposition())
+        assertThat(command(StockDisposition.BLOCKED, MoveReference.MOVE_TASK).disposition())
                 .isEqualTo(StockDisposition.BLOCKED);
     }
 }

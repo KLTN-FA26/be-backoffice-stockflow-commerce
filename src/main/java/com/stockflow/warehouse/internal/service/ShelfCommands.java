@@ -7,7 +7,6 @@ import com.stockflow.warehouse.internal.domain.Footprint;
 import com.stockflow.warehouse.internal.domain.LevelMeasures;
 import com.stockflow.warehouse.internal.domain.LocationSettings;
 import com.stockflow.warehouse.internal.domain.PickFaces;
-import com.stockflow.warehouse.internal.domain.StorageClass;
 
 import java.util.List;
 import java.util.UUID;
@@ -24,14 +23,12 @@ public final class ShelfCommands {
 
     /** @param zoneId optional; must be a zone of the same warehouse */
     public record CreateShelf(UUID warehouseId, UUID zoneId, String code, String name, String description,
-                              Footprint footprint, boolean obstacle, PickFaces pickFaces,
-                              StorageClass defaultStorageClass) {
+                              Footprint footprint, boolean obstacle, PickFaces pickFaces) {
     }
 
     /** No code: it is part of every bin's location code. */
     public record UpdateShelf(UUID shelfId, UUID zoneId, String name, String description, Footprint footprint,
-                              boolean obstacle, PickFaces pickFaces, StorageClass defaultStorageClass,
-                              long expectedVersion) {
+                              boolean obstacle, PickFaces pickFaces, long expectedVersion) {
     }
 
     public record AddLevel(UUID shelfId, int levelIndex, LevelMeasures measures) {

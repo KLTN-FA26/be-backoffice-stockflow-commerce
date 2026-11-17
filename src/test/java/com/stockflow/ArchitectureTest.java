@@ -410,7 +410,7 @@ class ArchitectureTest {
     }
 
     /**
-     * {@code RunAs} builds an authorization that no request carried (ADR-0012). Every caller is one more way to act for
+     * {@code RunAs} builds an authorization that no request carried (ADR-0013). Every caller is one more way to act for
      * someone without them, so each is added here on purpose, reviewed as such; today only the assistant's watch.
      */
     @Test
@@ -418,19 +418,19 @@ class ArchitectureTest {
         ArchRule rule = noClasses()
                 .that().haveNameNotMatching("com\\.stockflow\\.assistant\\.internal\\.service\\.AssistantWatch(\\$.*)?")
                 .and().haveNameNotMatching("com\\.stockflow\\.common\\.security\\.RunAs(\\$.*)?")
-                // A personal token's request is authenticated with the same authorization (ADR-0013); the chain
+                // A personal token's request is authenticated with the same authorization (ADR-0014); the chain
                 // that builds the provider only hands RunAs over.
                 .and().doNotHaveFullyQualifiedName("com.stockflow.common.security.PersonalTokenAuthenticationProvider")
                 .and().doNotHaveFullyQualifiedName("com.stockflow.common.security.ResourceServerSecurityConfig")
                 .should().dependOnClassesThat()
                 .haveNameMatching("com\\.stockflow\\.common\\.security\\.RunAs(\\$.*)?")
-                .because("acting for a user outside a request is reviewed per caller (ADR-0012, ADR-0013)");
+                .because("acting for a user outside a request is reviewed per caller (ADR-0013, ADR-0014)");
         rule.check(CLASSES);
     }
 
     /**
      * An authorization is built in two places only: from a request's token, and by {@code RunAs}. A third would be a
-     * way round both, and is reviewed as one (ADR-0008, ADR-0012).
+     * way round both, and is reviewed as one (ADR-0008, ADR-0013).
      */
     @Test
     void onlyTheConverterAndRunAsBuildAnAuthorization() {
@@ -472,7 +472,7 @@ class ArchitectureTest {
                         "com.stockflow.assistant.internal.service.AssistantWatchProperties")
                 .should().dependOnClassesThat()
                 .haveNameMatching("com\\.stockflow\\.assistant\\.internal\\.service\\.AssistantWatch(\\$.*)?")
-                .because("the watch acts for whichever user it is handed (ADR-0012)");
+                .because("the watch acts for whichever user it is handed (ADR-0013)");
         rule.check(CLASSES);
     }
 
@@ -482,6 +482,20 @@ class ArchitectureTest {
         ArchRule rule = noFields()
                 .should().beAnnotatedWith(org.springframework.beans.factory.annotation.Autowired.class)
                 .because("constructor injection makes dependencies explicit and objects testable");
+        rule.check(CLASSES);
+    }
+
+    /**
+     * Team plan 5-2: the customer does not place orders, so {@code OrderService.placeOrder} has no production caller. It
+     * stays only as the tests' fixture until 4B-10 replaces it with an order drawn up through a contract. A production
+     * class calling it would bring checkout back by the side door, priced at whatever the caller says.
+     */
+    @Test
+    void noProductionClassPlacesAnOrderThroughTheFixture() {
+        ArchRule rule = noClasses()
+                .should().callMethod(com.stockflow.order.api.OrderService.class, "placeOrder",
+                        com.stockflow.order.api.PlaceOrderCommand.class)
+                .because("placeOrder is a test fixture until 4B-10; the customer does not place orders (14 BR-01, BR-02)");
         rule.check(CLASSES);
     }
 }

@@ -98,8 +98,7 @@ final class TypedText {
     }
 
     /**
-     * {@code text} with its contacts masked, never marked: text sent to a reader that is told nothing about the mark
-     * (the delivery-note reader), and text whose mark is decided elsewhere.
+     * {@code text} with its contacts masked, never marked: text whose mark is decided elsewhere.
      */
     static String maskedContacts(String text) {
         if (text == null || text.isEmpty()) {
@@ -111,7 +110,7 @@ final class TypedText {
         masked = EMAIL_ADDRESS.matcher(masked).replaceAll(Matcher.quoteReplacement(EMAIL));
         masked = MOBILE_NUMBER.matcher(masked).replaceAll(Matcher.quoteReplacement(PHONE));
         masked = PHONE_NUMBER.matcher(masked).replaceAll(Matcher.quoteReplacement(PHONE));
-        // Typed text shaped like a customer alias ("KH#12") must not be read back as one (ADR-0014).
+        // Typed text shaped like a customer alias ("KH#12") must not be read back as one (ADR-0015).
         return ALIAS_SHAPED.matcher(masked).replaceAll("$1 ");
     }
 

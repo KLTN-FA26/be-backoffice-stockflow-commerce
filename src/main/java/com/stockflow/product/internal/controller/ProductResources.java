@@ -11,6 +11,8 @@ public final class ProductResources {
     public static final String PRODUCTS = "product-products";
     public static final String ATTRIBUTES = "product-attributes";
     public static final String VARIANTS = "product-variants";
+    /** Customization templates (kltn-docs 01 §4.10): the Sales Manager's, declared on CustomizationTemplateController. */
+    public static final String CUSTOMIZATION_TEMPLATES = "product-customization-templates";
     /**
      * Suspend, resume, discontinue: the System Admin's (kltn-docs 01 §5.1), apart from approving and publishing; also
      * what lets an approver approve their own submission (BR-PRD-003, checked in the service).

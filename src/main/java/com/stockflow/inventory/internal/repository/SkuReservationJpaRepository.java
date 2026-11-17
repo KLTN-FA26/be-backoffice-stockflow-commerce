@@ -48,6 +48,14 @@ interface SkuReservationJpaRepository extends JpaRepository<ReservationJpaEntity
             """)
     List<HeldTotal> heldBySku(@Param("skus") Collection<String> skus);
 
+    @Query("""
+            select r from ReservationJpaEntity r
+            where r.stockItem is null and r.sku = :sku and r.warehouseCode = :warehouseCode
+              and r.status = com.stockflow.inventory.internal.domain.ReservationStatus.HELD
+            order by r.reservedAt, r.id
+            """)
+    List<ReservationJpaEntity> findHeldAt(@Param("sku") String sku, @Param("warehouseCode") String warehouseCode);
+
     @Query("select r from ReservationJpaEntity r where r.stockItem is null and r.id in :ids")
     List<ReservationJpaEntity> findSoft(@Param("ids") Collection<UUID> ids);
 }

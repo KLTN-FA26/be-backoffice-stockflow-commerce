@@ -47,7 +47,7 @@ class CancellationRequestServiceTest {
             mock(CancellationRequestSearch.class), orders, orderService, Clock.fixed(NOW, ZoneOffset.UTC));
 
     private final UUID orderId = UUID.randomUUID();
-    private final Order order = OrderFixtures.releasedPrepaid();
+    private final Order order = OrderFixtures.released();
     private final OrderSummary summary = mock(OrderSummary.class);
 
     private CancellationRequest pending() {

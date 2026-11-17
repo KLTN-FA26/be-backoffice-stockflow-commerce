@@ -4,7 +4,8 @@ import java.util.UUID;
 
 /**
  * Input to {@link ProductService#update}. {@code code} is not here — it is fixed at creation.
- * {@code version} is the product's version the edit was made from (SCRUM-461).
+ * {@code version} is the product's version the edit was made from (SCRUM-461). Nor is the kind: every product is
+ * {@link ProductKind#CUSTOMIZABLE} (kltn-docs 01 BR-19).
  */
 public record UpdateProductCommand(
         UUID productId,
@@ -16,7 +17,6 @@ public record UpdateProductCommand(
         String shortDescription,
         String description,
         String descriptionEn,
-        TaxClass taxClass,
-        ProductKind kind
+        TaxClass taxClass
 ) {
 }

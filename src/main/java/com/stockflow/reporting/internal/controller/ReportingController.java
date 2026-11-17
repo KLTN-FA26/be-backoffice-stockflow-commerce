@@ -69,7 +69,7 @@ class ReportingController {
     }
 
     @GetMapping("/top-products")
-    @Operation(summary = "The best-selling SKUs of the range, by revenue then units",
+    @Operation(summary = "The best-selling SKUs of the range, by revenue before tax, then cartons, then units (D33)",
             description = "Needs reporting-reports:READ. productName is null if the product module does not know the SKU. "
                     + "limit 1..100, default 10 (400 otherwise).")
     @RequiresPermission(resource = ReportingResources.REPORTS, action = Action.READ, scope = DataScope.ALL)

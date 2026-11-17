@@ -11,7 +11,7 @@ class DesignArtifactWebMapper {
     DesignArtifactResponse toResponse(DesignArtifact artifact) {
         var file = artifact.file();
         return new DesignArtifactResponse(artifact.id(), artifact.designId(), artifact.role(), file.originalName(),
-                file.contentType(), file.sizeBytes(), file.storedAt(), artifact.checksum());
+                file.contentType(), file.sizeBytes(), file.storedAt(), artifact.checksum(), artifact.documentChecksum());
     }
 
     ArtifactDownloadResponse toResponse(DownloadLink link) {

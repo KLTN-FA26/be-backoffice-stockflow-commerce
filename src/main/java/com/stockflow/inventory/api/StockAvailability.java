@@ -1,6 +1,5 @@
 package com.stockflow.inventory.api;
 
-import java.time.LocalDate;
 import java.util.UUID;
 
 /**
@@ -14,7 +13,6 @@ public record StockAvailability(
         String sku,
         String locationCode,
         String lotNumber,
-        LocalDate expiryDate,
         int onHand,
         int reserved,
         int allocated,

@@ -35,9 +35,9 @@ public class ScannedCodeQueriesImpl implements ScannedCodeQueries {
         StockPackageBalance.Detail found = lookup.byLpn(lpn);
         StockPackageBalance carton = found.carton();
         return new Carton(carton.lpn(), carton.sku(), carton.unitOfMeasure(), carton.nominalQty(),
-                carton.locationCode(), carton.status().name(), carton.unopened(), carton.lotNumber(),
-                carton.expiryDate(), carton.onHand(), carton.reserved(), found.contents().stream()
-                .map(row -> new CartonContent(row.lotNumber(), row.expiryDate(), row.status().name(), row.onHand(),
+                carton.locationCode(), carton.status().name(), carton.lotNumber(),
+                carton.onHand(), carton.reserved(), found.contents().stream()
+                .map(row -> new CartonContent(row.lotNumber(), row.receivedAt(), row.status().name(), row.onHand(),
                         row.reserved())).toList());
     }
 
@@ -52,9 +52,8 @@ public class ScannedCodeQueriesImpl implements ScannedCodeQueries {
             throw new BusinessException(ErrorCode.LOCATION_NOT_FOUND, "No location " + locationCode);
         }
         return lookup.atLocation(locationCode).stream()
-                .map(line -> new LocationLine(line.sku(), line.lotNumber(), line.expiryDate(), line.status().name(),
-                        line.wholeCartons(), line.wholeCartonUnits(), line.openedCartons(), line.openedCartonUnits(),
-                        line.looseUnits(), line.totalUnits()))
+                .map(line -> new LocationLine(line.sku(), line.lotNumber(), line.status().name(),
+                        line.wholeCartons(), line.wholeCartonUnits(), line.looseUnits(), line.totalUnits()))
                 .toList();
     }
 

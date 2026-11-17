@@ -12,16 +12,14 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/** The putaway task's own rules: parts of a loose line, the whole of a carton, nothing after DONE (SCRUM-92). */
+/**
+ * The putaway task's own rules: one carton per task (team plan 4C-2), recorded whole, nothing after DONE
+ * (SCRUM-92).
+ */
 class PutawayTaskTest {
 
     private final UUID bin = Identifiers.newId();
     private final UUID bin2 = Identifiers.newId();
-
-    private static PutawayTask loose(int quantity) {
-        return PutawayTask.open(Identifiers.newId(),
-                new NewPutawayTask(Identifiers.newId(), Identifiers.newId(), "SKU-1", quantity, null));
-    }
 
     private static PutawayTask carton(int quantity) {
         return PutawayTask.open(Identifiers.newId(),
@@ -33,9 +31,39 @@ class PutawayTaskTest {
     }
 
     @Test
+    @DisplayName("a task names its carton (05 BR-08): a loose one is refused")
+    void aLooseTaskIsRefused() {
+        assertThat(code(org.assertj.core.api.Assertions.catchThrowable(() -> PutawayTask.open(Identifiers.newId(),
+                new NewPutawayTask(Identifiers.newId(), Identifiers.newId(), "SKU-1", 10, null)))))
+                .isEqualTo(ErrorCode.VALIDATION_FAILED);
+    }
+
+    @Test
+    @DisplayName("a receipt's task is RECEIPT; a quarantine release names no receipt line (05 BR-01, team plan 4D-1)")
+    void sources() {
+        assertThat(carton(10).source()).isEqualTo(com.stockflow.warehouse.api.PutawaySource.RECEIPT);
+        UUID box = Identifiers.newId();
+        PutawayTask release = PutawayTask.open(Identifiers.newId(), NewPutawayTask.quarantineRelease("SKU-1", 10, box));
+        assertThat(release.source()).isEqualTo(com.stockflow.warehouse.api.PutawaySource.QUARANTINE_RELEASE);
+        assertThat(release.goodsReceiptId()).isNull();
+        assertThat(release.goodsReceiptLineId()).isNull();
+        assertThat(release.stockPackageId()).isEqualTo(box);
+        assertThat(release.status()).isEqualTo(PutawayStatus.PENDING);
+
+        assertThat(code(org.assertj.core.api.Assertions.catchThrowable(() -> PutawayTask.open(Identifiers.newId(),
+                new NewPutawayTask(Identifiers.newId(), Identifiers.newId(), "SKU-1", 10, box,
+                        com.stockflow.warehouse.api.PutawaySource.QUARANTINE_RELEASE)))))
+                .isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThat(code(org.assertj.core.api.Assertions.catchThrowable(() -> PutawayTask.open(Identifiers.newId(),
+                NewPutawayTask.quarantineRelease("SKU-1", 10, null))))).isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThatThrownBy(() -> PutawayTask.open(Identifiers.newId(), new NewPutawayTask(null, null, "SKU-1", 10,
+                box))).isInstanceOf(NullPointerException.class);
+    }
+
+    @Test
     @DisplayName("a new task is PENDING with no target")
     void newTaskIsPending() {
-        PutawayTask task = loose(100);
+        PutawayTask task = carton(100);
 
         assertThat(task.status()).isEqualTo(PutawayStatus.PENDING);
         assertThat(task.targetLocationId()).isNull();
@@ -43,50 +71,13 @@ class PutawayTaskTest {
     }
 
     @Test
-    @DisplayName("part of a loose line leaves the task IN_PROGRESS, targeting the bin it went to")
-    void partialPutawayIsInProgress() {
-        PutawayTask task = loose(100);
-
-        task.recordPutaway(40, 100, bin);
-
-        assertThat(task.status()).isEqualTo(PutawayStatus.IN_PROGRESS);
-        assertThat(task.targetLocationId()).isEqualTo(bin);
-    }
-
-    @Test
-    @DisplayName("the last part finishes the task and the target is the last bin")
-    void lastPartIsDone() {
-        PutawayTask task = loose(100);
-        task.recordPutaway(40, 100, bin);
-
-        task.recordPutaway(60, 60, bin2);
-
-        assertThat(task.status()).isEqualTo(PutawayStatus.DONE);
-        assertThat(task.targetLocationId()).isEqualTo(bin2);
-    }
-
-    @Test
     @DisplayName("a DONE task takes nothing more: PUTAWAY_TASK_DONE")
     void doneRefusesMore() {
-        PutawayTask task = loose(60);
+        PutawayTask task = carton(60);
         task.recordPutaway(60, 60, bin);
 
         assertThatThrownBy(() -> task.recordPutaway(1, 0, bin2))
                 .extracting(PutawayTaskTest::code).isEqualTo(ErrorCode.PUTAWAY_TASK_DONE);
-    }
-
-    @Test
-    @DisplayName("more than is left, or nothing, is refused: PUTAWAY_QUANTITY_EXCEEDED")
-    void moreThanLeftRefused() {
-        PutawayTask task = loose(100);
-        task.recordPutaway(40, 100, bin);
-
-        assertThatThrownBy(() -> task.recordPutaway(61, 60, bin2))
-                .extracting(PutawayTaskTest::code).isEqualTo(ErrorCode.PUTAWAY_QUANTITY_EXCEEDED);
-        assertThatThrownBy(() -> task.recordPutaway(0, 60, bin2))
-                .extracting(PutawayTaskTest::code).isEqualTo(ErrorCode.PUTAWAY_QUANTITY_EXCEEDED);
-        assertThat(task.status()).as("a refusal changes nothing").isEqualTo(PutawayStatus.IN_PROGRESS);
-        assertThat(task.targetLocationId()).isEqualTo(bin);
     }
 
     @Test

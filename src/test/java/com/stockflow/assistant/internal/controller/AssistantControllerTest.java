@@ -34,7 +34,7 @@ import static org.mockito.Mockito.verifyNoInteractions;
 class AssistantControllerTest {
 
     private static final CurrentUser PLANNER = new CurrentUser(UUID.randomUUID(), "planner",
-            Set.of(Role.INVENTORY_PLANNER), Set.of(), DataScope.ALL, Set.of());
+            Set.of(Role.SYSTEM_ADMIN), Set.of(), DataScope.ALL, Set.of());
 
     @Test
     @DisplayName("both ways of asking draw on one named budget: alternating them must not double the limit")

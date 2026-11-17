@@ -41,7 +41,8 @@ import java.util.regex.Pattern;
  *       rows listed beside it. Arithmetic across records is not grounded, so a sum of unrelated figures is caught;</li>
  *   <li>a count under 10 of things a list holds ("2 mã", "3 đơn", "1 lô") counts when a list in a result has that
  *       many rows, or that many rows sharing one value of a field ({@link #groups}), when a result states it as a
- *       total or count, when the question typed it, or when a text names that many codes: "2 đơn đang bị giữ" out of
+ *       total or count, when the question typed it, when a text names that many codes, or when a result's text states
+ *       that count with what it counts ("tối đa 3 thùng" in a business rule): "2 đơn đang bị giữ" out of
  *       ten orders is a count the model may make, read off the list. Never the context's calendar or clock, which
  *       hold most small numbers on any day;</li>
  *   <li>other numbers under 10 (day and month parts, days left, small quantities with a unit), years and list
@@ -481,7 +482,11 @@ public final class AnswerNumbers {
                 continue;
             }
             readings.forEach(reading -> sets.values.add(reading.value()));
-            if (counts && number.group().chars().allMatch(Character::isDigit)) {
+            boolean digits = number.group().chars().allMatch(Character::isDigit);
+            // A count a source states with what it counts grounds that count: "tối đa 3 thùng" in a business rule
+            // lets the answer quote it, as a list of three rows would.
+            if (digits && (counts || kind == Kind.SOURCE
+                    && COUNTED.matcher(text).region(number.end(), text.length()).lookingAt())) {
                 sets.counts.add(new BigDecimal(number.group()));
             }
             Matcher unit = MULTIPLIER.matcher(text).region(number.end(), text.length());

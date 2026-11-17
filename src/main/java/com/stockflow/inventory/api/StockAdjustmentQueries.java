@@ -3,12 +3,17 @@ package com.stockflow.inventory.api;
 import com.stockflow.common.api.PageResponse;
 
 /**
- * Stock adjustments for other modules (the assistant, ADR-0010): the list the adjustment screen shows, the approver's
+ * Stock adjustments for other modules (the assistant, ADR-0011): the list the adjustment screen shows, the approver's
  * queue of PENDING_APPROVAL among them (SCRUM-145).
  *
  * <p><b>Scope.</b> The caller's warehouse limit is applied exactly as on {@code GET /api/v1/inventory/adjustments}: a
  * warehouse-limited caller sees the adjustments of their own warehouses' bins. Call it inside the same guard as that
  * endpoint, {@code @RequiresPermission(resource = "inventory-stock-adjustments", action = READ)}.</p>
+ *
+ * <p><b>Blind count</b> (kltn-docs 20 BR-07). As on that screen, a caller without
+ * {@code inventory-cycle-counts:APPROVE} does not get the adjustments of a slot a count holds (open, or its variance
+ * still pending): a pending {@code COUNT_VARIANCE} is a delta against the books the counter is to find. The caller is
+ * read from the security context; an absent one is treated as blind.</p>
  */
 public interface StockAdjustmentQueries {
 

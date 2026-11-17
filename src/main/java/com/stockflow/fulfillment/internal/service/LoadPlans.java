@@ -21,27 +21,22 @@ public interface LoadPlans {
 
     /**
      * A parcel as planning shows it: sizes in whole mm (measured cm rounded up), its place ({@code vehicleSeq}) or why
-     * it has none ({@code unplacedReason}). {@code partName} is its SKU ({@code SKU n/N} for a kit part).
+     * it has none ({@code unplacedReason}). {@code partName} is its SKU.
      */
     record ParcelView(UUID packageId, String labelCode, UUID shipmentId, String shipmentCode, String partName,
                       int lengthMm, int widthMm, int heightMm, BigDecimal weightKg, boolean rotatable,
-                      UUID kitGroupId, Integer kitPartNo, Integer kitPartCount, Integer vehicleSeq,
-                      String unplacedReason, UUID transferOrderId) { }
+                      Integer vehicleSeq, String unplacedReason) { }
 
     /**
      * A full-truckload shipment waiting for dispatch with the parcels no live plan holds (LP-5: chosen whole).
      * {@code packagesInOtherPlans} counts its parcels another plan holds (only after a plan left some behind).
-     *
-     * <p>With {@code sourceType} TRANSFER (SCRUM-287 PR T) it is a packed transfer order instead, whole:
-     * {@code shipmentId}, {@code orderId} and {@code orderNumber} are null, {@code code} is the transfer's number,
-     * {@code readyAt} when its packing completed, {@code transferOrderId} and {@code toWarehouseId} name it.</p>
+     * {@code sourceType} is always ORDER: transfers between warehouses were removed.
      */
     record CandidateShipment(UUID shipmentId, String code, UUID orderId, String orderNumber,
                              boolean allowPartialShipment, Instant readyAt, int packageCount, int packagesInOtherPlans,
-                             BigDecimal weightKg, long volumeMm3, List<ParcelView> packages, String sourceType,
-                             UUID transferOrderId, UUID toWarehouseId) { }
+                             BigDecimal weightKg, long volumeMm3, List<ParcelView> packages, String sourceType) { }
 
-    /** {@code shipmentCount}: the shipments of an ORDER plan; 1 for a TRANSFER plan's transfer order. */
+    /** {@code shipmentCount}: the shipments of the plan; {@code sourceType} is always ORDER. */
     record PlanRow(UUID loadPlanId, String code, UUID warehouseId, String status, String selectionMode,
                    int shipmentCount, int packageCount, int vehicleCount, int unplacedCount, Instant createdAt,
                    Instant calculatedAt, Instant confirmedAt, long version, String sourceType) { }
@@ -51,10 +46,6 @@ public interface LoadPlans {
 
     record ShipmentInPlan(UUID shipmentId, String code, UUID orderId, String orderNumber,
                           boolean allowPartialShipment, int packageCount) { }
-
-    /** The transfer order of a TRANSFER plan (SCRUM-287 PR T): its number, warehouses and status (10 §5). */
-    record TransferInPlan(UUID transferOrderId, String number, UUID fromWarehouseId, UUID toWarehouseId,
-                          String status, int packageCount) { }
 
     /** The dispatch load a confirmed vehicle became (PLANNED until PR E books it). */
     record LoadRef(UUID loadId, String code, String status) { }
@@ -76,17 +67,16 @@ public interface LoadPlans {
                       int packageCount, int placedCount, int unplacedCount, Acknowledgement unplacedAcknowledgement,
                       Instant calculatedAt, Map<String, Object> solverMeta, Instant confirmedAt, Instant reopenedAt,
                       String reopenReason, Instant dispatchedAt, Instant cancelledAt, String cancelReason,
-                      Instant createdAt, long version, TransferInPlan transferOrder, String cancelReasonCode,
+                      Instant createdAt, long version, String cancelReasonCode,
                       List<PendingUnload> pendingUnloads, boolean controlledCancelled) { }
 
     /**
      * A parcel still to be scanned off a vehicle of this plan that was called off after loading started (SCRUM-474
      * UNLOAD-DESIGN points 4-5): locked until then. {@code loadId} is where to scan it off ({@code POST
-     * /loads/{loadId}/unloads}); {@code shipmentCode} is the shipment's code, or the transfer order's number
-     * (then {@code transferOrderId} is set and {@code shipmentId} null).
+     * /loads/{loadId}/unloads}); {@code shipmentCode} is the shipment's code.
      */
     record PendingUnload(UUID loadId, String loadCode, Integer vehicleSeq, UUID packageId, String labelCode,
-                         UUID shipmentId, UUID transferOrderId, String shipmentCode, String reasonCode, String reason,
+                         UUID shipmentId, String shipmentCode, String reasonCode, String reason,
                          Instant requestedAt) { }
 
     // ---- reconciliation (design v2 §1 "nesting-reconcile": pieces in = placed + unplaced) ---------------------------
@@ -149,25 +139,18 @@ public interface LoadPlans {
     // ---- commands --------------------------------------------------------------------------------------------------
 
     /**
-     * @param sourceType      ORDER (default: {@code shipmentIds}) or TRANSFER ({@code transferOrderIds}: one packed
-     *                        transfer, 09 §4.2 step 1); a plan never holds both (LOAD_PLAN_SOURCE_MISMATCH)
+     * @param sourceType      ORDER, the default and the only value: transfers between warehouses were removed
      */
     record CreatePlan(UUID requestId, UUID warehouseId, List<UUID> shipmentIds, List<UUID> vehicleTypeIds,
-                      String selectionMode, String note, String sourceType, List<UUID> transferOrderIds) {
+                      String selectionMode, String note, String sourceType) {
 
         public CreatePlan(UUID requestId, UUID warehouseId, List<UUID> shipmentIds, List<UUID> vehicleTypeIds,
                           String selectionMode, String note) {
-            this(requestId, warehouseId, shipmentIds, vehicleTypeIds, selectionMode, note, null, null);
+            this(requestId, warehouseId, shipmentIds, vehicleTypeIds, selectionMode, note, null);
         }
     }
 
-    /** {@code transferOrderIds} for a TRANSFER plan (its one transfer), {@code shipmentIds} for an ORDER plan. */
-    record Inputs(Long expectedVersion, List<UUID> shipmentIds, List<UUID> vehicleTypeIds, String selectionMode,
-                  List<UUID> transferOrderIds) {
-
-        public Inputs(Long expectedVersion, List<UUID> shipmentIds, List<UUID> vehicleTypeIds, String selectionMode) {
-            this(expectedVersion, shipmentIds, vehicleTypeIds, selectionMode, null);
-        }
+    record Inputs(Long expectedVersion, List<UUID> shipmentIds, List<UUID> vehicleTypeIds, String selectionMode) {
     }
 
     /**
@@ -187,10 +170,7 @@ public interface LoadPlans {
         return candidates(warehouseId, loadPlanId, null);
     }
 
-    /**
-     * As {@link #candidates(UUID, UUID)} for {@code sourceType} ORDER (the default); TRANSFER: the packed full-truckload
-     * transfer orders leaving from the warehouse, whole, that no other live plan holds (SCRUM-287 PR T).
-     */
+    /** As {@link #candidates(UUID, UUID)}; {@code sourceType} may only be ORDER (or absent). */
     List<CandidateShipment> candidates(UUID warehouseId, UUID loadPlanId, String sourceType);
 
     /** A new DRAFT plan, idempotent by {@code requestId}; shipments and vehicle types may be given at once. */

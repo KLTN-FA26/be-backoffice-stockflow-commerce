@@ -11,13 +11,13 @@ import java.util.regex.Pattern;
 
 /**
  * Where the assistant may send what it reads, written down ({@code stockflow.assistant.data-policy},
- * {@code allowed-providers}, {@code allowed-hosts}; design §5.5, ADR-0014): the one check every adapter that sends
+ * {@code allowed-providers}, {@code allowed-hosts}; design §5.5, ADR-0015): the one check every adapter that sends
  * tool results, passages, photos or voice to a model passes before it is built.
  *
  * <p><b>Why a list, beside the policy.</b> {@link DataPolicy} has two answers, any cloud or none. A deployment
  * that accepted Gemini (AQ-01) can still be configured, by one wrong variable, to send the same data to a second
- * vendor nobody approved: a routed model of another provider, an embedding server on a public host, a delivery-note
- * reader. The lists name what was approved, and anything else is refused when the application starts, with the reason
+ * vendor nobody approved: a routed model of another provider, an embedding server on a public host, a speech
+ * transcriber. The lists name what was approved, and anything else is refused when the application starts, with the reason
  * logged; adding Bedrock later is one line, read by whoever reviews the change.</p>
  *
  * <ul>

@@ -1,7 +1,7 @@
 package com.stockflow.notification.internal.domain;
 
 /**
- * The one way out for e-mail. Supplier purchase orders, staff notices, the portal invitation and customer messages
+ * The one way out for e-mail. Producers' production orders, staff notices, the portal invitation and customer messages
  * all go through it; which provider sits behind it is {@code stockflow.notification.email.provider}.
  *
  * <p>The contract every implementation keeps, because the callers' retry decisions rest on it:</p>

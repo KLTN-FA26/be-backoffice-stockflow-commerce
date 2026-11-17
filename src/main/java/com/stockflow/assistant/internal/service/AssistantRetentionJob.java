@@ -33,15 +33,13 @@ class AssistantRetentionJob {
     private final ToolRunRecorder runs;
     private final AssistantProperties properties;
     private final Clock clock;
-    private final AssistantActions actions;
     private final AssistantWatch watch;
     private final McpTokenRepository mcpTokens;
     private final TransactionTemplate tx;
 
     AssistantRetentionJob(ConversationService conversations, ToolRunRecorder runs, AssistantProperties properties,
-                          Clock clock, AssistantActions actions, AssistantWatch watch, McpTokenRepository mcpTokens,
+                          Clock clock, AssistantWatch watch, McpTokenRepository mcpTokens,
                           PlatformTransactionManager transactions) {
-        this.actions = actions;
         this.watch = watch;
         this.mcpTokens = mcpTokens;
         this.tx = new TransactionTemplate(transactions);
@@ -95,16 +93,6 @@ class AssistantRetentionJob {
         if (standalone > 0) {
             log.info("Assistant retention: deleted {} MCP, today and background tool run(s) from before {}",
                     standalone, cutoff);
-        }
-        // A delivery note's suggestion belongs to no conversation; an answer's goes with its conversation.
-        int drafts = 0;
-        do {
-            batch = actions.deleteStandaloneBefore(cutoff, BATCH);
-            drafts += batch;
-        } while (batch == BATCH);
-        if (drafts > 0) {
-            log.info("Assistant retention: deleted {} suggestion(s) read from delivery notes before {}", drafts,
-                    cutoff);
         }
         int tokens = 0;
         do {

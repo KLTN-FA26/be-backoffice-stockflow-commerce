@@ -11,7 +11,7 @@ import java.util.Objects;
  * or an operator typed (names, notes, reasons), which is why the limits are small. The inbox does not
  * log them either.</p>
  *
- * @param category   a code of the poster's own, up to 40 characters ({@code "INVENTORY_ALERT"}); the bell
+ * @param category   a code of the poster's own, up to 40 characters ({@code "ORDER_SHIPPING"}); the bell
  *                   groups and icons by it
  * @param severity   how loudly to show it
  * @param title      one short line, up to 200 characters
@@ -19,7 +19,7 @@ import java.util.Objects;
  * @param link       optional route of this application the message opens, up to 300 characters and
  *                   starting with a single {@code /}; never a full URL, because the bell turns it into a
  *                   navigation
- * @param sourceType what the message is about ({@code "STOCK_ALERT"}), optional, up to 40 characters
+ * @param sourceType what the message is about ({@code "ORDER"}), optional, up to 40 characters
  * @param sourceId   id of that thing, optional, up to 100 characters
  * @param dedupeKey  posting the same key to the same recipient again is a no-op, up to 200 characters; it
  *                   decides how often someone can be told the same thing

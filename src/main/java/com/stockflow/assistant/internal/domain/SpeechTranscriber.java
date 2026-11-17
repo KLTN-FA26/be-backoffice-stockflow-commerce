@@ -3,8 +3,8 @@ package com.stockflow.assistant.internal.domain;
 import java.util.Objects;
 
 /**
- * The port to a model that writes down what was said in a short recording (ADR-0015, design §8.3): the assistant's
- * only audio input, kept apart from {@link LanguageModel} and {@link DocumentReader}.
+ * The port to a model that writes down what was said in a short recording (ADR-0016, design §8.3): the assistant's
+ * only audio input, kept apart from {@link LanguageModel}.
  *
  * <p><b>Why a port of its own.</b> A transcript is not a question: it goes back to the person who spoke, who reads it,
  * corrects it and only then sends it as a question. A misheard digit names another real carton or order, so nothing

@@ -1,7 +1,6 @@
 package com.stockflow.order.internal.entity;
 
 import com.stockflow.order.api.OrderStatus;
-import com.stockflow.order.api.PaymentTerm;
 import com.stockflow.common.persistence.BaseEntity;
 import com.stockflow.common.security.ScopedEntity;
 import jakarta.persistence.CascadeType;
@@ -119,65 +118,46 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
     @Column(name = "total_amount", nullable = false, precision = 19, scale = 4)
     private java.math.BigDecimal totalAmount;
 
+    /**
+     * 4B-3: the VAT of the order's lines and fee lines. The total before tax, {@code net_amount}, is a column the
+     * database generates as {@code total_amount - tax_amount}; it is not mapped, so nothing can write a third number
+     * that disagrees with the other two.
+     */
+    @Column(name = "tax_amount", nullable = false, precision = 19, scale = 4)
+    private java.math.BigDecimal taxAmount = java.math.BigDecimal.ZERO;
+
     @Column(name = "currency", nullable = false, length = 3)
     private String currency;
 
-    @Column(name = "placed_at", nullable = false, updatable = false)
+    /** Updatable since 4B-5: an order of a contract is placed when the contract is signed. */
+    @Column(name = "placed_at", nullable = false)
     private Instant placedAt;
 
     @Column(name = "cancellation_reason", length = 500)
     private String cancellationReason;
 
-    @Enumerated(EnumType.STRING)
-    @Column(name = "payment_term", nullable = false, length = 16)
-    private PaymentTerm paymentTerm = PaymentTerm.PREPAID;
-
-    @Column(name = "deposit_required", precision = 19, scale = 4)
-    private java.math.BigDecimal depositRequired;
-
-    @Column(name = "deposit_received_at")
-    private Instant depositReceivedAt;
-
-    /** V20261021000200 (G2-3): how a deposit order's balance is collected; a whole-order handover's COD. */
-    @Enumerated(EnumType.STRING)
-    @Column(name = "balance_policy", length = 16)
-    private com.stockflow.order.api.BalancePolicy balancePolicy;
-
-    @Column(name = "cod_amount", nullable = false, precision = 19, scale = 4)
-    private java.math.BigDecimal codAmount = java.math.BigDecimal.ZERO;
+    /*
+     * The money ledger's and the per-order payment terms' columns (payment_term, deposit_*, balance_policy, paid_*,
+     * credit_term_days, billed_amount, receivable_paid_amount, remainder_*) were unmapped by 4B-10 and dropped by 4B-11
+     * (V20261116000100): an order is paid by its sales contract's installments.
+     */
 
     /** V20261022000400 (PACK-PARTIAL / PACK-EARLY): Sales allowed shipping in parts; shipped early, printing goes on. */
     @Column(name = "allow_partial_shipment", nullable = false)
     private boolean allowPartialShipment;
 
-    /** V20261022000400 (review of #150): fees agreed when print lines were closed after printing started. */
-    @Column(name = "remainder_fee_amount", nullable = false, precision = 19, scale = 4)
-    private java.math.BigDecimal remainderFeeAmount = java.math.BigDecimal.ZERO;
-
-    @Column(name = "remainder_fee_retained_amount", nullable = false, precision = 19, scale = 4)
-    private java.math.BigDecimal remainderFeeRetainedAmount = java.math.BigDecimal.ZERO;
-
-    @Column(name = "remainder_fee_paid_amount", nullable = false, precision = 19, scale = 4)
-    private java.math.BigDecimal remainderFeePaidAmount = java.math.BigDecimal.ZERO;
-
-    /** V20261102030100: the value of the units closed out of the order; what "paid in full" is measured against. */
+    /** V20261102030100: the value of the units closed out of the order (what a closure takes off the installments). */
     @Column(name = "closed_amount", nullable = false, precision = 19, scale = 4)
     private java.math.BigDecimal closedAmount = java.math.BigDecimal.ZERO;
-
-    @Column(name = "awaiting_production", nullable = false)
-    private boolean awaitingProduction;
 
     /** V20261022000400 (review of #150): when fulfillment opened the order's task. */
     @Column(name = "fulfilment_started_at")
     private Instant fulfilmentStartedAt;
 
-    /** V20261022000800 (LP-1): how the order travels; when its first package was opened (locks the mode). */
-    @Enumerated(EnumType.STRING)
-    @Column(name = "delivery_mode", nullable = false, length = 16)
-    private com.stockflow.order.api.DeliveryMode deliveryMode = com.stockflow.order.api.DeliveryMode.PARCEL;
 
-    @Column(name = "packing_started_at")
-    private Instant packingStartedAt;
+    /** V20261113000700 (4C-6): when the order's first shipping label was printed - its lock (08 BR-04). */
+    @Column(name = "first_labeled_at")
+    private Instant firstLabeledAt;
 
     @Column(name = "warehouse_id")
     private UUID warehouseId;
@@ -187,13 +167,6 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
 
     @Column(name = "released_by")
     private UUID releasedBy;
-
-    /** Money received so far (SCRUM-460); the payment status is derived from it. */
-    @Column(name = "paid_amount", nullable = false, precision = 19, scale = 4)
-    private java.math.BigDecimal paidAmount = java.math.BigDecimal.ZERO;
-
-    @Column(name = "paid_in_full_at")
-    private Instant paidInFullAt;
 
     @jakarta.persistence.Enumerated(jakarta.persistence.EnumType.STRING)
     @Column(name = "cancellation_reason_code", length = 32)
@@ -214,9 +187,19 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
     @Column(name = "goods_left_at")
     private Instant goodsLeftAt;
 
-    /** V20261101020000 (SCRUM-260): the return whose accepted units this free order replaces; set once, at placing. */
-    @Column(name = "replaces_return_request_id", updatable = false)
-    private UUID replacesReturnRequestId;
+    /** V20261108002300 (4B-5): when the order's sales contract was signed - the basis of its confirmation. */
+    @Column(name = "contract_signed_at")
+    private Instant contractSignedAt;
+
+    /** V20261108002500 (4B-7): the warehouse an order of a contract ships from, who chose it and when. */
+    @Column(name = "shipping_warehouse_id")
+    private UUID shippingWarehouseId;
+
+    @Column(name = "shipping_warehouse_chosen_at")
+    private Instant shippingWarehouseChosenAt;
+
+    @Column(name = "shipping_warehouse_chosen_by")
+    private UUID shippingWarehouseChosenBy;
 
     /** V20261017000430, decision Q2: the terms of an agreed amount kept on cancellation. */
     @Column(name = "cancellation_fee_amount", precision = 19, scale = 4)
@@ -228,7 +211,7 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
     @Column(name = "cancellation_fee_detail", length = 2000)
     private String cancellationFeeDetail;
 
-    /** V20261021000100 (G3-2): why it is on hold and where it goes back; the milestones; the money billed. */
+    /** V20261021000100 (G3-2): why it is on hold and where it goes back; the milestones. */
     @Enumerated(EnumType.STRING)
     @Column(name = "hold_reason", length = 24)
     private com.stockflow.order.api.HoldReason holdReason;
@@ -259,23 +242,15 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
     @Column(name = "closed_at")
     private Instant closedAt;
 
-    @Column(name = "billed_amount", nullable = false, precision = 19, scale = 4)
-    private java.math.BigDecimal billedAmount = java.math.BigDecimal.ZERO;
-
-    @Column(name = "receivable_paid_amount", nullable = false, precision = 19, scale = 4)
-    private java.math.BigDecimal receivablePaidAmount = java.math.BigDecimal.ZERO;
-
-    @Column(name = "remainder_refund_amount", nullable = false, precision = 19, scale = 4)
-    private java.math.BigDecimal remainderRefundAmount = java.math.BigDecimal.ZERO;
-
-    /** A credit order's days to pay after delivery, as sold (SCRUM-427). */
-    @Column(name = "credit_term_days")
-    private Integer creditTermDays;
-
     @OneToMany(mappedBy = "order", cascade = CascadeType.ALL,
             orphanRemoval = true, fetch = FetchType.LAZY)
     @org.hibernate.annotations.BatchSize(size = 50)
     private List<OrderLineJpaEntity> lines = new ArrayList<>();
+
+    @OneToMany(mappedBy = "order", cascade = CascadeType.ALL,
+            orphanRemoval = true, fetch = FetchType.LAZY)
+    @org.hibernate.annotations.BatchSize(size = 50)
+    private List<OrderFeeLineJpaEntity> fees = new ArrayList<>();
 
     protected OrderJpaEntity() {
     }
@@ -316,27 +291,14 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
         this.cancellationReason = cancellationReason;
     }
 
-    public void applyTermsAndRelease(PaymentTerm paymentTerm, java.math.BigDecimal depositRequired,
-                                     Instant depositReceivedAt, UUID warehouseId, Instant releasedAt,
-                                     UUID releasedBy) {
-        this.paymentTerm = paymentTerm == null ? PaymentTerm.PREPAID : paymentTerm;
-        this.depositRequired = depositRequired;
-        this.depositReceivedAt = depositReceivedAt;
+    public void applyRelease(UUID warehouseId, Instant releasedAt, UUID releasedBy) {
         this.warehouseId = warehouseId;
         this.releasedAt = releasedAt;
         this.releasedBy = releasedBy;
     }
 
-    public void applyBalance(com.stockflow.order.api.BalancePolicy balancePolicy, java.math.BigDecimal codAmount) {
-        this.balancePolicy = balancePolicy;
-        this.codAmount = codAmount == null ? java.math.BigDecimal.ZERO : codAmount;
-    }
-
-    public com.stockflow.order.api.BalancePolicy getBalancePolicy() { return balancePolicy; }
-
-    public void applyPartialShipment(boolean allowed, boolean awaiting) {
+    public void applyPartialShipment(boolean allowed) {
         this.allowPartialShipment = allowed;
-        this.awaitingProduction = awaiting;
     }
 
     public boolean isAllowPartialShipment() { return allowPartialShipment; }
@@ -347,40 +309,44 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
 
     public Instant getFulfilmentStartedAt() { return fulfilmentStartedAt; }
 
-    public void applyDeliveryMode(com.stockflow.order.api.DeliveryMode mode, Instant packingStarted) {
-        this.deliveryMode = mode == null ? com.stockflow.order.api.DeliveryMode.PARCEL : mode;
-        this.packingStartedAt = packingStarted;
+
+    public void applyFirstLabeled(Instant firstLabeled) {
+        this.firstLabeledAt = firstLabeled;
     }
 
-    public com.stockflow.order.api.DeliveryMode getDeliveryMode() { return deliveryMode; }
-    public Instant getPackingStartedAt() { return packingStartedAt; }
-
-    public void applyRemainderFee(java.math.BigDecimal fee, java.math.BigDecimal retained, java.math.BigDecimal paid) {
-        this.remainderFeeAmount = fee == null ? java.math.BigDecimal.ZERO : fee;
-        this.remainderFeeRetainedAmount = retained == null ? java.math.BigDecimal.ZERO : retained;
-        this.remainderFeePaidAmount = paid == null ? java.math.BigDecimal.ZERO : paid;
-    }
+    public Instant getFirstLabeledAt() { return firstLabeledAt; }
 
     public void applyClosedAmount(java.math.BigDecimal closed) {
         this.closedAmount = closed == null ? java.math.BigDecimal.ZERO : closed;
     }
 
     public java.math.BigDecimal getClosedAmount() { return closedAmount; }
-    public java.math.BigDecimal getRemainderFeeAmount() { return remainderFeeAmount; }
-    public java.math.BigDecimal getRemainderFeeRetainedAmount() { return remainderFeeRetainedAmount; }
-    public java.math.BigDecimal getRemainderFeePaidAmount() { return remainderFeePaidAmount; }
-    public boolean isAwaitingProduction() { return awaitingProduction; }
-    public java.math.BigDecimal getCodAmount() { return codAmount; }
 
-    public void applyPaymentAndCancellation(java.math.BigDecimal paidAmount, Instant paidInFullAt,
-                                            com.stockflow.order.api.CancellationReasonCode code,
-                                            java.math.BigDecimal retained, Integer creditTermDays) {
-        this.creditTermDays = creditTermDays;
-        this.paidAmount = paidAmount == null ? java.math.BigDecimal.ZERO : paidAmount;
-        this.paidInFullAt = paidInFullAt;
+    public void applyCancellation(com.stockflow.order.api.CancellationReasonCode code, java.math.BigDecimal retained) {
         this.cancellationReasonCode = code;
         this.cancellationRetainedAmount = retained;
     }
+
+    /** The order's VAT (4B-3); the total with tax is {@link #apply}'s, the total before tax their difference. */
+    public void applyTax(java.math.BigDecimal tax) {
+        this.taxAmount = tax;
+    }
+
+    /**
+     * The fee lines, written once when the order is placed (4B-3): rows already there are kept as they are - they
+     * never change - and only fee lines the entity does not hold yet are added.
+     */
+    public void addMissingFees(List<OrderFeeLineJpaEntity> placed) {
+        java.util.Set<UUID> held = new java.util.HashSet<>();
+        fees.forEach(fee -> held.add(fee.getId()));
+        placed.stream().filter(fee -> !held.contains(fee.getId())).forEach(fee -> {
+            fee.attachTo(this);
+            fees.add(fee);
+        });
+    }
+
+    public List<OrderFeeLineJpaEntity> getFees() { return fees; }
+    public java.math.BigDecimal getTaxAmount() { return taxAmount; }
 
     public void replaceLines(List<OrderLineJpaEntity> replacement) {
         this.lines.clear();
@@ -403,14 +369,9 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
     public String getCurrency() { return currency; }
     public Instant getPlacedAt() { return placedAt; }
     public String getCancellationReason() { return cancellationReason; }
-    public PaymentTerm getPaymentTerm() { return paymentTerm; }
-    public java.math.BigDecimal getDepositRequired() { return depositRequired; }
-    public Instant getDepositReceivedAt() { return depositReceivedAt; }
     public UUID getWarehouseId() { return warehouseId; }
     public Instant getReleasedAt() { return releasedAt; }
     public UUID getReleasedBy() { return releasedBy; }
-    public java.math.BigDecimal getPaidAmount() { return paidAmount; }
-    public Instant getPaidInFullAt() { return paidInFullAt; }
     public com.stockflow.order.api.CancellationReasonCode getCancellationReasonCode() { return cancellationReasonCode; }
     public java.math.BigDecimal getCancellationRetainedAmount() { return cancellationRetainedAmount; }
     public String getCancellationFeeReason() { return cancellationFeeReason; }
@@ -429,14 +390,26 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
         this.goodsLeftAt = at;
     }
 
-    /** Written on insert only (the column is not updatable): an order replaces a return from the day it is placed. */
-    public void applyReplacement(UUID returnRequestId) {
-        this.replacesReturnRequestId = returnRequestId;
+    public void applyContractSigned(Instant at) {
+        this.contractSignedAt = at;
     }
 
-    public UUID getReplacesReturnRequestId() { return replacesReturnRequestId; }
+    public void applyShippingWarehouse(UUID warehouse, Instant chosenAt, UUID chosenBy) {
+        this.shippingWarehouseId = warehouse;
+        this.shippingWarehouseChosenAt = chosenAt;
+        this.shippingWarehouseChosenBy = chosenBy;
+    }
+
+    public UUID getShippingWarehouseId() { return shippingWarehouseId; }
+    public Instant getShippingWarehouseChosenAt() { return shippingWarehouseChosenAt; }
+    public UUID getShippingWarehouseChosenBy() { return shippingWarehouseChosenBy; }
+
+    public void applyPlaced(Instant at) {
+        this.placedAt = at;
+    }
 
     public Instant getGoodsLeftAt() { return goodsLeftAt; }
+    public Instant getContractSignedAt() { return contractSignedAt; }
 
     public void applyCancellationFee(java.math.BigDecimal amount, String reason, String detail) {
         this.cancellationFeeAmount = amount;
@@ -446,9 +419,7 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
     public void applyLifecycle(com.stockflow.order.api.HoldReason holdReason, OrderStatus statusBeforeHold,
                                String holdNote, Instant shippedAt, Instant deliveredAt,
                                com.stockflow.order.api.DeliveryFailureReason deliveryFailureReason,
-                               Instant completedAt, Instant refundedAt, Instant closedAt,
-                               java.math.BigDecimal billedAmount, java.math.BigDecimal receivablePaidAmount,
-                               java.math.BigDecimal remainderRefundAmount) {
+                               Instant completedAt, Instant refundedAt, Instant closedAt) {
         this.holdReason = holdReason;
         this.statusBeforeHold = statusBeforeHold;
         this.holdNote = holdNote;
@@ -458,14 +429,22 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
         this.completedAt = completedAt;
         this.refundedAt = refundedAt;
         this.closedAt = closedAt;
-        this.billedAmount = billedAmount;
-        this.receivablePaidAmount = receivablePaidAmount;
-        this.remainderRefundAmount = remainderRefundAmount;
     }
 
     /** One step of a status change: the row passes through each edge, so the transition trigger sees every one. */
     public void moveTo(OrderStatus next) {
         this.status = next;
+    }
+
+    /**
+     * Sets the hold columns alone: a step of a stepwise save that is not ON_HOLD carries none, as
+     * {@code ck_order_hold_reason}, {@code ck_order_hold_note} and {@code ck_order_hold_return} require.
+     */
+    public void holdColumns(com.stockflow.order.api.HoldReason holdReason, OrderStatus statusBeforeHold,
+                            String holdNote) {
+        this.holdReason = holdReason;
+        this.statusBeforeHold = statusBeforeHold;
+        this.holdNote = holdNote;
     }
 
     public com.stockflow.order.api.HoldReason getHoldReason() { return holdReason; }
@@ -477,10 +456,6 @@ public class OrderJpaEntity extends BaseEntity implements ScopedEntity {
     public Instant getCompletedAt() { return completedAt; }
     public Instant getRefundedAt() { return refundedAt; }
     public Instant getClosedAt() { return closedAt; }
-    public java.math.BigDecimal getBilledAmount() { return billedAmount; }
-    public java.math.BigDecimal getReceivablePaidAmount() { return receivablePaidAmount; }
-    public java.math.BigDecimal getRemainderRefundAmount() { return remainderRefundAmount; }
-    public Integer getCreditTermDays() { return creditTermDays; }
     public List<OrderLineJpaEntity> getLines() { return lines; }
 
     /**

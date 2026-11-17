@@ -15,10 +15,17 @@ import com.stockflow.warehouse.internal.domain.ShelfRepository;
 import com.stockflow.warehouse.internal.domain.Warehouse;
 import com.stockflow.warehouse.internal.domain.WarehouseRepository;
 import com.stockflow.warehouse.internal.domain.ZoneRepository;
+import com.stockflow.warehouse.api.BinSize;
+import com.stockflow.warehouse.internal.domain.ShelfLevel;
+import com.stockflow.warehouse.spi.BinOccupants;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
@@ -51,7 +58,16 @@ class ShelfLayoutServiceImpl implements ShelfLayoutService {
     private final WarehouseRepository warehouses;
     private final ZoneRepository zones;
 
-    ShelfLayoutServiceImpl(ShelfRepository shelves, WarehouseRepository warehouses, ZoneRepository zones) {
+    /**
+     * Asked before a bin or a level is resized (kltn-docs 06 BR-23): inventory, through the warehouse's own SPI, since
+     * inventory depends on this module and not the other way round. Through a provider only because a test slice of
+     * this module alone has no inventory; the application always has one.
+     */
+    private final ObjectProvider<BinOccupants> occupants;
+
+    ShelfLayoutServiceImpl(ShelfRepository shelves, WarehouseRepository warehouses, ZoneRepository zones,
+                           ObjectProvider<BinOccupants> occupants) {
+        this.occupants = occupants;
         this.shelves = shelves;
         this.warehouses = warehouses;
         this.zones = zones;
@@ -69,8 +85,7 @@ class ShelfLayoutServiceImpl implements ShelfLayoutService {
                     "Warehouse %s already has shelf %s".formatted(warehouse.prefix(), code));
         }
         Shelf shelf = Shelf.create(Identifiers.newId(), warehouse.id(), command.zoneId(), code, command.name(),
-                command.description(), command.footprint(), command.obstacle(), command.pickFaces(),
-                command.defaultStorageClass());
+                command.description(), command.footprint(), command.obstacle(), command.pickFaces());
         requirePlaceable(warehouse, shelf.id(), shelf.footprint());
         return ShelfSummary.of(shelves.save(shelf));
     }
@@ -83,7 +98,7 @@ class ShelfLayoutServiceImpl implements ShelfLayoutService {
         Shelf shelf = require(command.shelfId());
         requireZoneOf(command.zoneId(), warehouse.id());
         shelf.update(command.zoneId(), command.name(), command.description(), command.footprint(),
-                command.obstacle(), command.pickFaces(), command.defaultStorageClass(), command.expectedVersion());
+                command.obstacle(), command.pickFaces(), command.expectedVersion());
         if (shelf.status() != LocationStatus.INACTIVE) {
             requirePlaceable(warehouse, shelf.id(), shelf.footprint());
         }
@@ -122,7 +137,16 @@ class ShelfLayoutServiceImpl implements ShelfLayoutService {
     public ShelfSummary.Level updateLevel(ShelfCommands.UpdateLevel command) {
         lockWarehouseOf(command.shelfId());
         Shelf shelf = require(command.shelfId());
+        ShelfLevel before = shelf.level(command.levelId());
+        BigDecimal oldHeight = before.measures().usableHeight();
         shelf.updateLevel(command.levelId(), command.measures());
+        BigDecimal newHeight = command.measures().usableHeight();
+        if (oldHeight == null || newHeight.compareTo(oldHeight) != 0) {
+            Map<String, BinSize> sizes = new LinkedHashMap<>();
+            shelf.level(command.levelId()).bins().forEach(bin -> sizes.put(bin.location().locationCode(),
+                    new BinSize(bin.footprint().width(), bin.footprint().length(), newHeight)));
+            requireNothingStranded(sizes, "the level's new clear height");
+        }
         return ShelfSummary.Level.of(shelves.save(shelf).level(command.levelId()));
     }
 
@@ -134,7 +158,7 @@ class ShelfLayoutServiceImpl implements ShelfLayoutService {
         Shelf shelf = require(command.shelfId());
         UUID binId = shelf.addBin(command.levelId(), Identifiers.newId(), Identifiers.newId(), command.code(),
                 command.details(), command.settings(), warehouse.prefix()).id();
-        return ShelfSummary.BinEntry.of(shelves.save(shelf).level(command.levelId()).bin(binId));
+        return ShelfSummary.BinEntry.of(shelves.save(shelf).level(command.levelId()), binId);
     }
 
     @Override
@@ -143,8 +167,17 @@ class ShelfLayoutServiceImpl implements ShelfLayoutService {
     public ShelfSummary.BinEntry updateBin(ShelfCommands.UpdateBin command) {
         lockWarehouseOf(command.shelfId());
         Shelf shelf = require(command.shelfId());
+        Footprint oldFootprint = shelf.level(command.levelId()).bin(command.binId()).footprint();
         shelf.updateBin(command.levelId(), command.binId(), command.details(), command.settings());
-        return ShelfSummary.BinEntry.of(shelves.save(shelf).level(command.levelId()).bin(command.binId()));
+        Footprint newFootprint = command.details().footprint();
+        if (newFootprint.width().compareTo(oldFootprint.width()) != 0
+                || newFootprint.length().compareTo(oldFootprint.length()) != 0) {
+            ShelfLevel level = shelf.level(command.levelId());
+            requireNothingStranded(Map.of(level.bin(command.binId()).location().locationCode(),
+                    new BinSize(newFootprint.width(), newFootprint.length(), level.measures().usableHeight())),
+                    "the bin's new size");
+        }
+        return ShelfSummary.BinEntry.of(shelves.save(shelf).level(command.levelId()), command.binId());
     }
 
     @Override
@@ -153,7 +186,7 @@ class ShelfLayoutServiceImpl implements ShelfLayoutService {
         lockWarehouseOf(shelfId);
         Shelf shelf = require(shelfId);
         shelf.changeBinStatus(levelId, binId, status);
-        return ShelfSummary.BinEntry.of(shelves.save(shelf).level(levelId).bin(binId));
+        return ShelfSummary.BinEntry.of(shelves.save(shelf).level(levelId), binId);
     }
 
     /**
@@ -210,5 +243,17 @@ class ShelfLayoutServiceImpl implements ShelfLayoutService {
 
     private static BusinessException shelfNotFound(UUID shelfId) {
         return new BusinessException(ErrorCode.SHELF_NOT_FOUND, "Shelf " + shelfId + " not found");
+    }
+
+    /**
+     * 06 BR-23: refuses a resize that would leave a carton standing where it no longer fits, or a bin holding more
+     * volume than it would have. Taken under the warehouse lock this service already holds.
+     */
+    private void requireNothingStranded(Map<String, BinSize> newSizes, String change) {
+        BinOccupants stock = occupants.getIfAvailable();
+        if (stock == null || newSizes.isEmpty()) {
+            return;
+        }
+        BinOccupants.refuse(stock.strandedBy(newSizes), change);
     }
 }

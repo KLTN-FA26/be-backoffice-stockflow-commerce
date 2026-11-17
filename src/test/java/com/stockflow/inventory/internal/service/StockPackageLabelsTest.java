@@ -44,7 +44,7 @@ class StockPackageLabelsTest {
         Instant closedAt = status.isClosed() ? NOW : null;
         Integer counted = status == StockPackageStatus.RECEIVING ? null : 24;
         return new StockPackage(new StockPackageId(UUID.randomUUID()), lpn, UUID.randomUUID(), CARTON_UNIT, 24, counted,
-                new LocationId(location), status, status == StockPackageStatus.IN_STOCK, RECEIPT_LINE, closedAt, 0L);
+                new LocationId(location), status, RECEIPT_LINE, closedAt, 0L);
     }
 
     private void unitOfCartons() {

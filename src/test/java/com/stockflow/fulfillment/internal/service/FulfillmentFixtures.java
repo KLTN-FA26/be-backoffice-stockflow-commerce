@@ -6,7 +6,6 @@ import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.DataScope;
 import com.stockflow.common.security.Role;
-import com.stockflow.fulfillment.internal.domain.DeliveryMode;
 import com.stockflow.fulfillment.internal.domain.Shipment;
 import com.stockflow.fulfillment.internal.domain.ShipmentStatus;
 import com.stockflow.fulfillment.internal.entity.ShipmentJpaEntity;
@@ -44,15 +43,15 @@ final class FulfillmentFixtures {
                 Set.of(), Set.of(warehouses));
     }
 
-    /** A READY_TO_DISPATCH parcel shipment of one parcel, no COD. */
+    /** A READY_TO_DISPATCH shipment of two parcels. */
     static Shipment readyShipment() {
-        return readyShipment(DeliveryMode.PARCEL, 2, "0");
+        return readyShipment(2);
     }
 
-    static Shipment readyShipment(DeliveryMode mode, int packages, String cod) {
+    static Shipment readyShipment(int packages) {
         UUID id = UUID.randomUUID();
         return Shipment.ready(id, "SO-0001-S1", UUID.randomUUID(), UUID.randomUUID(), WAREHOUSE, UUID.randomUUID(),
-                mode, packages, new BigDecimal(cod), null, UUID.randomUUID(), NOW.minusSeconds(3600));
+                packages, null, UUID.randomUUID(), NOW.minusSeconds(3600));
     }
 
     /** The shipment as a row, in the given status (read through the real transitions). */
@@ -68,17 +67,17 @@ final class FulfillmentFixtures {
         UUID load = UUID.randomUUID();
         switch (status) {
             case READY_TO_DISPATCH -> { }
-            case HANDED_OVER -> s.handOver(load, carrier, null, false, by, NOW);
+            case HANDED_OVER -> s.handOver(load, carrier, false, by, NOW);
             case DELIVERED -> {
-                s.handOver(load, carrier, null, false, by, NOW);
+                s.handOver(load, carrier, false, by, NOW);
                 s.recordDelivered(by, NOW);
             }
             case DELIVERY_FAILED -> {
-                s.handOver(load, carrier, null, false, by, NOW);
+                s.handOver(load, carrier, false, by, NOW);
                 s.recordFailed(com.stockflow.fulfillment.internal.domain.DeliveryFailureReason.REFUSED, null, by, NOW);
             }
             case RETURNED -> {
-                s.handOver(load, carrier, null, false, by, NOW);
+                s.handOver(load, carrier, false, by, NOW);
                 s.recordFailed(com.stockflow.fulfillment.internal.domain.DeliveryFailureReason.REFUSED, null, by, NOW);
                 s.recordReturned(by, NOW);
             }
@@ -91,22 +90,20 @@ final class FulfillmentFixtures {
     /** An order as the order module reports it, with the given shipments recorded on it (null for no lifecycle). */
     static OrderSummary order(UUID id, List<OrderSummary.Shipment> shipments) {
         OrderSummary.Lifecycle lifecycle = shipments == null ? null : new OrderSummary.Lifecycle(null, null, null, NOW,
-                null, null, null, null, null, BigDecimal.ZERO, new BigDecimal("1000000"), new BigDecimal("1000000"),
+                null, null, null, null, null, new BigDecimal("1000000"),
                 BigDecimal.ZERO, List.of(), shipments);
         return new OrderSummary(id, "SO-0001", UUID.randomUUID(), OrderStatus.SHIPPED, Money.vnd(1_000_000), List.of(),
-                NOW.minusSeconds(86_400), null, null, null, null, null, null, null, null, null, WAREHOUSE, NOW,
-                null, null, lifecycle);
+                NOW.minusSeconds(86_400), null, null, null, null, null, null, null, null, WAREHOUSE, NOW, null, lifecycle);
     }
 
     /** An order in the given status with the given lines and, when {@code holdReason} is set, held for it. */
     static OrderSummary orderWith(UUID id, OrderStatus status, List<OrderSummary.LineSummary> lines,
                                   com.stockflow.order.api.HoldReason holdReason) {
         OrderSummary.Lifecycle lifecycle = new OrderSummary.Lifecycle(holdReason, null, null, null, null, null, null,
-                null, null, BigDecimal.ZERO, new BigDecimal("1000000"), new BigDecimal("1000000"), BigDecimal.ZERO,
+                null, null, new BigDecimal("1000000"), BigDecimal.ZERO,
                 List.of(), List.of());
         return new OrderSummary(id, "SO-0001", UUID.randomUUID(), status, Money.vnd(1_000_000), lines,
-                NOW.minusSeconds(86_400), null, null, null, null, null, null, null, null, null, WAREHOUSE, NOW,
-                null, null, lifecycle);
+                NOW.minusSeconds(86_400), null, null, null, null, null, null, null, null, WAREHOUSE, NOW, null, lifecycle);
     }
 
     static OrderSummary.LineSummary stockLine(String sku, UUID... reservations) {
@@ -128,15 +125,28 @@ final class FulfillmentFixtures {
 
     // ---- parcels and load plans ------------------------------------------------------------------------
 
+    /**
+     * Puts a shipping carton row (4C-6) into the state the old parcel fixtures meant: {@code SEALED} reads as LABELED
+     * (a shipment's parcel), {@code OPEN} as TO_CHECK (not plannable), measured as given and in {@code shipmentId}.
+     */
+    static void applyCarton(com.stockflow.fulfillment.internal.entity.PackageJpaEntity row,
+                            com.stockflow.fulfillment.internal.domain.PackageStatus status, UUID shipmentId,
+                            BigDecimal weight, BigDecimal length, BigDecimal width, BigDecimal height) {
+        boolean labeled = status == com.stockflow.fulfillment.internal.domain.PackageStatus.SEALED
+                || status == com.stockflow.fulfillment.internal.domain.PackageStatus.LABELED;
+        UUID staff = UUID.randomUUID();
+        row.applyCarton(labeled ? com.stockflow.fulfillment.internal.domain.PackageStatus.LABELED
+                        : com.stockflow.fulfillment.internal.domain.PackageStatus.TO_CHECK,
+                labeled ? NOW : null, labeled ? staff : null, labeled ? NOW : null, labeled ? staff : null,
+                labeled ? 1 : 0, weight, length, width, height, null, true, shipmentId, null, null, null, null);
+    }
+
     /** A sealed carton of the shipment, {@code l x w x h} cm and {@code kg} (null sizes: not measured). */
     static com.stockflow.fulfillment.internal.entity.PackageJpaEntity parcel(UUID shipmentId, int no, String l,
                                                                               String w, String h, String kg) {
         var parcel = new com.stockflow.fulfillment.internal.entity.PackageJpaEntity(UUID.randomUUID(), UUID.randomUUID(),
                 no, "PKG-" + no);
-        parcel.apply(shipmentId, com.stockflow.fulfillment.internal.domain.PackageType.CARTON,
-                com.stockflow.fulfillment.internal.domain.PackageStatus.SEALED, kg == null ? null : new BigDecimal(kg),
-                l == null ? null : new BigDecimal(l), w == null ? null : new BigDecimal(w),
-                h == null ? null : new BigDecimal(h), null, true, false, false, false, NOW, null, null, null);
+        FulfillmentFixtures.applyCarton(parcel, com.stockflow.fulfillment.internal.domain.PackageStatus.SEALED, shipmentId, kg == null ? null : new BigDecimal(kg), l == null ? null : new BigDecimal(l), w == null ? null : new BigDecimal(w), h == null ? null : new BigDecimal(h));
         return parcel;
     }
 
@@ -156,11 +166,6 @@ final class FulfillmentFixtures {
                        com.stockflow.fulfillment.internal.domain.loadplanning.VehicleSpec truck) { }
 
     static PlannedPlan plannedPlan(int cubes, int trucks) {
-        return plannedPlan(cubes, trucks, com.stockflow.fulfillment.internal.domain.LoadPlan.SOURCE_ORDER);
-    }
-
-    /** As {@link #plannedPlan(int, int)}; {@code sourceType} TRANSFER makes the key of its parcels a transfer order. */
-    static PlannedPlan plannedPlan(int cubes, int trucks, String sourceType) {
         UUID shipmentId = UUID.randomUUID();
         java.util.Map<UUID, com.stockflow.fulfillment.internal.domain.loadplanning.CargoPackage> cartons =
                 new java.util.LinkedHashMap<>();
@@ -176,7 +181,8 @@ final class FulfillmentFixtures {
                 new BigDecimal("1000"), trucks, 0);
         var plan = com.stockflow.fulfillment.internal.domain.LoadPlan.draft(UUID.randomUUID(), "LP-20261022-0001",
                 UUID.randomUUID(), WAREHOUSE,
-                com.stockflow.fulfillment.internal.domain.loadplanning.SelectionMode.SINGLE_TYPE, null, sourceType);
+                com.stockflow.fulfillment.internal.domain.loadplanning.SelectionMode.SINGLE_TYPE, null,
+                com.stockflow.fulfillment.internal.domain.LoadPlan.SOURCE_ORDER);
         UUID dispatcher = UUID.randomUUID();
         plan.setInputs(shipmentOf, List.of(TRUCK_TYPE), null, dispatcher, NOW);
         var result = new com.stockflow.fulfillment.internal.domain.loadplanning.LoadPlanner().plan(

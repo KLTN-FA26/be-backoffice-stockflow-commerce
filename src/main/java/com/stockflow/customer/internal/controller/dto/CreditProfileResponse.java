@@ -6,16 +6,10 @@ import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.UUID;
 
-/** A customer's commercial terms; {@code configured=false} means none were set: prepaid only. */
+/** A customer's credit; {@code configured=false} means none was set: no credit. */
 @Schema(name = "CreditProfile")
-public record CreditProfileResponse(UUID customerId, boolean configured, boolean allowPrepaid, boolean allowDeposit,
-                                    boolean allowCredit, @Schema(example = "CREDIT") String defaultPaymentTerm,
-                                    BigDecimal depositPercent, BigDecimal creditLimit, Integer creditTermDays,
+public record CreditProfileResponse(UUID customerId, boolean configured, BigDecimal creditLimit, Integer creditTermDays,
                                     String currency, UUID approvedBy, Instant approvedAt, String note,
                                     @Schema(description = "-1 when none were set; send it back as expectedVersion")
-                                    long version,
-                                    @Schema(example = "BEFORE_DELIVERY",
-                                            description = "How a deposit order's balance is collected; null without "
-                                                    + "deposits")
-                                    String depositBalancePolicy) {
+                                    long version) {
 }

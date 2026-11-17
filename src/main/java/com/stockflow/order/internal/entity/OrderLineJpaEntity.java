@@ -12,7 +12,6 @@ import jakarta.persistence.ManyToOne;
 import jakarta.persistence.Table;
 
 import java.math.BigDecimal;
-import java.time.Instant;
 import java.time.LocalDate;
 import java.util.Collection;
 import java.util.LinkedHashSet;
@@ -72,40 +71,39 @@ public class OrderLineJpaEntity {
     public String getDesignChecksum() { return designChecksum; }
     public void setDesignChecksum(String value) { designChecksum = value; }
 
-    /**
-     * Review 2026-10-25 of S6: what the customer agreed with Sales to go without (all four set, or none -
-     * ck_order_line_shortfall_agreement), and how many units production closed under it.
-     */
-    @Column(name = "shortfall_agreed_quantity")
-    private Integer shortfallAgreedQuantity;
-    @Column(name = "shortfall_agreed_note", length = 500)
-    private String shortfallAgreedNote;
-    @Column(name = "shortfall_agreed_by")
-    private UUID shortfallAgreedBy;
-    @Column(name = "shortfall_agreed_at")
-    private Instant shortfallAgreedAt;
-    @Column(name = "shortfall_closed_quantity", nullable = false)
-    private int shortfallClosedQuantity;
-
-    public Integer getShortfallAgreedQuantity() { return shortfallAgreedQuantity; }
-    public String getShortfallAgreedNote() { return shortfallAgreedNote; }
-    public UUID getShortfallAgreedBy() { return shortfallAgreedBy; }
-    public Instant getShortfallAgreedAt() { return shortfallAgreedAt; }
-    public int getShortfallClosedQuantity() { return shortfallClosedQuantity; }
-
-    public void setShortfall(Integer agreedQuantity, String note, UUID by, Instant at, int closedQuantity) {
-        this.shortfallAgreedQuantity = agreedQuantity;
-        this.shortfallAgreedNote = note;
-        this.shortfallAgreedBy = by;
-        this.shortfallAgreedAt = at;
-        this.shortfallClosedQuantity = closedQuantity;
-    }
-
     /** V20261102040000 (SCRUM-502): the date the customer asked for; a print line only (ck_order_line_requested_delivery). */
     @Column(name = "requested_delivery_date")
     private LocalDate requestedDeliveryDate;
     public LocalDate getRequestedDeliveryDate() { return requestedDeliveryDate; }
     public void setRequestedDeliveryDate(LocalDate value) { requestedDeliveryDate = value; }
+
+    /** 4B-2: the carton unit, cartons and pieces per carton a line of the customer's own SKU was ordered in. */
+    @Column(name = "uom_conversion_id")
+    private UUID uomConversionId;
+    @Column(name = "cartons")
+    private Integer cartons;
+    @Column(name = "units_per_carton")
+    private Integer unitsPerCarton;
+    public UUID getUomConversionId() { return uomConversionId; }
+    public Integer getCartons() { return cartons; }
+    public Integer getUnitsPerCarton() { return unitsPerCarton; }
+    public void setCartons(UUID unit, Integer cartons, Integer unitsPerCarton) {
+        this.uomConversionId = unit;
+        this.cartons = cartons;
+        this.unitsPerCarton = unitsPerCarton;
+    }
+
+    /** 4B-3: the VAT rate fixed on the line and its tax; both null for a line without VAT. */
+    @Column(name = "tax_rate", precision = 5, scale = 2)
+    private BigDecimal taxRate;
+    @Column(name = "tax_amount", precision = 19, scale = 4)
+    private BigDecimal taxAmount;
+    public BigDecimal getTaxRate() { return taxRate; }
+    public BigDecimal getTaxAmount() { return taxAmount; }
+    public void setTax(BigDecimal rate, BigDecimal amount) {
+        this.taxRate = rate;
+        this.taxAmount = amount;
+    }
 
     @ElementCollection(fetch = jakarta.persistence.FetchType.EAGER)
     @CollectionTable(

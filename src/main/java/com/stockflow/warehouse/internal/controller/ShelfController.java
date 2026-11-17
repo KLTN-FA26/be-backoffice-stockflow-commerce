@@ -66,8 +66,7 @@ class ShelfController {
     @Operation(summary = "Move, resize or edit a shelf",
             description = "A full replacement; code cannot change. Off the map: 409 LAYOUT_OUT_OF_BOUNDS "
                 + "(BR-06). Overlapping a shelf or area that is not INACTIVE: 409 LAYOUT_OVERLAP "
-                + "(BR-07). Shrinking it under a bin: 409 LAYOUT_OUT_OF_BOUNDS. Changing "
-                + "defaultStorageClass reclassifies every bin without an override. Send the version "
+                + "(BR-07). Shrinking it under a bin: 409 LAYOUT_OUT_OF_BOUNDS. Send the version "
                 + "from the last read; a stale one answers 409 OPTIMISTIC_LOCK.")
     @RequiresPermission(resource = WarehouseResources.LOCATIONS, action = Action.UPDATE)
     public ApiResponse<ShelfResponse> update(@PathVariable UUID shelfId,

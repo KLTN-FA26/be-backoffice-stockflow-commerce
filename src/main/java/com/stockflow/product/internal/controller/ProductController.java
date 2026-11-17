@@ -202,7 +202,7 @@ class ProductController {
     }
 
     @GetMapping("/{productId}/open-references")
-    @Operation(summary = "The open purchase order lines and order lines that still refer to this product's SKUs")
+    @Operation(summary = "The open production order lines and order lines that still refer to this product's SKUs")
     @RequiresPermission(resource = ProductResources.PRODUCTS, action = Action.READ)
     public ApiResponse<OpenReferencesResponse> openReferences(@PathVariable UUID productId) {
         return ApiResponse.ok(mapper.toResponse(productService.openReferences(productId)));

@@ -1,5 +1,9 @@
 /**
- * <b>Payment gateways, COD, deposits, refunds, reconciliation</b>
+ * <b>Installments of signed contracts, payment receipts, credit position, refundable amounts and refund records</b>
+ *
+ * <p>kltn-docs 15. Since 4B-10 no money ledger: no customer transfers, allocations, receivables of credit orders, carrier
+ * remittances or refund lifecycle - the accountant records receipts per installment, and the system works out what is to
+ * be refunded. The full books of money are the accounting software's (15 BR-06).</p>
  *
  * <p>WBS 3.15 · database schema {@code payment}</p>
  *

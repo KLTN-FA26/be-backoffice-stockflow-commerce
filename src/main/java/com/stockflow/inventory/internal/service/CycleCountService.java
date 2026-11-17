@@ -178,13 +178,13 @@ class CycleCountService implements CycleCounts {
         }
         if (drafts.size() > maxLines) {
             throw new BusinessException(ErrorCode.CYCLE_COUNT_TOO_LARGE,
-                    "The scope holds %d slots; a count takes at most %d".formatted(drafts.size(), maxLines));
+                    "The scope holds %d cartons; a count takes at most %d".formatted(drafts.size(), maxLines));
         }
 
         Map<CountSlot, String> busy = counts.claim(drafts.stream().map(CountLineDraft::slot).toList());
         List<CountLineDraft> free = drafts.stream().filter(draft -> !busy.containsKey(draft.slot())).toList();
         if (free.isEmpty() && !busy.isEmpty()) {
-            throw new BusinessException(ErrorCode.CYCLE_COUNT_EMPTY_SCOPE, "Every slot in scope is on another count: "
+            throw new BusinessException(ErrorCode.CYCLE_COUNT_EMPTY_SCOPE, "Every carton in scope is on another count: "
                     + busy.values().stream().distinct().sorted().collect(Collectors.joining(", ")));
         }
         LocalDate day = BusinessCalendar.date(clock.instant());
@@ -196,7 +196,7 @@ class CycleCountService implements CycleCounts {
         return new PlannedCount(views.of(planned, showExpected), skipped(busy));
     }
 
-    /** SKUs alone mean bins: stock in a receiving or QC area is still being received or inspected, not stored. */
+    /** SKUs alone mean bins: stock in a receiving or quarantine area is being received or decided on, not stored. */
     private List<CountLineDraft> onlyBins(List<CountLineDraft> drafts) {
         if (drafts.isEmpty()) {
             return drafts;
@@ -237,9 +237,8 @@ class CycleCountService implements CycleCounts {
 
     @Override
     @Transactional
-    public CycleCountView count(UUID id, UUID lineId, Integer countedQty, Boolean present, UUID actor,
-                                boolean mayDecide) {
-        return counting.count(id, lineId, countedQty, present, actor, mayDecide);
+    public CycleCountView count(UUID id, UUID lineId, boolean found, UUID actor, boolean mayDecide) {
+        return counting.count(id, lineId, found, actor, mayDecide);
     }
 
     @Override
@@ -300,7 +299,8 @@ class CycleCountService implements CycleCounts {
             throw new BusinessException(ErrorCode.CONFLICT, "Part of the variance still waits for approval: "
                     + stillPending.stream().map(UUID::toString).collect(Collectors.joining(", ")));
         }
-        // An emptied carton has nothing left to recount: said here, naming the line, rather than by the count of it.
+        // markRecount refuses a loose line of the history before any line is flagged, naming it; an emptied carton has
+        // nothing left to recount: said here, naming the line, rather than by the count of it.
         for (CycleCountLine line : count.lines()) {
             if (wanted.contains(line.id()) && line.slot().isCarton()) {
                 stockPackages.findById(line.slot().stockPackageId())

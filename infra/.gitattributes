@@ -1,0 +1,2 @@
+# Scripts here run with bash; a CRLF line ending fails with "$'\r': command not found".
+* text=auto eol=lf

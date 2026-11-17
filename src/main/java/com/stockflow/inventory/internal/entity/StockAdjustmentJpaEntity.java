@@ -77,8 +77,22 @@ public class StockAdjustmentJpaEntity extends BaseEntity {
     @Column(name = "stock_package_id", updatable = false)
     private UUID stockPackageId;
 
+    /**
+     * WF-05 fix plan, section 8: who counted the line a count's variance comes from; null for an adjustment asked by
+     * hand. {@code ck_stock_adjustment_counter_not_decider} refuses a decision by that person.
+     */
+    @Column(name = "counted_by", updatable = false)
+    private UUID countedBy;
+
     protected StockAdjustmentJpaEntity() {
     }
+
+    public StockAdjustmentJpaEntity countedBy(UUID countedBy) {
+        this.countedBy = countedBy;
+        return this;
+    }
+
+    public UUID getCountedBy() { return countedBy; }
 
     public StockAdjustmentJpaEntity atLayer(Instant receivedAt) {
         this.receivedAt = receivedAt;

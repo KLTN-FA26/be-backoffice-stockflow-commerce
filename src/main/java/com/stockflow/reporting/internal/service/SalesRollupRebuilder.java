@@ -37,9 +37,9 @@ class SalesRollupRebuilder {
 
     private static final Logger LOG = LoggerFactory.getLogger(SalesRollupRebuilder.class);
     static final int PAGE_SIZE = 100;
-    /** Every status but DRAFT: a draft is not a sale. */
+    /** Every status but DRAFT and PENDING_CONTRACT: an order is a sale once its contract is signed (4B-5). */
     private static final List<OrderStatus> COUNTABLE = Stream.of(OrderStatus.values())
-            .filter(status -> status != OrderStatus.DRAFT).toList();
+            .filter(status -> status != OrderStatus.DRAFT && status != OrderStatus.PENDING_CONTRACT).toList();
 
     private final OrderService orders;
     private final SalesRollupLedger ledger;
@@ -103,7 +103,8 @@ class SalesRollupRebuilder {
         for (OrderContribution taken : ledger.returnsOf(day)) {
             ledger.applyReturn(taken);
         }
-        // The units production closed short on them (S6): kept through the clear as well, taken off again.
+        // The units in-house production closed short on them (S6), recorded while it existed: kept through the clear
+        // as well, taken off again.
         rollups.reapplyClosures(day);
         return new long[] {seen, counted};
     }

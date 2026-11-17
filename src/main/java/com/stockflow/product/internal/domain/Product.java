@@ -30,7 +30,7 @@ import java.util.regex.Pattern;
  * class of every new or edited draft, and of every submission.</p>
  *
  * <p>What is deliberately <b>not</b> on the product (the PIM model, docs 01): logistics — weight,
- * dimensions, package, storage class — belong to the inventory item of each SKU (BR-08), and images
+ * dimensions, package — belong to the inventory item of each SKU (BR-08), and images
  * belong to a variant (decision D5). The product's selling SKUs are its variants, created with the
  * product: one default variant whose SKU is the product code, or, for a product created with variant
  * axes, every combination of its options, SKUs by the code rule and the first one the default.
@@ -94,7 +94,7 @@ public final class Product extends AggregateRoot {
         this.description = description;
         this.descriptionEn = descriptionEn;
         this.taxClass = taxClass;
-        this.kind = Objects.requireNonNullElse(kind, ProductKind.STANDARD);
+        this.kind = requireCustomizable(kind);
         this.status = Objects.requireNonNull(status, "status");
         this.version = version;
         this.submittedBy = submittedBy;
@@ -116,9 +116,10 @@ public final class Product extends AggregateRoot {
      */
     public static Product draft(String code, String name, String nameEn, UUID brandId, UUID categoryId,
                                 String shortDescription, String description, String descriptionEn,
-                                TaxClass taxClass, ProductKind kind) {
+                                TaxClass taxClass) {
         return new Product(ProductId.newId(), code, name, requireNonBlank(nameEn, "nameEn"), brandId, categoryId,
-                shortDescription, description, descriptionEn, requireTaxClass(taxClass), kind, ProductStatus.DRAFT,
+                shortDescription, description, descriptionEn, requireTaxClass(taxClass), ProductKind.CUSTOMIZABLE,
+                ProductStatus.DRAFT,
                 0L, null, null, null, null, false, null, null, null, null, null);
     }
 
@@ -133,12 +134,11 @@ public final class Product extends AggregateRoot {
      */
     public List<String> updateDetails(String name, String nameEn, UUID brandId, UUID categoryId,
                                       String shortDescription, String description, String descriptionEn,
-                                      TaxClass taxClass, ProductKind kind) {
+                                      TaxClass taxClass) {
         requireStatus(ProductStatus.DRAFT, "edited");
         String newName = requireNonBlank(name, "name");
         String newNameEn = requireNonBlank(nameEn, "nameEn");
         TaxClass newTaxClass = requireTaxClass(taxClass);
-        ProductKind newKind = Objects.requireNonNullElse(kind, ProductKind.STANDARD);
         List<String> changed = new ArrayList<>();
         if (!Objects.equals(this.name, newName)) changed.add("name");
         if (!Objects.equals(this.nameEn, newNameEn)) changed.add("nameEn");
@@ -148,7 +148,6 @@ public final class Product extends AggregateRoot {
         if (!Objects.equals(this.description, description)) changed.add("description");
         if (!Objects.equals(this.descriptionEn, descriptionEn)) changed.add("descriptionEn");
         if (this.taxClass != newTaxClass) changed.add("taxClass");
-        if (this.kind != newKind) changed.add("kind");
         this.name = newName;
         this.nameEn = newNameEn;
         this.brandId = brandId;
@@ -157,7 +156,6 @@ public final class Product extends AggregateRoot {
         this.description = description;
         this.descriptionEn = descriptionEn;
         this.taxClass = newTaxClass;
-        this.kind = newKind;
         return List.copyOf(changed);
     }
 
@@ -253,10 +251,10 @@ public final class Product extends AggregateRoot {
      * what {@code ck_products_discontinued} requires.
      *
      * <p><b>BR-PRD-005 is a warning, not a block</b>: discontinuing leaves the remaining stock and the
-     * orders and purchase orders already running to be processed (kltn-docs 01 step 12, 02 edge cases).
+     * orders and production orders already running to be processed (kltn-docs 01 step 12, BR-14).
      * Which of them still reference the product is read by the application service
      * ({@code SkuReferenceProbe}), which needs other modules; it is shown to the person, never refused.
-     * What a discontinued product cannot do is take new purchase order lines.</p>
+     * What a discontinued product cannot do is take new quote or order lines.</p>
      */
     public void discontinue(String reason, Instant now) {
         requireCanTransitionTo(ProductStatus.DISCONTINUED);
@@ -344,6 +342,17 @@ public final class Product extends AggregateRoot {
             throw new IllegalArgumentException(field + " must not be blank");
         }
         return value;
+    }
+
+    /**
+     * Every product is CUSTOMIZABLE (kltn-docs 01 BR-19, team plan 5-9); {@code ck_products_kind} says it too. Null is a
+     * row or a caller that never named one.
+     */
+    private static ProductKind requireCustomizable(ProductKind kind) {
+        if (kind != null && kind != ProductKind.CUSTOMIZABLE) {
+            throw new IllegalArgumentException("Every product is CUSTOMIZABLE, not " + kind);
+        }
+        return ProductKind.CUSTOMIZABLE;
     }
 
     private static TaxClass requireTaxClass(TaxClass taxClass) {

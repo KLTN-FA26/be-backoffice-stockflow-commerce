@@ -17,7 +17,7 @@ import java.util.UUID;
 import java.util.function.UnaryOperator;
 
 /**
- * Customer aliases (ADR-0014, design §5.5): a tool result goes to the model provider with {@code KH-1} where it names
+ * Customer aliases (ADR-0015, design §5.5): a tool result goes to the model provider with {@code KH-1} where it names
  * a customer, and what the panel shows has the name back.
  *
  * <p><b>Why.</b> A list of the customers who owe past due, with how much, is the business's most sensitive answer, and

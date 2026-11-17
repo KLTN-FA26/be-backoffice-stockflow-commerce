@@ -7,7 +7,6 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 
 import java.time.Instant;
-import java.time.LocalDate;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -29,8 +28,7 @@ public interface StockBrowseSearch {
     record ReservationCriteria(UUID orderId, String sku, List<ReservationStatus> statuses, String warehousePrefix) {
     }
 
-    record StockRow(UUID stockItemId, String sku, String locationCode, String lotNumber, LocalDate expiryDate,
-                    int onHand, int reserved, StockStatus status, Instant receivedAt) {
+    record StockRow(UUID stockItemId, String sku, String locationCode, String lotNumber, int onHand, int reserved, StockStatus status, Instant receivedAt) {
     }
 
     /**

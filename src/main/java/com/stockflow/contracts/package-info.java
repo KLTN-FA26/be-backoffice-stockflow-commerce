@@ -7,7 +7,10 @@
  * {@code ModularityTest} would reject the build. A neutral module both may depend on breaks that.</p>
  *
  * <p><b>Rules:</b> flat records and primitives only, no imports from any module. Once published,
- * you may only add nullable fields — removing one or changing a type breaks every listener.</p>
+ * you may only add nullable fields — removing one or changing a type breaks every listener, and the
+ * publications still waiting in {@code event_publication}. A field may go only with a migration that cuts
+ * it out of those publications' text, keeping Jackson's exact form (the registry finds a publication by
+ * its text): {@code ShipmentStatusChanged.deliveryMode} went that way, with V20261108000400.</p>
  */
 @org.springframework.modulith.ApplicationModule(type = org.springframework.modulith.ApplicationModule.Type.OPEN)
 package com.stockflow.contracts;

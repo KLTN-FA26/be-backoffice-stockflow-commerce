@@ -9,7 +9,7 @@ import java.io.IOException;
 import java.util.UUID;
 
 /**
- * A customer's name in a tool's result (ADR-0014). Written as the customer's alias in this conversation
+ * A customer's name in a tool's result (ADR-0015). Written as the customer's alias in this conversation
  * ({@code KH#3}) when the result goes to the assistant's model provider, and as the name itself everywhere else: an MCP
  * client, which is the user's own choice of model (AQ-17), and the "today" card, which no model reads.
  *

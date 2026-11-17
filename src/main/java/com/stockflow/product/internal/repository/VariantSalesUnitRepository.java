@@ -4,25 +4,24 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.stereotype.Repository;
 
-import java.math.BigDecimal;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
 /**
- * {@code product.variant_sales_units} (V20261019000400): the units a variant is sold in, each with its
- * price. Native SQL on one small table, like {@link ProductChangeLogRepository}.
+ * {@code product.variant_sales_units} (V20261019000400): the units a variant is sold in - no price since
+ * V20261110000100 (5-3). Native SQL on one small table, like {@link ProductChangeLogRepository}.
  */
 @Repository
 public class VariantSalesUnitRepository {
 
     /** One stored sales unit; the unit itself (code, factor) is the inventory item's. */
-    public record Row(UUID id, UUID variantId, UUID uomConversionId, BigDecimal price, long version) {
+    public record Row(UUID id, UUID variantId, UUID uomConversionId, long version) {
     }
 
     private static final RowMapper<Row> ROW = (rs, n) -> new Row(rs.getObject("id", UUID.class),
             rs.getObject("variant_id", UUID.class), rs.getObject("uom_conversion_id", UUID.class),
-            rs.getBigDecimal("price"), rs.getLong("version"));
+            rs.getLong("version"));
 
     private final JdbcTemplate jdbc;
 
@@ -54,18 +53,10 @@ public class VariantSalesUnitRepository {
                 Boolean.class, variantId, uomConversionId));
     }
 
-    public void insert(UUID id, UUID variantId, UUID uomConversionId, BigDecimal price, String actor) {
+    public void insert(UUID id, UUID variantId, UUID uomConversionId, String actor) {
         jdbc.update("""
-                insert into product.variant_sales_units (id, variant_id, uom_conversion_id, price, created_by)
-                values (?, ?, ?, ?, ?)""", id, variantId, uomConversionId, price, actor);
-    }
-
-    /** False when the version moved on. */
-    public boolean updatePrice(UUID id, long version, BigDecimal price, String actor) {
-        return jdbc.update("""
-                update product.variant_sales_units set price = ?, version = version + 1, last_modified_at = now(),
-                    last_modified_by = ?
-                where id = ? and version = ?""", price, actor, id, version) == 1;
+                insert into product.variant_sales_units (id, variant_id, uom_conversion_id, created_by)
+                values (?, ?, ?, ?)""", id, variantId, uomConversionId, actor);
     }
 
     public boolean delete(UUID id, long version) {

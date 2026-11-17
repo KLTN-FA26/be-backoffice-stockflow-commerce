@@ -4,10 +4,17 @@ import java.time.Instant;
 import java.util.UUID;
 
 /**
- * Goods picked for an order that was cancelled afterwards, waiting to go back onto a bin (docs 07 BR-05).
+ * A carton waiting in the put-back queue: picked for an order that was cancelled afterwards, to go back onto a bin
+ * (kltn-docs 07 BR-05, §4.5 step 13), or removed at the check station as damaged, to go whole into a quarantine area
+ * (08 §4.2 step 4, team plan 4C-6).
  *
- * @param fromLocationCode where they were picked from: the natural bin to put them back on
+ * @param lpn              the carton: scan it to put it back
+ * @param pickedQty        what goes back: the carton's count, whole
+ * @param fromLocationCode where it was picked from: the natural bin to put it back on
+ * @param quarantine       removed at the check station as damaged: it goes into a QUARANTINE area of the warehouse,
+ *                         not onto a bin
  */
 public record PutBackRowResponse(UUID taskId, String orderNumber, UUID warehouseId, UUID lineId, String sku,
-                                 String lotNumber, int pickedQty, String fromLocationCode, Instant pickedAt) {
+                                 String lotNumber, String lpn, int pickedQty, String fromLocationCode,
+                                 Instant pickedAt, boolean quarantine) {
 }

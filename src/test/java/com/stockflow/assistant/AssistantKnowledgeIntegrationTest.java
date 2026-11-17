@@ -59,29 +59,32 @@ class AssistantKnowledgeIntegrationTest {
     }
 
     @Test
-    @DisplayName("every rule, term and state machine is indexed, and indexing again changes nothing")
+    @DisplayName("every chapter's rules, statuses and flows and the glossary are indexed, the superseded documents are "
+            + "not, and indexing again changes nothing")
     void indexedOnce() {
         assertThat(jdbc.queryForObject("select count(*) from assistant.knowledge_chunk where source = "
-                + "'05-business-rules'", Long.class)).isGreaterThan(50);
+                + "'17-order-management' and kind = 'RULE' and anchor like '17 BR-%'", Long.class)).isGreaterThan(30);
         assertThat(jdbc.queryForObject("select count(*) from assistant.knowledge_chunk where kind = 'TERM'",
-                Long.class)).isGreaterThan(5);
+                Long.class)).isGreaterThan(200);
         assertThat(jdbc.queryForObject("select count(*) from assistant.knowledge_chunk where kind = "
-                + "'STATE_MACHINE'", Long.class)).isGreaterThan(10);
+                + "'STATE_MACHINE'", Long.class)).isGreaterThan(40);
+        assertThat(jdbc.queryForObject("select count(*) from assistant.knowledge_chunk where source in "
+                + "('05-business-rules', '01-ubiquitous-language', '03-state-machines', '04c-all-flows')", Long.class))
+                .as("docs/business-design is superseded: never cited again").isZero();
         assertThat(knowledge.index()).as("an unchanged document writes nothing").isZero();
     }
 
     @Test
-    @DisplayName("the process flows are indexed and found by Vietnamese words, with or without marks, and by their code")
+    @DisplayName("the flows are indexed in tests and found by Vietnamese words, with or without marks, and by their "
+            + "section")
     void flowsAreFound() {
-        assertThat(jdbc.queryForObject("select count(distinct anchor) from assistant.knowledge_chunk where kind = "
-                + "'FLOW' and source = '04c-all-flows' and anchor not like '%(%' and anchor not like '%›%'", Long.class))
-                // One anchor per flow code of 04c; X-DMG (damaged goods) came with develop on 5/11.
-                .isEqualTo(26);
-        assertThat(knowledge.search("quy trình đơn mua hàng gửi nhà cung cấp duyệt", 5))
-                .extracting(KnowledgeChunk::anchor).contains("F-PO");
-        assertThat(knowledge.search("nhat thieu hang don dung lai", 5)).extracting(KnowledgeChunk::anchor)
-                .contains("X-SHORT");
-        assertThat(knowledge.search("X-RESV", 5)).first().extracting(KnowledgeChunk::anchor).isEqualTo("X-RESV");
+        assertThat(jdbc.queryForObject("select count(*) from assistant.knowledge_chunk where kind = 'FLOW'",
+                Long.class)).isGreaterThan(100);
+        assertThat(knowledge.search("đổi trả hàng in theo thiết kế lỗi sản xuất đổi ý", 5))
+                .extracting(KnowledgeChunk::anchor).contains("17 §4.10");
+        assertThat(knowledge.search("bao thieu treo don kiem ke mu", 5)).extracting(KnowledgeChunk::anchor)
+                .contains("07 BR-09");
+        assertThat(knowledge.search("17 §4.10", 5)).first().extracting(KnowledgeChunk::anchor).isEqualTo("17 §4.10");
     }
 
     @Test
@@ -106,22 +109,26 @@ class AssistantKnowledgeIntegrationTest {
     }
 
     @Test
-    @DisplayName("a long state machine is found by the part that answers, not cut off at its start")
-    void stateMachinePassages() {
-        assertThat(knowledge.search("who may cancel order until when", 5)).extracting(KnowledgeChunk::anchor)
-                .anySatisfy(anchor -> assertThat(anchor).startsWith("9. Order — order-service"));
-        assertThat(jdbc.queryForObject("select max(length(body)) from assistant.knowledge_chunk where kind = "
-                + "'STATE_MACHINE'", Integer.class)).isLessThanOrEqualTo(KnowledgeParser.MAX_PASSAGE);
+    @DisplayName("a long section is found by the part that answers, and naming it brings every part of it")
+    void sectionPassages() {
+        assertThat(knowledge.search("trạng thái đơn hàng Return Requested Returned", 5))
+                .extracting(KnowledgeChunk::anchor).anySatisfy(anchor -> assertThat(anchor).startsWith("17 §5.1"));
+        assertThat(knowledge.search("17 §5.1", 5)).extracting(KnowledgeChunk::anchor)
+                .contains("17 §5.1", "17 §5.1 (2)", "17 §5.1 (3)", "17 §5.1 (4)");
+        assertThat(jdbc.queryForObject("select max(length(body)) from assistant.knowledge_chunk", Integer.class))
+                .isLessThanOrEqualTo(KnowledgeParser.MAX_PASSAGE);
     }
 
     @Test
-    @DisplayName("a search finds the rule by its words, by its anchor, and ignores accents and case")
+    @DisplayName("a search finds the rule by its words and by its anchor, the chapter deciding which BR-08, and "
+            + "ignores accents and case")
     void search() {
-        assertThat(knowledge.search("custom printed returnable defective", 5)).extracting(KnowledgeChunk::anchor)
-                .contains("BR-RMA-002");
-        assertThat(knowledge.search("what does br-rma-002 say", 5).getFirst().anchor()).isEqualTo("BR-RMA-002");
-        assertThat(knowledge.search("RESERVED allocated", 5)).extracting(KnowledgeChunk::anchor)
-                .contains("Reserved");
+        assertThat(knowledge.search("bốn mắt người duyệt sản phẩm người gửi duyệt", 5))
+                .extracting(KnowledgeChunk::anchor).contains("01 BR-12");
+        assertThat(knowledge.search("15 br-08 nói gì", 5).getFirst().anchor()).isEqualTo("15 BR-08");
+        assertThat(knowledge.search("quy dinh 9 BR-8", 5).getFirst().anchor()).isEqualTo("09 BR-08");
+        assertThat(knowledge.search("GIỮ HÀNG reservation", 5)).extracting(KnowledgeChunk::anchor)
+                .contains("Reservation / Giữ hàng");
         assertThat(knowledge.search("!!! ??", 5)).isEmpty();
     }
 
@@ -129,13 +136,13 @@ class AssistantKnowledgeIntegrationTest {
     @DisplayName("a passage sharing only one word of a longer search is not found by its words; one word alone, a "
             + "rule named, or both words of two still are")
     void oneSharedWordIsNotEnough() {
-        assertThat(repository.search("Tet holiday calendar", 5, 1)).as("before the threshold: 'calendar' alone")
+        assertThat(repository.search("Tet holiday Manhattan", 5, 1)).as("before the threshold: 'Manhattan' alone")
                 .isNotEmpty();
-        assertThat(repository.search("Tet holiday calendar", 5, 2)).isEmpty();
-        assertThat(knowledge.search("Tet holiday calendar", 5)).as("as the assistant is configured").isEmpty();
-        assertThat(repository.search("defective", 5, 2)).as("a one-word search needs its one word").isNotEmpty();
-        assertThat(repository.search("BR-RMA-002 calendar", 5, 2)).extracting(KnowledgeChunk::anchor)
-                .first().isEqualTo("BR-RMA-002");
+        assertThat(repository.search("Tet holiday Manhattan", 5, 2)).isEmpty();
+        assertThat(knowledge.search("Tet holiday Manhattan", 5)).as("as the assistant is configured").isEmpty();
+        assertThat(repository.search("FEFO", 5, 2)).as("a one-word search needs its one word").isNotEmpty();
+        assertThat(repository.search("15 BR-08 holiday", 5, 2)).extracting(KnowledgeChunk::anchor)
+                .first().isEqualTo("15 BR-08");
     }
 
     @Test
@@ -148,10 +155,11 @@ class AssistantKnowledgeIntegrationTest {
                 List.of()));
         when(model.next(any())).thenReturn(
                 new LanguageModel.Reply(new Turn.ModelTurn("{}", null, List.of(new ToolCall("toolu_k",
-                        "searchKnowledge", "{\"query\":\"custom printed returnable defective\"}"))),
+                        "searchKnowledge", "{\"query\":\"đổi trả hàng in theo thiết kế lỗi sản xuất\"}"))),
                         LanguageModel.StopReason.TOOL_USE, new LanguageModel.Usage(10, 5, 0, 0), "scripted"),
-                new LanguageModel.Reply(new Turn.ModelTurn("{}", "Không, trừ khi bị lỗi (BR-RMA-002). "
-                        + "Xem thêm BR-ZZZ-999.", List.of()),
+                // 17 BR-99 was never retrieved; and 17 §4.10 does not cite 17 §4.1, should the search return it.
+                new LanguageModel.Reply(new Turn.ModelTurn("{}", "Không, chỉ khi lỗi sản xuất (17 §4.10). "
+                        + "Xem thêm 17 BR-99.", List.of()),
                         LanguageModel.StopReason.END_TURN, new LanguageModel.Usage(10, 5, 0, 0), "scripted"));
         String conversation = JsonPath.read(http.asRole(Role.SALES_STAFF, seller,
                 post("/api/v1/assistant/conversations")).andReturn().getResponse().getContentAsString(), "$.data.id");
@@ -162,6 +170,6 @@ class AssistantKnowledgeIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.toolCalls[0].tool").value("searchKnowledge"))
                 .andExpect(jsonPath("$.data.citations.length()").value(1))
-                .andExpect(jsonPath("$.data.citations[0]").value("BR-RMA-002"));
+                .andExpect(jsonPath("$.data.citations[0]").value("17 §4.10"));
     }
 }

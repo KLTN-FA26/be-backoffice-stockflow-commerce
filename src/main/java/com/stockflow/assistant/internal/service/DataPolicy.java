@@ -15,7 +15,7 @@ import java.util.regex.Pattern;
  *
  * <p><b>{@code LOCAL_ONLY} is a guarantee, not a preference.</b> No adapter is built for an endpoint outside the
  * company's own network — no Gemini, no Claude, no OpenAI-compatible server on a public host — for the chat, the
- * embeddings or the delivery-note reader. A model that would break it is not used, and the assistant says why at
+ * embeddings or the speech transcriber. A model that would break it is not used, and the assistant says why at
  * start-up and answers 503 {@code ASSISTANT_DISABLED}, as it does without a key; the application still starts. It is
  * the technical half of AQ-01. Whether data may leave at all is the business owner's decision, and this switch is how
  * that decision is enforced instead of remembered.</p>

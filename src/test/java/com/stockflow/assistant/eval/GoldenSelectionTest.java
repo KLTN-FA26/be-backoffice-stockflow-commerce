@@ -58,7 +58,7 @@ class GoldenSelectionTest {
     }
 
     private static GoldenCase golden(String id, String useCase, boolean smoke) {
-        return new GoldenCase(id, useCase, "formal", new GoldenCase.Persona("INVENTORY_PLANNER", List.of()),
+        return new GoldenCase(id, useCase, "formal", new GoldenCase.Persona("SYSTEM_ADMIN", List.of()),
                 "Câu hỏi " + id, List.of(), List.of(), false, List.of(), null, List.of(), null, false, null, List.of(),
                 List.of(), List.of(), smoke);
     }

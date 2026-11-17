@@ -73,29 +73,27 @@ public sealed interface StockEvent extends DomainEvent {
         }
     }
 
-    /** Recorded by a damage report: its units left available-to-promise for a quarantine area. */
-    record DamageReported(UUID eventId, Instant occurredAt, com.stockflow.contracts.StockDamageReported payload)
+    record WrittenOffByCount(UUID eventId, Instant occurredAt, com.stockflow.contracts.StockWrittenOffByCount payload)
             implements StockEvent {
-        public DamageReported(com.stockflow.contracts.StockDamageReported payload) {
+        public WrittenOffByCount(com.stockflow.contracts.StockWrittenOffByCount payload) {
             this(UUID.randomUUID(), Instant.now(), payload);
         }
 
         @Override
         public String aggregateId() {
-            return payload.reportId().toString();
+            return payload.sku() + "@" + payload.warehouseCode();
         }
     }
 
-    /** Recorded by a damage report when a manager decided some of its units. */
-    record DamageDisposed(UUID eventId, Instant occurredAt, com.stockflow.contracts.StockDamageDisposed payload)
+    record HeldCartonWrittenOff(UUID eventId, Instant occurredAt, com.stockflow.contracts.StockHeldCartonWrittenOff payload)
             implements StockEvent {
-        public DamageDisposed(com.stockflow.contracts.StockDamageDisposed payload) {
+        public HeldCartonWrittenOff(com.stockflow.contracts.StockHeldCartonWrittenOff payload) {
             this(UUID.randomUUID(), Instant.now(), payload);
         }
 
         @Override
         public String aggregateId() {
-            return payload.reportId().toString();
+            return payload.sku() + "@" + payload.locationCode();
         }
     }
 }

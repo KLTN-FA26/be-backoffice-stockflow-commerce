@@ -45,7 +45,7 @@ class McpTokensTest {
 
     private static final Instant NOW = Instant.parse("2026-11-05T02:00:00Z");
     private static final CurrentUser PLANNER = new CurrentUser(UUID.randomUUID(), "planner",
-            Set.of(Role.INVENTORY_PLANNER), Set.of(), DataScope.ALL, Set.of());
+            Set.of(Role.SYSTEM_ADMIN), Set.of(), DataScope.ALL, Set.of());
 
     private final McpTokenRepository repository = mock(McpTokenRepository.class);
     private final McpTokens tokens = new McpTokens(repository, Clock.fixed(NOW, ZoneOffset.UTC),

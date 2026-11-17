@@ -134,21 +134,11 @@ public class AssistantTelemetry {
     }
 
     /**
-     * What became of a suggestion (ADR-0011): {@code suggested}, {@code confirmed} (with {@code edited}: whether its
-     * owner changed it first), {@code refused} (the document's module refused it; it stays open), {@code dismissed}.
-     * The acceptance rate is confirmed over suggested.
-     */
-    /**
      * A tool's result held typed text that reads like an instruction to the assistant ({@link InstructionLikeText}),
      * marked as data on its way to the model.
      */
     void instructionLike(String tool, ToolChannel channel) {
         meters.counter("assistant.tool.instruction_like", "tool", tool, "channel", channel.name()).increment();
-    }
-
-    void action(String kind, String outcome, boolean edited) {
-        meters.counter("assistant.actions", "kind", kind, "outcome", outcome, "edited", Boolean.toString(edited))
-                .increment();
     }
 
     /** The router moved a question: {@code fallback} before any reply, {@code escalation} after a useless one. */

@@ -28,7 +28,7 @@ import java.util.regex.Pattern;
 
 /**
  * {@link LanguageModel} on Google's Gemini API ({@code generateContent}, REST), the second adapter behind the port
- * (ADR-0010). Chosen with {@code stockflow.assistant.provider=gemini}; the loop, the tools and the stored history do
+ * (ADR-0011). Chosen with {@code stockflow.assistant.provider=gemini}; the loop, the tools and the stored history do
  * not change.
  *
  * <p><b>Replay is verbatim.</b> A reply is stored as the candidate's {@code content} exactly as it came, and sent back

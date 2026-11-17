@@ -34,9 +34,6 @@ public interface CustomerService {
      */
     java.util.Map<UUID, String> fullNames(java.util.Collection<UUID> customerIds);
 
-    /** Whether this customer group ({@code customer.segment}) exists: catalog prices groups (P7). */
-    boolean segmentExists(UUID segmentId);
-
     Optional<CustomerSummary> findByUserId(UUID userId);
 
     PageResponse<CustomerSummary> list(ListCustomersQuery query);
@@ -73,21 +70,22 @@ public interface CustomerService {
     CheckoutCustomer resolveCheckout(UUID customerId, UUID shippingAddressId, UUID billingAddressId);
 
     /**
-     * The customer's commercial terms (kltn-docs 18 §3); prepaid only when none were set (SCRUM-427).
+     * The customer's credit (kltn-docs 18 §3, 15 BR-12): the limit and the days to pay after delivery; no credit when
+     * none was set (SCRUM-427). Since 4B-10 nothing about payment terms: a contract's plan says how the customer pays.
      *
      * @throws com.stockflow.common.error.BusinessException {@code CUSTOMER_NOT_FOUND}
      */
     CreditTerms creditTerms(UUID customerId);
 
     /**
-     * {@link #creditTerms}, with the customer row locked for the rest of the caller's transaction: two
-     * credit orders of one customer are checked against the limit one after the other, never on the
-     * same exposure (kltn-docs 15 BR-03).
+     * {@link #creditTerms}, with the customer row locked for the rest of the caller's transaction: two contracts of one
+     * customer signed at once are checked against the limit one after the other, never on the same exposure (kltn-docs
+     * 15 BR-10, BR-11).
      */
     CreditTerms lockCreditTerms(UUID customerId);
 
     /**
-     * Set the terms; whoever approves credit only (18 BR-02), recorded with who and when.
+     * Set the credit; whoever approves credit only (18 BR-02), recorded with who and when.
      *
      * <p>Terms that already exist are changed only against the version the caller read
      * ({@link SaveCreditTermsCommand#expectedVersion()}); only the first set may omit it.</p>

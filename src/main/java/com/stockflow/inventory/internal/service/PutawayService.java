@@ -4,7 +4,6 @@ import com.stockflow.common.api.PageResponse;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.persistence.Pages;
-import com.stockflow.common.domain.Sku;
 import com.stockflow.common.security.WarehouseScope;
 import com.stockflow.contracts.PutawayCompleted;
 import com.stockflow.inventory.api.MoveReference;
@@ -15,7 +14,6 @@ import com.stockflow.inventory.internal.domain.PutawayRanker;
 import com.stockflow.inventory.internal.domain.PutawayRanker.Bin;
 import com.stockflow.inventory.internal.domain.PutawayRanker.Need;
 import com.stockflow.inventory.internal.domain.PutawayRanker.Occupancy;
-import com.stockflow.inventory.internal.domain.StockItemRepository;
 import com.stockflow.inventory.internal.domain.StockMovement;
 import com.stockflow.inventory.internal.domain.StockMovement.MovementType;
 import com.stockflow.inventory.internal.domain.StockMovement.ReferenceType;
@@ -24,11 +22,13 @@ import com.stockflow.inventory.internal.domain.StockPackage;
 import com.stockflow.inventory.internal.domain.StockPackageId;
 import com.stockflow.inventory.internal.domain.StockPackageRepository;
 import com.stockflow.inventory.internal.repository.BinOccupancyQuery;
-import com.stockflow.inventory.internal.repository.InventoryPolicyRepository;
-import com.stockflow.inventory.internal.repository.InventoryPolicyRepository.ItemRow;
+import com.stockflow.inventory.internal.domain.StockItem;
+import com.stockflow.inventory.internal.domain.StockItemRepository;
 import com.stockflow.warehouse.api.PutawayCandidate;
+import com.stockflow.warehouse.api.PutawaySource;
 import com.stockflow.warehouse.api.PutawayTaskView;
 import com.stockflow.warehouse.api.PutawayTasks;
+import com.stockflow.warehouse.api.PutawayTrips;
 import com.stockflow.warehouse.api.StorageLocationView;
 import com.stockflow.warehouse.api.WarehouseService;
 import org.slf4j.Logger;
@@ -37,11 +37,9 @@ import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.math.BigDecimal;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
@@ -53,11 +51,18 @@ import java.util.stream.Collectors;
  * of tasks. The warehouse module keeps the tasks; what is left, where the goods stand and where they could go are
  * facts of the stock, so they are read here.
  *
- * <p>Where a task's goods stand now (its <i>source</i>) is derived, never stored. A carton task: the carton's current
- * bin, wherever a hand move has taken it. A loose task: the bin of the first loose INBOUND row of the receipt line's
- * lot; once nothing is INBOUND any more (the task is done) the bin of the latest putaway, the task's target. Scope is
- * checked on the source before anything else is said about a task, so a task of another warehouse is 403 and not
- * 404 or a status.</p>
+ * <p>A task has one of two sources (kltn-docs 05 BR-01): a carton of a confirmed receipt, INBOUND at the receiving
+ * area, or a carton a warehouse manager released from quarantine (team plan 4D-1), QUARANTINE at the quarantine area;
+ * putting either away makes it AVAILABLE (05 BR-14). A release names no receipt line, so its lot is read from the
+ * carton's own rows, and finishing it announces no receipt's putaway - {@link PutawayCompleted} is for the receipt's
+ * closing - but {@code QuarantineStockReleased}: the carton is stock to promise again.</p>
+ *
+ * <p>Every task is one carton, put away whole (kltn-docs 05 BR-08; team plan 4C-2). Where a task's goods stand now
+ * (its <i>source</i>) is derived, never stored: the carton's current bin, wherever a hand move has taken it. Loose
+ * tasks are history - opened before receipts put every unit into a carton, and finished or cancelled before
+ * V20261111000110 boxed the stock - so one only stands where it put its goods (its target) or, cancelled, where its
+ * receipt line set them down; it is never confirmed again. Scope is checked on the source before anything else is
+ * said about a task, so a task of another warehouse is 403 and not 404 or a status.</p>
  *
  * <p>{@link #confirm} puts goods away in one transaction, in the order the spec fixes: the task row first (as the pick
  * row comes first when picking), then the scope of its source, the scan, the bin the clerk chose, the move, the
@@ -72,11 +77,9 @@ import java.util.stream.Collectors;
  * suggestion is stale as soon as someone else puts goods away.</p>
  *
  * <p>Sources are read in a constant number of queries however many tasks there are: one read of the tasks' own
- * cartons by id, one ledger read of the loose RECEIPT lines of all the lines, one read of where each lot's loose INBOUND
- * rows wait (a projection that loads no reservations), and one for the locations of the warehouse filter. A loose
- * task whose lot has no INBOUND units left (it is done) stands at its latest target; failing that, where the loose
- * RECEIPT ledger line says the goods arrived ({@code to}). Lots, remaining quantities of tasks in progress and target
- * codes are read for the returned page only, one read per task in progress and one per distinct target.</p>
+ * cartons by id, one ledger read of the loose RECEIPT lines of historical loose tasks, and one for the locations of
+ * the warehouse filter. Lots, remaining quantities of tasks in progress and target codes are read for the returned
+ * page only, one read per task in progress and one per distinct target.</p>
  */
 @Service
 public class PutawayService {
@@ -89,22 +92,23 @@ public class PutawayService {
     private final PutawayTasks tasks;
     private final WarehouseService warehouses;
     private final StockPackageRepository stockPackages;
-    private final StockItemRepository stockItems;
     private final StockMovementLog ledger;
-    private final InventoryPolicyRepository items;
     private final BinOccupancyQuery occupancy;
     private final StockOperations operations;
     private final ApplicationEventPublisher events;
+    private final StockItemRepository stockItems;
+    private final PutawayTrips trips;
 
     public PutawayService(PutawayTasks tasks, WarehouseService warehouses, StockPackageRepository stockPackages,
-                          StockItemRepository stockItems, StockMovementLog ledger, InventoryPolicyRepository items,
-                          BinOccupancyQuery occupancy, StockOperations operations, ApplicationEventPublisher events) {
+                          StockMovementLog ledger, BinOccupancyQuery occupancy,
+                          StockOperations operations, ApplicationEventPublisher events,
+                          StockItemRepository stockItems, PutawayTrips trips) {
+        this.stockItems = stockItems;
+        this.trips = trips;
         this.tasks = tasks;
         this.warehouses = warehouses;
         this.stockPackages = stockPackages;
-        this.stockItems = stockItems;
         this.ledger = ledger;
-        this.items = items;
         this.occupancy = occupancy;
         this.operations = operations;
         this.events = events;
@@ -116,12 +120,16 @@ public class PutawayService {
      * @param left               what is still to put away
      * @param sourceLocationCode where the goods stand now
      * @param lpn                the carton's, null for a loose task
-     * @param targetLocationCode the bin of the latest putaway; null until something was put away
+     * @param targetLocationCode the bin (or OVERFLOW area) of the latest putaway; null until something was put away
      * @param suggestions        ranked bins; filled by {@link #get} only
+     * @param overflowLocationCodes filled by {@link #get} only, when no bin takes the carton: the usable OVERFLOW
+     *                           areas of its warehouse, where it may go instead (kltn-docs 05 BR-13)
+     * @param source             why the task exists; a {@code QUARANTINE_RELEASE} has no receipt or receipt line
      */
     public record TaskView(UUID id, UUID goodsReceiptId, UUID goodsReceiptLineId, String sku, String lotNumber,
                            int quantity, int left, String sourceLocationCode, String lpn, String status,
-                           String targetLocationCode, List<PutawayRanker.Suggestion> suggestions) {
+                           String targetLocationCode, List<PutawayRanker.Suggestion> suggestions,
+                           List<String> overflowLocationCodes, PutawaySource source) {
     }
 
     /** Where a task's goods stand now. */
@@ -133,6 +141,7 @@ public class PutawayService {
         final Map<UUID, Optional<StockMovement>> receiptLine = new HashMap<>();
         final Map<UUID, Optional<StockMovement>> looseReceiptLine = new HashMap<>();
         final Map<UUID, String> locationCodes = new HashMap<>();
+        final Map<UUID, Optional<String>> cartonLot = new HashMap<>();
     }
 
     /**
@@ -146,49 +155,160 @@ public class PutawayService {
         Source source = locate(List.of(task), reads, false).get(task.id());
         WarehouseScope.requireLocation(source.locationCode());
         TaskView view = view(task, source, reads);
-        if (view.left() <= 0) {
+        if (view.left() <= 0 || task.stockPackageId() == null) {
             return view;
         }
-        ItemRow item = itemOf(task.sku()).orElse(null);
         StorageLocationView sourceLocation = warehouses.findLocation(source.locationCode()).orElse(null);
-        if (item == null || sourceLocation == null) {
+        if (sourceLocation == null) {
             return view;
         }
-        StorageLocationView.StorageClass storageClass = StorageLocationView.StorageClass
-                .valueOf(item.logistics().storageClass().name());
-        List<PutawayCandidate> candidates = warehouses.putawayCandidates(sourceLocation.warehouseId(), storageClass);
-        Map<String, Occupancy> occupied = occupancy.occupancyOf(
-                candidates.stream().map(PutawayCandidate::locationCode).toList(), task.sku(), view.lotNumber());
-        BigDecimal unitWeight = unitWeightOf(item);
-        // A carton goes in whole; loose units are put away in portions, so the first bin only has to take one.
-        Need need = new Need(task.stockPackageId() != null ? task.quantity() : 1, unitWeight);
-        List<PutawayRanker.Suggestion> suggestions = PutawayRanker.rank(need, candidates.stream()
-                .map(c -> new Bin(c.locationCode(), c.capacityUnits(), c.maxWeightKg())).toList(), occupied);
+        List<PutawayRanker.Suggestion> suggestions = suggest(sourceLocation.warehouseId(), task, view.lotNumber());
+        List<String> overflow = suggestions.isEmpty() ? overflowAreas(sourceLocation.warehouseId()) : List.of();
         return new TaskView(view.id(), view.goodsReceiptId(), view.goodsReceiptLineId(), view.sku(), view.lotNumber(),
                 view.quantity(), view.left(), view.sourceLocationCode(), view.lpn(), view.status(),
-                view.targetLocationCode(), suggestions);
+                view.targetLocationCode(), suggestions, overflow, view.source());
     }
 
     /**
-     * Puts goods away: a carton task moves its carton whole, a loose task moves {@code quantity} of the receipt
-     * line's loose units; both land in {@code locationCode} as AVAILABLE. A task is confirmed in as many parts as
-     * the clerk likes while it has units left, and publishes {@link PutawayCompleted} when the last one is in.
+     * The bins of the warehouse that take the task's carton now, best first: it fits them dimension by dimension and
+     * their free volume and load take it (kltn-docs 06 §4.4). The carton is left out of every bin's occupancy, so one
+     * somebody already moved into a bin by hand still finds that bin. Empty bins are ranked by the rest of the lot
+     * (05 §4.2 step 4).
+     */
+    private List<PutawayRanker.Suggestion> suggest(UUID warehouseId, PutawayTaskView task, String lot) {
+        return suggest(warehouseId, task, lot, heldByTrips(warehouseId, task.id()));
+    }
+
+    /**
+     * Space that counts as taken although no carton stands there yet (kltn-docs 05 BR-16): a putaway trip holds it
+     * for a carton on its cart, or the cart being planned has already given it to an earlier carton.
+     */
+    record Reserved(String locationCode, String sku, String lotNumber, int units, java.math.BigDecimal volumeM3,
+                    java.math.BigDecimal weightKg) {
+    }
+
+    /**
+     * What the putaway trips on their way hold in the warehouse, except for the carton of {@code exceptTaskId}: a
+     * carton does not compete with the space held for itself. A hold in an OVERFLOW area is left out - an area has
+     * no volume to run out of (05 BR-13).
+     */
+    List<Reserved> heldByTrips(UUID warehouseId, UUID exceptTaskId) {
+        List<com.stockflow.warehouse.api.PutawayHold> holds = trips.holds(warehouseId, null).stream()
+                .filter(hold -> !hold.putawayTaskId().equals(exceptTaskId) && hold.stockPackageId() != null).toList();
+        if (holds.isEmpty()) {
+            return List.of();
+        }
+        Map<UUID, BinOccupancyQuery.CartonLoad> loads = occupancy.loadsOf(holds.stream()
+                .map(com.stockflow.warehouse.api.PutawayHold::stockPackageId).distinct().toList());
+        Map<UUID, Optional<StorageLocationView>> locations = new HashMap<>();
+        List<Reserved> reserved = new java.util.ArrayList<>();
+        for (com.stockflow.warehouse.api.PutawayHold hold : holds) {
+            BinOccupancyQuery.CartonLoad load = loads.get(hold.stockPackageId());
+            StorageLocationView location = locations.computeIfAbsent(hold.locationId(), warehouses::findLocation)
+                    .orElse(null);
+            if (load != null && location != null && location.kind() == StorageLocationView.Kind.BIN) {
+                reserved.add(new Reserved(location.locationCode(), load.sku(), load.lotNumber(), load.units(),
+                        load.volumeM3(), load.weightKg()));
+            }
+        }
+        return reserved;
+    }
+
+    /**
+     * {@link #suggest(UUID, PutawayTaskView, String)} with the reserved space given by the caller: a putaway trip
+     * planning its cart passes the other trips' holds plus what it has already given to the cartons before this one.
+     */
+    List<PutawayRanker.Suggestion> suggest(UUID warehouseId, PutawayTaskView task, String lot,
+                                           List<Reserved> reserved) {
+        List<PutawayCandidate> candidates = warehouses.putawayCandidates(warehouseId);
+        Map<String, Occupancy> occupied = new HashMap<>(occupancy.occupancyOf(
+                candidates.stream().map(PutawayCandidate::locationCode).toList(), task.sku(), lot,
+                task.stockPackageId()));
+        for (Reserved r : reserved) {
+            boolean sameSku = r.sku() != null && r.sku().equals(task.sku());
+            occupied.merge(r.locationCode(),
+                    Occupancy.EMPTY.plus(r.units(), r.volumeM3(), r.weightKg(), sameSku,
+                            sameSku && lot != null && lot.equals(r.lotNumber())),
+                    (standing, more) -> standing.plus(more.units(), more.volumeM3(), more.weightKg(),
+                            more.holdsSku(), more.holdsLot()));
+        }
+        Need need = needOf(task);
+        return PutawayRanker.rank(need, restOfLot(warehouseId, task, lot, need),
+                candidates.stream().map(PutawayService::binOf).toList(), occupied);
+    }
+
+    /**
+     * The rest of the task's lot (05 §4.2): the cartons of that lot with an open putaway task (PENDING or IN_PROGRESS)
+     * standing in the same warehouse, this one included. A carton without a lot is a lot of its own.
+     */
+    private PutawayRanker.Lot restOfLot(UUID warehouseId, PutawayTaskView task, String lot, Need need) {
+        if (lot == null) {
+            return PutawayRanker.Lot.of(need);
+        }
+        Set<StockPackageId> open = new java.util.HashSet<>();
+        open.add(new StockPackageId(task.stockPackageId()));
+        tasks.openTasks().stream().map(PutawayTaskView::stockPackageId).filter(java.util.Objects::nonNull)
+                .forEach(id -> open.add(new StockPackageId(id)));
+        List<StockPackage> cartons = stockPackages.findAllById(List.copyOf(open));
+        Set<String> inWarehouse = warehouses.findLocations(cartons.stream().map(c -> c.location().code())
+                        .collect(Collectors.toSet())).stream()
+                .filter(location -> warehouseId.equals(location.warehouseId()))
+                .map(StorageLocationView::locationCode).collect(Collectors.toSet());
+        List<UUID> sameWarehouse = cartons.stream().filter(c -> inWarehouse.contains(c.location().code()))
+                .map(c -> c.id().value()).toList();
+        if (sameWarehouse.isEmpty()) {
+            return PutawayRanker.Lot.of(need);
+        }
+        PutawayRanker.Lot rest = occupancy.lotOf(sameWarehouse, lot);
+        return rest.volumeM3().signum() == 0 ? PutawayRanker.Lot.of(need) : rest;
+    }
+
+    /** The lot of a task's goods, read on its own (a putaway trip asks for each carton of its cart). */
+    String lotOfTask(PutawayTaskView task) {
+        return lotOf(task, new Reads());
+    }
+
+    /** The usable OVERFLOW areas of a warehouse, by location code. */
+    private List<String> overflowAreas(UUID warehouseId) {
+        return warehouses.areasOf(warehouseId, StorageLocationView.AreaType.OVERFLOW).stream()
+                .filter(StorageLocationView::usable)
+                .map(StorageLocationView::locationCode)
+                .toList();
+    }
+
+    private Need needOf(PutawayTaskView task) {
+        return occupancy.needsOf(List.of(task.stockPackageId())).getOrDefault(task.stockPackageId(), Need.UNMEASURED);
+    }
+
+    private static Bin binOf(PutawayCandidate candidate) {
+        return new Bin(candidate.locationCode(), CartonPlacement.spaceOf(candidate.size()),
+                candidate.capacityVolumeM3(), candidate.maxWeightKg());
+    }
+
+    /**
+     * Puts goods away: the task's carton moves whole into {@code locationCode} and its units turn AVAILABLE, in one
+     * step (kltn-docs 05 BR-08) - from INBOUND for a receipt's task, from QUARANTINE for a quarantine release's (05
+     * BR-14) - and the task is DONE; a receipt's task publishes {@link PutawayCompleted}, a quarantine release's
+     * {@code QuarantineStockReleased}.
      *
-     * <p>No replay lookup: all parts of a task share one ledger reference, so a lookup by it would take the second
-     * part for a repeat of the first. A retried request is answered by the idempotency filter; without a key a
-     * repeat is a second putaway, which {@code left} (summed from the ledger under the task lock) bounds.</p>
+     * <p>{@code locationCode} is a bin, or an OVERFLOW area of the same warehouse when no bin takes the carton - the
+     * warehouse is full or the carton fits no bin (05 BR-13). Goods in OVERFLOW are put away all the same: AVAILABLE,
+     * the task DONE; a manager moves them up to a bin when one has room (11).</p>
      *
-     * @param lpn      the scanned carton; required for a carton task, forbidden for a loose one
-     * @param quantity units to put away; required for a loose task, forbidden for a carton task
+     * <p>A retried request is answered by the idempotency filter; without a key a repeat finds the task DONE.</p>
+     *
+     * @param lpn the scanned carton
      * @throws BusinessException {@code PUTAWAY_TASK_NOT_FOUND}; 403 for a task standing in another warehouse;
-     *         {@code PUTAWAY_TASK_DONE}; {@code VALIDATION_FAILED} for a cancelled task or a scan of the wrong
-     *         kind; {@code PUTAWAY_LPN_MISMATCH}; {@code PUTAWAY_QUANTITY_EXCEEDED}; and the bin's refusals:
+     *         {@code PUTAWAY_TASK_DONE}; {@code VALIDATION_FAILED} for a cancelled task or a loose one (history,
+     *         see the class); {@code PUTAWAY_LPN_MISMATCH}; and the location's refusals:
      *         {@code LOCATION_NOT_FOUND}, {@code PUTAWAY_TARGET_NOT_BIN}, {@code MOVE_ACROSS_WAREHOUSES},
-     *         {@code LOCATION_NOT_USABLE}, {@code LOCATION_STORAGE_CLASS_MISMATCH},
-     *         {@code LOCATION_CAPACITY_EXCEEDED}
+     *         {@code LOCATION_NOT_USABLE}, {@code CARTON_DOES_NOT_FIT_BIN}, {@code LOCATION_CAPACITY_EXCEEDED},
+     *         {@code PUTAWAY_OVERFLOW_NOT_ALLOWED}
      */
     @Transactional
-    public TaskView confirm(UUID taskId, String locationCode, String lpn, Integer quantity, UUID actorId) {
+    public TaskView confirm(UUID taskId, String locationCode, String lpn, UUID actorId) {
+        // A carton on a trip's cart: the trip row is locked before the task row, the order every trip step keeps.
+        trips.lockTripCarrying(taskId);
         PutawayTaskView task = tasks.lockForUpdate(taskId);
         Reads reads = new Reads();
         Source source = locate(List.of(task), reads, false).get(task.id());
@@ -199,145 +319,94 @@ public class PutawayService {
         if ("CANCELLED".equals(task.status())) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, "This putaway task was cancelled");
         }
-        boolean carton = task.stockPackageId() != null;
-        int left = leftOf(task);
-        int units = scannedUnits(task, source, carton, left, lpn, quantity);
-
-        ItemRow item = itemOf(task.sku()).orElseThrow(() ->
-                new BusinessException(ErrorCode.VALIDATION_FAILED, "Item " + task.sku() + " is unknown"));
-        // A carton is judged by what it holds now: a count may have changed it since its task was opened, and the
-        // move takes the carton as it is. The task still records its own quantity, since it puts the carton away whole.
-        int moving = carton ? stockPackages.onHandOf(List.of(new StockPackageId(task.stockPackageId())))
-                .getOrDefault(new StockPackageId(task.stockPackageId()), 0) : units;
-        StorageLocationView bin = requireTarget(locationCode, source, item, task, moving, reads);
-
-        if (carton) {
-            operations.reclassifyStockPackages(new ReclassifyStockPackagesCommand(source.lpn(), bin.locationCode(),
-                    StockDisposition.AVAILABLE, MoveReference.PUTAWAY_TASK, task.id(), actorId, null));
-        } else {
-            UUID lotId = looseReceiptLine(task.goodsReceiptLineId(), reads).map(StockMovement::lotId)
-                    .orElseThrow(PutawayService::notFound);
-            operations.putAwayLoose(new Sku(task.sku()), lotId, bin.locationCode(), units, task.id(), actorId);
+        if (task.stockPackageId() == null) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                    "A loose putaway task is history; goods are put away by carton");
         }
-        PutawayTaskView after = tasks.recordPutaway(task.id(), units, left, bin.id());
-        if ("DONE".equals(after.status())) {
+        int left = leftOf(task);
+        int units = scannedUnits(task, source, lpn);
+
+        StorageLocationView target = requireTarget(locationCode, source, task, reads);
+
+        boolean release = task.source() == PutawaySource.QUARANTINE_RELEASE;
+        operations.reclassifyStockPackages(new ReclassifyStockPackagesCommand(source.lpn(), target.locationCode(),
+                StockDisposition.AVAILABLE, MoveReference.PUTAWAY_TASK, task.id(), actorId, null, release));
+        PutawayTaskView after = tasks.recordPutaway(task.id(), units, left, target.id());
+        // The carton left its cart, whichever screen put it away; the trip is COMPLETED with its last one.
+        trips.taskPutAway(task.id());
+        if ("DONE".equals(after.status()) && !release) {
             events.publishEvent(new PutawayCompleted(task.goodsReceiptId(), task.goodsReceiptLineId(), task.id()));
+        } else if ("DONE".equals(after.status())) {
+            // No receipt closes on a quarantine release, but its carton is stock to promise again: the orders waiting
+            // for it - first the one a returned shipment's carton came back for - hold it now (WF-05 fix plan).
+            events.publishEvent(new com.stockflow.contracts.QuarantineStockReleased(task.id(), source.lpn(),
+                    target.locationCode()));
         }
         return view(after, locate(List.of(after), reads, false).get(after.id()), reads);
     }
 
-    /** What the scan means in units, refusing a scan of the wrong kind or more than the task has left. */
-    private static int scannedUnits(PutawayTaskView task, Source source, boolean carton, int left, String lpn,
-                                    Integer quantity) {
-        if (carton) {
-            if (quantity != null) {
-                throw new BusinessException(ErrorCode.VALIDATION_FAILED,
-                        "A carton task is confirmed by its LPN, not by a quantity");
-            }
-            if (lpn == null || lpn.isBlank() || !StockPackageView.normalLpn(lpn).equals(source.lpn())) {
-                throw new BusinessException(ErrorCode.PUTAWAY_LPN_MISMATCH,
-                        "The scanned LPN is not the carton of this task");
-            }
-            return task.quantity();
+    /** What the scan means in units: the whole task, when the scan is the task's own carton. */
+    private static int scannedUnits(PutawayTaskView task, Source source, String lpn) {
+        if (lpn == null || lpn.isBlank() || !StockPackageView.normalLpn(lpn).equals(source.lpn())) {
+            throw new BusinessException(ErrorCode.PUTAWAY_LPN_MISMATCH,
+                    "The scanned LPN is not the carton of this task");
         }
-        if (lpn != null && !lpn.isBlank()) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED,
-                    "A loose task is confirmed by a quantity, not by an LPN");
-        }
-        if (quantity == null || quantity < 1 || quantity > left) {
-            throw new BusinessException(ErrorCode.PUTAWAY_QUANTITY_EXCEEDED,
-                    "Put away between 1 and %d units, not %s".formatted(left, quantity));
-        }
-        return quantity;
+        return task.quantity();
     }
 
     /**
-     * The hard rules for a bin the clerk chose, the same ones that keep a bin out of the suggestions; a bin outside
-     * the suggestions is allowed. A location that is not among the putaway targets of its class at all (not flagged,
-     * or not usable down to its shelf) is {@code LOCATION_NOT_USABLE}.
+     * The hard rules for the location the clerk scanned, the same ones that keep a bin out of the suggestions; a bin
+     * outside the suggestions is allowed (05 BR-07). A bin that is not among the putaway targets at all (not flagged,
+     * or not usable down to its shelf) is {@code LOCATION_NOT_USABLE}. An area is refused unless it is an OVERFLOW
+     * area and no bin takes the carton (05 BR-13, decided 2026-11-05: OVERFLOW only when the suggestions are empty).
      */
-    private StorageLocationView requireTarget(String locationCode, Source source, ItemRow item, PutawayTaskView task,
-                                              int units, Reads reads) {
-        StorageLocationView bin = warehouses.findLocation(locationCode).orElseThrow(() ->
+    private StorageLocationView requireTarget(String locationCode, Source source, PutawayTaskView task, Reads reads) {
+        StorageLocationView target = warehouses.findLocation(locationCode).orElseThrow(() ->
                 new BusinessException(ErrorCode.LOCATION_NOT_FOUND, "No location " + locationCode));
-        if (bin.kind() != StorageLocationView.Kind.BIN) {
+        boolean overflow = target.kind() == StorageLocationView.Kind.AREA
+                && target.areaType() == StorageLocationView.AreaType.OVERFLOW;
+        if (target.kind() != StorageLocationView.Kind.BIN && !overflow) {
             throw new BusinessException(ErrorCode.PUTAWAY_TARGET_NOT_BIN,
-                    bin.locationCode() + " is not a bin; goods are put away into bins");
+                    target.locationCode() + " is not a bin; goods are put away into bins, or into OVERFLOW");
         }
         StorageLocationView from = warehouses.findLocation(source.locationCode()).orElseThrow(() ->
                 new BusinessException(ErrorCode.LOCATION_NOT_FOUND, "No location " + source.locationCode()));
-        if (!from.warehouseId().equals(bin.warehouseId())) {
+        if (!from.warehouseId().equals(target.warehouseId())) {
             throw new BusinessException(ErrorCode.MOVE_ACROSS_WAREHOUSES,
-                    "%s is in another warehouse than the goods; use a transfer order".formatted(bin.locationCode()));
+                    "%s is in another warehouse than the goods".formatted(target.locationCode()));
         }
-        if (!bin.usable()) {
-            throw new BusinessException(ErrorCode.LOCATION_NOT_USABLE, bin.locationCode() + " cannot take stock now");
+        if (!target.usable()) {
+            throw new BusinessException(ErrorCode.LOCATION_NOT_USABLE, target.locationCode() + " cannot take stock now");
         }
-        StorageLocationView.StorageClass itemClass = StorageLocationView.StorageClass
-                .valueOf(item.logistics().storageClass().name());
-        if (bin.storageClass() != itemClass) {
-            throw new BusinessException(ErrorCode.LOCATION_STORAGE_CLASS_MISMATCH,
-                    "%s is %s; %s is kept %s".formatted(bin.locationCode(), bin.storageClass(), task.sku(), itemClass));
+        String lot = lotOf(task, reads);
+        if (overflow) {
+            // No bin lock: the suggestions are advice read at this moment, and OVERFLOW has no volume to protect.
+            List<PutawayRanker.Suggestion> bins = suggest(target.warehouseId(), task, lot);
+            if (!bins.isEmpty()) {
+                throw new BusinessException(ErrorCode.PUTAWAY_OVERFLOW_NOT_ALLOWED,
+                        "%s still takes this carton; OVERFLOW is for a carton no bin takes".formatted(
+                                bins.get(0).locationCode()),
+                        List.of(), Map.of("locationCode", bins.get(0).locationCode()));
+            }
+            return target;
         }
-        PutawayCandidate candidate = warehouses.putawayCandidate(bin.warehouseId(), itemClass, bin.locationCode())
+        PutawayCandidate candidate = warehouses.putawayCandidate(target.warehouseId(), target.locationCode())
                 .orElseThrow(() -> new BusinessException(ErrorCode.LOCATION_NOT_USABLE,
-                        bin.locationCode() + " is not a putaway target"));
-        String lot = (task.stockPackageId() != null ? receiptLine(task.goodsReceiptLineId(), reads)
-                : looseReceiptLine(task.goodsReceiptLineId(), reads)).map(StockMovement::lotNumber).orElse(null);
+                        target.locationCode() + " is not a putaway target"));
+        Need need = needOf(task);
         // Before the occupancy is read, so two putaways into one bin cannot both see it as it was.
-        occupancy.lockBin(bin.locationCode());
-        Occupancy occupied = withoutOwnGoods(occupancy.occupancyOf(List.of(bin.locationCode()), task.sku(), lot)
-                .getOrDefault(bin.locationCode(), Occupancy.EMPTY), alreadyIn(bin, source, task, units, reads),
-                unitWeightOf(item));
-        if (!PutawayRanker.fits(new Need(units, unitWeightOf(item)),
-                new Bin(candidate.locationCode(), candidate.capacityUnits(), candidate.maxWeightKg()), occupied)) {
+        occupancy.lockBin(target.locationCode());
+        Occupancy occupied = occupancy.occupancyOf(List.of(target.locationCode()), task.sku(), lot,
+                task.stockPackageId()).getOrDefault(target.locationCode(), Occupancy.EMPTY);
+        PutawayRanker.Refusal refusal = PutawayRanker.refusal(need, binOf(candidate), occupied);
+        if (refusal == PutawayRanker.Refusal.DOES_NOT_FIT) {
+            throw CartonPlacement.doesNotFit(source.lpn(), target.locationCode());
+        }
+        if (refusal == PutawayRanker.Refusal.NO_ROOM) {
             throw new BusinessException(ErrorCode.LOCATION_CAPACITY_EXCEEDED,
-                    "%d units of %s do not fit in %s".formatted(units, task.sku(), bin.locationCode()));
+                    "Carton %s does not fit in what is left of %s".formatted(source.lpn(), target.locationCode()));
         }
-        return bin;
-    }
-
-    /**
-     * Units of this putaway that already stand in the bin, because somebody moved the goods there by hand: a carton
-     * whose current bin it is, or the loose INBOUND units of the receipt line's lot in it (never more than are put
-     * away now). The bin's occupancy counts them already.
-     */
-    private int alreadyIn(StorageLocationView bin, Source source, PutawayTaskView task, int units, Reads reads) {
-        if (task.stockPackageId() != null) {
-            return source.locationCode().equals(bin.locationCode()) ? units : 0;
-        }
-        UUID lotId = looseReceiptLine(task.goodsReceiptLineId(), reads).map(StockMovement::lotId).orElse(null);
-        if (lotId == null) {
-            return 0;
-        }
-        int inBin = stockItems.findLooseInboundByLot(new Sku(task.sku()), lotId).stream()
-                .filter(row -> row.location().code().equals(bin.locationCode()))
-                .mapToInt(row -> row.onHand().value()).sum();
-        return Math.min(units, inBin);
-    }
-
-    /**
-     * The bin's occupancy without the goods being put away that it already holds. Counted twice, a carton that
-     * fills a bin exactly would not fit in the bin it is already standing in.
-     */
-    private static Occupancy withoutOwnGoods(Occupancy occupied, int own, BigDecimal unitWeight) {
-        if (own == 0) {
-            return occupied;
-        }
-        // An unknown unit weight is 0 in the occupancy read, so there is nothing of it to take off.
-        BigDecimal weight = unitWeight == null ? occupied.weightKg()
-                : occupied.weightKg().subtract(unitWeight.multiply(BigDecimal.valueOf(own)));
-        return new Occupancy(Math.max(0, occupied.units() - own), weight.max(BigDecimal.ZERO), occupied.holdsSku(),
-                occupied.holdsLot());
-    }
-
-    private Optional<ItemRow> itemOf(String sku) {
-        return items.findBySkus(List.of(sku)).stream().findFirst();
-    }
-
-    /** Null when the item master records none: {@link PutawayRanker#fits} then does not weigh the goods at all. */
-    private static BigDecimal unitWeightOf(ItemRow item) {
-        return item.logistics().weightKg();
+        return target;
     }
 
     /**
@@ -385,11 +454,26 @@ public class PutawayService {
     }
 
     private TaskView view(PutawayTaskView task, Source source, Reads reads) {
-        String lot = (task.stockPackageId() != null ? receiptLine(task.goodsReceiptLineId(), reads)
+        return new TaskView(task.id(), task.goodsReceiptId(), task.goodsReceiptLineId(), task.sku(),
+                lotOf(task, reads), task.quantity(), leftOf(task), source.locationCode(), source.lpn(), task.status(),
+                task.targetLocationId() == null ? null : locationCodeOf(task.targetLocationId(), reads), List.of(),
+                List.of(), task.source());
+    }
+
+    /**
+     * The lot of a task's goods: its receipt line's, or - for a quarantine release, which has no line - that of the
+     * carton's own rows (a carton holds one lot).
+     */
+    private String lotOf(PutawayTaskView task, Reads reads) {
+        if (task.goodsReceiptLineId() == null) {
+            return task.stockPackageId() == null ? null : reads.cartonLot.computeIfAbsent(task.stockPackageId(),
+                    carton -> stockItems.findIdsInStockPackage(new StockPackageId(carton)).stream()
+                            .map(stockItems::findById).flatMap(Optional::stream)
+                            .map(StockItem::lotNumber).filter(java.util.Objects::nonNull).findFirst())
+                    .orElse(null);
+        }
+        return (task.stockPackageId() != null ? receiptLine(task.goodsReceiptLineId(), reads)
                 : looseReceiptLine(task.goodsReceiptLineId(), reads)).map(StockMovement::lotNumber).orElse(null);
-        return new TaskView(task.id(), task.goodsReceiptId(), task.goodsReceiptLineId(), task.sku(), lot,
-                task.quantity(), leftOf(task), source.locationCode(), source.lpn(), task.status(),
-                task.targetLocationId() == null ? null : locationCodeOf(task.targetLocationId(), reads), List.of());
     }
 
     /** PENDING needs no ledger read, DONE and CANCELLED have nothing left: only a task in progress asks the ledger. */
@@ -441,8 +525,6 @@ public class PutawayService {
         Map<UUID, StockMovement> looseReceipts = ledger.findLooseByReferences(MovementType.RECEIPT,
                 ReferenceType.GOODS_RECEIPT_LINE, looseLines);
         looseLines.forEach(line -> reads.looseReceiptLine.put(line, Optional.ofNullable(looseReceipts.get(line))));
-        Map<UUID, String> waiting = stockItems.looseInboundLocationByLot(looseReceipts.values().stream()
-                .map(StockMovement::lotId).filter(Objects::nonNull).distinct().toList());
 
         Map<UUID, StockPackage> cartons = stockPackages.findAllById(found.stream()
                         .filter(task -> task.stockPackageId() != null)
@@ -464,11 +546,9 @@ public class PutawayService {
                 out.put(task.id(), new Source(carton.location().code(), carton.lpn()));
                 continue;
             }
+            // A historical loose task: where it put its goods, or where its receipt line set them down.
             StockMovement receipt = looseReceiptLine(task.goodsReceiptLineId(), reads).orElse(null);
-            String location = receipt == null || receipt.lotId() == null ? null : waiting.get(receipt.lotId());
-            if (location == null && task.targetLocationId() != null) {
-                location = locationCodeOf(task.targetLocationId(), reads);
-            }
+            String location = task.targetLocationId() == null ? null : locationCodeOf(task.targetLocationId(), reads);
             if (location == null && receipt != null && receipt.to() != null) {
                 location = receipt.to().code();
             }

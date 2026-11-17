@@ -46,6 +46,11 @@ atomically) is unaffected: foreign keys live inside the same database and the sa
    whose old rows fail stays `NOT VALID` with a warning instead of stopping the application
    (`tools/db/orphan_check.sql`, `db/pending/C0__validate_foreign_keys.sql`).
 
+   *2026-11-11:* the 270 migrations were squashed into `V20261111000000__baseline.sql` while every
+   database held demo data only. A fresh database has no old rows, so the baseline creates every key and
+   CHECK validated (step C0 folded in) and `db/pending/` is gone. Point 7 applies again to the next
+   key added to a database that holds rows.
+
 ## Consequences
 
 - Extracting a module now means dropping its incoming keys first. That is a one-migration job,

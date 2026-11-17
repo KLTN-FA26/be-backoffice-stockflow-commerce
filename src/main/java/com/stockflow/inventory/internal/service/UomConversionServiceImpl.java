@@ -46,8 +46,11 @@ class UomConversionServiceImpl implements UomConversionService {
     private final InventoryPolicyRepository items;
     private final CurrentUserProvider users;
 
+    private final BinStranding stranding;
+
     UomConversionServiceImpl(UomConversionRepository conversions, InventoryPolicyRepository items,
-                             CurrentUserProvider users) {
+                             CurrentUserProvider users, BinStranding stranding) {
+        this.stranding = stranding;
         this.conversions = conversions;
         this.items = items;
         this.users = users;
@@ -118,6 +121,11 @@ class UomConversionServiceImpl implements UomConversionService {
         // The base unit's code follows the item's and its factor is 1 (V20261019000300): nothing to lock here.
         boolean converts = current.factor() != draft.factor() || !current.unitOfMeasure().equals(draft.unitOfMeasure());
         if (!current.base() && converts && conversions.inUse(id)) throw inUse(sku, current);
+        // 06 BR-23: new measures must not leave a carton of this unit standing in a bin it no longer fits. Under the
+        // SKU lock, which every carton move of the SKU takes too.
+        if (!current.base() && resized(current, draft)) {
+            stranding.requireUnitResizable(id, draft.lengthCm(), draft.widthCm(), draft.heightCm());
+        }
         String actor = actor();
         if (draft.defaultPurchase() && !current.defaultPurchase()) conversions.clearDefaultPurchase(itemId, id, actor);
         if (draft.defaultShipping() && !current.defaultShipping()) conversions.clearDefaultShipping(itemId, id, actor);
@@ -155,6 +163,15 @@ class UomConversionServiceImpl implements UomConversionService {
 
     private static BusinessException notFound(Sku sku, UUID id) {
         return new BusinessException(ErrorCode.UOM_CONVERSION_NOT_FOUND, "No unit " + id + " on " + sku);
+    }
+
+    private static boolean resized(UomConversion current, UomConversionDraft draft) {
+        return !sameMeasure(current.lengthCm(), draft.lengthCm()) || !sameMeasure(current.widthCm(), draft.widthCm())
+                || !sameMeasure(current.heightCm(), draft.heightCm());
+    }
+
+    private static boolean sameMeasure(java.math.BigDecimal a, java.math.BigDecimal b) {
+        return a == null ? b == null : b != null && a.compareTo(b) == 0;
     }
 
     private static BusinessException inUse(Sku sku, UomConversion unit) {

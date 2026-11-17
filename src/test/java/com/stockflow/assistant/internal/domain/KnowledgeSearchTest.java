@@ -45,9 +45,27 @@ class KnowledgeSearchTest {
         assertThat(KnowledgeSearch.words("!!! ?? - a")).isEmpty();
         assertThat(KnowledgeSearch.words("w1 w2 w3 w4 w5 w6 w7 w8 w9 w10 w11 w12 w13 w14 w15 w16 w17 w18"))
                 .hasSize(KnowledgeSearch.MAX_WORDS).doesNotContain("w17");
-        assertThat(KnowledgeSearch.namedRules("what do br-rma-002 and BR-STK-006a say")).containsExactly("BR-RMA-002",
-                "BR-STK-006A");
-        assertThat(KnowledgeSearch.namedRules("custom printed returns")).isEmpty();
+        assertThat(KnowledgeSearch.namedRules("15 br-08 và 9 BR-8 khác gì 17 BR-12a?")).containsExactly("15 BR-08",
+                "09 BR-08", "17 BR-12A");
+        assertThat(KnowledgeSearch.namedRules("đổi trả hàng in")).isEmpty();
+    }
+
+    @Test
+    @DisplayName("a query's words two by two as written, never across a word that names nothing or a lone letter")
+    void pairs() {
+        assertThat(KnowledgeSearch.pairs("Đổi trả hàng lỗi sản xuất")).containsExactly("đổi trả", "trả hàng",
+                "hàng lỗi", "lỗi sản", "sản xuất");
+        assertThat(KnowledgeSearch.pairs("tự hoàn tất sau 7 ngày, có được không?")).containsExactly("tự hoàn",
+                "hoàn tất", "tất sau");
+        assertThat(KnowledgeSearch.pairs("chuyển hàng giữa các kho")).containsExactly("chuyển hàng", "hàng giữa");
+        assertThat(KnowledgeSearch.pairs("FEFO")).isEmpty();
+    }
+
+    @Test
+    @DisplayName("a rule number without its chapter names no rule: every chapter has a BR-08")
+    void aRuleNeedsItsChapter() {
+        assertThat(KnowledgeSearch.namedRules("BR-08 nói gì")).isEmpty();
+        assertThat(KnowledgeSearch.namedRules("mã ABC15 BR-08, BR-RMA-002, F-PO")).isEmpty();
     }
 
     @Test
@@ -96,11 +114,17 @@ class KnowledgeSearchTest {
     }
 
     @Test
-    @DisplayName("a flow code a query names comes first like a rule id; a code inside another word does not count")
-    void namedFlows() {
-        assertThat(KnowledgeSearch.namedRules("luồng f-po khác gì X-SHORT, theo BR-PO-002")).containsExactly(
-                "F-PO", "X-SHORT", "BR-PO-002");
-        assertThat(KnowledgeSearch.namedRules("mã EVAL-F-PO và AF-PO")).isEmpty();
+    @DisplayName("a section a query names comes first like a rule, every part of it; a number inside another does not "
+            + "count")
+    void namedSections() {
+        assertThat(KnowledgeSearch.namedRules("17 §5.1 và 7§4.4, glossary §8")).containsExactly("17 §5.1",
+                "07 §4.4", "GLOSSARY §8");
+        assertThat(KnowledgeSearch.namedRules("17 §4.12")).containsExactly("17 §4.12");
+        List<String> named = KnowledgeSearch.namedRules("17 §5.1");
+        assertThat(KnowledgeSearch.isNamed("17 §5.1", named)).isTrue();
+        assertThat(KnowledgeSearch.isNamed("17 §5.1 (3)", named)).as("a later part of it").isTrue();
+        assertThat(KnowledgeSearch.isNamed("17 §5.12", named)).isFalse();
+        assertThat(KnowledgeSearch.isNamed("17 §5", named)).isFalse();
     }
 
     @Test

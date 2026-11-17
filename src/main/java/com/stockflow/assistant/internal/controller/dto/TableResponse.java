@@ -12,12 +12,12 @@ import java.util.Map;
 public record TableResponse(
         @Schema(description = "Which list it is, as tool.field under an answer, the section's key on the today card: "
                 + "what the panel labels the table by. Two calls of one tool give two tables with the same key",
-                example = "findLowStock.skus")
+                example = "findOrders.orders")
         String key,
-        @Schema(example = "findLowStock") String tool,
+        @Schema(example = "findOrders") String tool,
         @Schema(description = "The keys of each row, in display order: the tool's field names, a dotted path for a "
                 + "field of a nested record (hold.reason). The panel labels them",
-                example = "[\"sku\", \"usableOnHand\", \"availableToPromise\", \"reorderPoint\"]")
+                example = "[\"orderNumber\", \"placedAt\", \"hold.reason\", \"hold.note\"]")
         List<String> columns,
         @Schema(description = "Each row maps a column to a text, a number or true/false; a value the tool did not "
                 + "return is absent under an answer and null on the today card. Text can be what a person typed: "

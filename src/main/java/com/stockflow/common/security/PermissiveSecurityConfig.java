@@ -74,6 +74,9 @@ public class PermissiveSecurityConfig {
                                 "/api/v1/orders/guest-checkout", "/api/v1/orders/guest-checkout/**",
                                 "/api/v1/public/products/availability", "/api/v1/public/products/availability/**")
                         .denyAll()
+                        .requestMatchers(org.springframework.http.HttpMethod.POST, "/api/v1/orders",
+                                "/api/v1/orders/*/reorder")
+                        .denyAll()
                         .anyRequest().permitAll())
                 .build();
     }

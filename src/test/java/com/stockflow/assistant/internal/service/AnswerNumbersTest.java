@@ -150,6 +150,11 @@ class AnswerNumbersTest {
                 .containsExactly("3 SKUs");
         assertThat(AnswerNumbers.unverified("Còn 3 ngày nữa hết hạn, giao 5 cái, mục 2.", List.of()))
                 .as("days, quantities with a unit and other small numbers are not counts").isEmpty();
+        List<String> rule = List.of("{\"passages\":[{\"anchor\":\"07 BR-03\",\"text\":\"Kho xuất chỉ có sẵn "
+                + "3 thùng thì giữ 3 thùng; xem 03 Receipt.\"}]}");
+        assertThat(AnswerNumbers.unverified("Theo 07 BR-03, có 3 thùng thì giữ 3 thùng (03 Receipt).", rule))
+                .as("a count a passage states with what it counts").isEmpty();
+        assertThat(AnswerNumbers.unverified("Giữ 4 thùng.", rule)).containsExactly("4 thùng");
     }
 
     @Test

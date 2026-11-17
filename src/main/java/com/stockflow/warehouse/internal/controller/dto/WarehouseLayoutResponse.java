@@ -4,7 +4,6 @@ import com.stockflow.warehouse.internal.domain.AreaType;
 import com.stockflow.warehouse.internal.domain.BinType;
 import com.stockflow.warehouse.internal.domain.LocationStatus;
 import com.stockflow.warehouse.internal.domain.MapUnit;
-import com.stockflow.warehouse.internal.domain.StorageClass;
 import com.stockflow.warehouse.internal.domain.WarehouseStatus;
 import io.swagger.v3.oas.annotations.media.Schema;
 
@@ -37,7 +36,7 @@ public record WarehouseLayoutResponse(Warehouse warehouse, List<ZoneResponse> zo
     @Schema(name = "LayoutShelf")
     public record Shelf(UUID id, UUID zoneId, String code, String name, String description,
                         FootprintResponse footprint, boolean obstacle, ShelfResponse.PickFaces pickFaces,
-                        StorageClass defaultStorageClass, LocationStatus status, LocationStatus effectiveStatus,
+                        LocationStatus status, LocationStatus effectiveStatus,
                         long version, List<Level> levels) {
     }
 
@@ -46,18 +45,19 @@ public record WarehouseLayoutResponse(Warehouse warehouse, List<ZoneResponse> zo
                         BigDecimal maxWeight, List<Bin> bins) {
     }
 
-    /** @param storageClass the class in force - the override, or the shelf's default */
+    /** @param capacityVolumeM3 width x length x the level's clear height, computed (06 BR-19); absent without one */
     @Schema(name = "LayoutBin")
     public record Bin(UUID id, String code, String description, FootprintResponse footprint, BinType type,
-                      StorageClass storageClassOverride, UUID locationId, String locationCode,
-                      StorageClass storageClass, Integer capacityUnits, BigDecimal maxWeight, boolean pickable,
+                      UUID locationId, String locationCode,
+                      @Schema(description = "Computed: width x length x the level's usableHeight; absent while the "
+                              + "level has none") BigDecimal capacityVolumeM3,
+                      BigDecimal maxWeight, boolean pickable,
                       boolean putawayTarget, LocationStatus status, LocationStatus effectiveStatus, boolean usable) {
     }
 
     @Schema(name = "LayoutArea")
     public record Area(UUID id, String code, AreaType type, String name, FootprintResponse footprint,
                        boolean obstacle, LocationStatus status, LocationStatus effectiveStatus, Boolean usable,
-                       long version, UUID locationId, String locationCode, StorageClass storageClass,
-                       Integer capacityUnits, BigDecimal maxWeight, Boolean pickable, Boolean putawayTarget) {
+                       long version, UUID locationId, String locationCode, BigDecimal maxWeight, Boolean pickable, Boolean putawayTarget) {
     }
 }

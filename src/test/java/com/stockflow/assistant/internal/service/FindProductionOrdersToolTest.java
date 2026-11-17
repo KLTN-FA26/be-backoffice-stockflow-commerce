@@ -1,324 +1,272 @@
 package com.stockflow.assistant.internal.service;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
+import com.fasterxml.jackson.databind.json.JsonMapper;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import com.stockflow.assistant.internal.domain.ToolCall;
+import com.stockflow.assistant.internal.domain.ToolExecution;
+import com.stockflow.assistant.internal.domain.ToolOutcome;
 import com.stockflow.common.api.PageResponse;
-import com.stockflow.common.domain.Money;
 import com.stockflow.common.error.BusinessException;
-import com.stockflow.common.error.ErrorCode;
-import com.stockflow.common.error.NotFoundException;
 import com.stockflow.common.security.Action;
 import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.CurrentUserProvider;
 import com.stockflow.common.security.DataScope;
+import com.stockflow.common.security.PermissionCode;
+import com.stockflow.common.security.RequiresPermission;
 import com.stockflow.common.security.Role;
-import com.stockflow.order.api.OrderService;
-import com.stockflow.order.api.OrderStatus;
-import com.stockflow.order.api.OrderSummary;
-import com.stockflow.production.api.ProductionOrderDetail;
-import com.stockflow.production.api.ProductionOrderQueries;
-import com.stockflow.production.api.ProductionOrderView;
-import com.stockflow.support.TestUsers;
-import com.stockflow.support.WithCurrentUser;
-import org.junit.jupiter.api.BeforeEach;
+import com.stockflow.order.api.ProductionOrderQueries;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.ZoneOffset;
+import java.util.Arrays;
 import java.util.List;
-import java.util.Locale;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyCollection;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 /**
- * The production orders tool without a database (design §4.1): what it asks the production module for, and what it
- * hands the model - numbers people type in, LSX fields out, and nothing of the customer order but its number.
+ * findProductionOrders: the production orders screen as a list - the screen's permission and warehouse rule, the
+ * filters it is asked with, and rows that say how late a producer is without the model comparing dates.
  */
 class FindProductionOrdersToolTest {
 
     private static final ObjectMapper JSON = new ObjectMapper().findAndRegisterModules();
-    private static final String ORDER_NUMBER = "SO-20261020-000123";
-    private static final Instant CREATED = Instant.parse("2026-10-20T03:00:00Z");
+    /** 16/11/2026 10:00 in Vietnam. */
+    private static final Instant NOW = Instant.parse("2026-11-16T03:00:00Z");
+    private static final Instant SENT = Instant.parse("2026-11-02T02:00:00Z");
 
-    private final RecordingProduction production = new RecordingProduction();
-    private final OrderService orders = mock(OrderService.class);
-    private final CurrentUserProvider users = mock(CurrentUserProvider.class);
-    private final FindProductionOrdersTool tool = new FindProductionOrdersTool(production, orders, users);
+    /** Reads production orders, not sales orders: the warehouse manager as seeded. */
+    private static final CurrentUser WAREHOUSE = staff(Role.WAREHOUSE_MANAGER, "production-orders:READ");
+    private static final CurrentUser SALES = staff(Role.SALES_STAFF, "production-orders:READ", "sales-orders:READ");
 
-    @BeforeEach
-    void signedIn() {
-        when(users.current()).thenReturn(Optional.of(TestUsers.builder().role(Role.ORDER_COORDINATOR)
-                .scope(DataScope.ALL).can("production-orders", Action.READ).can("sales-orders", Action.READ).build()));
+    private final ProductionOrderQueries queries = mock(ProductionOrderQueries.class);
+    private final CurrentUserProvider currentUsers = mock(CurrentUserProvider.class);
+    private final FindProductionOrdersTool tool = new FindProductionOrdersTool(queries, currentUsers,
+            Clock.fixed(NOW, ZoneOffset.UTC));
+
+    @Test
+    @DisplayName("the screen's guard: production-orders:READ at the screen's scope, mirroring its list, and a "
+            + "warehouse-limited user gets only their warehouses' rows")
+    void guard() throws Exception {
+        RequiresPermission guard = FindProductionOrdersTool.class.getMethod("run", ToolArguments.class)
+                .getAnnotation(RequiresPermission.class);
+
+        assertThat(guard.resource()).isEqualTo("production-orders").isEqualTo(ToolPermissions.PRODUCTION_ORDERS);
+        assertThat(guard.action()).isEqualTo(Action.READ);
+        assertThat(guard.scope()).isEqualTo(DataScope.ALL);
+        assertThat(tool.mirrors()).isEqualTo("GET /api/v1/production-orders");
+        assertThat(tool.scopeLimit()).isEqualTo(ScopeLimit.PARTIAL);
     }
 
     @Test
-    @DisplayName("a customer order number is matched exactly, and its LSX are asked for by that order's id")
-    void bySalesOrder() {
-        UUID order = UUID.randomUUID();
-        // A longer number containing the one asked for comes first: only the exact number is this order.
-        when(orders.list(any())).thenReturn(PageResponse.of(List.of(summary(UUID.randomUUID(), ORDER_NUMBER + "9"),
-                summary(order, ORDER_NUMBER)), 0, 20, 2));
-        production.found = new ProductionOrderQueries.Found(List.of(
-                view("LSX-20261020-0001", "ON_HOLD", "FILE_REJECTED"), view("LSX-20261020-0002", "PRINTING", null)), 2);
+    @DisplayName("a portal account is refused, as the screen's controller refuses it, before anything is read")
+    void backOfficeOnly() {
+        as(new CurrentUser(UUID.randomUUID(), "customer", Set.of(Role.CUSTOMER),
+                Set.of(PermissionCode.parse("production-orders:READ")), DataScope.OWN, Set.of()));
 
-        FindProductionOrdersTool.Answer answer = tool.run(arguments("", ORDER_NUMBER.toLowerCase(Locale.ROOT), "ANY",
-                "ANY", 20));
-
-        assertThat(production.criteria.salesOrderId()).isEqualTo(order);
-        assertThat(production.criteria.statuses()).isEmpty();
-        assertThat(production.criteria.overdueOnly()).isFalse();
-        assertThat(production.criteria.limit()).isEqualTo(20);
-        assertThat(answer.salesOrderNumber()).isEqualTo(ORDER_NUMBER);
-        assertThat(answer.productionOrders()).extracting(FindProductionOrdersTool.Row::productionOrderNumber)
-                .containsExactly("LSX-20261020-0001", "LSX-20261020-0002");
-        FindProductionOrdersTool.Row held = answer.productionOrders().getFirst();
-        assertThat(List.of(held.status(), held.holdReason(), held.warehouseCode(), held.blankSku()))
-                .containsExactly("ON_HOLD", "FILE_REJECTED", "HCM", "CUP-12OZ");
-        assertThat(List.of(held.plannedUnits(), held.goodUnitsPrinted())).containsExactly(20_000, 12_000);
-        assertThat(answer.total()).isEqualTo(2);
-        assertThat(answer.truncated()).isFalse();
-        assertThat(answer.detail()).isNull();
-        assertThat(answer.note()).isNull();
+        assertThatThrownBy(() -> tool.run(arguments("ANY", "", "", 5))).isInstanceOf(BusinessException.class);
+        verifyNoInteractions(queries);
     }
 
     @Test
-    @DisplayName("an LSX number returns that one LSX with its counts, its hold and its history; the filters are "
-            + "ignored")
-    void byNumber() {
-        production.detail = detail(view("LSX-20261020-0001", "ON_HOLD", "BLANKS_SHORT"), history(3));
-
-        FindProductionOrdersTool.Answer answer = tool.run(arguments(" LSX-20261020-0001 ", ORDER_NUMBER, "QC",
-                "OVERDUE", 5));
-
-        assertThat(production.number).isEqualTo("LSX-20261020-0001");
-        assertThat(production.criteria).as("a lookup by number lists nothing").isNull();
-        verifyNoInteractions(orders);
-        assertThat(answer.productionOrders()).singleElement()
-                .extracting(FindProductionOrdersTool.Row::salesOrderNumber).isEqualTo(ORDER_NUMBER);
-        assertThat(answer.total()).isEqualTo(1);
-        FindProductionOrdersTool.Detail detail = answer.detail();
-        assertThat(List.of(detail.blanksIssued(), detail.unitsPrinted(), detail.unitsScrapped(),
-                detail.blanksStillNeeded())).containsExactly(10_000, 6_000, 200, 4_200);
-        assertThat(detail.hold()).isEqualTo(new FindProductionOrdersTool.Hold("BLANKS_SHORT",
-                "Thiếu 4.200 phôi, chờ PO về", "READY", CREATED.plusSeconds(3)));
-        assertThat(detail.history()).hasSize(3);
-        assertThat(detail.historyTruncated()).isFalse();
-    }
-
-    @Test
-    @DisplayName("a long history keeps the latest changes and says so")
-    void historyIsCapped() {
-        int changes = FindProductionOrdersTool.MAX_HISTORY + 5;
-        production.detail = detail(view("LSX-20261020-0001", "PRINTING", null), history(changes));
-
-        FindProductionOrdersTool.Detail detail = tool.run(arguments("LSX-20261020-0001", "", "ANY", "ANY", 1))
-                .detail();
-
-        assertThat(detail.history()).hasSize(FindProductionOrdersTool.MAX_HISTORY);
-        assertThat(detail.history().getLast().at()).isEqualTo(CREATED.plusSeconds(changes));
-        assertThat(detail.historyTruncated()).isTrue();
-    }
-
-    @Test
-    @DisplayName("for a user who may not read orders, an order number nobody has reads exactly like an order with no "
-            + "LSX they may see")
-    void orderNumbersRevealNothingWithoutSalesOrders() {
-        CurrentUser qc = TestUsers.builder().role(Role.QC_STAFF).scope(DataScope.ALL)
-                .can("production-orders", Action.READ).build();
-        when(users.current()).thenReturn(Optional.of(qc));
-        String typed = ORDER_NUMBER.toLowerCase(Locale.ROOT);
-
-        when(orders.list(any())).thenReturn(PageResponse.of(List.of(summary(UUID.randomUUID(), ORDER_NUMBER + "9")),
-                0, 20, 1));
-        FindProductionOrdersTool.Answer nobodys = tool.run(arguments("", typed, "ANY", "ANY", 10));
-        when(orders.list(any())).thenReturn(PageResponse.of(List.of(summary(UUID.randomUUID(), ORDER_NUMBER)), 0, 20,
-                1));
-        FindProductionOrdersTool.Answer withoutLsx = tool.run(arguments("", typed, "ANY", "ANY", 10));
-
-        assertThat(nobodys).isEqualTo(withoutLsx);
-        assertThat(nobodys.salesOrderNumber()).as("as typed, not as stored").isEqualTo(typed);
-        assertThat(nobodys.note()).contains("neither whether the order exists");
-        assertThat(tool.run(arguments("", typed, "QC", "ANY", 10)).note()).contains("neither whether the order exists");
-    }
-
-    @Test
-    @DisplayName("an unknown LSX number is NOT_FOUND, and so is an unknown order number for a user who may read orders")
-    void unknownNumbers() {
-        when(orders.list(any())).thenReturn(PageResponse.of(List.of(summary(UUID.randomUUID(), ORDER_NUMBER + "9")),
-                0, 20, 1));
-
-        assertThatThrownBy(() -> tool.run(arguments("LSX-20261020-9999", "", "ANY", "ANY", 10)))
-                .isInstanceOf(NotFoundException.class).hasMessageContaining("LSX-20261020-9999");
-        assertThatThrownBy(() -> tool.run(arguments("", ORDER_NUMBER, "ANY", "ANY", 10)))
-                .isInstanceOf(NotFoundException.class).hasMessageContaining(ORDER_NUMBER);
-        assertThat(production.criteria).isNull();
-    }
-
-    @Test
-    @DisplayName("OPEN, ANY and one status become the statuses asked for; OVERDUE asks for late work only")
+    @DisplayName("OPEN is every status still to bring goods, ANY every status, one status itself; the number and the "
+            + "code are passed on trimmed, empty is no filter")
     void filters() {
-        tool.run(arguments("", "", "OPEN", "OVERDUE", 50));
-        assertThat(production.criteria.statuses()).isEqualTo(ProductionOrderQueries.OPEN_STATUSES);
-        assertThat(production.criteria.overdueOnly()).isTrue();
-        assertThat(production.criteria.salesOrderId()).isNull();
+        as(SALES);
+        listed(0);
 
-        tool.run(arguments("", "", "QC", "ANY", 10));
-        assertThat(production.criteria.statuses()).containsExactly("QC");
-        assertThat(production.criteria.overdueOnly()).isFalse();
+        tool.run(arguments("OPEN", "", "", 30));
+        tool.run(arguments("ANY", " SO-20261020-000042 ", "", 30));
+        tool.run(arguments("SAMPLE_PENDING", "", " PRD-2026 ", 20));
 
-        tool.run(arguments("", "", "ANY", "ANY", 10));
-        assertThat(production.criteria.statuses()).isEmpty();
-
-        assertThatThrownBy(() -> tool.run(arguments("", "", "LATE", "ANY", 10)))
-                .isInstanceOf(BusinessException.class).hasMessageContaining("status");
-        assertThatThrownBy(() -> tool.run(arguments("", "", "ANY", "ANY", FindProductionOrdersTool.MAX_ROWS + 1)))
-                .isInstanceOf(BusinessException.class).hasMessageContaining("limit");
+        verify(queries).productionOrders(ProductionOrderQueries.OPEN_STATUSES, null, null, 30);
+        verify(queries).productionOrders(List.of(), "SO-20261020-000042", null, 30);
+        verify(queries).productionOrders(List.of("SAMPLE_PENDING"), null, "PRD-2026", 20);
     }
 
     @Test
-    @DisplayName("a list cut at the limit says so, with the total")
+    @DisplayName("every status of the api is offered, after OPEN and ANY; anything else is refused before a lookup")
+    void offered() {
+        assertThat(FindProductionOrdersTool.STATUSES).containsExactly("OPEN", "ANY", "DRAFT", "PENDING_APPROVAL",
+                "SENT", "ACCEPTED", "SAMPLE_PENDING", "IN_PRODUCTION", "PARTIALLY_RECEIVED", "RECEIVED", "CANCELLED",
+                "CLOSED");
+        assertThatThrownBy(() -> tool.run(arguments("LATE", "", "", 5))).isInstanceOf(RuntimeException.class)
+                .hasMessageContaining("status must be one of");
+        verifyNoInteractions(queries);
+    }
+
+    @Test
+    @DisplayName("a row: the producer, cartons received of those ordered, the latest sample round, and overdue and "
+            + "atRisk worked out from its own dates in Vietnam")
+    void rows() {
+        as(SALES);
+        listed(3,
+                row("PRD-20261102-0001", "IN_PRODUCTION", LocalDate.parse("2026-11-15"),
+                        LocalDate.parse("2026-11-20"), null),
+                row("PRD-20261102-0002", "SAMPLE_PENDING", LocalDate.parse("2026-11-16"),
+                        LocalDate.parse("2026-11-14"), new ProductionOrderQueries.SampleRound(2, null, SENT, null)),
+                row("PRD-20261102-0003", "RECEIVED", LocalDate.parse("2026-11-01"), LocalDate.parse("2026-11-05"),
+                        new ProductionOrderQueries.SampleRound(1, "APPROVED", SENT, SENT)));
+
+        FindProductionOrdersTool.Answer answer = tool.run(arguments("ANY", "", "", 30));
+
+        FindProductionOrdersTool.Row late = answer.productionOrders().getFirst();
+        assertThat(late.overdue()).as("open, needed yesterday").isTrue();
+        assertThat(late.atRisk()).as("open, expected after the need-by day").isTrue();
+        assertThat(late.cartons()).isEqualTo(30);
+        assertThat(late.receivedCartons()).isEqualTo(12);
+        assertThat(late.skus()).isEqualTo("CUP-12OZ, LID-90");
+        assertThat(late.producerName()).isEqualTo("Xưởng in Việt");
+        assertThat(late.producerLeadDays()).isEqualTo(14);
+        assertThat(late.warehouseCode()).isEqualTo("HCM");
+        assertThat(late.deliveryBatchSeq()).isEqualTo(2);
+        assertThat(late.sampleStatus()).isNull();
+
+        FindProductionOrdersTool.Row today = answer.productionOrders().get(1);
+        assertThat(today.overdue()).as("needed today is not late yet").isFalse();
+        assertThat(today.atRisk()).isFalse();
+        assertThat(today.sampleStatus()).isEqualTo("WAITING");
+        assertThat(today.sampleRounds()).isEqualTo(2);
+
+        FindProductionOrdersTool.Row received = answer.productionOrders().get(2);
+        assertThat(received.overdue()).as("received: nothing is late any more").isFalse();
+        assertThat(received.atRisk()).isFalse();
+        assertThat(received.sampleStatus()).isEqualTo("APPROVED");
+        assertThat(answer.total()).isEqualTo(3);
+        assertThat(answer.truncated()).isFalse();
+    }
+
+    @Test
+    @DisplayName("the order number goes only to a caller who may read orders, or who typed it")
+    void orderNumberOnlyForThoseWhoMayReadOrders() throws Exception {
+        listed(1, row("PRD-20261102-0001", "IN_PRODUCTION", LocalDate.parse("2026-11-20"), null, null));
+
+        as(WAREHOUSE);
+        assertThat(tool.run(arguments("ANY", "", "", 5)).productionOrders().getFirst().salesOrderNumber()).isNull();
+        assertThat(JSON.writeValueAsString(tool.run(arguments("ANY", "", "", 5)))).doesNotContain("SO-20261020");
+        assertThat(tool.run(arguments("ANY", "SO-20261020-000042", "", 5)).productionOrders().getFirst()
+                .salesOrderNumber()).isEqualTo("SO-20261020-000042");
+
+        as(SALES);
+        assertThat(tool.run(arguments("ANY", "", "", 5)).productionOrders().getFirst().salesOrderNumber())
+                .isEqualTo("SO-20261020-000042");
+    }
+
+    @Test
+    @DisplayName("more production orders than returned is said: total counts them all")
     void truncated() {
-        production.found = new ProductionOrderQueries.Found(List.of(view("LSX-20261020-0001", "QC", null),
-                view("LSX-20261020-0002", "QC", null)), 7);
+        as(SALES);
+        listed(73, row("PRD-20261102-0001", "IN_PRODUCTION", LocalDate.parse("2026-11-20"), null, null));
 
-        FindProductionOrdersTool.Answer answer = tool.run(arguments("", "", "QC", "ANY", 2));
+        FindProductionOrdersTool.Answer answer = tool.run(arguments("OPEN", "", "", 1));
 
-        assertThat(answer.productionOrders()).hasSize(2);
-        assertThat(answer.total()).isEqualTo(7);
+        assertThat(answer.total()).isEqualTo(73);
         assertThat(answer.truncated()).isTrue();
     }
 
     @Test
-    @DisplayName("a portal customer, or nobody signed in, is refused before any order is looked up")
-    void backOfficeOnly() {
-        when(users.current()).thenReturn(Optional.of(TestUsers.customer()));
-        assertThatThrownBy(() -> tool.run(arguments("", ORDER_NUMBER, "ANY", "ANY", 10)))
-                .isInstanceOfSatisfying(BusinessException.class,
-                        refused -> assertThat(refused.errorCode()).isEqualTo(ErrorCode.FORBIDDEN));
+    @DisplayName("nothing of the customer, the price or the print files, and no ids, reach the model")
+    void noIds() throws Exception {
+        as(SALES);
+        ProductionOrderQueries.ProductionOrderRow row = row("PRD-20261102-0001", "IN_PRODUCTION",
+                LocalDate.parse("2026-11-20"), null, null);
+        listed(1, row);
 
-        when(users.current()).thenReturn(Optional.empty());
-        assertThatThrownBy(() -> tool.run(arguments("", ORDER_NUMBER, "ANY", "ANY", 10)))
-                .isInstanceOfSatisfying(BusinessException.class,
-                        refused -> assertThat(refused.errorCode()).isEqualTo(ErrorCode.UNAUTHORIZED));
+        String result = JSON.writeValueAsString(tool.run(arguments("ANY", "", "", 5)));
 
-        verifyNoInteractions(orders);
-        assertThat(production.criteria).isNull();
-        assertThat(production.number).isNull();
+        assertThat(result).doesNotContain(row.id().toString(), row.salesOrderId().toString());
     }
 
     @Test
-    @DisplayName("what reaches the model carries no ids, and of the customer order only its number")
-    void noIdsAndNothingOfTheOrder() throws Exception {
-        when(orders.list(any())).thenReturn(PageResponse.of(List.of(summary(UUID.randomUUID(), ORDER_NUMBER)), 0, 20,
-                1));
-        production.found = new ProductionOrderQueries.Found(List.of(view("LSX-20261020-0001", "PRINTING", null)), 1);
-        production.detail = detail(view("LSX-20261020-0001", "ON_HOLD", "FILE_REJECTED"), history(2));
+    @DisplayName("the most production orders one call returns, of long producer names and many SKUs, stay well "
+            + "under the result limit; more than that is refused before a lookup")
+    void fiftyRowsFit() {
+        as(SALES);
+        String longName = "Công ty TNHH Sản xuất Thương mại và Dịch vụ Bao bì Giấy Kraft Miền Nam ".repeat(3);
+        List<ProductionOrderQueries.Line> lines = IntStream.range(0, 12)
+                .mapToObj(i -> new ProductionOrderQueries.Line("CUSTOM-PRINTED-CUP-%02d".formatted(i), 100, 50, 20))
+                .toList();
+        ProductionOrderQueries.ProductionOrderRow[] rows = IntStream.range(0, FindProductionOrdersTool.MAX_ROWS)
+                .mapToObj(i -> new ProductionOrderQueries.ProductionOrderRow(UUID.randomUUID(),
+                        "PRD-20261102-%04d".formatted(i), "IN_PRODUCTION", UUID.randomUUID(),
+                        "SO-20261020-%06d".formatted(i), 3, longName, 14, "HCM", LocalDate.parse("2026-11-20"),
+                        LocalDate.parse("2026-11-25"), SENT, SENT, true, 3,
+                        new ProductionOrderQueries.SampleRound(3, "APPROVED", SENT, SENT), lines))
+                .toArray(ProductionOrderQueries.ProductionOrderRow[]::new);
+        listed(200, rows);
+        AssistantTools tools = new AssistantTools(List.of(tool), JsonMapper.builder()
+                .addModule(new JavaTimeModule()).disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
+                .serializationInclusion(JsonInclude.Include.NON_NULL).build());
 
-        String list = JSON.writeValueAsString(tool.run(arguments("", ORDER_NUMBER, "ANY", "ANY", 10)));
-        String one = JSON.writeValueAsString(tool.run(arguments("LSX-20261020-0001", "", "ANY", "ANY", 10)));
+        ToolExecution execution = tools.execute(new ToolCall("toolu_1", "findProductionOrders",
+                "{\"status\":\"ANY\",\"salesOrderNumber\":\"\",\"code\":\"\",\"limit\":"
+                        + FindProductionOrdersTool.MAX_ROWS + "}"));
 
-        for (String result : List.of(list, one)) {
-            assertThat(result).doesNotContainPattern("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
-                    .doesNotContain("IN_PRODUCTION", "Chị Lan", "lan@example.com", "0909000111")
-                    .contains("LSX-20261020-0001", ORDER_NUMBER);
-        }
+        assertThat(execution.outcome()).isEqualTo(ToolOutcome.OK);
+        assertThat(execution.result()).contains("…");
+        assertThat(execution.result().length())
+                .as("well under the limit above which the model gets RESULT_TOO_LARGE and no row at all")
+                .isLessThan(ToolExecution.MAX_RESULT_LENGTH * 9 / 10);
+        assertThatThrownBy(() -> tool.run(arguments("ANY", "", "", FindProductionOrdersTool.MAX_ROWS + 1)))
+                .isInstanceOf(RuntimeException.class);
     }
 
     @Test
-    @DisplayName("an empty list says why when it is not plainly 'nothing matches', without the order's status")
-    void emptyLists() {
-        when(orders.list(any())).thenReturn(PageResponse.of(List.of(summary(UUID.randomUUID(), ORDER_NUMBER)), 0, 20,
-                1));
-
-        assertThat(tool.run(arguments("", ORDER_NUMBER, "ANY", "ANY", 10)).note())
-                .contains("released to production").doesNotContain("IN_PRODUCTION");
-        assertThat(tool.run(arguments("", ORDER_NUMBER, "OPEN", "ANY", 10)).note())
-                .contains("status ANY and due ANY");
-        assertThat(tool.run(arguments("", "", "QC", "ANY", 10)).note()).as("nothing matches: nothing to explain")
-                .isNull();
-
-        CurrentUser qc = TestUsers.builder().role(Role.QC_STAFF).scope(DataScope.WAREHOUSE).warehouses("HCM").build();
-        when(users.current()).thenReturn(Optional.of(qc));
-        FindProductionOrdersTool.Answer limited = WithCurrentUser.call(qc, DataScope.ALL,
-                () -> tool.run(arguments("", "", "QC", "ANY", 10)));
-        assertThat(limited.note()).contains("warehouses HCM");
-    }
-
-    @Test
-    @DisplayName("the status choice is OPEN, ANY and every status the production module knows")
-    void vocabulary() {
-        assertThat(FindProductionOrdersTool.STATUSES).startsWith("OPEN", "ANY")
-                .containsAll(ProductionOrderQueries.STATUSES)
-                .hasSize(ProductionOrderQueries.STATUSES.size() + 2);
-        assertThat(ProductionOrderQueries.STATUSES).containsAll(ProductionOrderQueries.OPEN_STATUSES)
-                .doesNotContainAnyElementsOf(List.of("OPEN", "ANY"));
-        assertThat(ProductionOrderQueries.OPEN_STATUSES).doesNotContain("COMPLETED", "CANCELLED");
+    @DisplayName("the description tells the model how to read lateness, the sample and a cut list")
+    void description() {
+        assertThat(tool.spec().description()).contains("overdue", "atRisk", "needByDate", "sampleStatus",
+                "OPEN asks for", "truncated", "warehouses");
     }
 
     // ------------------------------------------------------------------------------------------------------------
 
-    private static ToolArguments arguments(String productionOrderNumber, String salesOrderNumber, String status,
-                                           String due, int limit) {
-        var node = JSON.createObjectNode().put("productionOrderNumber", productionOrderNumber)
-                .put("salesOrderNumber", salesOrderNumber).put("status", status).put("due", due).put("limit", limit);
-        return ToolArguments.of(node);
+    private static ToolArguments arguments(String status, String salesOrderNumber, String code, int limit) {
+        return ToolArguments.parse(JSON, "{\"status\":\"" + status + "\",\"salesOrderNumber\":\"" + salesOrderNumber
+                + "\",\"code\":\"" + code + "\",\"limit\":" + limit + "}");
     }
 
-    private static ProductionOrderView view(String number, String status, String holdReason) {
-        return new ProductionOrderView(number, "ORDER", "IN_HOUSE", status, holdReason, "HCM", "CUP-12OZ", 20_000,
-                12_000, LocalDate.of(2026, 11, 5), false, ORDER_NUMBER, null, null, CREATED);
+    private void listed(long total, ProductionOrderQueries.ProductionOrderRow... rows) {
+        when(queries.productionOrders(anyCollection(), any(), any(), anyInt()))
+                .thenReturn(PageResponse.of(List.of(rows), 0, 50, total));
     }
 
-    private static ProductionOrderDetail detail(ProductionOrderView order,
-                                                List<ProductionOrderDetail.StatusChange> history) {
-        ProductionOrderDetail.Hold hold = "ON_HOLD".equals(order.status())
-                ? new ProductionOrderDetail.Hold(order.holdReason(), "Thiếu 4.200 phôi, chờ PO về", "READY",
-                CREATED.plusSeconds(3))
-                : null;
-        return new ProductionOrderDetail(order, null, 10_000, 6_000, 200, 4_200, hold, CREATED.plusSeconds(1), null,
-                null, null, history);
+    /** Two lines, 30 cartons ordered and 12 received, for batch 2 of SO-20261020-000042. */
+    private static ProductionOrderQueries.ProductionOrderRow row(String code, String status, LocalDate needBy,
+                                                                 LocalDate expected,
+                                                                 ProductionOrderQueries.SampleRound latest) {
+        return new ProductionOrderQueries.ProductionOrderRow(UUID.randomUUID(), code, status, UUID.randomUUID(),
+                "SO-20261020-000042", 2, "Xưởng in Việt", 14, "HCM", needBy, expected, SENT, null, latest != null,
+                latest == null ? 0 : latest.roundNo(), latest,
+                List.of(new ProductionOrderQueries.Line("CUP-12OZ", 20, 50, 12),
+                        new ProductionOrderQueries.Line("LID-90", 10, 100, 0)));
     }
 
-    /** {@code changes} status changes, one second apart, the last at {@code CREATED + changes}. */
-    private static List<ProductionOrderDetail.StatusChange> history(int changes) {
-        return IntStream.rangeClosed(1, changes)
-                .mapToObj(second -> new ProductionOrderDetail.StatusChange(second == 1 ? null : "READY", "PRINTING",
-                        "round " + second, CREATED.plusSeconds(second)))
-                .toList();
+    private void as(CurrentUser user) {
+        when(currentUsers.current()).thenReturn(Optional.of(user));
     }
 
-    /** A customer order as the order list returns it, contact details included: they must not reach the answer. */
-    private static OrderSummary summary(UUID id, String number) {
-        return new OrderSummary(id, number, UUID.randomUUID(), OrderStatus.IN_PRODUCTION, Money.vnd(1_000_000),
-                List.of(), CREATED, null, null, null, "Chị Lan", "lan@example.com", "0909000111", null, null);
-    }
-
-    /** Answers with what a test set, and keeps what it was asked. */
-    private static final class RecordingProduction implements ProductionOrderQueries {
-
-        ProductionOrderDetail detail;
-        Found found = new Found(List.of(), 0);
-        String number;
-        Criteria criteria;
-
-        @Override
-        public Optional<ProductionOrderDetail> byNumber(String orderNumber, CurrentUser user) {
-            number = orderNumber;
-            return Optional.ofNullable(detail);
-        }
-
-        @Override
-        public Found find(Criteria asked, CurrentUser user) {
-            criteria = asked;
-            return found;
-        }
+    private static CurrentUser staff(Role role, String... permissions) {
+        return new CurrentUser(UUID.randomUUID(), role.name().toLowerCase(java.util.Locale.ROOT), Set.of(role),
+                Arrays.stream(permissions).map(PermissionCode::parse).collect(Collectors.toSet()), DataScope.ALL,
+                Set.of());
     }
 }

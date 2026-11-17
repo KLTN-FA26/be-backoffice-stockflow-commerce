@@ -257,7 +257,7 @@ class IdentitySessionServiceTest {
         assertThat(saved.getValue().temporaryPasswordSetAt()).isNull();
         // the current session is the one passed as "keep": it is never revoked
         verify(sessions).revokeLive(userId, current, NOW, SessionEndReason.PASSWORD_CHANGED);
-        // and the personal MCP tokens go with the other sessions (ADR-0013)
+        // and the personal MCP tokens go with the other sessions (ADR-0014)
         verify(events).publishEvent(new com.stockflow.contracts.CredentialsReset(userId,
                 com.stockflow.contracts.CredentialsReset.Cause.CHANGED_SIGNING_OUT_ELSEWHERE, NOW));
     }

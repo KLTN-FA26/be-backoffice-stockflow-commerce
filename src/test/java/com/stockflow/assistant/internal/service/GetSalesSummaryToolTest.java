@@ -103,7 +103,8 @@ class GetSalesSummaryToolTest {
     @DisplayName("the best sellers are asked for the same period")
     void topSkus() {
         when(reports.topProducts(any(), any(), any())).thenReturn(List.of(
-                new ReportingService.TopProduct("CUP-12OZ", "Cốc giấy 12oz", 300, BigDecimal.valueOf(9_000_000))));
+                new ReportingService.TopProduct("CUP-12OZ", "Cốc giấy 12oz", 300, BigDecimal.valueOf(9_000_000),
+                        6)));
 
         GetSalesSummaryTool.Answer answer = ask("{\"from\":\"2026-09-01\",\"to\":\"2026-09-30\",\"days\":0,"
                 + "\"top\":3}");

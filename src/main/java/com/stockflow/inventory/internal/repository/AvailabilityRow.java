@@ -6,7 +6,6 @@ import com.stockflow.inventory.internal.domain.StockAllocator;
 import com.stockflow.inventory.internal.domain.StockItemId;
 import com.stockflow.inventory.internal.domain.StockStatus;
 
-import java.time.LocalDate;
 import java.util.UUID;
 
 /**
@@ -25,7 +24,6 @@ public record AvailabilityRow(
         UUID id,
         String locationCode,
         String lotNumber,
-        LocalDate expiryDate,
         StockStatus status,
         int onHand,
         int reserved,
@@ -40,7 +38,6 @@ public record AvailabilityRow(
                 new StockItemId(id),
                 new LocationId(locationCode),
                 lotNumber,
-                expiryDate,
                 status,
                 Quantity.of(onHand - reserved), receivedAt, stockPackageId, wholeCarton);
     }

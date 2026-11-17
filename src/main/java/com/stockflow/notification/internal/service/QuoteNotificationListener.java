@@ -16,7 +16,7 @@ import java.util.Locale;
 import java.util.ResourceBundle;
 
 /**
- * Tells Sales that a customer's step on a quote made the next one theirs (accepted, changes asked, reorder), after
+ * Tells Sales that a customer's step on a quote made the next one theirs (accepted, changes asked), after
  * the customer's transaction committed: in-app first, then e-mail best effort ({@link StaffNotices}), one inbox row per
  * person per step ({@code quote:<quote>:<action>:<occurredAt>}). A mail server that is down delays nothing and is never
  * a reason to replay the event.
@@ -25,7 +25,7 @@ import java.util.ResourceBundle;
  * e-mail ({@code salesEmail} null), it goes to every active Sales account, marked as a hand-over, so that one of
  * them takes the customer on (user decision N1, 2026-10-13) - each person once. This only tells them; who may
  * read or answer the quote is unchanged. With no active Sales account at all it is logged at WARN, never
- * dropped silently. The in-app text names the quote and order numbers only - not the customer, not what they
+ * dropped silently. The in-app text names the quote number only - not the customer, not what they
  * typed.</p>
  */
 @Component
@@ -64,8 +64,7 @@ class QuoteNotificationListener {
     static InboxMessage message(CustomerActedOnQuote event, boolean takeover) {
         var messages = ResourceBundle.getBundle("i18n.messages", Locale.forLanguageTag("vi"));
         String action = event.action().name().toLowerCase(Locale.ROOT);
-        String title = messages.getString("inbox.quote." + action + ".title").formatted(event.quoteNumber(),
-                event.sourceOrderNumber() == null ? "" : event.sourceOrderNumber());
+        String title = messages.getString("inbox.quote." + action + ".title").formatted(event.quoteNumber());
         return new InboxMessage("QUOTE", InboxSeverity.INFO, title,
                 takeover ? messages.getString("inbox.quote.takeover") : null,
                 "/admin/sales/quotes/" + event.quoteId(), "QUOTE", event.quoteId().toString(),

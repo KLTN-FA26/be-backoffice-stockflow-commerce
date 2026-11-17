@@ -115,7 +115,7 @@ class AuditAspectResultTest {
 
     /**
      * Joined to a transaction its caller began, the method's change commits with the caller's: the SUCCESS entry waits
-     * for that commit, and a rollback records the attempt as a FAILURE instead (ADR-0011: a goods receipt whose lines
+     * for that commit, and a rollback records the attempt as a FAILURE instead (ADR-0012: a goods receipt whose lines
      * were refused must not stay in the trail as created).
      */
     @Test

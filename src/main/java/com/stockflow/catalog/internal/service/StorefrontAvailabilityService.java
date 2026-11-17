@@ -2,71 +2,109 @@ package com.stockflow.catalog.internal.service;
 
 import com.stockflow.catalog.internal.domain.Availability;
 import com.stockflow.catalog.internal.domain.SkuAvailability;
-import com.stockflow.catalog.internal.repository.ListingRepository;
 import com.stockflow.common.domain.Sku;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
-import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.customer.api.CustomerService;
+import com.stockflow.customer.api.CustomerSummary;
+import com.stockflow.inventory.api.InventoryService;
+import com.stockflow.inventory.api.UomConversion;
+import com.stockflow.inventory.api.UomConversionService;
+import com.stockflow.product.api.CustomerSkus;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
+import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 /**
- * The stock indicator a storefront page shows for its SKUs (SCRUM-158, docs 13 BR-03).
+ * The stock indicator of a customer's own SKUs (SCRUM-158; kltn-docs 13 §4.4 step 4, BR-07, BR-12).
  *
- * <p>Available to promise is inventory's figure and is read through {@code inventory :: api} in
- * one query for the whole page. It is system-wide: docs 13 BR-06 computes it per region only when
- * selling by region is switched on, which this system has no setting for (open question C3).</p>
+ * <p>Only the caller's own ACTIVE SKUs are answered (13 BR-01, BR-02, BR-11): another customer's SKU is not there at
+ * all, and a variant (quy cách) is only a mould to design on - it has no stock indicator. The SKU need not be on a
+ * published product: a customer's SKU stays visible while it is ACTIVE even when its product is unlisted (13 §4.5
+ * step 4).</p>
  *
- * <p>Not cached. Docs 13 asks for "near real time" without a number (open question G4); a stale
- * "in stock" is what makes a customer reach checkout for something already gone. The endpoint's
- * own short {@code Cache-Control} absorbs a page being refreshed.</p>
+ * <p>Counted in whole cartons of the SKU's standard size (13 BR-12, open-questions A9): available to promise is
+ * inventory's system-wide figure, every warehouse together (13 BR-07, C3), read through {@code inventory :: api} in one
+ * query for the whole page, then divided by the SKU's carton. The carton is the one {@code QuoteService} quotes in: the
+ * SKU's single active packing unit of more than one piece, the default shipping one should there be several
+ * ({@link UomConversion#cartonOf}). A SKU without one gets no indicator - a guessed carton would promise stock no quote
+ * can sell - and the gap is logged.</p>
+ *
+ * <p>Not cached. Docs 13 allows ten seconds of lag; the endpoint's own short {@code Cache-Control} absorbs a page being
+ * refreshed.</p>
  */
 @Service
+@Transactional(readOnly = true)
 public class StorefrontAvailabilityService {
 
+    private static final Logger log = LoggerFactory.getLogger(StorefrontAvailabilityService.class);
+
     private final InventoryService inventory;
+    private final UomConversionService units;
     private final AvailabilityProperties properties;
     private final CustomerService customers;
-    private final ListingRepository listings;
+    private final CustomerSkus customerSkus;
 
-    public StorefrontAvailabilityService(InventoryService inventory, AvailabilityProperties properties,
-                                        CustomerService customers, ListingRepository listings) {
+    public StorefrontAvailabilityService(InventoryService inventory, UomConversionService units,
+                                        AvailabilityProperties properties, CustomerService customers,
+                                        CustomerSkus customerSkus) {
         this.inventory = inventory;
+        this.units = units;
         this.properties = properties;
         this.customers = customers;
-        this.listings = listings;
+        this.customerSkus = customerSkus;
     }
 
     /**
      * @param userId the authenticated identity subject, not a client-selected customer id
      * @param codes the SKUs asked about, in display order; duplicates collapse to one answer
-     * @return one entry per distinct SKU, in the order asked; an unknown SKU is out of stock
+     * @return one entry per distinct SKU of the caller's own with a carton, in the order asked; any other SKU - another
+     *         customer's, a variant, an unknown or retired one - is left out, as if it did not exist
      * @throws BusinessException {@code VALIDATION_FAILED} for no SKU, too many, or a malformed one
      */
     public List<SkuAvailability> availabilityOf(UUID userId, List<String> codes) {
         if (userId == null) throw new BusinessException(ErrorCode.UNAUTHORIZED);
         // Resolve the profile from the authenticated subject; never accept a client customer id.
-        customers.findByUserId(userId).filter(customer -> "ACTIVE".equals(customer.status()))
+        CustomerSummary customer = customers.findByUserId(userId).filter(found -> "ACTIVE".equals(found.status()))
                 .orElseThrow(() -> new BusinessException(ErrorCode.FORBIDDEN));
         Set<Sku> asked = parse(codes);
-        // Only SKUs of a published, enabled listing are answered, decided by the same rule as the storefront
-        // catalog (ListingRepository#listedBySku); the rest are dropped before inventory is queried.
-        Set<String> listed = listings.listedBySku(asked.stream().map(Sku::code).toList()).keySet();
-        Set<Sku> skus = asked.stream().filter(sku -> listed.contains(sku.code()))
-                .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
-        if (skus.isEmpty()) return List.of();
-        Map<Sku, Integer> atp = inventory.availableToPromise(skus);
-        return skus.stream()
-                .map(sku -> new SkuAvailability(sku,
-                        Availability.of(atp.getOrDefault(sku, 0), properties.lowStockThreshold())))
+        Set<String> own = customerSkus.activeOwnedBy(customer.customerId(),
+                asked.stream().map(Sku::code).toList());
+        Set<Sku> owned = asked.stream().filter(sku -> own.contains(sku.code()))
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        if (owned.isEmpty()) return List.of();
+        Map<String, Integer> cartons = cartonSizes(owned);
+        Set<Sku> counted = owned.stream().filter(sku -> cartons.containsKey(sku.code()))
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        if (counted.isEmpty()) return List.of();
+        Map<Sku, Integer> atp = inventory.availableToPromise(counted);
+        return counted.stream()
+                .map(sku -> new SkuAvailability(sku, Availability.ofCartons(atp.getOrDefault(sku, 0),
+                        cartons.get(sku.code()), properties.lowStockThreshold())))
                 .toList();
+    }
+
+    /** The pieces in a carton of each SKU that has exactly one carton unit (see the class comment), by SKU code. */
+    private Map<String, Integer> cartonSizes(Set<Sku> skus) {
+        Map<String, List<UomConversion>> declared = units.conversionsOf(skus);
+        Map<String, Integer> sizes = new HashMap<>();
+        for (Sku sku : skus) {
+            UomConversion.cartonOf(declared.getOrDefault(sku.code(), List.of())).ifPresentOrElse(
+                    carton -> sizes.put(sku.code(), carton.factor()),
+                    () -> log.warn("Customer SKU {} has no single carton unit (kltn-docs 01 BR-03): no stock indicator "
+                            + "for it", sku.code()));
+        }
+        return sizes;
     }
 
     private Set<Sku> parse(List<String> codes) {

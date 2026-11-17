@@ -17,6 +17,8 @@ public final class BufferedUpload implements AutoCloseable {
     private final String checksum;
     private BufferedUpload(Path path, String checksum) { this.path = path; this.checksum = checksum; }
     public String checksum() { return checksum; }
+    /** The spooled file, for a check that needs random access (a PDF's structure). Read only. */
+    Path path() { return path; }
     public InputStream open() throws IOException { return Files.newInputStream(path); }
 
     public static BufferedUpload read(FileCategory category, FileUpload upload) {

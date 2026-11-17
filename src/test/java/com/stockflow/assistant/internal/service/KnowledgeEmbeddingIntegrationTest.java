@@ -26,7 +26,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assumptions.assumeFalse;
 
 /**
- * The vectors in PostgreSQL (design §6.4, {@code V20261105000600}): stored as {@code real[]} and read back value for
+ * The vectors in PostgreSQL (design §6.4, {@code V20261125000600}): stored as {@code real[]} and read back value for
  * value, embedded again only when a passage's text or the model changes, never stored on text that changed meanwhile,
  * refused by the database when malformed, and searched by meaning over the real corpus. The embedding model is a fake:
  * no provider, no key.
@@ -41,7 +41,7 @@ import static org.junit.jupiter.api.Assumptions.assumeFalse;
 class KnowledgeEmbeddingIntegrationTest {
 
     private static final String SOURCE = "embedding-test";
-    /** U6-03, untranslated: no word of it is in BR-RMA-002. */
+    /** U6-03, without its accents: a question by the words of a customer, not of 17 §4.10. */
     private static final String QUESTION = "hang in theo yeu cau co duoc tra lai khong";
 
     @MockitoBean JwtDecoder decoder;
@@ -173,12 +173,12 @@ class KnowledgeEmbeddingIntegrationTest {
     @DisplayName("over the real corpus, a Vietnamese question finds by meaning the rule its words never reach; a rule "
             + "it names stays first")
     void searchesByMeaning() {
-        embeddings.vector("BR-RMA-002 ", 1, 0, 0).vector(QUESTION, 1, 0, 0);
+        embeddings.vector("17 §4.10 ", 1, 0, 0).vector(QUESTION, 1, 0, 0);
         knowledge.embed();
 
-        assertThat(knowledge.search(QUESTION, 5)).extracting(KnowledgeChunk::anchor).contains("BR-RMA-002");
+        assertThat(knowledge.search(QUESTION, 5)).extracting(KnowledgeChunk::anchor).contains("17 §4.10");
         // This question's vector is the one nearly every passage has, so nothing stands out by meaning, and the
-        // keyword ranking, the named rule first, decides.
-        assertThat(knowledge.search("what does br-rma-001 say", 5).getFirst().anchor()).isEqualTo("BR-RMA-001");
+        // keyword ranking, the named rule first, decides: rule 1 of chapter 15, not of another chapter.
+        assertThat(knowledge.search("15 br-1 nói gì", 5).getFirst().anchor()).isEqualTo("15 BR-01");
     }
 }

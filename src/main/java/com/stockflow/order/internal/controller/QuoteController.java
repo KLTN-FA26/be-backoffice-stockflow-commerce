@@ -67,9 +67,8 @@ class QuoteController {
     public ApiResponse<QuoteResponse> create(@Valid @RequestBody QuoteRequests.Create request,
                                              @AuthenticatedUser CurrentUser user) {
         return ApiResponse.ok(QuoteWebMapper.toResponse(quotes.create(user, new Quotes.Create(request.requestId(),
-                request.customerId(), new Quotes.Draft(request.paymentTerm(), request.depositPercent(),
-                request.validUntil(), request.terms(), QuoteWebMapper.lines(request.lines()),
-                request.requestedDeliveryDate())))));
+                request.customerId(), new Quotes.Draft(request.validUntil(), request.terms(), QuoteWebMapper.lines(request.lines()),
+                request.requestedDeliveryDate(), QuoteWebMapper.fees(request.fees()))))));
     }
 
     @GetMapping
@@ -100,8 +99,8 @@ class QuoteController {
     public ApiResponse<QuoteResponse> edit(@PathVariable UUID quoteId, @Valid @RequestBody QuoteRequests.Edit request,
                                            @AuthenticatedUser CurrentUser user) {
         return ApiResponse.ok(QuoteWebMapper.toResponse(quotes.edit(user, quoteId, request.version(),
-                new Quotes.Draft(request.paymentTerm(), request.depositPercent(), request.validUntil(),
-                        request.terms(), QuoteWebMapper.lines(request.lines()), request.requestedDeliveryDate()))));
+                new Quotes.Draft(request.validUntil(), request.terms(), QuoteWebMapper.lines(request.lines()), request.requestedDeliveryDate(),
+                        QuoteWebMapper.fees(request.fees())))));
     }
 
     @PostMapping("/{quoteId}/sending")
@@ -120,7 +119,7 @@ class QuoteController {
                                              @AuthenticatedUser CurrentUser user) {
         Map<UUID, Integer> quantities = new LinkedHashMap<>();
         if (request.lines() != null) {
-            request.lines().forEach(line -> quantities.merge(line.lineId(), line.quantity(), (a, b) -> b));
+            request.lines().forEach(line -> quantities.merge(line.lineId(), line.cartons(), (a, b) -> b));
         }
         return ApiResponse.ok(QuoteWebMapper.toResponse(quotes.accept(user, quoteId,
                 new Quotes.Acceptance(request.version(), quantities))));

@@ -35,23 +35,17 @@ class ResultTableTest {
 
     /** Every tool whose rows the panel shows, with the record its {@code run} returns. */
     private static final Map<String, Class<?>> ANSWERS = Map.ofEntries(
-            Map.entry("findLowStock", FindLowStockTool.Answer.class),
-            Map.entry("findExpiringLots", FindExpiringLotsTool.Answer.class),
             Map.entry("getStockLevels", GetStockLevelsTool.Answer.class),
             Map.entry("getStockLots", GetStockLotsTool.Answer.class),
             Map.entry("findOrders", FindOrdersTool.Answer.class),
-            Map.entry("findPurchaseOrders", FindPurchaseOrdersTool.Answer.class),
-            Map.entry("getSupplierTerms", GetSupplierTermsTool.Answer.class),
-            Map.entry("findProductionOrders", FindProductionOrdersTool.Answer.class),
             Map.entry("getSalesSummary", GetSalesSummaryTool.Answer.class),
             Map.entry("findFulfillmentTasks", FindFulfillmentTasksTool.Answer.class),
             Map.entry("findGoodsReceipts", FindGoodsReceiptsTool.Answer.class),
             Map.entry("findPendingAdjustments", FindPendingAdjustmentsTool.Answer.class),
             Map.entry("findShipments", FindShipmentsTool.Answer.class),
-            Map.entry("findOverdueCustomers", FindOverdueCustomersTool.Answer.class),
-            Map.entry("lookupScan", LookupScanTool.Answer.class),
-            Map.entry("findTransferOrders", FindTransferOrdersTool.Answer.class),
-            Map.entry("findReturns", FindReturnsTool.Answer.class));
+            Map.entry("findProductionOrders", FindProductionOrdersTool.Answer.class),
+            Map.entry("findEInvoices", FindEInvoicesTool.Answer.class),
+            Map.entry("lookupScan", LookupScanTool.Answer.class));
 
     /** What Spring Boot builds from {@code application.yml}: java.time as ISO text, null fields left out. */
     private final ObjectMapper json = JsonMapper.builder()
@@ -71,8 +65,7 @@ class ResultTableTest {
 
             List<ResultTable.Table> tables = ResultTable.of(execution, json);
 
-            assertThat(tables).as("the tables of %s", tool.getKey())
-                    .hasSize(List.of("findExpiringLots", "findPurchaseOrders").contains(tool.getKey()) ? 2 : 1);
+            assertThat(tables).as("the tables of %s", tool.getKey()).hasSize(1);
             for (ResultTable.Table table : tables) {
                 assertThat(table.tool()).isEqualTo(tool.getKey());
                 assertThat(table.key()).startsWith(tool.getKey() + ".");
@@ -81,53 +74,6 @@ class ResultTableTest {
                         .containsExactlyElementsOf(table.columns()));
             }
         }
-    }
-
-    @Test
-    @DisplayName("low stock: the rows as returned, a field the tool left out absent from its row, the tool's own "
-            + "total and truncated")
-    void lowStock() {
-        ToolExecution execution = ok("findLowStock", """
-                {"total":23,"truncated":true,"skus":[
-                  {"sku":"EVAL-CUP-12OZ","usableOnHand":40,"availableToPromise":35,"reorderPoint":100,
-                   "safetyStock":50,"atOrBelowReorderPoint":true,"belowSafetyStock":true},
-                  {"sku":"EVAL-LID-90","usableOnHand":80,"availableToPromise":80,"atOrBelowReorderPoint":true,
-                   "belowSafetyStock":false}]}""");
-
-        ResultTable.Table table = ResultTable.of(execution, json).getFirst();
-
-        assertThat(table.key()).isEqualTo("findLowStock.skus");
-        assertThat(table.columns()).containsExactly("sku", "usableOnHand", "availableToPromise", "reorderPoint",
-                "safetyStock", "atOrBelowReorderPoint", "belowSafetyStock", "unit", "packingUnit", "unitsPerPacking",
-                "availableToPromisePacked.packingCount", "availableToPromisePacked.looseUnits");
-        assertThat(table.rows()).hasSize(2);
-        assertThat(table.rows().getFirst()).containsEntry("sku", "EVAL-CUP-12OZ").containsEntry("usableOnHand", 40L)
-                .containsEntry("belowSafetyStock", true);
-        assertThat(table.rows().get(1)).doesNotContainKey("reorderPoint").doesNotContainKey("safetyStock");
-        assertThat(table.total()).isEqualTo(23);
-        assertThat(table.truncated()).isTrue();
-    }
-
-    @Test
-    @DisplayName("expiring lots: one table per list, each with its own total; an empty list makes none")
-    void expiringLots() {
-        ToolExecution execution = ok("findExpiringLots", """
-                {"warningWindowDays":60,"expiringTotal":3,"expiringTruncated":true,
-                 "expiring":[{"sku":"EVAL-LID-90","warehouseCode":"HCM","lotNumber":"EVAL-LID-A",
-                   "expiryDate":"2026-11-04","daysToExpiry":6,"quantityAtLastCheck":30,
-                   "lastCheckedAt":"2026-10-29T01:00:00+07:00","stillHeld":false,"expired":false}],
-                 "expiredTotal":0,"expiredTruncated":false,"expired":[]}""");
-
-        List<ResultTable.Table> tables = ResultTable.of(execution, json);
-
-        assertThat(tables).singleElement().satisfies(table -> {
-            assertThat(table.key()).isEqualTo("findExpiringLots.expiring");
-            assertThat(table.rows().getFirst()).containsEntry("lotNumber", "EVAL-LID-A")
-                    .containsEntry("expiryDate", "2026-11-04").containsEntry("lastCheckedAt",
-                            "2026-10-29T01:00:00+07:00").doesNotContainKey("expired");
-            assertThat(table.total()).isEqualTo(3);
-            assertThat(table.truncated()).isTrue();
-        });
     }
 
     @Test
@@ -170,28 +116,6 @@ class ResultTableTest {
     }
 
     @Test
-    @DisplayName("one purchase order asked about: its lines are a table of their own, naming the order, counted by "
-            + "its line count")
-    void purchaseOrderLines() {
-        ToolExecution execution = ok("findPurchaseOrders", """
-                {"total":1,"truncated":false,"purchaseOrders":[
-                  {"poNumber":"PO-HCM-DEMO-0002","status":"CONFIRMED","overdue":false,"lineCount":60,"lines":[
-                    {"lineNo":1,"sku":"EVAL-LID-90","ordered":500,"received":200,"stillToReceive":300,
-                     "status":"PARTIALLY_RECEIVED","unitPriceBeforeTax":1200}]}]}""");
-
-        List<ResultTable.Table> tables = ResultTable.of(execution, json);
-
-        assertThat(tables).extracting(ResultTable.Table::key)
-                .containsExactly("findPurchaseOrders.purchaseOrders", "findPurchaseOrders.lines");
-        ResultTable.Table lines = tables.get(1);
-        assertThat(lines.rows().getFirst()).containsEntry("poNumber", "PO-HCM-DEMO-0002")
-                .containsEntry("stillToReceive", 300L);
-        assertThat(lines.total()).isEqualTo(60);
-        assertThat(lines.truncated()).as("60 lines, one listed").isTrue();
-        assertThat(tables.getFirst().rows().getFirst()).doesNotContainKeys("lines", "lineCount");
-    }
-
-    @Test
     @DisplayName("sales: the best sellers are the table, the period's totals are not")
     void bestSellers() {
         ToolExecution execution = ok("getSalesSummary", """
@@ -208,13 +132,13 @@ class ResultTableTest {
     @Test
     @DisplayName("no table from a failed call, a tool whose rows are not tabled, or a result that is not JSON")
     void noTable() {
-        String rows = "{\"total\":1,\"truncated\":false,\"skus\":[{\"sku\":\"A\"}]}";
-        assertThat(ResultTable.of(new ToolExecution(new ToolCall("toolu_1", "findLowStock", "{}"),
-                ToolOutcome.DENIED, "NOT_PERMITTED: Missing permission: inventory-alerts:READ", 1), json)).isEmpty();
+        String rows = "{\"total\":1,\"truncated\":false,\"orders\":[{\"orderNumber\":\"SO-1\"}]}";
+        assertThat(ResultTable.of(new ToolExecution(new ToolCall("toolu_1", "findOrders", "{}"),
+                ToolOutcome.DENIED, "NOT_PERMITTED: Missing permission: sales-orders:READ", 1), json)).isEmpty();
         assertThat(ResultTable.of(ok("findOrder", rows), json)).isEmpty();
-        assertThat(ResultTable.of(ok("findLowStock", "RESULT_TOO_LARGE: ask again"), json)).isEmpty();
-        assertThat(ResultTable.of(ok("findLowStock", "{\"note\":\"company-wide\",\"skus\":[]}"), json)).isEmpty();
-        assertThat(ResultTable.of(List.of(ok("findLowStock", rows), ok("getStockLots", "{\"locations\":[]}")),
+        assertThat(ResultTable.of(ok("findOrders", "RESULT_TOO_LARGE: ask again"), json)).isEmpty();
+        assertThat(ResultTable.of(ok("findOrders", "{\"note\":\"no customer\",\"orders\":[]}"), json)).isEmpty();
+        assertThat(ResultTable.of(List.of(ok("findOrders", rows), ok("getStockLots", "{\"locations\":[]}")),
                 json)).hasSize(1);
     }
 

@@ -18,8 +18,8 @@ import static org.mockito.Mockito.mock;
 
 class SearchKnowledgeToolTest {
 
-    private static final KnowledgeChunk FLOW = new KnowledgeChunk("04c-all-flows", "F-PO", KnowledgeChunk.Kind.FLOW,
-            "F-PO — Đơn mua hàng gửi nhà cung cấp (Nhập hàng)", "Từ nháp tới lúc nhà cung cấp xác nhận.");
+    private static final KnowledgeChunk FLOW = new KnowledgeChunk("07-picking", "07 §4.4", KnowledgeChunk.Kind.FLOW,
+            "07 §4.4 Thiếu hàng (Short pick) — Lấy hàng (Picking)", "9. **Báo thiếu** — picker báo thiếu kèm vị trí.");
 
     private final InMemoryKnowledgeRepository repository = new InMemoryKnowledgeRepository();
 
@@ -47,22 +47,22 @@ class SearchKnowledgeToolTest {
     }
 
     @Test
-    @DisplayName("the flows are named to the model only when they are indexed; what foundBy means always is")
+    @DisplayName("the steps of a process are named to the model only when they are indexed; what foundBy means, and "
+            + "that an anchor carries its chapter, always are")
     void flowsOnlyWhenIndexed() {
-        assertThat(SearchKnowledgeTool.description(true)).contains("F-PO", "the flows in Vietnamese",
-                "which statuses exist is for the state machines");
-        assertThat(SearchKnowledgeTool.description(false)).doesNotContain("F-PO", "flow").contains("foundBy",
-                "found by meaning alone");
+        assertThat(SearchKnowledgeTool.description(true)).contains("the steps of each process", "§4 the steps");
+        assertThat(SearchKnowledgeTool.description(false)).doesNotContain("steps").contains("foundBy",
+                "found by meaning alone", "'15 BR-08' is rule 8 of chapter 15", "Vietnamese keywords");
     }
 
     @Test
     @DisplayName("a question longer than the search reads is cut, and the search goes ahead")
     void aLongQuestionIsCut() {
-        repository.sync("04c-all-flows", List.of(FLOW), null);
-        repository.ranks("quy trình mua hàng", FLOW);
+        repository.sync("07-picking", List.of(FLOW), null);
+        repository.ranks("quy trình báo thiếu", FLOW);
 
         SearchKnowledgeTool.Answer answer = tool(true).run(ToolArguments.parse(new ObjectMapper(),
-                "{\"query\":\"quy trình mua hàng\",\"question\":\"" + "x".repeat(4000) + "\"}"));
+                "{\"query\":\"quy trình báo thiếu\",\"question\":\"" + "x".repeat(4000) + "\"}"));
 
         assertThat(answer.passages()).hasSize(1);
     }
@@ -70,14 +70,14 @@ class SearchKnowledgeToolTest {
     @Test
     @DisplayName("each passage says how the search found it")
     void foundBy() {
-        repository.sync("04c-all-flows", List.of(FLOW), null);
-        repository.ranks("quy trình mua hàng", FLOW);
+        repository.sync("07-picking", List.of(FLOW), null);
+        repository.ranks("quy trình báo thiếu", FLOW);
 
         SearchKnowledgeTool.Answer answer = tool(true).run(ToolArguments.parse(new ObjectMapper(),
-                "{\"query\":\"quy trình mua hàng\",\"question\":\"Mua hàng đi qua những bước nào?\"}"));
+                "{\"query\":\"quy trình báo thiếu\",\"question\":\"Nhặt thiếu thì làm gì?\"}"));
 
         assertThat(answer.passages()).singleElement().satisfies(passage -> {
-            assertThat(passage.anchor()).isEqualTo("F-PO");
+            assertThat(passage.anchor()).isEqualTo("07 §4.4");
             assertThat(passage.foundBy()).isEqualTo("words");
         });
     }

@@ -6,7 +6,6 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.Table;
 import jakarta.persistence.UniqueConstraint;
 
-import java.math.BigDecimal;
 import java.util.UUID;
 
 /**
@@ -14,7 +13,8 @@ import java.util.UUID;
  *
  * <p>A read replica built from product + inventory events: {@code sku} and {@code atp} are copied,
  * not owned. SEO is copied from catalog.product_listing; it is never independently edited here.
- * The canonical product URL belongs to that source row, not this per-SKU slug.
+ * The canonical product URL belongs to that source row, not this per-SKU slug. No price: the storefront shows none
+ * (kltn-docs 13 BR-04; the column went with V20261110000100).
  * {@code atp} may be a second stale — acceptable for a product page, never for the
  * reservation decision (which calls inventory synchronously).</p>
  */
@@ -37,12 +37,6 @@ public class CatalogEntryJpaEntity extends BaseEntity {
     @Column(name = "description", length = 2000)
     private String description;
 
-    @Column(name = "price", precision = 18, scale = 2)
-    private BigDecimal price;
-
-    @Column(name = "currency", nullable = false, length = 3)
-    private String currency;
-
     @Column(name = "atp")
     private Integer atp;
 
@@ -59,15 +53,12 @@ public class CatalogEntryJpaEntity extends BaseEntity {
     }
 
     public CatalogEntryJpaEntity(UUID id, String sku, String title, String slug, String description,
-                                 BigDecimal price, String currency, Integer atp, boolean published,
-                                 String seoTitle, String seoDescription) {
+                                 Integer atp, boolean published, String seoTitle, String seoDescription) {
         super(id);
         this.sku = sku;
         this.title = title;
         this.slug = slug;
         this.description = description;
-        this.price = price;
-        this.currency = currency;
         this.atp = atp;
         this.published = published;
         this.seoTitle = seoTitle;
@@ -78,8 +69,6 @@ public class CatalogEntryJpaEntity extends BaseEntity {
     public String getTitle() { return title; }
     public String getSlug() { return slug; }
     public String getDescription() { return description; }
-    public BigDecimal getPrice() { return price; }
-    public String getCurrency() { return currency; }
     public Integer getAtp() { return atp; }
     public boolean isPublished() { return published; }
     public String getSeoTitle() { return seoTitle; }

@@ -1,17 +1,17 @@
 package com.stockflow.product.api;
 
 /**
- * Whether a SKU may be put on a <b>new</b> purchase order line (kltn-docs 01 BR-04, 02 BR-01): its
- * product is {@code APPROVED} or {@code PUBLISHED} and its variant is {@code ACTIVE}. Anything else
- * names the reason, which a purchase order screen puts next to the line.
+ * Whether a SKU may be put on a <b>new</b> quote or order line (kltn-docs 01 BR-04): its product is
+ * {@code APPROVED} or {@code PUBLISHED} and its variant is {@code ACTIVE}. Anything else names the reason, which
+ * the screen puts next to the line. The name is the one it had when purchase order lines asked it too; they went
+ * with purchasing (4A-8).
  *
  * <p>It is not asked of a line that is already open: goods on their way are received whatever happened to
- * the product since (kltn-docs 02 edge cases), and neither is a subcontract order, which belongs to a
- * production order that is already running.</p>
+ * the product since (kltn-docs 01 BR-14).</p>
  */
 public enum Purchasability {
     PURCHASABLE,
-    /** Suspended: not shown, no new purchase orders. */
+    /** Suspended: not shown, no new quotes or orders. */
     PRODUCT_INACTIVE,
     PRODUCT_DISCONTINUED,
     /** Still a draft, or waiting for approval. */

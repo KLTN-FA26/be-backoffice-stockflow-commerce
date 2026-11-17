@@ -28,7 +28,7 @@ public class SalesRollupQueries {
     public record DayRow(LocalDate day, int ordersCount, BigDecimal revenue) {
     }
 
-    public record ProductRow(String sku, long quantitySold, BigDecimal revenue) {
+    public record ProductRow(String sku, long quantitySold, BigDecimal revenue, long cartonsSold) {
     }
 
     public record Totals(long ordersCount, BigDecimal revenue) {
@@ -51,47 +51,24 @@ public class SalesRollupQueries {
                 (rs, row) -> new Totals(rs.getLong(1), rs.getBigDecimal(2)));
     }
 
-    /** Best sellers of the range by revenue, then units, then SKU (so equal rows keep a stable order). */
+    /**
+     * Best sellers of the range by revenue, then cartons (4B-3, kltn-docs 17 §4.11, D33), then units, then SKU (so equal
+     * rows keep a stable order).
+     */
     public List<ProductRow> topProducts(LocalDate from, LocalDate to, int limit) {
         return jdbc.query("""
-                SELECT sku, SUM(quantity_sold) AS quantity_sold, SUM(revenue) AS revenue
+                SELECT sku, SUM(quantity_sold) AS quantity_sold, SUM(revenue) AS revenue, SUM(cartons_sold) AS cartons_sold
                 FROM reporting.product_sales_summary
                 WHERE period BETWEEN :fromPeriod AND :toPeriod
                 GROUP BY sku
                 HAVING SUM(quantity_sold) > 0
-                ORDER BY SUM(revenue) DESC, SUM(quantity_sold) DESC, sku
+                ORDER BY SUM(revenue) DESC, SUM(cartons_sold) DESC, SUM(quantity_sold) DESC, sku
                 LIMIT :limit""",
                 new MapSqlParameterSource("fromPeriod", BusinessDay.period(from))
                         .addValue("toPeriod", BusinessDay.period(to))
                         .addValue("limit", limit),
                 (rs, row) -> new ProductRow(rs.getString("sku"), rs.getLong("quantity_sold"),
-                        rs.getBigDecimal("revenue")));
-    }
-
-    /** Units and revenue of the given SKUs over the range; a SKU with no row in the range is absent. */
-    /** @param firstSoldOn the first day with units sold; null when every day of the range nets to zero */
-    public record SkuRow(String sku, long quantitySold, BigDecimal revenue, LocalDate firstSoldOn) {
-    }
-
-    public List<SkuRow> salesOf(java.util.Collection<String> skus, LocalDate from, LocalDate to) {
-        if (skus.isEmpty()) {
-            return List.of();
-        }
-        return jdbc.query("""
-                SELECT sku, SUM(quantity_sold) AS quantity_sold, SUM(revenue) AS revenue,
-                       MIN(period) FILTER (WHERE quantity_sold > 0) AS first_sold
-                FROM reporting.product_sales_summary
-                WHERE period BETWEEN :fromPeriod AND :toPeriod AND sku IN (:skus)
-                GROUP BY sku
-                ORDER BY sku""",
-                new MapSqlParameterSource("fromPeriod", BusinessDay.period(from))
-                        .addValue("toPeriod", BusinessDay.period(to))
-                        .addValue("skus", skus),
-                (rs, row) -> {
-                    String first = rs.getString("first_sold");
-                    return new SkuRow(rs.getString("sku"), rs.getLong("quantity_sold"), rs.getBigDecimal("revenue"),
-                            first == null ? null : LocalDate.parse(first));
-                });
+                        rs.getBigDecimal("revenue"), rs.getLong("cartons_sold")));
     }
 
     /** The earliest day the ledger knows an order for; empty when nothing was ever rolled up. */

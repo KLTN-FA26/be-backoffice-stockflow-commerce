@@ -78,8 +78,26 @@ public class StockMovementJpaEntity extends BaseEntity {
     @Column(name = "to_stock_package_id", updatable = false)
     private UUID toStockPackageId;
 
+    /** WF-05 fix plan, section 8: who asked for the adjustment an ADJUSTMENT line posts; null on any other line. */
+    @Column(name = "requested_by", updatable = false)
+    private UUID requestedBy;
+
+    /** Who counted the line, when that adjustment is a cycle count's variance. */
+    @Column(name = "counted_by", updatable = false)
+    private UUID countedBy;
+
     protected StockMovementJpaEntity() {
     }
+
+    /** The line posts an adjustment {@code requestedBy} asked for and, for a count's variance, {@code countedBy} counted. */
+    public StockMovementJpaEntity askedBy(UUID requestedBy, UUID countedBy) {
+        this.requestedBy = requestedBy;
+        this.countedBy = countedBy;
+        return this;
+    }
+
+    public UUID getRequestedBy() { return requestedBy; }
+    public UUID getCountedBy() { return countedBy; }
 
     public StockMovementJpaEntity(UUID id, StockMovement.MovementType movementType, String sku,
                                   String lotNumber, String fromLocationCode, String toLocationCode,

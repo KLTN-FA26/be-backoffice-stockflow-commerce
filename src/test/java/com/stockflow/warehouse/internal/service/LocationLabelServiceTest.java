@@ -4,7 +4,6 @@ import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.warehouse.internal.domain.LabelSelection;
 import com.stockflow.warehouse.internal.domain.LocationStatus;
-import com.stockflow.warehouse.internal.domain.StorageClass;
 import com.stockflow.warehouse.internal.domain.StorageLocationKind;
 import com.stockflow.warehouse.internal.domain.WarehouseStatus;
 import com.stockflow.warehouse.internal.repository.LocationLabelRepository;
@@ -40,7 +39,7 @@ class LocationLabelServiceTest {
         when(lookup.findWarehouseHeader(WAREHOUSE)).thenReturn(Optional.of(
                 new WarehouseHeader(WAREHOUSE, "HCM", "Kho Hồ Chí Minh", "address", WarehouseStatus.ACTIVE)));
         List<LabelRow> bins = IntStream.range(0, count)
-                .mapToObj(i -> new LabelRow("HCM-A01-1-B" + i, StorageLocationKind.BIN, StorageClass.NORMAL,
+                .mapToObj(i -> new LabelRow("HCM-A01-1-B" + i, StorageLocationKind.BIN,
                         LocationStatus.ACTIVE, LocationStatus.ACTIVE, "A01", 1, "B" + i, null))
                 .toList();
         when(rows.findRows(any(), any())).thenReturn(bins);

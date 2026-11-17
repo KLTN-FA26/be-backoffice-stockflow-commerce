@@ -1,7 +1,6 @@
 package com.stockflow.catalog.internal.repository;
 
 import com.stockflow.catalog.internal.domain.Listing;
-import com.stockflow.catalog.internal.domain.SellingPrice;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
@@ -10,7 +9,6 @@ import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 
-import java.math.BigDecimal;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
@@ -143,71 +141,6 @@ seo_title=excluded.seo_title, seo_description=excluded.seo_description, revision
             jdbc.update("update catalog.catalog_entry set published=false where product_id=?", id);
     }
 
-    public Optional<SellingPrice> price(String sku) {
-        var rows =
-                jdbc.query(
-                        """
-select price,currency,priority from catalog.pricing_rule where active and segment_id is null
-and (sku=? or sku is null) order by priority desc, id limit 2
-""",
-                        (r, n) -> new PriceRow(r.getBigDecimal(1), r.getString(2), r.getInt(3)),
-                        sku);
-        if (rows.isEmpty()) return Optional.empty();
-        if (rows.size() > 1 && rows.get(0).priority() == rows.get(1).priority())
-            throw new BusinessException(ErrorCode.CATALOG_PRICE_AMBIGUOUS);
-        return Optional.of(new SellingPrice(rows.getFirst().amount(), rows.getFirst().currency()));
-    }
-
-    private record PriceRow(BigDecimal amount, String currency, int priority) {}
-
-    /**
-     * The active price rule of a customer group for this SKU (or for every SKU), kltn-docs 13 §3's
-     * fallback when a customer has no own price. Same precedence and ambiguity rule as {@link #price}.
-     */
-    public Optional<SellingPrice> segmentPrice(UUID segmentId, String sku) {
-        var rows =
-                jdbc.query(
-                        """
-select price,currency,priority from catalog.pricing_rule where active and segment_id=?
-and (sku=? or sku is null) order by priority desc, id limit 2
-""",
-                        (r, n) -> new PriceRow(r.getBigDecimal(1), r.getString(2), r.getInt(3)),
-                        segmentId,
-                        sku);
-        if (rows.isEmpty()) return Optional.empty();
-        if (rows.size() > 1 && rows.get(0).priority() == rows.get(1).priority())
-            throw new BusinessException(ErrorCode.CATALOG_PRICE_AMBIGUOUS);
-        return Optional.of(new SellingPrice(rows.getFirst().amount(), rows.getFirst().currency()));
-    }
-
-    public Optional<SellingPrice> basePrice(String sku) {
-        return jdbc
-                .query(
-                        "select price,currency from catalog.pricing_rule where name=? and active",
-                        (r, n) -> new SellingPrice(r.getBigDecimal(1), r.getString(2)),
-                        "BASE:" + sku)
-                .stream()
-                .findFirst();
-    }
-
-    public void basePrice(String sku, SellingPrice p, String actor, Instant now) {
-        jdbc.update(
-                """
-insert into catalog.pricing_rule(id,name,sku,price,currency,priority,active,version,created_at,created_by)
-values (?,?,?,?,?,0,true,0,?,?)
-on conflict (name) where name like 'BASE:%' do update set price=excluded.price,
-    currency=excluded.currency, active=true, version=catalog.pricing_rule.version+1,
-    last_modified_at=excluded.created_at,last_modified_by=excluded.created_by
-""",
-                Identifiers.newId(),
-                "BASE:" + sku,
-                sku,
-                p.amount(),
-                p.currency(),
-                Timestamp.from(now),
-                actor);
-    }
-
     public void sourceRevision(UUID id, long version) {
         jdbc.update(
                 "update catalog.product_listing set revision=? where product_id=?", version, id);
@@ -223,6 +156,7 @@ on conflict (name) where name like 'BASE:%' do update set price=excluded.price,
                 (r, n) -> r.getString(1), id, revision));
     }
 
+    /** One published SKU's storefront entry. No price: the storefront shows none (kltn-docs 13 BR-04). */
     public void projectSku(
             UUID productId,
             UUID skuId,
@@ -231,16 +165,15 @@ on conflict (name) where name like 'BASE:%' do update set price=excluded.price,
             String description,
             String seoTitle,
             String seoDescription,
-            SellingPrice price,
             long revision,
             Instant now) {
         int changed = jdbc.update(
                 """
-insert into catalog.catalog_entry(id,sku,title,slug,description,price,currency,published,
+insert into catalog.catalog_entry(id,sku,title,slug,description,published,
     seo_title,seo_description,version,created_at,product_id,source_revision)
-values (?,?,?,?,?,?,?,true,?,?,0,?,?,?)
+values (?,?,?,?,?,true,?,?,0,?,?,?)
 on conflict(sku) do update set title=excluded.title,description=excluded.description,
-    price=excluded.price,currency=excluded.currency,published=true,
+    published=true,
     seo_title=excluded.seo_title,seo_description=excluded.seo_description,
     product_id=excluded.product_id,source_revision=excluded.source_revision,
     version=catalog.catalog_entry.version+1,last_modified_at=excluded.created_at
@@ -252,8 +185,6 @@ where (catalog.catalog_entry.product_id is null or catalog.catalog_entry.product
                 title,
                 "sku-" + skuId,
                 description,
-                price.amount(),
-                price.currency(),
                 seoTitle,
                 seoDescription,
                 Timestamp.from(now),

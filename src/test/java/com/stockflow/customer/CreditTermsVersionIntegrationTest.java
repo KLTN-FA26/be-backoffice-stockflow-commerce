@@ -4,7 +4,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
-import com.stockflow.customer.api.CommercialTerm;
 import com.stockflow.customer.api.CustomerService;
 import com.stockflow.customer.api.SaveCreditTermsCommand;
 import com.stockflow.support.IntegrationTest;
@@ -75,8 +74,7 @@ class CreditTermsVersionIntegrationTest {
     }
 
     private SaveCreditTermsCommand command(UUID customerId, UUID by, BigDecimal limit, Long expectedVersion) {
-        return new SaveCreditTermsCommand(customerId, true, false, true, CommercialTerm.PREPAID, null, limit, 30,
-                null, by, expectedVersion);
+        return new SaveCreditTermsCommand(customerId, limit, 30, null, by, expectedVersion);
     }
 
     private static ErrorCode codeOf(Throwable thrown) {
@@ -143,8 +141,7 @@ class CreditTermsVersionIntegrationTest {
         String profile = "/api/v1/customers/" + customerId + "/credit-profile";
         String approver = bearer("ACCOUNTANT");
 
-        Map<String, Object> body = new HashMap<>(Map.of("allowPrepaid", true, "allowDeposit", false,
-                "allowCredit", true, "defaultPaymentTerm", "PREPAID", "creditLimit", 10_000_000, "creditTermDays", 30));
+        Map<String, Object> body = new HashMap<>(Map.of("creditLimit", 10_000_000, "creditTermDays", 30));
         // First set: no version needed.
         mvc.perform(put(profile).header("Authorization", approver).contentType("application/json")
                         .content(json.writeValueAsString(body)))

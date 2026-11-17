@@ -81,6 +81,20 @@ public final class RawSql {
         assertThat(refusal.getSQLState()).as("%s: %s", rule, refusal.getMessage()).startsWith("23");
     }
 
+    /**
+     * {@link #refused}, and by the rule meant: the refusal names {@code expected} - a constraint or index name, or the
+     * words of the trigger that raises it. Another integrity rule refusing the statement first would otherwise pass the
+     * test while the rule under test says nothing.
+     */
+    public static void refusedBy(Connection db, String expected, String rule, String sql, Object... values) {
+        SQLException refusal = catchThrowableOfType(SQLException.class, () -> update(db, sql, values));
+        if (refusal == null) {
+            throw new AssertionError("%s is refused, but the database accepted: %s".formatted(rule, sql));
+        }
+        assertThat(refusal.getSQLState()).as("%s: %s", rule, refusal.getMessage()).startsWith("23");
+        assertThat(refusal.getMessage()).as(rule).contains(expected);
+    }
+
     private static PreparedStatement prepare(Connection db, String sql, Object... values) throws SQLException {
         PreparedStatement statement = db.prepareStatement(sql);
         try {

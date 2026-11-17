@@ -12,7 +12,6 @@ public record ReturnRequestRowResponse(UUID id, String rmaNumber, UUID orderId, 
                                        @Schema(example = "REQUESTED") String status, String reasonCode,
                                        String requestedResolution, String channel, Instant requestedAt,
                                        Instant returnDeadline, BigDecimal settlementAmount, BigDecimal refundedAmount,
-                                       BigDecimal creditedAmount, BigDecimal offsetAmount, String currency,
-                                       boolean vatAdjustmentRequired, UUID replacementOrderId, Instant closedAt,
-                                       long version) {
+                                       BigDecimal offsetAmount, String currency, boolean vatAdjustmentRequired,
+                                       Instant closedAt, long version) {
 }

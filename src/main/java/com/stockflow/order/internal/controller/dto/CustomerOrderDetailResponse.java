@@ -25,16 +25,14 @@ public record CustomerOrderDetailResponse(
         @Schema(example = "ON_HOLD")
         String status,
 
-        @Schema(example = "UNDER_REVIEW", description = "What the customer reads: AWAITING_PAYMENT, UNDER_REVIEW, "
-                + "CONFIRMED, IN_PRODUCTION, PREPARING, SHIPPING, DELIVERED, CANCELLED or RETURNED")
+        @Schema(example = "UNDER_REVIEW", description = "What the customer reads: AWAITING_CONTRACT, AWAITING_PAYMENT, "
+                + "UNDER_REVIEW, CONFIRMED, AWAITING_STOCK, IN_PRODUCTION (legacy), PREPARING, SHIPPING, DELIVERED, "
+                + "CANCELLED or RETURNED")
         String statusGroup,
 
         @Schema(example = "AWAITING_CREDIT_APPROVAL", description = "Set only while the order is ON_HOLD: "
                 + "AWAITING_CREDIT_APPROVAL or UNDER_REVIEW")
         String holdReasonPublic,
-
-        @Schema(example = "PREPAID", description = "PREPAID, DEPOSIT or CREDIT")
-        String paymentTerm,
 
         BigDecimal total,
 
@@ -44,8 +42,6 @@ public record CustomerOrderDetailResponse(
         Instant placedAt,
 
         OrderResponse.Address shippingAddress,
-
-        Payment payment,
 
         List<Line> lines,
 
@@ -65,13 +61,29 @@ public record CustomerOrderDetailResponse(
         CancellationRequest cancellationRequest,
 
         @Schema(description = "G4-2a: the shipments handed over to a carrier, oldest first (kltn-docs 09 BR-05); empty "
-                + "until the first handover. Nothing is tracked between handover and the outcome staff record")
+                + "until the first handover. Every order ships as a full truckload (09 BR-08). Nothing is tracked "
+                + "between handover and the outcome staff record")
         List<Shipment> shipments,
 
-        @Schema(example = "PARCEL", description = "SCRUM-209: how the order travels, PARCEL or FULL_TRUCKLOAD, as the "
-                + "coordinator set it; null when not set. Shipments carry their own mode too")
-        String deliveryMode
+        @Schema(description = "4B-3 (14 BR-09): the total before tax - the lines and the fee lines; total is it plus "
+                + "taxAmount. An order placed without VAT has its total here and taxAmount 0")
+        BigDecimal netAmount,
+
+        @Schema(description = "4B-3 (14 BR-21): the VAT of every line and fee line, each rounded to the dong")
+        BigDecimal taxAmount,
+
+        @Schema(description = "4B-3: the plate fee of each SKU produced for the first time, and the shipping fee")
+        List<Fee> fees
 ) {
+
+    @Schema(name = "CustomerOrderFee")
+    public record Fee(
+            @Schema(example = "PLATE_FEE", description = "PLATE_FEE or SHIPPING_FEE") String kind,
+            @Schema(description = "The SKU a plate fee is for; null on the shipping fee") String sku,
+            BigDecimal amount,
+            BigDecimal taxRate,
+            BigDecimal taxAmount) {
+    }
 
     @Schema(name = "CustomerOrderShipment")
     public record Shipment(
@@ -84,8 +96,6 @@ public record CustomerOrderDetailResponse(
             int packageCount,
             @Schema(example = "Giao Hàng Nhanh")
             String carrierName,
-            @Schema(example = "PARCEL", description = "PARCEL or FULL_TRUCKLOAD")
-            String deliveryMode,
             Instant handedOverAt,
             @Schema(description = "When staff recorded the latest outcome; null while with the carrier")
             Instant outcomeAt,
@@ -107,21 +117,7 @@ public record CustomerOrderDetailResponse(
     @Schema(name = "CustomerOrderAllowedActions")
     public record AllowedActions(
             @Schema(description = "Cancel at once (POST /orders/{id}/cancellation answers 200)") boolean cancel,
-            @Schema(description = "Ask for a cancellation (the same endpoint answers 202)") boolean requestCancellation,
-            @Schema(description = "Order the same again by a new draft quote (POST /orders/{id}/reorder): true only for an "
-                    + "order that came from a quote. An order bought at the price list is false: the portal puts its "
-                    + "lines back in the basket instead") boolean reorder) {
-    }
-
-    @Schema(name = "CustomerOrderPayment")
-    public record Payment(
-            @Schema(example = "PARTIALLY_PAID", description = "UNPAID, PARTIALLY_PAID, ON_CREDIT or PAID")
-            String status,
-            BigDecimal paidAmount,
-            @Schema(description = "The deposit a DEPOSIT order needs before it is confirmed; null otherwise")
-            BigDecimal depositRequired,
-            @Schema(description = "A credit order's days to pay after delivery; null otherwise")
-            Integer creditTermDays) {
+            @Schema(description = "Ask for a cancellation (the same endpoint answers 202)") boolean requestCancellation) {
     }
 
     @Schema(name = "CustomerOrderLine")
@@ -134,22 +130,23 @@ public record CustomerOrderDetailResponse(
             @Schema(description = "Set for a line printed to the customer's design; null for stock goods")
             UUID designSnapshotId,
             Production production,
-            @Schema(description = "Where this SKU is on sale in the storefront today (/catalog/{slug}); null when it "
-                    + "is not on sale now or the line is a design line. Today's catalogue, for putting the line back "
-                    + "in a basket (reorder)")
-            String productSlug,
-            @Schema(description = "The product's published title today; null as productSlug")
-            String productTitle,
-            @Schema(description = "The product's primary public image today; null without one or as productSlug")
-            String productImageUrl) {
+            @Schema(description = "4B-2 (14 BR-08): cartons ordered; quantity is cartons x unitsPerCarton pieces. Null "
+                    + "for a line not ordered in cartons")
+            Integer cartons,
+            @Schema(description = "4B-2: pieces per carton fixed on the line")
+            Integer unitsPerCarton,
+            @Schema(description = "4B-3 (14 BR-21): the line's VAT rate; null on a line placed without VAT")
+            BigDecimal taxRate,
+            @Schema(description = "4B-3: the line's VAT, lineTotal x taxRate rounded to the dong")
+            BigDecimal taxAmount) {
     }
 
     @Schema(name = "CustomerOrderLineProduction")
     public record Production(
-            @Schema(example = "IN_PROGRESS", description = "NOT_REQUIRED (stock goods), NOT_STARTED, IN_PROGRESS, DONE "
-                    + "or CANCELLED")
+            @Schema(example = "DONE", description = "NOT_REQUIRED (stock goods), NOT_STARTED (before release), DONE "
+                    + "(released: printed outside the system and in stock) or CANCELLED")
             String state,
-            @Schema(description = "Good units printed so far")
+            @Schema(description = "The line's units once released; 0 before")
             int goodQuantity) {
     }
 

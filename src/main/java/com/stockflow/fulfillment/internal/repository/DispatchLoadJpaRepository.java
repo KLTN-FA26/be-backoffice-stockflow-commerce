@@ -21,7 +21,93 @@ public interface DispatchLoadJpaRepository extends BaseJpaRepository<DispatchLoa
 
     Optional<DispatchLoadJpaEntity> findByRequestId(UUID requestId);
 
+    /** The loads with these codes (3-3: the lines of a waybill import name loads by code). */
+    List<DispatchLoadJpaEntity> findByCodeIn(Collection<String> codes);
+
+    /**
+     * The id, code and warehouse of the loads with these codes, read without loading the entities: a row lock taken next
+     * must read the loads fresh, not hand back copies already in the persistence context.
+     */
+    @Query("select l.id as id, l.code as code, l.warehouseId as warehouseId from DispatchLoadJpaEntity l "
+            + "where l.code in :codes")
+    List<LoadPlace> placesOfCodes(@Param("codes") Collection<String> codes);
+
+    /** A load's id, code and warehouse, read without the entity. */
+    interface LoadPlace {
+        UUID getId();
+
+        String getCode();
+
+        UUID getWarehouseId();
+    }
+
+    /** The live loads of these carriers holding one of these waybill numbers (3-3: a number is one load's). */
+    default List<DispatchLoadJpaEntity> findLiveByCarriersAndWaybills(Collection<UUID> carrierIds,
+                                                                      Collection<String> waybills) {
+        return findByWaybills(carrierIds, waybills, com.stockflow.fulfillment.internal.domain.LoadStatus.CANCELLED);
+    }
+
+    @Query("select l from DispatchLoadJpaEntity l where l.carrierId in :carrierIds and l.waybillNo in :waybills "
+            + "and l.status <> :cancelled")
+    List<DispatchLoadJpaEntity> findByWaybills(@Param("carrierIds") Collection<UUID> carrierIds,
+                                               @Param("waybills") Collection<String> waybills,
+                                               @Param("cancelled") com.stockflow.fulfillment.internal.domain.LoadStatus
+                                                       cancelled);
+
+    /** Loads of {@code carrierId} other than {@code loadId}, not cancelled, holding {@code waybill} (09 BR-23). */
+    default List<DispatchLoadJpaEntity> findLiveByCarrierAndWaybill(UUID carrierId, String waybill, UUID loadId) {
+        return findByWaybill(carrierId, waybill, loadId, com.stockflow.fulfillment.internal.domain.LoadStatus.CANCELLED);
+    }
+
+    @Query("select l from DispatchLoadJpaEntity l where l.carrierId = :carrierId and l.waybillNo = :waybill "
+            + "and l.id <> :loadId and l.status <> :cancelled order by l.code")
+    List<DispatchLoadJpaEntity> findByWaybill(@Param("carrierId") UUID carrierId, @Param("waybill") String waybill,
+                                              @Param("loadId") UUID loadId,
+                                              @Param("cancelled") com.stockflow.fulfillment.internal.domain.LoadStatus
+                                                      cancelled);
+
     /** What a load is, read without loading the entity (so a lock taken next reads it fresh). */
+    /**
+     * What the carrier-event applier matches a report on (3-5), read without loading the load: its row is locked, and
+     * read fresh, only by the change that follows.
+     */
+    interface LoadFacts {
+        UUID getId();
+
+        String getCode();
+
+        UUID getWarehouseId();
+
+        UUID getCarrierId();
+
+        com.stockflow.fulfillment.internal.domain.LoadStatus getStatus();
+
+        String getWaybillNo();
+
+        /** When the vehicle left; null until it has. */
+        java.time.Instant getDispatchedAt();
+    }
+
+    @Query("select l.id as id, l.code as code, l.warehouseId as warehouseId, l.carrierId as carrierId, "
+            + "l.status as status, l.waybillNo as waybillNo, l.dispatchedAt as dispatchedAt "
+            + "from DispatchLoadJpaEntity l where l.id = :id")
+    Optional<LoadFacts> findFactsById(@Param("id") UUID id);
+
+    @Query("select l.id as id, l.code as code, l.warehouseId as warehouseId, l.carrierId as carrierId, "
+            + "l.status as status, l.waybillNo as waybillNo, l.dispatchedAt as dispatchedAt "
+            + "from DispatchLoadJpaEntity l where l.code = :code")
+    Optional<LoadFacts> findFactsByCode(@Param("code") String code);
+
+    /**
+     * The loads holding one of these waybill numbers, cancelled ones left out: a number is unique among a carrier's
+     * live loads only, so several loads may answer to one number.
+     */
+    @Query("select l.id as id, l.code as code, l.warehouseId as warehouseId, l.carrierId as carrierId, "
+            + "l.status as status, l.waybillNo as waybillNo, l.dispatchedAt as dispatchedAt "
+            + "from DispatchLoadJpaEntity l where l.waybillNo in :waybills and l.carrierId is not null "
+            + "and l.status <> com.stockflow.fulfillment.internal.domain.LoadStatus.CANCELLED order by l.code")
+    List<LoadFacts> findFactsByWaybills(@Param("waybills") Collection<String> waybills);
+
     interface LoadKey {
         UUID getWarehouseId();
 

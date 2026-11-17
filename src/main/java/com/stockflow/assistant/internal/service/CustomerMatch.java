@@ -56,7 +56,7 @@ record CustomerMatch(UUID customerId, String name, String status, List<Candidate
 
     /**
      * {@link #find(CustomerService, String, boolean)}, where the text may also be one of the conversation's customer
-     * aliases ({@code KH#3}, ADR-0014): the model knows a customer it was shown only by that. An alias stands only for a
+     * aliases ({@code KH#3}, ADR-0015): the model knows a customer it was shown only by that. An alias stands only for a
      * customer a lookup of this conversation named, so it lists no one the caller was not already shown.
      *
      * @param pseudonyms the question's aliases; null where there are none

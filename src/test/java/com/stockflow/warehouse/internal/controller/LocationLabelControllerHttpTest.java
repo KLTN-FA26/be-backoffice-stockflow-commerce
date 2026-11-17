@@ -5,7 +5,6 @@ import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.i18n.Messages;
 import com.stockflow.common.web.GlobalExceptionHandler;
 import com.stockflow.warehouse.internal.domain.LabelSelection;
-import com.stockflow.warehouse.internal.domain.StorageClass;
 import com.stockflow.warehouse.internal.domain.StorageLocationKind;
 import com.stockflow.common.label.LabelFormat;
 import com.stockflow.warehouse.internal.service.LabelWords;
@@ -51,8 +50,7 @@ class LocationLabelControllerHttpTest {
     private static final UUID WAREHOUSE = UUID.fromString("0190a000-0000-7000-8000-000000000001");
     private static final byte[] PDF = "%PDF-1.7 test".getBytes();
     private static final LocationLabelSheet SHEET = new LocationLabelSheet("HCM", "Kho Hồ Chí Minh",
-            List.of(new LocationLabel("HCM-A01-1-A", StorageLocationKind.BIN, "A01", 1, "A", null,
-                    StorageClass.OVERSIZE)));
+            List.of(new LocationLabel("HCM-A01-1-A", StorageLocationKind.BIN, "A01", 1, "A", null)));
 
     private final LocationLabelService service = mock(LocationLabelService.class);
     private final LocationLabelPdfRenderer renderer = mock(LocationLabelPdfRenderer.class);

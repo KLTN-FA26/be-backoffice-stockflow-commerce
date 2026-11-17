@@ -206,7 +206,7 @@ public class AssistantTools {
     private static String explain(BusinessException refused) {
         ErrorCode code = refused.errorCode();
         return switch (outcome(refused)) {
-            // "Missing permission: inventory-alerts:READ" - the permission is what the model must name to the user.
+            // "Missing permission: inventory-stock-items:READ" - the permission is what the model must name to the user.
             case DENIED -> "NOT_PERMITTED: " + (code == ErrorCode.FORBIDDEN ? refused.getMessage()
                     : "the data is outside the warehouses or records this user may see");
             case NOT_FOUND -> "NOT_FOUND: " + refused.getMessage();
@@ -225,7 +225,7 @@ public class AssistantTools {
 
     /**
      * An instant as {@link BusinessDate#dateTime}, to the second. The offset keeps it one exact instant that
-     * {@code Instant.parse} reads back ({@link AnswerSources} does, for proposeReorder's {@code generatedAt}); the
+     * {@code Instant.parse} reads back; the
      * microseconds the database keeps are noise to a reader and cost tokens on every row.
      */
     private static final class VietnamTimeSerializer extends StdSerializer<Instant> {

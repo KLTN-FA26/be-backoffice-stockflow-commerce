@@ -93,7 +93,7 @@ public final class Customer extends AggregateRoot {
     }
 
     /**
-     * Puts the customer in a group, or none (P7: the E-commerce Admin's decision). Prices already given - a
+     * Puts the customer in a group, or none (P7: the Sales Manager's decision). Prices already given - a
      * quote, an order - keep theirs; only later pricing reads the new group.
      *
      * @param segmentId an existing group (the caller checks it), or null for none

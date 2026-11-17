@@ -28,7 +28,17 @@ import java.util.Set;
  * <p><b>Any word, not every word.</b> The question arrives as the model's search terms, several of which a rule may
  * not use; {@code websearch_to_tsquery} would require all of them and find nothing. The query is cut into words
  * ({@link KnowledgeSearch#words}: letters and digits only, so nothing reaches {@code to_tsquery} that it could parse as
- * an operator) and joined with OR; {@code ts_rank_cd} then ranks the chunks that match more of them higher.</p>
+ * an operator) and joined with OR.</p>
+ *
+ * <p><b>Ranked by how much of the query a passage holds, not how often.</b> A passage scores one for each distinct
+ * word of the query it holds, {@value #PAIR_WEIGHT} for each pair of adjacent words it holds as a phrase
+ * ({@link KnowledgeSearch#pairs}), {@value #TITLE_WEIGHT} for each of those words in its anchor or title,
+ * {@code ts_rank_cd} normalised below one (closeness), half the title's trigram similarity, and a hundred when the
+ * query names it, more than everything else together. The analysis is Vietnamese, a word is often two syllables, and
+ * the search counts syllables: ranked by {@code ts_rank_cd} alone, a long flow repeating "hàng", "kho" and "chuyến"
+ * outranked the one rule holding "chuyển hàng giữa các kho" as written. Weighing the words by their rarity (BM25's
+ * inverse document frequency), with or without its length normalisation, was measured and found less (design
+ * §6.3).</p>
  *
  * <p><b>Vectors in plain SQL, never through JPA.</b> The entity does not map the embedding columns, so a sync that
  * rewrites a chunk leaves its old vector in place, and the vector's own {@code embedding_hash} — the content hash of
@@ -47,6 +57,19 @@ class KnowledgeRepositoryAdapter implements KnowledgeRepository {
     private static final RowMapper<KnowledgeChunk> CHUNK = (rs, row) -> new KnowledgeChunk(rs.getString("source"),
             rs.getString("anchor"), KnowledgeChunk.Kind.valueOf(rs.getString("kind")), rs.getString("title"),
             rs.getString("body"));
+
+    /**
+     * What each pair of the query's words held as a phrase adds to a passage's score ({@link KnowledgeSearch#pairs}),
+     * where each of its distinct words adds one: a passage holding "đổi trả" and "lỗi sản xuất" as written comes before
+     * one holding the same syllables scattered. Chosen on {@code RetrievalEval}'s keyword-only numbers (design §6.3).
+     */
+    static final double PAIR_WEIGHT = 1.0;
+
+    /**
+     * What each distinct word of the query in a passage's anchor or title adds besides: a glossary term titled
+     * "Reservation / Giữ hàng" is about the words it is named by, where a long flow only mentions them.
+     */
+    static final double TITLE_WEIGHT = 0.5;
 
     /** {@code kind} values this build reads ({@link KnowledgeChunk.Kind}). */
     private static final String[] KINDS = Arrays.stream(KnowledgeChunk.Kind.values()).map(Enum::name)
@@ -103,6 +126,12 @@ class KnowledgeRepositoryAdapter implements KnowledgeRepository {
     }
 
     @Override
+    public List<String> sources() {
+        return jdbc.queryForList("SELECT DISTINCT source FROM assistant.knowledge_chunk ORDER BY source",
+                new MapSqlParameterSource(), String.class);
+    }
+
+    @Override
     public List<KnowledgeChunk> search(String query, int limit, int minMatched) {
         Set<String> words = KnowledgeSearch.words(query);
         List<String> anchors = KnowledgeSearch.namedRules(query);
@@ -111,12 +140,20 @@ class KnowledgeRepositoryAdapter implements KnowledgeRepository {
         }
         // Counted as the database compares them: "đơn" and "don" are one word, and must not make two matches.
         String[] each = words.stream().map(KnowledgeSearch::unmarked).distinct().toArray(String[]::new);
+        String[] pairs = KnowledgeSearch.pairs(query).stream().map(KnowledgeSearch::unmarked).distinct()
+                .toArray(String[]::new);
         MapSqlParameterSource parameters = new MapSqlParameterSource()
                 .addValue("words", words.isEmpty() ? "" : String.join(" | ", words))
                 .addValue("text", String.join(" ", words))
                 .addValue("each", each.length == 0 ? new String[] {""} : each)
                 .addValue("needed", Math.max(1, Math.min(minMatched, each.length)))
+                .addValue("pairs", pairs.length == 0 ? new String[] {""} : pairs)
+                .addValue("pairWeight", PAIR_WEIGHT)
+                .addValue("titleWeight", TITLE_WEIGHT)
                 .addValue("anchors", anchors.isEmpty() ? new String[] {""} : anchors.toArray(String[]::new))
+                // The later parts of a named rule or section, "17 §5.1 (2)": a name holds no LIKE wildcard.
+                .addValue("parts", anchors.isEmpty() ? new String[] {""}
+                        : anchors.stream().map(anchor -> anchor + " (%").toArray(String[]::new))
                 .addValue("limit", limit)
                 .addValue("kinds", KINDS);
         return jdbc.query("""
@@ -125,17 +162,27 @@ class KnowledgeRepositoryAdapter implements KnowledgeRepository {
                                 ELSE to_tsquery('simple', assistant.immutable_unaccent(:words)) END AS terms,
                            ARRAY(SELECT to_tsquery('simple', assistant.immutable_unaccent(w.word))
                                  FROM unnest(CAST(:each AS text[])) AS w(word) WHERE w.word <> '') AS each_term,
+                           ARRAY(SELECT to_tsquery('simple',
+                                        assistant.immutable_unaccent(replace(p.pair, ' ', ' <-> ')))
+                                 FROM unnest(CAST(:pairs AS text[])) AS p(pair) WHERE p.pair <> '') AS pair_term,
                            assistant.immutable_unaccent(:text) AS text)
                 SELECT c.source, c.anchor, c.kind, c.title, c.body,
-                       coalesce(ts_rank_cd(c.search_document, q.terms), 0)
+                       (SELECT count(*) FROM unnest(q.each_term) AS t(term) WHERE c.search_document @@ t.term)
+                       + :pairWeight * (SELECT count(*) FROM unnest(q.pair_term) AS t(term)
+                                        WHERE c.search_document @@ t.term)
+                       + :titleWeight * (SELECT count(*) FROM unnest(q.each_term) AS t(term)
+                                         WHERE ts_filter(c.search_document, '{a}') @@ t.term)
+                       + coalesce(ts_rank_cd(c.search_document, q.terms, 32), 0)
                        + 0.5 * public.similarity(assistant.immutable_unaccent(lower(c.title)), q.text)
-                       + CASE WHEN upper(c.anchor) = ANY(:anchors) THEN 10 ELSE 0 END AS score
+                       + CASE WHEN upper(c.anchor) = ANY(:anchors) OR upper(c.anchor) LIKE ANY(:parts) THEN 100
+                              ELSE 0 END AS score
                 FROM assistant.knowledge_chunk c, q
                 WHERE c.kind = ANY(:kinds)
                   AND ((q.terms IS NOT NULL AND c.search_document @@ q.terms
                         AND (SELECT count(*) FROM unnest(q.each_term) AS t(term) WHERE c.search_document @@ t.term)
                             >= :needed)
                    OR upper(c.anchor) = ANY(:anchors)
+                   OR upper(c.anchor) LIKE ANY(:parts)
                    OR public.similarity(assistant.immutable_unaccent(lower(c.title)), q.text) > 0.3)
                 ORDER BY score DESC, c.source, c.anchor
                 LIMIT :limit""", parameters, CHUNK);

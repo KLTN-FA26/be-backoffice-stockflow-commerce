@@ -1,7 +1,5 @@
 package com.stockflow.order;
 
-import com.stockflow.common.domain.Money;
-import com.stockflow.common.domain.Sku;
 import com.stockflow.common.error.BusinessException;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.security.DataScope;
@@ -10,16 +8,24 @@ import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.OrderStatusChange;
 import com.stockflow.order.api.OrderSummary;
-import com.stockflow.order.api.PlaceOrderCommand;
+import com.stockflow.support.ConfirmedOrders;
+import com.stockflow.support.CustomerSkuRows;
 import com.stockflow.support.DemoData;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
 import com.stockflow.support.TestUsers;
 import com.stockflow.support.WithCurrentUser;
+import jakarta.persistence.EntityManager;
+import org.assertj.core.groups.Tuple;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Import;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.context.TestPropertySource;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.LocalDate;
 import java.time.ZoneId;
@@ -29,19 +35,41 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/** SCRUM-443: the back-office order list and the status history every save now records. */
+/**
+ * SCRUM-443: the back-office order list and the status history every save now records.
+ *
+ * <p>Since 4B-10 an order reaches the list the way production makes one: a contract's, signed and waiting for its
+ * installment on signing ({@link ConfirmedOrders#signed}) - a checkout order never leaves PENDING_PAYMENT any more, and
+ * checkout itself goes with 5-2. The orders are of the demo customer's own SKU (14 BR-04).</p>
+ */
 @IntegrationTest
 @Import(PostgresContainer.class)
+@TestPropertySource(properties = {"stockflow.upload-inspection.enabled=false",
+        "stockflow.notification.email.customer.enabled=false"})
 class AdminOrderListIntegrationTest {
 
-    private static final Sku SOFA = new Sku("SOFA-3S-GREY");
     private static final LocalDate TODAY = LocalDate.now(ZoneId.of("Asia/Ho_Chi_Minh"));
 
     @Autowired OrderService orders;
+    @Autowired ApplicationContext context;
+    @Autowired JdbcTemplate jdbc;
+    @Autowired TransactionTemplate tx;
+    @Autowired EntityManager entityManager;
 
+    private ConfirmedOrders confirmedOrders;
+    private CustomerSkuRows.Issued sku;
+
+    @BeforeEach
+    void setUp() {
+        confirmedOrders = new ConfirmedOrders(context);
+        sku = CustomerSkuRows.issue(jdbc, tx, entityManager, DemoData.CUSTOMER_ID, 50);
+    }
+
+    /** A contract's order of the demo customer, signed, waiting for its installment on signing: PENDING_PAYMENT. */
     private OrderSummary place() {
-        return orders.placeOrder(new PlaceOrderCommand(UUID.randomUUID(), DemoData.CUSTOMER_ID, List.of(
-                new PlaceOrderCommand.Line(SOFA, 1, Money.vnd(12_000_000), null))));
+        UUID orderId = confirmedOrders.signed(DemoData.CUSTOMER_ID,
+                ConfirmedOrders.Line.cartons(sku, 1, 12_000)).orderId();
+        return orders.findById(orderId).orElseThrow();
     }
 
     private void cancel(UUID orderId, String reason) {
@@ -88,7 +116,8 @@ class AdminOrderListIntegrationTest {
         var tomorrow = orders.list(new ListOrdersQuery(0, 200, null, List.of(), null, TODAY.plusDays(1), null, null));
         assertThat(tomorrow.items()).extracting(OrderSummary::orderId).doesNotContain(order.orderId());
 
-        assertThatThrownBy(() -> orders.list(new ListOrdersQuery(0, 20, null, List.of(), null, TODAY, TODAY.minusDays(1), null)))
+        assertThatThrownBy(() -> orders.list(new ListOrdersQuery(0, 20, null, List.of(), null, TODAY,
+                TODAY.minusDays(1), null)))
                 .extracting(e -> ((BusinessException) e).errorCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
 
         var byNumber = orders.list(query(null, List.of(), "orderNumber,asc")).items();
@@ -98,17 +127,20 @@ class AdminOrderListIntegrationTest {
     }
 
     @Test
-    @DisplayName("history records the placed status and every transition, with the cancellation reason")
+    @DisplayName("history records every transition of a contract's order, with the cancellation reason")
     void history() {
         OrderSummary order = place();
         cancel(order.orderId(), "CUSTOMER_CHANGED_MIND");
 
         List<OrderStatusChange> history = orders.history(order.orderId());
         assertThat(history).extracting(OrderStatusChange::from, OrderStatusChange::to)
-                .containsExactly(
-                        org.assertj.core.groups.Tuple.tuple(null, OrderStatus.PENDING_PAYMENT),
-                        org.assertj.core.groups.Tuple.tuple(OrderStatus.PENDING_PAYMENT, OrderStatus.CANCELLED));
-        assertThat(history.get(1).reason()).isEqualTo("OTHER: CUSTOMER_CHANGED_MIND");
+                .as("sent, signed, cancelled (14 §4.3 steps 13-15)")
+                .endsWith(
+                        Tuple.tuple(OrderStatus.DRAFT, OrderStatus.PENDING_CONTRACT),
+                        Tuple.tuple(OrderStatus.PENDING_CONTRACT, OrderStatus.PENDING_PAYMENT),
+                        Tuple.tuple(OrderStatus.PENDING_PAYMENT, OrderStatus.CANCELLED));
+        assertThat(history.getFirst().from()).as("the first row is the order's creation").isNull();
+        assertThat(history.getLast().reason()).isEqualTo("OTHER: CUSTOMER_CHANGED_MIND");
         assertThat(orders.history(UUID.randomUUID())).isEmpty();
     }
 }

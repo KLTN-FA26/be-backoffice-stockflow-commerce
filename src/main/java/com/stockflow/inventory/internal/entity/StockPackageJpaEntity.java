@@ -42,9 +42,6 @@ public class StockPackageJpaEntity extends BaseEntity {
     @Column(name = "status", nullable = false, length = 16)
     private StockPackageStatus status;
 
-    @Column(name = "unopened", nullable = false)
-    private boolean unopened;
-
     @Column(name = "goods_receipt_line_id", updatable = false)
     private UUID goodsReceiptLineId;
 
@@ -56,7 +53,7 @@ public class StockPackageJpaEntity extends BaseEntity {
     }
 
     public StockPackageJpaEntity(UUID id, String lpn, UUID inventoryItemId, UUID uomConversionId, int nominalQty,
-                                 Integer receivedQty, String locationCode, StockPackageStatus status, boolean unopened,
+                                 Integer receivedQty, String locationCode, StockPackageStatus status,
                                  UUID goodsReceiptLineId, Instant closedAt) {
         super(id);
         this.lpn = lpn;
@@ -64,15 +61,13 @@ public class StockPackageJpaEntity extends BaseEntity {
         this.uomConversionId = uomConversionId;
         this.nominalQty = nominalQty;
         this.goodsReceiptLineId = goodsReceiptLineId;
-        apply(receivedQty, locationCode, status, unopened, closedAt);
+        apply(receivedQty, locationCode, status, closedAt);
     }
 
-    public void apply(Integer receivedQty, String locationCode, StockPackageStatus status, boolean unopened,
-                      Instant closedAt) {
+    public void apply(Integer receivedQty, String locationCode, StockPackageStatus status, Instant closedAt) {
         this.receivedQty = receivedQty;
         this.locationCode = locationCode;
         this.status = status;
-        this.unopened = unopened;
         this.closedAt = closedAt;
     }
 
@@ -83,7 +78,6 @@ public class StockPackageJpaEntity extends BaseEntity {
     public Integer getReceivedQty() { return receivedQty; }
     public String getLocationCode() { return locationCode; }
     public StockPackageStatus getStatus() { return status; }
-    public boolean isUnopened() { return unopened; }
     public UUID getGoodsReceiptLineId() { return goodsReceiptLineId; }
     public Instant getClosedAt() { return closedAt; }
 }

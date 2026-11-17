@@ -77,8 +77,8 @@ class FindFulfillmentTasksToolTest {
     private static FulfillmentTask task(String orderNumber, UUID warehouse, UUID assignee, String pick, String pack) {
         return new FulfillmentTask(UUID.randomUUID(), UUID.randomUUID(), orderNumber, warehouse, assignee,
                 assignee == null ? null : "Nguyễn Văn Nhặt", pick, pack, assignee == null ? null : ASSIGNED, null,
-                null, null, List.of(new FulfillmentTask.IntegrityEvidence(UUID.randomUUID(), UUID.randomUUID(),
-                "a".repeat(64), "b".repeat(64), false, ASSIGNED)), null);
+                null, null, List.of(new FulfillmentTask.Line(UUID.randomUUID(), "CUP-12OZ-LOGO-XANH", 20,
+                        UUID.randomUUID(), true)), null, null);
     }
 
     private void listed(long total, FulfillmentTask... tasks) {
@@ -131,15 +131,15 @@ class FindFulfillmentTasksToolTest {
     }
 
     @Test
-    @DisplayName("neither the assignee's name or id nor the design checksums reach the answer")
+    @DisplayName("neither the assignee's name or id nor the order's lines reach the answer")
     void nothingOfThePeopleOrTheDesigns() throws Exception {
         UUID colleague = UUID.randomUUID();
         listed(1, task("SO-1", HCM, colleague, "PICKING", "PENDING"));
 
         String sent = JSON.writeValueAsString(tool.run(arguments("ANY", 50)));
 
-        assertThat(sent).contains("SO-1").doesNotContain("Nguyễn Văn Nhặt", colleague.toString(), "a".repeat(64),
-                "b".repeat(64), HCM.toString());
+        assertThat(sent).contains("SO-1").doesNotContain("Nguyễn Văn Nhặt", colleague.toString(),
+                "CUP-12OZ-LOGO-XANH", HCM.toString());
     }
 
     @Test
@@ -158,9 +158,9 @@ class FindFulfillmentTasksToolTest {
     void fiftyRowsFit() {
         FulfillmentTask[] tasks = java.util.stream.IntStream.range(0, FindFulfillmentTasksTool.MAX_ROWS)
                 .mapToObj(i -> new FulfillmentTask(UUID.randomUUID(), UUID.randomUUID(),
-                        "SO-20261028-%06d".formatted(i), HCM, PICKER, "Nguyễn Văn Nhặt", "PICKED", "PACKING", ASSIGNED,
-                        ASSIGNED.plusSeconds(60), ASSIGNED.plusSeconds(600), ASSIGNED.plusSeconds(900), List.of(),
-                        null))
+                        "SO-20261028-%06d".formatted(i), HCM, PICKER, "Nguyễn Văn Nhặt", "PICKED", "IN_PROGRESS",
+                        ASSIGNED, ASSIGNED.plusSeconds(60), ASSIGNED.plusSeconds(600), ASSIGNED.plusSeconds(900),
+                        List.of(), null, null))
                 .toArray(FulfillmentTask[]::new);
         listed(400, tasks);
         AssistantTools tools = new AssistantTools(List.of(tool), JsonMapper.builder()
@@ -187,24 +187,22 @@ class FindFulfillmentTasksToolTest {
     }
 
     @Test
-    @DisplayName("the answer says whose tasks it lists, by fulfillment's order: oversight, design checks, own tasks")
+    @DisplayName("the answer says whose tasks it lists, by fulfillment's rule: oversight, else own tasks")
     void visibility() {
         listed(0);
         CurrentUser manager = TestUsers.builder().role(Role.WAREHOUSE_MANAGER).scope(DataScope.WAREHOUSE)
                 .warehouses("HCM").can("fulfillment-pick-lists", Action.READ)
-                .can("fulfillment-task-oversight", Action.READ).can("fulfillment-design-reverification", Action.READ)
-                .build();
-        CurrentUser qc = TestUsers.builder().role(Role.QC_STAFF).scope(DataScope.WAREHOUSE).warehouses("HCM")
-                .can("fulfillment-pick-lists", Action.READ).can("fulfillment-design-reverification", Action.READ)
-                .build();
+                .can("fulfillment-task-oversight", Action.READ).build();
+        CurrentUser picker = TestUsers.builder().role(Role.WAREHOUSE_STAFF).scope(DataScope.WAREHOUSE)
+                .warehouses("HCM").can("fulfillment-pick-lists", Action.READ).build();
 
         assertThat(tool.run(arguments("ANY", 5)).visibility()).isEqualTo(FindFulfillmentTasksTool.Visibility.OWN_TASKS);
         when(users.current()).thenReturn(Optional.of(manager));
         assertThat(tool.run(arguments("ANY", 5)).visibility())
                 .isEqualTo(FindFulfillmentTasksTool.Visibility.EVERY_TASK);
-        when(users.current()).thenReturn(Optional.of(qc));
+        when(users.current()).thenReturn(Optional.of(picker));
         assertThat(tool.run(arguments("ANY", 5)).visibility())
-                .isEqualTo(FindFulfillmentTasksTool.Visibility.DESIGN_HOLDS);
+                .isEqualTo(FindFulfillmentTasksTool.Visibility.OWN_TASKS);
     }
 
     @Test

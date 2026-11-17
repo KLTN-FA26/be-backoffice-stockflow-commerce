@@ -3,7 +3,7 @@ package com.stockflow.fulfillment.api;
 import com.stockflow.common.api.PageResponse;
 
 /**
- * Shipments for other modules (the assistant, ADR-0010): the list the shipment screen shows, newest first, or the
+ * Shipments for other modules (the assistant, ADR-0011): the list the shipment screen shows, newest first, or the
  * oldest first to work a queue from its head.
  *
  * <p><b>Scope.</b> The caller's warehouse limit is applied exactly as on {@code GET /api/v1/fulfillment/shipments}: a

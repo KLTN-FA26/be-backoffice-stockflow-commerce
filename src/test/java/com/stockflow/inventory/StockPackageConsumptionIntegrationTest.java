@@ -1,12 +1,12 @@
 package com.stockflow.inventory;
 
-import com.stockflow.common.domain.Sku;
+import com.stockflow.common.error.BusinessException;
+import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.inventory.api.InventoryService;
-import com.stockflow.inventory.api.IssueReservedStockCommand;
-import com.stockflow.inventory.api.ReserveStockCommand;
 import com.stockflow.inventory.consumption.PickConsumption;
 import com.stockflow.support.DemoData;
+import com.stockflow.support.Holds;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
 import com.stockflow.support.ReferenceRows;
@@ -28,19 +28,19 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.catchThrowable;
 
 /**
- * SCRUM-473 (#141) against a real PostgreSQL and its commit-time checks (V20261020000200): units taken out of a
- * carton open it, the last unit closes it CONSUMED, the ledger names the carton the units left, and two picks
- * from one carton are serialised on it. Before #141 the first partial pick of an unopened carton was refused at
- * commit as a 500 ("unopened with N counted in, but holds M").
+ * SCRUM-473 (#141) against a real PostgreSQL and its commit-time checks (V20261020000200), since team plan 4C-2 with
+ * whole cartons only: an order line is given whole cartons, never part of one, so a pick takes a carton whole and
+ * closes it CONSUMED in one go; the ledger names the carton the units left, and two picks of cartons of one SKU at
+ * once both commit.
  */
 @IntegrationTest
 @Import(PostgresContainer.class)
 class StockPackageConsumptionIntegrationTest {
 
     private static final String SHELF = "HCM-A01-1-B";
-    private static final String PRINT_SHOP = "HCM-PRD01";
     private static final Instant RECEIVED = Instant.parse("2026-01-02T00:00:00Z");
 
     @Autowired InventoryService inventory;
@@ -64,8 +64,6 @@ class StockPackageConsumptionIntegrationTest {
                     "Carton fixture", sku.toLowerCase(Locale.ROOT));
             jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature) values (?,?,?,?,'')",
                     Identifiers.newId(), product, sku, "Carton fixture");
-            jdbc.update("update inventory.inventory_items set removal_strategy='FIFO', policy_configured=true"
-                    + " where sku=?", sku);
             item = jdbc.queryForObject("select id from inventory.inventory_items where sku = ?", UUID.class, sku);
             carton = Identifiers.newId();
             jdbc.update("insert into inventory.uom_conversions (id, inventory_item_id, unit_of_measure, factor)"
@@ -73,7 +71,7 @@ class StockPackageConsumptionIntegrationTest {
         });
     }
 
-    /** An unopened carton of 5 on the shelf, counted in at 5: the only stock of the SKU unless another is added. */
+    /** A whole carton of 5 on the shelf, counted in at 5: the only stock of the SKU unless another is added. */
     private UUID cartonOnShelf(String name) {
         UUID id = Identifiers.newId();
         tx.executeWithoutResult(s -> {
@@ -82,8 +80,8 @@ class StockPackageConsumptionIntegrationTest {
                         received_qty, location_code, status) values (?, ?, ?, ?, 5, 5, ?, 'IN_STOCK')""",
                     id, "LPN-" + sku + "-" + name, item, carton, SHELF);
             jdbc.update("""
-                    insert into inventory.stock_item (id, sku, location_code, received_at, on_hand, reserved, status,
-                        version, created_at, stock_package_id) values (?, ?, ?, ?, 5, 0, 'AVAILABLE', 0, now(), ?)""",
+                    insert into inventory.stock_item (id, sku, location_code, lot_number, received_at, on_hand, reserved, status,
+                        version, created_at, stock_package_id) values (?, ?, ?, 'UNTRACED', ?, 5, 0, 'AVAILABLE', 0, now(), ?)""",
                     Identifiers.newId(), sku, SHELF, java.sql.Timestamp.from(RECEIVED), id);
         });
         return id;
@@ -93,8 +91,8 @@ class StockPackageConsumptionIntegrationTest {
         UUID order = Identifiers.newId();
         tx.executeWithoutResult(s -> jdbc.update("""
                 INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount,
-                    currency, placed_at, version, created_at, paid_amount, paid_in_full_at)
-                VALUES (?, ?, ?, ?, 'CONFIRMED', 1, 'VND', NOW(), 0, NOW(), 1, NOW())""", order,
+                    currency, placed_at, version, created_at, contract_signed_at)
+                VALUES (?, ?, ?, ?, 'CONFIRMED', 1, 'VND', NOW(), 0, NOW(), NOW())""", order,
                 "SO-20991227-%06d".formatted(java.util.concurrent.ThreadLocalRandom.current().nextInt(1_000_000)),
                 DemoData.CUSTOMER_ID, UUID.randomUUID()));
         return order;
@@ -102,11 +100,9 @@ class StockPackageConsumptionIntegrationTest {
 
     private UUID hold(UUID order, int quantity) {
         return tx.execute(s -> {
-            UUID id = inventory.reserve(new ReserveStockCommand(UUID.randomUUID(), new Sku(sku), quantity, order))
-                    .reservationIds().getFirst();
-            inventory.pinReservations(order);
-            // SCRUM-152: the checkout reservation holds the SKU on no bin; the release allocates it, here to the one
-            // stock row (a carton's, or loose) that can serve it.
+            UUID id = Holds.units(inventory, order, sku, "HCM", quantity);
+            // 4B-7: the hold takes the SKU at HCM on no bin; the release allocates it, here to the one carton that can
+            // serve it.
             return inventory.allocate(new com.stockflow.inventory.api.AllocateStockCommand(order, "HCM")).allocations()
                     .stream().filter(allocation -> allocation.reservationId().equals(id)).findFirst().orElseThrow()
                     .holdIds().getFirst();
@@ -115,62 +111,43 @@ class StockPackageConsumptionIntegrationTest {
 
     private Map<String, Object> carton(UUID id) {
         return jdbc.queryForMap("""
-                select p.status, p.unopened, p.closed_at is not null as closed,
+                select p.status, p.closed_at is not null as closed,
                        (select coalesce(sum(s.on_hand), 0) from inventory.stock_item s where s.stock_package_id = p.id) as held
                   from inventory.stock_package p where p.id = ?""", id);
     }
 
     @Test
-    @DisplayName("a pick out of a carton opens it, the last unit closes it CONSUMED, and the ledger names the carton")
-    void pickOpensThenEmpties() {
+    @DisplayName("a carton is never allocated in part; a pick takes it whole, closes it CONSUMED, the ledger names it")
+    void pickTakesTheCartonWhole() {
         UUID box = cartonOnShelf("A");
         UUID order = confirmedOrder();
 
-        UUID first = hold(order, 3);
-        tx.executeWithoutResult(s -> pickConsumption.consumeForPick(first, Identifiers.newId(), clerk));
-        assertThat(carton(box)).containsEntry("status", "IN_STOCK").containsEntry("unopened", false)
-                .containsEntry("closed", false).containsEntry("held", 2L);
+        // The checkout reservation's own refusal (RESERVATION_NOT_WHOLE_CARTONS) went with it (review C4 D-1); a hold
+        // of part of a carton still never reaches a carton: the release finds no whole carton for it, and nothing
+        // is held (the hold and its allocation are one transaction here).
+        assertThat(((BusinessException) catchThrowable(() -> hold(order, 3))).errorCode())
+                .as("3 of a carton of 5: allocated whole cartons only")
+                .isEqualTo(ErrorCode.INSUFFICIENT_STOCK);
+        assertThat(carton(box)).containsEntry("status", "IN_STOCK").containsEntry("held", 5L);
 
-        UUID rest = hold(order, 2);
-        tx.executeWithoutResult(s -> pickConsumption.consumeForPick(rest, Identifiers.newId(), clerk));
+        UUID whole = hold(order, 5);
+        tx.executeWithoutResult(s -> pickConsumption.consumeForPick(whole, Identifiers.newId(), clerk));
         assertThat(carton(box)).containsEntry("status", "CONSUMED").containsEntry("closed", true)
                 .containsEntry("held", 0L);
 
         assertThat(jdbc.queryForList("""
                 select from_stock_package_id from inventory.stock_movement
-                 where sku = ? and movement_type = 'PICK'""", UUID.class, sku)).containsExactly(box, box);
+                 where sku = ? and movement_type = 'PICK'""", UUID.class, sku)).containsExactly(box);
     }
 
     @Test
-    @DisplayName("a hold issued to the print shop out of a carton leaves it loose there; the carton is emptied")
-    void issueLeavesTheCarton() {
-        UUID box = cartonOnShelf("I");
-        UUID order = confirmedOrder();
-        UUID hold = hold(order, 5);
-
-        tx.executeWithoutResult(s -> inventory.issueReserved(new IssueReservedStockCommand(hold, order,
-                Identifiers.newId(), PRINT_SHOP, clerk)));
-
-        assertThat(carton(box)).containsEntry("status", "CONSUMED").containsEntry("held", 0L);
-        assertThat(jdbc.queryForList("""
-                select on_hand, status, stock_package_id from inventory.stock_item
-                 where sku = ? and location_code = ?""", sku, PRINT_SHOP)).singleElement().satisfies(row -> {
-                    assertThat(row).containsEntry("on_hand", 5).containsEntry("status", "IN_PRODUCTION");
-                    assertThat(row.get("stock_package_id")).as("arrives loose").isNull();
-                });
-        assertThat(jdbc.queryForObject("""
-                select from_stock_package_id from inventory.stock_movement
-                 where sku = ? and movement_type = 'MOVE' and to_location_code = ?""", UUID.class, sku, PRINT_SHOP))
-                .isEqualTo(box);
-    }
-
-    @Test
-    @DisplayName("two picks out of one carton at once are serialised on the carton: both commit, nothing is refused")
-    void concurrentPicksAreSerialised() throws Exception {
+    @DisplayName("two picks of two cartons of one SKU at once both commit, each carton CONSUMED, nothing refused")
+    void concurrentPicksBothCommit() throws Exception {
         UUID box = cartonOnShelf("C");
+        UUID other = cartonOnShelf("D");
         UUID order = confirmedOrder();
-        UUID one = hold(order, 2);
-        UUID two = hold(order, 2);
+        UUID one = hold(order, 5);
+        UUID two = hold(order, 5);
         CountDownLatch start = new CountDownLatch(1);
 
         CompletableFuture<Void> a = CompletableFuture.runAsync(() -> {
@@ -184,8 +161,8 @@ class StockPackageConsumptionIntegrationTest {
         start.countDown();
         CompletableFuture.allOf(a, b).get(30, TimeUnit.SECONDS);
 
-        assertThat(carton(box)).containsEntry("status", "IN_STOCK").containsEntry("unopened", false)
-                .containsEntry("held", 1L);
+        assertThat(carton(box)).containsEntry("status", "CONSUMED").containsEntry("held", 0L);
+        assertThat(carton(other)).containsEntry("status", "CONSUMED").containsEntry("held", 0L);
         assertThat(jdbc.queryForList("select status from inventory.stock_reservation where id in (?, ?)",
                 String.class, one, two)).containsOnly("CONSUMED");
     }

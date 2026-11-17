@@ -10,6 +10,7 @@ import jakarta.mail.MessagingException;
 import jakarta.mail.SendFailedException;
 import jakarta.mail.internet.MimeMessage;
 
+import org.springframework.core.io.ByteArrayResource;
 import org.springframework.mail.MailAuthenticationException;
 import org.springframework.mail.MailException;
 import org.springframework.mail.MailParseException;
@@ -26,7 +27,8 @@ import java.nio.charset.StandardCharsets;
  * deployment chooses instead of Resend.
  *
  * <p>A text-only message goes as a {@link SimpleMailMessage}, as every mail did before the transport existed; one with
- * HTML as {@code multipart/alternative}, so a client that shows no HTML still shows the text. The {@link MimeMessage}
+ * HTML as {@code multipart/alternative}, so a client that shows no HTML still shows the text; one with attachments
+ * (an issued e-invoice's PDF and XML) as a multipart message carrying them. The {@link MimeMessage}
  * comes from the sender, never {@code new MimeMessage(...)}: the sender's session carries {@code mail.from}, without
  * which JavaMail derives the Message-ID from a reverse DNS lookup (see {@code application.yml}).</p>
  *
@@ -49,7 +51,7 @@ final class SmtpEmailTransport implements EmailTransport {
     @Override
     public EmailReceipt send(Email email) {
         try {
-            if (email.html() == null) {
+            if (email.html() == null && email.attachments().isEmpty()) {
                 var message = new SimpleMailMessage();
                 message.setFrom(email.from());
                 message.setTo(email.to().toArray(String[]::new));
@@ -68,7 +70,15 @@ final class SmtpEmailTransport implements EmailTransport {
                     helper.setReplyTo(email.replyTo());
                 }
                 helper.setSubject(email.subject());
-                helper.setText(email.text(), email.html());
+                if (email.html() == null) {
+                    helper.setText(email.text());
+                } else {
+                    helper.setText(email.text(), email.html());
+                }
+                for (Email.Attachment attachment : email.attachments()) {
+                    helper.addAttachment(attachment.name(), new ByteArrayResource(attachment.content()),
+                            attachment.contentType());
+                }
                 mail.send(message);
             }
             return new EmailReceipt(EmailProvider.SMTP, null);

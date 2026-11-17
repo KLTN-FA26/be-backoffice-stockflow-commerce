@@ -42,6 +42,7 @@
     <springdoc.version>2.8.6</springdoc.version>
     <mapstruct.version>1.6.3</mapstruct.version>
     <archunit.version>1.3.0</archunit.version>
+    <wiremock.version>3.13.1</wiremock.version>
     <jacoco.version>0.8.12</jacoco.version>
 
     <!--
@@ -66,7 +67,7 @@
     <!-- Location labels (SCRUM-97): ZXing encodes Code 128 / QR, PDFBox draws the PDF. -->
     <zxing.version>3.5.3</zxing.version>
     <pdfbox.version>3.0.6</pdfbox.version>
-    <!-- The back-office assistant's model provider (ADR-0010): Anthropic's official Java SDK. -->
+    <!-- The back-office assistant's model provider (ADR-0011): Anthropic's official Java SDK. -->
     <anthropic-java.version>2.34.0</anthropic-java.version>
 
     <!--
@@ -250,7 +251,7 @@
 
     <!-- ==================== the assistant's model provider ==================== -->
     <!--
-      ADR-0010. Only com.stockflow.assistant uses it, behind the LanguageModel port; nothing in mvn test calls the
+      ADR-0011. Only com.stockflow.assistant uses it, behind the LanguageModel port; nothing in mvn test calls the
       provider. Its Jackson and Kotlin dependencies resolve to the Boot BOM's versions.
     -->
     <dependency>
@@ -383,6 +384,19 @@
       <artifactId>junit-jupiter</artifactId>
       <scope>test</scope>
     </dependency>
+
+    <!--
+      A carrier's HTTP API, and an e-invoice provider's (Viettel SInvoice), played back over a real socket (WF-05 fix
+      plan items 1 and 6): what MockRestServiceServer cannot
+      show is the client the application really builds - its timeouts, its error handling, a connection refused. The
+      standalone jar carries its own Jetty, shaded, so it cannot disagree with the server Spring Boot manages.
+    -->
+    <dependency>
+      <groupId>org.wiremock</groupId>
+      <artifactId>wiremock-standalone</artifactId>
+      <version>${wiremock.version}</version>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
 
   <build>
@@ -409,20 +423,21 @@
         </excludes>
       </resource>
       <!--
-        The assistant's retrieval corpus (ADR-0010, design §6.2): the business rules, the glossary, the state
-        machines and the Vietnamese process flows (indexed only with stockflow.assistant.knowledge.flows on), copied
-        from docs/ so the index follows the documents on every build. 04-data-flows.md is left out: it describes the
-        distributed design ADR-0005 replaced (sagas, a consumer cart, statuses the system does not have).
+        The assistant's retrieval corpus (design §6.2): the kltn-docs chapters a back-office user asks about and the
+        glossary, copied into docs/kltn-snapshot by tools/sync_kltn_docs.py (its README records the kltn-docs commit),
+        so the index follows the analysis on every build. KnowledgeService indexes the documents index.txt lists, and
+        only those: an earlier build may have left the superseded docs/business-design files in target/classes.
       -->
       <resource>
-        <directory>docs/business-design</directory>
+        <directory>docs/kltn-snapshot</directory>
         <targetPath>knowledge</targetPath>
         <includes>
-          <include>01-ubiquitous-language.md</include>
-          <include>03-state-machines.md</include>
-          <include>04c-all-flows.md</include>
-          <include>05-business-rules.md</include>
+          <include>*.md</include>
+          <include>index.txt</include>
         </includes>
+        <excludes>
+          <exclude>README.md</exclude>
+        </excludes>
       </resource>
     </resources>
     <plugins>

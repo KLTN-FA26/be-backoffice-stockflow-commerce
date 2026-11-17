@@ -13,6 +13,7 @@ public record MediaResponse(UUID mediaId, UUID variantId, String kind, String ur
                             String altText, int sortOrder, boolean primary, boolean published, Instant publishedAt,
                             UUID publishedBy, String uploadedBy, Instant uploadedAt, long version) {
 
-    public record Rendition(int edge, int width, int height, String contentType, long sizeBytes) {
+    /** @param url a short-lived link showing the rendition, on the list only (null elsewhere) */
+    public record Rendition(int edge, int width, int height, String contentType, long sizeBytes, String url) {
     }
 }

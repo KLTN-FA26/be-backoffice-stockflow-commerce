@@ -10,7 +10,6 @@ import com.stockflow.warehouse.api.WarehouseService;
 import com.stockflow.warehouse.api.WarehouseView;
 import org.springframework.stereotype.Component;
 
-import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.HashMap;
 import java.util.List;
@@ -20,7 +19,7 @@ import java.util.UUID;
 
 /**
  * Shipments as dispatch sees them - "chuyến nào đang giao thất bại", "chuyến giao của SO-… đã giao chưa", "còn bao
- * nhiêu chuyến chờ xuất" - for the warehouse and the order coordinator (P8).
+ * nhiêu chuyến chờ xuất" - for the warehouse and Sales (P8).
  *
  * <p><b>The screen's list.</b> {@code GET /api/v1/fulfillment/shipments}, whose guard this tool carries, read through
  * {@code fulfillment :: api}: the same rows, newest first, the same warehouse limit. A warehouse is named by its code,
@@ -32,11 +31,13 @@ import java.util.UUID;
  * got there: there is no date filter, and the description says so.</p>
  *
  * <p><b>Thirty rows, cut names.</b> A shipment row of the longest values (a 48-character code, a carrier name cut to
- * {@value #CARRIER_LENGTH} characters, a load code, a COD amount and four instants) is about 600 characters, so
+ * {@value #CARRIER_LENGTH} characters, a load code and four instants) is about 550 characters, so
  * {@value #MAX_ROWS} rows stay under the result limit.</p>
  *
- * <p><b>No tracking number, on purpose.</b> No carrier is called (fulfillment's design, 09 §1), so there is none to
- * give; the description says so, rather than let a model make one up from the shipment code. A failure reason stays on
+ * <p><b>No tracking number, on purpose.</b> The list carries none: a carrier booked through its API (Ahamove) keeps its
+ * own order on the load, not on the shipment row; the description says so, rather than let a model make one up from
+ * the shipment code. Every order ships as a full truckload through a load plan since the rescope, with nothing
+ * collected on delivery (V20261108000400), so a row has no delivery mode and no COD amount. A failure reason stays on
  * a shipment delivered or returned after a retry, so the description says what it means then. The staff note beside
  * it is on the shipment's detail, not here.</p>
  */
@@ -56,19 +57,17 @@ class FindShipmentsTool implements AssistantTool {
 
     private static final ToolSpec SPEC = new ToolSpec("findShipments",
             "Shipments of customer orders: shipment code (the order number and -S with a number), order number, "
-                    + "warehouse, status, delivery mode (PARCEL or FULL_TRUCKLOAD), packageCount (parcels), the "
-                    + "carrier, the load it is on, partial (part of an order sent while the rest waits), codAmount "
-                    + "(what the carrier collects on delivery, in currency; absent when nothing), and when it was "
-                    + "ready, handed to the carrier and when the outcome was recorded. status is READY_TO_DISPATCH "
+                    + "warehouse, status, packageCount (cartons), the carrier, the truckload (load) it is on, partial "
+                    + "(part of an order sent while the rest waits), and when it was ready, handed to the carrier and when the outcome was recorded. status is READY_TO_DISPATCH "
                     + "(packed, waiting for the carrier), HANDED_OVER (with the carrier), DELIVERED, DELIVERY_FAILED "
                     + "(not delivered; it may still be delivered or come back), RETURNED (back at the warehouse) or "
                     + "CANCELLED, as it is now, whenever it got there: there is no date filter, so never call a list "
                     + "today's. failureReason (CUSTOMER_ABSENT, REFUSED, WRONG_ADDRESS, LOST, DAMAGED or OTHER) is "
                     + "why the last failed attempt failed: on a DELIVERED or RETURNED shipment it is an earlier "
                     + "attempt's, not the outcome. Under READY_TO_DISPATCH, HANDED_OVER or DELIVERY_FAILED the longest "
-                    + "waiting come first; otherwise the most recently ready. Count parcels with packageCount, not "
-                    + "rows. There are no tracking numbers: no carrier system is connected, so never give one or "
-                    + "invent one. Filter by status and by text in the shipment code, such as an order number. When "
+                    + "waiting come first; otherwise the most recently ready. Count cartons with packageCount, not "
+                    + "rows. Every order ships as a full truckload and nothing is collected on delivery. The rows "
+                    + "carry no tracking number, so never give one or invent one. Filter by status and by text in the shipment code, such as an order number. When "
                     + "total is above the shipments returned, say how many were left out. A user limited to some "
                     + "warehouses sees only theirs.",
             ToolSchema.object()
@@ -126,20 +125,17 @@ class FindShipmentsTool implements AssistantTool {
 
     /**
      * @param carrierName   cut to {@value FindShipmentsTool#CARRIER_LENGTH} characters
-     * @param codAmount     what the carrier collects on delivery; null when nothing
      * @param failureReason why the last failed attempt failed; on DELIVERED or RETURNED an earlier attempt's
      * @param outcomeAt     when delivered, not delivered or back at the warehouse was recorded
      */
-    record Row(String shipmentCode, String orderNumber, String warehouseCode, String status, String deliveryMode,
-               int packageCount, String carrierName, String loadCode, boolean partial, BigDecimal codAmount,
-               String currency, Instant readyAt, Instant handedOverAt, Instant outcomeAt, String failureReason) {
+    record Row(String shipmentCode, String orderNumber, String warehouseCode, String status, int packageCount,
+               String carrierName, String loadCode, boolean partial, Instant readyAt, Instant handedOverAt,
+               Instant outcomeAt, String failureReason) {
 
         static Row of(ShipmentSummary shipment, String warehouseCode) {
-            boolean cod = shipment.codAmount() != null && shipment.codAmount().signum() > 0;
             return new Row(shipment.code(), shipment.orderNumber(), warehouseCode, shipment.status(),
-                    shipment.deliveryMode(), shipment.packageCount(), cut(shipment.carrierName()),
-                    shipment.loadCode(), shipment.partial(), cod ? shipment.codAmount() : null,
-                    cod ? shipment.currency() : null, shipment.readyAt(), shipment.handedOverAt(),
+                    shipment.packageCount(), cut(shipment.carrierName()),
+                    shipment.loadCode(), shipment.partial(), shipment.readyAt(), shipment.handedOverAt(),
                     shipment.outcomeAt(), shipment.failureReason());
         }
 

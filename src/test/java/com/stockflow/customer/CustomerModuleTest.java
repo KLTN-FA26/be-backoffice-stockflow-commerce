@@ -30,8 +30,17 @@ class CustomerModuleTest {
 
     @Autowired CustomerService customer;
     @Autowired ApplicationContext context;
+    // notification (booted here) asks the order module for production orders; order is not booted.
+    @org.springframework.test.context.bean.override.mockito.MockitoBean
+    com.stockflow.notification.api.ProductionOrderDirectory productionOrderDirectoryMock;
+    @org.springframework.test.context.bean.override.mockito.MockitoBean
+    com.stockflow.notification.api.ProductionOrderResends productionOrderResendsMock;
     // A dependency of a bootstrapped dependency, not of this module: explicit ports only, the slice must not boot more.
     @MockitoBean com.stockflow.warehouse.api.WarehouseService warehouseServiceMock;
+    // Order completion asks invoicing whether every delivery is invoiced (WF-05 condition 5); invoicing is not loaded here.
+    @MockitoBean com.stockflow.order.api.DeliveryInvoices deliveryInvoicesMock;
+    // Notification words the buyer's e-invoice mail from what invoicing hands it; invoicing is not loaded here.
+    @MockitoBean com.stockflow.notification.api.EInvoiceDirectory einvoiceDirectoryMock;
 
     @Test
     @DisplayName("customer starts and answers through its api with the other modules absent")

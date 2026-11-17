@@ -68,7 +68,7 @@ class TaskCandidatesIntegrationTest {
     void setUp() {
         north = warehouse();
         south = warehouse();
-        coordinator = staff("ORDER_COORDINATOR");
+        coordinator = staff("SYSTEM_ADMIN");
         managerNorth = staff("WAREHOUSE_MANAGER", north);
         pickerNorth = staff("WAREHOUSE_STAFF", north);
     }
@@ -79,7 +79,6 @@ class TaskCandidatesIntegrationTest {
             jdbc.update("DELETE FROM fulfillment.pack WHERE pick_id IN (SELECT id FROM fulfillment.pick WHERE order_id = ?)",
                     order);
             jdbc.update("DELETE FROM fulfillment.pick WHERE order_id = ?", order);
-            jdbc.update("DELETE FROM ordering.order_status_history WHERE order_id = ?", order);
             jdbc.update("DELETE FROM ordering.order_line WHERE order_id = ?", order);
             jdbc.update("DELETE FROM ordering.customer_order WHERE id = ?", order);
         }));
@@ -132,11 +131,11 @@ class TaskCandidatesIntegrationTest {
         tx.executeWithoutResult(s -> {
             jdbc.update("""
                     INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount,
-                                                         currency, placed_at, version, created_at, payment_term,
-                                                         credit_term_days, warehouse_id, released_at, released_by)
-                    VALUES (?, ?, ?, ?, ?, 1000, 'VND', ?, 0, NOW(), 'CREDIT', 30, ?, ?, ?)""",
+                                                         currency, placed_at, version, created_at, contract_signed_at,
+                                                         warehouse_id, released_at, released_by)
+                    VALUES (?, ?, ?, ?, ?, 1000, 'VND', ?, 0, NOW(), CASE WHEN ?::text = 'CONFIRMED' THEN NOW() END, ?, ?, ?)""",
                     order, number, DemoData.CUSTOMER_ID, UUID.randomUUID(), status,
-                    java.sql.Timestamp.from(released.minus(1, ChronoUnit.DAYS)), isReleased ? warehouse : null,
+                    java.sql.Timestamp.from(released.minus(1, ChronoUnit.DAYS)), status, isReleased ? warehouse : null,
                     isReleased ? java.sql.Timestamp.from(released) : null, isReleased ? coordinator : null);
             for (int quantity : quantities) {
                 jdbc.update("""
@@ -159,50 +158,36 @@ class TaskCandidatesIntegrationTest {
     }
 
     @Test
-    @DisplayName("review of #150: a mixed order still printed is listed (its stock is picked in parallel); a print-only "
-            + "one is not")
-    void earlyShipMixedOrderIsListed() throws Exception {
-        UUID mixed = order("IN_PRODUCTION", north, 3, 2);
-        printLine(mixed, 5);
-        UUID printOnly = order("IN_PRODUCTION", north, 2);
-        printLine(printOnly, 4);
+    @DisplayName("a legacy order still IN_PRODUCTION is not listed: nothing is printed in house any more; READY_TO_FULFILL "
+            + "ones are")
+    void anOrderStillInProductionIsNotListed() throws Exception {
+        UUID printing = order("IN_PRODUCTION", north, 3, 2);
+        printLine(printing, 5);
         UUID ready = order("READY_TO_FULFILL", north, 1, 1);
 
         mvc.perform(get("/api/v1/fulfillment/task-candidates?warehouseId=" + north)
                         .header("Authorization", token(managerNorth, "WAREHOUSE_MANAGER")))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.totalElements").value(2))
-                .andExpect(jsonPath("$.data.items[*].orderId").value(contains(mixed.toString(), ready.toString())))
-                .andExpect(jsonPath("$.data.items[0].lines", hasSize(2)));
-        org.assertj.core.api.Assertions.assertThat(printOnly).isNotNull();
+                .andExpect(jsonPath("$.data.totalElements").value(1))
+                .andExpect(jsonPath("$.data.items[*].orderId").value(contains(ready.toString())));
     }
 
     @Test
-    @DisplayName("review of #150: once its task is open the order leaves the list, and stays out after printing "
-            + "completes and it is READY_TO_FULFILL again")
+    @DisplayName("review of #150: once its task is open the order leaves the list")
     void anOrderWithAnOpenTaskIsNotListed() throws Exception {
-        UUID mixed = order("IN_PRODUCTION", north, 3, 2);
-        printLine(mixed, 5);
+        UUID opened = order("READY_TO_FULFILL", north, 3, 2);
         UUID other = order("READY_TO_FULFILL", north, 1, 1);
-        String oc = token(coordinator, "ORDER_COORDINATOR");
+        String oc = token(coordinator, "SYSTEM_ADMIN");
         String list = "/api/v1/fulfillment/task-candidates?warehouseId=" + north;
 
         mvc.perform(get(list).header("Authorization", oc))
-                .andExpect(jsonPath("$.data.items[*].orderId").value(contains(mixed.toString(), other.toString())));
+                .andExpect(jsonPath("$.data.items[*].orderId").value(contains(opened.toString(), other.toString())));
         mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post("/api/v1/fulfillment/tasks")
                         .header("Authorization", oc).contentType(org.springframework.http.MediaType.APPLICATION_JSON)
-                        .content("{\"orderId\":\"" + mixed + "\",\"assignedUserId\":\"" + pickerNorth + "\"}"))
+                        .content("{\"orderId\":\"" + opened + "\",\"assignedUserId\":\"" + pickerNorth + "\"}"))
                 .andExpect(status().isCreated());
         org.assertj.core.api.Assertions.assertThat(jdbc.queryForObject(
-                "SELECT status FROM ordering.customer_order WHERE id = ?", String.class, mixed))
-                .as("picked in parallel").isEqualTo("IN_PRODUCTION");
-        mvc.perform(get(list).header("Authorization", oc))
-                .andExpect(jsonPath("$.data.items[*].orderId").value(contains(other.toString())));
-
-        // Printing completes: the order is READY_TO_FULFILL again (the edge production completion takes), its task
-        // still open - it is not offered a second time.
-        tx.executeWithoutResult(s -> jdbc.update(
-                "UPDATE ordering.customer_order SET status = 'READY_TO_FULFILL' WHERE id = ?", mixed));
+                "SELECT status FROM ordering.customer_order WHERE id = ?", String.class, opened)).isEqualTo("PICKING");
         mvc.perform(get(list).header("Authorization", oc))
                 .andExpect(jsonPath("$.data.totalElements").value(1))
                 .andExpect(jsonPath("$.data.items[*].orderId").value(contains(other.toString())));
@@ -234,8 +219,8 @@ class TaskCandidatesIntegrationTest {
                     .andExpect(jsonPath("$.data.items[0].lines[0].sku").value("SOFA-3S-GREY"))
                     .andExpect(jsonPath("$.data.items[0].lines[0].printed").value(false));
         }
-        // The reason this list exists: the sales order list is not a warehouse manager's.
-        mvc.perform(get("/api/v1/orders").header("Authorization", manager)).andExpect(status().isForbidden());
+        // The sales order list is the manager's too, but limited to their warehouses' orders (OrderWarehouseVisibilityHttpTest).
+        mvc.perform(get("/api/v1/orders").header("Authorization", manager)).andExpect(status().isOk());
     }
 
     @Test
@@ -247,7 +232,7 @@ class TaskCandidatesIntegrationTest {
                         .header("Authorization", token(managerNorth, "WAREHOUSE_MANAGER")))
                 .andExpect(status().isForbidden());
         mvc.perform(get("/api/v1/fulfillment/task-candidates?warehouseId=" + UUID.randomUUID())
-                        .header("Authorization", token(coordinator, "ORDER_COORDINATOR")))
+                        .header("Authorization", token(coordinator, "SYSTEM_ADMIN")))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.errorCode").value("WAREHOUSE_NOT_FOUND"));
         mvc.perform(get("/api/v1/fulfillment/task-candidates")
@@ -257,12 +242,12 @@ class TaskCandidatesIntegrationTest {
     }
 
     @Test
-    @DisplayName("a coordinator, not limited to warehouses, narrows by warehouse and pages")
+    @DisplayName("an administrator, not limited to warehouses, narrows by warehouse and pages")
     void coordinatorPages() throws Exception {
         UUID first = order("READY_TO_FULFILL", south, 6, 1);
         UUID second = order("READY_TO_FULFILL", south, 4, 1);
         UUID third = order("READY_TO_FULFILL", south, 2, 1);
-        String oc = token(coordinator, "ORDER_COORDINATOR");
+        String oc = token(coordinator, "SYSTEM_ADMIN");
 
         mvc.perform(get("/api/v1/fulfillment/task-candidates?warehouseId=" + south + "&page=0&size=2")
                         .header("Authorization", oc))

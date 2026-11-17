@@ -22,7 +22,7 @@ import java.util.regex.Pattern;
 /**
  * One POST to a server speaking OpenAI's API ({@code /chat/completions}, {@code /embeddings},
  * {@code /audio/transcriptions}), tried again when that can help, and mapped to the assistant's error codes the way
- * {@link GeminiCall} maps Google's: the chat, the embeddings, the delivery-note reader and the voice transcriber on such
+ * {@link GeminiCall} maps Google's: the chat, the embeddings and the voice transcriber on such
  * a server all go through it.
  *
  * <p><b>A failure says what to do next.</b></p>

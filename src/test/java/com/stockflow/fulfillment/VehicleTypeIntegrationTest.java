@@ -129,7 +129,7 @@ class VehicleTypeIntegrationTest {
                 .andExpect(jsonPath("$.data.gussetMm").value(40)));
         String id = created.get("vehicleTypeId").asText();
 
-        as(Role.ORDER_COORDINATOR, get(BASE + "/" + id)).andExpect(status().isOk())
+        as(Role.WAREHOUSE_STAFF, get(BASE + "/" + id)).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.maxPayloadKg").value(9000))
                 .andExpect(jsonPath("$.data.rentalPrice").value(2500000));
         as(Role.WAREHOUSE_STAFF, get(BASE).param("search", code.substring(1)).param("status", "ACTIVE"))
@@ -365,7 +365,7 @@ class VehicleTypeIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.doorWidthMm").value(2350))
                 .andExpect(jsonPath("$.data.doorHeightMm").value(2400)));
-        as(Role.ORDER_COORDINATOR, get(BASE + "/" + id)).andExpect(jsonPath("$.data.doorHeightMm").value(2400));
+        as(Role.WAREHOUSE_STAFF, get(BASE + "/" + id)).andExpect(jsonPath("$.data.doorHeightMm").value(2400));
         // Only one side may be given; the other is cleared.
         JsonNode oneSide = data(send(Role.WAREHOUSE_MANAGER, put(BASE + "/" + id),
                 put.formatted("\"doorHeightMm\":2200,", changed.get("version").asLong())).andExpect(status().isOk())
@@ -493,7 +493,7 @@ class VehicleTypeIntegrationTest {
     }
 
     @Test
-    @DisplayName("staff and the coordinator read but cannot keep the catalogue; anonymous is 401; others are 403")
+    @DisplayName("staff read but cannot keep the catalogue; anonymous is 401; others are 403")
     void permissions() throws Exception {
         String id = data(as(Role.WAREHOUSE_STAFF, get(BASE).param("search", "45HC"))).get("items").get(0)
                 .get("vehicleTypeId").asText();
@@ -502,16 +502,16 @@ class VehicleTypeIntegrationTest {
                 {"name":"x","kind":"TRUCK","innerLengthMm":1,"innerWidthMm":1,"innerHeightMm":1,"maxPayloadKg":1,
                  "availableCount":1,"version":0}""";
 
-        for (Role reader : List.of(Role.WAREHOUSE_STAFF, Role.WAREHOUSE_MANAGER, Role.ORDER_COORDINATOR,
+        for (Role reader : List.of(Role.WAREHOUSE_STAFF, Role.WAREHOUSE_MANAGER,
                 Role.SYSTEM_ADMIN)) {
             as(reader, get(BASE)).andExpect(status().isOk());
             as(reader, get(BASE + "/" + id)).andExpect(status().isOk());
         }
-        for (Role cannotUpdate : List.of(Role.WAREHOUSE_STAFF, Role.ORDER_COORDINATOR)) {
+        for (Role cannotUpdate : List.of(Role.WAREHOUSE_STAFF)) {
             send(cannotUpdate, post(BASE), body).andExpect(status().isForbidden());
             send(cannotUpdate, put(BASE + "/" + id), update).andExpect(status().isForbidden());
         }
-        for (Role noAccess : List.of(Role.CUSTOMER, Role.ACCOUNTANT, Role.SALES_STAFF, Role.QC_STAFF)) {
+        for (Role noAccess : List.of(Role.CUSTOMER, Role.ACCOUNTANT, Role.SALES_STAFF)) {
             as(noAccess, get(BASE)).andExpect(status().isForbidden());
             as(noAccess, get(BASE + "/" + id)).andExpect(status().isForbidden());
             send(noAccess, post(BASE), body).andExpect(status().isForbidden());
@@ -526,7 +526,7 @@ class VehicleTypeIntegrationTest {
     }
 
     @Test
-    @DisplayName("the grants: VIEW_PAGE and READ for staff, manager, coordinator, admin; UPDATE for manager and admin; role versions bumped")
+    @DisplayName("the grants: VIEW_PAGE and READ for staff, manager, admin; UPDATE for manager and admin; role versions bumped")
     void grants() {
         List<String> holders = jdbc.queryForList("""
                 SELECT r.code || ':' || p.action FROM identity.role_permission rp
@@ -536,11 +536,10 @@ class VehicleTypeIntegrationTest {
         assertThat(holders).containsExactlyInAnyOrder(
                 "WAREHOUSE_STAFF:VIEW_PAGE", "WAREHOUSE_STAFF:READ",
                 "WAREHOUSE_MANAGER:VIEW_PAGE", "WAREHOUSE_MANAGER:READ", "WAREHOUSE_MANAGER:UPDATE",
-                "ORDER_COORDINATOR:VIEW_PAGE", "ORDER_COORDINATOR:READ",
                 "SYSTEM_ADMIN:VIEW_PAGE", "SYSTEM_ADMIN:READ", "SYSTEM_ADMIN:UPDATE");
         assertThat(jdbc.queryForObject("""
                 SELECT min(version) FROM identity.app_role
-                 WHERE code IN ('WAREHOUSE_STAFF', 'WAREHOUSE_MANAGER', 'ORDER_COORDINATOR', 'SYSTEM_ADMIN')""",
+                 WHERE code IN ('WAREHOUSE_STAFF', 'WAREHOUSE_MANAGER', 'SYSTEM_ADMIN')""",
                 Long.class)).isGreaterThanOrEqualTo(1L);
     }
 }

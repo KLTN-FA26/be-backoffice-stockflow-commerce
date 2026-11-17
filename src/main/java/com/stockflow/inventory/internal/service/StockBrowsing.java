@@ -6,7 +6,6 @@ import com.stockflow.inventory.internal.domain.ReservationStatus;
 import com.stockflow.inventory.internal.domain.StockStatus;
 
 import java.time.Instant;
-import java.time.LocalDate;
 import java.util.Collection;
 import java.util.List;
 import java.util.Set;
@@ -30,16 +29,15 @@ public interface StockBrowsing {
     }
 
     /**
-     * {@code available} is what may still be promised: on hand less held, and zero unless sellable and unexpired.
+     * {@code available} is what may still be promised: on hand less held, and zero unless sellable.
      * The three quantities are null, and {@code hiddenDuringCount} true, for a row of a slot a cycle count holds when
      * the reader may not see the books (SCRUM-146).
      */
-    record StockRow(UUID stockItemId, String sku, String locationCode, String lotNumber, LocalDate expiryDate,
-                    Integer onHand, Integer reserved, Integer available, StockStatus status, Instant receivedAt,
+    record StockRow(UUID stockItemId, String sku, String locationCode, String lotNumber, Integer onHand, Integer reserved, Integer available, StockStatus status, Instant receivedAt,
                     boolean hiddenDuringCount) {
 
         public StockRow hidden() {
-            return new StockRow(stockItemId, sku, locationCode, lotNumber, expiryDate, null, null, null, status,
+            return new StockRow(stockItemId, sku, locationCode, lotNumber, null, null, null, status,
                     receivedAt, true);
         }
     }

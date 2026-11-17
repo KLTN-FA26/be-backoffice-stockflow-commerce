@@ -3,11 +3,12 @@
  *
  * <p>WBS 3.19.2 · database schema {@code notification}</p>
  *
- * <p><b>May depend on:</b> {@code identity :: api} and {@code warehouse :: api} only, both as address books: a
- * staff notice that names a team ("Sales is notified", "alert purchasing", who to tell about a stock alert) is sent
- * to the active accounts holding that role, and only identity knows them; warehouse names the warehouse in a stock
- * alert. The module still makes no business decision through another module and no other module calls it for one;
- * neither depends on this module. Plus {@code common} and {@code contracts}, which are available to every module.</p>
+ * <p><b>May depend on:</b> {@code identity :: api} and {@code warehouse :: api} only, both as address books: a staff
+ * notice that names a team ("Sales is notified") is sent to the active accounts holding that role, and only identity
+ * knows them; warehouse names the receiving warehouse of a production order that was sent (4A-3,
+ * {@code ProductionOrderArrivalNotificationListener}) - it named a stock alert's warehouse too, until the alerts went
+ * (team plan 5-1). The module makes no business decision through another module and no other module calls it for
+ * one; neither depends on this module. Plus {@code common} and {@code contracts}, which are available to every module.</p>
  *
  * <p><b>Customers' addresses</b> (SCRUM-352) come the other way round: {@code api.CustomerDirectory} is declared here
  * and implemented by the customer module, because customer already depends on this module (the portal invitation)

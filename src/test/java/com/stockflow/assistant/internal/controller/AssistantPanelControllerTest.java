@@ -50,7 +50,7 @@ import static org.mockito.Mockito.when;
 class AssistantPanelControllerTest {
 
     private static final CurrentUser PLANNER = new CurrentUser(UUID.randomUUID(), "planner",
-            Set.of(Role.INVENTORY_PLANNER), Set.of(), DataScope.ALL, Set.of());
+            Set.of(Role.SYSTEM_ADMIN), Set.of(), DataScope.ALL, Set.of());
     private static final CurrentUser CUSTOMER = new CurrentUser(UUID.randomUUID(), "customer", Set.of(Role.CUSTOMER),
             Set.of(), DataScope.ALL, Set.of());
 
@@ -101,13 +101,13 @@ class AssistantPanelControllerTest {
         Instant generatedAt = Instant.parse("2026-10-29T00:30:00Z");
         Map<String, Object> row = new LinkedHashMap<>();
         row.put("sku", TextNode.valueOf("LID-90"));
-        row.put("safetyStock", NullNode.getInstance());
+        row.put("hold.note", NullNode.getInstance());
         row.put("price", DecimalNode.valueOf(new BigDecimal("12960000.00")));
         TodayCard card = mock(TodayCard.class);
         when(card.of(PLANNER)).thenReturn(new TodayCard.Card(generatedAt, List.of(
-                new TodayCard.Section("lowStock", "findLowStock", ToolOutcome.OK, new ResultTable.Table("lowStock",
-                        "findLowStock", List.of("sku", "safetyStock", "price"), List.of(row), 23, true), null),
-                new TodayCard.Section("expiredLots", "findExpiringLots", ToolOutcome.FAILED, null,
+                new TodayCard.Section("heldOrders", "findOrders", ToolOutcome.OK, new ResultTable.Table("heldOrders",
+                        "findOrders", List.of("sku", "hold.note", "price"), List.of(row), 23, true), null),
+                new TodayCard.Section("receiptsToPutAway", "findGoodsReceipts", ToolOutcome.FAILED, null,
                         "Chưa đọc được."))));
 
         TodayResponse response = new AssistantPanelController(mock(ToolAvailability.class), card).today(PLANNER)
@@ -115,16 +115,16 @@ class AssistantPanelControllerTest {
 
         JsonNode written = applicationMapper().readTree(applicationMapper().writeValueAsString(response));
         assertThat(written.path("generatedAt").asText()).isEqualTo("2026-10-29T00:30:00Z");
-        JsonNode lowStock = written.path("sections").path(0);
-        assertThat(lowStock.path("outcome").asText()).isEqualTo("OK");
-        assertThat(lowStock.has("note")).as("a note is always sent, null included").isTrue();
-        assertThat(lowStock.path("note").isNull()).isTrue();
-        assertThat(lowStock.path("table").path("total").asLong()).isEqualTo(23);
-        assertThat(lowStock.path("table").path("truncated").asBoolean()).isTrue();
-        assertThat(texts(lowStock.path("table").path("columns"))).containsExactly("sku", "safetyStock", "price");
-        JsonNode cells = lowStock.path("table").path("rows").path(0);
-        assertThat(cells.has("safetyStock")).as("every column, null included").isTrue();
-        assertThat(cells.path("safetyStock").isNull()).isTrue();
+        JsonNode held = written.path("sections").path(0);
+        assertThat(held.path("outcome").asText()).isEqualTo("OK");
+        assertThat(held.has("note")).as("a note is always sent, null included").isTrue();
+        assertThat(held.path("note").isNull()).isTrue();
+        assertThat(held.path("table").path("total").asLong()).isEqualTo(23);
+        assertThat(held.path("table").path("truncated").asBoolean()).isTrue();
+        assertThat(texts(held.path("table").path("columns"))).containsExactly("sku", "hold.note", "price");
+        JsonNode cells = held.path("table").path("rows").path(0);
+        assertThat(cells.has("hold.note")).as("every column, null included").isTrue();
+        assertThat(cells.path("hold.note").isNull()).isTrue();
         assertThat(applicationMapper().writeValueAsString(response)).contains("\"price\":12960000.00");
         JsonNode failed = written.path("sections").path(1);
         assertThat(failed.path("outcome").asText()).isEqualTo("FAILED");

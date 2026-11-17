@@ -8,7 +8,8 @@ import java.util.UUID;
  * variant whose SKU is the product code. With axes it is born with its axes, their options and every
  * combination of the active options, each a variant whose SKU follows the code rule; the first
  * combination is the default variant (spec D2), so no placeholder SKU ever exists. Each variant comes
- * with its inventory item; logistics live on the inventory item and images on a variant, not here.
+ * with its inventory item; logistics live on the inventory item and images on a variant, not here. There is no kind to
+ * choose: every product is {@link ProductKind#CUSTOMIZABLE} (kltn-docs 01 BR-19).
  */
 public record CreateProductCommand(
         String code,
@@ -20,7 +21,6 @@ public record CreateProductCommand(
         String description,
         String descriptionEn,
         TaxClass taxClass,
-        ProductKind kind,
         List<Axis> axes
 ) {
 

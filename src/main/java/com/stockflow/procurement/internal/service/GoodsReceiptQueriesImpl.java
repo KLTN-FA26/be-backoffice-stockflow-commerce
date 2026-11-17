@@ -10,27 +10,36 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.Arrays;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
  * {@link GoodsReceiptQueries} over {@link GoodsReceipts#list}, the very list the receipt screen reads, so its warehouse
- * rule and its supplier and warehouse labels are applied there, once, for the screen and for this alike. What a row of
- * that list also carries - the ids of the order, the supplier and the warehouse, the delivery note and who received and
+ * rule and its producer and warehouse labels are applied there, once, for the screen and for this alike. What a row of
+ * that list also carries - the ids of the production order and the warehouse, the delivery note and who received and
  * confirmed it - stays here.
  */
 @Service
 @Transactional(readOnly = true)
 class GoodsReceiptQueriesImpl implements GoodsReceiptQueries {
 
+    /**
+     * Domain statuses no receipt can be in any more and so not offered: PENDING_APPROVAL, which
+     * {@code ck_goods_receipts_status} no longer allows (purchasing went with 4A-8, and with it the over-receipt
+     * approval).
+     */
+    static final Set<GoodsReceiptStatus> LEGACY = EnumSet.of(GoodsReceiptStatus.PENDING_APPROVAL);
+
     private final GoodsReceipts receipts;
 
     GoodsReceiptQueriesImpl(GoodsReceipts receipts) {
         // The api's vocabulary is a copy of the domain's, so another module can name a status without importing it. A
-        // status added to one and not the other would be refused or shown wrongly; it stops the start instead.
-        if (!Set.copyOf(STATUSES).equals(Arrays.stream(GoodsReceiptStatus.values()).map(Enum::name)
-                .collect(Collectors.toSet()))) {
+        // status added to one and not the other would be refused or shown wrongly; it stops the start instead. The
+        // legacy constants are the domain's only, kept to name an old value read back, never to be asked for.
+        if (!Set.copyOf(STATUSES).equals(Arrays.stream(GoodsReceiptStatus.values())
+                .filter(status -> !LEGACY.contains(status)).map(Enum::name).collect(Collectors.toSet()))) {
             throw new IllegalStateException("GoodsReceiptQueries.STATUSES no longer matches GoodsReceiptStatus");
         }
         this.receipts = receipts;
@@ -45,11 +54,13 @@ class GoodsReceiptQueriesImpl implements GoodsReceiptQueries {
         List<GoodsReceiptStatus> wanted = statuses == null ? List.of()
                 : statuses.stream().map(GoodsReceiptQueriesImpl::status).toList();
         String text = number == null || number.isBlank() ? null : number.strip();
-        // withoutPurchaseOrder null: receipts against a PO and those without one (SCRUM-478) alike.
-        return receipts.list(wanted, null, null, text, null, null, null, 0, limit, null)
-                .map(row -> new GoodsReceiptSummary(row.id(), row.number(), row.purchaseOrderNumber(),
-                        row.supplierName(), row.warehouseCode(), row.status().name(), row.receivedAt(),
-                        row.confirmedAt(), row.closedAt(), row.withoutPurchaseOrder()));
+        // receiptType null: production receipts and the legacy purchase ones alike; return receipts are their own
+        // aggregate and never on this list (GoodsReceiptJpaEntity excludes them).
+        return receipts.list(wanted, null, text, null, null, null, null, 0, limit, null)
+                .map(row -> new GoodsReceiptSummary(row.id(), row.number(),
+                        row.receiptType() == null ? null : row.receiptType().name(), row.productionOrderCode(),
+                        row.producerName(), row.warehouseCode(), row.status().name(), row.receivedAt(),
+                        row.confirmedAt(), row.closedAt()));
     }
 
     private static GoodsReceiptStatus status(String name) {

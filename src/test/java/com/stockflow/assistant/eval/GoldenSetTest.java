@@ -46,11 +46,11 @@ class GoldenSetTest {
     }
 
     @Test
-    @DisplayName("QC_STAFF of HCM is asked about the lots it may see and refused what it may not")
+    @DisplayName("WAREHOUSE_STAFF of HCM is asked about the lots it may see and refused what it may not")
     void qualityControl() {
-        assertThat(set).filteredOn(golden -> golden.persona().role().equals("QC_STAFF"))
+        assertThat(set).filteredOn(golden -> golden.persona().role().equals("WAREHOUSE_STAFF"))
                 .allSatisfy(golden -> assertThat(golden.persona().warehouses()).containsExactly("HCM"))
                 .extracting(golden -> golden.oracle().getFirst().tool() + (golden.expectRefusal() ? " refused" : ""))
-                .contains("getStockLots", "findExpiringLots refused", "traceLot refused", "findOrder refused");
+                .contains("getStockLots", "traceLot", "lookupScan", "findOrder refused");
     }
 }

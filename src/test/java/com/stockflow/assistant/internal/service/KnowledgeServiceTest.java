@@ -41,8 +41,8 @@ class KnowledgeServiceTest {
             "Custom-printed items are not returnable unless defective.");
     private static final KnowledgeChunk WINDOW = rule("BR-RMA-001",
             "A return can only be opened within the configured return window after delivery.");
-    private static final KnowledgeChunk FEFO = rule("BR-STK-006",
-            "Allocation picks the lot with the earliest expiry date first (FEFO).");
+    private static final KnowledgeChunk FIFO = rule("07 BR-03",
+            "Cartons are allocated first in, first out (FIFO), by the day they were received.");
     private static final KnowledgeChunk IN_TRANSIT = term("In transit", "Goods on their way between two warehouses.");
 
     /** U6-03 as a small model may search it, untranslated: by keyword it finds "In transit" on the word "in". */
@@ -77,7 +77,7 @@ class KnowledgeServiceTest {
      * glossary terms among them, so the spread of similarities is a corpus's — nothing like it.
      */
     private int embeddedCorpus() {
-        repository.sync("05-business-rules", List.of(RETURNS, WINDOW, FEFO), null);
+        repository.sync("05-business-rules", List.of(RETURNS, WINDOW, FIFO), null);
         repository.sync("01-ubiquitous-language", Stream.concat(Stream.of(IN_TRANSIT), IntStream.rangeClosed(1, 30)
                 .mapToObj(i -> term("Term " + i, "Something else entirely, number " + i + "."))).toList(), null);
         embeddings.vector(RETURNS.title(), 1, 0, 0).vector(WINDOW.title(), 0.8f, 0.6f, 0).vector(QUESTION, 1, 0, 0);
@@ -89,16 +89,16 @@ class KnowledgeServiceTest {
     @Test
     @DisplayName("each passage is embedded once; a changed passage alone again; a new model all of them again")
     void embedsOnlyWhatChanged() {
-        repository.sync("05-business-rules", List.of(RETURNS, WINDOW, FEFO), null);
+        repository.sync("05-business-rules", List.of(RETURNS, WINDOW, FIFO), null);
 
         assertThat(knowledge.embed()).isEqualTo(3);
-        assertThat(embeddings.texts(Purpose.DOCUMENT)).containsExactly(KnowledgeService.embeddingText(WINDOW),
-                KnowledgeService.embeddingText(RETURNS), KnowledgeService.embeddingText(FEFO));
+        assertThat(embeddings.texts(Purpose.DOCUMENT)).containsExactly(KnowledgeService.embeddingText(FIFO),
+                KnowledgeService.embeddingText(WINDOW), KnowledgeService.embeddingText(RETURNS));
         assertThat(knowledge.embed()).as("nothing changed, nothing is sent").isZero();
         assertThat(embeddings.calls).hasSize(1);
 
         KnowledgeChunk reworded = rule("BR-RMA-002", "Custom-printed items cannot be returned unless defective.");
-        repository.sync("05-business-rules", List.of(reworded, WINDOW, FEFO), null);
+        repository.sync("05-business-rules", List.of(reworded, WINDOW, FIFO), null);
         assertThat(knowledge.embed()).isEqualTo(1);
         assertThat(embeddings.calls.getLast()).containsExactly(KnowledgeService.embeddingText(reworded));
 
@@ -152,12 +152,12 @@ class KnowledgeServiceTest {
     @DisplayName("a Vietnamese question whose words find only noise still gets the rule that means the same")
     void fusesKeywordAndMeaning() {
         embeddedCorpus();
-        repository.ranks(QUESTION, IN_TRANSIT, FEFO);
+        repository.ranks(QUESTION, IN_TRANSIT, FIFO);
 
         List<KnowledgeChunk> found = knowledge.search(QUESTION, 5);
 
         // In transit and BR-RMA-002 are each first of one ranking (1/61), the keyword hit first; then 1/62 each.
-        assertThat(found).containsExactly(IN_TRANSIT, RETURNS, FEFO, WINDOW);
+        assertThat(found).containsExactly(IN_TRANSIT, RETURNS, FIFO, WINDOW);
         assertThat(repository.searchLimits).containsExactly(KnowledgeService.FUSION_DEPTH);
         assertThat(embeddings.texts(Purpose.QUERY)).containsExactly(QUESTION);
     }
@@ -168,7 +168,7 @@ class KnowledgeServiceTest {
     void theQuestionIsSearchedToo() {
         embeddedCorpus();
         String terms = "return policy";
-        repository.ranks(terms, FEFO);
+        repository.ranks(terms, FIFO);
         KnowledgeService.Settings both = new KnowledgeService.Settings(true, KnowledgeSearch.STANDOUT, 10, true,
                 false);
         KnowledgeService.Settings termsOnly = new KnowledgeService.Settings(true, KnowledgeSearch.STANDOUT, 10, false,
@@ -176,12 +176,12 @@ class KnowledgeServiceTest {
 
         List<KnowledgeSearch.Hit> found = knowledge.find(terms, QUESTION, 5, both);
 
-        assertThat(found).extracting(KnowledgeSearch.Hit::chunk).containsExactly(FEFO, RETURNS, WINDOW);
+        assertThat(found).extracting(KnowledgeSearch.Hit::chunk).containsExactly(FIFO, RETURNS, WINDOW);
         assertThat(found).extracting(KnowledgeSearch.Hit::foundBy).containsExactly(KnowledgeSearch.FoundBy.WORDS,
                 KnowledgeSearch.FoundBy.MEANING, KnowledgeSearch.FoundBy.MEANING);
         assertThat(embeddings.texts(Purpose.QUERY)).containsExactly(terms, QUESTION);
         assertThat(knowledge.find(terms, QUESTION, 5, termsOnly)).extracting(KnowledgeSearch.Hit::chunk)
-                .containsExactly(FEFO);
+                .containsExactly(FIFO);
         assertThat(knowledge.find(QUESTION, " " + QUESTION, 5, both)).as("the same text is embedded once")
                 .isNotEmpty();
         assertThat(embeddings.texts(Purpose.QUERY)).containsExactly(terms, QUESTION);
@@ -192,33 +192,33 @@ class KnowledgeServiceTest {
             + "there is one")
     void theRerankerReorders() {
         embeddedCorpus();
-        String named = "what does BR-STK-006 say";
+        String named = "what does 07 BR-03 say";
         embeddings.vector(named, 1, 0, 0);
-        repository.ranks(named, WINDOW, FEFO);
+        repository.ranks(named, WINDOW, FIFO);
         FakeReranker reranker = new FakeReranker();
         KnowledgeService reranking = new KnowledgeService(repository, embeddings,
                 new TransactionTemplate(mock(PlatformTransactionManager.class)), build, clock, AssistantTelemetry.NONE,
                 KnowledgeProperties.DEFAULTS, reranker);
 
-        // Fused: BR-STK-006 (named), BR-RMA-001 (both), BR-RMA-002 (meaning); the fake reverses all but the named.
+        // Fused: 07 BR-03 (named), BR-RMA-001 (both), BR-RMA-002 (meaning); the fake reverses all but the named.
         assertThat(reranking.find(named, null, 5)).extracting(KnowledgeSearch.Hit::chunk)
-                .containsExactly(FEFO, RETURNS, WINDOW);
+                .containsExactly(FIFO, RETURNS, WINDOW);
         assertThat(reranker.queries).containsExactly(named);
         assertThat(reranker.texts.getFirst()).hasSize(2).first().asString().startsWith(WINDOW.title() + "\n");
         assertThat(repository.searchLimits.getLast()).as("enough fused passages for the reranker to choose from")
                 .isEqualTo(KnowledgeProperties.DEFAULTS.reranker().depth());
 
-        reranking.find(named, "Quy định BR-STK-006 nói gì?", 5);
-        assertThat(reranker.queries.getLast()).isEqualTo("Quy định BR-STK-006 nói gì?");
+        reranking.find(named, "Quy định 07 BR-03 nói gì?", 5);
+        assertThat(reranker.queries.getLast()).isEqualTo("Quy định 07 BR-03 nói gì?");
     }
 
     @Test
     @DisplayName("a reranker that fails leaves the fused order, and is not asked again for a while")
     void aFailingRerankerLeavesTheFusedOrder() {
         embeddedCorpus();
-        String named = "what does BR-STK-006 say";
+        String named = "what does 07 BR-03 say";
         embeddings.vector(named, 1, 0, 0);
-        repository.ranks(named, WINDOW, FEFO);
+        repository.ranks(named, WINDOW, FIFO);
         FakeReranker reranker = new FakeReranker();
         reranker.failure = new IllegalStateException("connection refused");
         KnowledgeService reranking = new KnowledgeService(repository, embeddings,
@@ -226,33 +226,72 @@ class KnowledgeServiceTest {
                 KnowledgeProperties.DEFAULTS, reranker);
 
         assertThat(reranking.find(named, null, 5)).extracting(KnowledgeSearch.Hit::chunk)
-                .containsExactly(FEFO, WINDOW, RETURNS);
+                .containsExactly(FIFO, WINDOW, RETURNS);
         reranking.find(named, null, 5);
         assertThat(reranker.queries).as("paused after the failure").hasSize(1);
 
         clock.advance(KnowledgeService.PAUSE_AFTER_FAILURE.plusSeconds(1));
         reranker.failure = null;
         assertThat(reranking.find(named, null, 5)).extracting(KnowledgeSearch.Hit::chunk)
-                .containsExactly(FEFO, RETURNS, WINDOW);
+                .containsExactly(FIFO, RETURNS, WINDOW);
     }
 
+    /** A chapter as kltn-docs writes one: a flow section and a rule. */
+    private static final KnowledgeService.Document PICKING = new KnowledgeService.Document("07-picking", """
+            # 07 — Lấy hàng (Picking)
+
+            ## 4. Luồng nghiệp vụ từng bước (Step-by-step)
+
+            ### 4.4. Thiếu hàng (Short pick)
+
+            9. **Báo thiếu** — picker báo thiếu kèm vị trí và lý do.
+
+            ## 6. Ràng buộc nghiệp vụ (Business Rules) & Edge case
+
+            ### Business rules
+
+            - **BR-09:** Báo thiếu luôn **treo đơn** và **mở kiểm kê mù** cho thùng đó.
+            """);
+
     @Test
-    @DisplayName("with the flows switched off, their document is synced empty: indexed before, their passages go")
+    @DisplayName("with the flows switched off, a chapter is indexed without its flow: indexed before, those passages go")
     void flowsOff() {
-        KnowledgeChunk flow = new KnowledgeChunk(KnowledgeService.FLOWS, "F-PO", KnowledgeChunk.Kind.FLOW,
-                "F-PO — Đơn mua hàng", "Từ nháp tới lúc nhà cung cấp xác nhận.");
-        repository.sync(KnowledgeService.FLOWS, List.of(flow), null);
-
-        knowledge.index();
-
-        assertThat(repository.chunks(KnowledgeService.FLOWS)).as("off by default").isEmpty();
         KnowledgeService flowsOn = new KnowledgeService(repository, embeddings,
                 new TransactionTemplate(mock(PlatformTransactionManager.class)), build, clock, AssistantTelemetry.NONE,
                 new KnowledgeProperties(3.0, 10, false, KnowledgeProperties.DEFAULTS.reranker(), true, 1),
                 com.stockflow.assistant.internal.domain.Reranker.NONE);
-        flowsOn.index();
-        assertThat(repository.chunks(KnowledgeService.FLOWS)).extracting(KnowledgeChunk::anchor).contains("F-PO",
-                "X-SHORT");
+        flowsOn.index(List.of(PICKING));
+        assertThat(repository.chunks("07-picking")).extracting(KnowledgeChunk::anchor)
+                .containsExactly("07 §4.4", "07 BR-09");
+
+        knowledge.index(List.of(PICKING));
+
+        assertThat(repository.chunks("07-picking")).as("off by default").extracting(KnowledgeChunk::anchor)
+                .containsExactly("07 BR-09");
+    }
+
+    @Test
+    @DisplayName("a source this build does not index is emptied, so the superseded documents are not cited; a build "
+            + "with no document at all leaves the index as it is")
+    void otherSourcesAreRetired() {
+        repository.sync("05-business-rules", List.of(RETURNS, WINDOW), null);
+
+        assertThat(knowledge.index(List.of())).isZero();
+        assertThat(repository.chunks("05-business-rules")).as("no document: a broken build").hasSize(2);
+
+        knowledge.index(List.of(PICKING));
+
+        assertThat(repository.chunks("05-business-rules")).isEmpty();
+        assertThat(repository.sources()).containsExactly("07-picking");
+    }
+
+    @Test
+    @DisplayName("the build puts the kltn-docs snapshot on the classpath: the glossary and every chapter, no README")
+    void theSnapshotIsOnTheClasspath() {
+        assertThat(KnowledgeService.documents()).extracting(KnowledgeService.Document::name)
+                .contains("glossary", "01-product-creation", "07-picking", "15-payment", "17-order-management",
+                        "21-e-invoice")
+                .doesNotContain("README", "05-business-rules", "04c-all-flows");
     }
 
     /** Reverses what it is given, or fails. */
@@ -298,19 +337,19 @@ class KnowledgeServiceTest {
     @DisplayName("a rule the question names comes first, whatever the fusion says")
     void aNamedRuleStaysFirst() {
         embeddedCorpus();
-        String named = "what does BR-STK-006 say";
+        String named = "what does 07 BR-03 say";
         embeddings.vector(named, 1, 0, 0);
-        repository.ranks(named, WINDOW, FEFO);
+        repository.ranks(named, WINDOW, FIFO);
 
-        // Fused alone: BR-RMA-001 (both rankings), BR-RMA-002, then BR-STK-006.
-        assertThat(knowledge.search(named, 5)).containsExactly(FEFO, WINDOW, RETURNS);
+        // Fused alone: BR-RMA-001 (both rankings), BR-RMA-002, then 07 BR-03.
+        assertThat(knowledge.search(named, 5)).containsExactly(FIFO, WINDOW, RETURNS);
     }
 
     @Test
     @DisplayName("any failure to embed the question searches by keyword alone, exactly as without embeddings")
     void anEmbeddingFailureSearchesByKeyword() {
         embeddedCorpus();
-        repository.ranks(QUESTION, IN_TRANSIT, FEFO);
+        repository.ranks(QUESTION, IN_TRANSIT, FIFO);
         for (RuntimeException failure : List.of(new BusinessException(ErrorCode.ASSISTANT_UNAVAILABLE, "down"),
                 new BusinessException(ErrorCode.ASSISTANT_QUOTA_EXHAUSTED, "spent"),
                 new IllegalStateException("a bug"))) {
@@ -318,7 +357,7 @@ class KnowledgeServiceTest {
             embeddings.fail(failure, call -> call > before);
             repository.searchLimits.clear();
 
-            assertThat(knowledge.search(QUESTION, 5)).as(failure.getMessage()).containsExactly(IN_TRANSIT, FEFO);
+            assertThat(knowledge.search(QUESTION, 5)).as(failure.getMessage()).containsExactly(IN_TRANSIT, FIFO);
             assertThat(repository.searchLimits).as("the search of old, with its own limit").containsExactly(5);
             assertThat(embeddings.calls).as("the provider was asked").hasSize(before + 1);
             clock.advance(KnowledgeService.PAUSE_AFTER_REFUSAL.plusSeconds(1));
@@ -329,13 +368,13 @@ class KnowledgeServiceTest {
     @DisplayName("after a failure questions go unembedded for a while: one wait and one log line, not one per search")
     void aFailurePausesEmbedding() {
         embeddedCorpus();
-        repository.ranks(QUESTION, IN_TRANSIT, FEFO);
-        repository.ranks("another question", FEFO);
+        repository.ranks(QUESTION, IN_TRANSIT, FIFO);
+        repository.ranks("another question", FIFO);
         int before = embeddings.calls.size();
         embeddings.fail(new BusinessException(ErrorCode.ASSISTANT_UNAVAILABLE, "timeout"), call -> true);
 
-        assertThat(knowledge.search(QUESTION, 5)).containsExactly(IN_TRANSIT, FEFO);
-        assertThat(knowledge.search("another question", 5)).containsExactly(FEFO);
+        assertThat(knowledge.search(QUESTION, 5)).containsExactly(IN_TRANSIT, FIFO);
+        assertThat(knowledge.search("another question", 5)).containsExactly(FIFO);
         assertThat(embeddings.calls).as("the second search waited for nothing").hasSize(before + 1);
 
         clock.advance(KnowledgeService.PAUSE_AFTER_FAILURE.plusSeconds(1));
@@ -348,7 +387,7 @@ class KnowledgeServiceTest {
     @DisplayName("a refusal pauses questions for an hour; a remembered question still searches by meaning meanwhile")
     void aRefusalPausesLonger() {
         embeddedCorpus();
-        repository.ranks(QUESTION, IN_TRANSIT, FEFO);
+        repository.ranks(QUESTION, IN_TRANSIT, FIFO);
         knowledge.search(QUESTION, 5);
         int before = embeddings.calls.size();
         embeddings.fail(new BusinessException(ErrorCode.ASSISTANT_MISCONFIGURED, "404"), call -> true);
@@ -397,11 +436,11 @@ class KnowledgeServiceTest {
     @DisplayName("without embeddings nothing is sent, and the search is the keyword search of old")
     void withoutEmbeddingsTheSearchIsKeywordOnly() {
         embeddings.available = false;
-        repository.sync("05-business-rules", List.of(RETURNS, WINDOW, FEFO), null);
-        repository.ranks(QUESTION, IN_TRANSIT, FEFO);
+        repository.sync("05-business-rules", List.of(RETURNS, WINDOW, FIFO), null);
+        repository.ranks(QUESTION, IN_TRANSIT, FIFO);
 
         assertThat(knowledge.embed()).isZero();
-        assertThat(knowledge.search(QUESTION, 5)).containsExactly(IN_TRANSIT, FEFO);
+        assertThat(knowledge.search(QUESTION, 5)).containsExactly(IN_TRANSIT, FIFO);
         assertThat(repository.searchLimits).containsExactly(5);
         assertThat(embeddings.calls).isEmpty();
     }
@@ -409,9 +448,9 @@ class KnowledgeServiceTest {
     @Test
     @DisplayName("before any passage is embedded, the keyword order stands")
     void nothingEmbeddedYet() {
-        repository.ranks(QUESTION, IN_TRANSIT, FEFO, WINDOW);
+        repository.ranks(QUESTION, IN_TRANSIT, FIFO, WINDOW);
 
-        assertThat(knowledge.search(QUESTION, 2)).containsExactly(IN_TRANSIT, FEFO);
+        assertThat(knowledge.search(QUESTION, 2)).containsExactly(IN_TRANSIT, FIFO);
     }
 
     @Test
@@ -426,7 +465,8 @@ class KnowledgeServiceTest {
     @Test
     @DisplayName("start-up does not wait for the provider: the passages are sent from a thread of their own")
     void startUpDoesNotWait() throws InterruptedException {
-        // A source of its own, so something is pending whatever the documents on the classpath hold.
+        // Something is pending whatever the classpath holds: this passage when it holds no document (the index is
+        // then left alone), the snapshot's passages when it does (this source is then retired).
         repository.sync("start-up-test", List.of(new KnowledgeChunk("start-up-test", "T-1", KnowledgeChunk.Kind.TERM,
                 "T-1", "A passage to embed.")), null);
         Thread startUp = Thread.currentThread();

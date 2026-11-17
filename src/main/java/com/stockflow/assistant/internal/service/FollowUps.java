@@ -47,9 +47,6 @@ public class FollowUps {
     /** Questions offered under one answer. */
     static final int MAX = 3;
 
-    /** SKUs one reorder question names: what reads at a glance; proposeReorder itself takes ten. */
-    static final int MAX_REORDER_SKUS = 5;
-
     /** {@code OrderNumber}'s format, copied by value: the order module keeps it internal. */
     private static final Pattern ORDER_NUMBER = Pattern.compile("SO-\\d{8}-\\d{6,}");
 
@@ -63,16 +60,13 @@ public class FollowUps {
 
     /** What a follow-up asks for, the tool that answers it and its text. */
     public enum Kind {
-        /** After the SKUs below their reorder point: how much to buy of them. */
-        REORDER("proposeReorder", "assistant.followUp.reorder",
-                "Propose how much to buy of {0}, from the last 30 days of sales, to cover 30 days."),
         /** After an order held for stock: which lines are short, and where. */
         ORDER_SHORTAGE("getOrderPicking", "assistant.followUp.orderShortage",
                 "Which lines of order {0} are short, by how much, and at which locations?"),
-        /** After a lot about to expire, or a SKU's stock: the SKU's lots, their expiry and their bins. */
+        /** After a SKU's stock: the SKU's lots, oldest received first, and their bins. */
         SKU_LOTS("getStockLots", "assistant.followUp.skuLots",
-                "Which lots of {0} are there, when do they expire and where are they?"),
-        /** After a short pick, a low SKU, a best seller or a catalog match: the SKU's stock per warehouse. */
+                "Which lots of {0} are there, which goes out first and where are they?"),
+        /** After a short pick, a best seller or a catalog match: the SKU's stock per warehouse. */
         SKU_STOCK("getStockLevels", "assistant.followUp.skuStock", "How much {0} is in stock in each warehouse?");
 
         private final String tool;
@@ -138,13 +132,11 @@ public class FollowUps {
 
     /**
      * What the OK results among {@code executions} lead to, best first: per lookup in the order they ran, leaving out
-     * a question this answer already looked up (the stock of a SKU it read, the picking of an order it read, a
-     * reorder it proposed).
+     * a question this answer already looked up (the stock of a SKU it read, the picking of an order it read).
      */
     static List<FollowUp> leads(List<ToolExecution> executions, ObjectMapper json) {
         List<FollowUp> leads = new ArrayList<>();
         Set<FollowUp> answered = new HashSet<>();
-        boolean reordered = false;
         for (ToolExecution execution : executions) {
             if (execution.outcome() != ToolOutcome.OK) {
                 continue;
@@ -154,7 +146,6 @@ public class FollowUps {
                 continue;
             }
             switch (execution.call().name()) {
-                case "findLowStock" -> afterLowStock(result.path("skus"), leads);
                 case "findOrder" -> {
                     JsonNode picking = result.path("picking");
                     if (picking.isObject()) {
@@ -176,11 +167,6 @@ public class FollowUps {
                         }
                     }
                 }
-                case "findExpiringLots" -> {
-                    JsonNode soonest = result.path("expiring").isEmpty() ? result.path("expired").path(0)
-                            : result.path("expiring").path(0);
-                    sku(soonest.path("sku")).ifPresent(sku -> leads.add(new FollowUp(Kind.SKU_LOTS, sku)));
-                }
                 case "getOrderPicking" -> {
                     orderNumber(result.path("orderNumber"))
                             .ifPresent(order -> answered.add(new FollowUp(Kind.ORDER_SHORTAGE, order)));
@@ -201,39 +187,15 @@ public class FollowUps {
                         .ifPresent(sku -> leads.add(new FollowUp(Kind.SKU_STOCK, sku)));
                 case "getSalesSummary" -> sku(result.path("topSkus").path(0).path("sku"))
                         .ifPresent(sku -> leads.add(new FollowUp(Kind.SKU_STOCK, sku)));
-                case "proposeReorder" -> reordered = true;
                 default -> {
                     // No lead: the other lookups answer their own question, or lead nowhere a person asks next.
                 }
             }
         }
-        boolean proposed = reordered;
-        return leads.stream().distinct()
-                .filter(lead -> !answered.contains(lead) && !(proposed && lead.kind() == Kind.REORDER))
-                .toList();
+        return leads.stream().distinct().filter(lead -> !answered.contains(lead)).toList();
     }
 
-    /**
-     * Below their reorder point: a reorder for the most urgent ones — below safety stock first, then in the list's
-     * order — and the stock per warehouse of the first, the question the design's U1 asks next.
-     */
-    private static void afterLowStock(JsonNode rows, List<FollowUp> leads) {
-        List<String> urgent = new ArrayList<>();
-        List<String> rest = new ArrayList<>();
-        for (JsonNode row : rows) {
-            sku(row.path("sku")).ifPresent(sku -> (row.path("belowSafetyStock").asBoolean(false) ? urgent : rest)
-                    .add(sku));
-        }
-        urgent.addAll(rest);
-        if (urgent.isEmpty()) {
-            return;
-        }
-        leads.add(new FollowUp(Kind.REORDER, String.join(", ", urgent.subList(0, Math.min(MAX_REORDER_SKUS,
-                urgent.size())))));
-        leads.add(new FollowUp(Kind.SKU_STOCK, urgent.getFirst()));
-    }
-
-    /** An order on hold for stock: where it is short is what the coordinator asks next (FEAT-5). */
+    /** An order on hold for stock: where it is short is what Sales ask next (FEAT-5). */
     private static Optional<FollowUp> heldForStock(JsonNode order) {
         boolean heldForStock = "ON_HOLD".equals(order.path("status").asText())
                 && "INVENTORY".equals(order.path("hold").path("reason").asText());

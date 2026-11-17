@@ -164,7 +164,7 @@ public class AssistantService {
      * @param telemetry  where each answer's span, the parent of its model calls and tools, is recorded
      * @param parallel   runs a step's calls at once, in the order the model asked for them
      * @param background the models the watch's questions go to
-     * @param pseudonyms the customer aliases the model provider is sent instead of names (ADR-0014)
+     * @param pseudonyms the customer aliases the model provider is sent instead of names (ADR-0015)
      */
     @Autowired
     AssistantService(ConversationService conversations, ModelRouter models, AssistantTools tools,
@@ -234,7 +234,7 @@ public class AssistantService {
 
     /**
      * A question the assistant's watch asks for {@code user}, in a proactive conversation of theirs (design §9.1,
-     * ADR-0012): answered as a question of theirs is — their tools, their scope, their proposals becoming suggestions
+     * ADR-0013): answered as a question of theirs is — their tools, their scope, their proposals becoming suggestions
      * of theirs — on the background models, and not counted against their daily limit (the watch has its own). Called
      * through the proxy, as the user {@code RunAs} acts for, on the watch's own thread.
      *
@@ -280,7 +280,7 @@ public class AssistantService {
     }
 
     /**
-     * The answer with its customers' names back (ADR-0014). It is stored already: a failure to read the names shows the
+     * The answer with its customers' names back (ADR-0015). It is stored already: a failure to read the names shows the
      * aliases rather than an error, and the transcript reads them again when it is reopened.
      */
     private Answer revealed(UUID conversationId, Pseudonyms aliases, Answer answer) {
@@ -327,7 +327,7 @@ public class AssistantService {
         if (channel == ToolChannel.CHAT) {
             conversations.requireAskable(conversationId);
         }
-        // A customer the conversation already calls KH#n is sent by that alias when the user names it (ADR-0014): the
+        // A customer the conversation already calls KH#n is sent by that alias when the user names it (ADR-0015): the
         // question is stored so, and read back with the name.
         Pseudonyms aliases = pseudonyms.forQuestion(conversationId);
         Turn.Question turn = new Turn.Question(aliases == null ? question : aliases.hideNames(question),
@@ -349,10 +349,8 @@ public class AssistantService {
             whileFailing(failure, () -> store(conversationId, user.userId(), claimedAt, produced, channel, aliases));
             throw failure;
         }
-        Answer answer = revealed(conversationId, aliases,
+        return revealed(conversationId, aliases,
                 Answer.of(stored, store(conversationId, user.userId(), claimedAt, produced, channel, aliases), json));
-        return answer.proposals().isEmpty() ? answer
-                : answer.withActions(conversations.actionsOf(answer.messageId(), user.userId()));
     }
 
     /**
@@ -1001,7 +999,6 @@ public class AssistantService {
      * @param cutShort          the answer hit the output limit and may be incomplete
      * @param usage             tokens across every model call it took
      * @param citations         rule anchors the answer names that its own searches returned (design §6.3)
-     * @param proposals         purchase orders the panel may open pre-filled (design §8)
      * @param tables            the rows its lookups returned, as the panel shows them under it (design §7)
      * @param unverifiedNumbers numbers it states that nothing the model was given for it holds, as written (design §7)
      * @param unverifiedCodes   codes it writes that nothing the model was given for it holds ({@link AnswerCodes})
@@ -1010,26 +1007,15 @@ public class AssistantService {
      */
     public record Answer(UUID messageId, String text, List<ConversationService.ToolCallView> toolCalls,
                          boolean cutShort, LanguageModel.Usage usage, List<String> citations,
-                         List<AnswerSources.Proposal> proposals, List<ResultTable.Table> tables,
-                         List<String> unverifiedNumbers, List<String> unverifiedCodes, List<String> instructionLike,
-                         List<FollowUps.FollowUp> followUps,
-                         java.util.Map<String, AssistantActions.ActionView> actions) {
+                         List<ResultTable.Table> tables, List<String> unverifiedNumbers,
+                         List<String> unverifiedCodes, List<String> instructionLike,
+                         List<FollowUps.FollowUp> followUps) {
 
-        public Answer {
-            actions = actions == null ? java.util.Map.of() : java.util.Map.copyOf(actions);
-        }
-
-        /** With the customers' names put back where the model was given aliases (ADR-0014). */
+        /** With the customers' names put back where the model was given aliases (ADR-0015). */
         Answer revealed(java.util.function.UnaryOperator<String> reveal) {
-            return new Answer(messageId, reveal.apply(text), toolCalls, cutShort, usage, citations, proposals,
+            return new Answer(messageId, reveal.apply(text), toolCalls, cutShort, usage, citations,
                     tables.stream().map(table -> table.revealed(reveal)).toList(), unverifiedNumbers, unverifiedCodes,
-                    instructionLike, followUps, actions);
-        }
-
-        /** With the suggestions its proposals became (ADR-0011), by proposal key. */
-        Answer withActions(java.util.Map<String, AssistantActions.ActionView> made) {
-            return new Answer(messageId, text, toolCalls, cutShort, usage, citations, proposals, tables,
-                    unverifiedNumbers, unverifiedCodes, instructionLike, followUps, made);
+                    instructionLike, followUps);
         }
 
         /**
@@ -1056,8 +1042,8 @@ public class AssistantService {
             }
             return new Answer(answer.messageId(), answer.text(), answer.toolCalls(), answer.cutShort(),
                     new LanguageModel.Usage(input, output, cacheRead, cacheWrite), answer.citations(),
-                    answer.proposals(), answer.tables(), answer.unverifiedNumbers(), answer.unverifiedCodes(),
-                    answer.instructionLike(), answer.followUps(), java.util.Map.of());
+                    answer.tables(), answer.unverifiedNumbers(), answer.unverifiedCodes(),
+                    answer.instructionLike(), answer.followUps());
         }
     }
 }

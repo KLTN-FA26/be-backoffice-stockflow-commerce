@@ -18,11 +18,11 @@ import java.time.Duration;
  * @param multiQuery  also embed the user's question as they wrote it, beside the model's search terms, and fuse the
  *                    three rankings; the tool then asks the model for the question. Off until measured
  * @param reranker    a cross-encoder reading the fused passages with the query; off without a base URL
- * @param flows       index the process flows ({@code 04c-all-flows.md}). Off, and their passages are removed: the
- *                    document names statuses the system does not have (a goods receipt QC_PASSED or POSTED, a
- *                    purchase order SENT), which the assistant would state as fact, and its Vietnamese words crowd the
- *                    English rules out of a keyword search (design §6.1). On once the document matches
- *                    {@code 03-state-machines.md} and {@code RetrievalEval} shows the rules still found
+ * @param flows       index each chapter's step-by-step flow (§4 of a kltn-docs chapter: {@code 07 §4.4}) beside its
+ *                    rules, statuses and edge cases. Off, and their passages are removed on the next start. Off
+ *                    while it covered {@code docs/business-design/04c-all-flows.md}, which named statuses the system
+ *                    did not have; on in {@code application.yml} since the corpus is kltn-docs, whose flows are the
+ *                    current analysis and hold answers no rule gives (design §6.1, §6.4 has the numbers)
  * @param minMatchedWords how many of a search's words a passage must hold to be found by its words, 1 to 4
  *                    ({@link com.stockflow.assistant.internal.domain.KnowledgeRepository#search}). One let a single
  *                    shared word bring back passages about something else: "calendar" found five on returns for a

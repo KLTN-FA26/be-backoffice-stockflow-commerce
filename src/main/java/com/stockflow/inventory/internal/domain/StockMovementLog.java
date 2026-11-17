@@ -9,6 +9,18 @@ public interface StockMovementLog {
     void append(StockMovement movement);
 
     /**
+     * The cartons a document moved whole, and where to: the carton named on the arriving side of its MOVE lines, each
+     * once, in no particular order; empty when it moved none. How a person's repeated carton move is recognised
+     * (kltn-docs 11 BR-07): the request id is the reference, and the cartons and the place say whether the repeat is
+     * the same request.
+     */
+    java.util.List<MovedCarton> cartonsMovedBy(StockMovement.ReferenceType referenceType, UUID referenceId);
+
+    /** A carton a document moved, and the location it moved it to. */
+    record MovedCarton(StockPackageId carton, LocationId to) {
+    }
+
+    /**
      * The line a document already caused, if any — how a retried move is recognised as one that
      * already happened instead of moving the goods twice. When the document caused several (a receipt line
      * received into cartons writes one per carton, SCRUM-473), the first written: ids are UUIDv7, so the
@@ -18,9 +30,17 @@ public interface StockMovementLog {
                                             StockMovement.ReferenceType referenceType, UUID referenceId);
 
     /**
+     * Every line of {@code type} a document caused, oldest first; empty when none. A pick line of a staging task writes
+     * two MOVE lines - staged out of its bin, then, its order cancelled, put back out of the staging area (team plan
+     * 4C-5) - and the put-back is recognised by the second.
+     */
+    java.util.List<StockMovement> findAllByReference(StockMovement.MovementType type,
+                                                     StockMovement.ReferenceType referenceType, UUID referenceId);
+
+    /**
      * {@link #findByReference}, among the lines that name no carton on either side: how a retried loose move is
-     * recognised. A document can move a carton whole and loose units under one reference (SCRUM-473: a receipt line
-     * to QC, a QC part to quarantine); a lookup that also saw the carton's lines would take them for the loose
+     * recognised. A document can move a carton whole and loose units under one reference (SCRUM-473: a receipt line's
+     * cartons and its loose remainder); a lookup that also saw the carton's lines would take them for the loose
      * move's first attempt and skip it, so whichever ran first would decide whether the loose units moved at all.
      */
     Optional<StockMovement> findLooseByReference(StockMovement.MovementType type,
@@ -42,25 +62,4 @@ public interface StockMovementLog {
      */
     int sumQuantityByReference(java.util.Collection<StockMovement.MovementType> types,
                                StockMovement.ReferenceType referenceType, UUID referenceId);
-
-    /**
-     * Whether production handed {@code hold}'s goods over, out of the print shop, to {@code location}: the hand-over
-     * line a production move writes ({@code MOVE}, reference {@code PRODUCTION_ORDER}, "Hold &lt;id&gt;",
-     * IN_PRODUCTION to AVAILABLE). Tells printed goods in a packing area from free stock somebody moved there.
-     */
-    boolean handedOverFromProduction(ReservationId hold, LocationId location);
-
-    /**
-     * Decision G4-Q2 (2026-10-21): whether {@code hold}'s goods left stock at {@code location} because their production
-     * order completed: a {@code CONSUMPTION} line, reference {@code PRODUCTION_ORDER}, "Hold &lt;id&gt;", from that
-     * location. Tells printed goods consumed for their order from
-     * a hold a pick or anything else closed.
-     */
-    boolean consumedAtCompletion(ReservationId hold, LocationId location);
-
-    /**
-     * Whether {@code hold} was opened to bring a cancelled order's consumed printed goods back onto {@code location}
-     * for their SCRAP write-off ({@code PUT_BACK}, reference {@code ORDER}, "Hold &lt;id&gt;", to that location).
-     */
-    boolean bookedBackForScrap(ReservationId hold, LocationId location);
 }

@@ -3,11 +3,14 @@
  *
  * <p>WBS 3.7 + 3.8 + 3.9 · database schema {@code fulfillment}</p>
  *
- * <p><b>May depend on:</b> order, inventory, warehouse, design, identity. Plus {@code common} and {@code contracts}, which are
+ * <p><b>May depend on:</b> order, inventory, warehouse, identity, customer (only to find the signed-in customer
+ * whose order's vehicles the portal shows, 3-6; no longer design: the warehouse checks no design,
+ * kltn-docs 08 §1). Plus {@code common} and {@code contracts}, which are
  * available to every module. From inventory it uses two named interfaces: {@code api}, and
- * {@code consumption} — the narrow one that deducts picked stock, books put-backs and reports damage found at a
- * pick line's bin, in the pick line's own transaction (SCRUM-275, SCRUM-277). No other module may use
- * {@code consumption}.</p>
+ * {@code consumption} — the narrow one that deducts picked stock, books put-backs and moves cartons into and out of
+ * a staging area, in the pick line's own transaction (SCRUM-275, team plan 4C-5). No other module may use
+ * {@code consumption}. From order it uses {@code api}, and implements {@code spi}: which units of an order are labelled
+ * and not handed over, asked when Sales closes the rest of an order (WF4-CLOSE-REST, 2026-11-13).</p>
  *
  * <p>The module has two packages and the split is the whole point:</p>
  * <ul>
@@ -17,6 +20,6 @@
  *       you reaching in; {@code ModularityTest} will.</li>
  * </ul>
  */
-@org.springframework.modulith.ApplicationModule(allowedDependencies = {"order :: api", "inventory :: api",
-        "inventory :: consumption", "warehouse :: api", "design :: api", "identity :: api"})
+@org.springframework.modulith.ApplicationModule(allowedDependencies = {"order :: api", "order :: spi", "inventory :: api",
+        "inventory :: consumption", "warehouse :: api", "identity :: api", "customer :: api", "payment :: api"})
 package com.stockflow.fulfillment;

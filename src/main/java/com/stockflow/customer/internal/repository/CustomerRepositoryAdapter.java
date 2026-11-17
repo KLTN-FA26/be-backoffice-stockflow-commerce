@@ -24,13 +24,10 @@ class CustomerRepositoryAdapter implements CustomerRepository, CustomerSearchRep
 
     private final CustomerJpaRepository customers;
     private final AddressJpaRepository addresses;
-    private final SegmentJpaRepository segments;
 
-    CustomerRepositoryAdapter(CustomerJpaRepository customers, AddressJpaRepository addresses,
-                              SegmentJpaRepository segments) {
+    CustomerRepositoryAdapter(CustomerJpaRepository customers, AddressJpaRepository addresses) {
         this.customers = customers;
         this.addresses = addresses;
-        this.segments = segments;
     }
 
     @Override
@@ -43,11 +40,6 @@ class CustomerRepositoryAdapter implements CustomerRepository, CustomerSearchRep
             names.put((UUID) row[0], (String) row[1]);
         }
         return names;
-    }
-
-    @Override
-    public boolean segmentExists(UUID segmentId) {
-        return segments.existsById(segmentId);
     }
 
     @Override

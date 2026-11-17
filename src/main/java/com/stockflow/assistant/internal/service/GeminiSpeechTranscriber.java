@@ -18,7 +18,7 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * {@link SpeechTranscriber} on Gemini's {@code generateContent} (REST), as {@link GeminiDocumentReader} reads a photo:
+ * {@link SpeechTranscriber} on Gemini's {@code generateContent} (REST), as the chat sends a question:
  * the instruction is the system instruction, the recording an {@code inline_data} part ({@code audio/wav}, base64),
  * then one line asking for the transcript. Gemini bills 32 tokens a second of audio, so a minute is under 2,000 input
  * tokens; the answer is capped at {@value #MAX_OUTPUT_TOKENS} tokens, far more than a minute of speech. One call, never

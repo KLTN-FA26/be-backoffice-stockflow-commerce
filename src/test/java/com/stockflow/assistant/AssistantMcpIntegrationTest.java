@@ -5,12 +5,13 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.jayway.jsonpath.JsonPath;
 import com.stockflow.assistant.internal.domain.ToolSpec;
 import com.stockflow.assistant.internal.service.AssistantTools;
-import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.security.Role;
+import com.stockflow.support.AssistantStock;
 import com.stockflow.support.ReferenceRows;
 import com.stockflow.support.RoleGrants;
 import com.stockflow.support.SecuredIntegrationTest;
 import com.stockflow.support.SecuredMvc;
+import com.stockflow.support.StaffFixtures;
 import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -27,10 +28,7 @@ import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilde
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.nio.charset.StandardCharsets;
-import java.sql.Date;
-import java.sql.Timestamp;
 import java.time.Instant;
-import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -60,7 +58,6 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 class AssistantMcpIntegrationTest {
 
     private static final String MCP = "/api/v1/assistant/mcp";
-    private static final String BIN = "HCM-A01-1-B";
     private static final String VERSION = "2025-06-18";
 
     @Autowired MockMvc mockMvc;
@@ -77,21 +74,13 @@ class AssistantMcpIntegrationTest {
     @BeforeEach
     void setUp() {
         http = new SecuredMvc(mockMvc, decoder);
-        // Opt-in (V20261105001100): the roles these cases sign in with, as an administrator would grant them.
-        RoleGrants.grant(jdbc, tx, "assistant-mcp:CREATE", "SALES_STAFF", "INVENTORY_PLANNER", "WAREHOUSE_MANAGER");
-        sku = "MCP-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(Locale.ROOT);
-        tx.executeWithoutResult(s -> {
-            UUID product = Identifiers.newId();
-            jdbc.update("insert into product.products(id,code,name,slug) values (?,?,?,?)", product, sku,
-                    "MCP fixture", sku.toLowerCase(Locale.ROOT));
-            jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature) values (?,?,?,?,'')",
-                    Identifiers.newId(), product, sku, "MCP fixture");
-            jdbc.update("""
-                    insert into inventory.stock_item (id, sku, location_code, expiry_date, received_at, on_hand,
-                        reserved, status, version, created_at) values (?, ?, ?, ?, ?, 10, 0, 'AVAILABLE', 0, now())""",
-                    Identifiers.newId(), sku, BIN, Date.valueOf(LocalDate.now().plusYears(1)),
-                    Timestamp.from(Instant.parse("2026-01-02T00:00:00Z")));
-        });
+        // Opt-in (V20261125001100): the roles these cases sign in with, as an administrator would grant them.
+        RoleGrants.grant(jdbc, tx, "assistant-mcp:CREATE", "SALES_STAFF", "SYSTEM_ADMIN", "WAREHOUSE_MANAGER",
+                "WAREHOUSE_STAFF");
+        // One whole carton of 10 at an HCM bin: stock is LPN cartons only since the rescope.
+        AssistantStock stock = new AssistantStock(jdbc, tx, entityManager);
+        sku = stock.sku("MCP-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(Locale.ROOT));
+        stock.cartons(sku, AssistantStock.HCM_BIN, 1, 10, "MCP-LOT", Instant.parse("2026-01-02T00:00:00Z"));
     }
 
     @Test
@@ -121,20 +110,20 @@ class AssistantMcpIntegrationTest {
     }
 
     @Test
-    @DisplayName("tools/list is the caller's own: SALES_STAFF sees findOrder and not getStockLevels, a planner the "
-            + "reverse, each exactly what the capabilities panel grants, with the description and schema the tool "
+    @DisplayName("tools/list is the caller's own: SALES_STAFF sees findOrder and not getStockLevels, warehouse staff "
+            + "the reverse, each exactly what the capabilities panel grants, with the description and schema the tool "
             + "declares")
     void theToolListIsTheCallersOwn() throws Exception {
         UUID sales = staff("SALES_STAFF");
-        UUID planner = staff("INVENTORY_PLANNER");
+        UUID clerk = staff("WAREHOUSE_STAFF", WAREHOUSE_HCM);
 
         JsonNode salesTools = toolList(Role.SALES_STAFF, sales);
-        JsonNode plannerTools = toolList(Role.INVENTORY_PLANNER, planner);
+        JsonNode clerkTools = toolList(Role.WAREHOUSE_STAFF, clerk);
 
         assertThat(names(salesTools)).contains("findOrder").doesNotContain("getStockLevels")
                 .containsExactlyElementsOf(granted(Role.SALES_STAFF, sales));
-        assertThat(names(plannerTools)).contains("getStockLevels").doesNotContain("findOrder")
-                .containsExactlyElementsOf(granted(Role.INVENTORY_PLANNER, planner));
+        assertThat(names(clerkTools)).contains("getStockLevels").doesNotContain("findOrder")
+                .containsExactlyElementsOf(granted(Role.WAREHOUSE_STAFF, clerk));
         Map<String, ToolSpec> specs = tools.specs().stream()
                 .collect(Collectors.toMap(ToolSpec::name, Function.identity()));
         for (JsonNode tool : salesTools) {
@@ -149,9 +138,9 @@ class AssistantMcpIntegrationTest {
     @Test
     @DisplayName("a granted tool answers under the caller's own permissions, as the text the chat's model receives")
     void aGrantedToolAnswers() throws Exception {
-        UUID planner = staff("INVENTORY_PLANNER");
+        UUID admin = staff("SYSTEM_ADMIN");
 
-        JsonNode result = call(Role.INVENTORY_PLANNER, planner, "getStockLevels", "{\"sku\":\"" + sku + "\"}");
+        JsonNode result = call(Role.SYSTEM_ADMIN, admin, "getStockLevels", "{\"sku\":\"" + sku + "\"}");
 
         assertThat(result.path("isError").isBoolean()).isTrue();
         assertThat(result.path("isError").booleanValue()).isFalse();
@@ -161,16 +150,16 @@ class AssistantMcpIntegrationTest {
     @Test
     @DisplayName("every MCP call is recorded as an MCP run of its user, with no conversation; a refused one too")
     void callsAreRecorded() throws Exception {
-        UUID planner = staff("INVENTORY_PLANNER");
+        UUID admin = staff("SYSTEM_ADMIN");
         UUID sales = staff("SALES_STAFF");
 
-        call(Role.INVENTORY_PLANNER, planner, "getStockLevels", "{\"sku\":\"" + sku + "\"}");
+        call(Role.SYSTEM_ADMIN, admin, "getStockLevels", "{\"sku\":\"" + sku + "\"}");
         call(Role.SALES_STAFF, sales, "getStockLevels", "{\"sku\":\"" + sku + "\"}");
 
         assertThat(jdbc.queryForList("""
                 SELECT outcome FROM assistant.tool_call
                 WHERE channel = 'MCP' AND user_id = ? AND conversation_id IS NULL AND tool_name = 'getStockLevels'""",
-                String.class, planner)).containsExactly("OK");
+                String.class, admin)).containsExactly("OK");
         assertThat(jdbc.queryForList("SELECT outcome FROM assistant.tool_call WHERE channel = 'MCP' AND user_id = ?",
                 String.class, sales)).containsExactly("DENIED");
     }
@@ -178,10 +167,10 @@ class AssistantMcpIntegrationTest {
     @Test
     @DisplayName("a JSON-RPC id of any length is answered and recorded: the record's call id is the server's own")
     void aLongRequestIdIsRecorded() throws Exception {
-        UUID planner = staff("INVENTORY_PLANNER");
+        UUID admin = staff("SYSTEM_ADMIN");
         String id = "\"" + "x".repeat(300) + "\"";
 
-        String body = http.asRole(Role.INVENTORY_PLANNER, planner, mcp("{\"jsonrpc\":\"2.0\",\"id\":" + id
+        String body = http.asRole(Role.SYSTEM_ADMIN, admin, mcp("{\"jsonrpc\":\"2.0\",\"id\":" + id
                         + ",\"method\":\"tools/call\",\"params\":{\"name\":\"getStockLevels\",\"arguments\":{\"sku\":\""
                         + sku + "\"}}}").header("MCP-Protocol-Version", VERSION))
                 .andExpect(status().isOk()).andReturn().getResponse().getContentAsString(StandardCharsets.UTF_8);
@@ -189,7 +178,7 @@ class AssistantMcpIntegrationTest {
         assertThat(json.readTree(body).path("result").path("isError").booleanValue()).isFalse();
         assertThat(jdbc.queryForObject("""
                 SELECT call_id FROM assistant.tool_call WHERE channel = 'MCP' AND user_id = ?""", String.class,
-                planner)).startsWith("mcp-").hasSizeLessThan(100);
+                admin)).startsWith("mcp-").hasSizeLessThan(100);
     }
 
     @Test
@@ -206,28 +195,32 @@ class AssistantMcpIntegrationTest {
     }
 
     @Test
-    @DisplayName("a manager limited to HCM is not offered company-wide figures and gets none by calling for them: the "
-            + "tool's own scope rule holds over MCP as in the chat")
-    void aWarehouseLimitedCallerGetsNoCompanyWideFigures() throws Exception {
+    @DisplayName("a manager limited to HCM gets HCM's stock and no company-wide figure, and a manager of another "
+            + "warehouse gets no HCM row: the tool's own scope rule holds over MCP as in the chat")
+    void aWarehouseLimitedCallerGetsTheirWarehousesOnly() throws Exception {
         UUID manager = staff("WAREHOUSE_MANAGER", WAREHOUSE_HCM);
+        UUID elsewhere = staff("WAREHOUSE_MANAGER",
+                new StaffFixtures(jdbc, tx, entityManager).otherWarehouse().id());
 
-        assertThat(names(toolList(Role.WAREHOUSE_MANAGER, manager))).contains("getStockLevels")
-                .doesNotContain("findLowStock");
-        JsonNode result = call(Role.WAREHOUSE_MANAGER, manager, "findLowStock", "{\"limit\":10}");
+        JsonNode result = call(Role.WAREHOUSE_MANAGER, manager, "getStockLevels", "{\"sku\":\"" + sku + "\"}");
+        JsonNode other = call(Role.WAREHOUSE_MANAGER, elsewhere, "getStockLevels", "{\"sku\":\"" + sku + "\"}");
 
         assertThat(result.path("isError").booleanValue()).isFalse();
         JsonNode answer = json.readTree(text(result));
-        assertThat(answer.path("skus").isArray()).isTrue();
-        assertThat(answer.path("skus")).isEmpty();
-        assertThat(answer.path("note").asText()).contains("company-wide");
+        assertThat(answer.path("warehouses")).singleElement()
+                .satisfies(row -> assertThat(row.path("warehouseCode").asText()).isEqualTo("HCM"));
+        assertThat(answer.has("companyAvailableToPromise")).as("never a company figure to a warehouse-limited user")
+                .isFalse();
+        assertThat(other.path("isError").booleanValue()).isFalse();
+        assertThat(json.readTree(text(other)).path("warehouses")).isEmpty();
     }
 
     @Test
     @DisplayName("a method the server does not have is the JSON-RPC error -32601, with the request's id")
     void anUnknownMethodIsMethodNotFound() throws Exception {
-        UUID planner = staff("INVENTORY_PLANNER");
+        UUID admin = staff("SYSTEM_ADMIN");
 
-        http.asRole(Role.INVENTORY_PLANNER, planner, mcp(request(7, "resources/list", "{}"))
+        http.asRole(Role.SYSTEM_ADMIN, admin, mcp(request(7, "resources/list", "{}"))
                         .header("MCP-Protocol-Version", VERSION))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.id").value(7))
@@ -257,12 +250,12 @@ class AssistantMcpIntegrationTest {
     @DisplayName("a page of another site cannot drive it, token or not: the shared CORS policy refuses its Origin "
             + "(the transport's defence against DNS rebinding)")
     void aPageOfAnotherSiteIsRefused() throws Exception {
-        UUID planner = staff("INVENTORY_PLANNER");
+        UUID admin = staff("SYSTEM_ADMIN");
 
-        http.asRole(Role.INVENTORY_PLANNER, planner, mcp(request(1, "ping", "{}")).header("Origin",
+        http.asRole(Role.SYSTEM_ADMIN, admin, mcp(request(1, "ping", "{}")).header("Origin",
                         "https://evil.example"))
                 .andExpect(status().isForbidden());
-        http.asRole(Role.INVENTORY_PLANNER, planner, mcp(request(2, "ping", "{}")).header("Origin",
+        http.asRole(Role.SYSTEM_ADMIN, admin, mcp(request(2, "ping", "{}")).header("Origin",
                         "http://localhost:3100"))
                 .andExpect(status().isOk());
     }
@@ -270,10 +263,10 @@ class AssistantMcpIntegrationTest {
     @Test
     @DisplayName("a body over 64 KiB is 413 with a JSON-RPC error, and nothing runs")
     void aBodyTooLargeIsRefused() throws Exception {
-        UUID planner = staff("INVENTORY_PLANNER");
+        UUID admin = staff("SYSTEM_ADMIN");
         String query = "x".repeat(70_000);
 
-        http.asRole(Role.INVENTORY_PLANNER, planner, mcp(request(4, "tools/call",
+        http.asRole(Role.SYSTEM_ADMIN, admin, mcp(request(4, "tools/call",
                         "{\"name\":\"searchKnowledge\",\"arguments\":{\"query\":\"" + query + "\"}}")))
                 .andExpect(status().isPayloadTooLarge())
                 .andExpect(jsonPath("$.error.code").value(-32600));
@@ -283,11 +276,11 @@ class AssistantMcpIntegrationTest {
     @DisplayName("an MCP client and the chat draw on one rate-limit budget: once MCP requests have spent it, the "
             + "chat's next question is refused too")
     void oneBudgetWithTheChat() throws Exception {
-        UUID planner = staff("INVENTORY_PLANNER");
+        UUID admin = staff("SYSTEM_ADMIN");
         int answered = 0;
         boolean limited = false;
         for (int i = 0; i < 40 && !limited; i++) {
-            MockHttpServletResponse response = http.asRole(Role.INVENTORY_PLANNER, planner,
+            MockHttpServletResponse response = http.asRole(Role.SYSTEM_ADMIN, admin,
                     mcp(request(i, "ping", "{}"))).andReturn().getResponse();
             if (response.getStatus() == 200) {
                 answered++;
@@ -300,7 +293,7 @@ class AssistantMcpIntegrationTest {
         assertThat(limited).as("a 429 within 40 rapid requests").isTrue();
         assertThat(answered).isBetween(10, 20);
 
-        http.asRole(Role.INVENTORY_PLANNER, planner,
+        http.asRole(Role.SYSTEM_ADMIN, admin,
                         post("/api/v1/assistant/conversations/" + UUID.randomUUID() + "/messages")
                                 .contentType(MediaType.APPLICATION_JSON).content("{\"text\":\"Xin chào\"}"))
                 .andExpect(status().isTooManyRequests())

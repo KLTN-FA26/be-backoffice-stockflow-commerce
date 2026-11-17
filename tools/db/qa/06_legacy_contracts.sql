@@ -43,8 +43,8 @@ SELECT pg_temp.expect_true('the archive exists', $q$ SELECT to_regclass('platfor
 
 \echo '--- C1: SKUs and designs point at the PIM'
 INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount, currency, placed_at, created_at,
-                                     paid_amount, paid_in_full_at)
-SELECT md5('qa:contract:order')::uuid, 'ORD-QA-CONTRACT', id, gen_random_uuid(), 'CONFIRMED', 1, 'VND', NOW(), NOW(), 1, NOW()
+                                     contract_signed_at)
+SELECT md5('qa:contract:order')::uuid, 'ORD-QA-CONTRACT', id, gen_random_uuid(), 'CONFIRMED', 1, 'VND', NOW(), NOW(), NOW()
   FROM customer.customer LIMIT 1;
 SELECT pg_temp.expect_fail('order line for a SKU that is no variant', $q$
     INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency)
@@ -58,8 +58,8 @@ SELECT pg_temp.expect_fail('design draft of no product', $q$
 
 \echo '--- C2: the map is the only location model'
 SELECT pg_temp.expect_fail('stock at a location the map does not have', $q$
-    INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, version, created_at)
-    VALUES (gen_random_uuid(), 'SOFA-3S-GREY', 'NOWHERE-1', 1, 0, 'AVAILABLE', 0, NOW()) $q$);
+    INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, version, created_at)
+    VALUES (gen_random_uuid(), 'SOFA-3S-GREY', 'NOWHERE-1', 'QA-LOT', 1, 0, 'AVAILABLE', 0, NOW()) $q$);
 SELECT pg_temp.expect_fail('warehouse without a map frame', $q$
     UPDATE warehouse.warehouse SET map_width = NULL WHERE prefix = 'HCM' $q$);
 SELECT pg_temp.expect_true('putaway targets a storage location', $q$
@@ -68,8 +68,8 @@ SELECT pg_temp.expect_true('putaway targets a storage location', $q$
 
 \echo '--- C3: stock and putaway are of known inventory items'
 SELECT pg_temp.expect_fail('stock of a SKU with no inventory item', $q$
-    INSERT INTO inventory.stock_item (id, sku, location_code, on_hand, reserved, status, version, created_at)
-    SELECT gen_random_uuid(), 'NO-ITEM-SKU', location_code, 1, 0, 'AVAILABLE', 0, NOW()
+    INSERT INTO inventory.stock_item (id, sku, location_code, lot_number, on_hand, reserved, status, version, created_at)
+    SELECT gen_random_uuid(), 'NO-ITEM-SKU', location_code, 'QA-LOT', 1, 0, 'AVAILABLE', 0, NOW()
       FROM warehouse.storage_location LIMIT 1 $q$);
 
 \echo '--- C4: putaway has exactly one source'
@@ -80,9 +80,5 @@ SELECT pg_temp.expect_true('putaway names a receipt and its line together, both 
     SELECT count(*) = 3 FROM pg_constraint
      WHERE conrelid = 'warehouse.putaway_task'::regclass
        AND conname IN ('ck_putaway_task_receipt_pair', 'fk_putaway_task_receipt', 'fk_putaway_task_receipt_line') $q$);
-SELECT pg_temp.expect_fail('delivery decision for no purchase order', $q$
-    INSERT INTO procurement.po_delivery_decision (id, purchase_order_id, generation, expected_at, reconciled,
-                                                  acknowledge_past_due, channel, recipient, actor, requested_at)
-    VALUES (gen_random_uuid(), gen_random_uuid(), 0, CURRENT_DATE, FALSE, FALSE, 'EMAIL', 'a@b.test', 'qa', NOW()) $q$);
 
 ROLLBACK;

@@ -85,11 +85,12 @@ class LoadEstimateService implements LoadEstimates {
     static final BigDecimal TRIAL_WEIGHT_KG = new BigDecimal("0.001");
 
     /**
-     * Where an estimate makes sense: CONFIRMED (the release dialog estimates before releasing, design v2 §2, with the
-     * warehouse it is about to choose), released to production or the warehouse, and partly fulfilled (its remaining
-     * units only). DRAFT, PENDING_PAYMENT, ON_HOLD and everything from SHIPPED on are refused.
+     * Where an estimate makes sense: CONFIRMED or AWAITING_STOCK (the release dialog estimates before releasing, design
+     * v2 §2, with the warehouse it is about to choose - an order waiting for stock is released from it too, 4A-6),
+     * released to the warehouse, and partly fulfilled (its remaining units only). DRAFT, PENDING_PAYMENT, ON_HOLD and
+     * everything from SHIPPED on are refused.
      */
-    private static final Set<OrderStatus> ESTIMABLE = EnumSet.of(OrderStatus.CONFIRMED, OrderStatus.IN_PRODUCTION,
+    private static final Set<OrderStatus> ESTIMABLE = EnumSet.of(OrderStatus.CONFIRMED, OrderStatus.AWAITING_STOCK,
             OrderStatus.READY_TO_FULFILL, OrderStatus.PICKING, OrderStatus.PACKED, OrderStatus.PARTIALLY_FULFILLED);
 
     private static final TypeReference<List<EstimateLine>> LINES = new TypeReference<>() { };
@@ -110,17 +111,12 @@ class LoadEstimateService implements LoadEstimates {
     private final Duration budget;
     private final Duration wallLimit;
     private final LoadPlanner planner = new LoadPlanner();
-    private final com.stockflow.inventory.api.TransferFulfillment transfers;
-    /** SCRUM-287 PR T: a transfer is estimated until it is dispatched. */
-    private static final Set<String> TRANSFER_ESTIMABLE = Set.of("DRAFT", "PENDING_APPROVAL", "APPROVED", "PICKING");
 
     LoadEstimateService(LoadEstimateJpaRepository estimates, VehicleTypeJpaRepository vehicleTypes,
                         OrderService orders, WarehouseService warehouses, PackagingSpecResolver packaging,
                         ObjectMapper json, PlatformTransactionManager transactionManager,
                         @Value("${stockflow.fulfillment.load-planning.solver-budget:PT5S}") Duration budget,
-                        @Value("${stockflow.fulfillment.load-planning.solver-wall-limit:PT12S}") Duration wallLimit,
-                        com.stockflow.inventory.api.TransferFulfillment transfers) {
-        this.transfers = transfers;
+                        @Value("${stockflow.fulfillment.load-planning.solver-wall-limit:PT12S}") Duration wallLimit) {
         this.estimates = estimates;
         this.vehicleTypes = vehicleTypes;
         this.orders = orders;
@@ -149,11 +145,9 @@ class LoadEstimateService implements LoadEstimates {
     @Override
     public LoadEstimateView create(CreateEstimate command) {
         Source source = onlySource(command.sources());
-        boolean transfer = source.type() == SourceType.TRANSFER;
         SelectionMode mode = command.selectionMode() == null ? SelectionMode.SINGLE_TYPE : command.selectionMode();
-        Prepared prepared = reads.execute(s -> transfer
-                ? prepareTransfer(source.id(), command.warehouseId(), command.vehicleTypeIds(), mode)
-                : prepare(source.id(), command.warehouseId(), command.vehicleTypeIds(), mode));
+        Prepared prepared = reads.execute(s -> prepare(source.id(), command.warehouseId(), command.vehicleTypeIds(),
+                mode));
 
         LoadPlanResult result = planner.plan(prepared.request());
         Layouts.Mapped mapped = Layouts.of(prepared.request(), result,
@@ -165,11 +159,7 @@ class LoadEstimateService implements LoadEstimates {
         layout.set("meta", json.valueToTree(meta(result)));
 
         UUID id = writes.execute(s -> {
-            if (transfer) {
-                recheckTransfer(source.id(), prepared);
-            } else {
-                recheck(source.id(), prepared);
-            }
+            recheck(source.id(), prepared);
             estimates.lockSource(source.type() + ":" + source.id());
             List<LoadEstimateJpaEntity> current = estimates.findAllBySourceTypeAndSourceIdAndStatus(
                     source.type().name(), source.id(), LoadEstimateJpaEntity.CURRENT);
@@ -344,73 +334,6 @@ class LoadEstimateService implements LoadEstimates {
     }
 
     /**
-     * SCRUM-287 PR T: a transfer order, from its creation until it is dispatched, at its source warehouse - every line
-     * requested, each carton from the packaging-spec resolver as an order line's (LP2-2..LP2-5; a line without sizes is
-     * blocked on its own, LP2-3). {@code orderLineId} of an estimate line is then the transfer line's id.
-     */
-    private Prepared prepareTransfer(UUID transferId, UUID requestedWarehouse, List<UUID> requestedTypes,
-                                     SelectionMode mode) {
-        var transfer = transfers.find(transferId).orElseThrow(() -> new NotFoundException("Transfer order",
-                transferId));
-        if (requestedWarehouse != null && !requestedWarehouse.equals(transfer.fromWarehouseId())) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Transfer " + transfer.number()
-                    + " leaves from another warehouse", List.of(new FieldError("warehouseId",
-                    "must be the transfer's source warehouse, or left out", "WarehouseMismatch")));
-        }
-        WarehouseScope.requireWarehouse(transfer.fromWarehouseId());
-        if (!TRANSFER_ESTIMABLE.contains(transfer.status())) {
-            throw new BusinessException(ErrorCode.LOAD_ESTIMATE_SOURCE_NOT_ELIGIBLE, "Transfer " + transfer.number()
-                    + " is " + transfer.status() + "; a transfer is estimated until it is dispatched");
-        }
-        Map<UUID, Integer> remaining = new LinkedHashMap<>();
-        transfer.lines().forEach(l -> remaining.put(l.lineId(), l.requested()));
-        List<VehicleSpec> types = vehicleSpecs(requestedTypes);
-        List<PackagingSpec> specs = packaging.resolveAll(transfer.lines().stream()
-                .map(l -> new PackagingRequest(new Sku(l.sku()), l.requested())).toList());
-        List<MissingLine> missing = new ArrayList<>();
-        List<EstimateCartons.Line> resolved = new ArrayList<>();
-        List<EstimateLine> estimateLines = new ArrayList<>();
-        List<EstimateWarning> warnings = new ArrayList<>();
-        for (int i = 0; i < transfer.lines().size(); i++) {
-            var line = transfer.lines().get(i);
-            PackagingSpec spec = specs.get(i);
-            spec.warnings().forEach(w -> warnings.add(new EstimateWarning(line.lineId(), spec.sku(), w.code().name(),
-                    w.unitOfMeasure(), w.fields(), w.message())));
-            List<String> absent = missingFields(spec);
-            if (!absent.isEmpty()) {
-                missing.add(new MissingLine(line.lineId(), spec.sku(), spec.inventoryItemId(), absent));
-                continue;
-            }
-            resolved.add(new EstimateCartons.Line(line.lineId(), spec));
-            estimateLines.add(line(line.lineId(), spec));
-        }
-        if (resolved.isEmpty()) {
-            throw new BusinessException(ErrorCode.LOAD_ESTIMATE_PACKAGING_MISSING, "No line of transfer "
-                    + transfer.number() + " has an item with a size and weight; complete the item(s) and estimate"
-                    + " again", missing.stream().map(LoadEstimateService::missingField).toList());
-        }
-        EstimateCartons.Built built = EstimateCartons.build(transferId.toString(), resolved);
-        LoadPlanRequest request = new LoadPlanRequest(built.cartons(), types, mode, built.kits(),
-                KitDistribution.AUTO, false, null, SEED, budget, wallLimit);
-        return new Prepared(transfer.fromWarehouseId(), remaining, types.stream().map(VehicleSpec::typeId).toList(),
-                mode, request, built, estimateLines, List.copyOf(missing), warnings);
-    }
-
-    /** Before storing: the transfer may still be estimated, from the same warehouse, with the same lines. */
-    private void recheckTransfer(UUID transferId, Prepared prepared) {
-        var transfer = transfers.find(transferId).orElse(null);
-        Map<UUID, Integer> lines = new LinkedHashMap<>();
-        if (transfer != null) {
-            transfer.lines().forEach(l -> lines.put(l.lineId(), l.requested()));
-        }
-        if (transfer == null || !TRANSFER_ESTIMABLE.contains(transfer.status())
-                || !transfer.fromWarehouseId().equals(prepared.warehouseId()) || !lines.equals(prepared.remaining())) {
-            throw new BusinessException(ErrorCode.LOAD_ESTIMATE_SOURCE_NOT_ELIGIBLE, "The transfer changed while it was "
-                    + "estimated (dispatched, cancelled or edited); estimate again");
-        }
-    }
-
-    /**
      * The warehouse the estimate belongs to: a released order's own; a CONFIRMED one has none yet, so the caller names
      * the warehouse the release dialog is about to choose - it must exist, be active and be within the caller's scope.
      */
@@ -461,7 +384,7 @@ class LoadEstimateService implements LoadEstimates {
 
     /**
      * The requested types in the order given (duplicates dropped), or every active type by code. A type the plan may
-     * not use is refused rather than silently left out: the coordinator chose it.
+     * not use is refused rather than silently left out: the warehouse manager chose it.
      */
     private List<VehicleSpec> vehicleSpecs(List<UUID> requested) {
         List<VehicleTypeJpaEntity> rows = new ArrayList<>();

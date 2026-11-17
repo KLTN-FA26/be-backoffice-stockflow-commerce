@@ -67,20 +67,18 @@ class ConversationServiceTest {
     }
 
     @Test
-    @DisplayName("one answer per question: the last text, carrying every call made for it, its citations and "
-            + "proposals; a line the model wrote beside its tool call takes nothing with it")
+    @DisplayName("one answer per question: the last text, carrying every call made for it and its citations; a line "
+            + "the model wrote beside its tool call takes nothing with it")
     void oneAnswerPerQuestion() {
         ToolExecution search = new ToolExecution(new ToolCall("toolu_1", "searchKnowledge", "{}"), ToolOutcome.OK,
                 "{\"passages\":[{\"anchor\":\"BR-RMA-002\"}]}", 3);
-        ToolExecution reorder = new ToolExecution(new ToolCall("toolu_2", "proposeReorder", "{}"), ToolOutcome.OK,
-                "{\"lines\":[],\"proposals\":[{\"type\":\"PURCHASE_ORDER_DRAFT\",\"supplierCode\":\"SUP-A\","
-                        + "\"supplierName\":\"A\",\"generatedAt\":\"2026-10-25T03:00:00Z\","
-                        + "\"lines\":[{\"sku\":\"CUP-12OZ\",\"quantity\":1276}]}]}", 5);
+        ToolExecution stock = new ToolExecution(new ToolCall("toolu_2", "getStockLevels", "{}"), ToolOutcome.OK,
+                "{\"sku\":\"CUP-12OZ\",\"companyAvailableToPromise\":1276}", 5);
         List<Message> messages = List.of(
-                question(0, "Hàng in theo yêu cầu có được trả lại không, và nên nhập thêm CUP-12OZ không?"),
-                model(1, "Để tôi kiểm tra quy định đổi trả.", LanguageModel.StopReason.TOOL_USE, search, reorder),
+                question(0, "Hàng in theo yêu cầu có được trả lại không, và CUP-12OZ còn bao nhiêu?"),
+                model(1, "Để tôi kiểm tra quy định đổi trả.", LanguageModel.StopReason.TOOL_USE, search, stock),
                 results(2, "toolu_1", "toolu_2"),
-                model(3, "Không, trừ khi hàng bị lỗi (BR-RMA-002). Nên nhập 1.276 cái.",
+                model(3, "Không, trừ khi hàng bị lỗi (BR-RMA-002). Còn 1.276 cái.",
                         LanguageModel.StopReason.END_TURN));
         when(store.messagesInScope(CONVERSATION)).thenReturn(messages);
 
@@ -93,69 +91,9 @@ class ConversationServiceTest {
         assertThat(answer.text()).startsWith("Không, trừ khi hàng bị lỗi");
         assertThat(answer.toolCalls()).containsExactly(
                 new ConversationService.ToolCallView("searchKnowledge", ToolOutcome.OK),
-                new ConversationService.ToolCallView("proposeReorder", ToolOutcome.OK));
+                new ConversationService.ToolCallView("getStockLevels", ToolOutcome.OK));
         assertThat(answer.citations()).containsExactly("BR-RMA-002");
-        assertThat(answer.proposals()).singleElement()
-                .satisfies(proposal -> assertThat(proposal.supplierCode()).isEqualTo("SUP-A"));
         assertThat(answer.cutShort()).isFalse();
-    }
-
-    @Test
-    @DisplayName("storing an answer suggests its proposals on its last text, in the same call; the transcript shows "
-            + "each proposal with its suggestion")
-    void answersSuggestTheirProposals() {
-        AssistantActions actions = org.mockito.Mockito.mock(AssistantActions.class);
-        ConversationService suggesting = new ConversationService(store, verdicts, Clock.fixed(NOW, ZoneOffset.UTC),
-                json, actions);
-        ToolExecution reorder = new ToolExecution(new ToolCall("toolu_2", "proposeReorder", "{}"), ToolOutcome.OK,
-                "{\"lines\":[],\"proposals\":[{\"type\":\"PURCHASE_ORDER_DRAFT\",\"supplierCode\":\"SUP-A\","
-                        + "\"supplierName\":\"A\",\"generatedAt\":\"2026-10-25T03:00:00Z\","
-                        + "\"lines\":[{\"sku\":\"CUP-12OZ\",\"quantity\":1276}]}]}", 5);
-        List<Message> produced = List.of(
-                model(1, null, LanguageModel.StopReason.TOOL_USE, reorder),
-                results(2, "toolu_2"),
-                model(3, "Nên nhập thêm CUP-12OZ.", LanguageModel.StopReason.END_TURN));
-        UUID owner = UUID.randomUUID();
-        when(store.appendAndRelease(org.mockito.ArgumentMatchers.eq(CONVERSATION), org.mockito.ArgumentMatchers.any(),
-                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any()))
-                .thenReturn(produced);
-
-        suggesting.appendAndRelease(CONVERSATION, owner, NOW, List.of());
-
-        org.mockito.ArgumentCaptor<List<AnswerSources.Proposal>> proposals = org.mockito.ArgumentCaptor.forClass(List.class);
-        org.mockito.Mockito.verify(actions).suggestPurchaseOrders(org.mockito.ArgumentMatchers.eq(owner),
-                org.mockito.ArgumentMatchers.eq(CONVERSATION), org.mockito.ArgumentMatchers.eq(produced.get(2).id()),
-                proposals.capture());
-        assertThat(proposals.getValue()).singleElement()
-                .satisfies(proposal -> assertThat(proposal.key()).isEqualTo("PURCHASE_ORDER_DRAFT:SUP-A"));
-
-        UUID suggestion = UUID.randomUUID();
-        when(store.messagesInScope(CONVERSATION)).thenReturn(java.util.stream.Stream.concat(
-                java.util.stream.Stream.of(question(0, "Có nên nhập thêm CUP-12OZ không?")), produced.stream()).toList());
-        when(actions.ofAnswers(org.mockito.ArgumentMatchers.anyCollection(), org.mockito.ArgumentMatchers.any()))
-                .thenReturn(java.util.Map.of(produced.get(2).id(), java.util.Map.of("PURCHASE_ORDER_DRAFT:SUP-A",
-                        new AssistantActions.ActionView(suggestion,
-                                com.stockflow.assistant.internal.domain.AssistantAction.Kind.PURCHASE_ORDER_DRAFT,
-                                com.stockflow.assistant.internal.domain.AssistantAction.Status.SUGGESTED, NOW, NOW,
-                                null, null, null, null, null, null))));
-        assertThat(suggesting.transcript(CONVERSATION).get(1).actions())
-                .containsOnlyKeys("PURCHASE_ORDER_DRAFT:SUP-A")
-                .satisfies(made -> assertThat(made.get("PURCHASE_ORDER_DRAFT:SUP-A").id()).isEqualTo(suggestion));
-    }
-
-    @Test
-    @DisplayName("an answer that proposes nothing suggests nothing")
-    void noProposalNoSuggestion() {
-        AssistantActions actions = org.mockito.Mockito.mock(AssistantActions.class);
-        ConversationService suggesting = new ConversationService(store, verdicts, Clock.fixed(NOW, ZoneOffset.UTC),
-                json, actions);
-        when(store.appendAndRelease(org.mockito.ArgumentMatchers.eq(CONVERSATION), org.mockito.ArgumentMatchers.any(),
-                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any()))
-                .thenReturn(List.of(model(1, "Xin chào.", LanguageModel.StopReason.END_TURN)));
-
-        suggesting.appendAndRelease(CONVERSATION, UUID.randomUUID(), NOW, List.of());
-
-        org.mockito.Mockito.verifyNoInteractions(actions);
     }
 
     @Test
@@ -166,18 +104,18 @@ class ConversationServiceTest {
                 "{\"sku\":\"EVAL-BOX-A4\",\"warehouses\":[{\"warehouseCode\":\"HCM\",\"onHand\":75}]}", 2);
         ToolExecution search = new ToolExecution(new ToolCall("toolu_1", "searchKnowledge", "{}"), ToolOutcome.OK,
                 "{\"passages\":[{\"anchor\":\"BR-RMA-002\"}]}", 3);
-        ToolExecution lots = new ToolExecution(new ToolCall("toolu_2", "findExpiringLots", "{}"), ToolOutcome.OK,
-                "{\"expiringTotal\":1,\"expiring\":[{\"sku\":\"EVAL-LID-90\",\"lotNumber\":\"EVAL-LID-A\","
-                        + "\"quantityAtLastCheck\":30}]}", 3);
+        ToolExecution lots = new ToolExecution(new ToolCall("toolu_2", "findOrders", "{}"), ToolOutcome.OK,
+                "{\"total\":1,\"truncated\":false,\"orders\":[{\"orderNumber\":\"SO-20991231-900001\","
+                        + "\"status\":\"ON_HOLD\",\"hold\":{\"reason\":\"INVENTORY\"}}]}", 3);
         List<Message> earlier = List.of(question(0, "Tồn EVAL-BOX-A4?"),
                 model(1, null, LanguageModel.StopReason.TOOL_USE, stock),
                 results(2, stock),
                 model(3, "Kho HCM còn 75.", LanguageModel.StopReason.END_TURN));
-        Message asked = question(4, "Trả lại được không, lô nào sắp hết hạn?");
+        Message asked = question(4, "Trả lại được không, đơn nào đang bị giữ?");
         List<Message> exchange = List.of(
                 model(5, "Để tôi kiểm tra.", LanguageModel.StopReason.TOOL_USE, search, lots),
                 results(6, search, lots),
-                model(7, "Không (BR-RMA-002). Lô EVAL-LID-A còn 30, HCM vẫn 75, thêm 64 nữa.",
+                model(7, "Không (BR-RMA-002). Đơn SO-20991231-900001 đang bị giữ, HCM vẫn 75, thêm 64 nữa.",
                         LanguageModel.StopReason.END_TURN));
         List<Message> conversation = new ArrayList<>(earlier);
         conversation.add(asked);
@@ -194,11 +132,11 @@ class ConversationServiceTest {
         assertThat(reopened.citations()).isEqualTo(live.citations());
         assertThat(reopened.cutShort()).isEqualTo(live.cutShort());
         assertThat(reopened.tables()).isEqualTo(live.tables()).extracting(ResultTable.Table::key)
-                .containsExactly("findExpiringLots.expiring");
+                .containsExactly("findOrders.orders");
         assertThat(reopened.unverifiedNumbers()).isEqualTo(live.unverifiedNumbers())
                 .as("75 was looked up in the earlier exchange; 64 nowhere").containsExactly("64");
         assertThat(reopened.followUps()).isEqualTo(live.followUps())
-                .containsExactly(new FollowUps.FollowUp(FollowUps.Kind.SKU_LOTS, "EVAL-LID-90"));
+                .containsExactly(new FollowUps.FollowUp(FollowUps.Kind.ORDER_SHORTAGE, "SO-20991231-900001"));
     }
 
     @Test
@@ -220,7 +158,7 @@ class ConversationServiceTest {
     @DisplayName("a verdict is recorded only on an answer of the caller's own conversation; anything else is not "
             + "found")
     void rateAnswer() {
-        CurrentUser owner = new CurrentUser(UUID.randomUUID(), "owner", Set.of(Role.INVENTORY_PLANNER), Set.of(),
+        CurrentUser owner = new CurrentUser(UUID.randomUUID(), "owner", Set.of(Role.SYSTEM_ADMIN), Set.of(),
                 DataScope.ALL, Set.of());
         UUID answer = UUID.randomUUID();
         AnswerFeedback down = new AnswerFeedback(FeedbackVerdict.DOWN, "  Sai số tồn  ");

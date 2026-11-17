@@ -23,25 +23,23 @@ class DesignArtifactRepositoryAdapter implements DesignArtifactRepository {
     }
 
     @Override
-    public Optional<DesignDraft> findDraft(UUID designId, UUID userId, boolean forUpdate) {
-        if (userId == null) { return Optional.empty(); }
-        return (forUpdate ? drafts.lockAccessible(designId, userId) : drafts.findAccessible(designId, userId))
-                .map(row -> new DesignDraft(row.getId(), row.getOwnerUserId(), row.getAssignedUserId(),
-                        row.getStatus(), row.getCurrentArtifactId(), row.getReviewerUserId()));
+    public Optional<DesignDraft> findDraft(UUID designId, boolean forUpdate) {
+        return (forUpdate ? drafts.lockById(designId) : drafts.findById(designId))
+                .map(row -> new DesignDraft(row.getId(), row.getOwnerUserId(), row.getStatus(),
+                        row.getCurrentArtifactId(), row.getTemplateId()));
     }
 
     @Override
     public boolean hasSnapshot(UUID designId) { return snapshots.existsByDraftId(designId); }
-
     @Override
-    public void recordEditor(UUID designId, UUID userId) {
-        drafts.findById(designId).orElseThrow().editedBy(userId);
-    }
+    public boolean quoteRequestOpen(UUID designId) { return drafts.hasOpenQuoteRequest(designId); }
+
 
     @Override
     public void attach(DesignArtifact artifact) {
         var row = new DesignArtifactJpaEntity(artifact.id(), artifact.designId(), artifact.role(), artifact.file(), artifact.checksum());
         row.setUploadKey(artifact.uploadKey());
+        row.renderedFrom(artifact.documentChecksum(), artifact.templateVersion());
         artifacts.save(row);
         // Already checked and locked by the service in this transaction.
         drafts.findById(artifact.designId()).orElseThrow().attachArtifact(artifact.role(), artifact.id());
@@ -50,7 +48,8 @@ class DesignArtifactRepositoryAdapter implements DesignArtifactRepository {
     @Override
     public List<DesignArtifact> findArtifacts(UUID designId) {
         return artifacts.findByDraftIdOrderByStoredAtDescIdDesc(designId).stream()
-                .map(row -> new DesignArtifact(row.getId(), row.getDraftId(), row.getRole(), row.storedFile(), row.getChecksum(), row.getUploadKey()))
+                .map(row -> new DesignArtifact(row.getId(), row.getDraftId(), row.getRole(), row.storedFile(), row.getChecksum(),
+                        row.getUploadKey(), row.getDocumentChecksum(), row.getTemplateVersion()))
                 .toList();
     }
 }

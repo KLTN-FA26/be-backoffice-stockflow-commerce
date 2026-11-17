@@ -22,6 +22,7 @@ public class ShipmentEventJpaEntity extends BaseEntity {
     @Column(name = "source", nullable = false, updatable = false, length = 16) private String source;
     @Column(name = "note", updatable = false, length = 1000) private String note;
     @Column(name = "recorded_by", updatable = false) private UUID recordedBy;
+    @Column(name = "carrier_event_id", updatable = false, length = 128) private String carrierEventId;
 
     protected ShipmentEventJpaEntity() {
     }
@@ -35,6 +36,18 @@ public class ShipmentEventJpaEntity extends BaseEntity {
         this.source = "MANUAL";
         this.note = note;
         this.recordedBy = recordedBy;
+    }
+
+    /**
+     * A step the carrier's webhook reported (3-5): source CARRIER_WEBHOOK, recorded by nobody, naming the carrier event
+     * it came from ({@code uk_shipment_event_carrier}: one row per step of one event).
+     */
+    public static ShipmentEventJpaEntity fromCarrier(UUID id, UUID shipmentId, String status, Instant occurredAt,
+                                                     String note, String carrierEventId) {
+        ShipmentEventJpaEntity row = new ShipmentEventJpaEntity(id, shipmentId, status, occurredAt, note, null);
+        row.source = "CARRIER_WEBHOOK";
+        row.carrierEventId = carrierEventId;
+        return row;
     }
 
     public UUID getShipmentId() { return shipmentId; }

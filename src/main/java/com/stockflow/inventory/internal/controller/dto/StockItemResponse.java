@@ -2,7 +2,6 @@ package com.stockflow.inventory.internal.controller.dto;
 
 import io.swagger.v3.oas.annotations.media.Schema;
 
-import java.time.LocalDate;
 import java.util.UUID;
 
 /**
@@ -28,7 +27,6 @@ public record StockItemResponse(
         @Schema(description = "Lot number; null when the product is not lot-tracked")
         String lotNumber,
 
-        LocalDate expiryDate,
 
         @Schema(description = "Physical units present, including reserved ones; null while hiddenDuringCount",
                 nullable = true)
@@ -51,6 +49,6 @@ public record StockItemResponse(
 
     /** The same row with its book quantities withheld (SCRUM-146). */
     public StockItemResponse hidden() {
-        return new StockItemResponse(id, sku, locationCode, lotNumber, expiryDate, null, null, null, status, true);
+        return new StockItemResponse(id, sku, locationCode, lotNumber, null, null, null, status, true);
     }
 }

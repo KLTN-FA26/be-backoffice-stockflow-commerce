@@ -11,7 +11,6 @@ import com.stockflow.inventory.api.LotTraceView;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
-import java.time.LocalDate;
 import java.util.Comparator;
 import java.util.List;
 
@@ -26,7 +25,7 @@ import java.util.List;
  * long ago rather than the ones whose goods may still be stopped.</p>
  *
  * <p><b>Only live holds.</b> The report lists every hold ever placed on the lot, in any status: a consumed hold is a
- * pick, already among the orders, and a released or expired one holds nothing. Passed on with their status, they read
+ * pick, already among the orders, and a released one holds nothing. Passed on with their status, they read
  * as units still held for an order after the goods had left.</p>
  *
  * <p><b>Several lots share the rows out.</b> A lookup traces up to {@value #MAX_LOTS} lots, and a result longer than
@@ -50,13 +49,16 @@ class TraceLotTool implements AssistantTool {
             .thenComparing(LotTraceView.OrderLeg::orderNumber, Comparator.nullsLast(Comparator.<String>naturalOrder()));
 
     private static final ToolSpec SPEC = new ToolSpec("traceLot",
-            "Trace a lot by its lot number: SKU, expiry date, when and from which goods receipt, purchase order and "
-                    + "supplier it came, how much was received, and how much is on hand, available and held now. "
+            "Trace a lot by its lot number: SKU, when and from which goods receipt and production order it came "
+                    + "(printed goods; nothing expires), how much was received, and how much is on hand, available and "
+                    + "allocated to an order now. "
                     + "Each lot then has three lists, each with its total and a truncated flag: orders (the customer "
                     + "orders it was picked for, with quantities, most recent first), balances (where it is now, by "
-                    + "location and status) and holds (units still held on it now, for an order, or for production "
-                    + "or a stock transfer when there is no order number). A lot number is unique per SKU only: a "
-                    + "supplier's date code may be printed on many SKUs, each a separate lot traced separately. "
+                    + "location and status; a balance with hiddenDuringCount has no figures while a blind count is "
+                    + "under way there: say they are hidden during the count, never zero) and holds (units still "
+                    + "allocated on it now, for an order). A lot number is "
+                    + "unique per SKU only: one number may be printed on many SKUs, each a separate lot traced "
+                    + "separately. "
                     + "Several lots share the rows out, so each lists fewer; ask for the SKU to see one lot in full. "
                     + "When totalLots is more than the lots returned, some were not traced: say so plainly (a recall "
                     + "built on a partial list misses customers) and ask for the SKU. When ordersTruncated is true the "
@@ -109,14 +111,15 @@ class TraceLotTool implements AssistantTool {
     private static Lot lot(LotTraceView view, int rows) {
         List<LotTraceView.OrderLeg> orders = view.orders().stream().sorted(MOST_RECENT_FIRST).toList();
         List<LotTraceView.Hold> live = view.holds().stream().filter(hold -> LIVE.equals(hold.status())).toList();
-        return new Lot(view.sku(), view.lotNumber(), view.expiryDate(), view.receivedAt(), view.origin(),
-                view.goodsReceiptNumber(), view.purchaseOrderNumber(), view.supplierName(), view.receivedQuantity(),
+        return new Lot(view.sku(), view.lotNumber(), view.receivedAt(), view.origin(),
+                view.goodsReceiptNumber(), view.productionOrderCode(), view.receivedQuantity(),
                 view.onHand(), view.available(), view.held(),
                 orders.size(), orders.size() > rows, orders.stream().limit(rows)
                         .map(o -> new OrderLeg(o.orderNumber(), o.picked(), o.putBack(), o.firstAt(), o.lastAt()))
                         .toList(),
                 view.balances().size(), view.balances().size() > rows, view.balances().stream().limit(rows)
-                        .map(b -> new Balance(b.locationCode(), b.status(), b.onHand(), b.held())).toList(),
+                        .map(b -> new Balance(b.locationCode(), b.status(), b.onHand(), b.held(),
+                                b.hiddenDuringCount() ? true : null)).toList(),
                 live.size(), live.size() > rows, live.stream().limit(rows)
                         .map(h -> new Hold(h.orderNumber(), h.locationCode(), h.quantity())).toList());
     }
@@ -135,15 +138,19 @@ class TraceLotTool implements AssistantTool {
      * @param balancesTotal the locations and statuses holding some of the lot now
      * @param holdsTotal    the live holds on the lot; closed ones are neither listed nor counted
      */
-    record Lot(String sku, String lotNumber, LocalDate expiryDate, Instant receivedAt, String origin,
-               String goodsReceiptNumber, String purchaseOrderNumber, String supplierName, long receivedQuantity,
+    record Lot(String sku, String lotNumber, Instant receivedAt, String origin,
+               String goodsReceiptNumber, String productionOrderCode, long receivedQuantity,
                long onHand, long available, long held,
                int ordersTotal, boolean ordersTruncated, List<OrderLeg> orders,
                int balancesTotal, boolean balancesTruncated, List<Balance> balances,
                int holdsTotal, boolean holdsTruncated, List<Hold> holds) {
     }
 
-    record Balance(String locationCode, String status, int onHand, int held) {
+    /**
+     * @param hiddenDuringCount true while a blind count covers the location: {@code onHand} and {@code held} are then
+     *                          withheld, as the lot screen withholds them from the counter; null otherwise
+     */
+    record Balance(String locationCode, String status, Integer onHand, Integer held, Boolean hiddenDuringCount) {
     }
 
     record OrderLeg(String orderNumber, long picked, long putBack, Instant firstAt, Instant lastAt) {

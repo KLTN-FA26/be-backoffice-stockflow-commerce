@@ -48,15 +48,14 @@ public final class Shelf extends AggregateRoot {
     private Footprint footprint;
     private boolean obstacle;
     private PickFaces pickFaces;
-    private StorageClass defaultStorageClass;
     private LocationStatus status;
     private final List<ShelfLevel> levels;
     private final long version;
 
     /** Rehydration from storage. New shelves go through {@link #create}. */
     public Shelf(UUID id, UUID warehouseId, UUID zoneId, String code, String name, String description,
-                 Footprint footprint, boolean obstacle, PickFaces pickFaces,
-                 StorageClass defaultStorageClass, LocationStatus status, List<ShelfLevel> levels,
+                 Footprint footprint, boolean obstacle, PickFaces pickFaces, LocationStatus status,
+                 List<ShelfLevel> levels,
                  long version) {
         this.id = Objects.requireNonNull(id, "id");
         this.warehouseId = Objects.requireNonNull(warehouseId, "warehouseId");
@@ -67,7 +66,6 @@ public final class Shelf extends AggregateRoot {
         this.footprint = Objects.requireNonNull(footprint, "footprint");
         this.obstacle = obstacle;
         this.pickFaces = Objects.requireNonNull(pickFaces, "pickFaces");
-        this.defaultStorageClass = Objects.requireNonNull(defaultStorageClass, "defaultStorageClass");
         this.status = Objects.requireNonNull(status, "status");
         this.levels = new ArrayList<>(levels);
         this.version = version;
@@ -75,27 +73,26 @@ public final class Shelf extends AggregateRoot {
 
     public static Shelf create(UUID id, UUID warehouseId, UUID zoneId, String code, String name,
                                String description, Footprint footprint, boolean obstacle,
-                               PickFaces pickFaces, StorageClass defaultStorageClass) {
-        requireShape(footprint, pickFaces, defaultStorageClass);
+                               PickFaces pickFaces) {
+        requireShape(footprint, pickFaces);
         return new Shelf(id, warehouseId, zoneId, CodePart.of(code, CodePart.CODE_MAX_LENGTH).value(),
                 DomainChecks.requiredText("name", name, NAME_MAX_LENGTH),
                 DomainChecks.optionalText("description", description, DESCRIPTION_MAX_LENGTH),
-                footprint, obstacle, pickFaces, defaultStorageClass, LocationStatus.ACTIVE, List.of(), 0L);
+                footprint, obstacle, pickFaces, LocationStatus.ACTIVE, List.of(), 0L);
     }
 
     /**
-     * Everything but the code. A new size must still hold every bin on the layout; a new default
-     * class reaches every bin without an override (issue #18 D9).
+     * Everything but the code. A new size must still hold every bin on the layout.
      *
      * @param expectedVersion the version the caller's edit was based on
      */
     public void update(UUID zoneId, String name, String description, Footprint footprint, boolean obstacle,
-                       PickFaces pickFaces, StorageClass defaultStorageClass, long expectedVersion) {
+                       PickFaces pickFaces, long expectedVersion) {
         if (expectedVersion != version) {
             throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK,
                     "Shelf %s changed meanwhile (version %d, edit based on %d)".formatted(code, version, expectedVersion));
         }
-        requireShape(footprint, pickFaces, defaultStorageClass);
+        requireShape(footprint, pickFaces);
         String newName = DomainChecks.requiredText("name", name, NAME_MAX_LENGTH);
         String newDescription = DomainChecks.optionalText("description", description, DESCRIPTION_MAX_LENGTH);
         for (ShelfLevel level : levels) {
@@ -116,10 +113,6 @@ public final class Shelf extends AggregateRoot {
         this.footprint = footprint;
         this.obstacle = obstacle;
         this.pickFaces = pickFaces;
-        this.defaultStorageClass = defaultStorageClass;
-        levels.forEach(level -> level.bins().stream()
-                .filter(bin -> bin.details().storageClassOverride() == null)
-                .forEach(bin -> bin.location().reclassify(defaultStorageClass)));
     }
 
     /** Bins keep their own status (issue #18 D2). */
@@ -143,13 +136,27 @@ public final class Shelf extends AggregateRoot {
             throw new BusinessException(ErrorCode.SHELF_CAPACITY_EXCEEDED,
                     "Shelf %s already has the maximum of %d levels".formatted(code, MAX_LEVELS));
         }
-        ShelfLevel level = new ShelfLevel(levelId, levelIndex, Objects.requireNonNull(measures, "measures"), List.of());
+        ShelfLevel level = new ShelfLevel(levelId, levelIndex, requireClearHeight(measures), List.of());
         levels.add(level);
         return level;
     }
 
     public void updateLevel(UUID levelId, LevelMeasures measures) {
-        level(levelId).apply(Objects.requireNonNull(measures, "measures"));
+        level(levelId).apply(requireClearHeight(measures));
+    }
+
+    /**
+     * A level is declared with its clear height (kltn-docs 06 BR-19, decided 2026-11-05): a bin's volume is its width
+     * times its length times this height, and a carton must fit under it (BR-01). Required on every write, so a legacy
+     * level without one gets it the first time somebody edits it; until then its bins have no volume and putaway does
+     * not check their height ({@code ck_shelf_level_usable_height_required} says the same, for new rows only).
+     */
+    private static LevelMeasures requireClearHeight(LevelMeasures measures) {
+        Objects.requireNonNull(measures, "measures");
+        if (measures.usableHeight() == null) {
+            throw DomainChecks.invalid("A shelf level needs its clear height (usableHeight): bin volumes are computed from it");
+        }
+        return measures;
     }
 
     /**
@@ -174,8 +181,7 @@ public final class Shelf extends AggregateRoot {
         requirePickFaceFor(settings);
 
         LocationCode locationCode = LocationCode.ofBin(warehousePrefix, this.code, level.levelIndex(), binCode);
-        StorageLocation location = StorageLocation.forBin(locationId, warehouseId, locationCode,
-                storageClassOf(details), settings);
+        StorageLocation location = StorageLocation.forBin(locationId, warehouseId, locationCode, settings);
         Bin bin = new Bin(binId, binCode, details, location);
         level.add(bin);
         return bin;
@@ -229,7 +235,7 @@ public final class Shelf extends AggregateRoot {
                 BinDetails details = defaults.detailsAt(cell.footprint());
                 LocationCode locationCode = LocationCode.ofBin(warehousePrefix, code, target.levelIndex(), cell.code());
                 StorageLocation location = StorageLocation.forBin(newId.get(), warehouseId, locationCode,
-                        storageClassOf(details), defaults.settings());
+                        defaults.settings());
                 bins.add(new Bin(newId.get(), cell.code(), details, location));
             }
             planned.put(target, bins);
@@ -253,7 +259,7 @@ public final class Shelf extends AggregateRoot {
         }
         requirePickFaceFor(settings);
         bin.apply(details);
-        bin.location().apply(storageClassOf(details), settings);
+        bin.location().apply(settings);
     }
 
     /**
@@ -315,13 +321,9 @@ public final class Shelf extends AggregateRoot {
                 "Shelf %s holds pickable bins, so it needs at least one pick face".formatted(code));
     }
 
-    private StorageClass storageClassOf(BinDetails details) {
-        return details.storageClassOverride() != null ? details.storageClassOverride() : defaultStorageClass;
-    }
-
-    private static void requireShape(Footprint footprint, PickFaces pickFaces, StorageClass defaultStorageClass) {
-        if (footprint == null || pickFaces == null || defaultStorageClass == null) {
-            throw DomainChecks.invalid("A shelf needs a footprint, pick faces and a default storage class");
+    private static void requireShape(Footprint footprint, PickFaces pickFaces) {
+        if (footprint == null || pickFaces == null) {
+            throw DomainChecks.invalid("A shelf needs a footprint and pick faces");
         }
     }
 
@@ -334,7 +336,6 @@ public final class Shelf extends AggregateRoot {
     public Footprint footprint() { return footprint; }
     public boolean obstacle() { return obstacle; }
     public PickFaces pickFaces() { return pickFaces; }
-    public StorageClass defaultStorageClass() { return defaultStorageClass; }
     public LocationStatus status() { return status; }
     public List<ShelfLevel> levels() { return Collections.unmodifiableList(levels); }
     public long version() { return version; }

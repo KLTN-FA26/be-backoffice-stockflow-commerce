@@ -2,14 +2,10 @@ package com.stockflow.assistant.internal.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.stockflow.common.api.PageResponse;
-import com.stockflow.common.error.BusinessException;
-import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.security.Action;
-import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.CurrentUserProvider;
 import com.stockflow.common.security.DataScope;
 import com.stockflow.common.security.Role;
-import com.stockflow.customer.api.CustomerService;
 import com.stockflow.fulfillment.api.ShipmentQueries;
 import com.stockflow.fulfillment.api.ShipmentSummary;
 import com.stockflow.common.error.NotFoundException;
@@ -18,8 +14,6 @@ import com.stockflow.inventory.api.StockAdjustmentQueries;
 import com.stockflow.inventory.api.StockAdjustmentReason;
 import com.stockflow.inventory.api.StockAdjustmentStatus;
 import com.stockflow.inventory.api.StockAdjustmentSummary;
-import com.stockflow.payment.api.OverdueCustomer;
-import com.stockflow.payment.api.OverdueReceivables;
 import com.stockflow.support.TestUsers;
 import com.stockflow.warehouse.api.WarehouseService;
 import com.stockflow.warehouse.api.WarehouseView;
@@ -27,12 +21,9 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
-import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Instant;
-import java.time.LocalDate;
 import java.time.ZoneOffset;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -41,7 +32,6 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyCollection;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
@@ -52,7 +42,7 @@ import static org.mockito.Mockito.when;
 /**
  * The four tools of P8 without a database: what each asks of its module, and what each row says. The guards, the
  * warehouse limits and the screens they mirror are held end to end by {@code AssistantIntegrationTest} and
- * {@code AssistantCapabilitiesIntegrationTest}; getCustomerCredit's credit left by {@link GetCustomerCreditToolTest}.
+ * {@code AssistantCapabilitiesIntegrationTest}.
  */
 class P8ToolsTest {
 
@@ -136,6 +126,18 @@ class P8ToolsTest {
         }
 
         @Test
+        @DisplayName("EXPIRED and SUBCONTRACT_LOSS are named as legacy, and a counter is told the queue leaves out the "
+                + "slots under a count, hidden, never zero")
+        void legacyReasonsAndTheBlindCount() {
+            String description = tool.spec().description();
+
+            assertThat(description).contains("EXPIRED and SUBCONTRACT_LOSS are legacy", "hidden during the count, "
+                    + "never zero", "may not approve cycle counts");
+            assertThat(description.indexOf("EXPIRED")).as("not among the current reasons")
+                    .isGreaterThan(description.indexOf("COUNT_VARIANCE"));
+        }
+
+        @Test
         @DisplayName("thirty rows of the longest values stay under the result limit")
         void thirtyRowsFit() throws Exception {
             signedIn(true);
@@ -206,9 +208,9 @@ class P8ToolsTest {
         private final FindShipmentsTool tool = new FindShipmentsTool(queries, warehouses);
         private final UUID hcm = UUID.randomUUID();
 
-        private ShipmentSummary shipment(String code, String status, BigDecimal cod, String failure) {
+        private ShipmentSummary shipment(String code, String status, String failure) {
             return new ShipmentSummary(UUID.randomUUID(), code, UUID.randomUUID(), code.substring(0, code.indexOf("-S")),
-                    hcm, status, "PARCEL", 2, cod, "VND", "Giao Hàng Nhanh", null, false, NOW.minusSeconds(7_200),
+                    hcm, status, 2, "Ahamove", "LD-1", false, NOW.minusSeconds(7_200),
                     NOW.minusSeconds(3_600), "DELIVERY_FAILED".equals(status) ? NOW : null, failure);
         }
 
@@ -235,9 +237,9 @@ class P8ToolsTest {
             List<ShipmentSummary> rows = new java.util.ArrayList<>();
             for (int i = 0; i < FindShipmentsTool.MAX_ROWS; i++) {
                 rows.add(new ShipmentSummary(UUID.randomUUID(), longest("SO-20261105-000123-S" + i, 48),
-                        UUID.randomUUID(), longest("SO-20261105-000123", 32), hcm, "DELIVERY_FAILED", "PARCEL",
-                        999, new BigDecimal("123456789012.3456"), "VND", longest("Hãng vận chuyển ", 120),
-                        longest("LD-", 30), true, NOW, NOW, NOW, "WRONG_ADDRESS"));
+                        UUID.randomUUID(), longest("SO-20261105-000123", 32), hcm, "DELIVERY_FAILED",
+                        999, longest("Hãng vận chuyển ", 120), longest("LD-", 30), true, NOW, NOW, NOW,
+                        "WRONG_ADDRESS"));
             }
             when(queries.shipments(any(), any(), org.mockito.ArgumentMatchers.anyBoolean(), eq(0), eq(30)))
                     .thenReturn(PageResponse.of(rows, 0, 30, 1_000_000));
@@ -247,19 +249,18 @@ class P8ToolsTest {
         }
 
         @Test
-        @DisplayName("each row names its warehouse by code, looked up once per warehouse; a COD amount and its "
-                + "currency only when the carrier collects something; the carrier's name cut")
+        @DisplayName("each row names its warehouse by code, looked up once per warehouse, and its truckload; the "
+                + "carrier's name cut")
         void rows() {
             when(warehouses.findWarehouse(hcm)).thenReturn(Optional.of(new WarehouseView(hcm, "HCM", "Kho HCM",
                     "Q7", true)));
             ShipmentSummary longName = new ShipmentSummary(UUID.randomUUID(), "SO-20261105-000103-S1",
-                    UUID.randomUUID(), "SO-20261105-000103", hcm, "READY_TO_DISPATCH", "PARCEL", 1, BigDecimal.ZERO,
-                    "VND", "Công ty Cổ phần Giao Nhận Vận Tải Liên Tỉnh Miền Nam", null, false, NOW, null, null, null);
+                    UUID.randomUUID(), "SO-20261105-000103", hcm, "READY_TO_DISPATCH", 1,
+                    "Công ty Cổ phần Giao Nhận Vận Tải Liên Tỉnh Miền Nam", null, false, NOW, null, null, null);
             when(queries.shipments(any(), any(), org.mockito.ArgumentMatchers.anyBoolean(), eq(0), eq(30)))
                     .thenReturn(PageResponse.of(List.of(
-                            shipment("SO-20261105-000101-S1", "DELIVERY_FAILED", new BigDecimal("1500000"),
-                                    "CUSTOMER_ABSENT"),
-                            shipment("SO-20261105-000102-S1", "HANDED_OVER", BigDecimal.ZERO, null), longName),
+                            shipment("SO-20261105-000101-S1", "DELIVERY_FAILED", "CUSTOMER_ABSENT"),
+                            shipment("SO-20261105-000102-S1", "HANDED_OVER", null), longName),
                             0, 30, 3));
 
             FindShipmentsTool.Answer answer = tool.run(arguments("{\"status\":\"ANY\",\"search\":\"\",\"limit\":30}"));
@@ -270,10 +271,8 @@ class P8ToolsTest {
             assertThat(failed.warehouseCode()).isEqualTo("HCM");
             assertThat(failed.orderNumber()).isEqualTo("SO-20261105-000101");
             assertThat(failed.failureReason()).isEqualTo("CUSTOMER_ABSENT");
-            assertThat(failed.currency()).isEqualTo("VND");
+            assertThat(failed.loadCode()).isEqualTo("LD-1");
             assertThat(failed.outcomeAt()).isEqualTo(NOW);
-            assertThat(answer.shipments().get(1).codAmount()).isNull();
-            assertThat(answer.shipments().get(1).currency()).isNull();
             assertThat(answer.shipments().get(2).carrierName()).hasSizeLessThanOrEqualTo(41).endsWith("…");
             verify(warehouses, times(1)).findWarehouse(hcm);
         }
@@ -282,90 +281,8 @@ class P8ToolsTest {
         @DisplayName("the description says there is no tracking number, so none is made up, that a failure reason on "
                 + "a delivered shipment is an earlier attempt's, and that there is no date filter")
         void whatTheDescriptionSays() {
-            assertThat(tool.spec().description()).contains("There are no tracking numbers", "never give one",
+            assertThat(tool.spec().description()).contains("carry no tracking number", "never give one",
                     "an earlier attempt's, not the outcome", "there is no date filter");
-        }
-    }
-
-    @Nested
-    @DisplayName("findOverdueCustomers")
-    class OverdueCustomers {
-
-        private final OverdueReceivables receivables = mock(OverdueReceivables.class);
-        private final CustomerService customers = mock(CustomerService.class);
-        private final CurrentUserProvider users = mock(CurrentUserProvider.class);
-        private final FindOverdueCustomersTool tool = new FindOverdueCustomersTool(receivables, customers, users,
-                CLOCK);
-
-        private final UUID abc = UUID.randomUUID();
-
-        private void owing() {
-            Map<String, BigDecimal> totals = new LinkedHashMap<>();
-            totals.put("VND", new BigDecimal("72000000"));
-            when(receivables.overdueCustomers(false, 10)).thenReturn(new OverdueReceivables.OverdueCustomers(
-                    List.of(new OverdueCustomer(abc, new BigDecimal("15000000"), "VND", LocalDate.of(2026, 10, 14),
-                            5, List.of("SO-1", "SO-2", "SO-3", "SO-4", "SO-5"))), 4, 4, totals));
-            when(receivables.overdueCustomers(true, 10)).thenReturn(new OverdueReceivables.OverdueCustomers(
-                    List.of(), 0, 0, Map.of()));
-            when(customers.fullNames(anyCollection())).thenReturn(Map.of(abc, "Công ty In Ly ABC"));
-        }
-
-        @Test
-        @DisplayName("Sales, who may list customers: each customer by name, what it owes past due, since when and for "
-                + "how many days in Vietnam, its first orders; the totals; largest first unless the oldest is asked")
-        void rows() {
-            when(users.current()).thenReturn(Optional.of(TestUsers.builder().role(Role.SALES_STAFF)
-                    .scope(DataScope.ALL).can("payment-receivables", Action.READ)
-                    .can("customer-customers", Action.READ).build()));
-            owing();
-
-            FindOverdueCustomersTool.Answer answer = tool.run(arguments("{\"order\":\"LARGEST_FIRST\",\"limit\":10}"));
-            tool.run(arguments("{\"order\":\"OLDEST_FIRST\",\"limit\":10}"));
-
-            verify(receivables).overdueCustomers(true, 10);
-            assertThat(answer.customersNamed()).isTrue();
-            assertThat(answer.totalCustomers()).isEqualTo(4);
-            assertThat(answer.truncated()).isTrue();
-            assertThat(answer.totalOverdue()).singleElement().satisfies(total -> {
-                assertThat(total.currency()).isEqualTo("VND");
-                assertThat(total.amount()).isEqualByComparingTo("72000000");
-            });
-            FindOverdueCustomersTool.Row row = answer.customers().getFirst();
-            assertThat(row.customerName().name()).isEqualTo("Công ty In Ly ABC");
-            assertThat(row.orderNumbers()).isEqualTo("SO-1, SO-2, SO-3 (+2)");
-            assertThat(row.overdueAmount()).isEqualByComparingTo("15000000");
-            assertThat(row.oldestDueDate()).isEqualTo(LocalDate.of(2026, 10, 14));
-            assertThat(row.daysOverdue()).isEqualTo(22);
-            assertThat(row.overdueReceivables()).isEqualTo(5);
-        }
-
-        @Test
-        @DisplayName("the accountant, who may not list customers, gets the debts by their orders and no name: a list "
-                + "of debtors by name would be the customer list their grants leave out")
-        void noNamesForWhoMayNotListCustomers() {
-            when(users.current()).thenReturn(Optional.of(TestUsers.builder().role(Role.ACCOUNTANT)
-                    .scope(DataScope.ALL).can("payment-receivables", Action.READ).build()));
-            owing();
-
-            FindOverdueCustomersTool.Answer answer = tool.run(arguments("{\"order\":\"LARGEST_FIRST\",\"limit\":10}"));
-
-            assertThat(answer.customersNamed()).isFalse();
-            assertThat(answer.customers().getFirst().customerName()).isNull();
-            assertThat(answer.customers().getFirst().orderNumbers()).startsWith("SO-1");
-            verifyNoInteractions(customers);
-        }
-
-        @Test
-        @DisplayName("a portal customer, who holds the same READ for its own receivables, is refused before anything "
-                + "is read")
-        void notForCustomers() {
-            CurrentUser customer = TestUsers.customer();
-            when(users.current()).thenReturn(Optional.of(customer));
-
-            assertThatThrownBy(() -> tool.run(arguments("{\"order\":\"LARGEST_FIRST\",\"limit\":10}")))
-                    .isInstanceOfSatisfying(BusinessException.class,
-                            e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.FORBIDDEN));
-            verifyNoInteractions(receivables, customers);
         }
     }
 }

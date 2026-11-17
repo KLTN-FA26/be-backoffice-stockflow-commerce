@@ -6,7 +6,7 @@ import java.util.Optional;
 import java.util.UUID;
 
 /**
- * An order's pick task and what happened on each line, for other modules (the assistant, ADR-0010): the detail
+ * An order's pick task and what happened on each line, for other modules (the assistant, ADR-0011): the detail
  * behind "why is this order on hold" when the reason is a short pick.
  *
  * <p>The same visibility as {@code GET /api/v1/fulfillment/tasks/{taskId}/pick-lines}: the caller must be allowed to
@@ -16,7 +16,7 @@ import java.util.UUID;
 public interface OrderPickingQueries {
 
     /**
-     * @return empty when the order has no pick task yet
+     * @return empty when the order has no pick task yet; with one task per released delivery batch (4B-8), the newest
      * @throws com.stockflow.common.error.BusinessException {@code OUT_OF_DATA_SCOPE} or {@code FORBIDDEN} when the
      *         caller may not see the task
      */

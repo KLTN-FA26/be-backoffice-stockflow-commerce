@@ -79,15 +79,15 @@ class AssistantFailureIntegrationTest {
     @DisplayName("a question the provider refuses before any reply is shown with the error, and is not counted "
             + "toward the daily cap; one it answers is")
     void failedQuestionIsShownAndNotCounted() throws Exception {
-        UUID planner = staff("INVENTORY_PLANNER");
-        String conversation = start(planner);
+        UUID admin = staff("SYSTEM_ADMIN");
+        String conversation = start(admin);
         doThrow(new BusinessException(ErrorCode.ASSISTANT_UNAVAILABLE, "provider down")).when(model).next(any());
 
-        http.asRole(Role.INVENTORY_PLANNER, planner, ask(conversation, "Lô nào sắp hết hạn?"))
+        http.asRole(Role.SYSTEM_ADMIN, admin, ask(conversation, "Lô nào nhập kho lâu nhất?"))
                 .andExpect(status().isServiceUnavailable())
                 .andExpect(jsonPath("$.errorCode").value("ASSISTANT_UNAVAILABLE"));
 
-        http.asRole(Role.INVENTORY_PLANNER, planner, get(BASE + "/" + conversation + "/messages"))
+        http.asRole(Role.SYSTEM_ADMIN, admin, get(BASE + "/" + conversation + "/messages"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.length()").value(2))
                 .andExpect(jsonPath("$.data[1].role").value("ASSISTANT"))
@@ -96,32 +96,32 @@ class AssistantFailureIntegrationTest {
                 + "order by sequence", String.class, conversation))
                 .containsExactly(null, "stockflow");
         Instant today = BusinessDate.startOfDay(Instant.now());
-        assertThat(conversations.questionsSince(planner, today)).as("the provider never replied").isZero();
+        assertThat(conversations.questionsSince(admin, today)).as("the provider never replied").isZero();
 
         doReturn(answer("Không có lô nào.")).when(model).next(any());
-        http.asRole(Role.INVENTORY_PLANNER, planner, ask(conversation, "Lô nào sắp hết hạn?"))
+        http.asRole(Role.SYSTEM_ADMIN, admin, ask(conversation, "Lô nào nhập kho lâu nhất?"))
                 .andExpect(status().isOk());
-        assertThat(conversations.questionsSince(planner, today)).isEqualTo(1);
+        assertThat(conversations.questionsSince(admin, today)).isEqualTo(1);
     }
 
     @Test
     @DisplayName("an answer that cannot be stored still releases the conversation: the next question is not refused "
             + "as busy")
     void storeFailureReleasesTheConversation() throws Exception {
-        UUID planner = staff("INVENTORY_PLANNER");
-        String conversation = start(planner);
+        UUID admin = staff("SYSTEM_ADMIN");
+        String conversation = start(admin);
         // message.model is VARCHAR(64): a provider naming its model longer than that breaks the INSERT at the end.
         LanguageModel.Reply unstorable = new LanguageModel.Reply(new Turn.ModelTurn("{\"scripted\":\"answer\"}",
                 "Xin chào.", List.of()), LanguageModel.StopReason.END_TURN, LanguageModel.Usage.NONE, "m".repeat(65));
         doReturn(unstorable, answer("Xin chào.")).when(model).next(any());
 
-        int status = http.asRole(Role.INVENTORY_PLANNER, planner, ask(conversation, "Xin chào"))
+        int status = http.asRole(Role.SYSTEM_ADMIN, admin, ask(conversation, "Xin chào"))
                 .andReturn().getResponse().getStatus();
 
         assertThat(status).as("the answer could not be stored").isGreaterThanOrEqualTo(400);
         assertThat(jdbc.queryForObject("select answering_since from assistant.conversation where id = ?::uuid",
                 Timestamp.class, conversation)).as("the claim is released").isNull();
-        http.asRole(Role.INVENTORY_PLANNER, planner, ask(conversation, "Xin chào"))
+        http.asRole(Role.SYSTEM_ADMIN, admin, ask(conversation, "Xin chào"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.answer").value("Xin chào."));
     }
@@ -130,12 +130,12 @@ class AssistantFailureIntegrationTest {
     @DisplayName("a tool name the model made up, which ck_tool_call_name would refuse, is stored under a fixed name "
             + "and the answer is kept")
     void madeUpToolName() throws Exception {
-        UUID planner = staff("INVENTORY_PLANNER");
-        String conversation = start(planner);
+        UUID admin = staff("SYSTEM_ADMIN");
+        String conversation = start(admin);
         when(model.next(any())).thenReturn(toolUse(null, "default_api.getStockLevels", "{\"sku\":\"AST-NOPE01\"}"),
                 answer("Tôi không tra được."));
 
-        http.asRole(Role.INVENTORY_PLANNER, planner, ask(conversation, "Còn bao nhiêu AST-NOPE01?"))
+        http.asRole(Role.SYSTEM_ADMIN, admin, ask(conversation, "Còn bao nhiêu AST-NOPE01?"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.answer").value("Tôi không tra được."))
                 .andExpect(jsonPath("$.data.toolCalls[0].tool").value("unknownTool"))
@@ -152,15 +152,15 @@ class AssistantFailureIntegrationTest {
     @DisplayName("reopened, a conversation shows one answer per question, and the tool chips stay under the answer, "
             + "not under the line the model wrote beside its call")
     void oneAnswerPerQuestion() throws Exception {
-        UUID planner = staff("INVENTORY_PLANNER");
-        String conversation = start(planner);
+        UUID admin = staff("SYSTEM_ADMIN");
+        String conversation = start(admin);
         when(model.next(any())).thenReturn(toolUse("Để tôi kiểm tra tồn kho.", "getStockLevels",
                 "{\"sku\":\"AST-NOPE01\"}"), answer("Không thấy mã AST-NOPE01."));
 
-        http.asRole(Role.INVENTORY_PLANNER, planner, ask(conversation, "Còn bao nhiêu AST-NOPE01?"))
+        http.asRole(Role.SYSTEM_ADMIN, admin, ask(conversation, "Còn bao nhiêu AST-NOPE01?"))
                 .andExpect(status().isOk());
 
-        http.asRole(Role.INVENTORY_PLANNER, planner, get(BASE + "/" + conversation + "/messages"))
+        http.asRole(Role.SYSTEM_ADMIN, admin, get(BASE + "/" + conversation + "/messages"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.length()").value(2))
                 .andExpect(jsonPath("$.data[1].text").value("Không thấy mã AST-NOPE01."))
@@ -177,8 +177,8 @@ class AssistantFailureIntegrationTest {
         return user;
     }
 
-    private String start(UUID planner) throws Exception {
-        String body = http.asRole(Role.INVENTORY_PLANNER, planner, post(BASE)).andExpect(status().isCreated())
+    private String start(UUID admin) throws Exception {
+        String body = http.asRole(Role.SYSTEM_ADMIN, admin, post(BASE)).andExpect(status().isCreated())
                 .andReturn().getResponse().getContentAsString();
         return JsonPath.read(body, "$.data.id");
     }

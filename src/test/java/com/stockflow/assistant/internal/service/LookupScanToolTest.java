@@ -14,7 +14,7 @@ import com.stockflow.inventory.api.ScannedCodeQueries;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
-import java.time.LocalDate;
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -51,22 +51,21 @@ class LookupScanToolTest {
     }
 
     @Test
-    @DisplayName("an LPN label is a carton, with what is left in it, whether it is still sealed, and its stock rows "
-            + "with their own status: an IN_STOCK carton of goods waiting for QC is not one to pick")
+    @DisplayName("an LPN label is a carton, with what is in it and its stock rows with their own status: an IN_STOCK "
+            + "carton of goods waiting for putaway is not one to pick")
     void carton() {
         when(scans.carton("lpn-20261026-000001")).thenReturn(new ScannedCodeQueries.Carton("LPN-20261026-000001",
-                "EVAL-LID-90", "PCS", 50, "HCM-A01-1-B", "IN_STOCK", false, "EVAL-LOT-1", LocalDate.of(2027, 3, 1),
-                26, 10, List.of(new ScannedCodeQueries.CartonContent("EVAL-LOT-1", LocalDate.of(2027, 3, 1),
-                "INBOUND", 26, 10))));
+                "EVAL-LID-90", "PCS", 50, "HCM-A01-1-B", "IN_STOCK", "EVAL-LOT-1", 50, 50,
+                List.of(new ScannedCodeQueries.CartonContent("EVAL-LOT-1", Instant.parse("2026-10-26T03:00:00Z"),
+                "INBOUND", 50, 50))));
 
         LookupScanTool.Answer answer = scan("lpn-20261026-000001");
 
         assertThat(answer.kind()).isEqualTo("CARTON");
         assertThat(answer.carton().sku()).isEqualTo("EVAL-LID-90");
         assertThat(answer.carton().unitsWhenFull()).isEqualTo(50);
-        assertThat(answer.carton().onHand()).isEqualTo(26);
-        assertThat(answer.carton().held()).isEqualTo(10);
-        assertThat(answer.carton().unopened()).isFalse();
+        assertThat(answer.carton().onHand()).isEqualTo(50);
+        assertThat(answer.carton().held()).isEqualTo(50);
         assertThat(answer.carton().contents()).singleElement()
                 .satisfies(row -> assertThat(row.stockStatus()).isEqualTo("INBOUND"));
         verify(scans, never()).atLocation(anyString());
@@ -88,7 +87,7 @@ class LookupScanToolTest {
     @DisplayName("a location code gives what the bin holds per SKU, lot and status; an empty bin is an empty list")
     void location() {
         when(scans.atLocation("HCM-A01-1-B")).thenReturn(List.of(new ScannedCodeQueries.LocationLine("EVAL-LID-90",
-                "EVAL-LOT-1", LocalDate.of(2027, 3, 1), "AVAILABLE", 2, 100, 1, 26, 4, 130)));
+                "EVAL-LOT-1", "AVAILABLE", 2, 100, 0, 100)));
         when(scans.atLocation("HCM-A01-1-C")).thenReturn(List.of());
 
         LookupScanTool.Answer answer = scan("HCM-A01-1-B");
@@ -96,8 +95,8 @@ class LookupScanToolTest {
         assertThat(answer.kind()).isEqualTo("LOCATION");
         assertThat(answer.location()).singleElement().satisfies(row -> {
             assertThat(row.wholeCartons()).isEqualTo(2);
-            assertThat(row.openedCartonUnits()).isEqualTo(26);
-            assertThat(row.totalUnits()).isEqualTo(130);
+            assertThat(row.wholeCartonUnits()).isEqualTo(100);
+            assertThat(row.totalUnits()).isEqualTo(100);
         });
         assertThat(scan("HCM-A01-1-C").location()).isEmpty();
         verify(scans, never()).carton(anyString());
@@ -107,8 +106,8 @@ class LookupScanToolTest {
     @DisplayName("a busy area is cut at the most lines one answer carries, with the total")
     void busyArea() {
         List<ScannedCodeQueries.LocationLine> lines = java.util.stream.IntStream.range(0, 130)
-                .mapToObj(i -> new ScannedCodeQueries.LocationLine("EVAL-SKU-" + i, null, null, "INBOUND", 0, 0, 0,
-                        0, 1, 1)).toList();
+                .mapToObj(i -> new ScannedCodeQueries.LocationLine("EVAL-SKU-" + i, null, "INBOUND", 0, 0, 1, 1))
+                .toList();
         when(scans.atLocation("HCM-QC01")).thenReturn(lines);
 
         LookupScanTool.Answer answer = scan("HCM-QC01");

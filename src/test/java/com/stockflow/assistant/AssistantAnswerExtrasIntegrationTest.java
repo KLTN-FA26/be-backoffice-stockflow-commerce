@@ -5,8 +5,8 @@ import com.jayway.jsonpath.JsonPath;
 import com.stockflow.assistant.internal.domain.LanguageModel;
 import com.stockflow.assistant.internal.domain.ToolCall;
 import com.stockflow.assistant.internal.domain.Turn;
-import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.security.Role;
+import com.stockflow.support.AssistantStock;
 import com.stockflow.support.ReferenceRows;
 import com.stockflow.support.SecuredIntegrationTest;
 import com.stockflow.support.SecuredMvc;
@@ -25,10 +25,7 @@ import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilde
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.nio.charset.StandardCharsets;
-import java.sql.Date;
-import java.sql.Timestamp;
 import java.time.Instant;
-import java.time.LocalDate;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -55,7 +52,6 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 class AssistantAnswerExtrasIntegrationTest {
 
     private static final String BASE = "/api/v1/assistant/conversations";
-    private static final String BIN = "HCM-A01-1-B";
 
     @Autowired MockMvc mockMvc;
     @MockitoBean JwtDecoder decoder;
@@ -71,21 +67,13 @@ class AssistantAnswerExtrasIntegrationTest {
     void setUp() {
         http = new SecuredMvc(mockMvc, decoder);
         // Letters only: a digit in the SKU would be a number the question holds, and could ground the answer's.
-        sku = "AXT-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(Locale.ROOT).chars()
+        String code = "AXT-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(Locale.ROOT).chars()
                 .map(c -> Character.isDigit(c) ? 'G' + (c - '0') : c)
                 .collect(StringBuilder::new, StringBuilder::appendCodePoint, StringBuilder::append);
-        tx.executeWithoutResult(s -> {
-            UUID product = Identifiers.newId();
-            jdbc.update("insert into product.products(id,code,name,slug) values (?,?,?,?)", product, sku,
-                    "Assistant extras fixture", sku.toLowerCase(Locale.ROOT));
-            jdbc.update("insert into product.variants(id,product_id,sku,name,attribute_signature) values (?,?,?,?,'')",
-                    Identifiers.newId(), product, sku, "Assistant extras fixture");
-            jdbc.update("""
-                    insert into inventory.stock_item (id, sku, location_code, expiry_date, received_at, on_hand,
-                        reserved, status, version, created_at) values (?, ?, ?, ?, ?, 10, 0, 'AVAILABLE', 0, now())""",
-                    Identifiers.newId(), sku, BIN, Date.valueOf(LocalDate.now().plusYears(1)),
-                    Timestamp.from(Instant.parse("2026-01-02T00:00:00Z")));
-        });
+        // One whole carton of 10 at an HCM bin: stock is LPN cartons only since the rescope.
+        AssistantStock stock = new AssistantStock(jdbc, tx, entityManager);
+        sku = stock.sku(code);
+        stock.cartons(sku, AssistantStock.HCM_BIN, 1, 10, "AXT-LOT", Instant.parse("2026-01-02T00:00:00Z"));
         when(model.available()).thenReturn(true);
         when(model.closingTurn(anyString())).thenAnswer(call -> new Turn.ModelTurn("{\"closing\":true}",
                 call.getArgument(0), List.of()));
@@ -95,13 +83,13 @@ class AssistantAnswerExtrasIntegrationTest {
     @DisplayName("an answer carries the rows of its lookup as a table, the next question its asker may use, and the "
             + "number no lookup holds; the reopened transcript shows the same, with no verdict yet")
     void tablesSuggestionsAndUnverifiedNumbers() throws Exception {
-        UUID planner = staff("INVENTORY_PLANNER");
+        UUID admin = staff("SYSTEM_ADMIN");
         // 250: above any day, month or minute the question's calendar holds, and in no result.
         script(toolUse("getStockLevels", "{\"sku\":\"" + sku + "\"}"), answer("Kho HCM còn 10 cái, 250 cái đang về."));
-        String conversation = start(Role.INVENTORY_PLANNER, planner);
-        String lots = "Mã " + sku + " có những lô nào, hết hạn ngày nào, đang nằm ở vị trí nào?";
+        String conversation = start(Role.SYSTEM_ADMIN, admin);
+        String lots = "Mã " + sku + " có những lô nào, lô nào xuất trước, đang nằm ở vị trí nào?";
 
-        http.asRole(Role.INVENTORY_PLANNER, planner, ask(conversation, "Còn bao nhiêu " + sku + "?"))
+        http.asRole(Role.SYSTEM_ADMIN, admin, ask(conversation, "Còn bao nhiêu " + sku + "?"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.tables.length()").value(1))
                 .andExpect(jsonPath("$.data.tables[0].key").value("getStockLevels.warehouses"))
@@ -114,7 +102,7 @@ class AssistantAnswerExtrasIntegrationTest {
                 .andExpect(jsonPath("$.data.suggestions[0]").value(lots))
                 .andExpect(jsonPath("$.data.unverifiedNumbers").value(contains("250")));
 
-        String transcript = http.asRole(Role.INVENTORY_PLANNER, planner, get(BASE + "/" + conversation + "/messages"))
+        String transcript = http.asRole(Role.SYSTEM_ADMIN, admin, get(BASE + "/" + conversation + "/messages"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data[1].tables[0].rows[0].onHand").value(10))
                 .andExpect(jsonPath("$.data[1].suggestions[0]").value(lots))
@@ -129,11 +117,11 @@ class AssistantAnswerExtrasIntegrationTest {
     @Test
     @DisplayName("a streamed answer carries the same table and follow-ups, mapped on the worker thread")
     void streamedAnswerCarriesTheExtras() throws Exception {
-        UUID planner = staff("INVENTORY_PLANNER");
+        UUID admin = staff("SYSTEM_ADMIN");
         script(toolUse("getStockLevels", "{\"sku\":\"" + sku + "\"}"), answer("Kho HCM còn 10."));
-        String conversation = start(Role.INVENTORY_PLANNER, planner);
+        String conversation = start(Role.SYSTEM_ADMIN, admin);
 
-        MvcResult started = http.asRole(Role.INVENTORY_PLANNER, planner,
+        MvcResult started = http.asRole(Role.SYSTEM_ADMIN, admin,
                         post(BASE + "/" + conversation + "/messages/stream").contentType(MediaType.APPLICATION_JSON)
                                 .content("{\"text\":\"Còn bao nhiêu " + sku + "?\"}"))
                 .andExpect(request().asyncStarted())
@@ -149,18 +137,18 @@ class AssistantAnswerExtrasIntegrationTest {
     @DisplayName("an owner rates an answer, changes their mind, and the transcript shows the latest verdict; one row "
             + "per answer, the reason stripped")
     void ownerRatesAnAnswer() throws Exception {
-        UUID planner = staff("INVENTORY_PLANNER");
-        Exchange exchange = answered(planner);
+        UUID admin = staff("SYSTEM_ADMIN");
+        Exchange exchange = answered(admin);
 
-        http.asRole(Role.INVENTORY_PLANNER, planner, rate(exchange, "{\"verdict\":\"UP\"}"))
+        http.asRole(Role.SYSTEM_ADMIN, admin, rate(exchange, "{\"verdict\":\"UP\"}"))
                 .andExpect(status().isNoContent());
-        http.asRole(Role.INVENTORY_PLANNER, planner, get(BASE + "/" + exchange.conversation() + "/messages"))
+        http.asRole(Role.SYSTEM_ADMIN, admin, get(BASE + "/" + exchange.conversation() + "/messages"))
                 .andExpect(jsonPath("$.data[1].feedback").value("UP"));
 
-        http.asRole(Role.INVENTORY_PLANNER, planner, rate(exchange,
+        http.asRole(Role.SYSTEM_ADMIN, admin, rate(exchange,
                         "{\"verdict\":\"DOWN\",\"reason\":\"  Số tồn của kho EVN không đúng  \"}"))
                 .andExpect(status().isNoContent());
-        http.asRole(Role.INVENTORY_PLANNER, planner, get(BASE + "/" + exchange.conversation() + "/messages"))
+        http.asRole(Role.SYSTEM_ADMIN, admin, get(BASE + "/" + exchange.conversation() + "/messages"))
                 .andExpect(jsonPath("$.data[1].feedback").value("DOWN"));
 
         List<Map<String, Object>> rows = jdbc.queryForList(
@@ -169,7 +157,7 @@ class AssistantAnswerExtrasIntegrationTest {
         assertThat(rows).singleElement().satisfies(row -> {
             assertThat(row.get("verdict")).isEqualTo("DOWN");
             assertThat(row.get("reason")).isEqualTo("Số tồn của kho EVN không đúng");
-            assertThat(row.get("owner_user_id")).isEqualTo(planner);
+            assertThat(row.get("owner_user_id")).isEqualTo(admin);
         });
     }
 
@@ -177,19 +165,19 @@ class AssistantAnswerExtrasIntegrationTest {
     @DisplayName("only an answer of one's own conversation takes a verdict: a question, an unknown id and another "
             + "person's answer are not found, and nothing is written")
     void onlyOwnAnswers() throws Exception {
-        UUID owner = staff("INVENTORY_PLANNER");
-        UUID other = staff("INVENTORY_PLANNER");
+        UUID owner = staff("SYSTEM_ADMIN");
+        UUID other = staff("SYSTEM_ADMIN");
         Exchange exchange = answered(owner);
         String up = "{\"verdict\":\"UP\"}";
 
-        http.asRole(Role.INVENTORY_PLANNER, owner, rate(exchange.conversation(), exchange.question(), up))
+        http.asRole(Role.SYSTEM_ADMIN, owner, rate(exchange.conversation(), exchange.question(), up))
                 .andExpect(status().isNotFound());
-        http.asRole(Role.INVENTORY_PLANNER, owner, rate(exchange.conversation(), UUID.randomUUID().toString(), up))
+        http.asRole(Role.SYSTEM_ADMIN, owner, rate(exchange.conversation(), UUID.randomUUID().toString(), up))
                 .andExpect(status().isNotFound());
-        http.asRole(Role.INVENTORY_PLANNER, other, rate(exchange, up))
+        http.asRole(Role.SYSTEM_ADMIN, other, rate(exchange, up))
                 .andExpect(status().isNotFound());
-        String othersConversation = start(Role.INVENTORY_PLANNER, other);
-        http.asRole(Role.INVENTORY_PLANNER, other, rate(othersConversation, exchange.answer(), up))
+        String othersConversation = start(Role.SYSTEM_ADMIN, other);
+        http.asRole(Role.SYSTEM_ADMIN, other, rate(othersConversation, exchange.answer(), up))
                 .andExpect(status().isNotFound());
 
         assertThat(jdbc.queryForObject("select count(*) from assistant.answer_feedback where message_id = ?::uuid",
@@ -199,14 +187,14 @@ class AssistantAnswerExtrasIntegrationTest {
     @Test
     @DisplayName("a verdict is UP or DOWN with at most 500 characters of reason; a portal customer is refused")
     void validationAndCustomers() throws Exception {
-        UUID planner = staff("INVENTORY_PLANNER");
-        Exchange exchange = answered(planner);
+        UUID admin = staff("SYSTEM_ADMIN");
+        Exchange exchange = answered(admin);
 
-        http.asRole(Role.INVENTORY_PLANNER, planner, rate(exchange, "{\"verdict\":\"MEH\"}"))
+        http.asRole(Role.SYSTEM_ADMIN, admin, rate(exchange, "{\"verdict\":\"MEH\"}"))
                 .andExpect(status().isBadRequest());
-        http.asRole(Role.INVENTORY_PLANNER, planner, rate(exchange, "{\"reason\":\"no verdict\"}"))
+        http.asRole(Role.SYSTEM_ADMIN, admin, rate(exchange, "{\"reason\":\"no verdict\"}"))
                 .andExpect(status().isBadRequest());
-        http.asRole(Role.INVENTORY_PLANNER, planner, rate(exchange,
+        http.asRole(Role.SYSTEM_ADMIN, admin, rate(exchange,
                         "{\"verdict\":\"DOWN\",\"reason\":" + TextNode.valueOf("x".repeat(501)) + "}"))
                 .andExpect(status().isBadRequest());
         UUID account = tx.execute(s -> ReferenceRows.user(entityManager));
@@ -221,10 +209,10 @@ class AssistantAnswerExtrasIntegrationTest {
     /** A conversation of {@code user} with one question answered from a tool. */
     private Exchange answered(UUID user) throws Exception {
         script(toolUse("getStockLevels", "{\"sku\":\"" + sku + "\"}"), answer("Kho HCM còn 10."));
-        String conversation = start(Role.INVENTORY_PLANNER, user);
-        http.asRole(Role.INVENTORY_PLANNER, user, ask(conversation, "Còn bao nhiêu " + sku + "?"))
+        String conversation = start(Role.SYSTEM_ADMIN, user);
+        http.asRole(Role.SYSTEM_ADMIN, user, ask(conversation, "Còn bao nhiêu " + sku + "?"))
                 .andExpect(status().isOk());
-        String transcript = http.asRole(Role.INVENTORY_PLANNER, user, get(BASE + "/" + conversation + "/messages"))
+        String transcript = http.asRole(Role.SYSTEM_ADMIN, user, get(BASE + "/" + conversation + "/messages"))
                 .andReturn().getResponse().getContentAsString(StandardCharsets.UTF_8);
         return new Exchange(conversation, JsonPath.read(transcript, "$.data[0].messageId"),
                 JsonPath.read(transcript, "$.data[1].messageId"));

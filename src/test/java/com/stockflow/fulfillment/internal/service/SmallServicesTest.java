@@ -5,14 +5,11 @@ import com.stockflow.common.domain.Money;
 import com.stockflow.common.error.ErrorCode;
 import com.stockflow.common.security.DataScope;
 import com.stockflow.fulfillment.internal.domain.PackStatus;
-import com.stockflow.fulfillment.internal.domain.PackingSession;
 import com.stockflow.fulfillment.internal.entity.PackJpaEntity;
 import com.stockflow.fulfillment.internal.entity.ShipmentJpaEntity;
 import com.stockflow.fulfillment.internal.repository.PackJpaRepository;
-import com.stockflow.fulfillment.internal.repository.PackingSessionStore;
 import com.stockflow.order.api.FulfillmentCandidate;
 import com.stockflow.order.api.FulfillmentCandidates;
-import com.stockflow.order.api.OrderService;
 import com.stockflow.order.api.OrderStatus;
 import com.stockflow.order.api.OrderSummary;
 import com.stockflow.support.WithCurrentUser;
@@ -40,7 +37,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
-/** The small collaborators of the fulfillment services: the task-creation list, the transfer guard, shipment context, partial rules. */
+/** The small collaborators of the fulfillment services: the task-creation list, shipment context, partial rules. */
 class SmallServicesTest {
 
     @Test
@@ -78,62 +75,17 @@ class SmallServicesTest {
     }
 
     @Test
-    @DisplayName("10 BR-04: cancelling a transfer's picking cancels its plan first, then voids its parcels and cancels its live packing sessions")
-    void transferPickingCancellation() {
-        PackJpaRepository packs = mock(PackJpaRepository.class);
-        PackingSessionStore store = mock(PackingSessionStore.class);
-        LoadPlanReleases loadPlans = mock(LoadPlanReleases.class);
-        TransferDispatchGuardService guard = new TransferDispatchGuardService(packs, store, loadPlans);
-        UUID transferId = UUID.randomUUID();
-        PackJpaEntity live = PackJpaEntity.forTransfer(UUID.randomUUID(), transferId);
-        PackJpaEntity cancelled = PackJpaEntity.forTransfer(UUID.randomUUID(), transferId);
-        cancelled.cancel();
-        when(packs.findByTransferOrderIdOrderByCreatedAtDesc(transferId)).thenReturn(List.of(live, cancelled));
-        when(packs.lockById(live.getId())).thenReturn(Optional.of(live));
-        PackingSession session = new PackingSession(live.getId(), "TO-1", PackStatus.PACKING, NOW, UUID.randomUUID(), null,
-                null, List.of(), List.of(), List.of());
-        when(store.load(any(), any(), any())).thenReturn(session);
-
-        guard.beforePickingCancelled(transferId, NOW);
-
-        org.mockito.InOrder order = org.mockito.Mockito.inOrder(loadPlans, store);
-        order.verify(loadPlans).releaseTransfer(transferId, "picking of its transfer order was cancelled", NOW);
-        order.verify(store).save(session, live);
-        assertThat(session.status()).isEqualTo(PackStatus.CANCELLED);
-        verify(packs, never()).lockById(cancelled.getId());
-    }
-
-    @Test
-    @DisplayName("a transfer never packed has only its plan to release")
-    void transferWithoutPacking() {
-        PackJpaRepository packs = mock(PackJpaRepository.class);
-        PackingSessionStore store = mock(PackingSessionStore.class);
-        LoadPlanReleases loadPlans = mock(LoadPlanReleases.class);
-        UUID transferId = UUID.randomUUID();
-        when(packs.findByTransferOrderIdOrderByCreatedAtDesc(transferId)).thenReturn(List.of());
-
-        new TransferDispatchGuardService(packs, store, loadPlans).beforePickingCancelled(transferId, NOW);
-
-        verify(loadPlans).releaseTransfer(any(), any(), any());
-        verifyNoInteractions(store);
-    }
-
-    @Test
     @DisplayName("a shipment's task is the pick of its pack; a shipment made without a pack has none")
     void tasksOfShipments() {
         PackJpaRepository packs = mock(PackJpaRepository.class);
-        OrderService orders = mock(OrderService.class);
-        ShipmentContext context = new ShipmentContext(packs, orders);
+        ShipmentContext context = new ShipmentContext(packs);
         UUID pickId = UUID.randomUUID();
-        PackJpaEntity pack = new PackJpaEntity(UUID.randomUUID(), pickId, PackStatus.PACKED, NOW);
+        PackJpaEntity pack = new PackJpaEntity(UUID.randomUUID(), pickId, PackStatus.COMPLETED, NOW);
         ShipmentJpaEntity withPack = FulfillmentFixtures.row(com.stockflow.fulfillment.internal.domain.Shipment.ready(
-                UUID.randomUUID(), "S1", UUID.randomUUID(), pack.getId(), WAREHOUSE, null,
-                com.stockflow.fulfillment.internal.domain.DeliveryMode.PARCEL, 1, BigDecimal.ZERO, null,
-                UUID.randomUUID(), NOW));
+                UUID.randomUUID(), "S1", UUID.randomUUID(), pack.getId(), WAREHOUSE, null, 1, null, UUID.randomUUID(),
+                NOW));
         ShipmentJpaEntity noPack = FulfillmentFixtures.row(com.stockflow.fulfillment.internal.domain.Shipment.ready(
-                UUID.randomUUID(), "S2", UUID.randomUUID(), null, WAREHOUSE, null,
-                com.stockflow.fulfillment.internal.domain.DeliveryMode.PARCEL, 1, BigDecimal.ZERO, null,
-                UUID.randomUUID(), NOW));
+                UUID.randomUUID(), "S2", UUID.randomUUID(), null, WAREHOUSE, null, 1, null, UUID.randomUUID(), NOW));
         when(packs.findAllById(Set.of(pack.getId()))).thenReturn(List.of(pack));
 
         Map<UUID, UUID> tasks = context.tasks(List.of(withPack, noPack));
@@ -141,26 +93,6 @@ class SmallServicesTest {
         assertThat(tasks).containsOnly(Map.entry(withPack.getId(), pickId));
         assertThat(context.tasks(List.of(noPack))).isEmpty();
         verify(packs, org.mockito.Mockito.times(1)).findAllById(any());
-    }
-
-    @Test
-    @DisplayName("an order's currency is its total's, once per distinct order; VND when the order cannot be read (15)")
-    void currencies() {
-        PackJpaRepository packs = mock(PackJpaRepository.class);
-        OrderService orders = mock(OrderService.class);
-        ShipmentContext context = new ShipmentContext(packs, orders);
-        UUID known = UUID.randomUUID();
-        UUID gone = UUID.randomUUID();
-        OrderSummary order = FulfillmentFixtures.order(known, null);
-        when(orders.findById(known)).thenReturn(Optional.of(new OrderSummary(known, "SO-1", order.customerId(),
-                OrderStatus.PACKED, new Money(new BigDecimal("10"), java.util.Currency.getInstance("USD")), List.of(), NOW,
-                null, null, null, null, null, null, null, null, null, WAREHOUSE, NOW, null, null, null)));
-        when(orders.findById(gone)).thenReturn(Optional.empty());
-
-        Map<UUID, String> currencies = context.currencies(List.of(known, known, gone));
-
-        assertThat(currencies).containsEntry(known, "USD").containsEntry(gone, ShipmentContext.DEFAULT_CURRENCY);
-        verify(orders, org.mockito.Mockito.times(1)).findById(known);
     }
 
     @Test
@@ -187,11 +119,11 @@ class SmallServicesTest {
         UUID line = UUID.randomUUID();
         var summary = new OrderSummary.LineSummary(line, "SKU-A", quantity, Money.vnd(1000), Money.vnd(1000L * quantity),
                 List.of());
-        var lifecycle = new OrderSummary.Lifecycle(null, null, null, null, null, null, null, null, null, BigDecimal.ZERO,
-                BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, List.of(new OrderSummary.LineProgress(line, shipped, 0,
-                closed)), List.of(), BigDecimal.ZERO, BigDecimal.ZERO, allowPartial, true);
+        var lifecycle = new OrderSummary.Lifecycle(null, null, null, null, null, null, null, null, null,
+                BigDecimal.ZERO, BigDecimal.ZERO, List.of(new OrderSummary.LineProgress(line, shipped, 0,
+                closed)), List.of(), allowPartial);
         return new OrderSummary(id, "SO-1", UUID.randomUUID(), OrderStatus.PACKED, Money.vnd(1000L * quantity),
-                List.of(summary), NOW, null, null, null, null, null, null, null, null, null, WAREHOUSE, NOW, null, null,
+                List.of(summary), NOW, null, null, null, null, null, null, null, null, WAREHOUSE, NOW, null,
                 lifecycle);
     }
 }

@@ -4,7 +4,6 @@ import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.CurrentUserProvider;
 import com.stockflow.common.security.DataScope;
 import com.stockflow.product.api.CreateProductCommand;
-import com.stockflow.product.api.ProductKind;
 import com.stockflow.product.api.ProductService;
 import com.stockflow.product.api.TaxClass;
 import com.stockflow.product.internal.domain.AttributeValueDetails;
@@ -93,7 +92,7 @@ class ProductAttributeConcurrencyIntegrationTest {
         String suffix = UUID.randomUUID().toString().substring(0, 6).toUpperCase();
         code = "CONC-" + suffix;
         productId = tx.execute(s -> products.create(new CreateProductCommand(code, "Ten " + suffix,
-                "Name " + suffix, null, null, null, null, null, TaxClass.STANDARD, ProductKind.CUSTOMIZABLE, List.of()))
+                "Name " + suffix, null, null, null, null, null, TaxClass.STANDARD, List.of()))
                 .productId());
         blue = tx.execute(s -> newValue("BLUE" + suffix));
         red = tx.execute(s -> newValue("RED" + suffix));

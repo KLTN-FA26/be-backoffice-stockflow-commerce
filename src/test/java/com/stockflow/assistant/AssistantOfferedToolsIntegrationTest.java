@@ -47,7 +47,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * What the model is offered, against the seeded role matrix, the real permission aspect and the real tools (ADR-0010,
+ * What the model is offered, against the seeded role matrix, the real permission aspect and the real tools (ADR-0011,
  * amended 29/10/2026; design §5.7): each persona is offered exactly the tools the panel says it may use, sorted by
  * name and the same on every call of an answer, and a tool it was not offered still refuses it, through its own guard,
  * when a model calls it anyway.
@@ -62,9 +62,12 @@ class AssistantOfferedToolsIntegrationTest {
     private static final String CAPABILITIES = "/api/v1/assistant/capabilities";
     private static final String CONVERSATIONS = "/api/v1/assistant/conversations";
 
-    /** The tools that read stock figures: none is offered to a persona without a stock permission. */
-    private static final Set<String> STOCK_TOOLS = Set.of("findExpiringLots", "findLowStock", "getStockLevels",
-            "getStockLots", "lookupScan", "proposeReorder", "traceLot");
+    /**
+     * The tools that read stock figures or cartons: none is offered to a persona without a stock permission. Since the
+     * rescope there are no low-stock, expiry or reorder tools left among them.
+     */
+    private static final Set<String> STOCK_TOOLS = Set.of("getStockLevels", "getStockLots", "lookupScan",
+            "traceLot");
 
     @Autowired MockMvc mockMvc;
     @MockitoBean JwtDecoder decoder;
@@ -85,14 +88,16 @@ class AssistantOfferedToolsIntegrationTest {
         }
     }
 
-    /** The personas of {@code AssistantCapabilitiesIntegrationTest}: every seeded role that may open the assistant. */
+    /**
+     * The personas of {@code AssistantCapabilitiesIntegrationTest}: every seeded role that may open the assistant,
+     * each once, the warehouse roles at HCM since their scope is WAREHOUSE.
+     */
     static Stream<Persona> personas() {
-        return Stream.of(new Persona(Role.SYSTEM_ADMIN, false), new Persona(Role.INVENTORY_PLANNER, false),
-                new Persona(Role.WAREHOUSE_MANAGER, true), new Persona(Role.SALES_STAFF, false),
-                new Persona(Role.PROCUREMENT_STAFF, false), new Persona(Role.ORDER_COORDINATOR, false),
-                new Persona(Role.ACCOUNTANT, false), new Persona(Role.QC_STAFF, true),
-                // V20261105000500: the floor roles may open the assistant too.
-                new Persona(Role.WAREHOUSE_STAFF, true), new Persona(Role.PRODUCTION_STAFF, true));
+        return Stream.of(new Persona(Role.SYSTEM_ADMIN, false), new Persona(Role.WAREHOUSE_MANAGER, true),
+                // V20261125000500: warehouse staff may open the assistant too.
+                new Persona(Role.WAREHOUSE_STAFF, true), new Persona(Role.SALES_STAFF, false),
+                new Persona(Role.SALES_MANAGER, false), new Persona(Role.ACCOUNTANT, false),
+                new Persona(Role.PRODUCTION_COORDINATOR, false));
     }
 
     @BeforeEach

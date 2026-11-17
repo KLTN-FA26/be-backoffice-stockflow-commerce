@@ -3,6 +3,8 @@
 * **Status:** Accepted — supersedes [ADR-0001](0001-choose-microservices.md) and
   [ADR-0002](0002-database-per-service.md); largely supersedes
   [ADR-0003](0003-saga-and-transactional-outbox.md)
+  · **amended 2026-11-11 by [ADR-0010](0010-rescope-b2b-printed-goods.md):** the decision stands; checkout, the
+  reason cited in Context 1 and 2, no longer exists, and ADR-0010 says what justifies the single transaction now
 * **Date:** 2026-09-07
 * **Deciders:** GFA26SE03 (5 members) · Supervisor: Nguyễn Minh Sang
 * **Project:** StockFlowCommerce (FA26SE029)

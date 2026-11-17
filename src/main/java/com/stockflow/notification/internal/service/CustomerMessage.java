@@ -1,6 +1,11 @@
 package com.stockflow.notification.internal.service;
 
+import com.stockflow.notification.api.CustomerContact;
+import com.stockflow.notification.internal.domain.Email;
+
+import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.UUID;
 
 /**
@@ -14,8 +19,12 @@ import java.util.UUID;
  *
  * @param guestAddress the address an order placed without an account carried; null for a customer's message, which
  *                     is addressed from {@code CustomerDirectory} when it is sent
+ * @param recipient    where this message goes instead of the customer's contact address, asked when it is sent; null
+ *                     for every message but the issued e-invoice's, which goes to the address the invoice names
+ * @param attachments  the files sent with it, read when it is sent; null for a message without any
  */
-record CustomerMessage(String templateCode, String sourceId, UUID customerId, String guestAddress, Draft draft) {
+record CustomerMessage(String templateCode, String sourceId, UUID customerId, String guestAddress, Draft draft,
+                       Recipient recipient, Attachments attachments) {
 
     static final String REFERENCE_PREFIX = "customer-mail:";
 
@@ -30,6 +39,30 @@ record CustomerMessage(String templateCode, String sourceId, UUID customerId, St
             throw new IllegalArgumentException("A customer message reference is at most " + MAX_REFERENCE_LENGTH
                     + " characters");
         }
+    }
+
+    /** A message to the customer's contact address, or a guest's, with no attachment. */
+    CustomerMessage(String templateCode, String sourceId, UUID customerId, String guestAddress, Draft draft) {
+        this(templateCode, sourceId, customerId, guestAddress, draft, null, null);
+    }
+
+    /**
+     * Who a message is for when that is not the customer's contact: the name to greet and the address, read from the
+     * record the message is about. Empty when that record is gone - the message is then skipped, not retried.
+     */
+    @FunctionalInterface
+    interface Recipient {
+        Optional<CustomerContact> resolve();
+    }
+
+    /**
+     * The files of a message, loaded only when it is about to be sent - never while the retry job merely asks which
+     * message an event calls for. The same files on every attempt. A failure to load them is an outage of the store,
+     * and the attempt is retried.
+     */
+    @FunctionalInterface
+    interface Attachments {
+        List<Email.Attachment> load();
     }
 
     /** The words, once the addressee is known. {@code addressee} is the name to greet, null when there is none. */

@@ -7,7 +7,7 @@ import com.stockflow.warehouse.internal.domain.Footprint;
 import com.stockflow.warehouse.internal.domain.LocationStatus;
 import com.stockflow.warehouse.internal.domain.MapUnit;
 import com.stockflow.warehouse.internal.domain.PickFaces;
-import com.stockflow.warehouse.internal.domain.StorageClass;
+import com.stockflow.warehouse.api.BinSize;
 import com.stockflow.warehouse.internal.domain.WarehouseStatus;
 import com.stockflow.warehouse.internal.repository.LayoutReadRepository.AreaRow;
 import com.stockflow.warehouse.internal.repository.LayoutReadRepository.BinRow;
@@ -41,8 +41,7 @@ public record WarehouseLayout(Warehouse warehouse, List<ZoneSummary> zones, List
 
     /** @param effectiveStatus the narrower of the warehouse's and the shelf's own */
     public record Shelf(UUID id, UUID zoneId, String code, String name, String description, Footprint footprint,
-                        boolean obstacle, PickFaces pickFaces, StorageClass defaultStorageClass,
-                        LocationStatus status, LocationStatus effectiveStatus, long version, List<Level> levels) {
+                        boolean obstacle, PickFaces pickFaces, LocationStatus status, LocationStatus effectiveStatus, long version, List<Level> levels) {
     }
 
     public record Level(UUID id, int levelIndex, BigDecimal elevation, BigDecimal usableHeight,
@@ -52,12 +51,14 @@ public record WarehouseLayout(Warehouse warehouse, List<ZoneSummary> zones, List
     /**
      * A bin and its storage location, flattened as in {@link ShelfSummary.BinEntry}.
      *
+     * @param capacityVolumeM3 computed, never stored (kltn-docs 06 BR-19, {@link BinSize}); null while its
+     *                         level has no clear height
      * @param status          the location's own status
      * @param effectiveStatus the narrowest of the warehouse's, the shelf's and {@code status}
      */
     public record Bin(UUID id, String code, String description, Footprint footprint, BinType type,
-                      StorageClass storageClassOverride, UUID locationId, String locationCode,
-                      StorageClass storageClass, Integer capacityUnits, BigDecimal maxWeight, boolean pickable,
+                      UUID locationId, String locationCode, BigDecimal capacityVolumeM3, BigDecimal maxWeight,
+                      boolean pickable,
                       boolean putawayTarget, LocationStatus status, LocationStatus effectiveStatus, boolean usable) {
     }
 
@@ -67,8 +68,7 @@ public record WarehouseLayout(Warehouse warehouse, List<ZoneSummary> zones, List
      */
     public record Area(UUID id, String code, AreaType type, String name, Footprint footprint, boolean obstacle,
                        LocationStatus status, LocationStatus effectiveStatus, Boolean usable, long version,
-                       UUID locationId, String locationCode, StorageClass storageClass, Integer capacityUnits,
-                       BigDecimal maxWeight, Boolean pickable, Boolean putawayTarget) {
+                       UUID locationId, String locationCode, BigDecimal maxWeight, Boolean pickable, Boolean putawayTarget) {
     }
 
     /**
@@ -103,22 +103,20 @@ public record WarehouseLayout(Warehouse warehouse, List<ZoneSummary> zones, List
                                Map<UUID, List<BinRow>> binsByLevel) {
         return new Shelf(s.id(), s.zoneId(), s.code(), s.name(), s.description(),
                 new Footprint(s.x(), s.y(), s.width(), s.length(), s.rotation()), s.obstacle(),
-                new PickFaces(s.pickNorth(), s.pickEast(), s.pickSouth(), s.pickWest()), s.defaultStorageClass(),
-                s.status(), EffectiveStatus.ofShelf(frame, s.status()), s.version(),
+                new PickFaces(s.pickNorth(), s.pickEast(), s.pickSouth(), s.pickWest()), s.status(), EffectiveStatus.ofShelf(frame, s.status()), s.version(),
                 levels.stream()
                         .map(l -> new Level(l.id(), l.levelIndex(), l.elevation(), l.usableHeight(), l.maxWeight(),
                                 binsByLevel.getOrDefault(l.id(), List.of()).stream()
-                                        .map(b -> bin(frame, s.status(), b))
+                                        .map(b -> bin(frame, s.status(), l.usableHeight(), b))
                                         .toList()))
                         .toList());
     }
 
-    private static Bin bin(WarehouseStatus frame, LocationStatus shelf, BinRow b) {
+    private static Bin bin(WarehouseStatus frame, LocationStatus shelf, BigDecimal usableHeight, BinRow b) {
         LocationStatus effective = EffectiveStatus.ofBin(frame, shelf, b.status());
         return new Bin(b.id(), b.code(), b.description(),
                 new Footprint(b.x(), b.y(), b.width(), b.length(), b.rotation()), b.type(),
-                b.storageClassOverride(), b.locationId(), b.locationCode(), b.storageClass(), b.capacityUnits(),
-                b.maxWeight(), b.pickable(), b.putawayTarget(), b.status(), effective,
+                b.locationId(), b.locationCode(), new BinSize(b.width(), b.length(), usableHeight).volumeM3(), b.maxWeight(), b.pickable(), b.putawayTarget(), b.status(), effective,
                 EffectiveStatus.isUsable(effective));
     }
 
@@ -127,7 +125,6 @@ public record WarehouseLayout(Warehouse warehouse, List<ZoneSummary> zones, List
         Boolean usable = a.locationId() == null ? null : EffectiveStatus.isUsable(effective);
         return new Area(a.id(), a.code(), a.type(), a.name(),
                 new Footprint(a.x(), a.y(), a.width(), a.length(), a.rotation()), a.obstacle(), a.status(),
-                effective, usable, a.version(), a.locationId(), a.locationCode(), a.storageClass(),
-                a.capacityUnits(), a.maxWeight(), a.pickable(), a.putawayTarget());
+                effective, usable, a.version(), a.locationId(), a.locationCode(), a.maxWeight(), a.pickable(), a.putawayTarget());
     }
 }

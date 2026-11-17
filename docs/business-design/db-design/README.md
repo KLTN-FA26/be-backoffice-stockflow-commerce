@@ -1,5 +1,11 @@
 # Database — quy tắc & luồng làm việc cho cả team (đọc trước khi code)
 
+> **Superseded by kltn-docs (rescope, 2026-11).** This document is the pre-rescope business analysis (web shop, in-house
+> printing, purchasing, loose stock). The current source of truth is the kltn-docs repository (`docs/`); the code and
+> `CLAUDE.md` §4 describe what is built; [ADR-0010](../../adr/0010-rescope-b2b-printed-goods.md) lists what changed. Kept for
+> history only. Its `schema.dbml` is current (generated from the migrated database); the "no one writes migrations" rule below is not: see `CLAUDE.md` §7.
+> *Tài liệu này đã được thay thế bởi kltn-docs; chỉ giữ để tham khảo lịch sử.*
+
 Từ 29/9/2026, **toàn bộ schema đã có sẵn trên `develop`**: 107 bảng, 213 FK, permission seed sẵn.
 Mỗi người **chỉ viết code** (entity, repository, service, controller). Không ai phải viết migration.
 
@@ -32,8 +38,8 @@ Mỗi người **chỉ viết code** (entity, repository, service, controller). 
 Code module trên bảng mới  ──▶  PR vào develop (review + test)
         │
         ▼  báo Tú "module X đã chuyển xong"
-C1–C4 đã kích hoạt (V20261011000300–0600). Còn lại trong db/pending:
-   dữ liệu cũ sạch (orphan_check = 0) ─▶ C0
+C1–C4 đã kích hoạt (V20261011000300–0600). C0 (validate các khoá / CHECK NOT VALID) đã gộp vào
+V20261111000000__baseline khi squash 270 migration ngày 2026-11-11; thư mục db/pending không còn.
 ```
 
 ### Chuyển dữ liệu cũ (V20261011000200)

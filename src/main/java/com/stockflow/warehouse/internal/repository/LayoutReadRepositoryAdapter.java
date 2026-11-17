@@ -60,7 +60,7 @@ class LayoutReadRepositoryAdapter implements LayoutReadRepository, LocationLooku
         return entityManager.createQuery("""
                         select s.id, s.zoneId, s.code, s.name, s.description, s.x, s.y, s.width, s.length,
                                s.rotation, s.obstacle, s.pickNorth, s.pickEast, s.pickSouth, s.pickWest,
-                               s.defaultStorageClass, s.status, s.version
+                               s.status, s.version
                         from ShelfJpaEntity s
                         where s.warehouseId = :warehouseId
                         order by s.code
@@ -87,8 +87,8 @@ class LayoutReadRepositoryAdapter implements LayoutReadRepository, LocationLooku
     public List<BinRow> findBins(UUID warehouseId) {
         return entityManager.createQuery("""
                         select b.id, l.id, b.code, b.description, b.x, b.y, b.width, b.length, b.rotation,
-                               b.type, b.storageClassOverride, loc.id, loc.locationCode, loc.storageClass,
-                               loc.capacityUnits, loc.maxWeight, loc.pickable, loc.putawayTarget, loc.status
+                               b.type, loc.id, loc.locationCode, loc.maxWeight, loc.pickable, loc.putawayTarget,
+                               loc.status
                         from BinJpaEntity b
                         join b.level l
                         join l.shelf s
@@ -105,8 +105,8 @@ class LayoutReadRepositoryAdapter implements LayoutReadRepository, LocationLooku
     public List<AreaRow> findAreas(UUID warehouseId) {
         return entityManager.createQuery("""
                         select a.id, a.code, a.type, a.name, a.x, a.y, a.width, a.length, a.rotation,
-                               a.obstacle, a.status, a.version, loc.id, loc.locationCode, loc.storageClass,
-                               loc.capacityUnits, loc.maxWeight, loc.pickable, loc.putawayTarget
+                               a.obstacle, a.status, a.version, loc.id, loc.locationCode, loc.maxWeight,
+                               loc.pickable, loc.putawayTarget
                         from AreaJpaEntity a
                         left join a.location loc
                         where a.warehouseId = :warehouseId
@@ -146,15 +146,38 @@ class LayoutReadRepositoryAdapter implements LayoutReadRepository, LocationLooku
     }
 
     @Override
+    public java.util.List<WarehouseHeader> findActiveWarehouseHeaders() {
+        return entityManager.createQuery("""
+                        select w.id, w.prefix, w.name, w.address, w.status
+                        from WarehouseJpaEntity w
+                        where w.status = com.stockflow.warehouse.internal.domain.WarehouseStatus.ACTIVE
+                        order by w.prefix
+                        """, WarehouseHeader.class)
+                .getResultList();
+    }
+
+    @Override
     public Optional<LocationRow> findById(UUID locationId) {
         return findLocation("loc.id = :key", locationId);
     }
 
     @Override
+    public java.util.List<String> findAreaLocationCodes(com.stockflow.warehouse.internal.domain.AreaType type) {
+        return entityManager.createQuery("""
+                        select loc.locationCode
+                        from AreaJpaEntity a
+                        join a.location loc
+                        where a.type = :type
+                        """, String.class)
+                .setParameter("type", type)
+                .getResultList();
+    }
+
+    @Override
     public java.util.List<LocationRow> findAreas(UUID warehouseId, com.stockflow.warehouse.internal.domain.AreaType type) {
         return entityManager.createQuery("""
-                        select loc.id, loc.kind, loc.warehouseId, loc.locationCode, loc.storageClass,
-                               loc.status, w.status, s.status, a.type
+                        select loc.id, loc.kind, loc.warehouseId, loc.locationCode,
+                               loc.status, w.status, s.status, a.type, b.width, b.length, l.usableHeight
                         from AreaJpaEntity a
                         join a.location loc
                         join WarehouseJpaEntity w on w.id = loc.warehouseId
@@ -175,8 +198,8 @@ class LayoutReadRepositoryAdapter implements LayoutReadRepository, LocationLooku
             return java.util.List.of();
         }
         return entityManager.createQuery("""
-                        select loc.id, loc.kind, loc.warehouseId, loc.locationCode, loc.storageClass,
-                               loc.status, w.status, s.status, a.type
+                        select loc.id, loc.kind, loc.warehouseId, loc.locationCode,
+                               loc.status, w.status, s.status, a.type, b.width, b.length, l.usableHeight
                         from StorageLocationJpaEntity loc
                         join WarehouseJpaEntity w on w.id = loc.warehouseId
                         left join BinJpaEntity b on b.location = loc
@@ -195,8 +218,8 @@ class LayoutReadRepositoryAdapter implements LayoutReadRepository, LocationLooku
             return java.util.List.of();
         }
         return entityManager.createQuery("""
-                        select loc.id, loc.kind, loc.warehouseId, loc.locationCode, loc.storageClass,
-                               loc.status, w.status, s.status, a.type
+                        select loc.id, loc.kind, loc.warehouseId, loc.locationCode,
+                               loc.status, w.status, s.status, a.type, b.width, b.length, l.usableHeight
                         from StorageLocationJpaEntity loc
                         join WarehouseJpaEntity w on w.id = loc.warehouseId
                         left join BinJpaEntity b on b.location = loc
@@ -212,12 +235,11 @@ class LayoutReadRepositoryAdapter implements LayoutReadRepository, LocationLooku
 
     @Override
     public List<PutawayCandidateRow> findPutawayCandidates(UUID warehouseId,
-                                                           com.stockflow.warehouse.internal.domain.StorageClass storageClass,
                                                            String locationCode) {
         // The one-location form appends its predicate rather than binding a nullable parameter, which PostgreSQL
         // cannot type in "(:code is null or ...)".
         var query = entityManager.createQuery("""
-                        select loc.id, loc.locationCode, loc.capacityUnits, loc.maxWeight
+                        select loc.id, loc.locationCode, b.width, b.length, l.usableHeight, loc.maxWeight
                         from StorageLocationJpaEntity loc
                         join WarehouseJpaEntity w on w.id = loc.warehouseId
                         join BinJpaEntity b on b.location = loc
@@ -225,15 +247,13 @@ class LayoutReadRepositoryAdapter implements LayoutReadRepository, LocationLooku
                         join l.shelf s
                         where loc.warehouseId = :warehouseId
                           and loc.kind = com.stockflow.warehouse.internal.domain.StorageLocationKind.BIN
-                          and loc.storageClass = :storageClass
                           and loc.putawayTarget = true
                           and w.status = com.stockflow.warehouse.internal.domain.WarehouseStatus.ACTIVE
                           and s.status = com.stockflow.warehouse.internal.domain.LocationStatus.ACTIVE
                           and loc.status = com.stockflow.warehouse.internal.domain.LocationStatus.ACTIVE
                         """ + (locationCode == null ? "" : " and loc.locationCode = :locationCode")
                         + " order by loc.locationCode", PutawayCandidateRow.class)
-                .setParameter("warehouseId", warehouseId)
-                .setParameter("storageClass", storageClass);
+                .setParameter("warehouseId", warehouseId);
         if (locationCode != null) {
             query.setParameter("locationCode", locationCode);
         }
@@ -259,8 +279,8 @@ class LayoutReadRepositoryAdapter implements LayoutReadRepository, LocationLooku
      */
     private Optional<LocationRow> findLocation(String condition, Object key) {
         return entityManager.createQuery("""
-                        select loc.id, loc.kind, loc.warehouseId, loc.locationCode, loc.storageClass,
-                               loc.status, w.status, s.status, a.type
+                        select loc.id, loc.kind, loc.warehouseId, loc.locationCode,
+                               loc.status, w.status, s.status, a.type, b.width, b.length, l.usableHeight
                         from StorageLocationJpaEntity loc
                         join WarehouseJpaEntity w on w.id = loc.warehouseId
                         left join BinJpaEntity b on b.location = loc
@@ -332,7 +352,7 @@ class LayoutReadRepositoryAdapter implements LayoutReadRepository, LocationLooku
             }
         };
         TypedQuery<LabelRow> query = entityManager.createQuery("""
-                        select loc.locationCode, loc.kind, loc.storageClass, loc.status, s.status, s.code,
+                        select loc.locationCode, loc.kind, loc.status, s.status, s.code,
                                l.levelIndex, b.code, a.name
                         from StorageLocationJpaEntity loc
                         left join BinJpaEntity b on b.location = loc

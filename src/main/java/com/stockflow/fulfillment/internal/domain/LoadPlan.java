@@ -57,8 +57,7 @@ public final class LoadPlan {
 
     /**
      * A parcel the plan holds or held. {@code unplacedReason} is null when it has a place or before a calculation.
-     * {@code shipmentId} is what the parcel leaves with: its shipment in an ORDER plan, its transfer order in a TRANSFER
-     * plan (SCRUM-287 PR T - a parcel is of a shipment or of a transfer, and a plan holds one kind).
+     * {@code shipmentId} is what the parcel leaves with: its shipment.
      */
     public record Member(UUID packageId, UUID shipmentId, boolean active, LoadPlanUnplacedReason unplacedReason,
                          Instant addedAt, UUID addedBy, Instant releasedAt, LoadPlanReleaseReason releaseReason) {
@@ -118,9 +117,8 @@ public final class LoadPlan {
         }
     }
 
+    /** 09 §3 LoadPlan.source_type: customer orders, the only source since transfers between warehouses were removed. */
     public static final String SOURCE_ORDER = "ORDER";
-    /** 09 §3 LoadPlan.source_type "TO", §4.2 step 1: the parcels of one transfer order (SCRUM-287 PR T, LP-9). */
-    public static final String SOURCE_TRANSFER = "TRANSFER";
 
     private final UUID id;
     private final String code;
@@ -194,10 +192,10 @@ public final class LoadPlan {
         return draft(id, code, requestId, warehouseId, mode, note, SOURCE_ORDER);
     }
 
-    /** A new plan of {@code sourceType} ({@link #SOURCE_ORDER} or {@link #SOURCE_TRANSFER}): DRAFT, nothing chosen. */
+    /** A new plan of {@code sourceType} ({@link #SOURCE_ORDER}): DRAFT, nothing chosen. */
     public static LoadPlan draft(UUID id, String code, UUID requestId, UUID warehouseId, SelectionMode mode,
                                  String note, String sourceType) {
-        if (!SOURCE_ORDER.equals(sourceType) && !SOURCE_TRANSFER.equals(sourceType)) {
+        if (!SOURCE_ORDER.equals(sourceType)) {
             throw new IllegalArgumentException("source type " + sourceType);
         }
         LoadPlan plan = new LoadPlan(new Snapshot(id, code, requestId, warehouseId, sourceType,
@@ -802,8 +800,6 @@ public final class LoadPlan {
     public UUID requestId() { return requestId; }
     public UUID warehouseId() { return warehouseId; }
     public String sourceType() { return sourceType; }
-    /** A plan of one transfer order's parcels (SCRUM-287 PR T). */
-    public boolean ofTransfer() { return SOURCE_TRANSFER.equals(sourceType); }
     public SelectionMode mode() { return mode; }
     public LoadPlanStatus status() { return status; }
     public long version() { return version; }

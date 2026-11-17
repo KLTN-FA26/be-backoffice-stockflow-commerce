@@ -22,12 +22,8 @@ public interface GoodsReceiptRepository {
     String nextNumber(LocalDate day);
 
     /**
-     * Units already received on other receipts of these PO lines, per line: the receipts that were posted - counted
-     * in, whatever has happened to them since - the way {@code check_goods_receipt_tolerance} counts them for BR-02. A
-     * draft, a receipt waiting for approval and a cancelled one have counted nothing in.
+     * 4A-5, kltn-docs 03 BR-02: units of these production order lines on other receipts that are not cancelled - drafts
+     * included, posted ones too - per line, the way {@code check_production_receipt_cartons} counts them.
      */
-    Map<UUID, Integer> receivedOnOtherReceipts(Iterable<UUID> poLineIds, UUID excludingReceiptId);
-
-    /** Units counted in (receipt posted: not a draft, not waiting for approval, not cancelled) per line of one order. */
-    Map<UUID, Integer> confirmedQuantities(UUID purchaseOrderId);
+    Map<UUID, Integer> unitsOnOtherProductionReceipts(Iterable<UUID> productionOrderLineIds, UUID excludingReceiptId);
 }

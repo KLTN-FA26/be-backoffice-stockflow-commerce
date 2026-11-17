@@ -1,6 +1,7 @@
 /**
  * <b>The public API of the {@code procurement} module.</b> Everything other modules are allowed to
- * touch lives here, and nothing else does.
+ * touch lives here, and nothing else does. Empty since purchasing went (4A-8): nothing outside the module drives a
+ * goods receipt, and other modules learn of receipts from events in {@code contracts}.
  *
  * <h2>Why this package needs an annotation to work</h2>
  *

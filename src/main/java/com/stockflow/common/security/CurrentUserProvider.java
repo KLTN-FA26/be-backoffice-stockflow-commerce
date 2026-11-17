@@ -90,6 +90,15 @@ public class CurrentUserProvider {
     }
 
     /**
+     * The same reading of an authentication held somewhere other than the security context: a STOMP session's
+     * principal, which arrives on a message-channel thread where no request set the context
+     * ({@code common.websocket.StompAuthenticationInterceptor}). Never throws, as {@link #current()}.
+     */
+    public Optional<CurrentUser> of(Authentication authentication) {
+        return userOf(authentication);
+    }
+
+    /**
      * The user an authentication stands for, read as {@link #current} reads the one in the security context: for an
      * authentication not put there yet ({@link RunAs#authenticationFor} checks the one it built). Never throws.
      */

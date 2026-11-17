@@ -8,19 +8,14 @@ import com.stockflow.assistant.internal.domain.ToolExecution;
 import com.stockflow.assistant.internal.domain.ToolOutcome;
 import com.stockflow.assistant.internal.domain.Turn;
 
-import java.math.BigDecimal;
-import java.time.Instant;
 import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
 import java.util.Set;
 
 /**
- * What an answer rests on, read from the tool calls that produced it: the rules it cites, the proposals it carries
+ * What an answer rests on, read from the tool calls that produced it: the rules it cites
  * (design §6.3, §8) and what its numbers may rest on (design §7, {@link AnswerNumbers}).
  *
  * <p><b>A citation is checked, not trusted.</b> An anchor counts only when the answer names it <i>and</i>
@@ -36,7 +31,6 @@ import java.util.Set;
 public final class AnswerSources {
 
     static final String KNOWLEDGE_TOOL = "searchKnowledge";
-    static final String REORDER_TOOL = "proposeReorder";
 
     private AnswerSources() {
     }
@@ -111,59 +105,33 @@ public final class AnswerSources {
         return List.copyOf(anchors);
     }
 
-    /** The retrieved anchors the answer names. */
+    /** The retrieved anchors the answer names ({@link #names}). */
     static List<String> citations(String text, List<ToolExecution> executions, ObjectMapper json) {
         if (text == null || text.isBlank()) {
             return List.of();
         }
         String answer = text.toLowerCase(Locale.ROOT);
         return retrieved(executions, json).stream()
-                .filter(anchor -> answer.contains(anchor.toLowerCase(Locale.ROOT)))
+                .filter(anchor -> names(answer, anchor.toLowerCase(Locale.ROOT)))
                 .toList();
     }
 
     /**
-     * The proposals {@code proposeReorder} returned, one per supplier and type, for the panel to offer as pre-filled
-     * purchase-order forms; when it ran more than once for the question (a model calling it twice, or a question
-     * answered again on a stronger model), the last one: two forms for one supplier invite two purchase orders. Each
-     * carries when it was computed: reopened days later, a proposal is history, and the panel marks it so rather than
-     * offering stale quantities as current.
+     * Whether {@code answer} names {@code anchor} as a whole, not inside a longer one: {@code 17 §4.1} is not named by
+     * "17 §4.12", nor {@code 5 BR-01} by "15 BR-01", nor {@code 15 BR-1} by "15 BR-10". Both lower-case.
      */
-    static List<Proposal> proposals(List<ToolExecution> executions, ObjectMapper json) {
-        Map<List<String>, Proposal> latest = new LinkedHashMap<>();
-        for (JsonNode result : results(executions, REORDER_TOOL, json)) {
-            for (JsonNode proposal : result.path("proposals")) {
-                List<ProposalLine> lines = new ArrayList<>();
-                proposal.path("lines").forEach(line -> lines.add(new ProposalLine(line.path("sku").asText(),
-                        line.path("quantity").asLong())));
-                Proposal found = new Proposal(proposal.path("type").asText(), text(proposal, "supplierCode"),
-                        text(proposal, "supplierName"), instant(proposal.path("generatedAt")), List.copyOf(lines));
-                // Arrays.asList: a proposal without a supplier code is still one key, which List.of would refuse.
-                latest.put(Arrays.asList(found.type(), found.supplierCode()), found);
+    static boolean names(String answer, String anchor) {
+        for (int at = answer.indexOf(anchor); at >= 0; at = answer.indexOf(anchor, at + 1)) {
+            int end = at + anchor.length();
+            boolean before = at == 0 || !Character.isLetterOrDigit(answer.codePointBefore(at));
+            boolean after = end == answer.length() || !Character.isLetterOrDigit(answer.codePointAt(end))
+                    && !(answer.charAt(end) == '.' && end + 1 < answer.length()
+                    && Character.isDigit(answer.charAt(end + 1)));
+            if (before && after) {
+                return true;
             }
         }
-        return List.copyOf(latest.values());
-    }
-
-    private static String text(JsonNode node, String field) {
-        JsonNode value = node.path(field);
-        return value.isTextual() ? value.asText() : null;
-    }
-
-    /**
-     * Written by {@code AssistantTools} as Vietnam time with its offset ({@code 2026-10-28T16:54:09+07:00}); a result
-     * stored before that is UTC text. {@code Instant.parse} reads both; epoch seconds are read for a mapper that
-     * writes dates as timestamps.
-     */
-    private static Instant instant(JsonNode value) {
-        if (value.isTextual()) {
-            return Instant.parse(value.asText());
-        }
-        if (value.isNumber()) {
-            return Instant.ofEpochSecond(value.longValue(), value.decimalValue().remainder(BigDecimal.ONE)
-                    .movePointRight(9).longValue());
-        }
-        return null;
+        return false;
     }
 
     private static List<JsonNode> results(List<ToolExecution> executions, String tool, ObjectMapper json) {
@@ -180,20 +148,4 @@ public final class AnswerSources {
         return results;
     }
 
-    /**
-     * A purchase order the user may open pre-filled; nothing is created until they submit it.
-     *
-     * @param generatedAt when the quantities were computed; null only for a result that did not say
-     */
-    public record Proposal(String type, String supplierCode, String supplierName, Instant generatedAt,
-                           List<ProposalLine> lines) {
-
-        /** Which proposal of an answer this is: one per type and supplier, as {@link #proposals} keeps them. */
-        public String key() {
-            return type + ":" + supplierCode;
-        }
-    }
-
-    public record ProposalLine(String sku, long quantity) {
-    }
 }

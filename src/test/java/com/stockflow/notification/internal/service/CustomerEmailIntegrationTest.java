@@ -120,7 +120,7 @@ class CustomerEmailIntegrationTest {
 
     private ShipmentStatusChanged handedOver(UUID customerId) {
         return new ShipmentStatusChanged(Identifiers.newId(), Identifiers.newId(), "SO-IT-1-S1", Identifiers.newId(),
-                "SO-IT-1", customerId, Identifiers.newId(), "PARCEL", "READY_TO_DISPATCH", "HANDED_OVER", null, 2,
+                "SO-IT-1", customerId, Identifiers.newId(), "READY_TO_DISPATCH", "HANDED_OVER", null, 2,
                 "Giao Hàng Nhanh", "LD-IT-1", null, Instant.parse("2026-10-24T07:05:00Z"));
     }
 

@@ -6,7 +6,7 @@ import com.stockflow.assistant.internal.domain.ToolCall;
 import com.stockflow.assistant.internal.domain.Turn;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.common.security.Role;
-import com.stockflow.support.AlertFixtures;
+import com.stockflow.support.AssistantStock;
 import com.stockflow.support.DemoData;
 import com.stockflow.support.ReferenceRows;
 import com.stockflow.support.SecuredIntegrationTest;
@@ -40,8 +40,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 /**
  * The question asked most about an order, why it is held and where it is short, in one lookup (design §4.2), with the
  * real security chain, the real order and fulfillment modules and a scripted model: {@code findOrder} carries the
- * order's pick task for a coordinator, who may see that task on the pick-lines screen, and nothing of it for Sales, who
- * may not.
+ * order's pick task for a warehouse manager, who may see that task on the pick-lines screen, and nothing of it for
+ * Sales, who may not.
  */
 @SecuredIntegrationTest
 class AssistantShortPickIntegrationTest {
@@ -61,8 +61,8 @@ class AssistantShortPickIntegrationTest {
     private String orderNumber;
 
     /**
-     * An order of 30 held for stock at HCM, its note naming no lot, and its pick task: 20 allocated at one bin, 15
-     * found, 5 short; 10 picked in full at another bin.
+     * An order of 30 held for stock at HCM, its note naming no lot, and its pick task, carton by carton: a carton of 20
+     * at one bin not found (short, NOT_FOUND); a carton of 10 picked whole at another bin.
      */
     @BeforeEach
     void setUp() {
@@ -97,6 +97,9 @@ class AssistantShortPickIntegrationTest {
             jdbc.update("update ordering.order_line set quantity = 30 where order_id = ?", order);
             UUID line = jdbc.queryForObject("select id from ordering.order_line where order_id = ?", UUID.class,
                     order);
+            AssistantStock stock = new AssistantStock(jdbc, tx, entityManager);
+            AssistantStock.Allocated missing = stock.allocated(order, sku, AssistantStock.HCM_BIN, 20, lot);
+            AssistantStock.Allocated found = stock.allocated(order, sku, AssistantStock.HCM_BIN_2, 10, lot + "-FULL");
             UUID pick = Identifiers.newId();
             jdbc.update("""
                     INSERT INTO fulfillment.pick (id, order_id, order_number, warehouse_id, status, assigned_user_id,
@@ -108,15 +111,18 @@ class AssistantShortPickIntegrationTest {
                     VALUES (?, ?, 'PENDING', NOW())""", Identifiers.newId(), pick);
             jdbc.update("""
                     INSERT INTO fulfillment.pick_line (id, pick_id, order_line_id, sku, location_code, lot_number,
-                        sequence_no, allocated_qty, picked_qty, short_qty, status, version, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, 1, 20, 15, 5, 'SHORT', 0, NOW())""",
-                    Identifiers.newId(), pick, line, sku, AlertFixtures.HCM_BIN, lot);
+                        lpn, reservation_id, sequence_no, allocated_qty, picked_qty, short_qty, short_reason, status,
+                        version, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 20, 0, 20, 'NOT_FOUND', 'SHORT', 0, NOW())""",
+                    Identifiers.newId(), pick, line, sku, AssistantStock.HCM_BIN, lot, missing.lpn(),
+                    missing.reservationId());
             jdbc.update("""
                     INSERT INTO fulfillment.pick_line (id, pick_id, order_line_id, sku, location_code, lot_number,
-                        sequence_no, allocated_qty, picked_qty, short_qty, status, picked_by, picked_at, version,
-                        created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, 2, 10, 10, 0, 'PICKED', ?, NOW(), 0, NOW())""",
-                    Identifiers.newId(), pick, line, sku, AlertFixtures.HCM_BIN_2, lot + "-FULL", picker);
+                        lpn, reservation_id, sequence_no, allocated_qty, picked_qty, short_qty, status, picked_by,
+                        picked_at, consumed_at, version, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 2, 10, 10, 0, 'PICKED', ?, NOW(), NOW(), 0, NOW())""",
+                    Identifiers.newId(), pick, line, sku, AssistantStock.HCM_BIN_2, lot + "-FULL", found.lpn(),
+                    found.reservationId(), picker);
         });
         when(model.available()).thenReturn(true);
         when(model.closingTurn(anyString())).thenAnswer(call -> new Turn.ModelTurn("{\"closing\":true}",
@@ -124,15 +130,15 @@ class AssistantShortPickIntegrationTest {
     }
 
     @Test
-    @DisplayName("a coordinator asking why an order is held and where it is short gets the pick task from findOrder "
-            + "alone: its status and the line still short, with SKU, location, lot and units")
-    void coordinatorGetsTheShortPick() throws Exception {
-        UUID coordinator = staff("ORDER_COORDINATOR");
+    @DisplayName("a warehouse manager asking why an order is held and where it is short gets the pick task from "
+            + "findOrder alone: its status and the carton still short, with SKU, location, lot and units")
+    void managerGetsTheShortPick() throws Exception {
+        UUID manager = staff("WAREHOUSE_MANAGER", true);
         script(toolUse("findOrder", "{\"orderNumber\":\"" + orderNumber + "\"}"),
-                answer("Đơn đang bị giữ vì nhặt thiếu 5."));
-        String conversation = start(Role.ORDER_COORDINATOR, coordinator);
+                answer("Đơn đang bị giữ vì nhặt thiếu 20."));
+        String conversation = start(Role.WAREHOUSE_MANAGER, manager);
 
-        http.asRole(Role.ORDER_COORDINATOR, coordinator,
+        http.asRole(Role.WAREHOUSE_MANAGER, manager,
                         ask(conversation, "Đơn " + orderNumber + " vì sao bị giữ, thiếu ở đâu?"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.toolCalls.length()").value(1))
@@ -145,18 +151,18 @@ class AssistantShortPickIntegrationTest {
         assertThat(JsonPath.<Boolean>read(result, "$.picking.shortLinesTruncated")).isFalse();
         assertThat(JsonPath.<String>read(result, "$.picking.shortLines[0].sku")).isEqualTo(sku);
         assertThat(JsonPath.<String>read(result, "$.picking.shortLines[0].locationCode"))
-                .isEqualTo(AlertFixtures.HCM_BIN);
+                .isEqualTo(AssistantStock.HCM_BIN);
         assertThat(JsonPath.<String>read(result, "$.picking.shortLines[0].lotNumber")).isEqualTo(lot);
-        assertThat(JsonPath.<Integer>read(result, "$.picking.shortLines[0].shortQuantity")).isEqualTo(5);
+        assertThat(JsonPath.<Integer>read(result, "$.picking.shortLines[0].shortQuantity")).isEqualTo(20);
         assertThat(result).as("a line picked in full answers nothing about the hold")
-                .doesNotContain(AlertFixtures.HCM_BIN_2, lot + "-FULL");
+                .doesNotContain(AssistantStock.HCM_BIN_2, lot + "-FULL");
     }
 
     @Test
     @DisplayName("Sales read orders but not pick tasks: the same question gets the order and its hold, and nothing of "
             + "the task, not even its lot")
     void salesGetNoPicking() throws Exception {
-        UUID sales = staff("SALES_STAFF");
+        UUID sales = staff("SALES_STAFF", false);
         script(toolUse("findOrder", "{\"orderNumber\":\"" + orderNumber + "\"}"),
                 answer("Đơn đang bị giữ vì thiếu hàng."));
         String conversation = start(Role.SALES_STAFF, sales);
@@ -167,7 +173,7 @@ class AssistantShortPickIntegrationTest {
 
         String result = result(conversation);
         assertThat(JsonPath.<String>read(result, "$.hold.reason")).isEqualTo("INVENTORY");
-        assertThat(result).doesNotContain("\"picking\"", lot, AlertFixtures.HCM_BIN, AlertFixtures.HCM_BIN_2);
+        assertThat(result).doesNotContain("\"picking\"", lot, AssistantStock.HCM_BIN, AssistantStock.HCM_BIN_2);
     }
 
     // ------------------------------------------------------------------------------------------------------------
@@ -178,12 +184,10 @@ class AssistantShortPickIntegrationTest {
                 String.class, conversation);
     }
 
-    private UUID staff(String role) {
-        UUID user = tx.execute(s -> ReferenceRows.user(entityManager));
-        tx.executeWithoutResult(s -> jdbc.update("""
-                INSERT INTO identity.user_role (id, user_id, role_id, version, created_at)
-                SELECT gen_random_uuid(), ?, id, 0, NOW() FROM identity.app_role WHERE code = ?""", user, role));
-        return user;
+    /** @param atHcm assigned to warehouse HCM, as a warehouse role must be to see its tasks */
+    private UUID staff(String role, boolean atHcm) {
+        AssistantStock fixtures = new AssistantStock(jdbc, tx, entityManager);
+        return atHcm ? fixtures.staff(role, DemoData.WAREHOUSE_HCM) : fixtures.staff(role);
     }
 
     private String start(Role role, UUID user) throws Exception {

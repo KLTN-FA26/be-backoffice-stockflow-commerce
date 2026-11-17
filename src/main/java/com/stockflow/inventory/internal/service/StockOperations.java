@@ -1,14 +1,9 @@
 package com.stockflow.inventory.internal.service;
 
 import com.stockflow.common.api.PageResponse;
-import com.stockflow.common.domain.Sku;
 import com.stockflow.inventory.api.CountReceivingPackagesCommand;
-import com.stockflow.inventory.api.IssueReservedStockCommand;
-import com.stockflow.inventory.api.IssueReservedStockResult;
-import com.stockflow.inventory.api.MoveStockCommand;
 import com.stockflow.inventory.api.MoveStockPackagesCommand;
 import com.stockflow.inventory.api.ReceiveStockCommand;
-import com.stockflow.inventory.api.ReclassifyStockCommand;
 import com.stockflow.inventory.api.ReclassifyStockPackagesCommand;
 import com.stockflow.inventory.api.RequestAdjustmentCommand;
 import com.stockflow.inventory.api.StockAdjustmentStatus;
@@ -31,78 +26,13 @@ import java.util.UUID;
  */
 public interface StockOperations {
 
-    StockMove move(MoveStockCommand command);
-
     StockMove receive(ReceiveStockCommand command);
-
-    /** See {@code InventoryService#receiveReturn}. */
-    StockMove receiveReturn(com.stockflow.inventory.api.ReceiveReturnCommand command);
 
     /** See {@code InventoryService#countReceivingPackages}. */
     List<StockPackageView> countReceivingPackages(CountReceivingPackagesCommand command);
 
     /** See {@code InventoryService#receivingPackagesOf}. */
     Map<UUID, List<StockPackageView>> receivingPackagesOf(Collection<UUID> receiptLineIds);
-
-    /** See {@code InventoryService#issueReserved}. */
-    IssueReservedStockResult issueReserved(IssueReservedStockCommand command);
-
-    /** See {@code InventoryService#holdReceived}. */
-    com.stockflow.inventory.api.StockReservation holdReceived(com.stockflow.inventory.api.HoldReceivedStockCommand command);
-
-    /** See {@code InventoryService#consumeHeld}. */
-    StockMove consumeHeld(com.stockflow.inventory.api.ConsumeHeldStockCommand command);
-
-    /** See {@code InventoryService#unissueHeld}. */
-    IssueReservedStockResult unissueHeld(IssueReservedStockCommand command);
-
-    /** See {@code InventoryService#finishHeld}. */
-    IssueReservedStockResult finishHeld(IssueReservedStockCommand command);
-
-    /** See {@code InventoryService#scrapCancelledPrint}. */
-    Optional<StockAdjustmentSummary> scrapCancelledPrint(UUID reservationId, UUID orderId, String note,
-                                                         UUID requestedBy);
-
-    /** See {@code InventoryService#scrapCancelledPrint(ScrapCancelledPrintCommand)}. */
-    List<StockAdjustmentSummary> scrapCancelledPrint(com.stockflow.inventory.api.ScrapCancelledPrintCommand command);
-
-    /** See {@code InventoryService#consumeFinishedGoods}. */
-    StockMove consumeFinishedGoods(UUID reservationId, UUID orderId, UUID productionOrderId, UUID actorId);
-
-    /**
-     * BR-PRD-10: the write-off of a cancelled order's printed goods was rejected or withdrawn; the goods are still
-     * held and out of sale, and this asks again, in {@code requestedBy}'s name. A write-off still standing is
-     * answered as it is.
-     *
-     * @throws com.stockflow.common.error.BusinessException {@code CONFLICT} for a hold no cancellation asked to scrap,
-     *         or one that is no longer printed goods waiting in packing
-     */
-    StockAdjustmentSummary askScrapAgain(UUID reservationId, String note, UUID requestedBy);
-
-    /**
-     * Whether {@code hold}, on the locked {@code item}, is finished custom goods of its order waiting in a PACKING
-     * area - which a release does not free (BR-PRD-10).
-     */
-    boolean isFinishedCustomGoods(com.stockflow.inventory.internal.domain.StockItem item,
-                                  com.stockflow.inventory.internal.domain.Reservation hold);
-
-    /** See {@code InventoryService#writeOffHeld}. */
-    StockAdjustmentSummary writeOffHeld(com.stockflow.inventory.api.WriteOffHeldStockCommand command);
-
-    /** See {@code InventoryService#returnHeld}. */
-    StockMove returnHeld(com.stockflow.inventory.api.ReturnHeldStockCommand command);
-
-    StockMove reclassify(ReclassifyStockCommand command);
-
-    /**
-     * Loose INBOUND units of a receipt's lot to a bin as AVAILABLE, one ledger line per row taken from, reference
-     * (PUTAWAY_TASK, taskId): a {@code MOVE} for a row taken from another place, a {@code STATUS_CHANGE} from the bin
-     * to the bin for a row already standing in it (a {@code MOVE} names two different places), whole or not at all.
-     * No replay lookup: two calls under one task are two parts of the putaway (spec section 6); the caller counts
-     * what is already done through both kinds of ledger line. Refuses with {@code STOCK_ITEM_NOT_FOUND} when the
-     * lot holds fewer than {@code units} loose INBOUND units. Returns {@code units}.
-     */
-    int putAwayLoose(Sku sku, UUID lotId, String toLocationCode, int units, UUID taskId, UUID actorId);
 
     /** See {@code InventoryService#moveStockPackages}. */
     List<StockPackageView> moveStockPackages(MoveStockPackagesCommand command);
@@ -111,14 +41,59 @@ public interface StockOperations {
     List<StockPackageView> reclassifyStockPackages(ReclassifyStockPackagesCommand command);
 
     /**
-     * A person's request to write stock up or down. Refuses {@code COUNT_VARIANCE} ({@code VALIDATION_FAILED}): only a
-     * cycle count asks for that, through {@link #requestCountVariance}.
+     * A warehouse manager quarantines one whole, free carton into a QUARANTINE area of its warehouse (kltn-docs 20
+     * §4.8, BR-21; team plan 4D-1). Reached through {@code CartonQuarantineService}, which settles the carton's open
+     * putaway task.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code STOCK_PACKAGE_NOT_FOUND},
+     *         {@code LOCATION_NOT_FOUND}, {@code LOCATION_NOT_USABLE}, {@code LOCATION_AREA_MISMATCH},
+     *         {@code MOVE_ACROSS_WAREHOUSES}, {@code INVALID_STOCK_PACKAGE_TRANSITION}, {@code STOCK_PACKAGE_HELD},
+     *         {@code STOCK_PACKAGE_QUARANTINED}, {@code STOCK_STATUS_MISMATCH}, {@code STOCK_SLOT_UNDER_COUNT}
+     */
+    StockPackageView quarantine(String lpn, String toLocationCode, String reason, UUID actorId);
+
+    /**
+     * A person's request to write a whole carton off, by its LPN (team plan 4D-1). A location given outside the
+     * caller's warehouses is {@code OUT_OF_DATA_SCOPE} first; a request naming no carton is {@code STOCK_NOT_IN_CARTON}
+     * (stock is kept in whole cartons, so there is no loose stock to adjust by lot). Refuses {@code COUNT_VARIANCE}
+     * ({@code VALIDATION_FAILED}): only a cycle count asks for that, through {@link #requestCountVariance}.
      */
     StockAdjustmentSummary requestAdjustment(RequestAdjustmentCommand command);
 
-    /** Submission's side of SCRUM-164: the variance of one counted line as pending COUNT_VARIANCE adjustment(s). */
-    List<StockAdjustmentSummary> requestCountVariance(UUID cycleCountLineId, CountSlot slot, int delta,
-                                                      UUID requestedBy, String note);
+    /**
+     * A person's request to write an LPN carton off whole or restock a LOST one whole (kltn-docs 20 §4.3, BR-04).
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code VALIDATION_FAILED} for {@code COUNT_VARIANCE} or a
+     *         reason of the history; {@code STOCK_PACKAGE_NOT_FOUND}; {@code OUT_OF_DATA_SCOPE};
+     *         {@code STOCK_SLOT_UNDER_COUNT}; {@code STOCK_PACKAGE_ADJUSTMENT_PENDING};
+     *         {@code INVALID_STOCK_PACKAGE_TRANSITION} (a write-off of a carton not in stock, a restock of one not
+     *         LOST); {@code STOCK_PACKAGE_HELD} (a write-off of a carton held for an order)
+     */
+    StockAdjustmentSummary requestPackageAdjustment(PackageAdjustmentRequest request);
+
+    /**
+     * Submission's side of SCRUM-164: one counted carton found against the books, as a pending COUNT_VARIANCE. The
+     * adjustment keeps who counted the line (WF-05 fix plan, section 8), read from the line itself - its counter is
+     * fixed once the count is submitted - so neither the caller nor a later reader has to be trusted with it.
+     */
+    StockAdjustmentSummary requestCountVariance(UUID cycleCountLineId, CountSlot slot, int delta, UUID requestedBy,
+                                                String note);
+
+    /**
+     * A carton to adjust, by its LPN in either case.
+     *
+     * @param note required when the reason is {@code OTHER}
+     */
+    record PackageAdjustmentRequest(String lpn, com.stockflow.inventory.internal.domain.AdjustmentDirection direction,
+                                    com.stockflow.inventory.api.StockAdjustmentReason reason, String note,
+                                    UUID requestedBy) {
+
+        public PackageAdjustmentRequest {
+            java.util.Objects.requireNonNull(direction, "direction");
+            java.util.Objects.requireNonNull(reason, "reason");
+            java.util.Objects.requireNonNull(requestedBy, "requestedBy");
+        }
+    }
 
     StockAdjustmentSummary approve(UUID adjustmentId, UUID approverId);
 
@@ -150,7 +125,7 @@ public interface StockOperations {
     record LedgerLine(UUID movementId, StockMovement.MovementType type, String sku, String lotNumber,
                       String fromLocation, String toLocation, int quantity, String status,
                       String toStatus, String referenceType, UUID referenceId, String reason, UUID actorId,
-                      java.time.Instant occurredAt) {
+                      java.time.Instant occurredAt, UUID requestedBy, UUID countedBy) {
     }
 
     default PageResponse<LedgerLine> ledger(String sku, String location, StockMovement.MovementType type,

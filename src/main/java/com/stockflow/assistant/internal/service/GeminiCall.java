@@ -19,7 +19,7 @@ import java.util.Set;
 
 /**
  * One POST to Gemini's REST API, tried again when that can help, and mapped to the assistant's error codes. The chat
- * ({@link GeminiLanguageModel}), the delivery-note reader ({@link GeminiDocumentReader}) and the embeddings
+ * ({@link GeminiLanguageModel}), the voice transcriber ({@link GeminiSpeechTranscriber}) and the embeddings
  * ({@link GeminiEmbeddingModel}) each held a copy of this loop; a fix to one did not reach the others.
  *
  * <p><b>A failure says what to do next</b>, the same way for all three:</p>

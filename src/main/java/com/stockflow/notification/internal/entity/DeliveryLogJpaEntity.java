@@ -17,7 +17,8 @@ import java.util.UUID;
 
 /**
  * JPA mapping of a delivery-log row (table {@code notification.delivery_log}): one row per attempt to deliver one
- * message. Supplier purchase orders and, since SCRUM-352, customer e-mail write here; the guards on the provider
+ * message. Producers' production order messages (4A-3; supplier purchase orders before 4A-8) and, since SCRUM-352,
+ * customer e-mail write here; the guards on the provider
  * columns repeat the table's CHECK constraints so a mistake fails here with a message rather than at flush.
  */
 @Entity

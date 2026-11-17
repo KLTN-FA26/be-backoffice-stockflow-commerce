@@ -109,15 +109,27 @@ public final class GoldenScorer {
         return answer != null && PLACEHOLDER.matcher(answer).find();
     }
 
-    private static final Pattern RULE = Pattern.compile("BR-[A-Z]+-\\d+[a-z]?|(?<![\\p{L}\\p{N}-])[FX]-[A-Z]{2,8}"
-            + "(?![\\p{L}\\p{N}-])", Pattern.CASE_INSENSITIVE);
+    /**
+     * A rule or section an answer cites: a kltn-docs anchor ({@code 15 BR-08}, {@code 17 §5.1}, {@code glossary §8}), a
+     * rule number written without its chapter ({@code BR-08}), and the ids of the superseded documents
+     * ({@code BR-RMA-002}, {@code F-PO}), which no search returns any more: one in an answer was written from memory.
+     */
+    private static final Pattern RULE = Pattern.compile(
+            "(?<![\\p{L}\\p{N}])(?:\\d{1,2}\\s*)?BR-\\d{1,3}[a-z]?(?![\\p{L}\\p{N}-])"
+            + "|(?<![\\p{L}\\p{N}])(?:\\d{1,2}|glossary)\\s*§\\s*\\d+[a-z]?(?:\\.\\d+)*(?!\\p{N}|\\.\\p{N})"
+            + "|BR-[A-Z]+-\\d+[a-z]?|(?<![\\p{L}\\p{N}-])[FX]-[A-Z]{2,8}(?![\\p{L}\\p{N}-])",
+            Pattern.CASE_INSENSITIVE);
 
-    /** The business-rule ids and flow codes an answer names ({@code BR-RMA-002}, {@code F-PO}), each once, upper case. */
+    /**
+     * The rules and sections an answer names ({@code 15 BR-08}, {@code 17 §5.1}, {@code BR-RMA-002}), each once,
+     * upper case, spaces as the anchors write them.
+     */
     public static List<String> namedRules(String answer) {
         Set<String> named = new java.util.LinkedHashSet<>();
         Matcher matcher = RULE.matcher(normalise(answer));
         while (matcher.find()) {
-            named.add(matcher.group().toUpperCase(Locale.ROOT));
+            named.add(matcher.group().toUpperCase(Locale.ROOT).replaceAll("\\s+", " ")
+                    .replaceAll("(\\d)BR-", "$1 BR-").replaceAll("\\s*§\\s*", " §"));
         }
         return List.copyOf(named);
     }

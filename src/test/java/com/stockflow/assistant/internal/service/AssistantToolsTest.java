@@ -20,7 +20,6 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
-import java.time.LocalDate;
 import java.util.List;
 import java.util.function.Function;
 import java.util.regex.Pattern;
@@ -186,8 +185,8 @@ class AssistantToolsTest {
         Instant completed = Instant.parse("2026-10-27T17:30:12.5Z");
 
         ToolExecution done = answering("findOrder", new FindOrderTool.Answer("SO-20991231-900001", "COMPLETED", null,
-                null, null, null, null, List.of(), List.of(), false,
-                new FindOrderTool.Dates(placed, null, null, null, null, completed, null),
+                null, null, null, List.of(), List.of(), false,
+                new FindOrderTool.Dates(placed, null, null, null, null, null, completed, null),
                 List.of(new FindOrderTool.Change(null, "PENDING_PAYMENT", null, placed)), false));
 
         assertThat(done.outcome()).isEqualTo(ToolOutcome.OK);
@@ -209,35 +208,16 @@ class AssistantToolsTest {
         ToolExecution picking = answering("getOrderPicking", new GetOrderPickingTool.Answer("SO-20991231-900001",
                 "PICKED", assigned, picked, List.of(), null));
         ToolExecution lot = answering("traceLot", new TraceLotTool.Answer("EVAL-LOT-2401", 1, List.of(
-                new TraceLotTool.Lot("EVAL-LID-90", "EVAL-LOT-2401", LocalDate.parse("2027-01-31"), received,
-                        "PURCHASE", "GR-1", "PO-EVAL-LOT-01", "Supplier", 100, 97, 97, 0,
+                new TraceLotTool.Lot("EVAL-LID-90", "EVAL-LOT-2401", received, "GOODS_RECEIPT", "GR-1", "LSX-1", 100,
+                        97, 97, 0,
                         1, false, List.of(new TraceLotTool.OrderLeg("SO-20991231-900003", 3, 0, firstPick, lastPick)),
                         0, false, List.of(), 0, false, List.of()))));
 
         assertThat(picking.result()).contains("\"assignedAt\":\"2026-10-28T16:54:10+07:00\"",
                 "\"pickedAt\":\"2026-10-28T17:00:00+07:00\"").doesNotContainPattern(UTC_TIME);
         assertThat(lot.result()).contains("\"receivedAt\":\"2026-11-01T06:30:00+07:00\"",
-                        "\"firstAt\":\"2026-11-01T09:00:00+07:00\"", "\"lastAt\":\"2026-11-01T10:15:00+07:00\"",
-                        "\"expiryDate\":\"2027-01-31\"")
+                        "\"firstAt\":\"2026-11-01T09:00:00+07:00\"", "\"lastAt\":\"2026-11-01T10:15:00+07:00\"")
                 .doesNotContainPattern(UTC_TIME);
-    }
-
-    @Test
-    @DisplayName("a proposal's generatedAt, written in Vietnam time, still reads back as the instant it was")
-    void proposalTimeReadsBack() {
-        Instant computed = Instant.parse("2026-10-28T09:54:09.108321Z");
-
-        ToolExecution done = answering(AnswerSources.REORDER_TOOL, new ProposeReorderTool.Answer(computed,
-                LocalDate.parse("2026-10-21"), LocalDate.parse("2026-10-27"), List.of(),
-                List.of(new ProposeReorderTool.Proposal("PURCHASE_ORDER_DRAFT", "SUP-A", "A", computed,
-                        List.of(new ProposeReorderTool.ProposalLine("CUP-12OZ", 1276)))), null));
-
-        assertThat(done.result()).contains("\"generatedAt\":\"2026-10-28T16:54:09+07:00\"")
-                .doesNotContainPattern(UTC_TIME);
-        assertThat(AnswerSources.proposals(List.of(done), applicationMapper())).singleElement().satisfies(proposal -> {
-            assertThat(proposal.generatedAt()).isEqualTo(Instant.parse("2026-10-28T09:54:09Z"));
-            assertThat(proposal.lines()).containsExactly(new AnswerSources.ProposalLine("CUP-12OZ", 1276));
-        });
     }
 
     @Test

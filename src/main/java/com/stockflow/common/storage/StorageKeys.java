@@ -39,6 +39,49 @@ public final class StorageKeys {
     private StorageKeys() {
     }
 
+    /** The quarantine prefix browser uploads land in. Never served, never a category. */
+    static final String INCOMING = "incoming";
+
+    /**
+     * Where a browser writes the file of {@code uploadId} before it is checked: {@code incoming/<category>/<date>/<id>},
+     * no extension - nothing about the bytes is trusted yet.
+     */
+    public static String incoming(FileCategory category, java.util.UUID uploadId, Instant now) {
+        return "%s/%s/%s/%s".formatted(INCOMING, category.prefix(), DATE_PATH.format(now), uploadId);
+    }
+
+    public static boolean isIncoming(String key) {
+        return key != null && key.startsWith(INCOMING + "/");
+    }
+
+    /**
+     * The key an accepted upload is copied to: the layout of {@link #generate}, with the upload's own id, so
+     * attaching the same upload twice lands on the same object.
+     */
+    public static String forUpload(FileCategory category, String contentType, java.util.UUID uploadId, Instant created) {
+        return "%s/%s/%s%s".formatted(category.prefix(), DATE_PATH.format(created), uploadId, extensionFor(contentType));
+    }
+
+    /** Whether photos of {@code category} get display copies ({@link #evidenceCopyOf}). */
+    public static boolean hasDisplayCopies(FileCategory category) {
+        return category == FileCategory.RETURN_EVIDENCE || category == FileCategory.QC_EVIDENCE;
+    }
+
+    /**
+     * Where the display copy of an evidence photo at longest edge {@code edge} lives: the original's date and id under
+     * {@code evidence-copies/<its category>/}, always JPEG - so finding it needs no column.
+     */
+    public static String evidenceCopyOf(String originalKey, int edge) {
+        FileCategory category = categoryOf(originalKey);
+        if (!hasDisplayCopies(category)) {
+            throw new StorageException("Not an evidence photo key: " + originalKey);
+        }
+        String tail = originalKey.substring(category.prefix().length() + 1);
+        int dot = tail.lastIndexOf('.');
+        String stem = dot < 0 ? tail : tail.substring(0, dot);
+        return "%s/%s/%s-%d.jpg".formatted(FileCategory.EVIDENCE_COPY.prefix(), category.prefix(), stem, edge);
+    }
+
     public static String generate(FileCategory category, String contentType, Instant now) {
         return "%s/%s/%s%s".formatted(
                 category.prefix(),
@@ -47,13 +90,49 @@ public final class StorageKeys {
                 extensionFor(contentType));
     }
 
+    /**
+     * The name a download is saved under: the uploader's name without its extension, plus the extension of what was
+     * stored - which the key carries ({@link #extensionFor} of the type the bytes were checked against). The uploader
+     * chooses the name, not what opens it: a JPEG named {@code invoice.pdf} whose bytes also parse as a PDF would
+     * otherwise reach the accountant's PDF reader without ever having been checked as a PDF. Null for a blank name.
+     */
+    static String downloadName(String originalName, String key) {
+        if (originalName == null || originalName.isBlank()) {
+            return null;
+        }
+        String leaf = key.substring(key.lastIndexOf('/') + 1);
+        int keyDot = leaf.lastIndexOf('.');
+        String extension = keyDot < 0 ? "" : leaf.substring(keyDot).toLowerCase(Locale.ROOT);
+        String base = originalName.strip();
+        base = base.substring(Math.max(base.lastIndexOf('/'), base.lastIndexOf('\\')) + 1);
+        // Only what looks like an extension goes - "scan.PNG", "x.docm" - not the end of "Báo giá v1.2".
+        int dot = base.lastIndexOf('.');
+        if (dot >= 0 && base.substring(dot + 1).matches("(?=.*[A-Za-z])[A-Za-z0-9]{1,5}")) {
+            base = base.substring(0, dot);
+        }
+        base = base.strip();
+        if (base.isEmpty() || base.equals(".")) {
+            base = "file";
+        }
+        // Short enough that the header's own limit never cuts the extension off; by code point, never mid-pair.
+        int room = 200 - extension.length();
+        if (base.codePointCount(0, base.length()) > room) {
+            base = base.substring(0, base.offsetByCodePoints(0, room));
+        }
+        return base + extension;
+    }
+
     /** Extension including the dot, or empty when the type has no obvious one. */
     static String extensionFor(String contentType) {
         return switch (ContentTypePolicy.normalise(contentType)) {
             case "image/jpeg" -> ".jpg";
             case "image/png" -> ".png";
             case "image/webp" -> ".webp";
+            case "video/mp4" -> ".mp4";
+            case "video/quicktime" -> ".mov";
+            case "video/webm" -> ".webm";
             case "application/pdf" -> ".pdf";
+            case "application/xml" -> ".xml";
             case "text/csv" -> ".csv";
             case "text/plain" -> ".txt";
             case "application/vnd.openxmlformats-officedocument.wordprocessingml.document" -> ".docx";
@@ -78,6 +157,17 @@ public final class StorageKeys {
             throw new StorageException("Malformed storage key: " + key);
         }
         String prefix = key.substring(0, Math.max(0, key.indexOf('/')));
+        if (INCOMING.equals(prefix)) {
+            // incoming/<category>/...: the second segment must be a category, so a quarantined key is ours too.
+            String rest = key.substring(prefix.length() + 1);
+            String category = rest.substring(0, Math.max(0, rest.indexOf('/')));
+            for (FileCategory candidate : FileCategory.values()) {
+                if (candidate.prefix().equals(category)) {
+                    return key;
+                }
+            }
+            throw new StorageException("Storage key is not in a known category: " + key);
+        }
         boolean known = false;
         for (FileCategory category : FileCategory.values()) {
             if (category.prefix().equals(prefix)) {

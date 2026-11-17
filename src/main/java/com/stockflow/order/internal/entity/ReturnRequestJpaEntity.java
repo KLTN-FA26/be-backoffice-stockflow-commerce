@@ -22,8 +22,9 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * {@code ordering.return_request} (V20260928005400, reshaped by V20261101020000). The opening is written once; the
- * review, receipt, inspection, resolution and end move. The lines are children written through it; photos,
+ * {@code ordering.return_request} (V20260928005400, reshaped by V20261101020000 and, for team plan 4D-3, by
+ * V20261114000100 / 000200). The opening is written once; the review, the goods coming back, the refund and the end
+ * move. The lines are children written through it; photos,
  * discrepancies and the status history are append-only rows of their own.
  */
 @Entity
@@ -100,23 +101,12 @@ public class ReturnRequestJpaEntity extends BaseEntity {
     @Column(name = "receiving_location_code", length = 64)
     private String receivingLocationCode;
 
-    @Column(name = "receipt_note", length = 1000)
-    private String receiptNote;
-
-    @Column(name = "parcel_count", nullable = false)
-    private int parcelCount;
+    /** The return receipt that brought the goods back (team plan 4D-3); set once. */
+    @Column(name = "goods_receipt_id")
+    private UUID goodsReceiptId;
 
     @Column(name = "window_override_reason", length = 500, updatable = false)
     private String windowOverrideReason;
-
-    @Column(name = "inspected_by")
-    private UUID inspectedBy;
-
-    @Column(name = "inspected_at")
-    private Instant inspectedAt;
-
-    @Column(name = "inspection_note", length = 1000)
-    private String inspectionNote;
 
     @Enumerated(EnumType.STRING)
     @Column(name = "money_mode", length = 16)
@@ -143,17 +133,8 @@ public class ReturnRequestJpaEntity extends BaseEntity {
     @Column(name = "refunded_amount", nullable = false, precision = 19, scale = 4)
     private BigDecimal refundedAmount = BigDecimal.ZERO;
 
-    @Column(name = "credited_amount", nullable = false, precision = 19, scale = 4)
-    private BigDecimal creditedAmount = BigDecimal.ZERO;
-
     @Column(name = "offset_amount", nullable = false, precision = 19, scale = 4)
     private BigDecimal offsetAmount = BigDecimal.ZERO;
-
-    @Column(name = "credit_transfer_id")
-    private UUID creditTransferId;
-
-    @Column(name = "replacement_order_id")
-    private UUID replacementOrderId;
 
     @Column(name = "vat_adjustment_required", nullable = false)
     private boolean vatAdjustmentRequired;
@@ -166,40 +147,6 @@ public class ReturnRequestJpaEntity extends BaseEntity {
 
     @Column(name = "closed_at")
     private Instant closedAt;
-
-    @Enumerated(EnumType.STRING)
-    @Column(name = "withdrawal_status", length = 16)
-    private com.stockflow.order.internal.domain.ReturnRequest.WithdrawalStatus withdrawalStatus;
-
-    @Column(name = "withdrawal_reason", length = 500)
-    private String withdrawalReason;
-
-    @Column(name = "withdrawal_amount", nullable = false, precision = 19, scale = 4)
-    private BigDecimal withdrawalAmount = BigDecimal.ZERO;
-
-    @Column(name = "withdrawal_proposed_by")
-    private UUID withdrawalProposedBy;
-
-    @Column(name = "withdrawal_proposed_at")
-    private Instant withdrawalProposedAt;
-
-    @Column(name = "withdrawal_decided_by")
-    private UUID withdrawalDecidedBy;
-
-    @Column(name = "withdrawal_decided_at")
-    private Instant withdrawalDecidedAt;
-
-    @Column(name = "withdrawal_decision_note", length = 500)
-    private String withdrawalDecisionNote;
-
-    @Column(name = "withdrawal_offset_amount", nullable = false, precision = 19, scale = 4)
-    private BigDecimal withdrawalOffsetAmount = BigDecimal.ZERO;
-
-    @Column(name = "withdrawal_credited_amount", nullable = false, precision = 19, scale = 4)
-    private BigDecimal withdrawalCreditedAmount = BigDecimal.ZERO;
-
-    @Column(name = "withdrawal_credit_transfer_id")
-    private UUID withdrawalCreditTransferId;
 
     /** LAZY: a list reads the header only; the detail and every command load the lines with a fetch join. */
     @OneToMany(mappedBy = "request", cascade = CascadeType.ALL, orphanRemoval = true, fetch = FetchType.LAZY)
@@ -248,24 +195,16 @@ public class ReturnRequestJpaEntity extends BaseEntity {
         this.returnDeadline = returnDeadline;
     }
 
-    public void applyReceipt(UUID receivedBy, Instant receivedAt, String locationCode, String note, int parcelCount) {
+    public void applyReceipt(UUID receivedBy, Instant receivedAt, String locationCode, UUID goodsReceiptId) {
         this.receivedBy = receivedBy;
         this.receivedAt = receivedAt;
         this.receivingLocationCode = locationCode;
-        this.receiptNote = note;
-        this.parcelCount = parcelCount;
-    }
-
-    public void applyInspection(UUID inspectedBy, Instant inspectedAt, String note) {
-        this.inspectedBy = inspectedBy;
-        this.inspectedAt = inspectedAt;
-        this.inspectionNote = note;
+        this.goodsReceiptId = goodsReceiptId;
     }
 
     public void applyResolution(ReturnResolution moneyMode, BigDecimal settlementAmount, UUID proposedBy,
                                 Instant proposedAt, String note, UUID settledBy, Instant settledAt,
-                                BigDecimal refunded, BigDecimal credited, BigDecimal offset, UUID creditTransferId,
-                                UUID replacementOrderId, boolean vatAdjustmentRequired) {
+                                BigDecimal refunded, BigDecimal offset, boolean vatAdjustmentRequired) {
         this.moneyMode = moneyMode;
         this.settlementAmount = settlementAmount;
         this.proposedBy = proposedBy;
@@ -274,10 +213,7 @@ public class ReturnRequestJpaEntity extends BaseEntity {
         this.settledBy = settledBy;
         this.settledAt = settledAt;
         this.refundedAmount = refunded;
-        this.creditedAmount = credited;
         this.offsetAmount = offset;
-        this.creditTransferId = creditTransferId;
-        this.replacementOrderId = replacementOrderId;
         this.vatAdjustmentRequired = vatAdjustmentRequired;
     }
 
@@ -285,23 +221,6 @@ public class ReturnRequestJpaEntity extends BaseEntity {
         this.cancelledBy = cancelledBy;
         this.cancellationReason = cancellationReason;
         this.closedAt = closedAt;
-    }
-
-    public void applyWithdrawal(com.stockflow.order.internal.domain.ReturnRequest.WithdrawalStatus status,
-                                String reason, BigDecimal amount, UUID proposedBy, Instant proposedAt, UUID decidedBy,
-                                Instant decidedAt, String decisionNote, BigDecimal offset, BigDecimal credited,
-                                UUID creditTransferId) {
-        this.withdrawalStatus = status;
-        this.withdrawalReason = reason;
-        this.withdrawalAmount = amount;
-        this.withdrawalProposedBy = proposedBy;
-        this.withdrawalProposedAt = proposedAt;
-        this.withdrawalDecidedBy = decidedBy;
-        this.withdrawalDecidedAt = decidedAt;
-        this.withdrawalDecisionNote = decisionNote;
-        this.withdrawalOffsetAmount = offset;
-        this.withdrawalCreditedAmount = credited;
-        this.withdrawalCreditTransferId = creditTransferId;
     }
 
     public String getRmaNumber() { return rmaNumber; }
@@ -326,12 +245,8 @@ public class ReturnRequestJpaEntity extends BaseEntity {
     public UUID getReceivedBy() { return receivedBy; }
     public Instant getReceivedAt() { return receivedAt; }
     public String getReceivingLocationCode() { return receivingLocationCode; }
-    public String getReceiptNote() { return receiptNote; }
-    public int getParcelCount() { return parcelCount; }
+    public UUID getGoodsReceiptId() { return goodsReceiptId; }
     public String getWindowOverrideReason() { return windowOverrideReason; }
-    public UUID getInspectedBy() { return inspectedBy; }
-    public Instant getInspectedAt() { return inspectedAt; }
-    public String getInspectionNote() { return inspectionNote; }
     public ReturnResolution getMoneyMode() { return moneyMode; }
     public BigDecimal getSettlementAmount() { return settlementAmount; }
     public UUID getProposedBy() { return proposedBy; }
@@ -340,26 +255,10 @@ public class ReturnRequestJpaEntity extends BaseEntity {
     public UUID getSettledBy() { return settledBy; }
     public Instant getSettledAt() { return settledAt; }
     public BigDecimal getRefundedAmount() { return refundedAmount; }
-    public BigDecimal getCreditedAmount() { return creditedAmount; }
     public BigDecimal getOffsetAmount() { return offsetAmount; }
-    public UUID getCreditTransferId() { return creditTransferId; }
-    public UUID getReplacementOrderId() { return replacementOrderId; }
     public boolean isVatAdjustmentRequired() { return vatAdjustmentRequired; }
     public UUID getCancelledBy() { return cancelledBy; }
     public String getCancellationReason() { return cancellationReason; }
     public Instant getClosedAt() { return closedAt; }
-    public com.stockflow.order.internal.domain.ReturnRequest.WithdrawalStatus getWithdrawalStatus() {
-        return withdrawalStatus;
-    }
-    public String getWithdrawalReason() { return withdrawalReason; }
-    public BigDecimal getWithdrawalAmount() { return withdrawalAmount; }
-    public UUID getWithdrawalProposedBy() { return withdrawalProposedBy; }
-    public Instant getWithdrawalProposedAt() { return withdrawalProposedAt; }
-    public UUID getWithdrawalDecidedBy() { return withdrawalDecidedBy; }
-    public Instant getWithdrawalDecidedAt() { return withdrawalDecidedAt; }
-    public String getWithdrawalDecisionNote() { return withdrawalDecisionNote; }
-    public BigDecimal getWithdrawalOffsetAmount() { return withdrawalOffsetAmount; }
-    public BigDecimal getWithdrawalCreditedAmount() { return withdrawalCreditedAmount; }
-    public UUID getWithdrawalCreditTransferId() { return withdrawalCreditTransferId; }
     public List<ReturnRequestLineJpaEntity> getLines() { return lines; }
 }
