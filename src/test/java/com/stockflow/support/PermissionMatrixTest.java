@@ -1083,7 +1083,8 @@ class PermissionMatrixTest {
 
     /**
      * SCRUM-474 5b (V20261029004000): the staff user-management screen picks roles and warehouses, so every role that
-     * can read users also reads roles and warehouses - READ only.
+     * can read users also reads roles and warehouses - READ only. Since V20261129000100 that is SYSTEM_ADMIN alone:
+     * staff accounts, roles and permissions are the administrator's (kltn-docs 00 §2.5.3 item 7, decided 2026-11-07).
      */
     @Test
     void everyRoleThatReadsUsersAlsoReadsRolesAndWarehouses() {
@@ -1091,16 +1092,30 @@ class PermissionMatrixTest {
         List<Role> holders = Arrays.stream(Role.values())
                 .filter(role -> roles.resolve(List.of(role.authority())).permissions().contains(users))
                 .toList();
-        assertThat(holders).containsExactlyInAnyOrder(Role.SALES_MANAGER, Role.SYSTEM_ADMIN);
+        assertThat(holders).containsExactly(Role.SYSTEM_ADMIN);
         for (Role role : holders) {
             assertThat(roles.resolve(List.of(role.authority())).permissions()).as(role.name())
                     .contains(PermissionCode.parse("identity-roles:READ"),
                             PermissionCode.parse("warehouse-warehouses:READ"));
         }
-        assertThat(roles.resolve(List.of(Role.SALES_MANAGER.authority())).permissions())
-                .doesNotContain(PermissionCode.parse("warehouse-warehouses:VIEW_PAGE"),
-                        PermissionCode.parse("warehouse-warehouses:CREATE"),
-                        PermissionCode.parse("warehouse-warehouses:UPDATE"));
+    }
+
+    /**
+     * V20261129000100: only SYSTEM_ADMIN manages staff accounts, roles and permissions (kltn-docs 00 §2.5.3 item 7),
+     * and every staff role reads its own inbox - the Production Coordinator was left without it.
+     */
+    @Test
+    void onlyTheAdministratorManagesAccountsAndEveryStaffRoleReadsItsInbox() {
+        for (Role role : Role.values()) {
+            Set<PermissionCode> granted = roles.resolve(List.of(role.authority())).permissions();
+            boolean identityGrant = granted.stream().anyMatch(code -> code.toString().startsWith("identity-users:")
+                    || code.toString().startsWith("identity-roles:") || code.toString().startsWith("identity-rbac:"));
+            assertThat(identityGrant).as(role.name() + " manages accounts").isEqualTo(role == Role.SYSTEM_ADMIN);
+            assertThat(granted).as(role.name() + " reads its inbox").contains(
+                    PermissionCode.parse("notification-notifications:VIEW_PAGE"),
+                    PermissionCode.parse("notification-notifications:READ"),
+                    PermissionCode.parse("notification-notifications:UPDATE"));
+        }
     }
 
     @Test
