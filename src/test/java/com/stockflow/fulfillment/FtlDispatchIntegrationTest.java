@@ -2443,9 +2443,13 @@ class FtlDispatchIntegrationTest {
         JsonNode plan = confirmed(List.of(shipment), truck1t25);
         String truck1 = loadOf(plan, 1);
         LocalDate tomorrow = LocalDate.now(ConfirmedOrders.VIETNAM).plusDays(1);
-        jdbc.update("UPDATE ordering.delivery_batch SET window_start = ?, window_end = ? WHERE contract_id IN "
-                + "(SELECT id FROM ordering.sales_contract WHERE order_id = ?)", tomorrow, tomorrow.plusDays(6),
-                order.orderId());
+        // The schedule of a signed contract is fixed (14 BR-14): the window is moved as time passing would, triggers off.
+        tx.executeWithoutResult(status -> {
+            jdbc.execute("SET LOCAL session_replication_role = replica");
+            jdbc.update("UPDATE ordering.delivery_batch SET window_start = ?, window_end = ? WHERE contract_id IN "
+                    + "(SELECT id FROM ordering.sales_contract WHERE order_id = ?)", tomorrow, tomorrow.plusDays(6),
+                    order.orderId());
+        });
         book(truck1, ghn, "51C-" + truck1.substring(0, 6));
         List<String> both = List.of("ORDER_BALANCE_NOT_PAID", "DELIVERY_BATCH_WINDOW_NOT_OPEN");
 
@@ -2713,7 +2717,8 @@ class FtlDispatchIntegrationTest {
 
         // F5: the line list says what the check station did to the carton - the UI shows "replace" from it alone.
         JsonNode removedLine = pickLine(task, removed);
-        assertThat(removedLine.path("status").asText()).as("the line stays PICKED").isEqualTo("PICKED");
+        assertThat(removedLine.path("status").asText()).as("PUT_BACK: the damaged carton went to quarantine already")
+                .isEqualTo("PUT_BACK");
         assertThat(removedLine.path("removalReason").asText()).isEqualTo("DAMAGED");
         assertThat(removedLine.path("replacementPending").asBoolean()).isTrue();
         // A picker does not reallocate: the warehouse manager does (fulfillment-task-assignment:UPDATE).
