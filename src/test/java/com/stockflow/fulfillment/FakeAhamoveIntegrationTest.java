@@ -111,21 +111,25 @@ class FakeAhamoveIntegrationTest {
      * twice: it is meant to be repeatable.
      */
     private UUID seededAhamove() {
-        jdbc.update("""
-                INSERT INTO fulfillment.carrier (id, code, name, contact_name, contact_phone, status, connection_type,
-                                                 version, created_at, created_by)
-                VALUES (?, 'AHAMOVE', 'Ahamove', 'Ahamove Partner Support', '1900545411', 'ACTIVE', 'MANUAL', 0, NOW(),
-                        'seed')
-                ON CONFLICT (code) DO NOTHING""", Identifiers.newId());
+        // The pool does not auto-commit (CLAUDE.md, persistence traps): a write outside a transaction is lost.
+        String script;
         try {
-            String script = new String(new ClassPathResource("db/demo/V20261201000400__demo_fake_ahamove.sql")
+            script = new String(new ClassPathResource("db/demo/V20261201000400__demo_fake_ahamove.sql")
                     .getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-            jdbc.execute(script);
-            jdbc.execute(script);
         } catch (java.io.IOException unreadable) {
             throw new IllegalStateException(unreadable);
         }
-        return jdbc.queryForObject("SELECT id FROM fulfillment.carrier WHERE code = 'AHAMOVE'", UUID.class);
+        return tx.execute(s -> {
+            jdbc.update("""
+                    INSERT INTO fulfillment.carrier (id, code, name, contact_name, contact_phone, status,
+                                                     connection_type, version, created_at, created_by)
+                    VALUES (?, 'AHAMOVE', 'Ahamove', 'Ahamove Partner Support', '1900545411', 'ACTIVE', 'MANUAL', 0,
+                            NOW(), 'seed')
+                    ON CONFLICT (code) DO NOTHING""", Identifiers.newId());
+            jdbc.execute(script);
+            jdbc.execute(script);
+            return jdbc.queryForObject("SELECT id FROM fulfillment.carrier WHERE code = 'AHAMOVE'", UUID.class);
+        });
     }
 
     // ---- fixtures (as FtlDispatchIntegrationTest's) ------------------------------------------------
