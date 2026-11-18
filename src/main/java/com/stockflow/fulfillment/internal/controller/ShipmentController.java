@@ -10,6 +10,7 @@ import com.stockflow.common.security.AuthenticatedUser;
 import com.stockflow.common.security.CurrentUser;
 import com.stockflow.common.security.RequiresPermission;
 import com.stockflow.fulfillment.internal.controller.dto.DeliveryOutcomeCorrectionRequest;
+import com.stockflow.fulfillment.internal.controller.dto.FailureReasonCorrectionRequest;
 import com.stockflow.fulfillment.internal.controller.dto.DeliveryOutcomeRequest;
 import com.stockflow.fulfillment.internal.controller.dto.ShipmentResponse;
 import com.stockflow.fulfillment.internal.controller.dto.ShipmentRowResponse;
@@ -124,5 +125,19 @@ class ShipmentController {
             @Valid @RequestBody DeliveryOutcomeCorrectionRequest request, @AuthenticatedUser CurrentUser actor) {
         return ApiResponse.ok(mapper.toResponse(shipments.correctOutcome(shipmentId, new Shipments.Correction(
                 request.outcome(), request.failureReason(), request.note(), request.reason()), actor)));
+    }
+
+    @PostMapping("/{shipmentId}/failure-reason-correction")
+    @Operation(summary = "Correct the failure reason of a failed or returned shipment once the real one is known, with "
+            + "why (09 edge: a return the carrier reported first is recorded OTHER); the status does not change. "
+            + "409 SHIPMENT_STATE_CONFLICT for a shipment neither failed nor returned; 409 "
+            + "SHIPMENT_FAILURE_REASON_LOCKED once its returned goods were received and their case opened")
+    @RequiresPermission(resource = FulfillmentResources.DELIVERY_CORRECTIONS, action = Action.UPDATE)
+    @Auditable(action = AuditAction.UPDATE, resourceType = "shipment", resourceId = "#shipmentId")
+    public ApiResponse<ShipmentResponse> correctFailureReason(@PathVariable UUID shipmentId,
+            @Valid @RequestBody FailureReasonCorrectionRequest request, @AuthenticatedUser CurrentUser actor) {
+        return ApiResponse.ok(mapper.toResponse(shipments.correctFailureReason(shipmentId,
+                new Shipments.ReasonCorrectionRequest(request.failureReason(), request.note(), request.reason()),
+                actor)));
     }
 }

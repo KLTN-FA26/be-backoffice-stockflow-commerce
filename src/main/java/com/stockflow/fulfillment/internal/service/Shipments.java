@@ -32,11 +32,21 @@ public interface Shipments {
     record Parcel(UUID packageId, String labelCode, String status, BigDecimal weightKg, BigDecimal lengthCm,
                   BigDecimal widthCm, BigDecimal heightCm) { }
 
-    /** One step of the timeline, with who recorded it (09 BR-02). */
-    record Step(String status, Instant occurredAt, UUID recordedBy, String recordedByName, String note) { }
+    /**
+     * One step of the timeline, with where it came from and who or what recorded it (09 BR-02): {@code source} MANUAL
+     * (a person, {@code recordedBy}) or CARRIER_WEBHOOK (nobody; {@code carrierEventId} names the carrier's event).
+     */
+    record Step(String status, Instant occurredAt, UUID recordedBy, String recordedByName, String note, String source,
+                UUID carrierEventId) { }
+
+    /**
+     * A failure reason the warehouse manager corrected: before and after, why, who and when.
+     */
+    record ReasonCorrection(String fromReason, String fromNote, String toReason, String toNote, String reason,
+                            UUID correctedBy, String correctedByName, Instant correctedAt) { }
 
     record ShipmentDetail(ShipmentRow shipment, String partialNote, String failureNote, Instant cancelledAt,
-                          List<Parcel> packages, List<Step> timeline) { }
+                          List<Parcel> packages, List<Step> timeline, List<ReasonCorrection> reasonCorrections) { }
 
     /**
      * @param outcome       DELIVERED, DELIVERY_FAILED or RETURNED
@@ -79,4 +89,22 @@ public interface Shipments {
      *         {@code SHIPMENT_STATE_CONFLICT}; {@code ORDER_DELIVERY_NOT_CORRECTABLE}; {@code VALIDATION_FAILED}
      */
     ShipmentDetail correctOutcome(UUID shipmentId, Correction correction, CurrentUser actor);
+
+    /**
+     * @param failureReason the real reason: CUSTOMER_ABSENT, REFUSED, WRONG_ADDRESS, LOST, DAMAGED or OTHER
+     * @param note          required with OTHER
+     * @param reason        why it is corrected (how the real reason was learnt); required
+     */
+    record ReasonCorrectionRequest(String failureReason, String note, String reason) { }
+
+    /**
+     * Corrects the failure reason of a failed or returned shipment once the warehouse manager learnt the real one
+     * (kltn-docs 09 edge "hoàn hàng khi còn Handed Over"), with why; the order's shipment follows. The status does not
+     * change, and the carrier's later reports still apply. The same reason and note again change nothing.
+     *
+     * @throws com.stockflow.common.error.BusinessException {@code SHIPMENT_NOT_FOUND}; {@code OUT_OF_DATA_SCOPE};
+     *         {@code SHIPMENT_STATE_CONFLICT}; {@code SHIPMENT_FAILURE_REASON_LOCKED} once its returned goods were
+     *         received; {@code VALIDATION_FAILED}
+     */
+    ShipmentDetail correctFailureReason(UUID shipmentId, ReasonCorrectionRequest correction, CurrentUser actor);
 }

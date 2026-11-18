@@ -670,6 +670,53 @@ public final class LoadPlan {
         return released;
     }
 
+    /**
+     * <b>Takes shipments off a vehicle called off under control</b> (kltn-docs 09 §4.2 step 9, §5.2, §5.3, BR-14;
+     * decided 2026-11-05): the parcels of {@code shipmentIds} placed on vehicle {@code seq} leave the plan
+     * ({@link LoadPlanReleaseReason#REMOVED_FROM_VEHICLE}) and wait at the dispatch area for another plan; the vehicle
+     * keeps the layout recalculated for the parcels it kept ({@code relayout}: one vehicle, every kept parcel placed),
+     * or, keeping none, leaves the plan - no new load is made for it. The service checks first that each shipment is
+     * on this vehicle only.
+     *
+     * @param relayout the planner's answer for the kept parcels; null when none are kept
+     * @return the parcels released
+     * @throws BusinessException {@code LOAD_PLAN_RELAYOUT_INCOMPLETE} when the answer did not place every kept parcel
+     */
+    public Set<UUID> removeFromVehicle(int seq, Set<UUID> shipmentIds, LoadPlanResult relayout,
+                                       Map<UUID, CargoPackage> cartons, Instant at) {
+        requireStatus("have shipments taken off a vehicle", LoadPlanStatus.CONFIRMED);
+        Vehicle vehicle = requireVehicle(seq);
+        Set<UUID> here = new HashSet<>();
+        vehicle.placements().forEach(p -> here.add(p.packageId()));
+        Set<UUID> released = new LinkedHashSet<>();
+        for (Member m : List.copyOf(members.values())) {
+            if (m.active() && here.contains(m.packageId()) && shipmentIds.contains(m.shipmentId())) {
+                released.add(m.packageId());
+            }
+        }
+        Set<UUID> kept = new HashSet<>(here);
+        kept.removeAll(released);
+        int index = vehicles.indexOf(vehicle);
+        if (kept.isEmpty()) {
+            vehicles.set(index, vehicle.retired());
+        } else {
+            Set<UUID> placed = new HashSet<>();
+            if (relayout != null && relayout.vehicles().size() == 1) {
+                relayout.vehicles().getFirst().placements().forEach(p -> placed.add(UUID.fromString(p.ref())));
+            }
+            if (relayout == null || relayout.vehicles().size() != 1 || !relayout.unplaced().isEmpty()
+                    || !placed.equals(kept)) {
+                throw new BusinessException(ErrorCode.LOAD_PLAN_RELAYOUT_INCOMPLETE, ("Vehicle %d of load plan %s: "
+                        + "the %d parcel(s) it keeps could not all be placed again").formatted(seq, code, kept.size()));
+            }
+            vehicles.set(index, withUsage(vehicle.id(), vehicle.seq(), vehicle.spec(),
+                    placedOf(relayout.vehicles().getFirst().placements()), cartons));
+        }
+        released.forEach(id -> members.put(id, members.get(id).released(LoadPlanReleaseReason.REMOVED_FROM_VEHICLE, at)));
+        changed = true;
+        return released;
+    }
+
     /** Every vehicle handed over and gone (BR-15): PR E calls this when the last dispatch load is DISPATCHED. */
     public void markDispatched(Instant at) {
         requireStatus("be dispatched", LoadPlanStatus.CONFIRMED);

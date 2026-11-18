@@ -70,7 +70,12 @@ class CarrierEventApplier {
                    String carrierOrderId, UUID shipmentId, String dedupeKey, List<CarrierReport> stops,
                    FailureReasonMap.Resolution failure) { }
 
-    private static final String E21_NOTE = "Returned by the carrier with no failed delivery reported first";
+    /**
+     * E21: the note of the failed delivery recorded for a shipment the carrier reports returned while still handed over.
+     * Stored on the shipment and read by staff on its timeline, so it is written as kltn-docs 09 §4.5 step 7 and BR-26
+     * word it (as {@code chat}'s document cards keep their Vietnamese titles), not in English.
+     */
+    static final String E21_NOTE = "hãng báo hoàn hàng";
 
     private final CarrierEventJpaRepository events;
     private final DispatchLoadJpaRepository loads;
@@ -387,8 +392,16 @@ class CarrierEventApplier {
                     .map(ShipmentJpaRepository.ShipmentState::getId).toList();
         }
         int changed = 0;
+        List<UUID> delivered = new ArrayList<>();
         for (UUID shipment : targets) {
-            changed += shipmentOutcomes.carrierOutcome(shipment, target, reason, note, at, eventId) ? 1 : 0;
+            if (shipmentOutcomes.carrierOutcome(shipment, target, reason, note, at, eventId)) {
+                changed++;
+                delivered.add(shipment);
+            }
+        }
+        if (target == ShipmentStatus.DELIVERED && report.podUrl() != null && !delivered.isEmpty()) {
+            // 09 §4.5 step 7 "POD đính kèm": fetched after commit, with no transaction held while it downloads.
+            publisher.publishEvent(new CarrierPodReported(eventId, report.podUrl(), delivered));
         }
         String untouched = skipped.isEmpty() ? "" : "; corrected by hand, not touched (E17): " + String.join(", ",
                 skipped);

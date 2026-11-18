@@ -30,6 +30,7 @@ final class FulfillmentResources {
      */
     static final String ORDERS = "sales-orders";
     static final String DELIVERY_OUTCOMES = FulfillmentPermissions.DELIVERY_OUTCOMES;
+    static final String DELIVERY_DOCUMENTS = FulfillmentPermissions.DELIVERY_DOCUMENTS;
 
     private FulfillmentResources() { }
 }

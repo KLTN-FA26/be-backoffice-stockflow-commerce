@@ -90,6 +90,13 @@ public final class FulfillmentPermissions {
      */
     public static final String DELIVERY_OUTCOMES = "fulfillment-delivery-outcomes";
 
+    /**
+     * READ: an order's proofs of delivery and the waybill files of the vehicles that carried it, which Sales sends a
+     * customer who asks in the chat (kltn-docs 09 §2, §7 row 16; V20261204000100). Sales staff, Sales Manager and the
+     * system admin; never the customer (BR-05).
+     */
+    public static final String DELIVERY_DOCUMENTS = "fulfillment-delivery-documents";
+
     private FulfillmentPermissions() {
     }
 }

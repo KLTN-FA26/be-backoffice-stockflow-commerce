@@ -661,12 +661,12 @@ class FtlDispatchIntegrationTest {
         as(dispatcherElsewhere, "WAREHOUSE_STAFF", get(LOADS + "/" + loadId + "/waybill-files"))
                 .andExpect(status().isForbidden());
 
-        // Reopened, the plan cancels the load: its files are history, it takes no new one.
+        // Reopened, the plan cancels the load: its files are history, it takes no new one (RTM-WAYBILLFILE).
         JsonNode now = data(dispatch(get(PLANS + "/" + plan.path("loadPlanId").asText())).andExpect(status().isOk()));
         step(now, "/reopening", "{\"expectedVersion\":" + now.path("version").asLong() + ",\"reason\":\"đổi xe\"}");
         as(dispatcher, "WAREHOUSE_STAFF", org.springframework.test.web.servlet.request.MockMvcRequestBuilders
                 .multipart(LOADS + "/" + loadId + "/waybill-files").file(file)).andExpect(status().isConflict())
-                .andExpect(jsonPath("$.errorCode").value("INVALID_LOAD_TRANSITION"));
+                .andExpect(jsonPath("$.errorCode").value("LOAD_NOT_BOOKED"));
     }
 
     private ResultActions importing(UUID user, String role, String path, String csv) throws Exception {
@@ -1367,6 +1367,44 @@ class FtlDispatchIntegrationTest {
                 .containsExactly("DELIVERY_FAILED", "RETURNED");
         assertThat(jdbc.queryForObject("SELECT failure_reason FROM fulfillment.shipment WHERE id = ?", String.class,
                 shipment)).isEqualTo("OTHER");
+        // G18: the note is the docs' own words (09 §4.5 step 7, BR-26); G14: the timeline says the carrier reported it.
+        assertThat(jdbc.queryForObject("SELECT failure_note FROM fulfillment.shipment WHERE id = ?", String.class,
+                shipment)).isEqualTo("hãng báo hoàn hàng");
+        JsonNode steps = data(dispatch(get(BASE + "/shipments/" + shipment)).andExpect(status().isOk())).path("timeline");
+        assertThat(steps).filteredOn(s -> "RETURNED".equals(s.path("status").asText())).singleElement()
+                .satisfies(s -> {
+                    assertThat(s.path("source").asText()).isEqualTo("CARRIER_WEBHOOK");
+                    assertThat(s.path("carrierEventId").asText()).isNotBlank();
+                    assertThat(s.hasNonNull("recordedBy")).isFalse();
+                });
+        assertThat(steps).filteredOn(s -> "READY_TO_DISPATCH".equals(s.path("status").asText())).singleElement()
+                .satisfies(s -> assertThat(s.path("source").asText()).isEqualTo("MANUAL"));
+
+        // G12 (09 edge "hoàn hàng khi còn Handed Over"): the manager learnt the real reason - a dispatcher may not, a
+        // correction says why, and the order's shipment follows; the status stays RETURNED.
+        String reasonFix = BASE + "/shipments/" + shipment + "/failure-reason-correction";
+        dispatch(body(post(reasonFix), "{\"failureReason\":\"REFUSED\",\"reason\":\"x\"}"))
+                .andExpect(status().isForbidden());
+        as(manager, "WAREHOUSE_MANAGER", body(post(reasonFix), "{\"failureReason\":\"REFUSED\"}"))
+                .andExpect(status().isBadRequest());
+        as(manager, "WAREHOUSE_MANAGER", body(post(reasonFix), "{\"failureReason\":\"OTHER\",\"reason\":\"x\"}"))
+                .andExpect(status().isBadRequest());
+        JsonNode fixed = data(as(manager, "WAREHOUSE_MANAGER", body(post(reasonFix), "{\"failureReason\":\"REFUSED\","
+                + "\"reason\":\"the carrier called: the customer refused the goods\"}")).andExpect(status().isOk()));
+        assertThat(fixed.path("shipment").path("status").asText()).isEqualTo("RETURNED");
+        assertThat(fixed.path("shipment").path("failureReason").asText()).isEqualTo("REFUSED");
+        assertThat(fixed.path("reasonCorrections")).singleElement().satisfies(c -> {
+            assertThat(c.path("fromReason").asText()).isEqualTo("OTHER");
+            assertThat(c.path("fromNote").asText()).isEqualTo("hãng báo hoàn hàng");
+            assertThat(c.path("toReason").asText()).isEqualTo("REFUSED");
+            assertThat(c.path("reason").asText()).isEqualTo("the carrier called: the customer refused the goods");
+            assertThat(c.path("correctedBy").asText()).isEqualTo(manager.toString());
+        });
+        assertThat(jdbc.queryForObject("SELECT failure_reason FROM ordering.order_shipment WHERE id = ?", String.class,
+                shipment)).isEqualTo("REFUSED");
+        // The same again changes nothing.
+        as(manager, "WAREHOUSE_MANAGER", body(post(reasonFix), "{\"failureReason\":\"REFUSED\",\"reason\":\"again\"}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.reasonCorrections.length()").value(1));
 
         // The error list: the manager resolves the early outcome once; an applied event is not the list's.
         String reviewId = review.path("eventId").asText();
@@ -1882,6 +1920,98 @@ class FtlDispatchIntegrationTest {
     }
 
     @Test
+    @DisplayName("09B G7 / G13: a delivery the carrier's webhook reports with a proof of delivery keeps it with the "
+            + "shipment as an uploaded one is (uploaded by nobody, naming the event; once per event); Sales read the "
+            + "order's POD and waybill files and download them, the customer and the warehouse staff may not")
+    void aProofOfDeliveryFromTheWebhookAndSalesReadTheDocuments() throws Exception {
+        UUID manager = staff("WAREHOUSE_MANAGER", HCM);
+        String secret = "load-webhook-secret-pod-0123456789";
+        String code = "WP" + UUID.randomUUID().toString().substring(0, 6).toUpperCase();
+        UUID carrier = UUID.fromString(data(as(manager, "WAREHOUSE_MANAGER", body(post(BASE + "/carriers"),
+                "{\"code\":\"" + code + "\",\"name\":\"Xe tải webhook\",\"connection\":{\"connectionType\":"
+                        + "\"WEBHOOK_LOAD\",\"webhookSecret\":\"" + secret + "\"}}")).andExpect(status().isCreated()))
+                .path("carrierId").asText());
+        UUID[] mine = portalCustomer();
+        OrderSummary order = ftlOrder(1, mine[0]);
+        UUID shipment = packed(order, false)[0];
+        String shipmentCode = jdbc.queryForObject("SELECT code FROM fulfillment.shipment WHERE id = ?", String.class,
+                shipment);
+        String loadId = loadOf(confirmed(List.of(shipment), truck5t), 1);
+        String loadCode = load(loadId).path("code").asText();
+        var waybillFile = new org.springframework.mock.web.MockMultipartFile("file", "van-don.pdf", "application/pdf",
+                onePagePdf());
+        // RTM-WAYBILLFILE: no waybill file before a carrier is booked for the vehicle.
+        dispatch(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                .multipart(LOADS + "/" + loadId + "/waybill-files").file(waybillFile)).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("LOAD_NOT_BOOKED"));
+        dispatch(body(post(LOADS + "/" + loadId + "/booking"), "{\"carrierId\":\"" + carrier
+                + "\",\"vehiclePlate\":\"51C-WP.01\",\"driverName\":\"Tai\",\"waybillNo\":\"WP-" + loadId
+                + "\"}")).andExpect(status().isOk());
+        dispatch(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                .multipart(LOADS + "/" + loadId + "/waybill-files").file(waybillFile)).andExpect(status().isCreated());
+        loadAndSign(loadId, "51C-WP.01");
+        byte[] proof = onePagePdf();
+        com.stockflow.fulfillment.internal.service.CarrierPodTestDownloads.answer(context, proof, "application/pdf",
+                "pod-signed.pdf");
+
+        // Not an https address: the event is unreadable and goes to the error list, nothing is applied.
+        String plain = "{\"loadCode\":\"" + loadCode + "\",\"type\":\"DELIVERED\",\"reportedAt\":"
+                + "\"2026-11-21T09:00:00Z\",\"shipmentCode\":\"" + shipmentCode + "\",\"podUrl\":"
+                + "\"http://files.example.com/pod.pdf\"}";
+        hook(code, plain, "X-Signature", com.stockflow.fulfillment.internal.service.CarrierWebhookTestSigner
+                .sign(secret, plain)).andExpect(jsonPath("$.data.result").value("NEEDS_REVIEW"));
+        assertThat(shipmentStatus(shipment)).isEqualTo("HANDED_OVER");
+
+        String delivered = "{\"loadCode\":\"" + loadCode + "\",\"type\":\"DELIVERED\",\"reportedAt\":"
+                + "\"2026-11-21T09:00:00Z\",\"shipmentCode\":\"" + shipmentCode + "\",\"podUrl\":"
+                + "\"https://files.example.com/pod/123/pod-signed.pdf\"}";
+        String eventId = data(hook(code, delivered, "X-Signature", com.stockflow.fulfillment.internal.service
+                .CarrierWebhookTestSigner.sign(secret, delivered)).andExpect(jsonPath("$.data.result").value("APPLIED")))
+                .path("eventId").asText();
+        assertThat(shipmentStatus(shipment)).isEqualTo("DELIVERED");
+        Await.until("the carrier's proof of delivery kept", ASYNC, () -> jdbc.queryForObject("SELECT count(*) FROM "
+                + "fulfillment.shipment_pod_file WHERE shipment_id = ?", Long.class, shipment) == 1);
+        Map<String, Object> pod = jdbc.queryForMap("SELECT file_name, content_type, uploaded_by, carrier_event_id::text "
+                + "AS event FROM fulfillment.shipment_pod_file WHERE shipment_id = ?", shipment);
+        assertThat(pod.get("file_name")).isEqualTo("pod-signed.pdf");
+        assertThat(pod.get("content_type")).isEqualTo("application/pdf");
+        assertThat(pod.get("uploaded_by")).isNull();
+        assertThat(pod.get("event")).isEqualTo(eventId);
+
+        // Sales read the order's documents and download them; the customer and the warehouse staff are refused.
+        String documents = BASE + "/orders/" + order.orderId() + "/delivery-documents";
+        JsonNode listed = data(sales(get(documents)).andExpect(status().isOk()));
+        assertThat(listed).singleElement().satisfies(s -> {
+            assertThat(s.path("shipmentCode").asText()).isEqualTo(shipmentCode);
+            assertThat(s.path("podFiles")).singleElement()
+                    .satisfies(f -> assertThat(f.path("fileName").asText()).isEqualTo("pod-signed.pdf"));
+            assertThat(s.path("vehicles")).singleElement().satisfies(v -> {
+                assertThat(v.path("loadCode").asText()).isEqualTo(loadCode);
+                assertThat(v.path("waybillNo").asText()).isEqualTo("WP-" + loadId);
+                assertThat(v.path("waybillFiles")).singleElement()
+                        .satisfies(f -> assertThat(f.path("fileName").asText()).isEqualTo("van-don.pdf"));
+            });
+        });
+        String podFile = listed.get(0).path("podFiles").get(0).path("fileId").asText();
+        String waybillFileId = listed.get(0).path("vehicles").get(0).path("waybillFiles").get(0).path("fileId").asText();
+        // The link itself needs the S3 provider (local storage answers 503 STORAGE_ERROR here): the order's own files
+        // pass the permission and the ownership check - neither 403 nor 404.
+        for (String link : List.of(documents + "/pod-files/" + podFile + "/download-url",
+                documents + "/waybill-files/" + waybillFileId + "/download-url")) {
+            int answered = sales(get(link)).andReturn().getResponse().getStatus();
+            assertThat(answered).as(link).isNotIn(403, 404);
+        }
+        // A file of another order is not this order's.
+        OrderSummary other = ftlOrder(1);
+        sales(get(BASE + "/orders/" + other.orderId() + "/delivery-documents/pod-files/" + podFile + "/download-url"))
+                .andExpect(status().isNotFound());
+        assertThat(data(sales(get(BASE + "/orders/" + other.orderId() + "/delivery-documents"))
+                .andExpect(status().isOk()))).isEmpty();
+        as(mine[1], "CUSTOMER", get(documents)).andExpect(status().isForbidden());
+        dispatch(get(documents)).andExpect(status().isForbidden());
+    }
+
+    @Test
     @DisplayName("3-6: a shipment across two vehicles (LP-3): each vehicle is shown to the customer as it leaves and "
             + "told in the portal's inbox once - not only the last one")
     void theCustomerFollowsEachVehicle() throws Exception {
@@ -1966,6 +2096,49 @@ class FtlDispatchIntegrationTest {
                 + "\"reason\":\"found at the reception\"}")).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.shipment.status").value("DELIVERED"));
         assertThat(orders.findById(order.orderId()).orElseThrow().status()).isEqualTo(OrderStatus.DELIVERED);
+    }
+
+    @Test
+    @DisplayName("09 edge 'hãng có webhook nhưng sự kiện không về' (RTM-FAILEDDELIV, 09B-226): the warehouse manager "
+            + "recorded a failure by hand - the carrier's later 'delivered' is not applied, it goes to the error list; "
+            + "a failure the carrier itself reported is delivered again by its next report")
+    void aDeliveryReportedAfterAFailureRecordedByHand() throws Exception {
+        UUID manager = staff("WAREHOUSE_MANAGER", HCM);
+        String secret = "load-webhook-secret-fd-0123456789";
+        String code = "WF" + UUID.randomUUID().toString().substring(0, 6).toUpperCase();
+        UUID carrier = UUID.fromString(data(as(manager, "WAREHOUSE_MANAGER", body(post(BASE + "/carriers"),
+                "{\"code\":\"" + code + "\",\"name\":\"Xe tải webhook\",\"connection\":{\"connectionType\":"
+                        + "\"WEBHOOK_LOAD\",\"webhookSecret\":\"" + secret + "\"}}")).andExpect(status().isCreated()))
+                .path("carrierId").asText());
+        UUID byHand = packed(ftlOrder(1), false)[0];
+        UUID byCarrier = packed(ftlOrder(1), false)[0];
+        JsonNode plan = confirmed(List.of(byHand, byCarrier), truck5t);
+        String loadId = loadOf(plan, 1);
+        String loadCode = load(loadId).path("code").asText();
+        dispatch(body(post(LOADS + "/" + loadId + "/booking"), "{\"carrierId\":\"" + carrier
+                + "\",\"vehiclePlate\":\"51C-WF.01\",\"driverName\":\"Tai\",\"waybillNo\":\"WF-" + loadId
+                + "\"}")).andExpect(status().isOk());
+        loadAndSign(loadId, "51C-WF.01");
+        java.util.function.BiFunction<UUID, String, String> report = (shipment, type) -> "{\"loadCode\":\""
+                + loadCode + "\",\"type\":\"" + type + "\",\"reportedAt\":\"2026-11-2" + (type.equals("DELIVERED")
+                ? "2" : "1") + "T09:00:00Z\",\"shipmentCode\":\"" + jdbc.queryForObject("SELECT code FROM "
+                + "fulfillment.shipment WHERE id = ?", String.class, shipment) + "\",\"failureReason\":\"x\"}";
+        java.util.function.Function<String, String> signed = content -> com.stockflow.fulfillment.internal.service
+                .CarrierWebhookTestSigner.sign(secret, content);
+
+        oc(body(post(BASE + "/shipments/" + byHand + "/delivery-outcome"), "{\"outcome\":\"DELIVERY_FAILED\","
+                + "\"failureReason\":\"CUSTOMER_ABSENT\"}")).andExpect(status().isOk());
+        String delivered = report.apply(byHand, "DELIVERED");
+        hook(code, delivered, "X-Signature", signed.apply(delivered))
+                .andExpect(jsonPath("$.data.result").value("NEEDS_REVIEW"));
+        assertThat(shipmentStatus(byHand)).isEqualTo("DELIVERY_FAILED");
+
+        String failed = report.apply(byCarrier, "DELIVERY_FAILED");
+        hook(code, failed, "X-Signature", signed.apply(failed)).andExpect(jsonPath("$.data.result").value("APPLIED"));
+        String deliveredAgain = report.apply(byCarrier, "DELIVERED");
+        hook(code, deliveredAgain, "X-Signature", signed.apply(deliveredAgain))
+                .andExpect(jsonPath("$.data.result").value("APPLIED"));
+        assertThat(shipmentStatus(byCarrier)).isEqualTo("DELIVERED");
     }
 
     @Test

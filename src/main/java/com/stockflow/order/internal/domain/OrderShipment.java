@@ -129,6 +129,25 @@ public final class OrderShipment {
         return true;
     }
 
+    /**
+     * The warehouse manager learnt the real reason a delivery failed (kltn-docs 09 edge "hoàn hàng khi còn Handed Over
+     * ... Quản lý kho sửa lý do thất bại nếu biết lý do thật"): the reason and note of a failed or returned shipment.
+     *
+     * @return false when they are the ones recorded
+     */
+    boolean correctFailureReason(DeliveryFailureReason reason, String note) {
+        if (status != OrderShipmentStatus.DELIVERY_FAILED && status != OrderShipmentStatus.RETURNED) {
+            throw new BusinessException(ErrorCode.ORDER_SHIPMENT_INVALID_TRANSITION,
+                    "Shipment %s is %s: only a failed delivery has a reason to correct".formatted(id, status));
+        }
+        if (Objects.requireNonNull(reason, "reason") == failureReason && Objects.equals(note, failureNote)) {
+            return false;
+        }
+        this.failureReason = reason;
+        this.failureNote = note;
+        return true;
+    }
+
     /** @return false when it already came back */
     boolean returned(Instant at, UUID by) {
         if (status == OrderShipmentStatus.RETURNED) {

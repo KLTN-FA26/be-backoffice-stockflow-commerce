@@ -1312,6 +1312,31 @@ public final class Order extends AggregateRoot {
         return true;
     }
 
+    /**
+     * The real reason a shipment's delivery failed, as the warehouse manager learnt it (09 edge "hoàn hàng khi còn
+     * Handed Over"): the shipment's reason and note change; an order waiting on that failure shows the reason of its
+     * failed shipments again. OTHER needs a note.
+     *
+     * @return whether this changed the order
+     * @throws BusinessException {@code ORDER_SHIPMENT_INVALID_TRANSITION} for a shipment neither failed nor returned
+     */
+    public boolean correctShipmentFailureReason(UUID shipmentId, DeliveryFailureReason reason, String note) {
+        java.util.Objects.requireNonNull(reason, "reason");
+        String trimmed = trimmed(note);
+        if (reason == DeliveryFailureReason.OTHER && trimmed == null) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A failure for another reason says what it was");
+        }
+        if (!requireShipment(shipmentId).correctFailureReason(reason, trimmed)) {
+            return false;
+        }
+        if (status == OrderStatus.DELIVERY_FAILED) {
+            this.deliveryFailureReason = shipments.stream()
+                    .filter(s -> s.status() == OrderShipmentStatus.DELIVERY_FAILED)
+                    .map(OrderShipment::failureReason).findFirst().orElse(deliveryFailureReason);
+        }
+        return true;
+    }
+
     /** The carrier could not deliver one shipment (09 §4.3 step 2). OTHER needs a note. */
     public boolean recordShipmentDeliveryFailed(UUID shipmentId, DeliveryFailureReason reason, String note, Instant at,
                                                 UUID by) {

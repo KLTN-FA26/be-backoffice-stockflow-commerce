@@ -898,6 +898,25 @@ class OrderServiceImpl implements OrderService, QuotedOrders {
     }
 
     @Override
+    public OrderSummary correctShipmentFailureReason(UUID orderId, UUID shipmentId,
+                                                     com.stockflow.order.api.DeliveryFailureReason reason,
+                                                     String note) {
+        Order order = lockOrder(orderId);
+        // The case of the returned goods is opened with the shipment's reason and keeps it (tg_delivery_failure_case):
+        // Sales decide on it - a failed trip charged or claimed from the carrier - so it does not move under them.
+        if (deliveryFailures.findByShipment(shipmentId).isPresent()) {
+            throw new BusinessException(ErrorCode.SHIPMENT_FAILURE_REASON_LOCKED, ("The goods of shipment %s of order %s "
+                    + "were received back and their case opened: its failure reason stays").formatted(shipmentId,
+                    order.orderNumber()));
+        }
+        if (!order.correctShipmentFailureReason(shipmentId, reason, note)) {
+            return toSummary(order);
+        }
+        log.info("Order {}: failure reason of shipment {} corrected to {}", order.orderNumber(), shipmentId, reason);
+        return saved(order);
+    }
+
+    @Override
     public OrderSummary correctShipmentToFailed(UUID orderId, UUID shipmentId,
                                                 com.stockflow.order.api.DeliveryFailureReason reason, String note,
                                                 Instant at, UUID by) {
