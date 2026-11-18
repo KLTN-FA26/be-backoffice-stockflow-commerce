@@ -84,6 +84,8 @@ class SalesContractService implements SalesContracts {
     private final OrderEventPublisher events;
     private final com.stockflow.order.internal.repository.OrderHoldJpaRepository holds;
     private final com.stockflow.order.internal.domain.CancellationRequestRepository cancellationRequests;
+    /** Its window is the complaint period a new contract states unless Sales agree another (WF-05 TH-1). */
+    private final com.stockflow.order.internal.domain.ReturnPolicy returnPolicy;
 
     SalesContractService(OrderRepository orders, SalesContractRepository contracts, CustomerService customers,
                          CustomerLegalProfiles legalProfiles, CustomerPaymentSchedules paymentSchedules,
@@ -91,7 +93,9 @@ class SalesContractService implements SalesContracts {
                          SalesContractDocument document, SellerProperties seller, ContractProperties defaults,
                          TransactionTemplate tx, Clock clock, OrderEventPublisher events,
                          com.stockflow.order.internal.repository.OrderHoldJpaRepository holds,
-                         com.stockflow.order.internal.domain.CancellationRequestRepository cancellationRequests) {
+                         com.stockflow.order.internal.domain.CancellationRequestRepository cancellationRequests,
+                         com.stockflow.order.internal.domain.ReturnPolicy returnPolicy) {
+        this.returnPolicy = returnPolicy;
         this.events = events;
         this.holds = holds;
         this.cancellationRequests = cancellationRequests;
@@ -140,6 +144,9 @@ class SalesContractService implements SalesContracts {
         SalesContract contract = SalesContract.draft(Identifiers.newId(), number, order, sellerParty(),
                 buyerParty(buyer), given.freeSampleRounds() == null ? defaults.freeSampleRounds()
                         : given.freeSampleRounds(), schedule, plan);
+        // Điều 318: the complaint period is written in the contract, the configured one unless agreed otherwise.
+        contract.agreeReturnWindow(order, given.returnWindowDays() == null ? (int) returnPolicy.window().toDays()
+                : given.returnWindowDays());
         SalesContract saved = contracts.save(contract);
         log.info("Sales contract {} drawn up for order {}", saved.contractNumber(), order.orderNumber());
         return view(saved, order, null);
@@ -187,6 +194,9 @@ class SalesContractService implements SalesContracts {
                         credit == null ? null : credit.creditTermDays());
         contract.revise(order, given.freeSampleRounds() == null ? contract.freeSampleRounds()
                 : given.freeSampleRounds(), schedule, plan);
+        if (given.returnWindowDays() != null) {
+            contract.agreeReturnWindow(order, given.returnWindowDays());
+        }
         return view(contracts.save(contract), order, null);
     }
 
@@ -365,7 +375,7 @@ class SalesContractService implements SalesContracts {
         return new ContractView(full.id(), full.contractNumber(), full.orderId(), full.orderNumber(), full.status(),
                 full.seller(), full.buyer(), full.freeSampleRounds(), full.totals(), full.deliverySchedule(),
                 full.paymentPlan(), full.sentAt(), null, full.signedOn(), full.signedFileName(), full.signedAt(), null,
-                null, null, null, full.completedAt(), full.version(), null);
+                null, null, null, full.completedAt(), full.version(), null, full.returnWindowDays());
     }
 
     @Override
@@ -632,7 +642,8 @@ class SalesContractService implements SalesContracts {
                 order.taxTotal().amount(), order.total().amount(), order.total().currency().getCurrencyCode()),
                 schedule, plan, contract.sentAt(), contract.sentBy(), contract.signedOn(), contract.signedFileName(),
                 contract.signedAt(), contract.signedBy(), contract.cancelledAt(), contract.cancelledBy(),
-                contract.cancellationReason(), contract.completedAt(), contract.version(), warning);
+                contract.cancellationReason(), contract.completedAt(), contract.version(), warning,
+                contract.returnWindowDays());
     }
 
     private static InstallmentView installmentView(PlannedInstallment i) {

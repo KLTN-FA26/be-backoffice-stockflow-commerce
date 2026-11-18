@@ -60,6 +60,15 @@ import java.util.stream.Collectors;
  * ({@code check_return_receipt}, {@code check_return_receipt_carton}). Every step is in the caller's warehouses
  * (BR-SEC-002), checked before anything else is said about the receipt or its source.</p>
  *
+ * <p>A return request is against one delivered shipment (WF-05 TH-1): its receipt takes only that shipment's cartons,
+ * and lists them as what to expect. A request of an order delivered without shipments takes any carton delivered on
+ * the order, as before.</p>
+ *
+ * <p>What is inside is counted (WF-05 TH-4): each carton keeps the units found in it - fewer than its label, it came
+ * back opened, goes into quarantine whole as every carton does, is marked so in inventory and is only ever written
+ * off - and units with no carton label are loose lines, recorded on the receipt and never put into stock. The return
+ * is refunded for what was counted.</p>
+ *
  * <p>Lock order: the receipt row ({@code FOR UPDATE}), then - on confirmation, inside inventory - the SKU advisory
  * locks, the cartons, their rows: the global order (receipt before SKU locks before cartons before stock rows).</p>
  */
@@ -79,9 +88,16 @@ public class ReturnReceiptService {
     public record Create(UUID shipmentId, UUID returnRequestId, String quarantineLocationCode, String note) {
     }
 
-    /** A carton on the receipt, as it was shipped, with the condition noted when it was scanned. */
+    /**
+     * A carton on the receipt, as it was shipped, with the condition noted when it was scanned and the units found in
+     * it ({@code countedQuantity}); {@code opened} when fewer than its label - it is only ever written off.
+     */
     public record CartonView(String lpn, String sku, String lotNumber, int quantity, String condition, UUID scannedBy,
-                             Instant scannedAt) {
+                             Instant scannedAt, int countedQuantity, boolean opened) {
+    }
+
+    /** Units that came back with no carton label: recorded, never put into stock (WF-05 TH-4). */
+    public record LooseLineView(UUID id, String sku, String lotNumber, int quantity, UUID recordedBy) {
     }
 
     /**
@@ -98,7 +114,7 @@ public class ReturnReceiptService {
                                     UUID quarantineLocationId, String quarantineLocationCode, String note,
                                     Instant receivedAt, UUID receivedBy, Instant confirmedAt, UUID confirmedBy,
                                     Instant closedAt, List<CartonView> cartons, List<ExpectedCarton> expectedCartons,
-                                    long version) {
+                                    long version, List<LooseLineView> looseLines) {
     }
 
     /** One receipt in the list: its source by id, and how many cartons it lists. */
@@ -209,6 +225,18 @@ public class ReturnReceiptService {
     @Auditable(action = AuditAction.UPDATE, resourceType = "return-receipt", resourceId = "#receiptId",
             details = "{lpn: #lpn}")
     public ReturnReceiptView scan(UUID receiptId, String lpn, String condition, UUID userId) {
+        return scan(receiptId, lpn, condition, null, userId);
+    }
+
+    /**
+     * As {@link #scan(UUID, String, String, UUID)}, with the units found inside the carton (WF-05 TH-4):
+     * {@code countedQuantity} null takes it as sealed - its whole label - on the first scan and keeps what was counted
+     * on a later one; fewer than its label records it opened. Never above the label ({@code VALIDATION_FAILED}).
+     */
+    @Auditable(action = AuditAction.UPDATE, resourceType = "return-receipt", resourceId = "#receiptId",
+            details = "{lpn: #lpn, counted: #countedQuantity}")
+    public ReturnReceiptView scan(UUID receiptId, String lpn, String condition, Integer countedQuantity,
+                                  UUID userId) {
         ReturnReceipt receipt = lock(receiptId);
         String normal = StockPackageView.normalLpn(lpn);
         if (normal == null) {
@@ -231,12 +259,51 @@ public class ReturnReceiptService {
                         carton.locationCode()), List.of(), Map.of("lpn", normal));
             }
             receipt.scan(new ReturnReceipt.Carton(Identifiers.newId(), carton.stockPackageId(), carton.lpn(),
-                    carton.sku(), carton.lotNumber(), carton.quantity(), condition, userId, clock.instant()));
+                    carton.sku(), carton.lotNumber(), carton.quantity(), condition, userId, clock.instant(),
+                    countedQuantity == null ? carton.quantity() : countedQuantity), countedQuantity != null);
         } else {
             ReturnReceipt.Carton held = already.get();
             receipt.scan(new ReturnReceipt.Carton(held.id(), held.stockPackageId(), held.lpn(), held.sku(),
-                    held.lotNumber(), held.quantity(), condition, held.scannedBy(), held.scannedAt()));
+                    held.lotNumber(), held.quantity(), condition, held.scannedBy(), held.scannedAt(),
+                    countedQuantity == null ? held.countedQuantity() : countedQuantity), countedQuantity != null);
         }
+        return view(receipts.save(receipt));
+    }
+
+    /**
+     * Units that came back with no carton label (WF-05 TH-4): their SKU - one of the order's - their lot when it can
+     * be read, how many. Recorded on a return request's receipt only, never put into stock (they are destroyed), and
+     * received for the return. The same SKU and lot again replaces the count.
+     *
+     * @throws BusinessException {@code GOODS_RECEIPT_NOT_FOUND}; 403; {@code VALIDATION_FAILED} (no SKU, no unit, a SKU
+     *         the order does not have); {@code INVALID_RECEIPT_TRANSITION} (not a draft, or a receipt of a shipment
+     *         the carrier brought back)
+     */
+    @Auditable(action = AuditAction.UPDATE, resourceType = "return-receipt", resourceId = "#receiptId",
+            details = "{loose: #sku, quantity: #quantity}")
+    public ReturnReceiptView recordLoose(UUID receiptId, String sku, String lotNumber, int quantity, UUID userId) {
+        ReturnReceipt receipt = lock(receiptId);
+        String code = sku == null ? null : sku.strip();
+        if (code == null || code.isEmpty()) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Name the SKU of the loose units",
+                    List.of(FieldError.of("sku", "must not be blank")));
+        }
+        boolean ofOrder = order(receipt.orderId()).lines().stream().anyMatch(line -> code.equals(line.sku()));
+        if (!ofOrder) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, ("%s is not a SKU of the order: only its own "
+                    + "goods are taken back (03 BR-14)").formatted(code), List.of(FieldError.of("sku",
+                    "not a SKU of the order")));
+        }
+        receipt.recordLoose(new ReturnReceipt.LooseLine(Identifiers.newId(), code, lotNumber, quantity, userId));
+        return view(receipts.save(receipt));
+    }
+
+    /** Loose units recorded by mistake come off the draft. */
+    @Auditable(action = AuditAction.UPDATE, resourceType = "return-receipt", resourceId = "#receiptId",
+            details = "{removedLoose: #lineId}")
+    public ReturnReceiptView removeLoose(UUID receiptId, UUID lineId) {
+        ReturnReceipt receipt = lock(receiptId);
+        receipt.removeLoose(lineId);
         return view(receipts.save(receipt));
     }
 
@@ -275,19 +342,27 @@ public class ReturnReceiptService {
         Instant now = clock.instant();
         receipt.confirm(userId, now);
         String area = location(receipt.quarantineLocationId()).locationCode();
-        List<ReturnedCarton> received = cartonReturns.receive(new ReceiveReturnedCartonsCommand(receipt.id(),
-                receipt.orderId(), area, receipt.cartons().stream().map(ReturnReceipt.Carton::lpn).toList(), userId,
-                now));
+        // Every carton goes into quarantine whole; one counted short is marked opened there, never to be released.
+        List<ReturnedCarton> received = receipt.cartons().isEmpty() ? List.of()
+                : cartonReturns.receive(new ReceiveReturnedCartonsCommand(receipt.id(), receipt.orderId(), area,
+                        receipt.cartons().stream().map(ReturnReceipt.Carton::lpn).toList(), userId, now,
+                        receipt.cartons().stream().filter(ReturnReceipt.Carton::opened)
+                                .map(ReturnReceipt.Carton::lpn).collect(Collectors.toSet())));
         ReturnReceipt saved = receipts.save(receipt);
         OrderSummary order = order(saved.orderId());
-        Map<String, String> conditions = saved.cartons().stream().filter(c -> c.condition() != null)
-                .collect(Collectors.toMap(ReturnReceipt.Carton::lpn, ReturnReceipt.Carton::condition));
+        Map<String, ReturnReceipt.Carton> scanned = saved.cartons().stream()
+                .collect(Collectors.toMap(ReturnReceipt.Carton::lpn, c -> c));
         events.publishEvent(new ReturnedGoodsReceived(saved.id(), saved.number(), saved.warehouseId(), saved.orderId(),
                 order.orderNumber(), order.customerId(), saved.shipmentId(), saved.returnRequestId(), area,
                 received.stream().map(c -> new ReturnedGoodsReceived.Carton(c.lpn(), c.sku(), c.lotNumber(),
-                        c.quantity(), conditions.get(c.lpn()))).toList(), userId, now));
-        log.info("Return receipt {} confirmed and closed: {} carton(s) of order {} into quarantine at {}",
-                saved.number(), received.size(), order.orderNumber(), area);
+                        c.quantity(), scanned.get(c.lpn()).condition(), scanned.get(c.lpn()).opened()
+                        ? scanned.get(c.lpn()).countedQuantity() : null)).toList(), userId, now,
+                saved.looseLines().stream().map(l -> new ReturnedGoodsReceived.LooseLine(l.sku(), l.lotNumber(),
+                        l.quantity())).toList()));
+        log.info("Return receipt {} confirmed and closed: {} carton(s) ({} opened) and {} loose line(s) of order {} "
+                        + "into quarantine at {}", saved.number(), received.size(),
+                saved.cartons().stream().filter(ReturnReceipt.Carton::opened).count(), saved.looseLines().size(),
+                order.orderNumber(), area);
         return view(saved);
     }
 
@@ -377,12 +452,24 @@ public class ReturnReceiptService {
                 new BusinessException(ErrorCode.NOT_FOUND, "No order " + orderId));
     }
 
-    /** The cartons the receipt's source carried: the shipment's, or those delivered on the return request's order. */
+    /**
+     * The cartons the receipt's source carried: the shipment's; for a return request, those of the delivered shipment
+     * it is against (WF-05 TH-1) - or, for an order delivered without shipments, those delivered on the order.
+     */
     private List<ShippedCarton> sourceCartons(ReturnReceipt receipt) {
         if (receipt.shipmentId() != null) {
             return shipments.ofShipment(receipt.shipmentId()).map(ShippedCartons::cartons).orElse(List.of());
         }
-        return shipments.deliveredToOrder(receipt.orderId());
+        return requestCartons(returnRequests.find(receipt.returnRequestId()), receipt.orderId());
+    }
+
+    /** What a return request takes back: its shipment's cartons, else every carton delivered on its order. */
+    private List<ShippedCarton> requestCartons(Optional<ReturnRequestReference> request, UUID orderId) {
+        UUID against = request.map(ReturnRequestReference::shipmentId).orElse(null);
+        if (against != null) {
+            return shipments.ofShipment(against).map(ShippedCartons::cartons).orElse(List.of());
+        }
+        return shipments.deliveredToOrder(orderId);
     }
 
     private String sourceName(ReturnReceipt receipt) {
@@ -390,8 +477,13 @@ public class ReturnReceiptService {
             return shipments.ofShipment(receipt.shipmentId()).map(s -> "shipment " + s.code())
                     .orElse("its shipment");
         }
-        return returnRequests.find(receipt.returnRequestId()).map(r -> "order " + r.orderNumber())
-                .orElse("its order");
+        Optional<ReturnRequestReference> request = returnRequests.find(receipt.returnRequestId());
+        UUID against = request.map(ReturnRequestReference::shipmentId).orElse(null);
+        if (against != null) {
+            return shipments.ofShipment(against).map(s -> "shipment " + s.code() + " the return is against")
+                    .orElse("the shipment the return is against");
+        }
+        return request.map(r -> "order " + r.orderNumber()).orElse("its order");
     }
 
     private ReturnReceiptView view(ReturnReceipt receipt) {
@@ -403,9 +495,9 @@ public class ReturnReceiptService {
             shipmentCode = shipment.map(ShippedCartons::code).orElse(null);
             expected = shipment.map(ShippedCartons::cartons).orElse(List.of());
         } else {
-            rmaNumber = returnRequests.find(receipt.returnRequestId()).map(ReturnRequestReference::rmaNumber)
-                    .orElse(null);
-            expected = shipments.deliveredToOrder(receipt.orderId());
+            Optional<ReturnRequestReference> request = returnRequests.find(receipt.returnRequestId());
+            rmaNumber = request.map(ReturnRequestReference::rmaNumber).orElse(null);
+            expected = requestCartons(request, receipt.orderId());
         }
         Set<String> scanned = receipt.cartons().stream().map(ReturnReceipt.Carton::lpn).collect(Collectors.toSet());
         String orderNumber = orders.findById(receipt.orderId()).map(OrderSummary::orderNumber).orElse(null);
@@ -416,9 +508,11 @@ public class ReturnReceiptService {
                 rmaNumber, receipt.quarantineLocationId(), areaCode, receipt.note(), receipt.receivedAt(),
                 receipt.receivedBy(), receipt.confirmedAt(), receipt.confirmedBy(), receipt.closedAt(),
                 receipt.cartons().stream().map(c -> new CartonView(c.lpn(), c.sku(), c.lotNumber(), c.quantity(),
-                        c.condition(), c.scannedBy(), c.scannedAt())).toList(),
+                        c.condition(), c.scannedBy(), c.scannedAt(), c.countedQuantity(), c.opened())).toList(),
                 expected.stream().map(c -> new ExpectedCarton(c.lpn(), c.sku(), c.lotNumber(), c.quantity(),
                         scanned.contains(StockPackageView.normalLpn(c.lpn())))).toList(),
-                receipt.version());
+                receipt.version(),
+                receipt.looseLines().stream().map(l -> new LooseLineView(l.id(), l.sku(), l.lotNumber(), l.quantity(),
+                        l.recordedBy())).toList());
     }
 }

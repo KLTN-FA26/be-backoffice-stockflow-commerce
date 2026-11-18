@@ -91,6 +91,12 @@ class PaymentServiceImpl implements PaymentService {
 
     @Override
     @Transactional(readOnly = true)
+    public java.util.Optional<String> refundVoidReason(UUID refundRecordId) {
+        return settlements.refundVoidReason(refundRecordId);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
     public java.util.Optional<com.stockflow.payment.api.CompanyBankAccount> companyBankAccount() {
         return bank.configured()
                 ? java.util.Optional.of(new com.stockflow.payment.api.CompanyBankAccount(bank.bankName().strip(),

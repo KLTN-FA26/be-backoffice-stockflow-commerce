@@ -43,8 +43,11 @@ import java.util.UUID;
  * cap again at commit.</p>
  *
  * <p>The refund's standing is computed ({@link RefundStanding}), and every record or void announces it
- * ({@link OrderRefundRecorded}). A cancelled order stays CANCELLED (17 §5.1 - CANCELLED is final); a RETURNED order the
- * standing shows refunded in full moves on to REFUNDED / PARTIALLY_REFUNDED in the order module (4D-3).</p>
+ * ({@link OrderRefundRecorded}; a void names the record voided). A cancelled order stays CANCELLED (17 §5.1 -
+ * CANCELLED is final); a RETURNED order the standing shows refunded in full moves on to REFUNDED / PARTIALLY_REFUNDED
+ * in the order module (4D-3), and a void takes a REFUNDED / PARTIALLY_REFUNDED one back to RETURNED there, waiting for
+ * its refund again (TT-4) - the order is not closed while a refund is owed. A CLOSED order is not reopened: what a void
+ * leaves owed on it shows here, on {@link #orderRefunds} with {@code outstanding}, oldest first.</p>
  */
 @Service
 @Transactional
@@ -113,7 +116,7 @@ public class RefundService {
         }
         log.info("Order {}: refund {} of {} {} recorded", order.orderNumber(), record.reference(), record.amount(),
                 record.currency());
-        return announced(detail(order.orderId(), null), order.orderId(), command.recordedBy(), now);
+        return announced(detail(order.orderId(), null), order.orderId(), command.recordedBy(), now, null);
     }
 
     /**
@@ -128,7 +131,7 @@ public class RefundService {
         record.voidRecord(reason, voidedBy, clock.instant());
         book.saveVoided(record);
         log.info("Order {}: refund {} voided", record.orderNumber(), record.reference());
-        return announced(detail(record.orderId(), null), record.orderId(), voidedBy, clock.instant());
+        return announced(detail(record.orderId(), null), record.orderId(), voidedBy, clock.instant(), record);
     }
 
     // ---- reading ----------------------------------------------------------------------------------------------------
@@ -156,7 +159,11 @@ public class RefundService {
         return Pages.toResponse(search.records(customerId, orderId, status, Pages.of(page, size)));
     }
 
-    /** Orders with something to refund, most recently settled first (the accountant's work list). */
+    /**
+     * Orders with something to refund (the accountant's work list), the oldest debt first: ordered by the first of the
+     * order's settlements that made something refundable, so a refund owed longest - one never made, or made and voided
+     * since, the order perhaps CLOSED by then (TT-4) - is on top rather than behind every newer one.
+     */
     @Transactional(readOnly = true)
     public PageResponse<com.stockflow.payment.internal.domain.OrderRefund> orderRefunds(UUID customerId, Boolean outstanding, int page,
                                                                int size) {
@@ -165,11 +172,15 @@ public class RefundService {
 
     /**
      * 4D-3 (17 §4.10 step 40): the order hears where its refund stands after commit, so a returned order refunded in
-     * full moves on to REFUNDED / PARTIALLY_REFUNDED.
+     * full moves on to REFUNDED / PARTIALLY_REFUNDED; and - TT-4 - which record a void voided, so a refunded order goes
+     * back to RETURNED (the reason stays here, read through {@code PaymentService.refundVoidReason}).
+     *
+     * @param voided the record a void voided; null for a record made
      */
-    private OrderRefundDetail announced(OrderRefundDetail detail, UUID orderId, UUID by, Instant at) {
+    private OrderRefundDetail announced(OrderRefundDetail detail, UUID orderId, UUID by, Instant at,
+                                        RefundRecord voided) {
         events.publishEvent(new OrderRefundRecorded(orderId, detail.orderNumber(), detail.standing().refundable(),
-                detail.standing().refunded(), detail.currency(), by, at));
+                detail.standing().refunded(), detail.currency(), by, at, voided == null ? null : voided.id()));
         return detail;
     }
 

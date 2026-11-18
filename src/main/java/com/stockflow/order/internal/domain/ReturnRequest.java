@@ -10,6 +10,7 @@ import com.stockflow.contracts.ReturnReceived;
 import com.stockflow.contracts.ReturnRejected;
 import com.stockflow.contracts.ReturnRequested;
 import com.stockflow.contracts.ReturnResolved;
+import com.stockflow.order.api.OrderShipmentStatus;
 import com.stockflow.order.api.OrderStatus;
 
 import java.math.BigDecimal;
@@ -28,10 +29,18 @@ import java.util.UUID;
 
 /**
  * <b>A return request (RMA, "đổi trả"; kltn-docs 17 §4.10, BR-18; team plan 4D-3).</b> The aggregate root of the
- * after-sales claim on a delivered order: what the customer says is wrong, what Sales approved, what came back on the
- * return receipt, and what was refunded. The order is its own aggregate; the application service moves it alongside
+ * after-sales claim on a delivery: what the customer says is wrong, what Sales approved, what came back on the return
+ * receipt, and what was refunded. The order is its own aggregate; the application service moves it alongside
  * (RETURN_REQUESTED while a return is open, RETURNED once goods are back, REFUNDED / PARTIALLY_REFUNDED once refunded
- * in full), under the order's row lock.
+ * in full), under the order's row lock - once the order is DELIVERED. While batches of the order are still to come its
+ * status is its deliveries', and a return lives on its own.
+ *
+ * <p><b>One return, one delivered shipment</b> (WF-05 TH-1; Luật Thương mại 2005 Điều 44, 313, 318). Each delivery
+ * has its own handover record and its own e-invoice, a partial delivery is dealt with per delivery, and the period to
+ * complain runs from that delivery. So a return names the shipment it is against ({@link #shipmentId}): its units are
+ * bounded by what that shipment delivered, its window runs from that shipment's delivery, its goods are that shipment's
+ * cartons, and its refund comes off that delivery's installments and e-invoice first. Only an order delivered without
+ * shipments (before split shipments) is claimed as a whole, from its delivery date.</p>
  *
  * <p>The goods always come back (17 BR-18): the warehouse receives them on a return receipt into quarantine
  * ({@code procurement}, 03 §4.2), and that receipt, confirmed, is what moves the return to RECEIVED
@@ -42,12 +51,15 @@ import java.util.UUID;
  *
  * <p>Invariants it protects - each stated again as a {@code CHECK} ({@code V20261101020000}, {@code V20261114000100}):</p>
  * <ul>
- *   <li><b>BR-RMA-001</b>: opened only on a delivered order, within the return window after delivery (calendar days of
- *       Asia/Ho_Chi_Minh) - or outside it when Sales accept a late claim and say why;</li>
+ *   <li><b>BR-RMA-001</b>: opened only on a delivered shipment (or a delivered order without shipments), within the
+ *       return window after that delivery (calendar days of Asia/Ho_Chi_Minh; the contract's period, else the
+ *       configured one) - or outside it when Sales accept a late claim and say why;</li>
  *   <li><b>BR-RMA-002</b>: goods printed to the customer's design come back only for a named defect;</li>
- *   <li>never more units of a line than were delivered, counting what the line's other returns still claim, and one
- *       open return per order line;</li>
- *   <li>units only narrow: approved ≤ asked for, refunded ≤ approved and ≤ what came back;</li>
+ *   <li>never more units of a line than its shipment delivered, counting what the other returns on that shipment line
+ *       still claim - nor more than the line delivered in all - and one open return per order line and shipment;</li>
+ *   <li>units only narrow: approved ≤ asked for, refunded ≤ approved and ≤ what came back - the units counted inside
+ *       the cartons and loose, not their labels; a return whose goods came back with nothing usable is closed with no
+ *       refund ({@link #closeWithoutRefund});</li>
  *   <li>a claim is approved on evidence (a photo of the defect), and its goods come back;</li>
  *   <li>four eyes: a claim Sales opened is approved by another person, and every refund by someone other than who
  *       proposed it;</li>
@@ -64,13 +76,16 @@ public final class ReturnRequest extends AggregateRoot {
     public record Claim(UUID orderLineId, int quantity) {
     }
 
-    /** One carton that came back on the return receipt: its SKU and the units in it. */
+    /**
+     * Units of one SKU that came back on the return receipt: what was counted inside one carton - none, for a carton
+     * that came back empty (WF-05 TH-4) - or units that came back loose, with no carton label.
+     */
     public record ReturnedCarton(String sku, int quantity) {
 
         public ReturnedCarton {
             Objects.requireNonNull(sku, "sku");
-            if (quantity < 1) {
-                throw new IllegalArgumentException("A carton holds at least one unit");
+            if (quantity < 0) {
+                throw new IllegalArgumentException("Nothing holds fewer than no units");
             }
         }
     }
@@ -109,6 +124,8 @@ public final class ReturnRequest extends AggregateRoot {
     private final List<ReturnLine> lines;
     private final String windowOverride;
     private final long version;
+    /** The delivered shipment the return is against; null only for an order delivered without shipments. */
+    private UUID shipmentId;
 
     private ReturnStatus status;
     private UUID decidedBy;
@@ -179,26 +196,89 @@ public final class ReturnRequest extends AggregateRoot {
     }
 
     /**
-     * The customer (or Sales for them) claims {@code claims} of {@code order} (17 §4.10 step 37: — → REQUESTED), at the
-     * order's own prices.
+     * Against the order's only delivered shipment, or the order itself when it was delivered without shipments - what
+     * every claim was before returns were taken per shipment. {@code claimedElsewhere} and {@code openElsewhere} are read
+     * as the other returns on that same shipment, and {@code claimedElsewhere} as the line's in all too.
+     */
+    public static ReturnRequest open(String rmaNumber, UUID requestId, Order order, ReturnChannel channel,
+                                     ReturnReason reason, String description, ReturnResolution requested,
+                                     List<Claim> claims, Map<UUID, Integer> claimedElsewhere,
+                                     Set<UUID> openElsewhere, UUID requestedBy, Instant now, ReturnPolicy policy,
+                                     String windowOverride) {
+        return open(rmaNumber, requestId, order, null, channel, reason, description, requested, claims,
+                claimedElsewhere, claimedElsewhere, openElsewhere, requestedBy, now, policy, windowOverride);
+    }
+
+    /**
+     * The delivered shipment a claim is against: the one named, or - none named - the order's only delivered one. Null
+     * for an order delivered without shipments, which is claimed as a whole.
      *
-     * @param requested        what the customer would like; null reads as {@link ReturnResolution#REFUND}, the only
-     *                         one there is
-     * @param claimedElsewhere per order line, the units the line's other returns still claim
-     * @param openElsewhere    the order lines that already have an open return
-     * @param windowOverride   why Sales accept the claim outside the return window - goods that came late, a second
-     *                         defect found after the window, goodwill; back office only, and approved by someone else
-     *                         like every claim staff open. Null: the window applies
+     * @throws BusinessException {@code RETURN_SHIPMENT_NOT_DELIVERED} for a shipment that is not the order's or not
+     *         delivered; {@code RETURN_SHIPMENT_REQUIRED} when none is named and several were delivered;
+     *         {@code RETURN_ORDER_NOT_DELIVERED} when none of the order's shipments was delivered
+     */
+    public static OrderShipment deliveredShipment(Order order, UUID shipmentId) {
+        Objects.requireNonNull(order, "order");
+        if (order.shipments().isEmpty()) {
+            if (shipmentId != null) {
+                throw new BusinessException(ErrorCode.RETURN_SHIPMENT_NOT_DELIVERED,
+                        "Order %s has no shipment %s".formatted(order.orderNumber(), shipmentId));
+            }
+            return null;
+        }
+        if (shipmentId != null) {
+            OrderShipment named = order.shipments().stream().filter(s -> s.id().equals(shipmentId)).findFirst()
+                    .orElseThrow(() -> new BusinessException(ErrorCode.RETURN_SHIPMENT_NOT_DELIVERED,
+                            "Order %s has no shipment %s".formatted(order.orderNumber(), shipmentId)));
+            if (named.status() != OrderShipmentStatus.DELIVERED) {
+                throw new BusinessException(ErrorCode.RETURN_SHIPMENT_NOT_DELIVERED, ("Shipment %s of order %s is %s: "
+                        + "only goods the customer received come back").formatted(shipmentId, order.orderNumber(),
+                        named.status()));
+            }
+            return named;
+        }
+        List<OrderShipment> delivered = order.shipments().stream()
+                .filter(s -> s.status() == OrderShipmentStatus.DELIVERED).toList();
+        if (delivered.isEmpty()) {
+            throw new BusinessException(ErrorCode.RETURN_ORDER_NOT_DELIVERED,
+                    "No shipment of order %s has been delivered yet".formatted(order.orderNumber()));
+        }
+        if (delivered.size() > 1) {
+            throw new BusinessException(ErrorCode.RETURN_SHIPMENT_REQUIRED, ("Order %s was delivered in %d shipments: "
+                    + "name the one the goods came on").formatted(order.orderNumber(), delivered.size()));
+        }
+        return delivered.getFirst();
+    }
+
+    /**
+     * The customer (or Sales for them) claims {@code claims} of one delivery of {@code order} (17 §4.10 step 37: — →
+     * REQUESTED), at the order's own prices.
+     *
+     * @param shipmentId        the delivered shipment the goods came on; null names the order's only delivered one, or
+     *                          none for an order delivered without shipments ({@link #deliveredShipment})
+     * @param requested         what the customer would like; null reads as {@link ReturnResolution#REFUND}, the only
+     *                          one there is
+     * @param claimedElsewhere  per order line, the units the line's other returns still claim, whatever delivery they
+     *                          are against
+     * @param claimedOnShipment per order line, the units the other returns on the same shipment still claim
+     * @param openElsewhere     the order lines that already have an open return on the same shipment
+     * @param policy            the return rules, its window the order's own (the contract's period, else the
+     *                          configured one)
+     * @param windowOverride    why Sales accept the claim outside the return window - goods that came late, a second
+     *                          defect found after the window, goodwill; back office only, and approved by someone else
+     *                          like every claim staff open. Null: the window applies
      * @throws BusinessException {@code ORDER_CANCELLED}, {@code RETURN_ORDER_NOT_DELIVERED},
      *         {@code RETURN_ORDER_NOT_RETURNABLE}, {@code RETURN_WINDOW_CLOSED} (BR-RMA-001);
+     *         {@code RETURN_SHIPMENT_NOT_DELIVERED}, {@code RETURN_SHIPMENT_REQUIRED};
      *         {@code RETURN_LINE_ALREADY_OPEN}; {@code RETURN_QUANTITY_EXCEEDED};
      *         {@code RETURN_CUSTOM_ITEM_NOT_DEFECTIVE} (BR-RMA-002); {@code RETURN_REASON_NOT_ACCEPTED} for a change of
      *         mind the policy refuses, and for a short delivery - nothing to send back, so no return;
      *         {@code RETURN_QUANTITIES_INVALID}, {@code VALIDATION_FAILED}
      */
-    public static ReturnRequest open(String rmaNumber, UUID requestId, Order order, ReturnChannel channel,
-                                     ReturnReason reason, String description, ReturnResolution requested,
-                                     List<Claim> claims, Map<UUID, Integer> claimedElsewhere,
+    public static ReturnRequest open(String rmaNumber, UUID requestId, Order order, UUID shipmentId,
+                                     ReturnChannel channel, ReturnReason reason, String description,
+                                     ReturnResolution requested, List<Claim> claims,
+                                     Map<UUID, Integer> claimedElsewhere, Map<UUID, Integer> claimedOnShipment,
                                      Set<UUID> openElsewhere, UUID requestedBy, Instant now, ReturnPolicy policy,
                                      String windowOverride) {
         Objects.requireNonNull(order, "order");
@@ -216,7 +296,9 @@ public final class ReturnRequest extends AggregateRoot {
             throw new BusinessException(ErrorCode.RETURN_REASON_NOT_ACCEPTED,
                     "A short delivery has no goods to send back: correct the delivery instead of opening a return");
         }
-        requireReturnable(order, now, policy, channel, override);
+        // The delivery first: the order's status is read against it, and the window runs from it.
+        OrderShipment shipment = deliveredShipment(order, shipmentId);
+        requireReturnable(order, shipment, now, policy, channel, override);
         String text = trimmed(description);
         if (text != null && text.length() > DESCRIPTION_LIMIT) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED,
@@ -254,6 +336,15 @@ public final class ReturnRequest extends AggregateRoot {
                         "%s: %d unit(s) delivered, %d already claimed by other returns; %d cannot be returned"
                                 .formatted(line.sku().code(), delivered, claimed, claim.quantity()));
             }
+            if (shipment != null) {
+                int onShipment = shipment.quantities().getOrDefault(line.id(), 0);
+                int claimedThere = claimedOnShipment == null ? 0 : claimedOnShipment.getOrDefault(line.id(), 0);
+                if (claim.quantity() > onShipment - claimedThere) {
+                    throw new BusinessException(ErrorCode.RETURN_QUANTITY_EXCEEDED, ("%s: %d unit(s) delivered on "
+                            + "this shipment, %d already claimed by its other returns; %d cannot be returned")
+                            .formatted(line.sku().code(), onShipment, claimedThere, claim.quantity()));
+                }
+            }
             if (!reason.isNamedFault() && line.printedToCustomerDesign()) {
                 throw new BusinessException(ErrorCode.RETURN_CUSTOM_ITEM_NOT_DEFECTIVE, ("%s was printed to the "
                         + "customer's design: it is returned only for a named defect, not %s (BR-RMA-002)")
@@ -270,6 +361,7 @@ public final class ReturnRequest extends AggregateRoot {
                 order.orderNumber().value(), order.customerId(), requestId, channel, reason, text, wanted,
                 requestedBy, now, order.total().currency().getCurrencyCode(), lines, override, ReturnStatus.REQUESTED,
                 0L);
+        request.shipmentId = shipment == null ? null : shipment.id();
         request.transitions.add(new ReturnTransition(null, ReturnStatus.REQUESTED, requestedBy,
                 override == null ? reason.name() : reason.name() + " LATE_CLAIM_ACCEPTED: " + override, now));
         request.registerEvent(new OrderEvent.ReturnChanged(request.id, new ReturnRequested(request.id, rmaNumber,
@@ -281,13 +373,21 @@ public final class ReturnRequest extends AggregateRoot {
     }
 
     /**
-     * BR-RMA-001: a delivered order, within the window after delivery - or, for Sales with a reason, after it. A further
-     * claim on an order a return already refunded goes through Sales; a CLOSED order takes none (BR-05).
+     * BR-RMA-001: a delivered shipment - or a delivered order, when it has no shipments - within the window after that
+     * delivery; or, for Sales with a reason, after it. A further claim on an order a return already refunded goes
+     * through Sales; a CLOSED order takes none (BR-05).
+     *
+     * <p>While batches are still to come the order is PARTIALLY_FULFILLED, SHIPPED, DELIVERY_FAILED, ON_HOLD - or
+     * PICKING / PACKED for the next batch - and a delivered shipment of it is returnable all the same (WF-05 TH-1:
+     * Điều 313, each delivery is dealt with on its own). Without a delivered shipment those statuses still mean nothing
+     * was received.</p>
      */
-    private static void requireReturnable(Order order, Instant now, ReturnPolicy policy, ReturnChannel channel,
-                                          String override) {
+    private static void requireReturnable(Order order, OrderShipment shipment, Instant now, ReturnPolicy policy,
+                                          ReturnChannel channel, String override) {
         OrderStatus status = order.status();
         boolean sales = channel == ReturnChannel.BACK_OFFICE;
+        BusinessException notDelivered = new BusinessException(ErrorCode.RETURN_ORDER_NOT_DELIVERED,
+                "Order %s is %s: only a delivered order can be returned".formatted(order.orderNumber(), status));
         // A switch expression, so a new order status is a compile error here rather than a silent "returnable".
         BusinessException refusal = switch (status) {
             case DELIVERED, RETURN_REQUESTED -> null;
@@ -301,20 +401,23 @@ public final class ReturnRequest extends AggregateRoot {
                             .formatted(order.orderNumber()));
             case CLOSED -> new BusinessException(ErrorCode.RETURN_ORDER_NOT_RETURNABLE,
                     "Order %s is closed for good (BR-05): it takes no return".formatted(order.orderNumber()));
+            // Batches still to come: one already delivered is returned on its own (WF-05 TH-1).
+            case PICKING, PARTIALLY_FULFILLED, PACKED, ON_HOLD, SHIPPED, DELIVERY_FAILED -> shipment == null
+                    ? notDelivered : null;
             // RETURNED as an order status is goods that came back undelivered (RTO), or a return being refunded.
             case DRAFT, PENDING_CONTRACT, PENDING_PAYMENT, CONFIRMED, AWAITING_STOCK, IN_PRODUCTION, READY_TO_FULFILL,
-                 PICKING, PARTIALLY_FULFILLED, PACKED, ON_HOLD, SHIPPED, DELIVERY_FAILED, RETURNED -> new BusinessException(
-                    ErrorCode.RETURN_ORDER_NOT_DELIVERED,
-                    "Order %s is %s: only a delivered order can be returned".formatted(order.orderNumber(), status));
+                 RETURNED -> notDelivered;
         };
         if (refusal != null) {
             throw refusal;
         }
-        if (order.deliveredAt() == null) {
+        // Điều 318: the period runs from the delivery the goods came on.
+        Instant deliveredAt = shipment != null ? shipment.outcomeAt() : order.deliveredAt();
+        if (deliveredAt == null) {
             throw new BusinessException(ErrorCode.RETURN_ORDER_NOT_DELIVERED,
                     "Order %s has no delivery recorded".formatted(order.orderNumber()));
         }
-        if (override == null && !policy.windowClosesAt(order.deliveredAt()).isAfter(now)) {
+        if (override == null && !policy.windowClosesAt(deliveredAt).isAfter(now)) {
             throw windowClosed(order, policy, sales);
         }
     }
@@ -591,7 +694,9 @@ public final class ReturnRequest extends AggregateRoot {
         }
         if (refunded.values().stream().mapToInt(Integer::intValue).sum() == 0) {
             throw new BusinessException(ErrorCode.RETURN_QUANTITIES_INVALID,
-                    "Refund at least one unit of %s that came back".formatted(rmaNumber));
+                    lines.stream().allMatch(line -> line.refundableUnits() == 0)
+                            ? "Nothing approved of %s came back usable: close it without a refund".formatted(rmaNumber)
+                            : "Refund at least one unit of %s that came back".formatted(rmaNumber));
         }
         BigDecimal value = BigDecimal.ZERO;
         for (ReturnLine line : lines) {
@@ -659,11 +764,48 @@ public final class ReturnRequest extends AggregateRoot {
         this.settledAt = now;
         this.vatAdjustmentRequired = settlementAmount.signum() > 0;
         close(ReturnStatus.RESOLVED, by, "RESOLVED_REFUND %s %s".formatted(plain(settlementAmount), currency), now);
+        announceResolved(by, now);
+    }
+
+    /**
+     * The goods came back with nothing usable in them - every carton counted empty, or only goods the return did not
+     * claim (WF-05 TH-4) - so nothing approved can be refunded: RECEIVED → RESOLVED with no refund, by one person. No
+     * money moves and no invoice is adjusted, so there is nothing for a second person to approve
+     * ({@code ck_return_request_four_eyes} lets a zero settlement through); without this the return could never leave
+     * RECEIVED, since a refund proposes at least one unit. The goods themselves are the warehouse's to write off.
+     *
+     * @throws BusinessException {@code RETURN_INVALID_TRANSITION} for a return not RECEIVED;
+     *         {@code RETURN_QUANTITIES_INVALID} while something approved came back and is to be refunded
+     */
+    public void closeWithoutRefund(UUID by, Instant now, String note) {
+        Objects.requireNonNull(by, "by");
+        requireStatus(ReturnStatus.RECEIVED, "be closed without a refund");
+        int refundable = lines.stream().mapToInt(ReturnLine::refundableUnits).sum();
+        if (refundable > 0) {
+            throw new BusinessException(ErrorCode.RETURN_QUANTITIES_INVALID, ("%d unit(s) of %s were approved and came "
+                    + "back: propose their refund").formatted(refundable, rmaNumber));
+        }
+        lines.forEach(line -> line.refund(0, BigDecimal.ZERO));
+        this.settlementAmount = BigDecimal.ZERO;
+        this.moneyMode = null;
+        this.proposedBy = by;
+        this.proposedAt = now;
+        this.resolutionNote = limited(note, NOTE_LIMIT, "note");
+        this.money = MoneyOutcome.NONE;
+        this.settledBy = by;
+        this.settledAt = now;
+        this.vatAdjustmentRequired = false;
+        close(ReturnStatus.RESOLVED, by, "RESOLVED_NOTHING_USABLE", now);
+        announceResolved(by, now);
+    }
+
+    /** {@link ReturnResolved}: what came back of each line, what was refunded, and the delivery it was against. */
+    private void announceResolved(UUID by, Instant now) {
         registerEvent(new OrderEvent.ReturnChanged(id, new ReturnResolved(id, rmaNumber, orderId, orderNumber,
-                customerId, null, null, booked.offset(), booked.refunded(), BigDecimal.ZERO, currency,
+                customerId, null, null, money.offset(), money.refunded(), BigDecimal.ZERO, currency,
                 vatAdjustmentRequired, lines.stream().map(l -> new ReturnResolved.Line(l.orderLineId(), l.sku(),
                         l.receivedQuantity() == null ? 0 : l.receivedQuantity(), 0, l.refundQuantity(),
-                        l.refundNetAmount())).toList(), by, now, orderId)));
+                        l.refundNetAmount())).toList(), by, now, orderId, shipmentId)));
     }
 
     // ================================================================================================= reading
@@ -791,6 +933,12 @@ public final class ReturnRequest extends AggregateRoot {
         return this;
     }
 
+    /** Rehydration of the delivered shipment the return is against; null for an order delivered without shipments. */
+    public ReturnRequest restoreShipment(UUID shipmentId) {
+        this.shipmentId = shipmentId;
+        return this;
+    }
+
     /** Rehydration of the photos and the discrepancies, as stored. */
     public ReturnRequest restoreRecords(Collection<ReturnEvidence> photos, Collection<ReturnDiscrepancy> found) {
         evidence.clear();
@@ -815,6 +963,8 @@ public final class ReturnRequest extends AggregateRoot {
     public String currency() { return currency; }
     public List<ReturnLine> lines() { return java.util.Collections.unmodifiableList(lines); }
     public String windowOverride() { return windowOverride; }
+    /** The delivered shipment the return is against; null for an order delivered without shipments. */
+    public UUID shipmentId() { return shipmentId; }
     public long version() { return version; }
     public ReturnStatus status() { return status; }
     public UUID decidedBy() { return decidedBy; }

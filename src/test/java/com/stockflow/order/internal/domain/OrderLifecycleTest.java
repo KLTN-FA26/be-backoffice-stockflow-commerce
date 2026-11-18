@@ -890,8 +890,8 @@ class OrderLifecycleTest {
             assertThat(order.complete(windowEnd, week, true, false, false)).as("a return is open").isFalse();
             assertThat(order.complete(windowEnd, week, false, false, false)).isTrue();
             assertThat(order.status()).isEqualTo(OrderStatus.COMPLETED);
-            assertThat(order.close(NOW.plus(Duration.ofDays(20)), Duration.ofDays(30), false)).isFalse();
-            assertThat(order.close(NOW.plus(Duration.ofDays(40)), Duration.ofDays(30), false)).isTrue();
+            assertThat(order.close(NOW.plus(Duration.ofDays(20)), Duration.ofDays(30), false, false)).isFalse();
+            assertThat(order.close(NOW.plus(Duration.ofDays(40)), Duration.ofDays(30), false, false)).isTrue();
             assertThat(order.status()).isEqualTo(OrderStatus.CLOSED);
             assertThat(order.closedAt()).isNotNull();
             assertThat(order.status().isTerminal()).isTrue();
@@ -926,7 +926,7 @@ class OrderLifecycleTest {
             order.goodsReturned(STAFF, NOW, null);
             order.refunded(false, STAFF, NOW, null);
             assertThat(order.status()).isEqualTo(OrderStatus.PARTIALLY_REFUNDED);
-            assertThat(order.close(NOW.plus(Duration.ofDays(31)), Duration.ofDays(30), false)).isTrue();
+            assertThat(order.close(NOW.plus(Duration.ofDays(31)), Duration.ofDays(30), false, false)).isTrue();
             assertThat(order.requestReturn(STAFF, NOW, "a claim after it closed")).as("BR-05: a closed order stays")
                     .isFalse();
             assertThat(order.status()).isEqualTo(OrderStatus.CLOSED);
@@ -945,10 +945,87 @@ class OrderLifecycleTest {
             credit.goodsReturned(STAFF, NOW, null);
             credit.refunded(false, STAFF, NOW, "REFUNDED");
             assertThat(credit.status()).isEqualTo(OrderStatus.PARTIALLY_REFUNDED);
-            assertThat(credit.close(NOW.plus(Duration.ofDays(60)), Duration.ofDays(30), true))
+            assertThat(credit.close(NOW.plus(Duration.ofDays(60)), Duration.ofDays(30), true, false))
                     .as("its installments still owe").isFalse();
             assertThat(credit.status()).isEqualTo(OrderStatus.PARTIALLY_REFUNDED);
             assertThat(credit.requestReturn(STAFF, NOW, "second claim")).isTrue();
+        }
+
+        @Test
+        @DisplayName("TT-4: a refund still owed to the customer keeps a refunded or completed order from closing")
+        void refundOwedNeverCloses() {
+            Order refunded = delivered();
+            refunded.requestReturn(STAFF, NOW);
+            refunded.goodsReturned(STAFF, NOW, null);
+            refunded.refunded(true, STAFF, NOW, "REFUNDED");
+            refunded.pullTransitions();
+            assertThat(refunded.close(NOW.plus(Duration.ofDays(60)), Duration.ofDays(30), false, true))
+                    .as("the seller still owes a refund").isFalse();
+            assertThat(refunded.status()).isEqualTo(OrderStatus.REFUNDED);
+            assertThat(refunded.pullTransitions()).isEmpty();
+            assertThat(refunded.close(NOW.plus(Duration.ofDays(60)), Duration.ofDays(30), false, false)).isTrue();
+            assertThat(refunded.status()).isEqualTo(OrderStatus.CLOSED);
+
+            Order completed = delivered();
+            Instant windowEnd = ReturnPolicy.endOfDays(NOW, Duration.ofDays(7));
+            assertThat(completed.complete(windowEnd, Duration.ofDays(7), false, false, false))
+                    .as("completion does not wait for a refund").isTrue();
+            assertThat(completed.close(NOW.plus(Duration.ofDays(60)), Duration.ofDays(30), false, true)).isFalse();
+            assertThat(completed.status()).isEqualTo(OrderStatus.COMPLETED);
+        }
+
+        @Test
+        @DisplayName("TT-4: a refund voided takes a (PARTIALLY_)REFUNDED order back to RETURNED; refunded again it "
+                + "moves on and closes from the new refund")
+        void refundVoidedReopens() {
+            Order order = delivered();
+            order.requestReturn(STAFF, NOW);
+            order.goodsReturned(STAFF, NOW, null);
+            order.refunded(false, STAFF, NOW, "REFUNDED");
+            order.pullTransitions();
+            Instant voided = NOW.plus(Duration.ofDays(3));
+
+            assertThat(order.refundReopened(STAFF, voided, "  wrong statement line  ")).isTrue();
+            assertThat(order.status()).isEqualTo(OrderStatus.RETURNED);
+            assertThat(order.refundedAt()).as("kept: when it last became refunded").isEqualTo(NOW);
+            assertThat(order.pullTransitions()).singleElement().satisfies(t -> {
+                assertThat(t.from()).isEqualTo(OrderStatus.PARTIALLY_REFUNDED);
+                assertThat(t.to()).isEqualTo(OrderStatus.RETURNED);
+                assertThat(t.reason()).isEqualTo("REFUND_VOIDED: wrong statement line");
+                assertThat(t.actorId()).isEqualTo(STAFF);
+            });
+            assertThat(order.refundReopened(STAFF, voided, "again")).as("RETURNED already").isFalse();
+            assertThat(order.close(NOW.plus(Duration.ofDays(60)), Duration.ofDays(30), false, false))
+                    .as("RETURNED does not close").isFalse();
+
+            Instant again = NOW.plus(Duration.ofDays(5));
+            assertThat(order.refunded(true, STAFF, again, "REFUNDED")).isTrue();
+            assertThat(order.status()).isEqualTo(OrderStatus.REFUNDED);
+            assertThat(order.refundedAt()).isEqualTo(again);
+            assertThat(order.close(again.plus(Duration.ofDays(29)), Duration.ofDays(30), false, false))
+                    .as("the delay counts from the new refund").isFalse();
+            assertThat(order.close(again.plus(Duration.ofDays(31)), Duration.ofDays(30), false, false)).isTrue();
+
+            assertThat(order.refundReopened(STAFF, again.plus(Duration.ofDays(40)), "too late"))
+                    .as("BR-05: a CLOSED order is never reopened").isFalse();
+            assertThat(order.status()).isEqualTo(OrderStatus.CLOSED);
+
+            Order full = delivered();
+            full.requestReturn(STAFF, NOW);
+            full.goodsReturned(STAFF, NOW, null);
+            full.refunded(true, STAFF, NOW, "REFUNDED");
+            full.pullTransitions();
+            assertThat(full.refundReopened(null, voided, "x".repeat(600))).isTrue();
+            assertThat(full.pullTransitions()).singleElement().satisfies(t -> {
+                assertThat(t.from()).isEqualTo(OrderStatus.REFUNDED);
+                assertThat(t.reason()).hasSize(500).startsWith("REFUND_VOIDED: xxx");
+            });
+
+            Order completed = delivered();
+            completed.complete(ReturnPolicy.endOfDays(NOW, Duration.ofDays(7)), Duration.ofDays(7), false, false,
+                    false);
+            assertThat(completed.refundReopened(STAFF, voided, "x")).as("only a refunded order").isFalse();
+            assertThat(completed.status()).isEqualTo(OrderStatus.COMPLETED);
         }
     }
 }

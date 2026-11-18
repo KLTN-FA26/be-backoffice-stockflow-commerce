@@ -33,6 +33,11 @@ public final class SalesContract {
     private final ContractParty seller;
     private final ContractParty buyer;
     private int freeSampleRounds;
+    /**
+     * The complaint period agreed, in calendar days from each delivery (Luật Thương mại 2005 Điều 318; WF-05 TH-1);
+     * null on a contract drawn up before it was written down, which reads the configured default.
+     */
+    private Integer returnWindowDays;
     private List<DeliveryBatch> schedule;
     private List<PlannedInstallment> plan;
     private Instant sentAt;
@@ -131,6 +136,29 @@ public final class SalesContract {
         this.freeSampleRounds = freeSampleRounds;
         this.schedule = List.copyOf(schedule);
         this.plan = List.copyOf(plan);
+    }
+
+    /**
+     * The complaint period agreed (Điều 318; WF-05 TH-1): written on the contract while it is a draft - the configured
+     * default when it is drawn up, what Sales and the customer agree on an edit - and frozen with the rest once sent
+     * ({@code tg_sales_contract_transition}). Returns of the order are opened within it, and the order completes only
+     * after it.
+     *
+     * @throws BusinessException {@code SALES_CONTRACT_STATUS_INVALID} once sent; {@code SALES_CONTRACT_ORDER_NOT_DRAFT};
+     *         {@code VALIDATION_FAILED} outside 1..365 days ({@code ck_sales_contract_return_window_days})
+     */
+    public void agreeReturnWindow(Order order, int days) {
+        requireRevisable(order);
+        if (days < 1 || days > 365) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Return window: a whole number of days, 1 to 365");
+        }
+        this.returnWindowDays = days;
+    }
+
+    /** Rehydration of the complaint period; null for a contract drawn up before it was written down. */
+    public SalesContract restoreReturnWindow(Integer days) {
+        this.returnWindowDays = days;
+        return this;
     }
 
     /**
@@ -285,6 +313,8 @@ public final class SalesContract {
     public ContractParty seller() { return seller; }
     public ContractParty buyer() { return buyer; }
     public int freeSampleRounds() { return freeSampleRounds; }
+    /** The complaint period agreed, in days from each delivery; null: the configured default. */
+    public Integer returnWindowDays() { return returnWindowDays; }
     public List<DeliveryBatch> schedule() { return schedule; }
     public List<PlannedInstallment> plan() { return plan; }
     public Instant sentAt() { return sentAt; }

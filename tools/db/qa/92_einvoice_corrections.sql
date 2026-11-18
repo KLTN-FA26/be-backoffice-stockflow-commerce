@@ -109,13 +109,17 @@ INSERT INTO fulfillment.shipment (id, order_id, status, code, warehouse_id, pack
 SELECT md5('qa92:' || s.tag)::uuid, md5('qa92:order' || s.o)::uuid, 'READY_TO_DISPATCH', 'SO-QA-EC-' || upper(s.tag),
        md5('demo:wh:HCM')::uuid, 1, NOW(), NOW()
   FROM (VALUES ('s1', 1), ('s2', 1), ('s3', 1), ('s4', 1), ('x1', 2)) AS s(tag, o);
-INSERT INTO ordering.order_shipment (id, order_id, status, amount, handed_over_at)
-SELECT md5('qa92:' || s.tag)::uuid, md5('qa92:order' || s.o)::uuid, 'HANDED_OVER', 1100000, NOW()
+-- S2 was delivered: the returns R1 and R2 are against it (WF-05 TH-1, V20261201000300), as its invoice B is.
+INSERT INTO ordering.order_shipment (id, order_id, status, amount, handed_over_at, outcome_at)
+SELECT md5('qa92:' || s.tag)::uuid, md5('qa92:order' || s.o)::uuid,
+       CASE s.tag WHEN 's2' THEN 'DELIVERED' ELSE 'HANDED_OVER' END, 1100000, NOW(),
+       CASE s.tag WHEN 's2' THEN NOW() END
   FROM (VALUES ('s1', 1), ('s2', 1), ('s3', 1), ('s4', 1), ('x1', 2)) AS s(tag, o);
 INSERT INTO ordering.return_request (id, rma_number, order_id, customer_id, status, reason_code, requested_at,
-                                     order_number, request_id, channel, requested_by)
+                                     order_number, request_id, channel, requested_by, shipment_id)
 SELECT md5('qa92:' || r.tag)::uuid, 'RMA-QA92-' || r.tag, o.id, o.customer_id, 'REQUESTED', 'DAMAGED_IN_TRANSIT', NOW(),
-       o.order_number, gen_random_uuid(), 'BACK_OFFICE', (SELECT id FROM identity.app_user ORDER BY id LIMIT 1)
+       o.order_number, gen_random_uuid(), 'BACK_OFFICE', (SELECT id FROM identity.app_user ORDER BY id LIMIT 1),
+       md5('qa92:s2')::uuid
   FROM ordering.customer_order o, (VALUES ('r1'), ('r2')) AS r(tag)
  WHERE o.id = md5('qa92:order1')::uuid;
 

@@ -104,6 +104,10 @@ class SalesContractDocument {
 
         lines.add(Line.heading(t.getString("contract.pdf.samples")));
         lines.add(Line.text(t.getString("contract.pdf.samplesText").formatted(c.freeSampleRounds())));
+        if (c.returnWindowDays() != null) {
+            // Điều 318: the period to complain about a delivery is the contract's, so the contract says it.
+            lines.add(Line.text(t.getString("contract.pdf.returnsText").formatted(c.returnWindowDays())));
+        }
         lines.add(Line.heading(""));
         lines.add(Line.bold(t.getString("contract.pdf.signatures")));
         return PrintedDocument.draw(fonts, lines, t.getString("contract.pdf.title") + " " + c.contractNumber(), null);

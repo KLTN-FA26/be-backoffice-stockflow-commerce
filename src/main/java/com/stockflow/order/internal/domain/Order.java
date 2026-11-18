@@ -1661,20 +1661,29 @@ public final class Order extends AggregateRoot {
 
     /**
      * Closed for good a while after it was completed or refunded (G3-Q1, default 30 days): BR-05, nothing changes it
-     * any more. Never while the customer still owes on it: its installments still owe, and closing it would put the debt
-     * out of the order's sight for good - COMPLETED already waits for the money ({@link #complete}), so REFUNDED and
-     * PARTIALLY_REFUNDED wait too.
+     * any more. So it is never closed while money is still owed on it, either way - closing it would put the debt out
+     * of the order's sight for good:
+     * <ul>
+     *   <li>the customer's: its installments still owe. COMPLETED already waits for the money ({@link #complete}), so
+     *       REFUNDED and PARTIALLY_REFUNDED wait too;</li>
+     *   <li>the seller's (TT-4): a refund its settlements made refundable is not made in full - not yet recorded, or
+     *       recorded and voided since. Completion does not wait for it (a refund is not the customer's to finish);
+     *       closing does, and the nightly run tries again until the accountant has recorded it.</li>
+     * </ul>
+     * The order keeps no money of its own (4B-10): the caller asks payment for both and passes the answers.
      *
-     * @param owing as for {@link #complete}
+     * @param owing       as for {@link #complete}
+     * @param refundOwed  whether the seller still owes the customer a refund of this order (payment's
+     *                    {@code RefundProgress.outstanding} above zero); false for an order with nothing to refund
      * @return whether this changed the order
      */
-    public boolean close(Instant now, java.time.Duration after, boolean owing) {
+    public boolean close(Instant now, java.time.Duration after, boolean owing, boolean refundOwed) {
         Instant since = switch (status) {
             case COMPLETED -> completedAt;
             case REFUNDED, PARTIALLY_REFUNDED -> refundedAt;
             default -> null;
         };
-        if (since == null || since.plus(after).isAfter(now) || owing) {
+        if (since == null || since.plus(after).isAfter(now) || owing || refundOwed) {
             return false;
         }
         transitionTo(OrderStatus.CLOSED, null, "CLOSED_AFTER_SETTLEMENT", now);
@@ -1738,7 +1747,9 @@ public final class Order extends AggregateRoot {
     /**
      * Everything the order's settlements made refundable was refunded, and no return of it is open (team plan 4D-3; 17
      * §4.10 step 40, 15 §4.5 step 17: "hoàn đủ"): RETURNED → REFUNDED when what came back covers what the order is
-     * worth, PARTIALLY_REFUNDED otherwise. From here the order closes after {@code close-after-days}.
+     * worth, PARTIALLY_REFUNDED otherwise. From here the order closes after {@code close-after-days}, once nothing is
+     * owed on it either way ({@link #close}); a refund record voided meanwhile takes it back here
+     * ({@link #refundReopened}), and this moves it forward again.
      *
      * @return whether this changed the order
      */
@@ -1748,6 +1759,33 @@ public final class Order extends AggregateRoot {
         }
         transitionTo(full ? OrderStatus.REFUNDED : OrderStatus.PARTIALLY_REFUNDED, by, reason, at);
         this.refundedAt = at;
+        return true;
+    }
+
+    /**
+     * A refund record of a refunded order was voided (TT-4): the money the order counted as gone back has not, so it is
+     * waiting for its refund again. REFUNDED / PARTIALLY_REFUNDED → RETURNED; from there the return request's or the
+     * failed delivery's refund rule moves it forward again once the refund is recorded anew, as it did the first time.
+     * Without this the order would stay REFUNDED and be closed for good with the refund still owed.
+     *
+     * <p>Any other order is left as it is: a RETURNED one is waiting already, a CLOSED one is never reopened (BR-05 -
+     * the debt then shows only on the accountant's list of refunds still to make), and a CANCELLED one is final
+     * (17 §5.1) with its refund followed by payment alone.</p>
+     *
+     * <p>{@link #refundedAt} is kept: like {@code completedAt} after a late return, it says when the order last became
+     * refunded, RETURNED asks nothing of it ({@code ck_order_refunded_at} binds REFUNDED / PARTIALLY_REFUNDED only),
+     * and {@link #refunded} sets it anew when the refund is made again - so the closing delay counts from that.</p>
+     *
+     * @param reason the void's reason, recorded in the status history after {@code REFUND_VOIDED}; cut to fit
+     * @return whether this changed the order
+     */
+    public boolean refundReopened(UUID by, Instant at, String reason) {
+        if (status != OrderStatus.REFUNDED && status != OrderStatus.PARTIALLY_REFUNDED) {
+            return false;
+        }
+        String history = withNote("REFUND_VOIDED", trimmed(reason));
+        // The history column holds 500.
+        transitionTo(OrderStatus.RETURNED, by, history.length() > 500 ? history.substring(0, 500) : history, at);
         return true;
     }
 

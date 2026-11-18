@@ -95,17 +95,49 @@ public interface EInvoiceRepository {
     /**
      * Up to {@code limit} drafts the system may issue by itself, the earliest dated first: originals that were never
      * sent and have nothing to look at. A draft that came back from a rejection is not among them - somebody has to
-     * correct it first. Dated order, not deadline order, because an invoice is refused while one dated before it waits
-     * ({@link #findEarlierUnissued}), and the deadline does not tell a Friday's invoice from a Saturday's.
+     * correct it first. Dated order, not deadline order: numbers of a series should run in the order of the dates
+     * (NĐ 254 Phụ lục điểm 2), and the deadline does not tell a Friday's invoice from a Saturday's.
      */
     List<UUID> findAutoIssuable(int limit);
 
     /**
-     * The code of an invoice other than {@code id}, dated in the year of {@code issueDate} but before it, that is
-     * still to be issued - a draft, a rejected one, or one the provider has not answered for - the earliest dated
-     * first; empty when there is none. A voided draft is not waiting for anything.
+     * The code of an invoice other than {@code id}, dated before {@code issueDate}, that is at the provider under
+     * {@code series} - SUBMITTING, flagged unknown to the provider or not, since either may already hold a number - the
+     * earliest dated first; empty when there is none. What keeps an invoice of the same series from being sent
+     * ({@code EInvoiceIssuanceSteps.submit}). Read under {@link #lockSeries}.
      */
-    Optional<String> findEarlierUnissued(UUID id, LocalDate issueDate);
+    Optional<String> findEarlierSubmitting(UUID id, InvoiceSeries series, LocalDate issueDate);
+
+    /**
+     * The code of an invoice other than {@code id}, dated in the year of {@code issueDate} but before it, still to be
+     * issued under {@code series}, the earliest dated first; empty when there is none. One at the provider counts when it
+     * was sent under that series; a draft or a rejected one, which has no series until it is sent, counts when it is of
+     * the same year - it will be numbered under the series in use for its year, which is {@code series}. A voided draft
+     * is not waiting for anything. What the draft's screen warns of; it keeps nothing back.
+     */
+    Optional<String> findEarlierUnissued(UUID id, InvoiceSeries series, LocalDate issueDate);
+
+    /**
+     * Takes the series' submission lock until the transaction ends: two invoices of one series are sent one after the
+     * other, so the second reads the first's SUBMITTING once it is committed ({@link #findEarlierSubmitting}).
+     */
+    void lockSeries(InvoiceSeries series);
+
+    /**
+     * Up to {@code limit} invoices past their deadline at {@code now}, still to be issued - drafts, rejected ones, and
+     * ones at the provider - that were warned of the deadline and whose accountants were last told about them before
+     * {@code toldBefore}, the longest overdue first: an invoice nobody issued is announced again, once a day.
+     */
+    List<UUID> findOverdueToRemind(Instant now, Instant toldBefore, int limit);
+
+    /**
+     * Notes that the accountants were reminded now of an invoice still past its deadline, if it still is and was last
+     * told about before {@code toldBefore}. Not part of the aggregate and not a new version of it: a reminder changes
+     * nothing the invoice says, and must not make the accountant's open screen stale.
+     *
+     * @return false when the invoice was issued, voided or reminded meanwhile
+     */
+    boolean markOverdueReminded(UUID id, Instant now, Instant toldBefore);
 
     /**
      * Up to {@code limit} invoices sent to the provider before {@code submittedBefore} that still wait for its answer

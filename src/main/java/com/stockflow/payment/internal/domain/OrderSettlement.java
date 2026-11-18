@@ -221,6 +221,19 @@ public final class OrderSettlement {
      */
     public static Outcome returned(List<Installment> ofOrder, UUID returnRequestId, BigDecimal returned, UUID by,
                                    Instant at, LocalDate day) {
+        return returned(ofOrder, returnRequestId, null, returned, by, at, day);
+    }
+
+    /**
+     * As {@link #returned(List, UUID, BigDecimal, UUID, Instant, LocalDate)}, for goods that came on the delivery batch
+     * {@code deliveryBatchId} (WF-05 TH-1): the installments tied to that batch take the value first, in
+     * {@link #CLOSURE_ORDER}; whatever they cannot take comes off the rest in that order, as before. A return is of one
+     * delivery: taking it off the latest batch first, as a closure does, would lower what a batch still on its way owes
+     * for its own goods - its installment before delivery, which gates its handover - for goods another batch
+     * brought. Null: the order's installments as a whole.
+     */
+    public static Outcome returned(List<Installment> ofOrder, UUID returnRequestId, UUID deliveryBatchId,
+                                   BigDecimal returned, UUID by, Instant at, LocalDate day) {
         Installment first = contractRow(ofOrder);
         Objects.requireNonNull(returnRequestId, "returnRequestId");
         Objects.requireNonNull(returned, "returned");
@@ -230,9 +243,14 @@ public final class OrderSettlement {
         BigDecimal collected = collected(ofOrder);
         List<Reduction> reductions = new ArrayList<>();
         List<Installment> changed = new ArrayList<>();
-        BigDecimal left = takeOff(ofOrder, returned, at, reductions, changed);
+        BigDecimal left = returned;
+        if (deliveryBatchId != null) {
+            left = takeOff(ofOrder.stream().filter(i -> deliveryBatchId.equals(i.deliveryBatchId())).toList(), left, at,
+                    reductions, changed);
+        }
+        left = takeOff(ofOrder, left, at, reductions, changed);
         return settle(first, ofOrder, Kind.GOODS_RETURNED, returnRequestId, collected, returned, reductions, left,
-                BigDecimal.ZERO, Fee.none(), by, at, day, "Fee", changed);
+                BigDecimal.ZERO, Fee.none(), by, at, day, "Fee", distinct(changed));
     }
 
     /**
@@ -258,6 +276,17 @@ public final class OrderSettlement {
             left = left.subtract(taken);
         }
         return left;
+    }
+
+    /** Each installment lowered once in the list, however many cuts it took: it is saved once. */
+    private static List<Installment> distinct(List<Installment> changed) {
+        List<Installment> once = new ArrayList<>();
+        for (Installment installment : changed) {
+            if (once.stream().noneMatch(seen -> seen == installment)) {
+                once.add(installment);
+            }
+        }
+        return once;
     }
 
     /**

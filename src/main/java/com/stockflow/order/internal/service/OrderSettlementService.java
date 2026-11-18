@@ -18,7 +18,10 @@ import java.util.UUID;
 /**
  * Completes and closes orders as time passes (G3-2; kltn-docs 17 §4.3 step 10, BR-05; BR-ORD-005):
  * <ul>
- *   <li>DELIVERED → COMPLETED once the return window ({@code stockflow.order.return-window-days}, default 7) has passed,
+ *   <li>DELIVERED → COMPLETED once the return window has passed - the order's own: the days its contract agreed
+ *       ({@code sales_contract.return_window_days}, Luật Thương mại Điều 318; WF-05 TH-1), else
+ *       {@code stockflow.order.return-window-days}, default 7 - so an order never completes while its customer may still
+ *       claim under the contract,
  *       every installment of its contract is paid (17 §4.6 step 21; 4B-10: asked of payment, the order keeps no
  *       money of its own), no return request is open, and every delivered shipment has its e-invoice issued (WF-05
  *       plan §4, condition 5: asked of invoicing, see {@link #complete}). An order whose installments still owe
@@ -35,7 +38,12 @@ import java.util.UUID;
  *   <li>RETURNED by a cancelled failed delivery → REFUNDED / PARTIALLY_REFUNDED once its refunds are made
  *       ({@link #settleFailedDelivery}; WF-05 fix plan, section 2): the order no run looked at before.</li>
  *   <li>COMPLETED / REFUNDED / PARTIALLY_REFUNDED → CLOSED after {@code stockflow.order.close-after-days} (default 30,
- *       decision G3-Q1).</li>
+ *       decision G3-Q1), once nothing is owed on it either way: no installment unpaid, and - TT-4 - no refund still to
+ *       make ({@code RefundProgress.outstanding}). CLOSED is final (BR-05), so a debt closed in would be out of the
+ *       order's sight for good; an order refused here is tried again the next night. Completion does not wait for a
+ *       refund.</li>
+ *   <li>REFUNDED / PARTIALLY_REFUNDED → RETURNED when a refund record of the order is voided ({@link #refundVoided},
+ *       TT-4): it waits for its refund again. Not a nightly step - the void's event moves it.</li>
  * </ul>
  * One order per transaction, through the aggregate, so each gets its history row and event, and one failing order does
  * not hold the others back.
@@ -77,7 +85,7 @@ public class OrderSettlementService {
 
     @Transactional(readOnly = true)
     public List<UUID> completionCandidates(int skip, int limit) {
-        return candidates.deliveredBy(clock.instant().minus(returnWindow), skip, limit);
+        return candidates.deliveredPastWindow(clock.instant(), (int) returnWindow.toDays(), skip, limit);
     }
 
     @Transactional(readOnly = true)
@@ -156,16 +164,21 @@ public class OrderSettlementService {
         Order order = repository.findByIdForUpdate(new OrderId(orderId)).orElse(null);
         // One moment for both: the order and its contract complete together, and say so.
         java.time.Instant now = clock.instant();
-        if (order == null || !order.complete(now, returnWindow, candidates.hasOpenReturn(orderId), owing(order),
+        java.util.Optional<com.stockflow.order.internal.domain.SalesContract> contract = order == null
+                ? java.util.Optional.empty() : contracts.findLiveByOrderId(orderId);
+        // The window the contract agreed (WF-05 TH-1), the configured one when it names none.
+        Duration window = contract.map(com.stockflow.order.internal.domain.SalesContract::returnWindowDays)
+                .map(Duration::ofDays).orElse(returnWindow);
+        if (order == null || !order.complete(now, window, candidates.hasOpenReturn(orderId), owing(order),
                 awaitingInvoice(order))) {
             return false;
         }
         repository.save(order);
         // 4B-8 (14 §5.2): the order completed - every batch delivered, invoiced and paid - completes its contract.
-        contracts.findLiveByOrderId(orderId).filter(contract -> contract.complete(now))
-                .ifPresent(contract -> {
-                    contracts.save(contract);
-                    log.info("Sales contract {} completed with its order", contract.contractNumber());
+        contract.filter(live -> live.complete(now))
+                .ifPresent(done -> {
+                    contracts.save(done);
+                    log.info("Sales contract {} completed with its order", done.contractNumber());
                 });
         events.publishEventsOf(order);
         log.info("Order {} completed", order.orderNumber());
@@ -173,19 +186,56 @@ public class OrderSettlementService {
     }
 
     /**
-     * @return whether the order was closed; never while a return of it is open (SCRUM-243): CLOSED is final (BR-05), and
-     *         the return would have nowhere to put its outcome
+     * Whether the seller still owes the customer a refund of the order (TT-4): something its settlements made
+     * refundable is not refunded by a live record - never recorded, or voided since. Read under the order's lock:
+     * recording and voiding a refund lock the order first.
+     */
+    private boolean refundOwed(Order order) {
+        return payments.refundProgress(order.id().value()).outstanding().signum() > 0;
+    }
+
+    /**
+     * @return whether the order was closed; never while a return of it is open (SCRUM-243): CLOSED is final (BR-05),
+     * and the return would have nowhere to put its outcome; nor while money is owed on it either way - an installment
+     * unpaid, or a refund still to make (TT-4, {@code Order.close})
      */
     @Transactional
     public boolean close(UUID orderId) {
         Order order = repository.findByIdForUpdate(new OrderId(orderId)).orElse(null);
         if (order == null || candidates.hasOpenReturn(orderId)
-                || !order.close(clock.instant(), closeAfter, owing(order))) {
+                || !order.close(clock.instant(), closeAfter, owing(order), refundOwed(order))) {
             return false;
         }
         repository.save(order);
         events.publishEventsOf(order);
         log.info("Order {} closed", order.orderNumber());
+        return true;
+    }
+
+    /**
+     * A refund record of the order was voided (TT-4; {@code OrderRefundRecorded} naming the voided record): a REFUNDED
+     * or PARTIALLY_REFUNDED order goes back to RETURNED - it waits for its refund again, and the return request's or
+     * the failed delivery's {@code followRefunds} moves it forward once the refund is recorded anew. Without this the
+     * order stayed REFUNDED and the nightly run closed it with the refund still owed.
+     *
+     * <p>The void's reason goes into the status history; payment keeps it ({@code PaymentService.refundVoidReason}),
+     * the event names only the record. The standing is read again under the order's lock: when the refund was recorded
+     * again before this event was handled, nothing is owed and the order stays where it is. A CLOSED order is never
+     * reopened (BR-05) and a CANCELLED one is final; any status but REFUNDED / PARTIALLY_REFUNDED is left alone ({@code
+     * Order.refundReopened}), and the debt shows on the accountant's list of refunds still to make.</p>
+     *
+     * @return whether the order moved
+     */
+    @Transactional
+    public boolean refundVoided(UUID orderId, UUID voidedRecordId, UUID by) {
+        Order order = repository.findByIdForUpdate(new OrderId(orderId)).orElse(null);
+        if (order == null || !refundOwed(order) || !order.refundReopened(by, clock.instant(),
+                payments.refundVoidReason(voidedRecordId).orElse(null))) {
+            return false;
+        }
+        repository.save(order);
+        events.publishEventsOf(order);
+        log.info("Order {}: a refund record was voided, back to {}", order.orderNumber(), order.status());
         return true;
     }
 }

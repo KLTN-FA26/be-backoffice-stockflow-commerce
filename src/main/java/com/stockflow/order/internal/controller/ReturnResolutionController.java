@@ -70,6 +70,20 @@ class ReturnResolutionController {
                 request == null ? null : request.version(), user.userId()), List.of()));
     }
 
+    @PostMapping("/{returnId}/closure-without-refund")
+    @Operation(summary = "Close a RECEIVED return with no refund, when nothing approved came back usable - every "
+            + "carton counted empty, or only goods the return did not claim (WF-05 TH-4): RESOLVED, no money, no "
+            + "adjustment invoice, one person. 409 RETURN_INVALID_TRANSITION when not RECEIVED; 400 "
+            + "RETURN_QUANTITIES_INVALID while something approved came back and is to be refunded")
+    @RequiresPermission(resource = OrderResources.RMA_RESOLUTIONS, action = Action.UPDATE, scope = DataScope.ALL)
+    public ApiResponse<ReturnRequestResponse> closeWithoutRefund(@PathVariable UUID returnId,
+            @Valid @RequestBody(required = false) ReturnRequests.CloseWithoutRefund request,
+            @AuthenticatedUser CurrentUser user) {
+        return ApiResponse.ok(ReturnWebMapper.toResponse(returns.closeWithoutRefund(returnId,
+                request == null ? null : request.note(), request == null ? null : request.version(), user.userId()),
+                List.of()));
+    }
+
     @PostMapping("/{returnId}/settlement-rejection")
     @Operation(summary = "Send the refund back to Sales, saying why; the return is RECEIVED again")
     @RequiresPermission(resource = OrderResources.RMA_RESOLUTIONS, action = Action.APPROVE, scope = DataScope.ALL)

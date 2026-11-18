@@ -18,6 +18,8 @@ public record CustomerReturnResponse(
         @Schema(example = "RMA-20261025-0001") String rmaNumber,
         UUID orderId,
         String orderNumber,
+        @Schema(description = "The delivery the returned goods came on; null for an order delivered at once")
+        UUID shipmentId,
         @Schema(example = "AWAITING_RETURN") String status,
         String reasonCode,
         String description,

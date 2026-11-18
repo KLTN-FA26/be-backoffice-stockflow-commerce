@@ -54,9 +54,17 @@ class RefundController {
         this.customers = customers;
     }
 
-    /** The accountant's work list: orders with something to refund ({@code outstanding=true}: not refunded in full). */
+    /**
+     * The accountant's work list: orders with something to refund ({@code outstanding=true}: not refunded in full), the
+     * oldest debt first (by the first settlement that made something refundable), each with what is still to refund
+     * ({@code remaining}). An order is not closed while it is on the outstanding list (TT-4); one closed before a
+     * refund of it was voided stays on it until the refund is recorded again.
+     */
     @GetMapping
-    @Operation(summary = "Orders with money to refund, most recently settled first")
+    @Operation(summary = "Orders with money to refund, oldest debt first",
+            description = "outstanding=true: only orders not refunded in full. Sorted by the first settlement that "
+                    + "made something refundable, oldest first; remaining = refundable - refunded (never below "
+                    + "zero) is what is still owed.")
     @RequiresPermission(resource = PaymentResources.REFUNDS, action = Action.READ, scope = DataScope.ALL)
     public ApiResponse<PageResponse<OrderRefundResponse>> list(
             @RequestParam(required = false) UUID customerId,

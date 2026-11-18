@@ -435,15 +435,27 @@ SELECT pg_temp.expect_fail('H15 the sandbox''s numbers stop at 8 digits', $q$
     INSERT INTO invoicing.sandbox_number (template_code, symbol, last_number) VALUES ('1', 'C26TZZ', 100000000) $q$);
 
 \echo '--- VAT rates of a period'
+-- V20261201000200 seeds the reduction of NĐ 174/2025: STANDARD at 8% from 2025-07-01 to 2026-12-31. The periods
+-- below are in years it does not touch.
+SELECT pg_temp.expect_true('I0 the seeded reduction: 8% through 2026, 10% from 2027',
+    (SELECT COALESCE(p.rate, r.rate) = 8 FROM ordering.tax_rate r LEFT JOIN ordering.tax_rate_period p
+        ON p.tax_class = r.tax_class AND DATE '2026-12-31' BETWEEN p.valid_from AND p.valid_to
+      WHERE r.tax_class = 'STANDARD')
+    AND (SELECT COALESCE(p.rate, r.rate) = 10 FROM ordering.tax_rate r LEFT JOIN ordering.tax_rate_period p
+        ON p.tax_class = r.tax_class AND DATE '2027-01-01' BETWEEN p.valid_from AND p.valid_to
+      WHERE r.tax_class = 'STANDARD'));
+SELECT pg_temp.expect_fail('I0b a second rate for a day of the seeded reduction', $q$
+    INSERT INTO ordering.tax_rate_period (id, tax_class, rate, valid_from, valid_to)
+    VALUES (gen_random_uuid(), 'STANDARD', 9, DATE '2026-12-31', DATE '2027-01-31') $q$);
 SELECT pg_temp.expect_ok('I1 a reduction of the standard rate for a period', $q$
     INSERT INTO ordering.tax_rate_period (id, tax_class, rate, valid_from, valid_to, note)
-    VALUES (md5('qa91:period')::uuid, 'STANDARD', 8, DATE '2026-07-01', DATE '2026-12-31', 'QA reduction') $q$);
+    VALUES (md5('qa91:period')::uuid, 'STANDARD', 8, DATE '2028-07-01', DATE '2028-12-31', 'QA reduction') $q$);
 SELECT pg_temp.expect_fail('I2 a second rate for a day of that period', $q$
     INSERT INTO ordering.tax_rate_period (id, tax_class, rate, valid_from, valid_to)
-    VALUES (gen_random_uuid(), 'STANDARD', 9, DATE '2026-12-31', DATE '2027-06-30') $q$);
+    VALUES (gen_random_uuid(), 'STANDARD', 9, DATE '2028-12-31', DATE '2029-06-30') $q$);
 SELECT pg_temp.expect_ok('I3 the next period starts the day after', $q$
     INSERT INTO ordering.tax_rate_period (id, tax_class, rate, valid_from, valid_to)
-    VALUES (gen_random_uuid(), 'STANDARD', 9, DATE '2027-01-01', DATE '2027-06-30') $q$);
+    VALUES (gen_random_uuid(), 'STANDARD', 9, DATE '2029-01-01', DATE '2029-06-30') $q$);
 SELECT pg_temp.expect_ok('I4 another class has its own periods', $q$
     INSERT INTO ordering.tax_rate_period (id, tax_class, rate, valid_from, valid_to)
     VALUES (gen_random_uuid(), 'REDUCED', 4, DATE '2026-07-01', DATE '2026-12-31') $q$);
@@ -455,10 +467,10 @@ SELECT pg_temp.expect_fail('I6 a class nobody knows', $q$
     VALUES (gen_random_uuid(), 'LUXURY', 20, DATE '2028-01-01', DATE '2028-02-01') $q$);
 SELECT pg_temp.expect_true('I7 the rate of a day: the period''s inside it, the class''s own outside',
     (SELECT COALESCE(p.rate, r.rate) = 8 FROM ordering.tax_rate r LEFT JOIN ordering.tax_rate_period p
-        ON p.tax_class = r.tax_class AND DATE '2026-11-12' BETWEEN p.valid_from AND p.valid_to
+        ON p.tax_class = r.tax_class AND DATE '2028-11-12' BETWEEN p.valid_from AND p.valid_to
       WHERE r.tax_class = 'STANDARD')
     AND (SELECT COALESCE(p.rate, r.rate) = 10 FROM ordering.tax_rate r LEFT JOIN ordering.tax_rate_period p
-        ON p.tax_class = r.tax_class AND DATE '2026-06-30' BETWEEN p.valid_from AND p.valid_to
+        ON p.tax_class = r.tax_class AND DATE '2028-06-30' BETWEEN p.valid_from AND p.valid_to
       WHERE r.tax_class = 'STANDARD'));
 
 \echo '--- grants'

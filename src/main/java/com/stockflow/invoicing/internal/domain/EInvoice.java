@@ -23,11 +23,13 @@ import java.util.UUID;
  * <p><b>Date and number.</b> An invoice's date is the day of its delivery (NĐ 254 Điều 9), fixed when it is drawn up;
  * its number is the provider's, given when it is issued. The law asks for numbers that run on within a symbol in the
  * order of the dates (Phụ lục điểm 2) and for signing by the next working day (điểm 7), which is why a draft carries a
- * deadline. So an invoice is not sent while one of its year dated earlier waits to be issued
- * ({@code EInvoiceIssuanceSteps.submit}, {@code EINVOICE_OLDER_DRAFT_PENDING}); an invoice dated before others that
- * were already issued - a delivery recorded late - still goes out, with the next number, since one that could never
- * be issued would be worse. Whether a real provider refuses a date before its last number is a question for its
- * adapter (package E3).</p>
+ * deadline. So an invoice is not sent while one of the same series dated earlier is at the provider, where it may
+ * already hold the next number ({@code EInvoiceIssuanceSteps.submit}, {@code EINVOICE_OLDER_DRAFT_PENDING}); a draft
+ * or a rejected invoice holds no number and keeps nothing back (HĐ-2) - one stuck invoice must not leave every later
+ * one overdue - and is only named on the screen of a later draft. An invoice dated before others that were already
+ * issued - a delivery recorded late, a draft issued after a later one - still goes out, with the next number and its
+ * own date, since one that could never be issued would be worse. Whether a real provider refuses a date before its
+ * last number is a question for its adapter (package E3).</p>
  *
  * <p>An original invoices one delivered shipment. It is drawn up as a draft the moment the delivery is recorded, with
  * the seller and the buyer <b>copied</b> onto it and its lines and totals fixed from the order's prices. From then on:</p>
@@ -82,6 +84,17 @@ public final class EInvoice {
          * product without a tax class, assumed standard. The customer agreed to no rate: the accountant decides.
          */
         TAX_RATE_NOT_ON_CONTRACT,
+        /**
+         * A line (not a note) is at 0%, and the invoice is not issued ({@code EINVOICE_TAX_EXEMPT_NOT_SUPPORTED}). No
+         * tax class here is zero-rated: 0.00 is the rate {@code ordering.tax_rate} keeps for EXEMPT - goods not subject
+         * to VAT ("không chịu thuế", KCT) - and an invoice saying 0% would declare zero-rated goods, which is another
+         * thing in law. No provider adapter here can state KCT yet (SePay takes 0, 5, 8 and 10 only). So the accountant
+         * corrects the product's tax class and draws the invoice up again, or invoices those goods outside the system.
+         * Checked on the invoice, not on the product or the quote: no product is EXEMPT today, the class stays for the
+         * tests and the QA checks, and the invoice is where every path a rate takes meets - a quote, an order, a
+         * reduction period, a fee, a correction. The database says the same ({@code tg_einvoice_no_zero_rate_line}).
+         */
+        TAX_EXEMPT_NOT_SUPPORTED,
         /**
          * Package E3: the invoice was handed to the provider, the provider says it never received the transaction, and
          * the time the provider remembers a transaction id has passed - so it is not sent again on its own (the same
@@ -336,6 +349,9 @@ public final class EInvoice {
         if (taxRateNotOnContract) {
             warnings.add(Warning.TAX_RATE_NOT_ON_CONTRACT);
         }
+        if (atZeroRate(lines)) {
+            warnings.add(Warning.TAX_EXEMPT_NOT_SUPPORTED);
+        }
         return new EInvoice(new Snapshot(id, code, EInvoiceType.ORIGINAL, EInvoiceStatus.DRAFT, false,
                 delivery.orderId(), delivery.orderNumber(), delivery.contractNumber(), delivery.shipmentId(),
                 delivery.shipmentCode(), delivery.deliveryBatchId(), delivery.customerId(), null, null, 0, null, null,
@@ -493,6 +509,9 @@ public final class EInvoice {
         if (!buyer.completeBuyer()) {
             warnings.add(Warning.BUYER_PROFILE_INCOMPLETE);
         }
+        if (atZeroRate(lines)) {
+            warnings.add(Warning.TAX_EXEMPT_NOT_SUPPORTED);
+        }
         return new EInvoice(new Snapshot(id, code, type, EInvoiceStatus.DRAFT, false, original.orderId,
                 original.orderNumber, original.contractNumber, original.shipmentId, original.shipmentCode,
                 original.deliveryBatchId, original.customerId, original.id, null, 0, null, null, null, null, null, null,
@@ -500,6 +519,11 @@ public final class EInvoice {
                 totals.net(), totals.tax(), totals.total(), VietnameseAmountInWords.of(totals.total()), warnings,
                 reason.strip(), null, null, null, null, null, null, null, null, null, null, null, 0, basis, null, null,
                 returnRequestId, listed));
+    }
+
+    /** Whether a line other than a note is at 0%: only an EXEMPT one ({@link Warning#TAX_EXEMPT_NOT_SUPPORTED}). */
+    private static boolean atZeroRate(List<EInvoiceLine> lines) {
+        return lines.stream().anyMatch(line -> line.kind() != EInvoiceLine.Kind.NOTE && line.taxRate().signum() == 0);
     }
 
     /** An invoice as it was stored. */
@@ -616,6 +640,8 @@ public final class EInvoice {
      *                           {@code EINVOICE_BUYER_PROFILE_INCOMPLETE} while the buyer's name, tax code or address
      *                           is missing; {@code EINVOICE_AGREEMENT_REQUIRED} for the correction
      *                           of an error without the agreement of both parties;
+     *                           {@code EINVOICE_TAX_EXEMPT_NOT_SUPPORTED} for a line at 0%
+     *                           ({@link Warning#TAX_EXEMPT_NOT_SUPPORTED});
      *                           {@code EINVOICE_SERIES_NOT_CONFIGURED} for a series of another year than the invoice's
      *                           date, or of a template other than a VAT invoice's
      */
@@ -629,6 +655,11 @@ public final class EInvoice {
             throw new BusinessException(ErrorCode.EINVOICE_AGREEMENT_REQUIRED, ("Invoice %s corrects an error: the "
                     + "written agreement with the buyer - file, number and date - is needed before it is sent "
                     + "(TT 91/2026/TT-BTC Điều 10 khoản 1 điểm b)").formatted(code));
+        }
+        if (atZeroRate(lines)) {
+            throw new BusinessException(ErrorCode.EINVOICE_TAX_EXEMPT_NOT_SUPPORTED, ("Invoice %s has a line at 0%%: "
+                    + "the tax class EXEMPT (not subject to VAT) cannot be issued as 0%%, which is a rate of its own")
+                    .formatted(code));
         }
         Objects.requireNonNull(series, "series");
         if (!series.vatTemplate()) {

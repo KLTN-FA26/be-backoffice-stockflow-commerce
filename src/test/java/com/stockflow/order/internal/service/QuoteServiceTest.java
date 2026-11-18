@@ -97,8 +97,9 @@ class QuoteServiceTest {
                 customer, QuoteStatus.SENT, 1, NOW.plusSeconds(3600), NOW, null, NOW, "sales", 7)));
         when(search.history(any())).thenReturn(List.of());
         ownedByTheCustomer(SKU);
-        // 4B-3: the products are STANDARD (10%) unless a test says otherwise; every SKU was produced before.
-        when(taxRates.all()).thenReturn(Map.of("STANDARD", new BigDecimal("10.00"), "REDUCED", new BigDecimal("5.00"),
+        // 4B-3: the products are STANDARD (10%) unless a test says otherwise; every SKU was produced before. HĐ-7: the
+        // rates of the quote's own day, whatever day that is here.
+        when(taxRates.onDay(any())).thenReturn(Map.of("STANDARD", new BigDecimal("10.00"), "REDUCED", new BigDecimal("5.00"),
                 "EXEMPT", new BigDecimal("0.00")));
         when(products.taxClassesOf(anyCollection())).thenAnswer(call -> {
             Map<String, com.stockflow.product.api.TaxClass> classes = new java.util.HashMap<>();
@@ -396,6 +397,27 @@ class QuoteServiceTest {
         assertThat(priced.proposed().fees()).isEqualByComparingTo("800000");
         assertThat(priced.proposed().tax()).isEqualByComparingTo("280000");
         assertThat(priced.proposedTotal()).isEqualByComparingTo("3080000");
+    }
+
+    @Test
+    void aQuoteTakesTheRatesInForceOnTheDayItIsDrawnUpNotTheClassesOwn() {
+        // HĐ-7: NĐ 174/2025 reduces STANDARD to 8% through 2026; NOW is 14/10/2026 in Vietnam.
+        when(taxRates.onDay(java.time.LocalDate.of(2026, 10, 14))).thenReturn(Map.of("STANDARD",
+                new BigDecimal("8.00"), "REDUCED", new BigDecimal("5.00"), "EXEMPT", new BigDecimal("0.00")));
+        when(quotes.findByRequestId(any())).thenReturn(Optional.empty());
+        when(quotes.nextNumber(any())).thenReturn("QT-9");
+        when(production.producedBefore(anyCollection())).thenReturn(Set.of());
+
+        Quotes.QuoteView view = service.create(sales, createWithFees(List.of(
+                new Quotes.Fee(com.stockflow.order.api.FeeKind.PLATE_FEE, SKU, new BigDecimal("500000")),
+                new Quotes.Fee(com.stockflow.order.api.FeeKind.SHIPPING_FEE, null, new BigDecimal("300000")))));
+
+        assertThat(view.lines().getFirst().taxRate()).isEqualByComparingTo("8");
+        assertThat(view.fees()).extracting(Quotes.FeeView::taxRate).allSatisfy(rate ->
+                assertThat(rate).isEqualByComparingTo("8"));
+        // 2,000,000 of goods + 800,000 of fees at 8%: 160,000 + 40,000 + 24,000.
+        assertThat(view.proposed().tax()).isEqualByComparingTo("224000");
+        verify(taxRates).onDay(java.time.LocalDate.of(2026, 10, 14));
     }
 
     @Test

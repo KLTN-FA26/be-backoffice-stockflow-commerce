@@ -15,4 +15,13 @@ public record RefundProgress(BigDecimal refundable, BigDecimal refunded) {
     public boolean settled() {
         return refunded.compareTo(refundable) >= 0;
     }
+
+    /**
+     * What the seller still owes the customer: refundable less refunded, never below zero. Positive exactly when
+     * {@link #settled} is false. The order is not closed while this is positive (TT-4): CLOSED is final, and a debt
+     * behind it would no longer show on the order.
+     */
+    public BigDecimal outstanding() {
+        return refundable.subtract(refunded).max(BigDecimal.ZERO);
+    }
 }
