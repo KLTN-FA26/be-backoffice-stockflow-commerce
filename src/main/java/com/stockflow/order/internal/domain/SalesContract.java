@@ -6,6 +6,7 @@ import com.stockflow.common.error.ErrorCode;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
@@ -25,6 +26,8 @@ import java.util.UUID;
 public final class SalesContract {
 
     private static final ZoneId VIETNAM = ZoneId.of("Asia/Ho_Chi_Minh");
+    /** How a day is written in a message people read. */
+    private static final DateTimeFormatter DAY = DateTimeFormatter.ofPattern("dd/MM/yyyy");
 
     private final UUID id;
     private final String contractNumber;
@@ -96,7 +99,7 @@ public final class SalesContract {
         if (order.lines().stream().anyMatch(line -> line.cartons() == null)) {
             throw new BusinessException(ErrorCode.SALES_CONTRACT_ORDER_NOT_CARTONS, ("Order %s has lines not ordered "
                     + "in cartons: a contract schedules cartons of the customer's own SKUs").formatted(
-                    order.orderNumber()));
+                    order.orderNumber())).localized("refusal.contract.orderNotCartons", order.orderNumber().value());
         }
     }
 
@@ -150,7 +153,8 @@ public final class SalesContract {
     public void agreeReturnWindow(Order order, int days) {
         requireRevisable(order);
         if (days < 1 || days > 365) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Return window: a whole number of days, 1 to 365");
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Return window: a whole number of days, 1 to 365")
+                    .localized("refusal.contract.returnWindow");
         }
         this.returnWindowDays = days;
     }
@@ -232,7 +236,8 @@ public final class SalesContract {
         }
         if (!status.canTransitionTo(SalesContractStatus.COMPLETED)) {
             throw new BusinessException(ErrorCode.SALES_CONTRACT_STATUS_INVALID, "Contract %s is %s: only a signed "
-                    .formatted(contractNumber, status) + "contract is completed");
+                    .formatted(contractNumber, status) + "contract is completed")
+                    .localized("refusal.contract.status.completed", contractNumber, status);
         }
         this.status = SalesContractStatus.COMPLETED;
         this.completedAt = Objects.requireNonNull(at, "at");
@@ -248,10 +253,12 @@ public final class SalesContract {
     public void cancel(String reason, Instant at, UUID by) {
         if (!status.canTransitionTo(SalesContractStatus.CANCELLED)) {
             throw new BusinessException(ErrorCode.SALES_CONTRACT_STATUS_INVALID, "Contract %s is %s: only a draft or a "
-                    .formatted(contractNumber, status) + "sent contract is cancelled");
+                    .formatted(contractNumber, status) + "sent contract is cancelled")
+                    .localized("refusal.contract.status.cancelled", contractNumber, status);
         }
         if (reason == null || reason.isBlank() || reason.strip().length() > 500) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A reason of at most 500 characters");
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A reason of at most 500 characters")
+                    .localized("refusal.contract.cancellationReason", 500);
         }
         this.status = SalesContractStatus.CANCELLED;
         this.cancellationReason = reason.strip();
@@ -276,14 +283,17 @@ public final class SalesContract {
         LocalDate today = LocalDate.ofInstant(at, VIETNAM);
         if (on.isAfter(today) || on.isBefore(LocalDate.ofInstant(sentAt, VIETNAM))) {
             throw new BusinessException(ErrorCode.VALIDATION_FAILED, ("Contract %s: signed on %s - not before it was "
-                    + "sent (%s), not after today").formatted(contractNumber, on, LocalDate.ofInstant(sentAt, VIETNAM)));
+                    + "sent (%s), not after today").formatted(contractNumber, on, LocalDate.ofInstant(sentAt, VIETNAM)))
+                    .localized("refusal.contract.signedOn", contractNumber, DAY.format(on),
+                            DAY.format(LocalDate.ofInstant(sentAt, VIETNAM)));
         }
     }
 
     private void requireStatus(SalesContractStatus wanted, String verb) {
         if (status != wanted) {
             throw new BusinessException(ErrorCode.SALES_CONTRACT_STATUS_INVALID, "Contract %s is %s: only a %s contract "
-                    .formatted(contractNumber, status, wanted.name().toLowerCase(java.util.Locale.ROOT)) + "is " + verb);
+                    .formatted(contractNumber, status, wanted.name().toLowerCase(java.util.Locale.ROOT)) + "is " + verb)
+                    .localized("refusal.contract.status." + verb, contractNumber, status);
         }
     }
 
@@ -296,13 +306,15 @@ public final class SalesContract {
     private static void requireDraftOrder(Order order) {
         if (order.status() != com.stockflow.order.api.OrderStatus.DRAFT) {
             throw new BusinessException(ErrorCode.SALES_CONTRACT_ORDER_NOT_DRAFT, ("Order %s is %s: a contract is "
-                    + "drawn up, edited and sent for a draft order").formatted(order.orderNumber(), order.status()));
+                    + "drawn up, edited and sent for a draft order").formatted(order.orderNumber(), order.status()))
+                    .localized("refusal.contract.orderNotDraft", order.orderNumber().value(), order.status());
         }
     }
 
     private static void requireRounds(int rounds) {
         if (rounds < 0 || rounds > 100) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Free sample rounds: a whole number, 0 to 100");
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Free sample rounds: a whole number, 0 to 100")
+                    .localized("refusal.contract.freeSampleRounds");
         }
     }
 

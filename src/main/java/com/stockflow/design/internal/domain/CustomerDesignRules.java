@@ -56,7 +56,7 @@ public final class CustomerDesignRules {
     public static void requireDraft(DesignStatus status) {
         if (status != DesignStatus.DRAFT) {
             throw new BusinessException(ErrorCode.DESIGN_NOT_DRAFT,
-                    "This design is " + status + "; only a draft can be changed");
+                    "This design is " + status + "; only a draft can be changed").localized("refusal.design.notDraft", status);
         }
     }
 
@@ -64,7 +64,7 @@ public final class CustomerDesignRules {
     public static void requireRoomForDraft(long drafts) {
         if (drafts >= MAX_DRAFTS) {
             throw new BusinessException(ErrorCode.DESIGN_DRAFT_LIMIT_REACHED,
-                    "A customer holds at most " + MAX_DRAFTS + " drafts; delete one first");
+                    "A customer holds at most " + MAX_DRAFTS + " drafts; delete one first").localized("refusal.design.draftLimit", MAX_DRAFTS);
         }
     }
 }

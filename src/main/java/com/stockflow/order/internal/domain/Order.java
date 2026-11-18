@@ -430,7 +430,8 @@ public final class Order extends AggregateRoot {
     private void requireCreditHold() {
         if (status != OrderStatus.ON_HOLD || holdReason != HoldReason.CREDIT) {
             throw new BusinessException(ErrorCode.ORDER_NOT_ON_CREDIT_HOLD,
-                    "Order %s is %s, not waiting for a credit decision".formatted(orderNumber, status));
+                    "Order %s is %s, not waiting for a credit decision".formatted(orderNumber, status))
+                    .localized("refusal.credit.notHeldStatus", orderNumber.value(), status);
         }
     }
 

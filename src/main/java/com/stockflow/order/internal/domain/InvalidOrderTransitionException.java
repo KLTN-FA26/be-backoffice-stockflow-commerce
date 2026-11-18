@@ -26,11 +26,18 @@ public class InvalidOrderTransitionException extends BusinessException {
 
     public InvalidOrderTransitionException(OrderNumber orderNumber, OrderStatus from, OrderStatus to) {
         super(ErrorCode.ORDER_INVALID_TRANSITION,
-                "Order %s cannot move from %s to %s".formatted(orderNumber, from, to));
+                "Order %s cannot move from %s to %s".formatted(orderNumber, from, to), java.util.List.of(),
+                java.util.Map.of(), "refusal.order.transition", number(orderNumber), from, to);
     }
 
     public InvalidOrderTransitionException(OrderNumber orderNumber, OrderStatus from, String hint) {
         super(ErrorCode.ORDER_INVALID_TRANSITION,
-                "Order %s is %s: %s".formatted(orderNumber, from, hint));
+                "Order %s is %s: %s".formatted(orderNumber, from, hint), java.util.List.of(), java.util.Map.of(),
+                "refusal.order.notNow", number(orderNumber), from);
+    }
+
+    /** The order number people read; the English hint stays in the log, the translation says what state forbids it. */
+    private static String number(OrderNumber orderNumber) {
+        return orderNumber == null ? "" : orderNumber.value();
     }
 }

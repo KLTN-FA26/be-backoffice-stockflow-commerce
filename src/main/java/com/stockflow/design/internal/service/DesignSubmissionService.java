@@ -156,12 +156,12 @@ public class DesignSubmissionService {
             tx.executeWithoutResult(status -> recordFailure(id, actor, issues));
             throw new BusinessException(ErrorCode.DESIGN_PREFLIGHT_FAILED,
                     "The design did not pass preflight: " + issues.size() + " problem(s)", List.of(),
-                    Map.of("issues", LayoutPreflight.asMaps(issues)));
+                    Map.of("issues", LayoutPreflight.asMaps(issues)), "refusal.design.preflightFailed", issues.size());
         }
         if (!plan.outdatedFiles().isEmpty()) {
             throw new BusinessException(ErrorCode.DESIGN_FILES_OUTDATED,
                     "Render the files again from the layout as it is now: " + plan.outdatedFiles(), List.of(),
-                    Map.of("roles", plan.outdatedFiles()));
+                    Map.of("roles", plan.outdatedFiles()), "refusal.design.filesOutdated");
         }
         return tx.execute(status -> submitLocked(id, actor, version, plan, quote));
     }
@@ -175,7 +175,7 @@ public class DesignSubmissionService {
         CustomerDesignRules.requireOwner(actor, draft.getOwnerUserId(), draft.getStatus());
         requireSubmittable(draft, version);
         if (draft.getTemplateId() == null) {
-            throw new BusinessException(ErrorCode.CONFLICT, "This design was not started on a template");
+            throw new BusinessException(ErrorCode.CONFLICT, "This design was not started on a template").localized("refusal.design.noTemplate");
         }
         if (quote != null) {
             // Before the preflight: a request that could not be opened refuses the submission, not half of it.
@@ -184,7 +184,8 @@ public class DesignSubmissionService {
         PrintConfig template = printConfigs.byId(draft.getTemplateId())
                 .orElseThrow(() -> new BusinessException(ErrorCode.PRINT_CONFIG_NOT_FOUND));
         DesignDocumentJpaEntity layout = documents.findById(id)
-                .orElseThrow(() -> new BusinessException(ErrorCode.CONFLICT, "This design has no layout"));
+                .orElseThrow(() -> new BusinessException(ErrorCode.CONFLICT, "This design has no layout")
+                        .localized("refusal.design.noLayout"));
 
         List<LayoutPreflight.Issue> issues = new ArrayList<>();
         if (!printConfigs.designable(draft.getTemplateId())) {
@@ -330,7 +331,8 @@ public class DesignSubmissionService {
         if (templateNow != plan.template().version()) {
             throw new BusinessException(ErrorCode.DESIGN_FILES_OUTDATED,
                     "The template changed while the design was being submitted", List.of(),
-                    Map.of("roles", SUBMITTED_FILES.stream().map(Enum::name).sorted().toList()));
+                    Map.of("roles", SUBMITTED_FILES.stream().map(Enum::name).sorted().toList()),
+                    "refusal.design.templateChanged");
         }
         Instant now = clock.instant();
         draft.submitForReview(now);

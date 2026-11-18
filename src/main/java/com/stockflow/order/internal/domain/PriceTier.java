@@ -20,7 +20,8 @@ public record PriceTier(int minQuantity, Money unitPrice) {
      */
     public static PriceTier of(int minQuantity, java.math.BigDecimal unitPrice) {
         if (unitPrice == null || unitPrice.signum() <= 0 || unitPrice.stripTrailingZeros().scale() > 0) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A quoted unit price is a positive whole VND amount");
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A quoted unit price is a positive whole VND amount")
+                    .localized("refusal.quote.unitPrice");
         }
         return new PriceTier(minQuantity, new Money(unitPrice, Money.VND));
     }
@@ -28,11 +29,13 @@ public record PriceTier(int minQuantity, Money unitPrice) {
     public PriceTier {
         Objects.requireNonNull(unitPrice, "unitPrice");
         if (minQuantity < 1) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A price tier starts at 1 unit or more");
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A price tier starts at 1 unit or more")
+                    .localized("refusal.quote.tierStart");
         }
         if (!Money.VND.equals(unitPrice.currency()) || unitPrice.amount().signum() <= 0
                 || unitPrice.amount().stripTrailingZeros().scale() > 0) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A quoted unit price is a positive whole VND amount");
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A quoted unit price is a positive whole VND amount")
+                    .localized("refusal.quote.unitPrice");
         }
     }
 }

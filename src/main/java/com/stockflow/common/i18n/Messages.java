@@ -76,4 +76,20 @@ public class Messages {
             return fallback;
         }
     }
+
+    /**
+     * A business refusal's message people read ({@code BusinessException#messageKey}): {@link #get} with each enum
+     * argument read as its label - {@code label.QuoteStatus.SENT} is "Đã gửi" - so a status in a message is in the
+     * reader's language too; an enum with no label reads as its name.
+     */
+    public String refusal(String key, String fallback, Object... arguments) {
+        Object[] labelled = arguments == null ? new Object[0] : arguments.clone();
+        for (int i = 0; i < labelled.length; i++) {
+            if (labelled[i] instanceof Enum<?> constant) {
+                labelled[i] = get("label." + constant.getDeclaringClass().getSimpleName() + "." + constant.name(),
+                        constant.name());
+            }
+        }
+        return get(key, fallback, labelled);
+    }
 }

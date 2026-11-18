@@ -206,7 +206,7 @@ public class CustomerChatService {
             return null;
         }
         if (kind == null || id == null) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A context is a kind and an id");
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A context is a kind and an id").localized("refusal.chat.contextIncomplete");
         }
         return new ContextRef(kind, id);
     }

@@ -80,7 +80,7 @@ public class CannedResponses {
         Actor staff = callers.staff(user);
         boolean shared = Boolean.TRUE.equals(draft.shared());
         if (shared && !staff.supervisor()) {
-            throw new BusinessException(ErrorCode.FORBIDDEN, "A shared reply is the chat supervisor's to write");
+            throw new BusinessException(ErrorCode.FORBIDDEN, "A shared reply is the chat supervisor's to write").localized("refusal.chat.sharedReplySupervisor");
         }
         return View.of(responses.save(new CannedResponse(Identifiers.newId(), shared ? null : staff.userId(),
                 draft.title(), draft.body(), draft.shortcut(), draft.category(), null, 0)));
@@ -93,7 +93,7 @@ public class CannedResponses {
         found.requireChangeableBy(staff);
         if (draft.version() != null && draft.version() != found.version()) {
             throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK, "The saved reply changed since version "
-                    + draft.version());
+                    + draft.version()).localized("refusal.chat.savedReplyChanged");
         }
         return View.of(responses.save(found.revise(draft.title(), draft.body(), draft.shortcut(), draft.category())));
     }

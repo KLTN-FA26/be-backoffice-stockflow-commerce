@@ -28,11 +28,12 @@ public final class QuoteRequestRules {
      */
     public static void requireValid(int cartons, LocalDate desiredDeliveryDate, LocalDate today, String field) {
         if (cartons < 1 || cartons > MAX_CARTONS) {
-            throw invalid(field + "cartons", "cartons must be from 1 to " + MAX_CARTONS, "Range");
+            throw invalid(field + "cartons", "cartons must be from 1 to " + MAX_CARTONS, "Range",
+                    "refusal.design.cartonsRange", MAX_CARTONS);
         }
         if (desiredDeliveryDate != null && desiredDeliveryDate.isBefore(today)) {
             throw invalid(field + "desiredDeliveryDate", "desiredDeliveryDate must be today or later",
-                    "FutureOrPresent");
+                    "FutureOrPresent", "refusal.design.desiredDatePast");
         }
     }
 
@@ -40,11 +41,13 @@ public final class QuoteRequestRules {
     public static void requireApproved(DesignStatus status) {
         if (status != DesignStatus.APPROVED) {
             throw new BusinessException(ErrorCode.DESIGN_NOT_APPROVED,
-                    "This design is " + status + "; ask for a quote on an approved design, or with a submission");
+                    "This design is " + status + "; ask for a quote on an approved design, or with a submission").localized("refusal.design.notApprovedForQuote", status);
         }
     }
 
-    private static BusinessException invalid(String field, String message, String code) {
-        return new BusinessException(ErrorCode.VALIDATION_FAILED, message, List.of(new FieldError(field, message, code)));
+    private static BusinessException invalid(String field, String message, String code, String key,
+                                              Object... arguments) {
+        return new BusinessException(ErrorCode.VALIDATION_FAILED, message,
+                List.of(FieldError.localized(field, message, code, key, arguments)), java.util.Map.of(), key, arguments);
     }
 }

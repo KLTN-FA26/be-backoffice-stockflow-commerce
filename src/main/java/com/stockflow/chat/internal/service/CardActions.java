@@ -61,6 +61,9 @@ public final class CardActions {
             return false;
         }
         if ("PROJECT".equals(payload.path("scope").asText())) {
+            if (!"OPEN".equals(payload.path("status").asText())) {
+                return false;
+            }
             JsonNode lines = payload.path("lines");
             if (!lines.isArray() || lines.isEmpty()) {
                 return false;
