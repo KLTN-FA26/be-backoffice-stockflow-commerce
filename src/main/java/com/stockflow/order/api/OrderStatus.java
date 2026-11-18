@@ -27,7 +27,15 @@ import java.util.stream.Collectors;
  *                     (a part handed over: the rest - of the batch, or a later batch - is packed while it stays
  *                      PARTIALLY_FULFILLED, WF4-PF-NEXT)
  *   DELIVERED ─▶ RETURN_REQUESTED ─▶ RETURNED ─▶ REFUNDED / PARTIALLY_REFUNDED ─▶ CLOSED
+ *                                       ▲                 │
+ *                                       └─refund voided───┘
  * </pre>
+ *
+ * <p><b>Closing waits for the refund</b> (TT-4). COMPLETED, REFUNDED and PARTIALLY_REFUNDED close a configured number
+ * of days later only once nothing is owed either way: neither by the customer on the installments nor by the seller as
+ * a refund still to make. A refund record voided after the order moved on to REFUNDED / PARTIALLY_REFUNDED takes it
+ * back to RETURNED, waiting for its refund again; recorded again, it moves forward as before. CLOSED is never
+ * reopened: a void after closing shows only on the accountant's list of refunds still to make.</p>
  *
  * <p><b>No way round the contract</b> (14 §5.3). A draft leaves only for PENDING_CONTRACT or CANCELLED: the old
  * checkout's DRAFT → PENDING_PAYMENT / CONFIRMED / ON_HOLD went with checkout (4B-10, removed from the table in
@@ -153,10 +161,13 @@ public enum OrderStatus {
      */
     RETURNED,
 
-    /** Refunded in full (or the receivable reduced in full, kltn-docs 15 §4.4). */
+    /**
+     * Refunded in full (or the receivable reduced in full, kltn-docs 15 §4.4). Back to {@link #RETURNED} when a refund
+     * record of it is voided (TT-4).
+     */
     REFUNDED,
 
-    /** Refunded in part. */
+    /** Refunded in part. Back to {@link #RETURNED} when a refund record of it is voided (TT-4). */
     PARTIALLY_REFUNDED,
 
     /** Closed successfully: delivered, paid, and the return window has passed. */
@@ -164,7 +175,11 @@ public enum OrderStatus {
 
     CANCELLED,
 
-    /** Closed for good (BR-05: immutable); reached a configured number of days after COMPLETED / REFUNDED. */
+    /**
+     * Closed for good (BR-05: immutable); reached a configured number of days after COMPLETED / REFUNDED /
+     * PARTIALLY_REFUNDED, and only once neither the customer nor the seller owes anything on it (TT-4: no refund still
+     * to make). Never reopened: a refund voided afterwards is the accountant's to follow, not the order's.
+     */
     CLOSED;
 
     public boolean isTerminal() {
@@ -270,7 +285,9 @@ public enum OrderStatus {
             case RETURNED -> target == REFUNDED || target == PARTIALLY_REFUNDED;
             // RETURN_REQUESTED: a further claim after a return gave money back (Sales open it, 03 §12), or a late claim
             // Sales accepted after the order completed - until the order closes for good (BR-05), it hears its returns.
-            case REFUNDED, PARTIALLY_REFUNDED, COMPLETED -> target == CLOSED || target == RETURN_REQUESTED;
+            // RETURNED (TT-4): a refund record of a refunded order was voided - it waits for its refund again.
+            case REFUNDED, PARTIALLY_REFUNDED -> target == CLOSED || target == RETURN_REQUESTED || target == RETURNED;
+            case COMPLETED -> target == CLOSED || target == RETURN_REQUESTED;
             case CANCELLED, CLOSED -> false;
         };
     }

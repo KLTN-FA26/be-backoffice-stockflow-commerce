@@ -29,6 +29,6 @@ public class ReturnRequestLookupService implements ReturnRequestLookup {
     public Optional<ReturnRequestReference> find(UUID returnRequestId) {
         return returns.findById(returnRequestId).map(r -> new ReturnRequestReference(r.id(), r.rmaNumber(),
                 r.orderId(), r.orderNumber(), r.customerId(), r.status().name(),
-                r.status() == ReturnStatus.AWAITING_RETURN));
+                r.status() == ReturnStatus.AWAITING_RETURN, r.shipmentId()));
     }
 }

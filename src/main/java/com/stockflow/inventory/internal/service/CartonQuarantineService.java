@@ -48,6 +48,10 @@ import java.util.UUID;
  * carton whose task is not open yet (tasks are opened just after a receipt is confirmed) is refused until it is, for
  * the same reason.</p>
  *
+ * <p>A carton that came back opened on a return (WF-05 TH-4) is the exception: it holds fewer units than its label,
+ * so it is not a whole carton any more and never goes back on sale (20 BR-14) - its release is refused
+ * ({@code RETURN_CARTON_OPENED}), and a write-off is the one way out.</p>
+ *
  * <p><b>Release.</b> A putaway task of source {@code QUARANTINE_RELEASE} is opened for the carton, which stays
  * QUARANTINE - out of ATP - where it stands until that task puts it into a bin and makes it AVAILABLE (05 BR-14,
  * {@code PutawayService#confirm}). Nothing moves and nothing is written to the ledger here. Releasing a carton that
@@ -126,6 +130,7 @@ public class CartonQuarantineService {
      * @return the task's id
      * @throws BusinessException {@code STOCK_PACKAGE_NOT_FOUND}; 403 for a carton of another warehouse;
      *         {@code INVALID_STOCK_PACKAGE_TRANSITION} for a carton not in stock; {@code STOCK_PACKAGE_NOT_QUARANTINED};
+     *         {@code RETURN_CARTON_OPENED} for a carton that came back opened on a return - written off only;
      *         {@code STOCK_PACKAGE_DECISION_PENDING} when a write-off of it awaits approval, or it has another open
      *         putaway task
      */
@@ -145,6 +150,11 @@ public class CartonQuarantineService {
         if (live.isEmpty() || live.stream().anyMatch(row -> row.status() != StockStatus.QUARANTINE)) {
             throw new BusinessException(ErrorCode.STOCK_PACKAGE_NOT_QUARANTINED,
                     "%s is not in quarantine; only a quarantined carton is released".formatted(carton.lpn()),
+                    List.of(), Map.of("lpn", carton.lpn()));
+        }
+        if (stockPackages.openedOnReturn(carton.id())) {
+            throw new BusinessException(ErrorCode.RETURN_CARTON_OPENED, ("%s came back opened on a return: it holds "
+                    + "fewer units than its label and is never sold again; write it off").formatted(carton.lpn()),
                     List.of(), Map.of("lpn", carton.lpn()));
         }
         if (adjustments.findPendingForPackage(carton.id()).isPresent()) {

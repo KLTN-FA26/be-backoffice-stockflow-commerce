@@ -35,6 +35,16 @@ public interface StockPackageRepository {
     StockPackage save(StockPackage stockPackage);
 
     /**
+     * Marks the cartons as come back opened on a return (WF-05 TH-4, {@code return_opened_at}): fewer units inside than
+     * their label, so they are only ever written off. Set once; marking one again changes nothing. The caller holds the
+     * cartons' row locks.
+     */
+    void markOpenedOnReturn(Collection<StockPackageId> ids, java.time.Instant at);
+
+    /** Whether the carton came back opened on a return ({@link #markOpenedOnReturn}). */
+    boolean openedOnReturn(StockPackageId id);
+
+    /**
      * What is left in each of these stock packages: the sum of its rows' {@code on_hand}, in one read. A package
      * with no row is absent.
      */

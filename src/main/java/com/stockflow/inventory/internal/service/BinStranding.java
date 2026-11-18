@@ -30,7 +30,8 @@ import java.util.stream.Collectors;
  *
  * <p>The judgement is the one every move makes ({@link CartonFit}) plus the bin's volume against the cartons' volumes.
  * What is not measured is not judged: a carton without a full size, a bin without a clear height. Areas are not
- * judged: area volume (06 BR-19, a stacking height) is not modelled yet.</p>
+ * judged: an area has no capacity (decided 2026-11-13, SCRUM-666) - receiving, dispatch, staging and quarantine are
+ * places goods pass through, and a floor's width x length x height is no measure of what fits on it.</p>
  *
  * <p>Not serialised against moves: a carton moved into a bin while the bin is being resized may slip past both
  * checks. The fit trigger ({@code tg_stock_package_fits_bin}) judges the move against the bin as committed.</p>

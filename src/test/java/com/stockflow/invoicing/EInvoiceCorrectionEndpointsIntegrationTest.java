@@ -80,7 +80,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * one by one without a database in {@code EInvoiceCorrectionsTest} and {@code EInvoiceCorrectionTest}; here the point
  * is that the endpoints, their permissions and the database agree with them.
  *
- * <p>Every invoice corrected is a real one: 2 cartons of 50 at 2,000 a piece taxed 10% - 220,000 - ordered, paid,
+ * <p>Every invoice corrected is a real one: 2 cartons of 50 at 2,000 a piece taxed at the STANDARD rate of the day (HĐ-7:
+ * 8% through 2026, 10% after; at 10%, 220,000) - ordered, paid,
  * delivered and issued through the sandbox. Issuing answers SUBMITTING and the provider is called on another thread,
  * so the result is awaited ({@link FirstSend}), never slept for.</p>
  *
@@ -149,7 +150,7 @@ class EInvoiceCorrectionEndpointsIntegrationTest {
     /** Two cartons delivered to the customer and their invoice issued through the sandbox. */
     private EInvoice.Snapshot issuedOriginal() {
         ConfirmedOrders.Confirmed confirmed = confirmedOrders.confirmed(customer,
-                ConfirmedOrders.Line.cartons(sku, 2, 2_000).withTax(BigDecimal.TEN));
+                ConfirmedOrders.Line.cartons(sku, 2, 2_000).withTax(com.stockflow.support.VatOfTheDay.standard(jdbc)));
         placed.add(confirmed.orderId());
         confirmedOrders.release(confirmed.orderId(), DemoData.WAREHOUSE_HCM, staff);
         orders.startPicking(confirmed.orderId(), staff);
@@ -236,7 +237,8 @@ class EInvoiceCorrectionEndpointsIntegrationTest {
                 .andExpect(jsonPath("$.data.lines.length()").value(1))
                 .andExpect(jsonPath("$.data.lines[0].quantity").value(-1)));
         String adjustment = draft.path("id").asText();
-        assertThat(draft.path("grandTotal").decimalValue()).as("one carton off, with its tax").isEqualByComparingTo("-110000");
+        assertThat(draft.path("grandTotal").decimalValue()).as("one carton off, with its tax")
+                .isEqualByComparingTo(oneCarton().negate());
         assertThat(draft.path("shipmentId").asText()).isEqualTo(original.shipmentId().toString());
 
         // Without the agreement it is not sent, and stays the draft it was.
@@ -266,6 +268,11 @@ class EInvoiceCorrectionEndpointsIntegrationTest {
                 .andExpect(jsonPath("$.errorCode").value("EINVOICE_CORRECTION_FORM_FIXED"));
     }
 
+    /** One carton of 50 at 2,000 with its VAT at the STANDARD rate of the day: 110,000 at 10%. */
+    private BigDecimal oneCarton() {
+        return com.stockflow.support.VatOfTheDay.tax(100_000, com.stockflow.support.VatOfTheDay.standard(jdbc)).add(BigDecimal.valueOf(100_000));
+    }
+
     @Test
     @DisplayName("a replacement: drawn up as a draft while the original stays in force and takes no adjustment; "
             + "issued, the original is REPLACED and no longer corrected")
@@ -281,7 +288,8 @@ class EInvoiceCorrectionEndpointsIntegrationTest {
                 .andExpect(jsonPath("$.data.agreementRequired").value(true))
                 .andExpect(jsonPath("$.data.lines[0].quantity").value(1)));
         String replacement = draft.path("id").asText();
-        assertThat(draft.path("grandTotal").decimalValue()).as("the invoice as it should have been").isEqualByComparingTo("110000");
+        assertThat(draft.path("grandTotal").decimalValue()).as("the invoice as it should have been")
+                .isEqualByComparingTo(oneCarton());
 
         asAccountant(EINVOICES + original.id()).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("ISSUED"));

@@ -53,6 +53,32 @@ class EInvoiceDueNotificationListenerTest {
     }
 
     @Test
+    void pastItsDeadlineAnInvoiceIsRemindedOfOncePerDay() {
+        UUID accountantId = UUID.randomUUID();
+        when(staff.activeHolders("einvoices:APPROVE", null))
+                .thenReturn(List.of(new StaffContact(accountantId, "ke.toan@example.com")));
+        EInvoiceIssueDue first = new EInvoiceIssueDue(EVENT.einvoiceId(), EVENT.code(), EVENT.orderId(),
+                EVENT.orderNumber(), EVENT.issueDate(), EVENT.issueDueAt(), LocalDate.of(2026, 11, 14));
+        EInvoiceIssueDue next = new EInvoiceIssueDue(EVENT.einvoiceId(), EVENT.code(), EVENT.orderId(),
+                EVENT.orderNumber(), EVENT.issueDate(), EVENT.issueDueAt(), LocalDate.of(2026, 11, 15));
+
+        listener.on(first);
+        listener.on(next);
+
+        var message = ArgumentCaptor.forClass(InboxMessage.class);
+        verify(inbox, org.mockito.Mockito.times(2)).post(eq(List.of(accountantId)), message.capture());
+        InboxMessage sent = message.getAllValues().getFirst();
+        assertThat(sent.severity()).isEqualTo(InboxSeverity.CRITICAL);
+        assertThat(sent.category()).isEqualTo("EINVOICE_DUE");
+        assertThat(sent.title()).isEqualTo("Hoá đơn EINV-20261112-0001 đã quá hạn phát hành (hạn 00:00 14/11/2026)");
+        assertThat(sent.body()).contains("SO-20261101-0007").contains("12/11/2026").contains("mỗi ngày");
+        // One message per person per day, not the once-ever key of the warning ahead of the deadline.
+        assertThat(message.getAllValues()).extracting(InboxMessage::dedupeKey).containsExactly(
+                "einvoice-overdue:" + EVENT.einvoiceId() + ":2026-11-14",
+                "einvoice-overdue:" + EVENT.einvoiceId() + ":2026-11-15");
+    }
+
+    @Test
     void nobodyToTellPostsNothing() {
         when(staff.activeHolders(any(), any())).thenReturn(List.of());
 

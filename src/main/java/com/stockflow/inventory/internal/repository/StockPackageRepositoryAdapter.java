@@ -112,6 +112,30 @@ class StockPackageRepositoryAdapter implements StockPackageRepository {
     }
 
     /**
+     * Native: the mark is outside the carton's mapping - it is written once, by the return receipt's confirmation, and
+     * read only by the release it forbids - so no other writer of the carton carries it or can clear it
+     * ({@code tg_stock_package_return_opened}).
+     */
+    @Override
+    public void markOpenedOnReturn(Collection<StockPackageId> ids, java.time.Instant at) {
+        List<UUID> wanted = ids.stream().map(StockPackageId::value).distinct().toList();
+        if (wanted.isEmpty()) {
+            return;
+        }
+        entityManager.createNativeQuery("""
+                        update inventory.stock_package set return_opened_at = :at
+                         where id in (:ids) and return_opened_at is null""")
+                .setParameter("at", at).setParameter("ids", wanted).executeUpdate();
+    }
+
+    @Override
+    public boolean openedOnReturn(StockPackageId id) {
+        return !entityManager.createNativeQuery("""
+                        select 1 from inventory.stock_package where id = :id and return_opened_at is not null""")
+                .setParameter("id", id.value()).getResultList().isEmpty();
+    }
+
+    /**
      * A native query through the entity manager, not JDBC: it flushes this transaction's pending stock rows first,
      * so a caller reading right after a receipt sees what the receipt put into the cartons.
      */

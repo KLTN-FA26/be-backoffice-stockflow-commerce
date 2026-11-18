@@ -76,6 +76,10 @@ public class ReturnReceiptJpaEntity extends BaseEntity {
     @OneToMany(mappedBy = "receipt", cascade = CascadeType.ALL, orphanRemoval = true, fetch = FetchType.LAZY)
     private List<ReturnReceiptCartonJpaEntity> cartons = new ArrayList<>();
 
+    /** WF-05 TH-4: loaded on access, not fetched with the cartons (two bags in one fetch join do not mix). */
+    @OneToMany(mappedBy = "receipt", cascade = CascadeType.ALL, orphanRemoval = true, fetch = FetchType.LAZY)
+    private List<ReturnReceiptLooseLineJpaEntity> looseLines = new ArrayList<>();
+
     protected ReturnReceiptJpaEntity() {
     }
 
@@ -108,6 +112,11 @@ public class ReturnReceiptJpaEntity extends BaseEntity {
         cartons.add(carton);
     }
 
+    public void addLooseLine(ReturnReceiptLooseLineJpaEntity line) {
+        line.attachTo(this);
+        looseLines.add(line);
+    }
+
     public String getReceiptNumber() { return receiptNumber; }
     public GoodsReceiptType getReceiptType() { return receiptType; }
     public UUID getWarehouseId() { return warehouseId; }
@@ -123,4 +132,5 @@ public class ReturnReceiptJpaEntity extends BaseEntity {
     public Instant getClosedAt() { return closedAt; }
     public String getNote() { return note; }
     public List<ReturnReceiptCartonJpaEntity> getCartons() { return cartons; }
+    public List<ReturnReceiptLooseLineJpaEntity> getLooseLines() { return looseLines; }
 }

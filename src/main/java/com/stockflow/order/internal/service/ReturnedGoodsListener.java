@@ -24,10 +24,13 @@ class ReturnedGoodsListener {
 
     private final ReturnRequestService returns;
     private final DeliveryFailureService deliveryFailures;
+    private final OrderSettlementService settlements;
 
-    ReturnedGoodsListener(ReturnRequestService returns, DeliveryFailureService deliveryFailures) {
+    ReturnedGoodsListener(ReturnRequestService returns, DeliveryFailureService deliveryFailures,
+                          OrderSettlementService settlements) {
         this.returns = returns;
         this.deliveryFailures = deliveryFailures;
+        this.settlements = settlements;
     }
 
     @ApplicationModuleListener
@@ -38,9 +41,16 @@ class ReturnedGoodsListener {
     /**
      * A refund recorded settles a return (the order RETURNED through an RMA), or - WF-05 fix plan, section 2 - an order
      * whose failed delivery Sales cancelled: each looks at its own kind of order and leaves the other's alone.
+     *
+     * <p>A refund voided (TT-4) first takes a REFUNDED / PARTIALLY_REFUNDED order back to RETURNED, so that it is not
+     * closed with the refund owed; the two rules after it then find it waiting, as they would have before it was
+     * refunded, and move it on again only once the refund is recorded anew.</p>
      */
     @ApplicationModuleListener
     public void on(OrderRefundRecorded event) {
+        if (event.voided()) {
+            settlements.refundVoided(event.orderId(), event.voidedRecordId(), event.recordedBy());
+        }
         returns.followRefunds(event.orderId(), event.recordedBy());
         deliveryFailures.followRefunds(event.orderId(), event.recordedBy());
     }

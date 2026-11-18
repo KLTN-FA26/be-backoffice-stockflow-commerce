@@ -176,24 +176,61 @@ class EInvoiceIssuanceStepsTest {
     }
 
     @Test
-    @DisplayName("E0 M6: a draft is not sent while one dated earlier this year is still unissued - numbers follow dates")
-    void anEarlierUnissuedDraftGoesFirst() {
-        EInvoice draft = EInvoiceFixtures.draft();
+    @DisplayName("HĐ-2: a draft is not sent while one of its series dated earlier is at the provider; the check runs "
+            + "under the series' lock")
+    void anEarlierInvoiceOfTheSeriesAtTheProviderGoesFirst() {
+        EInvoice draft = aDraftToSendAtTheSandbox(EInvoiceFixtures.draft());
+        when(invoices.findEarlierSubmitting(draft.id(), EInvoiceFixtures.SERIES, draft.issueDate()))
+                .thenReturn(Optional.of("EINV-20261110-0003"));
+
+        assertThatThrownBy(() -> steps.submit(draft.id(), null, null))
+                .isInstanceOfSatisfying(BusinessException.class, refused -> {
+                    assertThat(refused.errorCode()).isEqualTo(ErrorCode.EINVOICE_OLDER_DRAFT_PENDING);
+                    assertThat(refused.errorCode().httpStatus()).isEqualTo(409);
+                    assertThat(refused.getMessage()).contains("EINV-20261110-0003", "1C26TSB");
+                });
+
+        assertThat(draft.status()).isEqualTo(EInvoiceStatus.DRAFT);
+        verify(invoices, never()).save(any());
+        InOrder order = inOrder(invoices);
+        order.verify(invoices).findByIdForUpdate(draft.id());
+        order.verify(invoices).lockSeries(EInvoiceFixtures.SERIES);
+        order.verify(invoices).findEarlierSubmitting(draft.id(), EInvoiceFixtures.SERIES, draft.issueDate());
+    }
+
+    @Test
+    @DisplayName("HĐ-2: with nothing of its series at the provider a draft is sent, whatever drafts or rejected "
+            + "invoices are dated before it - they are not asked about")
+    void anEarlierDraftOrRejectedInvoiceKeepsNothingBack() {
+        EInvoice draft = aDraftToSendAtTheSandbox(EInvoiceFixtures.draft());
+        when(invoices.findEarlierSubmitting(any(), any(), any())).thenReturn(Optional.empty());
+
+        assertThat(steps.submit(draft.id(), null, null).status()).isEqualTo(EInvoiceStatus.SUBMITTING);
+
+        verify(invoices).lockSeries(EInvoiceFixtures.SERIES);
+        verify(invoices, never()).findEarlierUnissued(any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("HĐ-7: a draft with a line at 0% - tax class EXEMPT - is not sent")
+    void aLineAtZeroPercentIsNotSent() {
+        EInvoice draft = aDraftToSendAtTheSandbox(EInvoiceFixtures.draftAtRate(java.math.BigDecimal.ZERO));
+
+        assertThatThrownBy(() -> steps.submit(draft.id(), null, null))
+                .isInstanceOfSatisfying(BusinessException.class, refused ->
+                        assertThat(refused.errorCode()).isEqualTo(ErrorCode.EINVOICE_TAX_EXEMPT_NOT_SUPPORTED));
+
+        assertThat(draft.status()).isEqualTo(EInvoiceStatus.DRAFT);
+        verify(invoices, never()).save(any());
+    }
+
+    private EInvoice aDraftToSendAtTheSandbox(EInvoice draft) {
         when(invoices.findByIdForUpdate(draft.id())).thenReturn(Optional.of(draft));
         when(settings.active()).thenReturn(new InvoiceSettings.Provider("SANDBOX", "SANDBOX",
                 "https://sandbox.example", "user", true, true, 1));
         when(providers.require("SANDBOX")).thenReturn(mock(EInvoiceProvider.class));
         when(settings.seriesInUse("SANDBOX", draft.issueDate().getYear()))
                 .thenReturn(Optional.of(EInvoiceFixtures.SERIES));
-        when(invoices.findEarlierUnissued(draft.id(), draft.issueDate())).thenReturn(Optional.of("EINV-20261110-0003"));
-
-        assertThatThrownBy(() -> steps.submit(draft.id(), null, null))
-                .isInstanceOfSatisfying(BusinessException.class, refused -> {
-                    assertThat(refused.errorCode()).isEqualTo(ErrorCode.EINVOICE_OLDER_DRAFT_PENDING);
-                    assertThat(refused.errorCode().httpStatus()).isEqualTo(409);
-                });
-
-        assertThat(draft.status()).isEqualTo(EInvoiceStatus.DRAFT);
-        verify(invoices, never()).save(any());
+        return draft;
     }
 }

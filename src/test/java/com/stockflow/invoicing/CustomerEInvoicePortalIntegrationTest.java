@@ -148,7 +148,7 @@ class CustomerEInvoicePortalIntegrationTest {
     /** {@code cartons} cartons delivered to the customer; the draft the listener drew up. */
     private EInvoice.Snapshot draft(Portal portal, int cartons) {
         ConfirmedOrders.Confirmed confirmed = confirmedOrders.confirmed(portal.customer(),
-                ConfirmedOrders.Line.cartons(portal.sku(), cartons, 2_000).withTax(BigDecimal.TEN));
+                ConfirmedOrders.Line.cartons(portal.sku(), cartons, 2_000).withTax(com.stockflow.support.VatOfTheDay.standard(jdbc)));
         placed.add(confirmed.orderId());
         confirmedOrders.release(confirmed.orderId(), DemoData.WAREHOUSE_HCM, staff);
         orders.startPicking(confirmed.orderId(), staff);
@@ -202,8 +202,10 @@ class CustomerEInvoicePortalIntegrationTest {
         assertThat(item.path("templateCode").asText()).isEqualTo(first.templateCode());
         assertThat(item.path("invoiceNumber").asInt()).isEqualTo(first.invoiceNumber());
         assertThat(item.path("subtotal").decimalValue()).isEqualByComparingTo("200000");
-        assertThat(item.path("taxTotal").decimalValue()).isEqualByComparingTo("20000");
-        assertThat(item.path("grandTotal").decimalValue()).isEqualByComparingTo("220000");
+        // At the STANDARD rate of the day (HĐ-7: 8% through 2026, 10% after).
+        BigDecimal tax = com.stockflow.support.VatOfTheDay.tax(200_000, com.stockflow.support.VatOfTheDay.standard(jdbc));
+        assertThat(item.path("taxTotal").decimalValue()).isEqualByComparingTo(tax);
+        assertThat(item.path("grandTotal").decimalValue()).isEqualByComparingTo(tax.add(BigDecimal.valueOf(200_000)));
         assertThat(item.path("issueDate").asText()).isEqualTo(first.issueDate().toString());
         // Nothing of the seller's work on it, and nothing of anybody else's.
         String raw = page.toString();

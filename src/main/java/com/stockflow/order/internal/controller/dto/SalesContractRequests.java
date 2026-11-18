@@ -25,7 +25,9 @@ public final class SalesContractRequests {
             Long version,
             @PositiveOrZero Integer freeSampleRounds,
             @Valid @Size(max = 20) List<Batch> deliverySchedule,
-            @Valid @Size(max = 20) List<Installment> paymentPlan) { }
+            @Valid @Size(max = 20) List<Installment> paymentPlan,
+            @jakarta.validation.constraints.Positive @jakarta.validation.constraints.Max(365)
+            Integer returnWindowDays) { }
 
     /** A delivery batch, in delivery order: its window (both days or neither) and its cartons. */
     public record Batch(LocalDate windowStart, LocalDate windowEnd, @Valid @Size(max = 200) List<BatchLine> lines) { }

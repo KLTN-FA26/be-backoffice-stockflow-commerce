@@ -108,6 +108,10 @@ public class ReturnRequestJpaEntity extends BaseEntity {
     @Column(name = "window_override_reason", length = 500, updatable = false)
     private String windowOverrideReason;
 
+    /** WF-05 TH-1: the delivered shipment the return is against; null for an order delivered without shipments. */
+    @Column(name = "shipment_id", updatable = false)
+    private UUID shipmentId;
+
     @Enumerated(EnumType.STRING)
     @Column(name = "money_mode", length = 16)
     private ReturnResolution moneyMode;
@@ -174,6 +178,11 @@ public class ReturnRequestJpaEntity extends BaseEntity {
         this.requestedAt = requestedAt;
         this.currency = currency;
         this.windowOverrideReason = windowOverrideReason;
+    }
+
+    /** The delivered shipment the new return is against; set once, with the row ({@code tg_return_request_shipment}). */
+    public void againstShipment(UUID shipmentId) {
+        this.shipmentId = shipmentId;
     }
 
     public void addLine(ReturnRequestLineJpaEntity line) {
@@ -247,6 +256,7 @@ public class ReturnRequestJpaEntity extends BaseEntity {
     public String getReceivingLocationCode() { return receivingLocationCode; }
     public UUID getGoodsReceiptId() { return goodsReceiptId; }
     public String getWindowOverrideReason() { return windowOverrideReason; }
+    public UUID getShipmentId() { return shipmentId; }
     public ReturnResolution getMoneyMode() { return moneyMode; }
     public BigDecimal getSettlementAmount() { return settlementAmount; }
     public UUID getProposedBy() { return proposedBy; }

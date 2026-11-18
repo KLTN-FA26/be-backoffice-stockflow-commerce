@@ -490,9 +490,13 @@ class QuoteService implements Quotes {
         Map<String, Integer> cartonsBySku = new java.util.HashMap<>();
         draft.lines().forEach(line -> cartonsBySku.merge(new Sku(line.sku()).code(), line.cartons(), Integer::sum));
         // 14 BR-21: each line's VAT follows its product's tax class, copied with the price; a product without one
-        // leaves the line without a rate, and the quote is not sent until it has one.
+        // leaves the line without a rate, and the quote is not sent until it has one. The rate is the one in force on
+        // the day the offer is drawn up (HĐ-7: a VAT reduction such as NĐ 174/2025's 8% through 2026), not the class's
+        // own: a contract of 2026 then says 8%, and its 2026 invoices - which take the rate of the day of delivery -
+        // agree with it. Goods of that contract delivered after the reduction ends are invoiced at the rate of their
+        // day and flagged (TAX_RATE_DIFFERS_FROM_CONTRACT) for the accountant: the law's rate wins over the contract's.
         Map<String, com.stockflow.product.api.TaxClass> classes = products.taxClassesOf(skus);
-        Map<String, BigDecimal> rates = taxRates.all();
+        Map<String, BigDecimal> rates = taxRates.onDay(today());
         List<QuoteLine> lines = new ArrayList<>();
         int lineNo = 1;
         for (Line line : draft.lines()) {

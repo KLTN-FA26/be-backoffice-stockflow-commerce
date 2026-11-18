@@ -23,6 +23,11 @@ import java.util.UUID;
  *       invoice (hóa đơn điều chỉnh giảm, TT 91/2026/TT-BTC Điều 10 khoản 5 điểm c.1, under NĐ 254/2026/NĐ-CP;
  *       21 §4.4).</li>
  *   <li>{@code paidOrderId}: the returned order itself.</li>
+ *   <li>{@code shipmentId} (WF-05 TH-1): the delivered shipment the return was against - its e-invoice is the one
+ *       adjusted first (17 §4.10 step 40: the invoice of the shipment that carried the goods). Null for a return of an
+ *       order delivered without shipments, and in publications stored before.</li>
+ *   <li>A return closed with nothing usable come back (WF-05 TH-4) is announced too: every amount zero, no line
+ *       refunded, {@code vatAdjustmentRequired} false.</li>
  * </ul>
  *
  * <p>The shape is the one SCRUM-260 published, when a return could also be replaced or credited; the fields those
@@ -44,11 +49,23 @@ public record ReturnResolved(
         List<Line> lines,
         UUID resolvedBy,
         Instant resolvedAt,
-        UUID paidOrderId
+        UUID paidOrderId,
+        UUID shipmentId
 ) {
 
     public ReturnResolved {
         lines = lines == null ? List.of() : List.copyOf(lines);
+    }
+
+    /** As published before {@code shipmentId} was added: against the order as a whole. */
+    public ReturnResolved(UUID returnRequestId, String rmaNumber, UUID orderId, String orderNumber, UUID customerId,
+                          UUID replacementOrderId, String replacementOrderNumber, BigDecimal offsetAmount,
+                          BigDecimal refundedAmount, BigDecimal creditedAmount, String currency,
+                          boolean vatAdjustmentRequired, List<Line> lines, UUID resolvedBy, Instant resolvedAt,
+                          UUID paidOrderId) {
+        this(returnRequestId, rmaNumber, orderId, orderNumber, customerId, replacementOrderId, replacementOrderNumber,
+                offsetAmount, refundedAmount, creditedAmount, currency, vatAdjustmentRequired, lines, resolvedBy,
+                resolvedAt, paidOrderId, null);
     }
 
     /** As published before {@code paidOrderId} was added: the returned order paid for its goods. */
@@ -58,7 +75,7 @@ public record ReturnResolved(
                           boolean vatAdjustmentRequired, List<Line> lines, UUID resolvedBy, Instant resolvedAt) {
         this(returnRequestId, rmaNumber, orderId, orderNumber, customerId, replacementOrderId, replacementOrderNumber,
                 offsetAmount, refundedAmount, creditedAmount, currency, vatAdjustmentRequired, lines, resolvedBy,
-                resolvedAt, null);
+                resolvedAt, null, null);
     }
 
     /** The order whose money settled this return. */

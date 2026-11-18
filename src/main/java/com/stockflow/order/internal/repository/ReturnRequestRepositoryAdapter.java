@@ -176,6 +176,7 @@ class ReturnRequestRepositoryAdapter implements ReturnRequestRepository, ReturnR
         ReturnRequestJpaEntity entity = new ReturnRequestJpaEntity(r.id(), r.rmaNumber(), r.orderId(), r.orderNumber(),
                 r.customerId(), r.requestId(), r.channel(), r.reason(), r.description(), r.requestedResolution(),
                 r.requestedBy(), r.requestedAt(), r.currency(), r.windowOverride());
+        entity.againstShipment(r.shipmentId());
         for (ReturnLine line : r.lines()) {
             entity.addLine(new ReturnRequestLineJpaEntity(line.id(), line.orderLineId(), line.sku(),
                     line.customPrinted(), line.unitPrice(), line.requestedQuantity()));
@@ -209,6 +210,7 @@ class ReturnRequestRepositoryAdapter implements ReturnRequestRepository, ReturnR
                 e.getCustomerId(), e.getRequestId(), e.getChannel(), e.getReasonCode(), e.getNote(),
                 e.getRequestedResolution(), e.getRequestedBy(), e.getRequestedAt(), e.getCurrency(), lines,
                 e.getWindowOverrideReason(), e.getStatus(), e.getVersion());
+        request.restoreShipment(e.getShipmentId());
         request.restoreProgress(e.getDecidedBy(), e.getDecidedAt(), e.getDecisionNote(), e.getRejectionReason(),
                 e.getReturnRequired(), e.getReturnDeadline(), e.getReceivedBy(), e.getReceivedAt(),
                 e.getReceivingLocationCode(), e.getGoodsReceiptId());

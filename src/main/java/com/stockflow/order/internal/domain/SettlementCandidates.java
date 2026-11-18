@@ -9,14 +9,19 @@ import java.util.UUID;
  * completed or refunded orders old enough to close. Bounded batches; the aggregate decides each one.
  *
  * <p>{@code skip}: the candidates a run already looked at and left as they were (still owing on their installments, a
- * return open). Whether an order still owes is payment's to say (4B-10: the order keeps no money of its own), so the
- * query cannot leave those out; skipping them keeps one run from reading the same refused orders again and again while
- * the ones behind them wait.</p>
+ * refund still to make to the customer - TT-4 - or a return open). Whether money is owed either way is payment's to
+ * say (4B-10: the order keeps no money of its own), so the query cannot leave those out; skipping them keeps one run
+ * from reading the same refused orders again and again while the ones behind them wait.</p>
  */
 public interface SettlementCandidates {
 
-    /** DELIVERED orders delivered at or before {@code deliveredBy}, oldest first, the first {@code skip} left out. */
-    List<UUID> deliveredBy(Instant deliveredBy, int skip, int limit);
+    /**
+     * DELIVERED orders whose return window may have closed by {@code now}, oldest delivery first, the first {@code skip}
+     * left out: delivered at least the window before - each order's own window, the days its live contract agreed
+     * ({@code sales_contract.return_window_days}, WF-05 TH-1), else {@code defaultWindowDays}. A coarse filter, never
+     * finer than {@link Order#complete}, which decides in calendar days.
+     */
+    List<UUID> deliveredPastWindow(Instant now, int defaultWindowDays, int skip, int limit);
 
     /**
      * COMPLETED orders completed, and REFUNDED / PARTIALLY_REFUNDED ones refunded, at or before {@code settledBy}, the

@@ -27,7 +27,9 @@ public interface CartonReturns {
      * IN_STOCK there, sealed, its row QUARANTINE with the carton's count, one RECEIPT ledger line per carton naming the
      * receipt ({@code GOODS_RECEIPT}) and the order. Joins the caller's transaction, so the receipt closes with the
      * stock or not at all. Locks the SKUs (sorted), then every carton (in id order), then their rows. Not idempotent by
-     * itself: a carton already back is refused, so the receipt's own status is what answers a retry.
+     * itself: a carton already back is refused, so the receipt's own status is what answers a retry. The cartons named
+     * opened ({@code command.openedLpns()}, WF-05 TH-4) are marked so: they never leave quarantine but by a write-off
+     * (a release is refused with {@code RETURN_CARTON_OPENED}).
      *
      * @return the cartons as they now stand, in the order named
      * @throws com.stockflow.common.error.BusinessException {@code STOCK_PACKAGE_NOT_FOUND}; {@code LOCATION_NOT_FOUND},

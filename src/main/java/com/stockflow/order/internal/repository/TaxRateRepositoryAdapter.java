@@ -27,14 +27,6 @@ class TaxRateRepositoryAdapter implements TaxRates, SkuProductionHistory {
     }
 
     @Override
-    public Map<String, BigDecimal> all() {
-        Map<String, BigDecimal> rates = new HashMap<>();
-        jdbc.query("SELECT tax_class, rate FROM ordering.tax_rate",
-                row -> { rates.put(row.getString(1), row.getBigDecimal(2)); });
-        return rates;
-    }
-
-    @Override
     public Map<String, BigDecimal> onDay(LocalDate day) {
         Map<String, BigDecimal> rates = new HashMap<>();
         // At most one period covers a day (ex_tax_rate_period_overlap), so the join never doubles a class.

@@ -13,8 +13,9 @@ import java.util.UUID;
  * Nightly (Saigon) completion and closing of orders (G3-2, see {@link OrderSettlementService}), and - WF-05 fix plan,
  * section 2 - the settling of orders whose failed delivery was cancelled: RETURNED, their refunds made, they move on
  * to REFUNDED / PARTIALLY_REFUNDED so that a later night closes them. One instance at a time; bounded batches, each
- * order in its own transaction. A candidate the aggregate refuses (still owing, a return open, a refund not made)
- * stays as it is and is looked at again the next night.
+ * order in its own transaction. A candidate the aggregate refuses (still owing, a return open, a refund not made -
+ * which, since TT-4, also keeps a COMPLETED / REFUNDED / PARTIALLY_REFUNDED order from closing) stays as it is and is
+ * looked at again the next night.
  */
 @Component
 class OrderSettlementJob {
@@ -48,12 +49,12 @@ class OrderSettlementJob {
     private enum Step { COMPLETE, SETTLE_FAILED_DELIVERY, CLOSE }
 
     /**
-     * Batch after batch until nothing is left (review of G3-2: one batch a night fell behind), bounded per run. What the
-     * aggregate refuses (still owing on its installments, a return open) or what fails stays a candidate, in the same
-     * place: the next batch skips as many as were left behind, so they do not hold back the orders after them (4B-10 -
-     * the query can no longer tell an owing order, which is payment's to say). They are tried again the next night. Each
-     * order is its own transaction, so a run cut short by the lock's limit leaves every order either done or
-     * untouched.
+     * Batch after batch until nothing is left (review of G3-2: one batch a night fell behind), bounded per run. What
+     * the aggregate refuses (still owing on its installments, a refund still owed to the customer, a return open) or
+     * what fails stays a candidate, in the same place: the next batch skips as many as were left behind, so they do not
+     * hold back the orders after them (4B-10 - the query can no longer tell an owing order, which is payment's to say).
+     * They are tried again the next night. Each order is its own transaction, so a run cut short by the lock's limit
+     * leaves every order either done or untouched.
      */
     private int drain(Step step) {
         int done = 0;

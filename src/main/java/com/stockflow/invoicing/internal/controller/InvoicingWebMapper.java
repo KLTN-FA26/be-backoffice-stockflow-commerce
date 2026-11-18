@@ -31,7 +31,7 @@ final class InvoicingWebMapper {
     private InvoicingWebMapper() {
     }
 
-    /** The warning the screen shows beside the stored ones while an earlier-dated invoice waits (E0 M6). */
+    /** The warning shown beside the stored ones while an earlier-dated invoice of the series waits (HĐ-2). */
     static final String EARLIER_INVOICE_PENDING = "EARLIER_INVOICE_PENDING";
 
     static EInvoiceResponse toResponse(EInvoice.Snapshot s, Instant now) {
@@ -39,8 +39,8 @@ final class InvoicingWebMapper {
     }
 
     /**
-     * @param earlierPending the code of an earlier-dated invoice still to be issued, which keeps this draft from being
-     *                       issued; null when there is none or it was not asked
+     * @param earlierPending the code of an earlier-dated invoice still to be issued under the series this draft would
+     *                       take - a warning, not a refusal; null when there is none or it was not asked
      */
     static EInvoiceResponse toResponse(EInvoice.Snapshot s, Instant now, String earlierPending) {
         List<String> warnings = new java.util.ArrayList<>(s.warnings().stream().sorted().map(Enum::name).toList());

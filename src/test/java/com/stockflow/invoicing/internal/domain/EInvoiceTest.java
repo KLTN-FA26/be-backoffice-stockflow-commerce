@@ -101,6 +101,21 @@ class EInvoiceTest {
         }
 
         @Test
+        @DisplayName("HĐ-7: a line at 0% - only EXEMPT has that rate here - is drawn up, flagged, and never sent; a "
+                + "note line at 0% is not a rate")
+        void aLineAtZeroPercentIsFlaggedAndNotSent() {
+            EInvoice exempt = EInvoiceFixtures.draftAtRate(BigDecimal.ZERO);
+            assertThat(exempt.warnings()).containsExactly(EInvoice.Warning.TAX_EXEMPT_NOT_SUPPORTED);
+            assertThatThrownBy(() -> exempt.submit(SERIES, null, NOW)).extracting(EInvoiceTest::code)
+                    .isEqualTo(ErrorCode.EINVOICE_TAX_EXEMPT_NOT_SUPPORTED);
+            assertThat(exempt.status()).isEqualTo(DRAFT);
+
+            assertThat(EInvoiceFixtures.draftAtRate(new BigDecimal("8")).warnings()).isEmpty();
+            assertThat(EInvoiceFixtures.draft().lines()).as("the fixture's lines are at 10% and 8%")
+                    .noneMatch(line -> line.taxRate().signum() == 0);
+        }
+
+        @Test
         @DisplayName("refused: no seller, no lines, two lines with one number, a line below zero, no shipment")
         void refusals() {
             var delivery = EInvoiceFixtures.delivery();

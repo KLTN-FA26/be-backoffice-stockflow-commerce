@@ -251,6 +251,11 @@ public enum ErrorCode {
      * no longer fits, or a bin holding more volume than it has. The details list the bins and cartons; move them first.
      */
     CARTONS_WOULD_NOT_FIT("This change would leave cartons that no longer fit where they stand", 409),
+    /**
+     * kltn-docs 06 BR-04: a bin, a shelf, an area or a warehouse is not made INACTIVE while cartons still stand there.
+     * The details give the count and list the first cartons; move them first. BLOCKED and MAINTENANCE stay allowed.
+     */
+    LOCATION_HOLDS_CARTONS("This place still holds cartons; move them first", 409),
     /** kltn-docs 05 BR-13: a carton goes to the OVERFLOW area only when no bin of its warehouse takes it. */
     PUTAWAY_OVERFLOW_NOT_ALLOWED("A bin can still take this carton; put it away into a bin", 409),
     /** Kltn-docs 05 §4.5: no putaway trip with this id. */
@@ -429,10 +434,17 @@ public enum ErrorCode {
     /** WF-05 E2 (TT 91 Điều 4): no invoice series is in use at the provider for the invoice's year. */
     EINVOICE_SERIES_NOT_CONFIGURED("No invoice series is configured for the invoice's year", 409),
     /**
-     * WF-05 E2 (NĐ 254 Phụ lục điểm 2; TT 91 Điều 10 khoản 6a): an invoice of the same year dated earlier is still to be
-     * issued; issuing this one first would give it the lower number, and numbers would run against the dates.
+     * WF-05 E2, HĐ-2 (NĐ 254 Phụ lục điểm 2; TT 91 Điều 10 khoản 6a): an invoice of the same provider and series dated
+     * earlier is at the provider and may already hold the next number; sending this one now could give it the lower
+     * number against the dates. A draft or a rejected invoice dated earlier no longer refuses anything. The name is
+     * older than the rule and kept: clients match on it.
      */
-    EINVOICE_OLDER_DRAFT_PENDING("An invoice dated earlier is still to be issued; issue that one first, or void it", 409),
+    EINVOICE_OLDER_DRAFT_PENDING("An invoice of the same series dated earlier is still at the provider; wait for its result, then issue this one", 409),
+    /**
+     * HĐ-7: a line of the invoice is at 0%, which here only the tax class EXEMPT (not subject to VAT, KCT) produces; an
+     * invoice at 0% would declare zero-rated goods instead, and no provider adapter can state KCT yet.
+     */
+    EINVOICE_TAX_EXEMPT_NOT_SUPPORTED("A line of the invoice is not subject to VAT (tax class EXEMPT), which cannot be issued yet; correct the product's tax class and draw the invoice up again", 409),
     /** WF-05 E2: the e-invoice is not issued, so it has no XML or PDF yet. */
     EINVOICE_NOT_ISSUED("The e-invoice is not issued yet", 409),
     /** WF-05 E2: the e-invoice provider is not configured, or did not answer; nothing is known about the transaction until it is asked again. */
@@ -498,6 +510,12 @@ public enum ErrorCode {
     RETURN_QUANTITY_EXCEEDED("More units than can still be returned from this order line", 409),
     /** One open return per order line: the open one is decided first. */
     RETURN_LINE_ALREADY_OPEN("This order line already has an open return", 409),
+    /**
+     * WF-05 TH-1: a return is against one delivered shipment; the order was delivered in several, and none was named.
+     */
+    RETURN_SHIPMENT_REQUIRED("Name the delivery the returned goods came on", 422),
+    /** WF-05 TH-1 (Luật Thương mại Điều 44): only goods of a shipment the customer received come back. */
+    RETURN_SHIPMENT_NOT_DELIVERED("This shipment has not been delivered; its goods cannot be returned", 409),
     /** BR-RMA-002: goods printed to the customer's design come back only when defective. */
     RETURN_CUSTOM_ITEM_NOT_DEFECTIVE("Custom-printed goods are returned only when defective", 409),
     /** SCRUM-243 (B2B plan 2026-10-06): returns are taken for defects and delivery faults, not a change of mind. */
@@ -677,6 +695,11 @@ public enum ErrorCode {
     RETURN_CARTON_NOT_OF_SOURCE("This carton did not leave on the shipment or order the receipt is for", 409),
     /** Team plan 4D-2 (kltn-docs 03 §4.2 step 10): a carton still in the warehouse has not come back. */
     RETURN_CARTON_IN_WAREHOUSE("This carton is in the warehouse; it has not come back", 409),
+    /**
+     * WF-05 TH-4 (kltn-docs 20 BR-14): a carton that came back opened - fewer units in it than its label - is not whole,
+     * so it never goes back on sale; it is only written off.
+     */
+    RETURN_CARTON_OPENED("This carton came back opened; it can only be written off, not released", 409),
     /** Team plan 4C-3 (20 §4.3, BR-05): one adjustment of a carton waits for approval at a time. */
     STOCK_PACKAGE_ADJUSTMENT_PENDING("Another adjustment of this carton is waiting for approval", 409),
     /** Docs 07 step 9: a pick task closes only when every line is picked. */

@@ -215,6 +215,45 @@ public class BinOccupancyQuery {
                                 rs.getBigDecimal("height_cm"), rs.getBoolean("rotatable"))));
     }
 
+    /** A carton standing at {@code locationCode}, named by its LPN. */
+    public record CartonAt(String locationCode, String lpn) {
+    }
+
+    /**
+     * The cartons that stand at these locations, by their own status: labelled on a receipt not yet confirmed
+     * ({@code RECEIVING}) or in stock ({@code IN_STOCK}). Unlike {@link #cartonsIn}, a carton holding no units yet - one
+     * just labelled on a draft receipt - counts: it is on the floor all the same (kltn-docs 06 BR-04).
+     *
+     * @return how many there are, and the first {@code limit} in location code then LPN order
+     */
+    public Standing standingAt(Collection<String> locationCodes, int limit) {
+        if (locationCodes.isEmpty()) {
+            return new Standing(0, java.util.List.of());
+        }
+        java.util.List<CartonAt> first = new java.util.ArrayList<>();
+        long[] total = {0};
+        jdbc.query("""
+                select p.location_code, p.lpn, count(*) over () as total
+                from inventory.stock_package p
+                where p.location_code = any (?)
+                  and p.status in ('RECEIVING', 'IN_STOCK')
+                order by p.location_code, p.lpn
+                limit ?""", ps -> {
+            ps.setArray(1, ps.getConnection().createArrayOf("text", locationCodes.toArray()));
+            ps.setInt(2, Math.max(limit, 1));
+        }, rs -> {
+            total[0] = rs.getLong("total");
+            if (first.size() < limit) {
+                first.add(new CartonAt(rs.getString("location_code"), rs.getString("lpn")));
+            }
+        });
+        return new Standing(total[0], first);
+    }
+
+    /** @param first at most the limit asked for */
+    public record Standing(long total, java.util.List<CartonAt> first) {
+    }
+
     /** Where cartons of this carton unit holding units stand, by location code. */
     public java.util.List<String> locationsOfUnit(UUID unitId) {
         return jdbc.queryForList("""

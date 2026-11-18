@@ -104,7 +104,8 @@ public class OrderSettlementService {
             return Optional.empty();
         }
         OrderSettlement.Outcome outcome = OrderSettlement.returned(ofOrder, command.returnRequestId(),
-                command.returnedAmount(), command.settledBy(), command.settledAt(), day(command.settledAt()));
+                command.deliveryBatchId(), command.returnedAmount(), command.settledBy(), command.settledAt(),
+                day(command.settledAt()));
         OrderSettlement settlement = save(outcome);
         log.info("Order {}: goods returned worth {} {}; {} taken off {} installment(s), {} to refund",
                 settlement.orderNumber(), settlement.closed(), settlement.currency(), settlement.reduced(),
@@ -118,6 +119,14 @@ public class OrderSettlementService {
         RefundStanding standing = RefundStanding.of(orderId, settlements.ofOrder(orderId),
                 settlements.recordsOf(orderId));
         return new RefundProgress(standing.refundable(), standing.refunded());
+    }
+
+    /** {@link com.stockflow.payment.api.PaymentService#refundVoidReason}, read in the caller's transaction. */
+    @Transactional(propagation = Propagation.SUPPORTS, readOnly = true)
+    public Optional<String> refundVoidReason(java.util.UUID recordId) {
+        return settlements.findRecord(recordId)
+                .filter(record -> record.status() == com.stockflow.payment.internal.domain.RefundRecord.Status.VOIDED)
+                .map(com.stockflow.payment.internal.domain.RefundRecord::voidReason);
     }
 
     /** The installments changed, the fee item (before the settlement that names it), then the settlement. */

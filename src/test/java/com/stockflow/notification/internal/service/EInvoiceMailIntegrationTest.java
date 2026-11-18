@@ -48,7 +48,6 @@ import org.springframework.test.context.bean.override.convention.TestBean;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.client.RestClient;
 
-import java.math.BigDecimal;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
@@ -164,7 +163,7 @@ class EInvoiceMailIntegrationTest {
     /** Two cartons ordered, paid, released, packed, handed over and delivered; the draft the listener drew up. */
     private EInvoice.Snapshot draft() {
         ConfirmedOrders.Confirmed confirmed = confirmedOrders.confirmed(customer,
-                ConfirmedOrders.Line.cartons(sku, 2, PRICE).withTax(BigDecimal.TEN));
+                ConfirmedOrders.Line.cartons(sku, 2, PRICE).withTax(com.stockflow.support.VatOfTheDay.standard(jdbc)));
         placed.add(confirmed.orderId());
         confirmedOrders.release(confirmed.orderId(), DemoData.WAREHOUSE_HCM, staff);
         orders.startPicking(confirmed.orderId(), staff);
@@ -239,7 +238,8 @@ class EInvoiceMailIntegrationTest {
         assertThat(body.at("/tags/0/value").asText()).isEqualTo("einvoice_issued");
         assertThat(body.at("/text").asText()).contains("Mã tra cứu: " + issued.lookupCode(),
                 "Mã của cơ quan thuế: " + issued.taxAuthorityCode(), "Số hoá đơn: " + number, issued.orderNumber(),
-                "220.000");
+                String.format(java.util.Locale.GERMANY, "%,d", com.stockflow.support.VatOfTheDay.tax(200_000, com.stockflow.support.VatOfTheDay.standard(jdbc))
+                        .longValue() + 200_000));
         assertThat(body.at("/html").asText()).contains(issued.lookupCode(), number);
         // The two files, as stored when the invoice was issued: the PDF first, then the XML.
         JsonNode attachments = body.at("/attachments");

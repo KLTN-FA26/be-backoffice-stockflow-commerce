@@ -10,6 +10,7 @@ package com.stockflow.order.internal.domain;
  *       └─cancel─▶ CANCELLED ◀─cancel─ AWAITING_RETURN                             └──sent back────┤
  *                                                                          approved by another ─▶ RESOLVED
  *   EXPIRED, CANCELLED (after approval) ─a return receipt opened before brings the goods anyway─▶ RECEIVED
+ *   RECEIVED ─nothing approved came back usable, closed without a refund (WF-05 TH-4)─▶ RESOLVED
  * </pre>
  *
  * <p>Sales approve the claim on its photos, and the goods always come back (17 BR-18): the warehouse receives them on a
@@ -78,7 +79,8 @@ public enum ReturnStatus {
             // Goods are physically here: a return receipt opened while the return awaited them brings them in whatever
             // happened to the return meanwhile. The aggregate checks a CANCELLED one was approved.
             case EXPIRED, CANCELLED -> target == RECEIVED;
-            case RECEIVED -> target == SETTLEMENT_PENDING;
+            // RESOLVED straight away: nothing approved came back usable, so there is no refund to propose (WF-05 TH-4).
+            case RECEIVED -> target == SETTLEMENT_PENDING || target == RESOLVED;
             case SETTLEMENT_PENDING -> target == RESOLVED || target == RECEIVED;
             case INSPECTED, RESOLVED, REJECTED -> false;
         };

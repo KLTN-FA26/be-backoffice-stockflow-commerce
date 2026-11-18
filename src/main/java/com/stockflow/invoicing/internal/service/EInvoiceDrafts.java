@@ -186,8 +186,8 @@ public class EInvoiceDrafts {
      * no delivery will, and how much of the fee was left. Dating it back to the last delivery - which may be weeks
      * earlier - would give a newly drawn invoice a date before invoices already issued: a later number under an
      * earlier date, which NĐ 254 Phụ lục điểm 2 (numbers run in the order of the dates) and the rule that keeps a
-     * later-dated invoice back while an earlier one waits ({@code EINVOICE_OLDER_DRAFT_PENDING}) both exist to
-     * prevent, and an invoice overdue on the day it is drawn up.</p>
+     * later-dated invoice back while an earlier one of its series is at the provider
+     * ({@code EINVOICE_OLDER_DRAFT_PENDING}) both exist to prevent, and an invoice overdue on the day it is drawn up.</p>
      *
      * <p>In its own transaction ({@code REQUIRES_NEW}) and under the order's invoicing lock, for the reasons
      * {@link #drawUp} gives: a delivery's draft drawn up at the same moment either sees this one's fee line or is seen

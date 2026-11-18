@@ -28,8 +28,14 @@ import java.util.UUID;
  * lot it left with (BR-03). It is closed the moment it is confirmed: what happens to the goods next is a warehouse
  * manager's decision on each carton in quarantine (kltn-docs 20 §4.8), not the receipt's.</p>
  *
- * <p>What the aggregate decides: exactly one source, the order of the steps, a carton once per receipt, and that a
- * confirmed or cancelled receipt does not change. What it cannot see, and the service checks - the database again
+ * <p>What came back inside is counted too (WF-05 TH-4), the warehouse invariant left as it is - a carton is in stock
+ * only whole: each carton keeps the units found in it ({@link Carton#countedQuantity}; fewer than its label, it came
+ * back opened, and is received whole into quarantine only to be written off), and units that came back with no carton
+ * label are {@link LooseLine}s - recorded here, never put into stock, counted as received for the return request.</p>
+ *
+ * <p>What the aggregate decides: exactly one source, the order of the steps, a carton once per receipt, the count
+ * inside a carton never above its label, loose units on a return request's receipt only, and that a confirmed or
+ * cancelled receipt does not change. What it cannot see, and the service checks - the database again
  * ({@code check_return_receipt}, {@code check_return_receipt_carton}): that the source is coming back now, that the
  * receipt is at its warehouse, that each carton left on it.</p>
  */
@@ -38,9 +44,11 @@ public final class ReturnReceipt extends AggregateRoot {
     /**
      * One carton scanned on the receipt, as it was shipped. {@code condition} is what the warehouse saw of its outside
      * (dented, wet, opened - 03 edge cases), null when nothing; the carton is received whole whatever it says.
+     * {@code countedQuantity} is what was found inside it (WF-05 TH-4): its {@code quantity} when it came back sealed,
+     * fewer - down to none - when it was opened ({@code ck_goods_receipt_return_cartons_counted}).
      */
     public record Carton(UUID id, UUID stockPackageId, String lpn, String sku, String lotNumber, int quantity,
-                         String condition, UUID scannedBy, Instant scannedAt) {
+                         String condition, UUID scannedBy, Instant scannedAt, int countedQuantity) {
 
         public Carton {
             Objects.requireNonNull(id, "id");
@@ -51,11 +59,45 @@ public final class ReturnReceipt extends AggregateRoot {
             if (quantity <= 0) {
                 throw new IllegalArgumentException("A carton holds something");
             }
+            if (countedQuantity < 0 || countedQuantity > quantity) {
+                throw new BusinessException(ErrorCode.VALIDATION_FAILED, ("Carton %s holds %d unit(s) by its label: "
+                        + "count between 0 and %d inside it").formatted(lpn, quantity, quantity), List.of(),
+                        Map.of("lpn", lpn));
+            }
             condition = condition == null || condition.isBlank() ? null : condition.strip();
         }
 
-        Carton withCondition(String newCondition) {
-            return new Carton(id, stockPackageId, lpn, sku, lotNumber, quantity, newCondition, scannedBy, scannedAt);
+        /** Sealed, as shipped: every unit of its label inside. */
+        public Carton(UUID id, UUID stockPackageId, String lpn, String sku, String lotNumber, int quantity,
+                      String condition, UUID scannedBy, Instant scannedAt) {
+            this(id, stockPackageId, lpn, sku, lotNumber, quantity, condition, scannedBy, scannedAt, quantity);
+        }
+
+        /** Fewer units inside than its label: it was opened, and is only ever written off. */
+        public boolean opened() {
+            return countedQuantity < quantity;
+        }
+
+        Carton recorded(String newCondition, int newCount) {
+            return new Carton(id, stockPackageId, lpn, sku, lotNumber, quantity, newCondition, scannedBy, scannedAt,
+                    newCount);
+        }
+    }
+
+    /**
+     * Units that came back with no carton label (WF-05 TH-4): their SKU, their lot when it can be read, how many. No
+     * stock entry - they are destroyed - but received for the return request.
+     */
+    public record LooseLine(UUID id, String sku, String lotNumber, int quantity, UUID recordedBy) {
+
+        public LooseLine {
+            Objects.requireNonNull(id, "id");
+            Objects.requireNonNull(sku, "sku");
+            Objects.requireNonNull(recordedBy, "recordedBy");
+            if (quantity <= 0) {
+                throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Record at least one loose unit");
+            }
+            lotNumber = lotNumber == null || lotNumber.isBlank() ? null : lotNumber.strip();
         }
     }
 
@@ -70,6 +112,7 @@ public final class ReturnReceipt extends AggregateRoot {
     private final UUID receivedBy;
     private final String note;
     private final List<Carton> cartons;
+    private final List<LooseLine> looseLines = new ArrayList<>();
     private final long version;
 
     private GoodsReceiptStatus status;
@@ -141,12 +184,22 @@ public final class ReturnReceipt extends AggregateRoot {
      * @return the carton as the receipt now holds it
      */
     public Carton scan(Carton carton) {
+        return scan(carton, false);
+    }
+
+    /**
+     * As {@link #scan(Carton)}, and when {@code counted} the units the carton holds this time replace the count noted
+     * before (WF-05 TH-4: a carton is scanned again once it was opened and counted).
+     */
+    public Carton scan(Carton carton, boolean counted) {
         requireDraft("scan a carton on");
         for (int i = 0; i < cartons.size(); i++) {
             Carton held = cartons.get(i);
             if (held.stockPackageId().equals(carton.stockPackageId())) {
-                if (carton.condition() != null && !carton.condition().equals(held.condition())) {
-                    held = held.withCondition(carton.condition());
+                String condition = carton.condition() != null ? carton.condition() : held.condition();
+                int count = counted ? carton.countedQuantity() : held.countedQuantity();
+                if (!java.util.Objects.equals(condition, held.condition()) || count != held.countedQuantity()) {
+                    held = held.recorded(condition, count);
                     cartons.set(i, held);
                 }
                 return held;
@@ -154,6 +207,49 @@ public final class ReturnReceipt extends AggregateRoot {
         }
         cartons.add(carton);
         return carton;
+    }
+
+    /**
+     * Units that came back with no carton label (WF-05 TH-4), on a receipt against a return request - a shipment the
+     * carrier brought back comes back as it left, in its cartons. Recorded again for the same SKU and lot, the count
+     * replaces the one before. The caller has checked the SKU is one of the order's ({@code
+     * check_return_receipt_loose_line} again).
+     *
+     * @throws BusinessException {@code INVALID_RECEIPT_TRANSITION} for a receipt not a draft, or one against a shipment
+     */
+    public LooseLine recordLoose(LooseLine line) {
+        requireDraft("record loose units on");
+        if (returnRequestId == null) {
+            throw new BusinessException(ErrorCode.INVALID_RECEIPT_TRANSITION, ("Return receipt %s is against a shipment "
+                    + "the carrier brought back: its goods come back in their cartons").formatted(number));
+        }
+        for (int i = 0; i < looseLines.size(); i++) {
+            LooseLine held = looseLines.get(i);
+            if (held.sku().equals(line.sku()) && java.util.Objects.equals(held.lotNumber(), line.lotNumber())) {
+                LooseLine recounted = new LooseLine(held.id(), held.sku(), held.lotNumber(), line.quantity(),
+                        held.recordedBy());
+                looseLines.set(i, recounted);
+                return recounted;
+            }
+        }
+        looseLines.add(line);
+        return line;
+    }
+
+    /** Loose units recorded by mistake come off the draft. */
+    public void removeLoose(UUID lineId) {
+        requireDraft("remove loose units from");
+        if (!looseLines.removeIf(l -> l.id().equals(lineId))) {
+            throw new BusinessException(ErrorCode.NOT_FOUND,
+                    "Return receipt %s has no loose line %s".formatted(number, lineId));
+        }
+    }
+
+    /** Rehydration of the loose units, as stored. */
+    public ReturnReceipt restoreLoose(List<LooseLine> stored) {
+        looseLines.clear();
+        looseLines.addAll(stored);
+        return this;
     }
 
     /** A carton scanned by mistake comes off the draft. */
@@ -171,11 +267,11 @@ public final class ReturnReceipt extends AggregateRoot {
      * The cartons that came are received (03 §4.2 step 12): the receipt is confirmed and closed at once - there is no
      * putaway. Fewer cartons than the shipment or return request carried is no reason to wait (03 edge cases: the
      * warehouse manager settles the rest outside the system). The caller brings the cartons back into quarantine in
-     * the same transaction.
+     * the same transaction. A receipt of loose units only (WF-05 TH-4) closes too: nothing goes into stock.
      */
     public void confirm(UUID userId, Instant now) {
         requireDraft("confirm");
-        if (cartons.isEmpty()) {
+        if (cartons.isEmpty() && looseLines.isEmpty()) {
             throw new BusinessException(ErrorCode.INVALID_RECEIPT_TRANSITION,
                     "Return receipt %s has no carton to receive; scan the cartons that came back".formatted(number));
         }
@@ -217,6 +313,8 @@ public final class ReturnReceipt extends AggregateRoot {
     public UUID receivedBy() { return receivedBy; }
     public String note() { return note; }
     public List<Carton> cartons() { return Collections.unmodifiableList(cartons); }
+    /** Units that came back with no carton label (WF-05 TH-4). */
+    public List<LooseLine> looseLines() { return Collections.unmodifiableList(looseLines); }
     public GoodsReceiptStatus status() { return status; }
     public Instant confirmedAt() { return confirmedAt; }
     public UUID confirmedBy() { return confirmedBy; }

@@ -80,6 +80,11 @@ class WarehouseRepositoryAdapter implements WarehouseRepository, WarehouseSearch
                 .toList();
     }
 
+    @Override
+    public List<String> findLocationCodes(UUID warehouseId) {
+        return jpa.findLocationCodes(warehouseId);
+    }
+
     /**
      * Load-and-copy rather than {@code save(toNewEntity(...))}: the entity's application-assigned
      * id would make Spring Data merge, with a SELECT before every INSERT (CLAUDE.md §5).

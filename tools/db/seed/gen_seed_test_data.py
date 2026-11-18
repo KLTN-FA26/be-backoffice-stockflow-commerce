@@ -335,7 +335,7 @@ PRODUCTS = [
      [("8OZ", "8 oz", 0.006), ("12OZ", "12 oz", 0.008), ("16OZ", "16 oz", 0.011)]),
     ("LY-NHUA-PET", "Ly nhựa PET in logo", "LY-NHUA", "STANDARD", "parametric-cup", "DUNG_TICH",
      [("16OZ", "16 oz", 0.012), ("22OZ", "22 oz", 0.016)]),
-    ("HOP-BANH-KRAFT", "Hộp bánh giấy kraft in logo", "HOP-GIAY", "REDUCED", "parametric-bag", "KICH_THUOC",
+    ("HOP-BANH-KRAFT", "Hộp bánh giấy kraft in logo", "HOP-GIAY", "STANDARD", "parametric-bag", "KICH_THUOC",
      [("M", "Vừa 18x18 cm", 0.035)]),
     ("TUI-GIAY-QUAI", "Túi giấy quai xoắn in logo", "TUI-GIAY", "STANDARD", "parametric-bag", "KICH_THUOC",
      [("M", "Vừa 25x33 cm", 0.06), ("L", "Lớn 32x43 cm", 0.09)]),
@@ -1610,7 +1610,8 @@ RETURNED = o
 
 def return_request(o, key, when, reason, status, cartons=0, channel="PORTAL", note=None):
     """A customer's return (kltn-docs 16): REQUESTED, REJECTED, or approved and its cartons received back on a RETURN
-    receipt into the warehouse's QUARANTINE area (03 §4.2, BR-14), where they wait for a decision."""
+    receipt into the warehouse's QUARANTINE area (03 §4.2, BR-14), where they wait for a decision. It is against the
+    order's first delivered shipment (WF-05 TH-1), and its cartons come back sealed, counted whole (TH-4)."""
     rid = uid("return:" + key)
     number = next_no("RMA", when.date(), "RMA-{d}-{n:04d}")
     ln = o.lines[0]
@@ -1621,6 +1622,7 @@ def return_request(o, key, when, reason, status, cartons=0, channel="PORTAL", no
     decided = when + timedelta(days=1)
     approved = status not in ("REQUESTED", "REJECTED")
     ins("ordering.return_request", when, id=rid, rma_number=number, order_id=o.id, customer_id=o.c["id"],
+        shipment_id=sh["order_shipment"],
         status="AWAITING_RETURN" if approved else status, reason_code=reason, note=note, requested_at=when,
         decided_by=U["truongkd"] if status != "REQUESTED" else None,
         decided_at=decided if status != "REQUESTED" else None,
@@ -1658,7 +1660,8 @@ def return_request(o, key, when, reason, status, cartons=0, channel="PORTAL", no
         for pk in back:
             ins("procurement.goods_receipt_return_cartons", t, id=uid(f"gr-return-carton:{gid}:{pk['id']}"),
                 receipt_id=gid, stock_package_id=pk["package"], lpn=pk["lpn"], sku=ln["sku"], lot_number=pk["lot"],
-                quantity=pk["qty"], condition_note="Lỗi lệch màu in trên thân hộp", scanned_by=staff)
+                quantity=pk["qty"], counted_qty=pk["qty"], condition_note="Lỗi lệch màu in trên thân hộp",
+                scanned_by=staff)
         commit()
         for pk in back:
             r = pk["row"]

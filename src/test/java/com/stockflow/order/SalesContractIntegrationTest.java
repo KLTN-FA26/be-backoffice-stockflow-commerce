@@ -163,6 +163,8 @@ class SalesContractIntegrationTest {
         assertThat(drafted.status()).isEqualTo("DRAFT");
         assertThat(drafted.contractNumber()).startsWith("HD-").endsWith("-1");
         assertThat(drafted.freeSampleRounds()).as("BR-18, as configured").isEqualTo(2);
+        assertThat(drafted.returnWindowDays()).as("WF-05 TH-1 (Điều 318): the configured period, written in the "
+                + "contract").isEqualTo(7);
         assertThat(drafted.buyer().representative()).isEqualTo("Tran Van B");
         assertThat(drafted.seller().name()).isEqualTo("DEMO STOCKFLOW CO LTD");
         assertThat(drafted.totals().totalAmount()).as("the order's total with tax").isEqualByComparingTo("2530000");
@@ -192,8 +194,9 @@ class SalesContractIntegrationTest {
                                 new SalesContracts.Installment("Dot 2", "BEFORE_DELIVERY", new BigDecimal("1320000"),
                                         null, null, 2),
                                 new SalesContracts.Installment("Con lai", "BEFORE_DELIVERY", new BigDecimal("451000"),
-                                        null, null, null)))));
+                                        null, null, null)), 14)));
         assertThat(edited.freeSampleRounds()).isEqualTo(3);
+        assertThat(edited.returnWindowDays()).as("agreed with the customer while a draft").isEqualTo(14);
         assertThat(edited.deliverySchedule()).extracting(SalesContracts.BatchView::value)
                 .usingElementComparator(BigDecimal::compareTo)
                 .containsExactly(new BigDecimal("880000"), new BigDecimal("1320000"));
@@ -214,6 +217,7 @@ class SalesContractIntegrationTest {
                                 List.of(new SalesContracts.BatchLine(line, 12)))), null)));
         assertThat(rescheduled.version()).isGreaterThan(edited.version());
         assertThat(rescheduled.freeSampleRounds()).as("kept").isEqualTo(3);
+        assertThat(rescheduled.returnWindowDays()).as("kept").isEqualTo(14);
         assertThat(rescheduled.paymentPlan()).as("kept").hasSize(3);
         assertThatThrownBy(() -> asSales(() -> contracts.edit(sales, orderId, edited.version(),
                 new SalesContracts.Draft(null, null, List.of(new SalesContracts.Installment("All", "ON_SIGNING", null,
@@ -249,12 +253,18 @@ class SalesContractIntegrationTest {
                 + "window_end = window_end + 1 WHERE contract_id = ?", sent.id())))
                 .hasRootCauseInstanceOf(SQLException.class).rootCause()
                 .hasMessageContaining("do not change (14 BR-14)");
+        // And its complaint period (WF-05 TH-1).
+        assertThatThrownBy(() -> tx.executeWithoutResult(s -> jdbc.update("UPDATE ordering.sales_contract SET "
+                + "return_window_days = 30 WHERE id = ?", sent.id())))
+                .hasRootCauseInstanceOf(SQLException.class).rootCause()
+                .hasMessageContaining("does not change (14 BR-14)");
 
         // The customer reads the contract sent; another customer's order is not there.
         SalesContracts.ContractView customersCopy = contracts.customerContract(customerId, orderId);
         assertThat(customersCopy.contractNumber()).isEqualTo(sent.contractNumber());
         assertThat(customersCopy.sentAt()).isNotNull();
         assertThat(customersCopy.sentBy()).as("who in the back office sent it is not the customer's").isNull();
+        assertThat(customersCopy.returnWindowDays()).as("the customer reads the period too").isEqualTo(14);
         assertThatThrownBy(() -> contracts.customerContract(Identifiers.newId(), orderId))
                 .extracting(SalesContractIntegrationTest::code).isEqualTo(ErrorCode.NOT_FOUND);
 
