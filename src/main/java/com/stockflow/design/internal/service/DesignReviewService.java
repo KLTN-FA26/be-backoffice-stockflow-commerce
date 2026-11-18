@@ -185,7 +185,7 @@ public class DesignReviewService {
                 approval.printReadyChecksum());
              PrintFileCopy stamped = PrintFileCopy.empty()) {
             // Titled by its template and design: the customer's SKU exists only once the approval commits.
-            stamp.stamp(submitted, approval.template(), "Print file " + approval.template().code() + ", design " + id,
+            int pages = stamp.stamp(submitted, approval.template(), "Print file " + approval.template().code() + ", design " + id,
                     stamped);
             long size = stamped.size();
             if (size > FileCategory.DESIGN_RENDER.maxBytes()) {
@@ -195,7 +195,7 @@ public class DesignReviewService {
             try (InputStream content = Files.newInputStream(stamped.path());
                  PreparedFiles print = files.prepare(FileCategory.DESIGN_RENDER,
                          new FileUpload("print-ready.pdf", "application/pdf", size, content))) {
-                return tx.execute(status -> approve(id, actor, note, approval, print));
+                return tx.execute(status -> approve(id, actor, note, approval, print, pages));
             }
         } catch (IOException ex) {
             throw new StorageException("Could not read the stamped print file", ex);
@@ -261,7 +261,7 @@ public class DesignReviewService {
     }
 
     private DesignWorkflowService.DraftView approve(UUID id, UUID actor, String note, Approval approval,
-                                                    PreparedFiles print) {
+                                                    PreparedFiles print, int printPages) {
         DesignDraftJpaEntity draft = lockPending(id, approval.version());
         DesignDocumentJpaEntity layout = documents.findById(id).orElseThrow();
         if (!layout.getChecksum().equals(approval.layoutChecksum()) || !draft.getCurrentArtifacts().entrySet()
@@ -282,7 +282,7 @@ public class DesignReviewService {
         String customerSku = customerSkus.nextSku(draft.getSku(), draft.getCustomerId(), customerCode);
         byte[] sheet = instructions.render(new ProductionInstructionSheet.Facts(customerSku, approval.productName(),
                 draft.getSku(), approval.template(), approval.carton(), approval.layoutChecksum(),
-                stampedFile.getChecksum(), actor, now));
+                stampedFile.getChecksum(), actor, now, printPages));
         DesignArtifactJpaEntity sheetFile = drawnArtifact(id, DesignArtifactRole.PRODUCTION_INSTRUCTION, sheet,
                 "production-instruction.pdf", approval.layoutChecksum(), approval.template().version());
         draft.attachArtifact(DesignArtifactRole.PRINT_READY, stampedFile.getId());

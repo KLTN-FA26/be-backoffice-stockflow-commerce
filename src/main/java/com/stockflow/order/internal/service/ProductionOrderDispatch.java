@@ -23,6 +23,7 @@ import com.stockflow.customer.api.CustomerSummary;
 import com.stockflow.design.api.DesignArtifactRole;
 import com.stockflow.design.api.DesignService;
 import com.stockflow.design.api.FulfillmentArtifact;
+import com.stockflow.design.api.FulfillmentAsset;
 import com.stockflow.identity.api.IdentityService;
 import com.stockflow.inventory.api.PackagingRequest;
 import com.stockflow.inventory.api.PackagingSpec;
@@ -85,9 +86,10 @@ import java.util.UUID;
  *       transaction, once the production order is SENT, the slip is recorded and {@link ProductionOrderSent} published
  *       ({@link #sent}). The approval re-checks the version it read, so the slip is of the production order as
  *       approved; when the transaction fails, the stored file goes with it.</li>
- *   <li><b>The producer is told</b> by notification, through the producer's channel: e-mailed with links to the slip
- *       and the print files, or nothing for a producer the coordinator hands the slip. What the message says is read
- *       when it is written ({@link #mail}, behind {@code notification.api.ProductionOrderDirectory}).</li>
+ *   <li><b>The producer is told</b> by notification, through the producer's channel: e-mailed with links to the slip,
+ *       the print files and the customer's original images, or nothing for a producer the coordinator hands the slip.
+ *       What the message says is read when it is written ({@link #mail}, behind
+ *       {@code notification.api.ProductionOrderDirectory}).</li>
  *   <li><b>"Sample approved, print the batch"</b> ({@link #sampleApproved}, called by 4A-4) and <b>"stop"</b>
  *       ({@link #stopped}: a sent production order cancelled or closed) go the same way.</li>
  *   <li><b>The links</b> work for {@code stockflow.order.production-order.file-links-valid-for} and are checked again on
@@ -203,6 +205,11 @@ public class ProductionOrderDispatch {
     /** The route serving the print file of one of a production order's designs by a signed link. */
     public static String printFilePath(UUID productionOrderId, UUID designSnapshotId) {
         return FILES + productionOrderId + "/print-files/" + designSnapshotId;
+    }
+
+    /** The route serving one of the customer's original images of one of a production order's designs. */
+    public static String originalPath(UUID productionOrderId, UUID designSnapshotId, UUID assetId) {
+        return printFilePath(productionOrderId, designSnapshotId) + "/originals/" + assetId;
     }
 
     // ---- sending ----------------------------------------------------------------------------------------------------
@@ -377,7 +384,8 @@ public class ProductionOrderDispatch {
                     new ProductionOrderMail.Line(line.sku(), names.get(line.sku()), line.cartons(),
                             line.unitsPerCarton(), line.totalUnits(), size(sizes.get(line.sku())),
                             line.packingRequirements(), new ProductionOrderMail.File(line.sku() + " print file",
-                            printFilePath(id, line.designSnapshotId())))).toList();
+                            printFilePath(id, line.designSnapshotId())), originals(id, line.designSnapshotId())))
+                    .toList();
             ProductionOrderMail.File slip = slips.find(id).map(found -> new ProductionOrderMail.File(
                     ProductionOrderSlip.fileName(production.code()), slipPath(id))).orElse(null);
             String stopReason = switch (production.status()) {
@@ -392,6 +400,12 @@ public class ProductionOrderDispatch {
                     production.unitPrice(), production.currency(), production.note(), stopReason, lines, slip,
                     issuedAt.plus(linksValidFor));
         });
+    }
+
+    /** A link route for each original image the design places, named as the customer uploaded it. */
+    private List<ProductionOrderMail.File> originals(UUID id, UUID designSnapshotId) {
+        return designs.confirmedAssets(designSnapshotId).stream().map(asset -> new ProductionOrderMail.File(
+                asset.originalName(), originalPath(id, designSnapshotId, asset.assetId()))).toList();
     }
 
     /**
@@ -457,6 +471,38 @@ public class ProductionOrderDispatch {
             throw refused;
         }
         log.info("Production order {}: print file of design {} handed out by link", production.code(),
+                designSnapshotId);
+        return new DownloadLink(file.url(), file.expiresAt());
+    }
+
+    /**
+     * One of the customer's original images of one of the production order's designs, by a link its producer was sent
+     * (kltn-docs 12 §3, FE request 2026-11-18 BE-6): checked as {@link #openPrintFile} checks the print file - the
+     * signature, the production order still open, the design one of its lines', the image still the approved one and
+     * the bundle still adding up to the line's checksum; then a presigned URL of minutes.
+     *
+     * @throws BusinessException {@code PRODUCTION_ORDER_LINK_INVALID}; {@code PRODUCTION_ORDER_LINK_EXPIRED};
+     *         {@code PRINT_FILE_MISMATCH}; {@code NOT_FOUND} when the design places no such image
+     */
+    @Transactional(readOnly = true)
+    public DownloadLink openOriginal(UUID id, UUID designSnapshotId, UUID assetId, long expires, String signature) {
+        ProductionOrder production = linked(originalPath(id, designSnapshotId, assetId), id, expires, signature);
+        ProductionOrder.Line line = production.lines().stream()
+                .filter(candidate -> candidate.designSnapshotId().equals(designSnapshotId)).findFirst()
+                .orElseThrow(() -> invalidLink("not a design of production order " + production.code()));
+        FulfillmentAsset file;
+        try {
+            file = designs.assetDownload(designSnapshotId, line.printFileChecksum(), assetId);
+        } catch (BusinessException refused) {
+            if (refused.errorCode() == ErrorCode.CONFLICT) {
+                log.error("Production order {}: the original images of design {} no longer match what was approved",
+                        production.code(), designSnapshotId);
+                throw new BusinessException(ErrorCode.PRINT_FILE_MISMATCH, ("Production order %s: the print files "
+                        + "no longer match what was approved").formatted(production.code()));
+            }
+            throw refused;
+        }
+        log.info("Production order {}: original image {} of design {} handed out by link", production.code(), assetId,
                 designSnapshotId);
         return new DownloadLink(file.url(), file.expiresAt());
     }

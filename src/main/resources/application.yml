@@ -463,13 +463,14 @@ stockflow:
     max-concurrent: 4
     acquire-timeout: PT15S
 
-  # The PDF/X output intent stamped into an approved print file (PrintOutputIntentProperties). Blank profile =
-  # the interim sRGB intent until the printer's ICC profile is chosen (open question B35); then e.g.
-  # profile: file:/etc/stockflow/ISOcoated_v2_eci.icc, output-condition-identifier: FOGRA39.
+  # The PDF/X output intent stamped into an approved print file (PrintOutputIntentProperties). By default the bundled
+  # ISO Coated v2 (ECI) profile, FOGRA39 - the one the storefront embeds (print/icc/README.md), so a laptop and the VPS
+  # need nothing installed. A printer's own profile: a classpath:/file: location or a plain path, with its condition
+  # identifier (required then). A blank profile falls back to the interim sRGB intent.
   design:
     print:
       output-intent:
-        profile: ${DESIGN_PRINT_ICC_PROFILE:}
+        profile: ${DESIGN_PRINT_ICC_PROFILE:classpath:print/icc/ISOcoated_v2_eci.icc}
         output-condition-identifier: ${DESIGN_PRINT_OUTPUT_CONDITION:}
         info: ${DESIGN_PRINT_OUTPUT_INFO:}
 

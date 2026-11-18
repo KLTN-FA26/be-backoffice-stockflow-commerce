@@ -66,4 +66,29 @@ class DeployConfigurationTest {
             assertThat(example).as(".env.example lists %s", variable).contains("\n" + variable + "=");
         }
     }
+
+    @Test
+    @DisplayName("BE-3: approved print files get the FOGRA39 intent out of the box, on a laptop and on the server alike")
+    void theBundledPrintProfileIsTheDefaultEverywhere() throws Exception {
+        String compose = Files.readString(Path.of("deploy/docker-compose.yml"), StandardCharsets.UTF_8);
+        String example = Files.readString(Path.of("deploy/.env.example"), StandardCharsets.UTF_8);
+        String application = Files.readString(Path.of("src/main/resources/application.yml"), StandardCharsets.UTF_8);
+        String bundled = "classpath:print/icc/ISOcoated_v2_eci.icc";
+
+        assertThat(application).as("a run with no variable set stamps the bundled profile")
+                .contains("profile: ${DESIGN_PRINT_ICC_PROFILE:" + bundled + "}");
+        // ":-": a blank left in the server's .env must not reach the application, where it means the interim sRGB.
+        assertThat(compose).as("compose falls back to the bundled profile")
+                .contains("DESIGN_PRINT_ICC_PROFILE: ${DESIGN_PRINT_ICC_PROFILE:-" + bundled + "}");
+        for (String variable : java.util.List.of("DESIGN_PRINT_OUTPUT_CONDITION", "DESIGN_PRINT_OUTPUT_INFO")) {
+            assertThat(application).as("the application reads %s", variable).contains("${" + variable + ":}");
+            assertThat(compose).as("compose passes %s", variable).contains(variable + ": ${" + variable + ":-}");
+        }
+        for (String variable : java.util.List.of("DESIGN_PRINT_ICC_PROFILE", "DESIGN_PRINT_OUTPUT_CONDITION",
+                "DESIGN_PRINT_OUTPUT_INFO")) {
+            assertThat(example).as(".env.example lists %s as optional", variable).contains("\n# " + variable + "=");
+        }
+        assertThat(Files.size(Path.of("src/main/resources/print/icc/ISOcoated_v2_eci.icc")))
+                .as("the profile is in the jar, as ECI published it").isEqualTo(1_829_077L);
+    }
 }
