@@ -69,6 +69,12 @@ class ProductionCartonDamagedIntegrationTest {
         lpns = receipt.lines().getFirst().packages().stream().map(GoodsReceipts.PackageView::lpn).toList();
         tx.executeWithoutResult(s -> inventory.reclassifyStockPackages(new ReclassifyStockPackagesCommand(lpns, BIN,
                 StockDisposition.AVAILABLE, MoveReference.PUTAWAY_TASK, Identifiers.newId(), clerk, "putaway")));
+        // The receipt's putaway tasks are still open (the cartons were put away through the inventory API); a write-off
+        // of a carton with an open task is refused until it is done, so they are closed here.
+        tx.executeWithoutResult(s -> jdbc.update("""
+                UPDATE warehouse.putaway_task SET status = 'CANCELLED'
+                 WHERE stock_package_id IN (SELECT id FROM inventory.stock_package WHERE lpn = ANY (?))""",
+                (Object) lpns.toArray(new String[0])));
         recorded.clear();
     }
 

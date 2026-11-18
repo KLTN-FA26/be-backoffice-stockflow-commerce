@@ -48,7 +48,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @Import({PostgresContainer.class, RedisContainer.class})
 @AutoConfigureMockMvc
 // The same properties and mock as FulfillmentTaskContextIntegrationTest, so the application context is shared.
-@TestPropertySource(properties = {"stockflow.security.enabled=true", "stockflow.catalog.projection-retry-ms=3600000"})
+@TestPropertySource(properties = {"stockflow.security.enabled=true", "stockflow.upload-inspection.enabled=false",
+        "stockflow.catalog.projection-retry-ms=3600000"})
 class TaskCandidatesIntegrationTest {
 
     @Autowired MockMvc mvc;

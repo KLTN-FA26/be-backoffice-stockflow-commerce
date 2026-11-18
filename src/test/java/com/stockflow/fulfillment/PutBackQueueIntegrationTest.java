@@ -86,8 +86,8 @@ class PutBackQueueIntegrationTest {
         tx.executeWithoutResult(s -> {
             jdbc.update("""
                     INSERT INTO ordering.customer_order (id, order_number, customer_id, request_id, status, total_amount,
-                                                         currency, placed_at, version, created_at)
-                    VALUES (?, ?, ?, ?, 'CANCELLED', 1000, 'VND', NOW(), 0, NOW())""", order,
+                                                         currency, placed_at, version, created_at, contract_signed_at)
+                    VALUES (?, ?, ?, ?, 'CONFIRMED', 1000, 'VND', NOW(), 0, NOW(), NOW())""", order,
                     "SO-20991230-%06d".formatted(java.util.concurrent.ThreadLocalRandom.current().nextInt(1_000_000)),
                     DemoData.CUSTOMER_ID, UUID.randomUUID());
             jdbc.update("INSERT INTO ordering.order_line (id, order_id, sku, quantity, unit_price, currency) "
