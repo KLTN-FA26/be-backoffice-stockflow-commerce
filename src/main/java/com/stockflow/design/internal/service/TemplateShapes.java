@@ -87,6 +87,22 @@ final class TemplateShapes {
         return CanonicalJson.canonical(shape);
     }
 
+    /**
+     * {@code read} - what {@link #forReader} answered - with {@code designable} and {@code hasCartonSpec} added. Added
+     * on the way out, never by {@link #json}: they describe the variant now, so a snapshot freezing them would answer a
+     * question about the past.
+     */
+    @SuppressWarnings("unchecked")
+    static String withAvailability(String read, TemplateAvailability.Availability available) {
+        if (!(CanonicalJson.parse(read) instanceof Map<?, ?> parsed)) {
+            return read;
+        }
+        Map<String, Object> shape = new LinkedHashMap<>((Map<String, Object>) parsed);
+        shape.put("designable", available.designable());
+        shape.put("hasCartonSpec", available.hasCartonSpec());
+        return CanonicalJson.canonical(shape);
+    }
+
     private static Map<String, Object> surface(TemplateModel3d.Surface surface) {
         Map<String, Object> map = new LinkedHashMap<>();
         map.put("printAreaCode", surface.printAreaCode());
@@ -114,6 +130,8 @@ final class TemplateShapes {
                 model.put("gussetMm", bag.gussetMm());
                 model.put("heightMm", bag.heightMm());
                 model.put("topFoldMm", bag.topFoldMm());
+                model.put("glueFlapMm", bag.glueFlapMm());
+                model.put("bottomFoldMm", bag.bottomFoldMm());
                 model.put("handle", bag.handle());
                 model.put("material", bag.material());
             }
