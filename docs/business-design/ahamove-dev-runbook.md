@@ -188,7 +188,25 @@ Và: tài liệu không nói huỷ đơn **sau** khi lấy hàng có được kh
 - Đổi giá trị xác thực callback không gián đoạn: `POST /carriers/{id}/webhook-credential-rotation` (hai giá trị cùng hợp lệ trong lúc đổi).
 - Đổi sang production: `apiEnvironment=PRODUCTION` **bắt buộc** nhập lại `apiKey`; không làm trong đợt này.
 
-## 8. Sự cố thường gặp
+## 8. Phụ lục: demo local với Ahamove giả lập (không gọi mạng)
+
+Khác với chạy thật ở trên: trên máy local, profile `local` mặc định `stockflow.fulfillment.ahamove.mode=fake` (đặt `AHAMOVE_MODE=live` để tắt). Chạy luồng đặt xe giả lập **không cần** `STOCKFLOW_SECRETS_KEY`, **nhưng tạo hoặc sửa hãng kiểu `API_BOOKING` trên giao diện (hay `POST/PUT /carriers` có `apiKey`) vẫn cần**: không có khoá thì API trả **503 `SECRETS_UNAVAILABLE`**, kể cả ở chế độ giả lập, vì lúc lưu khoá API và giá trị xác thực hệ thống phải mã hoá chúng.
+Hãng `AHAMOVE` do seed demo (`V20261203000400__demo_fake_ahamove.sql`) tạo sẵn thì không cần khoá; chỉ cần khoá khi tạo hãng mới qua UI/API.
+
+Cách đặt (chỉ máy local, **giá trị thử bất kỳ, không dùng khoá thật**; khoá thật của server dev ở bước 1 không bao giờ nằm trên máy local):
+
+- Đặt biến môi trường `STOCKFLOW_SECRETS_KEY` **trước khi chạy BE** (trong cùng terminal hoặc cấu hình chạy của IDE), rồi khởi động lại BE. Khoá phải là base64 của đúng 32 byte; sinh một giá trị thử và để shell giữ, không in ra:
+  ```bash
+  export STOCKFLOW_SECRETS_KEY="$(openssl rand -base64 32)"
+  java -jar target/stockflow-monolith-1.0.0-SNAPSHOT.jar --spring.profiles.active=local   # hoặc mvn spring-boot:run
+  ```
+  Nếu chạy BE bằng `docker compose --profile app up`, đặt một dòng `STOCKFLOW_SECRETS_KEY=<giá trị thử>` trong `.env` ở thư mục gốc repo (file bị git bỏ qua; mẫu `.env.example`). Nếu chạy bằng IDE, thêm biến này vào Environment variables của cấu hình chạy.
+- Khoá thử chỉ mã hoá dữ liệu local. Đổi khoá thì các bí mật đã lưu bằng khoá cũ không đọc được (nhập lại); ở chế độ giả lập điều này không ảnh hưởng đặt xe vì khoá API không được mở.
+- Không dán khoá vào chat, commit hay log. Không dùng lại khoá của server dev/prod.
+
+Kiểm tra: tạo hãng `API_BOOKING` mới trên UI → 201 thay vì 503. Sau đó chạy demo như phần mô tả của PR #372 (đặt xe, `…/dev/fake-ahamove/orders/{FK…}/events`, `play`).
+
+## 9. Sự cố thường gặp
 
 | Triệu chứng | Nguyên nhân / cách xử lý |
 |---|---|
