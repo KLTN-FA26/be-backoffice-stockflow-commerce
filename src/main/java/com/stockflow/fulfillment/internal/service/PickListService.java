@@ -328,24 +328,40 @@ class PickListService implements PickLists {
             allowed.ifPresent(ids -> liveWhere.add(ids.isEmpty() ? cb.disjunction()
                     : livePick.get("warehouseId").in(ids)));
             live.select(livePick.get("id")).where(liveWhere.toArray(Predicate[]::new));
+            // 07 §4.5 step 13: the task cancelled earliest first, its cartons by when they were picked. A carton the
+            // check station removed from a task that was not cancelled has no cancellation to wait since: after them.
+            if (!Long.class.equals(query.getResultType())) {
+                var cancelled = query.subquery(java.time.Instant.class);
+                var owner = cancelled.from(PickJpaEntity.class);
+                cancelled.select(owner.<java.time.Instant>get("cancelledAt"))
+                        .where(cb.equal(owner.get("id"), root.get("pickId")));
+                query.orderBy(cb.asc(cancelled), cb.asc(root.get("pickedAt")), cb.asc(root.get("id")));
+            }
             return cb.and(cb.gt(root.<Integer>get("pickedQty"), 0), cb.or(
                     cb.and(root.get("status").in(PickLineStatus.PICKED, PickLineStatus.STAGED), cb.exists(task)),
                     cb.and(cb.equal(root.get("status"), PickLineStatus.PICKED), cb.exists(removedToPutBack(root, query,
                             cb)), cb.exists(live))));
         };
-        Page<PickLineJpaEntity> found = pickLines.findAll(waiting,
-                Pages.of(page, size, Sort.by(Sort.Direction.ASC, "pickedAt", "id")));
+        // Unsorted on purpose: the specification orders the page (a sort here would replace its ordering).
+        Page<PickLineJpaEntity> found = pickLines.findAll(waiting, Pages.of(page, size));
         Map<UUID, PickJpaEntity> tasks = picks.findAllById(found.getContent().stream()
                         .map(PickLineJpaEntity::getPickId).collect(Collectors.toSet())).stream()
                 .collect(Collectors.toMap(PickJpaEntity::getId, Function.identity()));
         Set<UUID> damaged = removedDamaged(found.getContent().stream().map(PickLineJpaEntity::getId).toList());
+        // 07 BR-12: a carton no bin of its warehouse takes may go into OVERFLOW; a damaged one goes to quarantine.
+        Map<UUID, Map<String, List<String>>> overflow = new HashMap<>();
+        found.getContent().stream().filter(row -> row.getLpn() != null && !damaged.contains(row.getId()))
+                .collect(Collectors.groupingBy(row -> tasks.get(row.getPickId()).getWarehouseId(),
+                        Collectors.mapping(PickLineJpaEntity::getLpn, Collectors.toSet())))
+                .forEach((warehouse, lpns) -> overflow.put(warehouse, consumption.overflowAreasFor(warehouse, lpns)));
         return Pages.toResponse(found, row -> {
             PickJpaEntity task = tasks.get(row.getPickId());
             // A staged carton stands in the staging area, not at the bin it was picked from (4C-5).
             return new PutBackRow(row.getPickId(), task.getOrderNumber(), task.getWarehouseId(), row.getId(),
                     row.getSku(), row.getLotNumber(), row.getLpn(), row.getPickedQty(),
                     row.getStatus() == PickLineStatus.STAGED ? row.getStagedLocationCode() : row.getLocationCode(),
-                    row.getPickedAt(), damaged.contains(row.getId()));
+                    row.getPickedAt(), damaged.contains(row.getId()),
+                    overflow.getOrDefault(task.getWarehouseId(), Map.of()).get(row.getLpn()));
         });
     }
 
@@ -365,7 +381,8 @@ class PickListService implements PickLists {
         PickList.PutBackTarget target = warehouses.findLocation(locationCode.trim())
                 .map(view -> new PickList.PutBackTarget(view.locationCode(), view.warehouseId(),
                         view.kind() == StorageLocationView.Kind.BIN, view.usable(),
-                        view.areaType() == StorageLocationView.AreaType.QUARANTINE))
+                        view.areaType() == StorageLocationView.AreaType.QUARANTINE,
+                        view.areaType() == StorageLocationView.AreaType.OVERFLOW))
                 .orElse(null);
 
         boolean damaged = removedDamaged(List.of(lineId)).contains(lineId);

@@ -121,10 +121,11 @@ class PickConsumptionServiceTest {
     private final com.stockflow.inventory.internal.domain.CycleCountRepository cycleCounts =
             mock(com.stockflow.inventory.internal.domain.CycleCountRepository.class);
     private final StockPackageRepository stockPackages = mock(StockPackageRepository.class);
+    private final CartonPlacement placement = mock(CartonPlacement.class);
     private final PickConsumptionService service = new PickConsumptionService(stockItems, ledger,
             new InventoryEventPublisher(publisher), locations, policies,
             new StockPackageContents(stockPackages, stockItems, locations), Clock.fixed(NOW, ZoneOffset.UTC),
-            cycleCounts, stockPackages, mock(CartonPlacement.class));
+            cycleCounts, stockPackages, placement);
     private final List<StockItem> saved = new ArrayList<>();
     private final List<StockItem> merged = new ArrayList<>();
 
@@ -1023,7 +1024,52 @@ class PickConsumptionServiceTest {
             assertThat(held.carton().location()).isEqualTo(staging);
             assertThat(ledgerRows).hasSize(1);
         }
+
+        @Test
+        @DisplayName("unstage: the carton must fit the bin, or go to OVERFLOW when no bin takes it (07 BR-12): a "
+                + "refusal moves nothing, and the target is judged by the placement rule")
+        void unstageChecksTheFit() {
+            UUID line = UUID.randomUUID();
+            Held held = staged(line);
+            cancelled(held);
+            org.mockito.Mockito.doThrow(CartonPlacement.doesNotFit(LPN, OTHER_BIN.code()))
+                    .when(placement).requirePutBackTarget(org.mockito.ArgumentMatchers.eq(OTHER_BIN.code()), any());
+
+            assertThat(refusal(() -> service.unstage(new PutBackCommand(line, held.hold(), LPN, OTHER_BIN.code(),
+                    PICKER)))).isEqualTo(ErrorCode.CARTON_DOES_NOT_FIT_BIN);
+            assertThat(held.carton().location()).as("nothing moved").isEqualTo(staging);
+            assertThat(held.row().location()).isEqualTo(staging);
+            assertThat(ledgerRows).hasSize(1);
+
+            LocationId overflow = new LocationId("HCM-OVF01");
+            when(locations.stateOf(overflow)).thenReturn(LocationDirectory.LocationState.USABLE);
+            when(locations.warehouseOf(any())).thenReturn(Optional.of(UUID.randomUUID()));
+            service.unstage(new PutBackCommand(line, held.hold(), LPN, overflow.code(), PICKER));
+
+            verify(placement).requirePutBackTarget(org.mockito.ArgumentMatchers.eq(overflow.code()), any());
+            assertThat(held.carton().location()).as("the placement rule let OVERFLOW through").isEqualTo(overflow);
+        }
+
+        @Test
+        @DisplayName("overflowAreasFor: the OVERFLOW areas of the warehouse for the cartons no bin takes, none for one a bin takes")
+        void overflowAreasForTheCartonsNoBinTakes() {
+            Held held = staged(UUID.randomUUID());
+            UUID warehouse = UUID.randomUUID();
+            when(stockPackages.findByLpns(any())).thenReturn(List.of(held.carton()));
+            when(placement.fittingNoBin(org.mockito.ArgumentMatchers.eq(warehouse), any()))
+                    .thenReturn(java.util.Set.of(held.carton().id().value()));
+            when(placement.overflowAreas(warehouse)).thenReturn(List.of("HCM-OVF01"));
+
+            assertThat(service.overflowAreasFor(warehouse, List.of(LPN)))
+                    .containsOnlyKeys(held.carton().lpn()).containsValue(List.of("HCM-OVF01"));
+
+            when(placement.fittingNoBin(org.mockito.ArgumentMatchers.eq(warehouse), any()))
+                    .thenReturn(java.util.Set.of());
+            assertThat(service.overflowAreasFor(warehouse, List.of(LPN))).isEmpty();
+            assertThat(service.overflowAreasFor(warehouse, List.of())).isEmpty();
+        }
     }
+
 
     @Nested
     @DisplayName("the whole task moves to dispatch in one call (review M1)")

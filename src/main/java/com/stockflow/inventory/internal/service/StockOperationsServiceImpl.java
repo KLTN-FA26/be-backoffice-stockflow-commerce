@@ -1067,9 +1067,32 @@ class StockOperationsServiceImpl implements StockOperations {
             // The holds the write-off gave up, if any: announced after the row is saved.
             events.publishEventsOf(row);
         }
+        announceDamagedProductionCarton(adjustment, changes, approverId, now);
         log.info("Posted adjustment {}: {} {} in carton {} at {}", adjustment.number(), adjustment.quantityDelta(),
                 adjustment.sku(), adjustment.stockPackageId().value(), adjustment.location());
         return toSummary(saved);
+    }
+
+    /**
+     * kltn-docs 20 §4.8 step 3, 17 §4.13 step 51: a {@code DAMAGED} write-off of a carton whose lot is a production
+     * order's is announced, for the Production Coordinator to be told; a carton of any other lot, or any other reason,
+     * is not. One announcement per approved adjustment, after the carton and its row are written.
+     */
+    private void announceDamagedProductionCarton(StockAdjustment adjustment,
+                                                 List<StockPackageContents.RowChange> changes, UUID approverId,
+                                                 Instant now) {
+        if (adjustment.reason() != AdjustmentReason.DAMAGED || adjustment.quantityDelta() >= 0) {
+            return;
+        }
+        changes.stream().map(change -> change.row().lotId()).filter(java.util.Objects::nonNull).distinct().findFirst()
+                .flatMap(lots::productionLotOf).ifPresent(lot -> {
+                    StockPackage carton = stockPackages.findById(adjustment.stockPackageId()).orElseThrow();
+                    UUID warehouseId = locations.warehouseOf(adjustment.location()).orElse(null);
+                    events.publish(new com.stockflow.contracts.ProductionCartonWrittenOffDamaged(Identifiers.newId(),
+                            adjustment.id(), adjustment.number(), adjustment.stockPackageId().value(), carton.lpn(),
+                            adjustment.sku().code(), lot.productionOrderCode(), lot.productionOrderId(), warehouseId,
+                            approverId, now));
+                });
     }
 
     /**

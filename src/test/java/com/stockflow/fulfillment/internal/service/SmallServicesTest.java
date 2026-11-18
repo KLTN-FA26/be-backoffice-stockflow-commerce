@@ -8,6 +8,7 @@ import com.stockflow.fulfillment.internal.domain.PackStatus;
 import com.stockflow.fulfillment.internal.entity.PackJpaEntity;
 import com.stockflow.fulfillment.internal.entity.ShipmentJpaEntity;
 import com.stockflow.fulfillment.internal.repository.PackJpaRepository;
+import com.stockflow.fulfillment.internal.repository.PickJpaRepository;
 import com.stockflow.order.api.FulfillmentCandidate;
 import com.stockflow.order.api.FulfillmentCandidates;
 import com.stockflow.order.api.OrderStatus;
@@ -45,7 +46,7 @@ class SmallServicesTest {
     void candidatesCheckScopeBeforeExistence() {
         FulfillmentCandidates orders = mock(FulfillmentCandidates.class);
         WarehouseService warehouses = mock(WarehouseService.class);
-        TaskCandidateService service = new TaskCandidateService(orders, warehouses);
+        TaskCandidateService service = new TaskCandidateService(orders, warehouses, mock(PickJpaRepository.class));
 
         WithCurrentUser.run(FulfillmentFixtures.userOf(WAREHOUSE), DataScope.WAREHOUSE, () -> {
             assertThat(refusal(() -> service.candidates(OTHER_WAREHOUSE, 0, 20)).errorCode())
@@ -65,9 +66,9 @@ class SmallServicesTest {
         when(warehouses.findWarehouse(WAREHOUSE)).thenReturn(Optional.of(
                 new WarehouseView(WAREHOUSE, "HCM", "HCM warehouse", "1 Le Loi", true)));
         PageResponse<FulfillmentCandidate> page = PageResponse.of(List.of(), 0, 20, 0);
-        when(orders.awaitingTask(WAREHOUSE, 0, 20)).thenReturn(page);
-        when(orders.awaitingTask(null, 1, 5)).thenReturn(page);
-        TaskCandidateService service = new TaskCandidateService(orders, warehouses);
+        when(orders.awaitingTask(WAREHOUSE, Set.of(), 0, 20)).thenReturn(page);
+        when(orders.awaitingTask(null, Set.of(), 1, 5)).thenReturn(page);
+        TaskCandidateService service = new TaskCandidateService(orders, warehouses, mock(PickJpaRepository.class));
 
         assertThat(service.candidates(WAREHOUSE, 0, 20)).isSameAs(page);
         assertThat(service.candidates(null, 1, 5)).isSameAs(page);
