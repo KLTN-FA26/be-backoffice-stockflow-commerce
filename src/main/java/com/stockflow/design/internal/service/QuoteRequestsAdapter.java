@@ -43,4 +43,9 @@ class QuoteRequestsAdapter implements QuoteRequests {
     public void close(UUID requestId, UUID salesUserId) {
         designRequests.close(requestId, salesUserId);
     }
+
+    @Override
+    public void closeProject(UUID requestId, UUID salesUserId) {
+        projectRequests.close(requestId, salesUserId);
+    }
 }

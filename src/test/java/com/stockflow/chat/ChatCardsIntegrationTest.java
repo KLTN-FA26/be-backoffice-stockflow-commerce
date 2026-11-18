@@ -158,6 +158,57 @@ class ChatCardsIntegrationTest {
     }
 
     @Test
+    @DisplayName("TC-F13-02 (14 BR-22): a project's quote request card becomes one quote of every design, and the request "
+            + "closes; a closed request is not quoted")
+    void projectQuoteRequestCard() throws Exception {
+        UUID project = project(alice);
+        UUID requestId = Identifiers.newId();
+        when(quoteRequests.projectRequest(requestId)).thenReturn(Optional.of(projectRequest(requestId, project, alice,
+                "OPEN")));
+        documentCards.projectQuoteRequested(requestId);
+        Map<String, Object> posted = jdbc.queryForMap("SELECT id, conversation_id FROM chat.message WHERE card_kind ="
+                + " 'QUOTE_REQUEST' AND conversation_id IN (SELECT id FROM chat.conversation WHERE customer_id = ?)",
+                alice.customer());
+        UUID conversation = (UUID) posted.get("conversation_id");
+        UUID card = (UUID) posted.get("id");
+        claim(sales, conversation);
+
+        UUID quote = quoteRow(alice);
+        when(quotes.draft(any(), any())).thenReturn(quoteCard(quote, alice, "DRAFT", 1));
+        String acted = body(cardAction(Role.SALES_STAFF, sales, conversation, card,
+                "{\"action\":\"CREATE_QUOTE\"}").andExpect(status().isOk()));
+        JsonNode view = json.readTree(acted).path("data").path("card");
+        assertThat(view.path("state").asText()).isEqualTo("ACTED");
+        assertThat(view.path("payload").path("quoteId").asText()).isEqualTo(quote.toString());
+        assertThat(view.path("payload").path("status").asText()).as("the card says the request is answered")
+                .isEqualTo("CLOSED");
+        ArgumentCaptor<QuoteCards.Draft> drafted = ArgumentCaptor.forClass(QuoteCards.Draft.class);
+        verify(quotes).draft(any(), drafted.capture());
+        assertThat(drafted.getValue().lines()).as("one quote line per design of the project").containsExactly(
+                new QuoteCards.DraftLine("ACME-CUP-01", 40), new QuoteCards.DraftLine("ACME-CUP-02", 60));
+        verify(quoteRequests).closeProject(requestId, sales);
+        verify(quoteRequests, never()).close(any(), any());
+
+        // Another card of a request already closed (by Sales on the design's own page): nothing is drawn up from it.
+        UUID closedId = Identifiers.newId();
+        when(quoteRequests.projectRequest(closedId)).thenReturn(Optional.of(projectRequest(closedId, project, alice,
+                "OPEN")));
+        documentCards.projectQuoteRequested(closedId);
+        Map<String, Object> other = jdbc.queryForMap("SELECT id, conversation_id FROM chat.message WHERE card_kind ="
+                + " 'QUOTE_REQUEST' AND id <> ? AND conversation_id IN (SELECT id FROM chat.conversation WHERE"
+                + " customer_id = ?)", card, alice.customer());
+        UUID secondConversation = (UUID) other.get("conversation_id");
+        if (!secondConversation.equals(conversation)) {
+            claim(sales, secondConversation);
+        }
+        when(quoteRequests.projectRequest(closedId)).thenReturn(Optional.of(projectRequest(closedId, project, alice,
+                "CLOSED")));
+        cardAction(Role.SALES_STAFF, sales, secondConversation, (UUID) other.get("id"), "{\"action\":\"CREATE_QUOTE\"}")
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("CHAT_CARD_ACTION_NOT_ALLOWED"));
+        verify(quotes).draft(any(), any());
+    }
+
+    @Test
     @DisplayName("16 §4.3: the quote card - the customer accepts on it through the quote module; Sales cannot accept for them")
     void quoteCard() throws Exception {
         UUID conversation = openAsCustomer(alice, "Bao gia coc giay");
@@ -320,6 +371,21 @@ class ChatCardsIntegrationTest {
                 VALUES (?, ?, ?, ?, 'DRAFT', NOW(), '{}'::jsonb, 'Coc logo xanh')""", design, who.customer(),
                 DemoData.PRODUCT_SOFA, who.account()));
         return design;
+    }
+
+    private UUID project(Portal who) {
+        UUID project = Identifiers.newId();
+        tx.executeWithoutResult(s -> jdbc.update("""
+                INSERT INTO design.design_project (id, customer_id, owner_user_id, name, status, created_at)
+                VALUES (?, ?, ?, 'Bo nhan dien quan', 'ACTIVE', NOW())""", project, who.customer(), who.account()));
+        return project;
+    }
+
+    private static QuoteRequests.ProjectRequest projectRequest(UUID id, UUID project, Portal who, String status) {
+        return new QuoteRequests.ProjectRequest(id, project, "Bo nhan dien quan", who.customer(),
+                LocalDate.now().plusDays(30), Instant.now(), status, List.of(
+                new QuoteRequests.ProjectLine(Identifiers.newId(), "Coc logo xanh", "APPROVED", "ACME-CUP-01", 40),
+                new QuoteRequests.ProjectLine(Identifiers.newId(), "Coc logo do", "APPROVED", "ACME-CUP-02", 60)));
     }
 
     private UUID quoteRow(Portal who) {

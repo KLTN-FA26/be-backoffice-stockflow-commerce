@@ -174,6 +174,9 @@ public class ChatCardActions {
             if (asked.lines().stream().anyMatch(l -> !"APPROVED".equals(l.designStatus()) || l.customerSku() == null)) {
                 throw new BusinessException(ErrorCode.CHAT_DESIGN_NOT_APPROVED);
             }
+            if (!"OPEN".equals(asked.status())) {
+                throw new BusinessException(ErrorCode.CHAT_CARD_ACTION_NOT_ALLOWED, "The quote request is closed");
+            }
             lines = asked.lines().stream().map(l -> new QuoteCards.DraftLine(l.customerSku(), l.cartons())).toList();
             wanted = asked.desiredDeliveryDate();
             next = (ObjectNode) payload.deepCopy();
@@ -195,7 +198,12 @@ public class ChatCardActions {
         QuoteCards.Card quote = quotes.draft(user, new QuoteCards.Draft(draftRequestId(card.id()), c.customerId(),
                 lines, wanted == null || wanted.isBefore(today) ? null : wanted,
                 now.plus(properties.draftQuoteValidity())));
-        if (!project) {
+        // Answered by this quote, the request closes - a project's as a design's (14 BR-22: one quote of every design
+        // on it) - so it no longer reads as waiting in the request lists, and the next order asks again.
+        if (project) {
+            quoteRequests.closeProject(requestId, staff.userId());
+            next.put("status", "CLOSED");
+        } else {
             quoteRequests.close(requestId, staff.userId());
             next.put("requestStatus", "CLOSED");
         }
