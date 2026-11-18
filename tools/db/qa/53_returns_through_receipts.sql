@@ -143,6 +143,9 @@ SELECT pg_temp.expect_fail_by('RQ4 the same receipt a second parcel', 'pk_return
             NOW()) $q$);
 SELECT pg_temp.expect_fail_by('RQ5 a parcel rewritten', 'append-only', $q$
     UPDATE ordering.return_request_receipt SET parcel = 3 WHERE goods_receipt_id = md5('qa53:g')::uuid $q$);
+SELECT pg_temp.expect_fail_by('RQ6 a return with a parcel back is withdrawn: its goods would stay unrefunded',
+    'it is not withdrawn - mark its goods complete', $q$
+    UPDATE ordering.return_request SET status = 'CANCELLED' WHERE id = md5('qa53:r1')::uuid $q$);
 
 \echo '--- the refund: units that came back, adding up to the settlement (17 §4.10 step 40)'
 SELECT pg_temp.expect_fail_by('RF1 more units refunded than came back', 'ck_return_request_line_refund', $q$

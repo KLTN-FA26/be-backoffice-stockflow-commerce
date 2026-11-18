@@ -175,8 +175,12 @@ class ReturnRequestController {
     }
 
     @PostMapping("/returns/{returnId}/cancellation")
-    @Operation(summary = "Withdraw a return before its goods are back (REQUESTED or AWAITING_RETURN → CANCELLED); "
-            + "the customer their own, Sales any")
+    @Operation(summary = "Withdraw a return before any of its goods is back (REQUESTED or AWAITING_RETURN → "
+            + "CANCELLED); the customer their own, Sales any",
+            description = "409 RETURN_INVALID_TRANSITION past AWAITING_RETURN. 409 RETURN_GOODS_PARTLY_RECEIVED once a "
+                    + "parcel of its goods came back (WF-05 TH-3): withdrawing it would leave those goods in the "
+                    + "warehouse with nothing refunded - Sales mark the goods complete instead "
+                    + "(POST /returns/{id}/goods-complete) and decide the refund on what came.")
     @RequiresPermission(resource = OrderResources.RMAS, action = Action.UPDATE, scope = DataScope.OWN)
     public ApiResponse<ReturnView> cancel(@PathVariable UUID returnId,
                                           @Valid @RequestBody(required = false) ReturnRequests.Cancel request,
