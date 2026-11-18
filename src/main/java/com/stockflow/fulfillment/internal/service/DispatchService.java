@@ -571,13 +571,17 @@ class DispatchService implements Dispatching {
         String reason = "The carrier cancelled order " + booking.getCarrierOrderId();
         booking.cancelled(reason, at);
         carrierBookings.saveAndFlush(booking);
-        if (load.status() == LoadStatus.LOADING) {
-            // The truck at the dock has no order any more: the load cannot be handed over on it (requireCarrierOrder).
-            log.warn("Load {}: its carrier cancelled order {} while loading", load.code(), booking.getCarrierOrderId());
+        if (load.status() == LoadStatus.LOADING && !load.activeParcels().isEmpty()) {
+            // TODO RTM-LOADCANCEL2-1119 (asked of the owner): docs 09 §4.5 send a load not signed for back to PLANNED,
+            // but say nothing of the parcels already scanned onto the truck. Until that is decided the load stays as
+            // it is and the event goes to the error list: the truck has no order any more, so the load cannot be
+            // handed over on it (requireCarrierOrder).
+            log.warn("Load {}: its carrier cancelled order {} while loading with parcels on board", load.code(),
+                    booking.getCarrierOrderId());
             return CarrierCancel.CANCELLED_WHILE_LOADING;
         }
         String before = load.waybillNo();
-        load.cancelBooking(reason, null, at);
+        load.carrierCancelledBooking(reason, at);
         store.save(load, locked.header());
         waybills.record(load.id(), before, null, WaybillSource.WEBHOOK, null, at, reason);
         log.info("Load {}: its carrier cancelled order {}; back to PLANNED", load.code(), booking.getCarrierOrderId());

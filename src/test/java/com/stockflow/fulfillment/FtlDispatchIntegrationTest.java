@@ -1243,6 +1243,42 @@ class FtlDispatchIntegrationTest {
     }
 
     @Test
+    @DisplayName("RTM-LOADCANCEL (09 §4.5): Ahamove cancels the order while the vehicle is loading - nothing on board, "
+            + "the load is PLANNED again with its booking cleared; with parcels on board it stays LOADING and the event "
+            + "goes to the error list (what becomes of those parcels is open, RTM-LOADCANCEL2-1119)")
+    void ahamoveCancelsTheOrderWhileLoading() throws Exception {
+        UUID manager = staff("WAREHOUSE_MANAGER", HCM);
+        UUID aha = apiCarrier(manager);
+        String code = carrierCode(aha);
+        UUID shipment = packed(ftlOrder(1), false)[0];
+        String loadId = loadOf(confirmed(List.of(shipment), truck5t), 1);
+        deliverTo(shipment, "79");
+        org.mockito.Mockito.when(carrierGateway.place(org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any())).thenReturn(new com.stockflow.fulfillment.internal.service
+                .CarrierBookingGateway.Placed("AHA-L1", null), new com.stockflow.fulfillment.internal.service
+                .CarrierBookingGateway.Placed("AHA-L2", null));
+        dispatch(body(post(LOADS + "/" + loadId + "/booking"), "{\"carrierId\":\"" + aha + "\"}"))
+                .andExpect(status().isOk());
+        dispatch(post(LOADS + "/" + loadId + "/loading-start")).andExpect(status().isOk());
+
+        ahamoveSays("AHA-L1", "CANCELLED");
+        aha(code, ahamove("AHA-L1", "CANCELLED", "", "\"cancel_time\":1800000900,\"cancel_by_user\":false", ""))
+                .andExpect(jsonPath("$.data.result").value("APPLIED"));
+        JsonNode planned = load(loadId);
+        assertThat(planned.path("status").asText()).isEqualTo("PLANNED");
+        assertThat(planned.hasNonNull("carrierId")).isFalse();
+        assertThat(planned.path("carrierBooking").path("status").asText()).isEqualTo("CANCELLED");
+
+        dispatch(body(post(LOADS + "/" + loadId + "/booking"), "{\"carrierId\":\"" + aha + "\"}"))
+                .andExpect(status().isOk());
+        loadAndScan(loadId);
+        ahamoveSays("AHA-L2", "CANCELLED");
+        aha(code, ahamove("AHA-L2", "CANCELLED", "", "\"cancel_time\":1800001900,\"cancel_by_user\":false", ""))
+                .andExpect(jsonPath("$.data.result").value("NEEDS_REVIEW"));
+        assertThat(load(loadId).path("status").asText()).isEqualTo("LOADING");
+    }
+
+    @Test
     @DisplayName("3-5: a completed Ahamove order applies the drop-off outcomes it carries that were not applied yet - "
             + "the carrier's long wording kept within the note's length (E22)")
     void ahamoveCompletedOrder() throws Exception {

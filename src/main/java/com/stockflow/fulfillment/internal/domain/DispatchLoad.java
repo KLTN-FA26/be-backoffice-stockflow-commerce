@@ -573,6 +573,28 @@ public final class DispatchLoad {
         return true;
     }
 
+    /**
+     * The carrier cancelled its order before the pickup (09 §4.5 table "Đơn bị huỷ (trước khi lấy hàng)": a load not
+     * signed for goes back to PLANNED, its booking cleared, the history kept by the caller; RTM-LOADCANCEL 18/11). From
+     * VEHICLE_BOOKED, or from LOADING while no parcel is on board. Parcels already scanned on are not settled here:
+     * what becomes of them is open (RTM-LOADCANCEL2-1119), so the caller leaves such a load as it is.
+     *
+     * @return whether it changed the load
+     * @throws BusinessException {@code INVALID_LOAD_TRANSITION} in any other status, or while a parcel is on board
+     */
+    public boolean carrierCancelledBooking(String reason, Instant at) {
+        if (status == LoadStatus.LOADING && activeParcels().isEmpty()) {
+            status = LoadStatus.VEHICLE_BOOKED;
+            loadingStartedAt = null;
+            loadingStartedBy = null;
+        }
+        if (status == LoadStatus.LOADING) {
+            throw new BusinessException(ErrorCode.INVALID_LOAD_TRANSITION, ("Load %s has parcels on board: the "
+                    + "carrier's cancel does not take it back to PLANNED").formatted(code));
+        }
+        return cancelBooking(reason, null, at);
+    }
+
     /** The booked vehicle arrived and loading starts (BR-14: its plan is locked from now on). LOADING already: no-op. */
     public boolean startLoading(UUID by, Instant at) {
         if (status == LoadStatus.LOADING) {

@@ -508,8 +508,8 @@ class CarrierEventApplier {
 
     /**
      * The carrier cancelled the order before the pickup: the booking is cancelled and the dispatchers told; the load is
-     * PLANNED again - or, while it was loading, stays as it is and goes to the error list too: the truck at the dock has
-     * no order any more, so it cannot be handed over on it (unload it with a controlled cancel, or book again).
+     * PLANNED again (09 §4.5) - or, while parcels were on board the loading vehicle, stays as it is and goes to the error
+     * list too (RTM-LOADCANCEL2-1119 open): the truck at the dock has no order any more, so it cannot leave on it.
      */
     private Outcome cancelled(CarrierJpaEntity carrier, Matched m, Instant at) {
         Dispatching.CarrierCancel done = dispatching.carrierOrderCancelled(m.loadId(), m.bookingId(), at);
