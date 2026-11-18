@@ -99,7 +99,10 @@ class ShipmentController {
             + "a note) or RETURNED; the order follows: a delivery makes the batch's installments after delivery due, "
             + "a RETURNED shipment puts the order ON_HOLD (DELIVERY_FAILED) until Sales decide to deliver again or "
             + "cancel what was not delivered. Nothing is billed here. fulfillment-delivery-outcomes:UPDATE; "
-            + "DELIVERED / DELIVERY_FAILED also :APPROVE. 409 SHIPMENT_STATE_CONFLICT")
+            + "DELIVERED / DELIVERY_FAILED also :APPROVE. DELIVERED takes an optional deliveredAt (ISO-8601, the time "
+            + "the carrier delivered; default now): it is the order's delivery time and dates the draft invoice; "
+            + "422 SHIPMENT_DELIVERY_TIME_IN_FUTURE / SHIPMENT_DELIVERY_TIME_BEFORE_HANDOVER, 400 VALIDATION_FAILED "
+            + "with another outcome. 409 SHIPMENT_STATE_CONFLICT")
     @RequiresPermission(resource = FulfillmentResources.DELIVERY_OUTCOMES, action = Action.UPDATE)
     @Auditable(action = AuditAction.TRANSITION, resourceType = "shipment", resourceId = "#shipmentId")
     public ApiResponse<ShipmentResponse> recordOutcome(@PathVariable UUID shipmentId,
@@ -109,7 +112,7 @@ class ShipmentController {
             actor.require(FulfillmentResources.DELIVERY_OUTCOMES, Action.APPROVE);
         }
         return ApiResponse.ok(mapper.toResponse(shipments.recordOutcome(shipmentId, new Shipments.Outcome(
-                request.outcome(), request.failureReason(), request.note()), actor)));
+                request.outcome(), request.failureReason(), request.note(), request.deliveredAt()), actor)));
     }
 
     @PostMapping("/{shipmentId}/delivery-outcome-correction")
@@ -117,12 +120,12 @@ class ShipmentController {
             + "while the order is not completed; the shipment takes no carrier report for its outcome afterwards (E17). "
             + "409 ORDER_DELIVERY_NOT_CORRECTABLE for a completed order or a delivery that billed the customer; "
             + "409 ORDER_DELIVERY_HAS_RETURN, to DELIVERY_FAILED, while a return request against the shipment is open "
-            + "or resolved")
+            + "or resolved. Correcting to DELIVERED takes the same optional deliveredAt as recording one")
     @RequiresPermission(resource = FulfillmentResources.DELIVERY_CORRECTIONS, action = Action.UPDATE)
     @Auditable(action = AuditAction.TRANSITION, resourceType = "shipment", resourceId = "#shipmentId")
     public ApiResponse<ShipmentResponse> correctOutcome(@PathVariable UUID shipmentId,
             @Valid @RequestBody DeliveryOutcomeCorrectionRequest request, @AuthenticatedUser CurrentUser actor) {
         return ApiResponse.ok(mapper.toResponse(shipments.correctOutcome(shipmentId, new Shipments.Correction(
-                request.outcome(), request.failureReason(), request.note(), request.reason()), actor)));
+                request.outcome(), request.failureReason(), request.note(), request.reason(), request.deliveredAt()), actor)));
     }
 }

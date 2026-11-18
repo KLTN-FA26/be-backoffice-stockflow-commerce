@@ -802,6 +802,10 @@ public enum ErrorCode {
     CARTON_SPEC_UNMEASURED("The SKU's carton spec has no size or weight: no shipping label can print", 422),
     /** Docs 09 §5: the shipment's status does not allow the step. */
     SHIPMENT_STATE_CONFLICT("The shipment cannot do that in its current status", 409),
+    /** Docs 09 §4.3 step 2: the delivery time a manager records is when the carrier delivered, so never in the future. */
+    SHIPMENT_DELIVERY_TIME_IN_FUTURE("The delivery time cannot be in the future", 422),
+    /** Docs 09 §4.3 step 2: a shipment cannot be delivered before it was handed over to the carrier. */
+    SHIPMENT_DELIVERY_TIME_BEFORE_HANDOVER("The delivery time cannot be before the shipment was handed over", 422),
     // ---- G4-2a loading and handover (kltn-docs 09 §4.1, §5): 404 / 400 / 409 kept together with the flow
     /** G4-2a: a load (manifest) of a warehouse outside the caller's scope is OUT_OF_DATA_SCOPE, not this. */
     LOAD_NOT_FOUND("Load not found", 404),
