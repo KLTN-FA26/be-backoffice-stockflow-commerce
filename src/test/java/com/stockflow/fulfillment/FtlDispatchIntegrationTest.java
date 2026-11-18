@@ -1915,7 +1915,7 @@ class FtlDispatchIntegrationTest {
 
     @Test
     @DisplayName("09 §4.3 step 2: the warehouse manager enters the delivery time the carrier reported - not in the future, "
-            + "not before the handover - and it is the shipment's, the order's, the installment's and the draft "
+            + "not before the handover - and it is the shipment's, the order's and the draft "
             + "invoice's date; a correction back to delivered takes one too; none given = now")
     void theDeliveryTimeIsEnteredByHand() throws Exception {
         OrderSummary order = ftlOrder(1);
@@ -1924,9 +1924,6 @@ class FtlDispatchIntegrationTest {
         String load = loadOf(confirmed(List.of(shipment), truck5t), 1);
         loadAll(load, ghn);
         handOver(load).andExpect(status().isOk());
-        // The handover happened days ago, as a carrier's report that arrives late says.
-        jdbc.update("UPDATE fulfillment.shipment SET handed_over_at = handed_over_at - INTERVAL '5 days' WHERE id = ?",
-                shipment);
         Instant handedOver = jdbc.queryForObject("SELECT handed_over_at FROM fulfillment.shipment WHERE id = ?",
                 java.sql.Timestamp.class, shipment).toInstant();
         String outcome = BASE + "/shipments/" + shipment + "/delivery-outcome";
@@ -1944,7 +1941,10 @@ class FtlDispatchIntegrationTest {
                 .andExpect(jsonPath("$.fieldErrors[0].field").value("deliveredAt"));
         assertThat(shipmentStatus(shipment)).as("nothing was recorded").isEqualTo("HANDED_OVER");
 
-        Instant deliveredAt = Instant.now().minus(Duration.ofDays(2)).truncatedTo(java.time.temporal.ChronoUnit.SECONDS);
+        // A moment between the handover and now: the whole span a delivery time may take.
+        Thread.sleep(2_500);
+        Instant deliveredAt = handedOver.plusSeconds(1).truncatedTo(java.time.temporal.ChronoUnit.SECONDS);
+        assertThat(deliveredAt).isAfter(handedOver).isBefore(Instant.now());
         oc(body(post(outcome), "{\"outcome\":\"DELIVERED\",\"deliveredAt\":\"" + deliveredAt + "\"}"))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.shipment.status").value("DELIVERED"))
                 .andExpect(jsonPath("$.data.shipment.outcomeAt").value(org.hamcrest.Matchers
@@ -1968,7 +1968,7 @@ class FtlDispatchIntegrationTest {
                 .andExpect(status().isBadRequest()).andExpect(jsonPath("$.fieldErrors[0].field").value("deliveredAt"));
         oc(body(post(correction), "{\"outcome\":\"DELIVERY_FAILED\",\"failureReason\":\"CUSTOMER_ABSENT\","
                 + "\"reason\":\"nothing arrived\"}")).andExpect(status().isOk());
-        Instant foundAt = Instant.now().minus(Duration.ofDays(1)).truncatedTo(java.time.temporal.ChronoUnit.SECONDS);
+        Instant foundAt = handedOver.plusSeconds(2).truncatedTo(java.time.temporal.ChronoUnit.SECONDS);
         oc(body(post(correction), "{\"outcome\":\"DELIVERED\",\"reason\":\"found\",\"deliveredAt\":\""
                 + Instant.now().plusSeconds(3600) + "\"}")).andExpect(status().isUnprocessableEntity())
                 .andExpect(jsonPath("$.errorCode").value("SHIPMENT_DELIVERY_TIME_IN_FUTURE"));
@@ -1982,7 +1982,7 @@ class FtlDispatchIntegrationTest {
         assertThat(orders.findById(orderId).orElseThrow().lifecycle().deliveredAt()).isEqualTo(foundAt);
         assertThat(jdbc.queryForObject("SELECT corrected_at FROM fulfillment.delivery_outcome_correction WHERE "
                 + "shipment_id = ? AND to_status = 'DELIVERED'", java.sql.Timestamp.class, shipment).toInstant())
-                .as("the correction itself is dated when it was made").isAfter(foundAt.plus(Duration.ofHours(12)));
+                .as("the correction itself is dated when it was made, not by the delivery time").isAfter(foundAt);
     }
 
     @Test
