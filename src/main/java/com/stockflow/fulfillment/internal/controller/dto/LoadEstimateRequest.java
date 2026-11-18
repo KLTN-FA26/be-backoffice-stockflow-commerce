@@ -17,12 +17,13 @@ import java.util.UUID;
  *                       the warehouse it is about to be released to; for a released order leave it out (or send its
  *                       own)
  * @param vehicleTypeIds the vehicle types the plan may use; empty or absent: every active type
- * @param selectionMode  SINGLE_TYPE ("Một loại", the default) or FEWEST_VEHICLES ("Ít xe nhất")
+ * @param selectionMode  SINGLE_TYPE ("Một loại", the default), FEWEST_VEHICLES ("Ít xe nhất"), KEEP_LINES ("Giữ
+ *                       nguyên dòng") or OVER_CAPACITY ("Vượt sức chứa"); WF4-LP-MODES
  */
 public record LoadEstimateRequest(@NotEmpty @Size(max = 1) List<@Valid @NotNull SourceRef> sources,
                                   UUID warehouseId,
                                   @Size(max = 20) List<@NotNull UUID> vehicleTypeIds,
-                                  @Pattern(regexp = "SINGLE_TYPE|FEWEST_VEHICLES") String selectionMode) {
+                                  @Pattern(regexp = "SINGLE_TYPE|FEWEST_VEHICLES|KEEP_LINES|OVER_CAPACITY") String selectionMode) {
 
     public record SourceRef(@NotNull @Pattern(regexp = "ORDER") String type, @NotNull UUID id) { }
 }

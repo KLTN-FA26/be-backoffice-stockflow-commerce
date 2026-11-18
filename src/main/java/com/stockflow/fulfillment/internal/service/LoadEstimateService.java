@@ -26,6 +26,8 @@ import com.stockflow.fulfillment.internal.entity.LoadEstimateJpaEntity;
 import com.stockflow.fulfillment.internal.entity.VehicleTypeJpaEntity;
 import com.stockflow.fulfillment.internal.repository.LoadEstimateJpaRepository;
 import com.stockflow.fulfillment.internal.repository.VehicleTypeJpaRepository;
+import com.stockflow.inventory.api.HoldView;
+import com.stockflow.inventory.api.InventoryService;
 import com.stockflow.inventory.api.PackagingRequest;
 import com.stockflow.inventory.api.PackagingSpec;
 import com.stockflow.inventory.api.PackagingSpecResolver;
@@ -106,6 +108,8 @@ class LoadEstimateService implements LoadEstimates {
     private final OrderService orders;
     private final WarehouseService warehouses;
     private final PackagingSpecResolver packaging;
+    /** The LPN cartons allocated to an order's lines (09 §4.0 step 2). */
+    private final InventoryService inventory;
     private final ObjectMapper json;
     private final TransactionTemplate reads;
     private final TransactionTemplate writes;
@@ -115,7 +119,7 @@ class LoadEstimateService implements LoadEstimates {
 
     LoadEstimateService(LoadEstimateJpaRepository estimates, VehicleTypeJpaRepository vehicleTypes,
                         OrderService orders, WarehouseService warehouses, PackagingSpecResolver packaging,
-                        ObjectMapper json, PlatformTransactionManager transactionManager,
+                        InventoryService inventory, ObjectMapper json, PlatformTransactionManager transactionManager,
                         @Value("${stockflow.fulfillment.load-planning.solver-budget:PT5S}") Duration budget,
                         @Value("${stockflow.fulfillment.load-planning.solver-wall-limit:PT12S}") Duration wallLimit) {
         this.estimates = estimates;
@@ -123,6 +127,7 @@ class LoadEstimateService implements LoadEstimates {
         this.orders = orders;
         this.warehouses = warehouses;
         this.packaging = packaging;
+        this.inventory = inventory;
         this.json = json;
         this.reads = new TransactionTemplate(transactionManager);
         this.reads.setReadOnly(true);
@@ -148,10 +153,11 @@ class LoadEstimateService implements LoadEstimates {
         Source source = onlySource(command.sources());
         SelectionMode mode = command.selectionMode() == null ? SelectionMode.SINGLE_TYPE : command.selectionMode();
         if (!mode.storable()) {
-            // A stored estimate keeps its mode, and its table takes only these two; the others are the trial's.
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "An order estimate is SINGLE_TYPE or "
-                    + "FEWEST_VEHICLES", List.of(new FieldError("selectionMode", "SINGLE_TYPE or FEWEST_VEHICLES",
-                    "Pattern")));
+            // A stored estimate keeps its mode (its table's check); PRIORITY_FILL is the trial's until a plan's main /
+            // filler split is defined (docs issue #40, question 4).
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "An order estimate is SINGLE_TYPE, "
+                    + "FEWEST_VEHICLES, KEEP_LINES or OVER_CAPACITY", List.of(new FieldError("selectionMode",
+                    "SINGLE_TYPE, FEWEST_VEHICLES, KEEP_LINES or OVER_CAPACITY", "Pattern")));
         }
         Prepared prepared = reads.execute(s -> prepare(source.id(), command.warehouseId(), command.vehicleTypeIds(),
                 mode));
@@ -322,10 +328,12 @@ class LoadEstimateService implements LoadEstimates {
         List<PackagingSpec> specs = packaging.resolveAll(lines.stream()
                 .map(l -> new PackagingRequest(new Sku(l.sku()), remaining.get(l.lineId()))).toList());
 
+        Map<UUID, Map<String, Integer>> allocated = allocatedCartons(lines);
+
         List<MissingLine> missing = new ArrayList<>();
         List<EstimateCartons.Line> resolved = new ArrayList<>();
-        List<EstimateLine> estimateLines = new ArrayList<>();
         List<EstimateWarning> warnings = new ArrayList<>();
+        List<OrderSummary.LineSummary> partlyAllocated = new ArrayList<>();
         for (int i = 0; i < lines.size(); i++) {
             OrderSummary.LineSummary line = lines.get(i);
             PackagingSpec spec = specs.get(i);
@@ -337,9 +345,34 @@ class LoadEstimateService implements LoadEstimates {
                 missing.add(new MissingLine(line.lineId(), spec.sku(), spec.inventoryItemId(), absent));
                 continue;
             }
-            resolved.add(new EstimateCartons.Line(line.lineId(), spec));
-            estimateLines.add(line(line, spec));
+            Map<String, Integer> lpns = allocated.getOrDefault(line.lineId(), Map.of());
+            int allocatedUnits = lpns.values().stream().mapToInt(Integer::intValue).sum();
+            int left = remaining.get(line.lineId());
+            if (lpns.isEmpty() || spec.kitParts() > 1 || allocatedUnits > left) {
+                // Nothing allocated yet (or a kit, or holds the line no longer needs all of): from the packaging.
+                resolved.add(new EstimateCartons.Line(line.lineId(), spec));
+            } else {
+                resolved.add(new EstimateCartons.Line(line.lineId(), spec, List.copyOf(lpns.keySet()), null));
+                if (allocatedUnits < left) {
+                    partlyAllocated.add(line);
+                }
+            }
         }
+        if (!partlyAllocated.isEmpty()) {
+            // The units of a line not allocated yet (a later delivery batch) are counted from the packaging.
+            List<PackagingSpec> rests = packaging.resolveAll(partlyAllocated.stream()
+                    .map(l -> new PackagingRequest(new Sku(l.sku()), remaining.get(l.lineId())
+                            - allocated.get(l.lineId()).values().stream().mapToInt(Integer::intValue).sum()))
+                    .toList());
+            Map<UUID, PackagingSpec> restOf = new HashMap<>();
+            for (int i = 0; i < partlyAllocated.size(); i++) {
+                restOf.put(partlyAllocated.get(i).lineId(), rests.get(i));
+            }
+            resolved.replaceAll(l -> restOf.containsKey(l.orderLineId())
+                    ? new EstimateCartons.Line(l.orderLineId(), l.spec(), l.allocatedLpns(), restOf.get(l.orderLineId()))
+                    : l);
+        }
+        List<EstimateLine> estimateLines = resolved.stream().map(LoadEstimateService::line).toList();
         if (resolved.isEmpty()) {
             throw new BusinessException(ErrorCode.LOAD_ESTIMATE_PACKAGING_MISSING, "No line of order "
                     + order.orderNumber() + " has an item with a size and weight; complete the item(s) and estimate"
@@ -473,8 +506,50 @@ class LoadEstimateService implements LoadEstimates {
                 + " on its inventory item", "PackagingMissing");
     }
 
-    private static EstimateLine line(OrderSummary.LineSummary line, PackagingSpec spec) {
-        return line(line.lineId(), spec);
+    /**
+     * The stored line: the packaging of what it has left to ship, with as many cartons as it makes - one per allocated
+     * LPN plus those of the rest (whose remainder carton, if any, is the line's).
+     */
+    private static EstimateLine line(EstimateCartons.Line l) {
+        if (l.allocatedLpns().isEmpty()) {
+            return line(l.orderLineId(), l.spec());
+        }
+        PackagingSpec spec = l.spec();
+        PackagingSpec.CartonSpec c = spec.carton();
+        PackagingSpec.PartialCarton rest = l.rest() == null ? null : l.rest().partialCarton();
+        return new EstimateLine(l.orderLineId(), spec.sku(), spec.inventoryItemId(), spec.quantity(),
+                spec.level().name(), spec.unitOfMeasure(), spec.factor(), l.cartons(),
+                rest == null ? null : new Partial(rest.units(), rest.weightKg()),
+                new Layout.Dims(c.lengthMm(), c.widthMm(), c.heightMm()), c.weightKg(), c.rotatable(),
+                Math.max(1, spec.kitParts()));
+    }
+
+    /**
+     * 09 §4.0 step 2, 07 BR-03: the LPN cartons allocated to each line and still on the shelf or staged (a live hold on
+     * a carton), with the units each holds. A carton already picked is no longer held; its units count as the line's
+     * remaining quantity does.
+     */
+    private Map<UUID, Map<String, Integer>> allocatedCartons(List<OrderSummary.LineSummary> lines) {
+        List<UUID> ids = lines.stream().flatMap(l -> l.reservationIds().stream()).distinct().toList();
+        if (ids.isEmpty()) {
+            return Map.of();
+        }
+        Map<UUID, HoldView> holds = new HashMap<>();
+        inventory.holds(ids).forEach(h -> holds.put(h.reservationId(), h));
+        Map<UUID, Map<String, Integer>> out = new HashMap<>();
+        for (OrderSummary.LineSummary line : lines) {
+            Map<String, Integer> lpns = new LinkedHashMap<>();
+            for (UUID id : line.reservationIds()) {
+                HoldView h = holds.get(id);
+                if (h != null && h.lpn() != null && h.status() == HoldView.Status.HELD) {
+                    lpns.merge(h.lpn(), h.quantity(), Integer::sum);
+                }
+            }
+            if (!lpns.isEmpty()) {
+                out.put(line.lineId(), lpns);
+            }
+        }
+        return out;
     }
 
     private static EstimateLine line(UUID lineId, PackagingSpec spec) {
