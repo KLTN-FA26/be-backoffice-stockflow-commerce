@@ -470,7 +470,8 @@ class QuoteIntegrationTest {
     }
 
     @Test
-    @DisplayName("a sent quote expires at its validity: read as EXPIRED at once, refused, then written by the sweep")
+    @DisplayName("TC-F03-03: a sent quote expires at its validity: read as EXPIRED at once, refused, then written by "
+            + "the sweep")
     void expiry() throws Exception {
         Quotes.QuoteView created = quotes.create(sales, new Quotes.Create(UUID.randomUUID(), customerId,
                 draft(Instant.now().plusSeconds(3))));
