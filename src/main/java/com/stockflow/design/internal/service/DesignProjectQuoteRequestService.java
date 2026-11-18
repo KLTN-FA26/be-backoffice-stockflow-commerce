@@ -131,17 +131,19 @@ public class DesignProjectQuoteRequestService {
     @Auditable(action = AuditAction.CREATE, resourceType = "design-project", resourceId = "#projectId")
     public Asked request(UUID projectId, UUID actor, List<LineInput> asked, LocalDate desiredDeliveryDate) {
         if (asked == null || asked.isEmpty()) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A project quote request names at least one design");
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A project quote request names at least one design").localized("refusal.design.projectNoLine");
         }
         Set<UUID> named = new HashSet<>();
         LocalDate today = BusinessCalendar.date(clock.instant());
         for (int i = 0; i < asked.size(); i++) {
             LineInput line = asked.get(i);
             if (line.designId() == null || !named.add(line.designId())) {
-                throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Each design is named once in a request");
+                throw new BusinessException(ErrorCode.VALIDATION_FAILED, "Each design is named once in a request").localized("refusal.design.projectDesignTwice");
             }
-            QuoteRequestRules.requireValid(line.cartons(), desiredDeliveryDate, today, "lines[" + i + "].");
+            QuoteRequestRules.requireValid(line.cartons(), null, today, "lines[" + i + "].");
         }
+        // One date for every line, at the top of the body: refused under its own name, not under a line's.
+        QuoteRequestRules.requireValid(1, desiredDeliveryDate, today, "");
         DesignProjectJpaEntity project = projectService.lockActive(projectId, actor);
         requireActiveCustomer(actor, project);
         Map<UUID, DesignDraftJpaEntity> designs = drafts.findAllById(named).stream()
@@ -261,7 +263,7 @@ public class DesignProjectQuoteRequestService {
                 .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND));
         if (!"ACTIVE".equals(customer.status())) {
             throw new BusinessException(ErrorCode.CUSTOMER_NOT_ACTIVE,
-                    "The customer is " + customer.status() + "; only an active customer asks for a quote");
+                    "The customer is " + customer.status() + "; only an active customer asks for a quote").localized("refusal.design.customerNotActive", customer.status());
         }
     }
 

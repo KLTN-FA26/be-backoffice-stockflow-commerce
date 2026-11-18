@@ -570,7 +570,15 @@ class DesignProjectIntegrationTest {
                 .andExpect(status().isConflict()).andExpect(jsonPath("$.errorCode").value("DESIGN_NOT_APPROVED"));
         mvc.perform(post("/api/v1/design-projects/" + project + "/quote-requests").contentType(MediaType.APPLICATION_JSON)
                 .content("{\"lines\":[{\"designId\":\"" + cup + "\",\"cartons\":1},{\"designId\":\"" + cup
-                        + "\",\"cartons\":2}]}")).andExpect(status().isBadRequest());
+                        + "\",\"cartons\":2}]}")).andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("Mỗi thiết kế chỉ chọn một lần trong yêu cầu."));
+        // The one date of the request is its own field, told once - not under a line (WF-02 review).
+        mvc.perform(post("/api/v1/design-projects/" + project + "/quote-requests").contentType(MediaType.APPLICATION_JSON)
+                .content("{\"lines\":[{\"designId\":\"" + cup + "\",\"cartons\":1}],\"desiredDeliveryDate\":\""
+                        + java.time.LocalDate.now(java.time.ZoneId.of("Asia/Ho_Chi_Minh")).minusDays(1) + "\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.fieldErrors[0].field").value("desiredDeliveryDate"))
+                .andExpect(jsonPath("$.fieldErrors[0].message").value("Ngày giao mong muốn phải từ hôm nay trở đi."));
 
         // The sales staff list it with the project's name.
         as(tx.execute(s -> ReferenceRows.user(entityManager)), SALES);

@@ -40,7 +40,7 @@ public final class ContentTypePolicy {
                             sizeBytes / (1024 * 1024)));
         }
         if (sizeBytes == 0) {
-            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "The uploaded file is empty");
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "The uploaded file is empty").localized("refusal.upload.empty");
         }
 
         String normalised = normalise(declaredType);
