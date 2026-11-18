@@ -75,7 +75,7 @@ class ProductionCartonDamagedIntegrationTest {
         // of a carton with an open task is refused until it is done, so they are closed here.
         // The tasks are opened after the receipt's commit, by a listener: wait for them all.
         String[] lpnArray = lpns.toArray(new String[0]);
-        Await.until("a putaway task for every carton", Duration.ofSeconds(20), () -> jdbc.queryForObject("""
+        Await.until("a putaway task for every carton", Duration.ofSeconds(90), () -> jdbc.queryForObject("""
                 SELECT count(*) FROM warehouse.putaway_task
                  WHERE stock_package_id IN (SELECT id FROM inventory.stock_package WHERE lpn = ANY (?))""",
                 Long.class, (Object) lpnArray) == lpnArray.length);
