@@ -10,6 +10,8 @@ import com.stockflow.support.CartonRows;
 import com.stockflow.support.DemoData;
 import com.stockflow.support.IntegrationTest;
 import com.stockflow.support.PostgresContainer;
+import com.stockflow.warehouse.internal.domain.AreaDetails;
+import com.stockflow.warehouse.internal.domain.AreaType;
 import com.stockflow.warehouse.internal.domain.BinDetails;
 import com.stockflow.warehouse.internal.domain.BinType;
 import com.stockflow.warehouse.internal.domain.Footprint;
@@ -38,6 +40,9 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
  *
  * <p>Demo bin {@code HCM-B01-2-A}: 5 m wide x 1.2 m long on a level 1.4 m clear. Two cartons of 50 x 40 x 30 cm
  * (0.06 m³ each, rotatable) stand in it. Every test rolls back.</p>
+ *
+ * <p>An area is never judged (06 BR-19, decided again 2026-11-13, SCRUM-666): it has no volume, so resizing one that
+ * holds cartons is not refused.</p>
  */
 @IntegrationTest
 @Import(PostgresContainer.class)
@@ -47,6 +52,7 @@ class BinResizeStrandingIntegrationTest {
     private static final String BIN = "HCM-B01-2-A";
 
     @Autowired ShelfLayoutService shelves;
+    @Autowired AreaLayoutService areas;
     @Autowired UomConversionService units;
     @Autowired JdbcTemplate jdbc;
 
@@ -95,6 +101,53 @@ class BinResizeStrandingIntegrationTest {
         resizeBin("0.4", "0.5");
         assertThat(jdbc.queryForObject("select width from warehouse.bin where id = ?", BigDecimal.class, bin))
                 .isEqualByComparingTo("0.4");
+    }
+
+    @Test
+    @DisplayName("a bin the cartons fit only turned on the horizontal is accepted while their item may be turned")
+    void rotatableCartonFitsTurned() {
+        resizeBin("0.5", "0.4");    // 50 cm along the bin's width, 40 cm along its length: turned, they fit
+
+        assertThat(jdbc.queryForObject("select length from warehouse.bin where id = ?", BigDecimal.class, bin))
+                .isEqualByComparingTo("0.4");
+    }
+
+    @Test
+    @DisplayName("the same bin is refused once the item may not be turned; the bin the right way round is not")
+    void cartonThatMayNotTurn() {
+        jdbc.update("""
+                update inventory.inventory_items set rotatable = false
+                where id = (select inventory_item_id from inventory.uom_conversions where id = ?)""", unit);
+
+        BusinessException refused = assertThrows(BusinessException.class, () -> resizeBin("0.5", "0.4"));
+        assertThat(refused.errorCode()).isEqualTo(ErrorCode.CARTONS_WOULD_NOT_FIT);
+        assertThat(refused.getMessage()).contains(BIN);
+
+        resizeBin("0.4", "0.5");
+        assertThat(jdbc.queryForObject("select width from warehouse.bin where id = ?", BigDecimal.class, bin))
+                .isEqualByComparingTo("0.4");
+    }
+
+    @Test
+    @DisplayName("an area holding cartons can be shrunk: an area has no volume to strand them in")
+    void areaIsNotJudged() {
+        UUID qc01 = DemoData.area("QC01");
+        assertThat(jdbc.queryForObject("select count(*) from inventory.stock_package where location_code = 'HCM-QC01'"
+                + " and status in ('RECEIVING', 'IN_STOCK')", Long.class)).isPositive();
+        var row = jdbc.queryForMap("""
+                select a.type, a.name, a.x, a.y, a.is_obstacle, a.version,
+                       l.max_weight, l.is_pickable, l.is_putaway_target
+                from warehouse.area a join warehouse.storage_location l on l.id = a.location_id
+                where a.id = ?""", qc01);
+
+        areas.updateArea(new AreaCommands.UpdateArea(qc01, new AreaDetails(AreaType.valueOf((String) row.get("type")),
+                (String) row.get("name"), new Footprint((BigDecimal) row.get("x"), (BigDecimal) row.get("y"),
+                BigDecimal.ONE, BigDecimal.ONE, 0), (Boolean) row.get("is_obstacle"),
+                new LocationSettings((BigDecimal) row.get("max_weight"), (Boolean) row.get("is_pickable"),
+                        (Boolean) row.get("is_putaway_target"))), (Long) row.get("version")));
+
+        assertThat(jdbc.queryForObject("select width from warehouse.area where id = ?", BigDecimal.class, qc01))
+                .isEqualByComparingTo("1");
     }
 
     @Test
