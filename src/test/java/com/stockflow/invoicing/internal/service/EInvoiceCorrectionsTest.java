@@ -82,7 +82,7 @@ class EInvoiceCorrectionsTest {
         when(invoices.save(any())).thenAnswer(call -> call.getArgument(0));
         when(invoices.correctionsOf(any())).thenReturn(EInvoice.Corrections.NONE);
         when(invoices.piecesTakenOff(any())).thenAnswer(call -> new HashMap<UUID, Long>());
-        when(invoices.findEarlierUnissued(any(), any())).thenReturn(Optional.empty());
+        when(invoices.findEarlierSubmitting(any(), any(), any())).thenReturn(Optional.empty());
     }
 
     @BeforeEach

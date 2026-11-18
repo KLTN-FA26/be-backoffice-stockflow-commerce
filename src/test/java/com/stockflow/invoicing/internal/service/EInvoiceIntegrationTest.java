@@ -30,6 +30,7 @@ import com.stockflow.support.PostgresContainer;
 import com.stockflow.support.ReferenceRows;
 import com.stockflow.support.ShipmentRows;
 import com.stockflow.support.TestUsers;
+import com.stockflow.support.VatOfTheDay;
 import com.stockflow.support.WithCurrentUser;
 import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.AfterEach;
@@ -75,7 +76,9 @@ import static org.assertj.core.api.Assertions.tuple;
  * tests (application-test.yml): reconciliation, automatic issuing and the deadline sweep are called here, so nothing
  * answers for the provider before the test asks. The sandbox answers at once (processing-delay PT0S).</p>
  *
- * <p>The goods: cartons of 50 at 2,000 a piece - 100,000 a carton - of a product taxed STANDARD (10%).</p>
+ * <p>The goods: cartons of 50 at 2,000 a piece - 100,000 a carton - of a product taxed STANDARD, ordered at the
+ * STANDARD rate of the day ({@link VatOfTheDay}: 8% through 2026 under NĐ 174/2025, 10% after), as a quote drawn up
+ * today fixes it - so the invoice of a delivery today carries the contract's rate and nothing to flag.</p>
  */
 @IntegrationTest
 @Import(PostgresContainer.class)
@@ -112,6 +115,8 @@ class EInvoiceIntegrationTest {
     private UUID accountant;
     private String taxCode;
     private CustomerSkuRows.Issued sku;
+    /** STANDARD today: the rate a contract drawn up today fixes, and an invoice dated today carries. */
+    private BigDecimal standard;
     private final List<UUID> placed = Collections.synchronizedList(new ArrayList<>());
 
     /** A delivered shipment and the draft the listener drew up for it. */
@@ -129,6 +134,7 @@ class EInvoiceIntegrationTest {
         buyer(taxCode, "ke.toan@" + customer + ".example.com");
         sku = CustomerSkuRows.issue(jdbc, tx, entityManager, customer, 50, "STANDARD", true);
         CustomerSkuRows.stock(jdbc, tx, sku.sku(), 1_000);
+        standard = VatOfTheDay.standard(jdbc);
     }
 
     @AfterEach
@@ -164,10 +170,15 @@ class EInvoiceIntegrationTest {
         });
     }
 
-    /** {@code cartons} cartons ordered at 10% VAT, paid, released from HCM, packed, handed over whole and delivered. */
+    /** {@code cartons} cartons ordered at the day's STANDARD rate, paid, released, packed, handed over and delivered. */
     private Delivered delivered(int cartons) {
+        return delivered(cartons, standard);
+    }
+
+    /** The same, ordered at {@code contractRate}. */
+    private Delivered delivered(int cartons, BigDecimal contractRate) {
         ConfirmedOrders.Confirmed confirmed = confirmedOrders.confirmed(customer,
-                ConfirmedOrders.Line.cartons(sku, cartons, PRICE).withTax(TEN));
+                ConfirmedOrders.Line.cartons(sku, cartons, PRICE).withTax(contractRate));
         placed.add(confirmed.orderId());
         confirmedOrders.release(confirmed.orderId(), DemoData.WAREHOUSE_HCM, staff);
         orders.startPicking(confirmed.orderId(), staff);
@@ -239,11 +250,13 @@ class EInvoiceIntegrationTest {
         assertThat(line.quantity()).isEqualTo(4);
         assertThat(line.unitsPerCarton()).isEqualTo(50);
         assertThat(line.unitPrice()).as("50 pieces x 2,000").isEqualByComparingTo("100000");
-        assertThat(line.taxRate()).as("ordering.tax_rate: STANDARD").isEqualByComparingTo("10");
+        assertThat(line.taxRate()).as("STANDARD on the day of delivery").isEqualByComparingTo(standard);
         assertThat(draft.subtotal()).isEqualByComparingTo("400000");
-        assertThat(draft.taxTotal()).isEqualByComparingTo("40000");
-        assertThat(draft.grandTotal()).isEqualByComparingTo("440000");
-        assertThat(draft.amountInWords()).isEqualTo("Bốn trăm bốn mươi nghìn đồng");
+        assertThat(draft.taxTotal()).isEqualByComparingTo(VatOfTheDay.tax(400_000, standard));
+        assertThat(draft.grandTotal()).isEqualByComparingTo(VatOfTheDay.tax(400_000, standard).add(
+                BigDecimal.valueOf(400_000)));
+        assertThat(draft.amountInWords()).isEqualTo(standard.compareTo(new BigDecimal("8")) == 0
+                ? "Bốn trăm ba mươi hai nghìn đồng" : "Bốn trăm bốn mươi nghìn đồng");
         assertThat(draft.seller().name()).as("stockflow.seller.*").isEqualTo("DEMO STOCKFLOW CO LTD");
         assertThat(draft.seller().taxCode()).isEqualTo("0000000000");
         assertThat(draft.buyer().name()).isEqualTo("Test customer");
@@ -272,20 +285,20 @@ class EInvoiceIntegrationTest {
     }
 
     @Test
-    @DisplayName("a VAT reduction in force on the day of delivery is the invoice's rate, and the draft is flagged")
+    @DisplayName("the rate in force on the day of delivery is the invoice's, whatever the contract fixed - a contract "
+            + "of 2026 at 8% delivered in 2027 at 10%, or the other way round - and the draft is flagged")
     void theRateInForceOnTheDayOfDelivery() {
-        LocalDate today = LocalDate.now(ConfirmedOrders.VIETNAM);
-        tx.executeWithoutResult(s -> jdbc.update("""
-                INSERT INTO ordering.tax_rate_period (id, tax_class, rate, valid_from, valid_to, note)
-                VALUES (gen_random_uuid(), 'STANDARD', 8, ?, ?, 'EInvoiceIntegrationTest')""",
-                java.sql.Date.valueOf(today.minusDays(1)), java.sql.Date.valueOf(today.plusDays(1))));
+        // A contract at the other rate of the reduction than today's: a 2026 contract delivered in 2027 when the test
+        // runs in 2027, a contract of before the reduction delivered during it when it runs in 2026.
+        BigDecimal contract = standard.compareTo(TEN) == 0 ? new BigDecimal("8") : TEN;
 
-        EInvoice.Snapshot draft = delivered(2).draft();
+        EInvoice.Snapshot draft = delivered(2, contract).draft();
 
-        // The contract fixed 10%; the day's rate is 8%: 200,000 at 8%.
-        assertThat(draft.lines().getFirst().taxRate()).isEqualByComparingTo("8");
-        assertThat(draft.taxTotal()).isEqualByComparingTo("16000");
-        assertThat(draft.grandTotal()).isEqualByComparingTo("216000");
+        // 200,000 at the day's rate, not the contract's.
+        assertThat(draft.lines().getFirst().taxRate()).isEqualByComparingTo(standard);
+        assertThat(draft.taxTotal()).isEqualByComparingTo(VatOfTheDay.tax(200_000, standard));
+        assertThat(draft.grandTotal()).isEqualByComparingTo(VatOfTheDay.tax(200_000, standard).add(
+                BigDecimal.valueOf(200_000)));
         assertThat(draft.warnings()).containsExactly(EInvoice.Warning.TAX_RATE_DIFFERS_FROM_CONTRACT);
     }
 
@@ -330,7 +343,9 @@ class EInvoiceIntegrationTest {
         assertThat(xml).contains("<SHDon>" + issued.invoiceNumber() + "</SHDon>")
                 .contains("<KHHDon>" + issued.symbol() + "</KHHDon>")
                 .contains("<MCCQT>" + issued.taxAuthorityCode() + "</MCCQT>")
-                .contains("<MST>" + taxCode + "</MST>").contains("<TgTTTBSo>330000</TgTTTBSo>")
+                .contains("<MST>" + taxCode + "</MST>")
+                .contains("<TgTTTBSo>" + VatOfTheDay.tax(300_000, standard).add(BigDecimal.valueOf(300_000))
+                        .toPlainString() + "</TgTTTBSo>")
                 .contains("NO LEGAL VALUE");
         assertThat(read(issued.pdfFileKey())).startsWith("%PDF-");
 
@@ -371,13 +386,15 @@ class EInvoiceIntegrationTest {
                 .singleElement().satisfies(entry -> {
                     assertThat(entry.buyerTaxCode()).isEqualTo(taxCode);
                     assertThat(entry.subtotal()).isEqualByComparingTo("300000");
-                    assertThat(entry.taxTotal()).isEqualByComparingTo("30000");
-                    assertThat(entry.grandTotal()).isEqualByComparingTo("330000");
+                    assertThat(entry.taxTotal()).isEqualByComparingTo(VatOfTheDay.tax(300_000, standard));
+                    assertThat(entry.grandTotal()).isEqualByComparingTo(VatOfTheDay.tax(300_000, standard)
+                            .add(BigDecimal.valueOf(300_000)));
                     assertThat(entry.status()).isEqualTo(EInvoiceStatus.ISSUED);
                 });
         assertThat(queries.registerCsv(issued.issueDate(), issued.issueDate()))
                 .contains("\"" + issued.symbol() + "\",%08d,".formatted(issued.invoiceNumber()))
-                .contains(",300000,30000,330000,");
+                .contains(",300000," + VatOfTheDay.tax(300_000, standard).toPlainString() + ","
+                        + VatOfTheDay.tax(300_000, standard).add(BigDecimal.valueOf(300_000)).toPlainString() + ",");
         assertThat(queries.register(issued.issueDate().minusDays(30), issued.issueDate().minusDays(1)))
                 .as("not in an earlier period").noneMatch(entry -> entry.taxAuthorityCode()
                         .equals(issued.taxAuthorityCode()));
@@ -429,6 +446,150 @@ class EInvoiceIntegrationTest {
         // The profile changes afterwards; the invoice keeps the buyer it was issued to.
         buyer(taxCode, "khac@" + customer + ".example.com");
         assertThat(queries.get(draft.id()).buyer().email()).isEqualTo("hoa.don@" + customer + ".example.com");
+    }
+
+    // ---- the order of numbers within a series (HĐ-2) -------------------------------------------------------------
+
+    /**
+     * An adjustment of {@code issued} that changes no money, dated {@code day}, written straight to the tables as a
+     * DRAFT - as review L1 does: a real invoice of each kind would be an order delivered apiece.
+     */
+    private UUID adjustmentOf(EInvoice.Snapshot issued, String code, LocalDate day) {
+        UUID id = UUID.randomUUID();
+        tx.executeWithoutResult(s -> {
+            jdbc.update("""
+                    INSERT INTO invoicing.einvoice (id, code, type, status, order_id, order_number, contract_number,
+                            shipment_id, shipment_code, delivery_batch_id, customer_id, original_einvoice_id,
+                            issue_date, issue_due_at, seller_name, seller_tax_code, seller_address, buyer_name,
+                            buyer_tax_code, buyer_address, buyer_email, currency, payment_method, subtotal,
+                            tax_total, grand_total, amount_in_words, adjustment_reason, correction_basis,
+                            agreement_file_key, agreement_number, agreement_date)
+                    SELECT ?, ?, 'ADJUSTMENT', 'DRAFT', o.order_id, o.order_number, o.contract_number, o.shipment_id,
+                           o.shipment_code, o.delivery_batch_id, o.customer_id, o.id, ?, o.issue_due_at,
+                           o.seller_name, o.seller_tax_code, o.seller_address, o.buyer_name, o.buyer_tax_code,
+                           o.buyer_address, o.buyer_email, o.currency, o.payment_method, 0, 0, 0, o.amount_in_words,
+                           'HĐ-2 fixture', 'ERROR', 'einvoices/hd2.pdf', 'BB-HD2', o.issue_date
+                      FROM invoicing.einvoice o WHERE o.id = ?""", id, code, java.sql.Date.valueOf(day), issued.id());
+            jdbc.update("""
+                    INSERT INTO invoicing.einvoice_line (id, einvoice_id, line_no, kind, item_name, unit, quantity,
+                            unit_price, tax_rate, amount, tax_amount)
+                    VALUES (gen_random_uuid(), ?, 1, 'NOTE', 'HĐ-2 fixture', 'Lan', 1, 0, 0, 0, 0)""", id);
+        });
+        return id;
+    }
+
+    /** The fixture sent to {@code provider} under {@code symbol} (template 1): SUBMITTING. */
+    private void atTheProvider(UUID id, String provider, String symbol) {
+        tx.executeWithoutResult(s -> jdbc.update("""
+                UPDATE invoicing.einvoice
+                   SET status = 'SUBMITTING', provider = ?, attempt = 1, transaction_id = id::text || '-1',
+                       template_code = '1', symbol = ?, submitted_at = now()
+                 WHERE id = ?""", provider, symbol, id));
+    }
+
+    /** Every fixture coded {@code codes}...: back to a draft, then voided - out of the way of every other test. */
+    private void voidFixtures(String codes) {
+        tx.executeWithoutResult(s -> {
+            jdbc.update("UPDATE invoicing.einvoice SET status = 'REJECTED', rejection_code = 'TEST_FIXTURE' "
+                    + "WHERE code LIKE ? AND status = 'SUBMITTING'", codes + "%");
+            jdbc.update("UPDATE invoicing.einvoice SET status = 'DRAFT' WHERE code LIKE ? AND status = 'REJECTED'",
+                    codes + "%");
+            jdbc.update("UPDATE invoicing.einvoice SET status = 'VOIDED_DRAFT', voided_at = now(), "
+                    + "void_reason = 'HĐ-2 fixture' WHERE code LIKE ? AND status = 'DRAFT'", codes + "%");
+        });
+    }
+
+    @Test
+    @DisplayName("HĐ-2: a draft is held back only by an earlier-dated invoice of its own series at the provider - not "
+            + "by an earlier draft, a rejected one, another series or another provider; the screen still names those")
+    void onlyAnEarlierInvoiceOfTheSeriesAtTheProviderHoldsADraftBack() {
+        LocalDate today = LocalDate.now(ConfirmedOrders.VIETNAM);
+        org.junit.jupiter.api.Assumptions.assumeTrue(today.getDayOfYear() > 1, "a day before today in the same year");
+        LocalDate yesterday = today.minusDays(1);
+        String yy = "%02d".formatted(today.getYear() % 100);
+        com.stockflow.invoicing.internal.domain.InvoiceSeries series =
+                new com.stockflow.invoicing.internal.domain.InvoiceSeries("SANDBOX", "1", "C" + yy + "TSB",
+                        today.getYear());
+        EInvoice.Snapshot first = delivered(1).draft();
+        EInvoice.Snapshot issued = FirstSend.issue(issuance, queries, first.id(), first.version(), accountant);
+        assertThat(issued.symbol()).isEqualTo(series.symbol());
+        EInvoice.Snapshot draft = delivered(1).draft();
+        String codes = "HD2-" + issued.id().toString().substring(24) + "-";
+        try {
+            adjustmentOf(issued, codes + "D", yesterday);
+            UUID rejected = adjustmentOf(issued, codes + "R", yesterday);
+            atTheProvider(rejected, "SANDBOX", series.symbol());
+            tx.executeWithoutResult(s -> jdbc.update("UPDATE invoicing.einvoice SET status = 'REJECTED', "
+                    + "rejection_code = 'INVALID_BUYER_TAX_CODE' WHERE id = ?", rejected));
+            atTheProvider(adjustmentOf(issued, codes + "S", yesterday), "SANDBOX", "C" + yy + "TSC");
+            atTheProvider(adjustmentOf(issued, codes + "P", yesterday), "SEPAY_EINVOICE", series.symbol());
+            atTheProvider(adjustmentOf(issued, codes + "T", today), "SANDBOX", series.symbol());
+
+            assertThat(invoices.findEarlierSubmitting(draft.id(), series, today))
+                    .as("another series, another provider, dated the same day: none of them comes first").isEmpty();
+            assertThat(invoices.findEarlierUnissued(draft.id(), series, today))
+                    .as("the screen names the earliest unissued invoice the series will number before it")
+                    .hasValueSatisfying(code -> assertThat(code).isIn(codes + "D", codes + "R"));
+            assertThat(queries.earlierPending(queries.get(draft.id()))).isPresent();
+            assertThat(FirstSend.issue(issuance, queries, draft.id(), draft.version(), accountant).status())
+                    .as("an earlier draft and an earlier rejected invoice keep nothing back")
+                    .isEqualTo(EInvoiceStatus.ISSUED);
+
+            // One of its own series, dated before it, is at the provider: the next draft waits for its number.
+            atTheProvider(adjustmentOf(issued, codes + "Q", yesterday), "SANDBOX", series.symbol());
+            EInvoice.Snapshot next = delivered(1).draft();
+            assertThat(invoices.findEarlierSubmitting(next.id(), series, today)).contains(codes + "Q");
+            assertThatThrownBy(() -> issuance.issue(next.id(), next.version(), accountant))
+                    .extracting(EInvoiceIntegrationTest::code).isEqualTo(ErrorCode.EINVOICE_OLDER_DRAFT_PENDING);
+            assertThat(queries.get(next.id()).status()).isEqualTo(EInvoiceStatus.DRAFT);
+            assertThat(calls(next.id())).as("nothing was sent").isEmpty();
+        } finally {
+            voidFixtures(codes);
+        }
+    }
+
+    @Test
+    @DisplayName("HĐ-2: submissions of one series take turns - while one holds the series' lock another waits for it; "
+            + "another series does not, and the lock goes with the transaction")
+    void submissionsOfOneSeriesTakeTurns() throws Exception {
+        com.stockflow.invoicing.internal.domain.InvoiceSeries series =
+                new com.stockflow.invoicing.internal.domain.InvoiceSeries("SANDBOX", "1", "C26TSB", 2026);
+        com.stockflow.invoicing.internal.domain.InvoiceSeries other =
+                new com.stockflow.invoicing.internal.domain.InvoiceSeries("SANDBOX", "1", "C26TSC", 2026);
+        java.util.concurrent.CountDownLatch held = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch done = new java.util.concurrent.CountDownLatch(1);
+        ExecutorService pool = Executors.newSingleThreadExecutor();
+        try {
+            Future<?> holder = pool.submit(() -> tx.executeWithoutResult(s -> {
+                invoices.lockSeries(series);
+                held.countDown();
+                try {
+                    done.await(20, java.util.concurrent.TimeUnit.SECONDS);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            }));
+            assertThat(held.await(20, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+
+            assertThatThrownBy(() -> tx.executeWithoutResult(s -> {
+                jdbc.execute("SET LOCAL lock_timeout = '300ms'");
+                invoices.lockSeries(series);
+            })).as("the same series waits").isInstanceOf(org.springframework.dao.DataAccessException.class);
+            tx.executeWithoutResult(s -> {
+                jdbc.execute("SET LOCAL lock_timeout = '300ms'");
+                invoices.lockSeries(other);
+            });
+
+            done.countDown();
+            holder.get(20, java.util.concurrent.TimeUnit.SECONDS);
+            tx.executeWithoutResult(s -> {
+                jdbc.execute("SET LOCAL lock_timeout = '300ms'");
+                invoices.lockSeries(series);
+            });
+        } finally {
+            done.countDown();
+            pool.shutdownNow();
+        }
     }
 
     // ---- when the provider goes wrong ----------------------------------------------------------------------------

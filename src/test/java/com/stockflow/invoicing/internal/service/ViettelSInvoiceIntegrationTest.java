@@ -249,10 +249,10 @@ class ViettelSInvoiceIntegrationTest {
         providerAccounts.activate(VIETTEL, configured(VIETTEL).version());
     }
 
-    /** One carton ordered at 10% VAT, paid, released, packed, handed over and delivered; its draft drawn up. */
+    /** One carton ordered at the day's STANDARD VAT, paid, released, packed, handed over and delivered; its draft. */
     private EInvoice.Snapshot deliveredDraft() {
         ConfirmedOrders.Confirmed confirmed = confirmedOrders.confirmed(customer,
-                ConfirmedOrders.Line.cartons(sku, 1, PRICE).withTax(new java.math.BigDecimal("10")));
+                ConfirmedOrders.Line.cartons(sku, 1, PRICE).withTax(com.stockflow.support.VatOfTheDay.standard(jdbc)));
         placed.add(confirmed.orderId());
         confirmedOrders.release(confirmed.orderId(), DemoData.WAREHOUSE_HCM, staff);
         orders.startPicking(confirmed.orderId(), staff);
@@ -490,7 +490,8 @@ class ViettelSInvoiceIntegrationTest {
         assertThat(sent.get("buyerInfo").get("buyerTaxCode").asText()).isEqualTo(taxCode);
         assertThat(sent.get("summarizeInfo").get("totalAmountWithoutTax").decimalValue())
                 .as("one carton of 50 at 2,000").isEqualByComparingTo("100000");
-        assertThat(sent.get("itemInfo").get(0).get("taxAmount").decimalValue()).isEqualByComparingTo("10000");
+        assertThat(sent.get("itemInfo").get(0).get("taxAmount").decimalValue())
+                .isEqualByComparingTo(com.stockflow.support.VatOfTheDay.tax(100_000, com.stockflow.support.VatOfTheDay.standard(jdbc)));
 
         assertThat(stored(issued.xmlFileKey())).as("the invoice in law is Viettel's signed XML, byte for byte - not one "
                 + "the system wrote").isEqualTo(xml);

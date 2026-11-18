@@ -335,7 +335,7 @@ PRODUCTS = [
      [("8OZ", "8 oz", 0.006), ("12OZ", "12 oz", 0.008), ("16OZ", "16 oz", 0.011)]),
     ("LY-NHUA-PET", "Ly nhựa PET in logo", "LY-NHUA", "STANDARD", "parametric-cup", "DUNG_TICH",
      [("16OZ", "16 oz", 0.012), ("22OZ", "22 oz", 0.016)]),
-    ("HOP-BANH-KRAFT", "Hộp bánh giấy kraft in logo", "HOP-GIAY", "REDUCED", "parametric-bag", "KICH_THUOC",
+    ("HOP-BANH-KRAFT", "Hộp bánh giấy kraft in logo", "HOP-GIAY", "STANDARD", "parametric-bag", "KICH_THUOC",
      [("M", "Vừa 18x18 cm", 0.035)]),
     ("TUI-GIAY-QUAI", "Túi giấy quai xoắn in logo", "TUI-GIAY", "STANDARD", "parametric-bag", "KICH_THUOC",
      [("M", "Vừa 25x33 cm", 0.06), ("L", "Lớn 32x43 cm", 0.09)]),

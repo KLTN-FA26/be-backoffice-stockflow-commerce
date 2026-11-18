@@ -137,9 +137,10 @@ class EInvoiceController {
     }
 
     @GetMapping("/{id}")
-    @Operation(summary = "One e-invoice with its lines, totals by VAT rate and total in words; a draft that an "
-            + "earlier-dated invoice still to be issued keeps back names it (earlierPendingInvoice, warning "
-            + "EARLIER_INVOICE_PENDING)")
+    @Operation(summary = "One e-invoice with its lines, totals by VAT rate and total in words. A draft names an "
+            + "invoice dated before it and still to be issued under the series it would be sent under "
+            + "(earlierPendingInvoice, warning EARLIER_INVOICE_PENDING): a warning - only one of them at the provider "
+            + "keeps the draft back")
     @RequiresPermission(resource = InvoicingResources.EINVOICES, action = Action.READ, scope = DataScope.ALL)
     public ApiResponse<EInvoiceResponse> get(@PathVariable UUID id, @AuthenticatedUser CurrentUser user) {
         ScopeGuards.requireBackOffice(user);
@@ -265,7 +266,9 @@ class EInvoiceController {
     @Operation(summary = "Issue a draft through the provider. Answers SUBMITTING at once: the provider is called "
             + "afterwards, and the invoice becomes ISSUED or REJECTED when it has answered (read it again, or ask with "
             + "/reconciliation). 409 EINVOICE_BUYER_PROFILE_INCOMPLETE while the buyer's name, tax code or address is "
-            + "missing")
+            + "missing; 409 EINVOICE_OLDER_DRAFT_PENDING while an invoice of the same series dated before it is at the "
+            + "provider (a draft or a rejected one does not keep it back); 409 EINVOICE_TAX_EXEMPT_NOT_SUPPORTED for a "
+            + "line at 0% (tax class EXEMPT, which cannot be issued yet)")
     @RequiresPermission(resource = InvoicingResources.EINVOICES, action = Action.APPROVE, scope = DataScope.ALL)
     public ApiResponse<EInvoiceResponse> issue(@PathVariable UUID id,
                                                @Valid @RequestBody EInvoiceVersionRequest request,

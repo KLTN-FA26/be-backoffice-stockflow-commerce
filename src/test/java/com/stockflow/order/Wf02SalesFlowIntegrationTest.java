@@ -72,8 +72,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *       under its one live contract.</li>
  * </ul>
  *
- * <p>Every money figure follows from one line: 4 cartons of 10 at 2,800 (the 4-carton tier) = 112,000 + 10% VAT, and a
- * plate fee of 500,000 + 10% VAT - 673,200 with tax.</p>
+ * <p>Every money figure follows from one line: 4 cartons of 10 at 2,800 (the 4-carton tier) = 112,000 + VAT, and a
+ * plate fee of 500,000 + VAT, at the STANDARD rate the quote takes on its day (HĐ-7: 8% through 2026, 10% after). The
+ * figures in the comments are at 10%: 673,200 with tax.</p>
  */
 @IntegrationTest
 @Import(PostgresContainer.class)
@@ -83,7 +84,16 @@ class Wf02SalesFlowIntegrationTest {
 
     private static final ZoneId VIETNAM = ZoneId.of("Asia/Ho_Chi_Minh");
     private static final Duration ASYNC = Duration.ofSeconds(15);
-    private static final BigDecimal TOTAL = new BigDecimal("673200");
+    /** With tax: 673,200 at 10%. */
+    private BigDecimal total;
+    /** 30% of it on signing (201,960 at 10%), the rest in halves (235,620), quarters (117,810) and three quarters. */
+    private long deposit;
+    private long half;
+    private long quarter;
+    private long threeQuarters;
+    /** 10 and 30 cups at 2,800 with tax (30,800 and 92,400 at 10%). */
+    private long tenCups;
+    private long thirtyCups;
 
     @Autowired Quotes quotes;
     @Autowired SalesContracts contracts;
@@ -105,6 +115,15 @@ class Wf02SalesFlowIntegrationTest {
 
     @BeforeEach
     void setUp() {
+        BigDecimal rate = com.stockflow.support.VatOfTheDay.standard(jdbc);
+        total = com.stockflow.support.VatOfTheDay.tax(112_000, rate).add(com.stockflow.support.VatOfTheDay.tax(500_000,
+                rate)).add(BigDecimal.valueOf(612_000));
+        deposit = total.multiply(new BigDecimal("0.30")).setScale(0, java.math.RoundingMode.HALF_UP).longValueExact();
+        half = (total.longValueExact() - deposit) / 2;
+        quarter = (total.longValueExact() - deposit) / 4;
+        threeQuarters = total.longValueExact() - deposit - quarter;
+        tenCups = com.stockflow.support.VatOfTheDay.tax(28_000, rate).longValueExact() + 28_000;
+        thirtyCups = com.stockflow.support.VatOfTheDay.tax(84_000, rate).longValueExact() + 84_000;
         UUID salesUser = tx.execute(s -> ReferenceRows.user(entityManager));
         sales = new CurrentUser(salesUser, "sales-" + salesUser, Set.of(Role.SALES_STAFF), Set.of(), DataScope.ALL,
                 Set.of(), Set.of());
@@ -181,12 +200,12 @@ class Wf02SalesFlowIntegrationTest {
                 Map.of(line, 4)));
         assertThat(accepted.status()).isEqualTo(QuoteStatus.ACCEPTED);
         assertThat(accepted.lines().getFirst().acceptedUnitPrice()).as("the 4-carton tier").isEqualByComparingTo("2800");
-        assertThat(accepted.acceptedTotal()).as("112,000 + 500,000 + 61,200 VAT").isEqualByComparingTo(TOTAL);
+        assertThat(accepted.acceptedTotal()).as("112,000 + 500,000 + 61,200 VAT").isEqualByComparingTo(total);
 
         UUID orderId = quotes.convert(sales, accepted.id(), new Quotes.Conversion(accepted.version(), null, null))
                 .convertedOrder().orderId();
         assertThat(status(orderId)).isEqualTo(OrderStatus.DRAFT);
-        assertThat(orders.findById(orderId).orElseThrow().total().amount()).isEqualByComparingTo(TOTAL);
+        assertThat(orders.findById(orderId).orElseThrow().total().amount()).isEqualByComparingTo(total);
         return orderId;
     }
 
@@ -247,10 +266,10 @@ class Wf02SalesFlowIntegrationTest {
 
         // 30% on signing = 201,960; the remaining 471,240 split as the two batches are worth (2 + 2 cartons).
         SalesContracts.ContractView drafted = asSales(() -> contracts.create(sales, orderId,
-                new SalesContracts.Draft(null, split(line, 2, 2), plan(235_620, 235_620))));
+                new SalesContracts.Draft(null, split(line, 2, 2), plan(half, half))));
         assertThat(drafted.status()).isEqualTo("DRAFT");
         assertThat(drafted.deliverySchedule()).extracting(SalesContracts.BatchView::seq).containsExactly(1, 2);
-        assertThat(amounts(drafted.paymentPlan())).containsExactly(201_960L, 235_620L, 235_620L);
+        assertThat(amounts(drafted.paymentPlan())).containsExactly(deposit, half, half);
         assertThat(drafted.paymentPlan()).extracting(SalesContracts.InstallmentView::milestone)
                 .containsExactly("ON_SIGNING", "BEFORE_DELIVERY", "AFTER_DELIVERY");
 
@@ -268,21 +287,21 @@ class Wf02SalesFlowIntegrationTest {
         // batch 1's own installment only before batch 1.
         UUID batch1 = batch(orderId, 1);
         UUID batch2 = batch(orderId, 2);
-        assertThat(payments.dueBeforeHandover(orderId, batch1)).isEqualByComparingTo("437580");
-        assertThat(payments.dueBeforeHandover(orderId, batch2)).isEqualByComparingTo("201960");
+        assertThat(payments.dueBeforeHandover(orderId, batch1)).isEqualByComparingTo(BigDecimal.valueOf(deposit + half));
+        assertThat(payments.dueBeforeHandover(orderId, batch2)).isEqualByComparingTo(BigDecimal.valueOf(deposit));
 
         List<UUID> installments = jdbc.queryForList("SELECT id FROM payment.installment WHERE order_id = ? ORDER BY "
                 + "seq", UUID.class, orderId);
         assertThat(installments).hasSize(3);
         PaymentReceipt receipt = receipts.record(new PaymentReceiptService.RecordReceiptCommand(customerId,
                 "FT" + UUID.randomUUID().toString().replace("-", "").substring(0, 14).toUpperCase(), today, null,
-                List.of(new PaymentReceipt.Payment(installments.getFirst(), new BigDecimal("201960"))), accountant))
+                List.of(new PaymentReceipt.Payment(installments.getFirst(), BigDecimal.valueOf(deposit))), accountant))
                 .receipt();
-        assertThat(receipt.amount()).isEqualByComparingTo("201960");
+        assertThat(receipt.amount()).isEqualByComparingTo(BigDecimal.valueOf(deposit));
         Await.until("the order confirmed by its receipt", ASYNC, () -> status(orderId) == OrderStatus.CONFIRMED);
 
         assertThat(payments.dueBeforeHandover(orderId, batch1)).as("batch 1 still waits for its own installment")
-                .isEqualByComparingTo("235620");
+                .isEqualByComparingTo(BigDecimal.valueOf(half));
         assertThat(payments.dueBeforeHandover(orderId, batch2)).as("batch 2 is not held by batch 1's money")
                 .isEqualByComparingTo("0");
         assertThat(reservations(orderId)).as("held once Sales chooses its shipping warehouse, not before").isZero();
@@ -298,7 +317,7 @@ class Wf02SalesFlowIntegrationTest {
         UUID orderId = quotedAndConverted();
         UUID line = lineOf(orderId);
         SalesContracts.ContractView first = asSales(() -> contracts.create(sales, orderId,
-                new SalesContracts.Draft(null, split(line, 2, 2), plan(235_620, 235_620))));
+                new SalesContracts.Draft(null, split(line, 2, 2), plan(half, half))));
         SalesContracts.ContractView sent = asSales(() -> contracts.send(sales, orderId, first.version()));
 
         // A5: the state first - a plan that does not add up is not what is wrong with editing a sent contract.
@@ -327,7 +346,7 @@ class Wf02SalesFlowIntegrationTest {
 
         // 1 + 2 cartons of an order of 4: refused, naming the SKU; nothing kept.
         Throwable wrongSplit = org.assertj.core.api.Assertions.catchThrowable(() -> asSales(() -> contracts.create(
-                sales, orderId, new SalesContracts.Draft(null, split(line, 1, 2), plan(235_620, 235_620)))));
+                sales, orderId, new SalesContracts.Draft(null, split(line, 1, 2), plan(half, half)))));
         assertThat(code(wrongSplit)).isEqualTo(ErrorCode.DELIVERY_SCHEDULE_INVALID);
         assertThat(fieldErrors(wrongSplit)).extracting(FieldError::message)
                 .anyMatch(message -> message.startsWith(sku + ": 3 carton(s) over the batches, the order has 4"));
@@ -335,20 +354,20 @@ class Wf02SalesFlowIntegrationTest {
 
         // 1 + 3: the old amounts still add up to the total, so they are taken - but they are the old batches' worth.
         SalesContracts.ContractView redrawn = asSales(() -> contracts.create(sales, orderId,
-                new SalesContracts.Draft(null, split(line, 1, 3), plan(235_620, 235_620))));
+                new SalesContracts.Draft(null, split(line, 1, 3), plan(half, half))));
         assertThat(redrawn.deliverySchedule()).extracting(b -> b.value().longValueExact())
-                .as("10 cups and 30 cups with tax").containsExactly(30_800L, 92_400L);
+                .as("10 cups and 30 cups with tax").containsExactly(tenCups, thirtyCups);
 
         // A4: suggested again from the batches as they are: the 471,240 after the deposit, shared 1 : 3.
         SalesContracts.PlanSuggestion suggestion = asSales(() -> contracts.suggestPaymentPlan(orderId));
         assertThat(suggestion.contractId()).isEqualTo(redrawn.id());
         assertThat(suggestion.version()).isEqualTo(redrawn.version());
-        assertThat(suggestion.totalAmount()).isEqualByComparingTo(TOTAL);
-        assertThat(amounts(suggestion.paymentPlan())).containsExactly(201_960L, 117_810L, 353_430L);
+        assertThat(suggestion.totalAmount()).isEqualByComparingTo(total);
+        assertThat(amounts(suggestion.paymentPlan())).containsExactly(deposit, quarter, threeQuarters);
         assertThat(suggestion.paymentPlan().stream().map(SalesContracts.InstallmentView::amount)
-                .reduce(BigDecimal.ZERO, BigDecimal::add)).isEqualByComparingTo(TOTAL);
+                .reduce(BigDecimal.ZERO, BigDecimal::add)).isEqualByComparingTo(total);
         assertThat(asSales(() -> contracts.get(orderId)).paymentPlan()).as("a suggestion saves nothing")
-                .extracting(i -> i.amount().longValueExact()).containsExactly(201_960L, 235_620L, 235_620L);
+                .extracting(i -> i.amount().longValueExact()).containsExactly(deposit, half, half);
 
         // Sales takes it as it is.
         SalesContracts.ContractView edited = asSales(() -> contracts.edit(sales, orderId, suggestion.version(),
@@ -356,7 +375,7 @@ class Wf02SalesFlowIntegrationTest {
                         .map(i -> new SalesContracts.Installment(i.name(), i.milestone(),
                                 i.percent() == null ? i.amount() : null, i.percent(), i.dueDays(),
                                 i.deliveryBatchSeq())).toList())));
-        assertThat(amounts(edited.paymentPlan())).containsExactly(201_960L, 117_810L, 353_430L);
+        assertThat(amounts(edited.paymentPlan())).containsExactly(deposit, quarter, threeQuarters);
         assertThat(edited.paymentPlan().getFirst().percent()).as("the deposit is still a share")
                 .isEqualByComparingTo("30");
 
@@ -369,7 +388,7 @@ class Wf02SalesFlowIntegrationTest {
                 .containsExactlyInAnyOrder("SIGNED", "CANCELLED");
         assertThat(jdbc.queryForList("SELECT amount FROM payment.installment WHERE order_id = ? ORDER BY seq",
                 BigDecimal.class, orderId)).extracting(BigDecimal::longValueExact)
-                .as("the installments opened are the suggested ones").containsExactly(201_960L, 117_810L, 353_430L);
+                .as("the installments opened are the suggested ones").containsExactly(deposit, quarter, threeQuarters);
         assertThat(reservations(orderId)).isZero();
     }
 

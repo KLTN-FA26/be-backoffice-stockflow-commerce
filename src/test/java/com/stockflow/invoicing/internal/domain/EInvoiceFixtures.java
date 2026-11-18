@@ -42,6 +42,13 @@ public final class EInvoiceFixtures {
                 false, false);
     }
 
+    /** A draft of one goods line taxed at {@code rate}: 20 cartons of 100,000. */
+    public static EInvoice draftAtRate(BigDecimal rate) {
+        return EInvoice.drawUpOriginal(UUID.randomUUID(), "EINV-20261112-0002", delivery(), SELLER, BUYER,
+                List.of(EInvoiceLine.goods(UUID.randomUUID(), 1, UUID.randomUUID(), "CUP12-0398765432-01",
+                        "Ly giay 12oz", "Thung", 20, 50, new BigDecimal("100000"), rate)), false, false);
+    }
+
     /** An invoice brought to {@code status} the way the application brings it there. */
     public static EInvoice in(EInvoiceStatus status) {
         EInvoice invoice = draft();

@@ -1,5 +1,6 @@
 package com.stockflow.invoicing.internal.service;
 
+import com.stockflow.common.domain.BusinessCalendar;
 import com.stockflow.contracts.EInvoiceIssueDue;
 import com.stockflow.contracts.EInvoiceNeedsAttention;
 import com.stockflow.invoicing.internal.domain.EInvoice;
@@ -11,6 +12,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
@@ -22,6 +24,13 @@ import java.util.UUID;
  */
 @Component
 class EInvoiceWorkQueues {
+
+    /**
+     * How often an invoice past its deadline and still not issued is announced again (HĐ-2): once a day. Counted from
+     * the last time the accountants were told - the warning ahead of the deadline included - so a reminder never comes
+     * a moment after that warning.
+     */
+    static final Duration OVERDUE_REMINDER_EVERY = Duration.ofDays(1);
 
     private final EInvoiceRepository invoices;
     private final InvoiceSettings settings;
@@ -81,6 +90,34 @@ class EInvoiceWorkQueues {
                 before.issueDate(), before.issueDueAt());
         events.publishEvent(due);
         return Optional.of(due);
+    }
+
+    /** Invoices past their deadline, still to be issued, whose accountants were last told a day or more ago. */
+    @Transactional(readOnly = true)
+    public List<UUID> overdueToRemind(int limit) {
+        Instant now = clock.instant();
+        return invoices.findOverdueToRemind(now, now.minus(OVERDUE_REMINDER_EVERY), limit);
+    }
+
+    /**
+     * Reminds the accountants, once a day, of an invoice still not issued past its deadline - a draft nobody issued, a
+     * rejected one nobody corrected, one stuck at the provider (HĐ-2). The same announcement as the warning ahead of
+     * the deadline, carrying the day it is for ({@link EInvoiceIssueDue#overdueOn}), so notification tells each person
+     * once a day and not once ever. The mark and the event are written in one transaction.
+     *
+     * @return the reminder, or empty when the invoice was issued, voided or reminded meanwhile
+     */
+    @Transactional
+    public Optional<EInvoiceIssueDue> remindOverdue(UUID id) {
+        Instant now = clock.instant();
+        if (!invoices.markOverdueReminded(id, now, now.minus(OVERDUE_REMINDER_EVERY))) {
+            return Optional.empty();
+        }
+        EInvoice.Snapshot invoice = invoices.findById(id).orElseThrow().snapshot();
+        EInvoiceIssueDue reminder = new EInvoiceIssueDue(invoice.id(), invoice.code(), invoice.orderId(),
+                invoice.orderNumber(), invoice.issueDate(), invoice.issueDueAt(), BusinessCalendar.date(now));
+        events.publishEvent(reminder);
+        return Optional.of(reminder);
     }
 
     /** Invoices that have waited for the provider's answer for longer than the configured time, not yet announced. */

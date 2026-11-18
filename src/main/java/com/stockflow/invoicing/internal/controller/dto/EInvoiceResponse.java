@@ -18,11 +18,13 @@ import java.util.UUID;
  * {@code listedInvoiceIds} the other invoices a trade discount covers. An adjustment's lines are signed: below zero
  * reduces.</p>
  *
- * <p>{@code earlierPendingInvoice} (owner's decision on E0 M6), on the invoice read by itself: the code of an invoice
- * of the same year dated before this draft that is still to be issued. While there is one, issuing this draft is
- * refused ({@code EINVOICE_OLDER_DRAFT_PENDING}) - numbers run in the order of the dates - so the screen says so before
- * the accountant tries; {@code warnings} then carries {@code EARLIER_INVOICE_PENDING} too. Null when nothing waits, on
- * an invoice that is not a draft, and in the answers of the other operations.</p>
+ * <p>{@code earlierPendingInvoice} (HĐ-2), on the invoice read by itself: the code of an invoice dated before this
+ * draft and still to be issued - a draft, a rejected one or one at the provider - under the series this draft would be
+ * sent under (the series in use for its year at the provider in use). Issued now, this draft would take a number before
+ * it, and numbers should run in the order of the dates, so the screen says so; {@code warnings} then carries
+ * {@code EARLIER_INVOICE_PENDING} too. A warning only: issuing is refused ({@code EINVOICE_OLDER_DRAFT_PENDING}) only
+ * while the earlier invoice is at the provider. Null when nothing waits, when no series is in use for the draft's
+ * year, on an invoice that is not a draft, and in the answers of the other operations.</p>
  */
 public record EInvoiceResponse(UUID id, String code, String type, String status, boolean adjusted, UUID orderId,
                                String orderNumber, String contractNumber, UUID shipmentId, String shipmentCode,

@@ -6,6 +6,7 @@ import com.stockflow.invoicing.internal.domain.EInvoice;
 import com.stockflow.invoicing.internal.domain.EInvoiceLine;
 import com.stockflow.invoicing.internal.domain.EInvoiceRepository;
 import com.stockflow.invoicing.internal.domain.FeeAllocation;
+import com.stockflow.invoicing.internal.domain.InvoiceSeries;
 import com.stockflow.invoicing.internal.entity.EInvoiceJpaEntity;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.LockModeType;
@@ -259,13 +260,58 @@ class EInvoiceRepositoryAdapter implements EInvoiceRepository {
     }
 
     @Override
-    public Optional<String> findEarlierUnissued(UUID id, LocalDate issueDate) {
+    public List<UUID> findOverdueToRemind(Instant now, Instant toldBefore, int limit) {
+        // ix_einvoice_status_due: status, then the deadline.
+        return jdbc.queryForList("""
+                SELECT id FROM invoicing.einvoice
+                 WHERE status IN ('DRAFT', 'REJECTED', 'SUBMITTING') AND issue_due_at <= ?
+                   AND due_warned_at IS NOT NULL AND COALESCE(overdue_warned_at, due_warned_at) < ?
+                 ORDER BY issue_due_at, id LIMIT ?""", UUID.class, Timestamp.from(now), Timestamp.from(toldBefore),
+                limit);
+    }
+
+    @Override
+    public boolean markOverdueReminded(UUID id, Instant now, Instant toldBefore) {
+        // One statement that checks and marks: two sweeps that overlap remind once. The version is left alone - a
+        // reminder changes nothing the invoice says (tg_einvoice_guard lets the column change on any invoice not issued).
+        return jdbc.update("""
+                UPDATE invoicing.einvoice SET overdue_warned_at = ?
+                 WHERE id = ? AND status IN ('DRAFT', 'REJECTED', 'SUBMITTING') AND issue_due_at <= ?
+                   AND due_warned_at IS NOT NULL AND COALESCE(overdue_warned_at, due_warned_at) < ?""",
+                Timestamp.from(now), id, Timestamp.from(now), Timestamp.from(toldBefore)) == 1;
+    }
+
+    @Override
+    public Optional<String> findEarlierSubmitting(UUID id, InvoiceSeries series, LocalDate issueDate) {
         return jdbc.queryForList("""
                 SELECT code FROM invoicing.einvoice
-                 WHERE id <> ? AND status IN ('DRAFT', 'REJECTED', 'SUBMITTING')
-                   AND issue_date < ? AND issue_date >= ?
+                 WHERE id <> ? AND status = 'SUBMITTING'
+                   AND provider = ? AND template_code = ? AND symbol = ? AND issue_date < ?
+                 ORDER BY issue_date, id LIMIT 1""", String.class, id, series.provider(), series.templateCode(),
+                series.symbol(), java.sql.Date.valueOf(issueDate)).stream().findFirst();
+    }
+
+    @Override
+    public Optional<String> findEarlierUnissued(UUID id, InvoiceSeries series, LocalDate issueDate) {
+        // A draft or a rejected invoice carries no series of its own yet (a rejected one carries the series of its last
+        // attempt, which is not necessarily the one it will be sent under): of the same year, it will be numbered under
+        // the series in use for that year at the provider in use - the one asked about.
+        return jdbc.queryForList("""
+                SELECT code FROM invoicing.einvoice
+                 WHERE id <> ? AND issue_date < ? AND issue_date >= ?
+                   AND (status IN ('DRAFT', 'REJECTED')
+                        OR status = 'SUBMITTING' AND provider = ? AND template_code = ? AND symbol = ?)
                  ORDER BY issue_date, id LIMIT 1""", String.class, id, java.sql.Date.valueOf(issueDate),
-                java.sql.Date.valueOf(issueDate.withDayOfYear(1))).stream().findFirst();
+                java.sql.Date.valueOf(issueDate.withDayOfYear(1)), series.provider(), series.templateCode(),
+                series.symbol()).stream().findFirst();
+    }
+
+    @Override
+    public void lockSeries(InvoiceSeries series) {
+        // As lockOrder: transaction-scoped, released at commit or rollback. One key per provider and series.
+        jdbc.queryForObject("SELECT 1 FROM (SELECT pg_advisory_xact_lock(hashtextextended(?, 0))) AS locked",
+                Integer.class, "einvoice-series:%s:%s%s".formatted(series.provider(), series.templateCode(),
+                        series.symbol()));
     }
 
     @Override

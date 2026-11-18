@@ -182,6 +182,49 @@ class DeliveredShipmentsServiceTest {
     }
 
     @Test
+    @DisplayName("HĐ-7: an order of 2026 fixed at 8% - NĐ 174/2025's reduction - is invoiced at 8% for a delivery of "
+            + "2026 and at the day's 10% for one of 2027, its 8% handed over beside it for the invoice to flag")
+    void theReductionEndsWithTheYear() {
+        BigDecimal eight = new BigDecimal("8");
+        Order reduced = Order.draft(OrderNumber.of(LocalDate.of(2026, 11, 2), 11), UUID.randomUUID(),
+                UUID.randomUUID(), List.of(Order.line(new Sku("CUP-12OZ"), 10, Money.vnd(100_000), null).withTax(eight)),
+                PLACED);
+        reduced.lines().forEach(line -> reduced.attachReservations(line.id(), List.of(UUID.randomUUID())));
+        reduced.decidePartialShipment(true);
+        reduced.sendContract(STAFF, PLACED);
+        reduced.contractSigned(false, false, STAFF, PLACED);
+        reduced.chooseShippingWarehouse(HCM, true, STAFF, PLACED);
+        reduced.release(HCM, "HCM", STAFF, PLACED);
+        reduced.startPicking(STAFF, PLACED);
+        reduced.markPacked(PLACED, STAFF);
+        UUID cups = reduced.lines().getFirst().id();
+        UUID inDecember = UUID.randomUUID();
+        UUID inJanuary = UUID.randomUUID();
+        reduced.recordHandover(new ShipmentHandover(inDecember, List.of(new ShipmentHandover.Line(cups, 6)), PLACED,
+                STAFF), BigDecimal.ZERO);
+        reduced.recordHandover(new ShipmentHandover(inJanuary, List.of(new ShipmentHandover.Line(cups, 4)), PLACED,
+                STAFF), BigDecimal.ZERO);
+        // 31/12/2026 and 02/01/2027 in Vietnam.
+        reduced.recordShipmentDelivered(inDecember, Instant.parse("2026-12-31T03:00:00Z"), STAFF);
+        reduced.recordShipmentDelivered(inJanuary, Instant.parse("2027-01-01T17:30:00Z"), STAFF);
+        when(orders.findById(new OrderId(reduced.id().value()))).thenReturn(Optional.of(reduced));
+        when(taxRates.onDay(LocalDate.of(2026, 12, 31))).thenReturn(Map.of("STANDARD", eight, "REDUCED",
+                new BigDecimal("5"), "EXEMPT", BigDecimal.ZERO));
+        when(taxRates.onDay(LocalDate.of(2027, 1, 2))).thenReturn(Map.of("STANDARD", TEN, "REDUCED",
+                new BigDecimal("5"), "EXEMPT", BigDecimal.ZERO));
+
+        DeliveredShipment.Line december = service.find(reduced.id().value(), inDecember).orElseThrow().lines()
+                .getFirst();
+        DeliveredShipment.Line january = service.find(reduced.id().value(), inJanuary).orElseThrow().lines()
+                .getFirst();
+
+        assertThat(december.taxRate()).isEqualByComparingTo("8");
+        assertThat(december.contractTaxRate()).isEqualByComparingTo("8");
+        assertThat(january.taxRate()).as("the law's rate of the day wins").isEqualByComparingTo("10");
+        assertThat(january.contractTaxRate()).as("the contract's, for the invoice to flag").isEqualByComparingTo("8");
+    }
+
+    @Test
     @DisplayName("a SKU whose product has no tax class keeps the rate the order fixed")
     void noTaxClassKeepsTheOrdersRate() {
         order.recordShipmentDelivered(S1, FIRST_DELIVERY, STAFF);

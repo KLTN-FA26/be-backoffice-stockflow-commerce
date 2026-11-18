@@ -70,21 +70,33 @@ class EInvoiceIssuanceSteps {
      * DRAFT → SUBMITTING, committed before the provider hears of it: from here on the invoice has a transaction id,
      * and whatever happens to the call, the answer is found again under it.
      *
-     * <p><b>Not before an invoice dated earlier.</b> The provider numbers invoices in the order they reach it, and the
-     * numbers of a symbol must run on in the order of the invoices' dates (NĐ 254 Phụ lục điểm 2; TT 91 Điều 10
-     * khoản 6a). So an invoice is refused while one of the same year dated before it is still to be issued
-     * ({@code EINVOICE_OLDER_DRAFT_PENDING}, naming it): the accountant issues or voids that one first, and the
-     * automatic issuing takes drafts earliest dated first. What this does not prevent: an invoice drawn up with a date
-     * before invoices already issued - a delivery recorded late - is still issued, with the next number. Refusing it would leave it unissuable for good, which the law
-     * forbids more plainly than it forbids the order of numbers; such an invoice is the exception the accountant can
-     * explain. Nor two submissions in the same instant, one of them of a draft not committed yet: the check reads
-     * committed rows.</p>
+     * <p><b>Not while an earlier-dated invoice of the same series is at the provider.</b> The provider numbers invoices
+     * in the order they reach it, and the numbers of a symbol should run on in the order of the invoices' dates (NĐ 254
+     * Phụ lục điểm 2; TT 91 Điều 10 khoản 6a). So an invoice is refused while one of the same provider, template and
+     * symbol, dated before it, is SUBMITTING - flagged unknown to the provider or not, since either may already hold a
+     * number ({@code EINVOICE_OLDER_DRAFT_PENDING}, naming it): its number comes first, or it is refused and leaves the
+     * way free, and this one may be sent once it is settled. A draft or a rejected invoice keeps nothing back (owner's
+     * decision, HĐ-2): it holds no number and may stay unissued for days - a buyer's tax code missing, a provider's
+     * refusal to correct - and holding every later invoice of the business behind it would leave the whole series
+     * overdue for one stuck invoice. The draft's screen still names such an invoice
+     * ({@code EInvoiceQueryService.earlierPending}), and the automatic issuing takes drafts earliest dated first.</p>
+     *
+     * <p>What this does not prevent: an invoice dated before invoices already issued - a delivery recorded late, a
+     * draft issued after a later one - is still issued, with the next number and its own date (the delivery's). A rule
+     * "no date before the series' last issued one" would leave such an invoice unissuable for good, which the law
+     * forbids more plainly than it forbids the order of numbers; it is the exception the accountant can explain.</p>
+     *
+     * <p>The check runs under the series' submission lock ({@link EInvoiceRepository#lockSeries}), taken after the
+     * invoice's own row lock and held until this transaction commits: two invoices of one series submitted at the same
+     * moment are decided one after the other, and the second reads the first's SUBMITTING. Without it each would read
+     * the other as the draft it still was in committed rows, and both would go.</p>
      *
      * @param expectedVersion the version the caller read; null when the system issues
      * @throws BusinessException {@code EINVOICE_NOT_FOUND}, {@code OPTIMISTIC_LOCK}, {@code EINVOICE_INVALID_TRANSITION},
      *         {@code EINVOICE_BUYER_PROFILE_INCOMPLETE}, {@code EINVOICE_AGREEMENT_REQUIRED} (the correction of an
      *         error without the agreement of both parties), {@code EINVOICE_SERIES_NOT_CONFIGURED},
-     *         {@code EINVOICE_OLDER_DRAFT_PENDING} (an invoice of the year dated before it is still to be issued),
+     *         {@code EINVOICE_OLDER_DRAFT_PENDING} (an invoice of the same series dated before it is at the provider),
+     *         {@code EINVOICE_TAX_EXEMPT_NOT_SUPPORTED} (a line at 0%, which here can only be an EXEMPT one),
      *         {@code EINVOICE_PROVIDER_UNAVAILABLE}, {@code EINVOICE_PROVIDER_CANNOT_CORRECT} (a correction, to a
      *         provider that would issue it as an original)
      */
@@ -109,10 +121,11 @@ class EInvoiceIssuanceSteps {
                 .orElseThrow(() -> new BusinessException(ErrorCode.EINVOICE_SERIES_NOT_CONFIGURED,
                         "No series is in use at %s for %d".formatted(provider.provider(),
                                 invoice.issueDate().getYear())));
-        invoices.findEarlierUnissued(invoice.id(), invoice.issueDate()).ifPresent(earlier -> {
-            throw new BusinessException(ErrorCode.EINVOICE_OLDER_DRAFT_PENDING,
-                    "%s is dated before %s and is still to be issued; issue %s first, or void it".formatted(earlier,
-                            invoice.code(), earlier));
+        invoices.lockSeries(series);
+        invoices.findEarlierSubmitting(invoice.id(), series, invoice.issueDate()).ifPresent(earlier -> {
+            throw new BusinessException(ErrorCode.EINVOICE_OLDER_DRAFT_PENDING, ("%s is dated before %s and is at the "
+                    + "provider under %s%s; wait for its result, or check it again, then issue %s").formatted(earlier,
+                    invoice.code(), series.templateCode(), series.symbol(), invoice.code()));
         });
         invoice.submit(series, by, clock.instant());
         return invoices.save(invoice).snapshot();

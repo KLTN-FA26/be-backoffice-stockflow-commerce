@@ -24,9 +24,10 @@ import java.util.ResourceBundle;
  * nobody opened is running out of that time. An in-app message, nothing by e-mail.
  *
  * <p>Who is told is decided by permission, not by role name: the holders of {@value #AUDIENCE} - whoever may issue.
- * One message per person per invoice ({@code einvoice-due:<id>}): the event is published once per invoice, and a
- * redelivery tells nobody twice. System text only - the invoice's and the order's codes, and dates. Titles and bodies
- * are never logged.</p>
+ * One message per person per invoice ahead of its deadline ({@code einvoice-due:<id>}), and once its deadline has
+ * passed one more per person per day it stays unissued ({@code einvoice-overdue:<id>:<day>}, HĐ-2): each event is
+ * published once, and a redelivery tells nobody twice. System text only - the invoice's and the order's codes, and
+ * dates. Titles and bodies are never logged.</p>
  */
 @Component
 class EInvoiceDueNotificationListener {
@@ -59,13 +60,21 @@ class EInvoiceDueNotificationListener {
         }
         int told = inbox.post(recipients.stream().map(StaffContact::userId).filter(Objects::nonNull).toList(),
                 message(event));
-        log.info("E-invoice {} close to its deadline: {} recipient(s), {} newly told", LogSafe.text(event.code()),
-                recipients.size(), told);
+        log.info("E-invoice {} {}: {} recipient(s), {} newly told", LogSafe.text(event.code()),
+                event.overdueOn() == null ? "close to its deadline" : "past its deadline", recipients.size(), told);
     }
 
     static InboxMessage message(EInvoiceIssueDue event) {
         ResourceBundle texts = ResourceBundle.getBundle("i18n.messages", Locale.forLanguageTag("vi"));
         String due = MOMENT.format(event.issueDueAt().atZone(BusinessCalendar.ZONE));
+        if (event.overdueOn() != null) {
+            return new InboxMessage(CATEGORY, InboxSeverity.CRITICAL,
+                    texts.getString("inbox.einvoice.overdue.title").formatted(event.code(), due),
+                    texts.getString("inbox.einvoice.overdue.body").formatted(event.code(), event.orderNumber(),
+                            DAY.format(event.issueDate()), due),
+                    "/invoicing/einvoices/" + event.einvoiceId(), SOURCE_TYPE, event.einvoiceId().toString(),
+                    "einvoice-overdue:" + event.einvoiceId() + ":" + event.overdueOn());
+        }
         return new InboxMessage(CATEGORY, InboxSeverity.WARN,
                 texts.getString("inbox.einvoice.due.title").formatted(event.code(), due),
                 texts.getString("inbox.einvoice.due.body").formatted(event.code(), event.orderNumber(),

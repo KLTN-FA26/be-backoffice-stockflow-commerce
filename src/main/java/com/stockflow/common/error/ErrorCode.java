@@ -429,10 +429,17 @@ public enum ErrorCode {
     /** WF-05 E2 (TT 91 Điều 4): no invoice series is in use at the provider for the invoice's year. */
     EINVOICE_SERIES_NOT_CONFIGURED("No invoice series is configured for the invoice's year", 409),
     /**
-     * WF-05 E2 (NĐ 254 Phụ lục điểm 2; TT 91 Điều 10 khoản 6a): an invoice of the same year dated earlier is still to be
-     * issued; issuing this one first would give it the lower number, and numbers would run against the dates.
+     * WF-05 E2, HĐ-2 (NĐ 254 Phụ lục điểm 2; TT 91 Điều 10 khoản 6a): an invoice of the same provider and series dated
+     * earlier is at the provider and may already hold the next number; sending this one now could give it the lower
+     * number against the dates. A draft or a rejected invoice dated earlier no longer refuses anything. The name is
+     * older than the rule and kept: clients match on it.
      */
-    EINVOICE_OLDER_DRAFT_PENDING("An invoice dated earlier is still to be issued; issue that one first, or void it", 409),
+    EINVOICE_OLDER_DRAFT_PENDING("An invoice of the same series dated earlier is still at the provider; wait for its result, then issue this one", 409),
+    /**
+     * HĐ-7: a line of the invoice is at 0%, which here only the tax class EXEMPT (not subject to VAT, KCT) produces; an
+     * invoice at 0% would declare zero-rated goods instead, and no provider adapter can state KCT yet.
+     */
+    EINVOICE_TAX_EXEMPT_NOT_SUPPORTED("A line of the invoice is not subject to VAT (tax class EXEMPT), which cannot be issued yet; correct the product's tax class and draw the invoice up again", 409),
     /** WF-05 E2: the e-invoice is not issued, so it has no XML or PDF yet. */
     EINVOICE_NOT_ISSUED("The e-invoice is not issued yet", 409),
     /** WF-05 E2: the e-invoice provider is not configured, or did not answer; nothing is known about the transaction until it is asked again. */

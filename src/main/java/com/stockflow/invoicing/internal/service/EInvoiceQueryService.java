@@ -11,6 +11,7 @@ import com.stockflow.common.storage.FileTransfers;
 import com.stockflow.invoicing.internal.domain.EInvoice;
 import com.stockflow.invoicing.internal.domain.EInvoiceQueries;
 import com.stockflow.invoicing.internal.domain.EInvoiceRepository;
+import com.stockflow.invoicing.internal.domain.InvoiceSettings;
 import com.stockflow.invoicing.internal.domain.ProviderCallLog;
 import com.stockflow.invoicing.internal.domain.TaxRateTotal;
 import org.springframework.stereotype.Service;
@@ -44,13 +45,15 @@ public class EInvoiceQueryService {
     private final EInvoiceQueries queries;
     private final ProviderCallLog calls;
     private final FileTransfers files;
+    private final InvoiceSettings settings;
 
     EInvoiceQueryService(EInvoiceRepository invoices, EInvoiceQueries queries, ProviderCallLog calls,
-                         FileTransfers files) {
+                         FileTransfers files, InvoiceSettings settings) {
         this.invoices = invoices;
         this.queries = queries;
         this.calls = calls;
         this.files = files;
+        this.settings = settings;
     }
 
     public PageResponse<EInvoiceQueries.Listing> list(EInvoiceQueries.Filter filter, int page, int size) {
@@ -66,16 +69,21 @@ public class EInvoiceQueryService {
     }
 
     /**
-     * The code of the invoice that keeps this draft from being issued: one of the same year dated before it and still
-     * to be issued (owner's decision on E0 M6; the rule itself is {@code EInvoiceIssuanceSteps.submit}). Asked here so
-     * the accountant is warned on the screen, before an attempt is refused. Empty for anything but a draft: nothing
-     * else is waiting to be sent.
+     * The code of an invoice dated before this draft and still to be issued under the series the draft would be sent
+     * under - the series in use for its year at the provider in use - a draft, a rejected one or one at the provider
+     * (HĐ-2). A warning, not a refusal: issued now, this draft takes a number before that invoice's, and the accountant
+     * may rather issue that one first. Only one at the provider keeps the draft back ({@code EInvoiceIssuanceSteps.submit},
+     * {@code EINVOICE_OLDER_DRAFT_PENDING}); a draft or a rejected one blocking it would let one stuck invoice hold back
+     * every later one. Empty for anything but a draft - nothing else is waiting to be sent - and when no series is in
+     * use for the draft's year: issuing is refused for that ({@code EINVOICE_SERIES_NOT_CONFIGURED}), and there is no
+     * series to share.
      */
     public java.util.Optional<String> earlierPending(EInvoice.Snapshot invoice) {
         if (invoice.status() != com.stockflow.invoicing.internal.domain.EInvoiceStatus.DRAFT) {
             return java.util.Optional.empty();
         }
-        return invoices.findEarlierUnissued(invoice.id(), invoice.issueDate());
+        return settings.seriesInUse(settings.active().provider(), invoice.issueDate().getYear())
+                .flatMap(series -> invoices.findEarlierUnissued(invoice.id(), series, invoice.issueDate()));
     }
 
     /** The invoice's calls to the provider, oldest first. */
