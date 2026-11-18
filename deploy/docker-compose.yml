@@ -180,10 +180,11 @@ services:
       COMPANY_BANK_BIN: ${COMPANY_BANK_BIN:-}
       # The seller on sales contracts and e-invoices (4B-4, WF-05 E1): the company's name, tax code and registered
       # address, its legal representative and their title, as on its business registration. This compose runs the dev
-      # profile, so an unset or blank value falls back to an obviously made-up company and the server keeps working
-      # (the fallback is spelled out here because a blank passed through would override the profile's own default).
+      # profile, so an unset or blank value falls back to a placeholder company and the server keeps working (the
+      # fallback is spelled out here because a blank passed through would override the profile's own default). The name
+      # has no "demo" wording: it is printed on the production order slip a capstone shows (owner, 2026-11-19).
       # A deployment in the prod profile sets all five: there the application refuses to start without them.
-      SELLER_NAME: ${SELLER_NAME:-DEMO STOCKFLOW CO LTD}
+      SELLER_NAME: ${SELLER_NAME:-CÔNG TY TNHH STOCKFLOW}
       SELLER_TAX_CODE: ${SELLER_TAX_CODE:-0000000000}
       SELLER_ADDRESS: ${SELLER_ADDRESS:-1 Demo Street, Ho Chi Minh City}
       SELLER_REPRESENTATIVE: ${SELLER_REPRESENTATIVE:-Demo Director}

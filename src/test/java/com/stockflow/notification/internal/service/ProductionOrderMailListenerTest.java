@@ -71,14 +71,14 @@ class ProductionOrderMailListenerTest {
     }
 
     private ProductionOrderMailListener listener(com.stockflow.notification.internal.domain.EmailTransport using) {
-        return new ProductionOrderMailListener(directory, new ProductionOrderMessages(EmailFixtures.properties(), links),
+        return new ProductionOrderMailListener(directory, new ProductionOrderMessages(EmailFixtures.properties(), links,
+                directory),
                 using, staff, logs, Clock.fixed(NOW, ZoneOffset.UTC), attempts);
     }
 
     private static ProductionOrderMail mail(String channel, String email, String status, String stopReason) {
         return new ProductionOrderMail(ID, "PRD-20261110-0001", "Xưởng in Bình Dương", channel, email, COORDINATOR,
-                status, LocalDate.of(2026, 11, 30), "Kho HCM", "12 Nguyễn Huệ", true, new BigDecimal("1250"), "VND",
-                "Giao buổi sáng", stopReason,
+                status, LocalDate.of(2026, 11, 30), "Kho HCM", "12 Nguyễn Huệ", true, "Giao buổi sáng", stopReason,
                 List.of(new ProductionOrderMail.Line("CUP-1", "Ly in logo", 12, 50, 600, "600 x 400 x 350 mm",
                         "Dán nhãn mã đơn", new ProductionOrderMail.File("CUP-1 print file",
                         "/api/v1/production-order-files/" + ID + "/print-files/" + DESIGN))),
@@ -86,11 +86,25 @@ class ProductionOrderMailListenerTest {
                 NOW.plus(Duration.ofDays(30)));
     }
 
+    @Test
+    @DisplayName("sent while the slip cannot be read: the e-mail still goes, with its links and no attachment")
+    void sentWithoutTheSlipWhenItCannotBeRead() {
+        when(directory.mail(eq(ID), any())).thenReturn(Optional.of(mail("EMAIL", "don@xuong.vn", "SENT", null)));
+        when(directory.slipPdf(ID)).thenThrow(new IllegalStateException("store down"));
+
+        listener.on(sent());
+
+        assertThat(transport.sent()).singleElement().satisfies(email -> {
+            assertThat(email.attachments()).isEmpty();
+            assertThat(email.text()).doesNotContain("đính kèm")
+                    .contains("/api/v1/production-order-files/" + ID + "/slip?expires=");
+        });
+    }
+
     /** What a stop reads: no line, no size, no file. */
     private static ProductionOrderMail stop(String status, String reason) {
         return new ProductionOrderMail(ID, "PRD-20261110-0001", "Xưởng in Bình Dương", "EMAIL", "don@xuong.vn",
-                COORDINATOR, status, LocalDate.of(2026, 11, 30), null, null, true, null, null, null, reason, List.of(),
-                null, null);
+                COORDINATOR, status, LocalDate.of(2026, 11, 30), null, null, true, null, reason, List.of(), null, null);
     }
 
     private static ProductionOrderSent sent() {
@@ -104,10 +118,13 @@ class ProductionOrderMailListenerTest {
         return row.getValue();
     }
 
+    private static final byte[] PDF = "%PDF-1.7 slip".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+
     @Test
     @DisplayName("sent: one e-mail to the producer with the slip and print-file links, the reply to the coordinator")
     void sentOnce() {
         when(directory.mail(eq(ID), any())).thenReturn(Optional.of(mail("EMAIL", "don@xuong.vn", "SENT", null)));
+        when(directory.slipPdf(ID)).thenReturn(Optional.of(PDF));
 
         listener.on(sent());
 
@@ -120,10 +137,17 @@ class ProductionOrderMailListenerTest {
             assertThat(email.text())
                     .contains("Kính gửi Xưởng in Bình Dương", "Kho HCM - 12 Nguyễn Huệ", "Ngày cần hàng: 30/11/2026")
                     .contains("CUP-1 Ly in logo: 12 thùng x 50 cái/thùng = 600 cái", "Dán nhãn mã đơn")
-                    .contains("Giao buổi sáng", "1250 VND")
+                    .contains("Giao buổi sáng", "đính kèm")
+                    .as("no money: prices are other departments' business").doesNotContain("Đơn giá", "VND")
                     .contains("https://api.stockflow.vn/api/v1/production-order-files/" + ID + "/slip?expires=")
                     .contains("/print-files/" + DESIGN + "?expires=", "&signature=")
                     .as("the links' expiry, in Vietnam's time").contains("10:00 10/12/2026");
+            assertThat(email.attachments()).as("the slip itself, so the order is in hand without a link")
+                    .singleElement().satisfies(attachment -> {
+                        assertThat(attachment.name()).isEqualTo("PRD-20261110-0001.pdf");
+                        assertThat(attachment.contentType()).isEqualTo("application/pdf");
+                        assertThat(attachment.content()).isEqualTo(PDF);
+                    });
         });
         DeliveryLogJpaEntity row = savedRow();
         assertThat(row.getStatus()).isEqualTo(DeliveryStatus.SENT);
@@ -273,7 +297,8 @@ class ProductionOrderMailListenerTest {
     void noLinks() {
         when(directory.mail(eq(ID), any())).thenReturn(Optional.of(mail("EMAIL", "don@xuong.vn", "SENT", null)));
         var unlinked = new ProductionOrderMailListener(directory, new ProductionOrderMessages(
-                EmailFixtures.properties(), new SignedLinks(new SignedLinkProperties(null, null))), transport, staff,
+                EmailFixtures.properties(), new SignedLinks(new SignedLinkProperties(null, null)), directory), transport,
+                staff,
                 logs, Clock.fixed(NOW, ZoneOffset.UTC), attempts);
 
         unlinked.on(sent());
