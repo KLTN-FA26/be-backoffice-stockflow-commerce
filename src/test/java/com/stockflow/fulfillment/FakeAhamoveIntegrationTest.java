@@ -5,7 +5,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.stockflow.common.id.Identifiers;
 import com.stockflow.order.api.OrderSummary;
 import com.stockflow.common.domain.Sku;
-import com.stockflow.order.internal.service.SalesContracts;
 import com.stockflow.support.ConfirmedOrders;
 import com.stockflow.support.CustomerSkuRows;
 import com.stockflow.support.DemoData;
@@ -42,7 +41,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -55,7 +53,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * order sends the load back to PLANNED; and the remote control is the warehouse manager's.
  *
  * <p>Its own context, hence its own database. The carrier is the one the demo seed makes
- * ({@code db/demo/V20261201000400__demo_fake_ahamove.sql}, run here over an AHAMOVE row that is still MANUAL, as the
+ * ({@code db/demo/V20261203000400__demo_fake_ahamove.sql}, run here over an AHAMOVE row that is still MANUAL, as the
  * tools seed leaves it).</p>
  */
 @IntegrationTest
@@ -114,7 +112,7 @@ class FakeAhamoveIntegrationTest {
         // The pool does not auto-commit (CLAUDE.md, persistence traps): a write outside a transaction is lost.
         String script;
         try {
-            script = new String(new ClassPathResource("db/demo/V20261201000400__demo_fake_ahamove.sql")
+            script = new String(new ClassPathResource("db/demo/V20261203000400__demo_fake_ahamove.sql")
                     .getInputStream().readAllBytes(), StandardCharsets.UTF_8);
         } catch (java.io.IOException unreadable) {
             throw new IllegalStateException(unreadable);
