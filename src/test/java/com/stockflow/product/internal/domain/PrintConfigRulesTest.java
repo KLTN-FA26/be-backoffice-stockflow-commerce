@@ -166,6 +166,92 @@ class PrintConfigRulesTest {
                 java.util.Arrays.asList("image/png", null), 20, null, null)), "empty");
     }
 
+    /**
+     * FE request 2026-11-18 BE-12: every refusal names the request field it is about, by the path of
+     * {@code CustomizationTemplateRequest} - a print area by its index in the request, not by its code.
+     */
+    @Test
+    void everyRefusalNamesTheFieldAtFault() {
+        refusedAt(() -> PrintConfigRules.areas(new CupModel(90, 60, 110, 3, 150, 6, 8, "kraft"), WALL),
+                "model.seamMm");
+        refusedAt(() -> PrintConfigRules.areas(new CupModel(90, 60, 110, -1, 8, 6, 8, "kraft"), WALL), "model.rimMm");
+        refusedAt(() -> PrintConfigRules.areas(new CupModel(60, 90, 110, 3, 8, 6, 8, "kraft"), WALL),
+                "model.bottomDiameterMm");
+        refusedAt(() -> PrintConfigRules.areas(new CupModel(90, 60, 110, 3, 8, 6, 8, "glass"), WALL), "model.material");
+        refusedAt(() -> PrintConfigRules.areas(new CupModel(90, 60, 10, 3, 8, 10, 10, "kraft"), WALL),
+                "model.bandTopOffsetMm", "model.bandBottomOffsetMm");
+        refusedAt(() -> PrintConfigRules.areas(new BagModel(260, 120, 40, 40, "twisted", "kraft-brown"), SIDES),
+                "model.topFoldMm");
+        refusedAt(() -> PrintConfigRules.areas(new BagModel(260, 120, 320, 40, "rope", "kraft-brown"), SIDES),
+                "model.handle");
+        refusedAt(() -> PrintConfigRules.areas(BAG_M, SIDES.subList(0, 3)), "printAreas");
+        // RIGHT is the fourth entry of the request: its index, not the model's order, names it.
+        refusedAt(() -> PrintConfigRules.areas(BAG_M, List.of(SIDES.get(0), SIDES.get(1), SIDES.get(2),
+                new PrintConfigRules.AreaSpec("RIGHT", "d", 60, 3))), "printAreas[3].safeMarginMm");
+        refusedAt(() -> PrintConfigRules.areas(CUP_12OZ, List.of(new PrintConfigRules.AreaSpec("BODY", "x", 3, 25))),
+                "printAreas[0].bleedMm");
+        refusedAt(() -> PrintConfigRules.areas(CUP_12OZ, List.of(new PrintConfigRules.AreaSpec("BODY", "x", -1, 2))),
+                "printAreas[0].safeMarginMm");
+        refusedAt(() -> PrintConfigRules.areas(BAG_M, List.of(SIDES.get(0), SIDES.get(0))), "printAreas[1].code");
+        refusedAt(() -> PrintConfigRules.requireValid(new PrintConfigRules.Limits(300, "CMYK",
+                List.of("image/png", "image/svg+xml"), 20, null, null)), "allowedFileFormats[1]");
+        refusedAt(() -> PrintConfigRules.requireValid(new PrintConfigRules.Limits(10, "CMYK", List.of("image/png"), 20,
+                null, null)), "minDpi");
+
+        assertThatThrownBy(() -> PrintConfigRules.areas(BAG_M, SIDES.subList(0, 3)))
+                .extracting(ex -> ((BusinessException) ex).fieldErrors().get(0))
+                .satisfies(error -> {
+                    assertThat(error.code()).isEqualTo("PrintAreaSet");
+                    assertThat(error.message()).isEqualTo("A bag has four print areas: FRONT, BACK, LEFT and RIGHT");
+                });
+    }
+
+    /** BE-8: the glue flap is 0 to 100 mm, the bottom fold 0 to the gusset - both ends allowed. */
+    @Test
+    void aBagsGlueFlapAndBottomFoldHaveTheirLimits() {
+        assertThat(PrintConfigRules.areas(new BagModel(260, 120, 320, 40, 0, 0, "twisted", "kraft-brown"), SIDES))
+                .hasSize(4);
+        assertThat(PrintConfigRules.areas(new BagModel(260, 120, 320, 40, 100, 120, "twisted", "kraft-brown"), SIDES))
+                .hasSize(4);
+
+        refusedAt(() -> PrintConfigRules.areas(new BagModel(260, 120, 320, 40, 100.01, 72, "twisted", "kraft-brown"),
+                SIDES), "model.glueFlapMm");
+        refusedAt(() -> PrintConfigRules.areas(new BagModel(260, 120, 320, 40, -1, 72, "twisted", "kraft-brown"),
+                SIDES), "model.glueFlapMm");
+        refusedAt(() -> PrintConfigRules.areas(new BagModel(260, 120, 320, 40, 20, 120.01, "twisted", "kraft-brown"),
+                SIDES), "model.bottomFoldMm");
+        refusedAt(() -> PrintConfigRules.areas(new BagModel(260, 120, 320, 40, 20, Double.NaN, "twisted",
+                "kraft-brown"), SIDES), "model.bottomFoldMm");
+    }
+
+    /** BE-8: left out, the glue flap is 20 mm and the bottom fold 0.6 x the gusset, rounded to hundredths. */
+    @Test
+    void aBagLeftWithoutGlueFlapOrBottomFoldTakesTheDefaults() {
+        BagModel bag = BagModel.withDefaults(260, 120, 320, 40, null, null, "twisted", "kraft-brown");
+        assertThat(bag.glueFlapMm()).isEqualTo(20);
+        assertThat(bag.bottomFoldMm()).isEqualTo(72);
+        assertThat(BagModel.withDefaults(260, 87.55, 320, 40, null, null, "flat", "kraft-white").bottomFoldMm())
+                .isEqualTo(52.53);
+        BagModel said = BagModel.withDefaults(260, 120, 320, 40, 15.0, 0.0, "twisted", "kraft-brown");
+        assertThat(said.glueFlapMm()).isEqualTo(15);
+        assertThat(said.bottomFoldMm()).isZero();
+    }
+
+    private static void refusedAt(org.assertj.core.api.ThrowableAssert.ThrowingCallable call, String... fields) {
+        assertThatThrownBy(call)
+                .isInstanceOf(BusinessException.class)
+                .satisfies(ex -> {
+                    BusinessException refusal = (BusinessException) ex;
+                    assertThat(refusal.errorCode()).isEqualTo(ErrorCode.PRINT_CONFIG_INVALID);
+                    assertThat(refusal.fieldErrors()).extracting(com.stockflow.common.api.FieldError::field)
+                            .containsExactly(fields);
+                    assertThat(refusal.fieldErrors()).allSatisfy(error -> {
+                        assertThat(error.message()).isEqualTo(refusal.getMessage());
+                        assertThat(error.code()).isNotBlank();
+                    });
+                });
+    }
+
     private static void refused(org.assertj.core.api.ThrowableAssert.ThrowingCallable call, String reason) {
         assertThatThrownBy(call)
                 .isInstanceOf(BusinessException.class)

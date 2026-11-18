@@ -64,7 +64,10 @@ allowedFontCodes?, model, printAreas, hasCartonSpec, model3d?}`. Filter `templat
 - `model` is the cup or bag geometry:
   - `{kind: "parametric-cup", topDiameterMm, bottomDiameterMm, heightMm, rimMm, seamMm, bandTopOffsetMm,
     bandBottomOffsetMm, material}`;
-  - or `{kind: "parametric-bag", widthMm, gussetMm, heightMm, topFoldMm, handle, material}`.
+  - or `{kind: "parametric-bag", widthMm, gussetMm, heightMm, topFoldMm, glueFlapMm, bottomFoldMm, handle,
+    material}`. `glueFlapMm` is the vertical glue flap and `bottomFoldMm` the depth of the bottom fold of the flat
+    sheet the bag is printed on (see "The print file"). A template saved before they existed reads with the defaults:
+    `glueFlapMm` 20, `bottomFoldMm` = round2(0.6 × `gussetMm`) (assumed, pending the workshop's confirmation).
 - The cup's sector is computed by the server.
 - `hasCartonSpec`: the variant has an active packing unit of more than one piece. Without it a design cannot be
   submitted (`CARTON_SPEC_MISSING`), so the studio can say so before the customer starts.
@@ -73,8 +76,17 @@ allowedFontCodes?, model, printAreas, hasCartonSpec, model3d?}`. Filter `templat
   `print:<printAreaCode>`). Absent when the template has no file; the studio then draws the parametric `model`.
   `model`'s measurements are taken from that file by the back office and only ever change together with it.
 - `GET /api/v1/designs/{id}/template` returns the template a design is drawn on (see Designs) in nearly the same
-  shape: it has `active` (whether that template still takes new designs) and no `hasCartonSpec`; read the carton
-  question from `/customization` or from the submission's `CARTON_SPEC_MISSING`.
+  shape, plus:
+  - `active`: whether that template still takes **new** designs. A draft keeps its template when it is deactivated
+    (B39), so `active: false` alone does not stop a submission;
+  - `designable`: the variant is `ACTIVE` and an ordinary one of an `APPROVED` or `PUBLISHED` CUSTOMIZABLE product;
+    `false` exactly when a submission now would fail with `VARIANT_UNAVAILABLE`;
+  - `hasCartonSpec`: as on `/customization`; `false` exactly when a submission now would fail with
+    `CARTON_SPEC_MISSING`.
+
+  Both are computed by the very rule the submission's preflight uses, as they are now - also for an approved design,
+  whose template is otherwise the one frozen in its snapshot. Gate "Gửi duyệt" on these two, not on whether the
+  template is listed in `/customization` (which lists only published products and active templates).
 
 ### Designs (P1, P6)
 | Endpoint | Body / query | Notes |
@@ -82,7 +94,7 @@ allowedFontCodes?, model, printAreas, hasCartonSpec, model3d?}`. Filter `templat
 | `POST /api/v1/designs/mine` | `{productId, sku, templateCode, name, projectId?}` | 201. Empty layout. 409 `DESIGN_DRAFT_LIMIT_REACHED`; with `projectId` 409 `DESIGN_PROJECT_FULL` / `DESIGN_PROJECT_ARCHIVED` |
 | `GET /api/v1/designs` | `?status=&page&size` | The caller's own designs, `ARCHIVED` excluded |
 | `GET /api/v1/designs/{id}` | | The design (§6) |
-| `PUT /api/v1/designs/{id}/name` | `{version, name}` | Drafts only, otherwise 409 `DESIGN_NOT_DRAFT` |
+| `PUT /api/v1/designs/{id}/name` | `{version, name}` | Drafts only, otherwise 409 `DESIGN_NOT_DRAFT` - checked before `version`, so a design submitted from another tab says so rather than 409 `CONFLICT`; the same for the archive and the layout save |
 | `POST /api/v1/designs/{id}/archive` | `{version}` | Deletes a draft. An open quote request on it closes |
 | `POST /api/v1/designs/{id}/revisions` | | From an approved design: copies its approved layout and images; counts against the 50 drafts. It joins the source's project while that project is open and has room; otherwise it stands alone |
 | `POST /api/v1/designs/{id}/clones` | `{variantSku, document}`; header `Idempotency-Key` **required** | 201 `{design, notInProject?}`. A new draft of the source (any of the caller's designs but an archived one) on another ACTIVE variant of the same product, with the active template `document.templateCode` names; `document` is the layout fitted to that template (checked as a layout save, at most 1,000,000 bytes) and may place only the source's images. The clone gets the source's images **with the same `assetId`s**, so the layout needs no rewriting. Name `"<source name> · <sku>"`. Joins the source's project as a revision does; `notInProject` = `PROJECT_ARCHIVED` / `PROJECT_FULL` when it could not. 409 `DESIGN_CLONE_TARGET_INVALID` (same variant, another product, a variant that cannot be designed on), `DESIGN_DRAFT_LIMIT_REACHED`, `PRODUCT_NOT_CUSTOMIZABLE`; 404 `PRINT_CONFIG_NOT_FOUND`; 400 `VALIDATION_FAILED`; 413. Same key and body again: the first answer; same key, other body: 422 `IDEMPOTENCY_KEY_REUSED` |
@@ -121,10 +133,50 @@ allowedFontCodes?, model, printAreas, hasCartonSpec, model3d?}`. Filter `templat
 - **Upload:** `POST /api/v1/designs/{id}/artifacts?role=&documentChecksum=` (multipart `file`), or the slot path
   (`/artifacts/uploads`, then `/artifacts` with `{uploadId, role, documentChecksum}`).
 - **Roles the studio renders:** `CUSTOMER_PREVIEW` (an image), `PRINT_READY` (PDF) and `TECHNICAL_SPEC` (PDF).
-- **The print file:**
-  - one page per print area, in the template's order;
-  - each page the size of that area's bleed box (±0.5 mm);
-  - for a cup, the flattened sector's bounding box including bleed.
+- **The print file (`PRINT_READY`):** PDF/X-4, vector where it can be, one optional content group (layer) per
+  element, the guide layer "Hướng dẫn kỹ thuật (không in)" switched off in `/OCProperties /D /OFF`, and an output
+  intent (the server puts its own in its place when it stamps the file, see §11).
+  - **Pages.** A cup: one page per print area, in the template's order. A bag: **one page, the flat sheet** the four
+    sides are laid out on (below). A 4-page bag file, one page per side as before, is still accepted so that bags
+    submitted before the change can be approved; any other page count is refused (`PRINT_FILE_INVALID`).
+  - **Page boxes** (PDF points, origin the bottom-left corner of the bleed box; `W × H` = the print area's bleed box,
+    for a cup the flattened sector's bounding box including bleed):
+
+    | Box | Value | Checked |
+    |---|---|---|
+    | MediaBox | `[-5 mm, -14 mm, W + 5 mm, H + 5 mm]`: a 5 mm white margin left, right and top, a 14 mm slug below | must contain the BleedBox |
+    | BleedBox | `[0, 0, W, H]` | read as declared (not clipped to the MediaBox), its size ±0.5 mm; a page with none falls back to its MediaBox, so older files still pass |
+    | TrimBox | the bounding box of the trim outline, same origin | position and size ±0.5 mm, only when declared |
+    | CropBox | not set (= MediaBox) | |
+
+    Example, a 12 oz cup (`CUP12-BODY`): BleedBox 286.54 × 125.53 mm, TrimBox 279.67 × 120.85 mm, MediaBox 296.54 ×
+    144.53 mm. When the design is approved the server stamps the TrimBox from the BleedBox's origin, keeps a declared
+    BleedBox and sets the CropBox to the MediaBox, so the press sees the slug.
+  - **Bag: the flat sheet.** `W` = `widthMm`, `g` = `gussetMm`, `T` = `topFoldMm`, `G` = `glueFlapMm`, `B` =
+    `bottomFoldMm`, `P` = round2(`heightMm`) − round2(`T`) (a side's printable height, as the print areas are
+    computed), `b` = the largest `bleedMm` of the four print areas.
+    - Trim: `Wt = G + 2W + 2g`, `Ht = T + P + B`. BleedBox `(Wt + 2b) × (Ht + 2b)`, TrimBox `Wt × Ht` at `(b, b)`, each
+      ±0.5 mm.
+    - Sides (top-left corner of each side's trim, in the sheet's trim coordinates, y downwards): FRONT `(G, T)`, RIGHT
+      `(G + W, T)`, BACK `(G + W + g, T)`, LEFT `(G + 2W + g, T)`, each the size of its print area (`W × P` or
+      `g × P`).
+    - Die line: the trim rectangle `(0, 0, Wt, Ht)`. Vertical folds at `G`, `G+W`, `G+W+g/2`, `G+W+g`, `G+2W+g`,
+      `G+2W+1.5g`; horizontal folds at `T` and `T + P`.
+    - Pinned by both sides' tests: `W 260, g 120, H 320, T 40, G 20, B 72, b 3` → `P 280`, `Wt 780`, `Ht 392`, bleed
+      box `786 × 398` mm.
+    - The template keeps its four print areas and the customer still designs each side; only the print file is one
+      sheet.
+  - **Cut line.** A paper cup and a bag carry the die line as the spot colour `CutContour`, overprinting. A clear PET
+    cup (`material = "pet-clear"`) has **no** `CutContour` (it is printed once formed, not die-cut) and an extra layer
+    "Lót trắng (mực White)", switched **on**, under the artwork: the separation `White` (alternate CMYK `0 0 0 0`), the
+    artwork above it overprinting (`OP true`) so that the white plate stays.
+  - **What the stamp keeps.** Every layer and its state, the `White` separation and the overprint; the XMP the studio
+    wrote (`xmpMM:DocumentID`, `InstanceID`, `VersionID`, `RenditionClass`, `xmp:CreateDate`, `xmp:CreatorTool`, ...)
+    and the trailer `/ID`. The server sets again only `dc:title`, `pdfxid:GTS_PDFXVersion`, `pdf:Trapped` (`False`),
+    `xmp:ModifyDate` and `xmp:MetadataDate`; a file with no XMP gets a packet of those fields alone.
+- **The technical spec (`TECHNICAL_SPEC`):** the multi-page A4 landscape design description (positions, sizes and
+  colours of each element, the proof sign-off box). It is stored and handed over as it is; the server reads nothing
+  in it.
 - **Reading:** `GET .../artifacts` lists them, `GET .../artifacts/{artifactId}/download-url` returns a signed link.
   Before the link is issued:
   - a file of the **approved** bundle is checked against its checksum: missing or changed is 409 `CONFLICT`;
@@ -232,9 +284,26 @@ would leave the measurements of the file before.
   `PAYLOAD_TOO_LARGE`, 400 `VALIDATION_FAILED` when the scan refuses it, 429 `RATE_LIMITED` when too many files are
   being scanned at once (retry later). The download link names the file `<name>.glb`, also for a file stored before
   the extension was kept.
-- **Order of checks on `POST`:** the file first, then the product. A JSON `POST` (no file) is 409
-  `PRINT_CONFIG_MODEL_FILE_REQUIRED` even for a product that is not customizable; with the file, a product that is
-  not customizable is 409 `PRODUCT_NOT_CUSTOMIZABLE`.
+- **Order of checks on `POST`**, as the server runs them - the cheap, pure checks before the file is scanned and
+  stored, the product last, inside the transaction:
+  1. a file is there: a JSON `POST` (no file) is 409 `PRINT_CONFIG_MODEL_FILE_REQUIRED`, whatever the product;
+  2. the model and the print areas: 400 `PRINT_CONFIG_INVALID` with `fieldErrors` (below), whatever the product;
+  3. the file itself: 415 / 413 / 400 / 429 as above;
+  4. the product: 409 `PRODUCT_NOT_CUSTOMIZABLE`; then the code (400 `PRINT_CONFIG_INVALID`, 409
+     `PRINT_CONFIG_CODE_TAKEN`) and the mesh map (422).
+
+  So a multipart `POST` with an invalid model on a product that is not customizable is 400, not 409. The order is
+  kept on purpose: checking the product first would cost a virus scan and an upload for a request the model alone
+  already refuses.
+- **Bag fields `glueFlapMm`, `bottomFoldMm`:** `0 ≤ glueFlapMm ≤ 100`, `0 ≤ bottomFoldMm ≤ gussetMm`. Free to change
+  without a file, like `topFoldMm`: the `.glb` does not determine them. Omitted on a save, each takes its default
+  (`glueFlapMm` 20, `bottomFoldMm` = round2(0.6 × `gussetMm`)): a `PUT` replaces the whole model, so send back the
+  values you read to keep them.
+- **`PRINT_CONFIG_INVALID` (400)** carries `fieldErrors: [{field, message, code}]`: `field` is the path in the request
+  (`model.seamMm`, `model.rimMm`, `model.topFoldMm`, `model.glueFlapMm`, `model.bottomFoldMm`,
+  `printAreas[i].safeMarginMm`, `printAreas[i].bleedMm`, ... - `i` the area's index in the request), `message` the
+  English reason, `code` the rule (`Range`, `OneOf`, `NoSafeArea`, ...). Map `field` to the form; show `message` only
+  as a fallback.
 - **Values only a new file may change** (409 `PRINT_CONFIG_MODEL_FILE_REQUIRED`, the message names them). Checked on
   **every** save without a file, whether or not the template has one. Values are stored as sent and compared after
   rounding each to 0.01 mm, so re-sending what was read is never refused:
@@ -256,7 +325,8 @@ would leave the measurements of the file before.
   `fieldErrors`: `model3d.surfaces` / `PrintAreaMissing`, `model3d.surfaces[i].meshName` / `MeshNameMismatch`, and the
   earlier `PrintAreaUnknown`, `PrintAreaDuplicate`, `Size`. Checked again on activation.
 - Stale `version`: 409 `OPTIMISTIC_LOCK`. Permission `product-customization-templates:{VIEW_PAGE, READ, CREATE,
-  UPDATE, DELETE}`, held by the Sales Manager and the System Admin.
+  UPDATE}`, held by the Sales Manager and the System Admin. There is no `DELETE`: a template is never deleted - designs
+  and snapshots name it - only deactivated, which is an `UPDATE`.
 
 **`POST /designs/{id}/reviews`:**
 - Returning requires `notes`, 1–2000 characters.
@@ -418,10 +488,13 @@ warning level, and the minimum is the template's `minDpi` (300).
 ## 11. Known limits
 
 - **PDF/X:** the stamped print file is identified as PDF/X-4 (TrimBox, BleedBox, `GTS_PDFXVersion`, `Trapped`) and
-  carries a `GTS_PDFX` output intent from `stockflow.design.print.output-intent`. Until the printer's ICC profile is
-  chosen (B35) that is the interim sRGB profile (`sRGB IEC61966-2.1`), a display profile a strict PDF/X-4 checker can
-  still reject; the production instruction says which intent is embedded. Colours are never converted to the profile,
-  and nothing in the build checks conformance (no veraPDF).
+  carries one `GTS_PDFX` output intent from `stockflow.design.print.output-intent`, in place of the studio's: by
+  default ISO Coated v2 (ECI), condition `FOGRA39`, info "ISO Coated v2 (ECI)", registry `http://www.color.org` - the
+  file `ISOcoated_v2_eci.icc` bundled with the server, byte for byte the one the storefront embeds from
+  `public/print/icc/`. A printer's own profile replaces it by configuration (`DESIGN_PRINT_ICC_PROFILE`,
+  `DESIGN_PRINT_OUTPUT_CONDITION`, `DESIGN_PRINT_OUTPUT_INFO`); the production instruction says which intent is
+  embedded. Clear PET cups (dry offset, white underlay) will need a printing condition of their own. Colours are never
+  converted to the profile, and nothing in the build checks conformance (no veraPDF).
 - **Quotes:** writing a quote from a request, with the customer's SKU filled in, is plan D5 and belongs to the order
   module. Quotes, orders and production orders still use the blank SKU and snapshot until then.
 - **Library formats:** the library takes the image types a design takes (PNG, JPEG, WebP). B43's SVG and PDF are

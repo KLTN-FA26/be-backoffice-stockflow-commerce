@@ -157,6 +157,12 @@ services:
       # Changing the key breaks every link already mailed (staff re-send them from the production order).
       STOCKFLOW_PUBLIC_BASE_URL: ${STOCKFLOW_PUBLIC_BASE_URL-https://api.${DOMAIN}}
       STOCKFLOW_LINKS_KEY: ${STOCKFLOW_LINKS_KEY:-}
+      # The PDF/X output intent stamped into an approved print file (FE request 2026-11-18 BE-3). Unset or blank: the
+      # ICC profile bundled in the image, ISO Coated v2 (ECI) under FOGRA39 - the one the storefront embeds. A printer's
+      # own profile is a path inside the container (mount it) with its condition identifier, which is then required.
+      DESIGN_PRINT_ICC_PROFILE: ${DESIGN_PRINT_ICC_PROFILE:-classpath:print/icc/ISOcoated_v2_eci.icc}
+      DESIGN_PRINT_OUTPUT_CONDITION: ${DESIGN_PRINT_OUTPUT_CONDITION:-}
+      DESIGN_PRINT_OUTPUT_INFO: ${DESIGN_PRINT_OUTPUT_INFO:-}
       # Off until the customer mail phase of the business documents: no customer order mail, staff and producer
       # mail and the portal invitation unchanged. Never true on a server holding copies of real customers.
       CUSTOMER_EMAIL_ENABLED: ${CUSTOMER_EMAIL_ENABLED:-false}

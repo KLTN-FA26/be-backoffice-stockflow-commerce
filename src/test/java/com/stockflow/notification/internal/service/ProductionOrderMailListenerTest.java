@@ -52,6 +52,7 @@ class ProductionOrderMailListenerTest {
     private static final UUID ID = UUID.fromString("0192f000-0000-7000-8000-0000000000aa");
     private static final UUID COORDINATOR = UUID.fromString("0192f000-0000-7000-8000-0000000000bb");
     private static final UUID DESIGN = UUID.fromString("0192f000-0000-7000-8000-0000000000cc");
+    private static final UUID ASSET = UUID.fromString("0192f000-0000-7000-8000-0000000000dd");
 
     private final ProductionOrderDirectory directory = mock(ProductionOrderDirectory.class);
     private final RecordingEmailTransport transport = new RecordingEmailTransport();
@@ -81,7 +82,9 @@ class ProductionOrderMailListenerTest {
                 status, LocalDate.of(2026, 11, 30), "Kho HCM", "12 Nguyễn Huệ", true, "Giao buổi sáng", stopReason,
                 List.of(new ProductionOrderMail.Line("CUP-1", "Ly in logo", 12, 50, 600, "600 x 400 x 350 mm",
                         "Dán nhãn mã đơn", new ProductionOrderMail.File("CUP-1 print file",
-                        "/api/v1/production-order-files/" + ID + "/print-files/" + DESIGN))),
+                        "/api/v1/production-order-files/" + ID + "/print-files/" + DESIGN),
+                        List.of(new ProductionOrderMail.File("logo quán A.png", "/api/v1/production-order-files/" + ID
+                                + "/print-files/" + DESIGN + "/originals/" + ASSET)))),
                 new ProductionOrderMail.File("PRD-20261110-0001.pdf", "/api/v1/production-order-files/" + ID + "/slip"),
                 NOW.plus(Duration.ofDays(30)));
     }
@@ -141,6 +144,10 @@ class ProductionOrderMailListenerTest {
                     .as("no money: prices are other departments' business").doesNotContain("Đơn giá", "VND")
                     .contains("https://api.stockflow.vn/api/v1/production-order-files/" + ID + "/slip?expires=")
                     .contains("/print-files/" + DESIGN + "?expires=", "&signature=")
+                    // BE-6: the customer's original image, a signed link of its own, named as it was uploaded.
+                    .contains("Tệp gốc của CUP-1, đúng như khách tải lên (logo quán A.png): https://api.stockflow.vn"
+                            + "/api/v1/production-order-files/" + ID + "/print-files/" + DESIGN + "/originals/" + ASSET
+                            + "?expires=")
                     .as("the links' expiry, in Vietnam's time").contains("10:00 10/12/2026");
             assertThat(email.attachments()).as("the slip itself, so the order is in hand without a link")
                     .singleElement().satisfies(attachment -> {

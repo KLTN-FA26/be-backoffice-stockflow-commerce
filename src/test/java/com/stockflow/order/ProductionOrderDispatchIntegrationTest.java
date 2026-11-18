@@ -186,6 +186,20 @@ class ProductionOrderDispatchIntegrationTest extends ProductionOrderDispatchFixt
         assertThat(ErrorCode.PRODUCTION_ORDER_LINK_EXPIRED.httpStatus()).isEqualTo(410);
         assertThat(ErrorCode.PRODUCTION_ORDER_LINK_INVALID.httpStatus()).isEqualTo(403);
 
+        // BE-6: this design was confirmed with no image of the customer's, so the e-mail links none; a validly signed
+        // link to an image it does not place is 404, and the print file's link opens no image.
+        assertThat(email.text()).doesNotContain("/originals/");
+        UUID noSuchImage = UUID.randomUUID();
+        Link original = link(links.url(ProductionOrderDispatch.originalPath(sent.id(), sku.snapshotId(), noSuchImage),
+                Instant.now().plusSeconds(600)), "/originals/" + noSuchImage);
+        assertThatThrownBy(() -> dispatch.openOriginal(sent.id(), sku.snapshotId(), noSuchImage, original.expires(),
+                original.signature())).extracting(ProductionOrderDispatchIntegrationTest::code)
+                .isEqualTo(ErrorCode.NOT_FOUND);
+        assertThatThrownBy(() -> dispatch.openOriginal(sent.id(), sku.snapshotId(), noSuchImage, print.expires(),
+                print.signature())).as("the print file's link used for an image")
+                .extracting(ProductionOrderDispatchIntegrationTest::code)
+                .isEqualTo(ErrorCode.PRODUCTION_ORDER_LINK_INVALID);
+
         // The files checked on every use: a print file or a slip that changed in the store is not handed out.
         tamper(sku.printFileKey(), FileCategory.DESIGN_RENDER);
         assertThatThrownBy(() -> dispatch.openPrintFile(sent.id(), sku.snapshotId(), print.expires(),
