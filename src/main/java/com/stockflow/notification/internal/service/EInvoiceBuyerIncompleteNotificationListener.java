@@ -34,7 +34,7 @@ class EInvoiceBuyerIncompleteNotificationListener {
     private static final Logger log = LoggerFactory.getLogger(EInvoiceBuyerIncompleteNotificationListener.class);
 
     static final String CATEGORY = "EINVOICE_BUYER_INCOMPLETE";
-    static final String SOURCE_TYPE = "CUSTOMER";
+    static final String SOURCE_TYPE = "CUSTOMER_PROFILE";
     /** Who records what is missing: the customer's legal profile, invoice e-mail included. */
     static final String AUDIENCE = "customer-legal-profiles:UPDATE";
 
