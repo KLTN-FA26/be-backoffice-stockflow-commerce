@@ -1934,14 +1934,14 @@ class FtlDispatchIntegrationTest {
         oc(body(post(outcome), "{\"outcome\":\"DELIVERED\",\"deliveredAt\":\"" + Instant.now().plusSeconds(3600)
                 + "\"}")).andExpect(status().isUnprocessableEntity())
                 .andExpect(jsonPath("$.errorCode").value("SHIPMENT_DELIVERY_TIME_IN_FUTURE"))
-                .andExpect(jsonPath("$.errors[0].field").value("deliveredAt"));
+                .andExpect(jsonPath("$.fieldErrors[0].field").value("deliveredAt"));
         oc(body(post(outcome), "{\"outcome\":\"DELIVERED\",\"deliveredAt\":\"" + handedOver.minusSeconds(3600)
                 + "\"}")).andExpect(status().isUnprocessableEntity())
                 .andExpect(jsonPath("$.errorCode").value("SHIPMENT_DELIVERY_TIME_BEFORE_HANDOVER"))
-                .andExpect(jsonPath("$.errors[0].field").value("deliveredAt"));
+                .andExpect(jsonPath("$.fieldErrors[0].field").value("deliveredAt"));
         oc(body(post(outcome), "{\"outcome\":\"DELIVERY_FAILED\",\"failureReason\":\"LOST\",\"deliveredAt\":\""
                 + Instant.now().minusSeconds(60) + "\"}")).andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.errors[0].field").value("deliveredAt"));
+                .andExpect(jsonPath("$.fieldErrors[0].field").value("deliveredAt"));
         assertThat(shipmentStatus(shipment)).as("nothing was recorded").isEqualTo("HANDED_OVER");
 
         Instant deliveredAt = Instant.now().minus(Duration.ofDays(2)).truncatedTo(java.time.temporal.ChronoUnit.SECONDS);
@@ -1965,7 +1965,7 @@ class FtlDispatchIntegrationTest {
         String correction = BASE + "/shipments/" + shipment + "/delivery-outcome-correction";
         oc(body(post(correction), "{\"outcome\":\"DELIVERY_FAILED\",\"failureReason\":\"CUSTOMER_ABSENT\","
                 + "\"reason\":\"nothing arrived\",\"deliveredAt\":\"" + deliveredAt + "\"}"))
-                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.errors[0].field").value("deliveredAt"));
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.fieldErrors[0].field").value("deliveredAt"));
         oc(body(post(correction), "{\"outcome\":\"DELIVERY_FAILED\",\"failureReason\":\"CUSTOMER_ABSENT\","
                 + "\"reason\":\"nothing arrived\"}")).andExpect(status().isOk());
         Instant foundAt = Instant.now().minus(Duration.ofDays(1)).truncatedTo(java.time.temporal.ChronoUnit.SECONDS);
