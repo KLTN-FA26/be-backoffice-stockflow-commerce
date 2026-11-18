@@ -13,6 +13,7 @@ import com.stockflow.inventory.internal.service.StockOperations.PackageAdjustmen
 import com.stockflow.notification.api.ProductionOrderDirectory;
 import com.stockflow.notification.api.ShortSalesOrder;
 import com.stockflow.procurement.internal.service.GoodsReceipts;
+import com.stockflow.support.Await;
 import com.stockflow.support.DemoData;
 import com.stockflow.support.ProductionReceiptTest;
 import com.stockflow.support.ProductionReceivables;
@@ -27,6 +28,7 @@ import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.UUID;
 
@@ -71,10 +73,16 @@ class ProductionCartonDamagedIntegrationTest {
                 StockDisposition.AVAILABLE, MoveReference.PUTAWAY_TASK, Identifiers.newId(), clerk, "putaway")));
         // The receipt's putaway tasks are still open (the cartons were put away through the inventory API); a write-off
         // of a carton with an open task is refused until it is done, so they are closed here.
+        // The tasks are opened after the receipt's commit, by a listener: wait for them all.
+        String[] lpnArray = lpns.toArray(new String[0]);
+        Await.until("a putaway task for every carton", Duration.ofSeconds(20), () -> jdbc.queryForObject("""
+                SELECT count(*) FROM warehouse.putaway_task
+                 WHERE stock_package_id IN (SELECT id FROM inventory.stock_package WHERE lpn = ANY (?))""",
+                Long.class, (Object) lpnArray) == lpnArray.length);
         tx.executeWithoutResult(s -> jdbc.update("""
                 UPDATE warehouse.putaway_task SET status = 'CANCELLED'
                  WHERE stock_package_id IN (SELECT id FROM inventory.stock_package WHERE lpn = ANY (?))""",
-                (Object) lpns.toArray(new String[0])));
+                (Object) lpnArray));
         recorded.clear();
     }
 
