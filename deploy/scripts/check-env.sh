@@ -52,7 +52,9 @@ done <<<"$optional"
 
 while read -r name; do
   [[ -z $name ]] && continue
-  grep -qx "$name" <<<"$active" || grep -qx "$name" <<<"$optional" || [[ $name == IMAGE_TAG ]] || report UNKNOWN "$name"
+  # IMAGE_TAG and ROLLBACK_TAG are written by scripts/deploy.sh.
+  grep -qx "$name" <<<"$active" || grep -qx "$name" <<<"$optional" || [[ $name == IMAGE_TAG || $name == ROLLBACK_TAG ]] \
+    || report UNKNOWN "$name"
 done <<<"$present"
 
 if (( problems )); then echo "-> fix MISSING / EMPTY / CHANGE_ME, then: docker compose config --quiet && echo CONFIG OK"; exit 1; fi
